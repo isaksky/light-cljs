@@ -54,6 +54,58 @@ thread_fn roundtrip() {
     let unicode = decoded.nodes[decoded.children[root.start + 4]]; assert(decoded.units[unicode.start..(unicode.start + unicode.count)] == [233 as u16, 55357, 56832, 55296]);
     assert(decoded.bytes[..] == "one two");
 }
+// light-cljs-877: a map's or set's traversal order (map_order). Updates
+// past 8 entries promote to hash order and keep it; a cell value's graph
+// carries the order (Form.number 1), which a compiler graph may not; a
+// compiler form's map past 8 entries and set past 8 members import
+// hash-ordered, as the V8 build's form bridge decodes them.
+fn order_of(heap: source::Heap&, v: source::Value) -> i64 { return source::node(heap, v.id()).length; }
+fn transported(heap: source::Heap&, roots: const source::Value[:], cells: bool, out: source::Value[>..]&) {
+    var g = bridge::Graph {}; var c = bridge::Control { cells: cells, spans: false }; var bytes: u8[>..] = [];
+    assert(bridge::export_graph(heap, roots, g, c) && bridge::encode(g, bytes, c));
+    var d = bridge::Graph {}; var r = bridge::Control { cells: cells }; assert(bridge::decode(d, bytes, r) && bridge::import_graph(heap, d, out, r));
+}
+thread_fn traversal_order() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var pairs: source::Value[>..] = []; var members: source::Value[>..] = [];
+    for i in 9 { pairs.push(source::number(i)); pairs.push(source::number(i * 10)); members.push(source::number(i)); }
+    let eight = source::form_construct(heap, node_kind::Map, pairs[..16]); let nine = source::form_construct(heap, node_kind::Map, pairs[..]);
+    let small = source::form_construct(heap, node_kind::Set, members[..8]); let wide = source::form_construct(heap, node_kind::Set, members[..]);
+    assert(order_of(heap, eight) == map_order::Insertion && order_of(heap, nine) == map_order::Insertion && order_of(heap, wide) == map_order::Insertion);
+    // A ninth entry or member promotes; replacing one or a present member does not.
+    let promoted = source::form_assoc(heap, eight, source::number(100), source::nil()); let replaced = source::form_assoc(heap, eight, source::number(0), source::nil());
+    let joined = source::form_conj(heap, small, source::number(100)); let present = source::form_conj(heap, small, source::number(0));
+    assert(order_of(heap, promoted) == map_order::Hash && order_of(heap, replaced) == map_order::Insertion && order_of(heap, joined) == map_order::Hash && present.id() == small.id());
+    // An insertion-ordered map past 8 entries replaces in place and promotes on a new key; hash order stays.
+    assert(order_of(heap, source::form_assoc(heap, nine, source::number(0), source::nil())) == map_order::Insertion && order_of(heap, source::form_assoc(heap, nine, source::number(100), source::nil())) == map_order::Hash);
+    assert(order_of(heap, source::form_assoc(heap, promoted, source::number(0), source::nil())) == map_order::Hash);
+    // NewFormMap's map is hash-ordered at any size; NewFormSet's past 8 members.
+    let literal = source::form_ordered(heap, node_kind::Map, pairs[..4], true); let set8 = source::form_ordered(heap, node_kind::Set, members[..8], false); let set9 = source::form_ordered(heap, node_kind::Set, members[..], false);
+    assert(order_of(heap, literal) == map_order::Hash && order_of(heap, set8) == map_order::Insertion && order_of(heap, set9) == map_order::Hash);
+    // A cell value keeps each order; a compiler graph decides by size.
+    var kept: source::Value[>..] = []; transported(heap, [literal, nine, joined, small], true, kept);
+    assert(order_of(heap, kept[0]) == map_order::Hash && order_of(heap, kept[1]) == map_order::Insertion && order_of(heap, kept[2]) == map_order::Hash && order_of(heap, kept[3]) == map_order::Insertion);
+    var decoded: source::Value[>..] = []; transported(heap, [literal, nine, eight, wide, small], false, decoded);
+    assert(order_of(heap, decoded[0]) == map_order::Insertion && order_of(heap, decoded[1]) == map_order::Hash && order_of(heap, decoded[2]) == map_order::Insertion && order_of(heap, decoded[3]) == map_order::Hash && order_of(heap, decoded[4]) == map_order::Insertion);
+    // To the compiler a hash-ordered map's entries go in hash order; to a cell in insertion order.
+    let mixed = source::form_ordered(heap, node_kind::Map, [source::number(1), source::nil(), source::number(32), source::nil()], true);
+    var wire = bridge::Graph {}; var wc = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [mixed], wire, wc));
+    assert(wire.nodes[wire.children[wire.nodes[wire.roots[0]].start]].number == 32);
+    var stored = bridge::Graph {}; var sc = bridge::Control { cells: true, spans: false }; assert(bridge::export_graph(heap, [mixed], stored, sc));
+    assert(stored.nodes[stored.children[stored.nodes[stored.roots[0]].start]].number == 1 && stored.nodes[stored.roots[0]].number == 1);
+    // A compiler graph cannot carry an order, nor a cell graph another number.
+    var g = bridge::Graph {}; var c = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [eight], g, c));
+    g.nodes[g.roots[0]].number = 1; var plain = bridge::Control {}; var bytes: u8[>..] = []; assert(!bridge::encode(g, bytes, plain) && plain.error == bridge::Error.Malformed);
+    g.nodes[g.roots[0]].number = 2; var cells = bridge::Control { cells: true }; assert(!bridge::encode(g, bytes, cells) && cells.error == bridge::Error.Malformed);
+    // A hash-ordered map's keys: nil first, then by five-bit hash paths from the low bits.
+    let h1, ok1 = source::form_hash(heap, source::number(1)); let h32, ok32 = source::form_hash(heap, source::number(32)); let h2, ok2 = source::form_hash(heap, source::number(2));
+    assert(ok1 && ok32 && ok2 && h1 == 1 && h32 == 32 && h2 == 2);
+    assert(source::legacy_order_key(heap, source::nil(), 0) < source::legacy_order_key(heap, source::number(0), 0));
+    assert(source::legacy_order_key(heap, source::number(32), h32) < source::legacy_order_key(heap, source::number(1), h1) && source::legacy_order_key(heap, source::number(1), h1) < source::legacy_order_key(heap, source::number(2), h2));
+    let atom = source::allocate(heap, source::Node { kind: node_kind::Atom }); let ha, oka = source::form_hash(heap, atom); assert(!oka && heap.fault == source::Fault.None);
+    print("traversal order: promotion past 8 entries, hash-ordered literals, cell graphs keep it, compiler graphs decide by size, hash paths passed");
+}
 thread_fn positional_map_equality() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
@@ -236,7 +288,7 @@ fn direct_update_boundaries() {
 }
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
-    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality));
+    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order));
     direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 

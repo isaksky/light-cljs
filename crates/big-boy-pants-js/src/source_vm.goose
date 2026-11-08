@@ -333,6 +333,8 @@ let node_kind::Binding = 3;    // a closure's captured binding cell
 let node_kind::Builtin = 4;
 let node_kind::List = 5;       // List .. Set: collection forms
 let node_kind::Vector = 6;
+// A map's or set's `length` is its traversal order, a map_order:: name
+// below (light-cljs-877).
 let node_kind::Map = 7;
 let node_kind::Set = 8;
 let node_kind::Symbol = 9;
@@ -396,6 +398,30 @@ let node_kind::ArgumentMap = 26;
 // property; unmapping turns it into an ordinary node_kind::Binding holding
 // the value it had.
 let node_kind::MappedBinding = 27;
+// A map's or set's traversal order (its node's `length`; light-cljs-877),
+// as the V8 build's runtime (src/js_runtime.js) has it: an array map or a
+// hash map or set, the Pants engine's FormMap::Positional and Hashed
+// (collections/form.rs). Insertion: a map or set of up to 8 entries, and a
+// constant literal or array map of any size (LiteralMap, ArrayMap),
+// printed in insertion order. Hash: a hash-map literal's map (CljZipMap,
+// NewFormMap) of any size, a set literal of more than 8 members
+// (NewFormSet), a compiler form's map or set of more than 8 entries (the
+// form bridge, decoded_hash_ordered), and a map or set an assoc or conj
+// took past 8 entries; it stays Hash through every update and prints in
+// ClojureScript's hash order (form_hash, legacy_order_key). The values run
+// stays in insertion order either way, so lookups and equality do not look
+// at it.
+let map_order::Insertion = 0;
+let map_order::Hash = 1;
+// A sequence's (node_kind::Concat) flavor, its node's `length`
+// (light-cljs-877): an ordinary sequence, or a realized integer range
+// (realm.goose core_range), which nth indexes as the V8 build's
+// IntegerRange does, flooring a fractional index inside its count; its
+// rest is one too.
+let seq_flavor::Sequence = 0;
+let seq_flavor::IntegerRange = 1;
+inline fn integer_range(n: Node) -> bool { return n.kind == node_kind::Concat && n.length == seq_flavor::IntegerRange; }
+inline fn hash_ordered(n: Node) -> bool { return (n.kind == node_kind::Map || n.kind == node_kind::Set) && n.length == map_order::Hash; }
 // Errors, generators, promises, wrappers and iterators are ordinary objects
 // with internal slots: their own properties are an Object's, without an
 // element run.
@@ -2799,8 +2825,8 @@ fn form_collection(heap: Heap&, kind: i64, children: const Value[:], template: N
 }
 // Ordinary constructors normalize equal keys/members. LiteralMap and the
 // compiler occurrence bridge deliberately retain positional source operands.
-fn form_construct(heap: Heap&, kind: i64, children: const Value[:]) -> Value {
-    if kind != node_kind::Map && kind != node_kind::Set { return form_collection(heap, kind, children); }
+fn form_construct(heap: Heap&, kind: i64, children: const Value[:], template: Node = Node { kind: node_kind::Object }) -> Value {
+    if kind != node_kind::Map && kind != node_kind::Set { return form_collection(heap, kind, children, template); }
     let stride: i64 = if kind == node_kind::Map { 2 } else { 1 };
     if children.len % stride != 0 { heap.fault = Fault.TypeError; return Value.Undefined; }
     if !charge(heap, children.len) { return Value.Undefined; }
@@ -2812,7 +2838,165 @@ fn form_construct(heap: Heap&, kind: i64, children: const Value[:]) -> Value {
         if found >= 0 { if kind == node_kind::Map { normalized[found + 1] = children[i * stride + 1]; } }
         else { normalized.push(key); if kind == node_kind::Map { normalized.push(children[i * stride + 1]); } }
     }
-    return form_collection(heap, kind, normalized);
+    return form_collection(heap, kind, normalized, template);
+}
+// form_construct, then the V8 build's traversal order (map_order): `always`
+// for NewFormMap's map (the Pants engine's new_map) of any size and the
+// runtime's mapFromArray of more than 16 operands (literalMap's `map`);
+// otherwise a map or set past 8 entries, as NewFormSet's (new_set) and
+// setFromArray's (`set`, conj by conj) promote; anything else stays
+// insertion-ordered.
+fn form_ordered(heap: Heap&, kind: i64, children: const Value[:], always: bool) -> Value {
+    let v = form_construct(heap, kind, children);
+    if heap.fault != Fault.None || kind != node_kind::Map && kind != node_kind::Set { return v; }
+    let entries = form_count(heap, v);
+    if always || entries > 8 { node_mut(heap, v.id()).length = map_order::Hash; }
+    return v;
+}
+
+// ClojureScript's `hash` of the form values this VM has (light-cljs-877),
+// the V8 build's (the Pants engine's collections/form.rs `hash`: the
+// runtime's Murmur3 profile), in 32-bit unsigned words that wrap as its
+// i32 arithmetic does: nil and undefined 0, booleans 1231 and 1237,
+// numbers (number_hash), strings (hash_int of string_hash), keywords and
+// symbols (hash_named), lists, sequences and vectors as ordered
+// collections, maps and sets as unordered ones, every position of their
+// value runs counted (equal reader keys included, as the Pants engine's
+// positional storage counts them). Another object (an atom, a delay, a
+// function, a JavaScript object) hashes by its identity there, which no
+// Goose heap row reproduces: hashing one returns false with no fault, for
+// the caller to fail by name; a lazy sequence too (its elements would run
+// JavaScript). Each node is one unit of work; nesting past 128 is the
+// catchable StackLimit, as form_equal's.
+inline fn rotl(x: u32, n: u32) -> u32 { return (x << n) | (x >> (32 - n)); }
+inline fn mix_k1(v: u32) -> u32 { return rotl(v * 3432918353, 15) * 461845907; }
+inline fn mix_h1(h: u32, v: u32) -> u32 { return rotl(h ^ v, 13) * 5 + 3864292196; }
+fn fmix(h0: u32, length: u32) -> u32 {
+    var h = h0 ^ length;
+    h = (h ^ (h >> 16)) * 2246822507;
+    h = (h ^ (h >> 13)) * 3266489909;
+    return h ^ (h >> 16);
+}
+inline fn hash_int(v: u32) -> u32 { return if v == 0 { 0 } else { fmix(mix_h1(0, mix_k1(v)), 4) }; }
+inline fn mix_collection_hash(basis: u32, count: i64) -> u32 { return fmix(mix_h1(0, mix_k1(basis)), (count & 4294967295) as u32); }
+// Java's `31 * h + c` over a string's units.
+fn string_hash(heap: const Heap&, s: Value) -> u32 {
+    var h: u32 = 0;
+    if !s.is_string() { return h; }
+    let r = header(heap, s.sid());
+    if r.wide { for u in wide_run(heap, r) { h = h * 31 + u; } } else { for c in narrow_run(heap, r) { h = h * 31 + c; } }
+    return h;
+}
+// Murmur3 of a name's units, two to a word.
+fn hash_chars(heap: const Heap&, s: Value) -> u32 {
+    let n = str_len(heap, s); var h: u32 = 0; var i: i64 = 0;
+    while i + 1 < n { let a: u32 = unit(heap, s, i); let b: u32 = unit(heap, s, i + 1); h = mix_h1(h, mix_k1(a | (b << 16))); i += 2; }
+    if i < n { let last: u32 = unit(heap, s, i); h = h ^ mix_k1(last); }
+    return fmix(h, ((n * 2) & 4294967295) as u32);
+}
+// A symbol's hash (a keyword's adds 0x9e3779b9): the name's hash_chars
+// mixed with its namespace's string_hash (0 without one); `seed >> 2` is
+// i32's arithmetic shift.
+fn hash_named(heap: const Heap&, name: Value, ns: Value) -> u32 {
+    let seed = hash_chars(heap, name);
+    let shifted = (seed >> 2) | (if seed >= 2147483648 { 3221225472 } else { 0 });
+    let space = if ns.is_string() { string_hash(heap, ns) } else { 0 };
+    return seed ^ (space + 2654435769 + (seed << 6) + shifted);
+}
+// A number's: NaN and the infinities fixed words, a safe integer its
+// remainder by 2^31 - 1 (truncated, so -0 is 0), any other the two
+// big-endian words of its little-endian bytes, xored.
+fn number_hash(x: f64) -> u32 {
+    if x != x { return 2146959360; }
+    if x > 1.7976931348623157e308 { return 2146435072; }
+    if x < -1.7976931348623157e308 { return 4293918720; }
+    if x == trunc(x) && x <= 9007199254740991.0 && x >= -9007199254740991.0 {
+        let k = x as i64; let r = k - (k / 2147483647) * 2147483647;
+        return ((r + 4294967296) & 4294967295) as u32;
+    }
+    let one:  f64[1] = [x]; let b = bytes_of(one);
+    let b0:   u32    = b[0]; let b1: u32 = b[1]; let b2: u32 = b[2]; let b3: u32 = b[3];
+    let b4:   u32    = b[4]; let b5: u32 = b[5]; let b6: u32 = b[6]; let b7: u32 = b[7];
+    let high: u32    = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+    let low:  u32    = (b4 << 24) | (b5 << 16) | (b6 << 8) | b7;
+    return high ^ low;
+}
+recursive fn form_hash(heap: Heap&, v: Value, depth: i64 = 0) -> u32, bool {
+    if !charge(heap) { return 0, false; }
+    if depth >= 128 { heap.fault = Fault.StackLimit; return 0, false; }
+    let x = form_value(heap, v);
+    if heap.fault != Fault.None { return 0, false; }
+    match x {
+        Undefined, Null => { return 0, true; },
+        Bool => { return if x.flag() { 1231 } else { 1237 }, true; },
+        Number => { return number_hash(x.num()), true; },
+        String => { if !charge(heap, str_len(heap, x)) { return 0, false; } return hash_int(string_hash(heap, x)), true; },
+        Object => {},
+        _ => { return 0, false; },
+    }
+    let n = node(heap, x.id());
+    if n.kind == node_kind::Keyword || n.kind == node_kind::Symbol {
+        if !charge(heap, str_len(heap, n.value) + str_len(heap, n.namespace_value)) { return 0, false; }
+        let h = hash_named(heap, n.value, n.namespace_value);
+        return if n.kind == node_kind::Keyword { h + 2654435769 } else { h }, true;
+    }
+    if n.kind == node_kind::List || n.kind == node_kind::Vector || n.kind == node_kind::Concat {
+        var h: u32 = 1;
+        for i in n.count { let c, ok = form_hash(heap, slot(heap, n.start + i), depth + 1); if !ok { return 0, false; } h = h * 31 + c; }
+        return mix_collection_hash(h, n.count), true;
+    }
+    if n.kind == node_kind::Map {
+        var sum: u32 = 0;
+        for i in (n.count / 2) {
+            let k, kok = form_hash(heap, slot(heap, n.start + i * 2), depth + 1); if !kok { return 0, false; }
+            let w, wok = form_hash(heap, slot(heap, n.start + i * 2 + 1), depth + 1); if !wok { return 0, false; }
+            sum = sum + mix_collection_hash(31 * (31 + k) + w, 2);
+        }
+        return mix_collection_hash(sum, n.count / 2), true;
+    }
+    if n.kind == node_kind::Set {
+        var sum: u32 = 0;
+        for i in n.count { let k, ok = form_hash(heap, slot(heap, n.start + i), depth + 1); if !ok { return 0, false; } sum = sum + k; }
+        return mix_collection_hash(sum, n.count), true;
+    }
+    return 0, false;
+}
+// The order key of a hash-ordered map's key or set's member with hash h
+// (the Pants engine's legacy_order, ClojureScript's PersistentHashMap
+// traversal): nil first, then the five-bit trie paths of h compared from
+// the low bits, not numerically.
+fn legacy_order_key(heap: Heap&, k: Value, h: u32) -> u64 {
+    if form_value(heap, k).tag() <= value_tag::Null { return 0; }
+    var key: u64 = 1;
+    var rest = h;
+    for i in 7 { let chunk: u64 = rest & 31; key = (key << 5) | chunk; rest = rest >> 5; }
+    return key;
+}
+// A hash-ordered map's entry or set's member: its legacy_order_key and its
+// position in the values run.
+struct OrderKey { key: u64, index: i64 }
+// The entries of map or set `n` (by position in its values run, a map's
+// entry i at 2i) in its traversal order, as the V8 build's runtime walks
+// it for printing, seq and its form bridge: insertion order, or for a
+// hash-ordered one its keys sorted by legacy_order_key of form_hash, equal
+// keys (a full hash collision) in insertion order. False when a key does
+// not hash here (form_hash), with no fault, or on a work or stack fault.
+fn traversal_order(heap: Heap&, n: Node, order: i64[>..]&) -> bool {
+    let stride:  i64 = if n.kind == node_kind::Map { 2 } else { 1 };
+    let entries: i64 = n.count / stride; let start: i64 = n.start;
+    order.clear();
+    if !hash_ordered(n) || entries < 2 { for i in entries { order.push(i); } return true; }
+    var keys: OrderKey[>..] = [];
+    for i in entries {
+        let k = slot(heap, start + i * stride);
+        let h, ok = form_hash(heap, k);
+        if !ok || heap.fault != Fault.None { return false; }
+        keys.push(OrderKey { key: legacy_order_key(heap, k, h), index: i });
+    }
+    if !charge(heap, entries) { return false; }
+    sort(keys) { x, y => x.key < y.key || x.key == y.key && x.index < y.index };
+    for o in keys { order.push(o.index); }
+    return true;
 }
 fn form_count(heap: Heap&, v: Value) -> i64 {
     let x = form_value(heap, v);
@@ -2877,6 +3061,17 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
     }
     if !charge(heap, n.count + 2) { return Value.Undefined; }
     let replacing = at >= 0 && at < n.count;
+    // A ninth entry promotes an insertion-ordered map to hash order, its
+    // entries rebuilt as the V8 build's hash map takes them (the Pants
+    // engine's map_assoc): equal keys (reader-distinct, equal once read)
+    // keep the first key and the last value. Metadata stays.
+    if kind == node_kind::Map && !replacing && n.count / 2 >= 8 && n.length == map_order::Insertion {
+        if !values_fit(heap, n.count + 2) { memory(heap); return Value.Undefined; }
+        var pairs: Value[>..] = [];
+        pairs.append(run(heap, n.start, n.count)); pairs.push(k); pairs.push(value);
+        var promoted = n; promoted.origin = -1; promoted.length = map_order::Hash;
+        return form_construct(heap, node_kind::Map, pairs, promoted);
+    }
     let count = n.count + (if replacing { 0 } else if kind == node_kind::Map { 2 } else { 1 });
     if !values_fit(heap, count) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
     if !charge(heap, count) { return Value.Undefined; }
@@ -2914,6 +3109,16 @@ fn form_conj(heap: Heap&, v: Value, value: Value) -> Value {
     let n = if x.tag() <= value_tag::Null { Node { kind: node_kind::List } } else { node(heap, x.id()) };
     if kind == node_kind::Set {
         for i in n.count { if !charge(heap) { return Value.Undefined; } if form_equal(heap, slot(heap, n.start + i), value) { return v; } if heap.fault != Fault.None { return Value.Undefined; } }
+        // A ninth member promotes an insertion-ordered set to hash order,
+        // its members rebuilt as the V8 build's hash set takes them (the
+        // Pants engine's set_add): of equal members the first stays.
+        if n.count >= 8 && n.length == map_order::Insertion {
+            if !values_fit(heap, n.count + 1) { memory(heap); return Value.Undefined; }
+            var members: Value[>..] = [];
+            members.append(run(heap, n.start, n.count)); members.push(value);
+            var promoted = n; promoted.origin = -1; promoted.length = map_order::Hash;
+            return form_construct(heap, node_kind::Set, members, promoted);
+        }
     }
     if !charge(heap, n.count + 1) { return Value.Undefined; }
     let count = n.count + 1;
@@ -2999,7 +3204,11 @@ fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
     if count <= skip { return if empty_nil { nil() } else { form_collection(heap, node_kind::List, []) }; }
     let kind = form_kind(heap, x);
     if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
-    let n = node(heap, x.id()); return allocate(heap, Node { kind: node_kind::Concat, start: (n.start + skip) as u32, count: (n.count - skip) as u32 });
+    // An integer range's seq is itself and its rest an integer range, as
+    // the V8 build's are.
+    let n = node(heap, x.id());
+    if integer_range(n) && skip == 0 { return x; }
+    return allocate(heap, Node { kind: node_kind::Concat, start: (n.start + skip) as u32, count: (n.count - skip) as u32, length: if integer_range(n) { seq_flavor::IntegerRange } else { seq_flavor::Sequence } });
 }
 // cljs.core's errors from the light-cljs form operations (light-cljs-873):
 // what the V8 build's runtime (src/js_runtime.js nth, count, seq, assoc,
@@ -3022,7 +3231,7 @@ fn core_failed(heap: Heap&, e: CoreError) -> bool {
 fn nth_found(heap: Heap&, x: Value, i: f64) -> bool {
     if x.is_string() { return i > -1 && i < str_len(heap, x); }
     let n = node(heap, x.id());
-    if n.kind == node_kind::Vector { return i >= 0 && i < n.count; }
+    if n.kind == node_kind::Vector || integer_range(n) { return i >= 0 && i < n.count; }
     return i >= 0 && i < n.count && i == trunc(i);
 }
 fn nth_error(heap: Heap&, coll: Value, index: Value, fallback: bool) -> CoreError {
@@ -3066,6 +3275,11 @@ fn conj_error(heap: Heap&, coll: Value, item: Value) -> CoreError, Value {
     if x.tag() <= value_tag::Null || kind >= node_kind::List && kind <= node_kind::Vector || kind == node_kind::Set || kind == node_kind::Concat { return CoreError.None, Value.Undefined; }
     if kind != node_kind::Map { return CoreError.ConjType, Value.Undefined; }
     let y = form_value(heap, item); let entries = form_kind(heap, y);
+    // A hash-ordered map's entries go in the runtime's own iteration order
+    // (the Pants engine's trie order, not the printed one), which this VM
+    // does not model: into an insertion-ordered map, where it decides the
+    // result's order, two or more of them are a boundary.
+    if entries == node_kind::Map && hash_ordered(node(heap, y.id())) && node(heap, y.id()).count > 2 && !hash_ordered(node(heap, x.id())) { return CoreError.Boundary, Value.Undefined; }
     if y.tag() <= value_tag::Null || entries == node_kind::Map { return CoreError.None, Value.Undefined; }
     if entries == node_kind::Vector { return if node(heap, y.id()).count < 2 { CoreError.OutOfBounds } else { CoreError.None }, Value.Undefined; }
     if y.is_string() { return if str_len(heap, y) == 0 { CoreError.None } else { CoreError.MapEntry }, Value.Undefined; }
@@ -3244,6 +3458,21 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         // insertion-ordered, equal keys keeping the first key and the last
         // value (the Pants engine's array_map_from_sequence).
         form_op::ArrayMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_construct(heap, node_kind::Map, run(heap, n.start, n.count)); },
+        // A hash-map literal (light-cljs-877): its keys, then its values, as
+        // two lists, made a map as the Pants engine's clj::zip_map makes it
+        // (new_map: equal keys keep the first key and the last value, hash
+        // order at any size).
+        form_op::CljZipMap => {
+            let ks = form_value(heap, a); let vs = form_value(heap, args[1]);
+            let kk = form_kind(heap, ks); let vk = form_kind(heap, vs);
+            if kk != node_kind::List && kk != node_kind::Vector || vk != node_kind::List && vk != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; }
+            let kn = node(heap, ks.id()); let vn = node(heap, vs.id());
+            if kn.count != vn.count { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+            if !charge(heap, kn.count * 2) { return Value.Undefined; }
+            var pairs: Value[>..] = [];
+            for i in kn.count { pairs.push(slot(heap, kn.start + i)); pairs.push(slot(heap, vn.start + i)); }
+            return form_ordered(heap, node_kind::Map, pairs, true);
+        },
         form_op::ReaderCollection => { if form_kind(heap, a) != node_kind::Map && form_kind(heap, a) != node_kind::Set { heap.fault = Fault.TypeError; return Value.Undefined; } return a; },
         form_op::CljCallable => { let kind = form_kind(heap, a); return boolean(kind == node_kind::Vector || kind == node_kind::Map || kind == node_kind::Set || kind == node_kind::Symbol || kind == node_kind::Keyword); },
         form_op::CljCallMember => {
@@ -3362,7 +3591,7 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
         if !charge(heap, count) { return Value.Undefined; }
         var values: Value[>..] = [];
         for i in count { let v, found = own_element(heap, array, i); values.push(v); }
-        return form_construct(heap, if id == 10 { node_kind::Vector } else if id == 11 { node_kind::List } else if id == 12 { node_kind::Map } else { node_kind::Set }, values);
+        return form_ordered(heap, if id == 10 { node_kind::Vector } else if id == 11 { node_kind::List } else if id == 12 { node_kind::Map } else { node_kind::Set }, values, id == 12 && values.len > 16);
     }
     if id == 0 && args.len == 1 { return args[0]; }
     // inc is the runtime's `x => x + 1`: a string concatenates "1" (it does
@@ -4207,7 +4436,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Literal l => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let base = job.operands.len - (l.count);
-                    let value = form_construct(heap, l.kind, job.operands[base..]); job.operands.resize(base); job.operands.push(value);
+                    let value = form_ordered(heap, l.kind, job.operands[base..], l.kind == node_kind::Map); job.operands.resize(base); job.operands.push(value);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },

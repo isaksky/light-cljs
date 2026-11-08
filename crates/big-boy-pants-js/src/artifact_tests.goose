@@ -121,7 +121,7 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
     defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
-    for mode in 14 {
+    for mode in 16 {
         var bad = copy(a);
         match mode {
             0 => { bad.root = source::object(bad.nodes.len); },
@@ -139,6 +139,9 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
             12 => { bad.nodes[0].count -= 1; bad.values[bad.nodes[0].start + bad.nodes[0].count] = source::object(bad.nodes.len); },
             // An arguments object is a mutable JavaScript object (light-cljs-854).
             13 => { bad.nodes[0].kind = node_kind::Arguments; },
+            // A set's traversal order or a sequence's flavor out of range (light-cljs-877).
+            14 => { bad.nodes[0].kind = node_kind::Set; bad.nodes[0].length = 2; },
+            15 => { bad.nodes[0].kind = node_kind::Concat; bad.nodes[0].length = 2; },
             _ => {},
         }
         var wire: u8[>..] = []; to_bytes([bad], wire); var decode = artifact::Control {};

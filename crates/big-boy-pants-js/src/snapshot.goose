@@ -589,7 +589,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // An atom or volatile (17) has a flavor, 0 or 1; a cell reference (18,
         // no state of its own) 0, 1 or 2, a delay, whose value is its thunk
         // or nothing; a job's own delay (19) none (source::Node, cells.goose).
-        if n.kind == node_kind::Atom && n.length > 1 || n.kind == node_kind::Cell && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == node_kind::Delay && n.length != 0 { return reject(c, Error.Link); }
+        if n.kind == node_kind::Atom && n.length > 1 || n.kind == node_kind::Cell && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == node_kind::Delay && n.length != 0 || (n.kind == node_kind::Map || n.kind == node_kind::Set) && n.length > map_order::Hash || n.kind == node_kind::Concat && n.length > seq_flavor::IntegerRange { return reject(c, Error.Link); }
         if n.kind == node_kind::Array && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
         // A key list (node_kind::KeyList): its walk position lies in its
         // records, and it walks an object or nothing.

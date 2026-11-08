@@ -526,7 +526,7 @@ thread_fn bound_malformed(saved: snapshot::Snapshot, mode: i64) {
     }
 }
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its
@@ -1359,6 +1359,28 @@ thread_fn assembly_restore(parent: Assembly, i: i64) {
     }
 }
 
+// light-cljs-877: a map's or set's traversal order and a realized integer
+// range's flavor (node `length`) restore as captured; any other value is a
+// Link rejection.
+thread_fn traversal_flags() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/arguments.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var pairs: source::Value[>..] = []; for i in 9 { pairs.push(source::number(i)); pairs.push(source::nil()); }
+    let map = source::form_ordered(heap, node_kind::Map, pairs[..4], true); let set = source::form_ordered(heap, node_kind::Set, pairs[..], false);
+    let range = source::allocate(heap, source::Node { kind: node_kind::Concat, start: source::node(heap, set.id()).start, count: 2, length: seq_flavor::IntegerRange as u32 });
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: map }, snapshot::Binding { id: 1, generation: 1, value: set }, snapshot::Binding { id: 2, generation: 1, value: range }], c); assert(c.error == snapshot::Error.None);
+    {
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+        assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), restore));
+        assert(source::hash_ordered(source::node(target, roots[0].value.id())) && source::hash_ordered(source::node(target, roots[1].value.id())) && source::integer_range(source::node(target, roots[2].value.id())));
+    }
+    for v in [map, set, range] {
+        var bad = copy(saved); bad.nodes[v.id()].length = 2;
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    print("snapshot traversal flags: hash order and integer ranges restore, other values refused");
+}
 fn argument_ownership() {
     heap_program::join(thread_spawn(argument_parent)); let saved = qget<Saved>();
     for n in [8, 9] { heap_program::join(thread_spawn(argument_restore, copy(saved.image), n)); }

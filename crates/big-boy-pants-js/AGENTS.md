@@ -64,7 +64,9 @@ See [README.md](README.md) for the layout.
   heap node's kind (`source::Node.kind`) is a Goose-private `node_kind::`
   name from `src/source_vm.goose` (`node_kind::Vector`, `node_kind::Cell`,
   `node_kind::None` for "not an object"); a new kind takes the next number
-  there, and none is renumbered. Generator and promise states and a Resume
+  there, and none is renumbered. A map's or set's traversal order (its
+  node's `length`) is a `map_order::` name there (`map_order::Hash`).
+  Generator and promise states and a Resume
   frame's operation are `generator_state::`, `promise_status::` and
   `resume_kind::` names from `src/continuations.goose`.
 

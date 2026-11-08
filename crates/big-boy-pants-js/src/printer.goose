@@ -36,16 +36,13 @@ namespace source;
 //   toString (`#error {:message m, :data d, :cause c}`, data and cause
 //   only when truthy); another error `#object[Ctor Name: message]`; a
 //   function `#object[name]`.
-// The V8 build prints a map of more than 8 entries and a set of more than
-// 8 members in ClojureScript's hash order unless the reader made it
-// (formPrintItems); this VM models neither hash order nor which maps the
-// reader made, so those fail by name, as a map's first entry does
-// (form_op CljFirst). One case remains wrong rather than refused: a map of
-// 2 to 8 entries made by `__rt.formMap` (NewFormMap) is hash-ordered in the
-// V8 build and prints here in insertion order; no emitted macro code makes
-// one today (hash-map has no Rust expansion on the Goose path, and a
-// literal reaches formMap only with more than 8 key positions), and
-// light-cljs-877 models hash order. A lazy sequence, a process-wide cell's value, a
+// Maps and sets print in their traversal order (map_order, light-cljs-877),
+// as the V8 build's runtime prints its array maps and hash maps and sets:
+// an insertion-ordered one in insertion order, a hash-ordered one in
+// ClojureScript's hash order, its keys sorted by legacy_order_key of
+// form_hash. A hash-ordered map or set whose
+// keys hash by identity in the V8 build (an atom, a function, a JavaScript
+// object) fails by name. A lazy sequence, a process-wide cell's value, a
 // JavaScript array or plain object, a Symbol and a BigInt fail by name too.
 
 // A PrintFrame's layout: what separates its items and closes it.
@@ -55,8 +52,7 @@ enum PrintClose { Paren, Bracket, Brace, ObjectEnd }
 // heap's value table or (scratch) in the printer's scratch values; `at` is
 // the next one. Fields: an ExceptionInfo's message, data and cause, an
 // Empty one skipped. Wrapped: the one value inside `#object[...]`.
-struct PrintFrame { kind: PrintKind, close: PrintClose, start: i64, count: i64, at: i64 = 0, scratch: bool = false }
-// The printer's state for one str, prStr or toString call.
+struct PrintFrame { kind: PrintKind, close: PrintClose, start: i64, count: i64, at: i64 = 0, scratch: bool = false } // The printer's state for one str, prStr or toString call.
 root struct Printer { out: u16[>..] = [], frames: PrintFrame[>..] = [], scratch: Value[>..] = [] }
 
 inline fn emit(p: Printer&, text: const u8[:]) { for c in text { p.out.push(c); } }
@@ -198,10 +194,25 @@ fn print_one(job: Job&, b: Builtin, p: Printer&, v: Value) -> bool {
     if kind == node_kind::List || kind == node_kind::Concat { emit(p, "("); return print_open(job, p, PrintFrame { kind: PrintKind.Seq, close: PrintClose.Paren, start: n.start, count: n.count }); }
     if kind == node_kind::Vector { emit(p, "["); return print_open(job, p, PrintFrame { kind: PrintKind.Seq, close: PrintClose.Bracket, start: n.start, count: n.count }); }
     if kind == node_kind::Map || kind == node_kind::Set {
-        let entries: i64 = if kind == node_kind::Map { n.count / 2 } else { n.count };
-        if entries > 8 { unsupported_step(job, b, if kind == node_kind::Map { "printing a map of more than 8 entries (hash order)" } else { "printing a set of more than 8 members (hash order)" }); return false; }
-        emit(p, if kind == node_kind::Map { "{" } else { "#{" });
-        return print_open(job, p, PrintFrame { kind: if kind == node_kind::Map { PrintKind.Map } else { PrintKind.Seq }, close: PrintClose.Brace, start: n.start, count: n.count });
+        let map = kind == node_kind::Map;
+        let stride: i64 = if map { 2 } else { 1 };
+        let entries = n.count / stride;
+        let frame_kind = if map { PrintKind.Map } else { PrintKind.Seq };
+        if !hash_ordered(n) || entries < 2 {
+            emit(p, if map { "{" } else { "#{" });
+            return print_open(job, p, PrintFrame { kind: frame_kind, close: PrintClose.Brace, start: n.start, count: n.count });
+        }
+        // A hash-ordered map or set: its entries in traversal_order.
+        let start: i64 = n.start;
+        var order: i64[>..] = [];
+        if !traversal_order(heap, n, order) {
+            if heap.fault == Fault.None { unsupported_step(job, b, if map { "the hash order of a map keyed by a JavaScript object" } else { "the hash order of a set holding a JavaScript object" }); }
+            return false;
+        }
+        var items: Value[>..] = [];
+        for i in order { items.push(slot(heap, start + i * stride)); if map { items.push(slot(heap, start + i * stride + 1)); } }
+        emit(p, if map { "{" } else { "#{" });
+        return print_open_scratch(job, p, frame_kind, PrintClose.Brace, items);
     }
     if kind == node_kind::Atom {
         emit(p, if n.length == 0 { "#object[cljs.core.Atom {:val " } else { "#object[cljs.core.Volatile {:val " });

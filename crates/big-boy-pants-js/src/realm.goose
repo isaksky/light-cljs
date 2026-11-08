@@ -100,11 +100,13 @@ enum Builtin {
     // identical) and ExceptionInfo.prototype.toString, a realm row
     // (exception_info_to_string_row) (light-cljs-876; printer.goose).
     Str, PrStr, Identical, ExceptionInfoPrototypeToString,
+    // cljs.core's range of numbers, realized (light-cljs-877; core_range).
+    Range,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[107] = [
+let BUILTINS: BuiltinInfo[108] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -166,6 +168,8 @@ let BUILTINS: BuiltinInfo[107] = [
     // function assigned to ExceptionInfo.prototype.toString.
     BuiltinInfo { which: Builtin.Str, name: "str" }, BuiltinInfo { which: Builtin.PrStr, name: "prStr" },
     BuiltinInfo { which: Builtin.Identical, name: "identical", length: 2 }, BuiltinInfo { which: Builtin.ExceptionInfoPrototypeToString, name: "" },
+    // `range: (...a) =>`, an arrow (constructor_builtin).
+    BuiltinInfo { which: Builtin.Range, name: "range" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -383,7 +387,7 @@ let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, 
 // The light-cljs runtime leaves boot_runtime installs on `rt` (core false)
 // or `rt.core`, in this order.
 struct Leaf { core: bool, key: u8[..24], which: Builtin }
-let RUNTIME_LEAVES: Leaf[48] = [
+let RUNTIME_LEAVES: Leaf[49] = [
     Leaf { core: true, key: "macroReaderFunction", which: Builtin.MacroReaderFunction }, Leaf { core: true, key: "inc", which: Builtin.Inc },
     Leaf { core: true, key: "mapv", which: Builtin.Mapv }, Leaf { core: true, key: "vec", which: Builtin.Vec }, Leaf { core: true, key: "into", which: Builtin.Into },
     Leaf { core: true, key: "sequence", which: Builtin.Sequence }, Leaf { core: true, key: "mapSeq", which: Builtin.MapSeq }, Leaf { core: true, key: "list", which: Builtin.List },
@@ -433,6 +437,8 @@ let RUNTIME_LEAVES: Leaf[48] = [
     // str, pr-str and identical? (light-cljs-876; printer.goose).
     Leaf { core: true, key: "str", which: Builtin.Str }, Leaf { core: true, key: "prStr", which: Builtin.PrStr },
     Leaf { core: true, key: "identical", which: Builtin.Identical },
+    // range (light-cljs-877; core_range).
+    Leaf { core: true, key: "range", which: Builtin.Range },
 ];
 
 // A built-in's code: its position in BUILTINS.
@@ -1111,6 +1117,52 @@ fn into(job: Job&, b: Builtin, args: const Value[:]) -> Value {
     }
     return out;
 }
+// rt.core.range(...a) (light-cljs-877): the V8 build's runtime's `range`
+// (src/js_runtime.js range and rangeNode) of up to three numbers, `(range
+// end)`, `(range start end)` and `(range start end step)`: `()` when step
+// > 0 and end <= start, step < 0 and end >= start, or otherwise end ==
+// start; else start, then each next x + step while it is < end (step > 0)
+// or > end (step < 0). That runtime makes a lazy Range, an IntegerRange
+// when start, end and step are integers (its isInteger: finite, integral,
+// under 1e21 in magnitude); this one realizes it as a sequence
+// (node_kind::Concat, as seq and rest make), seq_flavor::IntegerRange for
+// an integer one, which reads, counts, indexes, prints and compares as the
+// lazy one does. What it cannot realize fails by name: no argument (0 to
+// Number.MAX_VALUE) or a nonempty range of step 0 or NaN (an endless
+// repeat), and a non-number argument; one longer than the job's value
+// limit (one toward an infinite end, too) is its MemoryLimit, each number
+// one unit of work. More than three arguments is the runtime's arity
+// error.
+fn range_integer(x: f64) -> bool { return x == trunc(x) && x < 1e21 && x > -1e21; }
+fn core_range(job: Job&, b: Builtin, args: const Value[:]) -> Value {
+    let heap .= job.heap;
+    if args.len > 3 { return arity_error(job, args.len); }
+    if args.len == 0 { return unsupported_step(job, b, "an endless range"); }
+    var bounds: f64[3] = [0, 0, 1];
+    for v, i in args {
+        let x = form_value(heap, v);
+        if heap.fault != Fault.None { return Value.Undefined; }
+        if !x.is_number() { return unsupported_step(job, b, "a range of a value that is no number"); }
+        bounds[if args.len == 1 { 1 } else { i }] = x.num();
+    }
+    let first = bounds[0]; let end = bounds[1]; let step = bounds[2];
+    if (if step > 0 { end <= first } else if step < 0 { end >= first } else { end == first }) { return form_collection(heap, node_kind::List, []); }
+    if !(step > 0) && !(step < 0) { return unsupported_step(job, b, "an endless range"); }
+    var values: Value[>..] = [];
+    var x = first;
+    loop {
+        if !values_fit(heap, values.len + 1) { memory(heap); return Value.Undefined; }
+        if !charge(heap) { return Value.Undefined; }
+        values.push(number(x));
+        let next = x + step;
+        if !(if step > 0 { next < end } else { next > end }) { break; }
+        x = next;
+    }
+    if !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
+    let start = add_values(heap, values);
+    let flavor = if range_integer(first) && range_integer(end) && range_integer(step) { seq_flavor::IntegerRange } else { seq_flavor::Sequence };
+    return allocate(heap, Node { kind: node_kind::Concat, start: start as u32, count: values.len as u32, length: flavor as u32 });
+}
 // Units of `[object Tag]`.
 fn object_tag(job: Job&, receiver: Value) -> Value {
     let heap .= job.heap;
@@ -1513,6 +1565,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         // A non-seqable source is cljs.core's error (light-cljs-873).
         Vec, Sequence => { if args.len == 1 && !seq_source(job, args[0]) { return Value.Undefined; } return native_value(heap, id, args); },
         Into => { return into(job, b, args); },
+        Range => { return core_range(job, b, args); },
         _ => { return native_value(heap, id, args); },
     }
 }

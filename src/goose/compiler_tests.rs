@@ -1776,7 +1776,11 @@ fn source_matches_v8(source: &str, uncaught: Option<(&str, &str)>) {
     drop(host);
     cleaned(&session);
     match uncaught {
-        None => assert_eq!(goose.unwrap(), reference.unwrap(), "{source}"),
+        None => assert_eq!(
+            goose.unwrap_or_else(|e| panic!("{source}: {e}")),
+            reference.unwrap_or_else(|e| panic!("{source}: {e}")),
+            "{source}"
+        ),
         Some((exception, fault)) => {
             let reference = reference.unwrap_err().to_string();
             assert!(reference.contains(exception), "{source}: {reference}");
@@ -2032,11 +2036,153 @@ fn goose_compiler_macro_prints_exception_info_as_v8() {
         Some(("TypeError", "TypeError")),
     );
 }
+/// Maps and sets print in the V8 build's traversal order (light-cljs-877):
+/// literal, reader and array maps and sets in insertion order at any size;
+/// a map `__rt.formMap` made (a literal of more than 8 entries, or of more
+/// than 8 key positions whose keys are equal at run time) and a set of more
+/// than 8 members, or one an assoc or conj took past 8 entries, in
+/// ClojureScript's hash order, kept through updates, metadata, cell values
+/// and published definitions.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_prints_hash_ordered_collections_as_v8() {
+    for body in [
+        "[(pr-str {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}) (str {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9})]",
+        "[(pr-str #{1 2 3 4 5 6 7 8 9 10}) (str #{1 2 3 4 5 6 7 8 9 10}) (pr-str #{:a :b :c :d :e :f :g :h :i}) (str #{:a :b :c :d :e :f :g :h :i})]",
+        "[(pr-str (into #{} (range 12))) (str (into #{} (range 12)))]",
+        // Every hashed key kind: nil first, strings, symbols, namespaced
+        // keywords, integers, negative and fractional numbers, booleans,
+        // vectors, lists, maps and sets.
+        r#"(pr-str {nil 1 "s" 2 'sym 3 :ns/kw 4 1.5 5 -3 6 true 7 [1 2] 8 {:x 1} 9 #{2} 10 '(a) 11 false 12 "é" 13 'n/s 14 2147483648 15 -0.25 16 1e300 17})"#,
+        "(pr-str #{-1 -2 0.5 2147483647 -2147483648 9007199254740991 1e21 ##Inf ##-Inf 7})",
+        // Promotion past 8 entries; replacing a key does not promote.
+        "[(pr-str (assoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8} :i 9)) (pr-str (assoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8} :a 0)) (pr-str (conj #{1 2 3 4 5 6 7 8} 9)) (pr-str (conj #{1 2 3 4 5 6 7 8} 8)) (pr-str (into {} [[:z 1] [:y 2] [:x 3] [:w 4] [:v 5] [:u 6] [:t 7] [:s 8] [:r 9] [:q 10]]))]",
+        // A hashed map or set stays hashed through updates and nesting.
+        "[(pr-str (assoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9} :j 10)) (pr-str (conj (conj #{1 2 3 4 5 6 7 8} 9) 10))]",
+        "(pr-str [{:a #{1 2 3 4 5 6 7 8 9}} #{{:k 1 :l 2 :m 3 :n 4 :o 5 :p 6 :q 7 :r 8 :s 9}}])",
+        // A literal of more than 8 key positions whose keys are equal at run
+        // time is a small hash-ordered map.
+        r#"(let [a "x" b "x" c "x" d "x" e "x" f "x" g "x"] (pr-str {a 1 b 2 c 3 d 4 e 5 f 6 g 7 "b" 8 "a" 9}))"#,
+        "(let [a 1 b 1 c 1 d 1 e 1 f 1 g 1] [(pr-str {a 1 b 2 c 3 d 4 e 5 f 6 g 7 :k 8 :j 9}) (pr-str (assoc {a 1 b 2 c 3 d 4 e 5 f 6 g 7 :k 8 :j 9} :c 3))])",
+    ] {
+        macro_errors_match_v8(body, None);
+    }
+    // A macro's argument map or set, as the V8 build's form bridge
+    // decodes it (mapFromArray and setFromArray).
+    for argument in [
+        "{:i 1 :h 2 :g 3 :f 4 :e 5 :d 6 :c 7 :b 8 :a 9}",
+        "{:h 2 :g 3 :f 4 :e 5 :d 6 :c 7 :b 8 :a 9}",
+        "#{9 8 7 6 5 4 3 2 1 0}",
+        "#{8 7 6 5 4 3 2 1}",
+        "[{:i 1 :h 2 :g 3 :f 4 :e 5 :d 6 :c 7 :b 8 :a 9 \"j\" #{9 8 7 6 5 4 3 2 1 0}}]",
+    ] {
+        source_matches_v8(
+            &format!("(defmacro m [k] [(str k) (pr-str k)]) (def x (m {argument}))"),
+            None,
+        );
+    }
+    // A macro's hash-ordered result goes to the compiler in its traversal
+    // order, as the V8 build's form bridge encodes it.
+    for result in [
+        "{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}",
+        "#{1 2 3 4 5 6 7 8 9 10}",
+        "(into #{} (range 12))",
+        "[(assoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8} :i 9) {:k #{:a :b :c :d :e :f :g :h :i}}]",
+        "(let [a 1 b 1 c 1 d 1 e 1 f 1 g 1] {a 1 b 2 c 3 d 4 e 5 f 6 g 7 :k 8 :j 9})",
+        "'{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}",
+    ] {
+        macro_errors_match_v8(result, None);
+    }
+    // Promotion rebuilds the entries: reader-distinct keys equal once read
+    // keep the first key and the last value.
+    macro_errors_match_v8(
+        "(pr-str (assoc {1 :first 1.0 :last 2 :two 3 :three 4 :four 5 :five 6 :six 7 :seven} 8 :eight))",
+        None,
+    );
+    source_matches_v8(
+        "(defmacro m [k] k) (def x (m {:i 1 :h 2 :g 3 :f 4 :e 5 :d 6 :c 7 :b 8 :a 9})) (def y (m #{9 8 7 6 5 4 3 2 1 0}))",
+        None,
+    );
+    // A hash-ordered value through a macro namespace's atom and definition.
+    source_matches_v8(
+        "(def reg (atom nil)) (def table #{:k :j :i :h :g :f :e :d :c}) (defmacro put [] (reset! reg {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}) nil) (defmacro show [] [(pr-str @reg) (pr-str table) (pr-str (assoc @reg :z 0))]) (put) (def x (show))",
+        None,
+    );
+}
+/// cljs.core's range (light-cljs-877), realized: empty and one-element
+/// boundaries, fractional and negative steps, NaN bounds, and an integer
+/// range's indexing, which floors a fractional index, after rest too.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_range_matches_v8() {
+    for body in [
+        "(pr-str [(range 5) (range 2 5) (range 0 10 3) (range 5 0 -2) (range 0 1 0.25) (range 5 1) (range 1 1 0) (range -3) (range 0 -3 -1)])",
+        "(pr-str [(range ##NaN) (range ##NaN 3) (range 0 ##NaN) (range 0.5 3) (count (range 0 10 3)) (first (range 3)) (rest (range 3)) (seq (range 0))])",
+        "[(nth (range 3) 0.5 :missing) (nth (range 3) 1.5) (nth (rest (range 4)) 0.5) (nth (range 0 1 0.25) 1) (nth (range 3) 2)]",
+        "(js* \"(() => { try { return ~{}; } catch (e) { return e.message; } })()\" (nth (range 0 1 0.25) 0.5))",
+    ] {
+        macro_errors_match_v8(body, None);
+    }
+    // A small map __rt.formMap makes is hash-ordered (NewFormMap); the V8
+    // build's macros have no __rt.
+    let source = r#"(defmacro m [] [(pr-str (js* "__rt.formMap(2, 'b', 1, 'a')")) (pr-str (js* "__rt.formMap(32, 0, 1, 0)"))]) (def x (m))"#;
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let js = crate::compile_with_macros(source, &mut host).unwrap();
+    assert!(
+        js.contains(r#"{1 \"a\", 2 \"b\"}"#) && js.contains("{32 0, 1 0}"),
+        "{js}"
+    );
+    session.close();
+    drop(host);
+    cleaned(&session);
+}
+/// A hash-ordered map or set keeps its order in a process-wide cell's value
+/// and a published definition (light-cljs-877): one expansion stores a
+/// hash-ordered map in the macro namespace's atom and the next prints it
+/// and the published set as it prints fresh ones, at every slot count.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cells_keep_hash_order() {
+    let mut files = HashMap::new();
+    files.insert(
+        "m.state".to_owned(),
+        "(ns m.state) (def reg (atom nil)) (def table #{:k :j :i :h :g :f :e :d :c}) \
+         (defmacro put [] (reset! reg {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}) nil) \
+         (defmacro show [] (let [v @reg] [(= (pr-str v) (pr-str {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9})) \
+           (= (pr-str table) (pr-str #{:k :j :i :h :g :f :e :d :c})) \
+           (= (pr-str v) \"{:a 1, :b 2, :c 3, :d 4, :e 5, :f 6, :g 7, :h 8, :i 9}\")]))"
+            .to_owned(),
+    );
+    files.insert(
+        "app.main".to_owned(),
+        "(ns app.main (:require [m.state :refer [put show]])) (put) (js/console.log (show))"
+            .to_owned(),
+    );
+    for slots in [1, 2, 4] {
+        let session = GooseSession::start(&runner(), slots).unwrap();
+        let (output, _, _) = pooled_build(&files, slots, Some(&session), Default::default());
+        let js = output.unwrap();
+        let logged = js
+            .split("[\"log\"])(")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{js}"));
+        assert!(
+            logged.contains("[true, true, false]"),
+            "slots={slots}: {logged}"
+        );
+        session.close();
+        cleaned(&session);
+    }
+}
 /// What the Goose printer does not do fails by name (light-cljs-876): a
 /// toString that is JavaScript code, a JavaScript object or array, and a
-/// map or set of more than 8 entries (printed in the V8 build's hash order)
-/// are UnsupportedOperand faults naming the built-in, never a
-/// NativeBoundary or a different text.
+/// hash-ordered map or set holding an object the V8 build hashes by its
+/// identity (light-cljs-877) are UnsupportedOperand faults naming the
+/// built-in, never a NativeBoundary or a different text.
 #[cfg(light_v8)]
 #[test]
 #[ignore = "build native runner with compiler.bb"]
@@ -2054,13 +2200,15 @@ fn goose_compiler_printer_fails_by_name() {
             r#"(defmacro m [] (pr-str (js* "{}"))) (def x (m))"#,
             "UnsupportedOperand:prStr:",
         ),
+        // A hash-ordered set or map whose member or key the V8 build
+        // hashes by its identity (light-cljs-877).
         (
-            "(defmacro m [k] (pr-str k)) (def x (m {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}))",
-            "UnsupportedOperand:prStr:-printing-a-map-of-more-than-8-entries",
+            "(defmacro m [] (pr-str (conj #{1 2 3 4 5 6 7 8} (atom 1)))) (def x (m))",
+            "UnsupportedOperand:prStr:-the-hash-order-of-a-set-holding-a-JavaScript-object",
         ),
         (
-            "(defmacro m [k] (str k)) (def x (m #{1 2 3 4 5 6 7 8 9}))",
-            "UnsupportedOperand:str:-printing-a-set-of-more-than-8-members",
+            "(defmacro m [] (str (assoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8} (fn []) 9))) (def x (m))",
+            "UnsupportedOperand:str:-the-hash-order-of-a-map-keyed-by-a-JavaScript-object",
         ),
         // The V8 build gives a runtime function's JavaScript source.
         (
