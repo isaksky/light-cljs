@@ -45,7 +45,11 @@ file command above uses a checked-in script. It runs strict scripts unless
 `--host-bindings` installs the QuickJS-style `std.gc` and `os` timer
 bindings. `cargo run --release --example
 goose_export -- [--sloppy] IN.js OUT.gsp` writes a Goose program image; both
-serve the conformance harness (`../scripts/conformance.bb`). Module graph
+serve the conformance harness (`../scripts/conformance.bb`). `cargo build
+--release --example goose_frontend` builds the Goose VM's run-time compiler,
+a shared library with a C ABI over the frontend and the exporter that Goose
+programs load on their first eval (`../README.md`, "Run-time compilation
+library"). Module graph
 loading and evaluation use the library's `ModuleLoader` and
 `Runtime::spawn_module` API. The library owns no execution worker pool; `Executor` is an
 optional reference scheduler.

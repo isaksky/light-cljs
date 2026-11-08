@@ -320,7 +320,7 @@ fn decode_callable(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
     let held = row_of(job.cell_rows, f.identity);
     if held >= 0 { return object(held); }
     if cell_base.base <= 0 { return owner_fail(job, b, 4); }
-    let code = job.cell_code;
+    let code = job.writable_code;
     if code == null { return cell_fail(job, b, "a function loaded outside a macro expansion"); }
     let start = heap.nodes.len; let values = heap.values.len; let constants = heap.constants.len;
     var c = snapshot::Control {};

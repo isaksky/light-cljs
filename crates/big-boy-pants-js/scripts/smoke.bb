@@ -16,13 +16,19 @@
       driver (str (fs/path root "src/tests.goose"))
       temporary (fs/create-temp-dir {:dir (str directory) :prefix ".goose-smoke-"})
       executable (str (fs/path temporary "tiny-vm"))
+      ;; The run-time compiler the VM programs load on their first eval
+      ;; (light-cljs-856; src/runtime_compiler.h).
+      repository (fs/parent (fs/parent root))
+      frontend-library (str (fs/path (or (System/getenv "CARGO_TARGET_DIR") (str (fs/path repository "target"))) "release/examples"
+                                     (if (re-find #"(?i)mac" (System/getProperty "os.name")) "libgoose_frontend.dylib" "libgoose_frontend.so")))
       run! (fn [& arguments]
              (println "+" (str/join " " arguments))
              (flush)
-             (apply process/shell {:dir (str directory)} arguments))]
+             (apply process/shell {:dir (str directory) :extra-env {"BBP_FRONTEND_LIBRARY" frontend-library}} arguments))]
   (try
     (run! goose "version")
-    (doseq [source ["vm.goose" "tests.goose" "encoding.goose" "program.goose" "scalar.goose" "export_schema.goose" "inspect.goose" "source_tests.goose" "layout_probe.goose" "source_vm.goose" "realm.goose" "execute.goose" "serial_tests.goose" "form_bridge.goose" "bridge_tests.goose" "macro_tests.goose" "macro_run.goose" "snapshot.goose" "callable.goose" "snapshot_fixture.goose" "snapshot_tests.goose" "snapshot_workers.goose" "artifact.goose" "artifact_tests.goose" "dependency.goose" "dependency_tests.goose" "scheduler.goose" "scheduler_tests.goose" "effects.goose" "effects_tests.goose" "census.goose" "census_tests.goose" "heap_program.goose" "compiler_session.goose" "conformance.goose" "cells.goose" "cell_owner.goose" "continuations.goose"]]
+    (process/shell {:dir (str repository) :extra-env {"CARGO_BUILD_JOBS" "3"}} "cargo" "build" "--locked" "--release" "-p" "big-boy-pants-js" "--example" "goose_frontend")
+    (doseq [source ["vm.goose" "tests.goose" "encoding.goose" "program.goose" "scalar.goose" "export_schema.goose" "inspect.goose" "source_tests.goose" "layout_probe.goose" "source_vm.goose" "realm.goose" "execute.goose" "serial_tests.goose" "form_bridge.goose" "bridge_tests.goose" "macro_tests.goose" "macro_run.goose" "snapshot.goose" "callable.goose" "snapshot_fixture.goose" "snapshot_tests.goose" "snapshot_workers.goose" "artifact.goose" "artifact_tests.goose" "dependency.goose" "dependency_tests.goose" "scheduler.goose" "scheduler_tests.goose" "effects.goose" "effects_tests.goose" "census.goose" "census_tests.goose" "heap_program.goose" "compiler_session.goose" "conformance.goose" "cells.goose" "cell_owner.goose" "continuations.goose" "runtime_compile.goose"]]
       (run! goose "format" "--check" (str (fs/path root "src" source))))
     (let [probe (str (fs/path root "src/layout_probe.goose"))]
       (run! goose "check" probe)

@@ -71,6 +71,9 @@
 (def qjs (str (fs/path quickjs-dir "qjs")))
 (def pants (str (fs/path target "release/big-boy-pants-js")))
 (def exporter (str (fs/path target "release/examples/goose_export")))
+;; The run-time compiler the Goose runner loads on its first eval
+;; (light-cljs-856; src/runtime_compiler.h).
+(def frontend-library (str (fs/path target "release/examples" (if (str/includes? (str/lower-case (System/getProperty "os.name")) "mac") "libgoose_frontend.dylib" "libgoose_frontend.so"))))
 (def goose (or (System/getenv "GOOSE") "goose"))
 
 (defn fail! [& message]
@@ -171,7 +174,7 @@
 (defn run-process
   "Run a command with a deadline; returns {:exit :out :err} or {:timeout true}."
   [command & {:keys [dir]}]
-  (let [proc (p/process command (cond-> {:out :string :err :string} dir (assoc :dir (str dir))))
+  (let [proc (p/process command (cond-> {:out :string :err :string :extra-env {"BBP_FRONTEND_LIBRARY" frontend-library}} dir (assoc :dir (str dir))))
         result (deref proc (* 1000 (:timeout options)) ::timeout)]
     (if (= result ::timeout)
       (do (p/destroy-tree proc) (deref proc 5000 nil) {:timeout true})
@@ -445,14 +448,14 @@
 (fs/create-dirs (fs/path out-dir "images")) (fs/create-dirs (fs/path out-dir "cases"))
 (spit (str (fs/path out-dir "quickjs-driver.js")) quickjs-driver)
 (when-not (:no-build options)
-  (shell! "cargo" "build" "--locked" "--release" "-p" "big-boy-pants-js" "--bin" "big-boy-pants-js" "--example" "goose_export")
+  (shell! "cargo" "build" "--locked" "--release" "-p" "big-boy-pants-js" "--bin" "big-boy-pants-js" "--example" "goose_export" "--example" "goose_frontend")
   (let [program (str (fs/path root "src/conformance.goose"))]
     (shell! goose "format" "--check" program)
     (apply shell! goose "build" program (concat (when (:stack-stats options) ["-DGS_STACK_STATS=1"]) ["-o" runner])))
   (when-not (fs/exists? qjs)
     (println "+ make qjs in" (str quickjs-dir)) (flush)
     (p/shell {:dir (str quickjs-dir)} "make" "qjs")))
-(doseq [tool [qjs pants exporter runner]] (when-not (fs/exists? tool) (fail! "missing tool " tool " (run without --no-build)")))
+(doseq [tool [qjs pants exporter runner frontend-library]] (when-not (fs/exists? tool) (fail! "missing tool " tool " (run without --no-build)")))
 
 (def rows
   (let [pool (Executors/newFixedThreadPool (:jobs options))

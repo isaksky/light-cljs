@@ -528,6 +528,67 @@ pub fn export_source_with(
     encode(&executable, source)
 }
 
+/// What run-time code [`export_runtime`] compiles (light-cljs-856): the
+/// Goose VM's indirect eval, its Function constructor (light-cljs-857) and,
+/// later, direct eval (light-cljs-858), whose site record is not defined yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeMode {
+    /// Global script code of an indirect eval: sloppy unless `strict` or its
+    /// own directive prologue says "use strict" (ECMAScript PerformEval).
+    IndirectEval { strict: bool },
+    /// The source the Function constructor assembled, `function
+    /// anonymous(` + parameters + `\n) {\n` + body + `\n}`, the parameter
+    /// list's closing `)` ending `parameter_units` UTF-16 units in, as the
+    /// Pants engine's `DynamicFunction` places it (CreateDynamicFunction).
+    DynamicFunction { parameter_units: usize },
+}
+
+/// Compile JavaScript the Goose VM received while a job runs, given as its
+/// exact UTF-16 code units (lone surrogates carried as [`push_utf16`]
+/// carries them), into a GSP image as [`export_source`] encodes one; its
+/// function 0 is the eval script or the dynamic function's wrapper.
+///
+/// The compilation runs on a helper thread with a 2 MiB stack, as the Pants
+/// engine's eval does (`vm::native::eval`): the frontend's weighted nesting
+/// bound is proven for that stack, and the caller's thread (a Goose worker)
+/// may have less. Nothing runs here; the caller validates the image before
+/// it executes. Errors: any compile error the frontend reports (the eval
+/// becomes a SyntaxError with its message), the image limits, and
+/// [`SyntaxErrorKind::Internal`] when the helper thread cannot start or the
+/// frontend panics.
+///
+/// [`push_utf16`]: crate::frontend::push_utf16
+pub fn export_runtime(units: &[u16], mode: RuntimeMode) -> Result<Export, SyntaxError> {
+    let mut source = String::with_capacity(units.len());
+    let mut surrogates = Vec::new();
+    let mut next = 0;
+    crate::frontend::push_utf16(units, &mut next, units.len(), &mut source, &mut surrogates);
+    bounded(source.len(), MAX_SOURCE, &source)?;
+    let internal = |source: &str, message: &str| {
+        problem(source, SyntaxErrorKind::Internal, Span::new(0, 0), message)
+    };
+    let helper = std::thread::Builder::new()
+        .name("goose-runtime-compiler".into())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let executable = match mode {
+                RuntimeMode::IndirectEval { strict } => {
+                    crate::frontend::compile_eval("<eval>", &source, &surrogates, strict)
+                }
+                RuntimeMode::DynamicFunction { parameter_units } => {
+                    crate::frontend::compile_dynamic_function(&source, &surrogates, parameter_units)
+                }
+            };
+            executable.and_then(|executable| encode(&executable, &source))
+        });
+    match helper {
+        Ok(handle) => handle
+            .join()
+            .unwrap_or_else(|_| Err(internal("", "the run-time compiler panicked"))),
+        Err(_) => Err(internal("", "the run-time compiler thread did not start")),
+    }
+}
+
 /// Export a function body for source smoke tests, never ordinary-call support.
 pub fn export_function(source: &str) -> Result<Export, SyntaxError> {
     bounded(source.len(), MAX_SOURCE, source)?;
@@ -1121,6 +1182,48 @@ mod serial_tests {
             std::fs::write(path.with_extension("gsp"), export.bytes).unwrap();
         }
     }
+    /// light-cljs-856: run-time code exports from exact UTF-16 units; a lone
+    /// surrogate in a literal is carried, one where a token belongs is a
+    /// compile error with its position; the Function constructor's source
+    /// splits at its parameter boundary.
+    #[test]
+    fn runtime_export_takes_utf16_and_modes() {
+        let units = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let mut literal = units("\"");
+        literal.push(0xd800);
+        literal.extend(units("\" + 1"));
+        let export = export_runtime(&literal, RuntimeMode::IndirectEval { strict: false }).unwrap();
+        assert!(export.bytes.starts_with(b"GSP\0") && export.functions == 1);
+        let mut token = units("var ");
+        token.push(0xdc00);
+        let error =
+            export_runtime(&token, RuntimeMode::IndirectEval { strict: false }).unwrap_err();
+        assert!(
+            error.kind != SyntaxErrorKind::Internal && (error.line, error.column) == (1, 5),
+            "{error}"
+        );
+        let error =
+            export_runtime(&units("1 +"), RuntimeMode::IndirectEval { strict: false }).unwrap_err();
+        assert!(error.kind != SyntaxErrorKind::Internal, "{error}");
+        // A strict eval refuses what a sloppy one accepts.
+        let with = units("with ({}) {}");
+        assert!(export_runtime(&with, RuntimeMode::IndirectEval { strict: false }).is_ok());
+        assert!(export_runtime(&with, RuntimeMode::IndirectEval { strict: true }).is_err());
+        let source = units("function anonymous(a, b\n) {\nreturn a + b\n}");
+        let parameter_units = "function anonymous(a, b\n)".len();
+        let export =
+            export_runtime(&source, RuntimeMode::DynamicFunction { parameter_units }).unwrap();
+        assert!(export.functions >= 1);
+        assert!(
+            export_runtime(
+                &source,
+                RuntimeMode::DynamicFunction {
+                    parameter_units: source.len() + 1
+                }
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn source_cases_export_and_match_reference_engines() {
         use crate::{RunOutcome, Runtime, ValueView, VmErrorKind};
@@ -1196,8 +1299,7 @@ mod serial_tests {
             ("bigint-reached", "string:bigint"),
             // Direct eval (light-cljs-823): Goose fails a reached one by name
             // under a `catch`, spread or not; a marked call whose `eval` is
-            // not %eval% is an ordinary call; an indirect eval is a step of
-            // the built-in Goose does not implement (serial_tests.goose).
+            // not %eval% is an ordinary call (serial_tests.goose).
             ("direct-eval-reached", "number:2"),
             ("direct-eval-spread", "number:2"),
             ("direct-eval-replaced", "number:2"),
@@ -1205,7 +1307,14 @@ mod serial_tests {
             // 65,535 (Node collects the whole iterator): serial_tests.goose
             // runs it under the default and a 128-value stack limit.
             ("spread-limits", "goose"),
+            // Indirect eval (light-cljs-856) compiles at run time; a closure
+            // it makes survives a captured snapshot and leaves with the
+            // worker's reset (snapshot_tests.goose).
             ("indirect-eval", "number:2"),
+            ("eval-closure", "goose"),
+            ("eval-loop", "number:25"),
+            ("cancel-eval", "limit"),
+            ("eval-source-limit", "goose"),
             ("loop", "limit"),
             // Control flow (light-cljs-786): finally blocks, native frames,
             // the call depth limit, and an endless loop that only

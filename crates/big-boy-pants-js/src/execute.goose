@@ -47,7 +47,7 @@ fn main() {
     for i in (repetitions + warmup) {
         if i == warmup { warmed = clock_ns(); }
         // The typed outcome reads the write log's values (light-cljs-847).
-        var job = source::Job { heap: heap, logged_values: typed };
+        var job = source::Job { heap: heap, logged_values: typed, writable_code: code };
         defer { source::retire(job); }
         if !source::start(job, entry, []) { print("start:", job.fault); error(); return; }
         let outcome = source::run(job, -1);

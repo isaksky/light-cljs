@@ -52,33 +52,16 @@ impl State {
         }
         let units = self.text.as_ref().unwrap().code_units();
         if self.next < units.len() {
-            for _ in 0..256 {
-                if self.next == units.len() {
-                    break;
-                }
-                let unit = units[self.next];
-                self.next += 1;
-                let scalar = if (0xd800..=0xdbff).contains(&unit)
-                    && units
-                        .get(self.next)
-                        .is_some_and(|u| (0xdc00..=0xdfff).contains(u))
-                {
-                    let low = units[self.next];
-                    self.next += 1;
-                    0x10000 + ((u32::from(unit) - 0xd800) << 10) + u32::from(low) - 0xdc00
-                } else {
-                    u32::from(unit)
-                };
-                // One non-token scalar carries each lone unit through the
-                // UTF-8 frontend. Its byte provenance restores the exact unit
-                // only in literal contents; genuine U+FFFD stays distinct.
-                // Both occupy one column and one UTF-16 unit, unlike escapes.
-                let ch = char::from_u32(scalar).unwrap_or_else(|| {
-                    self.surrogates.push((self.source.len(), unit));
-                    '\u{fffd}'
-                });
-                self.source.push(ch);
-            }
+            // One non-token scalar carries each lone unit through the UTF-8
+            // frontend (crate::frontend::push_utf16, which the Goose run-time
+            // compiler shares).
+            crate::frontend::push_utf16(
+                units,
+                &mut self.next,
+                256,
+                &mut self.source,
+                &mut self.surrogates,
+            );
             return Ok(Action::Continue);
         }
         // The frontend's weighted nesting bound is proven for a 2 MiB stack.
@@ -104,7 +87,7 @@ impl State {
                 (_, Some(site)) => {
                     crate::frontend::compile_direct_eval(name, &source, &surrogates, &site)
                 }
-                _ => crate::frontend::compile_eval(name, &source, &surrogates),
+                _ => crate::frontend::compile_eval(name, &source, &surrogates, false),
             })
             .map_err(|_| Fault::OutOfMemory("eval compiler thread"))?
             .join()

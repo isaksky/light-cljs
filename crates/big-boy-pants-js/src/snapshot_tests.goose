@@ -526,7 +526,7 @@ thread_fn bound_malformed(saved: snapshot::Snapshot, mode: i64) {
     }
 }
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its
@@ -981,6 +981,62 @@ thread_fn stack_resumed(saved: Waiting, last: bool) {
     assert(source::retire(job, true));
     var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
     assert(qput(Waiting { image: copy(image), stack: saved.stack, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// Run-time code in a reused worker (light-cljs-856; decision 3): a job's
+// indirect eval appends its compiled functions to the worker's code above
+// the image, a captured snapshot carries them (with the closure over them)
+// to another program, where the closure runs, and the worker's reset cuts
+// them away: the tables are pristine, and the next job compiles the same
+// code again into the same rows a fresh worker would use.
+fn runtime_code() {
+    heap_program::join(thread_spawn(suspension_parent, str(embed_file("../corpus/serial/eval-closure.gsp")))); let base = qget<snapshot::Snapshot>();
+    heap_program::join(thread_spawn(runtime_code_worker, copy(base))); let saved = qget<Saved>();
+    heap_program::join(thread_spawn(runtime_code_carried, copy(saved.image), copy(base)));
+    print("snapshot runtime code: eval code joins a reused worker's code above its image, travels in a snapshot and leaves with the reset");
+}
+thread_fn runtime_code_worker(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    let identity = source::reserve_identity(); let rows: i64[] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, r) && snapshot::truncate(base, rows, identity, code, heap, bindings));
+    var first_row: i64 = -1; var first_function: i64 = -1;
+    for run in 2 {
+        // The worker's write boundary: the job owns only rows it allocates.
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len, writable_code: code };
+        assert(source::start(job, bindings[0].value, []) && source::run(job, -1) == tiny::Outcome.Complete);
+        let bump = job.result;
+        assert(bump.is_object() && source::node(heap, bump.id()).kind == node_kind::Closure);
+        // Its function is a job row above the image's, the root of the
+        // eval code below it, which is marked as eval code.
+        let f = source::node(heap, bump.id()).function as i64;
+        assert(f > base.functions.len && code.functions.len > base.functions.len && code.ops.len > base.ops.len);
+        assert(code.functions[base.functions.len].eval && !code.functions[f].eval && job.compiled_ops == code.ops.len - base.ops.len);
+        assert(source::retire(job));
+        if run == 0 {
+            first_row = bump.id(); first_function = f;
+            var c = snapshot::Control {}; let image = snapshot::capture(heap, [snapshot::Binding { id: 1, generation: 1, value: bump }], c);
+            assert(c.error == snapshot::Error.None && image.functions.len == code.functions.len);
+            assert(qput(Saved { image: copy(image) }));
+        } else {
+            // The next job's tables were a fresh worker's: the same rows.
+            assert(bump.id() == first_row && f == first_function);
+        }
+        assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
+        assert(code.functions.len == base.functions.len && code.ops.len == base.ops.len && code.ins.len == base.ops.len && heap.constants.len == base.code_constants.len);
+    }
+}
+// The captured snapshot restores in another program with the eval code in
+// its code tables, and the closure runs there: its counter, the eval
+// code's `let` in a binding cell, is 1 from the first call and becomes 2.
+thread_fn runtime_code_carried(image: snapshot::Snapshot, base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(image, code, heap, bindings, source::reserve_identity(), r));
+    assert(code.functions.len > base.functions.len && code.functions[base.functions.len].eval);
+    var job = source::Job { heap: heap };
+    assert(source::start(job, bindings[0].value, []) && source::run(job, -1) == tiny::Outcome.Complete);
+    assert(job.result.is_number() && job.result.num() == 2.0);
+    assert(source::retire(job));
 }
 thread_fn suspension_parent(bytes: u8[]) {
     defer { heap_program::finish(); }

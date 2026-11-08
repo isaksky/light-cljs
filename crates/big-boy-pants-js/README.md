@@ -386,6 +386,31 @@ Selected runtime source is reference material, **not executable Goose export**;
 its classes, private stores, protocol/reader machinery and host hooks are outside
 the scalar VM. Complete ECMAScript/cljs.core are excluded.
 
+### Run-time compilation library
+
+Indirect eval (light-cljs-856), and later the Function constructor and
+direct eval, compile JavaScript while a job runs with bbp's Rust frontend
+through an in-process C boundary (`docs/javascript-coverage.md`, decision 1,
+"Run-time compilation"). Every VM program's `.build` sidecar lists
+`src/runtime_compiler.h`, which opens the shared library on the first
+compilation in the process; a program that never compiles at run time never
+opens it, so `goose build` of any program needs nothing new. To run code that
+compiles at run time, build the library first:
+
+```sh
+cargo build --release -p big-boy-pants-js --example goose_frontend
+```
+
+It is `target/release/examples/libgoose_frontend.dylib` (`.so` on Linux).
+Programs find it through `BBP_FRONTEND_LIBRARY` (an absolute path), or by
+default in `target/release/examples/` of this repository, the default Cargo
+target directory. `scripts/conformance.bb`, `scripts/smoke.bb` (and
+`scripts/regenerate.bb`, which runs it) and `scripts/compiler.bb` build it
+and set the variable; the goose-generated-200k gate's `goose build` of
+`src/compiler_session.goose` needs no step, since its jobs never compile at
+run time. A program run with `goose run` (in-process TinyCC) cannot load it:
+an eval there fails by name.
+
 ## GSP version 5
 
 Integers are little endian. An image owns one exact immutable UTF-8 source

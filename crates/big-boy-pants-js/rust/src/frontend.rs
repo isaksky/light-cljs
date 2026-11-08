@@ -278,13 +278,56 @@ pub fn compile_script_with(
     lower::lower_script(name, source, &script)
 }
 
-/// Compile an indirect eval script in the global environment.
+/// Carry UTF-16 code units `units[*next..]`, at most `limit` of them (a
+/// surrogate pair counts once and is never split), into the UTF-8 source
+/// the frontend parses (bbp-279). A well-formed pair becomes its scalar
+/// value. Each lone surrogate becomes one U+FFFD scalar whose byte offset
+/// and exact unit go to `surrogates`: the lexer restores the unit only in
+/// literal contents, so a genuine U+FFFD stays distinct, and both occupy one
+/// column and one UTF-16 unit, unlike escapes. The Pants engine's eval
+/// (`vm::native::eval`, a bounded slice a step) and the Goose run-time
+/// compiler ([`goose::export_runtime`], the whole text at once) share it.
+pub fn push_utf16(
+    units: &[u16],
+    next: &mut usize,
+    limit: usize,
+    source: &mut String,
+    surrogates: &mut Vec<(usize, u16)>,
+) {
+    for _ in 0..limit {
+        if *next >= units.len() {
+            break;
+        }
+        let unit = units[*next];
+        *next += 1;
+        let scalar = if (0xd800..=0xdbff).contains(&unit)
+            && units
+                .get(*next)
+                .is_some_and(|u| (0xdc00..=0xdfff).contains(u))
+        {
+            let low = units[*next];
+            *next += 1;
+            0x10000 + ((u32::from(unit) - 0xd800) << 10) + u32::from(low) - 0xdc00
+        } else {
+            u32::from(unit)
+        };
+        let ch = char::from_u32(scalar).unwrap_or_else(|| {
+            surrogates.push((source.len(), unit));
+            '\u{fffd}'
+        });
+        source.push(ch);
+    }
+}
+
+/// Compile an indirect eval script in the global environment: sloppy unless
+/// `strict` or its directive prologue says "use strict".
 pub(crate) fn compile_eval(
     name: &str,
     source: &str,
     surrogates: &[(usize, u16)],
+    strict: bool,
 ) -> Result<Executable, SyntaxError> {
-    let script = parser::Parser::with_surrogates(source, false, surrogates).parse_script()?;
+    let script = parser::Parser::with_surrogates(source, strict, surrogates).parse_script()?;
     lower::lower_eval(name, source, &script)
 }
 

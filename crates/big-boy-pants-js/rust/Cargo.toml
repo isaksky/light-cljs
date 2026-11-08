@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+# The Goose VM's run-time compiler (light-cljs-856): a C ABI over this
+# package's frontend and Goose exporter, which Goose programs load on their
+# first eval (crates/big-boy-pants-js/src/runtime_compiler.h).
+[[example]]
+name = "goose_frontend"
+crate-type = ["cdylib"]

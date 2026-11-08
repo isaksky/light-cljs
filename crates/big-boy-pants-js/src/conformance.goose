@@ -61,7 +61,7 @@ fn main() {
     var heap = source::Heap { code: code, limits: source::Limits { steps: unbounded, work: unbounded } };
     if !source::initialize(heap) { var detail: u8[>..] = []; format(detail, heap.fault); infrastructure("heap:", detail); return; }
     let entry = source::closure(heap, 0, []);
-    var job = source::Job { heap: heap };
+    var job = source::Job { heap: heap, writable_code: code };
     defer { source::retire(job); }
     if !source::start(job, entry, []) { var detail: u8[>..] = []; format(detail, job.fault); infrastructure("start:", detail); return; }
     let outcome = source::run(job, -1);

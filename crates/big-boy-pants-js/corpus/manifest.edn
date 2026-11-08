@@ -5,9 +5,9 @@
  :regenerate "bb crates/big-boy-pants-js/scripts/regenerate.bb",
  :source-sha256
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
-  "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
+  "6d8d77f9f4c336a44bdc788b3346f89ed7306535c20974e825788ca07757d5a6",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "109be8dc77925b5fd4d1cb764d04cfd793898badd2c5d866bef0e30b41b2085a",
+  "22903e03a2e8c10de3658c79cfef0151ebd4a48d1b0a5fa27ab9368e85453fdb",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1782769c311414bfeb9707a853d211fdf2f66b940fa1d6b5a3d313078fbbee8a",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -253,6 +253,10 @@
   "c060e05675842f4eeb22d049255a39bf1acafcf87631f9f654c39c3dc0e5ef0f",
   "corpus/serial/cancel-break.js"
   "23f8cd070dbb1284b9a6dea5c43cf3e39d038b9d8484dc89f11f36094b8a8c51",
+  "corpus/serial/cancel-eval.gsp"
+  "93300abff96af5869065f4f529528ef3b69be23b4554dd9e8934b2304ff2a8c4",
+  "corpus/serial/cancel-eval.js"
+  "48f67e1949d22b4e2ab065808d97904361061c7e351d4666e96e1a766e611c3a",
   "corpus/serial/cancel-fault.gsp"
   "057f8d1ade758908e0ec81dedbcdcee91ae2aed7705de9739a7d938650ffc61d",
   "corpus/serial/cancel-fault.js"
@@ -309,6 +313,18 @@
   "6731d90fd90b43cdc526221a39218f2273cd068b6510cc5385fe2e5da81a5cff",
   "corpus/serial/dormant-constants.js"
   "d1094ee1e2835f30fa27281561b13a474085d6486d7624623fe2c4209e7d34c6",
+  "corpus/serial/eval-closure.gsp"
+  "33cb2044443ed65e2414b5d094cdf64e09c3acf6f483f4db432ad1de24dee39f",
+  "corpus/serial/eval-closure.js"
+  "1cf438b7fcb312abfd462de8801222c0f6d7b1a02fa941d4594cb9c5d6233797",
+  "corpus/serial/eval-loop.gsp"
+  "f3d0be1f472b94c1a504e4b3c7fbc6cc406b29d201433d0c38cd7806fdddd2c3",
+  "corpus/serial/eval-loop.js"
+  "71fbbccb574013d0d01faf9fc5c184b89d4642cd8429cbd610969b5e32243bd9",
+  "corpus/serial/eval-source-limit.gsp"
+  "ed3e2d3b9d9efa7f3beb99de5f5aabb93e8560f02fba4e47ee797e982cf98e19",
+  "corpus/serial/eval-source-limit.js"
+  "d64b3cd19ab8dcbd1e2783f1b4362315ef6ae9dc7d3b5fd5e11be26ea8e6f87e",
   "corpus/serial/finally.gsp"
   "5f9197367aee2d6cfcc2f76af5753adf45ad072927859094e9c3a4a5317cc374",
   "corpus/serial/finally.js"

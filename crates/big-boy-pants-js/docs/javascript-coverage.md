@@ -96,9 +96,80 @@ image (descriptor bit 24, GSP version 3; image metadata, not an opcode), and
 the VM decodes each marked call to `Ins.DirectEval`, which
 fails `Fault.Unsupported` naming `direct_eval` when its callee is the realm's
 %eval% and is an ordinary call otherwise. The global `eval` is that built-in;
-calling it any other way (indirect eval) is an unimplemented step of it. The
-sites' scope descriptors are not exported; implementing eval stays with the
-functions area.
+calling it any other way is an indirect eval, which compiles at run time
+(below, light-cljs-856). The sites' scope descriptors are not exported yet;
+direct eval stays with light-cljs-858.
+
+**Run-time compilation** (light-cljs-856). Indirect eval, and after it the
+Function constructor (light-cljs-857) and direct eval (light-cljs-858), hand
+the VM JavaScript while a job runs. It is compiled by the same Rust frontend
+and Goose exporter that made the job's image, through an in-process C
+boundary: `rust/examples/goose_frontend.rs`, a `cdylib` example target of
+the existing package (no new crate), exports `bbp_goose_compile` and
+`bbp_goose_free`; `src/runtime_compiler.h`, a `c_headers` adapter in each VM
+program's `.build` sidecar, implements `runtime_compile.goose`'s `extern fn
+compile_runtime` over it. The input is the source's exact UTF-16 code units
+(lone surrogates carried as the Pants engine's eval carries them, bbp-279:
+`frontend::push_utf16`, which the Pants engine now shares), the mode
+(indirect eval; the Function constructor's source with its parameter
+boundary; direct eval with an opaque site record, refused until
+light-cljs-858 defines it) and the strictness; the output is a GSP image
+(`frontend::goose::export_runtime`) or a compile error with its message and
+position, which becomes a catchable SyntaxError. The frontend runs on a
+helper thread with a 2 MiB stack, as the Pants engine's eval does, because
+its nesting bound is proven for that stack and a Goose worker may have less.
+The boundary returns bytes and never runs code. The VM validates the image
+(`program::install`) and checks its flow (`load`) as it does a loaded
+program's, then appends its functions to the job's code (`append_code`,
+`Job.writable_code`), above the image's function count, with its constants
+in the heap's constant rows; the eval script's root function is marked as
+eval code (`Function.eval`), so its `var` and function declarations make
+configurable global properties and a refused one is a TypeError
+(EvalDeclarationInstantiation). The instruction rows count against the job's
+`Limits.code` (a MemoryLimit) and the source and instructions against its
+work budget. The eval script runs in a new bytecode frame of the one
+dispatch loop (decision 4), so budgets, limits and cancellation apply inside
+it. Decision 3 keeps: the worker's reset truncates the code tables to the
+image with every other table, so the next job's code is a fresh worker's; a
+saved continuation or captured snapshot carries the whole code tables, eval
+code included, and validates them on restore (`snapshot::code_valid`), and a
+callable publication carries its code suffix (`callable.goose`). A job
+without writable code (a coordinator's leaf job, whose image must not
+change after `READY`) fails such a compilation by name
+(UnsupportedOperand), as does a program `goose run` executes in-process
+(TinyCC has neither `dlfcn.h` nor the C library's symbols).
+
+*The library and its cost.* The header opens the library with `dlopen` on
+the first compilation in the process, never at start-up: a program that
+never compiles at run time neither loads nor needs it, and its start-up
+and peak memory are unchanged: the generated 200k project (seed 42, `compare.bb
+--phase check`, alternating rounds against the master runner, outputs
+byte-identical) took a median 6.95 s against 6.90 s at one Goose worker
+(four rounds; peak memory 0.967 GB for both) and 5.04 s against 5.05 s at
+four (five rounds under load; 0.978 and 0.977 GB). The library is
+`$BBP_FRONTEND_LIBRARY`, or by default `target/release/examples/` of the
+repository the header is in; the scripts that run VM programs build it
+(`cargo build --release -p big-boy-pants-js --example goose_frontend`) and
+set the variable. Measured on the conformance runner (macOS, release
+library, median of 15 runs under load): a script without eval 4.6 ms and
+2.1 MB peak memory; one eval 4.8 ms and 3.6 MB (the first call opens the
+1.7 MB library); 1,000 evals 36 ms, about 31 µs an eval (helper thread,
+compilation, validation and decoding). No source-length cap beyond the
+exporter's 8 MiB of UTF-8: the Pants engine's 16,384-unit RangeError
+(`MAX_SOURCE_UNITS`), which QuickJS does not have, is not ported, nor is any
+row that depends on it.
+
+*Rejected.* *A request to the host through the compiler session's pipes*:
+the conformance runner and the Goose test programs have no host, and every
+eval would become a suspension of the job and a round trip. *A subprocess
+per compilation*: a process spawn per eval and a tool path at run time.
+*Linking the frontend statically into every VM program*: every `goose build`
+of a VM program (scripts, benchmarks, the 200k gate, the compiler tests)
+would need a prebuilt Rust static library and a linker search path, and
+every binary would carry the frontend. *Goose's `extern "library"` block*:
+it opens the library at program start and fails the program when it is
+missing, so the 200k runner would pay for it at every start. *A JavaScript
+parser in Goose*: forbidden (no second parser).
 
 **Form opcodes.** The light-cljs collection opcodes (`NewFormList`,
 `FormOp`, `NewVector` and the rest) stay in the one append-only registry and

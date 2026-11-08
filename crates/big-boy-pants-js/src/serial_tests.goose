@@ -150,7 +150,7 @@ thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault, setup: i6
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); install(heap, setup);
     let entry = source::closure(heap, 0, []);
-    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    var job = source::Job { heap: heap, writable_code: code }; assert(source::start(job, entry, []));
     assert(source::run(job, -1) == (if fault == source::Fault.None { tiny::Outcome.Complete } else { tiny::Outcome.Failed }));
     assert(job.fault == fault);
     if fault == source::Fault.None {
@@ -177,7 +177,7 @@ thread_fn spread_limits(bytes: u8[], stack: i64, expected: u8[]) {
     var heap = source::Heap { code: code, limits: source::Limits { steps: 1 << 40, work: 1 << 40 } }; assert(source::initialize(heap));
     if stack > 0 { heap.limits.stack = stack; }
     let entry = source::closure(heap, 0, []);
-    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    var job = source::Job { heap: heap, writable_code: code }; assert(source::start(job, entry, []));
     let outcome = source::run(job, -1);
     if outcome != tiny::Outcome.Complete { var fault: u8[>..] = []; source::describe_fault(fault, code, job); print("spread_limits: ", fault); }
     assert(outcome == tiny::Outcome.Complete);
@@ -195,7 +195,7 @@ thread_fn check_cut(bytes: u8[], cut: i64, run: Run, fault: source::Fault, setup
     var code = source::Code {}; decode(code, bytes);
     var h1 = source::Heap { code: code }; assert(source::initialize(h1)); install(h1, setup);
     let e1 = source::closure(h1, 0, []);
-    var a = source::Job { heap: h1 };
+    var a = source::Job { heap: h1, writable_code: code };
     assert(source::start(a, e1, []));
     let before = h1.work;
     assert(source::run(a, 0) == tiny::Outcome.Yielded && a.steps == 0 && h1.work == before);
@@ -221,7 +221,7 @@ thread_fn check_steps(bytes: u8[], cut: i64, setup: i64) {
     // Values carry no session, so only the heap's arena label differs.
     h2.identity = first.identity;
     let e2 = source::closure(h2, 0, []);
-    var b = source::Job { heap: h2 };
+    var b = source::Job { heap: h2, writable_code: code };
     assert(source::start(b, e2, []));
     let started = state(b); same_state(first, started);
     for i in cut { source::run(b, 1); }
@@ -630,7 +630,7 @@ fn main() {
     bigint_constants(embed_file("../corpus/serial/dormant-constants.gsp"));
     // Direct eval (light-cljs-823): reached, it fails by name even under a
     // `catch`; replacing the global `eval` makes the marked call ordinary; an
-    // indirect eval is an unimplemented step of %eval%. Spread arguments
+    // indirect eval compiles and runs (light-cljs-856). Spread arguments
     // from a generator are collected (light-cljs-843) and checked
     // (light-cljs-850); the marked call_spread of %eval% then fails by name,
     // and the spread variants are checked at decode (direct_eval_decode).
@@ -644,7 +644,9 @@ fn main() {
     heap_program::join(thread_spawn(spread_limits, str(embed_file("../corpus/serial/spread-limits.gsp")), 128, str("RangeError:65536:InternalError:InternalError:0")));
     direct_eval_decode(embed_file("../corpus/serial/direct-eval-spread.gsp"));
     check(embed_file("../corpus/serial/direct-eval-replaced.gsp"), "number:2.0");
-    check(embed_file("../corpus/serial/indirect-eval.gsp"), "Fault.UnsupportedOperand:eval:-indirect-eval", source::Fault.UnsupportedOperand);
+    check(embed_file("../corpus/serial/indirect-eval.gsp"), "number:2.0");
+    // A loop in eval code stops and resumes at every limit (light-cljs-856).
+    check(embed_file("../corpus/serial/eval-loop.gsp"), "number:25.0");
     fixed_cells(embed_file("../corpus/serial/mutations.gsp"));
     heap_program::join(thread_spawn(failed_job_isolation, str(embed_file("../corpus/serial/calls.gsp"))));
     allocation_limits(embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/strings.gsp"));
@@ -868,6 +870,8 @@ fn control_flow() {
         heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel-fault.gsp")), sliced, 3));
         heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel.gsp")), sliced, 4));
         for mode in 3 { heap_program::join(thread_spawn(cancelled_for_of, str(embed_file("../corpus/serial/cancel-for-of.gsp")), sliced, mode)); }
+        heap_program::join(thread_spawn(cancelled_eval, str(embed_file("../corpus/serial/cancel-eval.gsp")), sliced));
+        if !sliced { heap_program::join(thread_spawn(eval_source_limit, str(embed_file("../corpus/serial/eval-source-limit.gsp")))); }
     }
     heap_program::join(thread_spawn(pending_completions, str(embed_file("../corpus/serial/calls.gsp"))));
     print("serial source VM: finally/completions, native ToPrimitive frames, 10,000-frame depth and cancellation passed");
@@ -1641,6 +1645,37 @@ thread_fn cancelled_for_of(bytes: u8[], sliced: bool, mode: i64) {
     let keys = written(heap, job);
     expected.append(if mode == 1 { "closed " } else { "inner closed " });
     assert(keys[..] == expected[..]);
+}
+// Cancellation inside eval code (cancel-eval.js, light-cljs-856; decision
+// 4): the eval's frame is one of the dispatch loop's, so its finally block
+// runs and the caller's catch block never does; the job fails Cancelled.
+thread_fn cancelled_eval(bytes: u8[], sliced: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, writable_code: code }; assert(source::start(job, source::closure(heap, 0, []), []));
+    assert(source::run(job, 500) == tiny::Outcome.Yielded);
+    // The eval code's frame runs above the caller's.
+    assert(job.frames.len == 2 && code.functions[job.frames[1].function].eval);
+    var expected = written(heap, job); assert(find(expected[..], "looped ") >= 0);
+    assert(source::cancel(job) && job.status == tiny::Status.Ready);
+    if sliced { while source::run(job, 1) == tiny::Outcome.Yielded {} } else { source::run(job, -1); }
+    assert(job.status == tiny::Status.Failed && job.fault == source::Fault.Cancelled && !job.thrown);
+    let keys = written(heap, job);
+    expected.append("inner ");
+    assert(keys[..] == expected[..]);
+}
+// Run-time code stays within what a snapshot admits (eval-source-limit.js,
+// light-cljs-856): the compilation that would pass 8 MiB of code source
+// fails MemoryLimit, uncaught, and leaves the code as it was.
+thread_fn eval_source_limit(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code, limits: source::Limits { units: 1 << 26, work: 1 << 40, steps: 1 << 40 } }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, writable_code: code }; assert(source::start(job, source::closure(heap, 0, []), []));
+    assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.MemoryLimit && !job.thrown);
+    assert(code.source_bytes.len <= 8388608 && code.source_bytes.len > 8388608 - 524300 && code.ops.len == code.ins.len);
+    assert(source::retire(job));
 }
 // PendingThrow, PendingException and PendingCancel read the frame's
 // innermost entry only; an entry of another frame reads as none.

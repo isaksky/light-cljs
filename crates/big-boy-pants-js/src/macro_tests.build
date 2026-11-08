@@ -1,0 +1,2 @@
+// The run-time compiler boundary every VM program links (light-cljs-856).
+c_headers = ["runtime_compiler.h"];

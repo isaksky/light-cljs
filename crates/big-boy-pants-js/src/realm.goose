@@ -49,8 +49,8 @@ enum Builtin {
     // Generators (light-cljs-790; continuations.goose).
     GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator,
     // %eval% (light-cljs-823): a direct-eval call of it fails Unsupported
-    // naming `direct eval` (source_vm.goose, Ins.DirectEval); any other call,
-    // an indirect eval, is an unimplemented step of the built-in.
+    // naming `direct eval` (source_vm.goose, Ins.DirectEval); any other call
+    // is an indirect eval (light-cljs-856; runtime_compile.goose).
     Eval,
     // The primitive wrapper constructors (light-cljs-832; WRAPPER_NAMES
     // order) and their prototypes' methods.
@@ -955,8 +955,9 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         Swap, SwapVals, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, FunctionPrototypeHasInstance => { return unsupported_step(job, b, "called from a native frame"); },
         // %IteratorPrototype%[@@iterator]: returns its receiver.
         IteratorPrototypeIterator => { return receiver; },
-        // A direct-eval site's call of %eval% never reaches here (Ins.DirectEval).
-        Eval => { return unsupported_step(job, b, "indirect eval"); },
+        // A direct-eval site's call of %eval% never reaches here (Ins.DirectEval),
+        // and every other call runs it as a native frame (start_indirect_eval).
+        Eval => { return unsupported_step(job, b, "called outside a native frame"); },
         Delay, Force, Realized, IsDelay => { return delay_builtin(job, b, args); },
         NativeConstruct => {
             if !constructible(heap, arg(args, 0)) { return unsupported_step(job, b, "constructing a value other than a Delay"); }

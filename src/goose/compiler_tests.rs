@@ -370,6 +370,39 @@ fn goose_compiler_mapseq_demand_and_throw() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_runtime_eval() {
+    // light-cljs-856: a macro's JavaScript compiles code at run time in the
+    // session's job worker. Each call compiles again on the reused worker,
+    // whose reset drops the code it added (BBP_RESET_CHECK=1 in compiler.bb
+    // compares its tables with the image after every job).
+    for workers in [1, 2] {
+        let s = GooseSession::start(&runner(), workers).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let source = r#"rt => (form,env) => {
+            const bump=(0,eval)("let n=40; () => ++n");
+            let syntax=false;
+            try { (0,eval)("1 +"); } catch(e) { syntax=e instanceof SyntaxError; }
+            return (0,eval)("1 + 1")===2 && (0,eval)(5)===5 && bump()===41 && bump()===42 && syntax;
+        }"#;
+        let (f, args, call) = inputs(&e, source);
+        for _ in 0..3 {
+            let value = e.call(f, &args).unwrap();
+            let output = e
+                .export_form(value, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(
+                output
+                    .data()
+                    .value_eq(&Datum::new(DatumKind::Boolean(true)))
+            );
+        }
+        s.close();
+        cleaned(&s);
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_mapseq_helper_no_replay() {
     // A real emitted helper factory executes on the released worker. A
     // demand in the second callback snapshots the first memo and its writes.

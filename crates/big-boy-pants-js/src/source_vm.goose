@@ -14,6 +14,7 @@ import .continuations;
 import .number_text;
 import .reclaim;
 import .function_calls;
+import .runtime_compile;
 
 namespace source;
 
@@ -174,7 +175,11 @@ fn plain_rows<T>(rows: const T[:]) -> u8[>..] { var out: u8[>..] = []; for r in 
 // simple: the parameter list is simple (no default, rest or pattern; export
 // flag bit 19, light-cljs-854): sloppy code with one gives its arguments
 // object a `callee` data property, any other the %ThrowTypeError% accessor.
-struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, asynchronous: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0, has_text: bool = false, text_start: u32 = 0, text_end: u32 = 0, simple: bool = false }
+// eval: the root function of eval code compiled at run time
+// (light-cljs-856, runtime_compile.goose), whose var and function
+// declarations make configurable global properties (global_op); never set
+// by a loaded image.
+struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, asynchronous: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0, has_text: bool = false, text_start: u32 = 0, text_end: u32 = 0, simple: bool = false, eval: bool = false }
 // direct_eval: the image marks the row as the call of a direct-eval site
 // (descriptor bit 24, light-cljs-823); only the four call opcodes carry it.
 struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1, direct_eval: bool = false }
@@ -287,8 +292,10 @@ enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLim
 // before it changes anything. Neither depends on the native stack: the
 // dispatch loop never recurses per JavaScript call.
 // `shapes` bounds shape and accessor rows together (light-cljs-787);
-// `conts` the continuation table's rows (light-cljs-790).
-struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 10000, stack: i64 = 1048576, shapes: i64 = 1048576, conts: i64 = 1048576 }
+// `conts` the continuation table's rows (light-cljs-790); `code` the
+// instruction rows run-time compilation adds in one job (light-cljs-856,
+// Job.compiled_ops).
+struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 10000, stack: i64 = 1048576, shapes: i64 = 1048576, conts: i64 = 1048576, code: i64 = 1048576 }
 // All heap tables append until session teardown; IDs are never recycled.
 // kind: a node_kind:: name below (Goose-private; light-cljs-838). The
 // numbers are stored in snapshots and artifacts, so a new kind takes the
@@ -628,10 +635,13 @@ root struct Job {
     // (0: no macro job, which claims none), and how many it holds unsettled
     // (light-cljs-808; cells.goose).
     cell_holder: i64 = 0, claims: i64 = 0,
-    // The heap's code, writable, in a macro job: a function loaded from a
-    // cell installs its code there (light-cljs-809; null elsewhere, where
-    // such a load fails by name).
-    cell_code: Code? = null,
+    // The heap's code, writable, where the job may add to it (null
+    // elsewhere, where such an addition fails by name): a function loaded
+    // from a cell installs its code there in a macro job (light-cljs-809),
+    // and run-time compilation appends its functions (light-cljs-856,
+    // runtime_compile.goose), compiled_ops instructions so far. The worker's
+    // reset cuts both away (snapshot::truncate).
+    writable_code: Code? = null, compiled_ops: i64 = 0,
     // Promise jobs (light-cljs-790; continuations.goose): the job's FIFO of
     // reactions, `queue_head` its next; `draining` once the entry has
     // finished with `entry`, its value; and the promises rejected while no
@@ -2447,7 +2457,7 @@ fn reset(job: Job&) -> bool {
     job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear(); job.heap.proxy_method = -1;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     job.queue.clear(); job.queue_head = 0; job.draining = false; job.entry = Value.Undefined; job.rejections.clear();
-    job.lexicals = Value.Undefined; job.direct_eval = false; job.floor = Tops {}; job.reclaimable = false; job.logged_values = false;
+    job.lexicals = Value.Undefined; job.direct_eval = false; job.compiled_ops = 0; job.floor = Tops {}; job.reclaimable = false; job.logged_values = false;
     return true;
 }
 // The write log holds named property writes only: the typed outcome's
@@ -3788,7 +3798,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Await => { settle(job, ran, used); job.frames[top].pc = pc; await_value(job, top, at); break; },
                 Unsupported => { heap.fault = Fault.Unsupported; break; },
                 GlobalOp x => {
-                    settle(job, ran, used); job.frames[top].pc = pc; global_op(job, x.op, heap.constants[f.constants + x.k], f.strict);
+                    settle(job, ran, used); job.frames[top].pc = pc; global_op(job, x.op, heap.constants[f.constants + x.k], f.strict, f.eval);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -4301,9 +4311,14 @@ fn declare_lexical(job: Job&, key: Value, cell: Value, mutable: bool) {
     if !dict_append(heap, job.lexicals.id(), Property { key: key, value: cell, attrs: if mutable { attr_writable() } else { 0 } }) && heap.fault == Fault.None { memory(heap); }
 }
 // One GlobalOp instruction (Ins.GlobalOp) with name constant k, in a
-// function whose code is `strict` or not; the stack contracts are
-// rust/src/vm/instr.rs's.
-fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
+// function whose code is `strict` or not, and `eval` code (an indirect
+// eval's script, Function.eval; light-cljs-856) or not; the stack contracts
+// are rust/src/vm/instr.rs's. Eval code's declarations are the Pants
+// engine's declare_global_with and check_global_declaration with `eval`
+// (ECMAScript EvalDeclarationInstantiation, CreateGlobalVarBinding and
+// CreateGlobalFunctionBinding with D true): its properties are configurable,
+// and a refused declaration is a TypeError, not a SyntaxError.
+fn global_op(job: Job&, op: u8, k: Value, strict: bool, eval: bool) {
     let heap .= job.heap;
     if !k.is_string() { heap.fault = Fault.InvalidState; return; }
     let g = heap.global;
@@ -4334,25 +4349,28 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
             job.operands.push(g); set_property(job, value, key, false, strict_put);
         },
         // DeclareGlobalVar: a var the global object lacks as an own property
-        // becomes one (writable, enumerable, not configurable); an existing
-        // one is kept, whatever it is.
+        // becomes one (writable, enumerable, configurable only in eval
+        // code); an existing one is kept, whatever it is.
         opcode::DeclareGlobalVar => {
             let own = own_entry(heap, g, key);
-            if heap.fault == Fault.None && !own.found && !add_own(heap, g.id(), key, Value.Undefined, attr_writable() | attr_enumerable()) && heap.fault == Fault.None { memory(heap); }
+            let attrs = attr_writable() | attr_enumerable() | (if eval { attr_configurable() } else { 0 });
+            if heap.fault == Fault.None && !own.found && !add_own(heap, g.id(), key, Value.Undefined, attrs) && heap.fault == Fault.None { memory(heap); }
         },
         // DeclareGlobalFunction: the property the function's value is put
         // into (PutGlobal follows): a new or configurable one becomes a
-        // writable, enumerable, non-configurable undefined; a
-        // non-configurable writable enumerable data property is kept; any
-        // other non-configurable property is a SyntaxError.
+        // writable, enumerable undefined, configurable only in eval code;
+        // a non-configurable writable enumerable data property is kept; any
+        // other non-configurable property is a SyntaxError (eval code: a
+        // TypeError).
         opcode::DeclareGlobalFunction => {
             let own = own_entry(heap, g, key);
             if heap.fault != Fault.None { return; }
-            if refuses_function(own) { named_error(job, Fault.SyntaxError, "cannot declare global function '", key, "'"); return; }
+            let refused = if eval { Fault.TypeError } else { Fault.SyntaxError };
+            if refuses_function(own) { named_error(job, refused, "cannot declare global function '", key, "'"); return; }
             if own.found && own.attrs & attr_configurable() == 0 { return; }
-            let attrs = attr_writable() | attr_enumerable();
+            let attrs = attr_writable() | attr_enumerable() | (if eval { attr_configurable() } else { 0 });
             let ok = if own.found { define_own(heap, g.id(), key, Value.Undefined, attrs) } else { add_own(heap, g.id(), key, Value.Undefined, attrs) };
-            if !ok && heap.fault == Fault.None { named_error(job, Fault.SyntaxError, "cannot declare global '", key, "'"); }
+            if !ok && heap.fault == Fault.None { named_error(job, refused, "cannot declare global '", key, "'"); }
         },
         // DeclareGlobalLet, DeclareGlobalConst: cell → cell, the script's
         // cell registered by name.
@@ -4373,7 +4391,7 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
         opcode::CheckGlobalVar => {},
         opcode::CheckGlobalFunction => {
             let own = own_entry(heap, g, key);
-            if heap.fault == Fault.None && refuses_function(own) { named_error(job, Fault.SyntaxError, "cannot declare global '", key, "'"); }
+            if heap.fault == Fault.None && refuses_function(own) { named_error(job, if eval { Fault.TypeError } else { Fault.SyntaxError }, "cannot declare global '", key, "'"); }
         },
         // DeleteGlobal (sloppy `delete x`): → bool, false for a lexical
         // binding or a non-configurable property.

@@ -1,1 +1,1 @@
-c_headers = ["measurement.h", "pipes.h"];
+c_headers = ["measurement.h", "pipes.h", "runtime_compiler.h"];
