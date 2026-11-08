@@ -16,15 +16,14 @@
 // forwarding a throw; a throwing default parameter, plain and destructuring;
 // a throwing tag function; a throw in an argument skips the call and runs
 // the caller's finally block; a TypeError from `null.x` through two frames'
-// finally and catch blocks; `throw` inside `switch` inside try/catch/finally;
-// eval code that throws, direct and indirect, and eval of a SyntaxError.
-// Not ported: Proxy traps that throw (light-cljs-861); `Array.from` closing
+// finally and catch blocks; `throw` inside `switch` inside try/catch/finally.
+// Eval code that throws is in exceptions_eval_sloppy. Not ported: Proxy traps that throw (light-cljs-861); `Array.from` closing
 // its iterator on a throwing map function (the core built-ins area,
 // light-cljs-767); a throwing `Symbol.hasInstance`, which the oracles
 // disagree on because the Pants engine does not consult it (Goose and
 // QuickJS do; scored against QuickJS alone in the symbol_has_instance slice).
 // Completes with
-// "m2:1,f1,f2|3|fe:1,2|ReferenceError|2,4|outer|33:40,43,33|caught:50,60,70|g|s1|dg|kg|v|v|v|t|tplt|St|keyt|tp|f,v|a1|a2|a3|a4|c|Rc|Bc|d|1|g|tt|fin,a|i,TypeError,o|cone,two,def,123|5|SyntaxError|2|ReferenceError".
+// "m2:1,f1,f2|3|fe:1,2|ReferenceError|2,4|outer|33:40,43,33|caught:50,60,70|g|s1|dg|kg|v|v|v|t|tplt|St|keyt|tp|f,v|a1|a2|a3|a4|c|Rc|Bc|d|1|g|tt|fin,a|i,TypeError,o|cone,two,def,123".
 (function () {
   var r = [];
   // A callback's throw unwinds through `map` after its own finally blocks.
@@ -141,11 +140,5 @@
     } catch (e) { return "c" + e; } finally { slog.push(n); }
   }
   r.push([sw(1), sw(2), sw(3), slog.join("")].join(","));
-  // Eval code that throws, a SyntaxError from eval, and a throw caught inside
-  // eval code; an indirect eval's ReferenceError.
-  try { eval("throw 5"); } catch (e) { r.push(e); }
-  try { eval("("); } catch (e) { r.push(e instanceof SyntaxError ? e.name : "other"); }
-  r.push(eval("try { throw 1; } catch (e) { e + 1; }"));
-  try { (0, eval)("notDefinedInEval869"); } catch (e) { r.push(e.name); }
   return r.join("|");
 })();

@@ -22,10 +22,11 @@
 // area, light-cljs-766). Groups: E the Error constructor, one per native error
 // type, B the bound native error constructors, X the rows written for this
 // slice, K a native error constructor still working after `Error = 0` and its
-// own global name are reassigned (the last native_error_constructors row),
+// own global name are reassigned, then a lexical `let TypeError` and an
+// identifier assignment to TypeError (the last native_error_constructors rows),
 // then restored. Each group completes as one letter per row, "y" for true,
 // "n" for false and "x" for a throw. Completes with
-// "E:yyyyyyyyyyyyyyyyyyyyyyy|TypeError:yyyyyyyyyyyyyyyyyyyyy|RangeError:yyyyyyyyyyyyyyyyyyyyy|ReferenceError:yyyyyyyyyyyyyyyyyyyyy|SyntaxError:yyyyyyyyyyyyyyyyyyyyy|EvalError:yyyyyyyyyyyyyyyyyyyyy|URIError:yyyyyyyyyyyyyyyyyyyyy|InternalError:yyyyyyyyyyyyyyyyyyyyy|B:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy|X:yyyyyyy|K:yyyyyyyyyyy".
+// "E:yyyyyyyyyyyyyyyyyyyyyyy|TypeError:yyyyyyyyyyyyyyyyyyyyy|RangeError:yyyyyyyyyyyyyyyyyyyyy|ReferenceError:yyyyyyyyyyyyyyyyyyyyy|SyntaxError:yyyyyyyyyyyyyyyyyyyyy|EvalError:yyyyyyyyyyyyyyyyyyyyy|URIError:yyyyyyyyyyyyyyyyyyyyy|InternalError:yyyyyyyyyyyyyyyyyyyyy|B:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy|X:yyyyyyy|K:yyyyyyyyyyyyyy".
 (function () {
   function rows(fns) {
     var s = "";
@@ -53,7 +54,7 @@
     function () { return Error.prototype.toString.call({ name: "", message: "m" }) === "m"; },
     function () { return Error.prototype.toString.call({}) === "Error" && Error.prototype.toString.call({ name: "", message: "" }) === ""; },
     function () { return Error.prototype.toString.call({ name: "N", message: "" }) === "N"; },
-    function () { var caught = false; try { Error.prototype.toString.call(1); } catch (e) { caught = true; } return caught; },
+    function () { var caught = false; try { Error.prototype.toString.call(1); } catch (e) { caught = e instanceof TypeError; } return caught; },
     function () { var c; try { throw new Error("getter"); } catch (e) { c = e; } return c.message === "getter" && c instanceof Error; },
     function () {
       var e = Error("m", { cause: undefined });
@@ -176,6 +177,14 @@
   for (var m = 0; m < names.length; m++) globalThis[names[m]] = ctors[m];
   kept += Error === saved && globalThis.TypeError === TypeError ? "y" : "n";
   kept += new TypeError("back").toString() === "TypeError: back" ? "y" : "n";
+  // A lexical binding shadows the global constructor; an identifier
+  // assignment updates the global object's property.
+  { let TypeError = 42; kept += TypeError === 42 && globalThis.TypeError !== 42 ? "y" : "n"; }
+  var savedType = TypeError;
+  TypeError = 42;
+  kept += globalThis.TypeError === 42 ? "y" : "n";
+  TypeError = savedType;
+  kept += globalThis.TypeError === savedType ? "y" : "n";
   out.push("K:" + kept);
   return out.join("|");
 })();

@@ -70,6 +70,7 @@
  "bbp/eval_environment_unexecuted"
  "bbp/exceptions_catch_bindings"
  "bbp/exceptions_catch_bindings_sloppy"
+ "bbp/exceptions_eval_sloppy"
  "bbp/exceptions_finally_completions"
  "bbp/exceptions_jumps_through_finally"
  "bbp/exceptions_many_caught"

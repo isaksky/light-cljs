@@ -184,6 +184,7 @@
   "bbp/exceptions_catch_bindings" {:area :exceptions}
   "bbp/exceptions_catch_bindings_sloppy" {:area :exceptions :mode :sloppy}
   "bbp/exceptions_through_native_frames" {:area :exceptions}
+  "bbp/exceptions_eval_sloppy" {:area :exceptions :mode :sloppy}
   "bbp/exceptions_many_caught" {:area :exceptions}
   "bbp/engine_errors_are_error_objects" {:area :exceptions}
   "bbp/error_constructors" {:area :exceptions}
