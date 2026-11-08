@@ -178,6 +178,15 @@
   "bbp/realm_errors" {:area :exceptions}
   "bbp/realm_prototypes" {:area :objects-classes}
   "bbp/realm_uncaught_error" {:area :exceptions}
+  "bbp/exceptions_throw_and_catch" {:area :exceptions}
+  "bbp/exceptions_finally_completions" {:area :exceptions}
+  "bbp/exceptions_jumps_through_finally" {:area :exceptions}
+  "bbp/exceptions_catch_bindings" {:area :exceptions}
+  "bbp/exceptions_catch_bindings_sloppy" {:area :exceptions :mode :sloppy}
+  "bbp/exceptions_through_native_frames" {:area :exceptions}
+  "bbp/exceptions_many_caught" {:area :exceptions}
+  "bbp/engine_errors_are_error_objects" {:area :exceptions}
+  "bbp/error_constructors" {:area :exceptions}
   "bbp/realm_well_known_symbols" {:area :core-builtins}
   "bbp/in_operator" {:area :operators-values}
   "bbp/instanceof_operator" {:area :operators-values}
