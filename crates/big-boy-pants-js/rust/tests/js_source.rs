@@ -2026,7 +2026,7 @@ fn sloppy_eval_declares_vars_in_the_caller() {
         r#"function f() { return eval('function z() { return z; } var saved=z; z=3; saved')() === 3; } f()"#,
         r#"function f() { var x=1; { const x=2; return eval('x') === 2; } } f()"#,
         r#"function f() { eval('var z=1; eval(\"var z=3\")'); return z === 3; } f()"#,
-        r#"function f() { return eval('{ function z() { return 4; } z() }') === 4 && typeof z === 'undefined'; } f()"#,
+        r#"function f() { return eval('{ function z() { return 4; } z() }') === 4 && typeof z === 'function'; } f()"#,
         r#"var z=0; function f() { z=eval('var z=1; 2'); return z===1; } f() && z===2"#,
         r#"var z=4; function f() { z+=eval('var z=1; 2'); return z===1; } f() && z===6"#,
         r#"function f() { eval('var z=1'); z=eval('delete z; var other=1; 2'); return z===2; } f()"#,

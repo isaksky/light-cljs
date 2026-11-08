@@ -566,8 +566,23 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Class) => self.parse_class_declaration(),
             TokenKind::Keyword(Keyword::Function) => self.parse_function_declaration(),
             TokenKind::Keyword(Keyword::Let | Keyword::Const) => self.parse_lexical_decl(),
+            TokenKind::Identifier(_) if !self.strict && self.at_label() => {
+                self.parse_labelled_item()
+            }
             _ => self.parse_statement(),
         }
+    }
+
+    /// A labelled statement in statement-list position of sloppy code, where
+    /// its body may be a function declaration ([`Self::parse_labelled`]).
+    #[inline(never)]
+    fn parse_labelled_item(&mut self) -> PResult<Stmt> {
+        let saved = self.depth;
+        self.deeper(cost::STATEMENT)?;
+        let start = self.tok.span.start;
+        let kind = self.parse_labelled(true)?;
+        self.depth = saved;
+        self.bounded(Stmt::new(kind, self.span_from(start)))
     }
 
     #[inline(never)]
@@ -937,7 +952,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Switch) => self.parse_switch(),
             TokenKind::Keyword(Keyword::Debugger) => self.parse_debugger(),
             TokenKind::Keyword(Keyword::Break | Keyword::Continue) => self.parse_break_continue(),
-            TokenKind::Identifier(_) if self.at_label() => self.parse_labelled(),
+            TokenKind::Identifier(_) if self.at_label() => self.parse_labelled(false),
             _ => match self.statement_start_error() {
                 Some(error) => Err(error),
                 None => self.parse_expression_statement(),
@@ -1007,10 +1022,15 @@ impl<'a> Parser<'a> {
     /// after the whole set is a loop, so `continue` may target any label of
     /// the set. Early errors: a label already in scope in the same function
     /// (QuickJS `js_parse_statement_or_decl`: "duplicate label name"); a
-    /// declaration as the body (strict mode, reported by
-    /// [`Self::statement_start_error`]).
+    /// declaration as the body (reported by [`Self::statement_start_error`]),
+    /// except that a sloppy labelled statement in statement-list position
+    /// (`list_item`) may label a plain function declaration (ECMAScript
+    /// Annex B.3.2, "Labelled Function Declarations"; never the body of an
+    /// `if`, loop or `with`, IsLabelledFunction). No `break` or `continue`
+    /// can target such a label, so the result is the function declaration
+    /// itself, a declaration of the enclosing statement list.
     #[inline(never)]
-    fn parse_labelled(&mut self) -> PResult<StmtKind> {
+    fn parse_labelled(&mut self, list_item: bool) -> PResult<StmtKind> {
         let saved = self.depth;
         let outer = self.labels.len();
         let mut set = Vec::new();
@@ -1048,6 +1068,12 @@ impl<'a> Parser<'a> {
         );
         for entry in &mut self.labels[outer..] {
             entry.iteration = iteration;
+        }
+        if list_item && !self.strict && self.at_plain_function_declaration() {
+            let declaration = self.parse_function_declaration()?;
+            self.labels.truncate(outer);
+            self.depth = saved;
+            return Ok(declaration.kind);
         }
         let mut body = self.parse_statement()?;
         self.labels.truncate(outer);
@@ -1107,10 +1133,10 @@ impl<'a> Parser<'a> {
         self.deeper(cost::BODY)?;
         self.advance()?;
         let test = self.parse_paren_condition()?;
-        let consequent = Box::new(self.parse_statement()?);
+        let consequent = Box::new(self.parse_if_clause()?);
         let alternate = if self.is_keyword(Keyword::Else) {
             self.advance()?;
-            Some(Box::new(self.parse_statement()?))
+            Some(Box::new(self.parse_if_clause()?))
         } else {
             None
         };
@@ -1120,6 +1146,37 @@ impl<'a> Parser<'a> {
             consequent,
             alternate,
         })
+    }
+
+    /// An `if` statement's consequent or alternate. In sloppy code a plain
+    /// function declaration may stand there (ECMAScript Annex B.3.4,
+    /// "FunctionDeclarations in IfStatement Statement Clauses"): it is the
+    /// sole declaration of a block in that position. Generator and async
+    /// declarations, labelled ones and strict code keep the early error of
+    /// [`Self::statement_start_error`].
+    #[inline(never)]
+    fn parse_if_clause(&mut self) -> PResult<Stmt> {
+        if self.strict || !self.at_plain_function_declaration() {
+            return self.parse_statement();
+        }
+        let saved = self.depth;
+        self.deeper(cost::STATEMENT)?;
+        let start = self.tok.span.start;
+        let declaration = self.parse_function_declaration()?;
+        self.depth = saved;
+        self.bounded(Stmt::new(
+            StmtKind::Block(vec![declaration]),
+            self.span_from(start),
+        ))
+    }
+
+    /// The current token starts a function declaration that is neither a
+    /// generator nor async: `function` not followed by `*`.
+    fn at_plain_function_declaration(&self) -> bool {
+        self.is_keyword(Keyword::Function)
+            && !self
+                .peek_next()
+                .is_some_and(|t| t.kind == TokenKind::Punct(Punct::Star))
     }
 
     fn parse_with(&mut self) -> PResult<StmtKind> {
@@ -2194,6 +2251,9 @@ impl<'a> Parser<'a> {
             defaults.iter().all(Option::is_none) && params.iter().all(|p| p.identifier().is_some());
         let (body, strict) =
             self.parse_function_body(name.as_ref(), &params, simple, self.strict, false)?;
+        if strict && let Some(name) = first_duplicate_parameter(&params) {
+            return Err(self.duplicate_parameter(name));
+        }
         self.in_function = outer;
         self.new_target_allowed = outer_new_target;
         self.in_loop = outer_loop;
@@ -2297,7 +2357,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let params = self.parse_formal_parameters()?;
+        let params = self.parse_formal_parameters(false)?;
         Ok((name, params))
     }
 
@@ -2327,8 +2387,14 @@ impl<'a> Parser<'a> {
         Ok((param, true))
     }
 
+    /// FormalParameters, or UniqueFormalParameters when `unique` (arrows and
+    /// methods). Duplicate names are an early error there, in strict code and
+    /// in a list that is not simple; a sloppy function's simple list may
+    /// repeat a name (ECMAScript 15.2.1 early errors), and the last
+    /// occurrence is the binding. A `"use strict"` directive in the body
+    /// still rejects them ([`Self::parse_function`]).
     #[inline(never)]
-    fn parse_formal_parameters(&mut self) -> PResult<Params> {
+    fn parse_formal_parameters(&mut self, unique: bool) -> PResult<Params> {
         let parameters = std::mem::replace(&mut self.suspension.parameters, true);
         self.expect_punct(Punct::LParen)?;
         let no_in = std::mem::replace(&mut self.no_in, false);
@@ -2336,16 +2402,14 @@ impl<'a> Parser<'a> {
         let mut defaults: Vec<Option<Expr>> = Vec::new();
         while !self.is_punct(Punct::RParen) {
             let (param, rest) = self.parse_parameter_binding()?;
-            let mut names: Vec<&Ident> = params.iter().flat_map(|p| p.names()).collect();
-            for name in param.names() {
-                if names.iter().any(|p| p.name == name.name) {
-                    return Err(self.error(
-                        SyntaxErrorKind::Invalid,
-                        name.span,
-                        format!("duplicate parameter name `{}`", name.name),
-                    ));
+            if unique || self.strict || param.identifier().is_none() {
+                let mut names: Vec<&Ident> = params.iter().flat_map(|p| p.names()).collect();
+                for name in param.names() {
+                    if names.iter().any(|p| p.name == name.name) {
+                        return Err(self.duplicate_parameter(name));
+                    }
+                    names.push(name);
                 }
-                names.push(name);
             }
             params.push(param);
             if rest {
@@ -2362,9 +2426,22 @@ impl<'a> Parser<'a> {
             }
         }
         self.no_in = no_in;
+        let simple =
+            defaults.iter().all(Option::is_none) && params.iter().all(|p| p.identifier().is_some());
+        if !simple && let Some(name) = first_duplicate_parameter(&params) {
+            return Err(self.duplicate_parameter(name));
+        }
         self.expect_punct(Punct::RParen)?;
         self.suspension.parameters = parameters;
         Ok((params, defaults))
+    }
+
+    fn duplicate_parameter(&self, name: &Ident) -> SyntaxError {
+        self.error(
+            SyntaxErrorKind::Invalid,
+            name.span,
+            format!("duplicate parameter name `{}`", name.name),
+        )
     }
 
     /// ArrowFunction: ArrowParameters [no LineTerminator here] `=>`
@@ -2384,7 +2461,7 @@ impl<'a> Parser<'a> {
             self.suspension.asynchronous = true;
         }
         let (params, defaults) = if self.is_punct(Punct::LParen) {
-            self.parse_formal_parameters()?
+            self.parse_formal_parameters(true)?
         } else {
             (
                 vec![Pattern::ident(
@@ -3367,7 +3444,7 @@ impl<'a> Parser<'a> {
             },
         );
         let outer_new_target = std::mem::replace(&mut self.new_target_allowed, true);
-        let (params, defaults) = self.parse_formal_parameters()?;
+        let (params, defaults) = self.parse_formal_parameters(true)?;
         let outer_function = std::mem::replace(&mut self.in_function, true);
         let outer_loop = std::mem::replace(&mut self.in_loop, false);
         let outer_switch = std::mem::replace(&mut self.in_switch, false);
@@ -4563,6 +4640,15 @@ enum TargetUse {
 enum BinOrLogical {
     Binary(BinaryOp),
     Logical(LogicalOp),
+}
+
+/// The first parameter name that repeats an earlier one.
+fn first_duplicate_parameter(params: &[Pattern]) -> Option<&Ident> {
+    let mut seen = std::collections::HashSet::new();
+    params
+        .iter()
+        .flat_map(|p| p.names())
+        .find(|name| !seen.insert(name.name.as_str()))
 }
 
 /// Precedence (higher binds tighter) of the supported binary operators.

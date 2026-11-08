@@ -161,7 +161,7 @@
 mod modules;
 pub(crate) use modules::{ModuleBinding, lower_module, module_bindings};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::ast::{
@@ -703,6 +703,13 @@ struct FnCtx {
     /// parameters have their own scope (some parameter has a default,
     /// [`Lowerer::parameter_scope`]), otherwise 0.
     var_scope: usize,
+    /// The block function declarations (by [`Function::span`] start) that
+    /// also assign a `var` binding of the body when evaluated (ECMAScript
+    /// Annex B.3.3; [`Lowerer::enter_scope`], [`Lowerer::annex_b_copy`]).
+    annex_b: HashSet<usize>,
+    /// The flag local of each new global Annex B binding, true once it was
+    /// created ([`Lowerer::annex_b_global`]).
+    annex_b_globals: HashMap<String, u16>,
 }
 
 /// A construct of the running function that a `break` or `continue` inside
@@ -1014,6 +1021,8 @@ impl<'s> Lowerer<'s> {
             using_resources: Vec::new(),
             loop_labels: Vec::new(),
             var_scope: 0,
+            annex_b: HashSet::new(),
+            annex_b_globals: HashMap::new(),
         });
     }
 
@@ -1343,10 +1352,20 @@ impl<'s> Lowerer<'s> {
         let saved_slot = self.cur().next_slot;
         self.cur_mut().scopes.push(Scope::new());
         let mut declared: Vec<&Ident> = Vec::new();
+        let mut annex_b_globals: Vec<&Ident> = Vec::new();
         for p in params {
             self.declare(p, BindingKind::Param, top_level, false)?;
-            declared.push(p);
         }
+        // A sloppy simple parameter list may repeat a name (the parser
+        // rejects it elsewhere); its last occurrence is the binding.
+        let mut seen = HashSet::new();
+        let mut last: Vec<&Ident> = params
+            .iter()
+            .rev()
+            .filter(|p| seen.insert(p.name.as_str()))
+            .collect();
+        last.reverse();
+        declared.extend(last);
         // Analysis resolves the static fallbacks and marks direct eval sites;
         // emission inserts an environment only in the affected activations.
         // Allocate after argument slots and after parameter expressions, so
@@ -1408,6 +1427,9 @@ impl<'s> Lowerer<'s> {
                     declared.push(name);
                 }
             }
+            if !self.cur().strict {
+                self.annex_b_bindings(clauses, params, &mut declared, &mut annex_b_globals)?;
+            }
         }
         let arguments = if top_level && self.cur().var_scope == 0 {
             self.arguments_binding(
@@ -1446,6 +1468,11 @@ impl<'s> Lowerer<'s> {
                     name.span,
                 );
             }
+        }
+        // Annex B's global bindings come after the checks of the ordinary
+        // declarations and before their creation (B.3.2.2 step 12).
+        for name in annex_b_globals {
+            self.annex_b_global(name)?;
         }
         // Cells first, so hoisted closures can capture any of them. A
         // parameter's cell holds its argument and a `var`'s `undefined`;
@@ -1569,6 +1596,160 @@ impl<'s> Lowerer<'s> {
         Ok(saved_slot)
     }
 
+    /// Declare the `var` bindings that ECMAScript Annex B.3.3 gives a sloppy
+    /// script, function or eval body for its block function declarations
+    /// (FunctionDeclarationInstantiation, GlobalDeclarationInstantiation and
+    /// EvalDeclarationInstantiation as changed by B.3.2.1 to B.3.2.3): one
+    /// per name of an eligible declaration ([`annex_b_functions`]) that is
+    /// not a parameter, not `arguments` in a function (as in QuickJS) and,
+    /// in direct eval code, not a lexical binding of the calling code
+    /// between the eval and its variable environment. Such a binding is
+    /// `undefined` until a declaration of the name is evaluated
+    /// ([`Self::annex_b_copy`]), unless the name already is a `var` or
+    /// function binding of the body, which it then is. A new global one
+    /// (script code, or eval code whose variable environment is the global
+    /// one) goes to `globals` instead of `declared`, for
+    /// [`Self::annex_b_global`]. Each eligible declaration is recorded in
+    /// [`FnCtx::annex_b`].
+    #[inline(never)]
+    fn annex_b_bindings<'a>(
+        &mut self,
+        clauses: &[&'a [Stmt]],
+        params: &[Ident],
+        declared: &mut Vec<&'a Ident>,
+        globals: &mut Vec<&'a Ident>,
+    ) -> Result<(), SyntaxError> {
+        let mut functions = Vec::new();
+        annex_b_functions(clauses, &mut functions);
+        let function_code = self.cur().completion.is_none();
+        let direct_eval = self.sloppy_eval && self.fns.len() == 1;
+        for f in functions {
+            let name = self.declaration_name(f)?;
+            let ctx = self.cur();
+            let parameter = params.iter().any(|p| p.name == name.name)
+                || (ctx.var_scope > 0
+                    && ctx.scopes[0]
+                        .get(&name.name)
+                        .is_some_and(|b| b.kind == BindingKind::Param));
+            if parameter
+                || (function_code && name.name == "arguments")
+                || (direct_eval && self.eval_lexical_conflicts.contains(&name.name))
+            {
+                continue;
+            }
+            self.cur_mut().annex_b.insert(f.span.start);
+            // The block binding has the name's offset as its key; this
+            // binding takes the declaration's, where no name starts.
+            if self.declare_keyed(name, BindingKind::Var, true, false, f.span.start)? {
+                if self.local(name)?.global {
+                    globals.push(name);
+                } else {
+                    declared.push(name);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Create the global `var` binding of the Annex B block function `name`
+    /// only if no global lexical binding has the name and the global object
+    /// can define it (GlobalDeclarationInstantiation and
+    /// EvalDeclarationInstantiation as changed by B.3.2.2 and B.3.2.3):
+    /// the ordinary checks, whose errors are caught here, decide it, and a
+    /// local flag records it for [`Self::annex_b_copy`], which copies
+    /// nothing when the binding was not created.
+    #[inline(never)]
+    fn annex_b_global(&mut self, name: &Ident) -> Result<(), SyntaxError> {
+        let at = name.span;
+        let flag = self.temp(at)?;
+        let index = self.string_index(JsString::from(name.name.as_str()), at)?;
+        let skipped = self.out().label();
+        let end = self.out().label();
+        self.constant(Primitive::Bool(false), at)?;
+        self.out().op_u16(Opcode::SetLocal, flag, at);
+        self.out().branch(Opcode::PushCatch, skipped, at);
+        self.out()
+            .op_u16(Opcode::CheckGlobalLexicalConflict, index, at);
+        self.out().op_u16(Opcode::CheckGlobalVar, index, at);
+        self.out().op_u16(Opcode::DeclareGlobalVar, index, at);
+        self.out().op(Opcode::PopCatch, at);
+        self.constant(Primitive::Bool(true), at)?;
+        self.out().op_u16(Opcode::SetLocal, flag, at);
+        self.out().branch(Opcode::Jump, end, at);
+        self.out().bind(skipped);
+        self.out().op(Opcode::Pop, at);
+        self.out().bind(end);
+        self.cur_mut()
+            .annex_b_globals
+            .insert(name.name.clone(), flag);
+        Ok(())
+    }
+
+    /// Evaluate the function declaration `f`, which was created when its
+    /// statement list was entered. If Annex B.3.3 also binds it with `var`
+    /// ([`Self::annex_b_bindings`]), copy the block binding's value, the
+    /// closure made when the block was entered, to the body's `var` binding
+    /// of the name in the body's variable environment itself, never through
+    /// a `with` object or block in between (also not the calling code's, for
+    /// eval code). A global binding that [`Self::annex_b_global`] did not
+    /// create gets no copy. Out of line: the statement frame stays small.
+    #[inline(never)]
+    fn annex_b_copy(&mut self, f: &Function) -> Result<(), SyntaxError> {
+        if !self.cur().annex_b.contains(&f.span.start) {
+            return Ok(());
+        }
+        let name = self.declaration_name(f)?;
+        let at = name.span;
+        let saved = self.cur().next_slot;
+        let level = self.fns.len() - 1;
+        let ctx = self.cur();
+        let var = ctx.scopes[ctx.var_scope]
+            .get(&name.name)
+            .copied()
+            .ok_or_else(|| self.internal(at, "Annex B binding was not pre-declared"))?;
+        let skip = self.out().label();
+        if var.global {
+            if let Some(&flag) = self.cur().annex_b_globals.get(&name.name) {
+                self.out().op_u16(Opcode::GetLocal, flag, at);
+                self.out().branch(Opcode::JumpIfFalse, skip, at);
+            }
+            let block = self.resolve(&name.name);
+            self.load(block, at)?;
+            let target = self.global_access(&name.name);
+            self.store(target, at)?;
+            self.out().op(Opcode::Pop, at);
+        } else if level == 0 && self.sloppy_eval {
+            // The eval body's binding holds the cell of the variable in the
+            // calling code's variable environment (`enter_scope`). A deleted
+            // eval-created variable is created again, as a sloppy
+            // SetMutableBinding does.
+            if self.eval_variable_bindings.contains(&name.name) {
+                self.out().op_u16(Opcode::GetLocal, var.slot, at);
+            } else {
+                self.eval_var_cell(&name.name, at)?;
+            }
+            let block = self.resolve(&name.name);
+            self.load(block, at)?;
+            self.out().op(Opcode::CellSet, at);
+        } else {
+            let block = self.resolve(&name.name);
+            self.load(block, at)?;
+            let ctx = self.cur();
+            let end = ctx.var_scope + 1;
+            let with_count = ctx
+                .with_envs
+                .iter()
+                .take_while(|(depth, _, _)| *depth < end)
+                .count();
+            let target = self.resolve_scopes(level, &name.name, end, with_count);
+            self.store(target, at)?;
+            self.out().op(Opcode::Pop, at);
+        }
+        self.out().bind(skip);
+        self.cur_mut().next_slot = saved;
+        Ok(())
+    }
+
     /// Leave the scope entered by [`Self::enter_scope`], which returned
     /// `saved_slot`.
     fn exit_scope(&mut self, saved_slot: usize) {
@@ -1594,13 +1775,29 @@ impl<'s> Lowerer<'s> {
     /// them is that binding, not a new one. A function declaration then
     /// assigns it at scope entry, after the argument or an earlier function
     /// declaration, so the binding counts as assigned. Any other repeated
-    /// name is a JavaScript early error.
+    /// name is a JavaScript early error, except a repeated parameter name,
+    /// which the parser admits only in a sloppy simple parameter list: each
+    /// occurrence keeps its argument slot and the last is the binding.
     fn declare(
         &mut self,
         name: &Ident,
         kind: BindingKind,
         top_level: bool,
         checked: bool,
+    ) -> Result<bool, SyntaxError> {
+        self.declare_keyed(name, kind, top_level, checked, name.span.start)
+    }
+
+    /// [`Self::declare`] with the binding's fact `key`, which is the name's
+    /// source offset except for the `var` binding of an Annex B block
+    /// function ([`Self::enter_scope`]), whose name is the block binding's.
+    fn declare_keyed(
+        &mut self,
+        name: &Ident,
+        kind: BindingKind,
+        top_level: bool,
+        checked: bool,
+        key: usize,
     ) -> Result<bool, SyntaxError> {
         self.check_not_reserved(name)?;
         let prior = self
@@ -1609,7 +1806,9 @@ impl<'s> Lowerer<'s> {
             .last()
             .and_then(|s| s.get(&name.name))
             .copied();
-        if let Some(prior) = prior {
+        if let Some(prior) = prior
+            .filter(|p| !(top_level && kind == BindingKind::Param && p.kind == BindingKind::Param))
+        {
             let var_scoped = |k| {
                 matches!(
                     k,
@@ -1645,7 +1844,6 @@ impl<'s> Lowerer<'s> {
                 "more than 65,535 bindings are live at once",
             ));
         }
-        let key = name.span.start;
         let global_lexical = ctx.script_lexicals
             && top_level
             && matches!(kind, BindingKind::Let | BindingKind::Const);
@@ -3390,7 +3588,8 @@ impl<'s> Lowerer<'s> {
                 cases,
             } => self.switch_statement(discriminant, cases, span)?,
             // Created when its statement list was entered (hoisting).
-            StmtKind::FunctionDecl(_) | StmtKind::Empty => {}
+            StmtKind::FunctionDecl(f) => self.annex_b_copy(f)?,
+            StmtKind::Empty => {}
         }
         Ok(())
     }
@@ -7223,6 +7422,145 @@ fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
         | StmtKind::Continue(_)
         | StmtKind::Empty => {}
     }
+}
+
+/// The plain (not generator or async) function declarations of a sloppy
+/// body's blocks and case clauses, nested functions excluded, that
+/// ECMAScript Annex B.3.3 also binds with `var`: those that a `var`
+/// declaration of their name could replace without an early error, so no
+/// enclosing block, loop head or catch binding, nor the body's top level
+/// (`clauses`), declares the name lexically. A simple catch parameter does
+/// not count (Annex B.3.4, "VariableStatements in Catch Blocks"); a
+/// destructuring one does. In source order; names may repeat.
+fn annex_b_functions<'a>(clauses: &[&'a [Stmt]], out: &mut Vec<&'a Function>) {
+    let mut lexical = Vec::new();
+    for clause in clauses {
+        lexical_names(clause, false, &mut lexical);
+    }
+    for clause in clauses {
+        for stmt in clause.iter() {
+            annex_b_in(stmt, &mut lexical, out);
+        }
+    }
+}
+
+/// The names `body` declares with `let`, `const`, `using` or `class`, and
+/// with function declarations if `functions`.
+fn lexical_names<'a>(body: &'a [Stmt], functions: bool, out: &mut Vec<&'a str>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Lexical(decl) => out.extend(
+                decl.declarators
+                    .iter()
+                    .flat_map(|d| d.name.names())
+                    .map(|n| n.name.as_str()),
+            ),
+            StmtKind::FunctionDecl(f) if functions => {
+                out.extend(f.name.as_ref().map(|n| n.name.as_str()))
+            }
+            _ => {}
+        }
+    }
+}
+
+/// [`annex_b_functions`] for a block (or a `switch`'s case clauses), inside
+/// enclosing blocks that declare the names `lexical`.
+fn annex_b_block<'a>(
+    clauses: &[&'a [Stmt]],
+    lexical: &mut Vec<&'a str>,
+    out: &mut Vec<&'a Function>,
+) {
+    let depth = lexical.len();
+    for stmt in clauses.iter().flat_map(|c| c.iter()) {
+        if let StmtKind::FunctionDecl(f) = &stmt.kind
+            && !f.generator
+            && !f.asynchronous
+            && let Some(name) = &f.name
+            && !lexical.contains(&name.name.as_str())
+        {
+            out.push(f);
+        }
+    }
+    for clause in clauses {
+        lexical_names(clause, true, lexical);
+    }
+    for stmt in clauses.iter().flat_map(|c| c.iter()) {
+        annex_b_in(stmt, lexical, out);
+    }
+    lexical.truncate(depth);
+}
+
+fn annex_b_in<'a>(stmt: &'a Stmt, lexical: &mut Vec<&'a str>, out: &mut Vec<&'a Function>) {
+    let depth = lexical.len();
+    match &stmt.kind {
+        StmtKind::Block(body) => annex_b_block(&[body], lexical, out),
+        StmtKind::Switch { cases, .. } => {
+            let clauses: Vec<&[Stmt]> = cases.iter().map(|c| c.body.as_slice()).collect();
+            annex_b_block(&clauses, lexical, out);
+        }
+        StmtKind::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            annex_b_in(consequent, lexical, out);
+            if let Some(alternate) = alternate {
+                annex_b_in(alternate, lexical, out);
+            }
+        }
+        StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. }
+        | StmtKind::Labelled { body, .. }
+        | StmtKind::With { body, .. } => annex_b_in(body, lexical, out),
+        StmtKind::For { init, body, .. } => {
+            if let Some(ForInit::Lexical(decl)) = init {
+                lexical.extend(
+                    decl.declarators
+                        .iter()
+                        .flat_map(|d| d.name.names())
+                        .map(|n| n.name.as_str()),
+                );
+            }
+            annex_b_in(body, lexical, out);
+        }
+        StmtKind::ForIn { head, body, .. } | StmtKind::ForOf { head, body, .. } => {
+            match head {
+                ForInHead::Lexical(_, name) => lexical.push(name.name.as_str()),
+                ForInHead::Pattern(Some(_), pattern) => {
+                    lexical.extend(pattern.names().into_iter().map(|n| n.name.as_str()))
+                }
+                _ => {}
+            }
+            annex_b_in(body, lexical, out);
+        }
+        StmtKind::Try {
+            block,
+            handler,
+            finalizer,
+        } => {
+            annex_b_block(&[block], lexical, out);
+            if let Some(handler) = handler {
+                if let Some(pattern) = handler.param.as_ref().filter(|p| p.identifier().is_none()) {
+                    lexical.extend(pattern.names().into_iter().map(|n| n.name.as_str()));
+                }
+                annex_b_block(&[&handler.body], lexical, out);
+                lexical.truncate(depth);
+            }
+            if let Some(finalizer) = finalizer {
+                annex_b_block(&[finalizer], lexical, out);
+            }
+        }
+        StmtKind::FunctionDecl(_)
+        | StmtKind::Lexical(_)
+        | StmtKind::Var(_)
+        | StmtKind::Expr(_)
+        | StmtKind::Return(_)
+        | StmtKind::Throw(_)
+        | StmtKind::Break(_)
+        | StmtKind::Continue(_)
+        | StmtKind::Empty => {}
+    }
+    lexical.truncate(depth);
 }
 
 /// True when `e` always evaluates to a Number (if it completes), so no

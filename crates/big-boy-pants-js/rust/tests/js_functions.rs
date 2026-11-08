@@ -1821,6 +1821,206 @@ fn redeclaration_rules_cover_function_declarations() {
     );
 }
 
+/// Run sloppy scripts that each complete with `true`.
+fn sloppy_rows(name: &str, rows: &[&str]) {
+    for src in rows {
+        let rt = Runtime::new();
+        let exe = compile_script_with(name, src, ScriptOptions::SLOPPY)
+            .unwrap_or_else(|e| panic!("{src}: {e}"));
+        match rt.spawn(&exe, &[]).unwrap().run().unwrap() {
+            RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true), "{src}"),
+            other => panic!("{src}: expected Complete, got {other:?}"),
+        }
+    }
+}
+
+/// Kind, line and column of a sloppy compile error.
+fn sloppy_compile_err(src: &str) -> (SyntaxErrorKind, u32, u32) {
+    let e = compile_script_with("t", src, ScriptOptions::SLOPPY).expect_err(src);
+    (e.kind, e.line, e.column)
+}
+
+/// Sloppy block-level functions (ECMAScript Annex B.3.3, light-cljs-859):
+/// a plain function declaration in a block or case clause also assigns a
+/// `var` binding of the script, function or eval body when it is evaluated,
+/// unless a `var` there would conflict with an enclosing lexical binding,
+/// the name is a parameter, or it is `arguments` in a function. The block
+/// binding stays lexical, and strict code keeps only it. Values are
+/// QuickJS's except where noted (the specification's).
+#[test]
+fn sloppy_block_functions_also_bind_var() {
+    sloppy_rows(
+        "annex-b",
+        &[
+            "{ function f() { return 1; } } f() === 1",
+            "function g() { var before = typeof h; { function h() {} } return before + ',' + typeof h; } g() === 'undefined,function'",
+            "function g() { { function h() { return 1; } } { function h() { return 2; } } return h(); } g() === 2",
+            "switch (1) { case 1: function s() { return 4; } } s() === 4",
+            "switch (2) { case 1: function s() { return 4; } case 2: } typeof s === 'undefined'",
+            "function g() { for (var i = 0; i < 2; i++) { function l() { return i; } } return l(); } g() === 2",
+            "var r = []; for (var i = 0; i < 3; i++) { function h() { return i; } r.push(h()); } r.join() === '0,1,2'",
+            "{ let inner = 1; { function q() { return inner; } } } q() === 1",
+            "{ function f() {} } Object.getOwnPropertyDescriptor(globalThis, 'f') !== undefined",
+            "function g() { let h = 1; { function h() {} } return h; } g() === 1",
+            "function g(h) { { function h() {} } return typeof h; } g(5) === 'number'",
+            "function g(a = 1) { { function a() {} } return typeof a; } g() === 'number'",
+            "function g(a = 1) { { function h() { return a; } } return h(); } g() === 1",
+            "function g() { { let h = 1; { function h() {} } } return typeof h; } g() === 'undefined'",
+            "function g() { for (let h = 0; h < 1; h++) { function h() {} } return typeof h; } g() === 'undefined'",
+            "function g() { for (const h of [1]) { function h() {} } return typeof h; } g() === 'undefined'",
+            "function g() { try { throw 1; } catch ({h}) { { function h() {} } } return typeof h; } g() === 'undefined'",
+            "function g() { try { throw 1; } catch (h) { { function h() { return 2; } } } return h(); } g() === 2",
+            "function g() { var r = []; { r.push(typeof h); function h() {} } r.push(typeof h); return r.join(); } g() === 'function,function'",
+            "function g() { function h() { return 1; } { function h() { return 2; } } return h(); } g() === 2",
+            "function g() { { function h() { return 1; } { function h() { return 2; } } } return h(); } g() === 1",
+            "function g() { var f = 1; { function f() {} } return typeof f; } g() === 'function'",
+            "function g() { var c = function () { return h; }; { function h() { return 1; } } return c()(); } g() === 1",
+            "function g() { { function arguments() {} } return typeof arguments; } g() === 'object'",
+            "function g() { { function* h() {} } { async function k() {} } return typeof h + typeof k; } g() === 'undefinedundefined'",
+            "with ({h: 1}) { function h() {} } typeof h === 'function'",
+            "function g() { var o = {h: 1}; with (o) { { function h() { return 7; } } } return typeof o.h + typeof h; } g() === 'numberfunction'",
+            "function* g() { { function h() { return 3; } } yield h(); } g().next().value === 3",
+            "(() => { { function h() { return 4; } } return h(); })() === 4",
+            // The specification copies the block binding's current value
+            // (QuickJS copies the declared closure, and makes two closures).
+            "function g() { { h = 3; function h() {} } return h; } g() === 3",
+            "function g() { { function h() { return h; } } return h() === h; } g()",
+            // Strict code keeps block functions lexical.
+            "function g() { 'use strict'; { function h() {} } return typeof h; } g() === 'undefined'",
+        ],
+    );
+}
+
+/// Annex B.3.3.3: block functions of sloppy eval code bind `var` in the
+/// eval's variable environment, the caller's for direct eval, the global
+/// one for indirect eval; strict eval code keeps them lexical. A lexical
+/// binding of the caller between the eval and its variable environment
+/// prevents the binding (the specification; QuickJS throws SyntaxError).
+#[test]
+fn sloppy_eval_block_functions_also_bind_var() {
+    sloppy_rows(
+        "annex-b-eval",
+        &[
+            "eval('{ function e1() { return 3; } }'); e1() === 3",
+            "(0, eval)('{ function e2() { return 5; } }'); e2() === 5",
+            "function g() { eval('{ function e3() { return 7; } }'); return e3(); } g() === 7",
+            "function g() { var h = 1; eval('{ function h() { return 5; } }'); return h(); } g() === 5",
+            "function g() { eval('var z = 1'); eval('{ function h() { return z; } }'); return h(); } g() === 1",
+            "function g() { return eval('{ function h() { return 6; } } h()'); } g() === 6",
+            "function g() { eval('\"use strict\"; { function h() {} }'); return typeof h; } g() === 'undefined'",
+            "function g() { eval('let x; { function x() {} }'); return typeof x; } g() === 'undefined'",
+            "function g() { let x = 1; { eval('{ function x() {} }'); } return x; } g() === 1",
+            "function g() { eval('var h = 1; delete h; { function h() { return 4; } }'); return h(); } g() === 4",
+            // The copy goes to the variable environment itself, never to a
+            // `with` object of the calling code (QuickJS assigns the object).
+            "function g() { var h = 1, o = {h: 2}; with (o) { eval('{ function h() { return 3; } }'); } return typeof h + ',' + typeof o.h; } g() === 'function,number'",
+            "function g() { var o = {h: 2}; with (o) { eval('{ function h() { return 3; } }'); } return typeof h + ',' + typeof o.h; } g() === 'function,number'",
+            "var o = {k859: 1}; with (o) { eval('{ function k859() {} }'); } typeof k859 + typeof o.k859 === 'functionnumber'",
+        ],
+    );
+}
+
+/// A global Annex B binding is created only if no global lexical binding
+/// has the name and the global object can define it; otherwise the block
+/// function stays lexical, without an error (B.3.2.2, B.3.2.3; QuickJS
+/// throws SyntaxError or TypeError instead).
+#[test]
+fn sloppy_annex_b_globals_skip_ineligible_bindings() {
+    sloppy_rows(
+        "annex-b-globals",
+        &[
+            // Created before the ordinary global declarations (B.3.2.2).
+            "{ function annex859() {} } var ordinary859; var seen = ''; for (var k in globalThis) { if (k === 'annex859' || k === 'ordinary859') seen += k + ','; } seen === 'annex859,ordinary859,'",
+            "(0, eval)(\"{ function annexE859() {} } var ordinaryE859;\"); var seen = ''; for (var k in globalThis) { if (k === 'annexE859' || k === 'ordinaryE859') seen += k + ','; } seen === 'annexE859,ordinaryE859,'",
+            "let x = 1; (0, eval)('{ function x() {} }'); x === 1",
+            "let x = 1; function g() { return eval('{ function x() { return 2; } } x()'); } g() === 2 && x === 1",
+            "Object.preventExtensions(globalThis); (0, eval)('{ function fresh() {} } 1') === 1 && !('fresh' in globalThis)",
+        ],
+    );
+}
+
+/// Annex B.3.4 and B.3.2: in sloppy code a plain function declaration may
+/// be an `if` clause (a block holding only it) or labelled in statement-list
+/// position (a declaration of that list). Strict code, loops, `with`,
+/// labelled `if` clauses and generator declarations keep the early error.
+#[test]
+fn sloppy_if_clause_and_labelled_function_declarations() {
+    sloppy_rows(
+        "annex-b-forms",
+        &[
+            "if (true) function z() { return 9; } else function w() {} z() + typeof w === '9undefined'",
+            "if (false) function z() {} typeof z === 'undefined'",
+            "function g() { var r = typeof h; if (true) function h() {} return r + typeof h; } g() === 'undefinedfunction'",
+            "l: function f() { return 1; } f() === 1",
+            "function g() { a: b: function f() { return 2; } return f(); } g() === 2",
+            "function g() { return f(); l: function f() { return 2; } } g() === 2",
+            // Hoisted in a script too, as specified (QuickJS hoists a
+            // labelled declaration there only when it is evaluated).
+            "var r = typeof lt; l: function lt() {} r === 'function'",
+            "{ l: function f() { return 1; } } typeof f === 'function'",
+        ],
+    );
+    use SyntaxErrorKind::Invalid;
+    assert_eq!(compile_err("if (true) function z() {}"), (Invalid, 1, 11));
+    assert_eq!(compile_err("l: function f() {}"), (Invalid, 1, 4));
+    assert_eq!(
+        sloppy_compile_err("function g() { 'use strict'; if (true) function z() {} }"),
+        (Invalid, 1, 40)
+    );
+    assert_eq!(
+        sloppy_compile_err("while (false) function f() {}"),
+        (Invalid, 1, 15)
+    );
+    assert_eq!(
+        sloppy_compile_err("with ({}) function f() {}"),
+        (Invalid, 1, 11)
+    );
+    assert_eq!(
+        sloppy_compile_err("if (true) l: function f() {}"),
+        (Invalid, 1, 14)
+    );
+    assert_eq!(sloppy_compile_err("l: function* g() {}"), (Invalid, 1, 4));
+    assert_eq!(
+        sloppy_compile_err("if (true) function* g() {}"),
+        (Invalid, 1, 11)
+    );
+}
+
+/// A sloppy function's simple parameter list may repeat a name (ECMAScript
+/// 15.2.1 early errors); the last occurrence is the binding. Strict code,
+/// arrows, methods and non-simple lists keep the early error.
+#[test]
+fn sloppy_duplicate_parameter_names() {
+    sloppy_rows(
+        "duplicate-parameters",
+        &[
+            "function f(a, a) { return a; } f(1, 2) === 2",
+            "function f(a, a) { return arguments[0] + ',' + arguments.length; } f(1, 2) === '1,2'",
+            "function f(a, b, a) { return a + b; } Number.isNaN(f(1, 2))",
+            "function f(a, b, a) { return [a, b, arguments.length].join(); } f(1, 2, 3) === '3,2,3'",
+            "function f(a, a) { return f.length; } f() === 2",
+            "function f(a, a) { var c = function () { return a; }; return c(); } f(1, 2) === 2",
+            "function f(a, a) { eval('a = 9'); return a; } f(1, 2) === 9",
+            "function* g(a, a) { yield a; } g(1, 2).next().value === 2",
+            "Function('a', 'a', 'return a')(1, 2) === 2",
+        ],
+    );
+    use SyntaxErrorKind::Invalid;
+    assert_eq!(compile_err("function f(a, a) {}"), (Invalid, 1, 15));
+    for (src, column) in [
+        ("function f(a, a) { 'use strict'; }", 15),
+        ("function f(a, a = 1) {}", 15),
+        ("function f(a, b, a = 1) {}", 18),
+        ("function f(a, [a]) {}", 16),
+        ("function f({a}, a) {}", 17),
+        ("function f(a, ...a) {}", 18),
+        ("((a, a) => a)", 6),
+        ("({ m(a, a) {} })", 9),
+    ] {
+        assert_eq!(sloppy_compile_err(src), (Invalid, 1, column), "{src}");
+    }
+}
+
 /// Function declarations directly in a script or function body are
 /// var-scoped (clj-quickjs-94): they share one binding with a parameter, a
 /// `var` or another declaration of the same name, the last declaration

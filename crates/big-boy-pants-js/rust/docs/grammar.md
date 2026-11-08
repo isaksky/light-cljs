@@ -105,8 +105,24 @@ See [architecture.md](architecture.md#publication-and-native-values).
 
 `undefined`, `NaN` and `Infinity` are reserved literal bindings and cannot be
 shadowed. `await`/`yield` remain reserved as identifiers. Block functions stay
-lexical; sloppy Annex B block-function hoisting and admitting later independent
-scripts into an existing global environment are absent. Constructor errors use
+lexical in strict code. Sloppy code has the legacy function forms of ECMAScript
+Annex B.3.2 to B.3.4: a plain function declaration as an `if` clause (a block
+holding only it) or labelled in statement-list position (a declaration of that
+list, hoisted in a script as specified; QuickJS hoists it there only when it is
+evaluated), and a block or case-clause function also assigns a `var` binding of the
+script, function or eval body when its declaration is evaluated, unless a `var`
+there would be an early error (an enclosing lexical binding of the name), the
+name is a parameter, or it is `arguments` in a function (as in QuickJS). In
+direct eval code a lexical binding of the calling code between the eval and its
+variable environment also prevents the binding (the specification; QuickJS
+throws SyntaxError instead), and a global binding is created only if no global
+lexical binding has the name and the global object can define it (QuickJS
+throws instead). The copy is the block binding's current value (QuickJS copies
+the declared closure), assigned to the variable environment itself, never to a
+`with` object (QuickJS assigns the object). Duplicate function declarations
+in one block remain an early error. A sloppy function's simple parameter list
+may repeat a name; the last occurrence is the binding. Admitting later
+independent scripts into an existing global environment is absent. Constructor errors use
 the source callee label instead of consulting a mutable function name.
 Non-standard QuickJS function lineNumber/columnNumber properties are absent;
 error diagnostics/stacks retain source locations. Accepted syntax can still
@@ -254,7 +270,7 @@ checked examples. Runtime API rejections are asserted in `tests/js_source.rs`,
 | reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding or assigning/updating `eval`/`arguments` in strict code, including a function name or parameter checked again because the function's body starts with a `"use strict"` directive | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`), `++`/`--` on one (`__rt.count++`) or `delete` of one (`delete __rt.count`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
-| `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions included), declaration as an `if`/`while`/`do`/`for` or labelled body, a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, an initializer or more than one binding in a for-in head (`for (let k = 1 in o)`, `for (let a, b in o)`, `for (var k = 1 in o)` in strict code), a for-in target that is not a reference (`for (1 in o)`), invalid assignment target (`1 = 2`, `1 += 2`, `f() += 1`), an operand of `++`/`--` that is not an identifier binding or a property `o.p` / `o[k]` (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
+| `return` outside a function, `break` outside a loop or `switch` of the same function, `continue` outside a loop of the same function, a second `default` in a `switch`, `const` without initializer, duplicate parameter (arrow functions and methods included; a sloppy function's simple parameter list excepted), declaration as an `if`/`while`/`do`/`for` or labelled body (in sloppy code a plain function declaration may be an `if` clause, or labelled in statement-list position), a `break`/`continue` label that no enclosing statement of the same function has, `continue` to a label of a statement that is not a loop, a label inside a statement with the same label, `const` without initializer in a `for` head, an initializer or more than one binding in a for-in head (`for (let k = 1 in o)`, `for (let a, b in o)`, `for (var k = 1 in o)` in strict code), a for-in target that is not a reference (`for (1 in o)`), invalid assignment target (`1 = 2`, `1 += 2`, `f() += 1`), an operand of `++`/`--` that is not an identifier binding or a property `o.p` / `o[k]` (`1++`, `f()++`, `++a++`), a line break between `throw` and its expression, a `let`/`const`/function declaration in a catch body that repeats the catch parameter, a prefix-operator expression as the base of `**` (`-a ** b`) | Invalid |
 | nesting over the `MAX_NESTING` budget (256 units), or a syntax tree more than 256 nodes high; see "Nesting limit" below | TooDeep |
 ## Reserved intrinsic binding
 
@@ -1354,6 +1370,40 @@ L: {
 
 ```js reject Invalid 1:4
 L: function f() {}
+```
+
+```js sloppy-accept
+// Annex B.3.2 and B.3.4 (sloppy code only): a labelled function declaration
+// in statement-list position, a function declaration as an `if` clause, and
+// a block function that also binds the body's `var` (B.3.3).
+L: M: function f() { return 1; }
+if (f()) function g() {} else function h() {}
+{ function k() {} }
+function d(a, a) { return a; }
+```
+
+```js sloppy-reject Invalid 1:11
+if (x) L: function f() {}
+```
+
+```js sloppy-reject Invalid 1:11
+while (x) function f() {}
+```
+
+```js sloppy-reject Invalid 1:4
+L: function* g() {}
+```
+
+```js sloppy-reject Invalid 1:15
+function f(a, a) { "use strict"; }
+```
+
+```js sloppy-reject Invalid 1:18
+function f(a, b, a = 1) {}
+```
+
+```js sloppy-reject Invalid 1:9
+({ m(a, a) {} });
 ```
 
 ```js reject Invalid 1:4

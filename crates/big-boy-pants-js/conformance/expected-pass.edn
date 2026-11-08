@@ -2,6 +2,8 @@
 ;; does not. Area pellets add the cases their acceptance requires.
 ["bbp/accessor_own_inherited"
  "bbp/addition_concatenates_strings"
+ "bbp/annex_b_block_functions"
+ "bbp/annex_b_if_and_label_functions"
  "bbp/arguments_callee"
  "bbp/arguments_callee_sloppy"
  "bbp/arguments_for_in_and_tag"
@@ -140,6 +142,7 @@
  "bbp/reclaim_object_loop"
  "bbp/reclaim_string_loop"
  "bbp/reflect_apply_construct"
+ "bbp/sloppy_duplicate_parameters"
  "bbp/sloppy_globals"
  "bbp/sloppy_implicit_global_delete"
  "bbp/spread_calls"
