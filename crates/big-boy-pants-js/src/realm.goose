@@ -2,6 +2,7 @@ import std;
 import .source_vm;
 import .array_callbacks;
 import .array_methods;
+import .printer;
 
 namespace source;
 
@@ -14,8 +15,9 @@ namespace source;
 // rows 0 to fixed_rows() - 1 are the intrinsics every kind's default
 // prototype names (realm_row), then one built-in function object per entry
 // of REALM_FUNCTIONS, then ExceptionInfo.prototype
-// (exception_info_prototype_row) and the ExceptionInfo function
-// (exception_info_constructor_row), realm_nodes() rows in all. Every intrinsic is an
+// (exception_info_prototype_row), the ExceptionInfo function
+// (exception_info_constructor_row) and its prototype's `toString`
+// (exception_info_to_string_row), realm_nodes() rows in all. Every intrinsic is an
 // ordinary row of the VM tables (plain u32 IDs, decision 2): its state is
 // its rows, which the worker reset restores like any image row, and
 // JavaScript in a compiler job cannot write it (Job.owned_nodes,
@@ -94,11 +96,15 @@ enum Builtin {
     // for `instance?` of a class that is no js/ global, a native frame
     // (source_vm.goose start_is_instance).
     IsInstance,
+    // cljs.core's str, pr-str and identical? (rt.core.str, prStr and
+    // identical) and ExceptionInfo.prototype.toString, a realm row
+    // (exception_info_to_string_row) (light-cljs-876; printer.goose).
+    Str, PrStr, Identical, ExceptionInfoPrototypeToString,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[103] = [
+let BUILTINS: BuiltinInfo[107] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -154,6 +160,12 @@ let BUILTINS: BuiltinInfo[103] = [
     BuiltinInfo { which: Builtin.ExMessage, name: "exMessage", length: 1 }, BuiltinInfo { which: Builtin.ExCause, name: "exCause", length: 1 },
     BuiltinInfo { which: Builtin.GetIn, name: "getIn" }, BuiltinInfo { which: Builtin.ExceptionInfo, name: "ExceptionInfo", length: 3 },
     BuiltinInfo { which: Builtin.IsInstance, name: "isInstance", length: 2 },
+    // The names and lengths of the V8 build's str, prStr and identical
+    // (`identical: (a, b) =>`, an arrow, so no constructor:
+    // function_calls.goose constructor_builtin), and of the anonymous
+    // function assigned to ExceptionInfo.prototype.toString.
+    BuiltinInfo { which: Builtin.Str, name: "str" }, BuiltinInfo { which: Builtin.PrStr, name: "prStr" },
+    BuiltinInfo { which: Builtin.Identical, name: "identical", length: 2 }, BuiltinInfo { which: Builtin.ExceptionInfoPrototypeToString, name: "" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -274,12 +286,15 @@ let REALM_FUNCTIONS: Method[41] = [
 // Then the ExceptionInfo function itself (light-cljs-875), the realm's last
 // row: a built-in with [[Construct]] that rt.core.ExceptionInfo names. As
 // the V8 build's runtime (src/bbp_runtime.js) defines an ordinary function,
-// its `prototype` is writable, and the prototype's `constructor` is it. The
-// prototype's `toString`, the V8 build's cljs printer (`#error {:message
-// ...}`), is pending: bbp has no printer of light-cljs values.
+// its `prototype` is writable, and the prototype's `constructor` is it.
+// Then the prototype's `toString` (light-cljs-876), the realm's last row:
+// the V8 build's cljs printer (`#error {:message ...}`, printer.goose), a
+// writable, enumerable, configurable data property, as the runtime's
+// assignment makes it.
 inline fn exception_info_prototype_row() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 inline fn exception_info_constructor_row() -> i64 { return exception_info_prototype_row() + 1; }
-inline fn realm_nodes() -> i64 { return exception_info_constructor_row() + 1; }
+inline fn exception_info_to_string_row() -> i64 { return exception_info_constructor_row() + 1; }
+inline fn realm_nodes() -> i64 { return exception_info_to_string_row() + 1; }
 // The node row of built-in b's REALM_FUNCTIONS entry.
 fn realm_function_row(b: Builtin) -> i64 {
     for m, j in REALM_FUNCTIONS { if m.which == b { return fixed_rows() + j; } }
@@ -368,7 +383,7 @@ let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, 
 // The light-cljs runtime leaves boot_runtime installs on `rt` (core false)
 // or `rt.core`, in this order.
 struct Leaf { core: bool, key: u8[..24], which: Builtin }
-let RUNTIME_LEAVES: Leaf[45] = [
+let RUNTIME_LEAVES: Leaf[48] = [
     Leaf { core: true, key: "macroReaderFunction", which: Builtin.MacroReaderFunction }, Leaf { core: true, key: "inc", which: Builtin.Inc },
     Leaf { core: true, key: "mapv", which: Builtin.Mapv }, Leaf { core: true, key: "vec", which: Builtin.Vec }, Leaf { core: true, key: "into", which: Builtin.Into },
     Leaf { core: true, key: "sequence", which: Builtin.Sequence }, Leaf { core: true, key: "mapSeq", which: Builtin.MapSeq }, Leaf { core: true, key: "list", which: Builtin.List },
@@ -415,6 +430,9 @@ let RUNTIME_LEAVES: Leaf[45] = [
     Leaf { core: true, key: "ExceptionInfo", which: Builtin.ExceptionInfo },
     // `instance?` of a class that is no js/ global (light-cljs-875).
     Leaf { core: true, key: "isInstance", which: Builtin.IsInstance },
+    // str, pr-str and identical? (light-cljs-876; printer.goose).
+    Leaf { core: true, key: "str", which: Builtin.Str }, Leaf { core: true, key: "prStr", which: Builtin.PrStr },
+    Leaf { core: true, key: "identical", which: Builtin.Identical },
 ];
 
 // A built-in's code: its position in BUILTINS.
@@ -525,6 +543,8 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     if e.kind != node_kind::Object || !e.proto.is_object() || e.proto.id() != error_prototype_row(0) { return false; }
     let f .= nodes[exception_info_constructor_row()];
     if f.kind != node_kind::Builtin || f.function != code(Builtin.ExceptionInfo) || !f.proto.is_hole() { return false; }
+    let t .= nodes[exception_info_to_string_row()];
+    if t.kind != node_kind::Builtin || t.function != code(Builtin.ExceptionInfoPrototypeToString) || !t.proto.is_hole() { return false; }
     return true;
 }
 
@@ -558,6 +578,7 @@ fn build_realm(heap: Heap&) -> bool {
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(error_prototype_row(0)) });
     rows.push(Node { kind: node_kind::Builtin, function: code(Builtin.ExceptionInfo) });
+    rows.push(Node { kind: node_kind::Builtin, function: code(Builtin.ExceptionInfoPrototypeToString) });
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
     heap.global = object(global_row());
     // Every built-in function's `length` and `name`.
@@ -642,11 +663,10 @@ fn build_realm(heap: Heap&) -> bool {
     }
     // The ExceptionInfo function's `prototype` (an ordinary function's:
     // writable, neither enumerable nor configurable), its prototype's
-    // `constructor`, and the pending `toString`.
+    // `constructor`, and its `toString` (light-cljs-876).
     let ei = exception_info_constructor_row(); let eip = exception_info_prototype_row();
     if !realm_value(heap, ei, "prototype", object(eip), attr_writable()) || !realm_value(heap, eip, "constructor", object(ei), attr_writable() | attr_configurable()) { return false; }
-    let to_string = key_named(heap, "toString");
-    if heap.fault != Fault.None || !add_own(heap, eip, to_string, pending(), attr_configurable()) { return false; }
+    if !realm_value(heap, eip, "toString", object(exception_info_to_string_row()), attr_writable() | attr_enumerable() | attr_configurable()) { return false; }
     for n in TYPE_NAMES { key_named(heap, n.text); }
     if heap.fault != Fault.None { return false; }
     assert(heap.nodes.len == realm_nodes());
@@ -1484,6 +1504,12 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         },
         ExData, ExMessage, ExCause => { return ex_field(job, b, arg(args, 0)); },
         GetIn => { return get_in(job, b, args); },
+        // str, pr-str, identical? and ExceptionInfo.prototype.toString
+        // (light-cljs-876; printer.goose).
+        Str => { return core_str(job, b, args); },
+        PrStr => { return pr_str(job, b, args); },
+        Identical => { return core_identical(job, args); },
+        ExceptionInfoPrototypeToString => { return exception_info_to_string(job, b, receiver); },
         // A non-seqable source is cljs.core's error (light-cljs-873).
         Vec, Sequence => { if args.len == 1 && !seq_source(job, args[0]) { return Value.Undefined; } return native_value(heap, id, args); },
         Into => { return into(job, b, args); },

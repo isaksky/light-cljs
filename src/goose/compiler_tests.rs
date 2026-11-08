@@ -1951,6 +1951,159 @@ fn goose_compiler_exception_info_call_cannot_write_realm_rows() {
     drop(host);
     cleaned(&session);
 }
+/// cljs.core's identical? (light-cljs-876): `val(a) === val(b)`, with the
+/// V8 build's interned keywords (literals and a macro argument's).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_identical_matches_v8() {
+    macro_errors_match_v8(
+        r#"[(identical? 1 1) (identical? "a" "a") (identical? "a" (str "a")) (identical? 1 1.0) (identical? ##NaN ##NaN) (identical? nil nil) (identical? true true) (identical? 0 (js* "-0")) (identical? 'a 'a) (identical? :a :a) (identical? :a/b :a/b) (identical? :a :b) (identical? :a :b/a) (identical? [1] [1]) (let [v [1]] (identical? v v)) (let [a (atom 1)] (identical? a a))]"#,
+        None,
+    );
+    source_matches_v8(
+        "(defmacro m [k j] [(identical? k :a) (identical? k j) (identical? (first [k]) j) (identical? (get {k 1} :a) 1) (identical? k 'a)]) (def x (m :a :a))",
+        None,
+    );
+    // The leaves' names and lengths, and which of them is a constructor:
+    // identical is an arrow function in the V8 build.
+    let construct = r#"(js* "(() => { try { Reflect.construct(Object, [], ~{}); return 'ok'; } catch (e) { return e.name; } })()" "#;
+    macro_errors_match_v8(
+        &format!(
+            "(pr-str [(.-name str) (.-length str) (.-name pr-str) (.-length pr-str) (.-name identical?) (.-length identical?) {construct}identical?) {construct}pr-str) {construct}str)])"
+        ),
+        None,
+    );
+}
+/// cljs.core's str and pr-str (light-cljs-876): scalars, collections, a
+/// macro's arguments, atoms, volatiles, delays, errors and functions, and
+/// both as callbacks.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_str_and_pr_str_match_v8() {
+    for body in [
+        r#"(str nil 1.5 -0 true :k :n/k 'a 'n/b "é" 123456789012 1.5e-7 -1.25 ##NaN ##Inf ##-Inf (js* "-0") false)"#,
+        r#"[(str) (str "a" (js* "undefined")) (str "x") (str 1) (str :a.b/c)]"#,
+        r#"(str [1 "a" :k] '(1 2) #{3} {:a "b"} (list) [] #{} {} [nil "q\"" 'x])"#,
+        r#"(pr-str 1 "a\n\"b\\\t\r" nil true :k 'a/b ##NaN ##Inf ##-Inf 1e21 0.1 (js* "-0") (js* "undefined") "é ")"#,
+        "(pr-str [1 [2] {:a #{:b}} '(x y)] (concat [1] [2]) (seq [1 2]) (rest [1 2]) (into {} [[:a 1] [:b 2]]) (assoc {:a 1} :b 2) (conj #{1} 2) (mapv inc [1 2]) (list 1 2) [] {} #{} (list))",
+        "[(pr-str (atom {:a 1})) (str (atom 1)) (pr-str (volatile! [1])) (str (volatile! 1)) (pr-str (delay 1)) (let [d (delay 2)] @d (pr-str d)) (str (delay 1)) (pr-str [(atom (atom 1))])]",
+        r#"[(pr-str (js/Error. "c")) (pr-str (js/TypeError. "c")) (str (js/Error. "c")) (str (js/RangeError.)) (pr-str (js/Error.)) (pr-str [(js/Error. "v")])]"#,
+        r#"[(pr-str (js* "(() => { const e = new Error('m'); e.constructor = null; return e; })()")) (pr-str (js* "(() => { const e = new Error('m'); e.name = 'Custom'; return e; })()"))]"#,
+        r#"[(pr-str (fn foo [])) (str (js* "{}")) (str (js/Error. "x") (js* "{}"))]"#,
+        r#"[(mapv str [1 :a "b" nil]) (mapv pr-str [1 :a "b" nil])]"#,
+        r#"(str (js/Number. 1.5) (js/String. "s") (js/Boolean. true) (js/Boolean. false) js/Symbol.iterator)"#,
+        "(pr-str str)",
+    ] {
+        macro_errors_match_v8(body, None);
+    }
+    source_matches_v8(
+        "(defmacro m [k] [(str k) (pr-str k)]) (def x (m [:a \"b\" {:c #{1}} (d e/f) ^:foo [1] 1.5 nil true ns/sym]))",
+        None,
+    );
+    // An atom holding itself overflows the printer's stack in both.
+    macro_errors_match_v8(
+        "(let [a (atom nil)] (reset! a a) (pr-str a))",
+        Some(("RangeError", "StackLimit")),
+    );
+}
+/// ExceptionInfo printed by its prototype's toString (light-cljs-876),
+/// which 875 left pending: `#error {:message ..., :data ..., :cause ...}`
+/// through str, pr-str and `.toString`, of any receiver.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_prints_exception_info_as_v8() {
+    for body in [
+        r#"[(pr-str (ex-info "x" {:a 1})) (str (ex-info "x" {:a 1})) (pr-str (ex-info "x" nil)) (pr-str (ex-info nil {})) (pr-str (ex-info 5 {} nil)) (pr-str [(ex-info "in" {:k 1})]) (str "e: " (ex-info "x" {:a 1}) "!")]"#,
+        r#"(.toString (ex-info "x" {:a 1} (js/Error. "c")))"#,
+        // Data and cause print when cljs.core's truth holds: 0, "" and NaN.
+        r#"(pr-str [(str (ex-info "x" 0 "")) (pr-str (ex-info "x" ##NaN false)) (pr-str (ex-info "x" false nil)) (.toString (ex-info "x" "" 0))])"#,
+        r#"(pr-str (ExceptionInfo. "m" {:k [1 "s"]} (ex-info "inner" {} (js/TypeError. "t"))))"#,
+        r#"(let [o (js* "{message: 'm', data: 1}")] (.call (.-toString (.-prototype ExceptionInfo)) o))"#,
+        r#"[(.-length (.-toString (.-prototype ExceptionInfo))) (.-name (.-toString (.-prototype ExceptionInfo))) (js* "typeof ~{}" (.-toString (.-prototype ExceptionInfo))) (js* "(() => { const r = []; for (const k in ~{}) r.push(k); return r.join(); })()" (.-prototype ExceptionInfo))]"#,
+    ] {
+        macro_errors_match_v8(body, None);
+    }
+    // A strict `this` of null is the TypeError of reading its message.
+    macro_errors_match_v8(
+        r#"(js* "~{}.call(null)" (.-toString (.-prototype ExceptionInfo)))"#,
+        Some(("TypeError", "TypeError")),
+    );
+}
+/// What the Goose printer does not do fails by name (light-cljs-876): a
+/// toString that is JavaScript code, a JavaScript object or array, and a
+/// map or set of more than 8 entries (printed in the V8 build's hash order)
+/// are UnsupportedOperand faults naming the built-in, never a
+/// NativeBoundary or a different text.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_printer_fails_by_name() {
+    for (source, detail) in [
+        (
+            r#"(defmacro m [] (str (js* "{toString() { return 'ts'; }}"))) (def x (m))"#,
+            "UnsupportedOperand:str:",
+        ),
+        (
+            r#"(defmacro m [] (str (js* "[1, 2]"))) (def x (m))"#,
+            "UnsupportedOperand:str:",
+        ),
+        (
+            r#"(defmacro m [] (pr-str (js* "{}"))) (def x (m))"#,
+            "UnsupportedOperand:prStr:",
+        ),
+        (
+            "(defmacro m [k] (pr-str k)) (def x (m {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}))",
+            "UnsupportedOperand:prStr:-printing-a-map-of-more-than-8-entries",
+        ),
+        (
+            "(defmacro m [k] (str k)) (def x (m #{1 2 3 4 5 6 7 8 9}))",
+            "UnsupportedOperand:str:-printing-a-set-of-more-than-8-members",
+        ),
+        // The V8 build gives a runtime function's JavaScript source.
+        (
+            "(defmacro m [] (str str)) (def x (m))",
+            "UnsupportedOperand:str:-the-source-text-of-a-light-cljs-runtime-function",
+        ),
+        (
+            "(defmacro m [] (pr-str js/Symbol.iterator)) (def x (m))",
+            "UnsupportedOperand:prStr:-printing-a-Symbol",
+        ),
+    ] {
+        crate::compile_with_macros(source, &mut crate::MacroHost::new()).unwrap();
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let mut host = crate::MacroHost::new();
+        host.use_goose_source_macros(session.clone()).unwrap();
+        let message = crate::compile_with_macros(source, &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains(detail), "{source}: {message}");
+        session.close();
+        drop(host);
+        cleaned(&session);
+    }
+}
+/// The printer's output is bounded by the job's unit limit before its
+/// buffer grows (light-cljs-876): a string of 2^18 units shared ten
+/// thousand times would print about 2^31 units (4 GB of buffer), but the
+/// job stops with MemoryLimit after a few copies.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_printer_output_is_bounded() {
+    let source = r#"(defmacro m [] (let [s (js* "(() => { let s = 'x'; for (let i = 0; i < 18; i++) s = s + s; return s; })()") v [s s s s s s s s s s] w [v v v v v v v v v v] y [w w w w w w w w w w]] (pr-str [y y y y y y y y y y]))) (def x (m))"#;
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let message = crate::compile_with_macros(source, &mut host)
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("Fault.MemoryLimit"), "{message}");
+    session.close();
+    drop(host);
+    cleaned(&session);
+}
 /// get-in, whose `get` of a number is nil, inside a `js*` try (light-cljs-872).
 #[cfg(light_v8)]
 #[test]

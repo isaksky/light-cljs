@@ -89,6 +89,9 @@ fn is_constructor(heap: const Heap&, f: Value) -> bool {
 fn constructor_builtin(b: Builtin) -> bool {
     return match b {
         Object, Function, Array, Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, Number, String, Boolean, Proxy, SymbolFunction => true,
+        // The V8 build's identical is an arrow function, no constructor
+        // (light-cljs-876).
+        Identical => false,
         _ => runtime_leaf(b),
     };
 }
