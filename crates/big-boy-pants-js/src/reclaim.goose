@@ -112,6 +112,9 @@ root struct Evacuation {
     // start, -1 past their end.
     wide: i32[>..]  = [], narrow: i32[>..] = [],
     work: i64[>..<] = [], pending: i64[>..<] = [],
+    // Mapped parameter cells above the floor (weak links, mark_cells) and
+    // the value each would keep once detached.
+    cells: i64[>..] = [], kept_values: Value[>..] = [],
 }
 // An object or string link (an accessor pair's halves hold no accessor).
 fn mark_link(e: Evacuation&, heap: const Heap&, v: Value) {
@@ -167,7 +170,9 @@ fn mark_conts(e: Evacuation&, first: u32, capacity: u32) {
 }
 fn trace_node(e: Evacuation&, heap: const Heap&, o: i64) {
     let n .= node(heap, o);
-    mark(e, heap, n.value); mark(e, heap, n.namespace_value); mark(e, heap, n.metadata); mark(e, heap, n.proto);
+    // A mapped cell's arguments object is a weak link (mark_cells).
+    if n.kind == node_kind::MappedBinding && o >= e.floor.nodes { e.cells.push(o); } else { mark(e, heap, n.value); }
+    mark(e, heap, n.namespace_value); mark(e, heap, n.metadata); mark(e, heap, n.proto);
     for v in n.slots { mark(e, heap, v); }
     if snapshot::has_values(n.kind) { mark_values(e, heap, n.start, n.count); }
     if snapshot::shaped(n) { mark_values(e, heap, n.keys, n.key_capacity); } else if snapshot::record_run(n) { mark_properties(e, heap, n.keys, n.key_capacity); }
@@ -210,6 +215,43 @@ fn mark_roots(e: Evacuation&, job: const Job&) {
     for w in job.writes { mark(e, heap, w.key); if job.logged_values { mark(e, heap, w.value); } }
 }
 
+// Mapped parameter cells (light-cljs-867; source_vm.goose, "Mapped
+// arguments objects"). While index i of an arguments object is mapped, the
+// object's own property is the parameter's truth and its cell names the
+// object, so a closure that kept one parameter would keep every argument,
+// the map and the other cells. That link is weak here: trace_node lists a
+// mapped cell above the floor instead of marking its object, and each
+// listed cell's current value is marked in its place, which may reach the
+// object after all (a parameter holding its own arguments object) or other
+// cells, so marking repeats until no cell is left to resolve. An object
+// still unmarked then is unreachable but through its cells: each of them
+// becomes an ordinary binding holding the value it resolved (detach_cells,
+// as unmapping leaves it), and the object, its map and whatever only they
+// held are discarded. An object some root reaches keeps its cells mapped,
+// and the value marked for them is its own property, which it reaches
+// anyway. A cell below the floor is not the job's to change and marks its
+// object as before. Only the collection pays: the VM's mapped paths are
+// unchanged, and code without mapped objects lists no cells.
+inline fn marked_node(e: const Evacuation&, r: i64) -> bool { return r < e.floor.nodes || e.nodes[r - e.floor.nodes] != 0; }
+// Resolves the listed cells from `resolved` on; returns how many are.
+fn mark_cells(e: Evacuation&, heap: Heap&, resolved: i64) -> i64 {
+    var at = resolved;
+    while at < e.cells.len {
+        let c = e.cells[at]; at += 1;
+        let o: i64 = node(heap, c).value.id();
+        var v = Value.Undefined;
+        if !marked_node(e, o) {
+            v = mapped_value(heap, o, node(heap, c).length, c);
+            if heap.fault != Fault.None { abort("reclamation could not read a mapped parameter"); }
+            mark(e, heap, v);
+        }
+        e.kept_values.push(v);
+    }
+    return at;
+}
+fn detach_cells(e: const Evacuation&, heap: Heap&) {
+    for c, k in e.cells { if !marked_node(e, node(heap, c).value.id()) { detach_cell(heap, c, e.kept_values[k]); } }
+}
 // After marking: entry i becomes the number of marked rows before floor + i,
 // the extra last entry their total.
 fn number(marks: u32[>..]&) {
@@ -371,10 +413,16 @@ fn reclaim(job: Job&) {
     e.accessors.resize(lengths.accessors - e.floor.accessors + 1, 0); e.conts.resize(lengths.conts - e.floor.conts + 1, 0);
     e.wide.resize(e.units.len, 0); e.narrow.resize(e.latin1.len, 0);
     mark_roots(e, job);
-    while e.work.len > 0 || e.pending.len > 0 {
-        while e.work.len > 0 { let o = e.work.pop(); trace_node(e, heap, o); }
-        while e.pending.len > 0 { let r = e.pending.pop(); trace_cont(e, heap, r); }
+    var resolved: i64 = 0;
+    while true {
+        while e.work.len > 0 || e.pending.len > 0 {
+            while e.work.len > 0 { let o = e.work.pop(); trace_node(e, heap, o); }
+            while e.pending.len > 0 { let r = e.pending.pop(); trace_cont(e, heap, r); }
+        }
+        if resolved == e.cells.len { break; }
+        resolved = mark_cells(e, heap, resolved);
     }
+    detach_cells(e, heap);
     covered(e.wide[..], e.units); covered(e.narrow[..], e.latin1);
     number(e.nodes); number(e.values); number(e.properties); number(e.strings); number(e.units); number(e.latin1); number(e.accessors); number(e.conts);
     // Every table keeps its rows' order, so a run whose rows are all kept

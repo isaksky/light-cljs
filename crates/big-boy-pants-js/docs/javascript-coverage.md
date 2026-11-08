@@ -426,8 +426,8 @@ non-writable unmap an index: the map entry becomes `Undefined` and the
 cell an ordinary binding holding the parameter's value, as data. Links are
 plain node rows, so snapshots validate them (an object's map, each entry's
 cell naming that object and index, each mapped cell listed by its
-object's map), in-job reclamation reaches and remaps them through the
-cells' values and the map's run, a generator's or async function's
+object's map), in-job reclamation remaps them (a cell's link to its
+object is weak there; see below), a generator's or async function's
 detached activation keeps the cells as any locals, and direct eval reaches
 the parameters through the same cells. A duplicate parameter name leaves
 its earlier occurrences' cells unread, so only the last occurrence
@@ -443,6 +443,32 @@ closure captures by value (never assigned in the source) would then miss
 writes through the object, which only a lowering change can see, and the
 detach would need a pass over every returning frame's arguments object,
 the hot return path every function takes.
+
+*Amended by light-cljs-867 (a kept parameter no longer keeps its arguments
+object):* a mapped cell names its whole arguments object, so a closure that
+kept one parameter kept every argument, the map and the other cells, where
+QuickJS keeps only the parameter's variable reference. In-job reclamation
+(decision 3, `src/reclaim.goose` "Mapped parameter cells") now treats that
+link as weak: tracing lists each mapped cell above the job's floor instead
+of marking its object and marks the cell's current value in its place
+(which can reach the object after all, as when a parameter holds its own
+arguments object, so marking repeats until every listed cell is resolved).
+A cell whose object is still unmarked then becomes an ordinary binding
+holding that value, exactly as unmapping leaves it, before the rows slide,
+and the object, its map and whatever only they held are discarded; an
+object some root reaches keeps its cells mapped. The VM's own paths are
+unchanged, so strict functions, arrows and functions without the mapped
+form cost what they did, the snapshot link validation is untouched (a
+detached cell is an ordinary binding) and the collection pays only for the
+mapped cells it meets. `corpus/serial/sloppy-mapped-reclaim` keeps 300 such
+closures while discarding the 4,000-element arrays their arguments objects
+held and completes within the job's 1,048,576-value limit, which it passes
+without this. *Rejected:* inverting the link (cells own their values, the
+map lists the cells and the object's mapped elements read and write
+through them): every element read, write, delete, definition and
+enumeration of an arguments object, fnRest's run and the fast element paths
+would have to consult the map, and the snapshot and reclamation link rules
+would change with them, for a retention that only a collection can observe.
 
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the

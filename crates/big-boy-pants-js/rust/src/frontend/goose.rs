@@ -2191,6 +2191,9 @@ mod serial_tests {
             // Mapped arguments objects (light-cljs-860), which the Pants
             // engine does not implement.
             ("sloppy-mapped-arguments", "goose"),
+            // Mapped parameters closures keep while in-job reclamation
+            // discards their arguments objects (light-cljs-867).
+            ("sloppy-mapped-reclaim", "goose"),
             // `with` statements (light-cljs-855), which strict code cannot
             // compile for the Pants reference run.
             ("sloppy-with", "goose"),

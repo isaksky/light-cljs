@@ -4312,8 +4312,10 @@ fn cell(job: Job&, op: i64) {
 // so reads, writes, enumeration and fnRest's run need no case. A duplicate
 // parameter name leaves its earlier occurrences' cells unread, so only
 // the last occurrence aliases. All links are node rows: a snapshot carries
-// and validates them (snapshot.goose), in-job reclamation reaches and
-// remaps them through the cells' values and the map's run (reclaim.goose),
+// and validates them (snapshot.goose), in-job reclamation remaps them and
+// treats a cell's link to its object as weak: a cell whose object nothing
+// else reaches is detached, as unmapping would leave it, and the object
+// discarded (light-cljs-867; reclaim.goose, "Mapped parameter cells"),
 // a detached generator or async activation keeps its cells as any local,
 // and direct eval reads the parameters through the same cells (858's
 // eval-site records name the parameter locals, now cells).
@@ -4397,6 +4399,12 @@ fn mapped_cell_of(heap: const Heap&, o: i64, i: i64) -> i64 {
 // ordinary binding holding `value`.
 fn unmap(heap: Heap&, o: i64, i: i64, c: i64, value: Value) {
     set_slot(heap, node(heap, node(heap, o).namespace_value.id()).start + i, Value.Undefined);
+    detach_cell(heap, c, value);
+}
+// Mapped cell c becomes an ordinary binding holding `value`; its object's
+// map is the caller's (unmap clears its entry; in-job reclamation detaches
+// the cells of an object it discards, reclaim.goose).
+fn detach_cell(heap: Heap&, c: i64, value: Value) {
     let cell .= node_mut(heap, c); cell.kind = node_kind::Binding; cell.value = value; cell.length = 0; cell.namespace_value = Value.Null;
 }
 fn get_property(job: Job&, k: Value) {

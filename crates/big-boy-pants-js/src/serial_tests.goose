@@ -853,6 +853,12 @@ fn reclamation() {
     // A live set over the node limit still ends MemoryLimit, after the
     // collections that could not free enough.
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/reclaim-live.gsp")), source::Fault.MemoryLimit, 1, 8));
+    // Closures keep 300 mapped parameters whose arguments objects, each
+    // holding a 4,000-element array, only those parameters' cells name: the
+    // collections detach the cells and discard the objects, so the job
+    // completes within the value limit it would otherwise pass
+    // (light-cljs-867).
+    heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/sloppy-mapped-reclaim.gsp")), source::Fault.None, 1, 16));
     // Jobs that stay small never collect.
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/generators.gsp")), source::Fault.None, 0, 0));
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/async.gsp")), source::Fault.None, 0, 0));
