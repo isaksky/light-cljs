@@ -271,6 +271,7 @@ fn proxy_with_trap(job: Job&, at: i64, method: i64, trap: Value) {
     let c = builtin_of(heap, f.id());
     if effect_builtin(c) || c == Builtin.Mapv || c == Builtin.MapSeq || forces(heap, c, all[first..count]) { unsupported_step(job, Builtin.Proxy, "a host-effect built-in or a delay as a trap"); return; }
     if native_builtin(c) { native_start(job, c, this_value, all[first..count], job.operands.len); return; }
+    if error_native(c) { start_error_native(job, c, this_value, all[first..count], job.operands.len); return; }
     let r = call_builtin(job, node(heap, f.id()).function, this_value, all[first..count]);
     if heap.fault == Fault.None { push_operand(job, r); }
 }

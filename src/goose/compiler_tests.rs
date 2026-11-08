@@ -1727,7 +1727,7 @@ fn goose_compiler_control_flow_across_helper_waits_and_cancellation() {
     const ROOTS: [(&str, usize); 3] = [("fixture/a", 1), ("fixture/b", 2), ("fixture/s", 3)];
     // Each body runs inside two finally blocks of the macro's frame; the
     // result is the cleanup order's digits, then the completion values.
-    let cases: [(&str, &str, i64, &[usize]); 7] = [
+    let cases: [(&str, &str, i64, &[usize]); 10] = [
         (
             "return",
             "function f() { try { try { note(1); return 7; } finally { note(2); rec.waited = read('fixture/a'); note(3); } } finally { rec.frame = 1; note(4); } } value = f() + rec.waited;",
@@ -1777,6 +1777,30 @@ fn goose_compiler_control_flow_across_helper_waits_and_cancellation() {
             "function C() { try { note(1); this.v = read('fixture/a'); this.t = new.target === C; return 3; } finally { rec.frame = 1; note(4); } } const c = new C(); value = c.v + (c.t && Object.getPrototypeOf(c) === C.prototype ? 2 : 0);",
             1489042,
             &[1],
+        ),
+        // The Error constructors' and Error.prototype.toString's native
+        // frames (light-cljs-870): a message's toString inside `new Error`,
+        // a cause getter inside `new TypeError` (its receiver the options
+        // object) and a name getter inside Error.prototype.toString demand
+        // the root; the frame keeps the error object, the options object
+        // and the receiver across the wait. Values are the V8 build's.
+        (
+            "error-message",
+            "let calls = 0; const m = { toString: function () { try { calls += 1; note(1); return read('fixture/s'); } finally { rec.frame = 1; note(4); } } }; const e = new Error(m); value = (e.message === 'x' ? 5 : 0) + calls * 100;",
+            1489105,
+            &[3],
+        ),
+        (
+            "error-cause",
+            "let calls = 0; const o = { n: 2, get cause() { try { calls += 1; note(1); return read('fixture/a') + this.n; } finally { rec.frame = 1; note(4); } } }; const e = new TypeError('m', o); value = (e.message === 'm' && e instanceof TypeError ? e.cause : 0) + calls * 100;",
+            1489142,
+            &[1],
+        ),
+        (
+            "error-name",
+            "let calls = 0; const o = { get name() { try { calls += 1; note(1); return read('fixture/s'); } finally { rec.frame = 1; note(4); } }, message: 'm' }; value = (Error.prototype.toString.call(o) === 'x: m' ? 5 : 0) + calls * 100;",
+            1489105,
+            &[3],
         ),
     ];
     // fixture/a and fixture/b are the numbers 40 and 50, fixture/s is 'x'.

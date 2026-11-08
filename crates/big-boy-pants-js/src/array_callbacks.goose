@@ -218,6 +218,8 @@ fn array_call(job: Job&, at: i64, b: Builtin, v: Value) {
         if forces(heap, cb, args) { start_force(job, cb, v, job.operands.len); return; }
         // A forwarding built-in (light-cljs-851) runs in a frame of its own.
         if forwarding(cb) { native_start(job, cb, this_arg, args, job.operands.len); return; }
+        // So do the error built-ins when a step runs JavaScript (light-cljs-870).
+        if error_native(cb) { start_error_native(job, cb, this_arg, args, job.operands.len); return; }
         if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq || native_builtin(cb) { unsupported_step(job, b, "a host-effect or native-frame built-in callback"); return; }
         let r = call_builtin(job, node(heap, f.id()).function, this_arg, args);
         if heap.fault == Fault.None { job.operands.push(r); }

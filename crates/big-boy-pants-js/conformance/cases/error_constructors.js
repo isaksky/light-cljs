@@ -8,9 +8,10 @@
 // (`MyErr.prototype = new Error()`, `Error.call(this, m)`),
 // `Reflect.construct(TypeError, ['m'], F)` taking `F.prototype`, and `new
 // Error` without parentheses.
-// Not ported: the rows that convert an object with ToString or read `name`,
-// `message` or `cause` through getters (in the Error constructor, the native
-// error constructors and Error.prototype.toString; light-cljs-870 owns them);
+// Not ported here: the rows that convert an object with ToString or read
+// `name`, `message` or `cause` through getters (in the Error constructor, the
+// native error constructors and Error.prototype.toString), which are in
+// error_constructor_user_code and error_to_string_user_code (light-cljs-870);
 // `Error.prototype.message = 'changed'`, which the oracles disagree on (the
 // Pants engine refuses writes to built-in prototypes, QuickJS and Goose allow
 // them); `Object.setPrototypeOf` (the objects area, light-cljs-766); the

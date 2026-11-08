@@ -2118,6 +2118,9 @@ mod serial_tests {
             // Tagged templates (light-cljs-862): per-site template objects
             // at every budget cut and collection (serial_tests.goose).
             ("tagged-templates", "boolean:true"),
+            // The Error constructors' and Error.prototype.toString's native
+            // frames (light-cljs-870) at every budget cut (serial_tests.goose).
+            ("error-frames", "boolean:true"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

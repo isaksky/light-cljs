@@ -188,6 +188,8 @@
   "bbp/exceptions_many_caught" {:area :exceptions}
   "bbp/engine_errors_are_error_objects" {:area :exceptions}
   "bbp/error_constructors" {:area :exceptions}
+  "bbp/error_constructor_user_code" {:area :exceptions}
+  "bbp/error_to_string_user_code" {:area :exceptions}
   "bbp/realm_well_known_symbols" {:area :core-builtins}
   "bbp/in_operator" {:area :operators-values}
   "bbp/instanceof_operator" {:area :operators-values}

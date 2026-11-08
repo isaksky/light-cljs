@@ -1,5 +1,7 @@
 import std;
 import .source_vm;
+import .array_callbacks;
+import .array_methods;
 
 namespace source;
 
@@ -868,7 +870,68 @@ fn data_get(job: Job&, b: Builtin, o: Value, name: const u8[:]) -> Value {
     if getter.is_object() && heap.fault == Fault.None { return unsupported_step(job, b, "a getter"); }
     return v;
 }
-// Error.prototype.toString (no getter, no object-valued name or message).
+// ---- Error constructors and Error.prototype.toString (light-cljs-870)
+// ECMAScript 20.5.1.1 Error(message, options), 20.5.6.1.1
+// NativeError(message, options), 20.5.8.1 InstallErrorCause and 20.5.3.4
+// Error.prototype.toString; the Pants engine's rust/src/vm/native/error.rs
+// (ErrorState, bbp-228 and bbp-229), QuickJS's js_error_constructor and
+// js_error_toString. ToString(message) of an object, a getter for
+// `options.cause`, and Error.prototype.toString's reads of `name` and
+// `message` (a getter, own or inherited, or an object to convert) run
+// JavaScript, so the dispatch loop, a Forward frame, a Convert frame, a
+// proxy trap call and the native callbacks that start native frames run
+// these built-ins through start_error and start_error_text (decision 4).
+// Each takes its plain path, a Goose function with no frame (decision 5),
+// when no step can run JavaScript: `new Error('literal')` and a toString of
+// data-property strings push nothing. Otherwise:
+//   ErrorConstruct  output the new error object (its prototype the
+//              constructor's type's, or newTarget's `prototype`, set before
+//              any step runs, as OrdinaryCreateFromConstructor does first);
+//              receiver the options argument.
+//     pc 0     the message on the operand top: undefined installs nothing,
+//              a primitive installs its ToString, an object converts by
+//              ToString in a Convert frame above (hint string), and this
+//              step runs again on the string.
+//              Then InstallErrorCause: when options is an object with a
+//              `cause` (HasProperty), a data value installs at once and
+//              the frame finishes; a getter runs above it (receiver
+//              options) and
+//     pc 2     awaits that getter's value, which it installs.
+//   ErrorText  receiver the this object; input the name, once converted.
+//     pc 0     awaits Get(O, "name") (a getter runs above the frame, with
+//              O as receiver); undefined is "Error", an object converts in
+//              a Convert frame above and this step runs again.
+//     pc 1     awaits Get(O, "message") the same way; undefined is "".
+// An abrupt completion of any step unwinds the frame like any other
+// (unwind_natives: it holds nothing to release), so the order of throws is
+// the steps' order. Everything the frames hold is in their value fields,
+// which in-job reclamation marks (reclaim.goose mark_frame), saved
+// continuations copy (continuations.goose SavedFrame) and snapshot
+// validation checks (snapshot.goose native_valid). call_builtin, for the
+// callers that run a built-in to completion, keeps the plain functions,
+// which fail by name where a step would run JavaScript.
+
+// The error type (ERROR_BUILTINS position) of constructor b, or -1.
+fn error_type(b: Builtin) -> i64 { for e, i in ERROR_BUILTINS { if e == b { return i; } } return -1; }
+// Whether built-in b runs through start_error or start_error_text.
+fn error_native(b: Builtin) -> bool { return match b { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, ErrorPrototypeToString => true, _ => false }; }
+// Start error built-in b, called with `receiver` and `args`, with operand
+// base `base` (native_start's contract).
+fn start_error_native(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
+    if b == Builtin.ErrorPrototypeToString { start_error_text(job, receiver, base); return; }
+    start_error(job, b, args, base, Value.Empty);
+}
+// "name: message" from the converted strings (step 9 and on).
+fn error_text(job: Job&, name: Value, message: Value) -> Value {
+    let heap .= job.heap;
+    if str_len(heap, message) == 0 { return name; }
+    if str_len(heap, name) == 0 { return message; }
+    var units: u16[>..] = []; append_utf16(heap, name, units); units.push(58); units.push(32); append_utf16(heap, message, units);
+    if !charge(heap, units.len) { return Value.Undefined; }
+    return string(heap, units);
+}
+// Error.prototype.toString run to completion (no getter, no object-valued
+// name or message: those fail by name here).
 fn error_to_string(job: Job&, receiver: Value) -> Value {
     let heap .= job.heap; let b = Builtin.ErrorPrototypeToString;
     if !receiver.is_object() { return type_error(job, "not an object"); }
@@ -876,11 +939,136 @@ fn error_to_string(job: Job&, receiver: Value) -> Value {
     let name = if n.is_undefined() { key_named(heap, "Error") } else { primitive_string(job, b, n) }; if heap.fault != Fault.None { return Value.Undefined; }
     let m = data_get(job, b, receiver, "message"); if heap.fault != Fault.None { return Value.Undefined; }
     let message = if m.is_undefined() { key_named(heap, "") } else { primitive_string(job, b, m) }; if heap.fault != Fault.None { return Value.Undefined; }
-    if str_len(heap, message) == 0 { return name; }
-    if str_len(heap, name) == 0 { return message; }
-    var units: u16[>..] = []; append_utf16(heap, name, units); units.push(58); units.push(32); append_utf16(heap, message, units);
-    if !charge(heap, units.len) { return Value.Undefined; }
-    return string(heap, units);
+    return error_text(job, name, message);
+}
+// Whether Get(o, name) runs JavaScript or yields an object to convert (a
+// scalar form too: the frame takes its primitive).
+fn read_runs_code(heap: Heap&, o: Value, name: const u8[:]) -> bool {
+    let k = key_named(heap, name);
+    if heap.fault != Fault.None { return false; }
+    let v, getter = lookup(heap, o, k);
+    return heap.fault == Fault.None && (getter.is_object() || v.is_object());
+}
+// Error.prototype.toString with `receiver` as its this value: the plain
+// path, or the ErrorText frame (see above).
+fn start_error_text(job: Job&, receiver: Value, base: i64) {
+    let heap .= job.heap; let b = Builtin.ErrorPrototypeToString;
+    if !receiver.is_object() { type_error(job, "not an object"); return; }
+    let runs = read_runs_code(heap, receiver, "name") || read_runs_code(heap, receiver, "message");
+    if heap.fault != Fault.None { return; }
+    if !runs {
+        let v = error_to_string(job, receiver);
+        if heap.fault == Fault.None { job.operands.resize(base); deliver(job, v); }
+        return;
+    }
+    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+    job.operands.resize(base);
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: Value.Undefined, receiver: receiver, native: Native.ErrorText });
+    get_named(job, b, receiver, "name");
+}
+// The operand top, a read's value for error built-in b's frame: an object
+// starts its ToString in a Convert frame above and gives false (the step
+// runs again on the string); otherwise true and the value.
+fn error_operand(job: Job&, b: Builtin) -> bool, Value {
+    let heap .= job.heap;
+    // A scalar form (a primitive with its provenance, as a root read
+    // returns one) is its primitive.
+    let v = form_value(heap, job.operands.pop());
+    if !v.is_object() { return true, v; }
+    if !convertible(heap, v) { unsupported_step(job, b, "ToString of a light-cljs runtime value"); return false, Value.Undefined; }
+    job.operands.push(v); start_convert(job, Hint.String, true, 1, 1);
+    return false, Value.Undefined;
+}
+// One step of the ErrorText frame at the top (see above).
+fn error_text_step(job: Job&, frame: Frame) {
+    let heap .= job.heap; let b = Builtin.ErrorPrototypeToString; let at = job.frames.len - 1;
+    if frame.pc < 0 || frame.pc > 1 { heap.fault = Fault.InvalidState; return; }
+    let ready, v = error_operand(job, b);
+    if !ready { return; }
+    let s = if v.is_undefined() { key_named(heap, if frame.pc == 0 { "Error" } else { "" }) } else { primitive_string(job, b, v) };
+    if heap.fault != Fault.None { return; }
+    if frame.pc == 0 {
+        job.frames[at].input = s; job.frames[at].pc = 1;
+        get_named(job, b, frame.receiver, "message");
+        return;
+    }
+    if !frame.input.is_string() { heap.fault = Fault.InvalidState; return; }
+    let r = error_text(job, frame.input, s);
+    if heap.fault == Fault.None { finish_native(job, frame, r); }
+}
+// Whether options has a `cause` behind a getter (InstallErrorCause's Get runs it).
+fn cause_runs_code(heap: Heap&, options: Value) -> bool {
+    if !options.is_object() { return false; }
+    let k = key_named(heap, "cause");
+    if heap.fault != Fault.None || !has_property(heap, options, k) { return false; }
+    let _, getter = lookup(heap, options, k);
+    return heap.fault == Fault.None && getter.is_object();
+}
+// NativeError b called (Value.Empty proto) or constructed with `args`,
+// operand base `base`: the plain path, or the ErrorConstruct frame (see
+// above). `proto`, when an object, is newTarget's `prototype`.
+fn start_error(job: Job&, b: Builtin, args: const Value[:], base: i64, proto: Value) {
+    let heap .= job.heap;
+    let t = error_type(b);
+    if t < 0 { heap.fault = Fault.InvalidState; return; }
+    let m = arg(args, 0); let options = arg(args, 1);
+    let runs = m.is_object() || cause_runs_code(heap, options);
+    if heap.fault != Fault.None { return; }
+    if !runs {
+        let e = construct_error(job, b, t, args);
+        if heap.fault != Fault.None { return; }
+        if proto.is_object() { node_mut(heap, e.id()).proto = proto; }
+        job.operands.resize(base); deliver(job, e);
+        return;
+    }
+    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+    let e = error_object(heap, t, 0, Value.Undefined);
+    if heap.fault != Fault.None { return; }
+    if proto.is_object() { node_mut(heap, e.id()).proto = proto; }
+    job.operands.resize(base);
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: Value.Undefined, receiver: options, output: e, native: Native.ErrorConstruct { which: b } });
+    if push_operand(job, m) { error_construct_step(job, job.frames[job.frames.len - 1], b); }
+}
+// Install own property `name` = v on error object e (writable,
+// configurable, not enumerable).
+fn install_error_field(job: Job&, e: Value, name: const u8[:], v: Value) {
+    let heap .= job.heap;
+    let k = key_named(heap, name);
+    if heap.fault == Fault.None && !add_own(heap, e.id(), k, v, attr_writable() | attr_configurable()) && heap.fault == Fault.None { heap.fault = Fault.InvalidState; }
+}
+// One step of the ErrorConstruct frame at the top (see above).
+fn error_construct_step(job: Job&, frame: Frame, b: Builtin) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    let e = frame.output;
+    if !e.is_object() || node(heap, e.id()).kind != node_kind::Error { heap.fault = Fault.InvalidState; return; }
+    if frame.pc == 2 {
+        install_error_field(job, e, "cause", job.operands.pop());
+        if heap.fault == Fault.None { finish_native(job, frame, e); }
+        return;
+    }
+    if frame.pc != 0 { heap.fault = Fault.InvalidState; return; }
+    let ready, m = error_operand(job, b);
+    if !ready { return; }
+    if !m.is_undefined() {
+        let s = primitive_string(job, b, m);
+        if heap.fault != Fault.None { return; }
+        install_error_field(job, e, "message", s);
+        if heap.fault != Fault.None { return; }
+    }
+    // InstallErrorCause: HasProperty(options, "cause"), then its Get.
+    let options = frame.receiver;
+    if options.is_object() {
+        let k = key_named(heap, "cause");
+        if heap.fault != Fault.None { return; }
+        if has_property(heap, options, k) {
+            let cause, getter = lookup(heap, options, k);
+            if heap.fault != Fault.None { return; }
+            if getter.is_object() { job.frames[at].pc = 2; run_getter(job, b, getter, options); return; }
+            install_error_field(job, e, "cause", cause);
+        }
+        if heap.fault != Fault.None { return; }
+    }
+    finish_native(job, frame, e);
 }
 // NativeError(message, options) called as a function: a new error object of
 // type t whose own `message` is ToString(message) and, when options has a
@@ -939,8 +1127,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         Function => { return unsupported_step(job, b, "called outside a native frame"); },
         Array => { return construct_array(job, args); },
         Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
-            var t: i64 = 0; for e, i in ERROR_BUILTINS { if e == b { t = i; } }
-            return construct_error(job, b, t, args);
+            return construct_error(job, b, error_type(b), args);
         },
         ObjectGetPrototypeOf => {
             let v = arg(args, 0);

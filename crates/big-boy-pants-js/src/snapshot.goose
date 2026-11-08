@@ -304,6 +304,12 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // A DynamicFunction frame (light-cljs-857) converts its arguments
         // from `index` on; its newTarget, if any, is an object.
         DynamicFunction => f.pc == 0 && f.argument_count >= 0 && f.index >= 0 && f.index <= f.argument_count && (f.receiver.is_undefined() || object_of(s, f.receiver, node_kind::None)),
+        // An ErrorConstruct frame (light-cljs-870) holds the error object it
+        // is making; at pc 2 it awaits its options object's `cause` getter.
+        ErrorConstruct e => source::error_type(e.which) >= 0 && (f.pc == 0 || f.pc == 2) && object_of(s, f.output, node_kind::Error) && (f.pc != 2 || object_of(s, f.receiver, node_kind::None)),
+        // An ErrorText frame (light-cljs-870) holds its this object, and
+        // from pc 1 on the converted name.
+        ErrorText => f.pc >= 0 && f.pc <= 1 && object_of(s, f.receiver, node_kind::None) && (f.pc == 0 || f.input.is_string()),
         _ => true,
     };
 }

@@ -334,6 +334,7 @@ fn to_string_step(job: Job&, frame: Frame) {
     if is_bound(heap, f) { start_bound(job, f, frame.input, [], job.operands.len); return; }
     let c = builtin_of(heap, f.id());
     if array_native(c) || forwarding(c) { native_start(job, c, frame.input, [], job.operands.len); return; }
+    if error_native(c) { start_error_native(job, c, frame.input, [], job.operands.len); return; }
     if effect_builtin(c) || native_builtin(c) || c == Builtin.Mapv || c == Builtin.MapSeq || c == Builtin.FunctionPrototypeCall || forces(heap, c, []) { unsupported_step(job, b, "a host-effect or native-frame built-in as join"); return; }
     let r = call_builtin(job, node(heap, f.id()).function, frame.input, []);
     if heap.fault == Fault.None { job.operands.push(r); }

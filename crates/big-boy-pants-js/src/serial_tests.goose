@@ -736,6 +736,9 @@ fn main() {
     // So do the Function constructor's conversions, in its DynamicFunction
     // frame, and the function it compiles (light-cljs-857).
     check(embed_file("../corpus/serial/function-constructor.gsp"), "number:25.0");
+    // So do the Error constructors' ErrorConstruct frames and
+    // Error.prototype.toString's ErrorText frame (light-cljs-870).
+    check(embed_file("../corpus/serial/error-frames.gsp"), "boolean:true");
     // A generator function's `constructor` is %GeneratorFunction%, pending
     // for the generators area (light-cljs-768), never Function.
     check(embed_file("../corpus/serial/function-kind-constructor.gsp"), "Fault.UnsupportedOperand:pending-constructor", source::Fault.UnsupportedOperand);

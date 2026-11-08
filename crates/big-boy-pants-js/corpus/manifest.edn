@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "6e3231bb3f8f81520e755547c6fbd1bdd1eb101e8ea8a78e32d00dc9a870190c",
+  "3129c65a93deb726e3c4d8769f04751ab46513c5911bac90fa5f746ec55350eb",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -325,6 +325,10 @@
   "f3d4507e544e561aaefcce0e25f1cfcdcd91848f34f405b4dd9cf88830bedbed",
   "corpus/serial/dormant-constants.js"
   "d1094ee1e2835f30fa27281561b13a474085d6486d7624623fe2c4209e7d34c6",
+  "corpus/serial/error-frames.gsp"
+  "f6f63ad8f10d0d502961a0ee10a661575164383ab3a2068186021cba1acb0c69",
+  "corpus/serial/error-frames.js"
+  "5ce44a743c527c773be8747219ea48ac17c2af563b4dd4215ba1ede1ddd2dcf7",
   "corpus/serial/eval-closure.gsp"
   "cc51c62aab42bea092ae210b183598371be6d801378bbcbdf516b1cb8342daf9",
   "corpus/serial/eval-closure.js"
