@@ -100,7 +100,9 @@ thread_fn unsupported_values() {
     for index in [0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0, 1e100] {
         assert(source::form_get(heap, vector, source::number(index), source::number(99)).num() == 99 && heap.fault == source::Fault.None);
         source::form_assoc(heap, vector, source::number(index), source::nil()); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
-        source::form_op(heap, form_op::CljNth, [vector, source::number(index)]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+        source::form_op(heap, form_op::Nth, [vector, source::number(index)]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+        // cljs.core's nth throws its Error "Index out of bounds" (light-cljs-873).
+        source::form_op(heap, form_op::CljNth, [vector, source::number(index)]); assert(heap.fault == source::Fault.HostEffect); heap.fault = source::Fault.None;
     }
     let object = source::allocate(heap, source::Node { kind: node_kind::Object }); let container = source::form_collection(heap, node_kind::Vector, [object]);
     var c = bridge::Control {}; var out = bridge::Graph {}; assert(!bridge::export_graph(heap, [container], out, c) && c.error == bridge::Error.Unsupported && out.nodes.len == 0);

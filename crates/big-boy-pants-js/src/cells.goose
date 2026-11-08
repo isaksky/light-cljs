@@ -81,6 +81,20 @@ fn cell_fail(job: Job&, b: Builtin, what: const u8[:]) -> Value {
     if job.heap.fault == Fault.None { job.heap.fault = Fault.NativeBoundary; }
     return Value.Undefined;
 }
+// cljs.core's Error for a reference operation on a value that does not
+// support it (light-cljs-873), in the V8 build's runtime's words: a
+// catchable HostEffect fault (realm.goose runtime_error). The operations
+// that deref first (compare-and-set!, reset-vals!, swap-vals!,
+// set-validator!) fail as deref does on a value that is no reference; on a
+// delay, which that deref would force, they fail by name.
+fn reference_error(job: Job&, message: const u8[:]) -> Value { let none: u16[0] = []; return runtime_error(job, message, none); }
+fn not_derefable(job: Job&) -> Value { return reference_error(job, "value does not support deref"); }
+fn derefs_first(job: Job&, b: Builtin, a: Value, protocol: const u8[:]) -> Value {
+    if is_delay(job.heap, a) { return cell_fail(job, b, "a delay, which it would force before it fails"); }
+    return if reference_flavor(job.heap, a) < 0 { not_derefable(job) } else { reference_error(job, protocol) };
+}
+fn no_reset() -> const u8[:] { return "No protocol method IReset/-reset! defined for this value"; }
+fn no_swap() -> const u8[:] { return "No protocol method ISwap/-swap! defined for this value"; }
 // An owner error as the operation's named failure.
 fn owner_fail(job: Job&, b: Builtin, error: i64) -> Value {
     return cell_fail(job, b, match error { cell_error::Budget => "cell budget", cell_error::NoCell => "no such cell", cell_error::Halting => "the session is halting", cell_error::Cycle => "a cycle of delay claims", cell_error::NotClaim => "not a delay claim this job holds", _ => "no cell owner in this program" });
@@ -585,19 +599,30 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             if args.len > 1 { return cell_fail(job, b, "options (metadata and validators) are not supported"); }
             return allocate(heap, Node { kind: node_kind::Atom, length: if b == Builtin.Atom { cell_flavor::Atom } else { cell_flavor::Volatile }, value: arg(args, 0) });
         },
-        AddWatch, RemoveWatch, SetValidator => { return cell_fail(job, b, "watches and validators are not supported"); },
+        AddWatch, RemoveWatch, SetValidator => {
+            let a = arg(args, 0); let flavor = reference_flavor(heap, a);
+            if heap.fault != Fault.None { return Value.Undefined; }
+            // set-validator! derefs only for a validator; with nil it writes
+            // the target's property, which fails by name below.
+            if b == Builtin.SetValidator && flavor < 0 && !is_delay(heap, a) && form_value(heap, arg(args, 1)).tag() > value_tag::Null { return not_derefable(job); }
+            if b != Builtin.SetValidator && flavor != cell_flavor::Atom { return reference_error(job, if b == Builtin.AddWatch { "No protocol method IWatchable/-add-watch defined for this value" } else { "No protocol method IWatchable/-remove-watch defined for this value" }); }
+            return cell_fail(job, b, "watches and validators are not supported");
+        },
         Deref => {
             let a = arg(args, 0);
             if is_delay(heap, a) { return delay_now(job, b, a); }
             let flavor = reference_flavor(heap, a);
             if heap.fault != Fault.None { return Value.Undefined; }
-            if flavor < 0 { return unsupported_step(job, b, "a value that is not an atom or volatile"); }
+            if flavor < 0 { return not_derefable(job); }
             return load(job, b, a);
         },
         Reset, Vreset, ResetVals => {
             let a = arg(args, 0); let v = arg(args, 1); let flavor = reference_flavor(heap, a);
             if heap.fault != Fault.None { return Value.Undefined; }
-            if flavor != (if b == Builtin.Vreset { cell_flavor::Volatile } else { cell_flavor::Atom }) { return type_error(job, if b == Builtin.Vreset { "vreset! needs a volatile" } else { "reset! needs an atom" }); }
+            if flavor != (if b == Builtin.Vreset { cell_flavor::Volatile } else { cell_flavor::Atom }) {
+                if b == Builtin.ResetVals { return derefs_first(job, b, a, no_reset()); }
+                return reference_error(job, if b == Builtin.Vreset { "No protocol method IVolatile/-vreset! defined for this value" } else { no_reset() });
+            }
             if node(heap, a.id()).kind == node_kind::Atom {
                 if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
                 let old = node(heap, a.id()).value; node_mut(heap, a.id()).value = v;
@@ -625,7 +650,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
         },
         CompareAndSet => {
             let a = arg(args, 0); let old = arg(args, 1); let v = arg(args, 2);
-            if reference_flavor(heap, a) != cell_flavor::Atom { if heap.fault == Fault.None { type_error(job, "compare-and-set! needs an atom"); } return Value.Undefined; }
+            if reference_flavor(heap, a) != cell_flavor::Atom { if heap.fault == Fault.None { derefs_first(job, b, a, no_reset()); } return Value.Undefined; }
             if node(heap, a.id()).kind == node_kind::Atom {
                 let same = form_equal(heap, node(heap, a.id()).value, old); if heap.fault != Fault.None { return Value.Undefined; }
                 if !same { return boolean(false); }
@@ -680,7 +705,10 @@ fn load(job: Job&, b: Builtin, a: Value) -> Value {
 fn start_swap(job: Job&, b: Builtin, args: const Value[:], base: i64) {
     let heap .= job.heap;
     let a = arg(args, 0); let f = arg(args, 1);
-    if reference_flavor(heap, a) != cell_flavor::Atom { if heap.fault == Fault.None { type_error(job, "swap! needs an atom"); } return; }
+    if reference_flavor(heap, a) != cell_flavor::Atom {
+        if heap.fault == Fault.None { if b == Builtin.SwapVals { derefs_first(job, b, a, no_swap()); } else { reference_error(job, no_swap()); } }
+        return;
+    }
     if !callable(heap, f) { type_error(job, "not a function"); return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     var extra: Value[>..] = []; if args.len > 2 { extra.append(args[2..]); }

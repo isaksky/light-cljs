@@ -2759,22 +2759,30 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
     }
     return result;
 }
+// conj onto nil, a list or a sequence (Concat) prepends and makes a list;
+// onto a vector or a set appends, a set's member already there giving the
+// set itself (light-cljs-873, as cljs.core's).
 fn form_conj(heap: Heap&, v: Value, value: Value) -> Value {
-    let x = form_value(heap, v); let kind = if x.tag() <= value_tag::Null { node_kind::List } else { form_kind(heap, x) };
-    if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; }
+    let x = form_value(heap, v); let found = if x.tag() <= value_tag::Null { node_kind::List } else { form_kind(heap, x) };
+    let kind = if found == node_kind::Concat { node_kind::List } else { found };
+    if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Set { heap.fault = Fault.TypeError; return Value.Undefined; }
     let n = if x.tag() <= value_tag::Null { Node { kind: node_kind::List } } else { node(heap, x.id()) };
+    if kind == node_kind::Set {
+        for i in n.count { if !charge(heap) { return Value.Undefined; } if form_equal(heap, slot(heap, n.start + i), value) { return v; } if heap.fault != Fault.None { return Value.Undefined; } }
+    }
     if !charge(heap, n.count + 1) { return Value.Undefined; }
     let count = n.count + 1;
     if !values_fit(heap, count) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
     if !charge(heap, count) { return Value.Undefined; }
     if kind == node_kind::List && !valid(heap, value) { return Value.Undefined; }
     for child in run(heap, n.start, n.count) { if !valid(heap, child) { return Value.Undefined; } }
-    if kind == node_kind::Vector && !valid(heap, value) { return Value.Undefined; }
-    var made = n; made.kind = kind; made.origin = -1; made.start = heap.values.len as u32; made.count = count;
+    if kind != node_kind::List && !valid(heap, value) { return Value.Undefined; }
+    // A sequence's conj is a new list, without the sequence's metadata.
+    var made = if found == node_kind::Concat { Node { kind: node_kind::List } } else { n }; made.kind = kind; made.origin = -1; made.start = heap.values.len as u32; made.count = count;
     let result = allocate(heap, made); if heap.fault != Fault.None { return Value.Undefined; }
     if kind == node_kind::List { add_values(heap, [value]); }
     add_values(heap, run(heap, n.start, n.count));
-    if kind == node_kind::Vector { add_values(heap, [value]); }
+    if kind != node_kind::List { add_values(heap, [value]); }
     return result;
 }
 fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
@@ -2848,6 +2856,171 @@ fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
     if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
     let n = node(heap, x.id()); return allocate(heap, Node { kind: node_kind::Concat, start: (n.start + skip) as u32, count: (n.count - skip) as u32 });
 }
+// cljs.core's errors from the light-cljs form operations (light-cljs-873):
+// what the V8 build's runtime (src/js_runtime.js nth, count, seq, assoc,
+// conj, mapConj and a vector's call) throws for the same operands, a
+// js/Error raised here as a catchable HostEffect fault whose message
+// core_error words on the fault path. Boundary is an operand that runtime
+// accepts and this one does not implement (a JavaScript array, an object's
+// iteration or text); it fails NativeBoundary, uncatchably. Classifying
+// reads no row the operation would not, and allocates nothing.
+enum CoreError { None, Boundary, OutOfBounds, NthIndex, NthType, CountType, NotSeqable, AssocType, VectorKey, ConjType, InvokeKey, MapEntry }
+fn core_failed(heap: Heap&, e: CoreError) -> bool {
+    if heap.fault != Fault.None { return true; }
+    if e == CoreError.None { return false; }
+    heap.fault = if e == CoreError.Boundary { Fault.NativeBoundary } else { Fault.HostEffect };
+    return true;
+}
+// Whether nth finds index i (a number) in x, a vector, string, list or
+// sequence: a vector's in [0, count) and a string's in (-1, length),
+// truncated; a list is walked, so only an integer in [0, count) is found.
+fn nth_found(heap: Heap&, x: Value, i: f64) -> bool {
+    if x.is_string() { return i > -1 && i < str_len(heap, x); }
+    let n = node(heap, x.id());
+    if n.kind == node_kind::Vector { return i >= 0 && i < n.count; }
+    return i >= 0 && i < n.count && i == trunc(i);
+}
+fn nth_error(heap: Heap&, coll: Value, index: Value, fallback: bool) -> CoreError {
+    if !form_value(heap, index).is_number() { return CoreError.NthIndex; }
+    let x = form_value(heap, coll); if x.tag() <= value_tag::Null { return CoreError.None; }
+    let kind = form_kind(heap, x);
+    if x.is_string() || kind == node_kind::List || kind == node_kind::Vector || kind == node_kind::Concat { return if fallback || nth_found(heap, x, form_value(heap, index).num()) { CoreError.None } else { CoreError.OutOfBounds }; }
+    return if kind == node_kind::Array { CoreError.Boundary } else { CoreError.NthType };
+}
+fn count_error(heap: Heap&, coll: Value) -> CoreError {
+    let x = form_value(heap, coll); let kind = form_kind(heap, x);
+    if x.tag() <= value_tag::Null || x.is_string() || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat { return CoreError.None; }
+    return if kind == node_kind::Array { CoreError.Boundary } else { CoreError.CountType };
+}
+// seq's: a number, boolean, keyword or symbol is not seqable, with its
+// text in the message; any other object fails by name (an iterable one the
+// runtime seqs, another's text is its toString's).
+fn seq_error(heap: Heap&, coll: Value) -> CoreError {
+    let x = form_value(heap, coll); let kind = form_kind(heap, x);
+    if x.tag() <= value_tag::Null || x.is_string() || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::LazySeq { return CoreError.None; }
+    return if x.is_number() || x.is_bool() || kind == node_kind::Symbol || kind == node_kind::Keyword { CoreError.NotSeqable } else { CoreError.Boundary };
+}
+// assoc's: nil and a map take any key; a vector a number in [0, count],
+// a fractional one inside it (which the runtime's trie lookup resolves)
+// failing by name.
+fn assoc_error(heap: Heap&, coll: Value, k: Value) -> CoreError {
+    let x = form_value(heap, coll); let kind = form_kind(heap, x);
+    if x.tag() <= value_tag::Null || kind == node_kind::Map { return CoreError.None; }
+    if kind != node_kind::Vector { return CoreError.AssocType; }
+    let i = form_value(heap, k); let n = node(heap, x.id()).count;
+    if !i.is_number() { return CoreError.VectorKey; }
+    if !(i.num() >= 0 && i.num() <= n) { return CoreError.OutOfBounds; }
+    return if i.num() == trunc(i.num()) { CoreError.None } else if i.num() < n { CoreError.Boundary } else { CoreError.OutOfBounds };
+}
+// conj's, and the value its message names: nil, a list, sequence, vector
+// or set takes any item; a map takes nil, a vector (its first two items
+// the entry, so one of fewer than two is out of bounds) or a seqable of
+// such vectors.
+fn conj_error(heap: Heap&, coll: Value, item: Value) -> CoreError, Value {
+    let x = form_value(heap, coll); let kind = form_kind(heap, x);
+    if x.tag() <= value_tag::Null || kind >= node_kind::List && kind <= node_kind::Vector || kind == node_kind::Set || kind == node_kind::Concat { return CoreError.None, Value.Undefined; }
+    if kind != node_kind::Map { return CoreError.ConjType, Value.Undefined; }
+    let y = form_value(heap, item); let entries = form_kind(heap, y);
+    if y.tag() <= value_tag::Null || entries == node_kind::Map { return CoreError.None, Value.Undefined; }
+    if entries == node_kind::Vector { return if node(heap, y.id()).count < 2 { CoreError.OutOfBounds } else { CoreError.None }, Value.Undefined; }
+    if y.is_string() { return if str_len(heap, y) == 0 { CoreError.None } else { CoreError.MapEntry }, Value.Undefined; }
+    let e = seq_error(heap, y); if e != CoreError.None { return e, y; }
+    // A lazy sequence's entries are not demanded here, and a set's are in
+    // the runtime's iteration order (which entry fails first, which of two
+    // equal keys wins), which this one does not model.
+    if entries == node_kind::LazySeq || entries == node_kind::Set && node(heap, y.id()).count > 0 { return CoreError.Boundary, Value.Undefined; }
+    let n = node(heap, y.id());
+    for i in n.count {
+        let entry = form_value(heap, slot(heap, n.start + i));
+        if form_kind(heap, entry) != node_kind::Vector { return CoreError.MapEntry, Value.Undefined; }
+        if node(heap, entry.id()).count < 2 { return CoreError.OutOfBounds, Value.Undefined; }
+    }
+    return CoreError.None, Value.Undefined;
+}
+// A vector's call: a number index, found as nth finds it.
+fn invoke_error(heap: Heap&, v: Value, index: Value) -> CoreError {
+    let i = form_value(heap, index);
+    if !i.is_number() { return CoreError.InvokeKey; }
+    return if nth_found(heap, form_value(heap, v), i.num()) { CoreError.None } else { CoreError.OutOfBounds };
+}
+// conj onto a map of an item conj_error admitted: each entry assoc'd in
+// order.
+fn map_conj(heap: Heap&, m: Value, item: Value) -> Value {
+    let y = form_value(heap, item); let kind = form_kind(heap, y);
+    if y.tag() <= value_tag::Null || y.is_string() { return m; }
+    let n = node(heap, y.id());
+    if kind == node_kind::Vector { return form_assoc(heap, m, slot(heap, n.start), slot(heap, n.start + 1)); }
+    var out = m;
+    if kind == node_kind::Map {
+        for i in (n.count / 2) { out = form_assoc(heap, out, slot(heap, n.start + i * 2), slot(heap, n.start + i * 2 + 1)); if heap.fault != Fault.None { return Value.Undefined; } }
+        return out;
+    }
+    for i in n.count {
+        let entry = node(heap, form_value(heap, slot(heap, n.start + i)).id());
+        out = form_assoc(heap, out, slot(heap, entry.start), slot(heap, entry.start + 1)); if heap.fault != Fault.None { return Value.Undefined; }
+    }
+    return out;
+}
+// cljs.core's "v is not ISeqable" for v, a number, boolean, keyword or
+// symbol (seq_error's NotSeqable): its text is String(v), a keyword's
+// :ns/name and a symbol's ns/name.
+fn not_seqable(job: Job&, v: Value) {
+    let heap .= job.heap; let x = form_value(heap, v);
+    job.detail.clear();
+    if x.is_number() { var digits: u8[>..] = []; number::append_decimal(digits, x.num()); for c in digits { job.detail.push(c); } }
+    else if x.is_bool() { for c in (if x.flag() { "true" } else { "false" }) { job.detail.push(c); } }
+    else {
+        let n = node(heap, x.id());
+        if n.kind == node_kind::Keyword { job.detail.push(58); }
+        if n.namespace_value.is_string() { append_utf16(heap, n.namespace_value, job.detail); job.detail.push(47); }
+        append_utf16(heap, n.value, job.detail);
+    }
+    for c in " is not ISeqable" { job.detail.push(c); }
+    heap.fault = Fault.HostEffect;
+}
+// Whether v is a source a runtime leaf that seqs it (mapv, into, vec,
+// sequence, get-in's path) can take; otherwise its error is raised, as
+// seq_error classifies it.
+fn seq_source(job: Job&, v: Value) -> bool {
+    let e = seq_error(job.heap, v);
+    if job.heap.fault != Fault.None { return false; }
+    if e == CoreError.NotSeqable { not_seqable(job, v); return false; }
+    if e == CoreError.Boundary { job.heap.fault = Fault.NativeBoundary; return false; }
+    return true;
+}
+// The message of a CoreError the form operation `op` raised on the operands
+// at `base` (the fault path, before they are popped).
+fn core_error(job: Job&, op: i64, base: i64) {
+    let heap .= job.heap; let args = job.operands[base..];
+    heap.fault = Fault.None;
+    var e = CoreError.None; var culprit = args[0];
+    match op {
+        form_op::CljNth, form_op::CljNthOr => { e = nth_error(heap, args[0], args[1], op == form_op::CljNthOr); },
+        form_op::CljCount => { e = count_error(heap, args[0]); },
+        form_op::CljSeq, form_op::CljRest, form_op::CljNext, form_op::CljFirst => { e = seq_error(heap, args[0]); },
+        form_op::CljAssoc => { e = assoc_error(heap, args[0], args[1]); },
+        form_op::CljConj => { let c, v = conj_error(heap, args[0], args[1]); e = c; culprit = v; },
+        form_op::CljInvoke => { e = invoke_error(heap, args[0], args[1]); },
+        _ => {},
+    }
+    if heap.fault != Fault.None { return; }
+    if e == CoreError.NotSeqable { not_seqable(job, culprit); return; }
+    core_raise(job, e);
+}
+// Raise CoreError e, one whose message is fixed text.
+fn core_raise(job: Job&, e: CoreError) -> Value {
+    let words: const u8[:] = match e {
+        OutOfBounds => "Index out of bounds", NthIndex => "Index argument to nth must be a number", NthType => "nth not supported on this type",
+        CountType => "count not supported on this type", AssocType => "assoc not supported on this type", VectorKey => "Vector key must be a number",
+        ConjType => "conj not supported on this type", InvokeKey => "Key must be integer", MapEntry => "Map conj requires vector entries",
+        _ => "",
+    };
+    // Only a raised CoreError reaches here.
+    if words.len == 0 { job.heap.fault = Fault.InvalidState; return Value.Undefined; }
+    job.detail.clear(); for c in words { job.detail.push(c); }
+    job.heap.fault = Fault.HostEffect;
+    return Value.Undefined;
+}
 fn named_supported(heap: Heap&, ns: Value, name: Value) -> bool {
     let n = utf16(heap, name);
     if !charge(heap, n.len + str_len(heap, ns)) { return false; }
@@ -2870,8 +3043,16 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             return allocate(heap, Node { kind: if op == form_op::Keyword { node_kind::Keyword } else { node_kind::Symbol }, value: args[1], namespace_value: if a.tag() <= value_tag::Null { nil() } else { a } });
         },
         form_op::Kind => { let kind = form_kind(heap, a); return match kind { node_kind::List, node_kind::Concat => text(heap, "list"), node_kind::Vector => text(heap, "vector"), node_kind::Map => text(heap, "map"), node_kind::Set => text(heap, "set"), node_kind::Symbol => text(heap, "symbol"), node_kind::Keyword => text(heap, "keyword"), _ => nil() }; },
-        form_op::Count, form_op::CljCount => { return number(form_count(heap, a)); },
-        form_op::Nth, form_op::CljNth, form_op::CljNthOr => { let i = form_value(heap, args[1]); if !i.is_number() || !(i.num() >= -2147483648.0 && i.num() <= 2147483647.0) || i.num() != (i.num() as i64) || (op != form_op::CljNthOr && (i.num() < 0 || i.num() >= form_count(heap, a))) { heap.fault = Fault.TypeError; return Value.Undefined; } return form_nth(heap, a, i.num() as i64, if op == form_op::CljNthOr { args[2] } else { nil() }); },
+        form_op::Count => { return number(form_count(heap, a)); },
+        form_op::Nth => { let i = form_value(heap, args[1]); if !i.is_number() || !(i.num() >= -2147483648.0 && i.num() <= 2147483647.0) || i.num() != (i.num() as i64) || i.num() < 0 || i.num() >= form_count(heap, a) { heap.fault = Fault.TypeError; return Value.Undefined; } return form_nth(heap, a, i.num() as i64); },
+        form_op::CljCount => { if core_failed(heap, count_error(heap, a)) { return Value.Undefined; } return number(form_count(heap, a)); },
+        form_op::CljNth, form_op::CljNthOr => {
+            if core_failed(heap, nth_error(heap, a, args[1], op == form_op::CljNthOr)) { return Value.Undefined; }
+            let x = form_value(heap, a); let i = form_value(heap, args[1]).num();
+            let fallback = if op == form_op::CljNthOr { args[2] } else { nil() };
+            if x.tag() <= value_tag::Null || !nth_found(heap, x, i) { return fallback; }
+            return form_nth(heap, x, trunc(i) as i64);
+        },
         form_op::Get, form_op::CljGet => { return form_get(heap, a, args[1], args[2]); },
         form_op::CljGet2 => { return form_get(heap, a, args[1], nil()); },
         form_op::CljContains => { return boolean(form_contains(heap, a, args[1])); },
@@ -2882,15 +3063,37 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
             let n = node(heap, x.id()); return form_concat(heap, run(heap, n.start, n.count));
         },
-        form_op::Assoc, form_op::CljAssoc => { return form_assoc(heap, a, args[1], args[2]); },
-        form_op::Conj, form_op::CljConj => { return form_conj(heap, a, args[1]); },
+        form_op::Assoc => { return form_assoc(heap, a, args[1], args[2]); },
+        form_op::CljAssoc => {
+            if core_failed(heap, assoc_error(heap, a, args[1])) { return Value.Undefined; }
+            // assoc of nil is a one-entry map, as cljs.core's.
+            if form_value(heap, a).tag() <= value_tag::Null { return form_collection(heap, node_kind::Map, [args[1], args[2]]); }
+            return form_assoc(heap, a, args[1], args[2]);
+        },
+        form_op::Conj => { return form_conj(heap, a, args[1]); },
+        form_op::CljConj => {
+            let e, culprit = conj_error(heap, a, args[1]);
+            if core_failed(heap, e) { return Value.Undefined; }
+            if form_kind(heap, a) == node_kind::Map { return map_conj(heap, a, args[1]); }
+            return form_conj(heap, a, args[1]);
+        },
         form_op::Equals => { return boolean(form_equal(heap, a, args[1])); },
         form_op::Meta, form_op::CljMeta => { return if a.is_object() && !node(heap, a.id()).metadata.is_undefined() { node(heap, a.id()).metadata } else { nil() }; },
         form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != node_kind::Map) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
         form_op::Value => { return form_value(heap, a); },
         form_op::CljTruth => { let v = form_value(heap, a); return boolean(v.tag() > value_tag::Null && !(v.is_bool() && !v.flag())); },
-        form_op::CljSeq, form_op::CljRest, form_op::CljNext => { return form_sequence(heap, a, if op == form_op::CljSeq { 0 } else { 1 }, op != form_op::CljRest); },
-        form_op::CljFirst => { return form_nth(heap, a, 0); },
+        form_op::CljSeq, form_op::CljRest, form_op::CljNext => {
+            if core_failed(heap, seq_error(heap, a)) { return Value.Undefined; }
+            return form_sequence(heap, a, if op == form_op::CljSeq { 0 } else { 1 }, op != form_op::CljRest);
+        },
+        form_op::CljFirst => {
+            if core_failed(heap, seq_error(heap, a)) { return Value.Undefined; }
+            // A map's first entry and a set's first member are in the
+            // runtime's iteration order, which this one does not model.
+            let kind = form_kind(heap, a);
+            if kind == node_kind::Map || kind == node_kind::Set { if form_count(heap, a) == 0 { return nil(); } heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+            return form_nth(heap, a, 0);
+        },
         form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_collection(heap, node_kind::Map, run(heap, n.start, n.count)); },
         // A map literal with entries in a native macro unit (light-cljs-872):
         // insertion-ordered, equal keys keeping the first key and the last
@@ -2905,6 +3108,12 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         },
         form_op::CljInvoke => {
             let arity = args[3]; let kind = form_kind(heap, a);
+            // A vector's call takes one index and ignores any other
+            // argument, as the runtime's (light-cljs-873).
+            if kind == node_kind::Vector {
+                if core_failed(heap, invoke_error(heap, a, args[1])) { return Value.Undefined; }
+                return form_nth(heap, a, trunc(form_value(heap, args[1]).num()) as i64);
+            }
             if !arity.is_number() || (arity.num() != 1 && arity.num() != 2) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
             if kind == node_kind::Symbol || kind == node_kind::Keyword { return form_get(heap, args[1], a, args[2]); }
             if kind == node_kind::Map { return form_get(heap, a, args[1], args[2]); }
@@ -2912,12 +3121,6 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
                 let n = node(heap, a.id());
                 for i in n.count { if !charge(heap) { return Value.Undefined; } let v = slot(heap, n.start + i); if form_equal(heap, v, args[1]) { return v; } if heap.fault != Fault.None { return Value.Undefined; } }
                 return args[2];
-            }
-            if kind == node_kind::Vector {
-                let i = form_value(heap, args[1]);
-                if !i.is_number() || !(i.num() >= 0 && i.num() < form_count(heap, a)) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
-                // Legacy vector calls truncate after bounds validation.
-                return form_nth(heap, a, i.num() as! i64);
             }
             heap.fault = Fault.NativeBoundary; return Value.Undefined;
         },
@@ -3190,6 +3393,8 @@ fn mapv_step(job: Job&, frame: Frame) {
     } else if frame.index >= form_count(heap, frame.input) {
         finish_native(job, frame, frame.output);
     } else {
+        // A callback that is no object is not a function (light-cljs-873).
+        if !frame.callee.is_object() { type_error(job, "not a function"); return; }
         let arg = form_nth(heap, frame.input, frame.index);
         job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
         if frame.callee.is_object() && node(heap, frame.callee.id()).kind == node_kind::Builtin { builtin_callback(job, frame.callee, Value.Undefined, arg, frame); }
@@ -3879,7 +4084,11 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                         }
                     }
                     if waiting { job.operands.resize(base); }
-                    else { let value = form_op(heap, op, job.operands[base..]); job.operands.resize(base); job.operands.push(value); }
+                    else {
+                        let value = form_op(heap, op, job.operands[base..]);
+                        if heap.fault == Fault.HostEffect { core_error(job, op, base); }
+                        job.operands.resize(base); job.operands.push(value);
+                    }
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -4267,7 +4476,13 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
         // Number(o), String(o): the call runs again on the primitive.
         if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, args.len); return; }
         if id == 2 && args.len == 2 {
+            let source = form_kind(heap, args[1]);
             if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; }
+            // A non-seqable source is cljs.core's error (light-cljs-873); a
+            // map's entries and a set's members are in the runtime's
+            // iteration order, which this one does not model.
+            else if !seq_source(job, args[1]) {}
+            else if (source == node_kind::Map || source == node_kind::Set) && form_count(heap, args[1]) > 0 { heap.fault = Fault.NativeBoundary; }
             else {
                 let input = args[1]; let callback = args[0]; let out = form_collection(heap, node_kind::Vector, []);
                 form_count(heap, input);

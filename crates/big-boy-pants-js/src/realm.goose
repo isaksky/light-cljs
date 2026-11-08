@@ -668,11 +668,14 @@ fn error_object(heap: Heap&, t: i64, code: u32, message: Value) -> Value {
 // undefined or null base words its own message (source_vm.goose
 // base_error, light-cljs-871), naming the key; a refused strict write keeps
 // "cannot set property" (QuickJS's "'x' is read-only" and "no setter for
-// property" and the Pants engine's wordings all differ). "invalid operand"
-// is left to the instructions no JavaScript source makes fault this way:
-// the light-cljs form operations (light-cljs-873), a literal's AppendHole,
-// Append, CheckSpread, SetProto and DefineField on a value the bytecode
-// compiler never gives them.
+// property" and the Pants engine's wordings all differ). The cljs.core
+// form operations raise cljs.core's Errors (source_vm.goose CoreError,
+// light-cljs-873), not TypeErrors. "invalid operand" is left to the
+// instructions no JavaScript source makes fault this way: the compiler's
+// own form operations (formNth, formWithMeta and the like) on operands the
+// emitted code never gives them, a literal's AppendHole, Append,
+// CheckSpread, SetProto and DefineField on a value the bytecode compiler
+// never gives them.
 fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
     let heap .= job.heap;
     if job.detail.len > 0 { return string(heap, job.detail); }
@@ -957,7 +960,11 @@ fn get_in(job: Job&, b: Builtin, args: const Value[:]) -> Value {
     if heap.fault != Fault.None { return Value.Undefined; }
     if path.tag() <= value_tag::Null { return args[0]; }
     let kind = form_kind(heap, path);
-    if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat { return unsupported_step(job, b, "a path that is not a list or vector"); }
+    if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat {
+        // A path that is not seqable is cljs.core's error (light-cljs-873).
+        if seq_error(heap, path) == CoreError.NotSeqable { not_seqable(job, path); return Value.Undefined; }
+        return unsupported_step(job, b, "a path that is not a list or vector");
+    }
     let start: i64 = node(heap, path.id()).start; let count: i64 = node(heap, path.id()).count;
     var value = args[0];
     for i in count {
@@ -968,6 +975,41 @@ fn get_in(job: Job&, b: Builtin, args: const Value[:]) -> Value {
         if value.is_hole() { return args[2]; }
     }
     return value;
+}
+// into of two arguments, (reduce conj to from), as cljs.core's (and the V8
+// build's runtime's) (light-cljs-873): `from` is seqed first, then each
+// item conj'd as the conj form operation does it, a map target taking
+// entries (map_conj). A target that cannot conj fails only when `from`
+// has an item, with the protocol error. A map's or set's items as a source
+// are in the runtime's iteration order, which this one does not model.
+fn into(job: Job&, b: Builtin, args: const Value[:]) -> Value {
+    let heap .= job.heap;
+    if args.len != 2 { return native_value(heap, code(b), args); }
+    let to = args[0]; let from = form_value(heap, args[1]);
+    if !seq_source(job, from) { return Value.Undefined; }
+    let count = form_count(heap, from); let source = form_kind(heap, from);
+    if count == 0 { return to; }
+    if source == node_kind::Map || source == node_kind::Set { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    let target = form_kind(heap, to);
+    if form_value(heap, to).tag() > value_tag::Null && !(target >= node_kind::List && target <= node_kind::Set || target == node_kind::Concat) {
+        let none: u16[0] = []; return runtime_error(job, "No protocol method ICollection/-conj defined for this value", none);
+    }
+    var out = to;
+    for i in count {
+        if !charge(heap) { return Value.Undefined; }
+        let item = form_nth(heap, from, i);
+        if heap.fault != Fault.None { return Value.Undefined; }
+        if form_kind(heap, out) == node_kind::Map {
+            let e, culprit = conj_error(heap, out, item);
+            if heap.fault != Fault.None { return Value.Undefined; }
+            if e == CoreError.NotSeqable { not_seqable(job, culprit); return Value.Undefined; }
+            if e == CoreError.Boundary { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+            if e != CoreError.None { return core_raise(job, e); }
+            out = map_conj(heap, out, item);
+        } else { out = form_conj(heap, out, item); }
+        if heap.fault != Fault.None { return Value.Undefined; }
+    }
+    return out;
 }
 // Units of `[object Tag]`.
 fn object_tag(job: Job&, receiver: Value) -> Value {
@@ -1355,6 +1397,9 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         ExInfo => { return ex_info(job, b, args); },
         ExData, ExMessage, ExCause => { return ex_field(job, b, arg(args, 0)); },
         GetIn => { return get_in(job, b, args); },
+        // A non-seqable source is cljs.core's error (light-cljs-873).
+        Vec, Sequence => { if args.len == 1 && !seq_source(job, args[0]) { return Value.Undefined; } return native_value(heap, id, args); },
+        Into => { return into(job, b, args); },
         _ => { return native_value(heap, id, args); },
     }
 }

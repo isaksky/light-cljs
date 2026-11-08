@@ -573,6 +573,27 @@ fn goose_compiler_assembly_leaf_boundaries() {
             "Fault.UnsupportedOperand",
         ),
         ("return rt.core.mapSeq(x=>x);", "Fault.NativeBoundary"),
+        // Operands the V8 build's runtime accepts and this one does not
+        // implement fail by name, not as a cljs.core Error (light-cljs-873):
+        // a JavaScript array as a map entry source, a set of entries (its
+        // iteration order), the first item of a map, set-validator! with a
+        // nil validator on a value that is no reference.
+        (
+            "return rt.core.into(__rt.formMap(), __rt.formVector([]));",
+            "Fault.NativeBoundary",
+        ),
+        (
+            "return __rt.cljConj(__rt.formMap(), __rt.formSet(__rt.formVector(1, 2)));",
+            "Fault.NativeBoundary",
+        ),
+        (
+            "return __rt.cljFirst(__rt.formMap(1, 2));",
+            "Fault.NativeBoundary",
+        ),
+        (
+            "return rt.core.setValidator(null, null);",
+            "Fault.NativeBoundary",
+        ),
         // Outside every generated-name scope gensym stays an explicit
         // native-boundary fault; in one it returns symbols (below).
         ("return rt.core.gensym();", "Fault.NativeBoundary"),
@@ -1660,7 +1681,11 @@ fn goose_compiler_helper_failure_keeps_instruction_context() {
         message.contains("definition helper-negative.cljs:2:1"),
         "{message}"
     );
-    assert!(message.contains("TypeError function="), "{message}");
+    // cljs.core's nth throws its Error, a HostEffect fault (light-cljs-873).
+    assert!(
+        message.contains("HostEffect:Index-out-of-bounds function="),
+        "{message}"
+    );
     for field in ["function=", "pc=", "emitted-span="] {
         let value = message.split_once(field).expect(&message).1;
         assert!(value.starts_with(|c: char| c.is_ascii_digit()), "{message}");
@@ -1846,6 +1871,181 @@ fn goose_compiler_macro_runtime_errors_match_v8() {
         );
     }
     macro_errors_match_v8(r#"(ex-info "x")"#, Some(("Invalid arity: 1", "HostEffect")));
+}
+/// Each call of `calls` in a macro's `(try call (catch :default e ...))`,
+/// giving the caught error's name and message (or the call's value), on
+/// the Goose path as on the V8 build (light-cljs-873).
+#[cfg(light_v8)]
+fn core_errors_match_v8(calls: &[&str]) {
+    let caught: Vec<String> = calls
+        .iter()
+        .map(|call| format!("(try {call} (catch :default e [(.-name e) (.-message e)]))"))
+        .collect();
+    macro_errors_match_v8(&format!("[{}]", caught.join(" ")), None);
+}
+/// The pellet's cases (light-cljs-873): a cljs.core operation's error caught
+/// in a `js*` try is the V8 build's Error, and uncaught it fails the macro
+/// with that Error, not a TypeError.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_core_operations_raise_cljs_core_errors() {
+    for call in ["(nth [1] 10)", "(first 5)", "(assoc [] 3 1)"] {
+        macro_errors_match_v8(
+            &format!(
+                r#"(js* "(() => {{ try {{ return ~{{}}; }} catch (e) {{ return e.name + \":\" + e.message; }} }})()" {call})"#
+            ),
+            None,
+        );
+    }
+    macro_errors_match_v8(
+        "(nth [1] 10)",
+        Some(("Error: Index out of bounds", "HostEffect")),
+    );
+    // An ordinary Error instance: Error.prototype, an own non-enumerable
+    // message, caught by (catch js/Error e ...).
+    macro_errors_match_v8(
+        r#"(try (count :k) (catch js/Error e [(instance? js/Error e) (ex-message e) (js* "Object.getPrototypeOf(~{}) === Error.prototype" e) (js* "Object.getOwnPropertyDescriptor(~{}, 'message').enumerable" e)]))"#,
+        None,
+    );
+}
+/// nth and a vector's call (light-cljs-873): the index's type, bounds as
+/// the runtime finds them (a vector's and a string's index truncated, a
+/// list walked) and the collection's type.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_nth_errors_match_v8() {
+    core_errors_match_v8(&[
+        "(nth [1] -1)",
+        "(nth [1 2] 1.5)",
+        "(nth [1 2] -0.5)",
+        r#"(nth [1] "a")"#,
+        "(nth [1] nil)",
+        "(nth [1] 4294967296)",
+        "(nth '(1 2) 5)",
+        "(nth '(1 2) 1.5)",
+        "(nth (rest [1 2 3]) 5)",
+        r#"(nth "ab" 5)"#,
+        r#"(nth "ab" 1.5)"#,
+        "(nth {:a 1} 0)",
+        "(nth #{1} 0)",
+        "(nth 5 0)",
+        "(nth :k 0)",
+        "(nth nil 0)",
+        r#"(nth nil "a")"#,
+        "(nth [1] 10 :d)",
+        "(nth '(1 2) 1.5 :d)",
+        "(nth 5 0 :d)",
+    ]);
+    core_errors_match_v8(&[
+        "([1] 5)",
+        "([1] -1)",
+        "([1] :a)",
+        "([1] nil)",
+        "([1 2] 1.5)",
+        "([1])",
+        "([1] 0 1 2)",
+    ]);
+}
+/// count, seq, first, rest and next of a value that is not seqable: its
+/// text in the message (light-cljs-873).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_seq_and_count_errors_match_v8() {
+    core_errors_match_v8(&[
+        "(count 5)",
+        "(count :k)",
+        "(count 'a)",
+        "(count true)",
+        "(count nil)",
+        r#"(count "abc")"#,
+        "(seq 5)",
+        "(rest true)",
+        "(next 'x/a)",
+        "(second 5)",
+        "(first :a/k)",
+        "(first 1.5)",
+        "(first 1e21)",
+        "(first false)",
+        "(first #{})",
+        "(first {})",
+        r#"(first "ab")"#,
+    ]);
+}
+/// assoc and conj (light-cljs-873): a vector's key and bounds, a type that
+/// does not support the operation, assoc of nil, and a map's entries.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_assoc_and_conj_errors_match_v8() {
+    core_errors_match_v8(&[
+        "(assoc [] -1 1)",
+        "(assoc [1] 1.5 2)",
+        "(assoc [] :a 1)",
+        "(assoc [] nil 1)",
+        "(assoc 5 :a 1)",
+        "(assoc '(1) 0 1)",
+        "(assoc #{} 1 2)",
+        r#"(assoc "ab" 0 1)"#,
+        "(assoc nil :a 1)",
+        "(assoc [1] 1 2)",
+    ]);
+    core_errors_match_v8(&[
+        "(conj 5 1)",
+        "(conj :k 1)",
+        r#"(conj "ab" 1)"#,
+        "(conj {:a 1} 5)",
+        "(conj {:a 1} :k)",
+        "(conj {:a 1} [1])",
+        "(conj {:a 1} '([:b 2] 5))",
+        "(conj {:a 1} '([:b 2] [5]))",
+        r#"(conj {:a 1} "x")"#,
+        "(conj {:a 1} [:b 2])",
+        "(conj {} [1 2 3])",
+        "(conj {:a 1} {:b 2 :a 3})",
+        "(conj {:a 1} '([:b 2] [:c 3]))",
+        "(conj {:a 1} nil)",
+        "(conj #{1} 2)",
+        "(conj #{1} 1)",
+        "(conj (rest [1 2]) 0)",
+    ]);
+}
+/// Atoms, volatiles and the runtime leaves that seq their source
+/// (light-cljs-873): the protocol errors and deref's.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_reference_and_leaf_errors_match_v8() {
+    core_errors_match_v8(&[
+        "(deref 5)",
+        "(deref nil)",
+        "(deref [1])",
+        "(swap! 5 inc)",
+        "(swap! (volatile! 1) inc)",
+        "(reset! nil 1)",
+        "(reset! (volatile! 1) 2)",
+        "(vreset! (atom 1) 2)",
+        "(compare-and-set! 5 1 2)",
+        "(compare-and-set! (volatile! 1) 1 2)",
+        "(swap-vals! 5 inc)",
+        "(reset-vals! (volatile! 1) 2)",
+        "(add-watch 5 :k inc)",
+        "(remove-watch (volatile! 1) :k)",
+        "(set-validator! 5 inc)",
+    ]);
+    core_errors_match_v8(&[
+        "(mapv inc 5)",
+        "(vec :k)",
+        "(into [] 5)",
+        "(into 5 [1])",
+        "(into 5 [])",
+        "(into {} [[:a 1]])",
+        "(into #{} [1 1 2])",
+        "(sequence 5)",
+        "(get-in {:a 1} :a)",
+    ]);
 }
 /// Control flow across helper waits (light-cljs-803): a pending Return,
 /// Throw or Jump completion of a finally block that demands a root, and a
