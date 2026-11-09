@@ -8,9 +8,8 @@
 // and user_tags_and_proxy_dispatch (100) for the values Goose has today.
 // Left out: `__rt` rows and opcode checks; Object.hasOwn and
 // Object.prototype.hasOwnProperty, which the Pants engine does not have (they are
-// objects_own_property_reads, scored against QuickJS alone); an
-// @@toStringTag getter, which Goose's toString refuses (light-cljs-884); the
-// tags of Symbol (light-cljs-885), BigInt (light-cljs-771), Math and JSON
+// objects_own_property_reads, scored against QuickJS alone); a proxy's
+// @@toStringTag read (light-cljs-890); the tags of Symbol (light-cljs-885), BigInt (light-cljs-771), Math and JSON
 // (light-cljs-767), Date and RegExp (light-cljs-770), Promise and async
 // generators (light-cljs-768), Map, Set, weak collections, typed arrays and
 // ArrayBuffer (light-cljs-769), disposable stacks (light-cljs-772), Intl
@@ -188,6 +187,16 @@ row(Object.prototype.toString.call(''[Symbol.iterator]()) === '[object String It
   let o = {[Symbol.toStringTag]: '\ud800'};
   row(Object.prototype.toString.call(o) === '[object \ud800]');
 }
+// An @@toStringTag getter (object_to_string.rs lines 105, 120 and 123;
+// light-cljs-884's Statics frame), through every caller.
+{
+  let calls = 0, o = Object.create({get [Symbol.toStringTag]() { calls++; return this.x; }}); o.x = 'Inherited';
+  row(Object.prototype.toString.call(o) === '[object Inherited]' && calls === 1);
+}
+{ let a = []; a.join = 0; Object.defineProperty(a, Symbol.toStringTag, {get() { return 'Fallback'; }}); row(Array.prototype.toString.call(a) === '[object Fallback]'); }
+{ let caught = false; try { Object.prototype.toString.call({get [Symbol.toStringTag]() { throw 42; }}); } catch (e) { caught = e === 42; } row(caught); }
+{ let o = {get [Symbol.toStringTag]() { return 'G'; }}; row(String(o) + `${o}` + (o + '') === '[object G][object G][object G]' && [o].join() === '[object G]'); }
+{ let o = {get [Symbol.toStringTag]() { return 7; }}; row(Object.prototype.toString.call(o) === '[object Object]'); }
 // The planner's rows (light-cljs-766).
 row((Object.prototype.toString.call({[Symbol.toStringTag]: 'T'})) === "[object T]");
 row((Object.prototype.toString.call([]) + Object.prototype.toString.call(null) + Object.prototype.toString.call(function () {})) === "[object Array][object Null][object Function]");

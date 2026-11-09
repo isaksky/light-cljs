@@ -323,17 +323,15 @@ fn to_string_step(job: Job&, frame: Frame) {
     let heap .= job.heap; let b = Builtin.ArrayPrototypeToString; let at = job.frames.len - 1;
     if frame.pc == 2 { finish_native(job, frame, job.operands.pop()); return; }
     let f = job.operands.pop();
-    if !callable(heap, f) {
-        let r = object_tag(job, frame.input);
-        if heap.fault == Fault.None { finish_native(job, frame, r); }
-        return;
-    }
+    // %Object.prototype.toString%, whose @@toStringTag getter runs in a
+    // Statics frame above this one (light-cljs-884); its result arrives at pc 2.
+    if !callable(heap, f) { job.frames[at].pc = 2; start_conditional_native(job, Builtin.ObjectPrototypeToString, frame.input, [], job.operands.len); return; }
     job.frames[at].pc = 2;
     if node(heap, f.id()).kind == node_kind::Closure { push_frame(job, f, frame.input, [], false, job.operands.len); return; }
     if is_bound(heap, f) { start_bound(job, f, frame.input, [], job.operands.len); return; }
     let c = builtin_of(heap, f.id());
     if array_native(c) || forwarding(c) { native_start(job, c, frame.input, [], job.operands.len); return; }
-    if error_native(c) { start_error_native(job, c, frame.input, [], job.operands.len); return; }
+    if conditional_native(c) { start_conditional_native(job, c, frame.input, [], job.operands.len); return; }
     if effect_builtin(c) || native_builtin(c) || c == Builtin.Mapv || c == Builtin.MapSeq || c == Builtin.FunctionPrototypeCall || forces(heap, c, []) { unsupported_step(job, b, "a host-effect or native-frame built-in as join"); return; }
     let r = call_builtin(job, node(heap, f.id()).function, frame.input, []);
     if heap.fault == Fault.None { job.operands.push(r); }

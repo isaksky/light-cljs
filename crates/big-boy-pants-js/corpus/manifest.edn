@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "ef568f204270c19c7061ebdfc238c4d46f8323ad83908297dcbde6721c64e61c",
+  "118f30712b7f3b506986d9a761fbe21f7e3cd2be1f9f09ac0bb8db3892f63367",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -473,6 +473,14 @@
   "1068a1ec25cfc5bcc778a133e363570d16a78481bdb936a0626ac7f22ffb5afe",
   "corpus/serial/object-rest.js"
   "7d53bf63de3cb6aa3978a324901c38db5308ac5bb8e582244ba814e219f0a98c",
+  "corpus/serial/object-statics-wait.gsp"
+  "334bd4735ab8f2aaba98e201383e07bd15b79289ca1cb176a64bec4b142d9fdd",
+  "corpus/serial/object-statics-wait.js"
+  "e61c0dd23c67ae14c8c17dc07b4bba9f8898ca8a211fba2ceff4dc3732c09226",
+  "corpus/serial/object-statics.gsp"
+  "864d95378c8a132af4f24ab020dd0f39ac299f8657b28d11e42528e4694b56c2",
+  "corpus/serial/object-statics.js"
+  "0e9add5b351266c389aa33d2350fe304b957020cd2a2f863dcda85319bdf7cd4",
   "corpus/serial/primitive-methods.gsp"
   "1c408a94acda3bd6247c1cf2cebc4fecd971a9939bc6575a2a92f21e1e86eed8",
   "corpus/serial/primitive-methods.js"

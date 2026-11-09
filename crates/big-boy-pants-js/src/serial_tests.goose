@@ -745,6 +745,9 @@ fn main() {
     check(embed_file("../corpus/serial/define-property-frames.gsp"), "boolean:true");
     // Objects made non-extensible, sealed and frozen (light-cljs-882).
     check(embed_file("../corpus/serial/integrity-levels.gsp"), "boolean:true");
+    // The Object statics that expose own keys (light-cljs-884): their Statics
+    // frames, iterator closing and proxy traps at every budget cut.
+    check(embed_file("../corpus/serial/object-statics.gsp"), "boolean:true");
     // A generator function's `constructor` is %GeneratorFunction%, pending
     // for the generators area (light-cljs-768), never Function.
     check(embed_file("../corpus/serial/function-kind-constructor.gsp"), "Fault.UnsupportedOperand:pending-constructor", source::Fault.UnsupportedOperand);
@@ -913,7 +916,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/integrity-levels.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
@@ -1517,8 +1520,11 @@ thread_fn property_model() {
     // implement (a pending property) fails by name; under a null prototype
     // both are simply absent.
     let found = source::get(heap, c3, source::text(heap, "toString")); assert(heap.fault == source::Fault.None && found.is_object() && source::node(heap, found.id()).kind == node_kind::Builtin);
-    source::get(heap, c3, source::text(heap, "propertyIsEnumerable")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
-    assert(source::set_prototype(heap, c1.id(), source::nil()) && source::get(heap, c3, source::text(heap, "toString")).is_undefined() && source::get(heap, c3, source::text(heap, "propertyIsEnumerable")).is_undefined() && heap.fault == source::Fault.None);
+    // (Object.prototype has no pending name since light-cljs-884: an array
+    // reads Array.prototype's pending `at`.)
+    let listing = source::allocate(heap, source::Node { kind: node_kind::Array });
+    source::get(heap, listing, source::text(heap, "at")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(source::set_prototype(heap, c1.id(), source::nil()) && source::get(heap, c3, source::text(heap, "toString")).is_undefined() && source::get(heap, c3, source::text(heap, "at")).is_undefined() && heap.fault == source::Fault.None);
     // Past shape_limit() keys an object turns to dictionary mode.
     let big = source::allocate(heap, source::Node { kind: node_kind::Object });
     for i in source::shape_limit() + 1 { assert(source::put(heap, big, source::text(heap, str("k", i)), source::number(i))); }
@@ -1614,10 +1620,10 @@ thread_fn named_model() {
     assert(source::get(heap, g, source::text(heap, "prototype")).is_undefined() && source::materialize_function(heap, g.id()) && source::put(heap, g, source::text(heap, "y"), source::number(2)) && source::get(heap, g, source::text(heap, "call")) == heap.call_method);
     var arrow_keys: source::Value[>..] = []; assert(source::own_keys(heap, g, arrow_keys) && arrow_keys.len == 3);
     for name, i in ["length", "name", "y"] { assert(source::key_is(heap, arrow_keys[i], name)); }
-    // Inherited: Function.prototype.toString (light-cljs-853), and a pending
-    // Object.prototype name fails by name.
+    // Inherited: Function.prototype.toString (light-cljs-853) and
+    // Object.prototype.propertyIsEnumerable (light-cljs-884).
     let to_text = source::get(heap, g, source::text(heap, "toString")); assert(heap.fault == source::Fault.None && to_text.is_object() && source::builtin_of(heap, to_text.id()) == source::Builtin.FunctionPrototypeToString);
-    source::get(heap, g, source::text(heap, "propertyIsEnumerable")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    let enumerable = source::get(heap, g, source::text(heap, "propertyIsEnumerable")); assert(heap.fault == source::Fault.None && enumerable.is_object() && source::builtin_of(heap, enumerable.id()) == source::Builtin.ObjectPrototypePropertyIsEnumerable);
     // Snapshots validate arrays' and closures' shapes and records.
     var c = snapshot::Control {};
     let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: f }, snapshot::Binding { id: 1, generation: 1, value: g }, snapshot::Binding { id: 2, generation: 1, value: a }, snapshot::Binding { id: 3, generation: 1, value: b }], c);

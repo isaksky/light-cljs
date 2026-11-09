@@ -2131,6 +2131,13 @@ mod serial_tests {
             // made non-extensible, sealed and frozen survive every budget
             // cut and collection (serial_tests.goose).
             ("integrity-levels", "boolean:true"),
+            // The Object statics that expose own keys (light-cljs-884): the
+            // Statics native frame at every budget cut and collection
+            // (serial_tests.goose), and a dependency wait in each of its
+            // phases (snapshot_tests.goose). Both use built-ins the Pants
+            // engine lacks (Object.groupBy, hasOwn, toLocaleString).
+            ("object-statics", "goose"),
+            ("object-statics-wait", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

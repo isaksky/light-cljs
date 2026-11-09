@@ -19,6 +19,7 @@ import .templates;
 import .descriptors;
 import .integrity;
 import .prototypes;
+import .object_statics;
 
 namespace source;
 
@@ -155,7 +156,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -669,10 +670,14 @@ root struct Heap {
 //   ErrorText    Error.prototype.toString when a read or conversion runs
 //                JavaScript (light-cljs-870; realm.goose, which gives its
 //                fields and phases).
+//   Statics      the Object statics that expose own keys, Reflect.ownKeys
+//                and has, and toString's @@toStringTag getter
+//                (light-cljs-884; object_statics.goose, which gives their
+//                fields and phases), its Builtin the payload.
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -3969,6 +3974,7 @@ fn native_step(job: Job&) {
         ErrorConstruct e => { error_construct_step(job, frame, e.which); },
         ErrorText => { error_text_step(job, frame); },
         Descriptor d => { descriptor_step(job, frame, d.which); },
+        Statics s => { statics_step(job, frame, s.which); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -4041,7 +4047,7 @@ fn builtin_callback(job: Job&, callee: Value, receiver: Value, arg: Value, frame
     else if forces(job.heap, b, [arg]) { start_force(job, b, arg, job.operands.len); }
     else if effect_builtin(b) { request_effect(job, id, [arg], frame); }
     else if forwarding(b) { native_start(job, b, receiver, [arg], job.operands.len); }
-    else if error_native(b) { start_error_native(job, b, receiver, [arg], job.operands.len); }
+    else if conditional_native(b) { start_conditional_native(job, b, receiver, [arg], job.operands.len); }
     else { let v = call_builtin(job, id, receiver, [arg]); job.operands.push(v); }
 }
 // Pop a finished native frame and deliver its result to the frame below.
@@ -4219,7 +4225,7 @@ fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:])
     // Function.prototype.toString (light-cljs-853): its FunctionText frame, if it needs one.
     if b == Builtin.FunctionPrototypeToString { start_function_text(job, v, job.operands.len); return; }
     // Error.prototype.toString (light-cljs-870): its ErrorText frame, if it needs one.
-    if error_native(b) { start_error_native(job, b, v, args, job.operands.len); return; }
+    if conditional_native(b) { start_conditional_native(job, b, v, args, job.operands.len); return; }
     if effect_builtin(b) || native_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq || forces(heap, b, args) { unsupported_step(job, b, "as a ToPrimitive method"); return; }
     let r = call_builtin(job, node(heap, m.id()).function, v, args);
     if heap.fault == Fault.None { job.operands.push(r); }
@@ -5132,7 +5138,7 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
             }
         } else if forces(heap, BUILTINS[id].which, args) { let d = args[0]; start_force(job, BUILTINS[id].which, d, base);
         } else if BUILTINS[id].which == Builtin.FunctionPrototypeToString { start_function_text(job, receiver, base);
-        } else if error_native(BUILTINS[id].which) { start_error_native(job, BUILTINS[id].which, receiver, args, base);
+        } else if conditional_native(BUILTINS[id].which) { start_conditional_native(job, BUILTINS[id].which, receiver, args, base);
         } else if native_builtin(BUILTINS[id].which) { native_start(job, BUILTINS[id].which, receiver, args, base);
         } else if id == 5 && job.gensym_next > 0 { let value = gensym(job, args); job.operands.resize(base); job.operands.push(value); }
         else if id >= 5 && id <= 8 { request_effect(job, id, args, frame_at(job, top, at)); job.operands.resize(base); }

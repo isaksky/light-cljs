@@ -320,8 +320,37 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         Descriptor d => source::descriptor_native(d.which) && f.pc >= 0 && f.pc <= 2 && object_of(s, f.input, node_kind::None)
             && (if d.which == source::Builtin.ObjectDefineProperties { f.pc != 0 && object_of(s, f.output, node_kind::KeyList) && f.argument_count >= 0 && f.argument_count < s.nodes[f.output.id()].key_count } else { if f.pc == 0 { f.output.is_undefined() } else { f.pc == 2 && (f.output.is_string() || f.output.is_symbol()) } })
             && (f.pc != 2 || f.index >= 0 && f.index < source::FIELD_NAMES.len && object_of(s, f.callee, node_kind::KeyList) && object_of(s, f.receiver, node_kind::None)),
+        // A Statics frame (light-cljs-884, object_statics.goose) awaits one
+        // of its values for its built-in.
+        Statics x => statics_frame_valid(s, f, x.which),
         _ => true,
     };
+}
+// A Statics frame of built-in b (light-cljs-884): the value it awaits is
+// one of its built-in's, and the rows its steps read are there: a key walk's
+// object, result and key list (Undefined while a proxy's keys are listed)
+// with its cursor within the list, Object.assign's sources array, an
+// iteration's result and iterator record, a keyed built-in's proxy.
+fn statics_frame_valid<T>(s: const T&, f: source::SavedFrame, b: source::Builtin) -> bool {
+    let pc = f.pc;
+    if source::statics_walks(b) || source::statics_names(b) {
+        if !object_of(s, f.input, node_kind::None) || !object_of(s, f.output, node_kind::None) { return false; }
+        if b == source::Builtin.ObjectAssign && (!object_of(s, f.receiver, node_kind::Array) || f.argument_count < 1) { return false; }
+        if pc == statics_pc::List { return f.callee.is_undefined() && object_of(s, f.input, node_kind::Proxy) && f.index == 0; }
+        if source::statics_names(b) { return false; }
+        return (pc == statics_pc::Own || pc == statics_pc::Value || pc == statics_pc::Set) && object_of(s, f.callee, node_kind::KeyList) && f.index >= 1 && f.index <= s.nodes[f.callee.id()].key_count
+            && (pc != statics_pc::Own || object_of(s, f.input, node_kind::Proxy));
+    }
+    if source::statics_iterates(b) {
+        if !object_of(s, f.output, node_kind::Object) || (pc < statics_pc::Record || pc > statics_pc::Closed) && pc != statics_pc::Iterable { return false; }
+        if b == source::Builtin.ObjectGroupBy && pc != statics_pc::First && pc != statics_pc::Second && !object_of(s, f.receiver, node_kind::None) { return false; }
+        return pc == statics_pc::Record || pc == statics_pc::Iterable || object_of(s, f.callee, node_kind::Object);
+    }
+    // Reflect.has requires an object target; the others convert theirs later.
+    if source::statics_keyed(b) { return (pc == statics_pc::Key && (b != source::Builtin.ReflectHas || object_of(s, f.input, node_kind::None)) || pc == statics_pc::Own && object_of(s, f.input, node_kind::Proxy)) && f.output.is_undefined(); }
+    if b == source::Builtin.ObjectPrototypeToString { return pc == statics_pc::Tag; }
+    if b == source::Builtin.ObjectPrototypeToLocaleString { return pc == statics_pc::Method || pc == statics_pc::Result; }
+    return false;
 }
 // An activation (light-cljs-813, source::Activation): its runs of Frame,
 // value and Saved rows; its frames bottom first, the first at the run's

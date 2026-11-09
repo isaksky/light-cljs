@@ -555,6 +555,30 @@ Reflect.getPrototypeOf and the `__proto__` getter run a proxy's
 (light-cljs-891), as do forms. A realm row never changes its prototype,
 even in a runner whose jobs may write realm rows.
 
+*As landed by light-cljs-884 (Object statics):* the built-ins that expose
+own keys (Object.keys, values, entries, getOwnPropertyNames,
+getOwnPropertySymbols, getOwnPropertyDescriptors, assign, fromEntries and
+groupBy, Object.prototype.propertyIsEnumerable and toLocaleString,
+Reflect.ownKeys and has) take their keys from `own_property_keys` into
+light-cljs-804's key lists, so no new table exists, and run as one
+resumable native frame, Native.Statics with the built-in as payload
+(`src/object_statics.goose`); a call that meets no getter, setter,
+callback, iterator, key conversion or proxy pushes and pops it in one step,
+as a plain function would. EnumerableOwnProperties and Object.assign
+re-read each key's [[GetOwnProperty]] just before using it. Object.fromEntries
+and Object.groupBy iterate through `get_iterator` and hold a Catch handler
+on their own frame while an item is processed, so an abrupt completion
+there closes the iterator (its `return`'s exception dropped, the original
+rethrown) and an exception from `next`, `done` or `value` does not; the
+handler is plain handler-stack data, saved with a suspended stack like any
+other. A proxy's [[OwnPropertyKeys]] and [[GetOwnProperty]] run as
+light-cljs-845's Proxy frame above it; its [[Get]], [[Set]] and
+[[HasProperty]] fail by name (light-cljs-890). Object.prototype.toString,
+Object.hasOwn and hasOwnProperty stay plain built-ins, but every caller
+that can start a native frame (`conditional_native`, formerly the error
+built-ins' `error_native`) runs a @@toStringTag getter or a key object's
+ToPrimitive in the same frame.
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

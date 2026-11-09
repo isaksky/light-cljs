@@ -198,6 +198,9 @@
   "bbp/objects_prototype_reflection" {:area :objects-classes}
   "bbp/objects_proto_accessor" {:area :objects-classes}
   "bbp/objects_proto_accessor_sloppy" {:area :objects-classes :mode :sloppy}
+  "bbp/objects_statics_keys" {:area :objects-classes}
+  "bbp/objects_statics_assign_entries" {:area :objects-classes}
+  "bbp/objects_statics_quickjs" {:area :objects-classes :pants-gap "the Pants engine has no Object.groupBy, Object.getOwnPropertySymbols, Object.prototype.propertyIsEnumerable or toLocaleString"}
   "bbp/objects_prototype_quickjs" {:area :objects-classes :pants-gap "the Pants engine has no Object.prototype.isPrototypeOf, refuses Object.create's properties argument and changing a function's prototype (rust/src/vm/prototype.rs set_prototype_of, object_create), has no Number.prototype for Object.getPrototypeOf(1), and throws where Reflect.setPrototypeOf of a built-in object answers false"}
   "bbp/realm_builtin_functions" {:area :core-builtins}
   "bbp/realm_errors" {:area :exceptions}

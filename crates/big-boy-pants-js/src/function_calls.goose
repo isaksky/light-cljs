@@ -264,7 +264,7 @@ fn forward_run(job: Job&, at: i64, constructs: bool) {
     job.frames.pop();
     if forces(heap, b, args) { start_force(job, b, args[0], base); return; }
     if b == Builtin.FunctionPrototypeToString { start_function_text(job, receiver, base); return; }
-    if error_native(b) { start_error_native(job, b, receiver, args, base); return; }
+    if conditional_native(b) { start_conditional_native(job, b, receiver, args, base); return; }
     if native_builtin(b) { native_start(job, b, receiver, args, base); return; }
     if b == Builtin.Gensym && job.gensym_next > 0 { let v = gensym(job, args); job.operands.resize(base); job.operands.push(v); return; }
     if effect_builtin(b) { request_effect(job, id, args, frame); job.operands.resize(base); return; }
