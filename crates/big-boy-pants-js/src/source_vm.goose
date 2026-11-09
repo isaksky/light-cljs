@@ -4069,22 +4069,42 @@ fn length_converts(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
 }
 // An assignment's array `length` write of an object (length_converts): a
 // Setter frame at pc Length holding the array, key k, the assignment's
-// result and whether it is strict, with the value converting above it
-// (ToPrimitive with hint number, then ToNumber); length_step writes the
-// number.
+// result and whether it is strict, with two copies of the value converting
+// above it, in order (ToPrimitive with hint number, then ToNumber, each):
+// ArraySetLength's ToUint32 and ToNumber both convert the original value
+// (steps 3 and 4), as QuickJS does. length_step compares and writes.
 fn start_length(job: Job&, object: Value, k: Value, value: Value, result: Value, strict: bool) {
     if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return; }
     job.frames.push(Frame { function: -1, pc: setter_pc::Length, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: object, input: k, output: result, index: if strict { 1 } else { 0 }, native: Native.Setter });
-    job.operands.push(value);
-    start_convert(job, Hint.Number, true, 1, 1);
+    job.operands.push(value); job.operands.push(value);
+    start_convert(job, Hint.Number, true, 2, 2);
+}
+// ArraySetLength steps 3 to 5 once both conversions of an object length
+// are numbers (on the operand top, the first below): the first's ToUint32,
+// which must equal the second, else a RangeError, checked before the
+// length's writability (light-cljs-893).
+fn converted_length(job: Job&) -> Value {
+    let second = job.operands.pop(); let first = job.operands.pop();
+    if !first.is_number() || !second.is_number() { job.heap.fault = Fault.InvalidState; return Value.Undefined; }
+    let u = to_uint32(first.num()) as f64;
+    if u != second.num() { job.detail.clear(); for c in "invalid array length" { job.detail.push(c); } job.heap.fault = Fault.RangeError; return Value.Undefined; }
+    return number(u);
+}
+// Whether a converted length n leaves `object`'s read-only length as it is:
+// ArraySetLength's OrdinaryDefineOwnProperty accepts an unchanged value
+// (a conversion may have made the length read-only).
+fn length_kept(heap: Heap&, object: Value, n: Value) -> bool {
+    return read_only_length(heap, object.id()) && (node(heap, object.id()).length as f64) == n.num();
 }
 // The converted length arrived: [[Set]] it as set_property does, then
 // deliver the assignment's result. The conversion may have changed the
 // array (frozen it, grown it); the write sees it as it is now.
 fn length_step(job: Job&, frame: Frame) {
     let heap .= job.heap;
-    let n = job.operands.pop();
+    let n = converted_length(job);
+    if heap.fault != Fault.None { return; }
     let object = frame.receiver; let k = frame.input;
+    if length_kept(heap, object, n) { finish_native(job, frame, frame.output); return; }
     let setter, ok = write(heap, object, k, n);
     if heap.fault != Fault.None { property_fault(job, object, k, true, true); return; }
     if setter.is_object() { heap.fault = Fault.InvalidState; return; }

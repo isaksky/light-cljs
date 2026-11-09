@@ -4,10 +4,13 @@
 // hint number). An array's `length` written with an object value, by
 // assignment and by Object.assign: [Symbol.toPrimitive], then valueOf, then
 // toString; an invalid result is a RangeError, a thrown conversion
-// propagates, the conversion runs before the new length applies. Left out:
-// how many times the conversion runs (the specification and QuickJS
-// convert twice), and whether a read-only length converts before it
-// refuses (QuickJS converts, the specification's OrdinarySet does not).
+// propagates, the conversion runs before the new length applies. The value
+// converts twice (ToUint32, then ToNumber, of the original value), and the
+// results must agree; that check comes before the length's writability.
+// Left out: whether a length read-only before the assignment converts
+// before it refuses (QuickJS converts, the specification's OrdinarySet does
+// not), and a conversion that makes the length read-only and returns it
+// unchanged (the specification accepts it, QuickJS throws a TypeError).
 // Primitive values are array_length_set_converts. Each row is a `row(...)`
 // check; the script completes with the number of rows, or minus the first
 // failing row's number.
@@ -20,7 +23,7 @@ function name(thunk) { try { thunk(); return "none"; } catch (e) { return e.name
 { let a = [1, 2, 3]; a.length = [2]; row(a.length === 2); }
 { let a = [1, 2, 3]; a['length'] = new Number(1); row(a.length === 1); }
 { let a = [1, 2, 3]; let k = 'length'; a[k] = new String('0'); row(a.length === 0); }
-{ let a = [1, 2, 3], calls = 0, other = false; a.length = { [Symbol.toPrimitive](h) { calls++; if (h !== 'number') other = true; return 2; } }; row(a.length === 2 && calls > 0 && !other); }
+{ let a = [1, 2, 3], calls = 0, other = false; a.length = { [Symbol.toPrimitive](h) { calls++; if (h !== 'number') other = true; return 2; } }; row(a.length === 2 && calls === 2 && !other); }
 { let a = [1, 2, 3]; row(name(() => { a.length = {}; }) === "RangeError" && a.length === 3); }
 { let a = [1, 2, 3]; row(name(() => { a.length = { valueOf() { return 1.5; } }; }) === "RangeError" && a.length === 3); }
 { let a = [1, 2, 3]; row(name(() => { a.length = { valueOf() { throw new SyntaxError('v'); } }; }) === "SyntaxError" && a.length === 3); }
@@ -37,4 +40,15 @@ row(Object.assign([1, 2, 3], { length: [1] }).length === 1);
 { let a = [1, 2, 3]; row(name(() => Object.assign(a, { length: { valueOf() { return -1; } } })) === "RangeError" && a.length === 3); }
 { let a = [1, 2, 3]; Object.assign(a, { length: { valueOf() { return 1; } }, x: 5 }, { 3: 'd' }); row(a.length === 4 && a.x === 5 && a[3] === 'd' && a[1] === undefined); }
 { let a = [1, 2, 3]; row(name(() => Object.assign(a, { x: 1, length: { valueOf() { throw new EvalError('e'); } }, y: 2 })) === "EvalError" && a.x === 1 && !('y' in a) && a.length === 3); }
+// Both conversions run on the original value, in order, and must agree.
+{ let a = [1, 2, 3], n = 0; row(name(() => { a.length = { valueOf() { return ++n; } }; }) === "RangeError" && n === 2 && a.length === 3); }
+{ let a = [1, 2, 3], n = 0; a.length = { valueOf() { return ++n === 1 ? 4294967297 : 1; } }; row(n === 2 && a.length === 1); }
+{ let a = [1, 2, 3], n = 0; row(name(() => { a.length = { valueOf() { if (++n === 2) throw new URIError('u'); return 1; } }; }) === "URIError" && n === 2 && a.length === 3); }
+{ let a = [1, 2, 3], n = 0; row(name(() => Object.assign(a, { length: { valueOf() { return ++n; } } })) === "RangeError" && n === 2 && a.length === 3); }
+{ let a = [1, 2, 3], n = 0; Object.assign(a, { length: { valueOf() { return ++n === 1 ? 4294967297 : 1; } } }); row(n === 2 && a.length === 1); }
+// A conversion that makes the length read-only: an invalid number is still
+// a RangeError; another is refused.
+{ let a = [1, 2, 3]; row(name(() => { a.length = { valueOf() { Object.defineProperty(a, 'length', { writable: false }); return -1; } }; }) === "RangeError" && a.length === 3); }
+{ let a = [1, 2, 3]; row(name(() => Object.assign(a, { length: { valueOf() { Object.defineProperty(a, 'length', { writable: false }); return -1; } } })) === "RangeError" && a.length === 3); }
+{ let a = [1, 2, 3]; row(name(() => { a.length = { valueOf() { Object.defineProperty(a, 'length', { writable: false }); return 1; } }; }) === "TypeError" && a.length === 3); }
 failed === 0 ? rows : -failed;

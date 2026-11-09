@@ -96,6 +96,7 @@ let statics_pc::Tag = 16;
 let statics_pc::Method = 17;
 let statics_pc::Result = 18;
 let statics_pc::Iterable = 19;
+let statics_pc::Length = 20;
 
 // The built-ins that always start a Statics frame (native_start).
 fn statics_native(b: Builtin) -> bool {
@@ -256,12 +257,13 @@ fn use_value(job: Job&, at: i64, b: Builtin, k: Value, v: Value) -> bool {
     if !writable(job, out.id()) { heap.fault = Fault.NativeBoundary; return false; }
     prepare_function(job, out, k, true);
     prepare_function(job, out, k, false);
-    // An array target's `length` set to an object (light-cljs-893): its
-    // ToPrimitive with hint number, then ToNumber, in a Convert frame
-    // above this one; the number arrives at pc Value, which sets it here.
+    // An array target's `length` set to an object (light-cljs-893): two
+    // conversions of it (ToPrimitive with hint number, then ToNumber; see
+    // start_length) in a Convert frame above this one; pc Length compares
+    // them and sets the number here.
     if heap.fault == Fault.None && length_converts(heap, out, k, v) {
-        job.frames[at].pc = statics_pc::Value;
-        if push_operand(job, v) { start_convert(job, Hint.Number, true, 1, 1); }
+        job.frames[at].pc = statics_pc::Length;
+        if push_operand(job, v) && push_operand(job, v) { start_convert(job, Hint.Number, true, 2, 2); }
         return false;
     }
     let setter, ok = write(heap, out, k, v);
@@ -583,6 +585,16 @@ fn locale_call(job: Job&, at: i64, m: Value) {
 // ---- The frame's step
 fn statics_step(job: Job&, frame: Frame, b: Builtin) {
     let heap .= job.heap; let at = job.frames.len - 1;
+    // Object.assign's converted array length: both conversions are
+    // operands (converted_length), checked before the write (use_value).
+    if frame.pc == statics_pc::Length {
+        let n = converted_length(job);
+        if heap.fault != Fault.None { return; }
+        let list = frame.callee;
+        let k = property_row(heap, node(heap, list.id()).keys + frame.index - 1).key;
+        if length_kept(heap, frame.output, n) || use_value(job, at, b, k, n) { walk_keys(job, at, b); }
+        return;
+    }
     let v = job.operands.pop();
     match frame.pc {
         statics_pc::List => {

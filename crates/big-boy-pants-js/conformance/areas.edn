@@ -58,6 +58,7 @@
   "bbp/array_named_properties" {:area :objects-classes}
   "bbp/array_length_set_converts" {:area :objects-classes}
   "bbp/array_length_set_to_primitive" {:area :objects-classes :pants-gap "the Pants engine does not run ToPrimitive of an object length (UnsupportedOperand at put_field)"}
+  "bbp/array_length_set_sloppy" {:area :objects-classes :mode :sloppy :pants-gap "the Pants engine does not run ToPrimitive of an object length (UnsupportedOperand at put_field)"}
   "bbp/closure_counter" {:area :functions-scope}
   "bbp/completion_declarations_only" {:area :statements-loops}
   "bbp/completion_break_keeps_value" {:area :statements-loops}
