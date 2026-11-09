@@ -17,6 +17,7 @@ import .function_calls;
 import .runtime_compile;
 import .templates;
 import .descriptors;
+import .integrity;
 
 namespace source;
 
@@ -149,7 +150,7 @@ fn plain_bytes(v: Value, out: u8[>..]&) { out.append(bytes_of([plain(v)])); }
 // Bit-exact value identity: NaN equals itself, -0 differs from +0.
 fn same_bits(a: Value, b: Value) -> bool { return bytes_of([plain(a)]) == bytes_of([plain(b)]); }
 fn plain_bytes(n: Node, out: u8[>..]&) {
-    out.append(bytes_of([n.kind, n.function, n.start, n.count, n.keys, n.key_count, n.key_capacity, n.length, n.origin, n.source, n.span_start, n.span_end, n.shape])); out.append(bytes_of([n.initialized, n.immutable]));
+    out.append(bytes_of([n.kind, n.function, n.start, n.count, n.keys, n.key_count, n.key_capacity, n.length, n.origin, n.source, n.span_start, n.span_end, n.shape])); out.append(bytes_of([n.initialized, n.immutable, n.non_extensible]));
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
@@ -423,10 +424,26 @@ let map_order::Hash = 1;
 // writable, enumerable, configurable data property (a non-writable or
 // non-configurable element, or an accessor), so element writes take the
 // property model's checks.
+// Sealed and Frozen (light-cljs-882, integrity.goose): a dense array that
+// SetIntegrityLevel sealed or froze, every element of its run
+// non-configurable and, Frozen (which sets Sealed too), non-writable, so its
+// elements stay in the run; only a non-extensible array has them, since a
+// new element could not share them. A move to dictionary mode turns them
+// into its records' attributes (array_to_dictionary). A template object and
+// its `raw` (templates.goose) are frozen arrays.
 let array_flag::ReadOnlyLength: u32 = 1;
 let array_flag::Attributed: u32 = 2;
+let array_flag::Sealed: u32 = 4;
+let array_flag::Frozen: u32 = 8;
 inline fn array_flags(n: const Node&) -> u32 { return if n.kind == node_kind::Array { n.function } else { 0 }; }
 inline fn read_only_length(heap: const Heap&, o: i64) -> bool { return array_flags(node(heap, o)) & array_flag::ReadOnlyLength != 0; }
+// The attributes of a dense array's elements (array_flag).
+inline fn element_attrs(n: const Node&) -> u8 {
+    let f = array_flags(n);
+    return if f & array_flag::Frozen != 0 { attr_enumerable() } else if f & array_flag::Sealed != 0 { attr_writable() | attr_enumerable() } else { attrs_data() };
+}
+// Whether node o is a frozen array (array_flag::Frozen).
+checkfree inline fn frozen_array(heap: const Heap&, o: i64) -> bool { let n .= node(heap, o); return n.kind == node_kind::Array && n.function & array_flag::Frozen != 0; }
 // A sequence's (node_kind::Concat) flavor, its node's `length`
 // (light-cljs-877): an ordinary sequence, or a realized integer range
 // (realm.goose core_range), which nth indexes as the V8 build's
@@ -441,6 +458,11 @@ inline fn hash_ordered(n: Node) -> bool { return (n.kind == node_kind::Map || n.
 // element run.
 // An arguments object is an ordinary object with its element run.
 // Closure immutable marks fnApplyNull's immutable receiver convention.
+// non_extensible is a JavaScript object's [[Extensible]] cleared
+// (light-cljs-882, integrity.goose): set only on the kinds with own
+// properties (snapshot.goose named), never cleared, and only by the job
+// that allocated the node (or the realm, for %ThrowTypeError%). A
+// non-extensible object refuses a new property and another prototype.
 // Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
 // Metadata/origin belong to the occurrence, independently of value equality.
@@ -470,7 +492,7 @@ inline fn hash_ordered(n: Node) -> bool { return (n.kind == node_kind::Map || n.
 // array and a closure in shape mode (their `start` and `count` are the
 // elements or the captures), a dictionary array's names among its index
 // records. Other kinds keep no own properties.
-struct Node { kind: i64, function: u32 = 0, start: u32 = 0, count: u32 = 0, keys: u32 = 0, key_count: u32 = 0, key_capacity: u32 = 0, length: u32 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: u32 = 4294967295, span_start: u32 = 0, span_end: u32 = 0, shape: u32 = 0, proto: Value = Value.Empty, slots: Value[2] = [Value.Undefined; 2] }
+struct Node { kind: i64, function: u32 = 0, start: u32 = 0, count: u32 = 0, keys: u32 = 0, key_count: u32 = 0, key_capacity: u32 = 0, length: u32 = 0, initialized: bool = false, immutable: bool = false, non_extensible: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: u32 = 4294967295, span_start: u32 = 0, span_end: u32 = 0, shape: u32 = 0, proto: Value = Value.Empty, slots: Value[2] = [Value.Undefined; 2] }
 // A form source row: its text in the owner's source bytes (`identity` -1),
 // or, from the compiler (GFB2, light-cljs-817), the compiler's identity for
 // the source and its byte length, with no text (`start` 0). Goose never
@@ -1327,8 +1349,14 @@ fn own_element(heap: Heap&, array: Value, i: i64) -> Value, bool {
 // More than doubling the run would leave most of its slots holes.
 fn sparse_write(count: i64, i: i64) -> bool { return i >= count && i > 2 * count + 1024; }
 fn set_element(heap: Heap&, array: Value, i: i64, value: Value) -> bool {
-    // A built-in's CreateDataPropertyOrThrow into a frozen array (templates.goose).
-    if node(heap, array.id()).immutable { heap.fault = Fault.TypeError; return false; }
+    // A built-in's CreateDataPropertyOrThrow into a frozen array, or of a
+    // new element of a non-extensible one (light-cljs-882); assignment and
+    // definition refuse these before they get here.
+    if node(heap, array.id()).non_extensible {
+        let v, found = own_element(heap, array, i);
+        if heap.fault != Fault.None { return false; }
+        if !found || frozen_array(heap, array.id()) { heap.fault = Fault.TypeError; return false; }
+    }
     if i >= heap.limits.values { return memory(heap); }
     if !node(heap, array.id()).initialized && sparse_write(node(heap, array.id()).count, i) && !array_to_dictionary(heap, array) { return false; }
     if node(heap, array.id()).initialized {
@@ -1413,6 +1441,8 @@ fn as_element(heap: const Heap&, o: i64, i: i64) -> bool { return i >= 0 && !spa
 // unowned).
 fn array_to_dictionary(heap: Heap&, array: Value) -> bool {
     let o = array.id(); let start = node(heap, o).start; let count = node(heap, o).count; let end = min(node(heap, o).length, count);
+    // A sealed or frozen array's elements keep their attributes as records.
+    let attrs = element_attrs(node(heap, o)); let integrity = node(heap, o).function & (array_flag::Sealed | array_flag::Frozen);
     let named: i64 = node(heap, o).key_count;
     var records: i64 = 0; for i in end { if !slot(heap, start + i).is_hole() { records += 1; } }
     let capacity = max(4, records + named);
@@ -1425,7 +1455,7 @@ fn array_to_dictionary(heap: Heap&, array: Value) -> bool {
         if v.is_hole() { continue; }
         let k = index_key(heap, i);
         if heap.fault != Fault.None { return false; }
-        built.push(Property { key: k, value: v, attrs: attrs_data() });
+        built.push(Property { key: k, value: v, attrs: attrs });
     }
     let base = built.len; built.resize(base + named, Property {});
     var s: i64 = node(heap, o).shape;
@@ -1434,6 +1464,7 @@ fn array_to_dictionary(heap: Heap&, array: Value) -> bool {
     for row in start..(start + count) { set_slot(heap, row, Value.Undefined); }
     for i in named { set_slot_value(heap, o, i, Value.Undefined); }
     node_mut(heap, o).keys = run as u32; node_mut(heap, o).key_count = built.len as u32; node_mut(heap, o).key_capacity = capacity as u32; node_mut(heap, o).initialized = true; node_mut(heap, o).count = 0; node_mut(heap, o).shape = 0;
+    if integrity != 0 { node_mut(heap, o).function = (node(heap, o).function & ~integrity) | array_flag::Attributed; }
     for p, i in built { set_dict_at(heap, o, i, p); }
     return true;
 }
@@ -1637,6 +1668,31 @@ fn to_dictionary(heap: Heap&, o: i64) -> bool {
     while s != 0 { let e = shape_row(heap, s); set_property_row(heap, at + e.count - 1, Property { key: e.key, value: slot_value(heap, o, e.count - 1), attrs: e.attrs }); s = e.parent; }
     for i in count { set_slot_value(heap, o, i, Value.Undefined); }
     node_mut(heap, o).initialized = true; node_mut(heap, o).shape = 0; node_mut(heap, o).keys = at as u32; node_mut(heap, o).key_capacity = capacity as u32;
+    return true;
+}
+// SetIntegrityLevel's attributes (light-cljs-882, integrity.goose): attrs
+// not configurable and, `frozen`, a data property's not writable either.
+inline fn restricted(attrs: u8, accessor: bool, frozen: bool) -> u8 {
+    let a = attrs & ~attr_configurable();
+    return if frozen && !accessor { a & ~attr_writable() } else { a };
+}
+// Give every property of shape-mode object o restricted attributes: a new
+// chain of transitions from the empty shape with the same keys in the same
+// order, so each value keeps its slot and objects sealed or frozen alike
+// share shapes. A rejection leaves the object as it was.
+fn restrict_shape(heap: Heap&, o: i64, frozen: bool) -> bool {
+    var chain: Shape[>..] = [];
+    var s:     i64        = node(heap, o).shape;
+    while s != 0 { chain.push(shape_row(heap, s)); s = shape_row(heap, s).parent; }
+    if !charge(heap, chain.len) { return false; }
+    var at: i64 = 0; var i = chain.len;
+    while i > 0 {
+        i -= 1;
+        let e = chain[i];
+        at = transition(heap, at, e.key, restricted(e.attrs, is_accessor(slot_value(heap, o, e.count - 1)), frozen));
+        if at < 0 { return false; }
+    }
+    node_mut(heap, o).shape = at as u32;
     return true;
 }
 // The record of own property i (find_own's position) once node o is in
@@ -1885,14 +1941,13 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             return find_own(heap, o, k);
         },
         node_kind::Array => {
-            // A frozen array's (templates.goose) are neither writable nor configurable.
-            let fixed = node(heap, o).immutable;
-            if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).length), attrs: if fixed || read_only_length(heap, o) { 0 } else { attr_writable() } }; }
+            if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).length), attrs: if read_only_length(heap, o) { 0 } else { attr_writable() } }; }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Own {}; }
             if i < 0 || node(heap, o).initialized { return find_own(heap, o, k); }
+            // A sealed or frozen array's elements (array_flag) are not configurable.
             let v, found = own_element(heap, object, i);
-            return Own { found: found, index: i, value: v, attrs: if fixed { attr_enumerable() } else { attrs_data() } };
+            return Own { found: found, index: i, value: v, attrs: element_attrs(node(heap, o)) };
         },
         node_kind::Closure => {
             // A lazy closure's `length` and `name` come from its code row.
@@ -1971,22 +2026,24 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     match kind {
         node_kind::Object, node_kind::Arguments, node_kind::Builtin, node_kind::BoundFunction, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {},
         node_kind::Array => {
-            // A frozen array (templates.goose) refuses its `length` and
-            // elements; a name goes on below, where its own non-writable
-            // property or its sealing refuses it.
-            let fixed = node(heap, o).immutable;
-            // A non-writable `length` (light-cljs-881) refuses the write.
-            if key_is(heap, k, "length") { return Value.Undefined, !fixed && !read_only_length(heap, o) && array_length(heap, object, value); }
+            // A non-writable `length` (light-cljs-881) refuses the write; a
+            // name goes on below, where its own non-writable property or
+            // the array's non-extensibility refuses it.
+            if key_is(heap, k, "length") { return Value.Undefined, !read_only_length(heap, o) && array_length(heap, object, value); }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Value.Undefined, false; }
-            if i >= 0 && node(heap, o).function == 0 { return Value.Undefined, !fixed && set_element(heap, object, i, value); }
-            // An array a definition changed (array_flag): its element
-            // record decides as an own property does, and with a
-            // non-writable `length` an index at or past it is refused
-            // (ArrayDefineOwnProperty).
+            if i >= 0 && node(heap, o).function == 0 && !node(heap, o).non_extensible { return Value.Undefined, set_element(heap, object, i, value); }
+            // An array a definition or an integrity level changed
+            // (array_flag) or made non-extensible (light-cljs-882): its
+            // element record or flags decide as an own property does, a
+            // new element is refused, and with a non-writable `length` an
+            // index at or past it is refused (ArrayDefineOwnProperty).
             if i >= 0 {
-                if fixed { return Value.Undefined, false; }
-                if node(heap, o).initialized {
+                if !node(heap, o).initialized {
+                    let v, found = own_element(heap, object, i);
+                    if heap.fault != Fault.None { return Value.Undefined, false; }
+                    if found { return Value.Undefined, !frozen_array(heap, o) && set_element(heap, object, i, value); }
+                } else {
                     let own = find_own(heap, o, k);
                     if heap.fault != Fault.None { return Value.Undefined, false; }
                     if own.found {
@@ -1995,6 +2052,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
                         write_own(heap, o, own.index, value); return Value.Undefined, true;
                     }
                 }
+                if node(heap, o).non_extensible { return Value.Undefined, false; }
                 if read_only_length(heap, o) && i >= node(heap, o).length { return Value.Undefined, false; }
                 return Value.Undefined, set_element(heap, object, i, value);
             }
@@ -2039,8 +2097,8 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
         }
         proto = prototype(heap, proto.id());
     }
-    // %ThrowTypeError% is not extensible (light-cljs-853): a new property is refused.
-    if sealed(heap, o) { return Value.Undefined, false; }
+    // A non-extensible object (light-cljs-882) refuses a new property.
+    if node(heap, o).non_extensible { return Value.Undefined, false; }
     return Value.Undefined, if as_element(heap, o, i) { put_element(heap, o, i, value) } else { add_own(heap, o, k, value, attrs_data()) };
 }
 // [[DefineOwnProperty]] by object kind: ordinary objects (define_own), an
@@ -2055,11 +2113,8 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
 // keys function_key refuses fail UnsupportedOperand.
 fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    // %ThrowTypeError% is not extensible (light-cljs-853): only its own
-    // properties can be defined again, by their attributes.
-    if sealed(heap, o) { let own = find_own(heap, o, k); if heap.fault != Fault.None || !own.found { return false; } }
-    // A frozen array (templates.goose) accepts only a definition that changes nothing.
-    if frozen(heap, o) { return frozen_define(heap, o, k, value, attrs, half); }
+    // A non-extensible object (light-cljs-882) takes no new property.
+    if node(heap, o).non_extensible { let own = own_entry(heap, object, k); if heap.fault != Fault.None || !own.found { return false; } }
     // A mapped index (light-cljs-860, ECMAScript 10.4.4.2): the definition
     // writes through; an accessor or a non-writable one then unmaps it, the
     // parameter keeping its old value or the value just defined.
@@ -2087,8 +2142,16 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
         if read_only_length(heap, o) && i >= node(heap, o).length { return false; }
         // An array's length stays within the value limit (set_element's rule).
         if i >= heap.limits.values { return memory(heap); }
-        let plain = (half == half::Data || half == half::Complete && !is_accessor(value)) && attrs == attrs_data();
-        if plain && !node(heap, o).initialized { return set_element(heap, object, i, value); }
+        let data = half == half::Data || half == half::Complete && !is_accessor(value);
+        let plain = data && attrs == attrs_data();
+        // A dense element with the run's attributes stays in the run; a
+        // sealed or frozen array's (light-cljs-882) only from a validated
+        // definition, and a frozen one's changes nothing (define_descriptor
+        // has refused any change).
+        if data && attrs == element_attrs(node(heap, o)) && !node(heap, o).initialized && (plain || half == half::Complete) {
+            if frozen_array(heap, o) { let v, found = own_element(heap, object, i); return heap.fault == Fault.None && found && same_value(heap, v, value); }
+            return set_element(heap, object, i, value);
+        }
         if !node(heap, o).initialized && !array_to_dictionary(heap, object) { return false; }
         if !define_own(heap, o, k, value, attrs, half) { return false; }
         if !plain { node_mut(heap, o).function = node(heap, o).function | array_flag::Attributed; }
@@ -2156,8 +2219,8 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
             let i = index(heap, k);
             if heap.fault != Fault.None { return false; }
             if i < 0 || node(heap, o).initialized { return delete_own(heap, o, k); }
-            // A frozen array's elements are not configurable (templates.goose).
-            if node(heap, o).immutable { let v, found = own_element(heap, object, i); return heap.fault == Fault.None && !found; }
+            // A sealed or frozen array's elements are not configurable (array_flag).
+            if node(heap, o).function & array_flag::Sealed != 0 { let v, found = own_element(heap, object, i); return heap.fault == Fault.None && !found; }
             if !charge(heap) { return false; }
             if i < node(heap, o).count && i < node(heap, o).length { set_slot(heap, node(heap, o).start + i, hole()); }
             return true;
@@ -2213,7 +2276,7 @@ fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     if (element_kind(kind) || !node(heap, o).initialized) && !charge(heap, if element_kind(kind) { node(heap, o).count as i64 } else { min(node(heap, o).length, node(heap, o).count) as i64 }) { return false; }
     if kind == node_kind::Array && !node(heap, o).initialized {
         let end = min(node(heap, o).length, node(heap, o).count);
-        let attrs = if node(heap, o).immutable { attr_enumerable() } else { attrs_data() };
+        let attrs = element_attrs(node(heap, o));
         for i in end { if !slot(heap, node(heap, o).start + i).is_hole() { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs, index: i }); } }
     } else if element_kind(kind) {
         for i in node(heap, o).count { if !slot(heap, node(heap, o).start + i).is_hole() { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } }
@@ -2243,7 +2306,7 @@ fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
         for i in n { out.push(OwnKey { key: index_key(heap, i), attrs: attr_enumerable(), index: i }); }
     }
     out.append(indices);
-    if kind == node_kind::Array || wrapped.is_string() { let length = text(heap, "length"); out.push(OwnKey { key: intern(heap, length), attrs: if kind == node_kind::Array { attr_writable() } else { 0 } }); }
+    if kind == node_kind::Array || wrapped.is_string() { let length = text(heap, "length"); out.push(OwnKey { key: intern(heap, length), attrs: if kind == node_kind::Array && !read_only_length(heap, o) { attr_writable() } else { 0 } }); }
     for e in keys { if e.key.is_string() && e.index < 0 { out.push(e); } }
     for e in keys { if e.key.is_symbol() { out.push(e); } }
     return heap.fault == Fault.None;
@@ -2256,8 +2319,12 @@ fn own_keys(heap: Heap&, object: Value, out: Value[>..]&) -> bool {
 }
 // [[SetPrototypeOf]] of an ordinary object (OrdinarySetPrototypeOf) to Null
 // or an object: false, changing nothing, when the object is on that
-// prototype's chain (a cycle).
+// prototype's chain (a cycle) or is not extensible and the prototype is
+// another (light-cljs-883 calls it from Object.setPrototypeOf).
 fn set_prototype(heap: Heap&, o: i64, proto: Value) -> bool {
+    // A non-extensible object (light-cljs-882) keeps its prototype; the same
+    // one again changes nothing.
+    if node(heap, o).non_extensible { return same_bits(prototype(heap, o), proto); }
     var p = proto;
     while p.is_object() { if !charge(heap) { return false; } if p.id() == o { return false; } p = prototype(heap, p.id()); }
     node_mut(heap, o).proto = proto; return true;
@@ -2364,16 +2431,21 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
 fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
     if !value.is_number() || !(value.num() >= 0 && value.num() <= 4294967295.0) || value.num() != trunc(value.num()) { heap.fault = Fault.UnsupportedOperand; return false; }
     let length = value.num() as i64;
-    // A built-in's length update of a frozen array (templates.goose).
-    if node(heap, object.id()).immutable { heap.fault = Fault.TypeError; return false; }
+    // A built-in's length update of an array whose `length` is read-only (a
+    // frozen array's, light-cljs-882); assignment refuses it first.
+    if read_only_length(heap, object.id()) { heap.fault = Fault.TypeError; return false; }
     if length > heap.limits.values { return memory(heap); }
     if node(heap, object.id()).initialized { return dictionary_length(heap, object, length); }
     let start = node(heap, object.id()).start; let end = min(node(heap, object.id()).length, node(heap, object.id()).count);
+    var target = length;
     if length < end {
         if !charge(heap, end - length) { return false; }
-        for i in length..end { set_slot(heap, start + i, hole()); }
+        // A sealed array's elements are not configurable (array_flag): the
+        // length stops just past the last one, as dictionary_length's does.
+        if node(heap, object.id()).function & array_flag::Sealed != 0 { var last = end; while last > length && slot(heap, start + last - 1).is_hole() { last -= 1; } target = last; }
+        for i in target..end { set_slot(heap, start + i, hole()); }
     }
-    node_mut(heap, object.id()).length = length as u32; return true;
+    node_mut(heap, object.id()).length = target as u32; return target == length;
 }
 // Preflight the full walk before mutation so a work rejection is atomic.
 // A non-configurable element at or past the new length (light-cljs-881;
@@ -5567,7 +5639,7 @@ fn install_foreign(job: Job&, start: i64) {
 // read and write its run directly, without building key strings.
 fn dense(job: Job&, object: Value) -> bool {
     let heap .= job.heap;
-    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != node_kind::Array || node(heap, object.id()).immutable || node(heap, object.id()).function != 0 { return false; }
+    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != node_kind::Array || node(heap, object.id()).non_extensible || node(heap, object.id()).function != 0 { return false; }
     return !(job.root_receiver.is_object() && object == job.root_receiver);
 }
 // An unprotected ordinary object other than the compiler roots object with
@@ -5602,6 +5674,15 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
 fn refused_write(job: Job&, object: Value, k: Value) {
     let heap .= job.heap;
     let t = wrapper_type(object);
+    // A new property of a non-extensible object (light-cljs-882; the Pants
+    // engine's wording).
+    if object.is_object() && (k.is_string() || k.is_symbol()) && node(heap, object.id()).non_extensible {
+        let key = intern(heap, k);
+        if heap.fault != Fault.None { return; }
+        let own = own_entry(heap, object, key);
+        if heap.fault != Fault.None { return; }
+        if !own.found { named_error(job, Fault.TypeError, "cannot add property '", k, "': the object is not extensible"); return; }
+    }
     if object.is_object() || t < 0 || !k.is_string() { heap.fault = Fault.TypeError; return; }
     let i = index(heap, k);
     if heap.fault != Fault.None { return; }

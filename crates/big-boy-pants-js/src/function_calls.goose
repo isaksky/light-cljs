@@ -419,9 +419,9 @@ fn bind_step(job: Job&, frame: Frame) {
 // %ThrowTypeError% is a realm built-in (decision 6) installed as the getter
 // and setter of Function.prototype's `caller` and `arguments` accessors
 // (configurable, not enumerable), with `length` 0 and `name` "" both
-// non-configurable and no other property: QuickJS seals it, so it is not
-// extensible (sealed; a write or definition of a new key is refused and
-// IsExtensible answers false). Called, it throws TypeError
+// non-configurable and no other property: QuickJS seals it, so the realm
+// builds it non-extensible (builtin_metadata; a write or definition of a
+// new key is refused and IsExtensible answers false, light-cljs-882). Called, it throws TypeError
 // "invalid property access", except with no argument and a sloppy ordinary
 // function (a closure of a non-strict `function` declaration or expression,
 // QuickJS's has_prototype) as its receiver, where it returns undefined: so
@@ -434,10 +434,6 @@ fn bind_step(job: Job&, frame: Frame) {
 fn is_throw_type_error(heap: const Heap&, f: Value) -> bool {
     return f.is_object() && node(heap, f.id()).kind == node_kind::Builtin && builtin_of(heap, f.id()) == Builtin.ThrowTypeError;
 }
-// Whether node o is not extensible: %ThrowTypeError%, which QuickJS seals,
-// and a frozen array, a template object (light-cljs-862, templates.goose);
-// Object.preventExtensions is pending, so no other object is.
-fn sealed(heap: const Heap&, o: i64) -> bool { return frozen(heap, o) || is_throw_type_error(heap, object(o)); }
 // %ThrowTypeError% called with `receiver` and `argc` arguments.
 fn throw_type_error(job: Job&, receiver: Value, argc: i64) -> Value {
     let heap .= job.heap;

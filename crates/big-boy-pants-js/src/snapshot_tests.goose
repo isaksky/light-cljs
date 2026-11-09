@@ -525,8 +525,78 @@ thread_fn bound_malformed(saved: snapshot::Snapshot, mode: i64) {
         assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), check) && check.error == snapshot::Error.Link && target.nodes.len == 0);
     }
 }
+// [[Extensible]] and integrity levels (light-cljs-882) survive capture, the
+// byte codec and restoration in another program: a non-extensible object,
+// a frozen object (its restricted shape), a sealed and a frozen dense array
+// (their flags), a frozen dictionary array; the restored objects keep
+// refusing new properties. An image with [[Extensible]] cleared on a node
+// without own properties, a Sealed array that is extensible or in
+// dictionary mode, or a Frozen array that is not Sealed is refused.
+fn integrity_roundtrip() {
+    heap_program::join(thread_spawn(integrity_parent)); let saved = qget<Saved>();
+    heap_program::join(thread_spawn(integrity_restored, copy(saved.image)));
+    for mode in 4 { heap_program::join(thread_spawn(integrity_malformed, copy(saved.image), mode)); }
+}
+thread_fn integrity_parent() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, heap, bindings);
+    var job = source::Job { heap: heap };
+    let p = source::allocate(heap, source::Node { kind: node_kind::Object }); let f = source::allocate(heap, source::Node { kind: node_kind::Object });
+    let s = source::allocate(heap, source::Node { kind: node_kind::Array }); let a = source::allocate(heap, source::Node { kind: node_kind::Array }); let d = source::allocate(heap, source::Node { kind: node_kind::Array });
+    assert(source::put(heap, p, source::text(heap, "x"), source::number(1)) && source::put(heap, f, source::text(heap, "y"), source::number(2)) && source::put(heap, f, source::text(heap, "3"), source::number(3)));
+    for v, i in [source::number(1), source::number(2)] { assert(source::set_element(heap, s, i, v) && source::set_element(heap, a, i, v)); }
+    assert(source::set_element(heap, d, 0, source::number(5)) && source::set_element(heap, d, 5000, source::number(6)) && source::node(heap, d.id()).initialized);
+    assert(source::integrity_builtin(job, source::Builtin.ObjectPreventExtensions, p) == p && source::integrity_builtin(job, source::Builtin.ObjectFreeze, f) == f);
+    assert(source::integrity_builtin(job, source::Builtin.ObjectSeal, s) == s && source::integrity_builtin(job, source::Builtin.ObjectFreeze, a) == a && source::integrity_builtin(job, source::Builtin.ObjectFreeze, d) == d);
+    assert(heap.fault == source::Fault.None && source::node(heap, a.id()).function & array_flag::Frozen != 0 && !source::node(heap, a.id()).initialized);
+    for v, i in [p, f, s, a, d] { bindings.push(snapshot::Binding { id: 20 + i, generation: 1, value: v }); }
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
+    var encoded: u8[>..] = []; var enc = snapshot::Control {}; assert(snapshot::encode(saved, encoded, enc));
+    var dec = snapshot::Control {}; let decoded = snapshot::decode(encoded, dec); assert(dec.error == snapshot::Error.None && decoded.len == 1);
+    for image in decoded { assert(qput(Saved { image: copy(image) })); }
+}
+thread_fn integrity_restored(saved: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved, code, heap, roots, source::reserve_identity(), r));
+    var job = source::Job { heap: heap };
+    let base = roots.len - 5; let p = roots[base].value; let f = roots[base + 1].value; let s = roots[base + 2].value; let a = roots[base + 3].value; let d = roots[base + 4].value;
+    for v in [p, f, s, a, d] { assert(source::node(heap, v.id()).non_extensible && source::integrity_builtin(job, source::Builtin.ObjectIsExtensible, v) == source::boolean(false)); }
+    for v in [f, a, d] { assert(source::integrity_builtin(job, source::Builtin.ObjectIsFrozen, v) == source::boolean(true)); }
+    assert(source::integrity_builtin(job, source::Builtin.ObjectIsSealed, s) == source::boolean(true) && source::integrity_builtin(job, source::Builtin.ObjectIsFrozen, s) == source::boolean(false));
+    assert(source::integrity_builtin(job, source::Builtin.ObjectIsSealed, p) == source::boolean(false));
+    // Existing properties keep their attributes; new ones are refused.
+    let y = source::own_entry(heap, f, source::key_named(heap, "y")); let three = source::own_entry(heap, f, source::key_named(heap, "3"));
+    assert(y.found && y.attrs == source::attr_enumerable() && three.found && three.attrs == source::attr_enumerable() && !three.element);
+    assert(accepts(heap, p, "x", source::number(7)) && !accepts(heap, p, "z", source::number(1)) && accepts(heap, s, "0", source::number(9)) && !accepts(heap, s, "2", source::number(1)) && !accepts(heap, a, "0", source::number(9)) && !accepts(heap, d, "0", source::number(9)));
+    assert(source::get(heap, d, source::text(heap, "5000")).num() == 6 && source::node(heap, d.id()).length == 5001);
+    assert(source::get(heap, s, source::text(heap, "0")).num() == 9 && source::get(heap, a, source::text(heap, "0")).num() == 1 && heap.fault == source::Fault.None);
+    print("snapshot integrity levels: [[Extensible]], sealed and frozen arrays' flags and restricted shapes and records survive restoration passed");
+}
+// Whether [[Set]] of key k on object o accepts v (no setter runs here).
+fn accepts(heap: source::Heap&, o: source::Value, k: const u8[:], v: source::Value) -> bool {
+    let setter, ok = source::write(heap, o, source::text(heap, k), v);
+    return ok && setter.is_undefined() && heap.fault == source::Fault.None;
+}
+thread_fn integrity_malformed(saved: snapshot::Snapshot, mode: i64) {
+    defer { heap_program::finish(); }
+    {
+        var bad = copy(saved);
+        var sealed: i64 = -1; var cell: i64 = -1;
+        for n, i in bad.nodes { if n.kind == node_kind::Array && n.function & array_flag::Sealed != 0 && sealed < 0 { sealed = i; } if n.kind == node_kind::Binding && cell < 0 { cell = i; } }
+        assert(sealed >= 0 && cell >= 0);
+        match mode {
+            0 => { bad.nodes[cell].non_extensible = true; },
+            1 => { bad.nodes[sealed].non_extensible = false; },
+            2 => { bad.nodes[sealed].initialized = true; bad.nodes[sealed].count = 0; },
+            _ => { bad.nodes[sealed].function = array_flag::Frozen; },
+        }
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
+        assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), check) && check.error == snapshot::Error.Link && target.nodes.len == 0);
+    }
+}
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its

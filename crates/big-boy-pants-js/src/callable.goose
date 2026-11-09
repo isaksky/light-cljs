@@ -13,7 +13,7 @@ fn fail(c: snapshot::Control&, e: snapshot::Error = snapshot::Error.Unsupported)
 fn same(a: source::Value, b: source::Value) -> bool { return source::same_bits(a, b); }
 // Field by field: an enum's unused payload bytes are not part of its value.
 fn same(a: source::Node, b: source::Node) -> bool {
-    return a.kind == b.kind && a.function == b.function && a.start == b.start && a.count == b.count && a.keys == b.keys && a.key_count == b.key_count && a.key_capacity == b.key_capacity && a.length == b.length && a.initialized == b.initialized && a.immutable == b.immutable
+    return a.kind == b.kind && a.function == b.function && a.start == b.start && a.count == b.count && a.keys == b.keys && a.key_count == b.key_count && a.key_capacity == b.key_capacity && a.length == b.length && a.initialized == b.initialized && a.immutable == b.immutable && a.non_extensible == b.non_extensible
         && same(a.value, b.value) && same(a.namespace_value, b.namespace_value) && same(a.metadata, b.metadata) && a.origin == b.origin && a.source == b.source && a.span_start == b.span_start && a.span_end == b.span_end
         && a.shape == b.shape && same(a.proto, b.proto) && source::plain_rows(a.slots) == source::plain_rows(b.slots);
 }

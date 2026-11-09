@@ -136,14 +136,10 @@ fn proxy_detail(job: Job&) {
 // A proxy call or construction: a callable proxy's fails by name, any other
 // is a TypeError (not a function, not a constructor).
 fn proxy_invoke(heap: Heap&, f: Value, method: i64) { if proxy_callable(heap, f) { proxy_fault(heap, method); } else if heap.fault == Fault.None { heap.fault = Fault.TypeError; } }
-// IsExtensible(target) for a trap's invariants: a proxy target's
-// [[IsExtensible]] fails by name; every other object is extensible, since
-// Object.preventExtensions and the integrity built-ins are pending
-// (light-cljs-766).
-fn extensible(heap: Heap&, target: Value) -> bool {
-    if is_proxy(heap, target) { proxy_fault(heap, proxy_method::IsExtensible); return false; }
-    return !(target.is_object() && sealed(heap, target.id()));
-}
+// IsExtensible(target) for a trap's invariants (light-cljs-882,
+// integrity.goose): a proxy target's [[IsExtensible]] fails by name, as
+// does a form's.
+fn extensible(heap: Heap&, target: Value) -> bool { return target.is_object() && is_extensible(heap, target); }
 
 // ---- The Proxy constructor
 // new Proxy(target, handler) (ProxyCreate): new.target is Proxy itself.

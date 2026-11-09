@@ -224,8 +224,8 @@ fn signature_bytes<T>(values: const T[:], out: u8[>..]&, c: Control&) -> bool {
 // unused payload bytes are not part of its value, so values are never hashed
 // with bytes_of directly.
 struct ValueSig { tag: i64, number: f64 = 0, a: i64 = 0, b: i64 = 0 }
-struct NodeSig { kind: i64, function: i64, count: i64, keys: i64, key_count: i64, key_capacity: i64, length: i64, initialized: bool, immutable: bool, origin: i64, source: i64, span_start: i64, span_end: i64 }
-fn node_sig(n: source::Node) -> NodeSig { return NodeSig { kind: n.kind, function: n.function, count: n.count, keys: n.keys, key_count: n.key_count, key_capacity: n.key_capacity, length: n.length, initialized: n.initialized, immutable: n.immutable, origin: n.origin, source: if n.source == source::no_row() { -1 } else { 0 }, span_start: n.span_start, span_end: n.span_end }; }
+struct NodeSig { kind: i64, function: i64, count: i64, keys: i64, key_count: i64, key_capacity: i64, length: i64, initialized: bool, immutable: bool, non_extensible: bool, origin: i64, source: i64, span_start: i64, span_end: i64 }
+fn node_sig(n: source::Node) -> NodeSig { return NodeSig { kind: n.kind, function: n.function, count: n.count, keys: n.keys, key_count: n.key_count, key_capacity: n.key_capacity, length: n.length, initialized: n.initialized, immutable: n.immutable, non_extensible: n.non_extensible, origin: n.origin, source: if n.source == source::no_row() { -1 } else { 0 }, span_start: n.span_start, span_end: n.span_end }; }
 fn scalar_sig(v: source::Value, length: i64) -> ValueSig { return ValueSig { tag: v.tag(), number: v.num(), a: if v.flag() { 1 } else { 0 }, b: length }; }
 fn signature_value(a: const Artifact&, v: source::Value, out: u8[>..]&, c: Control&) -> bool {
     if v.is_object() { return signature_bytes([ValueSig { tag: value_tag::Object, a: a.keys[v.id()].slot, b: a.keys[v.id()].arena }], out, c); }

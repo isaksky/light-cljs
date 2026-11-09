@@ -59,8 +59,8 @@ namespace source;
 // with attributes by dictionary mode), closures (their lazy `length`,
 // `name` and `prototype` made first), built-ins, bound functions, String
 // wrappers (exotic indices and `length`, which change by nothing), errors,
-// generators, promises, iterators, frozen template arrays and
-// %ThrowTypeError% (not extensible). A write into a row the job did not
+// generators, promises, iterators, and non-extensible, sealed and frozen
+// objects (light-cljs-882, integrity.goose). A write into a row the job did not
 // allocate (the realm, a restored definition, an installed publication)
 // faults NativeBoundary before anything changes (decision 3). A proxy's
 // [[DefineOwnProperty]] fails by name (light-cljs-891).
@@ -114,7 +114,7 @@ fn define_descriptor(job: Job&, object: Value, k: Value, d: PropertyDescriptor) 
     if node(heap, o).kind == node_kind::Array && key_is(heap, k, "length") { return define_length(job, object, k, current, d); }
     let accessor = accessor_descriptor(d);
     if !current.found {
-        if sealed(heap, o) { return false; }
+        if node(heap, o).non_extensible { return false; }
         if accessor {
             let a = add_accessor(heap, Pair { get: d.get, set: d.set });
             if a < 0 { return false; }

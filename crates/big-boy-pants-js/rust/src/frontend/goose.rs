@@ -2127,6 +2127,10 @@ mod serial_tests {
             // dependency wait in each of its phases (snapshot_tests.goose).
             ("define-property-frames", "boolean:true"),
             ("define-property-wait", "goose"),
+            // [[Extensible]] and integrity levels (light-cljs-882): objects
+            // made non-extensible, sealed and frozen survive every budget
+            // cut and collection (serial_tests.goose).
+            ("integrity-levels", "boolean:true"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

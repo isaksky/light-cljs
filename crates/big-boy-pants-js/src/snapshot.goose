@@ -602,8 +602,13 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.kind == node_kind::Atom && n.length > 1 || n.kind == node_kind::Cell && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == node_kind::Delay && n.length != 0 || (n.kind == node_kind::Map || n.kind == node_kind::Set) && n.length > map_order::Hash || n.kind == node_kind::Concat && n.length > seq_flavor::IntegerRange { return reject(c, Error.Link); }
         if n.kind == node_kind::Array && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
         // An array's `function` holds its attribute flags (light-cljs-881,
-        // source::array_flag); only a dictionary array is Attributed.
-        if n.kind == node_kind::Array && (n.function > (array_flag::ReadOnlyLength | array_flag::Attributed) || n.function & array_flag::Attributed != 0 && !n.initialized) { return reject(c, Error.Link); }
+        // source::array_flag); only a dictionary array is Attributed, and
+        // only a dense, non-extensible one Sealed, and Frozen only with
+        // Sealed (light-cljs-882).
+        if n.kind == node_kind::Array && (n.function > (array_flag::ReadOnlyLength | array_flag::Attributed | array_flag::Sealed | array_flag::Frozen) || n.function & array_flag::Attributed != 0 && !n.initialized || n.function & (array_flag::Sealed | array_flag::Frozen) != 0 && (n.initialized || !n.non_extensible || n.function & array_flag::Sealed == 0)) { return reject(c, Error.Link); }
+        // [[Extensible]] cleared (light-cljs-882): only on a kind with own
+        // properties, and a closure's lazy properties made first.
+        if n.non_extensible && (!named(n.kind) || n.kind == node_kind::Closure && n.key_count == 0 && !n.initialized) { return reject(c, Error.Link); }
         // A key list (node_kind::KeyList): its walk position lies in its
         // records, and it walks an object or nothing.
         if (n.kind == node_kind::Object || n.kind == node_kind::Arguments) && n.length != 0 || n.kind == node_kind::KeyList && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }

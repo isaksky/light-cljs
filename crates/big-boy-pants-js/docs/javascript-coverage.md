@@ -498,6 +498,35 @@ sharing proxy.goose's field reader; every getter and setter call outside a
 closure (built-ins, bound functions) goes through the general call path
 (`call_accessor`, a Forward frame).
 
+*As landed by light-cljs-882 (extensibility and integrity levels):*
+[[Extensible]] is node state, a `non_extensible` byte of the object row,
+which every kind with own properties carries and only the allocating job
+(or the realm, for %ThrowTypeError%) sets; `src/integrity.goose` adds
+Object.preventExtensions, isExtensible, seal, isSealed, freeze, isFrozen
+and Reflect.isExtensible and preventExtensions as plain built-ins. A
+non-extensible object refuses a new property in assignment and definition
+and another prototype; existing properties keep their attributes.
+SetIntegrityLevel needs no table either: shape keys get a new chain of
+transitions with the restricted attributes (values keep their slots, and
+objects frozen alike share shapes), dictionary records change in place,
+an ordinary or arguments object's elements become keys (freezing unmaps a
+mapped arguments object's indices first; sealing keeps them mapped), and a
+dense array keeps its run, with two more flags in its node's `function`
+field (`array_flag::Sealed`, `array_flag::Frozen`) giving its elements'
+attributes, so a frozen array stays dense and costs nothing an element; a
+move to dictionary mode turns the flags into its records' attributes.
+light-cljs-862's template objects are such frozen arrays, so the
+`immutable` marker on arrays, the template-only definition path and the
+`sealed()` special case for %ThrowTypeError% are gone, and proxy
+invariants read real extensibility. *Rejected:* moving a sealed or frozen
+array to dictionary mode, which turns every element into a record found
+by a linear search (a frozen array of n elements would cost n records and
+a quadratic walk to iterate). Forms (light-cljs runtime values) fail by
+name: they take no properties here, while the V8 build's runtime makes
+them ordinary extensible objects. Objects that never stop being
+extensible pay one byte test where a property is added; the dense-array
+fast paths test the byte where they tested the template marker.
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

@@ -44,18 +44,24 @@ namespace source;
 // newest.
 struct TemplateSite { op: u32, object: u32 }
 
-// Frozen arrays. No Object.freeze yet (realm.goose lists it pending), so
-// the template object and its `raw` are the only frozen objects: an array
-// node with `immutable` set (it marks nothing else on an array). Its
-// elements are enumerable data properties that are neither writable nor
-// configurable, its `length` is neither writable nor configurable, its named
-// properties keep the attributes they were made with, and it is not
-// extensible (sealed, function_calls.goose). Assignments to it are refused
-// (a TypeError in strict code), deletes of its own properties are refused,
-// definitions succeed only when they change nothing, and a built-in that
-// writes into it (CreateDataPropertyOrThrow, a length update) throws
-// TypeError. dense() keeps it off the element fast paths.
-checkfree fn frozen(heap: const Heap&, o: i64) -> bool { let n .= node(heap, o); return n.kind == node_kind::Array && n.immutable; }
+// The template object and its `raw` are frozen arrays (light-cljs-882,
+// integrity.goose): non-extensible, with array_flag::Frozen (and so Sealed)
+// and ReadOnlyLength, as Object.freeze leaves a dense array. Their elements
+// are enumerable data properties that are neither writable nor
+// configurable, their `length` is neither writable nor configurable, and
+// their named properties keep the attributes they were made with (`raw`
+// has none). The property model treats them as any frozen array:
+// assignments are refused (a TypeError in strict code), deletes of their
+// own properties are refused, definitions succeed only when they change
+// nothing, and a built-in that writes into one (CreateDataPropertyOrThrow,
+// a length update) throws TypeError. dense() keeps them off the element
+// fast paths.
+checkfree fn frozen(heap: const Heap&, o: i64) -> bool { let n .= node(heap, o); return n.kind == node_kind::Array && n.non_extensible && frozen_array(heap, o); }
+// Freeze new template array o, whose named properties are already neither
+// writable nor configurable.
+fn freeze_template(heap: Heap&, o: i64) {
+    node_mut(heap, o).function = node(heap, o).function | array_flag::Sealed | array_flag::Frozen | array_flag::ReadOnlyLength; node_mut(heap, o).non_extensible = true;
+}
 
 // Run TemplateObject with `count` quasis for the instruction at row `at`
 // of the running frame.
@@ -83,24 +89,16 @@ fn template_object(job: Job&, at: i64, count: i64) {
     if !charge(heap, 2 * count) { return; }
     let raw_start = add_values(heap, raw);
     if raw_start < 0 { return; }
-    let raw_array = allocate(heap, Node { kind: node_kind::Array, start: raw_start as u32, count: count as u32, length: count as u32, immutable: true });
+    let raw_array = allocate(heap, Node { kind: node_kind::Array, start: raw_start as u32, count: count as u32, length: count as u32 });
     if !raw_array.is_object() { return; }
+    freeze_template(heap, raw_array.id());
     let cooked_start = add_values(heap, cooked);
     if cooked_start < 0 { return; }
     let template = allocate(heap, Node { kind: node_kind::Array, start: cooked_start as u32, count: count as u32, length: count as u32 });
     if !template.is_object() { return; }
     let k = key_named(heap, "raw");
     if heap.fault != Fault.None || !add_own(heap, template.id(), k, raw_array, 0) { if heap.fault == Fault.None { memory(heap); } return; }
-    node_mut(heap, template.id()).immutable = true;
+    freeze_template(heap, template.id());
     job.templates.push(TemplateSite { op: at as u32, object: template.id() });
     job.operands.resize(base); job.operands.push(template);
-}
-// A definition of own property k of frozen array o (define_property): it
-// succeeds only when it changes nothing (ValidateAndApplyPropertyDescriptor
-// over a non-configurable property; a new key is refused, since o is not
-// extensible).
-fn frozen_define(heap: Heap&, o: i64, k: Value, value: Value, attrs: u8, half: i64) -> bool {
-    let p = own_entry(heap, object(o), k);
-    if heap.fault != Fault.None || !p.found { return false; }
-    return (half == half::Data || half == half::Complete && !is_accessor(value)) && !is_accessor(p.value) && attrs == p.attrs && same_value(heap, p.value, value);
 }
