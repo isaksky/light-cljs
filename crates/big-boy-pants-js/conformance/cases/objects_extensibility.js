@@ -77,4 +77,13 @@ row(Reflect.isExtensible.length === 1 && Reflect.preventExtensions.length === 1 
 { let t = Object.preventExtensions({a: 1}); let p = new Proxy(t, {ownKeys() { return []; }}); row(name(() => { for (let k in p) {} }) === "TypeError"); }
 { let t = Object.preventExtensions({a: 1}); let p = new Proxy(t, {ownKeys() { return ['a']; }}); let s = ''; for (let k in p) s += k; row(s === 'a'); }
 { let t = {a: 1}; let p = new Proxy(t, {ownKeys() { return ['a', 'b']; }, getOwnPropertyDescriptor(t, k) { return k === 'b' ? undefined : Reflect.getOwnPropertyDescriptor(t, k); }}); let s = ''; for (let k in p) s += k; row(s === 'a'); }
+{ let t = Object.preventExtensions({a: 1}); let p = new Proxy(t, {getOwnPropertyDescriptor(t, k) { return undefined; }}); row(name(() => { for (let k in p) {} }) === "TypeError"); }
+{ let t = {a: 1}; let p = new Proxy(t, {getOwnPropertyDescriptor(t, k) { return undefined; }}); let s = ''; for (let k in p) s += k; row(s === ''); }
+// A non-extensible global object takes no new global declaration
+// (CanDeclareGlobalVar, CanDeclareGlobalFunction), and a sloppy assignment
+// to a new name does nothing; an existing name may be declared again. Last, since it changes the global
+// object.
+Object.preventExtensions(globalThis);
+row(name(() => (0, eval)('var fresh1;')) === "TypeError" && !('fresh1' in globalThis) && name(() => (0, eval)('function fresh2() {}')) === "TypeError" && !('fresh2' in globalThis));
+row(name(() => (0, eval)('var rows;')) === "none" && typeof rows === "number" && name(() => { (0, eval)('fresh3 = 1'); }) === "none" && !('fresh3' in globalThis));
 failed === 0 ? rows : -failed;

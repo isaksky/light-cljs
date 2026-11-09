@@ -4,7 +4,9 @@
 // getPrototypeOf trap, so QuickJS alone scores it). A for-in walk that has
 // used up a proxy's own keys takes the next object from its getPrototypeOf
 // trap; without a trap, from its target; a result that is neither an
-// object nor null is a TypeError. Completes with "az|ac|TypeError".
+// object nor null is a TypeError, as is another prototype than a
+// non-extensible target's (light-cljs-882). Completes with
+// "az|ac|TypeError|a|TypeError".
 (function () {
   var out = [];
   var s = "";
@@ -14,5 +16,12 @@
   for (var k2 in new Proxy(new Proxy({ __proto__: { c: 3 }, a: 1 }, {}), {})) s += k2;
   out.push(s);
   try { for (var k3 in new Proxy({}, { getPrototypeOf: function () { return 1; } })) {} out.push("none"); } catch (e) { out.push(e.name); }
+  // A non-extensible target (light-cljs-882): the trap must report its
+  // prototype; another one is a TypeError.
+  var fixed = Object.preventExtensions({ a: 1 });
+  s = "";
+  for (var k4 in new Proxy(fixed, { getPrototypeOf: function () { return Object.prototype; } })) s += k4;
+  out.push(s);
+  try { for (var k5 in new Proxy(fixed, { getPrototypeOf: function () { return { z: 1 }; } })) {} out.push("none"); } catch (e) { out.push(e.name); }
   return out.join("|");
 })();

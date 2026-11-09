@@ -536,6 +536,50 @@ fn integrity_roundtrip() {
     heap_program::join(thread_spawn(integrity_parent)); let saved = qget<Saved>();
     heap_program::join(thread_spawn(integrity_restored, copy(saved.image)));
     for mode in 4 { heap_program::join(thread_spawn(integrity_malformed, copy(saved.image), mode)); }
+    heap_program::join(thread_spawn(integrity_boundaries));
+}
+// The fault contracts (decision 3, light-cljs-891, forms): a row the job
+// did not allocate (below protected_nodes or owned_nodes, or in a foreign
+// range) faults NativeBoundary before anything changes, unless it is at
+// the level asked already; a proxy's [[PreventExtensions]] and
+// [[IsExtensible]] and a form fail UnsupportedOperand by name, which
+// JavaScript cannot catch.
+thread_fn integrity_boundaries() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, heap, bindings);
+    var job = source::Job { heap: heap };
+    let o = source::allocate(heap, source::Node { kind: node_kind::Object }); let frozen = source::allocate(heap, source::Node { kind: node_kind::Object });
+    assert(source::put(heap, o, source::text(heap, "x"), source::number(1)) && source::put(heap, frozen, source::text(heap, "y"), source::number(2)));
+    assert(source::integrity_builtin(job, source::Builtin.ObjectFreeze, frozen) == frozen && heap.fault == source::Fault.None);
+    let before = source::plain_rows(heap.nodes[o.id()..(o.id() + 1)]); let shape = heap.shapes.len;
+    for limit in 3 {
+        job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear();
+        if limit == 0 { job.protected_nodes = heap.nodes.len; } else if limit == 1 { job.owned_nodes = heap.nodes.len; } else { job.foreign.push(o.id()); job.foreign.push(frozen.id() + 1); }
+        for b in [source::Builtin.ObjectPreventExtensions, source::Builtin.ObjectSeal, source::Builtin.ObjectFreeze, source::Builtin.ReflectPreventExtensions] {
+            heap.fault = source::Fault.None;
+            source::integrity_builtin(job, b, o);
+            assert(heap.fault == source::Fault.NativeBoundary && source::plain_rows(heap.nodes[o.id()..(o.id() + 1)]) == before && heap.shapes.len == shape);
+        }
+        // Already at the level asked: nothing would change, so nothing faults.
+        heap.fault = source::Fault.None;
+        assert(source::integrity_builtin(job, source::Builtin.ObjectFreeze, frozen) == frozen && source::integrity_builtin(job, source::Builtin.ObjectSeal, frozen) == frozen && source::integrity_builtin(job, source::Builtin.ObjectPreventExtensions, frozen) == frozen);
+        assert(source::integrity_builtin(job, source::Builtin.ObjectIsExtensible, o) == source::boolean(true) && heap.fault == source::Fault.None);
+    }
+    job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear();
+    let p = source::allocate(heap, source::Node { kind: node_kind::Proxy, value: o, namespace_value: frozen, proto: source::Value.Null });
+    for b in [source::Builtin.ObjectIsExtensible, source::Builtin.ObjectPreventExtensions, source::Builtin.ObjectFreeze, source::Builtin.ObjectIsFrozen, source::Builtin.ReflectIsExtensible] {
+        heap.fault = source::Fault.None; heap.proxy_method = -1;
+        source::integrity_builtin(job, b, p);
+        assert(heap.fault == source::Fault.UnsupportedOperand && !source::catchable(heap.fault) && (heap.proxy_method == proxy_method::IsExtensible || heap.proxy_method == proxy_method::PreventExtensions));
+    }
+    heap.fault = source::Fault.None; assert(!source::node(heap, o.id()).non_extensible);
+    let form = source::allocate(heap, source::Node { kind: node_kind::Vector });
+    for b in [source::Builtin.ObjectIsExtensible, source::Builtin.ObjectFreeze, source::Builtin.ObjectIsSealed] {
+        heap.fault = source::Fault.None; job.detail.clear();
+        source::integrity_builtin(job, b, form);
+        assert(heap.fault == source::Fault.UnsupportedOperand && !source::node(heap, form.id()).non_extensible && job.detail.len > 0);
+    }
+    print("integrity boundaries: protected, owned and foreign rows fault NativeBoundary unchanged unless already at the level; proxies and forms fail by name passed");
 }
 thread_fn integrity_parent() {
     defer { heap_program::finish(); }

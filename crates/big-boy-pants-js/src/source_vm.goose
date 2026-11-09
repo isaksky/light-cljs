@@ -5478,6 +5478,9 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool, eval: bool) {
         opcode::DeclareGlobalVar => {
             let own = own_entry(heap, g, key);
             let attrs = attr_writable() | attr_enumerable() | (if eval { attr_configurable() } else { 0 });
+            // A non-extensible global object takes no new var (CheckGlobalVar
+            // refused it first, light-cljs-882).
+            if heap.fault == Fault.None && !own.found && node(heap, g.id()).non_extensible { named_error(job, if eval { Fault.TypeError } else { Fault.SyntaxError }, "cannot declare global '", key, "'"); return; }
             if heap.fault == Fault.None && !own.found && !add_own(heap, g.id(), key, Value.Undefined, attrs) && heap.fault == Fault.None { memory(heap); }
         },
         // DeclareGlobalFunction: the property the function's value is put
@@ -5492,6 +5495,7 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool, eval: bool) {
             let refused = if eval { Fault.TypeError } else { Fault.SyntaxError };
             if refuses_function(own) { named_error(job, refused, "cannot declare global function '", key, "'"); return; }
             if own.found && own.attrs & attr_configurable() == 0 { return; }
+            if !own.found && node(heap, g.id()).non_extensible { named_error(job, refused, "cannot declare global '", key, "'"); return; }
             let attrs = attr_writable() | attr_enumerable() | (if eval { attr_configurable() } else { 0 });
             let ok = if own.found { define_own(heap, g.id(), key, Value.Undefined, attrs) } else { add_own(heap, g.id(), key, Value.Undefined, attrs) };
             if !ok && heap.fault == Fault.None { named_error(job, refused, "cannot declare global '", key, "'"); }
@@ -5509,13 +5513,16 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool, eval: bool) {
             let cell .= node_mut(heap, lexical.value.id()); cell.value = value; cell.initialized = true;
         },
         // CheckGlobalVar, CheckGlobalFunction: before any declaration effect
-        // (CanDeclareGlobalVar, CanDeclareGlobalFunction). Every global
-        // object is extensible here (Object.preventExtensions is pending), so
-        // a var always can be declared.
-        opcode::CheckGlobalVar => {},
-        opcode::CheckGlobalFunction => {
+        // (CanDeclareGlobalVar, CanDeclareGlobalFunction; the Pants engine's
+        // check_global_declaration): a name the global object lacks needs it
+        // extensible (light-cljs-882), and a function's existing property
+        // must not refuse it.
+        opcode::CheckGlobalVar, opcode::CheckGlobalFunction => {
+            // A var on an extensible global object needs no lookup.
+            if op == opcode::CheckGlobalVar && !node(heap, g.id()).non_extensible { return; }
             let own = own_entry(heap, g, key);
-            if heap.fault == Fault.None && refuses_function(own) { named_error(job, if eval { Fault.TypeError } else { Fault.SyntaxError }, "cannot declare global '", key, "'"); }
+            if heap.fault != Fault.None { return; }
+            if !own.found && node(heap, g.id()).non_extensible || op == opcode::CheckGlobalFunction && refuses_function(own) { named_error(job, if eval { Fault.TypeError } else { Fault.SyntaxError }, "cannot declare global '", key, "'"); }
         },
         // DeleteGlobal (sloppy `delete x`): → bool, false for a lexical
         // binding or a non-configurable property.
