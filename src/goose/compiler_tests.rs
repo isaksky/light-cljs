@@ -505,9 +505,10 @@ fn goose_compiler_assembly_leaf_boundaries() {
             const alias=a;
             const before=a[0]===1 && a[1]===undefined && a[2]===undefined;
             alias.length=0; alias.length=4; alias[2]=7;
+            const b=[]; b.length='2';
             const xs=__rt.formList(1,2);
             const joined=__rt.cljConcatAll(__rt.formList(null,xs,__rt.cljConcat(xs,__rt.formVector(3))));
-            return before && a===alias && a.length===4 && a[0]===undefined && a[1]===undefined && a[2]===7 && a[3]===undefined
+            return before && b.length===2 && a===alias && a.length===4 && a[0]===undefined && a[1]===undefined && a[2]===7 && a[3]===undefined
                 && sequence.call(null,xs)===xs && __rt.cljCount(sequence(null))===0
                 && __rt.cljCount(sequence(__rt.formVector(1,2)))===2
                 && __rt.cljCount(joined)===5 && __rt.cljNth(joined,4)===3
@@ -535,27 +536,23 @@ fn goose_compiler_assembly_leaf_boundaries() {
     for (body, fault) in [
         (
             "const a=[];a.length=-1;return a;",
-            "Fault.UnsupportedOperand",
+            "Fault.RangeError",
         ),
         (
             "const a=[];a.length=1.5;return a;",
-            "Fault.UnsupportedOperand",
+            "Fault.RangeError",
         ),
         (
             "const a=[];a.length=0/0;return a;",
-            "Fault.UnsupportedOperand",
+            "Fault.RangeError",
         ),
         (
             "const a=[];a.length=1/0;return a;",
-            "Fault.UnsupportedOperand",
-        ),
-        (
-            "const a=[];a.length='2';return a;",
-            "Fault.UnsupportedOperand",
+            "Fault.RangeError",
         ),
         (
             "const a=[];a.length=4294967296;return a;",
-            "Fault.UnsupportedOperand",
+            "Fault.RangeError",
         ),
         ("const a=[];a.length=1048577;return a;", "Fault.MemoryLimit"),
         // Every opcode exports; one the Goose VM does not implement fails the
