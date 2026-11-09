@@ -2162,6 +2162,10 @@ mod serial_tests {
             // super(), inside a built-in's newTarget getter
             // (snapshot_tests.goose).
             ("derived-classes-wait", "goose"),
+            // Super properties and Reflect.get and Reflect.set with a
+            // receiver across dependency waits, home objects restored with
+            // the stack (light-cljs-888; snapshot_tests.goose).
+            ("super-reflect-wait", "goose"),
             // and the Function constructor waiting in newTarget's
             // `prototype` getter after it compiled (snapshot_tests.goose).
             ("function-prototype-wait", "goose"),

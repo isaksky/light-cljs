@@ -638,7 +638,8 @@ state of their own: they are closures, cells and DefineField/DefineElem on
 `this`. Derived classes (`InitHeritage`, `CheckHeritage`, `ConstructSuper`
 and the rest, light-cljs-887), `super` properties (light-cljs-888) and
 private names (light-cljs-889) still fail by name. *Home object:* the
-`Method` opcode's home object is not stored yet; light-cljs-888 adds it.
+`Method` opcode's home object is not stored yet; light-cljs-888 adds it
+(see its note below).
 The intended place is the method closure's `Node.value` (unused by
 closures), which reclamation (`mark`/`relink` of every node's `value`) and
 snapshot validation (`value` of every node) already cover; 888 must also
@@ -670,6 +671,46 @@ there runs its getter above the same `Construct` native frame, now also
 for a built-in callee (snapshot-validated as a constructor built-in), and
 the Function constructor reads it after compiling, at a new pc 1 of its
 `DynamicFunction` frame.
+
+*As landed by light-cljs-888 (super properties, Reflect.get and
+Reflect.set):* no new table, node kind or frame field. A method's
+[[HomeObject]] is its closure row's `value` (unused by closures before):
+`Ins.Closure` carries whether its opcode was `Method`, whose home object
+is the operand below the captures (an object literal, a class's prototype
+or constructor), and a class constructor's is the `prototype` made with
+it. It is a plain row link like any node's value, so the worker reset,
+in-job reclamation (`mark`/`relink` of every node's value), saved
+continuations and snapshot validation (which now also requires a
+closure's value to be undefined or an object) carry it with no rule of
+their own. `GetSuperBase` reads the home object's [[Prototype]] at each
+access; `GetSuperElem` is [[Get]] on that base with the method's `this` as
+the getter's receiver (`get_property` takes the receiver); `PutSuperElem`
+and `PutSuperElemStrict` are `receiver_set`, OrdinarySetWithOwnDescriptor
+with a separate receiver (the base's chain decides first; then the
+receiver's own writable data property is written or a new one defined, a
+primitive, an own accessor, a read-only property or a non-extensible
+receiver refusing it, a TypeError in strict code; an array receiver's
+`length` set to an object converts it first, as an assignment does), a
+setter running with the receiver in the `Setter` native frame;
+`ToSuperKey` and an object key at either instruction convert in a Convert
+frame and the instruction runs again, after a null base has been refused.
+`corpus/serial/super-reflect-wait.js` carries every one of these frames
+across saved continuations. Reflect.get and Reflect.set are Statics native frames
+(`object_statics.goose`, frame `receiver` the receiver, `output`
+Reflect.set's value): a receiver equal to the target takes the ordinary
+`write`, a separate one `receiver_set`; ordinary GetNamed, GetIndexed,
+SetNamed and SetIndexed are unchanged. *Publication:* the home object is
+an edge of the closure row, so the callable walk (`cells.goose`
+callable_unshareable), the publication graph (`callable.goose` graph) and
+artifact export follow it as they follow a captured value: a method whose
+home object is a job's object (every object literal, class prototype or
+constructor) is refused as "a mutable JavaScript object", as a closure
+capturing that object is, and one whose home object is an image row
+publishes as before. A method that never uses `super` is refused too
+(the lowering does not say which do); neither the generated 200k project
+nor the compiler tests publish one (ClojureScript emits `function`
+expressions, which take no home object), and the 200k output is
+unchanged.
 
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the

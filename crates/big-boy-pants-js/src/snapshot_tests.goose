@@ -830,6 +830,16 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(derived_wait, str(derived), false));
     heap_program::join(thread_spawn(derived_wait, str(derived), true));
     assert(qget<bool>()); let dw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(dw)));
+    // Super properties and Reflect.get and Reflect.set (light-cljs-888):
+    // eight waits, in a super getter, key conversion and setter and in
+    // every phase of the Reflect frames, each resumed from a saved stack
+    // with the methods' home objects.
+    let supers = embed_file("../corpus/serial/super-reflect-wait.gsp");
+    heap_program::join(thread_spawn(super_reflect_wait, str(supers), false));
+    heap_program::join(thread_spawn(super_reflect_wait, str(supers), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(super_reflect_resumed, copy(w))); waits += 1; }
+    assert(waits == 9);
     print("suspended continuations: a dependency wait keeps them in place or carries them, with its whole stack as rows (native frames included), in a saved continuation; a reused worker's next job cannot reach them");
 }
 // Run suspended-wait.js to its dependency wait, with a generator and an
@@ -1482,6 +1492,71 @@ thread_fn derived_wait(bytes: u8[], save: bool) {
     var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
     assert(qput(true));
     assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// Run super-reflect-wait.js (light-cljs-888) through its eight waits:
+// answered in place, checking that the Reflect frames wait at pc Key,
+// Result, Stored and Length (twice: both conversions of the new length)
+// with an object receiver, or each after the stack was saved and restored
+// in a fresh heap (super_reflect_resumed), where super_reflect_save checks
+// that an image is refused when a closure's home object is no object or a
+// saved Reflect frame names no target.
+thread_fn super_reflect_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    if save { super_reflect_save(job, heap); return; }
+    var waits: i64 = 1; var pcs: i64[>..] = [];
+    loop {
+        for f in job.frames { match f.native { Statics x => { if source::statics_receiver(x.which) { assert(f.input.is_object() && f.receiver.is_object()); pcs.push(f.pc); } }, _ => {} } }
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8); waits += 1;
+    }
+    assert(waits == 8 && pcs.len == 5 && pcs[0] == statics_pc::Key && pcs[1] == statics_pc::Result && pcs[2] == statics_pc::Stored && pcs[3] == statics_pc::Length && pcs[4] == statics_pc::Length);
+    assert(source::key_is(heap, job.result, "gDkDsDKDgDsDlDlD:11,5,10,3,true,7,true,1,9"));
+    assert(source::retire(job));
+}
+fn super_reflect_save(job: source::Job&, heap: source::Heap&) {
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    var bad = copy(image); var homed = false;
+    for n, row in image.nodes { if !homed && n.kind == node_kind::Closure && n.value.is_object() { bad.nodes[row].value = source::number(1); homed = true; } }
+    assert(homed);
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    var targetless = copy(image); var reflecting = false;
+    for i in a.frame_count {
+        let r = a.frames + i;
+        match image.conts[r] {
+            Frame x => {
+                var f = x.f;
+                match f.native { Statics s => { if source::statics_receiver(s.which) { f.input = source::Value.Undefined; reflecting = true; } }, _ => {} }
+                targetless.conts[r] = source::Cont.Frame { f: f };
+            },
+            _ => {},
+        }
+    }
+    if reflecting { var refused = snapshot::Control {}; assert(!snapshot::validate(targetless, refused) && refused.error == snapshot::Error.Link); }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn super_reflect_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); super_reflect_save(job, heap); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "gDkDsDKDgDsDlDlD:11,5,10,3,true,7,true,1,9"));
+    assert(source::retire(job));
+    assert(qput(false));
 }
 // A reused worker (light-cljs-795) runs symbols-wait.js twice: each job
 // registers symbols, the reset restores the image's empty registry with

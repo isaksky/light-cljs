@@ -358,6 +358,10 @@ fn statics_frame_valid<T>(s: const T&, f: source::SavedFrame, b: source::Builtin
     }
     // Reflect.has requires an object target; the others convert theirs later.
     if source::statics_keyed(b) { return (pc == statics_pc::Key && (b != source::Builtin.ReflectHas || object_of(s, f.input, node_kind::None)) || pc == statics_pc::Own && object_of(s, f.input, node_kind::Proxy)) && f.output.is_undefined(); }
+    // Reflect.get and Reflect.set (light-cljs-888): an object target; a
+    // key converting, a getter's or (Reflect.set) a setter's result or an
+    // array receiver's converting length awaited.
+    if source::statics_receiver(b) { return object_of(s, f.input, node_kind::None) && (pc == statics_pc::Key || pc == statics_pc::Result || b == source::Builtin.ReflectSet && (pc == statics_pc::Stored || pc == statics_pc::Length && object_of(s, f.receiver, node_kind::Array))) && (b == source::Builtin.ReflectSet || f.output.is_undefined()); }
     if b == source::Builtin.ObjectPrototypeToString { return pc == statics_pc::Tag; }
     if b == source::Builtin.ObjectPrototypeToLocaleString { return pc == statics_pc::Method || pc == statics_pc::Result; }
     return false;
@@ -669,7 +673,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             let r = s.sources[n.source]; let text = s.bytes[r.start..(r.start + r.count)];
             if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
         }
-        if n.kind == node_kind::Closure && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
+        // A closure's value is its home object (light-cljs-888), if any.
+        if n.kind == node_kind::Closure && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }
         // A class constructor makes its properties when it is made
         // (light-cljs-886): it is never a lazy closure.
         if n.kind == node_kind::Closure && s.functions[n.function].kind >= constructor::BaseClass && n.key_count == 0 && !n.initialized { return reject(c, Error.Link); }

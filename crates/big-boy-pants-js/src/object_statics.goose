@@ -97,12 +97,13 @@ let statics_pc::Method = 17;
 let statics_pc::Result = 18;
 let statics_pc::Iterable = 19;
 let statics_pc::Length = 20;
+let statics_pc::Stored = 21;
 
 // The built-ins that always start a Statics frame (native_start).
 fn statics_native(b: Builtin) -> bool {
     return match b {
         ObjectKeys, ObjectValues, ObjectEntries, ObjectGetOwnPropertyNames, ObjectGetOwnPropertySymbols, ObjectGetOwnPropertyDescriptors, ObjectAssign, ObjectFromEntries, ObjectGroupBy,
-        ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToLocaleString, ReflectOwnKeys, ReflectHas => true,
+        ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToLocaleString, ReflectOwnKeys, ReflectHas, ReflectGet, ReflectSet => true,
         _ => false,
     };
 }
@@ -127,6 +128,7 @@ fn start_statics(job: Job&, b: Builtin, receiver: Value, args: const Value[:], b
     if b == Builtin.ObjectAssign { start_assign(job, args, base); return; }
     if statics_iterates(b) { start_iteration(job, b, args, base); return; }
     if statics_keyed(b) { start_keyed(job, b, receiver, args, base); return; }
+    if statics_receiver(b) { start_reflect(job, b, args, base); return; }
     if b == Builtin.ObjectPrototypeToString { start_tag(job, receiver, base); return; }
     if b == Builtin.ObjectPrototypeToLocaleString { start_locale(job, receiver, base); return; }
     heap.fault = Fault.InvalidState;
@@ -554,6 +556,93 @@ fn keyed(job: Job&, at: i64, b: Builtin, k: Value) {
     if heap.fault == Fault.None { finish_native(job, job.frames[at], boolean(e.found && e.attrs & attr_enumerable() != 0)); }
 }
 
+// ---- Reflect.get and Reflect.set (light-cljs-888; ECMAScript 28.1.5 and
+// 28.1.12, the Pants engine's vm/native/reflect.rs): an object target (a
+// TypeError otherwise), the key's ToPropertyKey (a key object's ToPrimitive
+// in a Convert frame, pc Key), then [[Get]] or [[Set]] with the receiver,
+// the target when the argument is absent. The frame: input the target,
+// receiver the receiver, output Reflect.set's value. A getter runs above
+// the frame (pc Result, its value the answer), a setter too (pc Stored,
+// the answer true). With the target as receiver, Reflect.set is an
+// ordinary assignment (write); a separate receiver takes receiver_set's
+// path, as a super assignment does.
+inline fn statics_receiver(b: Builtin) -> bool { return b == Builtin.ReflectGet || b == Builtin.ReflectSet; }
+fn start_reflect(job: Job&, b: Builtin, args: const Value[:], base: i64) {
+    let heap .= job.heap;
+    let o = arg(args, 0); let kv = arg(args, 1);
+    let set = b == Builtin.ReflectSet;
+    if !o.is_object() { type_error(job, if set { "Reflect.set: the target is not an object" } else { "Reflect.get: the target is not an object" }); return; }
+    let given: i64 = if set { 3 } else { 2 };
+    let receiver = if args.len > given { args[given] } else { o };
+    let at = statics_frame(job, b, base, statics_pc::Key, o, if set { arg(args, 2) } else { Value.Undefined });
+    job.frames[at].receiver = receiver;
+    if convertible(heap, kv) { push_operand(job, kv); start_convert(job, Hint.String, false, 1, 1); return; }
+    let k = property_key(job, b, kv);
+    if heap.fault != Fault.None { return; }
+    reflect_access(job, at, b, k);
+}
+// Reflect.get's or Reflect.set's access of interned key k.
+fn reflect_access(job: Job&, at: i64, b: Builtin, k: Value) {
+    let heap .= job.heap; let frame = job.frames[at];
+    let o = frame.input; let receiver = frame.receiver;
+    if b == Builtin.ReflectGet {
+        // A compiler job's protected rows and root receiver are read only
+        // by the instructions that guard them (get_property): here they
+        // fault NativeBoundary, as the key walks do.
+        if !listable(job, o) { return; }
+        prepare_function(job, o, k, false);
+        let v, getter = read(heap, o, k);
+        if heap.fault != Fault.None { return; }
+        if !getter.is_object() { finish_native(job, frame, v); return; }
+        job.frames[at].pc = statics_pc::Result;
+        run_getter(job, b, getter, receiver);
+        return;
+    }
+    let value = frame.output;
+    var setter = Value.Undefined; var ok = false;
+    if receiver == o {
+        if !writable(job, o.id()) { heap.fault = Fault.NativeBoundary; return; }
+        prepare_function(job, o, k, true);
+        prepare_function(job, o, k, false);
+        if heap.fault != Fault.None { return; }
+        if length_converts(heap, o, k, value) { reflect_length(job, at, value); return; }
+        let f, accepted = write(heap, o, k, value);
+        setter = f; ok = accepted;
+        if heap.fault == Fault.None && ok && !setter.is_object() { record(job, o, k, value); }
+    } else {
+        let f, accepted = receiver_set(job, o, k, value, receiver);
+        setter = f; ok = accepted;
+    }
+    if heap.fault != Fault.None { return; }
+    if setter.is_hole() { reflect_length(job, at, value); return; }
+    if setter.is_object() { job.frames[at].pc = statics_pc::Stored; call_accessor(job, setter, receiver, [value]); return; }
+    finish_native(job, frame, boolean(ok));
+}
+// Reflect.set of an array receiver's `length` to an object `value`
+// (length_converts): ToPrimitive with hint number, then ToNumber, of two
+// copies (start_length's conversions) above the frame, at pc Length.
+fn reflect_length(job: Job&, at: i64, value: Value) {
+    job.frames[at].pc = statics_pc::Length;
+    if push_operand(job, value) && push_operand(job, value) { start_convert(job, Hint.Number, true, 2, 2); }
+}
+// Both conversions arrived: the length is written to the receiver (its own
+// writable `length`, checked before converting), Reflect.set answering
+// whether it was accepted.
+fn reflect_length_step(job: Job&, frame: Frame) {
+    let heap .= job.heap;
+    let n = converted_length(job);
+    if heap.fault != Fault.None { return; }
+    let r = frame.receiver;
+    if length_kept(heap, r, n) { finish_native(job, frame, boolean(true)); return; }
+    let k = key_named(heap, "length");
+    if heap.fault != Fault.None { return; }
+    let setter, ok = write(heap, r, k, n);
+    if heap.fault != Fault.None { return; }
+    if setter.is_object() { heap.fault = Fault.InvalidState; return; }
+    if ok { record(job, r, k, n); }
+    finish_native(job, frame, boolean(ok));
+}
+
 // ---- Object.prototype.toString's @@toStringTag getter and toLocaleString
 fn start_tag(job: Job&, receiver: Value, base: i64) {
     let heap .= job.heap;
@@ -587,6 +676,7 @@ fn statics_step(job: Job&, frame: Frame, b: Builtin) {
     let heap .= job.heap; let at = job.frames.len - 1;
     // Object.assign's converted array length: both conversions are
     // operands (converted_length), checked before the write (use_value).
+    if frame.pc == statics_pc::Length && statics_receiver(b) { reflect_length_step(job, frame); return; }
     if frame.pc == statics_pc::Length {
         let n = converted_length(job);
         if heap.fault != Fault.None { return; }
@@ -629,7 +719,10 @@ fn statics_step(job: Job&, frame: Frame, b: Builtin) {
         statics_pc::Item => { take_item(job, at, b, v); },
         statics_pc::First => { take_first(job, at, b, v); },
         statics_pc::Second => { take_second(job, at, b, v); },
-        statics_pc::Key => { if statics_keyed(b) { let k = property_key(job, b, v); if heap.fault == Fault.None { keyed(job, at, b, k); } } else { take_key(job, at, b, v); } },
+        statics_pc::Key => {
+            if statics_keyed(b) || statics_receiver(b) { let k = property_key(job, b, v); if heap.fault == Fault.None { if statics_keyed(b) { keyed(job, at, b, k); } else { reflect_access(job, at, b, k); } } }
+            else { take_key(job, at, b, v); }
+        },
         statics_pc::Group => {
             if convertible(heap, v) { job.frames[at].pc = statics_pc::Key; push_operand(job, v); start_convert(job, Hint.String, false, 1, 1); return; }
             take_key(job, at, b, v);
@@ -640,6 +733,8 @@ fn statics_step(job: Job&, frame: Frame, b: Builtin) {
         statics_pc::Tag => { let r = object_tag_text(job, frame.input, v); if heap.fault == Fault.None { finish_native(job, frame, r); } },
         statics_pc::Method => { locale_call(job, at, v); },
         statics_pc::Result => { finish_native(job, frame, v); },
+        // Reflect.set's setter returned: the assignment was accepted.
+        statics_pc::Stored => { finish_native(job, frame, boolean(true)); },
         _ => { heap.fault = Fault.InvalidState; },
     }
 }

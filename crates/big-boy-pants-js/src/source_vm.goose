@@ -247,7 +247,7 @@ struct SiteSource { kind: u8, role: u8, cell: bool, index: u32 }
 enum Ins {
     Const { k: u32 }, Undefined, Load { slot: u32 }, Store { slot: u32 }, Pop, Dup, Dup2, Dup3, Binary { op: u8 }, Not,
     Jump { to: u32 }, JumpUnless { to: u32 }, Return, NewObject { bare: bool }, NewArray, Try { to: u32 }, Throw, EndTry,
-    Unary { op: u8 }, Numeric2, Closure { child: u32 }, Call { argc: u32 }, CallMethod { argc: u32 },
+    Unary { op: u8 }, Numeric2, Closure { child: u32, home: bool }, Call { argc: u32 }, CallMethod { argc: u32 },
     Arguments, MappedArguments, Rest { skip: u32 }, Callee, Capture { slot: u32 }, NewCell { immutable: bool },
     InitCell, ReadCell, WriteCell, GetNamed { k: u32 }, GetIndexed, SetNamed { k: u32, strict: bool }, DefineNamed { k: u32, half: u8 },
     SetIndexed { strict: bool }, DefineIndexed { half: u8 }, SetProto, Delete { strict: bool }, In, Append, ResolveThis, This { sloppy: bool }, Global, GetGlobal { k: u32, throws: bool },
@@ -334,6 +334,14 @@ enum Ins {
     // array, decodes to Rest { skip: 0 }: no observable iteration.
     // ResolveThis (161) v → v reads a derived constructor's `this` cell.
     CheckHeritage, InitHeritage, SuperConstructor, ConstructSuper { argc: u32, spread: bool }, BindThis,
+    // Super property access (light-cljs-888; the Pants engine's
+    // property_step): SuperBase (GetSuperBase, 163) f → f's home object's
+    // current [[Prototype]]; GetSuper (GetSuperElem, 164) receiver base key
+    // → value, [[Get]] on the base with a separate receiver; SetSuper
+    // (PutSuperElem 165, PutSuperElemStrict 168 with `strict`) receiver
+    // base key value → value, [[Set]] with a separate receiver; SuperKey
+    // (ToSuperKey, 166) key → key, a resumable ToPropertyKey.
+    SuperBase, GetSuper, SetSuper { strict: bool }, SuperKey,
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -898,11 +906,9 @@ fn instruction(op: Op) -> Ins {
         opcode::NewObject => Ins.NewObject { bare: true }, opcode::NewObjectLiteral => Ins.NewObject { bare: false }, opcode::NewArray => Ins.NewArray, opcode::PushCatch => Ins.Try { to: a }, opcode::Throw => Ins.Throw, opcode::PopCatch => Ins.EndTry,
         opcode::Neg, opcode::ToNumber, opcode::ToNumeric, opcode::Inc, opcode::Dec, opcode::BitNot => Ins.Unary { op: op.code as u8 }, opcode::ToNumberPair => Ins.Numeric2,
         // Method, an object literal's or a class's method, getter or
-        // setter: obj c1..cn → obj f, a closure like Function's; its home
-        // object only serves `super`, whose opcodes are not implemented
-        // (light-cljs-787): light-cljs-888 stores it (see
-        // docs/javascript-coverage.md, light-cljs-886).
-        opcode::Function, opcode::Method => Ins.Closure { child: a }, opcode::Construct => Ins.Construct { argc: a },
+        // setter: obj c1..cn → obj f, a closure like Function's whose home
+        // object (light-cljs-888) is obj, the operand below the captures.
+        opcode::Function => Ins.Closure { child: a, home: false }, opcode::Method => Ins.Closure { child: a, home: true }, opcode::Construct => Ins.Construct { argc: a },
         opcode::Call => if op.direct_eval { Ins.DirectEval { argc: a, method: false, spread: false } } else { Ins.Call { argc: a } },
         opcode::CallMethod => if op.direct_eval { Ins.DirectEval { argc: a, method: true, spread: false } } else { Ins.CallMethod { argc: a } },
         opcode::CallSpread, opcode::CallMethodSpread => if op.direct_eval { Ins.DirectEval { argc: 0, method: op.code == opcode::CallMethodSpread, spread: true } } else { Ins.CallSpread { method: op.code == opcode::CallMethodSpread } },
@@ -934,6 +940,8 @@ fn instruction(op: Op) -> Ins {
         opcode::CheckHeritage => Ins.CheckHeritage, opcode::InitHeritage => Ins.InitHeritage, opcode::GetSuperConstructor => Ins.SuperConstructor,
         opcode::ConstructSuper => Ins.ConstructSuper { argc: a, spread: false }, opcode::ConstructSuperSpread => Ins.ConstructSuper { argc: 0, spread: true },
         opcode::BindThis => Ins.BindThis, opcode::ForwardArguments => Ins.Rest { skip: 0 },
+        opcode::GetSuperBase => Ins.SuperBase, opcode::GetSuperElem => Ins.GetSuper, opcode::ToSuperKey => Ins.SuperKey,
+        opcode::PutSuperElem => Ins.SetSuper { strict: false }, opcode::PutSuperElemStrict => Ins.SetSuper { strict: true },
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -2641,15 +2649,30 @@ fn dictionary_length(heap: Heap&, object: Value, length: i64) -> bool {
     }
     node_mut(heap, object.id()).length = target as u32; return target == length;
 }
-fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
+// A closure of code row `function` with its captured values. `home`, an
+// object, is a method's [[HomeObject]] (light-cljs-888): the object below
+// a Method instruction's captures (an object literal, a class's prototype
+// or constructor), kept in the closure row's `value`, a plain row link
+// like any other node's value, so reclamation, the worker reset, saved
+// continuations and snapshot validation carry it with no rule of their
+// own. A class constructor's home object is its `prototype`, made with it.
+// GetSuperBase reads it; nothing else does.
+fn closure(heap: Heap&, function: i64, captures: const Value[:], home: Value = Value.Undefined) -> Value {
     if function < 0 || function >= heap.code.functions.len || captures.len != heap.code.functions[function].captures { heap.fault = Fault.InvalidState; return Value.Undefined; }
     if !values_fit(heap, captures.len) || !charge(heap, captures.len) { if heap.fault == Fault.None { memory(heap); } return Value.Undefined; }
     for v in captures { if !valid(heap, v) { return Value.Undefined; } }
+    if !valid(heap, home) || !home.is_undefined() && !home.is_object() { if heap.fault == Fault.None { heap.fault = Fault.InvalidState; } return Value.Undefined; }
     let start = add_values(heap, captures);
-    let f = allocate(heap, Node { kind: node_kind::Closure, function: function as u32, start: start as u32, count: captures.len as u32 });
+    let f = allocate(heap, Node { kind: node_kind::Closure, function: function as u32, start: start as u32, count: captures.len as u32, value: home });
     // A class constructor's `length`, `name` and `prototype` are made with
     // it (light-cljs-886): a class is never a lazy closure.
-    if heap.fault == Fault.None && heap.code.functions[function].kind >= constructor::BaseClass { materialize_function(heap, f.id()); }
+    if heap.fault == Fault.None && heap.code.functions[function].kind >= constructor::BaseClass {
+        materialize_function(heap, f.id());
+        let k = key_named(heap, "prototype");
+        if heap.fault != Fault.None { return f; }
+        let own = find_own(heap, f.id(), k);
+        if heap.fault == Fault.None && own.found && own.value.is_object() { node_mut(heap, f.id()).value = own.value; } else if heap.fault == Fault.None { heap.fault = Fault.InvalidState; }
+    }
     return f;
 }
 // The native frames from `keep` up release their state as an unwind passes
@@ -4572,7 +4595,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Dup => { let v = job.operands[job.operands.len - 1]; job.operands.push(v); },
                 // a b → a b a b: a computed reference read before it is written.
                 Dup2 => { let n = job.operands.len; let a = job.operands[n - 2]; let b = job.operands[n - 1]; job.operands.push(a); job.operands.push(b); },
-                // a b c → a b c a b c: the super-reference form (its own opcodes stay Unsupported).
+                // a b c → a b c a b c: a super reference (receiver base key) read before it is written.
                 Dup3 => { let n = job.operands.len; let a = job.operands[n - 3]; let b = job.operands[n - 2]; let c = job.operands[n - 1]; job.operands.push(a); job.operands.push(b); job.operands.push(c); },
                 Binary b => {
                     let y = job.operands.pop(); let x = job.operands.pop();
@@ -4664,7 +4687,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Closure c => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let child = code.children[f.children + c.child]; let count = code.functions[child].captures; let base = job.operands.len - count;
-                    let v = closure(heap, child, job.operands[base..]); job.operands.resize(base); job.operands.push(v);
+                    let v = closure(heap, child, job.operands[base..], if c.home { job.operands[base - 1] } else { Value.Undefined }); job.operands.resize(base); job.operands.push(v);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -5074,6 +5097,38 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     left = fuel(job, allowance, used);
                 },
                 BindThis => { if !bind_this(job) { break; } },
+                // Super property access (light-cljs-888, super_get and
+                // super_set). An object key converts first in a Convert
+                // frame and the instruction runs again, as GetIndexed's does.
+                SuperBase => {
+                    let g = job.operands.pop();
+                    if !g.is_object() || node(heap, g.id()).kind != node_kind::Closure || !node(heap, g.id()).value.is_object() { heap.fault = Fault.InvalidState; break; }
+                    job.operands.push(prototype(heap, node(heap, g.id()).value.id()));
+                },
+                SuperKey => {
+                    if convertible(heap, job.operands[job.operands.len - 1]) { settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 1); in_place(job, top, at); break; }
+                    // A number key's ToString makes a string row.
+                    settle(job, ran, used); job.frames[top].pc = pc;
+                    let k = key(heap, job.operands.pop());
+                    if heap.fault == Fault.None { job.operands.push(k); }
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                // A null base is a TypeError before the key converts
+                // (the Pants engine's start_conversion, QuickJS's
+                // OP_get_super_value and OP_put_super_value).
+                GetSuper => {
+                    if convertible(heap, job.operands[job.operands.len - 1]) && job.operands[job.operands.len - 2].is_object() { settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 1); in_place(job, top, at); break; }
+                    settle(job, ran, used); job.frames[top].pc = pc; super_get(job);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                SetSuper s => {
+                    if convertible(heap, job.operands[job.operands.len - 2]) && job.operands[job.operands.len - 3].is_object() { settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 2); in_place(job, top, at); break; }
+                    settle(job, ran, used); job.frames[top].pc = pc; super_set(job, s.strict || f.strict);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
                 ToObject => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let v = job.operands.pop(); job.operands.push(to_object(job, v));
@@ -5716,7 +5771,10 @@ fn unmap(heap: Heap&, o: i64, i: i64, c: i64, value: Value) {
 fn detach_cell(heap: Heap&, c: i64, value: Value) {
     let cell .= node_mut(heap, c); cell.kind = node_kind::Binding; cell.value = value; cell.length = 0; cell.namespace_value = Value.Null;
 }
-fn get_property(job: Job&, k: Value, named: bool) {
+// [[Get]] of key k on the object popped (GetNamed, GetIndexed), a getter
+// running with it as receiver, or with `receiver` when that is not Empty
+// (super_get, light-cljs-888).
+fn get_property(job: Job&, k: Value, named: bool, receiver: Value = Value.Empty) {
     let heap .= job.heap;
     let object = job.operands.pop();
     if job.root_receiver.is_object() && object == job.root_receiver {
@@ -5738,14 +5796,113 @@ fn get_property(job: Job&, k: Value, named: bool) {
         let value, getter = read(heap, object, k);
         if heap.fault != Fault.None { property_fault(job, object, k, named, false); job.operands.push(value); return; }
         if !getter.is_object() { job.operands.push(value); return; }
+        let this = if receiver.is_hole() { object } else { receiver };
         // %ThrowTypeError% (Function.prototype.caller and .arguments) runs in place.
-        let done, v = accessor_builtin(job, getter, object, 0);
+        let done, v = accessor_builtin(job, getter, this, 0);
         if done { job.operands.push(v); }
-        else if node(heap, getter.id()).kind == node_kind::Closure { enter(job, getter, object, []); }
+        else if node(heap, getter.id()).kind == node_kind::Closure { enter(job, getter, this, []); }
         // Any other getter (a built-in, a bound function; light-cljs-881)
         // runs on the general call path, its result this read's.
-        else { call_accessor(job, getter, object, []); }
+        else { call_accessor(job, getter, this, []); }
     }
+}
+// GetSuperElem (light-cljs-888; the Pants engine's property_step):
+// receiver base key → value, [[Get]] of the key (ToPropertyKey's already,
+// or a primitive) on the lookup base, the home object's prototype (null
+// is a TypeError), a getter running with the method's `this` as receiver.
+fn super_get(job: Job&) {
+    let heap .= job.heap;
+    let kv = job.operands.pop(); let base = job.operands.pop(); let receiver = job.operands.pop();
+    if !valid(heap, receiver) { return; }
+    if !base.is_object() { type_error(job, "super lookup base is null"); return; }
+    let k = key(heap, kv);
+    if heap.fault != Fault.None { return; }
+    job.operands.push(base);
+    get_property(job, k, true, receiver);
+}
+// PutSuperElem and PutSuperElemStrict (light-cljs-888): receiver base key
+// value → value, [[Set]] of the key on the lookup base with the method's
+// `this` as receiver (receiver_set): a setter runs with the receiver in a
+// Setter native frame, the assignment's value its result; a refusal is a
+// TypeError in strict code and nothing in sloppy code, as set_property's.
+fn super_set(job: Job&, strict: bool) {
+    let heap .= job.heap;
+    let value = job.operands.pop(); let kv = job.operands.pop(); let base = job.operands.pop(); let receiver = job.operands.pop();
+    if !valid(heap, receiver) || !valid(heap, value) { return; }
+    if !base.is_object() { type_error(job, "super lookup base is null"); return; }
+    let k = key(heap, kv);
+    if heap.fault != Fault.None { return; }
+    let setter, ok = receiver_set(job, base, k, value, receiver);
+    if heap.fault == Fault.None && setter.is_object() { call_setter(job, setter, receiver, value, value); return; }
+    if heap.fault == Fault.None && setter.is_hole() { start_length(job, receiver, k, value, value, strict); return; }
+    if heap.fault == Fault.None && !ok && strict { refused_write(job, receiver, k); if heap.fault == Fault.None { heap.fault = Fault.TypeError; } }
+    else if heap.fault != Fault.None { property_fault(job, receiver, k, true, true); }
+    job.operands.push(value);
+}
+// [[Set]] of key k (a string or symbol) to `value` on object `base` with a
+// separate `receiver` (ECMAScript 10.1.9.2 OrdinarySetWithOwnDescriptor;
+// the Pants engine's property::super_write and super_receiver_descriptor),
+// shared by super assignments and Reflect.set: the base's chain decides
+// first, without the receiver: an accessor gives its setter (to run with
+// the receiver, as assign's caller runs it) or refuses without one, and a
+// non-writable data property refuses. Otherwise the receiver must be an
+// object (a primitive refuses) whose own property, if any, is a writable
+// data property, whose value is then written ([[DefineOwnProperty]] with
+// only a value, which for a writable data property is the write assign
+// makes); without one the receiver gets a new data property
+// (CreateDataProperty, refused when it is not extensible). A receiver row
+// the job did not allocate faults NativeBoundary before anything changes,
+// as every write does (decision 3). A proxy base or receiver fails by name
+// (light-cljs-890). An array receiver's writable `length` set to an object
+// returns Empty: the caller converts the value first (start_length's
+// two conversions) and writes the number to the receiver, as set_property
+// does. An ordinary assignment, receiver and base the same,
+// stays on assign's path; this one is only for a separate receiver.
+fn receiver_set(job: Job&, base: Value, k: Value, value: Value, receiver: Value) -> Value, bool {
+    let heap .= job.heap;
+    if !valid(heap, base) || !key_valid(heap, k) || !valid(heap, value) || !valid(heap, receiver) { return Value.Undefined, false; }
+    if !base.is_object() || !k.is_string() && !k.is_symbol() { heap.fault = Fault.InvalidState; return Value.Undefined, false; }
+    // OrdinarySet reads an inherited `prototype`: a lazy one is made first.
+    prepare_function(job, base, k, false);
+    let key = intern(heap, k);
+    if heap.fault != Fault.None { return Value.Undefined, false; }
+    var at = base;
+    while at.is_object() {
+        let p = own_entry(heap, at, key);
+        if heap.fault != Fault.None { proxy_relabel(heap, at, proxy_method::Set); return Value.Undefined, false; }
+        if p.found {
+            if is_pending(p.value) { pending_fault(heap, key); return Value.Undefined, false; }
+            if is_accessor(p.value) { let f = pair(heap, p.value).set; return f, f.is_object(); }
+            if p.attrs & attr_writable() == 0 { return Value.Undefined, false; }
+            break;
+        }
+        if !charge(heap) { return Value.Undefined, false; }
+        at = prototype(heap, at.id());
+    }
+    if !receiver.is_object() { return Value.Undefined, false; }
+    if !writable(job, receiver.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined, false; }
+    prepare_function(job, receiver, key, true);
+    if heap.fault != Fault.None { return Value.Undefined, false; }
+    let own = own_entry(heap, receiver, key);
+    // A proxy receiver's [[GetOwnProperty]] fails by name here.
+    if heap.fault != Fault.None { return Value.Undefined, false; }
+    var ok = false;
+    if own.found {
+        if is_pending(own.value) { pending_fault(heap, key); return Value.Undefined, false; }
+        if is_accessor(own.value) || own.attrs & attr_writable() == 0 { return Value.Undefined, false; }
+        // An array receiver's `length` set to an object converts first
+        // (ArraySetLength, length_converts): Empty asks the caller to run
+        // the conversion and then write the number to the receiver.
+        if length_converts(heap, receiver, key, value) { return Value.Empty, false; }
+        let setter, written = assign(heap, receiver, key, value);
+        if heap.fault != Fault.None || setter.is_object() { if heap.fault == Fault.None { heap.fault = Fault.InvalidState; } return Value.Undefined, false; }
+        ok = written;
+    } else {
+        ok = define_property(heap, receiver, key, value, attrs_data());
+        if heap.fault != Fault.None { return Value.Undefined, false; }
+    }
+    if ok { record(job, receiver, key, value); }
+    return Value.Undefined, ok;
 }
 // The message of a fault of [[Get]] or [[Set]] of key k on `base` (only
 // on the fault path): an undefined or null base's TypeError (base_error),

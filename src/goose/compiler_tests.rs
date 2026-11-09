@@ -5770,6 +5770,7 @@ fn goose_compiler_cell_effects_and_named_errors() {
                 "rt.core.reset(a, rt.vectorFromArray([(function f() {}).bind(null)])); return 0;",
                 "rt.core.reset(a, rt.vectorFromArray([(function () { return arguments; })(1)])); return 0;",
                 "return rt.core.compareAndSet(a, 1, 5) ? rt.core.deref(a) : -1;",
+                "rt.core.reset(a, rt.vectorFromArray([({ m() { return 1; } }).m])); return 0;",
             ],
         );
         assert!(
@@ -5812,6 +5813,16 @@ fn goose_compiler_cell_effects_and_named_errors() {
         );
         // None changed the cell: it still holds the faulting job's 1.
         assert_eq!(outcomes[6].as_deref(), Ok("Double(5.0)"), "{outcomes:?}");
+        // A method's home object (light-cljs-888) is an edge of its closure:
+        // an object literal's method reaches the literal, a mutable
+        // JavaScript object, and is refused as a closure capturing it is.
+        assert!(
+            outcomes[7]
+                .as_ref()
+                .unwrap_err()
+                .contains("Fault.NativeBoundary:reset:-cannot-share-a-mutable-JavaScript-object"),
+            "{outcomes:?}"
+        );
         assert_eq!((jobs.cells, jobs.conflicts), (1, 0), "{jobs:?}");
         assert!(
             jobs.cell_operations >= 7 && jobs.owner_ns > 0 && jobs.delay_waits == 0,

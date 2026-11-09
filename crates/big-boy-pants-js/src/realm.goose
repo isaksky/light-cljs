@@ -125,11 +125,14 @@ enum Builtin {
     // Symbol.for and keyFor, and Symbol.prototype's methods and
     // `description` getter (light-cljs-885; symbols.goose).
     SymbolFor, SymbolKeyFor, SymbolPrototypeToString, SymbolPrototypeValueOf, SymbolPrototypeDescription, SymbolPrototypeToPrimitive,
+    // Reflect.get and Reflect.set with their receiver (light-cljs-888;
+    // object_statics.goose), Statics native frames.
+    ReflectGet, ReflectSet,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[151] = [
+let BUILTINS: BuiltinInfo[153] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -215,6 +218,7 @@ let BUILTINS: BuiltinInfo[151] = [
     BuiltinInfo { which: Builtin.SymbolFor, name: "for", length: 1 }, BuiltinInfo { which: Builtin.SymbolKeyFor, name: "keyFor", length: 1 },
     BuiltinInfo { which: Builtin.SymbolPrototypeToString, name: "toString" }, BuiltinInfo { which: Builtin.SymbolPrototypeValueOf, name: "valueOf" },
     BuiltinInfo { which: Builtin.SymbolPrototypeDescription, name: "get description" }, BuiltinInfo { which: Builtin.SymbolPrototypeToPrimitive, name: "[Symbol.toPrimitive]", length: 1 },
+    BuiltinInfo { which: Builtin.ReflectGet, name: "get", length: 2 }, BuiltinInfo { which: Builtin.ReflectSet, name: "set", length: 3 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -292,7 +296,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[84] = [
+let REALM_FUNCTIONS: Method[86] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -362,6 +366,8 @@ let REALM_FUNCTIONS: Method[84] = [
     Method { which: Builtin.SymbolFor, holder: 52 }, Method { which: Builtin.SymbolKeyFor, holder: 52 },
     Method { which: Builtin.SymbolPrototypeToString, holder: 41 }, Method { which: Builtin.SymbolPrototypeValueOf, holder: 41 },
     Method { which: Builtin.SymbolPrototypeDescription, holder: 41 }, Method { which: Builtin.SymbolPrototypeToPrimitive, holder: 41 },
+    // Reflect.get and Reflect.set (light-cljs-888; object_statics.goose).
+    Method { which: Builtin.ReflectGet, holder: 34 }, Method { which: Builtin.ReflectSet, holder: 34 },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -404,7 +410,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[165] = [
+let PENDING: PendingName[163] = [
     // Object.prototype
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
@@ -422,10 +428,8 @@ let PENDING: PendingName[165] = [
     // Reflect (reflect_row()): apply and construct are light-cljs-851's,
     // defineProperty, deleteProperty and getOwnPropertyDescriptor light-cljs-881's,
     // isExtensible and preventExtensions light-cljs-882's, getPrototypeOf
-    // and setPrototypeOf light-cljs-883's, has and ownKeys light-cljs-884's;
-    // get and set belong to the
-    // objects and classes area (light-cljs-766).
-    PendingName { holder: 34, key: "get" }, PendingName { holder: 34, key: "set" },
+    // and setPrototypeOf light-cljs-883's, has and ownKeys light-cljs-884's,
+    // get and set light-cljs-888's: none is pending.
     // %IteratorPrototype% (its helpers), %GeneratorPrototype% and
     // %Promise.prototype% (light-cljs-790; the Promise area makes the last's).
     PendingName { holder: 23, key: "constructor" }, PendingName { holder: 23, key: "drop" }, PendingName { holder: 23, key: "every" }, PendingName { holder: 23, key: "filter" },
@@ -1741,7 +1745,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         // The Object statics that expose own keys run as Statics native
         // frames (light-cljs-884; object_statics.goose, native_start).
         ObjectKeys, ObjectValues, ObjectEntries, ObjectGetOwnPropertyNames, ObjectGetOwnPropertySymbols, ObjectGetOwnPropertyDescriptors, ObjectAssign, ObjectFromEntries, ObjectGroupBy,
-        ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToLocaleString, ReflectOwnKeys, ReflectHas => { return unsupported_step(job, b, "called outside a native frame"); },
+        ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToLocaleString, ReflectOwnKeys, ReflectHas, ReflectGet, ReflectSet => { return unsupported_step(job, b, "called outside a native frame"); },
         _ => { return native_value(heap, id, args); },
     }
 }
