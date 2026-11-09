@@ -792,6 +792,8 @@ fn swap_call(job: Job&, at: i64, b: Builtin) -> Value, bool {
     if node(heap, frame.callee.id()).kind == node_kind::Builtin {
         let cb = builtin_of(heap, frame.callee.id());
         if cb == Builtin.Gensym && job.gensym_next > 0 { return gensym(job, args), true; }
+        // A built-in that converts its arguments runs in a Coerce frame (light-cljs-900).
+        if coerces(heap, frame.callee, Value.Null, args) { job.frames[at].pc = 1; start_coerce(job, frame.callee, Value.Null, args, job.operands.len); return Value.Undefined, false; }
         if forces(heap, cb, args) { job.frames[at].pc = 1; start_force(job, cb, args[0], job.operands.len); return Value.Undefined, false; }
         if native_builtin(cb) { job.frames[at].pc = 1; native_start(job, cb, Value.Null, args, job.operands.len); return Value.Undefined, false; }
         if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq { unsupported_step(job, b, "a host-effect or mapv built-in function"); return Value.Undefined, false; }

@@ -124,3 +124,141 @@ fn radix_integer(digits: const u8[:], bits: i64) -> f64 {
     while scale > 0 && v != 1.0 / 0.0 { v = v * 2.0; scale -= 1; }
     return v;
 }
+// parseInt and parseFloat after leading StrWhiteSpace (light-cljs-900;
+// ECMAScript 19.2.5 and 19.2.4; the Pants engine's rust/src/value/string.rs
+// NumberParse, QuickJS's js_parseInt and js_parseFloat through js_atof):
+// `t` holds the string's units from its first unit that is not
+// StrWhiteSpace, as far as they can belong to a number (the caller charges
+// them as it scans them).
+//
+// parse_int(t, r), r being ToInt32 of the radix: an optional sign; radix 0
+// is 10, or 16 after a `0x` or `0X` prefix, which radix 16 also skips; a
+// radix outside 2 to 36 is NaN; then the longest prefix of digits of the
+// radix (letters for 10 to 35, either case), none being NaN. The digits
+// accumulate exactly in 32-bit limbs, up to 1,024 bits (more is Infinity),
+// and round to the nearest double, ties to even, so the result is exact up
+// to 2^53 and correctly rounded beyond; "-0" is -0.
+fn parse_int(t: const u16[:], radix_in: i64) -> f64 {
+    var i: i64 = 0; var negative = false;
+    if i < t.len && (t[i] == '+' || t[i] == '-') { negative = t[i] == '-'; i += 1; }
+    var radix = radix_in; var strip = true;
+    if radix != 0 {
+        if radix < 2 || radix > 36 { return 0.0 / 0.0; }
+        if radix != 16 { strip = false; }
+    } else { radix = 10; }
+    if strip && t.len - i >= 2 && t[i] == '0' && (t[i + 1] == 'x' || t[i + 1] == 'X') { i += 2; radix = 16; }
+    var limbs: u64[>..] = []; var any = false;
+    let r: u64 = radix as u64;
+    while i < t.len {
+        let c = t[i];
+        let d: i64 = if c >= '0' && c <= '9' { c - '0' } else if c >= 'a' && c <= 'z' { c - 'a' + 10 } else if c >= 'A' && c <= 'Z' { c - 'A' + 10 } else { 99 };
+        if d >= radix { break; }
+        any = true;
+        var carry: u64 = d as u64;
+        for k in limbs.len { carry += limbs[k] * r; limbs[k] = carry & 4294967295; carry = carry >> 32; }
+        if carry != 0 {
+            // Past 2^1024 every longer prefix is too.
+            if limbs.len == 32 { return if negative { -1.0 / 0.0 } else { 1.0 / 0.0 }; }
+            limbs.push(carry);
+        }
+        i += 1;
+    }
+    if !any { return 0.0 / 0.0; }
+    let v = limbs_value(limbs);
+    return if negative { -v } else { v };
+}
+// The integer of little-endian 32-bit limbs, rounded to the nearest double,
+// ties to even: its first 64 significant bits, how many follow and whether
+// any of those is 1.
+fn limbs_value(limbs: const u64[:]) -> f64 {
+    if limbs.len == 0 { return 0.0; }
+    if limbs.len <= 2 {
+        let x: u64 = if limbs.len == 2 { (limbs[1] << 32) | limbs[0] } else { limbs[0] };
+        if x <= 9007199254740992 { let small: i64 = x as i64; let v: f64 = small; return v; }
+    }
+    var mant: u64 = 0; var dropped: i64 = 0; var sticky = false;
+    var k = limbs.len - 1;
+    while k >= 0 {
+        var bit: i64 = 31;
+        while bit >= 0 {
+            let b = (limbs[k] >> bit) & 1;
+            if (mant >> 63) == 0 { mant = (mant << 1) | b; } else { dropped += 1; if b != 0 { sticky = true; } }
+            bit -= 1;
+        }
+        k -= 1;
+    }
+    return round_integer(mant, dropped, sticky);
+}
+// mant * 2^dropped, rounded to 53 significant bits (ties to even, `sticky`
+// marking a nonzero bit among the dropped ones).
+fn round_integer(mant: u64, dropped: i64, sticky: bool) -> f64 {
+    if mant == 0 { return 0.0; }
+    var length: i64 = 0; while length < 64 && (mant >> length) != 0 { length += 1; }
+    let shift = if length > 53 { length - 53 } else { 0 };
+    let one: u64 = 1;
+    var m = mant >> shift;
+    if shift > 0 {
+        let rest = mant & ((one << shift) - 1); let half = one << (shift - 1);
+        if rest > half || rest == half && (sticky || (m & 1) == 1) { m += 1; }
+    }
+    var scale = shift + dropped;
+    if scale > 1023 { return 1.0 / 0.0; }
+    // m is at most 2^53, exact as a double, and so is each product until
+    // one passes the largest double: Infinity, as rounding asks.
+    let mi: i64 = m as i64;
+    var v: f64 = mi;
+    while scale >= 32 && v != 1.0 / 0.0 { v = v * 4294967296.0; scale -= 32; }
+    while scale > 0 && v != 1.0 / 0.0 { v = v * 2.0; scale -= 1; }
+    return v;
+}
+// parse_float(t): an optional sign, then `Infinity` or the longest prefix
+// that is a StrUnsignedDecimalLiteral, `(D+ ('.' D*)? | '.' D+) ([eE]
+// [+-]? D+)?` (an exponent without digits is not part of it), correctly
+// rounded; no prefix is NaN, and no hexadecimal, octal or binary form is
+// read ("0x1" is 0). Of the significant digits the first 1,100 are kept and
+// any later nonzero one is a sticky 1: a double's rounding boundary has
+// fewer significant digits, so only that nonzeroness can decide a side.
+fn parse_float(t: const u16[:]) -> f64 {
+    var i: i64 = 0; var negative = false;
+    if i < t.len && (t[i] == '+' || t[i] == '-') { negative = t[i] == '-'; i += 1; }
+    let infinity = "Infinity";
+    if t.len - i >= infinity.len {
+        var same = true; for c, j in infinity { if t[i + j] != c { same = false; } }
+        if same { return if negative { -1.0 / 0.0 } else { 1.0 / 0.0 }; }
+    }
+    // States: 0 nothing, 2 integer digits, 3 a point without digits before
+    // it, 4 a point after digits or fraction digits, 5 `e`, 6 the exponent's
+    // sign, 7 exponent digits; 2, 4 and 7 end a literal.
+    var state:    i64     = 0; var any = false;
+    var digits:   u8[>..] = []; var fraction: i64 = 0; var dropped: i64 = 0; var sticky = false;
+    var exponent: i64     = 0; var exponent_negative = false;
+    while i < t.len {
+        let c = t[i]; let digit = c >= '0' && c <= '9';
+        var next: i64 = -1;
+        if digit { next = if state <= 2 { 2 } else if state <= 4 { 4 } else { 7 }; }
+        else if c == '.' { next = if state == 0 { 3 } else if state == 2 { 4 } else { -1 }; }
+        else if c == 'e' || c == 'E' { next = if state == 2 || state == 4 { 5 } else { -1 }; }
+        else if c == '+' || c == '-' { next = if state == 5 { 6 } else { -1 }; }
+        if next < 0 { break; }
+        if next == 7 { exponent = min(exponent * 10 + (c - '0'), 4000000000); }
+        else if state == 5 && c == '-' { exponent_negative = true; }
+        else if digit {
+            any = true;
+            if next == 4 { fraction += 1; }
+            if c != '0' || digits.len > 0 {
+                if digits.len < 1100 { digits.push(c as u8); } else { dropped += 1; if c != '0' { sticky = true; } }
+            }
+        }
+        state = next; i += 1;
+    }
+    if !any { return 0.0 / 0.0; }
+    let zero: f64 = 0.0;
+    if digits.len == 0 { return if negative { -zero } else { zero }; }
+    var shift = dropped - fraction;
+    if state == 7 { shift += if exponent_negative { -exponent } else { exponent }; }
+    if sticky { digits.push('1'); shift -= 1; }
+    digits.push('e'); format(digits, shift);
+    let v, ok = parse_flt(digits);
+    if !ok { return 0.0 / 0.0; }
+    return if negative { -v } else { v };
+}

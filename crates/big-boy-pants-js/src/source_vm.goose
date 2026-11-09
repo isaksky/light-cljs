@@ -21,6 +21,7 @@ import .integrity;
 import .prototypes;
 import .object_statics;
 import .symbols;
+import .coerce;
 import .private;
 
 namespace source;
@@ -194,7 +195,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64), Construct => 10001 }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64), Construct => 10001, Coerce c => -9001 - (code(c.which) as i64) * 2 - (if c.construct { 1 } else { 0 }) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -721,9 +722,9 @@ root struct Heap {
 //                instanceof_op): receiver the target C, input the value V;
 //                pc 1 awaits C[@@hasInstance] from its getter, pc 2 a user
 //                @@hasInstance method's result (ToBoolean) or a
-//                native-frame built-in's, pc 3 C.prototype from its getter,
-//                pc 4 V converted by a Convert frame for the built-in
-//                method callee (Number or String), pc 5 a proxy's
+//                native-frame or Coerce frame built-in's, pc 3 C.prototype
+//                from its getter (pc 4 is retired: a built-in method's
+//                conversion runs in its Coerce frame, light-cljs-900), pc 5 a proxy's
 //                [[GetPrototypeOf]] on the walk for the prototype in
 //                callee (light-cljs-891; prototype_walk, which
 //                Object.prototype.isPrototypeOf shares). Its result
@@ -777,6 +778,10 @@ root struct Heap {
 //                and has, and toString's @@toStringTag getter
 //                (light-cljs-884; object_statics.goose, which gives their
 //                fields and phases), its Builtin the payload.
+//   Coerce       the receiver and argument conversions of a built-in with
+//                a plan (light-cljs-900; coerce.goose, which gives its
+//                fields), its Builtin and whether it constructs the
+//                payload.
 //   Construct    [[Construct]] of an ordinary function or base class whose
 //                newTarget's `prototype` is an accessor (light-cljs-886;
 //                construct): callee the constructor, input newTarget, the
@@ -786,7 +791,7 @@ root struct Heap {
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct, Coerce { which: Builtin, construct: bool } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -4158,6 +4163,7 @@ fn native_step(job: Job&) {
         Descriptor d => { descriptor_step(job, frame, d.which); },
         Statics s => { statics_step(job, frame, s.which); },
         Construct => { construct_step(job, frame); },
+        Coerce c => { coerce_step(job, frame, c.which, c.construct); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -4286,6 +4292,7 @@ fn mapv_step(job: Job&, frame: Frame) {
 fn builtin_callback(job: Job&, callee: Value, receiver: Value, arg: Value, frame: Frame) {
     let id: i64 = node(job.heap, callee.id()).function; let b = builtin_of(job.heap, callee.id());
     if b == Builtin.Gensym && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
+    else if coerces(job.heap, callee, receiver, [arg]) { start_coerce(job, callee, receiver, [arg], job.operands.len); }
     else if forces(job.heap, b, [arg]) { start_force(job, b, arg, job.operands.len); }
     else if effect_builtin(b) { request_effect(job, id, [arg], frame); }
     else if forwarding(b) { native_start(job, b, receiver, [arg], job.operands.len); }
@@ -4307,19 +4314,6 @@ fn convertible(heap: const Heap&, v: Value) -> bool {
     if !v.is_object() { return false; }
     let kind = node(heap, v.id()).kind;
     return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::Proxy || kind == node_kind::Arguments;
-}
-// Whether call or construction of f with arguments `args` converts the
-// first argument first, and with which hint (light-cljs-832): Number(o) and
-// String(o) of an object run its ToPrimitive (hint number; hint string, then
-// ToString) in a Convert frame, and the call runs again on the primitive.
-// Symbol(o) and Symbol.for(o) convert o as String(o) does (light-cljs-885),
-// but only when called: a construction (`constructing`) of either throws
-// before it converts anything.
-fn argument_converts(heap: const Heap&, f: Value, args: const Value[:], constructing: bool = false) -> bool, Hint {
-    if args.len == 0 || !convertible(heap, args[0]) || !f.is_object() || f.id() >= heap.nodes.len || node(heap, f.id()).kind != node_kind::Builtin { return false, Hint.Default; }
-    let b = builtin_of(heap, f.id());
-    let symbol = !constructing && (b == Builtin.SymbolFunction || b == Builtin.SymbolFor);
-    return b == Builtin.Number || b == Builtin.String || symbol, if b == Builtin.Number { Hint.Number } else { Hint.String };
 }
 // Start the resumable ToPrimitive with `hint` of the `count` operands whose
 // first lies `depth` below the operand top (Native.Convert): a native frame
@@ -4464,6 +4458,8 @@ fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:])
     job.frames[at].pc = 1;
     if node(heap, m.id()).kind == node_kind::Closure { enter(job, m, v, args); return; }
     if is_bound(heap, m) { start_bound(job, m, v, args, job.operands.len); return; }
+    // A built-in that converts its receiver or arguments (light-cljs-900).
+    if coerces(heap, m, v, args) { start_coerce(job, m, v, args, job.operands.len); return; }
     let b = builtin_of(heap, m.id());
     // An Array.prototype native frame (Array.prototype.toString, light-cljs-842)
     // runs above this one; its result arrives at pc 1.
@@ -5216,11 +5212,12 @@ inline fn construct_at(job: Job&, top: i64, at: i64, argc: i64) -> bool {
     let heap .= job.heap;
     let callee = job.operands[job.operands.len - argc - 1];
     if constructible(heap, callee) { return invoke(job, top, at, argc, false); }
-    // new Number(o), new String(o): the construction runs again on the
-    // primitive (light-cljs-832).
-    let converts, hint = argument_converts(heap, callee, job.operands[(job.operands.len - argc)..], true);
-    if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, argc); in_place(job, top, at); return false; }
-    job.frames[top].pc = at + 1; construct(job, argc);
+    // new Number(o), new String(o): a Coerce frame converts the arguments
+    // first and then constructs (light-cljs-832, light-cljs-900).
+    job.frames[top].pc = at + 1;
+    let first = job.operands.len - argc;
+    if coerces(heap, callee, Value.Undefined, job.operands[first..], true) { start_coerce(job, callee, Value.Undefined, job.operands[first..], first - 1, true, callee); return in_place(job, top, at); }
+    construct(job, argc);
     return in_place(job, top, at);
 }
 // A spread call's arguments (light-cljs-850; the Pants engine's
@@ -5232,21 +5229,16 @@ inline fn construct_at(job: Job&, top: i64, at: i64, argc: i64) -> bool {
 // receiver and new.target, built-ins included). Elements that would pass
 // the value limit are a catchable StackLimit before anything changes.
 // A built-in callee that would run the instruction again from `at` first
-// (invoke's map demand, a Number or String conversion of its first
-// argument) does so with the packed array still in place, so the call
-// stays one instruction: a map demand realizes the map in its own row, and
-// a conversion converts a copy of the first argument pushed above the
-// array, which the next run writes back into the array (a primitive on top
-// marks it: the packed array is always an Array). Returns the argument
-// count, or -1 when the call does not run now (heap.fault set, or a demand
-// or conversion started with the pc at `at`). A super(...a) call
-// (`parent`, ConstructSuper with spread, light-cljs-887) has the parent
-// constructor and newTarget below the array; the parent decides.
+// (invoke's map demand) does so with the packed array still in place, so
+// the call stays one instruction: a map demand realizes the map in its own
+// row. A built-in's argument conversions run after the unpacking, in the
+// call's Coerce frame (light-cljs-900). Returns the argument count, or -1
+// when the call does not run now (heap.fault set, or a demand started with
+// the pc at `at`). A super(...a) call (`parent`, ConstructSuper with
+// spread, light-cljs-887) has the parent constructor and newTarget below
+// the array; the parent decides.
 fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool, parent: bool = false) -> i64 {
     let heap .= job.heap;
-    let last = job.operands[job.operands.len - 1];
-    let converted = !last.is_object() || node(heap, last.id()).kind != node_kind::Array;
-    let primitive = if converted { job.operands.pop() } else { Value.Undefined };
     let array = job.operands[job.operands.len - 1];
     if !array.is_object() || node(heap, array.id()).kind != node_kind::Array { heap.fault = Fault.InvalidState; return -1; }
     let base = job.operands.len - 1 - (if method || parent { 2 } else { 1 });
@@ -5260,21 +5252,8 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool, p
     // The limit comes first, as in the Pants engine: no conversion or
     // demand runs for a call that cannot enter.
     if count - 1 > heap.limits.stack - job.locals.len - job.operands.len { heap.fault = Fault.StackLimit; return -1; }
-    if converted {
-        if !set_element(heap, array, skip, primitive) { return -1; }
-    } else if callee.is_object() && node(heap, callee.id()).kind == node_kind::Builtin && !(constructs && constructible(heap, callee)) && count > skip {
+    if callee.is_object() && node(heap, callee.id()).kind == node_kind::Builtin && !(constructs && constructible(heap, callee)) && count > skip {
         let b = builtin_of(heap, callee.id());
-        let first, _ = own_element(heap, array, skip);
-        if heap.fault != Fault.None { return -1; }
-        // Symbol(o) and Symbol.for(o) convert o as String(o) does, but only
-        // when called (light-cljs-885; argument_converts).
-        let symbol = !constructs && (b == Builtin.SymbolFunction || b == Builtin.SymbolFor);
-        if (b == Builtin.Number || b == Builtin.String || symbol) && convertible(heap, first) {
-            if job.operands.len >= heap.limits.stack - job.locals.len { heap.fault = Fault.StackLimit; return -1; }
-            job.operands.push(first); job.frames[top].pc = at;
-            start_convert(job, if b == Builtin.Number { Hint.Number } else { Hint.String }, b != Builtin.Number, 1, 1);
-            return -1;
-        }
         if !constructs && (b == Builtin.Vec || b == Builtin.Into) {
             for i in skip..count {
                 let v, _ = own_element(heap, array, i);
@@ -5489,9 +5468,10 @@ fn construct_super(job: Job&, top: i64, at: i64, argc: i64) -> bool {
     let heap .= job.heap;
     let first = job.operands.len - argc;
     let parent = job.operands[first - 2];
-    let converts, hint = argument_converts(heap, parent, job.operands[first..], true);
-    if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, argc); in_place(job, top, at); return false; }
     let target = job.operands[first - 1];
+    // new Number(o) and new String(o) as the parent: a Coerce frame converts
+    // the arguments, then constructs (light-cljs-900).
+    if coerces(heap, parent, Value.Undefined, job.operands[first..], true) { job.frames[top].pc = at + 1; start_coerce(job, parent, Value.Undefined, job.operands[first..], first - 2, true, target); return in_place(job, top, at); }
     for i in (first - 1)..(job.operands.len - 1) { job.operands[i] = job.operands[i + 1]; }
     job.operands.pop();
     job.frames[top].pc = at + 1; construct(job, argc, target);
@@ -5625,9 +5605,9 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
     if kind == node_kind::Builtin {
         let id = node(heap, callee.id()).function;
         let args = job.operands[first..];
-        let converts, hint = argument_converts(heap, callee, args);
-        // Number(o), String(o): the call runs again on the primitive.
-        if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, args.len); return; }
+        // A built-in that converts its receiver or arguments first runs in a
+        // Coerce frame (light-cljs-900; coerce.goose).
+        if coerces(heap, callee, receiver, args) { start_coerce(job, callee, receiver, args, base); return; }
         if id == 2 && args.len == 2 {
             let source = form_kind(heap, args[1]);
             if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; }
@@ -6551,13 +6531,14 @@ fn has_instance_call(job: Job&, at: i64, c: Value, v: Value, m: Value) {
     let b = builtin_of(heap, m.id());
     let args: Value[1] = [v];
     if effect_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq || forces(heap, b, args[..]) { unsupported_step(job, b, "as a Symbol.hasInstance method"); return; }
-    // Number(o) and String(o) convert o in a Convert frame first (pc 4); a
-    // native-frame built-in runs above the HasInstance frame (pc 2).
-    let converts, hint = argument_converts(heap, m, args[..]);
+    // A built-in that converts its receiver or argument first (Number(o),
+    // String(o); light-cljs-900) runs in a Coerce frame, a native-frame
+    // built-in in its own, above the HasInstance frame (pc 2).
+    let converts = coerces(heap, m, c, args[..]);
     if converts || native_builtin(b) {
-        let row = has_instance_frame(job, at, if converts { 4 } else { 2 }, c, v, m);
+        let row = has_instance_frame(job, at, 2, c, v, m);
         if row < 0 { return; }
-        if converts { job.operands.push(v); start_convert(job, hint, hint == Hint.String, 1, 1); }
+        if converts { start_coerce(job, m, c, args[..], job.operands.len); }
         else { native_start(job, b, c, args[..], job.operands.len); }
         return;
     }
@@ -6702,12 +6683,6 @@ fn has_instance_step(job: Job&, frame: Frame) {
         1 => { has_instance_method(job, at, frame.receiver, frame.input, r); },
         2 => { has_instance_done(job, at, truthy(heap, r)); },
         3 => { has_instance_walk(job, at, frame.input, r); },
-        // r is V converted for the built-in method frame.callee.
-        4 => {
-            let args: Value[1] = [r];
-            let result = call_plain(job, frame.callee, frame.receiver, args[..]);
-            if heap.fault == Fault.None { has_instance_done(job, at, truthy(heap, form_value(heap, result))); }
-        },
         // r is a proxy's [[GetPrototypeOf]] on the walk for frame.callee.
         5 => {
             if !r.is_object() && !r.is_null() { heap.fault = Fault.InvalidState; return; }
@@ -6859,9 +6834,12 @@ fn get_iterator_method(job: Job&, at: i64, v: Value, method: Value) {
     if effect_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq { unsupported_step(job, b, "as a Symbol.iterator method"); return; }
     // A string's own cursor (light-cljs-844) needs no frame.
     if b == Builtin.StringPrototypeIterator && receiver.is_string() { let it = string_cursor(job, b, receiver); if heap.fault == Fault.None { get_iterator_next(job, at, it); } return; }
-    if native_builtin(b) {
+    // A built-in that converts its receiver (light-cljs-900) runs in a
+    // Coerce frame, a native-frame built-in in its own (pc 2).
+    let converts = coerces(heap, f, receiver, []);
+    if converts || native_builtin(b) {
         let row = get_iterator_frame(job, at, 2, v, Value.Undefined);
-        if row >= 0 { native_start(job, b, receiver, [], job.operands.len); }
+        if row >= 0 { if converts { start_coerce(job, f, receiver, [], job.operands.len); } else { native_start(job, b, receiver, [], job.operands.len); } }
         return;
     }
     let it = call_plain(job, f, receiver, []);

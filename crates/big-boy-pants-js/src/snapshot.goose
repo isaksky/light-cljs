@@ -302,8 +302,9 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         Force => object_of(s, f.input, node_kind::None),
         Swap => object_of(s, f.callee, node_kind::None),
         CopyData => copy_frame_valid(s, f),
-        // A HasInstance frame at pc 4 calls its built-in method (light-cljs-834).
-        HasInstance => f.pc >= 1 && f.pc <= 5 && (f.pc != 4 || object_of(s, f.callee, node_kind::Builtin)) && (f.pc != 5 || f.callee.is_undefined() || object_of(s, f.callee, node_kind::None)),
+        // A HasInstance frame awaits one of its phases (light-cljs-834);
+        // pc 4 is retired (light-cljs-900).
+        HasInstance => f.pc >= 1 && f.pc <= 5 && f.pc != 4 && (f.pc != 5 || f.callee.is_undefined() || object_of(s, f.callee, node_kind::None)),
         // Array.prototype.push, join and toString read their object (light-cljs-842).
         ArrayMethod => object_of(s, f.input, node_kind::None),
         // A GetIterator frame awaits one of its three phases; from `next`'s
@@ -362,6 +363,11 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // `prototype` getter for its constructor, a closure or a
         // constructor built-in (light-cljs-887).
         Construct => f.pc == 0 && (object_of(s, f.callee, node_kind::Closure) || object_of(s, f.callee, node_kind::Builtin) && s.nodes[f.callee.id()].function < source::BUILTINS.len && source::constructor_builtin(source::BUILTINS[s.nodes[f.callee.id()].function].which)) && object_of(s, f.input, node_kind::None),
+        // A Coerce frame (light-cljs-900, coerce.goose) holds a built-in
+        // with a plan that converts, its receiver and arguments as its
+        // operands (snapshot frame checks bound them), and the next
+        // position; a construction's newTarget is an object.
+        Coerce c => f.pc == 0 && object_of(s, f.callee, node_kind::Builtin) && s.nodes[f.callee.id()].function < source::BUILTINS.len && source::BUILTINS[s.nodes[f.callee.id()].function].which == c.which && source::BUILTINS[s.nodes[f.callee.id()].function].plan != plan::None && f.argument_count >= 0 && f.index >= 0 && f.index <= f.argument_count + 1 && (!c.construct || object_of(s, f.input, node_kind::None)),
         _ => true,
     };
 }

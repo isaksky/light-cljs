@@ -2165,6 +2165,11 @@ mod serial_tests {
             // engine lacks (Object.groupBy, hasOwn, toLocaleString).
             ("object-statics", "goose"),
             ("object-statics-wait", "goose"),
+            // Built-in receiver and argument conversions in Coerce frames
+            // (light-cljs-900) at every budget cut and collection
+            // (serial_tests.goose); its @@hasInstance row is one the Pants
+            // engine refuses.
+            ("number-conversions", "goose"),
             // Symbol values (light-cljs-885): symbol rows, symbol keys and
             // the Symbol.for registry at every budget cut and collection
             // (serial_tests.goose).

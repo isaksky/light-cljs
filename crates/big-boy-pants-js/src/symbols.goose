@@ -29,8 +29,8 @@ namespace source;
 // across jobs or workers.
 //
 // Symbol(description) and Symbol.for(key) run no JavaScript here: a call
-// whose argument is an object converts it in the dispatch loop's Convert
-// frame first, as String(o) does (argument_converts), and a construction
+// whose argument is an object converts it in a Coerce frame
+// first, as String(o) does (their plan, coerce.goose), and a construction
 // of Symbol is a TypeError before any conversion (construct).
 
 // thisSymbolValue(receiver) (ECMAScript 20.4.3): a symbol, or a Symbol

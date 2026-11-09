@@ -3,6 +3,8 @@ import .source_vm;
 import .array_callbacks;
 import .array_methods;
 import .printer;
+import .coerce;
+import .number_text;
 
 namespace source;
 
@@ -131,11 +133,16 @@ enum Builtin {
     // Proxy.revocable and the revoke function it makes, a job row naming
     // its proxy (light-cljs-891; proxy.goose).
     ProxyRevocable, ProxyRevoke,
+    // The global number functions and Number's predicates (light-cljs-900;
+    // number_builtin): isNaN, isFinite, parseInt and parseFloat, which Number
+    // also holds as parseInt and parseFloat, and Number.isNaN, isFinite,
+    // isInteger and isSafeInteger.
+    IsNaN, IsFinite, ParseInt, ParseFloat, NumberIsNaN, NumberIsFinite, NumberIsInteger, NumberIsSafeInteger,
 }
-// A built-in's code (its position here, a node's `function`), its `name`
-// and its `length`.
-struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[155] = [
+// A built-in's code (its position here, a node's `function`), its `name`,
+// its `length` and its conversion plan (coerce.goose; plan::None for none).
+struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
+let BUILTINS: BuiltinInfo[163] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -156,7 +163,7 @@ let BUILTINS: BuiltinInfo[155] = [
     BuiltinInfo { which: Builtin.ObjectHasOwn, name: "hasOwn", length: 2 }, BuiltinInfo { which: Builtin.ObjectPrototypeHasOwnProperty, name: "hasOwnProperty", length: 1 },
     BuiltinInfo { which: Builtin.ObjectPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.ObjectPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.ArrayIsArray, name: "isArray", length: 1 }, BuiltinInfo { which: Builtin.ErrorPrototypeToString, name: "toString" },
-    BuiltinInfo { which: Builtin.SymbolFunction, name: "Symbol" }, BuiltinInfo { which: Builtin.ObjectGetOwnPropertyDescriptor, name: "getOwnPropertyDescriptor", length: 2 },
+    BuiltinInfo { which: Builtin.SymbolFunction, name: "Symbol", plan: plan::Symbol }, BuiltinInfo { which: Builtin.ObjectGetOwnPropertyDescriptor, name: "getOwnPropertyDescriptor", length: 2 },
     BuiltinInfo { which: Builtin.NativeCoreBinding, name: "nativeCoreBinding", length: 1 },
     BuiltinInfo { which: Builtin.ArrayPrototypeMap, name: "map", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeForEach, name: "forEach", length: 1 },
     BuiltinInfo { which: Builtin.Atom, name: "atom", length: 1 }, BuiltinInfo { which: Builtin.Deref, name: "deref", length: 1 },
@@ -171,8 +178,8 @@ let BUILTINS: BuiltinInfo[155] = [
     BuiltinInfo { which: Builtin.GeneratorPrototypeNext, name: "next", length: 1 }, BuiltinInfo { which: Builtin.GeneratorPrototypeReturn, name: "return", length: 1 },
     BuiltinInfo { which: Builtin.GeneratorPrototypeThrow, name: "throw", length: 1 }, BuiltinInfo { which: Builtin.IteratorPrototypeIterator, name: "[Symbol.iterator]" },
     BuiltinInfo { which: Builtin.Eval, name: "eval", length: 1 },
-    BuiltinInfo { which: Builtin.Number, name: "Number", length: 1 }, BuiltinInfo { which: Builtin.String, name: "String", length: 1 }, BuiltinInfo { which: Builtin.Boolean, name: "Boolean", length: 1 },
-    BuiltinInfo { which: Builtin.NumberPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.NumberPrototypeToString, name: "toString", length: 1 },
+    BuiltinInfo { which: Builtin.Number, name: "Number", length: 1, plan: plan::Number }, BuiltinInfo { which: Builtin.String, name: "String", length: 1, plan: plan::String }, BuiltinInfo { which: Builtin.Boolean, name: "Boolean", length: 1 },
+    BuiltinInfo { which: Builtin.NumberPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.NumberPrototypeToString, name: "toString", length: 1, plan: plan::NumberRadix },
     BuiltinInfo { which: Builtin.StringPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.StringPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.BooleanPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.BooleanPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.FunctionPrototypeHasInstance, name: "[Symbol.hasInstance]", length: 1 },
@@ -218,11 +225,15 @@ let BUILTINS: BuiltinInfo[155] = [
     BuiltinInfo { which: Builtin.ObjectFromEntries, name: "fromEntries", length: 1 }, BuiltinInfo { which: Builtin.ObjectGroupBy, name: "groupBy", length: 2 },
     BuiltinInfo { which: Builtin.ObjectPrototypePropertyIsEnumerable, name: "propertyIsEnumerable", length: 1 }, BuiltinInfo { which: Builtin.ObjectPrototypeToLocaleString, name: "toLocaleString" },
     BuiltinInfo { which: Builtin.ReflectOwnKeys, name: "ownKeys", length: 1 }, BuiltinInfo { which: Builtin.ReflectHas, name: "has", length: 2 },
-    BuiltinInfo { which: Builtin.SymbolFor, name: "for", length: 1 }, BuiltinInfo { which: Builtin.SymbolKeyFor, name: "keyFor", length: 1 },
+    BuiltinInfo { which: Builtin.SymbolFor, name: "for", length: 1, plan: plan::Symbol }, BuiltinInfo { which: Builtin.SymbolKeyFor, name: "keyFor", length: 1 },
     BuiltinInfo { which: Builtin.SymbolPrototypeToString, name: "toString" }, BuiltinInfo { which: Builtin.SymbolPrototypeValueOf, name: "valueOf" },
     BuiltinInfo { which: Builtin.SymbolPrototypeDescription, name: "get description" }, BuiltinInfo { which: Builtin.SymbolPrototypeToPrimitive, name: "[Symbol.toPrimitive]", length: 1 },
     BuiltinInfo { which: Builtin.ReflectGet, name: "get", length: 2 }, BuiltinInfo { which: Builtin.ReflectSet, name: "set", length: 3 },
     BuiltinInfo { which: Builtin.ProxyRevocable, name: "revocable", length: 2 }, BuiltinInfo { which: Builtin.ProxyRevoke, name: "" },
+    BuiltinInfo { which: Builtin.IsNaN, name: "isNaN", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.IsFinite, name: "isFinite", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.ParseInt, name: "parseInt", length: 2, plan: plan::ParseInt }, BuiltinInfo { which: Builtin.ParseFloat, name: "parseFloat", length: 1, plan: plan::OneString },
+    BuiltinInfo { which: Builtin.NumberIsNaN, name: "isNaN", length: 1 }, BuiltinInfo { which: Builtin.NumberIsFinite, name: "isFinite", length: 1 },
+    BuiltinInfo { which: Builtin.NumberIsInteger, name: "isInteger", length: 1 }, BuiltinInfo { which: Builtin.NumberIsSafeInteger, name: "isSafeInteger", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -297,10 +308,18 @@ let UNSCOPABLE_NAMES: Name[16] = [
 let WRAPPER_NAMES:    Name[3]    = [Name { text: "Number" }, Name { text: "String" }, Name { text: "Boolean" }];
 let WRAPPER_BUILTINS: Builtin[3] = [Builtin.Number, Builtin.String, Builtin.Boolean];
 let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalError" }, Name { text: "RangeError" }, Name { text: "ReferenceError" }, Name { text: "SyntaxError" }, Name { text: "TypeError" }, Name { text: "URIError" }, Name { text: "InternalError" }];
-let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
+// Number's constants (light-cljs-900), in QuickJS's order.
+struct NumberConstant { name: Name, value: f64 }
+let NUMBER_CONSTANTS: NumberConstant[8] = [
+    NumberConstant { name: Name { text: "MAX_VALUE" }, value: 1.7976931348623157e308 }, NumberConstant { name: Name { text: "MIN_VALUE" }, value: 4.9406564584124654e-324 },
+    NumberConstant { name: Name { text: "NaN" }, value: 0.0 / 0.0 }, NumberConstant { name: Name { text: "NEGATIVE_INFINITY" }, value: -1.0 / 0.0 },
+    NumberConstant { name: Name { text: "POSITIVE_INFINITY" }, value: 1.0 / 0.0 }, NumberConstant { name: Name { text: "EPSILON" }, value: 2.220446049250313e-16 },
+    NumberConstant { name: Name { text: "MAX_SAFE_INTEGER" }, value: 9007199254740991.0 }, NumberConstant { name: Name { text: "MIN_SAFE_INTEGER" }, value: -9007199254740991.0 },
+];
+let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[87] = [
+let REALM_FUNCTIONS: Method[95] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -375,6 +394,11 @@ let REALM_FUNCTIONS: Method[87] = [
     // Proxy.revocable (light-cljs-891; proxy.goose): a property of the
     // Proxy function, REALM_FUNCTIONS entry 34 (row fixed_rows() + 34).
     Method { which: Builtin.ProxyRevocable, holder: 76 },
+    // The global number functions and Number's predicates (light-cljs-900):
+    // parseInt and parseFloat are also Number's own, one function object
+    // under two names (build_realm), as Number.parseInt === parseInt.
+    Method { which: Builtin.ParseInt, holder: 0 }, Method { which: Builtin.ParseFloat, holder: 0 }, Method { which: Builtin.IsNaN, holder: 0 }, Method { which: Builtin.IsFinite, holder: 0 },
+    Method { which: Builtin.NumberIsNaN, holder: 29 }, Method { which: Builtin.NumberIsFinite, holder: 29 }, Method { which: Builtin.NumberIsInteger, holder: 29 }, Method { which: Builtin.NumberIsSafeInteger, holder: 29 },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -417,7 +441,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[163] = [
+let PENDING: PendingName[145] = [
     // Object.prototype
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
@@ -457,14 +481,9 @@ let PENDING: PendingName[163] = [
     PendingName { holder: 0, key: "Uint8Array" }, PendingName { holder: 0, key: "Uint8ClampedArray" }, PendingName { holder: 0, key: "Uint16Array" }, PendingName { holder: 0, key: "Uint32Array" },
     PendingName { holder: 0, key: "WeakMap" }, PendingName { holder: 0, key: "WeakRef" }, PendingName { holder: 0, key: "WeakSet" }, PendingName { holder: 0, key: "decodeURI" },
     PendingName { holder: 0, key: "decodeURIComponent" }, PendingName { holder: 0, key: "encodeURI" }, PendingName { holder: 0, key: "encodeURIComponent" }, PendingName { holder: 0, key: "escape" },
-    PendingName { holder: 0, key: "isFinite" }, PendingName { holder: 0, key: "isNaN" }, PendingName { holder: 0, key: "parseFloat" },
-    PendingName { holder: 0, key: "parseInt" }, PendingName { holder: 0, key: "unescape" },
-    // Number and %Number.prototype% (light-cljs-832; the core-builtins
-    // area makes them, light-cljs-767).
-    PendingName { holder: 29, key: "parseInt" }, PendingName { holder: 29, key: "parseFloat" }, PendingName { holder: 29, key: "isNaN" }, PendingName { holder: 29, key: "isFinite" },
-    PendingName { holder: 29, key: "isInteger" }, PendingName { holder: 29, key: "isSafeInteger" }, PendingName { holder: 29, key: "MAX_VALUE" }, PendingName { holder: 29, key: "MIN_VALUE" },
-    PendingName { holder: 29, key: "NaN" }, PendingName { holder: 29, key: "NEGATIVE_INFINITY" }, PendingName { holder: 29, key: "POSITIVE_INFINITY" }, PendingName { holder: 29, key: "EPSILON" },
-    PendingName { holder: 29, key: "MAX_SAFE_INTEGER" }, PendingName { holder: 29, key: "MIN_SAFE_INTEGER" },
+    PendingName { holder: 0, key: "unescape" },
+    // %Number.prototype% (light-cljs-832; the core-builtins area makes
+    // them, light-cljs-767; Number's statics are light-cljs-900's).
     PendingName { holder: 26, key: "toExponential" }, PendingName { holder: 26, key: "toFixed" }, PendingName { holder: 26, key: "toPrecision" }, PendingName { holder: 26, key: "toLocaleString" },
     // String and %String.prototype%.
     PendingName { holder: 30, key: "fromCharCode" }, PendingName { holder: 30, key: "fromCodePoint" }, PendingName { holder: 30, key: "raw" },
@@ -762,7 +781,13 @@ fn build_realm(heap: Heap&) -> bool {
         if m.which == Builtin.FunctionPrototypeCall { heap.call_method = object(fixed_rows() + j); }
         // Array.prototype[@@iterator] is the `values` function object (ECMAScript 23.1.3.40).
         if m.which == Builtin.ArrayPrototypeValues && !add_own(heap, m.holder, Value.Symbol { s: well_known::Iterator }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
+        // Number.parseInt and Number.parseFloat are the global functions
+        // (ECMAScript 21.1.2.12 and 21.1.2.13), writable and configurable.
+        if (m.which == Builtin.ParseInt || m.which == Builtin.ParseFloat) && !realm_value(heap, wrapper_constructor_row(0), BUILTINS[code(m.which)].name, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
     }
+    // Number's value properties (ECMAScript 21.1.2), neither writable,
+    // enumerable nor configurable.
+    for c in NUMBER_CONSTANTS { if !realm_value(heap, wrapper_constructor_row(0), c.name.text, number(c.value), 0) { return false; } }
     // The arguments object templates: `length` 0 and @@iterator (writable,
     // configurable), then `callee`: the %ThrowTypeError% pair (neither
     // enumerable nor configurable) or a writable, configurable data property
@@ -974,7 +999,7 @@ fn primitive_number(job: Job&, b: Builtin, v: Value) -> f64 {
 // is ToString ("" without one), but a call of it gives a symbol's
 // SymbolDescriptiveString where a construction throws; Boolean is
 // ToBoolean. An object argument of Number or String converted before this
-// (argument_converts); one that reaches here fails by name.
+// (its plan, coerce.goose); one that reaches here fails by name.
 fn wrapper_value(job: Job&, b: Builtin, t: i64, args: const Value[:], construct: bool) -> Value {
     let heap .= job.heap;
     let v = form_value(heap, arg(args, 0));
@@ -1027,6 +1052,58 @@ fn number_to_string(job: Job&, b: Builtin, receiver: Value, args: const Value[:]
         if radix != 10 { return unsupported_step(job, b, "a radix other than 10"); }
     }
     return to_string(heap, x);
+}
+// The global number functions and Number's predicates (light-cljs-900;
+// ECMAScript 19.2.2 to 19.2.5 and 21.1.2.2 to 21.1.2.5; the Pants engine's
+// vm/native.rs NumberPredicate and NumberParse, QuickJS's js_global_isNaN,
+// js_global_isFinite, js_parseInt, js_parseFloat, js_number_isInteger and
+// js_number_isSafeInteger). isNaN, isFinite, parseInt and parseFloat have
+// conversion plans (coerce.goose), so an object argument's ToPrimitive ran
+// before this and their conversions here are a primitive's, in plan order;
+// Number's predicates convert nothing.
+fn number_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
+    let heap .= job.heap;
+    let v = form_value(heap, arg(args, 0));
+    if heap.fault != Fault.None { return Value.Undefined; }
+    match b {
+        IsNaN, IsFinite => {
+            let n = primitive_number(job, b, v);
+            if heap.fault != Fault.None { return Value.Undefined; }
+            return boolean(if b == Builtin.IsNaN { n != n } else { n - n == 0 });
+        },
+        NumberIsNaN => { return boolean(v.is_number() && v.num() != v.num()); },
+        NumberIsFinite => { return boolean(v.is_number() && v.num() - v.num() == 0); },
+        NumberIsInteger, NumberIsSafeInteger => {
+            if !v.is_number() { return boolean(false); }
+            let n = v.num();
+            if !(n - n == 0) || trunc(n) != n { return boolean(false); }
+            return boolean(b == Builtin.NumberIsInteger || n <= 9007199254740991.0 && n >= -9007199254740991.0);
+        },
+        ParseInt, ParseFloat => {
+            let s = primitive_string(job, b, v);
+            if heap.fault != Fault.None { return Value.Undefined; }
+            var radix: i64 = 0;
+            if b == Builtin.ParseInt {
+                let r = primitive_number(job, b, form_value(heap, arg(args, 1)));
+                if heap.fault != Fault.None { return Value.Undefined; }
+                radix = to_int32(r);
+            }
+            // Leading StrWhiteSpace, then the units that can belong to a
+            // number, each charged to the work limit as it is scanned.
+            let n = str_len(heap, s);
+            var start: i64      = 0; while start < n && str_white_space(unit(heap, s, start)) { start += 1; }
+            var units: u16[>..] = [];
+            var i = start;
+            while i < n {
+                let u = unit(heap, s, i);
+                if !(u >= '0' && u <= '9' || u >= 'a' && u <= 'z' || u >= 'A' && u <= 'Z' || u == '+' || u == '-' || u == '.') { break; }
+                units.push(u); i += 1;
+            }
+            if !charge(heap, i + 1) { return Value.Undefined; }
+            return number(if b == Builtin.ParseInt { number::parse_int(units, radix) } else { number::parse_float(units) });
+        },
+        _ => { heap.fault = Fault.InvalidState; return Value.Undefined; },
+    }
 }
 // ToString without user code: a primitive's (source_vm.goose to_string,
 // light-cljs-826; a symbol is a TypeError). An object's ToPrimitive is not
@@ -1800,6 +1877,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         // frames (light-cljs-884; object_statics.goose, native_start).
         ObjectKeys, ObjectValues, ObjectEntries, ObjectGetOwnPropertyNames, ObjectGetOwnPropertySymbols, ObjectGetOwnPropertyDescriptors, ObjectAssign, ObjectFromEntries, ObjectGroupBy,
         ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToLocaleString, ReflectOwnKeys, ReflectHas, ReflectGet, ReflectSet => { return unsupported_step(job, b, "called outside a native frame"); },
+        // The global number functions and Number's predicates (light-cljs-900).
+        IsNaN, IsFinite, ParseInt, ParseFloat, NumberIsNaN, NumberIsFinite, NumberIsInteger, NumberIsSafeInteger => { return number_builtin(job, b, args); },
         _ => { return native_value(heap, id, args); },
     }
 }

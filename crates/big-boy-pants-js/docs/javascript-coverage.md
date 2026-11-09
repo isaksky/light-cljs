@@ -1869,6 +1869,60 @@ a return through `run` to `native_step`, with its step accounting and frame
 row copies. Keeping a callback's return in the loop when its caller is a
 native frame is the next cut.
 
+*As landed by light-cljs-900 (receiver and argument conversions):* a
+built-in whose body is a plain Goose function but whose receiver or
+arguments take ToNumber, ToString or an integer conversion (Math, the
+Number and String methods, the global functions: about 120 in the
+core-builtins area) does not get a native frame of its own. It names a
+*plan* instead, static data in `src/coerce.goose` (decision 6): its
+`BuiltinInfo.plan` is a row of `PLANS`, which gives a receiver step
+(`ThisStep`: none; String, RequireObjectCoercible then ToString; Number,
+thisNumberValue), the `Step` of each of the first four arguments and of
+every later one (Numeric, Number, Integer, Length, Uint16, Int32, Uint32,
+String or None), and whether a construction converts too (Number and
+String; Symbol's construction throws first). Every path that calls a
+built-in asks `coerces` before any other dispatch: the dispatch loop's call,
+construction and super call (spread calls through them),
+Function.prototype.call and apply, Reflect.apply and construct and bound
+functions (`forward_run`), a trapless callable proxy, the native callbacks
+(`builtin_callback`, `array_call`, `swap_call`), ToPrimitive's methods,
+@@hasInstance, @@iterator and join. When a planned position holds an object
+that converts, `start_coerce` pushes one Coerce native frame
+(`Native.Coerce`, no new table: decision 2) whose operands are the receiver
+and the arguments; each step converts the next planned object in place in
+light-cljs-828's Convert frame above it (ToPrimitive with the step's hint,
+then ToNumber or ToString), so the conversions run left to right and each
+completes before the next starts, and a budget cut, limit or suspension
+falls between two of them. A planned primitive stays as it is (the body
+converts primitives, so an `undefined` that means an omitted argument keeps
+that meaning), but one whose conversion throws (a symbol, a BigInt, an
+undefined receiver of a String method) ends the walk, and the body runs at
+once and throws at that position. The frame then pops and runs the body on
+primitives, as the caller would have (`call_plain`, or the built-in's own
+native frame), or `construct` with its newTarget. A call with nothing to
+convert runs the body at once with no frame; a built-in without a plan pays
+one table read. Number(o), String(o), Symbol(o) and Symbol.for(o), which
+light-cljs-832 and -885 converted by running the call instruction again,
+are plans now, so `argument_converts`, spread_unpack's write-back of a
+converted first argument and the HasInstance frame's pc 4 are gone, and
+light-cljs-894's direct callback paths convert as every other path does.
+Conversions that are conditional or interleaved with other observable
+steps are not a plan's: padStart's and padEnd's fill string (converted only
+when padding is needed), split's limit (after the separator's @@split) and
+the search string of startsWith, endsWith and includes (after IsRegExp's
+@@match read) stay Step.None, and those built-ins convert them in phases of
+their own native frame with `start_convert`, after the plan has converted
+their receiver and leading arguments. Checks that follow a conversion
+without user code (toFixed's range check) are the body's. The first plans
+are isNaN and isFinite (ToNumber), parseInt (ToString, ToInt32),
+parseFloat (ToString), Number.prototype.toString (thisNumberValue, then
+ToIntegerOrInfinity of the radix) and the four above; parseInt and
+parseFloat scan their text in `src/number_text.goose` (`parse_int`
+accumulates the digits exactly in 32-bit limbs up to 1,024 bits and rounds
+once, ties to even; `parse_float` keeps 1,100 significant digits and a
+sticky digit), and Number.parseInt and parseFloat are the same function
+objects as the globals.
+
 **Rejected.** *Self-hosting by default*: 2.5 times slower on the measured
 case; it needs private intrinsics hidden from ordinary code, a second compile
 path for the realm, and `Function.prototype.toString` and stack traces that

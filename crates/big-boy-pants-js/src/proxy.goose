@@ -476,11 +476,9 @@ fn proxy_with_trap(job: Job&, at: i64, method: i64, trap: Value) {
     if effect_builtin(c) || c == Builtin.Mapv || c == Builtin.MapSeq || forces(heap, c, all[first..count]) { unsupported_step(job, Builtin.Proxy, "a host-effect built-in or a delay as a trap"); return; }
     if native_builtin(c) { native_start(job, c, this_value, all[first..count], job.operands.len); return; }
     if conditional_native(c) { start_conditional_native(job, c, this_value, all[first..count], job.operands.len); return; }
-    // Number, String, Symbol and Symbol.for convert an object first
-    // argument (the target, always) in a Convert frame: the general call
-    // path's Forward frame runs them.
-    let converts, hint = argument_converts(heap, f, all[first..count]);
-    if converts { start_bound(job, f, this_value, all[first..count], job.operands.len); return; }
+    // A built-in that converts its receiver or arguments runs in a Coerce
+    // frame (light-cljs-900).
+    if coerces(heap, f, this_value, all[first..count]) { start_coerce(job, f, this_value, all[first..count], job.operands.len); return; }
     let r = call_plain(job, f, this_value, all[first..count]);
     if heap.fault == Fault.None { push_operand(job, r); }
 }

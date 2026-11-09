@@ -43,8 +43,9 @@ namespace source;
 // The frame pops before the target runs: a bytecode target's frame takes
 // its place, so a forwarded call is a tail call, and the result reaches the
 // frame below at operand_base. A built-in target that would run its call
-// again (a Number or String conversion of its first argument, a map demand)
-// does so with the frame kept at pc 3. A dense array list (element-run
+// again (a map demand) does so with the frame kept at pc 3; one that
+// converts its receiver or arguments (light-cljs-900) runs in a Coerce
+// frame in this one's place. A dense array list (element-run
 // mode, its realm prototype) is read whole at its start, with no observable
 // access; an arguments object, an ordinary object or an array in any other
 // mode takes the specification's [[Get]] of each index, a getter running
@@ -232,12 +233,11 @@ fn forward_run(job: Job&, at: i64, constructs: bool) {
     let f = frame.callee; let receiver = frame.receiver;
     let argc = job.operands.len - base;
     if constructs {
-        // new Number(o), new String(o): the first argument converts first,
-        // in place, and this step runs again on the primitive.
-        let converts, hint = argument_converts(heap, f, job.operands[base..], true);
-        if converts { start_convert(job, hint, hint == Hint.String, 1, argc); return; }
         // Construct(target, args, newTarget), with target below its arguments.
         job.frames.pop();
+        // new Number(o), new String(o): a Coerce frame converts the
+        // arguments, then constructs (light-cljs-900).
+        if coerces(heap, f, Value.Undefined, job.operands[base..], true) { start_coerce(job, f, Value.Undefined, job.operands[base..], base, true, receiver); return; }
         job.operands.push(Value.Undefined);
         var i = job.operands.len - 1;
         while i > base { job.operands[i] = job.operands[i - 1]; i -= 1; }
@@ -253,10 +253,9 @@ fn forward_run(job: Job&, at: i64, constructs: bool) {
     }
     let b = builtin_of(heap, f.id()); let id: i64 = node(heap, f.id()).function;
     let args = job.operands[base..];
-    // Number(o), String(o): the conversion runs first, in place, and this
-    // step runs again on the primitive.
-    let converts, hint = argument_converts(heap, f, args);
-    if converts { start_convert(job, hint, hint == Hint.String, 1, args.len); return; }
+    // A built-in that converts its receiver or arguments runs in a Coerce
+    // frame in this one's place (light-cljs-900).
+    if coerces(heap, f, receiver, args) { job.frames.pop(); start_coerce(job, f, receiver, args, base); return; }
     // vec and into realize a deferred map argument first (demand_call).
     if (b == Builtin.Vec || b == Builtin.Into) && demand_maps(job, args) { return; }
     if heap.fault != Fault.None { return; }

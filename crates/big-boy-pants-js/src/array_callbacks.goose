@@ -265,6 +265,9 @@ fn array_call(job: Job&, at: i64, b: Builtin, v: Value) {
     if is_bound(heap, f) { start_bound(job, f, this_arg, args, job.operands.len); return; }
     if node(heap, f.id()).kind == node_kind::Builtin {
         let cb = builtin_of(heap, f.id());
+        // A built-in that converts its receiver or arguments runs in a
+        // Coerce frame (light-cljs-900).
+        if coerces(heap, f, this_arg, args[..]) { start_coerce(job, f, this_arg, args[..], job.operands.len); return; }
         // A delay forced as the callback runs in a frame of its own (cells.goose).
         if forces(heap, cb, args) { start_force(job, cb, v, job.operands.len); return; }
         // A forwarding built-in (light-cljs-851) runs in a frame of its own.
