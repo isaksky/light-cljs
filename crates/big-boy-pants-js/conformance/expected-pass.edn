@@ -190,6 +190,8 @@
  "bbp/proxy_builtin_reads_agreed"
  "bbp/proxy_get_traps"
  "bbp/proxy_has_traps"
+ "bbp/proxy_integrity_levels"
+ "bbp/proxy_integrity_traps"
  "bbp/proxy_remaining_traps"
  "bbp/proxy_revocable"
  "bbp/proxy_set_delete_traps"

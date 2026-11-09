@@ -47,7 +47,9 @@ namespace source;
 // prototype chain; any other target answers through its own internal
 // method, a getter or setter running above the frame; a forwarded [[Call]]
 // or [[Construct]] becomes a Forward frame (function_calls.goose) that
-// runs the target as any forwarded call.
+// runs the target as any forwarded call. A proxy target's
+// [[OwnPropertyKeys]] and each of its keys' [[GetOwnProperty]] for the
+// ownKeys trap's invariants run as frames above it too (light-cljs-897).
 //
 //   input     the proxy whose method runs (its target after a forward)
 //   output    the property key ([[GetOwnProperty]], the four property
@@ -94,6 +96,12 @@ namespace source;
 //   pc 12 awaits a proxy target's [[IsExtensible]] for the invariants
 //   pc 13 ([[GetPrototypeOf]], [[SetPrototypeOf]]) awaits a non-extensible
 //         proxy target's [[GetPrototypeOf]]
+//   pc 14 ([[OwnPropertyKeys]]) awaits a proxy target's [[OwnPropertyKeys]]
+//         for the invariants, the target's extensibility (0 or 1) in
+//         argument_count (light-cljs-897)
+//   pc 15 ([[OwnPropertyKeys]]) awaits that target's [[GetOwnProperty]] of
+//         its key `index`; its key list is the frame's receiver, each
+//         read key's row marked configurable or not in its attributes
 //
 // [[OwnPropertyKeys]] gives a key list (node_kind::KeyList, source_vm.goose's
 // "Key enumeration") of its keys, symbols included, attributes clear.
@@ -133,12 +141,15 @@ namespace source;
 // walk and isPrototypeOf's run a proxy's [[GetPrototypeOf]] above a
 // HasInstance frame (source_vm.goose prototype_walk), and the Descriptor
 // frame (descriptors.goose) runs a proxy target's [[DefineOwnProperty]].
+// Object.seal, freeze, isSealed and isFrozen of a proxy run its
+// [[PreventExtensions]] or [[IsExtensible]], [[OwnPropertyKeys]],
+// [[GetOwnProperty]] and [[DefineOwnProperty]] above a Statics frame
+// (light-cljs-897, integrity.goose start_integrity).
 //
 // Still a named UnsupportedOperand (decision 1), each where no frame can
-// start or for another pellet: Object.seal, freeze, isSealed and isFrozen
-// of a proxy (light-cljs-897) and Annex B's __defineGetter__ family on one;
-// a proxy target's [[OwnPropertyKeys]] and [[GetOwnProperty]] in the
-// ownKeys and getOwnPropertyDescriptor invariants (light-cljs-897, -895);
+// start or for another pellet: Annex B's __defineGetter__ family on a
+// proxy; a proxy target's [[GetOwnProperty]] in the
+// getOwnPropertyDescriptor invariants (light-cljs-895);
 // Function.prototype.bind of a proxy (light-cljs-861); the plain built-ins
 // run to completion (call_builtin) with a proxy, as a callback that cannot
 // start a frame calls them; a revoke function called that way; a
@@ -182,6 +193,8 @@ let proxy_pc::ReceiverOwn = 10;
 let proxy_pc::ReceiverDefine = 11;
 let proxy_pc::TargetExtensible = 12;
 let proxy_pc::TargetPrototype = 13;
+let proxy_pc::TargetKeys = 14;
+let proxy_pc::TargetKey = 15;
 // What a frame of a method with a boolean answer delivers (its `index`):
 // the boolean; the boolean, a false answer a TypeError (strict code, a
 // built-in's Set(O, P, V, true)); the frame's `receiver` for true
@@ -539,6 +552,10 @@ fn proxy_step(job: Job&, frame: Frame, method: i64) {
         // non-extensible proxy target's [[GetPrototypeOf]].
         12 => { target_extensible_known(job, at, method, truthy(heap, job.operands.pop())); },
         13 => { prototype_compare(job, at, job.operands.pop()); },
+        // ([[OwnPropertyKeys]]) a proxy target's keys, then each key's
+        // descriptor, for the invariants (light-cljs-897).
+        14 => { own_keys_target_keys(job, at, job.operands.pop()); },
+        15 => { own_keys_target_key(job, at, job.operands.pop()); },
         _ => { heap.fault = Fault.InvalidState; },
     }
 }
@@ -585,21 +602,85 @@ fn own_keys_element(job: Job&, at: i64, v: Value) -> bool {
     job.frames[at].index += 1;
     return true;
 }
-// Steps 9 to 21: no duplicates; every non-configurable key of the target
-// present; with a non-extensible target, exactly its keys.
+// Steps 8 to 25: no duplicates; every non-configurable key of the target
+// present; with a non-extensible target, exactly its keys. The target's
+// IsExtensible, [[OwnPropertyKeys]] and each of its keys' [[GetOwnProperty]]
+// (steps 9, 10 and 15) are read in that order: a proxy target's each run
+// as a Proxy frame above this one (pc TargetExtensible, TargetKeys and
+// TargetKey), any other target's are read now (own_property_keys gives
+// each key's attributes, unobservably).
 fn own_keys_done(job: Job&, at: i64) {
-    let heap .= job.heap; let frame = job.frames[at];
-    let list: i64 = frame.callee.id(); let n: i64 = node(heap, list).key_count;
-    if !charge(heap, n) { return; }
+    let heap .= job.heap;
     var words: i64[>..] = [];
-    for i in n { words.push(key_word(property_row(heap, node(heap, list).keys + i).key)); }
-    sort(words);
-    for i in 1..n { if words[i] == words[i - 1] { type_error(job, "Proxy: duplicate key in the ownKeys trap result"); return; } }
-    let target = node(heap, frame.input.id()).value;
-    let ext = extensible(heap, target);
-    if heap.fault != Fault.None { return; }
+    if !trap_words(heap, job.frames[at].callee, words) { return; }
+    for i in 1..words.len { if words[i] == words[i - 1] { type_error(job, "Proxy: duplicate key in the ownKeys trap result"); return; } }
+    let target = node(heap, job.frames[at].input.id()).value;
+    // The trap's result array is read whole.
+    if is_proxy(heap, target) { job.frames[at].receiver = Value.Undefined; }
+    let ready, ext = target_extensible(job, at);
+    if !ready { return; }
     var keys: OwnKey[>..] = [];
     if !listable(job, target) || !own_property_keys(heap, target, keys) || !charge(heap, keys.len) { return; }
+    own_keys_check(job, at, ext, keys, words);
+}
+// The sorted key words of key list `list` (the trap's keys).
+fn trap_words(heap: Heap&, list: Value, words: i64[>..]&) -> bool {
+    let l: i64 = list.id(); let n: i64 = node(heap, l).key_count;
+    if !charge(heap, n) { return false; }
+    for i in n { words.push(key_word(property_row(heap, node(heap, l).keys + i).key)); }
+    sort(words);
+    return true;
+}
+// A proxy target's IsExtensible answered `ext` (pc TargetExtensible): its
+// keys next.
+fn own_keys_target(job: Job&, at: i64, ext: bool) {
+    let heap .= job.heap; let target = node(heap, job.frames[at].input.id()).value;
+    if !is_proxy(heap, target) { heap.fault = Fault.InvalidState; return; }
+    job.frames[at].argument_count = if ext { 1 } else { 0 }; job.frames[at].pc = proxy_pc::TargetKeys;
+    proxy_start(job, proxy_method::OwnPropertyKeys, target, Value.Undefined);
+}
+// A proxy target's key list arrived (pc TargetKeys), kept as the frame's
+// receiver; or (pc TargetKey) descriptor d of its key `index`: a key
+// without one, or with a configurable one, is a configurable key of the
+// target (its row's attributes). Then the next key's [[GetOwnProperty]],
+// or with every key read, the checks.
+fn own_keys_target_keys(job: Job&, at: i64, v: Value) {
+    let heap .= job.heap;
+    if !v.is_object() || node(heap, v.id()).kind != node_kind::KeyList { heap.fault = Fault.InvalidState; return; }
+    job.frames[at].receiver = v; job.frames[at].index = 0;
+    own_keys_target_next(job, at);
+}
+fn own_keys_target_key(job: Job&, at: i64, d: Value) {
+    let heap .= job.heap; let frame = job.frames[at];
+    if !d.is_undefined() && (!d.is_object() || node(heap, d.id()).kind != node_kind::KeyList) { heap.fault = Fault.InvalidState; return; }
+    let fixed = d.is_object() && !flag_field(heap, d, field::Configurable);
+    if heap.fault != Fault.None { return; }
+    property_mut(heap, node(heap, frame.receiver.id()).keys + frame.index).attrs = if fixed { 0 } else { attr_configurable() };
+    job.frames[at].index += 1;
+    own_keys_target_next(job, at);
+}
+fn own_keys_target_next(job: Job&, at: i64) {
+    let heap .= job.heap; let frame = job.frames[at];
+    let list: i64 = frame.receiver.id(); let i = frame.index;
+    let target = node(heap, frame.input.id()).value;
+    if i < node(heap, list).key_count {
+        if !charge(heap) { return; }
+        job.frames[at].pc = proxy_pc::TargetKey;
+        proxy_start(job, proxy_method::GetOwnProperty, target, property_row(heap, node(heap, list).keys + i).key);
+        return;
+    }
+    let n: i64 = node(heap, list).key_count;
+    if !charge(heap, n) { return; }
+    var keys: OwnKey[>..] = [];
+    for j in n { let r = property_row(heap, node(heap, list).keys + j); keys.push(OwnKey { key: r.key, attrs: r.attrs }); }
+    var words: i64[>..] = [];
+    if trap_words(heap, frame.callee, words) { own_keys_check(job, at, frame.argument_count != 0, keys, words); }
+}
+// The checks of the trap's keys (sorted `words`) against the target's
+// `keys` (each configurable or not) and its extensibility `ext`.
+fn own_keys_check(job: Job&, at: i64, ext: bool, keys: const OwnKey[:], words: const i64[:]) {
+    let frame = job.frames[at];
+    let n = words.len;
     var seen: bool[>..] = []; seen.resize(n, false);
     // Non-configurable target keys first, then (non-extensible) the rest.
     for pass in 2 {
@@ -766,6 +847,7 @@ fn target_extensible_known(job: Job&, at: i64, method: i64, ext: bool) {
     else if method == proxy_method::IsExtensible || method == proxy_method::PreventExtensions { extensible_known(job, at, method, ext); }
     else if method == proxy_method::SetPrototypeOf { set_prototype_known(job, at, ext); }
     else if method == proxy_method::DefineOwnProperty { define_known(job, at, ext); }
+    else if method == proxy_method::OwnPropertyKeys { own_keys_target(job, at, ext); }
     else { job.heap.fault = Fault.InvalidState; }
 }
 // A non-extensible target's [[GetPrototypeOf]]: a proxy target's runs as a

@@ -3,6 +3,7 @@ import .source_vm;
 import .realm;
 import .function_calls;
 import .proxy;
+import .object_statics;
 
 namespace source;
 
@@ -61,12 +62,14 @@ namespace source;
 // A proxy's [[PreventExtensions]] and [[IsExtensible]] run as its Proxy
 // frame where Object.isExtensible, preventExtensions and their Reflect
 // counterparts can start one (light-cljs-891, proxy.goose
-// proxy_conditional); the plain built-ins here fail by name on a proxy, as
-// Object.seal, freeze, isSealed and isFrozen of one still do
-// (light-cljs-897). Light-cljs runtime values (forms) fail by name too: they
-// have no own properties and take none here, while the V8 build's runtime
-// (src/js_runtime.js makeVector, for one) makes them ordinary extensible
-// objects, so no answer would agree with both.
+// proxy_conditional). Object.seal, freeze, isSealed and isFrozen of a proxy
+// run the specification's steps through its internal methods in a Statics
+// frame where one can start (light-cljs-897, "Integrity levels of a proxy"
+// below); the plain built-ins here, run to completion where no frame can
+// start, fail by name on a proxy. Light-cljs runtime values (forms) fail by
+// name too: they have no own properties and take none here, while the V8
+// build's runtime (src/js_runtime.js makeVector, for one) makes them
+// ordinary extensible objects, so no answer would agree with both.
 
 // The kinds with [[Extensible]]: every JavaScript object kind with own
 // properties (snapshot.goose named).
@@ -174,8 +177,9 @@ fn mapped_count(heap: const Heap&, o: i64) -> i64 {
 }
 
 // ---- The built-ins (decision 5: plain functions, since no JavaScript runs
-// unless a proxy is involved: proxy.goose's proxy_conditional starts a
-// proxy's frame first, and a proxy that reaches these fails by name).
+// unless a proxy is involved: proxy.goose's proxy_conditional and
+// start_integrity below start a proxy's frames first, and a proxy that
+// reaches these fails by name).
 fn integrity_builtin(job: Job&, b: Builtin, target: Value) -> Value {
     let heap .= job.heap;
     if !target.is_object() {
@@ -202,4 +206,118 @@ fn integrity_builtin(job: Job&, b: Builtin, target: Value) -> Value {
     }
     if heap.fault != Fault.None { return Value.Undefined; }
     return match b { ObjectPreventExtensions, ObjectSeal, ObjectFreeze => target, _ => boolean(ok) };
+}
+
+// ---- Integrity levels of a proxy (light-cljs-897)
+// Object.seal, freeze, isSealed and isFrozen are conditional natives
+// (realm.goose conditional_native): of a proxy, SetIntegrityLevel (7.3.15)
+// and TestIntegrityLevel (7.3.16) run in a Statics frame
+// (object_statics.goose; Native.Statics, the built-in its payload) whose
+// `input` is the proxy, each of the proxy's internal methods a Proxy frame
+// above it whose answer arrives at the Statics frame's pc (decision 4):
+//
+//   statics_pc::Prevented   [[PreventExtensions]]'s boolean (seal, freeze;
+//                           false is a TypeError)
+//   statics_pc::Extensible  [[IsExtensible]]'s boolean (isSealed, isFrozen;
+//                           true answers false)
+//   statics_pc::List        [[OwnPropertyKeys]]'s key list, then the frame's
+//                           `callee`, `index` the next key
+//   statics_pc::Own         [[GetOwnProperty]] of key index - 1 (freeze,
+//                           isSealed, isFrozen)
+//   statics_pc::Defined     [[DefineOwnProperty]] of key index - 1 with
+//                           {configurable: false}, and for a data property
+//                           being frozen also {writable: false}
+//                           (DefinePropertyOrThrow: false is a TypeError)
+//
+// Seal defines every key without reading it; freeze reads each key's
+// descriptor first and skips a key without one; the tests answer false at
+// the first configurable property (or, frozen, writable data property) and
+// true after the last key. Any other argument is the plain built-in, with
+// no frame. The descriptors the frame defines with are job rows a Proxy
+// frame holds, truncated with the job (decision 3); the frame keeps no
+// state outside its fields (decision 2).
+fn integrity_walks(b: Builtin) -> bool { return match b { ObjectSeal, ObjectFreeze, ObjectIsSealed, ObjectIsFrozen => true, _ => false }; }
+inline fn integrity_tests(b: Builtin) -> bool { return b == Builtin.ObjectIsSealed || b == Builtin.ObjectIsFrozen; }
+// Start built-in b (integrity_walks) with `args` at operand base `base`
+// (native_start's contract).
+fn start_integrity(job: Job&, b: Builtin, args: const Value[:], base: i64) {
+    let heap .= job.heap; let o = arg(args, 0);
+    if !is_proxy(heap, o) { let r = integrity_builtin(job, b, o); statics_plain(job, base, r); return; }
+    let tests = integrity_tests(b);
+    statics_frame(job, b, base, if tests { statics_pc::Extensible } else { statics_pc::Prevented }, o, Value.Undefined);
+    proxy_push(job, if tests { proxy_method::IsExtensible } else { proxy_method::PreventExtensions }, o, Value.Undefined, Value.Undefined, Value.Undefined, answer::Boolean, job.operands.len);
+}
+// One step of an integrity built-in's Statics frame (statics_step).
+fn integrity_step(job: Job&, frame: Frame, b: Builtin) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    let v = job.operands.pop();
+    if !is_proxy(heap, frame.input) { heap.fault = Fault.InvalidState; return; }
+    match frame.pc {
+        statics_pc::Prevented => {
+            if !truthy(heap, v) { type_error(job, "proxy preventExtensions handler returned false"); return; }
+            integrity_keys(job, at);
+        },
+        statics_pc::Extensible => {
+            if truthy(heap, v) { finish_native(job, frame, boolean(false)); return; }
+            integrity_keys(job, at);
+        },
+        statics_pc::List => {
+            if !v.is_object() || node(heap, v.id()).kind != node_kind::KeyList { heap.fault = Fault.InvalidState; return; }
+            job.frames[at].callee = v; job.frames[at].index = 0;
+            integrity_next(job, at, b);
+        },
+        statics_pc::Own => { integrity_descriptor(job, at, b, v); },
+        statics_pc::Defined => {
+            if !truthy(heap, v) { named_error(job, Fault.TypeError, "cannot redefine property '", integrity_key(heap, frame), "'"); return; }
+            integrity_next(job, at, b);
+        },
+        _ => { heap.fault = Fault.InvalidState; },
+    }
+}
+// The proxy's [[OwnPropertyKeys]], its list arriving at pc List.
+fn integrity_keys(job: Job&, at: i64) {
+    job.frames[at].pc = statics_pc::List;
+    push_proxy(job, proxy_method::OwnPropertyKeys, job.frames[at].input, Value.Undefined);
+}
+// The key the frame is at (index - 1).
+fn integrity_key(heap: const Heap&, frame: Frame) -> Value { return property_row(heap, node(heap, frame.callee.id()).keys + frame.index - 1).key; }
+// The next key: seal defines it, the others read its descriptor; with none
+// left, the answer (the proxy, or true for the tests).
+fn integrity_next(job: Job&, at: i64, b: Builtin) {
+    let heap .= job.heap; let frame = job.frames[at];
+    let i = frame.index;
+    if i >= node(heap, frame.callee.id()).key_count { finish_native(job, frame, if integrity_tests(b) { boolean(true) } else { frame.input }); return; }
+    if !charge(heap) { return; }
+    job.frames[at].index = i + 1;
+    let k = property_row(heap, node(heap, frame.callee.id()).keys + i).key;
+    if b == Builtin.ObjectSeal { integrity_define(job, at, k, false); return; }
+    job.frames[at].pc = statics_pc::Own;
+    push_proxy(job, proxy_method::GetOwnProperty, frame.input, k);
+}
+// [[GetOwnProperty]]'s answer d (undefined, or a complete descriptor) for
+// the key the frame is at.
+fn integrity_descriptor(job: Job&, at: i64, b: Builtin, d: Value) {
+    let heap .= job.heap; let frame = job.frames[at];
+    if d.is_undefined() { integrity_next(job, at, b); return; }
+    if !d.is_object() || node(heap, d.id()).kind != node_kind::KeyList { heap.fault = Fault.InvalidState; return; }
+    let accessor = has_field(heap, d, field::Get) || has_field(heap, d, field::Set);
+    if integrity_tests(b) {
+        let open = flag_field(heap, d, field::Configurable) || b == Builtin.ObjectIsFrozen && !accessor && flag_field(heap, d, field::Writable);
+        if heap.fault != Fault.None { return; }
+        if open { finish_native(job, frame, boolean(false)); return; }
+        integrity_next(job, at, b);
+        return;
+    }
+    if heap.fault == Fault.None { integrity_define(job, at, integrity_key(heap, frame), !accessor); }
+}
+// DefinePropertyOrThrow(proxy, k, {configurable: false}), with
+// `read_only` also {writable: false}: the proxy's [[DefineOwnProperty]],
+// its answer arriving at pc Defined.
+fn integrity_define(job: Job&, at: i64, k: Value, read_only: bool) {
+    let heap .= job.heap;
+    let d = new_descriptor(heap);
+    if heap.fault != Fault.None || !set_field(heap, d, field::Configurable, boolean(false)) { return; }
+    if read_only && !set_field(heap, d, field::Writable, boolean(false)) { return; }
+    job.frames[at].pc = statics_pc::Defined;
+    proxy_push(job, proxy_method::DefineOwnProperty, job.frames[at].input, k, Value.Undefined, d, answer::Boolean, job.operands.len);
 }

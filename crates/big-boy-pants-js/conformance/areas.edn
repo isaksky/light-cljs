@@ -77,6 +77,8 @@
   "bbp/proxy_apply_trap" {:area :objects-classes}
   "bbp/proxy_remaining_traps" {:area :objects-classes :pants-gap "the Pants engine refuses the construct, defineProperty, isExtensible, preventExtensions and setPrototypeOf traps (\"unsupported Proxy trap: construct\", rust/src/vm/proxy.rs) and runs getPrototypeOf only for for-in"}
   "bbp/proxy_revocable" {:area :objects-classes :pants-gap "the Pants engine has no Proxy.revocable"}
+  "bbp/proxy_integrity_levels" {:area :objects-classes}
+  "bbp/proxy_integrity_traps" {:area :objects-classes :pants-gap "the Pants engine refuses the defineProperty, preventExtensions and isExtensible traps (\"unsupported Proxy trap: defineProperty\", rust/src/vm/proxy.rs) and has no Proxy.revocable"}
   "bbp/closure_counter" {:area :functions-scope}
   "bbp/completion_declarations_only" {:area :statements-loops}
   "bbp/completion_break_keeps_value" {:area :statements-loops}

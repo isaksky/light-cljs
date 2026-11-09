@@ -69,7 +69,8 @@ namespace source;
 // light-cljs-845's Proxy frame above this one, as do its [[Get]] (a getter's
 // phase), [[Set]] and [[HasProperty]] (light-cljs-890); a light-cljs runtime
 // value as the object, and a Symbol or BigInt wrapper (ToObject), fail by
-// name.
+// name. Object.seal, freeze, isSealed and isFrozen of a proxy walk its keys
+// in this frame too (light-cljs-897; integrity.goose integrity_step).
 //
 // Object.prototype.toString, Object.hasOwn and
 // Object.prototype.hasOwnProperty stay plain built-ins (realm.goose); where
@@ -99,6 +100,13 @@ let statics_pc::Result = 18;
 let statics_pc::Iterable = 19;
 let statics_pc::Length = 20;
 let statics_pc::Stored = 21;
+// Object.seal, freeze, isSealed and isFrozen of a proxy (light-cljs-897,
+// integrity.goose): its [[PreventExtensions]], [[IsExtensible]] and a
+// key's [[DefineOwnProperty]] answer; List and Own take its keys and a
+// key's descriptor as for the walks above.
+let statics_pc::Prevented = 22;
+let statics_pc::Extensible = 23;
+let statics_pc::Defined = 24;
 
 // The built-ins that always start a Statics frame (native_start).
 fn statics_native(b: Builtin) -> bool {
@@ -683,6 +691,7 @@ fn locale_call(job: Job&, at: i64, m: Value) {
 // ---- The frame's step
 fn statics_step(job: Job&, frame: Frame, b: Builtin) {
     let heap .= job.heap; let at = job.frames.len - 1;
+    if integrity_walks(b) { integrity_step(job, frame, b); return; }
     // Object.assign's converted array length: both conversions are
     // operands (converted_length), checked before the write (use_value).
     if frame.pc == statics_pc::Length && statics_receiver(b) { reflect_length_step(job, frame); return; }

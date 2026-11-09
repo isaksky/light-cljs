@@ -448,6 +448,35 @@ in the ownKeys invariants (light-cljs-897), getOwnPropertyDescriptor
 through proxies (light-cljs-895), bind of a proxy (light-cljs-861), and the
 plain built-ins run to completion where no frame can start.
 
+*As landed by light-cljs-897 (integrity levels of proxies, proxy targets
+in the ownKeys invariants):* Object.seal, freeze, isSealed and isFrozen
+became conditional natives: of a proxy, SetIntegrityLevel and
+TestIntegrityLevel (ECMAScript 7.3.15 and 7.3.16) run in light-cljs-884's
+Statics frame, whose key list and cursor walk the proxy's keys, each of
+the proxy's internal methods a Proxy frame above it: [[PreventExtensions]]
+(seal, freeze; false is a TypeError) or [[IsExtensible]] (the tests, read
+first, as the specification orders it), [[OwnPropertyKeys]], then per key
+[[DefineOwnProperty]] of {configurable: false} (seal), [[GetOwnProperty]]
+and a definition that also clears `writable` on a data property (freeze),
+or [[GetOwnProperty]] until a configurable (or, frozen, writable data)
+property answers false (the tests); any other argument is the plain
+built-in. The ownKeys trap's invariants read a proxy target's
+[[IsExtensible]], [[OwnPropertyKeys]] and each of its keys'
+[[GetOwnProperty]] as Proxy frames above the [[OwnPropertyKeys]] frame
+(its pc 12, 14 and 15), each read key's row of the target's key list
+marked configurable or not; any other target is read at once as before.
+No new table, node field or native kind (decision 2): the frames' fields
+and job rows hold the state, which snapshot validation checks
+(corpus/serial/proxy-integrity-wait). [[DefineOwnProperty]] of a row the
+job did not allocate (decision 3) now accepts a definition that changes
+nothing, as SetIntegrityLevel of such a row already did, so sealing or
+freezing a proxy of an image object already at that level succeeds; any
+other definition there still faults NativeBoundary before anything
+changes, and the compiler's protected rows are not read. Three steps where QuickJS departs
+from the specification (and V8) follow the specification: the tests read
+IsExtensible before the keys, freeze skips a key whose descriptor is gone,
+and freeze defines {writable: false} on a read-only data property too.
+
 *As landed by light-cljs-860 (mapped arguments objects):* a sloppy
 function with a simple parameter list gets a mapped arguments object
 (ECMAScript 10.4.4.7 CreateMappedArgumentsObject; QuickJS

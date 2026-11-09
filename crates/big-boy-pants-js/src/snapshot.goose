@@ -368,6 +368,18 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
 // keys, pc 5 and 8 read a descriptor's field `index` (its value from a
 // getter, its presence from a proxy's [[HasProperty]], light-cljs-890).
 fn enumeration_frame_valid<T>(s: const T&, f: source::SavedFrame, method: i64) -> bool {
+    // [[OwnPropertyKeys]] checking its trap's keys against a proxy target
+    // (light-cljs-897) holds those keys, and awaits the target's
+    // [[IsExtensible]] (pc 12), its [[OwnPropertyKeys]] (pc 14, the
+    // extensibility read) or the [[GetOwnProperty]] of key `index` of the
+    // target's key list (pc 15).
+    if method == proxy_method::OwnPropertyKeys && f.pc >= 12 {
+        if !object_of(s, f.callee, node_kind::KeyList) { return false; }
+        if f.pc == 12 { return f.receiver.is_undefined(); }
+        if f.argument_count < 0 || f.argument_count > 1 { return false; }
+        if f.pc == 14 { return f.receiver.is_undefined(); }
+        return f.pc == 15 && object_of(s, f.receiver, node_kind::KeyList) && f.index >= 0 && f.index < s.nodes[f.receiver.id()].key_count;
+    }
     // [[GetPrototypeOf]] awaiting a proxy target's [[IsExtensible]] or
     // [[GetPrototypeOf]] holds its trap's result (light-cljs-891).
     if f.pc == 12 || f.pc == 13 { return method == proxy_method::GetPrototypeOf && (f.receiver.is_null() || object_of(s, f.receiver, node_kind::None)); }
@@ -415,6 +427,17 @@ fn property_frame_valid<T>(s: const T&, f: source::SavedFrame, method: i64) -> b
 // iteration's result and iterator record, a keyed built-in's proxy.
 fn statics_frame_valid<T>(s: const T&, f: source::SavedFrame, b: source::Builtin) -> bool {
     let pc = f.pc;
+    // Object.seal, freeze, isSealed and isFrozen of a proxy (light-cljs-897,
+    // integrity.goose): the proxy; its [[PreventExtensions]] (seal, freeze)
+    // or [[IsExtensible]] (the tests) and its keys awaited before the key
+    // list; then, within the list, key index - 1's descriptor (all but
+    // seal) or definition (seal, freeze).
+    if source::integrity_walks(b) {
+        if !object_of(s, f.input, node_kind::Proxy) || !f.output.is_undefined() { return false; }
+        let tests = source::integrity_tests(b);
+        if pc == statics_pc::Prevented || pc == statics_pc::Extensible || pc == statics_pc::List { return (pc != statics_pc::Prevented || !tests) && (pc != statics_pc::Extensible || tests) && f.callee.is_undefined() && f.index == 0; }
+        return (pc == statics_pc::Own && b != source::Builtin.ObjectSeal || pc == statics_pc::Defined && !tests) && object_of(s, f.callee, node_kind::KeyList) && f.index >= 1 && f.index <= s.nodes[f.callee.id()].key_count;
+    }
     if source::statics_walks(b) || source::statics_names(b) {
         if !object_of(s, f.input, node_kind::None) || !object_of(s, f.output, node_kind::None) { return false; }
         if b == source::Builtin.ObjectAssign && (!object_of(s, f.receiver, node_kind::Array) || f.argument_count < 1) { return false; }

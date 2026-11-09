@@ -62,9 +62,10 @@ namespace source;
 // `name` and `prototype` made first), built-ins, bound functions, String
 // wrappers (exotic indices and `length`, which change by nothing), errors,
 // generators, promises, iterators, and non-extensible, sealed and frozen
-// objects (light-cljs-882, integrity.goose). A write into a row the job did not
+// objects (light-cljs-882, integrity.goose). A definition of a row the job did not
 // allocate (the realm, a restored definition, an installed publication)
-// faults NativeBoundary before anything changes (decision 3). A proxy
+// faults NativeBoundary before anything changes (decision 3), unless it
+// changes nothing (light-cljs-897, define_descriptor). A proxy
 // target's [[DefineOwnProperty]] runs as its Proxy frame above the
 // Descriptor frame, whose pc 4 takes its answer (light-cljs-891,
 // proxy.goose); define_descriptor itself, which __defineGetter__ and
@@ -106,18 +107,28 @@ inline fn flag_attrs(writable: bool, enumerable: bool, configurable: bool) -> u8
 
 // ---- ValidateAndApplyPropertyDescriptor (10.1.6.3)
 // [[DefineOwnProperty]](k, d) of `object` (k interned): whether it was
-// accepted. A definition that changes nothing is accepted without a write.
+// accepted. A definition that changes nothing is accepted without a write,
+// also on a row the job did not allocate (as SetIntegrityLevel through a
+// proxy defines on its target, light-cljs-897); any other definition of
+// such a row faults NativeBoundary before anything changes, whether it
+// would be accepted or refused (decision 3).
 fn define_descriptor(job: Job&, object: Value, k: Value, d: PropertyDescriptor) -> bool {
     let heap .= job.heap; let o: i64 = object.id();
     if node(heap, o).kind == node_kind::Proxy { proxy_fault(heap, proxy_method::DefineOwnProperty); return false; }
-    if !writable(job, o) { heap.fault = Fault.NativeBoundary; return false; }
-    prepare_function(job, object, k, true);
+    let owned = writable(job, o);
+    // The compiler's protected rows and root receiver are not read here
+    // (listable faults NativeBoundary), and another job's function whose
+    // properties are not made yet would change.
+    if !owned && (!listable(job, object) || lazy_function(heap, o)) { heap.fault = Fault.NativeBoundary; return false; }
+    // A lazy function property is made first.
+    if owned { prepare_function(job, object, k, true); }
     if heap.fault != Fault.None { return false; }
     let current = own_entry(heap, object, k);
     if heap.fault != Fault.None { return false; }
     if current.found && is_pending(current.value) { pending_fault(heap, k); return false; }
-    if node(heap, o).kind == node_kind::Array && key_is(heap, k, "length") { return define_length(job, object, k, current, d); }
+    if node(heap, o).kind == node_kind::Array && key_is(heap, k, "length") { return define_length(job, object, k, current, d, owned); }
     let accessor = accessor_descriptor(d);
+    if !owned { if define_unchanged(heap, current, d) { return true; } heap.fault = Fault.NativeBoundary; return false; }
     if !current.found {
         if node(heap, o).non_extensible { return false; }
         if accessor {
@@ -159,12 +170,30 @@ fn define_descriptor(job: Job&, object: Value, k: Value, d: PropertyDescriptor) 
     if !was_accessor && attrs == current.attrs && (!d.has_value || same_value(heap, value, current.value)) { return true; }
     return define_property(heap, object, k, value, attrs, half::Complete);
 }
+// Whether definition d of an existing own property `current` is accepted
+// and changes nothing (ValidateAndApplyPropertyDescriptor with no step
+// left to apply): every field d has equals the property's.
+fn define_unchanged(heap: Heap&, current: Own, d: PropertyDescriptor) -> bool {
+    if !current.found { return false; }
+    let was_accessor = is_accessor(current.value);
+    if d.has_configurable && d.configurable != (current.attrs & attr_configurable() != 0) { return false; }
+    if d.has_enumerable && d.enumerable != (current.attrs & attr_enumerable() != 0) { return false; }
+    if was_accessor {
+        if data_descriptor(d) { return false; }
+        let fns = pair(heap, current.value);
+        return (!d.has_get || same_bits(d.get, fns.get)) && (!d.has_set || same_bits(d.set, fns.set));
+    }
+    if accessor_descriptor(d) { return false; }
+    return (!d.has_writable || d.writable == (current.attrs & attr_writable() != 0)) && (!d.has_value || same_value(heap, d.value, current.value));
+}
 // An array's `length` (ArraySetLength, 10.4.2.4, with the validation of a
 // non-configurable, non-enumerable data property): a new value must be
 // ToUint32 of itself (a RangeError otherwise, before any validation); a
 // non-writable length takes no other value and does not become writable.
-fn define_length(job: Job&, object: Value, k: Value, current: Own, d: PropertyDescriptor) -> bool {
+fn define_length(job: Job&, object: Value, k: Value, current: Own, d: PropertyDescriptor, owned: bool) -> bool {
     let heap .= job.heap;
+    // Another job's array takes only a definition that changes nothing.
+    if !owned { if define_unchanged(heap, current, d) { return true; } heap.fault = Fault.NativeBoundary; return false; }
     var length: f64 = current.value.num();
     if d.has_value {
         let n = primitive_number(job, Builtin.ObjectDefineProperty, d.value);

@@ -643,6 +643,27 @@ thread_fn integrity_boundaries() {
         heap.fault = source::Fault.None;
         assert(source::integrity_builtin(job, source::Builtin.ObjectFreeze, frozen) == frozen && source::integrity_builtin(job, source::Builtin.ObjectSeal, frozen) == frozen && source::integrity_builtin(job, source::Builtin.ObjectPreventExtensions, frozen) == frozen);
         assert(source::integrity_builtin(job, source::Builtin.ObjectIsExtensible, o) == source::boolean(true) && heap.fault == source::Fault.None);
+        // [[DefineOwnProperty]] of such a row (light-cljs-897: SetIntegrityLevel
+        // through a proxy defines on its target) accepts a definition that
+        // changes nothing outside the compiler's protected rows, which it
+        // does not read; any other definition faults NativeBoundary with
+        // nothing changed.
+        let kx = source::key_named(heap, "x"); let ky = source::key_named(heap, "y");
+        let sealing = source::PropertyDescriptor { has_configurable: true }; let freezing = source::PropertyDescriptor { has_configurable: true, has_writable: true };
+        let same = source::PropertyDescriptor { has_value: true, value: source::number(2) }; let open = source::PropertyDescriptor { has_configurable: true, configurable: true, has_enumerable: true, enumerable: true, has_writable: true, writable: true };
+        let fixed = source::plain_rows(heap.nodes[frozen.id()..(frozen.id() + 1)]);
+        if limit > 0 {
+            heap.fault = source::Fault.None;
+            assert(source::define_descriptor(job, frozen, ky, sealing) && source::define_descriptor(job, frozen, ky, freezing) && source::define_descriptor(job, frozen, ky, same) && source::define_descriptor(job, o, kx, open) && heap.fault == source::Fault.None);
+        }
+        for d, i in [source::PropertyDescriptor { has_value: true, value: source::number(3) }, open, sealing, sealing] {
+            heap.fault = source::Fault.None;
+            let target = if i < 2 { frozen } else { o };
+            let k = if i < 2 { ky } else if i == 2 { kx } else { source::key_named(heap, "z") };
+            assert(!source::define_descriptor(job, target, k, d) && heap.fault == source::Fault.NativeBoundary);
+        }
+        assert(source::plain_rows(heap.nodes[o.id()..(o.id() + 1)]) == before && source::plain_rows(heap.nodes[frozen.id()..(frozen.id() + 1)]) == fixed && heap.shapes.len == shape);
+        heap.fault = source::Fault.None;
     }
     job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear();
     let p = source::allocate(heap, source::Node { kind: node_kind::Proxy, value: o, namespace_value: frozen, proto: source::Value.Null });
@@ -894,6 +915,16 @@ fn suspended_continuations() {
     waits = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_traps_resumed, copy(w))); waits += 1; }
     assert(waits == 9);
+    // Integrity levels of a proxy and a proxy target in the ownKeys
+    // invariants (light-cljs-897): nine waits, six under an integrity
+    // built-in's Statics frame and three under a [[OwnPropertyKeys]] frame
+    // at its target phases, each resumed from a saved stack.
+    let integrity = embed_file("../corpus/serial/proxy-integrity-wait.gsp");
+    heap_program::join(thread_spawn(proxy_integrity_wait, str(integrity), false));
+    heap_program::join(thread_spawn(proxy_integrity_wait, str(integrity), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_integrity_resumed, copy(w))); waits += 1; }
+    assert(waits == 10);
     // Private class elements (light-cljs-889): four waits, in a private
     // getter, setter, method and static method, each resumed from a saved
     // stack with the private names and elements; images whose private
@@ -1709,6 +1740,89 @@ thread_fn proxy_traps_resumed(saved: Waiting) {
     let outcome = source::run(job, -1);
     if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); proxy_traps_save(job, heap); return; }
     assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "aDcDdDeDgDsDrDvD:6,2,4,true,true,true,3,true,object,true,true"));
+    assert(source::retire(job));
+    assert(qput(false));
+}
+// Run proxy-integrity-wait.js (light-cljs-897) through its nine waits:
+// answered in place, checking at each the phase of the frame awaiting the
+// trap (an integrity built-in's Statics frame: seal's [[PreventExtensions]],
+// key list and [[DefineOwnProperty]], freeze's and isSealed's
+// [[GetOwnProperty]], isFrozen's [[IsExtensible]]; then a [[OwnPropertyKeys]]
+// Proxy frame awaiting its proxy target's [[IsExtensible]],
+// [[OwnPropertyKeys]] and [[GetOwnProperty]]), or each after the stack was
+// saved and restored in a fresh heap (proxy_integrity_resumed), where
+// proxy_integrity_save checks that an image is refused when a saved
+// integrity frame walking keys holds no key list, or a saved
+// [[OwnPropertyKeys]] frame at a target phase lacks its trap's keys.
+let INTEGRITY_WAITS: source::Builtin[6] = [source::Builtin.ObjectSeal, source::Builtin.ObjectSeal, source::Builtin.ObjectSeal, source::Builtin.ObjectFreeze, source::Builtin.ObjectIsSealed, source::Builtin.ObjectIsFrozen];
+let INTEGRITY_PCS:   i64[9]             = [statics_pc::Prevented, statics_pc::List, statics_pc::Defined, statics_pc::Own, statics_pc::Own, statics_pc::Extensible, proxy_pc::TargetExtensible, proxy_pc::TargetKeys, proxy_pc::TargetKey];
+let INTEGRITY_RESULT = "pDkDdDoDsDeDEDKDGD:true,true,true,false,x,true,writable/configurable";
+thread_fn proxy_integrity_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    if save { proxy_integrity_save(job, heap); return; }
+    var waits: i64 = 0;
+    loop {
+        assert(waits < INTEGRITY_PCS.len);
+        var found: i64 = 0;
+        for f in job.frames {
+            match f.native {
+                Statics x => { if source::integrity_walks(x.which) { assert(waits < INTEGRITY_WAITS.len && x.which == INTEGRITY_WAITS[waits] && f.pc == INTEGRITY_PCS[waits]); found += 1; } },
+                Proxy p => { if p.method == proxy_method::OwnPropertyKeys && f.pc >= proxy_pc::TargetExtensible { assert(waits >= INTEGRITY_WAITS.len && f.pc == INTEGRITY_PCS[waits]); found += 1; } },
+                _ => {},
+            }
+        }
+        assert(found == 1);
+        waits += 1;
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    }
+    assert(waits == 9 && source::key_is(heap, job.result, INTEGRITY_RESULT));
+    assert(source::retire(job));
+}
+fn proxy_integrity_save(job: source::Job&, heap: source::Heap&) {
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    // An integrity frame at a key without its key list, or a target-phase
+    // [[OwnPropertyKeys]] frame without its trap's keys.
+    var bad = copy(image); var broken = false;
+    for i in a.frame_count {
+        let r = a.frames + i;
+        match image.conts[r] {
+            Frame x => {
+                var f = x.f;
+                match f.native {
+                    Statics s => { if source::integrity_walks(s.which) && f.callee.is_object() { f.callee = source::Value.Undefined; broken = true; } },
+                    Proxy p => { if p.method == proxy_method::OwnPropertyKeys && f.pc >= proxy_pc::TargetExtensible { f.callee = source::Value.Undefined; broken = true; } },
+                    _ => {},
+                }
+                bad.conts[r] = source::Cont.Frame { f: f };
+            },
+            _ => {},
+        }
+    }
+    if broken { var refused = snapshot::Control {}; assert(!snapshot::validate(bad, refused) && refused.error == snapshot::Error.Link); }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn proxy_integrity_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); proxy_integrity_save(job, heap); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, INTEGRITY_RESULT));
     assert(source::retire(job));
     assert(qput(false));
 }

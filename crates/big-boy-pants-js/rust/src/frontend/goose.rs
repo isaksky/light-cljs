@@ -2056,6 +2056,10 @@ mod serial_tests {
             ("proxy-for-in", "boolean:true"),
             ("proxy-for-in-wait", "goose"),
             ("proxy-get", "boolean:true"),
+            // Integrity levels of a proxy and a proxy target in the ownKeys
+            // invariants (light-cljs-897) at every budget cut and
+            // collection (serial_tests.goose).
+            ("proxy-integrity", "boolean:true"),
             ("depth", "boolean:true"),
             ("cancel", "limit"),
             ("cancel-break", "limit"),
@@ -2172,6 +2176,11 @@ mod serial_tests {
             // a revocable proxy's get) across dependency waits, each Proxy
             // frame restored with the stack (snapshot_tests.goose).
             ("proxy-traps-wait", "goose"),
+            // Object.seal, freeze, isSealed and isFrozen of a proxy and a
+            // proxy target in the ownKeys invariants (light-cljs-897)
+            // across dependency waits, each Statics and Proxy frame
+            // restored with the stack (snapshot_tests.goose).
+            ("proxy-integrity-wait", "goose"),
             // Private class elements (light-cljs-889): fresh private names,
             // fields, methods, accessors and statics, the constructor-return
             // trick and a proxy's own elements at every budget cut and

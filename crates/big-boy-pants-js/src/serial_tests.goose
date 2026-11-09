@@ -914,7 +914,7 @@ fn reclamation() {
     // Forced collections at every budget cut and at other phases.
     for image in [embed_file("../corpus/serial/generators.gsp"), embed_file("../corpus/serial/async.gsp"), embed_file("../corpus/serial/generator-loop.gsp"), embed_file("../corpus/serial/for-of.gsp"), embed_file("../corpus/serial/builtin-iterators.gsp"),
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
-                  embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
+                  embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
                   embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
@@ -966,6 +966,12 @@ fn control_flow() {
     limit_points(embed_file("../corpus/serial/proxy-for-in.gsp"));
     check(embed_file("../corpus/serial/proxy-get.gsp"), "boolean:true");
     limit_points(embed_file("../corpus/serial/proxy-get.gsp"));
+    // Object.seal, freeze, isSealed and isFrozen of a proxy above their
+    // Statics frame, and a proxy target's isExtensible, ownKeys and
+    // getOwnPropertyDescriptor in the ownKeys invariants (light-cljs-897),
+    // at every cut and limit.
+    check(embed_file("../corpus/serial/proxy-integrity.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/proxy-integrity.gsp"));
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");

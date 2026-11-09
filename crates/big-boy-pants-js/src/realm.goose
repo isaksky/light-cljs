@@ -1435,12 +1435,14 @@ fn error_type(b: Builtin) -> i64 { for e, i in ERROR_BUILTINS { if e == b { retu
 // Reflect.deleteProperty's proxy trap (light-cljs-890; descriptors.goose),
 // and the built-ins that reach a proxy's [[IsExtensible]],
 // [[PreventExtensions]], [[SetPrototypeOf]] or, for isPrototypeOf,
-// [[GetPrototypeOf]] (light-cljs-891; proxy.goose).
-fn conditional_native(b: Builtin) -> bool { return match b { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, ErrorPrototypeToString, ReflectDeleteProperty => true, _ => statics_conditional(b) || proxy_conditional(b) }; }
+// [[GetPrototypeOf]] (light-cljs-891; proxy.goose), and Object.seal,
+// freeze, isSealed and isFrozen of a proxy (light-cljs-897; integrity.goose).
+fn conditional_native(b: Builtin) -> bool { return match b { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, ErrorPrototypeToString, ReflectDeleteProperty => true, _ => statics_conditional(b) || proxy_conditional(b) || integrity_walks(b) }; }
 // Start built-in b (conditional_native), called with `receiver` and
 // `args`, with operand base `base` (native_start's contract).
 fn start_conditional_native(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
     if proxy_conditional(b) { start_proxy_conditional(job, b, receiver, args, base); return; }
+    if integrity_walks(b) { start_integrity(job, b, args, base); return; }
     if statics_conditional(b) { start_statics(job, b, receiver, args, base); return; }
     if b == Builtin.ErrorPrototypeToString { start_error_text(job, receiver, base); return; }
     if b == Builtin.ReflectDeleteProperty { start_reflect_delete(job, b, args, base); return; }
