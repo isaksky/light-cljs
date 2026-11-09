@@ -2173,6 +2173,17 @@ mod serial_tests {
             // and through the light-cljs runtime's mapv, deferred map and
             // swap! callbacks, which the Pants engine does not have.
             ("runtime-conversions", "goose"),
+            // Math (light-cljs-901): Math.sumPrecise's native frame over a
+            // user iterator and Math's conversions at every budget cut and
+            // collection (serial_tests.goose); the Math.random stream across
+            // promise jobs, whose async entry the Pants engine returns as a
+            // promise; and a wait inside sumPrecise's iteration and between
+            // draws, saved and restored with its continuation
+            // (snapshot_tests.goose).
+            ("math-sum-precise", "boolean:true"),
+            ("math-random", "goose"),
+            ("math-sum-precise-wait", "goose"),
+            ("math-random-wait", "goose"),
             // Symbol values (light-cljs-885): symbol rows, symbol keys and
             // the Symbol.for registry at every budget cut and collection
             // (serial_tests.goose).
@@ -2244,8 +2255,9 @@ mod serial_tests {
                 continue;
             }
             // Node's default native stack holds fewer than the 10,000 frames
-            // `depth` needs; the Pants engine below is its oracle.
-            if name != "depth" {
+            // `depth` needs, and Node 24 has no Math.sumPrecise; the Pants
+            // engine below is their oracle.
+            if name != "depth" && name != "math-sum-precise" {
                 let js = format!(
                     "try {{ const value = ({source})(); console.log(typeof value === 'number' ? 'number:' + (Object.is(value, -0) ? '-0' : String(value)) : typeof value + ':' + String(value)); }} catch(e) {{ console.log('exception:' + e.name); }}"
                 );

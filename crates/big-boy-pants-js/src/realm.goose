@@ -5,6 +5,7 @@ import .array_methods;
 import .printer;
 import .coerce;
 import .number_text;
+import .math_object;
 
 namespace source;
 
@@ -138,11 +139,16 @@ enum Builtin {
     // also holds as parseInt and parseFloat, and Number.isNaN, isFinite,
     // isInteger and isSafeInteger.
     IsNaN, IsFinite, ParseInt, ParseFloat, NumberIsNaN, NumberIsFinite, NumberIsInteger, NumberIsSafeInteger,
+    // The Math object's functions (light-cljs-901; math_object.goose), in
+    // QuickJS's js_math_funcs order; sumPrecise is a native frame.
+    MathMin, MathMax, MathAbs, MathFloor, MathCeil, MathRound, MathSqrt, MathAcos, MathAsin, MathAtan, MathAtan2, MathCos, MathExp, MathLog, MathPow, MathSin, MathTan,
+    MathTrunc, MathSign, MathCosh, MathSinh, MathTanh, MathAcosh, MathAsinh, MathAtanh, MathExpm1, MathLog1p, MathLog2, MathLog10, MathCbrt, MathHypot, MathRandom,
+    MathF16round, MathFround, MathImul, MathClz32, MathSumPrecise,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[163] = [
+let BUILTINS: BuiltinInfo[200] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -234,6 +240,29 @@ let BUILTINS: BuiltinInfo[163] = [
     BuiltinInfo { which: Builtin.ParseInt, name: "parseInt", length: 2, plan: plan::ParseInt }, BuiltinInfo { which: Builtin.ParseFloat, name: "parseFloat", length: 1, plan: plan::OneString },
     BuiltinInfo { which: Builtin.NumberIsNaN, name: "isNaN", length: 1 }, BuiltinInfo { which: Builtin.NumberIsFinite, name: "isFinite", length: 1 },
     BuiltinInfo { which: Builtin.NumberIsInteger, name: "isInteger", length: 1 }, BuiltinInfo { which: Builtin.NumberIsSafeInteger, name: "isSafeInteger", length: 1 },
+    // Math (light-cljs-901): ToNumber of every argument for min, max and
+    // hypot, of two for atan2 and pow, ToUint32 of two for imul and of one
+    // for clz32, ToNumber of one for the rest; random and sumPrecise
+    // convert nothing.
+    BuiltinInfo { which: Builtin.MathMin, name: "min", length: 2, plan: plan::Numbers }, BuiltinInfo { which: Builtin.MathMax, name: "max", length: 2, plan: plan::Numbers },
+    BuiltinInfo { which: Builtin.MathAbs, name: "abs", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathFloor, name: "floor", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathCeil, name: "ceil", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathRound, name: "round", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathSqrt, name: "sqrt", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathAcos, name: "acos", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathAsin, name: "asin", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathAtan, name: "atan", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathAtan2, name: "atan2", length: 2, plan: plan::TwoNumbers }, BuiltinInfo { which: Builtin.MathCos, name: "cos", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathExp, name: "exp", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathLog, name: "log", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathPow, name: "pow", length: 2, plan: plan::TwoNumbers }, BuiltinInfo { which: Builtin.MathSin, name: "sin", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathTan, name: "tan", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathTrunc, name: "trunc", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathSign, name: "sign", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathCosh, name: "cosh", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathSinh, name: "sinh", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathTanh, name: "tanh", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathAcosh, name: "acosh", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathAsinh, name: "asinh", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathAtanh, name: "atanh", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathExpm1, name: "expm1", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathLog1p, name: "log1p", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathLog2, name: "log2", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathLog10, name: "log10", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathCbrt, name: "cbrt", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathHypot, name: "hypot", length: 2, plan: plan::Numbers }, BuiltinInfo { which: Builtin.MathRandom, name: "random" },
+    BuiltinInfo { which: Builtin.MathF16round, name: "f16round", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathFround, name: "fround", length: 1, plan: plan::OneNumber },
+    BuiltinInfo { which: Builtin.MathImul, name: "imul", length: 2, plan: plan::TwoUint32 }, BuiltinInfo { which: Builtin.MathClz32, name: "clz32", length: 1, plan: plan::OneUint32 },
+    BuiltinInfo { which: Builtin.MathSumPrecise, name: "sumPrecise", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -291,7 +320,10 @@ inline fn function_kind_prototype_row(k: i64) -> i64 { return 38 + k; }
 // inheriting %Object.prototype%, not a wrapper: the [[Prototype]] of symbol
 // wrappers and the prototype a symbol primitive's property reads start at.
 inline fn symbol_prototype_row() -> i64 { return 41; }
-inline fn fixed_rows() -> i64 { return 42; }
+// The Math namespace object (light-cljs-901; math_object.goose), an
+// ordinary object inheriting %Object.prototype%, like Reflect.
+inline fn math_row() -> i64 { return 42; }
+inline fn fixed_rows() -> i64 { return 43; }
 struct Name { text: u8[..24] }
 let FUNCTION_KIND_TAGS: Name[3] = [Name { text: "GeneratorFunction" }, Name { text: "AsyncFunction" }, Name { text: "AsyncGeneratorFunction" }];
 // The function_kind:: of closure o's code, -1 for an ordinary function.
@@ -316,10 +348,21 @@ let NUMBER_CONSTANTS: NumberConstant[8] = [
     NumberConstant { name: Name { text: "POSITIVE_INFINITY" }, value: 1.0 / 0.0 }, NumberConstant { name: Name { text: "EPSILON" }, value: 2.220446049250313e-16 },
     NumberConstant { name: Name { text: "MAX_SAFE_INTEGER" }, value: 9007199254740991.0 }, NumberConstant { name: Name { text: "MIN_SAFE_INTEGER" }, value: -9007199254740991.0 },
 ];
+// Math's value properties (light-cljs-901; ECMAScript 21.3.1), in QuickJS's
+// order: static data, as Number's are.
+let MATH_CONSTANTS: NumberConstant[8] = [
+    NumberConstant { name: Name { text: "E" }, value: 2.718281828459045 }, NumberConstant { name: Name { text: "LN10" }, value: 2.302585092994046 },
+    NumberConstant { name: Name { text: "LN2" }, value: 0.6931471805599453 }, NumberConstant { name: Name { text: "LOG2E" }, value: 1.4426950408889634 },
+    NumberConstant { name: Name { text: "LOG10E" }, value: 0.4342944819032518 }, NumberConstant { name: Name { text: "PI" }, value: 3.141592653589793 },
+    NumberConstant { name: Name { text: "SQRT1_2" }, value: 0.7071067811865476 }, NumberConstant { name: Name { text: "SQRT2" }, value: 1.4142135623730951 },
+];
 let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
-// A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
+// A built-in method: a property `name` (its BuiltinInfo name) of the fixed
+// row `holder`. A holder that is itself a REALM_FUNCTIONS row is named by its
+// row function (symbol_row, proxy_row), so a fixed row added before them
+// moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[95] = [
+let REALM_FUNCTIONS: Method[132] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -386,19 +429,35 @@ let REALM_FUNCTIONS: Method[95] = [
     // Symbol.prototype's methods (light-cljs-885; symbols.goose): its
     // @@toPrimitive is keyed by the well-known symbol, and its `description`
     // getter is no property but the getter of its accessor pair.
-    Method { which: Builtin.SymbolFor, holder: 52 }, Method { which: Builtin.SymbolKeyFor, holder: 52 },
+    Method { which: Builtin.SymbolFor, holder: symbol_row() }, Method { which: Builtin.SymbolKeyFor, holder: symbol_row() },
     Method { which: Builtin.SymbolPrototypeToString, holder: 41 }, Method { which: Builtin.SymbolPrototypeValueOf, holder: 41 },
     Method { which: Builtin.SymbolPrototypeDescription, holder: 41 }, Method { which: Builtin.SymbolPrototypeToPrimitive, holder: 41 },
     // Reflect.get and Reflect.set (light-cljs-888; object_statics.goose).
     Method { which: Builtin.ReflectGet, holder: 34 }, Method { which: Builtin.ReflectSet, holder: 34 },
     // Proxy.revocable (light-cljs-891; proxy.goose): a property of the
-    // Proxy function, REALM_FUNCTIONS entry 34 (row fixed_rows() + 34).
-    Method { which: Builtin.ProxyRevocable, holder: 76 },
+    // Proxy function (proxy_row()).
+    Method { which: Builtin.ProxyRevocable, holder: proxy_row() },
     // The global number functions and Number's predicates (light-cljs-900):
     // parseInt and parseFloat are also Number's own, one function object
     // under two names (build_realm), as Number.parseInt === parseInt.
     Method { which: Builtin.ParseInt, holder: 0 }, Method { which: Builtin.ParseFloat, holder: 0 }, Method { which: Builtin.IsNaN, holder: 0 }, Method { which: Builtin.IsFinite, holder: 0 },
     Method { which: Builtin.NumberIsNaN, holder: 29 }, Method { which: Builtin.NumberIsFinite, holder: 29 }, Method { which: Builtin.NumberIsInteger, holder: 29 }, Method { which: Builtin.NumberIsSafeInteger, holder: 29 },
+    // The Math object's functions (light-cljs-901; math_object.goose), in
+    // QuickJS's order; its @@toStringTag and constants follow them
+    // (build_realm).
+    Method { which: Builtin.MathMin, holder: math_row() }, Method { which: Builtin.MathMax, holder: math_row() }, Method { which: Builtin.MathAbs, holder: math_row() },
+    Method { which: Builtin.MathFloor, holder: math_row() }, Method { which: Builtin.MathCeil, holder: math_row() }, Method { which: Builtin.MathRound, holder: math_row() },
+    Method { which: Builtin.MathSqrt, holder: math_row() }, Method { which: Builtin.MathAcos, holder: math_row() }, Method { which: Builtin.MathAsin, holder: math_row() },
+    Method { which: Builtin.MathAtan, holder: math_row() }, Method { which: Builtin.MathAtan2, holder: math_row() }, Method { which: Builtin.MathCos, holder: math_row() },
+    Method { which: Builtin.MathExp, holder: math_row() }, Method { which: Builtin.MathLog, holder: math_row() }, Method { which: Builtin.MathPow, holder: math_row() },
+    Method { which: Builtin.MathSin, holder: math_row() }, Method { which: Builtin.MathTan, holder: math_row() }, Method { which: Builtin.MathTrunc, holder: math_row() },
+    Method { which: Builtin.MathSign, holder: math_row() }, Method { which: Builtin.MathCosh, holder: math_row() }, Method { which: Builtin.MathSinh, holder: math_row() },
+    Method { which: Builtin.MathTanh, holder: math_row() }, Method { which: Builtin.MathAcosh, holder: math_row() }, Method { which: Builtin.MathAsinh, holder: math_row() },
+    Method { which: Builtin.MathAtanh, holder: math_row() }, Method { which: Builtin.MathExpm1, holder: math_row() }, Method { which: Builtin.MathLog1p, holder: math_row() },
+    Method { which: Builtin.MathLog2, holder: math_row() }, Method { which: Builtin.MathLog10, holder: math_row() }, Method { which: Builtin.MathCbrt, holder: math_row() },
+    Method { which: Builtin.MathHypot, holder: math_row() }, Method { which: Builtin.MathRandom, holder: math_row() }, Method { which: Builtin.MathF16round, holder: math_row() },
+    Method { which: Builtin.MathFround, holder: math_row() }, Method { which: Builtin.MathImul, holder: math_row() }, Method { which: Builtin.MathClz32, holder: math_row() },
+    Method { which: Builtin.MathSumPrecise, holder: math_row() },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -436,12 +495,14 @@ fn realm_function_row(b: Builtin) -> i64 {
     for m, j in REALM_FUNCTIONS { if m.which == b { return fixed_rows() + j; } }
     abort("builtin is not in REALM_FUNCTIONS"); return 0;
 }
-// The Symbol function's row: its REALM_FUNCTIONS entry, the eleventh.
+// The Symbol function's row: its REALM_FUNCTIONS entry, the eleventh; and
+// the Proxy function's, the thirty-fifth (build_realm checks both).
 inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
+inline fn proxy_row() -> i64 { return fixed_rows() + 34; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[145] = [
+let PENDING: PendingName[144] = [
     // Object.prototype
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
@@ -475,7 +536,7 @@ let PENDING: PendingName[145] = [
     PendingName { holder: 0, key: "BigInt64Array" }, PendingName { holder: 0, key: "BigUint64Array" }, PendingName { holder: 0, key: "DataView" },
     PendingName { holder: 0, key: "Date" }, PendingName { holder: 0, key: "FinalizationRegistry" }, PendingName { holder: 0, key: "Float32Array" }, PendingName { holder: 0, key: "Float64Array" },
     PendingName { holder: 0, key: "Int8Array" }, PendingName { holder: 0, key: "Int16Array" }, PendingName { holder: 0, key: "Int32Array" }, PendingName { holder: 0, key: "Iterator" },
-    PendingName { holder: 0, key: "JSON" }, PendingName { holder: 0, key: "Map" }, PendingName { holder: 0, key: "Math" },
+    PendingName { holder: 0, key: "JSON" }, PendingName { holder: 0, key: "Map" },
     PendingName { holder: 0, key: "Promise" }, PendingName { holder: 0, key: "RegExp" },
     PendingName { holder: 0, key: "Set" }, PendingName { holder: 0, key: "SharedArrayBuffer" },
     PendingName { holder: 0, key: "Uint8Array" }, PendingName { holder: 0, key: "Uint8ClampedArray" }, PendingName { holder: 0, key: "Uint16Array" }, PendingName { holder: 0, key: "Uint32Array" },
@@ -657,8 +718,8 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     for o in iterator_prototypes { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != iterator_prototype_row() { return false; } }
     // Symbol.prototype is an ordinary object (light-cljs-885).
     if nodes[symbol_prototype_row()].kind != node_kind::Object || !nodes[symbol_prototype_row()].proto.is_object() || nodes[symbol_prototype_row()].proto.id() != object_prototype_row() { return false; }
-    // Reflect is an ordinary object (light-cljs-851).
-    if nodes[reflect_row()].kind != node_kind::Object || !nodes[reflect_row()].proto.is_object() || nodes[reflect_row()].proto.id() != object_prototype_row() { return false; }
+    // Reflect (light-cljs-851) and Math (light-cljs-901) are ordinary objects.
+    for o in [reflect_row(), math_row()] { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != object_prototype_row() { return false; } }
     // The arguments templates (light-cljs-854): shape-mode, three properties,
     // no elements, `length` 0 and @@iterator %Array.prototype.values%.
     for mapped in [false, true] {
@@ -717,6 +778,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Arguments }); rows.push(Node { kind: node_kind::Arguments });
     rows.push(Node { kind: node_kind::Object, proto: Value.Null });
     for k in FUNCTION_KIND_TAGS.len { rows.push(Node { kind: node_kind::Object, proto: object(function_prototype_row()) }); }
+    rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
@@ -815,6 +877,12 @@ fn build_realm(heap: Heap&) -> bool {
     if !realm_value(heap, function_kind_prototype_row(function_kind::Generator), "prototype", object(generator_prototype_row()), attr_configurable()) { return false; }
     // Reflect[@@toStringTag] (ECMAScript 28.1.14).
     if !add_own(heap, reflect_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Reflect"), attr_configurable()) { return false; }
+    // Math[@@toStringTag] (ECMAScript 21.3.1.9), configurable only, after
+    // its functions, then its value properties (21.3.1.1 to 21.3.1.8),
+    // neither writable, enumerable nor configurable, in QuickJS's order
+    // (light-cljs-901).
+    if !add_own(heap, math_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Math"), attr_configurable()) { return false; }
+    for c in MATH_CONSTANTS { if !realm_value(heap, math_row(), c.name.text, number(c.value), 0) { return false; } }
     // Symbol.prototype and its `constructor`, and its @@toStringTag (ECMAScript
     // 20.4.3.6), configurable only (light-cljs-885).
     if !link_constructor(heap, symbol_row(), symbol_prototype_row()) || !add_own(heap, symbol_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Symbol"), attr_configurable()) { return false; }
@@ -822,13 +890,14 @@ fn build_realm(heap: Heap&) -> bool {
     // non-configurable data properties; their values are the exporter's
     // fixed indices (decision 2), so they take no rows.
     assert(REALM_FUNCTIONS[symbol_row() - fixed_rows()].which == Builtin.SymbolFunction && REALM_FUNCTIONS[realm_function_row(Builtin.SymbolFor) - fixed_rows()].holder == symbol_row());
+    assert(REALM_FUNCTIONS[proxy_row() - fixed_rows()].which == Builtin.Proxy && REALM_FUNCTIONS[realm_function_row(Builtin.ProxyRevocable) - fixed_rows()].holder == proxy_row());
     var s: i64 = 0;
     while export_well_known_symbol(s).len > 0 { if !realm_value(heap, symbol_row(), export_well_known_symbol(s), Value.Symbol { s: s as u32 }, 0) { return false; } s += 1; }
     // The global object's own properties.
     if !realm_value(heap, global_row(), "globalThis", heap.global, attr_writable() | attr_configurable()) { return false; }
     let globals: i64[] = [object_constructor_row(), function_constructor_row(), array_constructor_row(), wrapper_constructor_row(0), wrapper_constructor_row(1), wrapper_constructor_row(2)];
     for o in globals { if !realm_value(heap, global_row(), BUILTINS[node(heap, o).function].name, object(o), attr_writable() | attr_configurable()) { return false; } }
-    if !realm_value(heap, global_row(), "Reflect", object(reflect_row()), attr_writable() | attr_configurable()) { return false; }
+    if !realm_value(heap, global_row(), "Reflect", object(reflect_row()), attr_writable() | attr_configurable()) || !realm_value(heap, global_row(), "Math", object(math_row()), attr_writable() | attr_configurable()) { return false; }
     for t in ERROR_NAMES.len { if !realm_value(heap, global_row(), ERROR_NAMES[t].text, object(error_constructor_row(t)), attr_writable() | attr_configurable()) { return false; } }
     if !realm_value(heap, global_row(), "NaN", number(0.0 / 0.0), 0) || !realm_value(heap, global_row(), "Infinity", number(1.0 / 0.0), 0) || !realm_value(heap, global_row(), "undefined", Value.Undefined, 0) { return false; }
     for p in PENDING {
@@ -1877,6 +1946,12 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToLocaleString, ReflectOwnKeys, ReflectHas, ReflectGet, ReflectSet => { return unsupported_step(job, b, "called outside a native frame"); },
         // The global number functions and Number's predicates (light-cljs-900).
         IsNaN, IsFinite, ParseInt, ParseFloat, NumberIsNaN, NumberIsFinite, NumberIsInteger, NumberIsSafeInteger => { return number_builtin(job, b, args); },
+        // Math's functions (light-cljs-901; math_object.goose). sumPrecise
+        // runs as a SumPrecise native frame (native_start).
+        MathMin, MathMax, MathAbs, MathFloor, MathCeil, MathRound, MathSqrt, MathAcos, MathAsin, MathAtan, MathAtan2, MathCos, MathExp, MathLog, MathPow, MathSin, MathTan,
+        MathTrunc, MathSign, MathCosh, MathSinh, MathTanh, MathAcosh, MathAsinh, MathAtanh, MathExpm1, MathLog1p, MathLog2, MathLog10, MathCbrt, MathHypot, MathRandom,
+        MathF16round, MathFround, MathImul, MathClz32 => { return math_builtin(job, b, args); },
+        MathSumPrecise => { return unsupported_step(job, b, "called outside a native frame"); },
         _ => { return native_value(heap, id, args); },
     }
 }

@@ -391,7 +391,8 @@ Indirect eval (light-cljs-856), the Function constructor (light-cljs-857) and
 direct eval (light-cljs-858) compile JavaScript while a job runs with bbp's Rust frontend
 through an in-process C boundary (`docs/javascript-coverage.md`, decision 1,
 "Run-time compilation"). Every VM program's `.build` sidecar lists
-`src/runtime_compiler.h`, which opens the shared library on the first
+`src/runtime_compiler.h` (beside `src/math_libm.h`, the platform libm
+functions Math needs, light-cljs-901), which opens the shared library on the first
 compilation in the process; a program that never compiles at run time never
 opens it, so `goose build` of any program needs nothing new. To run code that
 compiles at run time, build the library first:

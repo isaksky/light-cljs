@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "ae3b2de80eabe863258b65d5cf0cca5aff1693c012f9b5062d1bbbf1de0ad37a",
+  "11e6cad899f186e91859e404a38ceacc5f5a817bc4396cf422a2dd4e8fc3d38b",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -473,6 +473,22 @@
   "68fe7cf4170419df12cdadba0aa8980cadacbd4af7683ade014c95d3f5e84a0f",
   "corpus/serial/loop.js"
   "3619774d675665f2e8a68d2e83b601f075cec1b43f51742faa4717aa6a9d4a41",
+  "corpus/serial/math-random-wait.gsp"
+  "fbd52238bea4853d2e91e29eaec3b62a96c7a970842f4d2697cda2afc5e7b81e",
+  "corpus/serial/math-random-wait.js"
+  "2dbae3c0e4e060841f80bceb3b017187775765aef9ae3eb9aa65ff88449ae3ae",
+  "corpus/serial/math-random.gsp"
+  "b966945fcf826900d3093149ac188a06afa517806e862910c84c5048dc467670",
+  "corpus/serial/math-random.js"
+  "75aa183befa3b9b5b151906e199619efc5f3e7b715dcfb13b743458f44713267",
+  "corpus/serial/math-sum-precise-wait.gsp"
+  "f97c0925079618c8c8abde615fd6320bef9febe69dfe84a1b4007809c80f1875",
+  "corpus/serial/math-sum-precise-wait.js"
+  "bd0f7c9b955f26d53d104cbfdfb1c9562b462e77921cc9629a3d9c2a27e4da0f",
+  "corpus/serial/math-sum-precise.gsp"
+  "4aa7e960aeced2823eec9c982270e0823bf7bb075409ece90b5ce0ff2ae0b3cc",
+  "corpus/serial/math-sum-precise.js"
+  "ea9d6e1d65ed8e635c79f3627216ff67c606ccccd36aef93f95ef355ea9a2681",
   "corpus/serial/mutations.gsp"
   "05aae6c8565c5a108a5f106775770ed3cb24861d4cbbea62dda57c2a9d57a157",
   "corpus/serial/mutations.js"
@@ -602,9 +618,9 @@
   "corpus/serial/reclaim-roots.js"
   "d41bdafa3b4cfc75f66cc2ac9f02ec8a012dcaf0a65a8bc91bf13a531c304b48",
   "corpus/serial/runtime-conversions.gsp"
-  "78de319f7055b7f54abead65a852e6c42fe9ea5891da3bed48ce612c2920c52a",
+  "b25f5ed7382f27541928277027da028d6785f845d4f2efa6aaf085158376f314",
   "corpus/serial/runtime-conversions.js"
-  "3f8a1eac60d8b70fca79e8c45a49df7ac4b5023b896d449e70dee9477893edad",
+  "e0d8f98be92f6f169a834383aefc64247f49de50ebc1018489e25100891b020f",
   "corpus/serial/script-declarations.gsp"
   "b9dbe0cea12a06ac32629c26d1c9791efda71789cefef897c95a31a9984ed9c2",
   "corpus/serial/script-declarations.js"

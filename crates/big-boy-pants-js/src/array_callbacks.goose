@@ -60,7 +60,7 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b) || prototype_native(b) || statics_native(b); }
+fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b) || prototype_native(b) || statics_native(b) || b == Builtin.MathSumPrecise; }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
@@ -94,6 +94,8 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
     // The Object statics that expose own keys, Reflect.ownKeys and has
     // (light-cljs-884; object_statics.goose).
     if statics_native(b) { start_statics(job, b, receiver, args, base); return; }
+    // Math.sumPrecise (light-cljs-901; math_object.goose).
+    if b == Builtin.MathSumPrecise { start_sum_precise(job, arg(args, 0), base); return; }
     // %ArrayIteratorPrototype%.next and String.prototype[@@iterator]
     // (light-cljs-844; iterators.goose).
     if iterator_native(b) { start_iterator(job, b, receiver, base); return; }
@@ -272,8 +274,9 @@ fn array_call(job: Job&, at: i64, b: Builtin, v: Value) {
         if forces(heap, cb, args) { start_force(job, cb, v, job.operands.len); return; }
         // A forwarding built-in (light-cljs-851) runs in a frame of its own.
         if forwarding(cb) { native_start(job, cb, this_arg, args, job.operands.len); return; }
-        // So do the Object statics (light-cljs-884; object_statics.goose).
-        if statics_native(cb) { native_start(job, cb, this_arg, args, job.operands.len); return; }
+        // So do the Object statics (light-cljs-884; object_statics.goose)
+        // and Math.sumPrecise (light-cljs-901; math_object.goose).
+        if statics_native(cb) || cb == Builtin.MathSumPrecise { native_start(job, cb, this_arg, args, job.operands.len); return; }
         // So do the error built-ins when a step runs JavaScript (light-cljs-870).
         if conditional_native(cb) { start_conditional_native(job, cb, this_arg, args, job.operands.len); return; }
         if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq || native_builtin(cb) { unsupported_step(job, b, "a host-effect or native-frame built-in callback"); return; }

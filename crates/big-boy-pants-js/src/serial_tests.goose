@@ -23,6 +23,8 @@ struct State {
     lexicals: u8[] = [],
     // The template objects by site (light-cljs-862).
     templates: u8[] = [],
+    // The Math.random stream's state (light-cljs-901).
+    random: u64 = 0,
 }
 fn state(a: source::Job&) -> State {
     return State {
@@ -31,7 +33,7 @@ fn state(a: source::Job&) -> State {
         nodes:      source::plain_rows(a.heap.nodes), values: source::plain_rows(a.heap.values), properties: source::plain_rows(a.heap.properties), units: copy(a.heap.units), latin1: copy(a.heap.latin1), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
         shapes:     source::plain_rows(a.heap.shapes), accessors: source::plain_rows(a.heap.accessors), keys: str(bytes_of(a.heap.keys)),
         conts:      source::plain_rows(a.heap.conts), queue: source::plain_rows(a.queue[a.queue_head..]), draining: a.draining, entry: source::plain_rows([a.entry]), handlers: handler_rows(a.handlers),
-        lexicals:   source::plain_rows([a.lexicals]), templates: str(bytes_of(a.templates)),
+        lexicals:   source::plain_rows([a.lexicals]), templates: str(bytes_of(a.templates)), random: a.heap.random,
     };
 }
 fn handler_rows(handlers: const source::Handler[:]) -> u8[] {
@@ -52,7 +54,7 @@ fn same_state(a: const State&, b: const State&) {
     assert(a.values == b.values);
     assert(a.properties == b.properties);
     assert(a.shapes == b.shapes && a.accessors == b.accessors && a.keys == b.keys);
-    assert(a.conts == b.conts && a.queue == b.queue && a.draining == b.draining && a.entry == b.entry && a.handlers == b.handlers && a.lexicals == b.lexicals && a.templates == b.templates);
+    assert(a.conts == b.conts && a.queue == b.queue && a.draining == b.draining && a.entry == b.entry && a.handlers == b.handlers && a.lexicals == b.lexicals && a.templates == b.templates && a.random == b.random);
     assert(a.units[..] == b.units[..] && a.latin1[..] == b.latin1[..] && a.identity == b.identity && a.work == b.work && a.heap_fault == b.heap_fault);
 }
 struct Run { status: tiny::Status, steps: i64 }
@@ -766,6 +768,12 @@ fn main() {
     // and the callbacks of mapv, a deferred map and swap! (setup 9 boots
     // the light-cljs runtime).
     check(embed_file("../corpus/serial/runtime-conversions.gsp"), "boolean:true", source::Fault.None, 9);
+    // Math (light-cljs-901): Math.sumPrecise's SumPrecise frame over a user
+    // iterator, its iterator closing and Math's Coerce frames at every budget
+    // cut; and the Math.random stream across the job's promise jobs.
+    check(embed_file("../corpus/serial/math-sum-precise.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/math-random.gsp"), "boolean:true");
+    for call in 2 { heap_program::join(thread_spawn(sum_precise_limit, str(embed_file("../corpus/serial/math-sum-precise.gsp")), call)); }
     // A generator function's `constructor` is %GeneratorFunction%, pending
     // for the generators area (light-cljs-768), never Function.
     check(embed_file("../corpus/serial/function-kind-constructor.gsp"), "Fault.UnsupportedOperand:pending-constructor", source::Fault.UnsupportedOperand);
@@ -904,6 +912,34 @@ thread_fn mapped_reclaim_work_limit(bytes: u8[], dictionary: bool) {
     assert(image_valid(heap));
     source::retire(job);
 }
+// Math.sumPrecise's element limit (light-cljs-901; the Pants engine's
+// element_limit_raises_range_error_before_type_validation): math-sum-precise.js
+// run one step a slice, with the count of its `call`th SumPrecise frame
+// fast-forwarded to 2^53 - 1 once it holds one element. The next element is
+// a RangeError, checked before its type, that closes the iterator: a Number
+// in call 0, uncaught, so the job fails RangeError; the string "2" in call
+// 1, inside a try whose catch sees no TypeError, so the case answers false.
+thread_fn sum_precise_limit(bytes: u8[], call: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, writable_code: code }; assert(source::start(job, source::closure(heap, 0, []), []));
+    var calls: i64 = -1; var inside = false; var set = false;
+    while source::run(job, 1) == tiny::Outcome.Yielded {
+        var at: i64 = -1;
+        for f, i in job.frames { match f.native { SumPrecise => { at = i; }, _ => {} } }
+        if at >= 0 && !inside { calls += 1; }
+        inside = at >= 0;
+        if !set && at >= 0 && calls == call && job.frames[at].index == 1 { job.frames[at].index = sum_layout::MaxElements; set = true; }
+    }
+    assert(set);
+    if call == 0 { assert(job.status == tiny::Status.Failed && job.fault == source::Fault.RangeError); }
+    else {
+        assert(job.status == tiny::Status.Complete);
+        var output: u8[>..] = []; source::canonical(heap, job.result, output); assert(output[..] == "boolean:false");
+    }
+    source::retire(job);
+}
 fn reclamation() {
     for dictionary in [false, true] { heap_program::join(thread_spawn(mapped_reclaim_work_limit, str(embed_file("../corpus/serial/calls.gsp")), dictionary)); }
     // 600,000 garbage objects, arrays, strings and closures: each loop
@@ -934,7 +970,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-set-delete.gsp"), embed_file("../corpus/serial/proxy-traps.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/proxy-copy.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");

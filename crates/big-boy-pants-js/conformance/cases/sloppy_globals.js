@@ -15,9 +15,10 @@
 // (Pants-only early error); rows with Object.defineProperty,
 // Object.setPrototypeOf, Object.preventExtensions or Object.keys (the
 // objects area, light-cljs-766); the descriptors of isNaN, isFinite,
-// parseInt, parseFloat and Math (pending: the core built-ins area,
-// light-cljs-767). Each row is a `row(...)` check; the script completes
-// with the number of rows, or minus the first failing row's number.
+// parseInt and parseFloat, which core_global_number_functions pins
+// (light-cljs-900). Math's is here (light-cljs-901). Each row is a
+// `row(...)` check; the script completes with the number of rows, or minus
+// the first failing row's number.
 var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
 function name(thunk) { try { thunk(); return "none"; } catch (e) { return e.name; } }
@@ -67,6 +68,7 @@ row(describes("String", String) && String.name === "String");
 row(describes("Array", Array) && Array.name === "Array");
 row(describes("Function", Function) && Function.name === "Function");
 row(describes("Reflect", Reflect) && typeof Reflect === "object" && typeof Reflect.apply === "function");
+row(describes("Math", Math) && typeof Math === "object" && typeof Math.floor === "function");
 function fixed(key) {
   var d = Object.getOwnPropertyDescriptor(globalThis, key);
   return d !== undefined && !d.writable && !d.enumerable && !d.configurable;

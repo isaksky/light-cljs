@@ -110,7 +110,15 @@ let plan::ParseInt: u8 = 6;
 // Number.prototype.toString(radix): thisNumberValue, then
 // ToIntegerOrInfinity.
 let plan::NumberRadix: u8 = 7;
-let PLANS: Plan[8] = [
+// Math.atan2(y, x) and Math.pow(base, exponent): ToNumber of both
+// (light-cljs-901; math_object.goose).
+let plan::TwoNumbers: u8 = 8;
+// Math.min, max and hypot: ToNumber of every argument, in order.
+let plan::Numbers: u8 = 9;
+// Math.imul(x, y): ToUint32 of both; Math.clz32(x): ToUint32.
+let plan::TwoUint32: u8 = 10;
+let plan::OneUint32: u8 = 11;
+let PLANS: Plan[12] = [
     Plan { this_step: ThisStep.None, steps: [Step.None, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
     Plan { this_step: ThisStep.None, steps: [Step.Numeric, Step.None, Step.None, Step.None], rest: Step.None, construct: true },
     Plan { this_step: ThisStep.None, steps: [Step.String, Step.None, Step.None, Step.None], rest: Step.None, construct: true },
@@ -119,6 +127,10 @@ let PLANS: Plan[8] = [
     Plan { this_step: ThisStep.None, steps: [Step.String, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
     Plan { this_step: ThisStep.None, steps: [Step.String, Step.Int32, Step.None, Step.None], rest: Step.None, construct: false },
     Plan { this_step: ThisStep.Number, steps: [Step.Integer, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
+    Plan { this_step: ThisStep.None, steps: [Step.Number, Step.Number, Step.None, Step.None], rest: Step.None, construct: false },
+    Plan { this_step: ThisStep.None, steps: [Step.Number, Step.Number, Step.Number, Step.Number], rest: Step.Number, construct: false },
+    Plan { this_step: ThisStep.None, steps: [Step.Uint32, Step.Uint32, Step.None, Step.None], rest: Step.None, construct: false },
+    Plan { this_step: ThisStep.None, steps: [Step.Uint32, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
 ];
 inline fn step_at(p: const Plan&, i: i64) -> Step { return if i < p.steps.len { p.steps[i] } else { p.rest }; }
 // The plan row of built-in function object f.

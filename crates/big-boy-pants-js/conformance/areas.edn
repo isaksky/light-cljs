@@ -56,6 +56,9 @@
   "bbp/core_builtin_conversions" {:area :core-builtins}
   "bbp/core_global_number_functions" {:area :core-builtins}
   "bbp/core_number_statics" {:area :core-builtins}
+  "bbp/math_functions" {:area :core-builtins}
+  "bbp/math_conversions" {:area :core-builtins}
+  "bbp/math_sum_precise" {:area :core-builtins}
   "bbp/async_await_order" {:area :generators-async}
   "bbp/async_unhandled_rejection" {:area :generators-async}
   "bbp/array_named_properties" {:area :objects-classes}

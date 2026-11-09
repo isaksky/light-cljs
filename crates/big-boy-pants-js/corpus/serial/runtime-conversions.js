@@ -17,6 +17,11 @@ function runtimeConversions() {
   core.swap(atom, parseInt, { valueOf() { spin("r"); return 16; } });
   let thrown = 0;
   try { core.swap(core.atom("7"), parseInt, { valueOf() { spin("t"); throw 5; } }); } catch (e) { thrown = e; }
+  // Math.sumPrecise as the callback runs its own native frame above
+  // mapv's and a deferred map's (light-cljs-901), over a user iterator.
+  const items = { *[Symbol.iterator]() { spin("u"); yield 1; yield 2; } };
+  const sums = core.str(core.mapv(Math.sumPrecise, rt.vectorFromArray([[1, 2], items])));
+  const lazy = core.str(core.vec(core.mapSeq(Math.sumPrecise, rt.listFromArray([[0.1, 0.2], [3]]))));
   return mapped === "[true false]" && deferred === "[1.5]" && core.str(core.mapv((s) => s.description === "q", symbols)) === "[true]"
-    && core.deref(atom) === 255 && thrown === 5 && order === "abcdsrt";
+    && core.deref(atom) === 255 && thrown === 5 && sums === "[3 3]" && lazy === "[0.30000000000000004 3]" && order === "abcdsrtu";
 }

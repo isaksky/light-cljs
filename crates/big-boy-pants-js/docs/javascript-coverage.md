@@ -1928,6 +1928,55 @@ objects as the globals. The callbacks of the light-cljs runtime's mapv,
 deferred maps and swap! convert as well
 (`corpus/serial/runtime-conversions.js`).
 
+*As landed by light-cljs-901 (the Math object):* `Math` is a fixed realm
+row, `math_row()` (row 42), an ordinary object inheriting
+%Object.prototype% as Reflect is, with its 37 functions in QuickJS's order
+(writable, configurable), its @@toStringTag (configurable only) and its
+eight constants (static data, `MATH_CONSTANTS`; neither writable,
+enumerable nor configurable). A fixed row moves every REALM_FUNCTIONS row
+up one, so a REALM_FUNCTIONS holder that is itself such a row is named by
+its row function (`symbol_row()` for Symbol.for and keyFor, `proxy_row()`
+for Proxy.revocable), never a number. `src/math_object.goose` holds the
+functions. All but random and sumPrecise are plain functions with plans
+(`plan::OneNumber`, `TwoNumbers`, `Numbers`, `OneUint32`, `TwoUint32`), so
+objects convert in a Coerce frame first; min, max and hypot convert every
+argument and charge one work unit an argument (hypot two, for its scaled
+sum), in one step (light-cljs-913 budgets long calls in steps, as the Pants
+engine does). Results are the Pants engine's: its min and max over -0, its round,
+hypot (the largest magnitude, an infinity winning over a NaN, then a
+scaled sum with Kahan's correction), log2 (exact for powers of two) and
+binary16 rounding; fround is a binary32 cast and pow is `**`'s
+exponentiate. The transcendental functions are the platform's libm, as on
+both oracles: Goose's `math` module has sin to pow, and sinh, cosh, tanh,
+asinh, acosh, atanh, expm1, log1p and cbrt come from `src/math_libm.h`, a
+`c_headers` adapter every VM program's sidecar now links beside
+`runtime_compiler.h`. `goose run` (TinyCC) has no libm, so there those nine
+fail `UnsupportedOperand` by name rather than answer an approximation.
+Math.random is the Pants engine's stream (splitmix64 from a fixed seed of
+zero) in `Heap.random`, a heap state field like the Symbol.for registry:
+`snapshot::Header.random` carries it in snapshots and saved continuations
+(any 64-bit value is a valid state), the worker reset restores the image's,
+and it has no rows for reclamation. So a job's promise jobs and its resumed
+continuation continue its stream, and the next job on the worker starts it
+again, drawing what a fresh worker would (`corpus/serial/math-random.js`
+at every cut, `math-random-wait.js` in place, saved and twice in a reused
+worker); QuickJS seeds from the clock, so no conformance row pins a value.
+Math.sumPrecise iterates (GetIterator, then `next`, `done` and `value`,
+getters above) in a `SumPrecise` native frame whose steps add at most one
+element; past the 2^53 - 1 element limit an element is a RangeError (checked
+first, as the Pants engine does), else a non-Number one a TypeError, both closing the iterator through the frame's Catch handler,
+as Object.fromEntries does; as a callback it runs its own frame above
+map's, mapv's and a deferred map's. The exact sum is the Pants engine's fixed-point
+accumulator in units of 2^-1074 (`vm/native/sum_precise.rs`, not Shewchuk's
+partials), held as a job array the frame's `output` names: 68 32-bit limbs
+for each sign and a flags element, 137 Number elements no JavaScript
+reaches, so reclamation moves it, a saved continuation carries it and
+snapshot validation checks every limb (`sum_frame_valid`); the result
+rounds once, ties to even. The slices `math_functions` (190 rows),
+`math_conversions` (128) and `math_sum_precise` (45) and QuickJS's
+test_math pass, with the Math rows of `sloppy_globals` and
+`objects_intrinsic_reads`.
+
 **Rejected.** *Self-hosting by default*: 2.5 times slower on the measured
 case; it needs private intrinsics hidden from ordinary code, a second compile
 path for the realm, and `Function.prototype.toString` and stack traces that

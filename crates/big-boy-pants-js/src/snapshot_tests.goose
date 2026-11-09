@@ -886,6 +886,22 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(symbols_wait, str(symbols), true));
     assert(qget<bool>()); let sw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(sw)));
     heap_program::join(thread_spawn(symbols_reused, str(symbols)));
+    // The Math.random stream (light-cljs-901): its state across a wait, in
+    // place and in a saved continuation's header, and restarted by a reused
+    // worker's reset in the next job.
+    let random = embed_file("../corpus/serial/math-random-wait.gsp");
+    heap_program::join(thread_spawn(random_wait, str(random), false));
+    heap_program::join(thread_spawn(random_wait, str(random), true));
+    assert(qget<bool>()); let rw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(rw)));
+    heap_program::join(thread_spawn(random_reused, str(random)));
+    // Math.sumPrecise (light-cljs-901): a wait in `next` above the
+    // SumPrecise frame, in place and from a saved continuation; a saved
+    // frame whose sum is no sum array, holds a limb that is no 32-bit
+    // integer or lost its iterator record is refused.
+    let summing = embed_file("../corpus/serial/math-sum-precise-wait.gsp");
+    heap_program::join(thread_spawn(sum_precise_wait, str(summing), false));
+    heap_program::join(thread_spawn(sum_precise_wait, str(summing), true));
+    assert(qget<bool>()); let spw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(spw)));
     // Base classes (light-cljs-886): a wait inside newTarget's `prototype`
     // getter, above the Construct frame, in place and from a saved
     // continuation; an image whose class constructor looks lazy is refused.
@@ -2356,6 +2372,99 @@ thread_fn symbols_reused(bytes: u8[]) {
         assert(source::retire(job));
         assert(!snapshot::pristine(base, identity, code, heap, bindings));
         assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings) && heap.registry.is_null());
+    }
+}
+// math-random-wait.js (light-cljs-901) to its one wait, after two draws:
+// answered in place, or after the stack was saved with the heap's state in
+// the snapshot header and restored in a fresh heap (symbols_resumed answers
+// it), where the draw after the wait continues the stream ("D:true").
+thread_fn random_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap) && heap.random == 0);
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    let drawn = heap.random; assert(drawn != 0);
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(heap.random != drawn);
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None && image.header.random == drawn);
+    // Every 64-bit value is a state the stream reaches, so validation
+    // accepts any.
+    var bits = snapshot::Control {}; var other = copy(image); other.header.random = 12345; assert(snapshot::validate(other, bits));
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// math-sum-precise-wait.js (light-cljs-901) to its wait in `next`, above
+// the SumPrecise frame: answered in place, or saved (symbols_resumed answers
+// it), the image refused when the saved frame's sum is its iterator record
+// (mode 0), a limb of its sum is 0.5 (1) or its record is gone (2).
+thread_fn sum_precise_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8 && job.frames.len == 3);
+    let summing = match job.frames[1].native { SumPrecise => true, _ => false }; assert(summing && job.frames[1].index == 2);
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    for mode in 3 {
+        var bad = copy(image); var changed = false;
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        SumPrecise => {
+                            if mode == 0 { f.output = f.callee; }
+                            if mode == 1 { bad.values[image.nodes[f.output.id()].start + 3] = source::number(0.5); }
+                            if mode == 2 { f.callee = source::Value.Undefined; }
+                            changed = true;
+                        },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        assert(changed);
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// A reused worker (light-cljs-795) runs math-random-wait.js twice: the reset
+// after each job restores the image's stream state with its tables, so the
+// second job draws what the first did.
+thread_fn random_reused(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var pc = source::Code {}; snapshot_test::append(pc, bytes);
+    var parent = source::Heap { code: pc }; assert(source::initialize(parent));
+    var c = snapshot::Control {}; let base = snapshot::capture(parent, [], c); assert(c.error == snapshot::Error.None && base.header.random == 0);
+    let identity = source::reserve_identity(); let rows: i64[0] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, r));
+    var first: u64 = 0;
+    for round in 2 {
+        var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+        assert(source::run(job, -1) == tiny::Outcome.Yielded && source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(heap.random != 0);
+        if round == 0 { first = heap.random; } else { assert(heap.random == first); }
+        assert(source::retire(job));
+        assert(!snapshot::pristine(base, identity, code, heap, bindings));
+        assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings) && heap.random == 0);
     }
 }
 thread_fn symbols_resumed(saved: Waiting) {

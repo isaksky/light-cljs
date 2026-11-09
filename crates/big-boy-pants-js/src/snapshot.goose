@@ -22,6 +22,9 @@ struct Header {
     // The Symbol.for registry's newest symbol (source::Heap.registry,
     // light-cljs-885), or Null.
     registry: source::Value = source::Value.Null,
+    // The Math.random stream's state (source::Heap.random, light-cljs-901):
+    // every value is a valid state.
+    random: u64 = 0,
 }
 struct Snapshot {
     header:     Header          = Header {},
@@ -368,8 +371,21 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // operands (snapshot frame checks bound them), and the next
         // position; a construction's newTarget is an object.
         Coerce c => f.pc == 0 && object_of(s, f.callee, node_kind::Builtin) && s.nodes[f.callee.id()].function < source::BUILTINS.len && source::BUILTINS[s.nodes[f.callee.id()].function].which == c.which && source::BUILTINS[s.nodes[f.callee.id()].function].plan != plan::None && f.argument_count >= 0 && f.index >= 0 && f.index <= f.argument_count + 1 && (!c.construct || object_of(s, f.input, node_kind::None)),
+        SumPrecise => sum_frame_valid(s, f),
         _ => true,
     };
+}
+// A SumPrecise frame (light-cljs-901, math_object.goose) awaits one of its
+// values with its exact sum, an array of sum_layout::Size limbs and flags,
+// and the elements it added; from pc Record on it holds the iterator
+// record, while it reads a result's `done` and `value` that result.
+fn sum_frame_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
+    if f.pc < sum_pc::Iterable || f.pc > sum_pc::Closed || f.index < 0 || f.index > sum_layout::MaxElements || !object_of(s, f.output, node_kind::Array) { return false; }
+    let sum = s.nodes[f.output.id()];
+    if sum.initialized || sum.count != sum_layout::Size || sum.length != sum_layout::Size || !range(sum.start, sum.count, s.values.len) || !source::sum_words_valid(s.values[sum.start..(sum.start + sum.count)]) { return false; }
+    if f.pc <= sum_pc::Record { return f.callee.is_undefined(); }
+    if !object_of(s, f.callee, node_kind::Object) { return false; }
+    return f.pc != sum_pc::Done && f.pc != sum_pc::Item || object_of(s, f.input, node_kind::None);
 }
 // A CopyData frame (light-cljs-804, source_vm.goose copy_step) walks its
 // key list at pc Next and Value; of a proxy source (light-cljs-895) it
@@ -886,7 +902,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
 }
 fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64) -> View {
     let code .= heap.code;
-    var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows, registry: heap.registry },
+    var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows, registry: heap.registry, random: heap.random },
         code_bytes: code.source_bytes, functions: code.functions, code_constants: code.constants, children: code.children, ops: code.ops, code_units: code.units, code_strings: code.strings,
         nodes:      heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings, latin1: heap.latin1[..source::latin1_len(heap)],
         shapes: heap.shapes, accessors: heap.accessors, keys: heap.keys, conts: heap.conts, sites: code.sites, site_sources: code.site_sources, site_records: code.site_records };
@@ -922,7 +938,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.strings.clear(); code.ins.clear(); code.effects.clear(); code.heights.clear(); code.decoded = 0;
     code.sites.clear(); code.site_sources.clear(); code.site_records.clear();
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
-    heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined; heap.registry = source::Value.Null;
+    heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined; heap.registry = source::Value.Null; heap.random = 0;
     heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0; heap.property_rows = 0; heap.image = source::Tops {};
     return true;
 }
@@ -934,7 +950,7 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     // No initialization, producer, publication cache, claim or waiter code.
     code.source_bytes.append(s.code_bytes); code.functions.append(s.functions); code.constants.append(s.code_constants); code.children.append(s.children); code.ops.append(s.ops); code.units.append(s.code_units); code.strings.append(s.code_strings);
     code.sites.append(s.sites); code.site_sources.append(s.site_sources); code.site_records.append(s.site_records); source::decode(code); code.valid = true;
-    heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = s.header.global; heap.call_method = s.header.call_method; heap.registry = s.header.registry;
+    heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = s.header.global; heap.call_method = s.header.call_method; heap.registry = s.header.registry; heap.random = s.header.random;
     heap.boot_count = s.header.boot; heap.initializer_count = s.header.initializers; heap.producer_count = s.header.producers; heap.property_rows = s.header.property_rows;
     // The image install, not an allocation: rows are copied verbatim into
     // empty tables (links count from each table's start, so the
@@ -990,7 +1006,7 @@ fn service_row(heap: source::Heap&, from: const Snapshot&, twin: const Snapshot&
 }
 // The heap's state fields, as a restore of this header sets them.
 fn state(h: const Header&, identity: i64, heap: source::Heap&) {
-    heap.identity = identity; heap.limits = h.limits; heap.work = h.work; heap.global = h.global; heap.call_method = h.call_method; heap.registry = h.registry; heap.fault = source::Fault.None;
+    heap.identity = identity; heap.limits = h.limits; heap.work = h.work; heap.global = h.global; heap.call_method = h.call_method; heap.registry = h.registry; heap.random = h.random; heap.fault = source::Fault.None;
     heap.boot_count = h.boot; heap.initializer_count = h.initializers; heap.producer_count = h.producers; heap.property_rows = h.property_rows;
 }
 fn same_rows<T>(a: const T[:], b: const T[:]) -> bool { return a.len == b.len && bytes_of(a) == bytes_of(b); }
@@ -998,7 +1014,7 @@ fn same_rows<T>(a: const T[:], b: const T[:]) -> bool { return a.len == b.len &&
 // byte (tests and BBP_RESET_CHECK=1).
 fn pristine(twin: const Snapshot&, identity: i64, code: const source::Code&, heap: const source::Heap&, bindings: const Binding[:]) -> bool {
     let h = twin.header;
-    if heap.identity != identity || !same_bits(heap.limits, h.limits) || heap.work != h.work || !source::same_bits(heap.global, h.global) || !source::same_bits(heap.call_method, h.call_method) || !source::same_bits(heap.registry, h.registry) || heap.fault != source::Fault.None || heap.live_jobs != 0 { return false; }
+    if heap.identity != identity || !same_bits(heap.limits, h.limits) || heap.work != h.work || !source::same_bits(heap.global, h.global) || !source::same_bits(heap.call_method, h.call_method) || !source::same_bits(heap.registry, h.registry) || heap.random != h.random || heap.fault != source::Fault.None || heap.live_jobs != 0 { return false; }
     if heap.boot_count != h.boot || heap.initializer_count != h.initializers || heap.producer_count != h.producers || heap.property_rows != h.property_rows || code.decoded != twin.functions.len || code.heights.len != twin.functions.len || code.ins.len != twin.ops.len { return false; }
     return same_rows(code.source_bytes, twin.code_bytes) && same_rows(code.functions, twin.functions) && same_rows(code.constants, twin.code_constants) && same_rows(code.children, twin.children) && same_rows(code.ops, twin.ops) && same_rows(code.units, twin.code_units) && same_rows(code.strings, twin.code_strings)
         && same_rows(code.sites, twin.sites) && same_rows(code.site_sources, twin.site_sources) && same_rows(code.site_records, twin.site_records)

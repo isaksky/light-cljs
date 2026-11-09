@@ -9,7 +9,7 @@
 // Left out: `__rt` rows and opcode checks; Object.hasOwn and
 // Object.prototype.hasOwnProperty, which the Pants engine does not have (they are
 // objects_own_property_reads, scored against QuickJS alone); a proxy's
-// @@toStringTag read (light-cljs-890); the tags of Symbol (light-cljs-885), BigInt (light-cljs-771), Math and JSON
+// @@toStringTag read (light-cljs-890); the tags of Symbol (light-cljs-885), BigInt (light-cljs-771), JSON
 // (light-cljs-767), Date and RegExp (light-cljs-770), Promise and async
 // generators (light-cljs-768), Map, Set, weak collections, typed arrays and
 // ArrayBuffer (light-cljs-769), disposable stacks (light-cljs-772), Intl
@@ -172,6 +172,7 @@ row(Object.prototype.toString.call(new Number(0)) === '[object Number]');
 row(Object.prototype.toString.call(new String('')) === '[object String]');
 row(Object.prototype.toString.call((function() { return arguments; })(1)) === '[object Arguments]');
 row(Object.prototype.toString.call(Reflect) === '[object Reflect]');
+row(Object.prototype.toString.call(Math) === '[object Math]');
 row(Object.prototype.toString.call((function*() {})()) === '[object Generator]');
 row(Object.prototype.toString.call([].values()) === '[object Array Iterator]');
 row(Object.prototype.toString.call(''[Symbol.iterator]()) === '[object String Iterator]');

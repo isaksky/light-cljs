@@ -23,6 +23,7 @@ import .object_statics;
 import .symbols;
 import .coerce;
 import .private;
+import .math_object;
 
 namespace source;
 
@@ -195,7 +196,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64), Construct => 10001, Coerce c => -9001 - (code(c.which) as i64) * 2 - (if c.construct { 1 } else { 0 }) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64), Construct => 10001, Coerce c => -9001 - (code(c.which) as i64) * 2 - (if c.construct { 1 } else { 0 }), SumPrecise => 11001 }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -661,6 +662,15 @@ root struct Heap {
     // and moves the symbols it reaches; there is no lookup structure
     // outside the rows.
     registry: Value = Value.Null,
+    // The Math.random stream (light-cljs-901; math_object.goose): the
+    // Pants engine's splitmix64 state, zero in an image the realm was just
+    // built in. A state field, so the worker reset restores the image's
+    // value after every job and a job's draws do not depend on its worker's
+    // history (decision 3); a snapshot or saved continuation carries it
+    // (snapshot::Header), so a resumed job and its promise jobs continue
+    // its stream. No rows: reclamation has nothing to keep, and every value
+    // is a valid state.
+    random: u64 = 0,
 }
 // Native frames (light-cljs-786, decision 4): an operation that must run
 // JavaScript from inside an instruction or built-in pushes a frame of
@@ -788,10 +798,12 @@ root struct Heap {
 //                constructor and its arguments at operand_base; pc 0
 //                awaits the getter's value, then the constructor's frame
 //                replaces this one.
+//   SumPrecise   Math.sumPrecise's iteration (light-cljs-901;
+//                math_object.goose, which gives its fields and phases).
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct, Coerce { which: Builtin, construct: bool } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct, Coerce { which: Builtin, construct: bool }, SumPrecise }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -4164,6 +4176,7 @@ fn native_step(job: Job&) {
         Statics s => { statics_step(job, frame, s.which); },
         Construct => { construct_step(job, frame); },
         Coerce c => { coerce_step(job, frame, c.which, c.construct); },
+        SumPrecise => { sum_precise_step(job, frame); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -4287,15 +4300,16 @@ fn mapv_step(job: Job&, frame: Frame) {
     }
 }
 // A native frame's callback that is a built-in function: gensym in a scope,
-// a host effect saved at the frame, or a plain built-in whose result the
-// frame's next step pops.
+// a host effect saved at the frame, a forwarding built-in's or
+// Math.sumPrecise's own native frame (light-cljs-901), or a plain built-in
+// whose result the frame's next step pops.
 fn builtin_callback(job: Job&, callee: Value, receiver: Value, arg: Value, frame: Frame) {
     let id: i64 = node(job.heap, callee.id()).function; let b = builtin_of(job.heap, callee.id());
     if b == Builtin.Gensym && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
     else if coerces(job.heap, callee, receiver, [arg]) { start_coerce(job, callee, receiver, [arg], job.operands.len); }
     else if forces(job.heap, b, [arg]) { start_force(job, b, arg, job.operands.len); }
     else if effect_builtin(b) { request_effect(job, id, [arg], frame); }
-    else if forwarding(b) { native_start(job, b, receiver, [arg], job.operands.len); }
+    else if forwarding(b) || b == Builtin.MathSumPrecise { native_start(job, b, receiver, [arg], job.operands.len); }
     else if conditional_native(b) { start_conditional_native(job, b, receiver, [arg], job.operands.len); }
     else { let v = call_plain(job, callee, receiver, [arg]); job.operands.push(v); }
 }
