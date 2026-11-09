@@ -562,8 +562,15 @@ its earlier occurrences' cells unread, so only the last occurrence
 aliases. One limit of the static decision: a getter on Object.prototype
 reached by `arguments[i]` past the argument count receives the object as
 its receiver and could write a parameter through it while the function
-has an unmapped object; installing such a getter needs
-Object.defineProperty, which Goose does not have yet (light-cljs-766).
+has an unmapped object. With Object.defineProperty on Goose
+(light-cljs-881) that is observable: `f(a) { arguments[1]; return a; }`
+under such a getter writing `this[0] = 5` gives 5 on QuickJS and 1 on
+Goose (light-cljs-899 is to close it). Light-cljs-868 pinned the rest:
+conformance/cases/mapped_arguments_unmapping.js covers value, non-writable,
+accessor and `enumerable: false` redefinitions of a mapped index, and
+snapshot_tests.goose (`corpus/serial/sloppy-mapped-wait`) carries mapped
+cells, a moved-key cell and a sloppy async function's mapped object
+through a saved continuation into a fresh heap.
 *Rejected:* Goose alone aliasing the indices to the frame's parameter
 slots, or to the cells the lowering already made for captured
 parameters, and detaching them when the frame returns. A parameter that a

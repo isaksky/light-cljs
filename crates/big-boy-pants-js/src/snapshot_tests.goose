@@ -808,6 +808,10 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(suspended_wait, str(wait), false));
     heap_program::join(thread_spawn(suspended_wait, str(wait), true)); let saved = qget<Waiting>();
     heap_program::join(thread_spawn(resumed_wait, copy(saved)));
+    let mapped = embed_file("../corpus/serial/sloppy-mapped-wait.gsp");
+    heap_program::join(thread_spawn(mapped_wait, str(mapped), false));
+    heap_program::join(thread_spawn(mapped_wait, str(mapped), true)); let pending_mapped = qget<Waiting>();
+    heap_program::join(thread_spawn(mapped_resumed, copy(pending_mapped)));
     let stacked = embed_file("../corpus/serial/suspended-stack.gsp");
     heap_program::join(thread_spawn(stack_limits, str(stacked)));
     heap_program::join(thread_spawn(stack_wait, str(stacked))); let first = qget<Waiting>();
@@ -1032,6 +1036,58 @@ thread_fn resumed_wait(saved: Waiting) {
     assert(source::deliver_effect(job, source::text(heap, "D")));
     assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "axDbfypz"));
     assert(source::retire(job));
+}
+// Mapped arguments objects across a dependency wait (sloppy-mapped-wait.js,
+// light-cljs-868): the sloppy script's entry waits with its own mapped cell
+// on the stack, an escaped mapped object whose closures keep its
+// parameters (index 1 moved to a shape key by a redefinition that kept the
+// link) and a sloppy async function awaiting with its mapped object.
+// Answered in place, or saved: the image's mapped links validate, a cell
+// naming the wrong index is refused, and a fresh heap that restores it
+// completes the job with aliasing both ways and a delete that unmaps.
+fn mapped_wait_start(heap: source::Heap&, job: source::Job&) {
+    assert(source::initialize(heap) && source::install_field(heap, heap.global, "dep", source::builtin(heap, 8)));
+    assert(source::start(job, source::closure(heap, 0, []), []));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+}
+fn mapped_wait_done(job: source::Job&) {
+    assert(source::deliver_effect(job, source::text(job.heap, "D")));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(job.heap, job.result, "D,s,,t,m:n,qpB:undefined,true"));
+    assert(source::retire(job));
+}
+thread_fn mapped_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; var job = source::Job { heap: heap, effects_enabled: true };
+    mapped_wait_start(heap, job);
+    // Three mapped objects (the entry's, keep's, af's) and their cells.
+    var maps: i64 = 0; var cells: i64 = 0; var moved: i64 = 0;
+    for n in heap.nodes {
+        if n.kind == node_kind::ArgumentMap { maps += 1; }
+        if n.kind == node_kind::MappedBinding { cells += 1; if !n.namespace_value.is_null() { moved += 1; } }
+    }
+    assert(maps == 3 && cells == 5 && moved == 1);
+    if !save { mapped_wait_done(job); return; }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && source::activation(heap, stack).frame_count == 2);
+    assert(source::retire(job, true));
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    var valid = snapshot::Control {}; assert(snapshot::validate(image, valid));
+    // A cell naming another index of its object's map is refused.
+    var bad = copy(image); var changed = false;
+    for n, i in image.nodes { if !changed && n.kind == node_kind::MappedBinding && n.length == 0 { bad.nodes[i].length = 1; changed = true; } }
+    assert(changed);
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, queue: copy(job.queue), queue_head: job.queue_head, draining: job.draining, entry: job.entry, rejections: copy(job.rejections), steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn mapped_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack) && job.frames.len == 2);
+    for t in saved.queue { job.queue.push(t); } job.queue_head = saved.queue_head; job.draining = saved.draining; job.entry = saved.entry; for p in saved.rejections { job.rejections.push(p); }
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    mapped_wait_done(job);
 }
 // A dependency wait inside a constructor (construct-wait.js, light-cljs-831):
 // the constructor's frame holds its new.target and its new object, which

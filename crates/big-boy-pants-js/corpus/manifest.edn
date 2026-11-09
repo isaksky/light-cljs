@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "6de45283c222af3607878aa8ebc9dfa32e5b16e10d6a2a42620f9c4d6941cb1d",
+  "30f86b9715c9ececd0a193a468b1a3f28d71b71e13270528dd4f5420332ef474",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -641,6 +641,10 @@
   "0384d4ade74829d2ed6b32a3977e88fec4226d82c326de6672bc9a01134b48a3",
   "corpus/serial/sloppy-mapped-reclaim.js"
   "533f2c489bfe6b490cb8b9d737ac5102f8128f3d86cbc0cedcc02ad25796a855",
+  "corpus/serial/sloppy-mapped-wait.gsp"
+  "02d015f6d684017e60d3f558933e8632b4acc20b32874731525415871b1786b8",
+  "corpus/serial/sloppy-mapped-wait.js"
+  "7b26f5928336ff92b192b0524d2df2905ea72076cb38cfafa80cb3e6ffab8225",
   "corpus/serial/sloppy-this.gsp"
   "9b7984860cb7d103b14e2086aa9b990e04ccfd184e0a8bef8ee887b8a321ee42",
   "corpus/serial/sloppy-this.js"
