@@ -68,4 +68,7 @@ row(name(() => { let o = null; o.x += 1; }) === "TypeError");
 // So is a non-writable data property (a function's length), after the right operand.
 { let log = ""; function f(a, b) {} const k = "length";
   try { f[k] *= (log += "r", 3); } catch (e) { log += e.name; } row(log === "rTypeError" && f.length === 2); }
+// And one Object.defineProperty made non-writable (light-cljs-881).
+{ let log = ""; const o = {}; Object.defineProperty(o, "k", {value: 2});
+  try { o["k"] *= (log += "r", 3); } catch (e) { log += e.name; } row(log === "rTypeError" && o.k === 2); }
 failed === 0 ? rows : -failed;

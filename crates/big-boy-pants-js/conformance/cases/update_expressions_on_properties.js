@@ -55,4 +55,6 @@ row(name(() => { let u; --u[0]; }) === "TypeError");
 { let log = ""; const o = {get k() { log += "g"; return 1; }}; row(name(() => o.k++) === "TypeError" && name(() => --o["k"]) === "TypeError" && log === "gg" && o.k === 1); }
 // So is a non-writable data property (a function's length); it keeps its value.
 { function f(a) {} const k = "length"; row(name(() => f[k]++) === "TypeError" && name(() => --f.length) === "TypeError" && f.length === 1); }
+// And one Object.defineProperty made non-writable (light-cljs-881).
+{ const o = {}; Object.defineProperty(o, "k", {value: 1}); const k = "k"; row(name(() => o[k]++) === "TypeError" && name(() => --o.k) === "TypeError" && o.k === 1); }
 failed === 0 ? rows : -failed;

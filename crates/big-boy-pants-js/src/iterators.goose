@@ -56,8 +56,8 @@ namespace source;
 //
 // Not implemented yet, each a named UnsupportedOperand (decision 1): Map,
 // Set and typed-array iterators (light-cljs-769), a BigInt receiver of
-// String.prototype[@@iterator], a light-cljs runtime value as a source, and
-// a built-in getter.
+// String.prototype[@@iterator] and a light-cljs runtime value as a source.
+// (A built-in getter runs on the general call path, light-cljs-881.)
 
 // A cursor's iteration, its node's `function`.
 let iteration::Values = 0;

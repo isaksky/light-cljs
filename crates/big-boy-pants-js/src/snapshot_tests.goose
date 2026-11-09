@@ -591,6 +591,14 @@ fn suspended_continuations() {
     waits = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_resumed, copy(w))); waits += 1; }
     assert(waits == 18);
+    // Property descriptors (light-cljs-881): four waits, one in every
+    // phase of the Descriptor frame, each resumed from a saved stack.
+    let defining = embed_file("../corpus/serial/define-property-wait.gsp");
+    heap_program::join(thread_spawn(define_property_wait, str(defining), false));
+    heap_program::join(thread_spawn(define_property_wait, str(defining), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(define_property_resumed, copy(w))); waits += 1; }
+    assert(waits == 5);
     print("suspended continuations: a dependency wait keeps them in place or carries them, with its whole stack as rows (native frames included), in a saved continuation; a reused worker's next job cannot reach them");
 }
 // Run suspended-wait.js to its dependency wait, with a generator and an
@@ -924,6 +932,83 @@ thread_fn proxy_resumed(saved: Waiting) {
     let outcome = source::run(job, -1);
     if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); for_of_save(job, heap); return; }
     assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "ab:gDkDlDiDhDdDeDcDvDwDhDdDeDcDGDSDpD"));
+    assert(source::retire(job));
+    assert(qput(false));
+}
+// Dependency waits in every phase of the Descriptor frame
+// (define-property-wait.js, light-cljs-881): a property getter of
+// defineProperties's properties object and a field getter of its
+// descriptor, then defineProperty's object key in a Convert frame and a
+// field getter of its descriptor, answered in place, or each after the
+// whole stack was saved as a continuation and restored in a fresh heap
+// (define_property_resumed). The first wait is in the property getter,
+// above the Descriptor frame, whose saved state an image may not break.
+thread_fn define_property_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    var defining: i64 = 0;
+    for f in job.frames { match f.native { Descriptor d => { assert(d.which == source::Builtin.ObjectDefineProperties && f.pc == 1); defining += 1; }, _ => {} } }
+    assert(defining == 1 && job.frames.len == 3);
+    if save { descriptor_frame_refusals(job, heap); return; }
+    var waits: i64 = 1;
+    loop {
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8); waits += 1;
+    }
+    assert(waits == 4 && source::key_is(heap, job.result, "aDvDkDwD:1:true"));
+    assert(source::retire(job));
+}
+// Save the first wait (as for_of_save does), checking that the image is
+// refused when its saved Descriptor frame names no target (mode 0), its key
+// list is no key list (1) or its cursor lies past the keys (2).
+fn descriptor_frame_refusals(job: source::Job&, heap: source::Heap&) {
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    for mode in 3 {
+        var bad = copy(image); var changed = false;
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        Descriptor => {
+                            if mode == 0 { f.input = source::Value.Undefined; }
+                            if mode == 1 { f.output = f.input; }
+                            if mode == 2 { f.argument_count = 9; }
+                            changed = true;
+                        },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        assert(changed);
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn define_property_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); for_of_save(job, heap); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "aDvDkDwD:1:true"));
     assert(source::retire(job));
     assert(qput(false));
 }

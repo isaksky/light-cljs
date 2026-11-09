@@ -103,11 +103,18 @@ enum Builtin {
     Str, PrStr, Identical, ExceptionInfoPrototypeToString,
     // cljs.core's range of numbers, realized (light-cljs-877; core_range).
     Range,
+    // Property descriptors (light-cljs-881; descriptors.goose):
+    // Object.defineProperty, Object.defineProperties and
+    // Reflect.defineProperty (Descriptor native frames),
+    // Reflect.getOwnPropertyDescriptor, Reflect.deleteProperty and Annex B's
+    // Object.prototype accessor methods.
+    ObjectDefineProperty, ObjectDefineProperties, ReflectDefineProperty, ReflectGetOwnPropertyDescriptor, ReflectDeleteProperty,
+    ObjectPrototypeDefineGetter, ObjectPrototypeDefineSetter, ObjectPrototypeLookupGetter, ObjectPrototypeLookupSetter,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[108] = [
+let BUILTINS: BuiltinInfo[117] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -171,6 +178,11 @@ let BUILTINS: BuiltinInfo[108] = [
     BuiltinInfo { which: Builtin.Identical, name: "identical", length: 2 }, BuiltinInfo { which: Builtin.ExceptionInfoPrototypeToString, name: "" },
     // `range: (...a) =>`, an arrow (constructor_builtin).
     BuiltinInfo { which: Builtin.Range, name: "range" },
+    BuiltinInfo { which: Builtin.ObjectDefineProperty, name: "defineProperty", length: 3 }, BuiltinInfo { which: Builtin.ObjectDefineProperties, name: "defineProperties", length: 2 },
+    BuiltinInfo { which: Builtin.ReflectDefineProperty, name: "defineProperty", length: 3 }, BuiltinInfo { which: Builtin.ReflectGetOwnPropertyDescriptor, name: "getOwnPropertyDescriptor", length: 2 },
+    BuiltinInfo { which: Builtin.ReflectDeleteProperty, name: "deleteProperty", length: 2 },
+    BuiltinInfo { which: Builtin.ObjectPrototypeDefineGetter, name: "__defineGetter__", length: 2 }, BuiltinInfo { which: Builtin.ObjectPrototypeDefineSetter, name: "__defineSetter__", length: 2 },
+    BuiltinInfo { which: Builtin.ObjectPrototypeLookupGetter, name: "__lookupGetter__", length: 1 }, BuiltinInfo { which: Builtin.ObjectPrototypeLookupSetter, name: "__lookupSetter__", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -244,7 +256,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[41] = [
+let REALM_FUNCTIONS: Method[50] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -284,6 +296,13 @@ let REALM_FUNCTIONS: Method[41] = [
     // property: Function.prototype's `caller` and `arguments` accessors hold
     // it as getter and setter (light-cljs-853).
     Method { which: Builtin.FunctionPrototypeToString, holder: 2 }, Method { which: Builtin.ThrowTypeError, holder: 2 },
+    // Property descriptors (light-cljs-881; descriptors.goose): Object's
+    // and Reflect's descriptor methods and Annex B's accessor methods of
+    // Object.prototype.
+    Method { which: Builtin.ObjectDefineProperty, holder: 12 }, Method { which: Builtin.ObjectDefineProperties, holder: 12 },
+    Method { which: Builtin.ReflectDefineProperty, holder: 34 }, Method { which: Builtin.ReflectGetOwnPropertyDescriptor, holder: 34 }, Method { which: Builtin.ReflectDeleteProperty, holder: 34 },
+    Method { which: Builtin.ObjectPrototypeDefineGetter, holder: 1 }, Method { which: Builtin.ObjectPrototypeDefineSetter, holder: 1 },
+    Method { which: Builtin.ObjectPrototypeLookupGetter, holder: 1 }, Method { which: Builtin.ObjectPrototypeLookupSetter, holder: 1 },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -326,10 +345,9 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[204] = [
+let PENDING: PendingName[195] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
-    PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
     PendingName { holder: 3, key: "fill" }, PendingName { holder: 3, key: "filter" }, PendingName { holder: 3, key: "find" }, PendingName { holder: 3, key: "findIndex" }, PendingName { holder: 3, key: "findLast" },
@@ -340,7 +358,7 @@ let PENDING: PendingName[204] = [
     PendingName { holder: 3, key: "toLocaleString" }, PendingName { holder: 3, key: "toReversed" }, PendingName { holder: 3, key: "toSorted" }, PendingName { holder: 3, key: "toSpliced" },
     PendingName { holder: 3, key: "unshift" }, PendingName { holder: 3, key: "with" },
     // Object
-    PendingName { holder: 12, key: "assign" }, PendingName { holder: 12, key: "create" }, PendingName { holder: 12, key: "defineProperties" }, PendingName { holder: 12, key: "defineProperty" },
+    PendingName { holder: 12, key: "assign" }, PendingName { holder: 12, key: "create" },
     PendingName { holder: 12, key: "entries" }, PendingName { holder: 12, key: "freeze" }, PendingName { holder: 12, key: "fromEntries" },
     PendingName { holder: 12, key: "getOwnPropertyDescriptors" }, PendingName { holder: 12, key: "getOwnPropertyNames" }, PendingName { holder: 12, key: "getOwnPropertySymbols" }, PendingName { holder: 12, key: "groupBy" },
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
@@ -350,9 +368,10 @@ let PENDING: PendingName[204] = [
     // %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction%
     // (function_kind_prototype_row; the generators area, light-cljs-768).
     PendingName { holder: 38, key: "constructor" }, PendingName { holder: 39, key: "constructor" }, PendingName { holder: 40, key: "constructor" },
-    // Reflect (reflect_row()): apply and construct are light-cljs-851's;
-    // the other eleven belong to the objects and classes area (light-cljs-766).
-    PendingName { holder: 34, key: "defineProperty" }, PendingName { holder: 34, key: "deleteProperty" }, PendingName { holder: 34, key: "get" }, PendingName { holder: 34, key: "getOwnPropertyDescriptor" },
+    // Reflect (reflect_row()): apply and construct are light-cljs-851's,
+    // defineProperty, deleteProperty and getOwnPropertyDescriptor light-cljs-881's;
+    // the other eight belong to the objects and classes area (light-cljs-766).
+    PendingName { holder: 34, key: "get" },
     PendingName { holder: 34, key: "getPrototypeOf" }, PendingName { holder: 34, key: "has" }, PendingName { holder: 34, key: "isExtensible" }, PendingName { holder: 34, key: "ownKeys" },
     PendingName { holder: 34, key: "preventExtensions" }, PendingName { holder: 34, key: "set" }, PendingName { holder: 34, key: "setPrototypeOf" },
     // %IteratorPrototype% (its helpers), %GeneratorPrototype% and
@@ -1590,6 +1609,13 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         Vec, Sequence => { if args.len == 1 && !seq_source(job, args[0]) { return Value.Undefined; } return native_value(heap, id, args); },
         Into => { return into(job, b, args); },
         Range => { return core_range(job, b, args); },
+        // Property descriptors (light-cljs-881; descriptors.goose). The
+        // three definers run as Descriptor native frames (native_start).
+        ObjectDefineProperty, ObjectDefineProperties, ReflectDefineProperty => { return unsupported_step(job, b, "called outside a native frame"); },
+        ReflectGetOwnPropertyDescriptor => { return reflect_own_descriptor(job, b, arg(args, 0), arg(args, 1)); },
+        ReflectDeleteProperty => { return reflect_delete(job, b, arg(args, 0), arg(args, 1)); },
+        ObjectPrototypeDefineGetter, ObjectPrototypeDefineSetter => { return define_accessor_half(job, b, receiver, arg(args, 0), arg(args, 1)); },
+        ObjectPrototypeLookupGetter, ObjectPrototypeLookupSetter => { return lookup_accessor_half(job, b, receiver, arg(args, 0)); },
         _ => { return native_value(heap, id, args); },
     }
 }

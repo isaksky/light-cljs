@@ -34,4 +34,7 @@ row(name(() => { let u; u["k"] ??= 1; }) === "TypeError");
 // So is a non-writable data property (a function's length); a short circuit does not write.
 { let n = 0; function f() {} const k = "length"; let r = (f[k] &&= (n++, 1));
   row(r === 0 && n === 0 && name(() => { f[k] ||= (n++, 1); }) === "TypeError" && n === 1 && name(() => { f.length ??= 1; }) === "none" && f.length === 0); }
+// And one Object.defineProperty made non-writable (light-cljs-881).
+{ let n = 0; const o = {}; Object.defineProperty(o, "k", {value: 0}); let r = (o.k &&= (n++, 1));
+  row(r === 0 && n === 0 && name(() => { o["k"] ||= (n++, 1); }) === "TypeError" && n === 1 && name(() => { o.k ??= 1; }) === "none" && o.k === 0); }
 failed === 0 ? rows : -failed;

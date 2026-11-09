@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "3129c65a93deb726e3c4d8769f04751ab46513c5911bac90fa5f746ec55350eb",
+  "b8de131119b81b79e7972cbfaf52ec551efdad2b90166a2e3f4fcfca0b0be0f2",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -293,6 +293,14 @@
   "303bf82c71fc84ce74eb2999e79329ca5ba200abea83e6bad6ed35e2b4773609",
   "corpus/serial/control.js"
   "e503ed5568ad0c8f961ecbc5f1d2a417f2d7a6231bc640237b300d307910f029",
+  "corpus/serial/define-property-frames.gsp"
+  "82b9f392c1d3fef7040d1c2f6a04cec772167f5c3e63cc60142d738dac20711a",
+  "corpus/serial/define-property-frames.js"
+  "a7429c1db1d635c98125c0a9b8dcdbf9032696b420d22400869d5e56104b466e",
+  "corpus/serial/define-property-wait.gsp"
+  "02b37c28faa9b8278ac13534404ac03e1808236646588d5546c027143c6f27ae",
+  "corpus/serial/define-property-wait.js"
+  "b0d097e4bf7a9c3a4b4807acf162ea4e4e5a4c76a5cdc952111d354e557f20da",
   "corpus/serial/deletes.gsp"
   "88ba8fa22df1d8cb3157539036be5e37d155d21dd3b73a04fa7bc681930bccad",
   "corpus/serial/deletes.js"

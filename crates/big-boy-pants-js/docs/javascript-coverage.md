@@ -470,6 +470,34 @@ enumeration of an arguments object, fnRest's run and the fast element paths
 would have to consult the map, and the snapshot and reclamation link rules
 would change with them, for a retention that only a collection can observe.
 
+*As landed by light-cljs-881 (property descriptors):* `src/descriptors.goose`
+adds Object.defineProperty, Object.defineProperties, Reflect.defineProperty,
+Reflect.getOwnPropertyDescriptor, Reflect.deleteProperty and Annex B's
+`__defineGetter__`, `__defineSetter__`, `__lookupGetter__` and
+`__lookupSetter__`. Attributes stay in shapes and dictionary records; no
+table is added. ValidateAndApplyPropertyDescriptor (`define_descriptor`)
+reads the current property through `own_entry`, decides the complete new
+property (a data value or an accessor pair, a fresh accessor row) and
+writes it through `define_property` with `half::Complete`, which every
+kind already dispatches; a definition that changes nothing writes nothing,
+so a String wrapper's exotic properties, a frozen template array and a
+non-configurable property accept only that. An attribute change of a
+shape-mode object moves it to dictionary mode (light-cljs-787's rule; no
+shape transition was measured better, since definitions are rare on the
+paths the generated project takes). An array element with other
+attributes, or an accessor, moves the array to dictionary mode
+(light-cljs-805's records) and an array's two flags live in its node's
+otherwise unused `function` field (`array_flag::ReadOnlyLength`,
+`array_flag::Attributed`): an array with either flag leaves the element
+fast paths (`dense`), so an array no definition touched costs one more
+field test there, and assignment checks the element record and the
+read-only `length` (ArraySetLength, which also stops a shortening at the
+last non-configurable element). ToPropertyDescriptor and
+defineProperties's reads run as a `Descriptor` native frame (decision 4),
+sharing proxy.goose's field reader; every getter and setter call outside a
+closure (built-ins, bound functions) goes through the general call path
+(`call_accessor`, a Forward frame).
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

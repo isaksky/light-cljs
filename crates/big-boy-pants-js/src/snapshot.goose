@@ -310,6 +310,16 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // An ErrorText frame (light-cljs-870) holds its this object, and
         // from pc 1 on the converted name.
         ErrorText => f.pc >= 0 && f.pc <= 1 && object_of(s, f.receiver, node_kind::None) && (f.pc == 0 || f.input.is_string()),
+        // A Descriptor frame (light-cljs-881, descriptors.goose) defines on
+        // its target object; defineProperties's key list holds the
+        // properties object and the descriptors read so far, its cursor
+        // within it, and at pc 1 it awaits a property's getter; the other
+        // two await their key's conversion (pc 0) or hold it; at pc 2
+        // each awaits a field of the descriptor object it reads into a
+        // descriptor key list.
+        Descriptor d => source::descriptor_native(d.which) && f.pc >= 0 && f.pc <= 2 && object_of(s, f.input, node_kind::None)
+            && (if d.which == source::Builtin.ObjectDefineProperties { f.pc != 0 && object_of(s, f.output, node_kind::KeyList) && f.argument_count >= 0 && f.argument_count < s.nodes[f.output.id()].key_count } else { if f.pc == 0 { f.output.is_undefined() } else { f.pc == 2 && (f.output.is_string() || f.output.is_symbol()) } })
+            && (f.pc != 2 || f.index >= 0 && f.index < source::FIELD_NAMES.len && object_of(s, f.callee, node_kind::KeyList) && object_of(s, f.receiver, node_kind::None)),
         _ => true,
     };
 }
@@ -591,6 +601,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // or nothing; a job's own delay (19) none (source::Node, cells.goose).
         if n.kind == node_kind::Atom && n.length > 1 || n.kind == node_kind::Cell && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == node_kind::Delay && n.length != 0 || (n.kind == node_kind::Map || n.kind == node_kind::Set) && n.length > map_order::Hash || n.kind == node_kind::Concat && n.length > seq_flavor::IntegerRange { return reject(c, Error.Link); }
         if n.kind == node_kind::Array && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
+        // An array's `function` holds its attribute flags (light-cljs-881,
+        // source::array_flag); only a dictionary array is Attributed.
+        if n.kind == node_kind::Array && (n.function > (array_flag::ReadOnlyLength | array_flag::Attributed) || n.function & array_flag::Attributed != 0 && !n.initialized) { return reject(c, Error.Link); }
         // A key list (node_kind::KeyList): its walk position lies in its
         // records, and it walks an object or nothing.
         if (n.kind == node_kind::Object || n.kind == node_kind::Arguments) && n.length != 0 || n.kind == node_kind::KeyList && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }

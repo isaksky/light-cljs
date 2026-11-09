@@ -71,7 +71,7 @@ namespace source;
 // Object.getOwnPropertyDescriptor, Object.getPrototypeOf), named in
 // Job.detail as `Proxy: [[Get]]` (Heap.proxy_method, fail); the invariant
 // checks of a trap whose target is itself a proxy (its [[IsExtensible]],
-// or for getOwnPropertyDescriptor its [[GetOwnProperty]]); a built-in getter; a host-effect
+// or for getOwnPropertyDescriptor its [[GetOwnProperty]]); a host-effect
 // built-in or a delay as a trap. A callable proxy counts as callable for
 // `typeof`, for calls, which fail by name, and as a descriptor's getter or
 // setter, but not where a built-in takes a callback (a TypeError there, as
@@ -312,7 +312,7 @@ fn proxy_step(job: Job&, frame: Frame, method: i64) {
             own_keys_elements(job, at);
         },
         4 => { if own_keys_element(job, at, job.operands.pop()) { own_keys_elements(job, at); } },
-        5 => { if descriptor_field(job, at, job.operands.pop()) { descriptor_fields(job, at); } },
+        5 => { if descriptor_field(job, at, job.operands.pop(), Builtin.Proxy) && descriptor_fields(job, at, Builtin.Proxy, 5) { descriptor_done(job, at); } },
         _ => { heap.fault = Fault.InvalidState; },
     }
 }
@@ -419,43 +419,61 @@ fn descriptor_result(job: Job&, at: i64, r: Value) {
     if heap.fault != Fault.None { return; }
     node_mut(heap, d.id()).namespace_value = if td.is_object() { td } else { Value.Null };
     job.frames[at].receiver = r; job.frames[at].callee = d; job.frames[at].index = 0; job.frames[at].argument_count = if ext { 1 } else { 0 };
-    descriptor_fields(job, at);
+    if descriptor_fields(job, at, Builtin.Proxy, 5) { descriptor_done(job, at); }
 }
-// ToPropertyDescriptor's reads from field `index` on: HasProperty, then
-// Get, a getter's above the frame (pc 5).
-fn descriptor_fields(job: Job&, at: i64) {
+// ToPropertyDescriptor's reads from field `index` on into the descriptor
+// `callee` of the frame at `at`, for built-in b (Proxy, or the Descriptor
+// frame's, descriptors.goose): HasProperty, then Get, a getter's above the
+// frame, whose value arrives at `phase`. True when every field is read;
+// false while a getter runs, or on a fault.
+fn descriptor_fields(job: Job&, at: i64, b: Builtin, phase: i64) -> bool {
     let heap .= job.heap;
     while job.frames[at].index < FIELD_NAMES.len {
         let r = job.frames[at].receiver;
         let k = key_named(heap, FIELD_NAMES[job.frames[at].index].text);
-        if heap.fault != Fault.None { return; }
+        if heap.fault != Fault.None { return false; }
         let has = has_property(heap, r, k);
-        if heap.fault != Fault.None { return; }
+        if heap.fault != Fault.None { return false; }
         if !has { job.frames[at].index += 1; continue; }
         let v, getter = lookup(heap, r, k);
-        if heap.fault != Fault.None { return; }
-        if getter.is_object() { job.frames[at].pc = 5; run_getter(job, Builtin.Proxy, getter, r); return; }
-        if !descriptor_field(job, at, v) { return; }
+        if heap.fault != Fault.None { return false; }
+        if getter.is_object() { job.frames[at].pc = phase; run_getter(job, b, getter, r); return false; }
+        if !descriptor_field(job, at, v, b) { return false; }
     }
-    descriptor_done(job, at);
+    return true;
 }
 // Field `index` read as v: a flag is its ToBoolean; a getter or setter
 // must be callable or undefined.
-fn descriptor_field(job: Job&, at: i64, v: Value) -> bool {
+fn descriptor_field(job: Job&, at: i64, v: Value, b: Builtin) -> bool {
     let heap .= job.heap; let f = job.frames[at].index;
     var x = v;
     if f == field::Enumerable || f == field::Configurable || f == field::Writable { x = boolean(truthy(heap, v)); }
-    else if (f == field::Get || f == field::Set) && !v.is_undefined() && !proxy_callable(heap, v) { type_error(job, if f == field::Get { "Proxy: a descriptor's getter is not a function" } else { "Proxy: a descriptor's setter is not a function" }); return false; }
+    else if (f == field::Get || f == field::Set) && !v.is_undefined() && !proxy_callable(heap, v) {
+        let proxy = b == Builtin.Proxy;
+        type_error(job, if f == field::Get { if proxy { "Proxy: a descriptor's getter is not a function" } else { "Getter must be a function" } } else if proxy { "Proxy: a descriptor's setter is not a function" } else { "Setter must be a function" });
+        return false;
+    }
     if !set_field(heap, job.frames[at].callee, f, x) { return false; }
     job.frames[at].index += 1;
     return true;
+}
+// ToPropertyDescriptor's last check (step 15): a descriptor read for
+// built-in b has accessor or data fields, not both.
+fn descriptor_valid(job: Job&, d: Value, b: Builtin) -> bool {
+    let heap .= job.heap;
+    let accessor = has_field(heap, d, field::Get) || has_field(heap, d, field::Set);
+    if accessor && (has_field(heap, d, field::Value) || has_field(heap, d, field::Writable)) {
+        type_error(job, if b == Builtin.Proxy { "Proxy: a descriptor with both accessor and data fields" } else { "Invalid property descriptor. Cannot both specify accessors and a value or writable attribute" });
+        return false;
+    }
+    return heap.fault == Fault.None;
 }
 // ToPropertyDescriptor's last check, CompletePropertyDescriptor and the
 // invariants (steps 16 to 18).
 fn descriptor_done(job: Job&, at: i64) {
     let heap .= job.heap; let frame = job.frames[at]; let d = frame.callee;
+    if !descriptor_valid(job, d, Builtin.Proxy) { return; }
     let accessor = has_field(heap, d, field::Get) || has_field(heap, d, field::Set);
-    if accessor && (has_field(heap, d, field::Value) || has_field(heap, d, field::Writable)) { type_error(job, "Proxy: a descriptor with both accessor and data fields"); return; }
     // Absent fields take their defaults: undefined, or false for a flag.
     for f in FIELD_NAMES.len {
         let other = if accessor { f == field::Value || f == field::Writable } else { f == field::Get || f == field::Set };

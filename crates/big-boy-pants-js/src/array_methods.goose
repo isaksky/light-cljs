@@ -64,7 +64,7 @@ namespace source;
 //   pc 2  awaits the join call's result
 //
 // Not implemented yet, each a named UnsupportedOperand (decision 1): a
-// built-in getter or setter, a BigInt length, separator or element, a light-cljs
+// BigInt length, separator or element, a light-cljs
 // runtime value to convert, and as toString's `join` a host-effect built-in
 // or a native-frame built-in other than these and map and forEach.
 
@@ -202,8 +202,7 @@ fn set_or_throw(job: Job&, b: Builtin, o: Value, k: Value, v: Value) -> bool {
     let setter, ok = write(heap, o, k, v);
     if heap.fault != Fault.None { return false; }
     if setter.is_object() {
-        if node(heap, setter.id()).kind != node_kind::Closure { unsupported_step(job, b, "a built-in setter"); return false; }
-        push_frame(job, setter, o, [v], false, job.operands.len);
+        call_accessor(job, setter, o, [v]);
         return heap.fault == Fault.None;
     }
     if !ok { named_error(job, Fault.TypeError, "cannot set property '", k, "'"); return false; }

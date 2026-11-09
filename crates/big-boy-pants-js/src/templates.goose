@@ -102,5 +102,5 @@ fn template_object(job: Job&, at: i64, count: i64) {
 fn frozen_define(heap: Heap&, o: i64, k: Value, value: Value, attrs: u8, half: i64) -> bool {
     let p = own_entry(heap, object(o), k);
     if heap.fault != Fault.None || !p.found { return false; }
-    return half == 0 && !is_accessor(p.value) && attrs == p.attrs && same_value(heap, p.value, value);
+    return (half == half::Data || half == half::Complete && !is_accessor(value)) && !is_accessor(p.value) && attrs == p.attrs && same_value(heap, p.value, value);
 }

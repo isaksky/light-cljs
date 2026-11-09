@@ -2121,6 +2121,12 @@ mod serial_tests {
             // The Error constructors' and Error.prototype.toString's native
             // frames (light-cljs-870) at every budget cut (serial_tests.goose).
             ("error-frames", "boolean:true"),
+            // Property descriptors (light-cljs-881): the Descriptor native
+            // frame, its key conversion and built-in accessors at every
+            // budget cut and collection (serial_tests.goose), and a
+            // dependency wait in each of its phases (snapshot_tests.goose).
+            ("define-property-frames", "boolean:true"),
+            ("define-property-wait", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

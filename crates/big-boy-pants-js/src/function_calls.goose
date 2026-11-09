@@ -323,7 +323,8 @@ fn begin_list(job: Job&, at: i64, list: Value) -> bool {
 //              is a string, else "bound "), each non-writable,
 //              non-enumerable and configurable, and delivers the function.
 // A proxy target's [[GetPrototypeOf]] and [[GetOwnProperty]] fail by name
-// (proxy.goose), and so does a built-in getter (run_getter).
+// (proxy.goose); a getter that is no closure runs on the general call path
+// (run_getter, call_accessor; light-cljs-881).
 
 // Whether f is a bound function exotic object.
 inline fn is_bound(heap: const Heap&, f: Value) -> bool { return f.is_object() && node(heap, f.id()).kind == node_kind::BoundFunction; }
@@ -453,6 +454,26 @@ fn throw_type_error(job: Job&, receiver: Value, argc: i64) -> Value {
 fn accessor_builtin(job: Job&, f: Value, receiver: Value, argc: i64) -> bool, Value {
     if !is_throw_type_error(job.heap, f) { return false, Value.Undefined; }
     return true, throw_type_error(job, receiver, argc);
+}
+// Call accessor half f (a getter with no arguments, a setter with its
+// value) with receiver o on the general call path (light-cljs-881,
+// decision 4): %ThrowTypeError% in place (accessor_builtin), a closure as
+// its frame, and any other callable (a built-in, a bound function) through
+// a Forward frame (start_bound), which runs a plain built-in to completion,
+// a native-frame built-in as its frame and a bound function's target. Its
+// result arrives on the operands of the frame at the top when the call
+// began, as a getter frame's return value does. A callable proxy's [[Call]]
+// fails by name (light-cljs-891).
+fn call_accessor(job: Job&, f: Value, o: Value, args: const Value[:]) {
+    let heap .= job.heap;
+    let done, v = accessor_builtin(job, f, o, args.len);
+    if done { if heap.fault == Fault.None { push_operand(job, v); } return; }
+    if !f.is_object() || f.id() >= heap.nodes.len { heap.fault = Fault.InvalidState; return; }
+    let kind = node(heap, f.id()).kind;
+    if kind == node_kind::Closure { push_frame(job, f, o, args, false, job.operands.len); return; }
+    if kind == node_kind::Proxy { proxy_invoke(heap, f, proxy_method::Call); return; }
+    if kind != node_kind::Builtin && kind != node_kind::BoundFunction { heap.fault = Fault.TypeError; return; }
+    start_bound(job, f, o, args, job.operands.len);
 }
 // The source text of closure f, if it has one: true and the string.
 fn source_text(job: Job&, f: Value) -> bool, Value {

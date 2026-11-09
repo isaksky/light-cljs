@@ -16,6 +16,7 @@ import .reclaim;
 import .function_calls;
 import .runtime_compile;
 import .templates;
+import .descriptors;
 
 namespace source;
 
@@ -152,7 +153,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001 }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -414,6 +415,18 @@ let node_kind::MappedBinding = 27;
 // at it.
 let map_order::Insertion = 0;
 let map_order::Hash = 1;
+// An array's attribute flags, bits of its node's `function` (light-cljs-881;
+// "Property descriptors" below), 0 for an array no definition changed, so
+// the element fast paths (dense) see only arrays without them. ReadOnlyLength:
+// its `length` is not writable (ArraySetLength). Attributed: it is a
+// dictionary array that may hold an element record other than a plain
+// writable, enumerable, configurable data property (a non-writable or
+// non-configurable element, or an accessor), so element writes take the
+// property model's checks.
+let array_flag::ReadOnlyLength: u32 = 1;
+let array_flag::Attributed: u32 = 2;
+inline fn array_flags(n: const Node&) -> u32 { return if n.kind == node_kind::Array { n.function } else { 0 }; }
+inline fn read_only_length(heap: const Heap&, o: i64) -> bool { return array_flags(node(heap, o)) & array_flag::ReadOnlyLength != 0; }
 // A sequence's (node_kind::Concat) flavor, its node's `length`
 // (light-cljs-877): an ordinary sequence, or a realized integer range
 // (realm.goose core_range), which nth indexes as the V8 build's
@@ -636,7 +649,7 @@ root struct Heap {
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -1300,6 +1313,9 @@ fn own_element(heap: Heap&, array: Value, i: i64) -> Value, bool {
         let k = index_key(heap, i);
         if heap.fault != Fault.None { return Value.Undefined, false; }
         let p = find_own(heap, array.id(), k);
+        // An accessor element (light-cljs-881) has no value here: the
+        // callers' general steps read it through [[Get]].
+        if p.found && is_accessor(p.value) { return Value.Undefined, false; }
         return p.value, p.found;
     }
     // Field reads: a whole Node copy would dominate an element access.
@@ -1449,6 +1465,15 @@ inline fn attrs_data() -> u8 { return 7; }
 // An object literal's accessor (DefineGetter, DefineSetter): enumerable and
 // configurable.
 inline fn attrs_accessor() -> u8 { return 6; }
+// What a definition (define_property, define_own) gives: a data property
+// (Data), an accessor's getter or setter merged with an existing pair's other
+// function (Getter, Setter; an object literal's DefineGetter and
+// DefineSetter), or a complete property ValidateAndApplyPropertyDescriptor
+// has already checked (Complete, light-cljs-881; define_descriptor).
+let half::Data: i64 = 0;
+let half::Getter: i64 = 1;
+let half::Setter: i64 = 2;
+let half::Complete: i64 = 3;
 // The keys a shape-mode object holds before it turns to dictionary mode (the
 // Pants engine's object/shape.rs).
 fn shape_limit() -> i64 { return 64; }
@@ -1645,16 +1670,20 @@ fn same_value(heap: Heap&, a: Value, b: Value) -> bool {
 // image row never changes. An ordinary object's element (light-cljs-804) is
 // configurable: a complete data descriptor with every attribute replaces its
 // value; any other turns it into a shape key or record, the element becoming
-// a hole only once that property exists.
+// a hole only once that property exists. With `half` 3 (complete, from
+// Object.defineProperty and its relatives, light-cljs-881) `value` is the
+// property's whole new state, a data value or an Accessor naming its pair,
+// which define_descriptor has already validated against the current one.
 fn define_own(heap: Heap&, o: i64, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
     let i = if element_kind(node(heap, o).kind) { element_key(heap, k) } else { -1 };
     if heap.fault != Fault.None { return false; }
-    let data = half == 0 && attrs == attrs_data();
+    let data = (half == half::Data || half == half::Complete && !is_accessor(value)) && attrs == attrs_data();
+    let merge = half == half::Getter || half == half::Setter;
     if i >= 0 && !object_element(heap, o, i).is_hole() {
         if data { set_slot(heap, node(heap, o).start + i, value); return true; }
         var v = value;
-        if half != 0 {
-            let a = add_accessor(heap, if half == 1 { Pair { get: value } } else { Pair { set: value } });
+        if merge {
+            let a = add_accessor(heap, if half == half::Getter { Pair { get: value } } else { Pair { set: value } });
             if a < 0 { return false; }
             v = Value.Accessor { a: a as u32 };
         }
@@ -1665,21 +1694,21 @@ fn define_own(heap: Heap&, o: i64, k: Value, value: Value, attrs: u8, half: i64 
     if heap.fault != Fault.None { return false; }
     if !p.found && data && as_element(heap, o, i) { return put_element(heap, o, i, value); }
     var v = value;
-    if half != 0 {
+    if merge {
         var fns = if p.found && is_accessor(p.value) { pair(heap, p.value) } else { Pair {} };
-        if half == 1 { fns.get = value; } else { fns.set = value; }
+        if half == half::Getter { fns.get = value; } else { fns.set = value; }
         // A non-configurable accessor accepts only its own function again,
         // with the same attributes (SameValue of the half), changing nothing.
         if p.found && p.attrs & attr_configurable() == 0 {
             let old = pair(heap, p.value);
-            return is_accessor(p.value) && attrs == p.attrs && same_bits(if half == 1 { old.get } else { old.set }, value);
+            return is_accessor(p.value) && attrs == p.attrs && same_bits(if half == half::Getter { old.get } else { old.set }, value);
         }
         let a = add_accessor(heap, fns);
         if a < 0 { return false; }
         v = Value.Accessor { a: a as u32 };
     }
     if !p.found { return add_own(heap, o, k, v, attrs); }
-    if p.attrs & attr_configurable() == 0 {
+    if half != half::Complete && p.attrs & attr_configurable() == 0 {
         if is_accessor(p.value) || attrs & attr_configurable() != 0 || (attrs & attr_enumerable()) != (p.attrs & attr_enumerable()) { return false; }
         if p.attrs & attr_writable() == 0 && (attrs & attr_writable() != 0 || !same_value(heap, p.value, value)) { return false; }
     }
@@ -1858,7 +1887,7 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
         node_kind::Array => {
             // A frozen array's (templates.goose) are neither writable nor configurable.
             let fixed = node(heap, o).immutable;
-            if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).length), attrs: if fixed { 0 } else { attr_writable() } }; }
+            if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).length), attrs: if fixed || read_only_length(heap, o) { 0 } else { attr_writable() } }; }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Own {}; }
             if i < 0 || node(heap, o).initialized { return find_own(heap, o, k); }
@@ -1946,10 +1975,29 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
             // elements; a name goes on below, where its own non-writable
             // property or its sealing refuses it.
             let fixed = node(heap, o).immutable;
-            if key_is(heap, k, "length") { return Value.Undefined, !fixed && array_length(heap, object, value); }
+            // A non-writable `length` (light-cljs-881) refuses the write.
+            if key_is(heap, k, "length") { return Value.Undefined, !fixed && !read_only_length(heap, o) && array_length(heap, object, value); }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Value.Undefined, false; }
-            if i >= 0 { return Value.Undefined, !fixed && set_element(heap, object, i, value); }
+            if i >= 0 && node(heap, o).function == 0 { return Value.Undefined, !fixed && set_element(heap, object, i, value); }
+            // An array a definition changed (array_flag): its element
+            // record decides as an own property does, and with a
+            // non-writable `length` an index at or past it is refused
+            // (ArrayDefineOwnProperty).
+            if i >= 0 {
+                if fixed { return Value.Undefined, false; }
+                if node(heap, o).initialized {
+                    let own = find_own(heap, o, k);
+                    if heap.fault != Fault.None { return Value.Undefined, false; }
+                    if own.found {
+                        if is_accessor(own.value) { let f = pair(heap, own.value).set; return f, f.is_object(); }
+                        if own.attrs & attr_writable() == 0 { return Value.Undefined, false; }
+                        write_own(heap, o, own.index, value); return Value.Undefined, true;
+                    }
+                }
+                if read_only_length(heap, o) && i >= node(heap, o).length { return Value.Undefined, false; }
+                return Value.Undefined, set_element(heap, object, i, value);
+            }
         },
         node_kind::Closure => {
             if !function_key(heap, o, k) || lazy_change(heap, o) { return Value.Undefined, false; }
@@ -1996,10 +2044,15 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     return Value.Undefined, if as_element(heap, o, i) { put_element(heap, o, i, value) } else { add_own(heap, o, k, value, attrs_data()) };
 }
 // [[DefineOwnProperty]] by object kind: ordinary objects (define_own), an
-// array's elements as data properties and its named properties, a closure's
-// own properties (light-cljs-805); an array's `length`, its elements with
-// other descriptors, other kinds and a function's keys function_key refuses
-// fail UnsupportedOperand.
+// array's elements and named properties, its `length` (ArraySetLength,
+// light-cljs-881: only with `half` Complete, from define_descriptor, which
+// has validated it), a closure's own properties (light-cljs-805). A plain
+// data element of an array stays in its run; an element with other
+// attributes or an accessor moves the array to dictionary mode
+// (array_to_dictionary, as light-cljs-805 moves named properties) and marks
+// it Attributed (array_flag); with a non-writable `length` an index at or
+// past it is refused (ArrayDefineOwnProperty). Other kinds and a function's
+// keys function_key refuses fail UnsupportedOperand.
 fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     // %ThrowTypeError% is not extensible (light-cljs-853): only its own
@@ -2017,16 +2070,28 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
         if c >= 0 {
             let before = mapped_value(heap, o, i, c);
             if heap.fault != Fault.None || !define_own(heap, o, k, value, attrs, half) { return false; }
-            if half != 0 { unmap(heap, o, i, c, before); } else if attrs & attr_writable() == 0 { unmap(heap, o, i, c, value); } else if object_element(heap, o, i).is_hole() { node_mut(heap, c).namespace_value = k; }
+            let accessor = half == half::Getter || half == half::Setter || half == half::Complete && is_accessor(value);
+            if accessor { unmap(heap, o, i, c, before); } else if attrs & attr_writable() == 0 { unmap(heap, o, i, c, value); } else if object_element(heap, o, i).is_hole() { node_mut(heap, c).namespace_value = k; }
             return true;
         }
     }
     if kind == node_kind::Object || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
-    if kind == node_kind::Array && !key_is(heap, k, "length") {
+    if kind == node_kind::Array {
+        if key_is(heap, k, "length") {
+            if half != half::Complete || !value.is_number() { if heap.fault == Fault.None { heap.fault = Fault.InvalidState; } return false; }
+            return define_array_length(heap, object, value.num() as i64, attrs & attr_writable() != 0);
+        }
         let i = index(heap, k);
         if heap.fault != Fault.None { return false; }
         if i < 0 { return define_own(heap, o, k, value, attrs, half); }
-        if half == 0 && attrs == attrs_data() { return set_element(heap, object, i, value); }
+        if read_only_length(heap, o) && i >= node(heap, o).length { return false; }
+        let plain = (half == half::Data || half == half::Complete && !is_accessor(value)) && attrs == attrs_data();
+        if plain && !node(heap, o).initialized { return set_element(heap, object, i, value); }
+        if !node(heap, o).initialized && !array_to_dictionary(heap, object) { return false; }
+        if !define_own(heap, o, k, value, attrs, half) { return false; }
+        if !plain { node_mut(heap, o).function = node(heap, o).function | array_flag::Attributed; }
+        if i >= node(heap, o).length { node_mut(heap, o).length = (i + 1) as u32; }
+        return true;
     }
     if kind == node_kind::Closure {
         if !function_key(heap, o, k) || lazy_change(heap, o) { return false; }
@@ -2040,11 +2105,26 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
         if heap.fault != Fault.None { return false; }
         if !exotic { return define_own(heap, o, k, value, attrs, half); }
         let p = own_entry(heap, object, k);
-        return heap.fault == Fault.None && half == 0 && attrs == p.attrs && same_value(heap, p.value, value);
+        return heap.fault == Fault.None && (half == half::Data || half == half::Complete && !is_accessor(value)) && attrs == p.attrs && same_value(heap, p.value, value);
     }
     if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::DefineOwnProperty); return false; }
     if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
     return false;
+}
+// ArraySetLength (ECMAScript 10.4.2.4) of a validated `length` definition
+// (define_descriptor): the array's length becomes `length` (shortening
+// drops its elements from the end, stopping just past the last
+// non-configurable one, which refuses the definition), and then, unless
+// `writable`, its `length` is read-only (array_flag::ReadOnlyLength).
+fn define_array_length(heap: Heap&, object: Value, length: i64, writable: bool) -> bool {
+    let o: i64 = object.id();
+    var ok = true;
+    if length != node(heap, o).length {
+        ok = array_length(heap, object, number(length));
+        if heap.fault != Fault.None { return false; }
+    }
+    if !writable { node_mut(heap, o).function = node(heap, o).function | array_flag::ReadOnlyLength; }
+    return ok;
 }
 // [[Delete]] by object kind: ordinary objects (delete_own); an array's
 // element becomes a hole (a dictionary array's record is removed), its
@@ -2294,7 +2374,11 @@ fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
     node_mut(heap, object.id()).length = length as u32; return true;
 }
 // Preflight the full walk before mutation so a work rejection is atomic.
+// A non-configurable element at or past the new length (light-cljs-881;
+// ArraySetLength step 17) stays: the length stops just past the last one,
+// and the shortening reports false (a refused write) with no fault.
 fn dictionary_length(heap: Heap&, object: Value, length: i64) -> bool {
+    var target = length;
     if length < node(heap, object.id()).length {
         let o = object.id(); let count = node(heap, o).key_count;
         // Each record's array index, -1 for a named property (light-cljs-805),
@@ -2303,16 +2387,18 @@ fn dictionary_length(heap: Heap&, object: Value, length: i64) -> bool {
         var indices: i64[>..] = [];
         for r in count {
             if !charge(heap, 2 + str_len(heap, dict_at(heap, o, r).key)) { return false; }
-            indices.push(index(heap, dict_at(heap, o, r).key));
+            let i = index(heap, dict_at(heap, o, r).key);
             if heap.fault != Fault.None { return false; }
+            indices.push(i);
+            if i >= target && dict_at(heap, o, r).attrs & attr_configurable() == 0 { target = i + 1; }
         }
         // Compact the kept records in order; the cut-off rows are cleared.
         var kept: i64 = 0;
-        for r in count { if indices[r] < length { set_dict_at(heap, o, kept, dict_at(heap, o, r)); kept += 1; } }
+        for r in count { if indices[r] < target { set_dict_at(heap, o, kept, dict_at(heap, o, r)); kept += 1; } }
         for r in kept..count { set_dict_at(heap, o, r, Property {}); }
         node_mut(heap, o).key_count = kept as u32;
     }
-    node_mut(heap, object.id()).length = length as u32; return true;
+    node_mut(heap, object.id()).length = target as u32; return target == length;
 }
 fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
     if function < 0 || function >= heap.code.functions.len || captures.len != heap.code.functions[function].captures { heap.fault = Fault.InvalidState; return Value.Undefined; }
@@ -3747,6 +3833,7 @@ fn native_step(job: Job&) {
         DynamicFunction => { dynamic_function_step(job, frame); },
         ErrorConstruct e => { error_construct_step(job, frame, e.which); },
         ErrorText => { error_text_step(job, frame); },
+        Descriptor d => { descriptor_step(job, frame, d.which); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -3758,10 +3845,14 @@ fn call_setter(job: Job&, setter: Value, object: Value, value: Value, result: Va
     let heap .= job.heap;
     // %ThrowTypeError% (Function.prototype.caller and .arguments) throws in place.
     if is_throw_type_error(heap, setter) { throw_type_error(job, object, 1); return; }
-    if !setter.is_object() || node(heap, setter.id()).kind != node_kind::Closure { heap.fault = Fault.UnsupportedOperand; return; }
+    if !setter.is_object() { heap.fault = Fault.UnsupportedOperand; return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     job.frames.push(Frame { function: -1, pc: 1, local_base: job.locals.len, operand_base: job.operands.len, callee: setter, receiver: object, output: result, native: Native.Setter });
-    if !enter(job, setter, object, [value]) { job.frames.pop(); }
+    if node(heap, setter.id()).kind == node_kind::Closure { if !enter(job, setter, object, [value]) { job.frames.pop(); } return; }
+    // Any other setter (a built-in, a bound function; light-cljs-881) runs
+    // on the general call path; its result arrives for the Setter frame.
+    if !valid(heap, object) || !valid(heap, value) { job.frames.pop(); return; }
+    call_accessor(job, setter, object, [value]);
 }
 // A deferred map's callbacks, one element a step.
 fn map_seq_step(job: Job&, frame: Frame) {
@@ -3924,7 +4015,7 @@ fn holds_string(heap: const Heap&, v: Value) -> bool {
 // here and its result is the next step's; an Array.prototype built-in that
 // runs as a native frame (Array.prototype.toString, light-cljs-842) runs as
 // one above this one. A method the realm's pending properties would supply
-// fails by name, as does a built-in getter or another built-in that needs a
+// fails by name, as does a built-in method that needs a
 // native frame or a host effect. Operands that need no conversion are left for
 // the operation, except that with `numeric` each takes ToNumber in turn.
 fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, method: u8) {
@@ -3959,8 +4050,9 @@ fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, me
         let value, getter = lookup(heap, v, k);
         if heap.fault != Fault.None { return; }
         if getter.is_object() {
-            if node(heap, getter.id()).kind != node_kind::Closure { unsupported_detail(job, "ToPrimitive through a built-in getter"); return; }
-            job.frames[at].pc = 2; enter(job, getter, v, []); return;
+            job.frames[at].pc = 2;
+            if node(heap, getter.id()).kind == node_kind::Closure { enter(job, getter, v, []); } else { call_accessor(job, getter, v, []); }
+            return;
         }
         m = value;
     }
@@ -5126,8 +5218,10 @@ fn get_property(job: Job&, k: Value, named: bool) {
         // %ThrowTypeError% (Function.prototype.caller and .arguments) runs in place.
         let done, v = accessor_builtin(job, getter, object, 0);
         if done { job.operands.push(v); }
-        else if node(heap, getter.id()).kind != node_kind::Closure { heap.fault = Fault.UnsupportedOperand; job.operands.push(value); }
-        else { enter(job, getter, object, []); }
+        else if node(heap, getter.id()).kind == node_kind::Closure { enter(job, getter, object, []); }
+        // Any other getter (a built-in, a bound function; light-cljs-881)
+        // runs on the general call path, its result this read's.
+        else { call_accessor(job, getter, object, []); }
     }
 }
 // The message of a fault of [[Get]] or [[Set]] of key k on `base` (only
@@ -5471,7 +5565,7 @@ fn install_foreign(job: Job&, start: i64) {
 // read and write its run directly, without building key strings.
 fn dense(job: Job&, object: Value) -> bool {
     let heap .= job.heap;
-    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != node_kind::Array || node(heap, object.id()).immutable { return false; }
+    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != node_kind::Array || node(heap, object.id()).immutable || node(heap, object.id()).function != 0 { return false; }
     return !(job.root_receiver.is_object() && object == job.root_receiver);
 }
 // An unprotected ordinary object other than the compiler roots object with
@@ -5602,7 +5696,7 @@ fn in_op(job: Job&) {
 // `prototype`) runs as a frame above a HasInstance native frame (decision 4),
 // which the operation's operands leave first; everything else completes in
 // the instruction. A built-in method that converts its argument (a Convert
-// frame) or runs as a native frame also runs above it. Failing by name (decision 1): a built-in getter, a
+// frame) or runs as a native frame also runs above it, as does a getter that is no closure (call_accessor, light-cljs-881). Failing by name (decision 1): a
 // built-in @@hasInstance method that needs a host effect or a map demand, an
 // arguments object as the target, a class constructor's or async generator's `prototype` (light-cljs-766),
 // and a light-cljs runtime value (a form, cell or cursor, which the V8
@@ -5733,12 +5827,18 @@ fn has_instance_walk(job: Job&, at: i64, o: Value, p: Value) {
 }
 // Run f (a user method or getter) with `receiver` and `args` above the
 // HasInstance frame, pushed first when the instruction has none; its result
-// arrives at `phase`. Only an ordinary function can be a getter here.
+// arrives at `phase`. A getter that is no closure runs on the general call
+// path (call_accessor, light-cljs-881).
 fn has_instance_await(job: Job&, at: i64, phase: i64, c: Value, v: Value, f: Value, receiver: Value, args: const Value[:]) {
     let heap .= job.heap;
-    if node(heap, f.id()).kind != node_kind::Closure { unsupported_detail(job, "instanceof: a built-in getter"); return; }
     let fresh = at < 0;
     if has_instance_frame(job, at, phase, c, v, Value.Undefined) < 0 { return; }
+    if node(heap, f.id()).kind != node_kind::Closure {
+        var copied: Value[>..] = []; copied.append(args);
+        call_accessor(job, f, receiver, copied[..]);
+        if heap.fault != Fault.None && fresh { job.frames.pop(); }
+        return;
+    }
     if !push_frame(job, f, receiver, args, false, job.operands.len) && fresh { job.frames.pop(); }
 }
 // The HasInstance frame, at row `at` or pushed when the instruction has
@@ -5955,12 +6055,17 @@ fn get_iterator_done(job: Job&, at: i64, it: Value, next: Value) {
 }
 // Run f (a user method or getter) with `receiver` above the GetIterator
 // frame, pushed first when the operation has none; its result arrives at
-// `phase`. Only an ordinary function can be a getter here.
+// `phase`. A getter that is no closure runs on the general call path
+// (call_accessor, light-cljs-881).
 fn get_iterator_await(job: Job&, at: i64, phase: i64, v: Value, it: Value, f: Value, receiver: Value) {
     let heap .= job.heap;
-    if node(heap, f.id()).kind != node_kind::Closure { unsupported_detail(job, "GetIterator: a built-in getter"); return; }
     let fresh = at < 0;
     if get_iterator_frame(job, at, phase, v, it) < 0 { return; }
+    if node(heap, f.id()).kind != node_kind::Closure {
+        call_accessor(job, f, receiver, []);
+        if heap.fault != Fault.None && fresh { job.frames.pop(); }
+        return;
+    }
     if !push_frame(job, f, receiver, [], false, job.operands.len) && fresh { job.frames.pop(); }
 }
 // The GetIterator frame, at row `at` or pushed when the operation has none,

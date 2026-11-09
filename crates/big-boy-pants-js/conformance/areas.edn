@@ -187,6 +187,10 @@
   "bbp/objects_intrinsic_reads" {:area :objects-classes}
   "bbp/objects_property_reads_follow_changes" {:area :objects-classes}
   "bbp/objects_own_property_reads" {:area :objects-classes :pants-gap "the Pants engine has no Object.hasOwn or Object.prototype.hasOwnProperty"}
+  "bbp/objects_define_property" {:area :objects-classes}
+  "bbp/objects_define_property_sloppy" {:area :objects-classes :mode :sloppy}
+  "bbp/objects_reflect_descriptors" {:area :objects-classes}
+  "bbp/objects_annex_b_accessors" {:area :objects-classes :mode :sloppy :pants-gap "the Pants engine has no Object.prototype.__defineGetter__, __defineSetter__, __lookupGetter__ or __lookupSetter__"}
   "bbp/realm_builtin_functions" {:area :core-builtins}
   "bbp/realm_errors" {:area :exceptions}
   "bbp/realm_prototypes" {:area :objects-classes}

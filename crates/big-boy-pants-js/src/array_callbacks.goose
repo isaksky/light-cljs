@@ -4,6 +4,7 @@ import .source_vm;
 import .realm;
 import .function_calls;
 import .runtime_compile;
+import .descriptors;
 
 namespace source;
 
@@ -45,7 +46,7 @@ namespace source;
 // TypeError JavaScript could catch: a primitive receiver other than
 // undefined and null (String wrapper objects), species (an Array receiver
 // whose `constructor` is neither undefined nor the realm's Array), a
-// `constructor` getter, a built-in getter, and a host-effect or native-frame
+// `constructor` getter, and a host-effect or native-frame
 // built-in as the callback.
 //
 // The template for areas porting a built-in that runs user code: a Builtin
@@ -54,7 +55,7 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance; }
+fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b); }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
@@ -77,6 +78,9 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
     if b == Builtin.FunctionPrototypeHasInstance { start_function_has_instance(job, receiver, arg(args, 0), base); return; }
     // rt.core.isInstance (light-cljs-875; source_vm.goose).
     if b == Builtin.IsInstance { start_is_instance(job, arg(args, 0), arg(args, 1), base); return; }
+    // Object.defineProperty, Object.defineProperties and
+    // Reflect.defineProperty (light-cljs-881; descriptors.goose).
+    if descriptor_native(b) { start_descriptor(job, b, args, base); return; }
     // %ArrayIteratorPrototype%.next and String.prototype[@@iterator]
     // (light-cljs-844; iterators.goose).
     if iterator_native(b) { start_iterator(job, b, receiver, base); return; }
@@ -100,15 +104,9 @@ fn start_array_callbacks(job: Job&, b: Builtin, receiver: Value, callback: Value
     job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: this_arg, input: receiver, native: Native.ArrayCallbacks { which: b } });
     if getter.is_object() { run_getter(job, b, getter, receiver); } else { job.operands.push(v); }
 }
-// Enter getter `g` with receiver o; its value arrives at the frame's
-// current phase. Only an ordinary function can be a getter here.
-fn run_getter(job: Job&, b: Builtin, g: Value, o: Value) {
-    // %ThrowTypeError% runs in place; its value arrives as a getter's would.
-    let done, v = accessor_builtin(job, g, o, 0);
-    if done { if job.heap.fault == Fault.None { push_operand(job, v); } return; }
-    if node(job.heap, g.id()).kind != node_kind::Closure { unsupported_step(job, b, "a built-in getter"); return; }
-    push_frame(job, g, o, [], false, job.operands.len);
-}
+// Run getter `g` with receiver o on the general call path (call_accessor,
+// light-cljs-881); its value arrives at the frame's current phase.
+fn run_getter(job: Job&, b: Builtin, g: Value, o: Value) { call_accessor(job, g, o, []); }
 // One step of the frame at the top (see above), dispatched on its phase.
 fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
     let heap .= job.heap; let at = job.frames.len - 1;
