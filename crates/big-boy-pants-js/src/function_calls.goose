@@ -467,7 +467,9 @@ fn call_accessor(job: Job&, f: Value, o: Value, args: const Value[:]) {
     if !f.is_object() || f.id() >= heap.nodes.len { heap.fault = Fault.InvalidState; return; }
     let kind = node(heap, f.id()).kind;
     if kind == node_kind::Closure { push_frame(job, f, o, args, false, job.operands.len); return; }
-    if kind == node_kind::Proxy { proxy_invoke(heap, f, proxy_method::Call); return; }
+    // lookup's proxy hit runs the proxy's [[Get]] for the receiver
+    // (proxy.goose); any other proxy is a callable proxy's [[Call]].
+    if kind == node_kind::Proxy { if args.len == 0 && is_hit(heap, f) { proxy_get(job, f, o); } else { proxy_invoke(heap, f, proxy_method::Call); } return; }
     if kind != node_kind::Builtin && kind != node_kind::BoundFunction { heap.fault = Fault.TypeError; return; }
     start_bound(job, f, o, args, job.operands.len);
 }

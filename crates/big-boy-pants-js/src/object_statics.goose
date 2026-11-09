@@ -66,9 +66,10 @@ namespace source;
 // an exception from `next`, `done` or `value` does not.
 //
 // A proxy's [[OwnPropertyKeys]] and [[GetOwnProperty]] run as
-// light-cljs-845's Proxy frame above this one; its [[Get]], [[Set]] and
-// [[HasProperty]] fail by name (light-cljs-890), as do a light-cljs runtime
-// value as the object, and a Symbol or BigInt wrapper (ToObject).
+// light-cljs-845's Proxy frame above this one, as do its [[Get]] (a getter's
+// phase), [[Set]] and [[HasProperty]] (light-cljs-890); a light-cljs runtime
+// value as the object, and a Symbol or BigInt wrapper (ToObject), fail by
+// name.
 //
 // Object.prototype.toString, Object.hasOwn and
 // Object.prototype.hasOwnProperty stay plain built-ins (realm.goose); where
@@ -235,7 +236,6 @@ fn walk_keys(job: Job&, at: i64, b: Builtin) {
 // goes on.
 fn get_value(job: Job&, at: i64, b: Builtin, o: Value, k: Value) -> bool {
     let heap .= job.heap;
-    if is_proxy(heap, o) { proxy_fault(heap, proxy_method::Get); return false; }
     prepare_function(job, o, k, false);
     if heap.fault != Fault.None { return false; }
     let v, getter = lookup(heap, o, k);
@@ -255,7 +255,6 @@ fn use_value(job: Job&, at: i64, b: Builtin, k: Value, v: Value) -> bool {
     }
     if b != Builtin.ObjectAssign { heap.fault = Fault.InvalidState; return false; }
     // Set(to, key, value, true).
-    if is_proxy(heap, out) { proxy_fault(heap, proxy_method::Set); return false; }
     if !writable(job, out.id()) { heap.fault = Fault.NativeBoundary; return false; }
     prepare_function(job, out, k, true);
     prepare_function(job, out, k, false);
@@ -269,6 +268,8 @@ fn use_value(job: Job&, at: i64, b: Builtin, k: Value, v: Value) -> bool {
         return false;
     }
     let setter, ok = write(heap, out, k, v);
+    // A proxy target's [[Set]] (proxy.goose), its answer dropped at pc Set.
+    if proxy_pending(heap, proxy_method::Set) { job.frames[at].pc = statics_pc::Set; proxy_take(job, proxy_method::Set, out, v, true); return false; }
     if heap.fault != Fault.None { property_fault(job, out, k, true, true); return false; }
     if setter.is_object() { job.frames[at].pc = statics_pc::Set; call_accessor(job, setter, out, [v]); return false; }
     if !ok { refused_write(job, out, k); if heap.fault == Fault.None { heap.fault = Fault.TypeError; } return false; }
@@ -390,7 +391,6 @@ fn iterate(job: Job&, at: i64) {
 // it, its value arriving at `pc` (false); otherwise true and the value.
 fn read_field(job: Job&, at: i64, b: Builtin, o: Value, name: const u8[:], pc: i64) -> bool, Value {
     let heap .= job.heap;
-    if is_proxy(heap, o) { proxy_fault(heap, proxy_method::Get); return false, Value.Undefined; }
     let k = key_named(heap, name);
     if heap.fault != Fault.None { return false, Value.Undefined; }
     let v, getter = read(heap, o, k);
@@ -538,6 +538,8 @@ fn keyed(job: Job&, at: i64, b: Builtin, k: Value) {
     let heap .= job.heap; let o = job.frames[at].input;
     if b == Builtin.ReflectHas {
         let found = has_property(heap, o, k);
+        // A proxy's [[HasProperty]] (proxy.goose) answers at pc Result.
+        if proxy_pending(heap, proxy_method::HasProperty) { job.frames[at].pc = statics_pc::Result; proxy_take(job, proxy_method::HasProperty); return; }
         if heap.fault == Fault.None { finish_native(job, job.frames[at], boolean(found)); }
         return;
     }
@@ -613,6 +615,9 @@ fn reflect_access(job: Job&, at: i64, b: Builtin, k: Value) {
         let f, accepted = receiver_set(job, o, k, value, receiver);
         setter = f; ok = accepted;
     }
+    // A proxy's [[Set]] (proxy.goose), the target or on its chain: its
+    // answer is Reflect.set's (pc Result).
+    if proxy_pending(heap, proxy_method::Set) { job.frames[at].pc = statics_pc::Result; proxy_take(job, proxy_method::Set, receiver, value, false); return; }
     if heap.fault != Fault.None { return; }
     if setter.is_hole() { reflect_length(job, at, value); return; }
     if setter.is_object() { job.frames[at].pc = statics_pc::Stored; call_accessor(job, setter, receiver, [value]); return; }

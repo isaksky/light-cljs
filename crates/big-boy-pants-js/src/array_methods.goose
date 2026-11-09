@@ -200,6 +200,9 @@ fn set_or_throw(job: Job&, b: Builtin, o: Value, k: Value, v: Value) -> bool {
     prepare_function(job, o, k, true);
     if heap.fault != Fault.None { return false; }
     let setter, ok = write(heap, o, k, v);
+    // A proxy's [[Set]] (light-cljs-890), its answer arriving as a setter's
+    // would, a false one a TypeError.
+    if proxy_pending(heap, proxy_method::Set) { proxy_take(job, proxy_method::Set, o, v, true); return heap.fault == Fault.None; }
     if heap.fault != Fault.None { return false; }
     if setter.is_object() {
         call_accessor(job, setter, o, [v]);

@@ -1391,8 +1391,10 @@ fn data_get(job: Job&, b: Builtin, o: Value, name: const u8[:]) -> Value {
 //              Then InstallErrorCause: when options is an object with a
 //              `cause` (HasProperty), a data value installs at once and
 //              the frame finishes; a getter runs above it (receiver
-//              options) and
+//              options), as does a proxy's [[Get]] (light-cljs-890), and
 //     pc 2     awaits that getter's value, which it installs.
+//     pc 3     awaits a proxy options object's [[HasProperty]] answer
+//              (light-cljs-890), then reads `cause` as above.
 //   ErrorText  receiver the this object; input the name, once converted.
 //     pc 0     awaits Get(O, "name") (a getter runs above the frame, with
 //              O as receiver); undefined is "Error", an object converts in
@@ -1413,13 +1415,15 @@ fn error_type(b: Builtin) -> i64 { for e, i in ERROR_BUILTINS { if e == b { retu
 // that can start a native frame starts it through start_conditional_native:
 // the error built-ins (start_error, start_error_text), and Object.prototype.toString's
 // @@toStringTag getter and Object.hasOwn's and hasOwnProperty's key
-// conversion (light-cljs-884; object_statics.goose).
-fn conditional_native(b: Builtin) -> bool { return match b { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, ErrorPrototypeToString => true, _ => statics_conditional(b) }; }
+// conversion (light-cljs-884; object_statics.goose), and
+// Reflect.deleteProperty's proxy trap (light-cljs-890; descriptors.goose).
+fn conditional_native(b: Builtin) -> bool { return match b { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, ErrorPrototypeToString, ReflectDeleteProperty => true, _ => statics_conditional(b) }; }
 // Start built-in b (conditional_native), called with `receiver` and
 // `args`, with operand base `base` (native_start's contract).
 fn start_conditional_native(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
     if statics_conditional(b) { start_statics(job, b, receiver, args, base); return; }
     if b == Builtin.ErrorPrototypeToString { start_error_text(job, receiver, base); return; }
+    if b == Builtin.ReflectDeleteProperty { start_reflect_delete(job, b, args, base); return; }
     start_error(job, b, args, base, Value.Empty);
 }
 // "name: message" from the converted strings (step 9 and on).
@@ -1502,12 +1506,18 @@ fn error_text_step(job: Job&, frame: Frame) {
     let r = error_text(job, frame.input, s);
     if heap.fault == Fault.None { finish_native(job, frame, r); }
 }
-// Whether options has a `cause` behind a getter (InstallErrorCause's Get runs it).
+// Whether options has a `cause` behind a getter (InstallErrorCause's Get
+// runs it), or reaches a proxy, whose [[HasProperty]] or [[Get]] runs its
+// trap (light-cljs-890): the frame path asks again.
 fn cause_runs_code(heap: Heap&, options: Value) -> bool {
     if !options.is_object() { return false; }
     let k = key_named(heap, "cause");
-    if heap.fault != Fault.None || !has_property(heap, options, k) { return false; }
+    if heap.fault != Fault.None { return false; }
+    let has = has_property(heap, options, k);
+    if proxy_pending(heap, proxy_method::HasProperty) { take_proxy(heap); return true; }
+    if heap.fault != Fault.None || !has { return false; }
     let _, getter = lookup(heap, options, k);
+    if is_hit(heap, getter) { take_proxy(heap); }
     return heap.fault == Fault.None && getter.is_object();
 }
 // NativeError b called (Value.Empty proto) or constructed with `args`,
@@ -1555,6 +1565,11 @@ fn error_construct_step(job: Job&, frame: Frame, b: Builtin) {
         if heap.fault == Fault.None { finish_native(job, frame, e); }
         return;
     }
+    // A proxy's answer to HasProperty(options, "cause") (light-cljs-890).
+    if frame.pc == 3 {
+        if truthy(heap, job.operands.pop()) { error_cause(job, at, b, e, frame.receiver); } else { finish_native(job, frame, e); }
+        return;
+    }
     if frame.pc != 0 { heap.fault = Fault.InvalidState; return; }
     let ready, m = error_operand(job, b);
     if !ready { return; }
@@ -1569,15 +1584,24 @@ fn error_construct_step(job: Job&, frame: Frame, b: Builtin) {
     if options.is_object() {
         let k = key_named(heap, "cause");
         if heap.fault != Fault.None { return; }
-        if has_property(heap, options, k) {
-            let cause, getter = lookup(heap, options, k);
-            if heap.fault != Fault.None { return; }
-            if getter.is_object() { job.frames[at].pc = 2; run_getter(job, b, getter, options); return; }
-            install_error_field(job, e, "cause", cause);
-        }
+        let has = has_property(heap, options, k);
+        if proxy_pending(heap, proxy_method::HasProperty) { job.frames[at].pc = 3; proxy_take(job, proxy_method::HasProperty); return; }
         if heap.fault != Fault.None { return; }
+        if has { error_cause(job, at, b, e, options); return; }
     }
     finish_native(job, frame, e);
+}
+// InstallErrorCause's Get(options, "cause") for the ErrorConstruct frame at
+// `at`: a getter (or a proxy's [[Get]]) above it, its value arriving at pc 2.
+fn error_cause(job: Job&, at: i64, b: Builtin, e: Value, options: Value) {
+    let heap .= job.heap;
+    let k = key_named(heap, "cause");
+    if heap.fault != Fault.None { return; }
+    let cause, getter = lookup(heap, options, k);
+    if heap.fault != Fault.None { return; }
+    if getter.is_object() { job.frames[at].pc = 2; run_getter(job, b, getter, options); return; }
+    install_error_field(job, e, "cause", cause);
+    if heap.fault == Fault.None { finish_native(job, job.frames[at], e); }
 }
 // NativeError(message, options) called as a function: a new error object of
 // type t whose own `message` is ToString(message) and, when options has a

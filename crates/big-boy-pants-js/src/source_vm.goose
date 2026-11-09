@@ -634,9 +634,14 @@ root struct Heap {
     // proxy_method: the proxy internal method (proxy.goose, proxy_method::)
     // an UnsupportedOperand reached, for its report; fail() takes and
     // clears it (-1: none).
-    proxy_method: i64   = -1,
-    fault:        Fault = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
-    live_jobs:    i64   = 0,
+    proxy_method: i64 = -1,
+    // proxy_at, proxy_key: the proxy an operation reached and the key
+    // (proxy.goose: lookup's proxy hit, or the method proxy_method names),
+    // for the caller that runs its trap; between the operation and its
+    // caller only, cleared by fail() and the job reset (light-cljs-890).
+    proxy_at:  Value = Value.Undefined, proxy_key: Value = Value.Undefined,
+    fault:     Fault = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
+    live_jobs: i64   = 0,
     // Reclamation inside a job (light-cljs-847, reclaim.goose): each table's
     // margin below its limit while a job runs; a collection asked for at the
     // next safe point; and the collections this heap ran (the JOBS line).
@@ -737,9 +742,11 @@ root struct Heap {
 //                key just reached, pc 3 the walk's next object. Its results,
 //                the key and whether there is one, go where the key list
 //                was (operand_base).
-//   Proxy        a proxy's [[GetPrototypeOf]], [[OwnPropertyKeys]] or
-//                [[GetOwnProperty]] (light-cljs-845; proxy.goose, which
-//                gives its fields and phases), its proxy_method the payload.
+//   Proxy        a proxy's [[GetPrototypeOf]], [[OwnPropertyKeys]],
+//                [[GetOwnProperty]] (light-cljs-845), [[Get]], [[Set]],
+//                [[HasProperty]] or [[Delete]] (light-cljs-890; proxy.goose,
+//                which gives its fields and phases), its proxy_method the
+//                payload.
 //   Forward      Function.prototype.call and apply, Reflect.apply and
 //                Reflect.construct (light-cljs-851; function_calls.goose,
 //                which gives its fields and phases): `construct` once
@@ -2095,10 +2102,13 @@ fn lookup(heap: Heap&, object: Value, k: Value) -> Value, Value {
     var at = object;
     loop {
         let p = own_entry(heap, at, k);
-        if heap.fault != Fault.None { proxy_relabel(heap, at, proxy_method::Get); return Value.Undefined, Value.Undefined; }
+        // A proxy (own_entry's fault) is a proxy hit: the getter path
+        // runs its [[Get]] (proxy.goose).
+        if heap.fault != Fault.None { if proxy_hit(heap, at, k) { return Value.Undefined, at; } return Value.Undefined, Value.Undefined; }
         if p.found {
             if is_pending(p.value) { pending_fault(heap, k); return Value.Undefined, Value.Undefined; }
-            return if is_accessor(p.value) { Value.Undefined } else { p.value }, if is_accessor(p.value) { pair(heap, p.value).get } else { Value.Undefined };
+            if is_accessor(p.value) { heap.proxy_at = Value.Undefined; return Value.Undefined, pair(heap, p.value).get; }
+            return p.value, Value.Undefined;
         }
         let proto = prototype(heap, at.id());
         if !proto.is_object() { return Value.Undefined, Value.Undefined; }
@@ -2122,7 +2132,7 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
         // made (light-cljs-805; the Pants engine's function::probe).
         if lazy_prototype(heap, at.id()) && key_is(heap, k, "prototype") { return true; }
         let p = own_entry(heap, at, k);
-        if heap.fault != Fault.None { proxy_relabel(heap, at, proxy_method::HasProperty); return false; }
+        if heap.fault != Fault.None { proxy_relabel(heap, at, proxy_method::HasProperty, k); return false; }
         if p.found { return true; }
         let proto = prototype(heap, at.id());
         if !proto.is_object() { return false; }
@@ -2191,7 +2201,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
             let exotic, i = string_key(heap, o, k);
             if heap.fault != Fault.None || exotic { return Value.Undefined, false; }
         },
-        node_kind::Proxy => { proxy_fault(heap, proxy_method::Set); return Value.Undefined, false; },
+        node_kind::Proxy => { proxy_reach(heap, object, proxy_method::Set, k); return Value.Undefined, false; },
         _ => { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; },
     }
     // An element is a writable data property (light-cljs-804); only an
@@ -2224,7 +2234,7 @@ inline fn inherited_assign(heap: Heap&, o: i64, k: Value) -> bool, Value, bool {
     while proto.is_object() {
         if !charge(heap) { return true, Value.Undefined, false; }
         let p = own_entry(heap, proto, k);
-        if heap.fault != Fault.None { proxy_relabel(heap, proto, proxy_method::Set); return true, Value.Undefined, false; }
+        if heap.fault != Fault.None { proxy_relabel(heap, proto, proxy_method::Set, k); return true, Value.Undefined, false; }
         if p.found {
             if is_pending(p.value) { pending_fault(heap, k); return true, Value.Undefined, false; }
             if is_accessor(p.value) { let f = pair(heap, p.value).set; return true, f, f.is_object(); }
@@ -2371,7 +2381,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
             let exotic, i = string_key(heap, o, k);
             return heap.fault == Fault.None && !exotic && delete_own(heap, o, k);
         },
-        node_kind::Proxy => { proxy_fault(heap, proxy_method::Delete); return false; },
+        node_kind::Proxy => { proxy_reach(heap, object, proxy_method::Delete, k); return false; },
         _ => { heap.fault = Fault.UnsupportedOperand; return false; },
     }
 }
@@ -2556,7 +2566,7 @@ fn read(heap: Heap&, object: Value, k: Value) -> Value, Value {
 // since only the dispatch loop can run it (get_property).
 fn get(heap: Heap&, object: Value, k: Value) -> Value {
     let v, getter = read(heap, object, k);
-    if !getter.is_undefined() && heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
+    if !getter.is_undefined() && heap.fault == Fault.None { if is_hit(heap, getter) { take_proxy(heap); proxy_fault(heap, proxy_method::Get); } else { heap.fault = Fault.UnsupportedOperand; } }
     return v;
 }
 // [[Set]] of a string key: the setter to run (see assign) and whether the
@@ -2739,7 +2749,7 @@ fn fail(job: Job&, fault: Fault, frame: Frame) {
     job.heap.fault = Fault.None;
     if fault == Fault.UnsupportedOperand && job.detail.len == 0 && !job.heap.pending.is_undefined() { pending_detail(job); }
     if fault == Fault.UnsupportedOperand && job.detail.len == 0 && job.heap.proxy_method >= 0 { proxy_detail(job); }
-    job.heap.pending = Value.Undefined; job.heap.proxy_method = -1;
+    job.heap.pending = Value.Undefined; job.heap.proxy_method = -1; job.heap.proxy_at = Value.Undefined; job.heap.proxy_key = Value.Undefined;
     var reported = fault;
     if catchable(fault) && catches(job) {
         let message = fault_message(job, fault, frame);
@@ -3137,7 +3147,7 @@ fn reset(job: Job&) -> bool {
     job.frames.clear(); job.locals.clear(); job.operands.clear(); job.writes.clear(); job.handlers.clear();
     job.status = tiny::Status.Ready; job.result = Value.Undefined; job.fault = Fault.None; job.fault_pc = -1; job.fault_function = -1; job.thrown = false;
     job.steps = 0; job.effects_enabled = false; job.helpers_enabled = false; job.effect_pending = false; job.effect_kind = -1; job.cancelling = false;
-    job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear(); job.heap.proxy_method = -1;
+    job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear(); job.heap.proxy_method = -1; job.heap.proxy_at = Value.Undefined; job.heap.proxy_key = Value.Undefined;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     job.queue.clear(); job.queue_head = 0; job.draining = false; job.entry = Value.Undefined; job.rejections.clear();
     job.lexicals = Value.Undefined; job.compiled_ops = 0; job.floor = Tops {}; job.reclaimable = false; job.logged_values = false; job.templates.clear();
@@ -5827,7 +5837,12 @@ fn get_property(job: Job&, k: Value, named: bool, receiver: Value = Value.Empty)
         // definition. A raw JS bypass must not observe stale undefined.
         if !found { heap.fault = Fault.DependencyNeed; } job.operands.push(value);
     } else if valid(heap, object) && object.is_object() && (node(heap, object.id()).kind == node_kind::Builtin || node(heap, object.id()).kind == node_kind::Closure && node(heap, object.id()).key_count == 0 && !node(heap, object.id()).initialized) && key_is(heap, k, "call") {
-        job.operands.push(get(heap, object, k));
+        // A proxy its prototype chain reaches runs its [[Get]] above the
+        // frame (light-cljs-890), as get_property's getter path does.
+        let v, getter = read(heap, object, k);
+        if is_hit(heap, getter) { call_accessor(job, getter, if receiver.is_hole() { object } else { receiver }, []); return; }
+        if !getter.is_undefined() && heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
+        job.operands.push(v);
     } else if object.is_object() && !realm_intrinsic(object.id()) && object.id() < job.protected_nodes {
         let value, found = own_property(heap, object, k);
         let optional = object == heap.global && (key_is(heap, k, "__lightCompilerRootReceiver") || key_is(heap, k, "__lightCompilerRootContext"));
@@ -5877,6 +5892,7 @@ fn super_set(job: Job&, strict: bool) {
     let k = key(heap, kv);
     if heap.fault != Fault.None { return; }
     let setter, ok = receiver_set(job, base, k, value, receiver);
+    if proxy_pending(heap, proxy_method::Set) { proxy_assign(job, receiver, value, value, strict); return; }
     if heap.fault == Fault.None && setter.is_object() { call_setter(job, setter, receiver, value, value); return; }
     if heap.fault == Fault.None && setter.is_hole() { start_length(job, receiver, k, value, value, strict); return; }
     if heap.fault == Fault.None && !ok && strict { refused_write(job, receiver, k); if heap.fault == Fault.None { heap.fault = Fault.TypeError; } }
@@ -5913,7 +5929,7 @@ fn receiver_set(job: Job&, base: Value, k: Value, value: Value, receiver: Value)
     var at = base;
     while at.is_object() {
         let p = own_entry(heap, at, key);
-        if heap.fault != Fault.None { proxy_relabel(heap, at, proxy_method::Set); return Value.Undefined, false; }
+        if heap.fault != Fault.None { proxy_relabel(heap, at, proxy_method::Set, key); return Value.Undefined, false; }
         if p.found {
             if is_pending(p.value) { pending_fault(heap, key); return Value.Undefined, false; }
             if is_accessor(p.value) { let f = pair(heap, p.value).set; return f, f.is_object(); }
@@ -5927,8 +5943,10 @@ fn receiver_set(job: Job&, base: Value, k: Value, value: Value, receiver: Value)
     if !writable(job, receiver.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined, false; }
     prepare_function(job, receiver, key, true);
     if heap.fault != Fault.None { return Value.Undefined, false; }
+    // A proxy receiver is defined on by its [[DefineOwnProperty]], which
+    // fails by name (light-cljs-891).
+    if node(heap, receiver.id()).kind == node_kind::Proxy { proxy_fault(heap, proxy_method::DefineOwnProperty); return Value.Undefined, false; }
     let own = own_entry(heap, receiver, key);
-    // A proxy receiver's [[GetOwnProperty]] fails by name here.
     if heap.fault != Fault.None { return Value.Undefined, false; }
     var ok = false;
     if own.found {
@@ -6332,6 +6350,8 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
     prepare_function(job, object, k, false);
     if heap.fault == Fault.None && length_converts(heap, object, k, value) { start_length(job, object, k, value, result, strict); return; }
     let setter, ok = write(heap, object, k, value);
+    // A proxy, the object or on its chain: its [[Set]] (proxy.goose).
+    if proxy_pending(heap, proxy_method::Set) { proxy_assign(job, object, value, result, strict); return; }
     if heap.fault == Fault.None && setter.is_object() { call_setter(job, setter, object, value, result); return; }
     if heap.fault == Fault.None { if ok { record(job, object, k, value); } else if strict { refused_write(job, object, k); } }
     else { property_fault(job, object, k, true, true); }
@@ -6414,6 +6434,8 @@ fn delete_op(job: Job&, strict: bool) {
         // A lazy closure's `length` or `name` is made before it goes.
         if key.is_string() && (key_is(heap, key, "length") || key_is(heap, key, "name")) { prepare_function(job, object, key, true); }
         ok = delete_property(heap, object, key);
+        // A proxy's [[Delete]] runs its trap (proxy.goose).
+        if proxy_pending(heap, proxy_method::Delete) { proxy_take(job, proxy_method::Delete, Value.Undefined, Value.Undefined, strict); return; }
     }
     if heap.fault != Fault.None { return; }
     if !ok && strict { type_error(job, "could not delete property"); return; }
@@ -6432,6 +6454,8 @@ fn in_op(job: Job&) {
     let key = intern(heap, k);
     if heap.fault != Fault.None { return; }
     let found = has_property(heap, object, key);
+    // A proxy, the object or on its chain: its [[HasProperty]] (proxy.goose).
+    if proxy_pending(heap, proxy_method::HasProperty) { proxy_take(job, proxy_method::HasProperty); return; }
     if heap.fault == Fault.None { job.operands.push(boolean(found)); }
 }
 
@@ -6457,9 +6481,11 @@ fn in_op(job: Job&) {
 // arguments object as the target, an async generator's `prototype` (the generators area),
 // and a light-cljs runtime value (a form, cell or cursor, which the V8
 // build's runtime makes instances of its own constructors) as V or on its
-// prototype chain. Bound functions (light-cljs-764) and Proxy
-// (light-cljs-766) do not exist in this VM yet; when they do, a bound C
-// defers to its target and a Proxy's getPrototypeOf trap runs as a frame.
+// prototype chain. A bound C defers to its target (light-cljs-764). A
+// proxy C is callable when its target is, and its [[Get]] of @@hasInstance
+// and `prototype` runs as a Proxy frame above the HasInstance frame, as a
+// getter would (light-cljs-890); a proxy on O's chain fails by name at its
+// [[GetPrototypeOf]].
 fn instanceof_op(job: Job&) {
     let heap .= job.heap;
     // A scalar form (a primitive with its provenance) is its primitive.
@@ -6480,7 +6506,7 @@ inline fn instance_kind(heap: const Heap&, v: Value) -> bool { return convertibl
 fn has_instance_method(job: Job&, at: i64, c: Value, v: Value, m: Value) {
     let heap .= job.heap;
     if m.tag() <= value_tag::Null {
-        if !callable(heap, c) { type_error(job, "invalid 'instanceof' right operand"); return; }
+        if !is_callable(heap, c) { type_error(job, "invalid 'instanceof' right operand"); return; }
         ordinary_has_instance(job, at, c, v); return;
     }
     if function_has_instance(heap, m) { ordinary_has_instance(job, at, c, v); return; }
@@ -6525,7 +6551,7 @@ fn has_instance_call(job: Job&, at: i64, c: Value, v: Value, m: Value) {
 // not an instance, and nothing is made.
 fn ordinary_has_instance(job: Job&, at: i64, bound: Value, o: Value) {
     let heap .= job.heap;
-    if !callable(heap, bound) { has_instance_done(job, at, false); return; }
+    if !is_callable(heap, bound) { has_instance_done(job, at, false); return; }
     // Step 2 (light-cljs-852): for a bound function, InstanceofOperator(O,
     // its target): the target's @@hasInstance, which for the realm's
     // continues here with the target as C. Any other method is called from

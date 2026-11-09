@@ -396,6 +396,25 @@ fields. for-in pushes a `ForIn` frame only when its walk meets a proxy.
 Every other internal method of a proxy fails `UnsupportedOperand` naming
 it (`Proxy: [[Get]]`, `Heap.proxy_method`), for light-cljs-766.
 
+*As landed by light-cljs-890 (Proxy get, set, has and deleteProperty):*
+the same `Proxy` frame runs [[Get]], [[Set]], [[HasProperty]] and
+[[Delete]] with their invariants, forwarding without a trap to the
+target's ordinary method (a proxy on the target's prototype chain
+restarts the frame on it, a bounded number of times). No new table and
+no new check on the ordinary path: own_entry's proxy arm already faulted
+by name, and only that cold fault path changed. `lookup` turns it into a
+*proxy hit*, returning the proxy as the getter with the proxy and key in
+two transient heap fields (`Heap.proxy_at`, `proxy_key`), so every
+reader that runs getters (the dispatch loop's GetNamed and GetIndexed,
+`call_accessor` and every built-in's `run_getter`) runs [[Get]] traps with
+its receiver; `has_property`, `assign` and `delete_property` keep the
+fault, relabelled with the proxy and key recorded, and each caller that
+supports the method (`in`, `delete`, assignments, super and Reflect.set,
+has and deleteProperty, Object.assign, push, map and forEach presence,
+ToPropertyDescriptor, Error's `cause`) starts the frame instead. A
+trapless [[Set]] that defines on the proxy receiver fails by name at its
+[[DefineOwnProperty]] (light-cljs-891).
+
 *As landed by light-cljs-860 (mapped arguments objects):* a sloppy
 function with a simple parameter list gets a mapped arguments object
 (ECMAScript 10.4.4.7 CreateMappedArgumentsObject; QuickJS
@@ -572,8 +591,8 @@ there closes the iterator (its `return`'s exception dropped, the original
 rethrown) and an exception from `next`, `done` or `value` does not; the
 handler is plain handler-stack data, saved with a suspended stack like any
 other. A proxy's [[OwnPropertyKeys]] and [[GetOwnProperty]] run as
-light-cljs-845's Proxy frame above it; its [[Get]], [[Set]] and
-[[HasProperty]] fail by name (light-cljs-890). Object.prototype.toString,
+light-cljs-845's Proxy frame above it, as do its [[Get]], [[Set]] and
+[[HasProperty]] since light-cljs-890. Object.prototype.toString,
 Object.hasOwn and hasOwnProperty stay plain built-ins, but every caller
 that can start a native frame (`conditional_native`, formerly the error
 built-ins' `error_native`) runs a @@toStringTag getter or a key object's

@@ -33,8 +33,11 @@ namespace source;
 //   index     k, the next index     argument_count  len, LengthOfArrayLike(O)
 //   pc 0      awaits the length's value (Get(O, "length"), then ToNumber)
 //   pc 1      visits index k (scan)
-//   pc 2      awaits element k from its getter
+//   pc 2      awaits element k from its getter (or a proxy's [[Get]])
 //   pc 3      awaits the callback's result for index k
+//   pc 4      awaits a proxy's answer to HasProperty(O, k) (light-cljs-890)
+//   pc 5      (map) awaits O's `constructor` from its getter or a proxy's
+//             [[Get]], for ArraySpeciesCreate
 // A step visits at most one index, so the budget, the instruction limit and
 // a suspension see a boundary between callbacks, holes included.
 //
@@ -138,12 +141,36 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
             // ToLength.
             let len: f64 = if !(n > 0) { 0 } else { min(trunc(n), 9007199254740991.0) };
             if !callable(heap, frame.callee) { type_error(job, "not a function"); return; }
+            job.frames[at].argument_count = len as i64; job.frames[at].pc = 1;
             if b == Builtin.ArrayPrototypeMap {
+                // ArraySpeciesCreate: an array's (IsArray: a proxy's final
+                // target's) `constructor`, its getter or a proxy's [[Get]]
+                // above the frame, whose value arrives at pc 5.
+                if is_array(heap, frame.input) {
+                    let k = key_named(heap, "constructor");
+                    if heap.fault != Fault.None { return; }
+                    let c, getter = lookup(heap, frame.input, k);
+                    if heap.fault != Fault.None { return; }
+                    if getter.is_object() { job.frames[at].pc = 5; run_getter(job, b, getter, frame.input); return; }
+                    if !species_constructor(job, b, c) { return; }
+                }
                 let a = array_species_create(job, b, frame.input, len);
                 if heap.fault != Fault.None { return; }
                 job.frames[at].output = a;
             }
-            job.frames[at].argument_count = len as i64; job.frames[at].pc = 1;
+            array_visit(job, at, b);
+        },
+        // A proxy's answer to HasProperty(O, k) (light-cljs-890).
+        4 => {
+            job.frames[at].pc = 1;
+            if truthy(heap, job.operands.pop()) { array_get(job, at, b); } else { job.frames[at].index += 1; }
+        },
+        // The `constructor` from a getter or a proxy's [[Get]].
+        5 => {
+            if !species_constructor(job, b, job.operands.pop()) { return; }
+            let a = array_species_create(job, b, frame.input, frame.argument_count as f64);
+            if heap.fault != Fault.None { return; }
+            job.frames[at].output = a; job.frames[at].pc = 1;
             array_visit(job, at, b);
         },
         2 => { let v = job.operands.pop(); array_call(job, at, b, v); },
@@ -162,20 +189,24 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
 // IsCallable: a closure, a built-in function or a bound function (a class constructor is
 // callable; calling it throws TypeError when its frame is entered).
 inline fn callable(heap: const Heap&, f: Value) -> bool { return f.is_object() && (node(heap, f.id()).kind == node_kind::Closure || node(heap, f.id()).kind == node_kind::Builtin || node(heap, f.id()).kind == node_kind::BoundFunction); }
-// ArraySpeciesCreate(O, len) without species: a new array of length len
-// when O is not an array or its `constructor` is undefined or the realm's
-// Array; any other constructor object is the species step, not implemented.
+// IsArray(v): an array, or a proxy whose final target is one.
+fn is_array(heap: const Heap&, v: Value) -> bool {
+    var t = v;
+    while t.is_object() && node(heap, t.id()).kind == node_kind::Proxy { t = node(heap, t.id()).value; }
+    return t.is_object() && node(heap, t.id()).kind == node_kind::Array;
+}
+// ArraySpeciesCreate's check of an array's `constructor` c (map's pc 0 or
+// 5 read it): undefined or the realm's Array make a plain array; any other
+// constructor object is the species step, not implemented.
+fn species_constructor(job: Job&, b: Builtin, c: Value) -> bool {
+    if c.is_object() { if c.id() != array_constructor_row() { unsupported_step(job, b, "species constructors"); return false; } }
+    else if !c.is_undefined() { type_error(job, "array constructor is not an object"); return false; }
+    return true;
+}
+// ArraySpeciesCreate(O, len) once O's `constructor` passed
+// species_constructor (or O is no array): a new array of length len.
 fn array_species_create(job: Job&, b: Builtin, o: Value, len: f64) -> Value {
     let heap .= job.heap;
-    if node(heap, o.id()).kind == node_kind::Array {
-        let k = key_named(heap, "constructor");
-        if heap.fault != Fault.None { return Value.Undefined; }
-        let c, getter = lookup(heap, o, k);
-        if heap.fault != Fault.None { return Value.Undefined; }
-        if getter.is_object() { return unsupported_step(job, b, "a constructor getter"); }
-        if c.is_object() { if c.id() != array_constructor_row() { return unsupported_step(job, b, "species constructors"); } }
-        else if !c.is_undefined() { return type_error(job, "array constructor is not an object"); }
-    }
     // ArrayCreate(len).
     if len > 4294967295.0 { job.detail.clear(); for c in "invalid array length" { job.detail.push(c); } heap.fault = Fault.RangeError; return Value.Undefined; }
     let a = allocate(heap, Node { kind: node_kind::Array });
@@ -202,10 +233,20 @@ fn array_visit(job: Job&, at: i64, b: Builtin) {
     }
     let key = index_key(heap, k);
     if heap.fault != Fault.None { return; }
-    if !has_property(heap, o, key) {
-        if heap.fault == Fault.None { job.frames[at].index += 1; }
-        return;
-    }
+    let has = has_property(heap, o, key);
+    // A proxy's [[HasProperty]] answers at pc 4 (light-cljs-890).
+    if proxy_pending(heap, proxy_method::HasProperty) { job.frames[at].pc = 4; proxy_take(job, proxy_method::HasProperty); return; }
+    if heap.fault != Fault.None { return; }
+    if !has { job.frames[at].index += 1; return; }
+    array_get(job, at, b);
+}
+// Get(O, k) of the present index k: its value to the callback now or, from
+// a getter or a proxy's [[Get]], at pc 2.
+fn array_get(job: Job&, at: i64, b: Builtin) {
+    let heap .= job.heap;
+    let o = job.frames[at].input;
+    let key = index_key(heap, job.frames[at].index);
+    if heap.fault != Fault.None { return; }
     let v, getter = lookup(heap, o, key);
     if heap.fault != Fault.None { return; }
     if getter.is_object() { job.frames[at].pc = 2; run_getter(job, b, getter, o); return; }

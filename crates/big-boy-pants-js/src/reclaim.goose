@@ -40,8 +40,8 @@ namespace source;
 // job's rows is rewritten; that also covers the service rows and image runs
 // a job may write. The other roots: every shape's key (shapes are a
 // transition cache and are kept), the code constants, the heap's global,
-// call method and pending key, and the job's frames, locals, operands,
-// handlers, result, lexicals, template objects (templates.goose), root
+// call method, pending key and proxy record (proxy.goose), and the job's
+// frames, locals, operands, handlers, result, lexicals, template objects (templates.goose), root
 // receiver, entry, effect arguments and
 // frame, promise queue from its head, unhandled rejections, cell rows (a
 // publication's rows whole, so its identities stay consecutive), foreign
@@ -202,7 +202,7 @@ fn mark_roots(e: Evacuation&, job: const Job&) {
     for r in e.floor.conts { trace_cont(e, heap, r); }
     for s in heap.shapes { mark(e, heap, s.key); }
     for v in heap.constants { mark(e, heap, v); }
-    mark(e, heap, heap.global); mark(e, heap, heap.call_method); mark(e, heap, heap.pending);
+    mark(e, heap, heap.global); mark(e, heap, heap.call_method); mark(e, heap, heap.pending); mark(e, heap, heap.proxy_at); mark(e, heap, heap.proxy_key);
     // The Symbol.for registry keeps every registered symbol (light-cljs-885).
     mark(e, heap, heap.registry);
     for f in job.frames { mark_frame(e, heap, f); }
@@ -404,7 +404,7 @@ fn reindex(e: const Evacuation&, heap: Heap&) {
 }
 fn rewrite_job(e: const Evacuation&, job: Job&) {
     let heap .= job.heap;
-    relink(e, heap.global); relink(e, heap.call_method); relink(e, heap.pending); relink(e, heap.registry);
+    relink(e, heap.global); relink(e, heap.call_method); relink(e, heap.pending); relink(e, heap.proxy_at); relink(e, heap.proxy_key); relink(e, heap.registry);
     for i in heap.shapes.len { relink(e, heap.shapes[i].key); }
     for i in heap.constants.len { relink(e, heap.constants[i]); }
     for i in job.frames.len { relink(e, job.frames[i]); }

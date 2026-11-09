@@ -42,7 +42,9 @@ namespace source;
 //   pc 0      (defineProperty) awaits the key's ToPrimitive from a Convert
 //             frame (an object key), the output still undefined
 //   pc 1      (defineProperties) awaits Get(properties, key) from its getter
-//   pc 2      awaits field `index` from its getter
+//   pc 2      awaits field `index` from its getter (or a proxy's [[Get]])
+//   pc 3      awaits a proxy descriptor object's answer whether it has
+//             field `index` (light-cljs-890; proxy.goose descriptor_fields)
 // A call that runs no JavaScript pushes and pops the frame in one step,
 // outside the frame limit (start_descriptor), so it behaves as a plain
 // function would. defineProperties reads every descriptor before the first definition
@@ -297,6 +299,12 @@ fn descriptor_step(job: Job&, frame: Frame, b: Builtin) {
             if !descriptor_field(job, at, v, b) || !descriptor_fields(job, at, b, 2) || !descriptor_valid(job, job.frames[at].callee, b) { return; }
             if b == Builtin.ObjectDefineProperties { if keep_descriptor(job, at) { visit_properties(job, at, b); } } else { define_one(job, at, b); }
         },
+        // A field's presence, from a proxy descriptor object's
+        // [[HasProperty]] (proxy.goose descriptor_fields).
+        3 => {
+            if !descriptor_present(job, at, b, 2, truthy(heap, v)) || !descriptor_fields(job, at, b, 2) || !descriptor_valid(job, job.frames[at].callee, b) { return; }
+            if b == Builtin.ObjectDefineProperties { if keep_descriptor(job, at) { visit_properties(job, at, b); } } else { define_one(job, at, b); }
+        },
         _ => { heap.fault = Fault.InvalidState; },
     }
 }
@@ -320,6 +328,14 @@ fn reflect_delete(job: Job&, b: Builtin, target: Value, kv: Value) -> Value {
     if heap.fault != Fault.None { return Value.Undefined; }
     let ok = delete_property(heap, target, k);
     return if heap.fault == Fault.None { boolean(ok) } else { Value.Undefined };
+}
+// Reflect.deleteProperty called where a frame can start (conditional_native),
+// operand base `base`: a proxy's [[Delete]] (light-cljs-890) runs as its
+// Proxy frame, whose answer is the call's; anything else answers now.
+fn start_reflect_delete(job: Job&, b: Builtin, args: const Value[:], base: i64) {
+    let r = reflect_delete(job, b, arg(args, 0), arg(args, 1));
+    if proxy_pending(job.heap, proxy_method::Delete) { job.operands.resize(base); proxy_take(job, proxy_method::Delete); return; }
+    if job.heap.fault == Fault.None { job.operands.resize(base); deliver(job, r); }
 }
 // Object.prototype.__defineGetter__ and __defineSetter__ (B.2.2.2, B.2.2.3):
 // an enumerable, configurable accessor half of ToObject(this).
