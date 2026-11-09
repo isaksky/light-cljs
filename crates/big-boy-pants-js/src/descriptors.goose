@@ -45,13 +45,19 @@ namespace source;
 //   pc 2      awaits field `index` from its getter (or a proxy's [[Get]])
 //   pc 3      awaits a proxy descriptor object's answer whether it has
 //             field `index` (light-cljs-890; proxy.goose descriptor_fields)
+//   pc 4      awaits a proxy target's [[DefineOwnProperty]] (light-cljs-891)
+//   pc 5      awaits both conversions of an array's new `length` from a
+//             Convert frame (light-cljs-898, convert_length), the
+//             descriptor in `callee` (defineProperties: key `index`'s)
 // A call that runs no JavaScript pushes and pops the frame in one step,
 // outside the frame limit (start_descriptor), so it behaves as a plain
 // function would. defineProperties reads every descriptor before the first definition
 // (object_statics.rs object_statics_define_properties_conversion_before_writes).
-// Then the definitions run in key order as plain Goose: none of them runs
-// JavaScript. A definition refused is a TypeError for Object's methods and
-// false for Reflect.defineProperty.
+// Then the definitions run in key order as plain Goose, except that an
+// array's `length` given an object converts it first, twice, above the
+// frame (pc 5; ArraySetLength's ToUint32 and ToNumber, light-cljs-898). A
+// definition refused is a TypeError for Object's methods and false for
+// Reflect.defineProperty.
 //
 // ValidateAndApplyPropertyDescriptor (define_descriptor) covers every
 // JavaScript object kind through the property model's [[GetOwnProperty]]
@@ -190,6 +196,8 @@ fn define_unchanged(heap: Heap&, current: Own, d: PropertyDescriptor) -> bool {
 // non-configurable, non-enumerable data property): a new value must be
 // ToUint32 of itself (a RangeError otherwise, before any validation); a
 // non-writable length takes no other value and does not become writable.
+// An object value was converted before this (length_definition); one that
+// reaches here fails by name.
 fn define_length(job: Job&, object: Value, k: Value, current: Own, d: PropertyDescriptor, owned: bool) -> bool {
     let heap .= job.heap;
     // Another job's array takes only a definition that changes nothing.
@@ -208,6 +216,35 @@ fn define_length(job: Job&, object: Value, k: Value, current: Own, d: PropertyDe
     let w = if d.has_writable { d.writable } else { was_writable };
     if w == was_writable && length == current.value.num() { return true; }
     return define_property(heap, object, k, number(length), if w { attr_writable() } else { 0 }, half::Complete);
+}
+// Whether definition d of key k on `object` gives an array's `length` an
+// object value (light-cljs-898): ArraySetLength converts it twice, ToUint32
+// and then ToNumber, each a ToPrimitive with hint number that can run
+// JavaScript, before it reads the length or anything else about the array
+// (steps 3 and 4). Both run in a Convert frame above the frame that defines
+// (convert_length), which then defines the number; the conversions may
+// change the array, and the definition sees it as it is then. A primitive
+// converts in define_length.
+fn length_definition(heap: Heap&, object: Value, k: Value, d: PropertyDescriptor) -> bool {
+    if !d.has_value || !convertible(heap, d.value) || !object.is_object() || node(heap, object.id()).kind != node_kind::Array { return false; }
+    return key_is(heap, k, "length");
+}
+// The frame at `at` awaits, at `pc`, both conversions of `value`, as
+// start_length converts an assignment's: two copies, each ToPrimitive with
+// hint number and then ToNumber, in order; converted_length compares them.
+fn convert_length(job: Job&, at: i64, pc: i64, value: Value) {
+    job.frames[at].pc = pc;
+    if push_operand(job, value) && push_operand(job, value) { start_convert(job, Hint.Number, true, 2, 2); }
+}
+// The descriptor key list d's definition with both conversions of its
+// object length on the operand top (convert_length): its value the number
+// they agree on, or a RangeError (converted_length).
+fn converted_descriptor(job: Job&, d: Value) -> PropertyDescriptor {
+    let n = converted_length(job);
+    if job.heap.fault != Fault.None { return PropertyDescriptor {}; }
+    var r = descriptor_of(job.heap, d);
+    r.value = n;
+    return r;
 }
 
 // ---- The Descriptor frame
@@ -265,6 +302,16 @@ fn define_one(job: Job&, at: i64, b: Builtin) {
     if is_proxy(heap, frame.input) { job.frames[at].pc = 4; proxy_push(job, proxy_method::DefineOwnProperty, frame.input, frame.output, Value.Undefined, frame.callee, answer::Boolean, job.operands.len); return; }
     let d = descriptor_of(heap, frame.callee);
     if heap.fault != Fault.None { return; }
+    // An array's object length converts above the frame first (pc 5).
+    let converts = length_definition(heap, frame.input, frame.output, d);
+    if heap.fault != Fault.None { return; }
+    if converts { convert_length(job, at, 5, d.value); return; }
+    define_with(job, at, b, d);
+}
+// Object.defineProperty and Reflect.defineProperty: definition d of the
+// frame's key on its (not proxy) target, then the built-in's result.
+fn define_with(job: Job&, at: i64, b: Builtin, d: PropertyDescriptor) {
+    let heap .= job.heap; let frame = job.frames[at];
     let ok = define_descriptor(job, frame.input, frame.output, d);
     if heap.fault != Fault.None { return; }
     if b == Builtin.ReflectDefineProperty { finish_native(job, frame, boolean(ok)); return; }
@@ -309,7 +356,9 @@ fn define_all(job: Job&, at: i64) {
     define_from(job, at);
 }
 // The definitions from key `index` on; a proxy target's [[DefineOwnProperty]]
-// runs as its Proxy frame, its answer arriving at pc 4 (light-cljs-891).
+// runs as its Proxy frame, its answer arriving at pc 4 (light-cljs-891), and
+// an array's object length converts above the frame, arriving at pc 5
+// (light-cljs-898).
 fn define_from(job: Job&, at: i64) {
     let heap .= job.heap; let frame = job.frames[at]; let list: i64 = frame.output.id();
     for i in frame.index..node(heap, list).key_count {
@@ -318,16 +367,37 @@ fn define_from(job: Job&, at: i64) {
         if is_proxy(heap, frame.input) { job.frames[at].index = i; job.frames[at].pc = 4; proxy_push(job, proxy_method::DefineOwnProperty, frame.input, r.key, Value.Undefined, r.value, answer::Boolean, job.operands.len); return; }
         let d = descriptor_of(heap, r.value);
         if heap.fault != Fault.None { return; }
-        let ok = define_descriptor(job, frame.input, r.key, d);
+        let converts = length_definition(heap, frame.input, r.key, d);
         if heap.fault != Fault.None { return; }
-        if !ok { named_error(job, Fault.TypeError, "cannot redefine property '", r.key, "'"); return; }
-        if d.has_value && !accessor_descriptor(d) && r.key.is_string() { record(job, frame.input, r.key, d.value); }
+        if converts { job.frames[at].index = i; convert_length(job, at, 5, d.value); return; }
+        if !define_entry(job, frame.input, r.key, d) { return; }
     }
     finish_native(job, frame, frame.input);
+}
+// Object.defineProperties's definition d of key k on `object`: whether it
+// was accepted (refused, a TypeError).
+fn define_entry(job: Job&, object: Value, k: Value, d: PropertyDescriptor) -> bool {
+    let ok = define_descriptor(job, object, k, d);
+    if job.heap.fault != Fault.None { return false; }
+    if !ok { named_error(job, Fault.TypeError, "cannot redefine property '", k, "'"); return false; }
+    if d.has_value && !accessor_descriptor(d) && k.is_string() { record(job, object, k, d.value); }
+    return true;
 }
 // One step of the Descriptor frame at the top (see above).
 fn descriptor_step(job: Job&, frame: Frame, b: Builtin) {
     let heap .= job.heap; let at = job.frames.len - 1;
+    // Both conversions of an array's object length arrived (light-cljs-898):
+    // the definition of the number they agree on, defineProperties's then
+    // going on with its next key.
+    if frame.pc == 5 {
+        if b != Builtin.ObjectDefineProperties { let d = converted_descriptor(job, frame.callee); if heap.fault == Fault.None { define_with(job, at, b, d); } return; }
+        let r = property_row(heap, node(heap, frame.output.id()).keys + frame.index);
+        let d = converted_descriptor(job, r.value);
+        if heap.fault != Fault.None || !define_entry(job, frame.input, r.key, d) { return; }
+        job.frames[at].index += 1;
+        define_from(job, at);
+        return;
+    }
     let v = job.operands.pop();
     match frame.pc {
         0 => {

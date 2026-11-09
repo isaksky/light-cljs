@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "0c7672551a22d4d8bfd85ab0c69489225ad21d91fb181b15a35560a8138c6315",
+  "d54a030e8603fd37e390369c60e5fb34af67a1e703bcf1c8a119472145fe0273",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -201,6 +201,14 @@
   "0d09748ba5a7cc5be18a886cf980550965d6b7934764a3eeb1d567d844cff8fc",
   "corpus/serial/array-join-strings.js"
   "c9c085ffe2d8c7859fc058a16a5a67bd3dd828e2ad7d5831c63017b0dfec6cf7",
+  "corpus/serial/array-length-definition-wait.gsp"
+  "a515db9ca05039cbbe1123d403b47576d74915c20a321d4071bc3774c8a81e60",
+  "corpus/serial/array-length-definition-wait.js"
+  "b14210937dc51de4ff14b14c7f968667bc74b1d43c9ff250053e0d01ef6480e6",
+  "corpus/serial/array-length-definition.gsp"
+  "16628cdb3284aaa5317f85eb4f464160ee273fea0a86b48efdf6c073207e74dc",
+  "corpus/serial/array-length-definition.js"
+  "d634b4d54c60892c7f553d16de1f8e31808bc0d3599e696ebb7b7c7824342ad2",
   "corpus/serial/array-names.gsp"
   "5d9d3dcd130d8868e6f9ce493f52767642002935c834e8325bfc10cbcdaff7fb",
   "corpus/serial/array-names.js"

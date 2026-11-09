@@ -743,6 +743,11 @@ fn main() {
     // Object.defineProperties's Descriptor frames, their key conversion and
     // built-in getters and setters on the general call path (light-cljs-881).
     check(embed_file("../corpus/serial/define-property-frames.gsp"), "boolean:true");
+    // An array's object `length` converting twice above a Descriptor frame
+    // and above a trapless proxy's [[DefineOwnProperty]] frame
+    // (light-cljs-898), at every cut and limit.
+    check(embed_file("../corpus/serial/array-length-definition.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/array-length-definition.gsp"));
     // Objects made non-extensible, sealed and frozen (light-cljs-882).
     check(embed_file("../corpus/serial/integrity-levels.gsp"), "boolean:true");
     // The Object statics that expose own keys (light-cljs-884): their Statics
@@ -916,7 +921,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");

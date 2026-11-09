@@ -477,6 +477,28 @@ from the specification (and V8) follow the specification: the tests read
 IsExtensible before the keys, freeze skips a key whose descriptor is gone,
 and freeze defines {writable: false} on a read-only data property too.
 
+*As landed by light-cljs-898 (an array's object length in
+[[DefineOwnProperty]]):* ArraySetLength (ECMAScript 10.4.2.4) converts an
+object `length` value twice, ToUint32 and then ToNumber, before it reads
+anything about the array; each ToPrimitive can run JavaScript, so both run
+in a Convert frame (decision 4), as light-cljs-893's assignments convert
+theirs. Object.defineProperty, Reflect.defineProperty and
+Object.defineProperties wait for them at a new `Descriptor` phase (pc 5),
+and a trapless proxy's [[DefineOwnProperty]] forwarded to an array target
+at its `Proxy` frame's pc 9, which [[Set]] already uses for its array
+receiver's length; that path also serves Reflect.set, super and plain
+assignments whose proxy receiver defines through its [[DefineOwnProperty]].
+The proxy's trap was read before the conversions, so a trap they install is
+not called, and the definition goes to the target the forward resolved
+even if they revoke the proxy. With both numbers, the definition runs as
+before on the array as it is then: a RangeError when they disagree or are
+no array length, an unchanged length accepted on a read-only array, any
+other refused. No new table, field or native kind: the frame's pc and two
+operands hold the state, which snapshot validation checks (an array target,
+defineProperties's cursor at a descriptor key list;
+corpus/serial/array-length-definition-wait); a light-cljs runtime value as
+the length still fails by name.
+
 *As landed by light-cljs-860 (mapped arguments objects):* a sloppy
 function with a simple parameter list gets a mapped arguments object
 (ECMAScript 10.4.4.7 CreateMappedArgumentsObject; QuickJS

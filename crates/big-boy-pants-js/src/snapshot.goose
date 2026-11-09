@@ -348,10 +348,8 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // two await their key's conversion (pc 0) or hold it; at pc 2
         // each awaits a field of the descriptor object it reads into a
         // descriptor key list, and at pc 3 its presence (light-cljs-890).
-        // At pc 4 a proxy target's [[DefineOwnProperty]] answers
-        // (light-cljs-891): the key and descriptor, or defineProperties's
-        // list read whole and the cursor of its definitions.
-        Descriptor d => if f.pc == 4 { source::descriptor_native(d.which) && object_of(s, f.input, node_kind::Proxy) && (if d.which == source::Builtin.ObjectDefineProperties { object_of(s, f.output, node_kind::KeyList) && f.argument_count == s.nodes[f.output.id()].key_count && f.index >= 0 && f.index < f.argument_count } else { (f.output.is_string() || f.output.is_symbol()) && object_of(s, f.callee, node_kind::KeyList) }) } else { source::descriptor_native(d.which) && f.pc >= 0 && f.pc <= 3 && object_of(s, f.input, node_kind::None)
+        // At pc 4 and 5 it defines (definition_frame_valid).
+        Descriptor d => if f.pc == 4 || f.pc == 5 { source::descriptor_native(d.which) && definition_frame_valid(s, f, d.which) } else { source::descriptor_native(d.which) && f.pc >= 0 && f.pc <= 3 && object_of(s, f.input, node_kind::None)
             && (if d.which == source::Builtin.ObjectDefineProperties { f.pc != 0 && object_of(s, f.output, node_kind::KeyList) && f.argument_count >= 0 && f.argument_count < s.nodes[f.output.id()].key_count } else { if f.pc == 0 { f.output.is_undefined() } else { f.pc >= 2 && (f.output.is_string() || f.output.is_symbol()) } })
             && (f.pc < 2 || f.index >= 0 && f.index < source::FIELD_NAMES.len && object_of(s, f.callee, node_kind::KeyList) && object_of(s, f.receiver, node_kind::None)) },
         // A Statics frame (light-cljs-884, object_statics.goose) awaits one
@@ -363,6 +361,18 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         Construct => f.pc == 0 && (object_of(s, f.callee, node_kind::Closure) || object_of(s, f.callee, node_kind::Builtin) && s.nodes[f.callee.id()].function < source::BUILTINS.len && source::constructor_builtin(source::BUILTINS[s.nodes[f.callee.id()].function].which)) && object_of(s, f.input, node_kind::None),
         _ => true,
     };
+}
+// A Descriptor frame that defines: at pc 4 on a proxy, whose
+// [[DefineOwnProperty]] answers (light-cljs-891), at pc 5 on an array,
+// whose new `length` given as an object converts (light-cljs-898). It
+// holds the key and descriptor, or defineProperties's list read whole and
+// the cursor of its definitions, there (pc 5) a descriptor key list's.
+fn definition_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Builtin) -> bool {
+    if !object_of(s, f.input, if f.pc == 4 { node_kind::Proxy } else { node_kind::Array }) { return false; }
+    if which != source::Builtin.ObjectDefineProperties { return (f.output.is_string() || f.pc == 4 && f.output.is_symbol()) && object_of(s, f.callee, node_kind::KeyList); }
+    if !object_of(s, f.output, node_kind::KeyList) || f.argument_count != s.nodes[f.output.id()].key_count || f.index < 0 || f.index >= f.argument_count { return false; }
+    let row: i64 = s.nodes[f.output.id()].keys + f.index;
+    return f.pc == 4 || row < s.properties.len && object_of(s, s.properties[row].value, node_kind::KeyList);
 }
 // A Proxy frame of an enumeration method (light-cljs-845): pc 3 and 4 list
 // keys, pc 5 and 8 read a descriptor's field `index` (its value from a
@@ -391,8 +401,8 @@ fn enumeration_frame_valid<T>(s: const T&, f: source::SavedFrame, method: i64) -
 // A Proxy frame of [[Get]], [[Set]], [[HasProperty]] or [[Delete]]
 // (light-cljs-890): its key, a throw flag only for [[Set]] and [[Delete]],
 // and a phase of its method's (pc 6 a target descriptor, pc 7 a forwarded
-// getter's or setter's result, pc 9 a forwarded [[Set]]'s array length
-// conversions).
+// getter's or setter's result, pc 9 a forwarded [[Set]]'s or
+// [[DefineOwnProperty]]'s array length conversions).
 //
 // The methods of light-cljs-891: [[Call]] and [[Construct]] hold their
 // argument array until the trap is called; [[IsExtensible]],
@@ -414,7 +424,9 @@ fn property_frame_valid<T>(s: const T&, f: source::SavedFrame, method: i64) -> b
         return phase && f.index <= modes && f.index != answer::Throws && (f.index != answer::Object || object_of(s, f.receiver, node_kind::None)) && (!set || f.callee.is_object() || f.callee.is_null()) && f.output.is_undefined();
     }
     if !(f.output.is_string() || f.output.is_symbol()) { return false; }
-    if method == proxy_method::DefineOwnProperty { return (f.pc <= 2 || f.pc == 6 || f.pc == 12 && (f.receiver.is_undefined() || object_of(s, f.receiver, node_kind::KeyList))) && f.index == answer::Boolean && object_of(s, f.callee, node_kind::KeyList); }
+    // A trapless [[DefineOwnProperty]] awaiting both conversions of an
+    // array target's new `length` (pc 9, light-cljs-898) has that target.
+    if method == proxy_method::DefineOwnProperty { return (f.pc <= 2 || f.pc == 6 || f.pc == 12 && (f.receiver.is_undefined() || object_of(s, f.receiver, node_kind::KeyList)) || f.pc == proxy_pc::Length && object_of(s, s.nodes[f.input.id()].value, node_kind::Array)) && f.index == answer::Boolean && object_of(s, f.callee, node_kind::KeyList); }
     let throws = method == proxy_method::Set || method == proxy_method::Delete;
     if f.index > (if throws { answer::Throws } else { answer::Boolean }) { return false; }
     return f.pc <= 2 || f.pc == 6 || f.pc == 7 && (method == proxy_method::Get || method == proxy_method::Set) || f.pc == 9 && method == proxy_method::Set || (f.pc == 10 || f.pc == 11) && method == proxy_method::Set && object_of(s, f.receiver, node_kind::Proxy)

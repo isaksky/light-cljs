@@ -89,7 +89,10 @@ namespace source;
 //   pc 8  ([[GetOwnProperty]]) awaits a proxy trap result's answer whether
 //         it has descriptor field `index` (its [[HasProperty]])
 //   pc 9  ([[Set]]) awaits both conversions of an array receiver's new
-//         `length` (proxy_length)
+//         `length` (proxy_length); ([[DefineOwnProperty]]) of an array
+//         target's new `length` given as an object, the target the one
+//         its forward resolved (light-cljs-898; descriptors.goose
+//         length_definition)
 //   pc 10 ([[Set]]) awaits its proxy receiver's [[GetOwnProperty]]
 //   pc 11 ([[Set]]) awaits its proxy receiver's [[DefineOwnProperty]]
 //         (proxy_receiver_define)
@@ -489,10 +492,14 @@ fn proxy_forward(job: Job&, at: i64, method: i64) {
     if method == proxy_method::DefineOwnProperty {
         let d = descriptor_of(heap, frame.callee);
         if heap.fault != Fault.None { return; }
-        let ok = define_descriptor(job, target, frame.output, d);
+        // An array target's object length converts above the frame first
+        // (pc Length, light-cljs-898): the trap was read, so a trap the
+        // conversion installs is not called, and the target stays the
+        // proxy's.
+        let converts = length_definition(heap, target, frame.output, d);
         if heap.fault != Fault.None { return; }
-        if ok && d.has_value && !accessor_descriptor(d) && frame.output.is_string() { record(job, target, frame.output, d.value); }
-        proxy_answer(job, at, method, ok, false);
+        if converts { convert_length(job, at, proxy_pc::Length, d.value); return; }
+        forward_definition(job, at, target, d);
         return;
     }
     if method >= proxy_method::Get { proxy_forward_property(job, at, method, target); return; }
@@ -505,6 +512,15 @@ fn proxy_forward(job: Job&, at: i64, method: i64) {
     }
     let d = target_descriptor(job, target, frame.output);
     if heap.fault == Fault.None { finish_native(job, frame, d); }
+}
+// A trapless [[DefineOwnProperty]]'s definition d on `target`, no proxy:
+// its answer.
+fn forward_definition(job: Job&, at: i64, target: Value, d: PropertyDescriptor) {
+    let heap .= job.heap; let k = job.frames[at].output;
+    let ok = define_descriptor(job, target, k, d);
+    if heap.fault != Fault.None { return; }
+    if ok && d.has_value && !accessor_descriptor(d) && k.is_string() { record(job, target, k, d.value); }
+    proxy_answer(job, at, proxy_method::DefineOwnProperty, ok, false);
 }
 // One step of the Proxy frame at the top (see above).
 fn proxy_step(job: Job&, frame: Frame, method: i64) {
@@ -542,8 +558,14 @@ fn proxy_step(job: Job&, frame: Frame, method: i64) {
         // trap result's [[HasProperty]].
         8 => { if descriptor_present(job, at, Builtin.Proxy, 5, truthy(heap, job.operands.pop())) && descriptor_fields(job, at, Builtin.Proxy, 5) { descriptor_done(job, at); } },
         // ([[Set]]) both conversions of an array receiver's new `length`
-        // arrived: the write, as Reflect.set's (reflect_length_step).
-        9 => { proxy_length(job, at); },
+        // arrived: the write, as Reflect.set's (reflect_length_step);
+        // ([[DefineOwnProperty]]) of an array target's, the definition of
+        // the number on that target (light-cljs-898).
+        9 => {
+            if method != proxy_method::DefineOwnProperty { proxy_length(job, at); return; }
+            let d = converted_descriptor(job, frame.callee);
+            if heap.fault == Fault.None { forward_definition(job, at, node(heap, frame.input.id()).value, d); }
+        },
         // ([[Set]]) the proxy receiver's [[GetOwnProperty]], then its
         // [[DefineOwnProperty]]'s answer (proxy_receiver_define).
         10 => { receiver_descriptor(job, at, job.operands.pop()); },

@@ -925,6 +925,16 @@ fn suspended_continuations() {
     waits = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_integrity_resumed, copy(w))); waits += 1; }
     assert(waits == 10);
+    // An array's object `length` (light-cljs-898): eight waits, two in each
+    // definition's conversions, above a Descriptor frame at pc 5 or a
+    // [[DefineOwnProperty]] Proxy frame at pc Length, each resumed from a
+    // saved stack.
+    let lengths = embed_file("../corpus/serial/array-length-definition-wait.gsp");
+    heap_program::join(thread_spawn(length_definition_wait, str(lengths), false));
+    heap_program::join(thread_spawn(length_definition_wait, str(lengths), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(length_definition_resumed, copy(w))); waits += 1; }
+    assert(waits == 9);
     // Private class elements (light-cljs-889): four waits, in a private
     // getter, setter, method and static method, each resumed from a saved
     // stack with the private names and elements; images whose private
@@ -1823,6 +1833,100 @@ thread_fn proxy_integrity_resumed(saved: Waiting) {
     let outcome = source::run(job, -1);
     if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); proxy_integrity_save(job, heap); return; }
     assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, INTEGRITY_RESULT));
+    assert(source::retire(job));
+    assert(qput(false));
+}
+// Run array-length-definition-wait.js (light-cljs-898) through its eight
+// waits: answered in place, checking at each the frame awaiting both
+// conversions (Object.defineProperty's and then Object.defineProperties's
+// Descriptor frame at pc 5, twice each; then a [[DefineOwnProperty]] Proxy
+// frame at pc Length, twice under Reflect.defineProperty's Descriptor
+// frame and twice under a [[Set]] frame at its receiver phase), or each
+// after the stack was saved and restored in a fresh heap
+// (length_definition_resumed), where length_definition_save checks that an
+// image is refused when that frame defines on no array: a Descriptor
+// frame's target is another object or its defineProperties cursor lies past
+// the keys, or a Proxy frame's proxy is one of a plain object.
+let LENGTH_WAITS: source::Builtin[4] = [source::Builtin.ObjectDefineProperty, source::Builtin.ObjectDefineProperty, source::Builtin.ObjectDefineProperties, source::Builtin.ObjectDefineProperties];
+let LENGTH_RESULT = "aDaDbDbDcDcDdDdD:1,2,4,1,true,0,true,object";
+thread_fn length_definition_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    if save { length_definition_save(job, heap); return; }
+    var waits: i64 = 0;
+    loop {
+        var found: i64 = 0; var receiver_phase = false; var converting = false;
+        for f in job.frames {
+            match f.native {
+                Descriptor d => { if f.pc == 5 { assert(waits < LENGTH_WAITS.len && d.which == LENGTH_WAITS[waits]); found += 1; } },
+                Proxy p => {
+                    if p.method == proxy_method::DefineOwnProperty && f.pc == proxy_pc::Length { assert(waits >= LENGTH_WAITS.len); found += 1; }
+                    if p.method == proxy_method::Set && f.pc == proxy_pc::ReceiverDefine { receiver_phase = true; }
+                },
+                Convert => { converting = true; },
+                _ => {},
+            }
+        }
+        assert(found == 1 && converting && receiver_phase == (waits >= 6));
+        waits += 1;
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    }
+    assert(waits == 8 && source::key_is(heap, job.result, LENGTH_RESULT));
+    assert(source::retire(job));
+}
+fn length_definition_save(job: source::Job&, heap: source::Heap&) {
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    // The fixture's proxy of a plain object.
+    var plain: i64 = -1;
+    for n, row in image.nodes { if plain < 0 && n.kind == node_kind::Proxy && n.value.is_object() && image.nodes[n.value.id()].kind == node_kind::Object { plain = row; } }
+    assert(plain >= 0);
+    var refusals: i64 = 0;
+    for mode in 3 {
+        var bad = copy(image); var broken = false;
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        Descriptor d => {
+                            if f.pc == 5 && mode == 0 { f.input = source::object(plain); broken = true; }
+                            if f.pc == 5 && mode == 1 && d.which == source::Builtin.ObjectDefineProperties { f.index = f.argument_count; broken = true; }
+                        },
+                        Proxy p => { if p.method == proxy_method::DefineOwnProperty && f.pc == proxy_pc::Length && mode == 2 { f.input = source::object(plain); broken = true; } },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        if broken { var refused = snapshot::Control {}; assert(!snapshot::validate(bad, refused) && refused.error == snapshot::Error.Link); refusals += 1; }
+    }
+    assert(refusals > 0);
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn length_definition_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); length_definition_save(job, heap); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, LENGTH_RESULT));
     assert(source::retire(job));
     assert(qput(false));
 }

@@ -2133,6 +2133,15 @@ mod serial_tests {
             // dependency wait in each of its phases (snapshot_tests.goose).
             ("define-property-frames", "boolean:true"),
             ("define-property-wait", "goose"),
+            // An array's object `length` converting twice above the
+            // Descriptor frame and a trapless proxy's [[DefineOwnProperty]]
+            // frame (light-cljs-898) at every budget cut and collection
+            // (serial_tests.goose), and across dependency waits in each
+            // conversion (snapshot_tests.goose). The Pants engine converts
+            // an object length only in Reflect's methods, so Goose alone
+            // runs these.
+            ("array-length-definition", "goose"),
+            ("array-length-definition-wait", "goose"),
             // [[Extensible]] and integrity levels (light-cljs-882): objects
             // made non-extensible, sealed and frozen survive every budget
             // cut and collection (serial_tests.goose).

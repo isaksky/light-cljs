@@ -59,6 +59,7 @@
   "bbp/array_length_set_converts" {:area :objects-classes}
   "bbp/array_length_set_to_primitive" {:area :objects-classes :pants-gap "the Pants engine does not run ToPrimitive of an object length (UnsupportedOperand at put_field)"}
   "bbp/array_length_set_sloppy" {:area :objects-classes :mode :sloppy :pants-gap "the Pants engine does not run ToPrimitive of an object length (UnsupportedOperand at put_field)"}
+  "bbp/array_length_definition_conversion" {:area :objects-classes :pants-gap "the Pants engine converts an object length only in Reflect.defineProperty and Reflect.set: Object.defineProperty, Object.defineProperties and an assignment through a proxy fail UnsupportedOperand (converting an object to a number), and it refuses the defineProperty trap (\"unsupported Proxy trap: defineProperty\", rust/src/vm/proxy.rs)"}
   "bbp/classes_base" {:area :objects-classes :mode :sloppy}
   "bbp/classes_builtin_parents" {:area :objects-classes}
   "bbp/classes_derived" {:area :objects-classes}
