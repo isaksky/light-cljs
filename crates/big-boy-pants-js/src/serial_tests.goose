@@ -123,6 +123,12 @@ fn install(heap: source::Heap&, setup: i64) {
             }
             assert(source::define_own(heap, global, source::key_named(heap, global_name), f, source::attr_writable() | source::attr_configurable()));
         }
+    } else if setup == 9 {
+        // The light-cljs runtime (`__lightNativeRuntime`, boot_runtime), for
+        // the callbacks of mapv, a deferred map and swap!
+        // (runtime-conversions.js, light-cljs-900).
+        let rt = source::boot_runtime(heap);
+        assert(rt.is_object());
     } else if setup == 7 {
         // for-of's @@iterator getter (for-of.js, light-cljs-843): `hooked`,
         // an ordinary object whose Symbol.iterator is an accessor with
@@ -757,6 +763,9 @@ fn main() {
     // (light-cljs-900): object arguments whose valueOf and toString run
     // above the frame, one that throws and a symbol, at every budget cut.
     check(embed_file("../corpus/serial/number-conversions.gsp"), "boolean:true");
+    // and the callbacks of mapv, a deferred map and swap! (setup 9 boots
+    // the light-cljs runtime).
+    check(embed_file("../corpus/serial/runtime-conversions.gsp"), "boolean:true", source::Fault.None, 9);
     // A generator function's `constructor` is %GeneratorFunction%, pending
     // for the generators area (light-cljs-768), never Function.
     check(embed_file("../corpus/serial/function-kind-constructor.gsp"), "Fault.UnsupportedOperand:pending-constructor", source::Fault.UnsupportedOperand);

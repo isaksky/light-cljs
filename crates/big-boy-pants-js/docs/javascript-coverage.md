@@ -1920,8 +1920,13 @@ ToIntegerOrInfinity of the radix) and the four above; parseInt and
 parseFloat scan their text in `src/number_text.goose` (`parse_int`
 accumulates the digits exactly in 32-bit limbs up to 1,024 bits and rounds
 once, ties to even; `parse_float` keeps 1,100 significant digits and a
-sticky digit), and Number.parseInt and parseFloat are the same function
-objects as the globals.
+sticky digit), reading the string's run in place up to the end of the
+numeric prefix and charging every unit read to the work limit, in one step
+(light-cljs-912 makes long scans resumable, as the Pants engine's 256-unit
+NumberParse is), and Number.parseInt and parseFloat are the same function
+objects as the globals. The callbacks of the light-cljs runtime's mapv,
+deferred maps and swap! convert as well
+(`corpus/serial/runtime-conversions.js`).
 
 **Rejected.** *Self-hosting by default*: 2.5 times slower on the measured
 case; it needs private intrinsics hidden from ordinary code, a second compile

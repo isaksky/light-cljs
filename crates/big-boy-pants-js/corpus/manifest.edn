@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "359e8f811adee7344db74fe26f3545a26c0f0857a61c5b5b27c7e6c801426585",
+  "ae3b2de80eabe863258b65d5cf0cca5aff1693c012f9b5062d1bbbf1de0ad37a",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -601,6 +601,10 @@
   "d389fc7274e6d22357e7f8e6570432e5d828ef78c8d41486c5b0bd4fb2565d05",
   "corpus/serial/reclaim-roots.js"
   "d41bdafa3b4cfc75f66cc2ac9f02ec8a012dcaf0a65a8bc91bf13a531c304b48",
+  "corpus/serial/runtime-conversions.gsp"
+  "78de319f7055b7f54abead65a852e6c42fe9ea5891da3bed48ce612c2920c52a",
+  "corpus/serial/runtime-conversions.js"
+  "3f8a1eac60d8b70fca79e8c45a49df7ac4b5023b896d449e70dee9477893edad",
   "corpus/serial/script-declarations.gsp"
   "b9dbe0cea12a06ac32629c26d1c9791efda71789cefef897c95a31a9984ed9c2",
   "corpus/serial/script-declarations.js"

@@ -1088,19 +1088,17 @@ fn number_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
                 if heap.fault != Fault.None { return Value.Undefined; }
                 radix = to_int32(r);
             }
-            // Leading StrWhiteSpace, then the units that can belong to a
-            // number, each charged to the work limit as it is scanned.
+            // Leading StrWhiteSpace, then the numeric prefix, read in place
+            // in the string's run; every unit read is charged to the work
+            // limit, the unit that ends the prefix included, and none past it.
             let n = str_len(heap, s);
-            var start: i64      = 0; while start < n && str_white_space(unit(heap, s, start)) { start += 1; }
-            var units: u16[>..] = [];
-            var i = start;
-            while i < n {
-                let u = unit(heap, s, i);
-                if !(u >= '0' && u <= '9' || u >= 'a' && u <= 'z' || u >= 'A' && u <= 'Z' || u == '+' || u == '-' || u == '.') { break; }
-                units.push(u); i += 1;
-            }
-            if !charge(heap, i + 1) { return Value.Undefined; }
-            return number(if b == Builtin.ParseInt { number::parse_int(units, radix) } else { number::parse_float(units) });
+            var start: i64 = 0; while start < n && str_white_space(unit(heap, s, start)) { start += 1; }
+            let h = header(heap, s.sid());
+            var value: f64 = 0; var read: i64 = 0;
+            if h.wide { let t = wide_run(heap, h)[start..]; if b == Builtin.ParseInt { value, read = number::parse_int(t, radix); } else { value, read = number::parse_float(t); } }
+            else { let t = narrow_run(heap, h)[start..]; if b == Builtin.ParseInt { value, read = number::parse_int(t, radix); } else { value, read = number::parse_float(t); } }
+            if !charge(heap, start + read) { return Value.Undefined; }
+            return number(value);
         },
         _ => { heap.fault = Fault.InvalidState; return Value.Undefined; },
     }

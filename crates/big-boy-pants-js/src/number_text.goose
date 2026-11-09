@@ -127,9 +127,10 @@ fn radix_integer(digits: const u8[:], bits: i64) -> f64 {
 // parseInt and parseFloat after leading StrWhiteSpace (light-cljs-900;
 // ECMAScript 19.2.5 and 19.2.4; the Pants engine's rust/src/value/string.rs
 // NumberParse, QuickJS's js_parseInt and js_parseFloat through js_atof):
-// `t` holds the string's units from its first unit that is not
-// StrWhiteSpace, as far as they can belong to a number (the caller charges
-// them as it scans them).
+// `t` is the string's run (Latin-1 bytes or UTF-16 units, read in place)
+// from its first unit that is not StrWhiteSpace. Each returns the value and
+// how many units it read: the numeric prefix and the unit that ended it,
+// which the caller charges to the work limit.
 //
 // parse_int(t, r), r being ToInt32 of the radix: an optional sign; radix 0
 // is 10, or 16 after a `0x` or `0X` prefix, which radix 16 also skips; a
@@ -138,12 +139,12 @@ fn radix_integer(digits: const u8[:], bits: i64) -> f64 {
 // accumulate exactly in 32-bit limbs, up to 1,024 bits (more is Infinity),
 // and round to the nearest double, ties to even, so the result is exact up
 // to 2^53 and correctly rounded beyond; "-0" is -0.
-fn parse_int(t: const u16[:], radix_in: i64) -> f64 {
+fn parse_int<T>(t: const T[:], radix_in: i64) -> f64, i64 {
     var i: i64 = 0; var negative = false;
     if i < t.len && (t[i] == '+' || t[i] == '-') { negative = t[i] == '-'; i += 1; }
     var radix = radix_in; var strip = true;
     if radix != 0 {
-        if radix < 2 || radix > 36 { return 0.0 / 0.0; }
+        if radix < 2 || radix > 36 { return 0.0 / 0.0, i; }
         if radix != 16 { strip = false; }
     } else { radix = 10; }
     if strip && t.len - i >= 2 && t[i] == '0' && (t[i + 1] == 'x' || t[i + 1] == 'X') { i += 2; radix = 16; }
@@ -158,14 +159,15 @@ fn parse_int(t: const u16[:], radix_in: i64) -> f64 {
         for k in limbs.len { carry += limbs[k] * r; limbs[k] = carry & 4294967295; carry = carry >> 32; }
         if carry != 0 {
             // Past 2^1024 every longer prefix is too.
-            if limbs.len == 32 { return if negative { -1.0 / 0.0 } else { 1.0 / 0.0 }; }
+            if limbs.len == 32 { return if negative { -1.0 / 0.0 } else { 1.0 / 0.0 }, i + 1; }
             limbs.push(carry);
         }
         i += 1;
     }
-    if !any { return 0.0 / 0.0; }
+    let read = min(i + 1, t.len);
+    if !any { return 0.0 / 0.0, read; }
     let v = limbs_value(limbs);
-    return if negative { -v } else { v };
+    return if negative { -v } else { v }, read;
 }
 // The integer of little-endian 32-bit limbs, rounded to the nearest double,
 // ties to even: its first 64 significant bits, how many follow and whether
@@ -218,13 +220,13 @@ fn round_integer(mant: u64, dropped: i64, sticky: bool) -> f64 {
 // read ("0x1" is 0). Of the significant digits the first 1,100 are kept and
 // any later nonzero one is a sticky 1: a double's rounding boundary has
 // fewer significant digits, so only that nonzeroness can decide a side.
-fn parse_float(t: const u16[:]) -> f64 {
+fn parse_float<T>(t: const T[:]) -> f64, i64 {
     var i: i64 = 0; var negative = false;
     if i < t.len && (t[i] == '+' || t[i] == '-') { negative = t[i] == '-'; i += 1; }
     let infinity = "Infinity";
     if t.len - i >= infinity.len {
         var same = true; for c, j in infinity { if t[i + j] != c { same = false; } }
-        if same { return if negative { -1.0 / 0.0 } else { 1.0 / 0.0 }; }
+        if same { return if negative { -1.0 / 0.0 } else { 1.0 / 0.0 }, i + infinity.len; }
     }
     // States: 0 nothing, 2 integer digits, 3 a point without digits before
     // it, 4 a point after digits or fraction digits, 5 `e`, 6 the exponent's
@@ -251,14 +253,15 @@ fn parse_float(t: const u16[:]) -> f64 {
         }
         state = next; i += 1;
     }
-    if !any { return 0.0 / 0.0; }
+    let read = min(i + 1, t.len);
+    if !any { return 0.0 / 0.0, read; }
     let zero: f64 = 0.0;
-    if digits.len == 0 { return if negative { -zero } else { zero }; }
+    if digits.len == 0 { return if negative { -zero } else { zero }, read; }
     var shift = dropped - fraction;
     if state == 7 { shift += if exponent_negative { -exponent } else { exponent }; }
     if sticky { digits.push('1'); shift -= 1; }
     digits.push('e'); format(digits, shift);
     let v, ok = parse_flt(digits);
-    if !ok { return 0.0 / 0.0; }
-    return if negative { -v } else { v };
+    if !ok { return 0.0 / 0.0, read; }
+    return if negative { -v } else { v }, read;
 }

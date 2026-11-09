@@ -2170,6 +2170,9 @@ mod serial_tests {
             // (serial_tests.goose); its @@hasInstance row is one the Pants
             // engine refuses.
             ("number-conversions", "goose"),
+            // and through the light-cljs runtime's mapv, deferred map and
+            // swap! callbacks, which the Pants engine does not have.
+            ("runtime-conversions", "goose"),
             // Symbol values (light-cljs-885): symbol rows, symbol keys and
             // the Symbol.for registry at every budget cut and collection
             // (serial_tests.goose).
