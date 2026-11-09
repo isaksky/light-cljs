@@ -806,6 +806,13 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(symbols_wait, str(symbols), true));
     assert(qget<bool>()); let sw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(sw)));
     heap_program::join(thread_spawn(symbols_reused, str(symbols)));
+    // Base classes (light-cljs-886): a wait inside newTarget's `prototype`
+    // getter, above the Construct frame, in place and from a saved
+    // continuation; an image whose class constructor looks lazy is refused.
+    let classes = embed_file("../corpus/serial/classes-wait.gsp");
+    heap_program::join(thread_spawn(classes_wait, str(classes), false));
+    heap_program::join(thread_spawn(classes_wait, str(classes), true));
+    assert(qget<bool>()); let cw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(cw)));
     print("suspended continuations: a dependency wait keeps them in place or carries them, with its whole stack as rows (native frames included), in a saved continuation; a reused worker's next job cannot reach them");
 }
 // Run suspended-wait.js to its dependency wait, with a generator and an
@@ -1330,6 +1337,33 @@ thread_fn symbols_wait(bytes: u8[], save: bool) {
     // Every registered symbol is on the chain: a Null head disconnects one.
     var cut = copy(image); cut.header.registry = source::Value.Null;
     check = snapshot::Control {}; assert(!snapshot::validate(cut, check) && check.error == snapshot::Error.Link);
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// Run classes-wait.js to its dependency wait, inside newTarget's
+// `prototype` getter above the Construct native frame; answer it in place,
+// or save the continuation (symbols_resumed answers it, "D:true").
+// A class constructor's closure row with its properties cleared, as a lazy
+// closure's are, is refused.
+thread_fn classes_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8 && job.frames.len == 3);
+    let constructing = match job.frames[1].native { Construct => true, _ => false }; assert(constructing);
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    var class_row: i64 = -1;
+    for n, row in image.nodes { if n.kind == node_kind::Closure && image.functions[n.function].kind == constructor::BaseClass { class_row = row; } }
+    assert(class_row >= 0 && image.nodes[class_row].key_count == 5);
+    var bad = copy(image); bad.nodes[class_row].key_count = 0; bad.nodes[class_row].shape = 0; bad.nodes[class_row].keys = 0; bad.nodes[class_row].key_capacity = 0; bad.nodes[class_row].slots = [source::Value.Undefined; 2];
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
     assert(qput(true));
     assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
 }

@@ -327,6 +327,9 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // A Statics frame (light-cljs-884, object_statics.goose) awaits one
         // of its values for its built-in.
         Statics x => statics_frame_valid(s, f, x.which),
+        // A Construct frame (light-cljs-886) awaits newTarget's
+        // `prototype` getter for its constructor, a closure.
+        Construct => f.pc == 0 && object_of(s, f.callee, node_kind::Closure) && object_of(s, f.input, node_kind::None),
         _ => true,
     };
 }
@@ -664,6 +667,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
         }
         if n.kind == node_kind::Closure && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
+        // A class constructor makes its properties when it is made
+        // (light-cljs-886): it is never a lazy closure.
+        if n.kind == node_kind::Closure && s.functions[n.function].kind >= constructor::BaseClass && n.key_count == 0 && !n.initialized { return reject(c, Error.Link); }
         if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == node_kind::Map && n.count % 2 != 0 { return reject(c, Error.Link); } }
         if elements(n.kind) {
             // A dictionary array (initialized) has records and no run; a dense

@@ -193,7 +193,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64), Construct => 10001 }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -317,6 +317,11 @@ enum Ins {
     // TemplateObject (111; light-cljs-862, templates.goose): `count` cooked
     // and raw string pairs → the site's template object.
     TemplateObject { count: u32 },
+    // DefineClassMethod, DefineClassGetter and DefineClassSetter (147-149;
+    // light-cljs-886): obj k f → obj, a class element on its home object
+    // (the prototype or the constructor), `half` a data method (0), getter
+    // (1) or setter (2) (define_field's class attributes).
+    DefineClass { half: u8 },
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -725,10 +730,16 @@ root struct Heap {
 //                and has, and toString's @@toStringTag getter
 //                (light-cljs-884; object_statics.goose, which gives their
 //                fields and phases), its Builtin the payload.
+//   Construct    [[Construct]] of an ordinary function or base class whose
+//                newTarget's `prototype` is an accessor (light-cljs-886;
+//                construct): callee the constructor, input newTarget, the
+//                constructor and its arguments at operand_base; pc 0
+//                awaits the getter's value, then the constructor's frame
+//                replaces this one.
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -874,9 +885,11 @@ fn instruction(op: Op) -> Ins {
         opcode::Not => Ins.Not, opcode::Jump => Ins.Jump { to: a }, opcode::JumpIfFalse => Ins.JumpUnless { to: a }, opcode::Return => Ins.Return,
         opcode::NewObject => Ins.NewObject { bare: true }, opcode::NewObjectLiteral => Ins.NewObject { bare: false }, opcode::NewArray => Ins.NewArray, opcode::PushCatch => Ins.Try { to: a }, opcode::Throw => Ins.Throw, opcode::PopCatch => Ins.EndTry,
         opcode::Neg, opcode::ToNumber, opcode::ToNumeric, opcode::Inc, opcode::Dec, opcode::BitNot => Ins.Unary { op: op.code as u8 }, opcode::ToNumberPair => Ins.Numeric2,
-        // Method, an object literal's method, getter or setter: obj c1..cn
-        // → obj f, a closure like Function's; its home object only serves
-        // `super`, whose opcodes are not implemented (light-cljs-787).
+        // Method, an object literal's or a class's method, getter or
+        // setter: obj c1..cn → obj f, a closure like Function's; its home
+        // object only serves `super`, whose opcodes are not implemented
+        // (light-cljs-787): light-cljs-888 stores it (see
+        // docs/javascript-coverage.md, light-cljs-886).
         opcode::Function, opcode::Method => Ins.Closure { child: a }, opcode::Construct => Ins.Construct { argc: a },
         opcode::Call => if op.direct_eval { Ins.DirectEval { argc: a, method: false, spread: false } } else { Ins.Call { argc: a } },
         opcode::CallMethod => if op.direct_eval { Ins.DirectEval { argc: a, method: true, spread: false } } else { Ins.CallMethod { argc: a } },
@@ -905,6 +918,7 @@ fn instruction(op: Op) -> Ins {
         opcode::GetIterator => Ins.GetIterator, opcode::RequireObject => Ins.RequireObject, opcode::AppendHole => Ins.AppendHole,
         opcode::IsCell => Ins.IsCell, opcode::IsObject => Ins.IsObject, opcode::CheckSloppyThis => Ins.SloppyThis, opcode::SetComputedName => Ins.ComputedName { k: a },
         opcode::TemplateObject => Ins.TemplateObject { count: a },
+        opcode::DefineClassMethod => Ins.DefineClass { half: 0 }, opcode::DefineClassGetter => Ins.DefineClass { half: 1 }, opcode::DefineClassSetter => Ins.DefineClass { half: 2 },
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -1865,9 +1879,12 @@ fn delete_own(heap: Heap&, o: i64, k: Value) -> bool {
 // lazy again. Arrows, methods and async functions have no `prototype`. A
 // generator function's (light-cljs-790) is made the same way, a new object
 // whose [[Prototype]] is %GeneratorPrototype% and which has no
-// `constructor`. Not implemented, failing UnsupportedOperand by name: a class
-// constructor's eager `prototype` and an async generator's, and therefore
-// those functions' key lists. A computed-key literal function's name
+// `constructor`. A class constructor (constructor kind 2 to 4,
+// light-cljs-886) makes all three when it is made (closure), never lazily:
+// its `prototype` is a new ordinary object with that `constructor`, and is
+// neither writable, enumerable nor configurable. Not implemented, failing
+// UnsupportedOperand by name: an async generator's `prototype`, and
+// therefore its key list. A computed-key literal function's name
 // (SetComputedName, light-cljs-855) makes its properties at once, with
 // that name (set_computed_name). Built-ins
 // (node_kind::Builtin) have their own `length` and `name` from the realm (light-cljs-788).
@@ -1877,12 +1894,12 @@ fn lazy_function(heap: const Heap&, o: i64) -> bool {
     return n.kind == node_kind::Closure && n.key_count == 0 && !n.initialized;
 }
 // Whether closure o's code gives it an own `prototype`: an ordinary
-// function's or a (synchronous) generator's.
-fn has_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.kind == constructor::Ordinary || f.generator && !f.asynchronous; }
+// function's, a class constructor's or a (synchronous) generator's.
+fn has_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.kind != constructor::None || f.generator && !f.asynchronous; }
 fn lazy_prototype(heap: const Heap&, o: i64) -> bool { return lazy_function(heap, o) && has_prototype(heap, o); }
-// Whether closure o's `prototype` is one this VM does not make (a class
-// constructor's or an async generator's).
-fn unsupported_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.kind >= constructor::BaseClass || f.generator && f.asynchronous; }
+// Whether closure o's `prototype` is one this VM does not make (an async
+// generator's).
+fn unsupported_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.generator && f.asynchronous; }
 // Closure o's `length` and `name` from its code row.
 fn function_length(heap: const Heap&, o: i64) -> Value { return number(heap.code.functions[node(heap, o).function].length); }
 fn function_name(heap: Heap&, o: i64) -> Value {
@@ -1921,11 +1938,16 @@ fn materialize_function(heap: Heap&, o: i64) -> bool {
 // (ToPropertyKey's: a string, a symbol or an index). Its `name` is the
 // constant prefix ("", "get " or "set ") and the key's spelling, a
 // well-known symbol's bracketed description (`[Symbol.unscopables]`); its
-// properties are made now, with that name.
+// properties are made now, with that name. A class constructor, made with
+// its properties (light-cljs-886), is named by a computed key of the
+// literal holding the class (`{ [k]: class {} }`) before any element is
+// defined: its `name` value is replaced.
 fn set_computed_name(job: Job&, prefix: Value) {
     let heap .= job.heap;
     let f = job.operands[job.operands.len - 1]; let k = job.operands[job.operands.len - 2];
-    if !f.is_object() || !valid(heap, f) || !lazy_function(heap, f.id()) || !prefix.is_string() { heap.fault = Fault.InvalidState; return; }
+    if !f.is_object() || !valid(heap, f) || !prefix.is_string() { heap.fault = Fault.InvalidState; return; }
+    let is_class = node(heap, f.id()).kind == node_kind::Closure && constructor_kind(heap, f.id()) >= constructor::BaseClass && !lazy_function(heap, f.id());
+    if !is_class && !lazy_function(heap, f.id()) { heap.fault = Fault.InvalidState; return; }
     var units: u16[>..] = [];
     append_utf16(heap, prefix, units);
     // A symbol's description in brackets, nothing for an undefined one.
@@ -1935,7 +1957,14 @@ fn set_computed_name(job: Job&, prefix: Value) {
     else { heap.fault = Fault.InvalidState; return; }
     if !units_fit(heap, units.len) { memory(heap); return; }
     let n = string(heap, units);
-    if heap.fault == Fault.None { materialize_named(heap, f.id(), n); }
+    if heap.fault != Fault.None { return; }
+    if !is_class { materialize_named(heap, f.id(), n); return; }
+    let name = key_named(heap, "name");
+    if heap.fault != Fault.None { return; }
+    let p = find_own(heap, f.id(), name);
+    if heap.fault != Fault.None { return; }
+    if !p.found || is_accessor(p.value) { heap.fault = Fault.InvalidState; return; }
+    write_own(heap, f.id(), p.index, n);
 }
 fn materialize_named(heap: Heap&, o: i64, n: Value) -> bool {
     let length = key_named(heap, "length"); let name = key_named(heap, "name");
@@ -1943,10 +1972,11 @@ fn materialize_named(heap: Heap&, o: i64, n: Value) -> bool {
     if !has_prototype(heap, o) { return true; }
     let constructor = key_named(heap, "constructor"); let prototype = key_named(heap, "prototype");
     if heap.fault != Fault.None { return false; }
-    let ordinary = constructor_kind(heap, o) == constructor::Ordinary;
+    // An ordinary function's or a class's; otherwise a generator's.
+    let kind = constructor_kind(heap, o); let ordinary = kind != constructor::None;
     let p = allocate(heap, if ordinary { Node { kind: node_kind::Object } } else { Node { kind: node_kind::Object, proto: object(generator_prototype_row()) } });
     if heap.fault != Fault.None || ordinary && !add_own(heap, p.id(), constructor, object(o), attr_writable() | attr_configurable()) { return false; }
-    return add_own(heap, o, prototype, p, attr_writable());
+    return add_own(heap, o, prototype, p, if kind >= constructor::BaseClass { 0 } else { attr_writable() });
 }
 // Primitive wrapper objects (light-cljs-832; decision 2): node_kind::Wrapper, whose
 // `value` is the number, string or boolean it wraps ([[NumberData]],
@@ -2601,7 +2631,11 @@ fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
     if !values_fit(heap, captures.len) || !charge(heap, captures.len) { if heap.fault == Fault.None { memory(heap); } return Value.Undefined; }
     for v in captures { if !valid(heap, v) { return Value.Undefined; } }
     let start = add_values(heap, captures);
-    return allocate(heap, Node { kind: node_kind::Closure, function: function as u32, start: start as u32, count: captures.len as u32 });
+    let f = allocate(heap, Node { kind: node_kind::Closure, function: function as u32, start: start as u32, count: captures.len as u32 });
+    // A class constructor's `length`, `name` and `prototype` are made with
+    // it (light-cljs-886): a class is never a lazy closure.
+    if heap.fault == Fault.None && heap.code.functions[function].kind >= constructor::BaseClass { materialize_function(heap, f.id()); }
+    return f;
 }
 // The native frames from `keep` up release their state as an unwind passes
 // them (see Native): a deferred map gives up its claim, so a later demand
@@ -2997,8 +3031,9 @@ fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[
         heap.fault = Fault.TypeError; return false;
     }
     let id = node(heap, callee.id()).function; let f .= heap.code.functions[id];
-    // A class constructor has no [[Call]]: calling it throws TypeError.
-    if f.kind >= constructor::BaseClass { heap.fault = Fault.TypeError; return false; }
+    // A class constructor has no [[Call]]: calling it throws TypeError; only
+    // construct enters it, with its new.target (light-cljs-886).
+    if f.kind >= constructor::BaseClass && !new_target.is_object() { type_error(job, "class constructors must be invoked with 'new'"); return false; }
     if job.frames.len >= heap.limits.frames || f.locals + arguments.len > heap.limits.stack - job.locals.len - operands { heap.fault = Fault.StackLimit; return false; }
     if !charge(heap, f.locals + arguments.len) { return false; }
     if checked { for v in arguments { if !valid(heap, v) { return false; } } }
@@ -4032,6 +4067,7 @@ fn native_step(job: Job&) {
         ErrorText => { error_text_step(job, frame); },
         Descriptor d => { descriptor_step(job, frame, d.which); },
         Statics s => { statics_step(job, frame, s.which); },
+        Construct => { construct_step(job, frame); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -4691,6 +4727,15 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
+                // The key is ToPropertyKey's already (a string, symbol or
+                // number), so nothing converts here.
+                DefineClass d => {
+                    settle(job, ran, used); job.frames[top].pc = pc;
+                    let value = job.operands.pop(); let v = job.operands.pop(); let k = key(heap, v);
+                    if heap.fault == Fault.None { define_field(job, k, value, d.half, true); }
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
                 SetProto => {
                     settle(job, ran, used); job.frames[top].pc = pc; set_proto(job);
                     if !in_place(job, top, at) { break; }
@@ -5069,7 +5114,7 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
 // vm/dispatch.rs construct_target, QuickJS's JS_CallConstructorInternal),
 // f and its arguments the top argc + 1 operands, every argument already
 // evaluated and none used before f is known to be a constructor. An ordinary
-// function (constructor kind Ordinary) gets OrdinaryCreateFromConstructor's
+// function (constructor kind Ordinary) or base class (BaseClass, light-cljs-886) gets OrdinaryCreateFromConstructor's
 // object, a job row inheriting F.prototype (made on first observation, as a
 // read makes it) or, when that is not an object, %Object.prototype%; F's
 // frame runs with it as `this` and F as new.target, and return_value
@@ -5084,7 +5129,7 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
 // TypeError: primitives, objects without [[Call]], the light-cljs runtime
 // kinds, arrows, methods, accessors, generator and async functions, and the
 // realm's other built-ins (Symbol's [[Construct]] throws). Failing by name
-// (decision 1): class constructors (the objects area, light-cljs-766) and
+// (decision 1): derived class constructors (light-cljs-887) and
 // the light-cljs runtime's leaves other than Delay, which the V8 build
 // constructs as ordinary JavaScript functions.
 fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
@@ -5097,13 +5142,24 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
     let kind: i64 = if f.is_object() { node(heap, f.id()).kind } else { node_kind::None };
     if kind == node_kind::Closure {
         let code_kind = constructor_kind(heap, f.id());
-        if code_kind >= constructor::BaseClass { unsupported_detail(job, "construct: class constructors"); return; }
-        if code_kind != constructor::Ordinary { heap.fault = Fault.TypeError; return; }
-        let proto = construct_prototype(job, nt);
+        // A base class constructs as an ordinary function does (its body
+        // first runs the instance-field initializer, compiled into it);
+        // derived classes are light-cljs-887's.
+        if code_kind > constructor::BaseClass { unsupported_detail(job, "construct: derived class constructors"); return; }
+        if code_kind == constructor::None { heap.fault = Fault.TypeError; return; }
+        // A `prototype` getter on newTarget (a bound function's or an
+        // object's on its chain, Reflect.construct's) runs as a frame above
+        // a Construct native frame, which then enters the constructor
+        // (construct_step).
+        let proto, getter = closure_prototype(job, nt);
         if heap.fault != Fault.None { return; }
-        let o = allocate(heap, Node { kind: node_kind::Object, proto: proto });
-        if heap.fault != Fault.None { return; }
-        if push_frame(job, f, o, job.operands[(base + 1)..], false, base, nt) { job.operands.resize(base); }
+        if getter.is_object() {
+            if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+            job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: f, receiver: Value.Undefined, input: nt, native: Native.Construct });
+            call_accessor(job, getter, nt, []);
+            return;
+        }
+        enter_constructor(job, f, nt, proto, base);
         return;
     }
     // A bound function's [[Construct]] runs in a Forward frame, newTarget
@@ -5159,6 +5215,41 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
         if proto.is_object() { node_mut(heap, value.id()).proto = proto; }
     }
     job.operands.resize(base); job.operands.push(value);
+}
+// GetPrototypeFromConstructor(nt) for an ordinary function's or base
+// class's construct: the prototype (Empty, the realm's %Object.prototype%,
+// when not an object), or the getter of an accessor `prototype`, which
+// construct runs (light-cljs-886).
+fn closure_prototype(job: Job&, nt: Value) -> Value, Value {
+    let heap .= job.heap;
+    if node(heap, nt.id()).kind == node_kind::Closure && lazy_prototype(heap, nt.id()) && !writable(job, nt.id()) { unsupported_detail(job, "construct: a function whose lazy prototype is in a row this job did not allocate"); return Value.Undefined, Value.Undefined; }
+    let k = key_named(heap, "prototype");
+    if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
+    prepare_function(job, nt, k, false);
+    if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
+    let v, getter = lookup(heap, nt, k);
+    if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
+    return if v.is_object() { v } else { Value.Empty }, getter;
+}
+// OrdinaryCreateFromConstructor's object with prototype `proto`, then
+// constructor f's frame with it as `this` and nt as new.target; f and its
+// arguments are the operands from `base`.
+fn enter_constructor(job: Job&, f: Value, nt: Value, proto: Value, base: i64) {
+    let heap .= job.heap;
+    let o = allocate(heap, Node { kind: node_kind::Object, proto: proto });
+    if heap.fault != Fault.None { return; }
+    if push_frame(job, f, o, job.operands[(base + 1)..], false, base, nt) { job.operands.resize(base); }
+}
+// The Construct frame's step (see Native): the getter's value on the
+// operand top is newTarget's prototype, the realm's %Object.prototype%
+// when it is not an object; the constructor's frame replaces this one.
+fn construct_step(job: Job&, frame: Frame) {
+    let heap .= job.heap;
+    if frame.pc != 0 || job.operands.len < frame.operand_base + 2 || !same_bits(job.operands[frame.operand_base], frame.callee) { heap.fault = Fault.InvalidState; return; }
+    let p = job.operands.pop();
+    if !valid(heap, p) { return; }
+    job.frames.pop();
+    enter_constructor(job, frame.callee, frame.input, if p.is_object() { p } else { Value.Empty }, frame.operand_base);
 }
 // GetPrototypeFromConstructor(newTarget) for construct, Empty (the kind's
 // realm default) when it is not an object. Making a closure's lazy
@@ -5904,8 +5995,12 @@ fn refused_write(job: Job&, object: Value, k: Value) {
 // own property, a data property (half 0) or an accessor's getter (1) or
 // setter (2), merged with the other half (light-cljs-787). A refused
 // definition is a TypeError (CreateDataPropertyOrThrow). Data definitions
-// enter the write log as assignments did.
-fn define_field(job: Job&, k: Value, value: Value, half: u8) {
+// enter the write log as assignments did. `class_member`: a class element
+// (DefineClass, light-cljs-886; the Pants engine's define_class_element),
+// non-enumerable and configurable, a method writable too; a getter or
+// setter merges with the other half as a literal's does. A refusal (a
+// computed `static ['prototype']()`, say) is a TypeError there too.
+fn define_field(job: Job&, k: Value, value: Value, half: u8, class_member: bool = false) {
     let heap .= job.heap;
     let object = job.operands[job.operands.len - 1];
     if !valid(heap, object) || !key_valid(heap, k) || !valid(heap, value) { return; }
@@ -5914,7 +6009,8 @@ fn define_field(job: Job&, k: Value, value: Value, half: u8) {
     prepare_function(job, object, k, true);
     let key = intern(heap, k);
     if heap.fault != Fault.None { return; }
-    let ok = define_property(heap, object, key, value, if half == 0 { attrs_data() } else { attrs_accessor() }, half);
+    let attrs = if class_member { if half == 0 { attr_writable() | attr_configurable() } else { attr_configurable() } } else if half == 0 { attrs_data() } else { attrs_accessor() };
+    let ok = define_property(heap, object, key, value, attrs, half);
     if heap.fault != Fault.None { return; }
     if !ok { heap.fault = Fault.TypeError; } else if half == 0 { record(job, object, k, value); }
 }
@@ -5989,7 +6085,7 @@ fn in_op(job: Job&) {
 // the instruction. A built-in method that converts its argument (a Convert
 // frame) or runs as a native frame also runs above it, as does a getter that is no closure (call_accessor, light-cljs-881). Failing by name (decision 1): a
 // built-in @@hasInstance method that needs a host effect or a map demand, an
-// arguments object as the target, a class constructor's or async generator's `prototype` (light-cljs-766),
+// arguments object as the target, an async generator's `prototype` (the generators area),
 // and a light-cljs runtime value (a form, cell or cursor, which the V8
 // build's runtime makes instances of its own constructors) as V or on its
 // prototype chain. Bound functions (light-cljs-764) and Proxy
@@ -6080,7 +6176,7 @@ fn ordinary_has_instance(job: Job&, at: i64, bound: Value, o: Value) {
     }
     if !o.is_object() { has_instance_done(job, at, false); return; }
     if node(heap, c.id()).kind == node_kind::Closure {
-        if unsupported_prototype(heap, c.id()) { unsupported_detail(job, "instanceof: a class constructor's or async generator's prototype"); return; }
+        if unsupported_prototype(heap, c.id()) { unsupported_detail(job, "instanceof: an async generator's prototype"); return; }
         if lazy_prototype(heap, c.id()) { has_instance_done(job, at, false); return; }
     }
     let k = key_named(heap, "prototype");

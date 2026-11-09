@@ -83,10 +83,10 @@ fn integrity_target(job: Job&, b: Builtin, object: Value, method: i64) -> bool {
     let heap .= job.heap; let kind = node(heap, object.id()).kind;
     if kind == node_kind::Proxy { proxy_fault(heap, method); return false; }
     if !integrity_kind(kind) { unsupported_step(job, b, "a light-cljs runtime value"); return false; }
-    // A class constructor's eager `prototype` and an async generator's are
-    // not made yet (source_vm.goose unsupported_prototype), so they cannot
-    // stop being extensible (and so are never sealed or frozen).
-    if method == proxy_method::PreventExtensions && kind == node_kind::Closure && unsupported_prototype(heap, object.id()) { unsupported_step(job, b, "a class constructor or async generator function"); return false; }
+    // An async generator's `prototype` is not made yet (source_vm.goose
+    // unsupported_prototype), so it cannot stop being extensible (and so is
+    // never sealed or frozen).
+    if method == proxy_method::PreventExtensions && kind == node_kind::Closure && unsupported_prototype(heap, object.id()) { unsupported_step(job, b, "an async generator function"); return false; }
     return true;
 }
 // [[PreventExtensions]] (OrdinaryPreventExtensions): true, or false with a

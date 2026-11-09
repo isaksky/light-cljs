@@ -612,6 +612,40 @@ instruction's Convert frame, as String(o)'s does), the [[Prototype]] of
 Symbol wrappers (`node_kind::Wrapper` holding a symbol) and where a symbol
 primitive's property reads and writes start (`primitive_prototype`).
 
+*As landed by light-cljs-886 (base classes):* a class is a closure row
+(no new table or node kind) whose code's constructor kind is
+`constructor::BaseClass` or a derived kind. Unlike any other closure it
+is never lazy: `closure` makes its `length`, `name` and `prototype` when it
+makes the closure, the `prototype` a new ordinary object with a
+non-enumerable `constructor`, and itself neither writable, enumerable nor
+configurable. A computed class name (`{ [k]: class {} }`) replaces the
+made `name` value (`set_computed_name`); snapshot validation refuses a
+class closure without properties. Class elements are own properties of
+their home object, defined by `Ins.DefineClass` (DefineClassMethod,
+DefineClassGetter, DefineClassSetter) through `define_field`'s ordinary
+[[DefineOwnProperty]] with class attributes (not enumerable; configurable;
+methods writable; getter and setter halves merging). [[Call]] of a class
+is a TypeError in `push_frame`, which enters class code only with a
+new.target; [[Construct]] of a base class is an ordinary function's
+(`construct`, Reflect.construct's Forward frame included; a newTarget
+whose `prototype` is an accessor runs its getter above a `Construct`
+native frame, which then enters the constructor, for ordinary functions
+too, decision 4), and the
+instance-field initializer the Rust lowering keeps in the class's
+`*instance-fields*` cell runs as an ordinary method frame of `this` at the
+start of the body, so fields, static fields and static blocks need no VM
+state of their own: they are closures, cells and DefineField/DefineElem on
+`this`. Derived classes (`InitHeritage`, `CheckHeritage`, `ConstructSuper`
+and the rest, light-cljs-887), `super` properties (light-cljs-888) and
+private names (light-cljs-889) still fail by name. *Home object:* the
+`Method` opcode's home object is not stored yet; light-cljs-888 adds it.
+The intended place is the method closure's `Node.value` (unused by
+closures), which reclamation (`mark`/`relink` of every node's `value`) and
+snapshot validation (`value` of every node) already cover; 888 must also
+decide what a publication does with a method whose home object is a
+mutable object (today a lazy method publishes; reaching its home object
+would refuse it).
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

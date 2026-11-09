@@ -2146,6 +2146,13 @@ mod serial_tests {
             // and across a dependency wait, saved and restored with its
             // continuation (snapshot_tests.goose).
             ("symbols-wait", "goose"),
+            // Base classes (light-cljs-886): constructors, eager
+            // prototypes, methods, accessors, fields and static blocks at
+            // every budget cut and collection (serial_tests.goose).
+            ("classes", "boolean:true"),
+            // and across a dependency wait inside newTarget's `prototype`
+            // getter during a construction (snapshot_tests.goose).
+            ("classes-wait", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));
