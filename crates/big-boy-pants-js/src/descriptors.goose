@@ -43,7 +43,9 @@ namespace source;
 //             frame (an object key), the output still undefined
 //   pc 1      (defineProperties) awaits Get(properties, key) from its getter
 //   pc 2      awaits field `index` from its getter
-// defineProperties reads every descriptor before the first definition
+// A call that runs no JavaScript pushes and pops the frame in one step,
+// outside the frame limit (start_descriptor), so it behaves as a plain
+// function would. defineProperties reads every descriptor before the first definition
 // (object_statics.rs object_statics_define_properties_conversion_before_writes).
 // Then the definitions run in key order as plain Goose: none of them runs
 // JavaScript. A definition refused is a TypeError for Object's methods and
@@ -181,7 +183,11 @@ fn start_descriptor(job: Job&, b: Builtin, args: const Value[:], base: i64) {
     let heap .= job.heap;
     let target = arg(args, 0);
     if !target.is_object() { type_error(job, if b == Builtin.ReflectDefineProperty { "Reflect.defineProperty: the target is not an object" } else { "Object.defineProperty called on non-object" }); return; }
-    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+    // The frame is scratch until JavaScript must run: a call that reads
+    // no getter and converts no key pops it in this step, so it is not
+    // counted against the frame limit; a getter's frame or a Convert frame
+    // above it is (push_frame, start_bound, start_convert), so a call at
+    // the limit that needs JavaScript is still the catchable StackLimit.
     if b == Builtin.ObjectDefineProperties {
         let props = to_object(job, arg(args, 1));
         if heap.fault != Fault.None { return; }

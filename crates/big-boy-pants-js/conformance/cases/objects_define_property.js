@@ -13,7 +13,8 @@
 // (line 118); and the planner's rows (light-cljs-766). Left out: rows using
 // Object.create, Object.keys, Object.freeze or Object.preventExtensions
 // (light-cljs-882, -883), Symbol() and Proxy traps outside for-in
-// (light-cljs-889, -891), writes into the realm (which QuickJS allows and the
+// (light-cljs-889, -891), definitions on promises (which the Pants engine
+// refuses), writes into the realm (which QuickJS allows and the
 // Pants engine and Goose refuse), `__rt.vector`, a length assignment of a
 // non-number (a named gap of the core built-ins area, light-cljs-767), and
 // that test's three rows where every descriptor must be read before the
@@ -149,4 +150,21 @@ for (let write of [a => { a.length = 5; }, a => { a.length = 0; }, a => { a.leng
 { let t = {}; Object.defineProperty(t, 'b', {value: 0}); let ok = false; try { Object.defineProperties(t, {a: {value: 1}, b: {value: 2}, c: {value: 3}}); } catch (e) { ok = e instanceof TypeError; } row(ok && t.a === 1 && !('c' in t)); }
 { let n = 0; for (let p of [null, undefined]) { try { Object.defineProperties({}, p); } catch (e) { if (e instanceof TypeError) n++; } } let o = Object.defineProperties({}, 7); let k = 0; for (let x in o) k++; row(n === 2 && k === 0); }
 { let p = {set a(v) { throw 99; }}; let t = {__proto__: p}; Object.defineProperties(t, {a: {value: 7}}); row(t.a === 7); }
+// Object spread and rest read built-in and bound getters (light-cljs-881).
+{ let o = {}; Object.defineProperty(o, 'x', {get: Object.prototype.valueOf, enumerable: true}); Object.defineProperty(o, 'y', {get: function () { return this.k; }.bind({k: 3}), enumerable: true}); let s = {...o}; let {...r} = o; row(s.x === o && s.y === 3 && r.x === o && r.y === 3); }
+// Every other object kind as a target: bound functions, errors,
+// generators, iterators, String wrappers (whose exotic `length`
+// and indices change by nothing) and frozen template arrays.
+{
+  let targets = [function () {}.bind(null), new Error('e'), (function* () {})(), [1][Symbol.iterator](), new String('ab')];
+  let ok = true;
+  for (let t of targets) {
+    Object.defineProperty(t, 'k', {value: 1, enumerable: true});
+    let d = Object.getOwnPropertyDescriptor(t, 'k');
+    ok = ok && t.k === 1 && d.enumerable && !d.writable && !d.configurable && name(() => { t.k = 2; }) === "TypeError" && name(() => { delete t.k; }) === "TypeError" && !Reflect.defineProperty(t, 'k', {value: 2}) && Reflect.defineProperty(t, 'k', {value: 1});
+  }
+  row(ok);
+}
+{ let s = new String('ab'); row(Reflect.defineProperty(s, '0', {value: 'a'}) && !Reflect.defineProperty(s, '0', {value: 'z'}) && Reflect.defineProperty(s, 'length', {value: 2}) && !Reflect.defineProperty(s, 'length', {value: 3}) && !Reflect.defineProperty(s, 'length', {writable: true}) && s[0] === 'a' && s.length === 2 && Reflect.defineProperty(s, '5', {value: 'q'}) && s[5] === 'q'); }
+{ let t = (s => s)`a${0}b`; row(Reflect.defineProperty(t, 0, {value: 'a'}) && !Reflect.defineProperty(t, 0, {value: 'z'}) && !Reflect.defineProperty(t, 'length', {value: 1}) && !Reflect.defineProperty(t, 'x', {value: 1}) && !Reflect.defineProperty(t.raw, 1, {writable: true}) && t[0] === 'a' && t.length === 2 && desc(t, 0) === "a:falsetruefalse"); }
 failed === 0 ? rows : -failed;

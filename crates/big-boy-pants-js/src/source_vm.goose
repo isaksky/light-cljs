@@ -2085,6 +2085,8 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
         if heap.fault != Fault.None { return false; }
         if i < 0 { return define_own(heap, o, k, value, attrs, half); }
         if read_only_length(heap, o) && i >= node(heap, o).length { return false; }
+        // An array's length stays within the value limit (set_element's rule).
+        if i >= heap.limits.values { return memory(heap); }
         let plain = (half == half::Data || half == half::Complete && !is_accessor(value)) && attrs == attrs_data();
         if plain && !node(heap, o).initialized { return set_element(heap, object, i, value); }
         if !node(heap, o).initialized && !array_to_dictionary(heap, object) { return false; }
@@ -6334,8 +6336,9 @@ fn copy_step(job: Job&, frame: Frame) {
     if !is_accessor(e.value) { copy_define(job, frame.output, k, e.value); return; }
     let getter = pair(heap, e.value).get;
     if !getter.is_object() { copy_define(job, frame.output, k, Value.Undefined); return; }
-    if node(heap, getter.id()).kind != node_kind::Closure { heap.fault = Fault.UnsupportedOperand; return; }
-    job.frames[at].pc = 1; enter(job, getter, frame.input, []);
+    job.frames[at].pc = 1;
+    // A getter that is no closure runs on the general call path (light-cljs-881).
+    if node(heap, getter.id()).kind == node_kind::Closure { enter(job, getter, frame.input, []); } else { call_accessor(job, getter, frame.input, []); }
 }
 // ToPropertyKey: o k → o k', the key converted once for a read and a
 // later write of o[k] or an object pattern's key: an array index as a
