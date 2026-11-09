@@ -83,8 +83,10 @@ namespace source;
 //   pc 5  ([[GetOwnProperty]]) awaits descriptor field `index` from its
 //         getter
 //   pc 6  ([[Get]], [[Set]], [[HasProperty]], [[Delete]],
-//         [[DefineOwnProperty]]) awaits a proxy target's descriptor for the
-//         trap result's invariants
+//         [[DefineOwnProperty]], [[GetOwnProperty]]) awaits a proxy
+//         target's descriptor for the trap result's invariants
+//         ([[GetOwnProperty]]: the trap's result kept as the receiver,
+//         light-cljs-895)
 //   pc 7  ([[Get]], [[Set]]) awaits a forwarded getter's or setter's result
 //   pc 8  ([[GetOwnProperty]]) awaits a proxy trap result's answer whether
 //         it has descriptor field `index` (its [[HasProperty]])
@@ -97,6 +99,8 @@ namespace source;
 //   pc 11 ([[Set]]) awaits its proxy receiver's [[DefineOwnProperty]]
 //         (proxy_receiver_define)
 //   pc 12 awaits a proxy target's [[IsExtensible]] for the invariants
+//         ([[GetOwnProperty]]: the trap's result the receiver and, an
+//         object, the descriptor to build the callee, light-cljs-895)
 //   pc 13 ([[GetPrototypeOf]], [[SetPrototypeOf]]) awaits a non-extensible
 //         proxy target's [[GetPrototypeOf]]
 //   pc 14 ([[OwnPropertyKeys]]) awaits a proxy target's [[OwnPropertyKeys]]
@@ -133,8 +137,13 @@ namespace source;
 // [[Delete]] with the proxy and key recorded (proxy_relabel); receiver_set
 // records a proxy receiver's [[DefineOwnProperty]] the same way; a caller
 // that supports the method takes it (proxy_pending, take_proxy) and starts
-// the frame. The two fields live only from the operation to its caller
-// within one step; fail() and the job reset clear them, and in-job
+// the frame. Object spread and object rest (CopyDataProperties; OwnKeys and
+// IsEnumerable) run a proxy source's [[OwnPropertyKeys]], [[GetOwnProperty]]
+// and [[Get]] above a CopyData frame, and Object.getOwnPropertyDescriptor
+// and Reflect.getOwnPropertyDescriptor, conditional natives, its
+// [[GetOwnProperty]] above a Descriptor frame (light-cljs-895). The two
+// fields live only from the operation to its caller within one step;
+// fail() and the job reset clear them, and in-job
 // reclamation keeps and moves what they hold (reclaim.goose). A call or
 // `new` reaches [[Call]] or [[Construct]] where it would push a closure's
 // frame (push_frame, construct, call_accessor; proxy_call), so ordinary
@@ -151,10 +160,8 @@ namespace source;
 //
 // Still a named UnsupportedOperand (decision 1), each where no frame can
 // start or for another pellet: Annex B's __defineGetter__ family on a
-// proxy; a proxy target's [[GetOwnProperty]] in the
-// getOwnPropertyDescriptor invariants (light-cljs-895);
-// Function.prototype.bind of a proxy (light-cljs-861); the plain built-ins
-// run to completion (call_builtin) with a proxy, as a callback that cannot
+// proxy; Function.prototype.bind of a proxy (light-cljs-861); the plain
+// built-ins run to completion (call_builtin) with a proxy, as a callback that cannot
 // start a frame calls them; a revoke function called that way; a
 // host-effect built-in or a delay as a trap.
 
@@ -550,7 +557,7 @@ fn proxy_step(job: Job&, frame: Frame, method: i64) {
         },
         4 => { if own_keys_element(job, at, job.operands.pop()) { own_keys_elements(job, at); } },
         5 => { if descriptor_field(job, at, job.operands.pop(), Builtin.Proxy) && descriptor_fields(job, at, Builtin.Proxy, 5) { descriptor_done(job, at); } },
-        6 => { property_invariants(job, at, method, job.operands.pop()); },
+        6 => { let d = job.operands.pop(); if method == proxy_method::GetOwnProperty { descriptor_target(job, at, d); } else { property_invariants(job, at, method, d); } },
         // A forwarded getter's value is [[Get]]'s; a setter's completion
         // makes [[Set]] true.
         7 => { let v = job.operands.pop(); finish_native(job, frame, if method == proxy_method::Get { v } else { boolean(true) }); },
@@ -726,28 +733,56 @@ fn sorted_find(words: const i64[:], w: i64) -> i64 {
 
 // ---- [[GetOwnProperty]] (10.5.5)
 // The trap's result r: undefined, or an object read by ToPropertyDescriptor
-// after the target's own descriptor and extensibility.
+// after the target's own descriptor and extensibility. r is kept as the
+// frame's receiver from here on; a proxy target's [[GetOwnProperty]] runs
+// as a Proxy frame above this one (pc Descriptor, light-cljs-895), any
+// other target's is read now.
 fn descriptor_result(job: Job&, at: i64, r: Value) {
     let heap .= job.heap; let frame = job.frames[at];
     if !r.is_object() && !r.is_undefined() { type_error(job, "Proxy: getOwnPropertyDescriptor trap result is neither an object nor undefined"); return; }
     let target = node(heap, frame.input.id()).value;
-    if is_proxy(heap, target) { unsupported_step(job, Builtin.Proxy, "[[GetOwnProperty]] of a Proxy target in a trap's invariant checks"); return; }
+    job.frames[at].receiver = r;
+    if is_proxy(heap, target) { job.frames[at].pc = proxy_pc::Descriptor; proxy_start(job, proxy_method::GetOwnProperty, target, frame.output); return; }
     if !listable(job, target) { return; }
     let td = target_descriptor(job, target, frame.output);
-    if heap.fault != Fault.None { return; }
+    if heap.fault == Fault.None { descriptor_target(job, at, td); }
+}
+// The target's own descriptor td (undefined, or a complete descriptor)
+// arrived: a property reported missing must be configurable, then the
+// target's IsExtensible (a proxy target's above this frame, pc
+// TargetExtensible) decides; for a trap result that is an object, the
+// descriptor to build (the callee) keeps td as its namespace_value
+// meanwhile.
+fn descriptor_target(job: Job&, at: i64, td: Value) {
+    let heap .= job.heap; let r = job.frames[at].receiver;
+    if !td.is_undefined() && (!td.is_object() || node(heap, td.id()).kind != node_kind::KeyList) { heap.fault = Fault.InvalidState; return; }
     if r.is_undefined() {
-        if td.is_object() {
-            if !flag_field(heap, td, field::Configurable) { type_error(job, "Proxy: a non-configurable property of the target is reported missing"); return; }
-            if !extensible(heap, target) { type_error(job, "Proxy: a property of a non-extensible target is reported missing"); return; }
-        }
-        if heap.fault == Fault.None { finish_native(job, frame, Value.Undefined); }
+        if td.is_undefined() { finish_native(job, job.frames[at], Value.Undefined); return; }
+        let fixed = !flag_field(heap, td, field::Configurable);
+        if heap.fault != Fault.None { return; }
+        if fixed { type_error(job, "Proxy: a non-configurable property of the target is reported missing"); return; }
+        job.frames[at].callee = Value.Undefined;
+    } else {
+        let d = new_descriptor(heap);
+        if heap.fault != Fault.None { return; }
+        node_mut(heap, d.id()).namespace_value = if td.is_object() { td } else { Value.Null };
+        job.frames[at].callee = d;
+    }
+    let ready, ext = target_extensible(job, at);
+    if ready { descriptor_known(job, at, ext); }
+}
+// The target's extensibility `ext` is known: a property of a
+// non-extensible target cannot be reported missing; a trap result that is
+// an object is read by ToPropertyDescriptor.
+fn descriptor_known(job: Job&, at: i64, ext: bool) {
+    if job.frames[at].receiver.is_undefined() {
+        if !ext { type_error(job, "Proxy: a property of a non-extensible target is reported missing"); return; }
+        finish_native(job, job.frames[at], Value.Undefined);
         return;
     }
-    let ext = extensible(heap, target);
-    let d = new_descriptor(heap);
-    if heap.fault != Fault.None { return; }
-    node_mut(heap, d.id()).namespace_value = if td.is_object() { td } else { Value.Null };
-    job.frames[at].receiver = r; job.frames[at].callee = d; job.frames[at].index = 0; job.frames[at].argument_count = if ext { 1 } else { 0 };
+    let d = job.frames[at].callee;
+    if !d.is_object() || node(job.heap, d.id()).kind != node_kind::KeyList { job.heap.fault = Fault.InvalidState; return; }
+    job.frames[at].index = 0; job.frames[at].argument_count = if ext { 1 } else { 0 };
     if descriptor_fields(job, at, Builtin.Proxy, 5) { descriptor_done(job, at); }
 }
 // ToPropertyDescriptor's reads from field `index` on into the descriptor
@@ -870,6 +905,7 @@ fn target_extensible_known(job: Job&, at: i64, method: i64, ext: bool) {
     else if method == proxy_method::SetPrototypeOf { set_prototype_known(job, at, ext); }
     else if method == proxy_method::DefineOwnProperty { define_known(job, at, ext); }
     else if method == proxy_method::OwnPropertyKeys { own_keys_target(job, at, ext); }
+    else if method == proxy_method::GetOwnProperty { descriptor_known(job, at, ext); }
     else { job.heap.fault = Fault.InvalidState; }
 }
 // A non-extensible target's [[GetPrototypeOf]]: a proxy target's runs as a

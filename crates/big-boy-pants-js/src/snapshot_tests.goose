@@ -925,6 +925,17 @@ fn suspended_continuations() {
     waits = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_integrity_resumed, copy(w))); waits += 1; }
     assert(waits == 10);
+    // Object spread, object rest and getOwnPropertyDescriptor through
+    // proxies (light-cljs-895): nine waits, five under a CopyData frame,
+    // two under a getOwnPropertyDescriptor built-in's Descriptor frame and
+    // two under a [[GetOwnProperty]] Proxy frame at its proxy target
+    // phases, each resumed from a saved stack.
+    let copies = embed_file("../corpus/serial/proxy-copy-wait.gsp");
+    heap_program::join(thread_spawn(proxy_copy_wait, str(copies), false));
+    heap_program::join(thread_spawn(proxy_copy_wait, str(copies), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_copy_resumed, copy(w))); waits += 1; }
+    assert(waits == 10);
     // An array's object `length` (light-cljs-898): eight waits, two in each
     // definition's conversions, above a Descriptor frame at pc 5 or a
     // [[DefineOwnProperty]] Proxy frame at pc Length, each resumed from a
@@ -1833,6 +1844,98 @@ thread_fn proxy_integrity_resumed(saved: Waiting) {
     let outcome = source::run(job, -1);
     if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); proxy_integrity_save(job, heap); return; }
     assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, INTEGRITY_RESULT));
+    assert(source::retire(job));
+    assert(qput(false));
+}
+// Run proxy-copy-wait.js (light-cljs-895) through its nine waits: answered
+// in place, checking at each the frame awaiting the trap (a CopyData frame
+// at an object spread's Keys, Own and Value phases and at object rest's
+// RestKeys and RestEnumerable; Object's and then Reflect's
+// getOwnPropertyDescriptor Descriptor frame at pc 6; then a
+// [[GetOwnProperty]] Proxy frame awaiting its proxy target's
+// [[GetOwnProperty]] and [[IsExtensible]]), or each after the stack was
+// saved and restored in a fresh heap (proxy_copy_resumed), where
+// proxy_copy_save checks that an image is refused when that frame's proxy
+// is a plain object, or a target-phase [[GetOwnProperty]] frame holding a
+// trap result lacks the descriptor it builds.
+let COPY_PCS:         i64[5]             = [copy_pc::Keys, copy_pc::Own, copy_pc::Value, copy_pc::RestKeys, copy_pc::RestEnumerable];
+let COPY_DESCRIPTORS: source::Builtin[2] = [source::Builtin.ObjectGetOwnPropertyDescriptor, source::Builtin.ReflectGetOwnPropertyDescriptor];
+let COPY_TARGET_PCS:  i64[2]             = [proxy_pc::Descriptor, proxy_pc::TargetExtensible];
+let COPY_RESULT = "kDoDgDKDODdDrDiDeD:1,1,2,b,1,true,2,true";
+thread_fn proxy_copy_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    if save { proxy_copy_save(job, heap); return; }
+    var waits: i64 = 0;
+    loop {
+        assert(waits < 9);
+        var copies: i64 = 0; var descriptors: i64 = 0; var targets: i64 = 0;
+        for f in job.frames {
+            match f.native {
+                CopyData => { assert(waits < COPY_PCS.len && f.pc == COPY_PCS[waits]); copies += 1; },
+                Descriptor d => { if f.pc == 6 { assert(waits >= COPY_PCS.len && d.which == COPY_DESCRIPTORS[if waits == COPY_PCS.len + 1 { 1 } else { 0 }]); descriptors += 1; } },
+                Proxy p => { if p.method == proxy_method::GetOwnProperty && (f.pc == proxy_pc::Descriptor || f.pc == proxy_pc::TargetExtensible) { assert(waits >= COPY_PCS.len + 2 && f.pc == COPY_TARGET_PCS[waits - COPY_PCS.len - 2]); targets += 1; } },
+                _ => {},
+            }
+        }
+        assert(copies == (if waits < COPY_PCS.len { 1 } else { 0 }) && descriptors == (if waits < COPY_PCS.len { 0 } else { 1 }) && targets == (if waits < COPY_PCS.len + 2 { 0 } else { 1 }));
+        waits += 1;
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    }
+    assert(waits == 9 && source::key_is(heap, job.result, COPY_RESULT));
+    assert(source::retire(job));
+}
+fn proxy_copy_save(job: source::Job&, heap: source::Heap&) {
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    // A plain object of the image.
+    var plain: i64 = -1;
+    for n, row in image.nodes { if plain < 0 && n.kind == node_kind::Object { plain = row; } }
+    assert(plain >= 0);
+    // A CopyData frame at a proxy phase or a getOwnPropertyDescriptor
+    // frame whose proxy is a plain object, or a target-phase
+    // [[GetOwnProperty]] frame at pc 12 holding a trap result without its
+    // descriptor.
+    var bad = copy(image); var broken = false;
+    for i in a.frame_count {
+        let r = a.frames + i;
+        match image.conts[r] {
+            Frame x => {
+                var f = x.f;
+                match f.native {
+                    CopyData => { if f.pc >= copy_pc::Keys { f.input = source::object(plain); broken = true; } },
+                    Descriptor => { if f.pc == 6 { f.input = source::object(plain); broken = true; } },
+                    Proxy p => { if p.method == proxy_method::GetOwnProperty && f.pc == proxy_pc::TargetExtensible && f.receiver.is_object() { f.callee = source::Value.Undefined; broken = true; } },
+                    _ => {},
+                }
+                bad.conts[r] = source::Cont.Frame { f: f };
+            },
+            _ => {},
+        }
+    }
+    if broken { var refused = snapshot::Control {}; assert(!snapshot::validate(bad, refused) && refused.error == snapshot::Error.Link); }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn proxy_copy_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); proxy_copy_save(job, heap); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, COPY_RESULT));
     assert(source::retire(job));
     assert(qput(false));
 }

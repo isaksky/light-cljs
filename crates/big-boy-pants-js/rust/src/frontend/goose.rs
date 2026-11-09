@@ -2060,6 +2060,11 @@ mod serial_tests {
             // invariants (light-cljs-897) at every budget cut and
             // collection (serial_tests.goose).
             ("proxy-integrity", "boolean:true"),
+            // Object spread, object rest and getOwnPropertyDescriptor
+            // through proxies, a proxy target in the latter's invariants
+            // (light-cljs-895), at every budget cut and collection
+            // (serial_tests.goose).
+            ("proxy-copy", "boolean:true"),
             ("depth", "boolean:true"),
             ("cancel", "limit"),
             ("cancel-break", "limit"),
@@ -2190,6 +2195,11 @@ mod serial_tests {
             // across dependency waits, each Statics and Proxy frame
             // restored with the stack (snapshot_tests.goose).
             ("proxy-integrity-wait", "goose"),
+            // and across dependency waits in each new phase of the
+            // CopyData, Descriptor and [[GetOwnProperty]] Proxy frames
+            // (light-cljs-895), each restored with the stack
+            // (snapshot_tests.goose).
+            ("proxy-copy-wait", "goose"),
             // Private class elements (light-cljs-889): fresh private names,
             // fields, methods, accessors and statics, the constructor-return
             // trick and a proxy's own elements at every budget cut and

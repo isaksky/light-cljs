@@ -4,7 +4,8 @@
 // builtin_presence_checks_resume_without_replaying_indices and
 // every_descriptor_reader_resumes_presence_and_value_callbacks): the rows
 // of its blocks at lines 9-22, 23-38, 39-63, 64-80, 81-106, 107-151 and
-// 154-174 that the Pants engine and QuickJS agree on (ECMAScript 10.5.7
+// 154-174 (its getOwnPropertyDescriptor readers at lines 159-160 added by
+// light-cljs-895) that the Pants engine and QuickJS agree on (ECMAScript 10.5.7
 // [[HasProperty]]: the `has` trap with its target and key, ToBoolean of its
 // result, absent traps forwarding, the trap read through a getter, the
 // invariants of a false result, and the presence checks of built-ins and of
@@ -25,10 +26,6 @@
 //     built-ins and Intl areas' (light-cljs-767, -774).
 //   'descriptor reader has exception' (lines 169-171): QuickJS calls no `has`
 //     trap that throws there, where the Pants engine does (a disagreement).
-//   The Object.getOwnPropertyDescriptor and Reflect.getOwnPropertyDescriptor
-//     readers (lines 159-160): those built-ins on a proxy fail by name at
-//     its [[GetOwnProperty]] (light-cljs-845 runs it for for-in and the key
-//     walks only; light-cljs-895).
 //   The block at lines 175-195 (isExtensible traps): light-cljs-891's.
 function assert(value, label) { if (!value) throw new Error(label); }
 function typeError(f, label) {
@@ -147,12 +144,16 @@ function typeError(f, label) {
     desc = new Proxy({}, {has(t, k) {return k === 'value';}});
     assert(Object.getOwnPropertyDescriptor(Object.defineProperty({}, 'x', desc), 'x').value === undefined, 'virtual descriptor presence');
 }
-// Every supported ToPropertyDescriptor reader uses HasProperty before Get.
+// Every supported ToPropertyDescriptor reader uses HasProperty before Get,
+// the getOwnPropertyDescriptor trap's result read through a proxy's
+// [[GetOwnProperty]] too (light-cljs-895).
 {
     let readers=[
         d=>Object.defineProperty({},'x',d).x===42,
         d=>Object.defineProperties({},{x:d}).x===42,
-        d=>{let o={};return Reflect.defineProperty(o,'x',d)&&o.x===42;}
+        d=>{let o={};return Reflect.defineProperty(o,'x',d)&&o.x===42;},
+        d=>Object.getOwnPropertyDescriptor(new Proxy({},{getOwnPropertyDescriptor(){return d;}}),'x').value===42,
+        d=>Reflect.getOwnPropertyDescriptor(new Proxy({},{getOwnPropertyDescriptor(){return d;}}),'x').value===42
     ];
     for (let read of readers) {
         let log='', desc=new Proxy({value:42,configurable:true},{

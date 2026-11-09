@@ -703,6 +703,9 @@ root struct Heap {
 //                callee the key list of the source's own keys, input the
 //                source, output the target, index the next key, one key a
 //                step; pc 1 awaits a getter's result for key index - 1.
+//                A proxy source's internal methods run as Proxy frames
+//                above it (light-cljs-895; copy_pc:: names its phases),
+//                as do object rest's OwnKeys and IsEnumerable of a proxy.
 //   ArrayCallbacks  a built-in that calls back into JavaScript, its Builtin
 //                the payload: Array.prototype.map and forEach
 //                (array_callbacks.goose, which gives its fields and phases).
@@ -7087,14 +7090,20 @@ fn for_in_yield(job: Job&, at: i64, k: Value, more: bool) {
 // symbols included, before object rest copies them: an index as a number
 // (as ToPropertyKey gives it), a name as a string. A string's are its indices
 // and `length`; undefined and null are a TypeError; other primitives have
-// none. A symbol key is listed as itself (light-cljs-885).
+// none. A symbol key is listed as itself (light-cljs-885). A proxy's are its
+// [[OwnPropertyKeys]], run in a Proxy frame above a CopyData frame at pc
+// RestKeys (light-cljs-895), which makes the array (rest_keys).
 fn own_keys_op(job: Job&) {
     let heap .= job.heap;
     let source = job.operands.pop();
     if !valid(heap, source) { return; }
     if source.tag() <= value_tag::Null { heap.fault = Fault.TypeError; return; }
     var keys: OwnKey[>..] = [];
-    if source.is_object() { if !listable(job, source) || !own_property_keys(heap, source, keys) { return; } }
+    if source.is_object() {
+        if !listable(job, source) { return; }
+        if node(heap, source.id()).kind == node_kind::Proxy { copy_proxy(job, copy_pc::RestKeys, source, Value.Undefined, job.operands.len, proxy_method::OwnPropertyKeys); return; }
+        if !own_property_keys(heap, source, keys) { return; }
+    }
     else if source.is_string() && !string_keys(heap, source, true, keys) { return; }
     let array = allocate(heap, Node { kind: node_kind::Array });
     if !array.is_object() { return; }
@@ -7107,7 +7116,9 @@ fn own_keys_op(job: Job&) {
 // IsEnumerable: source key → whether the source has an own enumerable
 // property `key` (already converted by ToPropertyKey): its current
 // attributes, not a snapshot's. A string's indices are enumerable; other
-// primitives have no own properties.
+// primitives have no own properties. A proxy's [[GetOwnProperty]] runs in a
+// Proxy frame above a CopyData frame at pc RestEnumerable (light-cljs-895),
+// which answers from the descriptor's `enumerable`.
 fn is_enumerable(job: Job&) {
     let heap .= job.heap;
     let kv = job.operands.pop(); let source = job.operands.pop();
@@ -7121,18 +7132,43 @@ fn is_enumerable(job: Job&) {
         else {
             let ik = intern(heap, k);
             if heap.fault != Fault.None { return; }
+            if node(heap, source.id()).kind == node_kind::Proxy { copy_proxy(job, copy_pc::RestEnumerable, source, ik, job.operands.len, proxy_method::GetOwnProperty); return; }
             let e = enumerable_entry(heap, source, ik);
             result = e.found && e.attrs & attr_enumerable() != 0;
         }
     }
     if heap.fault == Fault.None { job.operands.push(boolean(result)); }
 }
+// A CopyData frame's phase (its pc): pc Next copies key `index` (or
+// finishes), Value awaits a getter's (or a proxy's [[Get]]) value for key
+// index - 1. Of a proxy source (light-cljs-895): Keys awaits its
+// [[OwnPropertyKeys]] (the key list Undefined meanwhile), Own the
+// [[GetOwnProperty]] of key index - 1. For object rest's opcodes of a
+// proxy, with no key list and no target: RestKeys awaits its
+// [[OwnPropertyKeys]], RestEnumerable the [[GetOwnProperty]] of key
+// `output`, each delivering the opcode's result.
+let copy_pc::Next = 0;
+let copy_pc::Value = 1;
+let copy_pc::Keys = 2;
+let copy_pc::Own = 3;
+let copy_pc::RestKeys = 4;
+let copy_pc::RestEnumerable = 5;
+// A CopyData frame at `pc` for proxy source p (key k, target `target`), its
+// result arriving at operand base `base`, with a Proxy frame running
+// p's internal method `method` above it.
+fn copy_proxy(job: Job&, pc: i64, p: Value, k: Value, base: i64, method: i64, target: Value = Value.Undefined) {
+    if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return; }
+    job.frames.push(Frame { function: -1, pc: pc, local_base: job.locals.len, operand_base: base, callee: Value.Undefined, receiver: Value.Undefined, input: p, output: if pc == copy_pc::RestEnumerable { k } else { target }, native: Native.CopyData });
+    proxy_start(job, method, p, k);
+}
 // CopyDataProperties: target source → target, an object spread. An
 // undefined or null source, or one with no own keys, copies nothing; a
 // CopyData native frame copies the rest, one key a step: each key still an
 // own enumerable property of the source when reached is read ([[Get]], a
 // getter running as a frame above) and defined on the target
-// (CreateDataProperty).
+// (CreateDataProperty). A proxy source's [[OwnPropertyKeys]], each key's
+// [[GetOwnProperty]] and each enumerable key's [[Get]] run as Proxy frames
+// above the CopyData frame (light-cljs-895).
 fn copy_data(job: Job&) {
     let heap .= job.heap;
     let source = job.operands.pop(); let target = job.operands[job.operands.len - 1];
@@ -7140,13 +7176,18 @@ fn copy_data(job: Job&) {
     if !target.is_object() || node(heap, target.id()).kind != node_kind::Object { heap.fault = Fault.UnsupportedOperand; return; }
     if !writable(job, target.id()) { heap.fault = Fault.NativeBoundary; return; }
     var keys: OwnKey[>..] = []; var walked = Value.Undefined;
-    if source.is_object() { if !listable(job, source) || !own_property_keys(heap, source, keys) { return; } walked = source; }
+    if source.is_object() {
+        if !listable(job, source) { return; }
+        if node(heap, source.id()).kind == node_kind::Proxy { copy_proxy(job, copy_pc::Keys, source, Value.Undefined, job.operands.len - 1, proxy_method::OwnPropertyKeys, target); return; }
+        if !own_property_keys(heap, source, keys) { return; }
+        walked = source;
+    }
     else if source.is_string() && !string_keys(heap, source, false, keys) { return; }
     if keys.len == 0 { return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     let list = key_list(heap, walked, keys, true);
     if heap.fault != Fault.None { return; }
-    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: job.operands.len - 1, callee: list, receiver: Value.Undefined, input: source, output: target, native: Native.CopyData });
+    job.frames.push(Frame { function: -1, pc: copy_pc::Next, local_base: job.locals.len, operand_base: job.operands.len - 1, callee: list, receiver: Value.Undefined, input: source, output: target, native: Native.CopyData });
 }
 // Define a copied key on the spread's target; a refusal is a TypeError
 // (CreateDataPropertyOrThrow). Data definitions enter the write log as
@@ -7156,9 +7197,11 @@ fn copy_define(job: Job&, target: Value, k: Value, value: Value) {
     record(job, target, k, value);
 }
 fn copy_step(job: Job&, frame: Frame) {
-    let heap .= job.heap; let at = job.frames.len - 1; let list: i64 = frame.callee.id();
-    if frame.pc == 1 {
-        let value = job.operands.pop(); job.frames[at].pc = 0;
+    let heap .= job.heap; let at = job.frames.len - 1;
+    if frame.pc >= copy_pc::Keys { copy_proxy_step(job, frame); return; }
+    let list: i64 = frame.callee.id();
+    if frame.pc == copy_pc::Value {
+        let value = job.operands.pop(); job.frames[at].pc = copy_pc::Next;
         copy_define(job, frame.output, property_row(heap, node(heap, list).keys + frame.index - 1).key, value);
         return;
     }
@@ -7166,14 +7209,58 @@ fn copy_step(job: Job&, frame: Frame) {
     let k = property_row(heap, node(heap, list).keys + frame.index).key;
     job.frames[at].index += 1;
     if frame.input.is_string() { let i = index(heap, k); if heap.fault == Fault.None { copy_define(job, frame.output, k, unit_string(heap, frame.input, i)); } return; }
+    // A proxy source's [[GetOwnProperty]] of the key (pc Own).
+    if node(heap, frame.input.id()).kind == node_kind::Proxy { job.frames[at].pc = copy_pc::Own; proxy_start(job, proxy_method::GetOwnProperty, frame.input, k); return; }
     let e = enumerable_entry(heap, frame.input, k);
     if heap.fault != Fault.None || !e.found || e.attrs & attr_enumerable() == 0 { return; }
     if !is_accessor(e.value) { copy_define(job, frame.output, k, e.value); return; }
     let getter = pair(heap, e.value).get;
     if !getter.is_object() { copy_define(job, frame.output, k, Value.Undefined); return; }
-    job.frames[at].pc = 1;
+    job.frames[at].pc = copy_pc::Value;
     // A getter that is no closure runs on the general call path (light-cljs-881).
     if node(heap, getter.id()).kind == node_kind::Closure { enter(job, getter, frame.input, []); } else { call_accessor(job, getter, frame.input, []); }
+}
+// A CopyData frame's step at a proxy phase (light-cljs-895): the proxy's
+// key list arrived (Keys: the walk starts; RestKeys: object rest's array of
+// them), or key index - 1's descriptor (Own: an enumerable key is read
+// through the proxy's [[Get]] with the proxy as receiver, pc Value; any
+// other is skipped) or key `output`'s (RestEnumerable: whether it is there
+// and enumerable). A descriptor is undefined or a descriptor key list
+// (proxy.goose).
+fn copy_proxy_step(job: Job&, frame: Frame) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    let v = job.operands.pop();
+    if frame.pc == copy_pc::Keys || frame.pc == copy_pc::RestKeys {
+        if !v.is_object() || node(heap, v.id()).kind != node_kind::KeyList { heap.fault = Fault.InvalidState; return; }
+        if frame.pc == copy_pc::Keys { job.frames[at].callee = v; job.frames[at].index = 0; job.frames[at].pc = copy_pc::Next; return; }
+        let array = rest_keys(heap, v);
+        if heap.fault == Fault.None { finish_native(job, frame, array); }
+        return;
+    }
+    if !v.is_undefined() && (!v.is_object() || node(heap, v.id()).kind != node_kind::KeyList) { heap.fault = Fault.InvalidState; return; }
+    let enumerable = v.is_object() && flag_field(heap, v, field::Enumerable);
+    if heap.fault != Fault.None { return; }
+    if frame.pc == copy_pc::RestEnumerable { finish_native(job, frame, boolean(enumerable)); return; }
+    if frame.pc != copy_pc::Own { heap.fault = Fault.InvalidState; return; }
+    job.frames[at].pc = copy_pc::Next;
+    if !enumerable { return; }
+    let list: i64 = frame.callee.id();
+    job.frames[at].pc = copy_pc::Value;
+    proxy_start(job, proxy_method::Get, frame.input, property_row(heap, node(heap, list).keys + frame.index - 1).key, frame.input);
+}
+// OwnKeys's array of a proxy's key list `list`: an index as a number, any
+// other key as itself (own_keys_op).
+fn rest_keys(heap: Heap&, list: Value) -> Value {
+    let n: i64 = node(heap, list.id()).key_count;
+    if !charge(heap, n) { return Value.Undefined; }
+    let array = allocate(heap, Node { kind: node_kind::Array });
+    if !array.is_object() { return Value.Undefined; }
+    for i in n {
+        let k = property_row(heap, node(heap, list.id()).keys + i).key;
+        let x = index(heap, k);
+        if heap.fault != Fault.None || !set_element(heap, array, i, if x >= 0 { number(x) } else { k }) { return Value.Undefined; }
+    }
+    return array;
 }
 // ToPropertyKey: o k → o k', the key converted once for a read and a
 // later write of o[k] or an object pattern's key: an array index as a

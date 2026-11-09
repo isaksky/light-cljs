@@ -5,8 +5,9 @@
 // (proxy_descriptor_observation_order_and_receivers, its Object.freeze row)
 // and rust/tests/fixtures/js/proxy_has.js lines 176-184 and 188-192 (an
 // inner proxy's isExtensible, ownKeys and getOwnPropertyDescriptor during
-// the outer ownKeys trap's invariants, through Reflect.ownKeys only: the
-// getOwnPropertyDescriptor rows are light-cljs-895's), with ECMAScript
+// the outer ownKeys trap's invariants, and, added by light-cljs-895, an
+// inner proxy's getOwnPropertyDescriptor and isExtensible during the outer
+// getOwnPropertyDescriptor trap's), with ECMAScript
 // 7.3.15 SetIntegrityLevel, 7.3.16
 // TestIntegrityLevel and 10.5.11 [[OwnPropertyKeys]]. The rows both oracles
 // agree on: Object.seal, freeze, isSealed and isFrozen of a proxy through
@@ -58,11 +59,17 @@ for (let sealed of [false,true]) {
     });
     let p=new Proxy(inner,{ownKeys(){log+='K';return ['x'];},getOwnPropertyDescriptor(t,k){log+='D';return Object.getOwnPropertyDescriptor(target,k);}});
     row(Reflect.ownKeys(p).join(',')==='x' && log==='KeEkd');
+    // The getOwnPropertyDescriptor trap's invariants read the proxy
+    // target's descriptor, then its isExtensible (light-cljs-895).
+    log=''; row(Reflect.getOwnPropertyDescriptor(p,'x').value===1 && log==='DdeE');
+    log=''; row(Object.keys(p).join(',')==='x' && log==='KeEkdDdeE');
 }
 for (let h of [{isExtensible(){return false;}},{get isExtensible(){throw 42;}},{isExtensible(){throw 42;}}]) {
     let inner=new Proxy({x:1},h), p=new Proxy(inner,{ownKeys(){return ['x'];},getOwnPropertyDescriptor(){return {value:1,configurable:true};}});
-    let e; try{Reflect.ownKeys(p);}catch(x){e=x;}
-    row(e===42 || e instanceof TypeError);
+    for (let read of [()=>Reflect.ownKeys(p),()=>Reflect.getOwnPropertyDescriptor(p,'x'),()=>Object.keys(p)]) {
+        let e; try{read();}catch(x){e=x;}
+        row(e===42 || e instanceof TypeError);
+    }
 }
 // The checks against a proxy target's keys: a non-configurable key
 // omitted, a key added to or omitted from a non-extensible target; an

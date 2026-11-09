@@ -294,14 +294,14 @@ fn callable_kind(kind: i64) -> bool { return kind == node_kind::Closure || kind 
 fn object_of<T>(s: const T&, v: source::Value, kind: i64) -> bool { return v.is_object() && v.id() < s.nodes.len && (kind == node_kind::None || s.nodes[v.id()].kind == kind); }
 // A native frame's state that its steps read by row: a Resume frame's
 // generator, a MapSeq frame's deferred map, a Force frame's delay, a Swap
-// frame's function and a CopyData frame's key list.
+// frame's function and a CopyData frame's key list or proxy source.
 fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
     return match f.native {
         Resume => object_of(s, f.input, node_kind::Generator),
         MapSeq => object_of(s, f.input, node_kind::LazySeq),
         Force => object_of(s, f.input, node_kind::None),
         Swap => object_of(s, f.callee, node_kind::None),
-        CopyData => object_of(s, f.callee, node_kind::KeyList),
+        CopyData => copy_frame_valid(s, f),
         // A HasInstance frame at pc 4 calls its built-in method (light-cljs-834).
         HasInstance => f.pc >= 1 && f.pc <= 5 && (f.pc != 4 || object_of(s, f.callee, node_kind::Builtin)) && (f.pc != 5 || f.callee.is_undefined() || object_of(s, f.callee, node_kind::None)),
         // Array.prototype.push, join and toString read their object (light-cljs-842).
@@ -349,7 +349,10 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // each awaits a field of the descriptor object it reads into a
         // descriptor key list, and at pc 3 its presence (light-cljs-890).
         // At pc 4 and 5 it defines (definition_frame_valid).
-        Descriptor d => if f.pc == 4 || f.pc == 5 { source::descriptor_native(d.which) && definition_frame_valid(s, f, d.which) } else { source::descriptor_native(d.which) && f.pc >= 0 && f.pc <= 3 && object_of(s, f.input, node_kind::None)
+        // At pc 6 Object.getOwnPropertyDescriptor or
+        // Reflect.getOwnPropertyDescriptor awaits a proxy's
+        // [[GetOwnProperty]] of its key (light-cljs-895).
+        Descriptor d => if f.pc == 6 { source::own_descriptor_reads(d.which) && object_of(s, f.input, node_kind::Proxy) && (f.output.is_string() || f.output.is_symbol()) } else if f.pc == 4 || f.pc == 5 { source::descriptor_native(d.which) && definition_frame_valid(s, f, d.which) } else { source::descriptor_native(d.which) && f.pc >= 0 && f.pc <= 3 && object_of(s, f.input, node_kind::None)
             && (if d.which == source::Builtin.ObjectDefineProperties { f.pc != 0 && object_of(s, f.output, node_kind::KeyList) && f.argument_count >= 0 && f.argument_count < s.nodes[f.output.id()].key_count } else { if f.pc == 0 { f.output.is_undefined() } else { f.pc >= 2 && (f.output.is_string() || f.output.is_symbol()) } })
             && (f.pc < 2 || f.index >= 0 && f.index < source::FIELD_NAMES.len && object_of(s, f.callee, node_kind::KeyList) && object_of(s, f.receiver, node_kind::None)) },
         // A Statics frame (light-cljs-884, object_statics.goose) awaits one
@@ -361,6 +364,20 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         Construct => f.pc == 0 && (object_of(s, f.callee, node_kind::Closure) || object_of(s, f.callee, node_kind::Builtin) && s.nodes[f.callee.id()].function < source::BUILTINS.len && source::constructor_builtin(source::BUILTINS[s.nodes[f.callee.id()].function].which)) && object_of(s, f.input, node_kind::None),
         _ => true,
     };
+}
+// A CopyData frame (light-cljs-804, source_vm.goose copy_step) walks its
+// key list at pc Next and Value; of a proxy source (light-cljs-895) it
+// awaits the proxy's key list (pc Keys, none held yet) or, within its key
+// list, key index - 1's descriptor (pc Own), for its target object; object
+// rest's frames hold no list and no target (pc RestKeys) or the key whose
+// descriptor they await (pc RestEnumerable).
+fn copy_frame_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
+    if f.pc == copy_pc::Next || f.pc == copy_pc::Value { return object_of(s, f.callee, node_kind::KeyList); }
+    if !object_of(s, f.input, node_kind::Proxy) { return false; }
+    if f.pc == copy_pc::Keys { return f.callee.is_undefined() && object_of(s, f.output, node_kind::Object); }
+    if f.pc == copy_pc::Own { return object_of(s, f.callee, node_kind::KeyList) && f.index >= 1 && f.index <= s.nodes[f.callee.id()].key_count && object_of(s, f.output, node_kind::Object); }
+    if f.pc == copy_pc::RestKeys { return f.callee.is_undefined() && f.output.is_undefined(); }
+    return f.pc == copy_pc::RestEnumerable && f.callee.is_undefined() && (f.output.is_string() || f.output.is_symbol());
 }
 // A Descriptor frame that defines: at pc 4 on a proxy, whose
 // [[DefineOwnProperty]] answers (light-cljs-891), at pc 5 on an array,
@@ -389,6 +406,14 @@ fn enumeration_frame_valid<T>(s: const T&, f: source::SavedFrame, method: i64) -
         if f.argument_count < 0 || f.argument_count > 1 { return false; }
         if f.pc == 14 { return f.receiver.is_undefined(); }
         return f.pc == 15 && object_of(s, f.receiver, node_kind::KeyList) && f.index >= 0 && f.index < s.nodes[f.receiver.id()].key_count;
+    }
+    // [[GetOwnProperty]] awaiting a proxy target's [[GetOwnProperty]] (pc
+    // 6) holds its trap's result, undefined or an object; awaiting its
+    // [[IsExtensible]] (pc 12), that result and, an object, the descriptor
+    // it builds (light-cljs-895).
+    if method == proxy_method::GetOwnProperty && (f.pc == 6 || f.pc == 12) {
+        if f.receiver.is_undefined() { return f.pc == 6 || f.callee.is_undefined(); }
+        return object_of(s, f.receiver, node_kind::None) && (f.pc == 6 || object_of(s, f.callee, node_kind::KeyList));
     }
     // [[GetPrototypeOf]] awaiting a proxy target's [[IsExtensible]] or
     // [[GetPrototypeOf]] holds its trap's result (light-cljs-891).

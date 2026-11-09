@@ -5,12 +5,10 @@
 // and QuickJS agree on and both of its loops over them (each read through
 // the proxy's `get` trap, in order, and a throwing read propagated),
 // without the pause() hook (a no-op there), with light-cljs-766's planner
-// row of a trapless proxy of an array. The Object.assign row compares its
-// result by Object.entries instead of JSON.stringify. Rows left out, each
-// with its reason:
-//   'object spread': CopyDataProperties lists a proxy source's keys through
-//     its [[OwnPropertyKeys]], which fails by name outside for-in and the
-//     Object statics (light-cljs-895).
+// row of a trapless proxy of an array. The Object.assign and object spread
+// rows (the latter light-cljs-895's) compare their results by
+// Object.entries instead of JSON.stringify. Rows left out, each with its
+// reason:
 //   'JSON' and the JSON tail (lines 8, 42-74): JSON is the core built-ins
 //     area's (light-cljs-767), as are Array.from, concat, sort and flat
 //     ('Array.from iterable', 'concat', 'sort', 'flat').
@@ -29,6 +27,7 @@ function entries(o) { return Object.entries(o).map(e => e.join(':')).join(','); 
 const cases = [
     ['join', p=>Array.prototype.join.call(p), '3,1', 'length,number,0,1'],
     ['Object.assign', p=>entries(Object.assign({},p)), '0:3,1:1,2:2', '0,1,2'],
+    ['object spread', p=>entries({...p}), '0:3,1:1,2:2', '0,1,2'],
     ['String', p=>String(p), '3,1', '@@toPrimitive,toString,join,length,number,0,1'],
 ];
 for (let row of cases) {
@@ -44,7 +43,7 @@ for (let row of cases) {
 // Every consumer must propagate a throwing read, rather than using storage or
 // swallowing the failure. Assign/spread read elements, not the array's length.
 for (let row of cases) {
-    let property = row[0]==='Object.assign' ? '0' : 'length';
+    let property = row[0]==='Object.assign' || row[0]==='object spread' ? '0' : 'length';
     let n=0, target=[3,1,2], p=new Proxy(target, {get(t,k,r) {
         if(k===property) {n++;throw 42;} return Reflect.get(t,k,r);
     }}), reason;

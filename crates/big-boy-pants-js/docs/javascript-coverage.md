@@ -499,6 +499,31 @@ defineProperties's cursor at a descriptor key list;
 corpus/serial/array-length-definition-wait); a light-cljs runtime value as
 the length still fails by name.
 
+*As landed by light-cljs-895 (object spread, object rest and
+getOwnPropertyDescriptor through proxies):* CopyDataProperties of a proxy
+source runs its [[OwnPropertyKeys]], each key's
+[[GetOwnProperty]] and each enumerable key's [[Get]] (the proxy as
+receiver) as Proxy frames above the spread's `CopyData` frame, at new
+phases Keys and Own (`copy_pc::`, source_vm.goose); its existing Value
+phase takes the [[Get]]. Object rest's OwnKeys and IsEnumerable
+instructions of a proxy wait in a `CopyData` frame too (RestKeys, which
+makes the array of keys with indices as numbers, and RestEnumerable,
+which answers the descriptor's `enumerable`); the rest's reads were
+already proxy hits. Object.getOwnPropertyDescriptor and
+Reflect.getOwnPropertyDescriptor became conditional natives: of a proxy,
+the key converted, its [[GetOwnProperty]] runs above a `Descriptor` frame
+at a new pc 6, which gives the descriptor key list as an object
+(FromPropertyDescriptor, `descriptor_fields_object`) or undefined; any
+other argument is the plain built-in. The getOwnPropertyDescriptor trap's
+invariants read a proxy target's [[GetOwnProperty]] (the [[GetOwnProperty]]
+frame's pc 6, shared with the property methods) and [[IsExtensible]] (pc
+12) as Proxy frames, the trap's result kept as the frame's receiver; any
+other target is read at once as before. An ordinary source pays one node
+kind test per key. No new table, node field or native kind: frame fields
+and job rows hold the state, which snapshot validation checks (a proxy
+source or argument at the new phases, the key list and its cursor at Own,
+the descriptor being built at pc 12; corpus/serial/proxy-copy-wait).
+
 *As landed by light-cljs-860 (mapped arguments objects):* a sloppy
 function with a simple parameter list gets a mapped arguments object
 (ECMAScript 10.4.4.7 CreateMappedArgumentsObject; QuickJS

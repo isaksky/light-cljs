@@ -9,10 +9,12 @@
 // rust/tests/js_source.rs line 29421 (a forwarded write running the
 // target's setter with the proxy as receiver), compound assignments through
 // a proxy on the chain, and light-cljs-766's planner row `p.foo` of a `get`
-// trap returning its key. Rows left out, each with its reason:
-//   Object rest from a proxy (js_source.rs line 29348): CopyDataProperties
-//     lists a proxy source's keys through its [[OwnPropertyKeys]], which
-//     fails by name outside for-in and the Object statics (light-cljs-895).
+// trap returning its key. Light-cljs-895 adds object rest from a proxy
+// (js_source.rs line 29349) and Object.getOwnPropertyDescriptor through a
+// proxy (lines 29346 and 29347, a forwarded and a getter-backed
+// descriptor; its TypeError rows at lines 29361-29368 for invalid
+// getOwnPropertyDescriptor trap results; and line 29423, the fields read
+// in ToPropertyDescriptor's order). Rows left out, each with its reason:
 //   'method call' (line 22): `instanceof` walks the proxy's
 //     [[GetPrototypeOf]], which fails by name outside for-in until
 //     light-cljs-891; the call itself is checked below with `this` the proxy.
@@ -109,5 +111,27 @@ function typeError(f, label) {let e; try {f();} catch (x) {e=x;} assert(e instan
     assert(new Proxy({toString(){return 's';}},{get:String}).x==='s', 'String as the get trap');
     let e; try {new Proxy({valueOf(){throw 42;}},{get:Number}).x;} catch(x){e=x;}
     assert(e===42, 'a throwing conversion in a built-in trap');
+}
+{
+    // js_source.rs proxy_invariants_reflection_and_forwarding and
+    // proxy_descriptor_observation_order_and_receivers (light-cljs-895).
+    let {a,...rest}=new Proxy({a:1,b:2},{});
+    assert(a===1 && rest.b===2 && Object.keys(rest).join(',')==='b', 'object rest from a proxy');
+    let t={a:1}, p=new Proxy(t,{}); Object.defineProperty(p,'b',{value:2,enumerable:true});
+    assert(Object.getOwnPropertyDescriptor(p,'b').value===2 && Object.getPrototypeOf(p)===Object.prototype && Object.preventExtensions(p)===p && !Object.isExtensible(t), 'forwarded descriptor');
+    let h={get ownKeys(){return function(t){return {length:1,get 0(){return 'a';}};}}, getOwnPropertyDescriptor(t,k){return {get enumerable(){return true;},get configurable(){return true;},get value(){return 3;}};}};
+    let q=new Proxy({},h);
+    assert(Object.keys(q).join(',')==='a' && Object.getOwnPropertyDescriptor(q,'x').value===3, 'getter-backed descriptor fields');
+    let log='', r=new Proxy({a:1},{getOwnPropertyDescriptor(){return {get enumerable(){log+='e';return true;},get configurable(){log+='c';return true;},get value(){log+='v';return 2;},get writable(){log+='w';return true;}};}});
+    let d=Object.getOwnPropertyDescriptor(r,'a');
+    assert(log==='ecvw' && d.value===2 && d.writable && d.enumerable && d.configurable, 'descriptor field order');
+    typeError(()=>Object.getOwnPropertyDescriptor(new Proxy({}, {getOwnPropertyDescriptor(){return 1;}}),'a'), 'primitive trap result');
+    typeError(()=>Object.getOwnPropertyDescriptor(new Proxy({}, {getOwnPropertyDescriptor(){return {};}}),'a'), 'non-configurable result for a missing property');
+    typeError(()=>{let t={a:1}; Object.preventExtensions(t); Object.getOwnPropertyDescriptor(new Proxy(t,{getOwnPropertyDescriptor(){return undefined;}}),'a');}, 'missing property of a non-extensible target');
+    typeError(()=>{let t={}; Object.preventExtensions(t); Object.getOwnPropertyDescriptor(new Proxy(t,{getOwnPropertyDescriptor(){return {configurable:true};}}),'a');}, 'new property of a non-extensible target');
+    typeError(()=>{let t={}; Object.defineProperty(t,'a',{value:1}); Object.getOwnPropertyDescriptor(new Proxy(t,{getOwnPropertyDescriptor(){return {value:2};}}),'a');}, 'incompatible value');
+    typeError(()=>{let t={}; Object.defineProperty(t,'a',{value:1,writable:true}); Object.getOwnPropertyDescriptor(new Proxy(t,{getOwnPropertyDescriptor(){return {value:1,writable:false};}}),'a');}, 'non-writable over a writable target property');
+    typeError(()=>Object.getOwnPropertyDescriptor(new Proxy({}, {getOwnPropertyDescriptor(){return {get:1,configurable:true};}}),'a'), 'non-callable getter');
+    typeError(()=>Object.getOwnPropertyDescriptor(new Proxy({}, {getOwnPropertyDescriptor(){return {get(){},value:1,configurable:true};}}),'a'), 'accessor and data fields');
 }
 true;

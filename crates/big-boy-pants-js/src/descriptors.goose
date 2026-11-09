@@ -49,6 +49,10 @@ namespace source;
 //   pc 5      awaits both conversions of an array's new `length` from a
 //             Convert frame (light-cljs-898, convert_length), the
 //             descriptor in `callee` (defineProperties: key `index`'s)
+//   pc 6      (Object.getOwnPropertyDescriptor and
+//             Reflect.getOwnPropertyDescriptor of a proxy, light-cljs-895)
+//             awaits the proxy's [[GetOwnProperty]] of key `output`
+//             (start_own_descriptor)
 // A call that runs no JavaScript pushes and pops the frame in one step,
 // outside the frame limit (start_descriptor), so it behaves as a plain
 // function would. defineProperties reads every descriptor before the first definition
@@ -77,9 +81,11 @@ namespace source;
 // proxy.goose); define_descriptor itself, which __defineGetter__ and
 // __defineSetter__ reach as plain built-ins, fails by name on a proxy.
 //
-// The other methods run no JavaScript and are plain built-ins:
-// Reflect.getOwnPropertyDescriptor and Reflect.deleteProperty require an
-// object target; Annex B's __defineGetter__ and __defineSetter__ define an
+// The other methods are plain built-ins: Reflect.getOwnPropertyDescriptor
+// and Reflect.deleteProperty require an object target, and where a frame
+// can start (conditional_native) a proxy's [[GetOwnProperty]] (both
+// getOwnPropertyDescriptor built-ins, pc 6 above) or [[Delete]] runs as
+// its Proxy frame; Annex B's __defineGetter__ and __defineSetter__ define an
 // enumerable, configurable accessor half, and __lookupGetter__ and
 // __lookupSetter__ walk the prototype chain to the first own property of
 // the key (QuickJS-only: the Pants engine lacks them).
@@ -400,6 +406,14 @@ fn descriptor_step(job: Job&, frame: Frame, b: Builtin) {
     }
     let v = job.operands.pop();
     match frame.pc {
+        // getOwnPropertyDescriptor of a proxy (light-cljs-895): its
+        // [[GetOwnProperty]] answered.
+        6 => {
+            if v.is_undefined() { finish_native(job, frame, v); return; }
+            if !v.is_object() || node(heap, v.id()).kind != node_kind::KeyList { heap.fault = Fault.InvalidState; return; }
+            let o = descriptor_fields_object(heap, v);
+            if heap.fault == Fault.None { finish_native(job, frame, o); }
+        },
         0 => {
             let k = property_key(job, b, v);
             if heap.fault != Fault.None { return; }
@@ -438,6 +452,27 @@ fn descriptor_step(job: Job&, frame: Frame, b: Builtin) {
 fn reflect_own_descriptor(job: Job&, b: Builtin, target: Value, k: Value) -> Value {
     if !target.is_object() { return type_error(job, "Reflect.getOwnPropertyDescriptor: the target is not an object"); }
     return own_descriptor(job, b, target, k);
+}
+// Object.getOwnPropertyDescriptor and Reflect.getOwnPropertyDescriptor
+// (light-cljs-895).
+inline fn own_descriptor_reads(b: Builtin) -> bool { return b == Builtin.ObjectGetOwnPropertyDescriptor || b == Builtin.ReflectGetOwnPropertyDescriptor; }
+// Either called where a frame can start (conditional_native), operand base
+// `base`: of a proxy, its key converted, the proxy's [[GetOwnProperty]]
+// runs as its Proxy frame above a Descriptor frame at pc 6, which gives the
+// delivered descriptor as an object (FromPropertyDescriptor,
+// descriptor_fields_object) or undefined; anything else answers now.
+fn start_own_descriptor(job: Job&, b: Builtin, args: const Value[:], base: i64) {
+    let heap .= job.heap; let target = arg(args, 0); let kv = arg(args, 1);
+    if !is_proxy(heap, target) {
+        let r = if b == Builtin.ReflectGetOwnPropertyDescriptor { reflect_own_descriptor(job, b, target, kv) } else { own_descriptor(job, b, target, kv) };
+        if heap.fault == Fault.None { job.operands.resize(base); deliver(job, r); }
+        return;
+    }
+    let k = property_key(job, b, kv);
+    if heap.fault != Fault.None { return; }
+    job.operands.resize(base);
+    job.frames.push(Frame { function: -1, pc: 6, local_base: job.locals.len, operand_base: base, callee: Value.Undefined, receiver: Value.Undefined, input: target, output: k, native: Native.Descriptor { which: b } });
+    proxy_start(job, proxy_method::GetOwnProperty, target, k);
 }
 // Reflect.deleteProperty(target, key): [[Delete]], false for a
 // non-configurable property.
