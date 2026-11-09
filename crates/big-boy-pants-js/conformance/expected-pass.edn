@@ -14,6 +14,8 @@
  "bbp/array_for_each"
  "bbp/array_iterator_kinds"
  "bbp/array_join_to_string"
+ "bbp/array_length_set_converts"
+ "bbp/array_length_set_to_primitive"
  "bbp/array_literal_holes"
  "bbp/array_map"
  "bbp/array_map_length_to_primitive"

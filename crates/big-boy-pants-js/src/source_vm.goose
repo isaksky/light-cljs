@@ -2538,14 +2538,21 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     if !ok { heap.fault = Fault.TypeError; }
     return ok;
 }
-// Bounded numeric length writes only. A shorter length turns a dense array's
-// cut-off slots back into holes, or drops a dictionary array's cut-off
-// records from its run (their rows stay charged until teardown); the work is charged before
-// anything changes, so a work rejection is atomic. A longer length writes
-// nothing.
+// ArraySetLength (ECMAScript 10.4.2.4) of a primitive: its ToNumber
+// (numeric: a string, boolean, null or undefined converts, a symbol is a
+// TypeError), which must be a uint32 (ToUint32 of itself), else a
+// RangeError (light-cljs-893; property_fault words it). An object value
+// converts in a Convert frame before this (length_converts); one that
+// reaches here fails UnsupportedOperand by name. A shorter length turns a
+// dense array's cut-off slots back into holes, or drops a dictionary
+// array's cut-off records from its run (their rows stay charged until
+// teardown); the work is charged before anything changes, so a work
+// rejection is atomic. A longer length writes nothing.
 fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
-    if !value.is_number() || !(value.num() >= 0 && value.num() <= 4294967295.0) || value.num() != trunc(value.num()) { heap.fault = Fault.UnsupportedOperand; return false; }
-    let length = value.num() as i64;
+    let n: f64 = if value.is_number() { value.num() } else { numeric(heap, value) };
+    if heap.fault != Fault.None { return false; }
+    if !(n >= 0 && n <= 4294967295.0) || n != trunc(n) { heap.fault = Fault.RangeError; return false; }
+    let length = n as i64;
     // A built-in's length update of an array whose `length` is read-only (a
     // frozen array's, light-cljs-882); assignment refuses it first.
     if read_only_length(heap, object.id()) { heap.fault = Fault.TypeError; return false; }
@@ -4003,8 +4010,9 @@ fn native_step(job: Job&) {
         MapSeq => { map_seq_step(job, frame); },
         Mapv => { mapv_step(job, frame); },
         Convert c => { convert_step(job, frame, c.hint, c.finish, c.count, c.method); },
-        // The setter returned: drop its value, deliver the assignment's.
-        Setter => { job.operands.pop(); finish_native(job, frame, frame.output); },
+        // The setter returned: drop its value, deliver the assignment's; or
+        // an array length's conversion finished (length_step).
+        Setter => { if frame.pc == setter_pc::Length { length_step(job, frame); } else { job.operands.pop(); finish_native(job, frame, frame.output); } },
         CopyData => { copy_step(job, frame); },
         ArrayCallbacks a => { array_callbacks_step(job, frame, a.which); },
         Swap s => { swap_step(job, frame, s.which); },
@@ -4037,12 +4045,51 @@ fn call_setter(job: Job&, setter: Value, object: Value, value: Value, result: Va
     if is_throw_type_error(heap, setter) { throw_type_error(job, object, 1); return; }
     if !setter.is_object() { heap.fault = Fault.UnsupportedOperand; return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
-    job.frames.push(Frame { function: -1, pc: 1, local_base: job.locals.len, operand_base: job.operands.len, callee: setter, receiver: object, output: result, native: Native.Setter });
+    job.frames.push(Frame { function: -1, pc: setter_pc::Setter, local_base: job.locals.len, operand_base: job.operands.len, callee: setter, receiver: object, output: result, native: Native.Setter });
     if node(heap, setter.id()).kind == node_kind::Closure { if !enter(job, setter, object, [value]) { job.frames.pop(); } return; }
     // Any other setter (a built-in, a bound function; light-cljs-881) runs
     // on the general call path; its result arrives for the Setter frame.
     if !valid(heap, object) || !valid(heap, value) { job.frames.pop(); return; }
     call_accessor(job, setter, object, [value]);
+}
+// A Setter frame's pc: a setter is running above it, or (Length) a Convert
+// frame converting an array's new `length` (start_length).
+let setter_pc::Setter = 1;
+let setter_pc::Length = 2;
+// Whether [[Set]] of key k to `value` on `object` writes an array's
+// `length` with an object value, which converts first (ArraySetLength's
+// ToNumber, ECMAScript 10.4.2.4; light-cljs-893): ToPrimitive with hint
+// number runs in a Convert frame above the operation. A read-only length
+// refuses the write before any conversion (OrdinarySet), and a primitive
+// converts in array_length. The value's tag is tested first, so a write of
+// a primitive pays nothing more.
+fn length_converts(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
+    if !value.is_object() || !object.is_object() || object.id() >= heap.nodes.len || node(heap, object.id()).kind != node_kind::Array || read_only_length(heap, object.id()) || !convertible(heap, value) { return false; }
+    return key_is(heap, k, "length");
+}
+// An assignment's array `length` write of an object (length_converts): a
+// Setter frame at pc Length holding the array, key k, the assignment's
+// result and whether it is strict, with the value converting above it
+// (ToPrimitive with hint number, then ToNumber); length_step writes the
+// number.
+fn start_length(job: Job&, object: Value, k: Value, value: Value, result: Value, strict: bool) {
+    if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return; }
+    job.frames.push(Frame { function: -1, pc: setter_pc::Length, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: object, input: k, output: result, index: if strict { 1 } else { 0 }, native: Native.Setter });
+    job.operands.push(value);
+    start_convert(job, Hint.Number, true, 1, 1);
+}
+// The converted length arrived: [[Set]] it as set_property does, then
+// deliver the assignment's result. The conversion may have changed the
+// array (frozen it, grown it); the write sees it as it is now.
+fn length_step(job: Job&, frame: Frame) {
+    let heap .= job.heap;
+    let n = job.operands.pop();
+    let object = frame.receiver; let k = frame.input;
+    let setter, ok = write(heap, object, k, n);
+    if heap.fault != Fault.None { property_fault(job, object, k, true, true); return; }
+    if setter.is_object() { heap.fault = Fault.InvalidState; return; }
+    if ok { record(job, object, k, n); } else if frame.index != 0 { refused_write(job, object, k); if heap.fault == Fault.None { heap.fault = Fault.TypeError; } return; }
+    finish_native(job, frame, frame.output);
 }
 // A deferred map's callbacks, one element a step.
 fn map_seq_step(job: Job&, frame: Frame) {
@@ -5427,6 +5474,9 @@ fn get_property(job: Job&, k: Value, named: bool) {
 fn property_fault(job: Job&, base: Value, k: Value, named: bool, write: bool) {
     if job.heap.fault == Fault.UnsupportedOperand { primitive_gap(job, base); }
     else if job.heap.fault == Fault.TypeError && base.tag() <= value_tag::Null && job.detail.len == 0 { base_error(job, base, k, named, write); }
+    // A property write's only RangeError: an array's invalid new length
+    // (array_length).
+    else if job.heap.fault == Fault.RangeError && job.detail.len == 0 { for c in "invalid array length" { job.detail.push(c); } }
 }
 // A property access on a BigInt base fails by name (decision 1):
 // %BigInt.prototype% is the BigInt area's (light-cljs-771). (A symbol
@@ -5800,6 +5850,7 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
     // OrdinarySet reads an inherited `prototype` too: a lazy one on the
     // chain (an object made by Object.create(F), light-cljs-883) is made first.
     prepare_function(job, object, k, false);
+    if heap.fault == Fault.None && length_converts(heap, object, k, value) { start_length(job, object, k, value, result, strict); return; }
     let setter, ok = write(heap, object, k, value);
     if heap.fault == Fault.None && setter.is_object() { call_setter(job, setter, object, value, result); return; }
     if heap.fault == Fault.None { if ok { record(job, object, k, value); } else if strict { refused_write(job, object, k); } }

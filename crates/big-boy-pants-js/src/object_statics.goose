@@ -256,6 +256,14 @@ fn use_value(job: Job&, at: i64, b: Builtin, k: Value, v: Value) -> bool {
     if !writable(job, out.id()) { heap.fault = Fault.NativeBoundary; return false; }
     prepare_function(job, out, k, true);
     prepare_function(job, out, k, false);
+    // An array target's `length` set to an object (light-cljs-893): its
+    // ToPrimitive with hint number, then ToNumber, in a Convert frame
+    // above this one; the number arrives at pc Value, which sets it here.
+    if heap.fault == Fault.None && length_converts(heap, out, k, v) {
+        job.frames[at].pc = statics_pc::Value;
+        if push_operand(job, v) { start_convert(job, Hint.Number, true, 1, 1); }
+        return false;
+    }
     let setter, ok = write(heap, out, k, v);
     if heap.fault != Fault.None { property_fault(job, out, k, true, true); return false; }
     if setter.is_object() { job.frames[at].pc = statics_pc::Set; call_accessor(job, setter, out, [v]); return false; }

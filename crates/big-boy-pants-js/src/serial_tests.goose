@@ -1887,9 +1887,14 @@ thread_fn array_length_bounds() {
     assert(source::put(heap, array, length, source::number(3)));
     for i in 3 { assert(source::get(heap, array, source::key(heap, source::number(i))).is_undefined()); }
     for n in [-1.0, 1.5, 0.0 / 0.0, 1.0 / 0.0, 4294967296.0] {
-        assert(!source::put(heap, array, length, source::number(n)) && heap.fault == source::Fault.UnsupportedOperand);
+        assert(!source::put(heap, array, length, source::number(n)) && heap.fault == source::Fault.RangeError);
         heap.fault = source::Fault.None; assert(source::node(heap, array.id()).length == 3);
     }
+    // A primitive converts first (ArraySetLength's ToNumber, light-cljs-893).
+    assert(!source::put(heap, array, length, source::text(heap, "-1")) && heap.fault == source::Fault.RangeError);
+    heap.fault = source::Fault.None;
+    assert(source::put(heap, array, length, source::text(heap, " 3 ")) && source::put(heap, array, length, source::boolean(true)) && source::node(heap, array.id()).length == 1);
+    assert(source::put(heap, array, length, source::number(3)));
     assert(!source::put(heap, array, length, source::number(heap.limits.values + 1)) && heap.fault == source::Fault.MemoryLimit);
     heap.fault = source::Fault.None;
     assert(source::put(heap, array, source::key(heap, source::number(1)), source::number(7)));
