@@ -800,6 +800,8 @@ struct Waiting {
     queue: source::Task[]     = [], queue_head: i64 = 0, draining: bool = false, entry: source::Value = source::Value.Undefined, rejections: u32[] = [],
     steps: i64                = 0, kind: i64 = 0, count: i64 = 0, frame: source::Frame = source::Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: source::Value.Undefined, receiver: source::Value.Undefined },
     args:  source::Value[8]   = [source::Value.Undefined; 8],
+    // The wait a saved stack stopped at, for tests that check its frame.
+    wait: i64 = 0,
 }
 fn suspended_continuations() {
     let wait = embed_file("../corpus/serial/suspended-wait.gsp");
@@ -936,6 +938,17 @@ fn suspended_continuations() {
     waits = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_copy_resumed, copy(w))); waits += 1; }
     assert(waits == 10);
+    // A proxy's [[Get]], [[Set]], [[HasProperty]] and [[Delete]]
+    // (light-cljs-890, -896): sixteen waits across the phases of their
+    // Proxy frames, each frame collected and checked in place, or
+    // collected, saved, refused when malformed and resumed from a saved
+    // stack.
+    let properties = embed_file("../corpus/serial/proxy-property-wait.gsp");
+    heap_program::join(thread_spawn(proxy_property_wait, str(properties), false));
+    heap_program::join(thread_spawn(proxy_property_wait, str(properties), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_property_resumed, copy(w))); waits += 1; }
+    assert(waits == 17);
     // An array's object `length` (light-cljs-898): eight waits, two in each
     // definition's conversions, above a Descriptor frame at pc 5 or a
     // [[DefineOwnProperty]] Proxy frame at pc Length, each resumed from a
@@ -1683,8 +1696,9 @@ thread_fn super_reflect_resumed(saved: Waiting) {
 // proxy revoked and its revoke function spent), or each after the
 // stack was saved and restored in a fresh heap (proxy_traps_resumed), where
 // proxy_traps_save checks that an image is refused when a saved
-// [[Call]] or [[Construct]] frame holds no argument array or a revoke
-// function names no proxy.
+// [[Call]] or [[Construct]] frame holds no argument array, an
+// [[IsExtensible]] or [[SetPrototypeOf]] frame would throw on a false
+// answer, or a revoke function names no proxy.
 let PROXY_TRAP_WAITS: i64[8] = [proxy_method::Call, proxy_method::Construct, proxy_method::DefineOwnProperty, proxy_method::IsExtensible, proxy_method::GetPrototypeOf, proxy_method::SetPrototypeOf, proxy_method::Get, -1];
 thread_fn proxy_traps_wait(bytes: u8[], save: bool) {
     defer { heap_program::finish(); }
@@ -1695,6 +1709,7 @@ thread_fn proxy_traps_wait(bytes: u8[], save: bool) {
     if save { proxy_traps_save(job, heap); return; }
     var waits: i64 = 0;
     loop {
+        collect_at_wait(job, heap);
         var method: i64 = -1; var receiver_phase = false; var walking = false;
         for f in job.frames {
             match f.native {
@@ -1724,6 +1739,7 @@ thread_fn proxy_traps_wait(bytes: u8[], save: bool) {
     assert(source::retire(job));
 }
 fn proxy_traps_save(job: source::Job&, heap: source::Heap&) {
+    collect_at_wait(job, heap);
     let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
     assert(source::retire(job, true));
     let a = source::activation(heap, stack);
@@ -1747,6 +1763,21 @@ fn proxy_traps_save(job: source::Job&, heap: source::Heap&) {
         }
     }
     if calling { var refused = snapshot::Control {}; assert(!snapshot::validate(listless, refused) && refused.error == snapshot::Error.Link); }
+    // A saved [[IsExtensible]] or [[SetPrototypeOf]] frame that would throw
+    // on a false answer, a mode neither method has (light-cljs-896).
+    var throwing = copy(image); var answering = false;
+    for i in a.frame_count {
+        let r = a.frames + i;
+        match image.conts[r] {
+            Frame x => {
+                var f = x.f;
+                match f.native { Proxy p => { if p.method == proxy_method::IsExtensible || p.method == proxy_method::SetPrototypeOf { f.index = answer::Throws; answering = true; } }, _ => {} }
+                throwing.conts[r] = source::Cont.Frame { f: f };
+            },
+            _ => {},
+        }
+    }
+    if answering { var refused = snapshot::Control {}; assert(!snapshot::validate(throwing, refused) && refused.error == snapshot::Error.Link); }
     assert(qput(true));
     assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
 }
@@ -1787,6 +1818,7 @@ thread_fn proxy_integrity_wait(bytes: u8[], save: bool) {
     if save { proxy_integrity_save(job, heap); return; }
     var waits: i64 = 0;
     loop {
+        collect_at_wait(job, heap);
         assert(waits < INTEGRITY_PCS.len);
         var found: i64 = 0;
         for f in job.frames {
@@ -1807,6 +1839,7 @@ thread_fn proxy_integrity_wait(bytes: u8[], save: bool) {
     assert(source::retire(job));
 }
 fn proxy_integrity_save(job: source::Job&, heap: source::Heap&) {
+    collect_at_wait(job, heap);
     let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
     assert(source::retire(job, true));
     let a = source::activation(heap, stack);
@@ -1871,6 +1904,7 @@ thread_fn proxy_copy_wait(bytes: u8[], save: bool) {
     if save { proxy_copy_save(job, heap); return; }
     var waits: i64 = 0;
     loop {
+        collect_at_wait(job, heap);
         assert(waits < 9);
         var copies: i64 = 0; var descriptors: i64 = 0; var targets: i64 = 0;
         for f in job.frames {
@@ -1892,6 +1926,7 @@ thread_fn proxy_copy_wait(bytes: u8[], save: bool) {
     assert(source::retire(job));
 }
 fn proxy_copy_save(job: source::Job&, heap: source::Heap&) {
+    collect_at_wait(job, heap);
     let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
     assert(source::retire(job, true));
     let a = source::activation(heap, stack);
@@ -1939,6 +1974,146 @@ thread_fn proxy_copy_resumed(saved: Waiting) {
     assert(source::retire(job));
     assert(qput(false));
 }
+// Run proxy-property-wait.js (light-cljs-896) through the sixteen waits in
+// the phases of light-cljs-890's [[Get]], [[Set]], [[HasProperty]] and
+// [[Delete]] Proxy frames: a forced collection at each wait, the frame's
+// state checked after it (proxy_property_frame), then answered in place;
+// or at each wait collected, the stack saved and restored in a fresh heap
+// (proxy_property_resumed), where proxy_property_save checks that an image
+// is refused when such a frame's key is no property key, its phase is not
+// one of its method's, or its answer mode is not one its method has. The
+// result string counts every trap, getter and setter that ran.
+let PROPERTY_METHODS: i64[16] = [
+    proxy_method::Get, proxy_method::Get, proxy_method::HasProperty, proxy_method::Get, proxy_method::Set, proxy_method::Set, proxy_method::Set, proxy_method::Delete,
+    proxy_method::Delete, proxy_method::Get, proxy_method::Set, proxy_method::HasProperty, proxy_method::Delete, proxy_method::Get, proxy_method::Set, proxy_method::Set,
+];
+// The handler getter's phase is 1 and the trap call's 2 (proxy_step).
+let PROPERTY_PCS:   i64[16] = [1, 2, 2, proxy_pc::Accessor, proxy_pc::Accessor, 2, 2, 2, 2, proxy_pc::Descriptor, proxy_pc::Descriptor, proxy_pc::TargetExtensible, proxy_pc::TargetExtensible, 2, proxy_pc::Length, proxy_pc::Length];
+let PROPERTY_MODES: i64[16] = [answer::Boolean, answer::Boolean, answer::Boolean, answer::Boolean, answer::Throws, answer::Throws, answer::Boolean, answer::Throws, answer::Boolean, answer::Boolean, answer::Boolean, answer::Boolean, answer::Throws, answer::Boolean, answer::Boolean, answer::Boolean];
+let PROPERTY_KEYS: source::Name[16] = [
+    source::Name { text: "x" }, source::Name { text: "x" }, source::Name { text: "virtual" }, source::Name { text: "y" }, source::Name { text: "z" }, source::Name { text: "w" },
+    source::Name { text: "w" }, source::Name { text: "q" }, source::Name { text: "q" }, source::Name { text: "f" }, source::Name { text: "f" }, source::Name { text: "e" },
+    source::Name { text: "e" }, source::Name { text: "k" }, source::Name { text: "length" }, source::Name { text: "length" },
+];
+// The receiver's kind (node_kind::None for undefined) and a [[Set]]'s
+// value (-1 for an object).
+let PROPERTY_RECEIVERS: i64[16] = [
+    node_kind::Proxy, node_kind::Proxy, node_kind::None, node_kind::Object, node_kind::Object, node_kind::Object, node_kind::Object, node_kind::None,
+    node_kind::None, node_kind::Proxy, node_kind::Proxy, node_kind::None, node_kind::None, node_kind::Proxy, node_kind::Array, node_kind::Array,
+];
+let PROPERTY_VALUES: f64[16] = [0, 0, 0, 0, 5, 7, 7, 0, 0, 0, 3, 0, 0, 0, -1, -1];
+let PROPERTY_RESULT = "gDtDhDGDZDsDSDxDXDiDIDeDEDrDnDnD:2,true,true,zz,5,true,true,false,true,false,true,false,3,true,true,true,true,true,1";
+inline fn property_method(m: i64) -> bool { return m == proxy_method::Get || m == proxy_method::Set || m == proxy_method::HasProperty || m == proxy_method::Delete; }
+// The lowest [[Get]], [[Set]], [[HasProperty]] or [[Delete]] Proxy frame at
+// wait w holds its method, phase, answer mode, key, receiver and value,
+// and only the restarted [[Get]] (wait 14) counts a hop.
+fn proxy_property_frame(job: const source::Job&, heap: source::Heap&, w: i64) {
+    assert(w < PROPERTY_METHODS.len);
+    for f in job.frames {
+        match f.native {
+            Proxy p => {
+                if property_method(p.method) {
+                    assert(p.method == PROPERTY_METHODS[w] && f.pc == PROPERTY_PCS[w] && f.index == PROPERTY_MODES[w] && f.argument_count == (if w == 13 { 1 } else { 0 }));
+                    assert(source::key_is(heap, f.output, PROPERTY_KEYS[w].text));
+                    let kind = PROPERTY_RECEIVERS[w];
+                    if kind == node_kind::None { assert(f.receiver.is_undefined()); } else { assert(f.receiver.is_object() && heap.nodes[f.receiver.id()].kind == kind); }
+                    if p.method == proxy_method::Set { if PROPERTY_VALUES[w] < 0 { assert(f.callee.is_object()); } else { assert(f.callee.is_number() && source::num(f.callee) == PROPERTY_VALUES[w]); } }
+                    return;
+                }
+            },
+            _ => {},
+        }
+    }
+    abort("no property Proxy frame");
+}
+// A forced collection at a wait (reclaim.goose), which moves every row the
+// suspended frames hold. The Proxy wait tests (light-cljs-891, -895, -897,
+// -898 and -890's here) collect at each wait answered in place, before
+// checking its frames, and before saving the stack (light-cljs-896).
+fn collect_at_wait(job: source::Job&, heap: source::Heap&) {
+    let before = heap.reclaims;
+    heap.reclaim = true; source::reclaim(job);
+    assert(heap.reclaims == before + 1 && !heap.reclaim);
+}
+thread_fn proxy_property_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    if save { proxy_property_save(job, heap, 0); return; }
+    var waits: i64 = 0;
+    loop {
+        collect_at_wait(job, heap);
+        proxy_property_frame(job, heap, waits);
+        waits += 1;
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    }
+    assert(waits == 16 && source::key_is(heap, job.result, PROPERTY_RESULT));
+    assert(source::retire(job));
+}
+fn proxy_property_save(job: source::Job&, heap: source::Heap&, w: i64) {
+    collect_at_wait(job, heap);
+    proxy_property_frame(job, heap, w);
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    // The property frame with a number for its key, a phase of another
+    // method's (a forwarded accessor's for [[HasProperty]] and [[Delete]],
+    // the target's extensibility for [[Get]] and [[Set]]), or an answer
+    // mode its method lacks (a throwing [[Get]] or [[HasProperty]], an
+    // object-giving [[Set]] or [[Delete]]): each refused alone.
+    for mode in 3 {
+        var bad = copy(image); var broken = false;
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        Proxy p => {
+                            if !broken && property_method(p.method) {
+                                let reads = p.method == proxy_method::Get || p.method == proxy_method::Set;
+                                let answers = p.method == proxy_method::Set || p.method == proxy_method::Delete;
+                                if mode == 0 { f.output = source::number(1); }
+                                else if mode == 1 { f.pc = if reads { proxy_pc::TargetExtensible } else { proxy_pc::Accessor }; }
+                                else { f.index = if answers { answer::Object } else { answer::Throws }; }
+                                broken = true;
+                            }
+                        },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        assert(broken);
+        var refused = snapshot::Control {}; assert(!snapshot::validate(bad, refused) && refused.error == snapshot::Error.Link);
+    }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args, wait: w }));
+}
+thread_fn proxy_property_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    // The restored frame is the one saved.
+    proxy_property_frame(job, heap, saved.wait);
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); proxy_property_save(job, heap, saved.wait + 1); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, PROPERTY_RESULT));
+    assert(source::retire(job));
+    assert(qput(false));
+}
 // Run array-length-definition-wait.js (light-cljs-898) through its eight
 // waits: answered in place, checking at each the frame awaiting both
 // conversions (Object.defineProperty's and then Object.defineProperties's
@@ -1961,6 +2136,7 @@ thread_fn length_definition_wait(bytes: u8[], save: bool) {
     if save { length_definition_save(job, heap); return; }
     var waits: i64 = 0;
     loop {
+        collect_at_wait(job, heap);
         var found: i64 = 0; var receiver_phase = false; var converting = false;
         for f in job.frames {
             match f.native {
@@ -1984,6 +2160,7 @@ thread_fn length_definition_wait(bytes: u8[], save: bool) {
     assert(source::retire(job));
 }
 fn length_definition_save(job: source::Job&, heap: source::Heap&) {
+    collect_at_wait(job, heap);
     let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
     assert(source::retire(job, true));
     let a = source::activation(heap, stack);

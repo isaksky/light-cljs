@@ -2065,6 +2065,13 @@ mod serial_tests {
             // (light-cljs-895), at every budget cut and collection
             // (serial_tests.goose).
             ("proxy-copy", "boolean:true"),
+            // A proxy's [[Set]] and [[Delete]] traps, forwarding and
+            // invariants (light-cljs-890), and the traps of light-cljs-891,
+            // at every budget cut and collection (serial_tests.goose, which
+            // expects true; the Pants engine refuses some of these traps,
+            // and their conformance cases are scored against QuickJS).
+            ("proxy-set-delete", "goose"),
+            ("proxy-traps", "goose"),
             ("depth", "boolean:true"),
             ("cancel", "limit"),
             ("cancel-break", "limit"),
@@ -2200,6 +2207,11 @@ mod serial_tests {
             // (light-cljs-895), each restored with the stack
             // (snapshot_tests.goose).
             ("proxy-copy-wait", "goose"),
+            // A proxy's [[Get]], [[Set]], [[HasProperty]] and [[Delete]]
+            // (light-cljs-890) across dependency waits in each phase of
+            // their Proxy frames, collected in place or restored with the
+            // stack (snapshot_tests.goose, light-cljs-896).
+            ("proxy-property-wait", "goose"),
             // Private class elements (light-cljs-889): fresh private names,
             // fields, methods, accessors and statics, the constructor-return
             // trick and a proxy's own elements at every budget cut and
