@@ -712,6 +712,48 @@ nor the compiler tests publish one (ClojureScript emits `function`
 expressions, which take no home object), and the 200k output is
 unchanged.
 
+*As landed by light-cljs-889 (private class elements):* a private name is
+a symbol row (light-cljs-885), fresh and unregistered at each evaluation of
+a class body (`NewPrivateName`, its description the name's source text),
+held in the const binding the Rust lowering makes for it, so methods,
+arrows and direct eval code reach it as they reach any binding. An
+object's private elements are not properties: they are dictionary records
+(key, value or Accessor, and `attr_writable()` for a field only) of a node
+of their own, `node_kind::PrivateElements` (kind 29), which the object's
+`metadata` names. A JavaScript object never had Clojure metadata (forms keep
+theirs there, always a map, and `meta` of a JavaScript object stays nil),
+so the field was free, and the Pants engine's per-object private record
+(`vm/private.rs`) becomes rows rather than a map. Any JavaScript object
+with own properties (`snapshot::named`) and a proxy can hold them; a form
+cannot (a TypeError). `src/private.goose` runs the eight instructions:
+GetPrivate, PutPrivate and the four Define instructions look only at the
+receiver's own records (the brand check; a proxy has its own, never its
+target's, and no trap runs), a getter runs as a frame entered from the
+read and a setter under the `Setter` native frame (decision 4), a method
+or getter-only element refuses PutPrivate and a setter-only one GetPrivate,
+a second definition is a TypeError, `#x in o` is a TypeError for a
+primitive, and a write to a row the job did not allocate faults
+NativeBoundary. *Rejected:* private symbol keys in shapes and records with
+an attribute bit every key path skips (QuickJS's representation): own
+keys, key lists, for-in, light-cljs-845's proxy key checks, descriptors,
+integrity levels (freezing must leave private fields writable) and JSON
+would each need the skip, and a shape-mode object adding a private field
+would share transitions with public keys. With a separate node no key path
+changes, objects without private elements pay nothing, and integrity levels
+and extensibility leave private elements alone by construction. The node
+is a plain `u32` row: the worker reset truncates it, in-job reclamation
+marks and relinks `metadata` and record runs as it does for every node
+(`snapshot::record_run` includes the kind), saved continuations carry it,
+and snapshot validation requires the node to hold nothing but records
+whose keys are symbol rows and whose only attribute is a field's writable
+bit, and each such node to be named by the `metadata` of exactly one
+holder, an earlier row (the owner exists before its first private
+element). Publication refuses
+an object with private elements as before (it is a job's mutable object,
+or a lazy closure whose `metadata` edge reaches a node kind no image
+accepts), and a method using a private name captures a symbol row
+(`symbol-unshareable`).
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

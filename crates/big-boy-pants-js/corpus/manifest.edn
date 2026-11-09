@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "9d3cc3432d6f138834da2ff12d689f7ce6fdd1944b478e990e8a026413ef7954",
+  "e91f37fad445ae5c71cc22eb6739728d9a1c06adc81127be812a91769d89e6b0",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -509,6 +509,14 @@
   "5d0023582b698fcadc3db9a9499ac69563723444ae55c1464c2b40e1abf39e63",
   "corpus/serial/primitive-receiver.js"
   "375ae6dfd51ea515871eda60565738689d170185c121ab9c757ac1e42c0b3009",
+  "corpus/serial/private-elements-wait.gsp"
+  "8a0de1129afb228800d8106e7995d1a8d1c1d48077b0e785fb043d0825712734",
+  "corpus/serial/private-elements-wait.js"
+  "a644db9a8fde0273eee64613e10f073538cf27e859918a4f656c8c3415132d98",
+  "corpus/serial/private-elements.gsp"
+  "f945dcaa6e19430d47e91dea999e2be7ecd4c75ba193cb800f0863126400ace9",
+  "corpus/serial/private-elements.js"
+  "9ef87c0fd5a9c45a709b1e6691b23795956333b01ca81ea44a38d42070753abf",
   "corpus/serial/promise-then.gsp"
   "9b3b6a23acde37a9c7c6da04be779d952a476c0c1881261c17b1bfdf5d3ff2ee",
   "corpus/serial/promise-then.js"
@@ -613,6 +621,10 @@
   "644f4ac6d790aeb9c85aa2fcb1f556c4f17f452ffc1d555d76d7d9111ea785ff",
   "corpus/serial/strings.js"
   "ed7e88de0a3974c5012e388a6676c645b891aa6d94b6e0652488d6956ab0c254",
+  "corpus/serial/super-reflect-wait.gsp"
+  "e372f19395f3f250f240d0b1b960276dafe1c65f7e47f5d527854c95958973c8",
+  "corpus/serial/super-reflect-wait.js"
+  "0db3025269621b808e5c35a52d2c7c961c99e9a1f81800618e7b6ea91ac2aa3f",
   "corpus/serial/suspended-generator.gsp"
   "a0309e967f108e72e06da1b2864c6d3ee32ebd0ee7625c775a2f8b3fc55865c0",
   "corpus/serial/suspended-generator.js"

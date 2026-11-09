@@ -21,6 +21,7 @@ import .integrity;
 import .prototypes;
 import .object_statics;
 import .symbols;
+import .private;
 
 namespace source;
 
@@ -342,6 +343,13 @@ enum Ins {
     // base key value → value, [[Set]] with a separate receiver; SuperKey
     // (ToSuperKey, 166) key → key, a resumable ToPropertyKey.
     SuperBase, GetSuper, SetSuper { strict: bool }, SuperKey,
+    // Private class elements (light-cljs-889, private.goose):
+    // NewPrivate (NewPrivateName, 183) → a fresh private name, `k` its
+    // name constant; GetPrivate (184) receiver name → value; PutPrivate
+    // (185) receiver name value → value; PrivateIn (190) name receiver →
+    // bool; DefinePrivate (186-189, `op` the opcode) receiver name value →
+    // receiver.
+    NewPrivate { k: u32 }, GetPrivate, PutPrivate, PrivateIn, DefinePrivate { op: u8 },
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -471,6 +479,12 @@ let node_kind::MappedBinding = 27;
 // before it, or Null (the chain Heap.registry starts). It has no
 // properties, prototype or element run, and nothing writes it.
 let node_kind::JsSymbol = 28;
+// An object's private elements (light-cljs-889; private.goose), named only
+// by that object's `metadata`: keys/key_count/key_capacity=a run of
+// dictionary records in heap.properties, each a private name (a symbol
+// row), its value (Accessor for an accessor) and attr_writable() for a
+// field. JavaScript never sees the node.
+let node_kind::PrivateElements = 29;
 // A map's or set's traversal order (its node's `length`; light-cljs-877),
 // as the V8 build's runtime (src/js_runtime.js) has it: an array map or a
 // hash map or set, the Pants engine's FormMap::Positional and Hashed
@@ -865,8 +879,8 @@ inline fn boolean(b: bool) -> Value { return Value.Bool { v: b }; }
 // cell or a key list, which only compiled code and native frames see.
 inline fn javascript_object(heap: const Heap&, v: Value) -> bool { return v.is_object() && !internal_kind(node(heap, v.id()).kind); }
 // The kinds only compiled code and native frames see: binding cells (a
-// mapped parameter's too), key lists and arguments maps.
-inline fn internal_kind(kind: i64) -> bool { return kind == node_kind::Binding || kind == node_kind::KeyList || kind == node_kind::MappedBinding || kind == node_kind::ArgumentMap; }
+// mapped parameter's too), key lists, arguments maps and private elements.
+inline fn internal_kind(kind: i64) -> bool { return kind == node_kind::Binding || kind == node_kind::KeyList || kind == node_kind::MappedBinding || kind == node_kind::ArgumentMap || kind == node_kind::PrivateElements; }
 // A code constant's units: Code keeps its own string headers over its units.
 fn code_chars(code: const Code&, v: Value) -> const u16[:] { let s = code.strings[v.sid()]; return code.units[s.start..(s.start + s.len)]; }
 fn reject(code: Code&, error: tiny::LoadError, pc: i64) -> bool { code.error = error; code.error_pc = pc; return false; }
@@ -942,6 +956,8 @@ fn instruction(op: Op) -> Ins {
         opcode::BindThis => Ins.BindThis, opcode::ForwardArguments => Ins.Rest { skip: 0 },
         opcode::GetSuperBase => Ins.SuperBase, opcode::GetSuperElem => Ins.GetSuper, opcode::ToSuperKey => Ins.SuperKey,
         opcode::PutSuperElem => Ins.SetSuper { strict: false }, opcode::PutSuperElemStrict => Ins.SetSuper { strict: true },
+        opcode::NewPrivateName => Ins.NewPrivate { k: a }, opcode::GetPrivate => Ins.GetPrivate, opcode::PutPrivate => Ins.PutPrivate, opcode::PrivateIn => Ins.PrivateIn,
+        opcode::DefinePrivateField, opcode::DefinePrivateMethod, opcode::DefinePrivateGetter, opcode::DefinePrivateSetter => Ins.DefinePrivate { op: op.code as u8 },
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -3834,7 +3850,9 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             return form_conj(heap, a, args[1]);
         },
         form_op::Equals => { return boolean(form_equal(heap, a, args[1])); },
-        form_op::Meta, form_op::CljMeta => { return if a.is_object() && !node(heap, a.id()).metadata.is_undefined() { node(heap, a.id()).metadata } else { nil() }; },
+        // A JavaScript object's `metadata` is its private elements
+        // (light-cljs-889), not metadata.
+        form_op::Meta, form_op::CljMeta => { return if a.is_object() && !node(heap, a.id()).metadata.is_undefined() && private_row(heap, a) < 0 { node(heap, a.id()).metadata } else { nil() }; },
         form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != node_kind::Map) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
         form_op::Value => { return form_value(heap, a); },
         form_op::CljTruth => { let v = form_value(heap, a); return boolean(v.tag() > value_tag::Null && !(v.is_bool() && !v.flag())); },
@@ -5132,6 +5150,32 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 ToObject => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let v = job.operands.pop(); job.operands.push(to_object(job, v));
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                // Private class elements (light-cljs-889, private.goose).
+                NewPrivate p => {
+                    settle(job, ran, used); job.frames[top].pc = pc; new_private_name(job, heap.constants[f.constants + p.k]);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                GetPrivate => {
+                    settle(job, ran, used); job.frames[top].pc = pc; get_private(job);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                PutPrivate => {
+                    settle(job, ran, used); job.frames[top].pc = pc; put_private(job);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                PrivateIn => {
+                    settle(job, ran, used); job.frames[top].pc = pc; private_in(job);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                DefinePrivate d => {
+                    settle(job, ran, used); job.frames[top].pc = pc; define_private(job, d.op);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },

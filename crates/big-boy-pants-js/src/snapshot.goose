@@ -3,6 +3,7 @@ import os;
 import .source_vm;
 import .export_schema;
 import .program;
+import .private;
 
 namespace snapshot;
 
@@ -65,6 +66,25 @@ fn elements(kind: i64) -> bool { return kind == node_kind::Object || kind == nod
 // slots, but an unrealized map owns its entire writable memo exclusively,
 // including the completed prefix. Charge both scratch initialization and each
 // range visit; overlapping immutable views cannot hide unbounded scan work.
+// Private elements (light-cljs-889, source::private_holder): validate
+// checked each holder's link (a later PrivateElements row) and counted
+// `owners` links and `rows` such rows; here every row has exactly one
+// owner. Only an image with private elements pays for the bitmap, charged
+// like memo_ranges' scratch.
+fn private_owners<T>(s: const T&, c: Control&, owners: i64, rows: i64) -> bool {
+    if owners != rows { return reject(c, Error.Link); }
+    if s.nodes.len > c.bytes - footprint(s) { return reject(c, Error.Bytes); }
+    if !poll(c, s.nodes.len) { return false; }
+    c.validation_peak = max(c.validation_peak, s.nodes.len);
+    var owned: u8[>..] = []; owned.resize(s.nodes.len, 0);
+    for n in s.nodes {
+        if !poll(c) { return false; }
+        if !n.metadata.is_object() || s.nodes[n.metadata.id()].kind != node_kind::PrivateElements { continue; }
+        if owned[n.metadata.id()] != 0 { return reject(c, Error.Link); }
+        owned[n.metadata.id()] = 1;
+    }
+    return true;
+}
 fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
     if s.values.len > c.bytes - footprint(s) { return reject(c, Error.Bytes); }
     if !poll(c, s.values.len) { return false; }
@@ -158,7 +178,7 @@ fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initializ
 fn dictionary(n: const source::Node&) -> bool { return named(n.kind) && n.initialized; }
 // A run of property records: a dictionary's, or a key list's (node_kind::KeyList, the
 // keys a for-in walk or an object spread visits; source::Node).
-fn record_run(n: const source::Node&) -> bool { return dictionary(n) || n.kind == node_kind::KeyList; }
+fn record_run(n: const source::Node&) -> bool { return dictionary(n) || n.kind == node_kind::KeyList || n.kind == node_kind::PrivateElements; }
 // A property key: an interned string (source::intern) or a symbol, a
 // well-known one or a symbol row (light-cljs-885).
 fn key_value<T>(s: const T&, k: source::Value) -> bool {
@@ -189,7 +209,10 @@ fn key_runs<T>(s: const T&, c: Control&) -> bool {
         for row in n.keys..(n.keys + n.key_capacity) { if used[row] { return reject(c, Error.Link); } used[row] = true; }
         for row in n.keys..(n.keys + n.key_capacity) {
             let p = s.properties[row];
-            if (if row < n.keys + n.key_count { !key_value(s, p.key) || !slot_value(s, p.value) || p.attrs > 7 } else { !p.key.is_undefined() || !p.value.is_undefined() || p.attrs != 0 }) { return reject(c, Error.Link); }
+            // A private element's key is a private name, a symbol row, and
+            // its only attribute a field's writable bit (light-cljs-889).
+            let private = n.kind == node_kind::PrivateElements && (source::symbol_node(p.key) < 0 || p.attrs > source::attr_writable() || p.attrs != 0 && source::is_accessor(p.value));
+            if (if row < n.keys + n.key_count { private || !key_value(s, p.key) || !slot_value(s, p.value) || p.attrs > 7 } else { !p.key.is_undefined() || !p.value.is_undefined() || p.attrs != 0 }) { return reject(c, Error.Link); }
         }
         records += n.key_capacity;
     }
@@ -621,9 +644,14 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if source::has_text(r) && !utf8(s.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
     }
     var has_memo = false; var array_holes: i64 = 0; var registrations: i64 = 0;
+    var owners: i64 = 0; var private_rows: i64 = 0;
     for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < node_kind::Object || n.kind > node_kind::JsSymbol { return reject(c, Error.Unsupported); }
+        if n.kind < node_kind::Object || n.kind > node_kind::PrivateElements { return reject(c, Error.Unsupported); }
+        // An object's private elements (light-cljs-889) are records
+        // (record_run, key_runs) and nothing else; their one owner is
+        // checked with its metadata below.
+        if n.kind == node_kind::PrivateElements && (!n.value.is_undefined() || !n.namespace_value.is_null() || !n.metadata.is_undefined() || !n.proto.is_hole() || n.count != 0 || n.start != 0 || n.shape != 0 || n.function != 0 || n.length != 0 || n.initialized || n.immutable || n.non_extensible) { return reject(c, Error.Link); }
         // A symbol row (light-cljs-885) has a description, a string or (not
         // registered) undefined, and nothing else but, registered, a link to
         // the symbol registered before it, an earlier row.
@@ -702,8 +730,16 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.kind == node_kind::Builtin && (n.function >= source::builtin_count() || n.function == 9) || n.kind == node_kind::Error && n.function > 5 { return reject(c, Error.Unsupported); }
         if n.kind == node_kind::Error && !n.value.is_undefined() && (n.function == 0 || !n.value.is_string()) { return reject(c, Error.Link); }
         if (n.kind == node_kind::Symbol || n.kind == node_kind::Keyword) && (!n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string()) || n.kind == node_kind::Scalar && n.value.tag() > value_tag::String { return reject(c, Error.Link); }
-        if !n.metadata.is_undefined() && !n.metadata.is_null() && (!n.metadata.is_object() || s.nodes[n.metadata.id()].kind != node_kind::Map) { return reject(c, Error.Link); }
+        // Metadata is a form's map or, on an object that can hold them, its
+        // private elements, a later row no other object names
+        // (light-cljs-889, source::private_holder).
+        if !n.metadata.is_undefined() && !n.metadata.is_null() && (!n.metadata.is_object() || s.nodes[n.metadata.id()].kind != node_kind::Map) {
+            if !n.metadata.is_object() || s.nodes[n.metadata.id()].kind != node_kind::PrivateElements || !source::private_holder(n.kind) || n.metadata.id() <= row { return reject(c, Error.Link); }
+            owners += 1;
+        }
+        if n.kind == node_kind::PrivateElements { private_rows += 1; }
     }
+    if private_rows > 0 && !private_owners(s, c, owners, private_rows) { return false; }
     // The registry (light-cljs-885) is a chain from the header through every
     // registered symbol row, each once: a row off the chain would be a
     // second symbol for its key.

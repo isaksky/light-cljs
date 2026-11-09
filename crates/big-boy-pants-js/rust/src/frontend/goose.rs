@@ -2166,6 +2166,14 @@ mod serial_tests {
             // receiver across dependency waits, home objects restored with
             // the stack (light-cljs-888; snapshot_tests.goose).
             ("super-reflect-wait", "goose"),
+            // Private class elements (light-cljs-889): fresh private names,
+            // fields, methods, accessors and statics, the constructor-return
+            // trick and a proxy's own elements at every budget cut and
+            // collection (serial_tests.goose).
+            ("private-elements", "boolean:true"),
+            // and across dependency waits in a private getter, setter,
+            // method and static method (snapshot_tests.goose).
+            ("private-elements-wait", "goose"),
             // and the Function constructor waiting in newTarget's
             // `prototype` getter after it compiled (snapshot_tests.goose).
             ("function-prototype-wait", "goose"),

@@ -537,6 +537,7 @@ fn integrity_roundtrip() {
     heap_program::join(thread_spawn(integrity_restored, copy(saved.image)));
     for mode in 4 { heap_program::join(thread_spawn(integrity_malformed, copy(saved.image), mode)); }
     heap_program::join(thread_spawn(integrity_boundaries));
+    heap_program::join(thread_spawn(private_boundaries));
     heap_program::join(thread_spawn(prototype_boundaries));
 }
 // [[SetPrototypeOf]]'s contracts (light-cljs-883): a row the job did not
@@ -658,6 +659,50 @@ thread_fn integrity_boundaries() {
         assert(heap.fault == source::Fault.UnsupportedOperand && !source::node(heap, form.id()).non_extensible && job.detail.len > 0);
     }
     print("integrity boundaries: protected, owned and foreign rows fault NativeBoundary unchanged unless already at the level; proxies and forms fail by name passed");
+}
+// Private elements (light-cljs-889) obey the write boundary: PutPrivate
+// of a field and every DefinePrivate operation on a row the job did not
+// allocate (below protected_nodes or owned_nodes, or in a foreign range)
+// fault NativeBoundary before anything changes, the receiver's row, its
+// private elements and every table length included; reads and `#x in`
+// still answer.
+thread_fn private_boundaries() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, heap, bindings);
+    var job = source::Job { heap: heap };
+    let o = source::allocate(heap, source::Node { kind: node_kind::Object }); let bare = source::allocate(heap, source::Node { kind: node_kind::Object });
+    let x = source::new_symbol(heap, source::text(heap, "#x"), false); let y = source::new_symbol(heap, source::text(heap, "#y"), false);
+    let f = source::closure(heap, 0, []);
+    job.operands.push(o); job.operands.push(x); job.operands.push(source::number(1));
+    source::define_private(job, opcode::DefinePrivateField);
+    assert(heap.fault == source::Fault.None && job.operands.len == 1 && job.operands.pop() == o);
+    let elements = source::node(heap, o.id()).metadata; assert(elements.is_object() && source::node(heap, elements.id()).kind == node_kind::PrivateElements);
+    let before = source::plain_rows(heap.nodes[o.id()..]); let records = source::plain_rows(heap.properties[..]);
+    let nodes = heap.nodes.len; let properties = heap.properties.len; let accessors = heap.accessors.len;
+    for limit in 3 {
+        job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear();
+        if limit == 0 { job.protected_nodes = heap.nodes.len; } else if limit == 1 { job.owned_nodes = heap.nodes.len; } else { job.foreign.push(o.id()); job.foreign.push(bare.id() + 1); }
+        heap.fault = source::Fault.None; job.operands.clear();
+        job.operands.push(o); job.operands.push(x); job.operands.push(source::number(2));
+        source::put_private(job);
+        assert(heap.fault == source::Fault.NativeBoundary);
+        for op in [opcode::DefinePrivateField, opcode::DefinePrivateMethod, opcode::DefinePrivateGetter, opcode::DefinePrivateSetter] {
+            for target in [o, bare] {
+                heap.fault = source::Fault.None; job.operands.clear();
+                job.operands.push(target); job.operands.push(y); job.operands.push(f);
+                source::define_private(job, op);
+                assert(heap.fault == source::Fault.NativeBoundary);
+            }
+        }
+        assert(source::plain_rows(heap.nodes[o.id()..]) == before && source::plain_rows(heap.properties[..]) == records && heap.nodes.len == nodes && heap.properties.len == properties && heap.accessors.len == accessors);
+        // Reads and brand checks change nothing and still answer.
+        heap.fault = source::Fault.None; job.operands.clear();
+        job.operands.push(o); job.operands.push(x); source::get_private(job);
+        assert(heap.fault == source::Fault.None && job.operands.pop() == source::number(1));
+        job.operands.push(x); job.operands.push(bare); source::private_in(job);
+        assert(heap.fault == source::Fault.None && job.operands.pop() == source::boolean(false));
+    }
+    print("private boundaries: protected, owned and foreign rows fault NativeBoundary unchanged on PutPrivate and every DefinePrivate; reads and brand checks answer passed");
 }
 thread_fn integrity_parent() {
     defer { heap_program::finish(); }
@@ -840,6 +885,17 @@ fn suspended_continuations() {
     waits = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(super_reflect_resumed, copy(w))); waits += 1; }
     assert(waits == 9);
+    // Private class elements (light-cljs-889): four waits, in a private
+    // getter, setter, method and static method, each resumed from a saved
+    // stack with the private names and elements; images whose private
+    // elements lose their owner, gain a second one or key a record by a
+    // string are refused.
+    let privates = embed_file("../corpus/serial/private-elements-wait.gsp");
+    heap_program::join(thread_spawn(private_wait, str(privates), false));
+    heap_program::join(thread_spawn(private_wait, str(privates), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(private_resumed, copy(w))); waits += 1; }
+    assert(waits == 5);
     print("suspended continuations: a dependency wait keeps them in place or carries them, with its whole stack as rows (native frames included), in a saved continuation; a reused worker's next job cannot reach them");
 }
 // Run suspended-wait.js to its dependency wait, with a generator and an
@@ -1555,6 +1611,76 @@ thread_fn super_reflect_resumed(saved: Waiting) {
     let outcome = source::run(job, -1);
     if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); super_reflect_save(job, heap); return; }
     assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "gDkDsDKDgDsDlDlD:11,5,10,3,true,7,true,1,9"));
+    assert(source::retire(job));
+    assert(qput(false));
+}
+// Run private-elements-wait.js (light-cljs-889) through its four waits:
+// answered in place, checking that only the setter's wait (the second)
+// runs under a Setter native frame, or each after the stack was saved and
+// restored in a fresh heap (private_resumed), where private_save checks that
+// an image is refused when an object's private elements lose their owner,
+// gain a second owner or key a record by a well-known symbol.
+thread_fn private_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    if save { private_save(job, heap); return; }
+    var waits: i64 = 0; var setters: i64[>..] = [];
+    loop {
+        for f in job.frames { match f.native { Setter => { setters.push(waits); }, _ => {} } }
+        assert(source::deliver_effect(job, source::text(heap, "D"))); waits += 1;
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    }
+    assert(waits == 4 && setters.len == 1 && setters[0] == 1);
+    assert(source::key_is(heap, job.result, "gDsDmDtD:1,4,5,5,true,true,true,true,false"));
+    assert(source::retire(job));
+}
+fn private_save(job: source::Job&, heap: source::Heap&) {
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    // The first object with private elements, its row and theirs, and an
+    // earlier ordinary object without any.
+    var owner: i64 = -1; var elements: i64 = -1; var other: i64 = -1;
+    for n, row in image.nodes {
+        if owner < 0 && n.metadata.is_object() && image.nodes[n.metadata.id()].kind == node_kind::PrivateElements { owner = row; elements = n.metadata.id(); }
+    }
+    for n, row in image.nodes { if other < 0 && row != owner && row < elements && n.kind == node_kind::Object && n.metadata.is_undefined() { other = row; } }
+    assert(owner >= 0 && other >= 0 && image.nodes[elements].key_count > 0);
+    var orphaned = copy(image); orphaned.nodes[owner].metadata = source::Value.Undefined;
+    var check = snapshot::Control {}; assert(!snapshot::validate(orphaned, check) && check.error == snapshot::Error.Link);
+    var shared = copy(image); shared.nodes[other].metadata = image.nodes[owner].metadata;
+    var check2 = snapshot::Control {}; assert(!snapshot::validate(shared, check2) && check2.error == snapshot::Error.Link);
+    var public = copy(image); public.properties[image.nodes[elements].keys].key = source::Value.Symbol { s: well_known::Iterator as u32 };
+    var check3 = snapshot::Control {}; assert(!snapshot::validate(public, check3) && check3.error == snapshot::Error.Link);
+    // The owner bitmap (one byte a node row) obeys its byte and work cuts
+    // at their exact boundaries.
+    var rows: i64 = 0; for n in image.nodes { if n.kind == node_kind::PrivateElements { rows += 1; } }
+    var tight = snapshot::Control { bytes: snapshot::footprint(image) + image.nodes.len - 1 };
+    assert(!snapshot::private_owners(image, tight, rows, rows) && tight.error == snapshot::Error.Bytes && tight.visited == 0 && tight.validation_peak == 0);
+    var exact = snapshot::Control { bytes: snapshot::footprint(image) + image.nodes.len };
+    assert(snapshot::private_owners(image, exact, rows, rows) && exact.validation_peak == image.nodes.len);
+    var at_work = snapshot::Control { work: exact.visited }; assert(snapshot::private_owners(image, at_work, rows, rows));
+    var below = snapshot::Control { work: exact.visited - 1 }; assert(!snapshot::private_owners(image, below, rows, rows) && below.error == snapshot::Error.Work);
+    var miscounted = snapshot::Control {}; assert(!snapshot::private_owners(image, miscounted, rows, rows + 1) && miscounted.error == snapshot::Error.Link);
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn private_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); private_save(job, heap); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "gDsDmDtD:1,4,5,5,true,true,true,true,false"));
     assert(source::retire(job));
     assert(qput(false));
 }
