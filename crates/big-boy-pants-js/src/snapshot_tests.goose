@@ -758,6 +758,14 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(dynamic_function_wait, str(dynamic), false));
     heap_program::join(thread_spawn(dynamic_function_wait, str(dynamic), true)); let pending_function = qget<Waiting>();
     heap_program::join(thread_spawn(dynamic_function_resumed, copy(pending_function)));
+    // A wait in newTarget's `prototype` getter after the Function
+    // constructor compiled (light-cljs-887): its DynamicFunction frame at pc
+    // 1, in place and from a saved continuation; a saved frame at pc 1
+    // without its function is refused.
+    let prototype_wait = embed_file("../corpus/serial/function-prototype-wait.gsp");
+    heap_program::join(thread_spawn(function_prototype_wait, str(prototype_wait), false));
+    heap_program::join(thread_spawn(function_prototype_wait, str(prototype_wait), true)); let pending_prototype = qget<Waiting>();
+    heap_program::join(thread_spawn(function_prototype_resumed, copy(pending_prototype)));
     // for-of (light-cljs-843): five waits, in place, or each after the
     // stack was saved and restored in a fresh heap.
     let iterating = embed_file("../corpus/serial/for-of-wait.gsp");
@@ -813,6 +821,15 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(classes_wait, str(classes), false));
     heap_program::join(thread_spawn(classes_wait, str(classes), true));
     assert(qget<bool>()); let cw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(cw)));
+    // Derived classes (light-cljs-887): a wait in a parent constructor
+    // during super(), above the derived frame whose `this` cell is unbound,
+    // inside a built-in's newTarget `prototype` getter above its Construct
+    // frame, in place and from a saved continuation; a saved Construct
+    // frame whose constructor is a built-in without [[Construct]] is refused.
+    let derived = embed_file("../corpus/serial/derived-classes-wait.gsp");
+    heap_program::join(thread_spawn(derived_wait, str(derived), false));
+    heap_program::join(thread_spawn(derived_wait, str(derived), true));
+    assert(qget<bool>()); let dw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(dw)));
     print("suspended continuations: a dependency wait keeps them in place or carries them, with its whole stack as rows (native frames included), in a saved continuation; a reused worker's next job cannot reach them");
 }
 // Run suspended-wait.js to its dependency wait, with a generator and an
@@ -957,6 +974,61 @@ thread_fn dynamic_function_resumed(saved: Waiting) {
     assert(source::deliver_effect(job, source::text(heap, "x")));
     assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "pb:4:true"));
     assert(code.functions.len > functions);
+    assert(source::retire(job));
+}
+// function-prototype-wait.js (light-cljs-887): the one DynamicFunction
+// frame waits at pc 1 for newTarget's `prototype` getter, holding the
+// function it compiled.
+fn function_prototype_frame(job: const source::Job&) -> source::Frame {
+    var found: i64 = -1; var count: i64 = 0;
+    for f, i in job.frames { match f.native { DynamicFunction => { found = i; count += 1; }, _ => {} } }
+    assert(count == 1);
+    let d = job.frames[found];
+    assert(d.pc == 1 && d.argument_count == 2 && d.receiver.is_object() && d.output.is_object() && source::node(job.heap, d.output.id()).kind == node_kind::Closure);
+    return d;
+}
+thread_fn function_prototype_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true, writable_code: code }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    function_prototype_frame(job);
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "x")));
+        assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "1:4:true"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var k = snapshot::Control {}; let image = snapshot::capture(heap, [], k); assert(k.error == snapshot::Error.None);
+    var bad = copy(image); var changed = false;
+    for i in a.frame_count {
+        let r = a.frames + i;
+        match image.conts[r] {
+            Frame x => {
+                var f = x.f;
+                match f.native { DynamicFunction => { f.output = source::Value.Undefined; changed = true; }, _ => {} }
+                bad.conts[r] = source::Cont.Frame { f: f };
+            },
+            _ => {},
+        }
+    }
+    assert(changed);
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn function_prototype_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true, writable_code: code };
+    assert(source::resume_stack(job, saved.stack));
+    function_prototype_frame(job);
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "x")));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "1:4:true"));
     assert(source::retire(job));
 }
 // Dependency waits inside for-of (for-of-wait.js, light-cljs-843): in the
@@ -1363,6 +1435,50 @@ thread_fn classes_wait(bytes: u8[], save: bool) {
     for n, row in image.nodes { if n.kind == node_kind::Closure && image.functions[n.function].kind == constructor::BaseClass { class_row = row; } }
     assert(class_row >= 0 && image.nodes[class_row].key_count == 5);
     var bad = copy(image); bad.nodes[class_row].key_count = 0; bad.nodes[class_row].shape = 0; bad.nodes[class_row].keys = 0; bad.nodes[class_row].key_capacity = 0; bad.nodes[class_row].slots = [source::Value.Undefined; 2];
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// Run derived-classes-wait.js to its dependency wait: the entry, the
+// Construct frame of Array, newTarget's `prototype` getter, the derived
+// class B's frame with its unbound `this` cell and its parent A's frame;
+// answer it in place, or save the continuation (symbols_resumed answers it,
+// "D:true"), checking that the saved Construct frame is refused with a
+// built-in constructor that has no [[Construct]].
+thread_fn derived_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8 && job.frames.len == 5);
+    let constructing = match job.frames[1].native { Construct => true, _ => false };
+    assert(constructing && source::node(heap, job.frames[1].callee.id()).kind == node_kind::Builtin);
+    let cell = job.frames[3].receiver;
+    assert(cell.is_object() && source::node(heap, cell.id()).kind == node_kind::Binding && !source::node(heap, cell.id()).initialized);
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    var other: i64 = -1;
+    for n, row in image.nodes { if other < 0 && n.kind == node_kind::Builtin && n.function < source::BUILTINS.len && !source::constructor_builtin(source::BUILTINS[n.function].which) { other = row; } }
+    assert(other >= 0);
+    var bad = copy(image); var changed = false;
+    for i in a.frame_count {
+        let r = a.frames + i;
+        match image.conts[r] {
+            Frame x => {
+                var f = x.f;
+                match f.native { Construct => { f.callee = source::object(other); changed = true; }, _ => {} }
+                bad.conts[r] = source::Cont.Frame { f: f };
+            },
+            _ => {},
+        }
+    }
+    assert(changed);
     var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
     assert(qput(true));
     assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));

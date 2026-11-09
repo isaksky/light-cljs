@@ -985,14 +985,19 @@ fn wrapper_value(job: Job&, b: Builtin, t: i64, args: const Value[:], construct:
     return to_string(heap, v);
 }
 // new Number(v), new String(v), new Boolean(v): a wrapper of their call's
-// primitive. new.target is the constructor itself (no subclass or
-// Reflect.construct reaches here yet), so the prototype is the realm's.
+// primitive, inheriting the realm's prototype; construct_builtin gives it
+// another newTarget's `prototype` (light-cljs-887).
 fn construct_wrapper(job: Job&, b: Builtin, args: const Value[:]) -> Value {
-    var t: i64 = 0; for w, i in WRAPPER_BUILTINS { if w == b { t = i; } }
+    let t = wrapper_index(b);
     let v = wrapper_value(job, b, t, args, true);
     if job.heap.fault != Fault.None { return Value.Undefined; }
     return wrap(job, v, object(wrapper_prototype_row(t)));
 }
+fn wrapper_index(b: Builtin) -> i64 { var t: i64 = 0; for w, i in WRAPPER_BUILTINS { if w == b { t = i; } } return t; }
+// The primitive new Number(v), new String(v) or new Boolean(v) wraps: its
+// conversion, which construct runs before newTarget's `prototype` is read
+// (light-cljs-887); converting it again gives itself.
+fn wrapper_primitive(job: Job&, b: Builtin, args: const Value[:]) -> Value { return wrapper_value(job, b, wrapper_index(b), args, true); }
 // Number.prototype.toString(radix): radix 10, or undefined, is the number's
 // ToString; a radix outside 2 to 36 is a RangeError and another one fails
 // by name (bbp-149, the core-builtins area, light-cljs-767).
@@ -1174,9 +1179,10 @@ fn exception_info(job: Job&, b: Builtin, fields: const Value[:], receiver: Value
 // nativeConstruct and exInfo), as for an ordinary function: an ordinary
 // object whose [[Prototype]] is nt's `prototype`, or %Object.prototype%
 // when that is not an object (GetPrototypeFromConstructor), is `this` of
-// the steps.
-fn construct_exception_info(job: Job&, nt: Value, args: const Value[:]) -> Value {
-    let proto = construct_prototype(job, nt);
+// the steps. With `resolved` the caller read it: `prototype` (Empty when
+// it is not an object; construct, light-cljs-887).
+fn construct_exception_info(job: Job&, nt: Value, args: const Value[:], resolved: bool = false, prototype: Value = Value.Empty) -> Value {
+    let proto = if resolved { prototype } else { construct_prototype(job, nt) };
     if job.heap.fault != Fault.None { return Value.Undefined; }
     let o = allocate(job.heap, Node { kind: node_kind::Object, proto: if proto.is_object() { proto } else { object(object_prototype_row()) } });
     if job.heap.fault != Fault.None { return Value.Undefined; }

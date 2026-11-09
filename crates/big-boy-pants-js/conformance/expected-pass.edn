@@ -31,6 +31,8 @@
  "bbp/bound_functions"
  "bbp/calls_and_parameters"
  "bbp/classes_base"
+ "bbp/classes_builtin_parents"
+ "bbp/classes_derived"
  "bbp/classes_fields_and_static_blocks"
  "bbp/classes_quickjs_base_rows"
  "bbp/classes_source_text"

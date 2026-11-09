@@ -916,7 +916,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/classes.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
@@ -1011,7 +1011,7 @@ fn control_flow() {
     // the return override, through finally and a generator yielding inside
     // the constructor, the realm's constructors and a non-constructor's
     // TypeError, at every cut; F patched to a base class constructs alike
-    // and to a derived class fails by name.
+    // and to a derived class throws a ReferenceError at its first `this`.
     check(embed_file("../corpus/serial/construct.gsp"), "boolean:true");
     construct_kinds(embed_file("../corpus/serial/construct.gsp"));
     // 9,999 frames of f above the entry frame fit the 10,000-frame limit, and
@@ -1275,6 +1275,11 @@ fn primitive_methods() {
     // constructor's frame, static fields and blocks, and Reflect.construct
     // with a newTarget, at every budget cut.
     check(embed_file("../corpus/serial/classes.gsp"), "boolean:true");
+    // Derived classes (light-cljs-887): super() with the derived `this`
+    // cell (read early by an arrow, bound by another), default derived
+    // constructors, Array and Error parents and a built-in's newTarget
+    // getter, at every budget cut.
+    check(embed_file("../corpus/serial/derived-classes.gsp"), "boolean:true");
 }
 fn scripts() {
     check(embed_file("../corpus/serial/script-declarations.gsp"), "boolean:true");
@@ -2052,7 +2057,8 @@ fn class_kinds(bytes: const u8[:]) {
 }
 // construct.js with F's constructor kind patched (light-cljs-831): as a
 // base class (light-cljs-886) `new F(2)` constructs as before; as a derived
-// class it fails by name, uncaught (light-cljs-887); with no constructor
+// class (light-cljs-887) its `this.x = x` before any super() is a
+// ReferenceError, here uncaught; with no constructor
 // kind (a method's or an arrow's) it is a TypeError, here uncaught.
 fn construct_kinds(bytes: const u8[:]) {
     var code = source::Code {}; decode(code, bytes);
@@ -2062,7 +2068,7 @@ fn construct_kinds(bytes: const u8[:]) {
         set_word(patched[..], at, (program::word(bytes, at) & ~(255 << 8)) | (kind << 8));
         if kind == constructor::None { check(patched, "", source::Fault.TypeError); }
         else if kind == constructor::BaseClass { check(patched, "boolean:true"); }
-        else { check(patched, "Fault.UnsupportedOperand:construct:-derived-class-constructors", source::Fault.UnsupportedOperand); }
+        else { check(patched, "", source::Fault.ReferenceError); }
     }
 }
 // Function.prototype.toString by function kind (light-cljs-853): the image

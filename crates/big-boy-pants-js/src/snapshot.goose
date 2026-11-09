@@ -306,8 +306,10 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // A FunctionText frame (light-cljs-853) awaits its function's name.
         FunctionText => f.pc == 0 && object_of(s, f.callee, node_kind::None) && callable_kind(s.nodes[f.callee.id()].kind),
         // A DynamicFunction frame (light-cljs-857) converts its arguments
-        // from `index` on; its newTarget, if any, is an object.
-        DynamicFunction => f.pc == 0 && f.argument_count >= 0 && f.index >= 0 && f.index <= f.argument_count && (f.receiver.is_undefined() || object_of(s, f.receiver, node_kind::None)),
+        // from `index` on; its newTarget, if any, is an object; at pc 1 it
+        // awaits that newTarget's `prototype` getter for the function it
+        // made (light-cljs-887).
+        DynamicFunction => (f.pc == 0 || f.pc == 1 && object_of(s, f.output, node_kind::Closure) && f.receiver.is_object()) && f.argument_count >= 0 && f.index >= 0 && f.index <= f.argument_count && (f.receiver.is_undefined() || object_of(s, f.receiver, node_kind::None)),
         // An ErrorConstruct frame (light-cljs-870) holds the error object it
         // is making; at pc 2 it awaits its options object's `cause` getter.
         ErrorConstruct e => source::error_type(e.which) >= 0 && (f.pc == 0 || f.pc == 2) && object_of(s, f.output, node_kind::Error) && (f.pc != 2 || object_of(s, f.receiver, node_kind::None)),
@@ -328,8 +330,9 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // of its values for its built-in.
         Statics x => statics_frame_valid(s, f, x.which),
         // A Construct frame (light-cljs-886) awaits newTarget's
-        // `prototype` getter for its constructor, a closure.
-        Construct => f.pc == 0 && object_of(s, f.callee, node_kind::Closure) && object_of(s, f.input, node_kind::None),
+        // `prototype` getter for its constructor, a closure or a
+        // constructor built-in (light-cljs-887).
+        Construct => f.pc == 0 && (object_of(s, f.callee, node_kind::Closure) || object_of(s, f.callee, node_kind::Builtin) && s.nodes[f.callee.id()].function < source::BUILTINS.len && source::constructor_builtin(source::BUILTINS[s.nodes[f.callee.id()].function].which)) && object_of(s, f.input, node_kind::None),
         _ => true,
     };
 }

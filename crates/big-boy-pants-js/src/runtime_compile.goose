@@ -213,6 +213,8 @@ fn start_direct_eval(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
 //   pc 0            converts the arguments from `index` on: a primitive in
 //                   place, an object in a Convert frame above this one (hint
 //                   string, then ToString), after which this step runs again
+//   pc 1            awaits newTarget's `prototype` getter (light-cljs-887),
+//                   the compiled function in `output`
 // Generator, async and async generator functions built at run time
 // (%GeneratorFunction% and its siblings) belong to the generators area
 // (light-cljs-768).
@@ -229,7 +231,15 @@ fn start_dynamic_function(job: Job&, args: const Value[:], base: i64, new_target
 fn dynamic_function_step(job: Job&, frame: Frame) {
     let heap .= job.heap; let at = job.frames.len - 1;
     let base = frame.operand_base; let n = frame.argument_count;
-    if job.operands.len != base + n || frame.index < 0 || frame.index > n { heap.fault = Fault.InvalidState; return; }
+    if frame.pc == 1 {
+        let p = job.operands.pop();
+        if !valid(heap, p) { return; }
+        if job.operands.len != base + n || !frame.output.is_object() { heap.fault = Fault.InvalidState; return; }
+        if p.is_object() { node_mut(heap, frame.output.id()).proto = p; }
+        finish_native(job, frame, frame.output);
+        return;
+    }
+    if frame.pc != 0 || job.operands.len != base + n || frame.index < 0 || frame.index > n { heap.fault = Fault.InvalidState; return; }
     for i in frame.index..n {
         // A scalar form (a primitive with its provenance) is its primitive.
         let v = form_value(heap, job.operands[base + i]);
@@ -263,8 +273,9 @@ fn dynamic_function_step(job: Job&, frame: Frame) {
     let f = closure(heap, root, []);
     if heap.fault != Fault.None { return; }
     if frame.receiver.is_object() {
-        let proto = construct_prototype(job, frame.receiver);
+        let proto, getter = closure_prototype(job, frame.receiver);
         if heap.fault != Fault.None { return; }
+        if getter.is_object() { job.frames[at].output = f; job.frames[at].pc = 1; call_accessor(job, getter, frame.receiver, []); return; }
         if proto.is_object() { node_mut(heap, f.id()).proto = proto; }
     }
     finish_native(job, frame, f);

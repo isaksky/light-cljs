@@ -250,7 +250,7 @@ enum Ins {
     Unary { op: u8 }, Numeric2, Closure { child: u32 }, Call { argc: u32 }, CallMethod { argc: u32 },
     Arguments, MappedArguments, Rest { skip: u32 }, Callee, Capture { slot: u32 }, NewCell { immutable: bool },
     InitCell, ReadCell, WriteCell, GetNamed { k: u32 }, GetIndexed, SetNamed { k: u32, strict: bool }, DefineNamed { k: u32, half: u8 },
-    SetIndexed { strict: bool }, DefineIndexed { half: u8 }, SetProto, Delete { strict: bool }, In, Append, CheckValue, This { sloppy: bool }, Global, GetGlobal { k: u32, throws: bool },
+    SetIndexed { strict: bool }, DefineIndexed { half: u8 }, SetProto, Delete { strict: bool }, In, Append, ResolveThis, This { sloppy: bool }, Global, GetGlobal { k: u32, throws: bool },
     Literal { kind: u8, count: u32 }, Form { op: u32 }, ToString, Unsupported { opcode: u8 },
     // new f(...) (94; light-cljs-831, construct): an ordinary function's
     // [[Construct]] and the realm's constructors. NewTarget (GetNewTarget,
@@ -322,6 +322,18 @@ enum Ins {
     // (the prototype or the constructor), `half` a data method (0), getter
     // (1) or setter (2) (define_field's class attributes).
     DefineClass { half: u8 },
+    // Derived classes (light-cljs-887; the Pants engine's class_step):
+    // CheckHeritage (155) parent → parent, a TypeError unless null or a
+    // constructor; InitHeritage (156) class parent proto → class, both
+    // inheritance links; SuperConstructor (GetSuperConstructor, 157) f →
+    // f's [[Prototype]]; ConstructSuper (158, ConstructSuperSpread 159
+    // with `spread`) parent newTarget a1..an → result, the parent's
+    // [[Construct]] with the shared newTarget; BindThis (160) cell result →
+    // result, a derived constructor's `this` initialized once.
+    // ForwardArguments (162) → args, the frame's arguments in a packed
+    // array, decodes to Rest { skip: 0 }: no observable iteration.
+    // ResolveThis (161) v → v reads a derived constructor's `this` cell.
+    CheckHeritage, InitHeritage, SuperConstructor, ConstructSuper { argc: u32, spread: bool }, BindThis,
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -903,7 +915,7 @@ fn instruction(op: Op) -> Ins {
         opcode::DefineField => Ins.DefineNamed { k: a, half: 0 }, opcode::DefineGetter => Ins.DefineNamed { k: a, half: 1 }, opcode::DefineSetter => Ins.DefineNamed { k: a, half: 2 },
         opcode::DefineElem => Ins.DefineIndexed { half: 0 }, opcode::DefineGetterElem => Ins.DefineIndexed { half: 1 }, opcode::DefineSetterElem => Ins.DefineIndexed { half: 2 },
         opcode::SetProto => Ins.SetProto, opcode::Delete => Ins.Delete { strict: false }, opcode::DeleteStrict => Ins.Delete { strict: true }, opcode::In => Ins.In,
-        opcode::ResolveThis => Ins.CheckValue, opcode::GetThis => Ins.This { sloppy: true }, opcode::GetRawThis => Ins.This { sloppy: false }, opcode::GetGlobalObject => Ins.Global,
+        opcode::ResolveThis => Ins.ResolveThis, opcode::GetThis => Ins.This { sloppy: true }, opcode::GetRawThis => Ins.This { sloppy: false }, opcode::GetGlobalObject => Ins.Global,
         opcode::GetGlobal => Ins.GetGlobal { k: a, throws: true }, opcode::GetGlobalOrUndefined => Ins.GetGlobal { k: a, throws: false },
         opcode::PutGlobal, opcode::DeclareGlobalVar, opcode::DeclareGlobalFunction, opcode::DeclareGlobalLet, opcode::DeclareGlobalConst, opcode::InitGlobalLexical, opcode::CheckGlobalVar, opcode::CheckGlobalFunction, opcode::DeleteGlobal, opcode::DeclareGlobalConstValue, opcode::CheckGlobalLexicalConflict, opcode::PutGlobalStrict => Ins.GlobalOp { op: op.code as u8, k: a },
         opcode::ThrowError => Ins.ThrowError { kind: if op.arg >= 0 && op.arg < export_selector_count(opcode::ThrowError) { op.arg as u8 } else { 255 } },
@@ -919,6 +931,9 @@ fn instruction(op: Op) -> Ins {
         opcode::IsCell => Ins.IsCell, opcode::IsObject => Ins.IsObject, opcode::CheckSloppyThis => Ins.SloppyThis, opcode::SetComputedName => Ins.ComputedName { k: a },
         opcode::TemplateObject => Ins.TemplateObject { count: a },
         opcode::DefineClassMethod => Ins.DefineClass { half: 0 }, opcode::DefineClassGetter => Ins.DefineClass { half: 1 }, opcode::DefineClassSetter => Ins.DefineClass { half: 2 },
+        opcode::CheckHeritage => Ins.CheckHeritage, opcode::InitHeritage => Ins.InitHeritage, opcode::GetSuperConstructor => Ins.SuperConstructor,
+        opcode::ConstructSuper => Ins.ConstructSuper { argc: a, spread: false }, opcode::ConstructSuperSpread => Ins.ConstructSuper { argc: 0, spread: true },
+        opcode::BindThis => Ins.BindThis, opcode::ForwardArguments => Ins.Rest { skip: 0 },
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -2920,7 +2935,19 @@ fn return_value(job: Job&, top: i64, value: Value, at: i64) {
     let lb = job.frames[top].local_base; let ob = job.frames[top].operand_base;
     // A constructed frame (new.target set) gives its new object unless it
     // returned an object (OrdinaryCallEvaluateBody's [[Construct]] step).
-    let result = if job.frames[top].input.is_object() && !value.is_object() { job.frames[top].receiver } else { value };
+    // A derived constructor's receiver is its `this` cell (light-cljs-887):
+    // undefined gives the bound `this`, a ReferenceError if super() never
+    // ran, and any other non-object is a TypeError, thrown past the frame.
+    var result = value;
+    if job.frames[top].input.is_object() && !value.is_object() {
+        result = job.frames[top].receiver;
+        if result.is_object() && node(job.heap, result.id()).kind == node_kind::Binding {
+            if !value.is_undefined() { type_error(job, "derived class constructor must return an object or undefined"); }
+            else if !node(job.heap, result.id()).initialized { reference_fault(job, "this is not initialized"); }
+            else { result = node(job.heap, result.id()).value; }
+            if job.heap.fault != Fault.None { fail(job, job.heap.fault, frame_at(job, top, at)); return; }
+        }
+    }
     job.frames.pop(); job.locals.resize(lb); job.operands.resize(ob);
     deliver(job, result);
 }
@@ -4801,9 +4828,16 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
-                CheckValue => {
-                    let value = job.operands.pop(); if valid(heap, value) && value.is_object() && (node(heap, value.id()).kind == node_kind::Binding || node(heap, value.id()).kind == node_kind::MappedBinding) { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value);
-                    if heap.fault != Fault.None { break; }
+                // A derived constructor's `this` is its frame's binding cell
+                // (construct, light-cljs-887), read here: a ReferenceError
+                // before super() has bound it. Any other receiver is itself.
+                ResolveThis => {
+                    let value = job.operands[job.operands.len - 1];
+                    if value.is_object() {
+                        let kind = node(heap, value.id()).kind;
+                        if kind == node_kind::Binding { if !resolve_this(job, value) { break; } }
+                        else if kind == node_kind::MappedBinding { heap.fault = Fault.UnsupportedOperand; break; }
+                    }
                 },
                 This t => {
                     let receiver = job.frames[top].receiver;
@@ -5014,6 +5048,32 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     left = fuel(job, allowance, used);
                 },
                 NewTarget => { job.operands.push(job.frames[top].input); },
+                // Derived classes (light-cljs-887; see Ins).
+                CheckHeritage => {
+                    let p = job.operands[job.operands.len - 1];
+                    if !p.is_null() && !is_constructor(heap, p) { type_error(job, "parent class must be a constructor"); break; }
+                },
+                InitHeritage => {
+                    settle(job, ran, used); job.frames[top].pc = pc; init_heritage(job);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                SuperConstructor => {
+                    let g = job.operands.pop();
+                    if !g.is_object() { heap.fault = Fault.InvalidState; break; }
+                    job.operands.push(prototype(heap, g.id()));
+                },
+                ConstructSuper c => {
+                    settle(job, ran, used);
+                    var argc: i64 = c.argc;
+                    if c.spread {
+                        argc = spread_unpack(job, top, at, false, true, true);
+                        if argc < 0 { if heap.fault == Fault.None { in_place(job, top, at); } break; }
+                    }
+                    if !construct_super(job, top, at, argc) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                BindThis => { if !bind_this(job) { break; } },
                 ToObject => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let v = job.operands.pop(); job.operands.push(to_object(job, v));
@@ -5058,15 +5118,17 @@ inline fn construct_at(job: Job&, top: i64, at: i64, argc: i64) -> bool {
 // array, which the next run writes back into the array (a primitive on top
 // marks it: the packed array is always an Array). Returns the argument
 // count, or -1 when the call does not run now (heap.fault set, or a demand
-// or conversion started with the pc at `at`).
-fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -> i64 {
+// or conversion started with the pc at `at`). A super(...a) call
+// (`parent`, ConstructSuper with spread, light-cljs-887) has the parent
+// constructor and newTarget below the array; the parent decides.
+fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool, parent: bool = false) -> i64 {
     let heap .= job.heap;
     let last = job.operands[job.operands.len - 1];
     let converted = !last.is_object() || node(heap, last.id()).kind != node_kind::Array;
     let primitive = if converted { job.operands.pop() } else { Value.Undefined };
     let array = job.operands[job.operands.len - 1];
     if !array.is_object() || node(heap, array.id()).kind != node_kind::Array { heap.fault = Fault.InvalidState; return -1; }
-    let base = job.operands.len - 1 - (if method { 2 } else { 1 });
+    let base = job.operands.len - 1 - (if method || parent { 2 } else { 1 });
     var callee = job.operands[base + (if method { 1 } else { 0 })];
     // Function.prototype.call forwards its receiver as callee (call).
     var skip: i64 = 0;
@@ -5118,10 +5180,13 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
 // object, a job row inheriting F.prototype (made on first observation, as a
 // read makes it) or, when that is not an object, %Object.prototype%; F's
 // frame runs with it as `this` and F as new.target, and return_value
-// substitutes it for a non-object return value. Object, Array and the Error
-// constructors construct as their call (call_builtin), which is their
-// [[Construct]] when new.target is the constructor itself, as it is for
-// `new`: their prototypes are the realm's. Function constructs as its call
+// substitutes it for a non-object return value. A derived class
+// (light-cljs-887) runs with an unbound `this` cell instead, which super()
+// binds. Object, Array and the Error constructors construct as their call
+// (call_builtin), which is their [[Construct]] when new.target is the
+// constructor itself, as it is for `new`: their prototypes are the realm's;
+// another newTarget (a subclass's, Reflect.construct's) gives its
+// `prototype` (construct_builtin). Function constructs as its call
 // does, in its DynamicFunction frame (light-cljs-857). Number, String and Boolean
 // make a wrapper object of their conversion (construct_wrapper,
 // light-cljs-832; an object argument converted first, in the dispatch
@@ -5129,8 +5194,7 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
 // TypeError: primitives, objects without [[Call]], the light-cljs runtime
 // kinds, arrows, methods, accessors, generator and async functions, and the
 // realm's other built-ins (Symbol's [[Construct]] throws). Failing by name
-// (decision 1): derived class constructors (light-cljs-887) and
-// the light-cljs runtime's leaves other than Delay, which the V8 build
+// (decision 1): the light-cljs runtime's leaves other than Delay, which the V8 build
 // constructs as ordinary JavaScript functions.
 fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
     let heap .= job.heap;
@@ -5143,9 +5207,19 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
     if kind == node_kind::Closure {
         let code_kind = constructor_kind(heap, f.id());
         // A base class constructs as an ordinary function does (its body
-        // first runs the instance-field initializer, compiled into it);
-        // derived classes are light-cljs-887's.
-        if code_kind > constructor::BaseClass { unsupported_detail(job, "construct: derived class constructors"); return; }
+        // first runs the instance-field initializer, compiled into it). A
+        // derived class (light-cljs-887) makes no object: its frame's
+        // receiver is a new uninitialized binding cell, its `this`, which
+        // super() binds (BindThis) to the parent's object and ResolveThis
+        // reads; arrows and eval code capture the cell. It is frame state
+        // (a job row the frame names), so it survives waits, saved
+        // continuations and collections as any receiver does.
+        if code_kind > constructor::BaseClass {
+            let cell = allocate(heap, Node { kind: node_kind::Binding });
+            if heap.fault != Fault.None { return; }
+            if push_frame(job, f, cell, job.operands[(base + 1)..], false, base, nt) { job.operands.resize(base); }
+            return;
+        }
         if code_kind == constructor::None { heap.fault = Fault.TypeError; return; }
         // A `prototype` getter on newTarget (a bound function's or an
         // object's on its chain, Reflect.construct's) runs as a frame above
@@ -5172,6 +5246,41 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
     if kind != node_kind::Builtin { if kind == node_kind::Proxy { proxy_invoke(heap, f, proxy_method::Construct); } else { heap.fault = Fault.TypeError; } return; }
     let b = builtin_of(heap, f.id());
     if !constructor_builtin(b) || b == Builtin.SymbolFunction { heap.fault = Fault.TypeError; return; }
+    // A built-in that makes its object from newTarget's `prototype`
+    // (GetPrototypeFromConstructor, light-cljs-887: a class extending it, or
+    // Reflect.construct) reads it first; a getter there runs as a frame
+    // above a Construct native frame, which then constructs (construct_step).
+    // ExceptionInfo always reads it, as an ordinary function does; the
+    // Function constructor reads it after compiling (runtime_compile.goose).
+    // Number and String convert their argument first (ToNumeric and
+    // ToString precede OrdinaryCreateFromConstructor, so a Symbol's
+    // TypeError comes before any getter); the primitive replaces the
+    // argument, which construct_builtin's conversion leaves as it is.
+    if (b == Builtin.Number || b == Builtin.String) && argc > 0 && !same_value(heap, nt, f) {
+        let v = wrapper_primitive(job, b, job.operands[(base + 1)..]);
+        if heap.fault != Fault.None { return; }
+        job.operands[base + 1] = v;
+    }
+    if b == Builtin.ExceptionInfo || b != Builtin.Proxy && b != Builtin.Function && !same_value(heap, nt, f) {
+        let proto, getter = closure_prototype(job, nt);
+        if heap.fault != Fault.None { return; }
+        if getter.is_object() {
+            if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+            job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: f, receiver: Value.Undefined, input: nt, native: Native.Construct });
+            call_accessor(job, getter, nt, []);
+            return;
+        }
+        construct_builtin(job, b, f, nt, base, proto);
+        return;
+    }
+    construct_builtin(job, b, f, nt, base, Value.Empty);
+}
+// The [[Construct]] of constructor built-in b (function object f) with
+// newTarget nt, f and its arguments the operands from `base`, its object's
+// prototype `proto` (Empty: the realm's for b, as when nt is f or nt's
+// `prototype` is not an object).
+fn construct_builtin(job: Job&, b: Builtin, f: Value, nt: Value, base: i64, proto: Value) {
+    let heap .= job.heap;
     var value = Value.Undefined;
     match b {
         // new Proxy(target, handler) (light-cljs-845; proxy.goose).
@@ -5181,7 +5290,7 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
         // the argument.
         Object => {
             if same_value(heap, nt, f) { value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]); }
-            else { value = allocate(heap, Node { kind: node_kind::Object }); }
+            else { value = allocate(heap, Node { kind: node_kind::Object, proto: proto }); }
         },
         // The Function constructor's DynamicFunction frame (light-cljs-857;
         // runtime_compile.goose) delivers the function at `base` and applies
@@ -5191,35 +5300,25 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
         // take newTarget's `prototype` first, then run their steps, as an
         // ErrorConstruct frame when one runs JavaScript; the error goes at `base`.
         Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
-            let proto = if same_value(heap, nt, f) { Value.Empty } else { construct_prototype(job, nt) };
-            if heap.fault != Fault.None { return; }
             start_error(job, b, job.operands[(base + 1)..], base, proto);
             return;
         },
-        Array => {
-            value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]);
-        },
+        // An array keeps its exotic `length` with another prototype.
+        Array => { value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]); },
         Number, String, Boolean => { value = construct_wrapper(job, b, job.operands[(base + 1)..]); },
-        // new ExceptionInfo(...) takes newTarget's `prototype` itself
-        // (light-cljs-875; realm.goose construct_exception_info).
-        ExceptionInfo => { value = construct_exception_info(job, nt, job.operands[(base + 1)..]); },
+        // new ExceptionInfo(...) (light-cljs-875; realm.goose
+        // construct_exception_info) with newTarget's `prototype`.
+        ExceptionInfo => { value = construct_exception_info(job, nt, job.operands[(base + 1)..], true, proto); },
         _ => { unsupported_step(job, b, "construct"); return; },
     }
     if heap.fault != Fault.None { return; }
-    // A newTarget other than the constructor gives the new object its
-    // `prototype` (GetPrototypeFromConstructor; the realm's intrinsic when
-    // that is not an object). A proxy ignores it.
-    if b != Builtin.Proxy && b != Builtin.ExceptionInfo && !same_value(heap, nt, f) && value.is_object() {
-        let proto = construct_prototype(job, nt);
-        if heap.fault != Fault.None { return; }
-        if proto.is_object() { node_mut(heap, value.id()).proto = proto; }
-    }
+    if proto.is_object() && b != Builtin.ExceptionInfo && b != Builtin.Object && value.is_object() { node_mut(heap, value.id()).proto = proto; }
     job.operands.resize(base); job.operands.push(value);
 }
-// GetPrototypeFromConstructor(nt) for an ordinary function's or base
-// class's construct: the prototype (Empty, the realm's %Object.prototype%,
-// when not an object), or the getter of an accessor `prototype`, which
-// construct runs (light-cljs-886).
+// GetPrototypeFromConstructor(nt) for construct: the prototype (Empty, the
+// constructor's realm default, when not an object), or the getter of an
+// accessor `prototype`, which construct runs (light-cljs-886; for
+// built-ins, light-cljs-887).
 fn closure_prototype(job: Job&, nt: Value) -> Value, Value {
     let heap .= job.heap;
     if node(heap, nt.id()).kind == node_kind::Closure && lazy_prototype(heap, nt.id()) && !writable(job, nt.id()) { unsupported_detail(job, "construct: a function whose lazy prototype is in a row this job did not allocate"); return Value.Undefined, Value.Undefined; }
@@ -5241,15 +5340,84 @@ fn enter_constructor(job: Job&, f: Value, nt: Value, proto: Value, base: i64) {
     if push_frame(job, f, o, job.operands[(base + 1)..], false, base, nt) { job.operands.resize(base); }
 }
 // The Construct frame's step (see Native): the getter's value on the
-// operand top is newTarget's prototype, the realm's %Object.prototype%
-// when it is not an object; the constructor's frame replaces this one.
+// operand top is newTarget's prototype, the constructor's realm default
+// when it is not an object; the constructor's frame (a closure's) or its
+// construction (a built-in's, light-cljs-887) replaces this one.
 fn construct_step(job: Job&, frame: Frame) {
     let heap .= job.heap;
-    if frame.pc != 0 || job.operands.len < frame.operand_base + 2 || !same_bits(job.operands[frame.operand_base], frame.callee) { heap.fault = Fault.InvalidState; return; }
+    if frame.pc != 0 || job.operands.len < frame.operand_base + 2 || !same_bits(job.operands[frame.operand_base], frame.callee) || !frame.callee.is_object() { heap.fault = Fault.InvalidState; return; }
     let p = job.operands.pop();
     if !valid(heap, p) { return; }
     job.frames.pop();
-    enter_constructor(job, frame.callee, frame.input, if p.is_object() { p } else { Value.Empty }, frame.operand_base);
+    let proto = if p.is_object() { p } else { Value.Empty };
+    if node(heap, frame.callee.id()).kind == node_kind::Builtin { construct_builtin(job, builtin_of(heap, frame.callee.id()), frame.callee, frame.input, frame.operand_base, proto); return; }
+    enter_constructor(job, frame.callee, frame.input, proto, frame.operand_base);
+}
+// super(a1, ..., an) at `at` (ConstructSuper, light-cljs-887; the Pants
+// engine's construct_target with a target): parent newTarget a1..an on the
+// operand top, the parent's [[Construct]] with that newTarget, its result
+// delivered to this frame. A parent that is not a constructor (a derived
+// class of null has %Function.prototype%) is construct's TypeError. new
+// Number(o) and new String(o) as the parent convert their first argument
+// first, the instruction then running again. Returns whether the frame
+// continues in place.
+fn construct_super(job: Job&, top: i64, at: i64, argc: i64) -> bool {
+    let heap .= job.heap;
+    let first = job.operands.len - argc;
+    let parent = job.operands[first - 2];
+    let converts, hint = argument_converts(heap, parent, job.operands[first..], true);
+    if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, argc); in_place(job, top, at); return false; }
+    let target = job.operands[first - 1];
+    for i in (first - 1)..(job.operands.len - 1) { job.operands[i] = job.operands[i + 1]; }
+    job.operands.pop();
+    job.frames[top].pc = at + 1; construct(job, argc, target);
+    return in_place(job, top, at);
+}
+// BindThis: cell result → result, the derived constructor's `this` bound
+// to super()'s result; a second super() is a ReferenceError after its
+// parent ran. Returns false with a fault.
+fn bind_this(job: Job&) -> bool {
+    let heap .= job.heap;
+    let value = job.operands.pop(); let cell = job.operands.pop();
+    if !cell.is_object() || node(heap, cell.id()).kind != node_kind::Binding { heap.fault = Fault.InvalidState; return false; }
+    if !writable(job, cell.id()) { heap.fault = Fault.NativeBoundary; return false; }
+    let row .= node_mut(heap, cell.id());
+    if row.initialized { reference_fault(job, "this can be initialized only once"); return false; }
+    row.value = value; row.initialized = true;
+    job.operands.push(value);
+    return true;
+}
+// ResolveThis of a derived constructor's `this` cell on the operand top:
+// its value, or a ReferenceError before super() bound it.
+fn resolve_this(job: Job&, cell: Value) -> bool {
+    let row .= node(job.heap, cell.id());
+    if !row.initialized { reference_fault(job, "this is not initialized"); return false; }
+    job.operands[job.operands.len - 1] = row.value;
+    return true;
+}
+// A ReferenceError with this message.
+fn reference_fault(job: Job&, message: const u8[:]) {
+    job.detail.clear(); for c in message { job.detail.push(c); }
+    if job.heap.fault == Fault.None { job.heap.fault = Fault.ReferenceError; }
+}
+// InitHeritage: class parent proto → class (the Pants engine's
+// inherit_class). The class's [[Prototype]] becomes the parent (it stays
+// %Function.prototype% for `extends null`) and its `prototype` object's
+// the parent's `prototype`, read by the lowering's GetField (null for
+// `extends null`); a value other than an object or null is a TypeError.
+// Both rows are the class's, made by this job.
+fn init_heritage(job: Job&) {
+    let heap .= job.heap;
+    let proto = job.operands.pop(); let parent = job.operands.pop(); let class = job.operands[job.operands.len - 1];
+    if !class.is_object() || node(heap, class.id()).kind != node_kind::Closure || constructor_kind(heap, class.id()) <= constructor::BaseClass { heap.fault = Fault.InvalidState; return; }
+    if !proto.is_object() && !proto.is_null() && !parent.is_null() { type_error(job, "parent prototype must be an object or null"); return; }
+    let k = key_named(heap, "prototype");
+    if heap.fault != Fault.None { return; }
+    let own = find_own(heap, class.id(), k);
+    if heap.fault != Fault.None { return; }
+    if !own.found || !own.value.is_object() || !writable(job, class.id()) || !writable(job, own.value.id()) { heap.fault = Fault.InvalidState; return; }
+    if parent.is_object() { node_mut(heap, class.id()).proto = parent; }
+    node_mut(heap, own.value.id()).proto = if proto.is_object() { proto } else { Value.Null };
 }
 // GetPrototypeFromConstructor(newTarget) for construct, Empty (the kind's
 // realm default) when it is not an object. Making a closure's lazy

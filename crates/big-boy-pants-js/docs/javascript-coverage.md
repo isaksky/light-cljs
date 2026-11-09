@@ -646,6 +646,31 @@ decide what a publication does with a method whose home object is a
 mutable object (today a lazy method publishes; reaching its home object
 would refuse it).
 
+*As landed by light-cljs-887 (derived classes):* no new table, node kind or
+frame field. `InitHeritage` sets the class row's `proto` to the parent and
+its `prototype` object's to the parent's `prototype` (null for `extends
+null`). A derived class's [[Construct]] makes no object: its frame's
+receiver is a new uninitialized `node_kind::Binding` row, the Rust
+lowering's "receiver cell", which `BindThis` initializes once with the
+result of super() and `ResolveThis` reads (a ReferenceError while
+unbound); arrows and eval code capture the cell as they capture any
+binding, and because the frame names it as its receiver, waits, saved
+continuations, reclamation and snapshot validation carry it with no new
+rule. `return_value` gives the bound `this` for an undefined return (a
+ReferenceError if super() never ran) and a TypeError for another
+non-object. `ConstructSuper` and `ConstructSuperSpread` are `construct`
+with the shared newTarget, so every parent kind (class, ordinary
+function, bound function, built-in; a proxy fails by name until
+light-cljs-891) resumes as a `new` does; `ForwardArguments` decodes to
+`Rest { skip: 0 }`. Constructor built-ins with a newTarget other than
+themselves read its `prototype` first (`construct_builtin`; Number and
+String convert their argument before it, the primitive replacing the
+argument): an accessor
+there runs its getter above the same `Construct` native frame, now also
+for a built-in callee (snapshot-validated as a constructor built-in), and
+the Function constructor reads it after compiling, at a new pc 1 of its
+`DynamicFunction` frame.
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

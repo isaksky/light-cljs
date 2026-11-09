@@ -2153,6 +2153,18 @@ mod serial_tests {
             // and across a dependency wait inside newTarget's `prototype`
             // getter during a construction (snapshot_tests.goose).
             ("classes-wait", "goose"),
+            // Derived classes (light-cljs-887): super(), the derived
+            // `this`, Array and Error parents and a built-in's newTarget
+            // getter at every budget cut and collection
+            // (serial_tests.goose).
+            ("derived-classes", "boolean:true"),
+            // and across a dependency wait in a parent constructor during
+            // super(), inside a built-in's newTarget getter
+            // (snapshot_tests.goose).
+            ("derived-classes-wait", "goose"),
+            // and the Function constructor waiting in newTarget's
+            // `prototype` getter after it compiled (snapshot_tests.goose).
+            ("function-prototype-wait", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));
