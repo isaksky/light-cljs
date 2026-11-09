@@ -65,6 +65,34 @@ fn transported(heap: source::Heap&, roots: const source::Value[:], cells: bool, 
     assert(bridge::export_graph(heap, roots, g, c) && bridge::encode(g, bytes, c));
     var d = bridge::Graph {}; var r = bridge::Control { cells: cells }; assert(bridge::decode(d, bytes, r) && bridge::import_graph(heap, d, out, r));
 }
+// light-cljs-878: inside the session the realm's empty literals keep their
+// rows through a transport, as a child, a metadata edge or a root; to the
+// compiler they are new forms. An empty collection with metadata is no
+// realm row, and the marker (number 2) needs a cell graph, no children and
+// no metadata.
+thread_fn realm_empties() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let v = source::empty_literal(heap, node_kind::Vector); let m = source::empty_literal(heap, node_kind::Map);
+    assert(source::empty_form(v.id()) && source::empty_form(m.id()) && source::node(heap, m.id()).kind == node_kind::Map);
+    let tagged = source::form_collection(heap, node_kind::Vector, [source::number(1)]); source::node_mut(heap, tagged.id()).metadata = m;
+    let marked = source::form_collection(heap, node_kind::Vector, []); source::node_mut(heap, marked.id()).metadata = m;
+    let outer = source::form_collection(heap, node_kind::List, [v, m, tagged, marked]);
+    var kept: source::Value[>..] = []; transported(heap, [outer, v], true, kept);
+    let k = source::node(heap, kept[0].id());
+    assert(source::slot(heap, k.start) == v && source::slot(heap, k.start + 1) == m && kept[1] == v);
+    let kt = source::slot(heap, k.start + 2); let km = source::slot(heap, k.start + 3);
+    assert(source::node(heap, kt.id()).metadata == m && !source::empty_form(km.id()) && source::node(heap, km.id()).metadata == m);
+    var fresh: source::Value[>..] = []; transported(heap, [outer, v], false, fresh);
+    let f = source::node(heap, fresh[0].id());
+    assert(!source::empty_form(source::slot(heap, f.start).id()) && !source::empty_form(fresh[1].id()) && !source::empty_form(source::node(heap, source::slot(heap, f.start + 2).id()).metadata.id()));
+    var g = bridge::Graph {}; var c = bridge::Control { cells: true, spans: false }; assert(bridge::export_graph(heap, [v, marked], g, c));
+    assert(g.nodes[g.roots[0]].number == 2 && g.nodes[g.roots[1]].number == 0);
+    var bytes: u8[>..] = []; g.nodes[g.roots[1]].number = 2; var cells = bridge::Control { cells: true }; assert(!bridge::encode(g, bytes, cells) && cells.error == bridge::Error.Malformed);
+    var plain = bridge::Graph {}; var pc = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [v], plain, pc) && plain.nodes[plain.roots[0]].number == 0);
+    plain.nodes[plain.roots[0]].number = 2; var pe = bridge::Control {}; assert(!bridge::encode(plain, bytes, pe) && pe.error == bridge::Error.Malformed);
+    print("compiler form bridge: realm empty literals keep their rows in cell graphs, as children, metadata and roots");
+}
 thread_fn traversal_order() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
@@ -326,7 +354,7 @@ fn direct_update_boundaries() {
 }
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
-    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(merged_keys));
+    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
     direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 

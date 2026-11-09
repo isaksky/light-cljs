@@ -152,8 +152,9 @@ fn validate_graph(g: const Graph&, c: Control&, sets: i64[>..]&, record: bool) -
         if collection(n.tag) && (!range(n.start, n.count, g.children.len) || n.tag == form_tag::Map && n.count % 2 != 0) { return reject(c); }
         // A collection's number is 0, or inside the session 1 for a
         // hash-ordered map or set (map_order::Hash) or a realized integer
-        // range, a list (seq_flavor::IntegerRange; light-cljs-877).
-        if collection(n.tag) && n.number != 0 && !(n.number == 1 && c.cells && n.tag != form_tag::Vector) { return reject(c); }
+        // range, a list (seq_flavor::IntegerRange; light-cljs-877), or 2 for
+        // the realm's empty collection of its kind (realm_empty).
+        if collection(n.tag) && n.number != 0 && !(n.number == 1 && c.cells && n.tag != form_tag::Vector) && !(realm_empty(n) && c.cells) { return reject(c); }
     }
     // The omitted nodes' own polls and their names' units.
     if !poll(c, o.nodes + o.names) { return false; }
@@ -388,6 +389,21 @@ fn merge_keys(g: const Graph&, m: Merging&, id: i64, c: Control&) -> bool {
     m.start[id] = start; m.count[id] = m.kids.len - start;
     return true;
 }
+// Inside the session (Control.cells), the realm's empty list, vector, map
+// or set (light-cljs-878; realm.goose empty_form_row), an empty literal's
+// one object, goes as a collection of its kind with no children or
+// metadata and number 2, and every link to it imports as a link to that
+// realm row, so a publication or cell value keeps the literal's identity.
+// Its own node still takes a row, unlinked, so the graph's nodes stay one
+// row each.
+fn realm_empty(n: Form) -> bool { return collection(n.tag) && n.number == 2 && n.count == 0 && n.metadata < 0; }
+// The value a link to node `id` of an imported graph whose nodes start at
+// row `base` names.
+fn imported_link(heap: const source::Heap&, g: const Graph&, base: i64, id: i64, c: const Control&) -> source::Value {
+    let n = g.nodes[id];
+    if c.cells && realm_empty(n) && heap.global.is_object() { return source::object(source::empty_form_row(heap_kind(n.tag))); }
+    return source::object(base + id);
+}
 fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&, c: Control&) -> bool {
     var sets: i64[>..] = [];
     if !validate_graph(g, c, sets, !c.cells) { return false; }
@@ -414,11 +430,11 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     // An identity source copies no text: the row names the compiler's source.
     for s in g.sources { source::add_source_range(heap, source::shifted_source(s, bytes)); }
     let base = source::add_nodes(heap, [], g.nodes.len, source::Node { kind: node_kind::Scalar });
-    var links: source::Value[>..] = []; for id in g.children { links.push(source::object(base + id)); } for id in m.kids { links.push(source::object(base + id)); }
+    var links: source::Value[>..] = []; for id in g.children { links.push(imported_link(heap, g, base, id, c)); } for id in m.kids { links.push(imported_link(heap, g, base, id, c)); }
     let children = source::add_values(heap, links);
     for n, i in g.nodes {
         var node = source::Node { kind: node_kind::Scalar, origin: n.origin, source: if n.source < 0 { source::no_row() } else { (sources + n.source) as u32 }, span_start: n.span_start as u32, span_end: n.span_end as u32 };
-        if n.metadata >= 0 { node.metadata = source::object(base + n.metadata); }
+        if n.metadata >= 0 { node.metadata = imported_link(heap, g, base, n.metadata, c); }
         if collection(n.tag) { node.kind = heap_kind(n.tag); node.start = (children + n.start) as u32; node.count = n.count as u32; if m.start.len > 0 && m.start[i] >= 0 { node.start = (children + g.children.len + m.start[i]) as u32; node.count = m.count[i] as u32; } if c.cells && n.number == 1 && n.tag == form_tag::List { node.kind = node_kind::Concat; node.length = seq_flavor::IntegerRange; } else if c.cells && n.number == 1 || !c.cells && (decoded_hash_ordered(n) || n.tag == form_tag::Set && node.count > 8) { node.length = map_order::Hash; } }
         else if n.tag == form_tag::Cell { node = source::Node { kind: node_kind::Cell, function: n.number as u32, length: n.count as u32 }; }
         else if named(n.tag) {
@@ -427,7 +443,7 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
         } else { node.value = if n.tag == form_tag::Nil { source::nil() } else if n.tag == form_tag::Boolean { source::boolean(n.number != 0) } else if n.tag == form_tag::Number { source::number(n.number) } else { source::import_text(heap, g.units[n.start..(n.start + n.count)]) }; }
         source::set_node(heap, base + i, node);
     }
-    for id in g.roots { roots.push(source::object(base + id)); }
+    for id in g.roots { roots.push(imported_link(heap, g, base, id, c)); }
     return true;
 }
 // Export first discovers reachable heap nodes (including metadata) into a
@@ -503,6 +519,7 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
                 // range its flavor, in a cell value or publication; the
                 // compiler's forms have neither.
                 if c.cells && (source::hash_ordered(node) || source::integer_range(node)) { n.number = 1; }
+                if c.cells && v.is_object() && heap.global.is_object() && source::empty_form(v.id()) { n.number = 2; }
                 if !poll(c, node.count) { return false; }
                 if !range(node.start, node.count, heap.values.len) { return reject(c); }
                 // To the compiler, a hash-ordered map's or set's children

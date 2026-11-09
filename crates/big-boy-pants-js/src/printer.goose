@@ -359,22 +359,12 @@ fn exception_info_to_string(job: Job&, b: Builtin, receiver: Value) -> Value {
     if !print_error_fields(job, b, p, receiver) || !print_rest(job, b, p) { return Value.Undefined; }
     return printed(job, p);
 }
-// rt.core.identical(a, b): `val(a) === val(b)`. The V8 build interns
-// keyword literals and the keywords of imported forms (a macro's `:a`, the
-// `:a` of its argument and of a collection it reads are one object), while
-// a keyword built at run time by cljs.core/keyword is fresh. Every keyword
-// this VM makes is of the first kind (form_op::Keyword and the form
-// bridge; cljs.core/keyword fails NativeBoundary here), so two keywords
-// with the same namespace and name are identical. A runtime keyword
-// constructor added here must keep its keywords apart.
+// rt.core.identical(a, b): `val(a) === val(b)`, keyword literals and empty
+// collection literals included (light-cljs-878: source_vm.goose
+// same_keyword, realm.goose empty_form_row).
 fn core_identical(job: Job&, args: const Value[:]) -> Value {
     let heap .= job.heap;
     let x = form_value(heap, arg(args, 0)); let y = form_value(heap, arg(args, 1));
     if heap.fault != Fault.None { return Value.Undefined; }
-    if x.is_object() && y.is_object() && node(heap, x.id()).kind == node_kind::Keyword && node(heap, y.id()).kind == node_kind::Keyword {
-        let an = node(heap, x.id()).value; let bn = node(heap, y.id()).value;
-        let ans = node(heap, x.id()).namespace_value; let bns = node(heap, y.id()).namespace_value;
-        return boolean(equal(heap, an, bn) && equal(heap, ans, bns));
-    }
     return boolean(equal(heap, x, y));
 }

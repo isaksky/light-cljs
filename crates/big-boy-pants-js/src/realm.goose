@@ -16,8 +16,9 @@ namespace source;
 // prototype names (realm_row), then one built-in function object per entry
 // of REALM_FUNCTIONS, then ExceptionInfo.prototype
 // (exception_info_prototype_row), the ExceptionInfo function
-// (exception_info_constructor_row) and its prototype's `toString`
-// (exception_info_to_string_row), realm_nodes() rows in all. Every intrinsic is an
+// (exception_info_constructor_row), its prototype's `toString`
+// (exception_info_to_string_row) and the four empty collection literals
+// (empty_form_row), realm_nodes() rows in all. Every intrinsic is an
 // ordinary row of the VM tables (plain u32 IDs, decision 2): its state is
 // its rows, which the worker reset restores like any image row, and
 // JavaScript in a compiler job cannot write it (Job.owned_nodes,
@@ -298,7 +299,23 @@ let REALM_FUNCTIONS: Method[41] = [
 inline fn exception_info_prototype_row() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 inline fn exception_info_constructor_row() -> i64 { return exception_info_prototype_row() + 1; }
 inline fn exception_info_to_string_row() -> i64 { return exception_info_constructor_row() + 1; }
-inline fn realm_nodes() -> i64 { return exception_info_to_string_row() + 1; }
+// Then the empty list, vector, map and set (light-cljs-878), in
+// node_kind::List..Set order: the V8 build's runtime reads its `EMPTY`
+// singletons for `'()`, `[]`, `{}` and `#{}` (List.EMPTY,
+// PersistentVector.EMPTY, PersistentArrayMap.EMPTY, PersistentHashSet.EMPTY),
+// so every empty literal of a kind, in every unit, job and worker, is one
+// object. A literal that evaluates to one (Ins.Literal of no operands but a
+// map's, form_op::LiteralMap of no entries) answers this row instead of a
+// new node. Forms are immutable and have no own properties, so no job
+// writes it (a new collection, with-meta's included, is a new row); the map
+// and set are insertion-ordered (map_order::Insertion), as the array map and
+// set the runtime's are. A form the compiler hands a job (the form bridge)
+// is a new row, so an imported `[]` is not identical to a literal one, as in
+// the V8 build. In a publication or cell value the row keeps its identity
+// (form_bridge.goose realm_empty, cells.goose realm_identity).
+inline fn empty_form_row(kind: i64) -> i64 { return exception_info_to_string_row() + 1 + kind - node_kind::List; }
+inline fn empty_form(o: i64) -> bool { return o >= empty_form_row(node_kind::List) && o <= empty_form_row(node_kind::Set); }
+inline fn realm_nodes() -> i64 { return empty_form_row(node_kind::Set) + 1; }
 // The node row of built-in b's REALM_FUNCTIONS entry.
 fn realm_function_row(b: Builtin) -> i64 {
     for m, j in REALM_FUNCTIONS { if m.which == b { return fixed_rows() + j; } }
@@ -551,6 +568,12 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     if f.kind != node_kind::Builtin || f.function != code(Builtin.ExceptionInfo) || !f.proto.is_hole() { return false; }
     let t .= nodes[exception_info_to_string_row()];
     if t.kind != node_kind::Builtin || t.function != code(Builtin.ExceptionInfoPrototypeToString) || !t.proto.is_hole() { return false; }
+    // The empty collection literals (light-cljs-878): no values, metadata,
+    // properties or provenance, insertion-ordered.
+    for k in node_kind::List..(node_kind::Set + 1) {
+        let n .= nodes[empty_form_row(k)];
+        if n.kind != k || n.count != 0 || n.length != map_order::Insertion || !n.metadata.is_undefined() || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.initialized || n.origin != -1 || n.source != no_row() { return false; }
+    }
     return true;
 }
 
@@ -585,6 +608,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Object, proto: object(error_prototype_row(0)) });
     rows.push(Node { kind: node_kind::Builtin, function: code(Builtin.ExceptionInfo) });
     rows.push(Node { kind: node_kind::Builtin, function: code(Builtin.ExceptionInfoPrototypeToString) });
+    for k in node_kind::List..(node_kind::Set + 1) { rows.push(Node { kind: k }); }
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
     heap.global = object(global_row());
     // Every built-in function's `length` and `name`.

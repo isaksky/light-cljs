@@ -125,6 +125,16 @@ fn definition_publication(key: i64) -> i64 { return if key >= 0 && key < 6871947
 // numbers and publication_identity).
 fn cell_identity(cell: i64) -> i64 { return 2305843009213693952 + cell; }
 fn is_cell_identity(identity: i64) -> bool { return identity >= 2305843009213693952 && identity < 4611686018427387904; }
+// An empty collection literal's identity (light-cljs-878): its realm row
+// (realm.goose empty_form_row), which every program of the session has, so
+// a job loading one gets that row (bit 60, apart from the owner's numbers,
+// cells and publications; the graph links it as form_bridge.goose
+// realm_empty), and a compare-and-set expecting it matches it.
+// known_identity gives it to the row.
+fn realm_identity(row: i64) -> i64 { return 1152921504606846976 + row; }
+// The identity of stored row `row`: an empty literal's realm identity, or
+// the one the job knows (identity_of).
+fn known_identity(heap: const Heap&, rows: const CellRow[:], row: i64) -> i64 { return if heap.global.is_object() && empty_form(row) { realm_identity(row) } else { identity_of(rows, row) }; }
 // The identity the job knows for row `row`, or 0.
 fn identity_of(rows: const CellRow[:], row: i64) -> i64 {
     for r in rows {
@@ -137,6 +147,7 @@ fn identity_of(rows: const CellRow[:], row: i64) -> i64 {
 // so a row the job held before an import keeps its place.
 fn row_of(rows: const CellRow[:], identity: i64) -> i64 {
     if identity <= 0 { return -1; }
+    if identity >= realm_identity(0) && identity < cell_identity(0) { return if empty_form(identity - realm_identity(0)) { identity - realm_identity(0) } else { -1 }; }
     for r in rows {
         if r.count == 1 { if r.identity == identity { return r.row; } }
         else if identity >= r.identity && identity < r.identity + r.count { return r.row + (identity - r.identity); }
@@ -284,6 +295,7 @@ fn encode(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: 
         var bytes: u8[>..] = []; for u in utf16(heap, v) { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); }
         return cells::Flat { kind: flat_kind::String, data: bytes }, true;
     }
+    if v.is_object() && valid(heap, v) && node(heap, v.id()).kind == node_kind::Keyword { stored.clear(); return keyword_flat(heap, v), true; }
     if v.is_object() && valid(heap, v) && reaches_function(heap, v) { let f, ok = encode_callable(heap, rows, v, failure, stored, places, publication); return copy(f), ok; }
     // A value outlives the call it was made in: the compiler occurrences and
     // source spans of that call's forms mean nothing to a later job, which
@@ -297,9 +309,20 @@ fn encode(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: 
     // Each object's identity, 0 for one the owner numbers; a primitive has
     // none, and a cell reference its cell's.
     var nodes: i64[>..] = [];
-    for row, i in stored { nodes.push(if row < 0 { -1 } else if graph.nodes[i].tag == form_tag::Cell { cell_identity(graph.nodes[i].number as i64) } else if publication >= 0 && row < places.len && places[row] >= 0 { publication_identity(publication, places[row]) } else { identity_of(rows, row) }); }
+    // An empty literal's realm identity comes before a publication's place,
+    // so its loads find the realm row, not the publication's unlinked one.
+    for row, i in stored { nodes.push(if row < 0 { -1 } else if graph.nodes[i].tag == form_tag::Cell { cell_identity(graph.nodes[i].number as i64) } else if heap.global.is_object() && empty_form(row) { realm_identity(row) } else if publication >= 0 && row < places.len && places[row] >= 0 { publication_identity(publication, places[row]) } else { identity_of(rows, row) }); }
     let root = graph.roots[0];
     return cells::Flat { kind: flat_kind::Graph, identity: nodes[root], data: bytes, root: root, nodes: nodes }, true;
+}
+// A keyword's flat value (flat_kind::Keyword): its namespace's units, then
+// its name's.
+fn keyword_flat(heap: const Heap&, v: Value) -> cells::Flat {
+    let ns = node(heap, v.id()).namespace_value; let name = node(heap, v.id()).value;
+    var bytes: u8[>..] = [];
+    if ns.is_string() { for u in utf16(heap, ns) { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); } }
+    for u in utf16(heap, name) { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); }
+    return cells::Flat { kind: flat_kind::Keyword, number: if ns.is_string() { str_len(heap, ns) } else { -1.0 }, data: bytes };
 }
 // A value that reaches a function or a job delay (light-cljs-809): a
 // built-in or other function of the image is its row (flat_kind::Function: every program
@@ -410,6 +433,14 @@ fn decode(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
     match f.kind {
         flat_kind::Undefined => { return Value.Undefined; }, flat_kind::Null => { return Value.Null; }, flat_kind::Bool => { return boolean(f.number != 0); }, flat_kind::Number => { return number(f.number); },
         flat_kind::String => { return string(heap, units_of(f.data)); },
+        flat_kind::Keyword => {
+            let units = units_of(f.data); let split = f.number as i64;
+            if f.data.len % 2 != 0 || f.number != split || split < -1 || split > units.len { return cell_fail(job, b, "a cell value does not import"); }
+            let ns = if split < 0 { nil() } else { string(heap, units[..split]) };
+            let name = string(heap, units[(max(split, 0))..]);
+            if heap.fault != Fault.None { return Value.Undefined; }
+            return form_op(heap, form_op::Keyword, [ns, name]);
+        },
         flat_kind::Thrown => {
             // One error object a job for each thrown error.
             let held = row_of(job.cell_rows, f.identity);
@@ -527,7 +558,8 @@ fn expected(job: Job&, v: Value) -> cells::Flat {
     if v.is_object() {
         let n = node(heap, v.id());
         if v.id() < cell_base.ends[6] && (n.kind == node_kind::Closure || n.kind == node_kind::Builtin) { return cells::Flat { kind: flat_kind::Function, number: v.id() }; }
-        return cells::Flat { kind: flat_kind::Graph, identity: if n.kind == node_kind::Cell { cell_identity(n.function) } else { identity_of(job.cell_rows, v.id()) } };
+        if n.kind == node_kind::Keyword { return keyword_flat(heap, v); }
+        return cells::Flat { kind: flat_kind::Graph, identity: if n.kind == node_kind::Cell { cell_identity(n.function) } else { known_identity(heap, job.cell_rows, v.id()) } };
     }
     var failure: i64 = 0; var stored: i64[>..] = []; let f, ok = encode(heap, job.cell_rows, v, failure, stored);
     return f;

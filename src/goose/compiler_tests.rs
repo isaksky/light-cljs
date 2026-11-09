@@ -1979,6 +1979,52 @@ fn goose_compiler_macro_identical_matches_v8() {
         None,
     );
 }
+/// Keyword literals and empty collection literals (light-cljs-878): as in
+/// the V8 build, a literal keyword is one object per namespace and name
+/// (a literal, a helper's, a published definition's and a macro
+/// argument's alike), and an empty literal is its kind's one empty
+/// collection, while an imported `[]` is its own.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_literal_identity_matches_v8() {
+    macro_errors_match_v8(
+        r#"[(js* "~{} === ~{}" :a :a) (js* "~{} === ~{}" :n/a :n/a) (js* "~{} === ~{}" :a :n/a) (js* "~{} === ~{}" :a :b) (js* "Object.is(~{}, ~{})" :a :a) (js* "~{} !== ~{}" :a :a) (js* "~{} == ~{}" :a :a) (let [f (fn [] :a)] (identical? (f) (f))) (identical? :a :a) (identical? [] []) (identical? {} {}) (identical? #{} #{}) (identical? '() '()) (js* "~{} === ~{}" [] []) (let [f (fn [] [])] (identical? (f) (f))) (let [f (fn [] {})] (identical? (f) (f))) (identical? [] '()) (identical? [] {}) (identical? [] [1])]"#,
+        None,
+    );
+    source_matches_v8(
+        r#"(defn h [] :a) (defn e [] []) (def k :a) (def v []) (defmacro m [x y] [(identical? (h) :a) (js* "~{} === ~{}" (h) :a) (identical? k :a) (identical? (h) k) (identical? x :a) (js* "~{} === ~{}" x :a) (identical? x (first [x])) (identical? (e) []) (identical? v []) (identical? y []) (js* "~{} === ~{}" y []) (identical? y y)]) (def x (m :a []))"#,
+        None,
+    );
+    // Inside a published definition's value, in a cell value, and in a
+    // macro's result, where the shared objects are aliases.
+    source_matches_v8(
+        "(def v [[] {} #{} '() {:a []}]) (defmacro m [] [(identical? (first v) []) (identical? (nth v 1) {}) (identical? (nth v 2) #{}) (identical? (nth v 3) '()) (identical? (:a (nth v 4)) []) v]) (def x (m))",
+        None,
+    );
+    source_matches_v8(
+        "(def a (atom [])) (def b (atom :q)) (defmacro m [y] (do (swap! b (fn [_] y)) [(identical? @a []) (identical? @b :q) (identical? @b y) (compare-and-set! a [] 1) @a (do (reset! a {}) (identical? @a {})) (compare-and-set! a {} 2) @a])) (def x (m []))",
+        None,
+    );
+    macro_errors_match_v8(
+        "[[] [] {} {} [[] []] '([] []) {[] 1} #{[]} (let [a [] b []] (list 'do a b {}))]",
+        None,
+    );
+    // An empty literal in a publication and in its cell's initial value is
+    // the realm's one object in both (the cell's identity for it is the
+    // realm's, not the publication place's).
+    source_matches_v8(
+        "(def v [[] {} #{} '() (atom [[] {} #{} '()]) (atom [])]) (defmacro m [] (let [c @(nth v 4)] [(identical? (first v) (first c)) (identical? (nth v 1) (nth c 1)) (identical? (nth v 2) (nth c 2)) (identical? (nth v 3) (nth c 3)) (identical? (first c) []) (identical? @(nth v 5) []) (identical? (first v) @(nth v 5))])) (def x (m))",
+        None,
+    );
+    // A keyword in a cell is the same keyword wherever it was made: a swap!
+    // whose function resets the atom to the keyword it read commits, and a
+    // compare-and-set! expecting a keyword literal matches.
+    source_matches_v8(
+        "(def a (atom :a)) (def b (atom :n/a)) (def c (atom [:k])) (defmacro m [] [(swap! a (fn [_] (reset! a :a) :b)) @a (compare-and-set! b :n/a 1) (compare-and-set! b 1 :n/b) (swap! b (fn [x] (reset! b :n/b) [x])) (identical? (first @b) :n/b) (identical? (first @c) :k)]) (def x (m))",
+        None,
+    );
+}
 /// cljs.core's str and pr-str (light-cljs-876): scalars, collections, a
 /// macro's arguments, atoms, volatiles, delays, errors and functions, and
 /// both as callbacks.

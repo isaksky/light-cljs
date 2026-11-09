@@ -1121,8 +1121,30 @@ fn equal(heap: Heap&, a: Value, b: Value) -> bool {
     return match a {
         Undefined, Null => true, Bool => a.flag() == b.flag(), Number => a.num() == b.num(),
         String => { if !charge(heap, str_len(heap, a) + str_len(heap, b)) { return false; } same_text(heap, a, b) },
+        Object => a == b || same_keyword(heap, a.id(), b.id()),
         _ => a == b,
     };
+}
+// Whether object rows a and b are one keyword (light-cljs-878). The V8
+// build interns keyword literals and the keywords of imported forms: one
+// object per namespace and name, whichever unit, job, publication or cell
+// it came from (a fresh one only from cljs.core/keyword, which fails
+// NativeBoundary here). Every keyword row this VM makes is of that kind
+// (form_op::Keyword, the form bridge, publications, cell values), and a
+// keyword row is immutable, with no own properties or metadata, so its
+// namespace and name are its identity: ===, Object.is and identical?
+// compare two keyword rows by them, and nothing JavaScript does can tell
+// two such rows apart. There is no intern index, so no table or job state
+// has to follow the worker reset, reclamation, snapshots or continuations
+// (decisions 2 and 3), and a keyword arriving in a publication or a cell
+// needs no remapping. A runtime keyword constructor added here must mark
+// its keywords and keep them out of this rule.
+fn same_keyword(heap: Heap&, a: i64, b: i64) -> bool {
+    if node(heap, a).kind != node_kind::Keyword || node(heap, b).kind != node_kind::Keyword { return false; }
+    let an = node(heap, a).value; let bn = node(heap, b).value; let ans = node(heap, a).namespace_value; let bns = node(heap, b).namespace_value;
+    if !charge(heap, str_len(heap, an) + str_len(heap, ans)) { return false; }
+    if !same_text(heap, an, bn) || ans.is_string() != bns.is_string() { return false; }
+    return !ans.is_string() || same_text(heap, ans, bns);
 }
 // ECMAScript ToNumber of a primitive (light-cljs-827; the Pants engine's
 // vm/dispatch.rs to_number): undefined NaN, null +0, a boolean 0 or 1, a
@@ -1608,7 +1630,7 @@ fn dictionary_at(heap: Heap&, o: i64, i: i64) -> i64 {
 fn same_value(heap: Heap&, a: Value, b: Value) -> bool {
     if a.is_number() && b.is_number() && a.num() != a.num() && b.num() != b.num() { return true; }
     if a.is_string() && b.is_string() { return same_text(heap, a, b); }
-    return same_bits(a, b);
+    return same_bits(a, b) || a.is_object() && b.is_object() && a.id() < heap.nodes.len && b.id() < heap.nodes.len && same_keyword(heap, a.id(), b.id());
 }
 // [[DefineOwnProperty]] of an ordinary object (OrdinaryDefineOwnProperty,
 // ValidateAndApplyPropertyDescriptor) for interned key k: with `half` 0 a
@@ -2841,6 +2863,13 @@ fn form_construct(heap: Heap&, kind: i64, children: const Value[:], template: No
     }
     return form_collection(heap, kind, normalized, template);
 }
+// An empty collection literal of `kind` (light-cljs-878): the realm's one
+// empty collection of that kind (realm.goose empty_form_row); a heap built
+// without the realm makes a new one.
+fn empty_literal(heap: Heap&, kind: i64) -> Value {
+    if heap.global.is_object() { return object(empty_form_row(kind)); }
+    return form_collection(heap, kind, []);
+}
 // form_construct, then the V8 build's traversal order (map_order): `always`
 // for NewFormMap's map (the Pants engine's new_map) of any size and the
 // runtime's mapFromArray of more than 16 operands (literalMap's `map`);
@@ -3454,7 +3483,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if kind == node_kind::Map || kind == node_kind::Set { if form_count(heap, a) == 0 { return nil(); } heap.fault = Fault.NativeBoundary; return Value.Undefined; }
             return form_nth(heap, a, 0);
         },
-        form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_collection(heap, node_kind::Map, run(heap, n.start, n.count)); },
+        form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); if n.count == 0 { return empty_literal(heap, node_kind::Map); } return form_collection(heap, node_kind::Map, run(heap, n.start, n.count)); },
         // A map literal with entries in a native macro unit (light-cljs-872):
         // insertion-ordered, equal keys keeping the first key and the last
         // value (the Pants engine's array_map_from_sequence).
@@ -4437,7 +4466,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Literal l => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let base = job.operands.len - (l.count);
-                    let value = form_ordered(heap, l.kind, job.operands[base..], l.kind == node_kind::Map); job.operands.resize(base); job.operands.push(value);
+                    let value = if l.count == 0 && l.kind != node_kind::Map { empty_literal(heap, l.kind) } else { form_ordered(heap, l.kind, job.operands[base..], l.kind == node_kind::Map) }; job.operands.resize(base); job.operands.push(value);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },

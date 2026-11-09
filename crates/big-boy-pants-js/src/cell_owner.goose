@@ -58,6 +58,13 @@ let flat_kind::Thrown = 6;
 let flat_kind::Callable = 7;
 // A function of the session's image, its row in number.
 let flat_kind::Function = 8;
+// A keyword (light-cljs-878): its namespace's units then its name's,
+// UTF-16 little-endian, in data, and the namespace's length in units in
+// number (-1 for none). A keyword's namespace and name are its identity
+// (source_vm.goose same_keyword), so it has no identity number and two
+// flats of one keyword match (`matches`), as the V8 build's interned
+// keyword is one object wherever it is stored.
+let flat_kind::Keyword = 9;
 // A graph's nodes have identities (light-cljs-808): `nodes` holds one per
 // graph node, 0 for one the owner numbers when it is first stored and -1
 // for one that has none (a primitive child), and `root` is the root's
