@@ -2167,6 +2167,11 @@ mod serial_tests {
             // receiver across dependency waits, home objects restored with
             // the stack (light-cljs-888; snapshot_tests.goose).
             ("super-reflect-wait", "goose"),
+            // The Proxy traps of light-cljs-891 (apply, construct,
+            // defineProperty, isExtensible, getPrototypeOf, setPrototypeOf,
+            // a revocable proxy's get) across dependency waits, each Proxy
+            // frame restored with the stack (snapshot_tests.goose).
+            ("proxy-traps-wait", "goose"),
             // Private class elements (light-cljs-889): fresh private names,
             // fields, methods, accessors and statics, the constructor-return
             // trick and a proxy's own elements at every budget cut and

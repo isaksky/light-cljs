@@ -64,8 +64,11 @@ namespace source;
 // generators, promises, iterators, and non-extensible, sealed and frozen
 // objects (light-cljs-882, integrity.goose). A write into a row the job did not
 // allocate (the realm, a restored definition, an installed publication)
-// faults NativeBoundary before anything changes (decision 3). A proxy's
-// [[DefineOwnProperty]] fails by name (light-cljs-891).
+// faults NativeBoundary before anything changes (decision 3). A proxy
+// target's [[DefineOwnProperty]] runs as its Proxy frame above the
+// Descriptor frame, whose pc 4 takes its answer (light-cljs-891,
+// proxy.goose); define_descriptor itself, which __defineGetter__ and
+// __defineSetter__ reach as plain built-ins, fails by name on a proxy.
 //
 // The other methods run no JavaScript and are plain built-ins:
 // Reflect.getOwnPropertyDescriptor and Reflect.deleteProperty require an
@@ -228,6 +231,9 @@ fn begin_descriptor(job: Job&, at: i64, b: Builtin, v: Value) -> bool {
 // Object.defineProperty and Reflect.defineProperty, the descriptor read.
 fn define_one(job: Job&, at: i64, b: Builtin) {
     let heap .= job.heap; let frame = job.frames[at];
+    // A proxy's [[DefineOwnProperty]] runs as its Proxy frame (light-cljs-891),
+    // its answer arriving at pc 4.
+    if is_proxy(heap, frame.input) { job.frames[at].pc = 4; proxy_push(job, proxy_method::DefineOwnProperty, frame.input, frame.output, Value.Undefined, frame.callee, answer::Boolean, job.operands.len); return; }
     let d = descriptor_of(heap, frame.callee);
     if heap.fault != Fault.None { return; }
     let ok = define_descriptor(job, frame.input, frame.output, d);
@@ -270,10 +276,17 @@ fn keep_descriptor(job: Job&, at: i64) -> bool {
 }
 // Every descriptor read: DefinePropertyOrThrow of each in key order.
 fn define_all(job: Job&, at: i64) {
+    job.frames[at].index = 0;
+    define_from(job, at);
+}
+// The definitions from key `index` on; a proxy target's [[DefineOwnProperty]]
+// runs as its Proxy frame, its answer arriving at pc 4 (light-cljs-891).
+fn define_from(job: Job&, at: i64) {
     let heap .= job.heap; let frame = job.frames[at]; let list: i64 = frame.output.id();
-    for i in node(heap, list).key_count {
+    for i in frame.index..node(heap, list).key_count {
         let r = property_row(heap, node(heap, list).keys + i);
         if !r.value.is_object() { continue; }
+        if is_proxy(heap, frame.input) { job.frames[at].index = i; job.frames[at].pc = 4; proxy_push(job, proxy_method::DefineOwnProperty, frame.input, r.key, Value.Undefined, r.value, answer::Boolean, job.operands.len); return; }
         let d = descriptor_of(heap, r.value);
         if heap.fault != Fault.None { return; }
         let ok = define_descriptor(job, frame.input, r.key, d);
@@ -304,6 +317,18 @@ fn descriptor_step(job: Job&, frame: Frame, b: Builtin) {
         3 => {
             if !descriptor_present(job, at, b, 2, truthy(heap, v)) || !descriptor_fields(job, at, b, 2) || !descriptor_valid(job, job.frames[at].callee, b) { return; }
             if b == Builtin.ObjectDefineProperties { if keep_descriptor(job, at) { visit_properties(job, at, b); } } else { define_one(job, at, b); }
+        },
+        // A proxy target's [[DefineOwnProperty]] answered (light-cljs-891):
+        // Reflect.defineProperty's result; for Object's methods false is a
+        // TypeError, and defineProperties goes on with its next key.
+        4 => {
+            let ok = truthy(heap, v);
+            if b == Builtin.ReflectDefineProperty { finish_native(job, frame, boolean(ok)); return; }
+            let k = if b == Builtin.ObjectDefineProperties { property_row(heap, node(heap, frame.output.id()).keys + frame.index).key } else { frame.output };
+            if !ok { named_error(job, Fault.TypeError, "cannot redefine property '", k, "'"); return; }
+            if b == Builtin.ObjectDefineProperty { finish_native(job, frame, frame.input); return; }
+            job.frames[at].index += 1;
+            define_from(job, at);
         },
         _ => { heap.fault = Fault.InvalidState; },
     }

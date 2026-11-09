@@ -885,6 +885,15 @@ fn suspended_continuations() {
     waits = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(super_reflect_resumed, copy(w))); waits += 1; }
     assert(waits == 9);
+    // The Proxy traps of light-cljs-891: eight waits, one in each trap
+    // while its Proxy frame awaits the result and one holding a revoked
+    // proxy, each resumed from a saved stack.
+    let traps = embed_file("../corpus/serial/proxy-traps-wait.gsp");
+    heap_program::join(thread_spawn(proxy_traps_wait, str(traps), false));
+    heap_program::join(thread_spawn(proxy_traps_wait, str(traps), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_traps_resumed, copy(w))); waits += 1; }
+    assert(waits == 9);
     // Private class elements (light-cljs-889): four waits, in a private
     // getter, setter, method and static method, each resumed from a saved
     // stack with the private names and elements; images whose private
@@ -1611,6 +1620,95 @@ thread_fn super_reflect_resumed(saved: Waiting) {
     let outcome = source::run(job, -1);
     if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); super_reflect_save(job, heap); return; }
     assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "gDkDsDKDgDsDlDlD:11,5,10,3,true,7,true,1,9"));
+    assert(source::retire(job));
+    assert(qput(false));
+}
+// Run proxy-traps-wait.js (light-cljs-891) through its eight waits:
+// answered in place, checking the method of the Proxy frame nearest the
+// top at each (apply, construct, defineProperty above a [[Set]] at its
+// receiver phase, isExtensible, getPrototypeOf above a HasInstance frame
+// at pc 5, setPrototypeOf, a revocable proxy's get; then none, with the
+// proxy revoked and its revoke function spent), or each after the
+// stack was saved and restored in a fresh heap (proxy_traps_resumed), where
+// proxy_traps_save checks that an image is refused when a saved
+// [[Call]] or [[Construct]] frame holds no argument array or a revoke
+// function names no proxy.
+let PROXY_TRAP_WAITS: i64[8] = [proxy_method::Call, proxy_method::Construct, proxy_method::DefineOwnProperty, proxy_method::IsExtensible, proxy_method::GetPrototypeOf, proxy_method::SetPrototypeOf, proxy_method::Get, -1];
+thread_fn proxy_traps_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    if save { proxy_traps_save(job, heap); return; }
+    var waits: i64 = 0;
+    loop {
+        var method: i64 = -1; var receiver_phase = false; var walking = false;
+        for f in job.frames {
+            match f.native {
+                Proxy p => { method = p.method; if p.method == proxy_method::Set && f.pc == proxy_pc::ReceiverDefine { receiver_phase = true; } },
+                HasInstance => { if f.pc == 5 { walking = true; } },
+                _ => {},
+            }
+        }
+        assert(waits < PROXY_TRAP_WAITS.len && method == PROXY_TRAP_WAITS[waits]);
+        if method == proxy_method::DefineOwnProperty { assert(receiver_phase); }
+        if method == proxy_method::GetPrototypeOf { assert(walking); }
+        if method == -1 {
+            var revoked: i64 = 0; var spent: i64 = 0;
+            for n in heap.nodes {
+                if n.kind == node_kind::Proxy && n.initialized { revoked += 1; }
+                if n.kind == node_kind::Builtin && n.function == source::code(source::Builtin.ProxyRevoke) && n.value.is_null() { spent += 1; }
+            }
+            assert(revoked == 1 && spent == 1);
+        }
+        waits += 1;
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    }
+    assert(waits == 8 && source::key_is(heap, job.result, "aDcDdDeDgDsDrDvD:6,2,4,true,true,true,3,true,object,true,true"));
+    assert(source::retire(job));
+}
+fn proxy_traps_save(job: source::Job&, heap: source::Heap&) {
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    // A revoke function naming no proxy.
+    var bad = copy(image); var revoker = false;
+    for n, row in image.nodes { if !revoker && n.kind == node_kind::Builtin && n.function == source::code(source::Builtin.ProxyRevoke) { bad.nodes[row].value = source::number(1); revoker = true; } }
+    assert(revoker);
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    // A saved [[Call]] or [[Construct]] frame without its argument array.
+    var listless = copy(image); var calling = false;
+    for i in a.frame_count {
+        let r = a.frames + i;
+        match image.conts[r] {
+            Frame x => {
+                var f = x.f;
+                match f.native { Proxy p => { if p.method == proxy_method::Call || p.method == proxy_method::Construct { f.output = source::Value.Undefined; calling = true; } }, _ => {} }
+                listless.conts[r] = source::Cont.Frame { f: f };
+            },
+            _ => {},
+        }
+    }
+    if calling { var refused = snapshot::Control {}; assert(!snapshot::validate(listless, refused) && refused.error == snapshot::Error.Link); }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn proxy_traps_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); proxy_traps_save(job, heap); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "aDcDdDeDgDsDrDvD:6,2,4,true,true,true,3,true,object,true,true"));
     assert(source::retire(job));
     assert(qput(false));
 }

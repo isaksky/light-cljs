@@ -618,6 +618,10 @@ fn reflect_access(job: Job&, at: i64, b: Builtin, k: Value) {
     // A proxy's [[Set]] (proxy.goose), the target or on its chain: its
     // answer is Reflect.set's (pc Result).
     if proxy_pending(heap, proxy_method::Set) { job.frames[at].pc = statics_pc::Result; proxy_take(job, proxy_method::Set, receiver, value, false); return; }
+    // A proxy receiver's [[GetOwnProperty]] and [[DefineOwnProperty]]
+    // (light-cljs-891): a [[Set]] frame at its receiver phases, whose answer
+    // is Reflect.set's.
+    if proxy_pending(heap, proxy_method::DefineOwnProperty) { job.frames[at].pc = statics_pc::Result; proxy_set_receiver(job, k, value, false); return; }
     if heap.fault != Fault.None { return; }
     if setter.is_hole() { reflect_length(job, at, value); return; }
     if setter.is_object() { job.frames[at].pc = statics_pc::Stored; call_accessor(job, setter, receiver, [value]); return; }

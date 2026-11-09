@@ -720,8 +720,11 @@ root struct Heap {
 //                @@hasInstance method's result (ToBoolean) or a
 //                native-frame built-in's, pc 3 C.prototype from its getter,
 //                pc 4 V converted by a Convert frame for the built-in
-//                method callee (Number or String). Its result replaces the
-//                operation's operands at operand_base.
+//                method callee (Number or String), pc 5 a proxy's
+//                [[GetPrototypeOf]] on the walk for the prototype in
+//                callee (light-cljs-891; prototype_walk, which
+//                Object.prototype.isPrototypeOf shares). Its result
+//                replaces the operation's operands at operand_base.
 //   ArrayMethod  Array.prototype.push, join and toString (light-cljs-842;
 //                array_methods.goose, which gives their fields and phases),
 //                its Builtin the payload.
@@ -2471,7 +2474,8 @@ fn own_keys(heap: Heap&, object: Value, out: Value[>..]&) -> bool {
 // keeps its prototype; a prototype whose chain reaches the object is
 // refused, the walk stopping at a proxy (whose [[GetPrototypeOf]] could run
 // JavaScript). A row the job did not allocate faults NativeBoundary before
-// anything changes (decision 3). A proxy fails by name (light-cljs-891), as
+// anything changes (decision 3). A proxy fails by name here (its callers
+// start its [[SetPrototypeOf]] Proxy frame first, light-cljs-891), as
 // does a form, which has no [[Prototype]] here while the V8 build's runtime
 // makes it an ordinary object. The kind does not change: an array stays an
 // array, a function a function. A prototype equal to the kind's realm
@@ -3102,8 +3106,13 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
 fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[:], checked: bool, operands: i64, new_target: Value = Value.Undefined) -> bool {
     let heap .= job.heap;
     if !callee.is_object() || node(heap, callee.id()).kind != node_kind::Closure {
-        // A callable proxy's [[Call]] fails by name (proxy.goose).
-        if callee.is_object() && node(heap, callee.id()).kind == node_kind::Proxy { proxy_invoke(heap, callee, proxy_method::Call); return false; }
+        // A proxy's [[Call]] runs as its Proxy frame (proxy.goose
+        // proxy_call), whose result arrives at `operands` as a callee
+        // frame's return value would.
+        if callee.is_object() && node(heap, callee.id()).kind == node_kind::Proxy {
+            if checked { for v in arguments { if !valid(heap, v) { return false; } } }
+            return proxy_call(job, callee, receiver, arguments, operands, false);
+        }
         heap.fault = Fault.TypeError; return false;
     }
     let id = node(heap, callee.id()).function; let f .= heap.code.functions[id];
@@ -4278,7 +4287,7 @@ fn builtin_callback(job: Job&, callee: Value, receiver: Value, arg: Value, frame
     else if effect_builtin(b) { request_effect(job, id, [arg], frame); }
     else if forwarding(b) { native_start(job, b, receiver, [arg], job.operands.len); }
     else if conditional_native(b) { start_conditional_native(job, b, receiver, [arg], job.operands.len); }
-    else { let v = call_builtin(job, id, receiver, [arg]); job.operands.push(v); }
+    else { let v = call_plain(job, callee, receiver, [arg]); job.operands.push(v); }
 }
 // Pop a finished native frame and deliver its result to the frame below.
 fn finish_native(job: Job&, frame: Frame, result: Value) {
@@ -4461,7 +4470,7 @@ fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:])
     // Error.prototype.toString (light-cljs-870): its ErrorText frame, if it needs one.
     if conditional_native(b) { start_conditional_native(job, b, v, args, job.operands.len); return; }
     if effect_builtin(b) || native_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq || forces(heap, b, args) { unsupported_step(job, b, "as a ToPrimitive method"); return; }
-    let r = call_builtin(job, node(heap, m.id()).function, v, args);
+    let r = call_plain(job, m, v, args);
     if heap.fault == Fault.None { job.operands.push(r); }
 }
 // Operand `slot` of the frame at `at` is primitive value p: it replaces the
@@ -5352,7 +5361,10 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
         start_bound(job, f, nt, job.operands[(base + 1)..], base, true);
         return;
     }
-    if kind != node_kind::Builtin { if kind == node_kind::Proxy { proxy_invoke(heap, f, proxy_method::Construct); } else { heap.fault = Fault.TypeError; } return; }
+    // A proxy's [[Construct]] runs as its Proxy frame with newTarget
+    // (light-cljs-891; proxy.goose proxy_call).
+    if kind == node_kind::Proxy { if proxy_call(job, f, nt, job.operands[(base + 1)..], base, true) { job.operands.resize(base); } return; }
+    if kind != node_kind::Builtin { heap.fault = Fault.TypeError; return; }
     let b = builtin_of(heap, f.id());
     if !constructor_builtin(b) || b == Builtin.SymbolFunction { heap.fault = Fault.TypeError; return; }
     // A built-in that makes its object from newTarget's `prototype`
@@ -5633,6 +5645,8 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
         } else if native_builtin(BUILTINS[id].which) { native_start(job, BUILTINS[id].which, receiver, args, base);
         } else if id == 5 && job.gensym_next > 0 { let value = gensym(job, args); job.operands.resize(base); job.operands.push(value); }
         else if id >= 5 && id <= 8 { request_effect(job, id, args, frame_at(job, top, at)); job.operands.resize(base); }
+        // A revoke function (Proxy.revocable, light-cljs-891) reads its own row.
+        else if BUILTINS[id].which == Builtin.ProxyRevoke { let value = proxy_revoke(job, callee); if heap.fault == Fault.None { job.operands.resize(base); job.operands.push(value); } }
         else { let value = call_builtin(job, id, receiver, args); job.operands.resize(base); job.operands.push(value); }
     } else if push_frame(job, callee, receiver, job.operands[first..], false, base) { job.operands.resize(base); }
 }
@@ -5893,6 +5907,7 @@ fn super_set(job: Job&, strict: bool) {
     if heap.fault != Fault.None { return; }
     let setter, ok = receiver_set(job, base, k, value, receiver);
     if proxy_pending(heap, proxy_method::Set) { proxy_assign(job, receiver, value, value, strict); return; }
+    if proxy_pending(heap, proxy_method::DefineOwnProperty) { proxy_assign_receiver(job, k, value, strict); return; }
     if heap.fault == Fault.None && setter.is_object() { call_setter(job, setter, receiver, value, value); return; }
     if heap.fault == Fault.None && setter.is_hole() { start_length(job, receiver, k, value, value, strict); return; }
     if heap.fault == Fault.None && !ok && strict { refused_write(job, receiver, k); if heap.fault == Fault.None { heap.fault = Fault.TypeError; } }
@@ -5912,8 +5927,9 @@ fn super_set(job: Job&, strict: bool) {
 // makes); without one the receiver gets a new data property
 // (CreateDataProperty, refused when it is not extensible). A receiver row
 // the job did not allocate faults NativeBoundary before anything changes,
-// as every write does (decision 3). A proxy base or receiver fails by name
-// (light-cljs-890). An array receiver's writable `length` set to an object
+// as every write does (decision 3). A proxy base or receiver records its
+// [[Set]] (light-cljs-890) or [[DefineOwnProperty]] (light-cljs-891) for
+// the caller (proxy_pending). An array receiver's writable `length` set to an object
 // returns Empty: the caller converts the value first (start_length's
 // two conversions) and writes the number to the receiver, as set_property
 // does. An ordinary assignment, receiver and base the same,
@@ -5943,9 +5959,10 @@ fn receiver_set(job: Job&, base: Value, k: Value, value: Value, receiver: Value)
     if !writable(job, receiver.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined, false; }
     prepare_function(job, receiver, key, true);
     if heap.fault != Fault.None { return Value.Undefined, false; }
-    // A proxy receiver is defined on by its [[DefineOwnProperty]], which
-    // fails by name (light-cljs-891).
-    if node(heap, receiver.id()).kind == node_kind::Proxy { proxy_fault(heap, proxy_method::DefineOwnProperty); return Value.Undefined, false; }
+    // A proxy receiver is defined on by its [[DefineOwnProperty]]: the
+    // proxy and key are recorded for the caller, which runs it
+    // (light-cljs-891; proxy.goose proxy_receiver_define).
+    if node(heap, receiver.id()).kind == node_kind::Proxy { proxy_reach(heap, receiver, proxy_method::DefineOwnProperty, key); return Value.Undefined, false; }
     let own = own_entry(heap, receiver, key);
     if heap.fault != Fault.None { return Value.Undefined, false; }
     var ok = false;
@@ -6541,7 +6558,7 @@ fn has_instance_call(job: Job&, at: i64, c: Value, v: Value, m: Value) {
         else { native_start(job, b, c, args[..], job.operands.len); }
         return;
     }
-    let r = call_builtin(job, node(heap, m.id()).function, c, args[..]);
+    let r = call_plain(job, m, c, args[..]);
     if heap.fault != Fault.None { return; }
     has_instance_done(job, at, truthy(heap, form_value(heap, r)));
 }
@@ -6595,17 +6612,51 @@ fn has_instance_walk(job: Job&, at: i64, o: Value, p: Value) {
         if error_prototype(heap, p.id()) { has_instance_done(job, at, false); return; }
         unsupported_detail(job, "instanceof: a light-cljs runtime value"); return;
     }
-    var x = o;
+    prototype_walk(job, at, o, p);
+}
+// The prototype chain from x (x's [[GetPrototypeOf]] next) looking for p
+// (an object, or for isPrototypeOf of a primitive this undefined, which
+// nothing matches), one work unit a link. A proxy's [[GetPrototypeOf]]
+// runs as its Proxy frame (light-cljs-891) above the HasInstance frame
+// (pushed first when the operation has none), whose pc 5 takes the
+// result and goes on (prototype_found); p is the frame's callee meanwhile.
+fn prototype_walk(job: Job&, at: i64, x0: Value, p: Value) {
+    let heap .= job.heap;
+    var x = x0;
     loop {
-        // A proxy's [[GetPrototypeOf]] fails by name here (proxy.goose).
-        if node(heap, x.id()).kind == node_kind::Proxy { proxy_fault(heap, proxy_method::GetPrototypeOf); return; }
+        if node(heap, x.id()).kind == node_kind::Proxy {
+            let a = has_instance_frame(job, at, 5, Value.Undefined, x0, p);
+            if a < 0 { return; }
+            proxy_start(job, proxy_method::GetPrototypeOf, x, Value.Undefined);
+            return;
+        }
         let q = prototype(heap, x.id());
-        if !q.is_object() { has_instance_done(job, at, false); return; }
-        if q.id() == p.id() { has_instance_done(job, at, true); return; }
-        if !charge(heap) { return; }
-        if !instance_kind(heap, q) { unsupported_detail(job, "instanceof: a light-cljs runtime value"); return; }
+        if !prototype_found(job, at, q, p) { return; }
         x = q;
     }
+}
+// The walk reached q: true when it goes on from q; otherwise its answer is
+// given (or a fault set).
+fn prototype_found(job: Job&, at: i64, q: Value, p: Value) -> bool {
+    let heap .= job.heap;
+    if !q.is_object() { has_instance_done(job, at, false); return false; }
+    if p.is_object() && q.id() == p.id() { has_instance_done(job, at, true); return false; }
+    if !charge(heap) { return false; }
+    if !instance_kind(heap, q) { unsupported_detail(job, "instanceof: a light-cljs runtime value"); return false; }
+    return true;
+}
+// Object.prototype.isPrototypeOf(v) where a frame can start
+// (conditional_native, light-cljs-891): the walk of prototype_walk, so a
+// proxy on v's chain runs its [[GetPrototypeOf]]; the answer arrives at
+// `base`.
+fn start_is_prototype_of(job: Job&, receiver: Value, v: Value, base: i64) {
+    let heap .= job.heap;
+    if !v.is_object() { job.operands.resize(base); deliver(job, boolean(false)); return; }
+    if receiver.tag() <= value_tag::Null { type_error(job, "cannot convert to object"); return; }
+    if !valid(heap, v) || !valid(heap, receiver) { return; }
+    if !instance_kind(heap, v) { unsupported_step(job, Builtin.ObjectPrototypeIsPrototypeOf, "a runtime form"); return; }
+    job.operands.resize(base);
+    prototype_walk(job, -1, v, if receiver.is_object() { receiver } else { Value.Undefined });
 }
 // Run f (a user method or getter) with `receiver` and `args` above the
 // HasInstance frame, pushed first when the instruction has none; its result
@@ -6651,8 +6702,13 @@ fn has_instance_step(job: Job&, frame: Frame) {
         // r is V converted for the built-in method frame.callee.
         4 => {
             let args: Value[1] = [r];
-            let result = call_builtin(job, node(heap, frame.callee.id()).function, frame.receiver, args[..]);
+            let result = call_plain(job, frame.callee, frame.receiver, args[..]);
             if heap.fault == Fault.None { has_instance_done(job, at, truthy(heap, form_value(heap, result))); }
+        },
+        // r is a proxy's [[GetPrototypeOf]] on the walk for frame.callee.
+        5 => {
+            if !r.is_object() && !r.is_null() { heap.fault = Fault.InvalidState; return; }
+            if prototype_found(job, at, r, frame.callee) { prototype_walk(job, at, r, frame.callee); }
         },
         _ => { heap.fault = Fault.InvalidState; },
     }
@@ -6805,7 +6861,7 @@ fn get_iterator_method(job: Job&, at: i64, v: Value, method: Value) {
         if row >= 0 { native_start(job, b, receiver, [], job.operands.len); }
         return;
     }
-    let it = call_builtin(job, node(heap, f.id()).function, receiver, []);
+    let it = call_plain(job, f, receiver, []);
     if heap.fault != Fault.None { return; }
     get_iterator_next(job, at, it);
 }

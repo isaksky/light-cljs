@@ -31,8 +31,11 @@ namespace source;
 // of a proxy run its [[GetPrototypeOf]] as light-cljs-845's Proxy frame
 // (start_prototype), and Object.create with a properties argument runs
 // Object.defineProperties's Descriptor frame (descriptors.goose) on the new
-// object. A proxy's [[SetPrototypeOf]], and a proxy on isPrototypeOf's
-// walk, fail by name until light-cljs-891. A realm row never changes its
+// object. Object.setPrototypeOf, Reflect.setPrototypeOf and the
+// `__proto__` setter of a proxy run its [[SetPrototypeOf]], and
+// isPrototypeOf runs a [[GetPrototypeOf]] met on its walk, as Proxy frames
+// where a frame can start (light-cljs-891, proxy.goose proxy_conditional);
+// run to completion here, a proxy fails by name. A realm row never changes its
 // prototype (NativeBoundary, decision 3). Object.prototype's `__proto__` is an accessor pair of the
 // realm (proto_pair, decision 6), its getter and setter two built-ins; an
 // object without Object.prototype on its chain has a plain `__proto__`, and
@@ -51,8 +54,9 @@ fn prototype_of_value(job: Job&, b: Builtin, v: Value, message: const u8[:]) -> 
     if !v.is_object() { let p = primitive_prototype(v); return if p.is_object() { p } else { unsupported_step(job, b, "Symbol and BigInt prototypes") }; }
     return prototype_of_object(job, b, v);
 }
-// [[GetPrototypeOf]] of object o for built-in b. A proxy's fails by name
-// outside for-in (proxy.goose, light-cljs-891), as does a form's.
+// [[GetPrototypeOf]] of object o for built-in b, run to completion. A
+// proxy's fails by name here (its callers start its Proxy frame first
+// where they can), as does a form's.
 fn prototype_of_object(job: Job&, b: Builtin, o: Value) -> Value {
     let heap .= job.heap;
     if !valid(heap, o) { return Value.Undefined; }
@@ -105,8 +109,9 @@ fn prototype_builtin(job: Job&, b: Builtin, receiver: Value, args: const Value[:
         // A value that is not an object has no prototype to look for, even
         // with an undefined this (step 1 before ToObject). A primitive this
         // becomes a new wrapper, on no chain, but the walk still runs: a
-        // proxy on it fails by name (its [[GetPrototypeOf]] trap could be
-        // observed; light-cljs-891 runs it), as does a form.
+        // proxy on it fails by name here (where a frame can start,
+        // source_vm.goose start_is_prototype_of runs its trap), as does a
+        // form.
         ObjectPrototypeIsPrototypeOf => {
             var v = arg(args, 0);
             if !v.is_object() { return boolean(false); }

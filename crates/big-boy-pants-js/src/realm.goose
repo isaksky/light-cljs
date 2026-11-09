@@ -128,11 +128,14 @@ enum Builtin {
     // Reflect.get and Reflect.set with their receiver (light-cljs-888;
     // object_statics.goose), Statics native frames.
     ReflectGet, ReflectSet,
+    // Proxy.revocable and the revoke function it makes, a job row naming
+    // its proxy (light-cljs-891; proxy.goose).
+    ProxyRevocable, ProxyRevoke,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[153] = [
+let BUILTINS: BuiltinInfo[155] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -219,6 +222,7 @@ let BUILTINS: BuiltinInfo[153] = [
     BuiltinInfo { which: Builtin.SymbolPrototypeToString, name: "toString" }, BuiltinInfo { which: Builtin.SymbolPrototypeValueOf, name: "valueOf" },
     BuiltinInfo { which: Builtin.SymbolPrototypeDescription, name: "get description" }, BuiltinInfo { which: Builtin.SymbolPrototypeToPrimitive, name: "[Symbol.toPrimitive]", length: 1 },
     BuiltinInfo { which: Builtin.ReflectGet, name: "get", length: 2 }, BuiltinInfo { which: Builtin.ReflectSet, name: "set", length: 3 },
+    BuiltinInfo { which: Builtin.ProxyRevocable, name: "revocable", length: 2 }, BuiltinInfo { which: Builtin.ProxyRevoke, name: "" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -296,7 +300,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[86] = [
+let REALM_FUNCTIONS: Method[87] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -368,6 +372,9 @@ let REALM_FUNCTIONS: Method[86] = [
     Method { which: Builtin.SymbolPrototypeDescription, holder: 41 }, Method { which: Builtin.SymbolPrototypeToPrimitive, holder: 41 },
     // Reflect.get and Reflect.set (light-cljs-888; object_statics.goose).
     Method { which: Builtin.ReflectGet, holder: 34 }, Method { which: Builtin.ReflectSet, holder: 34 },
+    // Proxy.revocable (light-cljs-891; proxy.goose): a property of the
+    // Proxy function, REALM_FUNCTIONS entry 34 (row fixed_rows() + 34).
+    Method { which: Builtin.ProxyRevocable, holder: 76 },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -1117,7 +1124,8 @@ fn arity_error(job: Job&, n: i64) -> Value {
 // Whether x has p on its prototype chain: `x instanceof C` for a C whose
 // @@hasInstance is %Function.prototype%'s and whose prototype is p. A
 // light-cljs runtime value (a form, atom or delay) is no instance; a
-// proxy's [[GetPrototypeOf]] fails by name (proxy.goose).
+// proxy's [[GetPrototypeOf]] fails by name (a runtime leaf runs to
+// completion and starts no Proxy frame).
 fn inherits(job: Job&, x: Value, p: Value) -> bool {
     let heap .= job.heap;
     if !p.is_object() || !instance_kind(heap, x) { return false; }
@@ -1334,6 +1342,9 @@ fn object_tag(job: Job&, receiver: Value) -> Value {
 fn tag_lookup(job: Job&, receiver: Value) -> Value, Value {
     let heap .= job.heap;
     if receiver.tag() <= value_tag::Null { return Value.Undefined, Value.Undefined; }
+    // A proxy's builtinTag comes first (light-cljs-891): IsArray of a
+    // revoked one is a TypeError before @@toStringTag is read.
+    if is_proxy(heap, receiver) { is_array_value(job, receiver); if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; } }
     let holder = if receiver.is_object() { receiver } else { primitive_prototype(receiver) };
     if !holder.is_object() { unsupported_step(job, Builtin.ObjectPrototypeToString, "a Symbol or BigInt receiver"); return Value.Undefined, Value.Undefined; }
     return lookup(heap, holder, Value.Symbol { s: well_known::ToStringTag });
@@ -1349,7 +1360,12 @@ fn object_tag_text(job: Job&, receiver: Value, tag: Value) -> Value {
         let wrapped = if receiver.is_object() { if node(heap, receiver.id()).kind == node_kind::Wrapper { node(heap, receiver.id()).value } else { Value.Undefined } } else { receiver };
         // A symbol or its wrapper without a string @@toStringTag is "Object"
         // (light-cljs-885), as any kind without a builtinTag.
-        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else if !receiver.is_object() { "Object" } else { match node(heap, receiver.id()).kind { node_kind::Array => "Array", node_kind::Closure, node_kind::Builtin, node_kind::BoundFunction => "Function", node_kind::Error => "Error", node_kind::Arguments => "Arguments", _ => "Object" } };
+        // A proxy's builtinTag (light-cljs-891): "Array" when IsArray,
+        // "Function" when callable. Its revocation was checked before the
+        // tag's read (tag_lookup); one since does not change the answer.
+        let proxy = is_proxy(heap, receiver);
+        let array = proxy && is_array(heap, receiver);
+        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else if !receiver.is_object() { "Object" } else if proxy { if array { "Array" } else if proxy_callable(heap, receiver) { "Function" } else { "Object" } } else { match node(heap, receiver.id()).kind { node_kind::Array => "Array", node_kind::Closure, node_kind::Builtin, node_kind::BoundFunction => "Function", node_kind::Error => "Error", node_kind::Arguments => "Arguments", _ => "Object" } };
         for c in name { units.push(c); }
     }
     units.push(93);
@@ -1416,11 +1432,15 @@ fn error_type(b: Builtin) -> i64 { for e, i in ERROR_BUILTINS { if e == b { retu
 // the error built-ins (start_error, start_error_text), and Object.prototype.toString's
 // @@toStringTag getter and Object.hasOwn's and hasOwnProperty's key
 // conversion (light-cljs-884; object_statics.goose), and
-// Reflect.deleteProperty's proxy trap (light-cljs-890; descriptors.goose).
-fn conditional_native(b: Builtin) -> bool { return match b { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, ErrorPrototypeToString, ReflectDeleteProperty => true, _ => statics_conditional(b) }; }
+// Reflect.deleteProperty's proxy trap (light-cljs-890; descriptors.goose),
+// and the built-ins that reach a proxy's [[IsExtensible]],
+// [[PreventExtensions]], [[SetPrototypeOf]] or, for isPrototypeOf,
+// [[GetPrototypeOf]] (light-cljs-891; proxy.goose).
+fn conditional_native(b: Builtin) -> bool { return match b { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, ErrorPrototypeToString, ReflectDeleteProperty => true, _ => statics_conditional(b) || proxy_conditional(b) }; }
 // Start built-in b (conditional_native), called with `receiver` and
 // `args`, with operand base `base` (native_start's contract).
 fn start_conditional_native(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
+    if proxy_conditional(b) { start_proxy_conditional(job, b, receiver, args, base); return; }
     if statics_conditional(b) { start_statics(job, b, receiver, args, base); return; }
     if b == Builtin.ErrorPrototypeToString { start_error_text(job, receiver, base); return; }
     if b == Builtin.ReflectDeleteProperty { start_reflect_delete(job, b, args, base); return; }
@@ -1683,10 +1703,16 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         },
         ObjectPrototypeToString => { return object_tag(job, receiver); },
         ObjectGetOwnPropertyDescriptor => { return own_descriptor(job, b, arg(args, 0), arg(args, 1)); },
-        // IsArray: a proxy is its final target's (light-cljs-845).
-        ArrayIsArray => { var v = arg(args, 0); while is_proxy(heap, v) { v = node(heap, v.id()).value; } return boolean(v.is_object() && node(heap, v.id()).kind == node_kind::Array); },
+        // IsArray: a proxy is its final target's (light-cljs-845), a
+        // revoked one a TypeError (light-cljs-891).
+        ArrayIsArray => { let r = is_array_value(job, arg(args, 0)); return if heap.fault == Fault.None { boolean(r) } else { Value.Undefined }; },
         // Proxy called without `new` (light-cljs-845; construct makes one).
         Proxy => { return type_error(job, "Proxy: constructor requires 'new'"); },
+        // Proxy.revocable (light-cljs-891; proxy.goose). A revoke function
+        // needs its own row, which the call paths that know the callee
+        // give it (revoke_call); any other reach fails by name.
+        ProxyRevocable => { return proxy_revocable(job, args); },
+        ProxyRevoke => { return unsupported_step(job, b, "a revoke function called where its row is not known"); },
         ErrorPrototypeToString => { return error_to_string(job, receiver); },
         // Function.prototype.toString and %ThrowTypeError% (light-cljs-853; function_calls.goose).
         FunctionPrototypeToString => { return function_text(job, receiver); },

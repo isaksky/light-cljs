@@ -415,6 +415,39 @@ ToPropertyDescriptor, Error's `cause`) starts the frame instead. A
 trapless [[Set]] that defines on the proxy receiver fails by name at its
 [[DefineOwnProperty]] (light-cljs-891).
 
+*As landed by light-cljs-891 (the remaining traps and Proxy.revocable):*
+the `Proxy` frame runs every internal method: [[Call]] and [[Construct]]
+(the arguments become an array the frame holds; without a trap the frame
+becomes a `Forward` frame that runs the target as any forwarded call, a
+construction keeping its newTarget), [[DefineOwnProperty]] (the trap gets
+FromPropertyDescriptor's object), [[IsExtensible]], [[PreventExtensions]],
+[[SetPrototypeOf]] and [[GetPrototypeOf]] everywhere, each with the
+specification's invariants, a proxy target's [[IsExtensible]] and
+[[GetPrototypeOf]] for those invariants running as a nested Proxy frame.
+Calls reach it where they would push a closure's frame (`push_frame`,
+`construct`, `call_accessor`), so ordinary calls test nothing new; the
+methods with a boolean answer carry an answer mode (TypeError on false,
+the object, or undefined), so Object.preventExtensions, Object and
+Reflect.setPrototypeOf and the `__proto__` setter deliver their results
+from the frame. Those built-ins, Object and Reflect.isExtensible and
+Object.prototype.isPrototypeOf became conditional natives; instanceof's
+and isPrototypeOf's walks share `prototype_walk`, which waits for a
+proxy's [[GetPrototypeOf]] at a `HasInstance` frame's pc 5; the
+`Descriptor` frame runs a proxy target's [[DefineOwnProperty]] at its pc
+4; a trapless [[Set]] with a proxy receiver (an assignment, Reflect.set,
+a super assignment) reads its [[GetOwnProperty]] and then defines through
+its [[DefineOwnProperty]]. Proxy.revocable's revoke function is a job row
+of a new built-in naming its proxy; revoking sets the proxy's revoked flag
+(its node's `initialized`: proxy node state, decision 2; target and
+handler stay, so an operation past its handler read keeps it), after
+which every internal method,
+Array.isArray and Object.prototype.toString's tag are a TypeError while
+`typeof` stays. No new table. Still named failures: Object.seal, freeze,
+isSealed and isFrozen of a proxy and a proxy target's [[OwnPropertyKeys]]
+in the ownKeys invariants (light-cljs-897), getOwnPropertyDescriptor
+through proxies (light-cljs-895), bind of a proxy (light-cljs-861), and the
+plain built-ins run to completion where no frame can start.
+
 *As landed by light-cljs-860 (mapped arguments objects):* a sloppy
 function with a simple parameter list gets a mapped arguments object
 (ECMAScript 10.4.4.7 CreateMappedArgumentsObject; QuickJS
@@ -570,8 +603,8 @@ Object.prototype's `__proto__` becomes a realm accessor pair (accessor row
 literal `__proto__: v` stays SetProto. Object.getPrototypeOf,
 Reflect.getPrototypeOf and the `__proto__` getter run a proxy's
 [[GetPrototypeOf]] as light-cljs-845's Proxy frame; a proxy's
-[[SetPrototypeOf]] and a proxy on isPrototypeOf's walk fail by name
-(light-cljs-891), as do forms. A realm row never changes its prototype,
+[[SetPrototypeOf]] and a proxy on isPrototypeOf's walk run as Proxy
+frames since light-cljs-891; forms fail by name. A realm row never changes its prototype,
 even in a runner whose jobs may write realm rows.
 
 *As landed by light-cljs-884 (Object statics):* the built-ins that expose
@@ -680,8 +713,8 @@ rule. `return_value` gives the bound `this` for an undefined return (a
 ReferenceError if super() never ran) and a TypeError for another
 non-object. `ConstructSuper` and `ConstructSuperSpread` are `construct`
 with the shared newTarget, so every parent kind (class, ordinary
-function, bound function, built-in; a proxy fails by name until
-light-cljs-891) resumes as a `new` does; `ForwardArguments` decodes to
+function, bound function, built-in; a proxy since light-cljs-891)
+resumes as a `new` does; `ForwardArguments` decodes to
 `Rest { skip: 0 }`. Constructor built-ins with a newTarget other than
 themselves read its `prototype` first (`construct_builtin`; Number and
 String convert their argument before it, the primitive replacing the

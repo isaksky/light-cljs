@@ -2013,6 +2013,13 @@ thread_fn failed_job_isolation(bytes: u8[]) {
     var bad = source::Job { heap: heap };
     assert(!source::start(bad, entry, [source::object(heap.nodes.len + 1)]));
     assert(bad.fault == source::Fault.StaleID && !bad.claimed);
+    // So does one through a callable proxy (light-cljs-891), before any
+    // argument array is made.
+    let p = source::allocate(heap, source::Node { kind: node_kind::Proxy, value: entry, namespace_value: entry, proto: source::Value.Null });
+    let rows = heap.nodes.len;
+    var proxied = source::Job { heap: heap };
+    assert(!source::start(proxied, p, [source::object(heap.nodes.len + 1)]));
+    assert(proxied.fault == source::Fault.StaleID && !proxied.claimed && heap.nodes.len == rows);
     var good = source::Job { heap: heap }; assert(source::start(good, entry, []));
     assert(source::run(good, -1) == tiny::Outcome.Complete);
     assert(source::equal(heap, good.result, source::boolean(true)));

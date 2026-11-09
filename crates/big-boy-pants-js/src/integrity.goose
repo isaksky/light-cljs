@@ -58,8 +58,12 @@ namespace source;
 // a new property is added (and none on the dense-array fast paths, which
 // already test the node).
 //
-// A proxy's [[PreventExtensions]] and [[IsExtensible]] fail by name
-// (light-cljs-891). Light-cljs runtime values (forms) fail by name too: they
+// A proxy's [[PreventExtensions]] and [[IsExtensible]] run as its Proxy
+// frame where Object.isExtensible, preventExtensions and their Reflect
+// counterparts can start one (light-cljs-891, proxy.goose
+// proxy_conditional); the plain built-ins here fail by name on a proxy, as
+// Object.seal, freeze, isSealed and isFrozen of one still do
+// (light-cljs-897). Light-cljs runtime values (forms) fail by name too: they
 // have no own properties and take none here, while the V8 build's runtime
 // (src/js_runtime.js makeVector, for one) makes them ordinary extensible
 // objects, so no answer would agree with both.
@@ -170,7 +174,8 @@ fn mapped_count(heap: const Heap&, o: i64) -> i64 {
 }
 
 // ---- The built-ins (decision 5: plain functions, since no JavaScript runs
-// unless a proxy is involved, and a proxy fails by name).
+// unless a proxy is involved: proxy.goose's proxy_conditional starts a
+// proxy's frame first, and a proxy that reaches these fails by name).
 fn integrity_builtin(job: Job&, b: Builtin, target: Value) -> Value {
     let heap .= job.heap;
     if !target.is_object() {

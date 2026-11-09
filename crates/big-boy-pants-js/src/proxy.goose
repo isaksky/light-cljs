@@ -7,53 +7,69 @@ import .cells;
 
 namespace source;
 
-// Proxy objects and the three internal methods for-in uses (light-cljs-845;
+// Proxy objects and their internal methods (light-cljs-845, -890 and -891;
 // decisions 1, 2, 4 and 5 of docs/javascript-coverage.md). Semantics from
 // the Pants engine's rust/src/vm/proxy.rs and vm/keys.rs, QuickJS's
-// js_proxy_constructor, js_proxy_get_own_property_names and
-// js_proxy_get_own_property, and the specification (ECMAScript 10.5.1
-// [[GetPrototypeOf]], 10.5.5 [[GetOwnProperty]], 10.5.11
-// [[OwnPropertyKeys]], 28.2.1.1 Proxy(target, handler), 7.3.18
-// CreateListFromArrayLike, 6.2.6.5 ToPropertyDescriptor, 6.2.6.6
-// CompletePropertyDescriptor, 10.1.6.3 ValidateAndApplyPropertyDescriptor).
+// js_proxy_* functions, and the specification (ECMAScript 10.5 Proxy
+// exotic objects, 28.2.1.1 Proxy(target, handler), 28.2.2.1
+// Proxy.revocable, 7.3.18 CreateListFromArrayLike, 6.2.6.4
+// FromPropertyDescriptor, 6.2.6.5 ToPropertyDescriptor, 6.2.6.6
+// CompletePropertyDescriptor, 10.1.6.2 IsCompatiblePropertyDescriptor,
+// 10.1.6.3 ValidateAndApplyPropertyDescriptor).
 //
 // A proxy is a node of kind node_kind::Proxy whose internal slots hold its
 // target (`value`) and handler (`namespace_value`), both objects, the
 // target always an earlier row (decision 2); it has no own properties and
 // no prototype of its own (`proto` Null). `new Proxy(target, handler)`
 // makes one, a job row; Proxy called without `new`, or with a target or
-// handler that is no object, is a TypeError. `typeof` gives "function" when
-// its final target is callable. Proxy.revocable is light-cljs-766's.
+// handler that is no object, is a TypeError. It is callable when its final
+// target is, and a constructor when that is one (`typeof` "function",
+// Object.prototype.toString's "Function"; Array.isArray and its "Array"
+// see through it). Proxy.revocable makes one with a revoke function (a
+// job row of Builtin.ProxyRevoke whose `value` is the proxy, null once it
+// revoked it); revoking sets the proxy's revoked flag (its node's
+// `initialized`; decision 2: proxy node state, which snapshots, the reset,
+// reclamation and saved continuations carry as any field, and snapshot
+// validation accepts), after which every internal method, Array.isArray
+// and toString's tag are a TypeError; target and handler stay, so `typeof`
+// does not change and an operation already past its handler read keeps it.
 //
-// [[OwnPropertyKeys]], [[GetOwnProperty]] and [[GetPrototypeOf]] (for-in,
-// light-cljs-845) and [[Get]], [[Set]], [[HasProperty]] and [[Delete]]
-// (ECMAScript 10.5.8, 10.5.9, 10.5.7 and 10.5.10; light-cljs-890) run as a
-// Proxy native frame (Native.Proxy, its proxy_method the payload): every
-// trap getter, trap call and observable read of a trap's result (the
+// Every internal method runs as a Proxy native frame (Native.Proxy, its
+// proxy_method the payload): the trap read (a handler getter runs above
+// the frame), the trap call, every observable read of a trap's result (the
 // result's `length` and elements, a descriptor's fields), a forwarded
-// getter or setter, and a proxy target's [[GetOwnProperty]] for a trap's
-// invariants runs as a frame above it (decision 4), and its result arrives
-// at its operand base for the frame below. A proxy without the trap
-// forwards to its target: a proxy target restarts the frame on it (pc 0,
-// one step a hop), as does a proxy that [[Get]], [[Set]] or
-// [[HasProperty]] meets on the target's prototype chain; any other target
-// answers through its own internal method, a getter or setter running
-// above the frame.
+// getter or setter, and a proxy target's [[GetOwnProperty]],
+// [[IsExtensible]] or [[GetPrototypeOf]] for a trap's invariants run as
+// frames above it (decision 4), and its result arrives at its operand base
+// for the frame below. A proxy without the trap forwards to its target: a
+// proxy target restarts the frame on it (pc 0, one step a hop), as does a
+// proxy that [[Get]], [[Set]] or [[HasProperty]] meets on the target's
+// prototype chain; any other target answers through its own internal
+// method, a getter or setter running above the frame; a forwarded [[Call]]
+// or [[Construct]] becomes a Forward frame (function_calls.goose) that
+// runs the target as any forwarded call.
 //
 //   input     the proxy whose method runs (its target after a forward)
-//   output    the property key (all but [[GetPrototypeOf]] and
-//             [[OwnPropertyKeys]])
-//   receiver  [[Get]]'s and [[Set]]'s receiver; for the two enumeration
-//             methods the trap's result object while its fields are read
-//   callee    [[Set]]'s value; for the enumeration methods the trap while
-//             it is called, then the key list or descriptor the frame
-//             builds; [[Get]]'s trap result while the target's descriptor
-//             is read
+//   output    the property key ([[GetOwnProperty]], the four property
+//             methods, [[DefineOwnProperty]]); [[Call]]'s and
+//             [[Construct]]'s argument array (CreateArrayFromList)
+//   receiver  [[Get]]'s and [[Set]]'s receiver; [[Call]]'s this value,
+//             [[Construct]]'s newTarget; for the two enumeration methods
+//             the trap's result object while its fields are read;
+//             [[GetPrototypeOf]]'s trap result and [[DefineOwnProperty]]'s
+//             target descriptor while a proxy target answers; the object
+//             answer::Object gives back
+//   callee    [[Set]]'s value, [[SetPrototypeOf]]'s new prototype,
+//             [[DefineOwnProperty]]'s descriptor (partial); for the
+//             enumeration methods the trap while it is called, then the key
+//             list or descriptor the frame builds; [[Get]]'s trap result
+//             while the target's descriptor is read; [[IsExtensible]]'s and
+//             [[PreventExtensions]]'s trap result while a proxy target
+//             answers
 //   index, argument_count  CreateListFromArrayLike's index and length;
 //             ToPropertyDescriptor's next field and the target's
-//             extensibility; for [[Set]] and [[Delete]], index 1 when a
-//             false result throws (strict code, or a built-in's
-//             Set(O, P, V, true)); for the four property methods,
+//             extensibility; for the methods with a boolean answer, index
+//             the answer mode (answer::); for the four property methods,
 //             argument_count the hops a prototype chain led back to a
 //             proxy (proxy_restart)
 //   pc 0  restart on `input` (after a forward)
@@ -64,13 +80,20 @@ namespace source;
 //   pc 4  ([[OwnPropertyKeys]]) awaits element `index` from its getter
 //   pc 5  ([[GetOwnProperty]]) awaits descriptor field `index` from its
 //         getter
-//   pc 6  ([[Get]], [[Set]], [[HasProperty]], [[Delete]]) awaits a proxy
-//         target's descriptor for the trap result's invariants
+//   pc 6  ([[Get]], [[Set]], [[HasProperty]], [[Delete]],
+//         [[DefineOwnProperty]]) awaits a proxy target's descriptor for the
+//         trap result's invariants
 //   pc 7  ([[Get]], [[Set]]) awaits a forwarded getter's or setter's result
 //   pc 8  ([[GetOwnProperty]]) awaits a proxy trap result's answer whether
 //         it has descriptor field `index` (its [[HasProperty]])
 //   pc 9  ([[Set]]) awaits both conversions of an array receiver's new
 //         `length` (proxy_length)
+//   pc 10 ([[Set]]) awaits its proxy receiver's [[GetOwnProperty]]
+//   pc 11 ([[Set]]) awaits its proxy receiver's [[DefineOwnProperty]]
+//         (proxy_receiver_define)
+//   pc 12 awaits a proxy target's [[IsExtensible]] for the invariants
+//   pc 13 ([[GetPrototypeOf]], [[SetPrototypeOf]]) awaits a non-extensible
+//         proxy target's [[GetPrototypeOf]]
 //
 // [[OwnPropertyKeys]] gives a key list (node_kind::KeyList, source_vm.goose's
 // "Key enumeration") of its keys, symbols included, attributes clear.
@@ -79,9 +102,13 @@ namespace source;
 // `writable`, `get`, `set`, `enumerable`, `configurable`), complete once
 // delivered; while the frame builds it, its namespace_value is the target's
 // own descriptor (or Null), read before the trap result's fields as the
-// specification orders it. [[GetPrototypeOf]] gives an object or null,
-// [[Get]] the value, the other three a boolean. Key lists and descriptors
-// are job rows only frames hold, truncated with the job (decision 3).
+// specification orders it. [[DefineOwnProperty]] takes such a descriptor,
+// partial, and gives its trap an ordinary object of its fields
+// (from_descriptor). [[GetPrototypeOf]] gives an object or null, [[Get]],
+// [[Call]] and [[Construct]] a value, the others a boolean that the frame's
+// answer mode may turn into a TypeError, its object or undefined (the
+// built-ins' results). Key lists, descriptors and argument arrays are job
+// rows only frames hold, truncated with the job (decision 3).
 //
 // How an operation reaches a proxy (source_vm.goose): own_entry of a proxy
 // faults UnsupportedOperand naming [[GetOwnProperty]], on the cold fault
@@ -92,32 +119,37 @@ namespace source;
 // getter's receiver, so every reader that runs getters runs [[Get]] traps
 // too. has_property, assign (with inherited_assign and receiver_set) and
 // delete_property keep the fault, relabelled [[HasProperty]], [[Set]] or
-// [[Delete]] with the proxy and key recorded (proxy_relabel); a caller that
-// supports the method takes it (proxy_pending, take_proxy) and starts the
-// frame, and any other caller still fails by name. The two fields live
-// only from the operation to its caller within one step; fail() and the
-// job reset clear them, and in-job reclamation keeps and moves what they
-// hold (reclaim.goose).
+// [[Delete]] with the proxy and key recorded (proxy_relabel); receiver_set
+// records a proxy receiver's [[DefineOwnProperty]] the same way; a caller
+// that supports the method takes it (proxy_pending, take_proxy) and starts
+// the frame. The two fields live only from the operation to its caller
+// within one step; fail() and the job reset clear them, and in-job
+// reclamation keeps and moves what they hold (reclaim.goose). A call or
+// `new` reaches [[Call]] or [[Construct]] where it would push a closure's
+// frame (push_frame, construct, call_accessor; proxy_call), so ordinary
+// calls test nothing new. Object.isExtensible, preventExtensions,
+// setPrototypeOf and their Reflect counterparts, the `__proto__` setter and
+// isPrototypeOf are conditional natives (proxy_conditional), instanceof's
+// walk and isPrototypeOf's run a proxy's [[GetPrototypeOf]] above a
+// HasInstance frame (source_vm.goose prototype_walk), and the Descriptor
+// frame (descriptors.goose) runs a proxy target's [[DefineOwnProperty]].
 //
-// Not implemented yet, each a named UnsupportedOperand (decision 1): a
-// proxy's [[DefineOwnProperty]] (so `set` without a trap, which defines on
-// the proxy receiver, fails by name), [[Call]], [[Construct]],
-// [[IsExtensible]], [[PreventExtensions]] and [[SetPrototypeOf]]
-// (light-cljs-891), and [[GetPrototypeOf]] where a built-in other than
-// for-in reaches it (Object.getPrototypeOf), named in Job.detail as
-// `Proxy: [[DefineOwnProperty]]` (Heap.proxy_method, fail); [[IsExtensible]]
-// of a proxy target in a trap's invariants, and for getOwnPropertyDescriptor
-// its [[GetOwnProperty]]; a host-effect built-in or a delay as a trap. A
-// callable proxy counts as callable for `typeof`, for calls, which fail by
-// name, and as a descriptor's getter or setter, but not where a built-in
-// takes a callback (a TypeError there, as for any non-function).
+// Still a named UnsupportedOperand (decision 1), each where no frame can
+// start or for another pellet: Object.seal, freeze, isSealed and isFrozen
+// of a proxy (light-cljs-897) and Annex B's __defineGetter__ family on one;
+// a proxy target's [[OwnPropertyKeys]] and [[GetOwnProperty]] in the
+// ownKeys and getOwnPropertyDescriptor invariants (light-cljs-897, -895);
+// Function.prototype.bind of a proxy (light-cljs-861); the plain built-ins
+// run to completion (call_builtin) with a proxy, as a callback that cannot
+// start a frame calls them; a revoke function called that way; a
+// host-effect built-in or a delay as a trap.
 
 // A key list's `function`: Pending while the keys of the proxy it walks
 // (its `value`) are not listed yet (for-in, source_vm.goose).
 let key_list::Listed = 0;
 let key_list::Pending = 1;
-// A proxy's internal methods: the seven a Proxy frame runs (its payload),
-// then the ones that fail by name (Heap.proxy_method).
+// A proxy's internal methods, a Proxy frame's payload; Heap.proxy_method
+// names the one a caller is asked to run (proxy_pending).
 let proxy_method::GetPrototypeOf = 0;
 let proxy_method::OwnPropertyKeys = 1;
 let proxy_method::GetOwnProperty = 2;
@@ -136,15 +168,30 @@ let PROXY_METHODS: Name[13] = [
     Name { text: "[[HasProperty]]" }, Name { text: "[[Delete]]" }, Name { text: "[[DefineOwnProperty]]" }, Name { text: "[[Call]]" }, Name { text: "[[Construct]]" },
     Name { text: "[[IsExtensible]]" }, Name { text: "[[PreventExtensions]]" }, Name { text: "[[SetPrototypeOf]]" },
 ];
-// The trap of each method a Proxy frame runs.
-let TRAP_NAMES: Name[7] = [
+// The trap of each method.
+let TRAP_NAMES: Name[13] = [
     Name { text: "getPrototypeOf" }, Name { text: "ownKeys" }, Name { text: "getOwnPropertyDescriptor" }, Name { text: "get" }, Name { text: "set" }, Name { text: "has" },
-    Name { text: "deleteProperty" },
+    Name { text: "deleteProperty" }, Name { text: "defineProperty" }, Name { text: "apply" }, Name { text: "construct" }, Name { text: "isExtensible" },
+    Name { text: "preventExtensions" }, Name { text: "setPrototypeOf" },
 ];
 // A Proxy frame's phases beyond the enumeration methods' (see above).
 let proxy_pc::Descriptor = 6;
 let proxy_pc::Accessor = 7;
 let proxy_pc::Length = 9;
+let proxy_pc::ReceiverOwn = 10;
+let proxy_pc::ReceiverDefine = 11;
+let proxy_pc::TargetExtensible = 12;
+let proxy_pc::TargetPrototype = 13;
+// What a frame of a method with a boolean answer delivers (its `index`):
+// the boolean; the boolean, a false answer a TypeError (strict code, a
+// built-in's Set(O, P, V, true)); the frame's `receiver` for true
+// (Object.preventExtensions and setPrototypeOf give their object), false a
+// TypeError; or undefined for true (the `__proto__` setter), false a
+// TypeError.
+let answer::Boolean = 0;
+let answer::Throws = 1;
+let answer::Object = 2;
+let answer::Nothing = 3;
 // A descriptor's fields, in ToPropertyDescriptor's reading order.
 let field::Enumerable = 0;
 let field::Configurable = 1;
@@ -200,12 +247,9 @@ fn proxy_detail(job: Job&) {
     for c in "Proxy: " { job.detail.push(c); }
     for c in PROXY_METHODS[job.heap.proxy_method].text { job.detail.push(c); }
 }
-// A proxy call or construction: a callable proxy's fails by name, any other
-// is a TypeError (not a function, not a constructor).
-fn proxy_invoke(heap: Heap&, f: Value, method: i64) { if proxy_callable(heap, f) { proxy_fault(heap, method); } else if heap.fault == Fault.None { heap.fault = Fault.TypeError; } }
 // IsExtensible(target) for a trap's invariants (light-cljs-882,
-// integrity.goose): a proxy target's [[IsExtensible]] fails by name, as
-// does a form's.
+// integrity.goose) of a target that is no proxy (target_extensible runs a
+// proxy target's); a proxy's fails by name here, as does a form's.
 fn extensible(heap: Heap&, target: Value) -> bool { return target.is_object() && is_extensible(heap, target); }
 
 // ---- The Proxy constructor
@@ -263,23 +307,27 @@ fn target_descriptor(job: Job&, target: Value, k: Value) -> Value {
     if !set_field(heap, d, field::Enumerable, boolean(e.attrs & attr_enumerable() != 0)) || !set_field(heap, d, field::Configurable, boolean(e.attrs & attr_configurable() != 0)) { return Value.Undefined; }
     return d;
 }
-// IsCompatiblePropertyDescriptor(extensible, d, current): d is complete;
-// `current` is a descriptor or Null.
+// IsCompatiblePropertyDescriptor(extensible, d, current): d complete or
+// partial ([[DefineOwnProperty]]'s); `current` a complete descriptor, or
+// Null (or undefined) when the target lacks the property.
 fn compatible(heap: Heap&, extensible: bool, d: Value, current: Value) -> bool {
     if !current.is_object() { return extensible; }
     if flag_field(heap, current, field::Configurable) { return true; }
-    if flag_field(heap, d, field::Configurable) || flag_field(heap, d, field::Enumerable) != flag_field(heap, current, field::Enumerable) { return false; }
+    if flag_field(heap, d, field::Configurable) { return false; }
+    if has_field(heap, d, field::Enumerable) && flag_field(heap, d, field::Enumerable) != flag_field(heap, current, field::Enumerable) { return false; }
     let accessor = has_field(heap, current, field::Get);
-    if has_field(heap, d, field::Get) != accessor { return false; }
+    let d_accessor = has_field(heap, d, field::Get) || has_field(heap, d, field::Set);
+    let d_data = has_field(heap, d, field::Value) || has_field(heap, d, field::Writable);
+    if (d_accessor || d_data) && d_accessor != accessor { return false; }
     if accessor {
-        let a, x = field_of(heap, d, field::Get); let b, y = field_of(heap, current, field::Get);
-        let c, z = field_of(heap, d, field::Set); let e, w = field_of(heap, current, field::Set);
-        return same_value(heap, a, b) && same_value(heap, c, e);
+        let a, has_get = field_of(heap, d, field::Get); let b, y = field_of(heap, current, field::Get);
+        let c, has_set = field_of(heap, d, field::Set); let e, w = field_of(heap, current, field::Set);
+        return (!has_get || same_value(heap, a, b)) && (!has_set || same_value(heap, c, e));
     }
     if flag_field(heap, current, field::Writable) { return true; }
     if flag_field(heap, d, field::Writable) { return false; }
-    let v, x = field_of(heap, d, field::Value); let u, y = field_of(heap, current, field::Value);
-    return same_value(heap, v, u);
+    let v, has_value = field_of(heap, d, field::Value); let u, y = field_of(heap, current, field::Value);
+    return !has_value || same_value(heap, v, u);
 }
 
 // ---- The Proxy frame
@@ -290,9 +338,33 @@ fn compatible(heap: Heap&, extensible: bool, d: Value, current: Value) -> bool {
 // reads its trap at its first step (pc 0), so a getter path that starts it
 // (call_accessor) does not re-enter one.
 fn proxy_start(job: Job&, method: i64, p: Value, k: Value, receiver: Value = Value.Undefined, value: Value = Value.Undefined, throws: bool = false) {
+    proxy_push(job, method, p, k, receiver, value, if throws { answer::Throws } else { answer::Boolean }, job.operands.len);
+}
+// proxy_start with the frame's answer mode (answer::) and operand base.
+fn proxy_push(job: Job&, method: i64, p: Value, k: Value, receiver: Value, value: Value, mode: i64, base: i64) -> bool {
     let heap .= job.heap;
-    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
-    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: value, receiver: receiver, input: p, output: k, index: if throws { 1 } else { 0 }, native: Native.Proxy { method: method as u8 } });
+    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return false; }
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: value, receiver: receiver, input: p, output: k, index: mode, native: Native.Proxy { method: method as u8 } });
+    return true;
+}
+// [[Call]] (10.5.12) of callable proxy p with this `receiver`, or with
+// `constructs` [[Construct]] (10.5.13) with newTarget `receiver`, and
+// `args`: a Proxy frame whose result arrives at operand base `base`. The
+// arguments become an array first (CreateArrayFromList, which nothing
+// observes), the frame's `output`. A proxy of a function that is no
+// constructor is not one either: `new` of it is a TypeError. Returns
+// false on a fault.
+fn proxy_call(job: Job&, p: Value, receiver: Value, args: const Value[:], base: i64, constructs: bool) -> bool {
+    let heap .= job.heap;
+    if !is_proxy(heap, p) { heap.fault = Fault.InvalidState; return false; }
+    if constructs && !is_constructor(heap, p) { type_error(job, "not a constructor"); return false; }
+    if !constructs && !proxy_callable(heap, p) { type_error(job, "not a function"); return false; }
+    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return false; }
+    if !charge(heap, args.len) { return false; }
+    let list = allocate(heap, Node { kind: node_kind::Array });
+    if heap.fault != Fault.None { return false; }
+    for v, i in args { if !set_element(heap, list, i, v) { return false; } }
+    return proxy_push(job, if constructs { proxy_method::Construct } else { proxy_method::Call }, p, list, receiver, Value.Undefined, answer::Boolean, base);
 }
 // [[Get]] of the proxy hit p (lookup's) for `receiver`: its recorded key.
 fn proxy_get(job: Job&, p: Value, receiver: Value) {
@@ -316,10 +388,22 @@ fn proxy_assign(job: Job&, receiver: Value, value: Value, result: Value, strict:
     job.frames.push(Frame { function: -1, pc: setter_pc::Setter, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: receiver, output: result, native: Native.Setter });
     proxy_start(job, proxy_method::Set, p, k, receiver, value, strict);
 }
+// A super assignment whose receiver_set reached its proxy receiver
+// (proxy_pending DefineOwnProperty, light-cljs-891): as proxy_assign, a
+// Setter frame delivering `value` under a [[Set]] frame at its receiver
+// phases (proxy_set_receiver).
+fn proxy_assign_receiver(job: Job&, k: Value, value: Value, strict: bool) {
+    if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return; }
+    job.frames.push(Frame { function: -1, pc: setter_pc::Setter, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: job.heap.proxy_at, output: value, native: Native.Setter });
+    proxy_set_receiver(job, k, value, strict);
+}
 // GetMethod(handler, trap name) of the frame's proxy.
 fn proxy_trap(job: Job&, at: i64, method: i64) {
     let heap .= job.heap;
     let handler = node(heap, job.frames[at].input.id()).namespace_value;
+    // Every internal method of a revoked proxy (Proxy.revocable) is a
+    // TypeError.
+    if revoked(heap, job.frames[at].input) { type_error(job, "revoked proxy"); return; }
     let k = key_named(heap, TRAP_NAMES[method].text);
     if heap.fault != Fault.None { return; }
     let v, getter = lookup(heap, handler, k);
@@ -332,24 +416,30 @@ fn proxy_trap(job: Job&, at: i64, method: i64) {
 fn proxy_with_trap(job: Job&, at: i64, method: i64, trap: Value) {
     let heap .= job.heap; let p = job.frames[at].input;
     if trap.tag() <= value_tag::Null { proxy_forward(job, at, method); return; }
-    if is_proxy(heap, trap) { proxy_invoke(heap, trap, proxy_method::Call); return; }
-    if !callable(heap, trap) { type_error(job, "Proxy: trap is not a function"); return; }
+    if !is_callable(heap, trap) { type_error(job, "Proxy: trap is not a function"); return; }
     if method <= proxy_method::GetOwnProperty { job.frames[at].callee = trap; }
-    job.frames[at].pc = 2;
     var f = trap; var this_value = node(heap, p.id()).namespace_value;
-    // The arguments all[first..count]: the target, then the key for all
-    // but the enumeration methods, [[Set]]'s value and the receiver of
-    // [[Get]] and [[Set]].
+    // The arguments all[first..count]: the target, then the key (or for
+    // [[Call]] the this value, for [[Construct]] the argument array), then
+    // [[Set]]'s value, [[DefineOwnProperty]]'s descriptor object, [[Call]]'s
+    // argument array or [[Construct]]'s newTarget, then [[Set]]'s receiver;
+    // [[Get]]'s receiver third.
     let frame = job.frames[at];
-    let all:   Value[4] = [node(heap, p.id()).value, frame.output, if method == proxy_method::Set { frame.callee } else { frame.receiver }, frame.receiver];
-    let count: i64      = if method == proxy_method::Set { 4 } else if method == proxy_method::Get { 3 } else if method == proxy_method::GetPrototypeOf || method == proxy_method::OwnPropertyKeys { 1 } else { 2 };
+    var third = frame.receiver;
+    if method == proxy_method::Set { third = frame.callee; }
+    else if method == proxy_method::DefineOwnProperty { third = from_descriptor(job, frame.callee); if heap.fault != Fault.None { return; } }
+    else if method == proxy_method::Call { third = frame.output; }
+    let second = if method == proxy_method::Call { frame.receiver } else if method == proxy_method::SetPrototypeOf { frame.callee } else { frame.output };
+    job.frames[at].pc = 2;
+    let all:   Value[4] = [node(heap, p.id()).value, second, third, frame.receiver];
+    let count: i64      = trap_arity(method);
     var first: i64 = 0;
     // Call(trap, handler, args). Function.prototype.call as the trap calls
     // its receiver with its first argument as `this`, as the dispatch loop's
     // call does; a native-frame built-in runs in its own frame above this
-    // one, a plain one completes here.
+    // one, a plain one completes here; a proxy runs its [[Call]].
     loop {
-        if is_proxy(heap, f) { proxy_invoke(heap, f, proxy_method::Call); return; }
+        if is_proxy(heap, f) { proxy_call(job, f, this_value, all[first..count], job.operands.len, false); return; }
         if !callable(heap, f) { type_error(job, "Proxy: trap is not a function"); return; }
         if node(heap, f.id()).kind == node_kind::Closure { push_frame(job, f, this_value, all[first..count], false, job.operands.len); return; }
         if is_bound(heap, f) { start_bound(job, f, this_value, all[first..count], job.operands.len); return; }
@@ -368,7 +458,7 @@ fn proxy_with_trap(job: Job&, at: i64, method: i64, trap: Value) {
     // path's Forward frame runs them.
     let converts, hint = argument_converts(heap, f, all[first..count]);
     if converts { start_bound(job, f, this_value, all[first..count], job.operands.len); return; }
-    let r = call_builtin(job, node(heap, f.id()).function, this_value, all[first..count]);
+    let r = call_plain(job, f, this_value, all[first..count]);
     if heap.fault == Fault.None { push_operand(job, r); }
 }
 // The method of the target: a proxy target's in this frame, from pc 0 at
@@ -378,7 +468,20 @@ fn proxy_forward(job: Job&, at: i64, method: i64) {
     let target = node(heap, frame.input.id()).value;
     if is_proxy(heap, target) { job.frames[at].input = target; job.frames[at].pc = 0; return; }
     if method == proxy_method::GetPrototypeOf { finish_native(job, frame, prototype(heap, target.id())); return; }
+    if method == proxy_method::Call || method == proxy_method::Construct { proxy_forward_call(job, at, method, target); return; }
     if !listable(job, target) { return; }
+    if method == proxy_method::IsExtensible { let ok = is_extensible(heap, target); if heap.fault == Fault.None { proxy_answer(job, at, method, ok, false); } return; }
+    if method == proxy_method::PreventExtensions { let ok = prevent_extensions(job, Builtin.Proxy, target); if heap.fault == Fault.None { proxy_answer(job, at, method, ok, false); } return; }
+    if method == proxy_method::SetPrototypeOf { let ok = set_prototype_of(job, Builtin.Proxy, target, frame.callee); if heap.fault == Fault.None { proxy_answer(job, at, method, ok, false); } return; }
+    if method == proxy_method::DefineOwnProperty {
+        let d = descriptor_of(heap, frame.callee);
+        if heap.fault != Fault.None { return; }
+        let ok = define_descriptor(job, target, frame.output, d);
+        if heap.fault != Fault.None { return; }
+        if ok && d.has_value && !accessor_descriptor(d) && frame.output.is_string() { record(job, target, frame.output, d.value); }
+        proxy_answer(job, at, method, ok, false);
+        return;
+    }
     if method >= proxy_method::Get { proxy_forward_property(job, at, method, target); return; }
     if method == proxy_method::OwnPropertyKeys {
         var keys: OwnKey[>..] = [];
@@ -401,6 +504,13 @@ fn proxy_step(job: Job&, frame: Frame, method: i64) {
             if method == proxy_method::OwnPropertyKeys { own_keys_result(job, at, r); }
             else if method == proxy_method::GetOwnProperty { descriptor_result(job, at, r); }
             else if method == proxy_method::GetPrototypeOf { prototype_result(job, at, r); }
+            else if method == proxy_method::Call { finish_native(job, frame, r); }
+            else if method == proxy_method::Construct {
+                if !r.is_object() { type_error(job, "Proxy: the construct trap result is not an object"); return; }
+                finish_native(job, frame, r);
+            }
+            else if method == proxy_method::IsExtensible || method == proxy_method::PreventExtensions { extensible_result(job, at, method, truthy(heap, r)); }
+            else if method == proxy_method::SetPrototypeOf { set_prototype_result(job, at, truthy(heap, r)); }
             else { property_result(job, at, method, r); }
         },
         3 => {
@@ -421,6 +531,14 @@ fn proxy_step(job: Job&, frame: Frame, method: i64) {
         // ([[Set]]) both conversions of an array receiver's new `length`
         // arrived: the write, as Reflect.set's (reflect_length_step).
         9 => { proxy_length(job, at); },
+        // ([[Set]]) the proxy receiver's [[GetOwnProperty]], then its
+        // [[DefineOwnProperty]]'s answer (proxy_receiver_define).
+        10 => { receiver_descriptor(job, at, job.operands.pop()); },
+        11 => { proxy_answer(job, at, method, truthy(heap, job.operands.pop()), false); },
+        // A proxy target's [[IsExtensible]] for the invariants, and a
+        // non-extensible proxy target's [[GetPrototypeOf]].
+        12 => { target_extensible_known(job, at, method, truthy(heap, job.operands.pop())); },
+        13 => { prototype_compare(job, at, job.operands.pop()); },
         _ => { heap.fault = Fault.InvalidState; },
     }
 }
@@ -617,14 +735,59 @@ fn descriptor_done(job: Job&, at: i64) {
 }
 
 // ---- [[GetPrototypeOf]] (10.5.1)
+// The trap's result r (kept as the frame's receiver): a non-extensible
+// target's prototype must be r.
 fn prototype_result(job: Job&, at: i64, r: Value) {
-    let heap .= job.heap; let frame = job.frames[at];
     if !r.is_object() && !r.is_null() { type_error(job, "Proxy: getPrototypeOf trap result is neither an object nor null"); return; }
-    let target = node(heap, frame.input.id()).value;
+    job.frames[at].receiver = r;
+    let ready, ext = target_extensible(job, at);
+    if ready { prototype_known(job, at, ext); }
+}
+fn prototype_known(job: Job&, at: i64, ext: bool) {
+    if ext { finish_native(job, job.frames[at], job.frames[at].receiver); return; }
+    target_prototype(job, at);
+}
+
+// ---- The target's state for a trap's invariants (light-cljs-891)
+// IsExtensible(target) of the frame at `at`: true and the answer for a
+// target that is no proxy; a proxy target's [[IsExtensible]] runs as a
+// Proxy frame above this one, its answer arriving at pc TargetExtensible
+// (target_extensible_known), and false comes back.
+fn target_extensible(job: Job&, at: i64) -> bool, bool {
+    let heap .= job.heap; let target = node(heap, job.frames[at].input.id()).value;
+    if is_proxy(heap, target) { job.frames[at].pc = proxy_pc::TargetExtensible; proxy_start(job, proxy_method::IsExtensible, target, Value.Undefined); return false, false; }
     let ext = extensible(heap, target);
-    if heap.fault != Fault.None { return; }
-    if !ext && !same_value(heap, r, prototype(heap, target.id())) { type_error(job, "Proxy: the getPrototypeOf trap result differs from a non-extensible target's prototype"); return; }
-    finish_native(job, frame, r);
+    return heap.fault == Fault.None, ext;
+}
+// The target's IsExtensible arrived: the method's check goes on.
+fn target_extensible_known(job: Job&, at: i64, method: i64, ext: bool) {
+    if method == proxy_method::HasProperty || method == proxy_method::Delete { presence_known(job, at, method, ext); }
+    else if method == proxy_method::GetPrototypeOf { prototype_known(job, at, ext); }
+    else if method == proxy_method::IsExtensible || method == proxy_method::PreventExtensions { extensible_known(job, at, method, ext); }
+    else if method == proxy_method::SetPrototypeOf { set_prototype_known(job, at, ext); }
+    else if method == proxy_method::DefineOwnProperty { define_known(job, at, ext); }
+    else { job.heap.fault = Fault.InvalidState; }
+}
+// A non-extensible target's [[GetPrototypeOf]]: a proxy target's runs as a
+// Proxy frame above this one, its answer arriving at pc TargetPrototype.
+fn target_prototype(job: Job&, at: i64) {
+    let heap .= job.heap; let target = node(heap, job.frames[at].input.id()).value;
+    if is_proxy(heap, target) { job.frames[at].pc = proxy_pc::TargetPrototype; proxy_start(job, proxy_method::GetPrototypeOf, target, Value.Undefined); return; }
+    prototype_compare(job, at, prototype(heap, target.id()));
+}
+// The non-extensible target's prototype q must be [[GetPrototypeOf]]'s
+// trap result (the receiver), or [[SetPrototypeOf]]'s new prototype.
+fn prototype_compare(job: Job&, at: i64, q: Value) {
+    let heap .= job.heap; let frame = job.frames[at];
+    let method: i64 = match frame.native { Proxy p => p.method, _ => -1 };
+    if method == proxy_method::GetPrototypeOf {
+        if !same_value(heap, frame.receiver, q) { type_error(job, "Proxy: the getPrototypeOf trap result differs from a non-extensible target's prototype"); return; }
+        finish_native(job, frame, frame.receiver);
+        return;
+    }
+    if method != proxy_method::SetPrototypeOf { heap.fault = Fault.InvalidState; return; }
+    if !same_value(heap, frame.callee, q) { type_error(job, "Proxy: the setPrototypeOf trap changed a non-extensible target's prototype"); return; }
+    proxy_answer(job, at, method, true, true);
 }
 
 // ---- [[Get]], [[Set]], [[HasProperty]] and [[Delete]] (10.5.8, 10.5.9,
@@ -636,7 +799,7 @@ fn prototype_result(job: Job&, at: i64, r: Value) {
 // frame on it, with the same key and receiver (its [[Get]], [[Set]] or
 // [[HasProperty]]); a getter or setter runs above the frame (pc Accessor).
 // A proxy receiver of a forwarded [[Set]] is defined on through its
-// [[DefineOwnProperty]], which fails by name (light-cljs-891).
+// [[GetOwnProperty]] and [[DefineOwnProperty]] (proxy_receiver_define).
 fn proxy_forward_property(job: Job&, at: i64, method: i64, target: Value) {
     let heap .= job.heap; let frame = job.frames[at]; let k = frame.output;
     if method == proxy_method::Get {
@@ -666,6 +829,7 @@ fn proxy_forward_property(job: Job&, at: i64, method: i64, target: Value) {
     }
     let setter, ok = receiver_set(job, target, k, frame.callee, frame.receiver);
     if proxy_pending(heap, proxy_method::Set) { let p, x = take_proxy(heap); proxy_restart(job, at, p); return; }
+    if proxy_pending(heap, proxy_method::DefineOwnProperty) { take_proxy(heap); proxy_receiver_define(job, at); return; }
     if heap.fault != Fault.None { return; }
     // An array receiver's `length` set to an object converts it twice
     // (start_length's conversions) above the frame, at pc Length.
@@ -712,12 +876,17 @@ fn proxy_restart(job: Job&, at: i64, p: Value) {
 // target: false is a TypeError when the frame's caller throws on it
 // (strict code, Set(O, P, V, true)).
 fn proxy_answer(job: Job&, at: i64, method: i64, ok: bool, trap: bool) {
-    if !ok && job.frames[at].index != 0 {
+    let mode = job.frames[at].index;
+    if !ok && mode != answer::Boolean {
         if method == proxy_method::Delete { type_error(job, if trap { "Proxy: the deleteProperty trap returned false" } else { "could not delete property" }); }
-        else { type_error(job, if trap { "Proxy: the set trap returned false" } else { "Proxy: the target refused the assignment" }); }
+        else if method == proxy_method::Set { type_error(job, if trap { "Proxy: the set trap returned false" } else { "Proxy: the target refused the assignment" }); }
+        else if method == proxy_method::PreventExtensions { type_error(job, if trap { "Proxy: the preventExtensions trap returned false" } else { "proxy preventExtensions handler returned false" }); }
+        else if method == proxy_method::SetPrototypeOf { type_error(job, if trap { "Proxy: the setPrototypeOf trap returned false" } else { "circular prototype chain or non-extensible object" }); }
+        else { type_error(job, if trap { "Proxy: the defineProperty trap returned false" } else { "cannot define the property" }); }
         return;
     }
-    finish_native(job, job.frames[at], boolean(ok));
+    let frame = job.frames[at];
+    finish_native(job, frame, if mode == answer::Object { frame.receiver } else if mode == answer::Nothing { Value.Undefined } else { boolean(ok) });
 }
 // The trap's result r: [[Get]]'s value, the others' ToBoolean. A false
 // [[Set]] or [[Delete]] and a true [[HasProperty]] answer now; otherwise
@@ -750,6 +919,7 @@ fn property_invariants(job: Job&, at: i64, method: i64, d: Value) {
     let found = d.is_object();
     let fixed = found && !flag_field(heap, d, field::Configurable);
     if heap.fault != Fault.None { return; }
+    if method == proxy_method::DefineOwnProperty { define_invariants(job, at, d, found, fixed); return; }
     if method == proxy_method::Get || method == proxy_method::Set {
         let v = frame.callee;
         if fixed {
@@ -769,11 +939,247 @@ fn property_invariants(job: Job&, at: i64, method: i64, d: Value) {
     let has = method == proxy_method::HasProperty;
     if found {
         if fixed { type_error(job, if has { "Proxy: a non-configurable property of the target is reported missing" } else { "Proxy: a non-configurable property of the target is reported deleted" }); return; }
-        let ext = extensible(heap, node(heap, frame.input.id()).value);
-        if heap.fault != Fault.None { return; }
-        if !ext { type_error(job, if has { "Proxy: a property of a non-extensible target is reported missing" } else { "Proxy: a property of a non-extensible target is reported deleted" }); return; }
+        let ready, ext = target_extensible(job, at);
+        if ready { presence_known(job, at, method, ext); }
+        return;
     }
     finish_native(job, frame, boolean(!has));
+}
+// A property the target has, reported missing or deleted: the target must
+// be extensible.
+fn presence_known(job: Job&, at: i64, method: i64, ext: bool) {
+    let has = method == proxy_method::HasProperty;
+    if !ext { type_error(job, if has { "Proxy: a property of a non-extensible target is reported missing" } else { "Proxy: a property of a non-extensible target is reported deleted" }); return; }
+    finish_native(job, job.frames[at], boolean(!has));
+}
+
+// ---- [[DefineOwnProperty]] (10.5.6)
+// The trap answered true for descriptor `callee` (partial): a property the
+// target lacks needs an extensible target and may not be reported
+// non-configurable; one it has must be compatible, reported
+// non-configurable only when it is, and reported non-writable only when a
+// non-configurable data property is.
+// The target's descriptor d is kept as the frame's receiver meanwhile.
+fn define_invariants(job: Job&, at: i64, d: Value, found: bool, fixed: bool) {
+    job.frames[at].receiver = d;
+    let ready, ext = target_extensible(job, at);
+    if ready { define_known(job, at, ext); }
+}
+fn define_known(job: Job&, at: i64, ext: bool) {
+    let heap .= job.heap; let frame = job.frames[at]; let desc = frame.callee; let d = frame.receiver;
+    if !d.is_undefined() && (!d.is_object() || node(heap, d.id()).kind != node_kind::KeyList) { heap.fault = Fault.InvalidState; return; }
+    let found = d.is_object();
+    let fixed = found && !flag_field(heap, d, field::Configurable);
+    let c, has_c = field_of(heap, desc, field::Configurable);
+    if heap.fault != Fault.None { return; }
+    let config_false = has_c && !c.flag();
+    if !found {
+        if !ext { type_error(job, "Proxy: the defineProperty trap added a property to a non-extensible target"); return; }
+        if config_false { type_error(job, "Proxy: the defineProperty trap reported a property the target lacks non-configurable"); return; }
+        proxy_answer(job, at, proxy_method::DefineOwnProperty, true, true);
+        return;
+    }
+    if !compatible(heap, ext, desc, d) { if heap.fault == Fault.None { type_error(job, "Proxy: the defineProperty trap's descriptor is incompatible with the target's property"); } return; }
+    if config_false && !fixed { type_error(job, "Proxy: the defineProperty trap reported a configurable property of the target non-configurable"); return; }
+    if fixed && has_field(heap, d, field::Value) && flag_field(heap, d, field::Writable) && has_field(heap, desc, field::Writable) && !flag_field(heap, desc, field::Writable) { type_error(job, "Proxy: the defineProperty trap reported a writable, non-configurable property of the target non-writable"); return; }
+    if heap.fault == Fault.None { proxy_answer(job, at, proxy_method::DefineOwnProperty, true, true); }
+}
+// FromPropertyDescriptor(d): an ordinary object with d's fields, in the
+// specification's order, the descriptor a defineProperty trap receives.
+let FROM_ORDER: i64[6] = [field::Value, field::Writable, field::Get, field::Set, field::Enumerable, field::Configurable];
+fn from_descriptor(job: Job&, d: Value) -> Value {
+    let heap .= job.heap;
+    let o = allocate(heap, Node { kind: node_kind::Object });
+    if heap.fault != Fault.None { return Value.Undefined; }
+    for f in FROM_ORDER {
+        let v, found = field_of(heap, d, f);
+        if heap.fault != Fault.None { return Value.Undefined; }
+        if !found { continue; }
+        let k = key_named(heap, FIELD_NAMES[f].text);
+        if heap.fault != Fault.None { return Value.Undefined; }
+        if !add_own(heap, o.id(), k, v, attrs_data()) { if heap.fault == Fault.None { memory(heap); } return Value.Undefined; }
+    }
+    return o;
+}
+// A trapless [[Set]] reached its proxy receiver (OrdinarySetWithOwnDescriptor
+// steps 2.c to 2.e): the receiver's [[GetOwnProperty]] (pc ReceiverOwn),
+// then its [[DefineOwnProperty]] of {[[Value]]: V} on an existing writable
+// data property or CreateDataProperty's complete descriptor on none (pc
+// ReceiverDefine), each a Proxy frame above this [[Set]] frame, whose answer
+// is the definition's. Also started for Reflect.set and super assignments
+// with a proxy receiver (proxy_set_receiver).
+fn proxy_receiver_define(job: Job&, at: i64) {
+    let frame = job.frames[at];
+    if !is_proxy(job.heap, frame.receiver) { job.heap.fault = Fault.InvalidState; return; }
+    job.frames[at].pc = proxy_pc::ReceiverOwn;
+    proxy_start(job, proxy_method::GetOwnProperty, frame.receiver, frame.output);
+}
+fn receiver_descriptor(job: Job&, at: i64, d: Value) {
+    let heap .= job.heap; let frame = job.frames[at];
+    if !d.is_undefined() && (!d.is_object() || node(heap, d.id()).kind != node_kind::KeyList) { heap.fault = Fault.InvalidState; return; }
+    if d.is_object() && (has_field(heap, d, field::Get) || has_field(heap, d, field::Set) || !flag_field(heap, d, field::Writable)) {
+        if heap.fault == Fault.None { proxy_answer(job, at, proxy_method::Set, false, false); }
+        return;
+    }
+    let desc = new_descriptor(heap);
+    if heap.fault != Fault.None || !set_field(heap, desc, field::Value, frame.callee) { return; }
+    if !d.is_object() && !(set_field(heap, desc, field::Writable, boolean(true)) && set_field(heap, desc, field::Enumerable, boolean(true)) && set_field(heap, desc, field::Configurable, boolean(true))) { return; }
+    job.frames[at].pc = proxy_pc::ReceiverDefine;
+    proxy_push(job, proxy_method::DefineOwnProperty, frame.receiver, frame.output, Value.Undefined, desc, answer::Boolean, job.operands.len);
+}
+// A built-in's or super assignment's [[Set]] whose receiver_set reached a
+// proxy receiver (proxy_pending DefineOwnProperty): a [[Set]] frame on that
+// receiver for key k and value v, at its receiver phases, whose answer
+// arrives on the operands (`throws`: a false one is a TypeError).
+fn proxy_set_receiver(job: Job&, k: Value, v: Value, throws: bool) {
+    let r, x = take_proxy(job.heap);
+    if !proxy_push(job, proxy_method::Set, r, k, r, v, if throws { answer::Throws } else { answer::Boolean }, job.operands.len) { return; }
+    proxy_receiver_define(job, job.frames.len - 1);
+}
+
+// ---- [[Call]] and [[Construct]] (10.5.12, 10.5.13)
+// The arguments of each method's trap, after the target.
+fn trap_arity(method: i64) -> i64 {
+    if method == proxy_method::Set { return 4; }
+    if method == proxy_method::Get || method == proxy_method::DefineOwnProperty || method == proxy_method::Call || method == proxy_method::Construct { return 3; }
+    if method == proxy_method::GetPrototypeOf || method == proxy_method::OwnPropertyKeys || method == proxy_method::IsExtensible || method == proxy_method::PreventExtensions { return 1; }
+    return 2;
+}
+// Without the trap: the call or construction of the target (no proxy)
+// with the frame's arguments replaces the frame, in a Forward frame
+// (start_bound) as a forwarded call runs it; a construction keeps the
+// frame's newTarget (the proxy itself after `new p`), whose `prototype`
+// the new object then takes through the proxy's [[Get]].
+fn proxy_forward_call(job: Job&, at: i64, method: i64, target: Value) {
+    let heap .= job.heap; let frame = job.frames[at]; let list = frame.output;
+    if !list.is_object() || node(heap, list.id()).kind != node_kind::Array || at != job.frames.len - 1 { heap.fault = Fault.InvalidState; return; }
+    let n: i64 = node(heap, list.id()).length;
+    if !charge(heap, n) { return; }
+    var args: Value[>..] = [];
+    for i in n { let v, found = own_element(heap, list, i); if heap.fault != Fault.None { return; } args.push(v); }
+    job.frames.pop();
+    job.operands.resize(frame.operand_base);
+    start_bound(job, target, frame.receiver, args[..], frame.operand_base, method == proxy_method::Construct);
+}
+
+// ---- [[IsExtensible]], [[PreventExtensions]] and [[SetPrototypeOf]]
+// (10.5.3, 10.5.4, 10.5.2)
+// The trap's ToBoolean result b: [[IsExtensible]]'s must be the target's;
+// a true [[PreventExtensions]] needs a non-extensible target.
+// The result is kept as the frame's callee meanwhile.
+fn extensible_result(job: Job&, at: i64, method: i64, b: bool) {
+    if method == proxy_method::PreventExtensions && !b { proxy_answer(job, at, method, false, true); return; }
+    job.frames[at].callee = boolean(b);
+    let ready, ext = target_extensible(job, at);
+    if ready { extensible_known(job, at, method, ext); }
+}
+fn extensible_known(job: Job&, at: i64, method: i64, ext: bool) {
+    let b = job.frames[at].callee.flag();
+    if method == proxy_method::IsExtensible && ext != b { type_error(job, "Proxy: the isExtensible trap result differs from the target's"); return; }
+    if method == proxy_method::PreventExtensions && ext { type_error(job, "Proxy: the preventExtensions trap returned true for an extensible target"); return; }
+    proxy_answer(job, at, method, b, true);
+}
+// A true [[SetPrototypeOf]] of a non-extensible target needs the target's
+// prototype to be the new one (`callee`).
+fn set_prototype_result(job: Job&, at: i64, b: bool) {
+    if !b { proxy_answer(job, at, proxy_method::SetPrototypeOf, false, true); return; }
+    let ready, ext = target_extensible(job, at);
+    if ready { set_prototype_known(job, at, ext); }
+}
+fn set_prototype_known(job: Job&, at: i64, ext: bool) {
+    if ext { proxy_answer(job, at, proxy_method::SetPrototypeOf, true, true); return; }
+    target_prototype(job, at);
+}
+
+// ---- The built-ins that reach these methods
+// Object.isExtensible, preventExtensions and setPrototypeOf, their Reflect
+// counterparts, the `__proto__` setter and Object.prototype.isPrototypeOf
+// run where a frame can start (conditional_native): a proxy target's
+// method runs as its Proxy frame at the call's operand base, the frame's
+// answer mode giving the built-in's result; isPrototypeOf walks with
+// prototype_walk (source_vm.goose); anything else is the plain built-in.
+fn proxy_conditional(b: Builtin) -> bool {
+    return match b { ObjectIsExtensible, ReflectIsExtensible, ObjectPreventExtensions, ReflectPreventExtensions, ObjectSetPrototypeOf, ReflectSetPrototypeOf, ObjectPrototypeProtoSetter, ObjectPrototypeIsPrototypeOf => true, _ => false };
+}
+fn start_proxy_conditional(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
+    let heap .= job.heap;
+    if b == Builtin.ObjectPrototypeIsPrototypeOf { start_is_prototype_of(job, receiver, arg(args, 0), base); return; }
+    let setter = b == Builtin.ObjectPrototypeProtoSetter;
+    let target = if setter { receiver } else { arg(args, 0) };
+    let value = if setter { arg(args, 0) } else { arg(args, 1) };
+    var r = Value.Undefined;
+    if !is_proxy(heap, target) { r = call_builtin(job, code(b), receiver, args); }
+    if heap.fault != Fault.None { return; }
+    if !is_proxy(heap, target) { job.operands.resize(base); deliver(job, r); return; }
+    var method = proxy_method::IsExtensible; var mode = answer::Boolean;
+    if b == Builtin.ObjectPreventExtensions || b == Builtin.ReflectPreventExtensions {
+        method = proxy_method::PreventExtensions;
+        if b == Builtin.ObjectPreventExtensions { mode = answer::Object; }
+    } else if b == Builtin.ObjectSetPrototypeOf || b == Builtin.ReflectSetPrototypeOf || setter {
+        if !prototype_value(value) {
+            if setter { job.operands.resize(base); deliver(job, Value.Undefined); return; }
+            type_error(job, "Object prototype may only be an Object or null"); return;
+        }
+        method = proxy_method::SetPrototypeOf;
+        mode = if setter { answer::Nothing } else if b == Builtin.ObjectSetPrototypeOf { answer::Object } else { answer::Boolean };
+    }
+    job.operands.resize(base);
+    proxy_push(job, method, target, Value.Undefined, target, value, mode, base);
+}
+
+// ---- Proxy.revocable (28.2.2.1)
+// Proxy.revocable(target, handler): a new proxy and its revoke function
+// (Builtin.ProxyRevoke, a job row whose `value` is the proxy until it
+// revokes it), in a new object's `proxy` and `revoke`.
+fn proxy_revocable(job: Job&, args: const Value[:]) -> Value {
+    let heap .= job.heap;
+    let p = construct_proxy(job, args);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    let revoke = allocate(heap, Node { kind: node_kind::Builtin, function: code(Builtin.ProxyRevoke), value: p });
+    let o = allocate(heap, Node { kind: node_kind::Object });
+    if heap.fault != Fault.None { return Value.Undefined; }
+    let kp = key_named(heap, "proxy"); let kr = key_named(heap, "revoke");
+    if heap.fault != Fault.None { return Value.Undefined; }
+    if !add_own(heap, o.id(), kp, p, attrs_data()) || !add_own(heap, o.id(), kr, revoke, attrs_data()) { if heap.fault == Fault.None { memory(heap); } return Value.Undefined; }
+    return o;
+}
+// A revoke function f called: its proxy is marked revoked (its node's
+// `initialized`, the revoked flag; decision 2: proxy node state, which
+// snapshots, the reset, reclamation and continuations carry as any field),
+// and f forgets the proxy. Target and handler stay: `typeof` of the proxy
+// does not change, and an operation that read its handler before the
+// revocation (a trap getter that revokes) still calls its trap with that
+// handler. A second call does nothing.
+fn proxy_revoke(job: Job&, f: Value) -> Value {
+    let heap .= job.heap;
+    if !f.is_object() || node(heap, f.id()).kind != node_kind::Builtin { heap.fault = Fault.InvalidState; return Value.Undefined; }
+    let p = node(heap, f.id()).value;
+    if !p.is_object() { return Value.Undefined; }
+    if !is_proxy(heap, p) { heap.fault = Fault.InvalidState; return Value.Undefined; }
+    if !writable(job, f.id()) || !writable(job, p.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    node_mut(heap, p.id()).initialized = true;
+    node_mut(heap, f.id()).value = Value.Null;
+    return Value.Undefined;
+}
+// Call plain built-in function f (a Builtin row) with `receiver` and
+// `args` to completion: call_builtin, except that a revoke function reads
+// its own row. Every caller that knows the function object calls through
+// here.
+fn call_plain(job: Job&, f: Value, receiver: Value, args: const Value[:]) -> Value {
+    if builtin_of(job.heap, f.id()) == Builtin.ProxyRevoke { return proxy_revoke(job, f); }
+    return call_builtin(job, node(job.heap, f.id()).function, receiver, args);
+}
+// Whether proxy p is revoked.
+inline fn revoked(heap: const Heap&, p: Value) -> bool { return node(heap, p.id()).initialized; }
+// IsArray(v) (7.2.2): an array, or a proxy whose target is one; a revoked
+// proxy on the way is a TypeError (false, with the fault).
+fn is_array_value(job: Job&, v: Value) -> bool {
+    let heap .= job.heap; var t = v;
+    while is_proxy(heap, t) {
+        if revoked(heap, t) { type_error(job, "revoked proxy"); return false; }
+        t = node(heap, t.id()).value;
+    }
+    return t.is_object() && node(heap, t.id()).kind == node_kind::Array;
 }
 
 // ---- for-in over a proxy (source_vm.goose's for_in_walk)

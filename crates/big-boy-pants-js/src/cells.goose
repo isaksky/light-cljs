@@ -795,7 +795,7 @@ fn swap_call(job: Job&, at: i64, b: Builtin) -> Value, bool {
         if forces(heap, cb, args) { job.frames[at].pc = 1; start_force(job, cb, args[0], job.operands.len); return Value.Undefined, false; }
         if native_builtin(cb) { job.frames[at].pc = 1; native_start(job, cb, Value.Null, args, job.operands.len); return Value.Undefined, false; }
         if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq { unsupported_step(job, b, "a host-effect or mapv built-in function"); return Value.Undefined, false; }
-        return call_builtin(job, node(heap, frame.callee.id()).function, Value.Null, args), true;
+        return call_plain(job, frame.callee, Value.Null, args), true;
     }
     job.frames[at].pc = 1;
     if is_bound(heap, frame.callee) { start_bound(job, frame.callee, Value.Null, args, job.operands.len); return Value.Undefined, false; }
@@ -961,7 +961,7 @@ fn force_call(job: Job&, at: i64, b: Builtin, f: Value) {
     if node(heap, f.id()).kind == node_kind::Builtin {
         let cb = builtin_of(heap, f.id());
         if native_builtin(cb) || effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq || cb == Builtin.Gensym { unsupported_step(job, b, "a host-effect or native-frame built-in as a delay's function"); return; }
-        let v = call_builtin(job, node(heap, f.id()).function, Value.Null, []);
+        let v = call_plain(job, f, Value.Null, []);
         if heap.fault == Fault.None { job.operands.push(v); }
         return;
     }

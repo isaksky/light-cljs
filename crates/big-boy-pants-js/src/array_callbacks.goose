@@ -140,7 +140,7 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
             if heap.fault != Fault.None { return; }
             // ToLength.
             let len: f64 = if !(n > 0) { 0 } else { min(trunc(n), 9007199254740991.0) };
-            if !callable(heap, frame.callee) { type_error(job, "not a function"); return; }
+            if !is_callable(heap, frame.callee) { type_error(job, "not a function"); return; }
             job.frames[at].argument_count = len as i64; job.frames[at].pc = 1;
             if b == Builtin.ArrayPrototypeMap {
                 // ArraySpeciesCreate: an array's (IsArray: a proxy's final
@@ -274,7 +274,8 @@ fn array_call(job: Job&, at: i64, b: Builtin, v: Value) {
         // So do the error built-ins when a step runs JavaScript (light-cljs-870).
         if conditional_native(cb) { start_conditional_native(job, cb, this_arg, args, job.operands.len); return; }
         if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq || native_builtin(cb) { unsupported_step(job, b, "a host-effect or native-frame built-in callback"); return; }
-        let r = call_builtin(job, node(heap, f.id()).function, this_arg, args);
+        // A revoke function reads its own row (light-cljs-891; proxy.goose).
+        let r = call_plain(job, f, this_arg, args);
         if heap.fault == Fault.None { job.operands.push(r); }
         return;
     }

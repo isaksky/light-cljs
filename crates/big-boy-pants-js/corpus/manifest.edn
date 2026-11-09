@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "e91f37fad445ae5c71cc22eb6739728d9a1c06adc81127be812a91769d89e6b0",
+  "fb1f1d758197db7589215abc188b176d788c43fcb5c9f251b997f784b852da2e",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -537,6 +537,10 @@
   "944a0bf80e924e8d082b1695e81a92a9d2774a5335ff7a2da644e262299ed0d2",
   "corpus/serial/proxy-get.js"
   "2e48408b93a6cf77760227211b00db02644d282e686dbd6e8810365afa6563cb",
+  "corpus/serial/proxy-traps-wait.gsp"
+  "4b1dac011dab283b47bc2f8b864925fd531a85ccb42c3ddbe13b61b2316e1280",
+  "corpus/serial/proxy-traps-wait.js"
+  "830f685ab9b6f9b9718de49b7b7775a78e50e6b61a3115b1b0bb7479e0c53d6c",
   "corpus/serial/reclaim-bursts.gsp"
   "77f2ef2df1c796fa869e4048fe7ff47b9cb68ae1bb6edae3263c6822b1cdb046",
   "corpus/serial/reclaim-bursts.js"

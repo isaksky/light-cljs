@@ -268,7 +268,8 @@ fn forward_run(job: Job&, at: i64, constructs: bool) {
     if native_builtin(b) { native_start(job, b, receiver, args, base); return; }
     if b == Builtin.Gensym && job.gensym_next > 0 { let v = gensym(job, args); job.operands.resize(base); job.operands.push(v); return; }
     if effect_builtin(b) { request_effect(job, id, args, frame); job.operands.resize(base); return; }
-    let v = call_builtin(job, id, receiver, args);
+    // A revoke function reads its own row (light-cljs-891; proxy.goose).
+    let v = call_plain(job, f, receiver, args);
     if heap.fault == Fault.None { job.operands.resize(base); deliver(job, v); }
 }
 // CreateListFromArrayLike(list) into the Forward frame at `at`: a dense
@@ -459,7 +460,7 @@ fn accessor_builtin(job: Job&, f: Value, receiver: Value, argc: i64) -> bool, Va
 // a native-frame built-in as its frame and a bound function's target. Its
 // result arrives on the operands of the frame at the top when the call
 // began, as a getter frame's return value does. A callable proxy's [[Call]]
-// fails by name (light-cljs-891).
+// runs as its Proxy frame (light-cljs-891, proxy.goose proxy_call).
 fn call_accessor(job: Job&, f: Value, o: Value, args: const Value[:]) {
     let heap .= job.heap;
     let done, v = accessor_builtin(job, f, o, args.len);
@@ -469,7 +470,7 @@ fn call_accessor(job: Job&, f: Value, o: Value, args: const Value[:]) {
     if kind == node_kind::Closure { push_frame(job, f, o, args, false, job.operands.len); return; }
     // lookup's proxy hit runs the proxy's [[Get]] for the receiver
     // (proxy.goose); any other proxy is a callable proxy's [[Call]].
-    if kind == node_kind::Proxy { if args.len == 0 && is_hit(heap, f) { proxy_get(job, f, o); } else { proxy_invoke(heap, f, proxy_method::Call); } return; }
+    if kind == node_kind::Proxy { if args.len == 0 && is_hit(heap, f) { proxy_get(job, f, o); } else { proxy_call(job, f, o, args, job.operands.len, false); } return; }
     if kind != node_kind::Builtin && kind != node_kind::BoundFunction { heap.fault = Fault.TypeError; return; }
     start_bound(job, f, o, args, job.operands.len);
 }
