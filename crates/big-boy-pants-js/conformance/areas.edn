@@ -195,6 +195,10 @@
   "bbp/objects_integrity_levels" {:area :objects-classes}
   "bbp/objects_integrity_levels_sloppy" {:area :objects-classes :mode :sloppy}
   "bbp/objects_integrity_mapped_arguments" {:area :objects-classes :mode :sloppy :pants-gap "the Pants engine's `arguments` is always an unmapped copy, even in sloppy functions (rust/docs/grammar.md)"}
+  "bbp/objects_prototype_reflection" {:area :objects-classes}
+  "bbp/objects_proto_accessor" {:area :objects-classes}
+  "bbp/objects_proto_accessor_sloppy" {:area :objects-classes :mode :sloppy}
+  "bbp/objects_prototype_quickjs" {:area :objects-classes :pants-gap "the Pants engine has no Object.prototype.isPrototypeOf, refuses Object.create's properties argument and changing a function's prototype (rust/src/vm/prototype.rs set_prototype_of, object_create), has no Number.prototype for Object.getPrototypeOf(1), and throws where Reflect.setPrototypeOf of a built-in object answers false"}
   "bbp/realm_builtin_functions" {:area :core-builtins}
   "bbp/realm_errors" {:area :exceptions}
   "bbp/realm_prototypes" {:area :objects-classes}

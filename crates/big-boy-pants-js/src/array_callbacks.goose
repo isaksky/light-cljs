@@ -5,6 +5,7 @@ import .realm;
 import .function_calls;
 import .runtime_compile;
 import .descriptors;
+import .prototypes;
 
 namespace source;
 
@@ -55,7 +56,7 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b); }
+fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b) || prototype_native(b); }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
@@ -81,6 +82,11 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
     // Object.defineProperty, Object.defineProperties and
     // Reflect.defineProperty (light-cljs-881; descriptors.goose).
     if descriptor_native(b) { start_descriptor(job, b, args, base); return; }
+    // Object.create, whose properties argument runs
+    // Object.defineProperties's Descriptor frame, and the [[GetPrototypeOf]]
+    // readers, whose proxy runs its Proxy frame (light-cljs-883;
+    // prototypes.goose).
+    if prototype_native(b) { start_prototype(job, b, receiver, args, base); return; }
     // %ArrayIteratorPrototype%.next and String.prototype[@@iterator]
     // (light-cljs-844; iterators.goose).
     if iterator_native(b) { start_iterator(job, b, receiver, base); return; }

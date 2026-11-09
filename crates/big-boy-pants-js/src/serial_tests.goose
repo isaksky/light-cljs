@@ -1465,7 +1465,7 @@ thread_fn property_model() {
     let getter = source::closure(heap, 0, []); let setter_fn = source::closure(heap, 0, []);
     let base = source::allocate(heap, source::Node { kind: node_kind::Object }); let a = key(heap, "a"); let g = key(heap, "g");
     assert(source::define_own(heap, base.id(), a, getter, source::attrs_accessor(), 1) && source::define_own(heap, base.id(), a, setter_fn, source::attrs_accessor(), 2));
-    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 5); // after the realm's pending pair and its caller/arguments pair (light-cljs-853)
+    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 6); // after the realm's pending pair, its caller/arguments pair (light-cljs-853) and its __proto__ pair (light-cljs-883)
     let child = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::set_prototype(heap, child.id(), base));
     for target in [base, child] {
         let v, found = source::lookup(heap, target, a); assert(v.is_undefined() && found == getter);

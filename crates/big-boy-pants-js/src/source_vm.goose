@@ -18,6 +18,7 @@ import .runtime_compile;
 import .templates;
 import .descriptors;
 import .integrity;
+import .prototypes;
 
 namespace source;
 
@@ -2017,10 +2018,8 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 // strict code). An own writable data property is written; otherwise the
 // object gets a new data property. Arrays write `length`, an element or a
 // named property, closures their own properties (light-cljs-805); other
-// kinds, a function's keys function_key refuses, and the accessors the
-// pending realm prototypes define (Object.prototype's `__proto__`,
-// Function.prototype's `arguments` and `caller`; light-cljs-788) fail
-// UnsupportedOperand.
+// kinds, a function's keys function_key refuses, and the realm's pending
+// properties (light-cljs-788) fail UnsupportedOperand.
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     match kind {
@@ -2032,12 +2031,14 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
             if key_is(heap, k, "length") { return Value.Undefined, !read_only_length(heap, o) && array_length(heap, object, value); }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Value.Undefined, false; }
-            if i >= 0 && node(heap, o).function == 0 && !node(heap, o).non_extensible { return Value.Undefined, set_element(heap, object, i, value); }
+            if i >= 0 && node(heap, o).function == 0 && !node(heap, o).non_extensible && node(heap, o).proto.is_hole() { return Value.Undefined, set_element(heap, object, i, value); }
             // An array a definition or an integrity level changed
             // (array_flag) or made non-extensible (light-cljs-882): its
             // element record or flags decide as an own property does, a
             // new element is refused, and with a non-writable `length` an
-            // index at or past it is refused (ArrayDefineOwnProperty).
+            // index at or past it is refused (ArrayDefineOwnProperty). An
+            // array with a prototype other than the realm's
+            // (light-cljs-883) asks its chain about a missing element first.
             if i >= 0 {
                 if !node(heap, o).initialized {
                     let v, found = own_element(heap, object, i);
@@ -2051,6 +2052,10 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
                         if own.attrs & attr_writable() == 0 { return Value.Undefined, false; }
                         write_own(heap, o, own.index, value); return Value.Undefined, true;
                     }
+                }
+                if !node(heap, o).proto.is_hole() {
+                    let decided, f, ok = inherited_assign(heap, o, k);
+                    if decided { return f, ok; }
                 }
                 if node(heap, o).non_extensible { return Value.Undefined, false; }
                 if read_only_length(heap, o) && i >= node(heap, o).length { return Value.Undefined, false; }
@@ -2082,24 +2087,32 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
         if own.attrs & attr_writable() == 0 { return Value.Undefined, false; }
         write_own(heap, o, own.index, value); return Value.Undefined, true;
     }
-    // A pending property on the chain (Object.prototype's `__proto__`)
-    // fails by name.
-    var proto = prototype(heap, o);
-    while proto.is_object() {
-        if !charge(heap) { return Value.Undefined, false; }
-        let p = own_entry(heap, proto, k);
-        if heap.fault != Fault.None { proxy_relabel(heap, proto, proxy_method::Set); return Value.Undefined, false; }
-        if p.found {
-            if is_pending(p.value) { pending_fault(heap, k); return Value.Undefined, false; }
-            if is_accessor(p.value) { let f = pair(heap, p.value).set; return f, f.is_object(); }
-            if p.attrs & attr_writable() == 0 { return Value.Undefined, false; }
-            break;
-        }
-        proto = prototype(heap, proto.id());
-    }
+    let decided, f, ok = inherited_assign(heap, o, k);
+    if decided { return f, ok; }
     // A non-extensible object (light-cljs-882) refuses a new property.
     if node(heap, o).non_extensible { return Value.Undefined, false; }
     return Value.Undefined, if as_element(heap, o, i) { put_element(heap, o, i, value) } else { add_own(heap, o, k, value, attrs_data()) };
+}
+// assign's walk of node o's prototype chain for key k, which o lacks: true
+// and assign's answer when an inherited property decides (its setter, or a
+// refusal: a non-writable data property or an accessor without a setter) or
+// the walk faults (a pending property fails by name); false when the
+// receiver is to get a new own data property.
+inline fn inherited_assign(heap: Heap&, o: i64, k: Value) -> bool, Value, bool {
+    var proto = prototype(heap, o);
+    while proto.is_object() {
+        if !charge(heap) { return true, Value.Undefined, false; }
+        let p = own_entry(heap, proto, k);
+        if heap.fault != Fault.None { proxy_relabel(heap, proto, proxy_method::Set); return true, Value.Undefined, false; }
+        if p.found {
+            if is_pending(p.value) { pending_fault(heap, k); return true, Value.Undefined, false; }
+            if is_accessor(p.value) { let f = pair(heap, p.value).set; return true, f, f.is_object(); }
+            if p.attrs & attr_writable() == 0 { return true, Value.Undefined, false; }
+            return false, Value.Undefined, true;
+        }
+        proto = prototype(heap, proto.id());
+    }
+    return false, Value.Undefined, true;
 }
 // [[DefineOwnProperty]] by object kind: ordinary objects (define_own), an
 // array's elements and named properties, its `length` (ArraySetLength,
@@ -2317,17 +2330,65 @@ fn own_keys(heap: Heap&, object: Value, out: Value[>..]&) -> bool {
     for e in keys { out.push(e.key); }
     return true;
 }
-// [[SetPrototypeOf]] of an ordinary object (OrdinarySetPrototypeOf) to Null
-// or an object: false, changing nothing, when the object is on that
-// prototype's chain (a cycle) or is not extensible and the prototype is
-// another (light-cljs-883 calls it from Object.setPrototypeOf).
+// [[SetPrototypeOf]] (light-cljs-883; ECMAScript 10.1.2.1
+// OrdinarySetPrototypeOf, 10.4.7.2 SetImmutablePrototype) of `object`, any
+// JavaScript object kind, to Null or an object: true when the object has
+// that prototype afterwards; false without a fault when it refuses another
+// (prototype_refusal says why); false with a fault otherwise. The same
+// prototype again is accepted with no write. %Object.prototype% is an
+// immutable-prototype exotic object; a non-extensible object (light-cljs-882)
+// keeps its prototype; a prototype whose chain reaches the object is
+// refused, the walk stopping at a proxy (whose [[GetPrototypeOf]] could run
+// JavaScript). A row the job did not allocate faults NativeBoundary before
+// anything changes (decision 3). A proxy fails by name (light-cljs-891), as
+// does a form, which has no [[Prototype]] here while the V8 build's runtime
+// makes it an ordinary object. The kind does not change: an array stays an
+// array, a function a function. A prototype equal to the kind's realm
+// prototype is stored as Empty (kind_prototype), so an object set back to
+// its default is the untouched object the dense-array paths expect.
+fn set_prototype(job: Job&, object: Value, proto: Value) -> bool {
+    let heap .= job.heap; let o: i64 = object.id(); let kind = node(heap, o).kind;
+    if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::SetPrototypeOf); return false; }
+    if !integrity_kind(kind) { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } return false; }
+    if same_bits(prototype(heap, o), proto) { return true; }
+    if prototype_refusal(heap, o, proto) != refusal::None || heap.fault != Fault.None { return false; }
+    // A realm row never changes its prototype, even in a job that may write
+    // realm rows (the conformance and execute runners): dense relies on the
+    // realm's prototype chains (decision 3).
+    if !writable(job, o) || heap.global.is_object() && realm_row(o) { heap.fault = Fault.NativeBoundary; return false; }
+    store_prototype(heap, o, proto); return true;
+}
+// OrdinarySetPrototypeOf of node o for Goose callers (tests, which own
+// every row): the same prototype, a refusal and the Empty encoding as
+// above, without the kind and ownership checks.
 fn set_prototype(heap: Heap&, o: i64, proto: Value) -> bool {
-    // A non-extensible object (light-cljs-882) keeps its prototype; the same
-    // one again changes nothing.
-    if node(heap, o).non_extensible { return same_bits(prototype(heap, o), proto); }
+    if same_bits(prototype(heap, o), proto) { return true; }
+    if prototype_refusal(heap, o, proto) != refusal::None || heap.fault != Fault.None { return false; }
+    store_prototype(heap, o, proto); return true;
+}
+inline fn store_prototype(heap: Heap&, o: i64, proto: Value) {
+    node_mut(heap, o).proto = if heap.global.is_object() && same_bits(kind_prototype(heap, o), proto) { Value.Empty } else { proto };
+}
+// Why [[SetPrototypeOf]] of node o to another prototype is refused, or
+// refusal::None (also on a fault: the walk charges a work unit a link).
+let refusal::None: i64 = 0;
+let refusal::Immutable: i64 = 1;
+let refusal::NotExtensible: i64 = 2;
+let refusal::Circular: i64 = 3;
+fn prototype_refusal(heap: Heap&, o: i64, proto: Value) -> i64 {
+    if heap.global.is_object() && o == object_prototype_row() { return refusal::Immutable; }
+    if node(heap, o).non_extensible { return refusal::NotExtensible; }
     var p = proto;
-    while p.is_object() { if !charge(heap) { return false; } if p.id() == o { return false; } p = prototype(heap, p.id()); }
-    node_mut(heap, o).proto = proto; return true;
+    while p.is_object() { if !charge(heap) { return refusal::None; } if p.id() == o { return refusal::Circular; } p = prototype(heap, p.id()); }
+    return refusal::None;
+}
+// The TypeError of a refused [[SetPrototypeOf]] of node o (the Pants
+// engine's wording; QuickJS words the cycle "circular prototype chain").
+fn prototype_type_error(job: Job&, o: i64, proto: Value) -> Value {
+    let r = prototype_refusal(job.heap, o, proto);
+    if r == refusal::Immutable { return type_error(job, "cannot set the prototype of an immutable prototype object"); }
+    if r == refusal::NotExtensible { return type_error(job, "cannot set the prototype: the object is not extensible"); }
+    return type_error(job, "cannot set the prototype: the prototype chain would be circular");
 }
 // Own data property by kind for Goose callers (compiler services, form
 // operations): presence separately, since an own value can be undefined. An
@@ -5643,10 +5704,15 @@ fn install_foreign(job: Job&, start: i64) {
     let end = job.heap.nodes.len; if end > start { job.foreign.push(start as u32); job.foreign.push(end as u32); }
 }
 // An unprotected array other than the compiler roots object: element opcodes
-// read and write its run directly, without building key strings.
+// read and write its run directly, without building key strings. Its
+// prototype is the realm's (Empty), whose chain the realm builds without
+// elements and keeps (a compiler job cannot write realm rows, and no job
+// changes a realm row's prototype); another prototype may hold elements a
+// hole would inherit (light-cljs-883), so such an array takes the general
+// path.
 fn dense(job: Job&, object: Value) -> bool {
     let heap .= job.heap;
-    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != node_kind::Array || node(heap, object.id()).non_extensible || node(heap, object.id()).function != 0 { return false; }
+    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != node_kind::Array || node(heap, object.id()).non_extensible || node(heap, object.id()).function != 0 || !node(heap, object.id()).proto.is_hole() { return false; }
     return !(job.root_receiver.is_object() && object == job.root_receiver);
 }
 // An unprotected ordinary object other than the compiler roots object with
@@ -5669,6 +5735,9 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
     let result = if chain { object } else { value };
     if object.is_object() && !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; job.operands.push(result); return; }
     prepare_function(job, object, k, true);
+    // OrdinarySet reads an inherited `prototype` too: a lazy one on the
+    // chain (an object made by Object.create(F), light-cljs-883) is made first.
+    prepare_function(job, object, k, false);
     let setter, ok = write(heap, object, k, value);
     if heap.fault == Fault.None && setter.is_object() { call_setter(job, setter, object, value, result); return; }
     if heap.fault == Fault.None { if ok { record(job, object, k, value); } else if strict { refused_write(job, object, k); } }
@@ -5717,15 +5786,14 @@ fn define_field(job: Job&, k: Value, value: Value, half: u8) {
     if !ok { heap.fault = Fault.TypeError; } else if half == 0 { record(job, object, k, value); }
 }
 // SetProto: obj v → obj. An object or null v becomes the literal's
-// prototype ([[SetPrototypeOf]]; a cycle is a TypeError); any other v is
-// ignored.
+// prototype ([[SetPrototypeOf]], set_prototype: the literal is the job's
+// new extensible object, so nothing refuses it); any other v is ignored.
 fn set_proto(job: Job&) {
     let heap .= job.heap;
     let v = job.operands.pop(); let object = job.operands[job.operands.len - 1];
     if !valid(heap, object) || !valid(heap, v) || !v.is_object() && !v.is_null() { return; }
     if !object.is_object() || node(heap, object.id()).kind != node_kind::Object { heap.fault = Fault.UnsupportedOperand; return; }
-    if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
-    if !set_prototype(heap, object.id(), v) && heap.fault == Fault.None { heap.fault = Fault.TypeError; }
+    if !set_prototype(job, object, v) && heap.fault == Fault.None { prototype_type_error(job, object.id(), v); }
 }
 // Delete and DeleteStrict: o k → b, [[Delete]] of the own
 // property (delete_property). Undefined or null o is a TypeError; a string's

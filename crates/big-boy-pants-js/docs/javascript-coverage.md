@@ -527,6 +527,34 @@ them ordinary extensible objects. Objects that never stop being
 extensible pay one byte test where a property is added; the dense-array
 fast paths test the byte where they tested the template marker.
 
+*As landed by light-cljs-883 (prototypes):* the prototype stays the
+object row's `proto` field, Empty meaning the kind's realm prototype, and
+[[SetPrototypeOf]] (`set_prototype` in `src/source_vm.goose`) writes it for
+every JavaScript object kind, keeping the kind (an array stays an array).
+It accepts the prototype an object has with no write, refuses a cycle (the
+walk stops at a proxy), a non-extensible object and a new prototype for
+%Object.prototype% (an immutable-prototype exotic object), faults
+NativeBoundary for a row the job did not allocate, and stores a prototype
+equal to the kind's realm one as Empty. Shapes hold no prototype, so a
+change invalidates nothing. The one shortcut that assumed the realm
+prototype is the dense-array path, which reads a hole as undefined because
+no realm prototype holds an element in a job: it now also requires Empty,
+so an array with another prototype takes the general path, where a hole
+inherits and an inherited read-only element or setter decides a write.
+Objects whose prototype never changes pay one more field test there.
+`src/prototypes.goose` adds Object.create (a native frame when it has a
+properties argument, which runs Object.defineProperties's Descriptor frame
+on the new object), Object.setPrototypeOf, Object.prototype.isPrototypeOf
+and Reflect.getPrototypeOf and setPrototypeOf as built-ins, and
+Object.prototype's `__proto__` becomes a realm accessor pair (accessor row
+2, checked by `realm_valid`) whose getter and setter are built-ins; the
+literal `__proto__: v` stays SetProto. Object.getPrototypeOf,
+Reflect.getPrototypeOf and the `__proto__` getter run a proxy's
+[[GetPrototypeOf]] as light-cljs-845's Proxy frame; a proxy's
+[[SetPrototypeOf]] and a proxy on isPrototypeOf's walk fail by name
+(light-cljs-891), as do forms. A realm row never changes its prototype,
+even in a runner whose jobs may write realm rows.
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

@@ -537,6 +537,84 @@ fn integrity_roundtrip() {
     heap_program::join(thread_spawn(integrity_restored, copy(saved.image)));
     for mode in 4 { heap_program::join(thread_spawn(integrity_malformed, copy(saved.image), mode)); }
     heap_program::join(thread_spawn(integrity_boundaries));
+    heap_program::join(thread_spawn(prototype_boundaries));
+}
+// [[SetPrototypeOf]]'s contracts (light-cljs-883): a row the job did not
+// allocate faults NativeBoundary unchanged unless it has the prototype
+// asked already; %Object.prototype% refuses another prototype (a TypeError,
+// not a boundary); a prototype set back to the kind's realm one is stored
+// as Empty; a proxy and a form fail UnsupportedOperand by name; and an
+// image whose `__proto__` pair does not hold the realm's getter and setter
+// is refused.
+thread_fn prototype_boundaries() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, heap, bindings);
+    var job = source::Job { heap: heap };
+    let o = source::allocate(heap, source::Node { kind: node_kind::Object }); let p = source::allocate(heap, source::Node { kind: node_kind::Object });
+    let before = source::plain_rows(heap.nodes[o.id()..(o.id() + 1)]);
+    let setter = source::object(source::realm_function_row(source::Builtin.ObjectPrototypeProtoSetter));
+    for limit in 3 {
+        job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear();
+        if limit == 0 { job.protected_nodes = heap.nodes.len; } else if limit == 1 { job.owned_nodes = heap.nodes.len; } else { job.foreign.push(o.id()); job.foreign.push(o.id() + 1); }
+        heap.fault = source::Fault.None;
+        source::prototype_builtin(job, source::Builtin.ObjectSetPrototypeOf, source::Value.Undefined, [o, p]);
+        assert(heap.fault == source::Fault.NativeBoundary && source::plain_rows(heap.nodes[o.id()..(o.id() + 1)]) == before);
+        heap.fault = source::Fault.None;
+        source::prototype_builtin(job, source::Builtin.ObjectPrototypeProtoSetter, o, [p]);
+        assert(heap.fault == source::Fault.NativeBoundary && source::plain_rows(heap.nodes[o.id()..(o.id() + 1)]) == before);
+        // The prototype it has already: nothing would change, so nothing faults.
+        heap.fault = source::Fault.None;
+        let proto = source::object(source::object_prototype_row());
+        assert(source::prototype_builtin(job, source::Builtin.ObjectSetPrototypeOf, source::Value.Undefined, [o, proto]) == o && source::prototype_builtin(job, source::Builtin.ReflectSetPrototypeOf, source::Value.Undefined, [o, proto]) == source::boolean(true) && heap.fault == source::Fault.None);
+    }
+    job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear();
+    // A realm row keeps its prototype even where the job may write it.
+    let ap = source::array_prototype_row(); let realm_before = source::plain_rows(heap.nodes[ap..(ap + 1)]);
+    heap.fault = source::Fault.None;
+    source::prototype_builtin(job, source::Builtin.ReflectSetPrototypeOf, source::Value.Undefined, [source::object(ap), p]);
+    assert(heap.fault == source::Fault.NativeBoundary && source::plain_rows(heap.nodes[ap..(ap + 1)]) == realm_before);
+    // %Object.prototype% is immutable even where its row may be written.
+    heap.fault = source::Fault.None;
+    assert(source::prototype_builtin(job, source::Builtin.ReflectSetPrototypeOf, source::Value.Undefined, [source::object(source::object_prototype_row()), p]) == source::boolean(false) && heap.fault == source::Fault.None);
+    source::prototype_builtin(job, source::Builtin.ObjectSetPrototypeOf, source::Value.Undefined, [source::object(source::object_prototype_row()), p]);
+    assert(heap.fault == source::Fault.TypeError && source::node(heap, source::object_prototype_row()).proto.is_null());
+    // Another prototype is a link; the realm's again is Empty; a cycle is refused.
+    heap.fault = source::Fault.None;
+    assert(source::prototype_builtin(job, source::Builtin.ReflectSetPrototypeOf, source::Value.Undefined, [o, p]) == source::boolean(true) && source::node(heap, o.id()).proto == p);
+    assert(source::prototype_builtin(job, source::Builtin.ReflectSetPrototypeOf, source::Value.Undefined, [p, o]) == source::boolean(false) && heap.fault == source::Fault.None);
+    assert(source::prototype_builtin(job, source::Builtin.ObjectSetPrototypeOf, source::Value.Undefined, [o, source::object(source::object_prototype_row())]) == o && source::node(heap, o.id()).proto.is_hole());
+    let a = source::allocate(heap, source::Node { kind: node_kind::Array });
+    assert(source::prototype_builtin(job, source::Builtin.ObjectSetPrototypeOf, source::Value.Undefined, [a, p]) == a && source::node(heap, a.id()).kind == node_kind::Array && !source::dense(job, a));
+    assert(source::prototype_builtin(job, source::Builtin.ObjectSetPrototypeOf, source::Value.Undefined, [a, source::object(source::array_prototype_row())]) == a && source::node(heap, a.id()).proto.is_hole() && source::dense(job, a));
+    // A proxy and a form fail by name, uncatchable.
+    let x = source::allocate(heap, source::Node { kind: node_kind::Proxy, value: o, namespace_value: p, proto: source::Value.Null });
+    heap.fault = source::Fault.None; heap.proxy_method = -1;
+    source::prototype_builtin(job, source::Builtin.ObjectSetPrototypeOf, source::Value.Undefined, [x, p]);
+    assert(heap.fault == source::Fault.UnsupportedOperand && !source::catchable(heap.fault) && heap.proxy_method == proxy_method::SetPrototypeOf);
+    heap.fault = source::Fault.None; heap.proxy_method = -1;
+    source::prototype_builtin(job, source::Builtin.ReflectGetPrototypeOf, source::Value.Undefined, [x]);
+    assert(heap.fault == source::Fault.UnsupportedOperand && heap.proxy_method == proxy_method::GetPrototypeOf);
+    heap.fault = source::Fault.None; let form = source::allocate(heap, source::Node { kind: node_kind::Vector });
+    for b in [source::Builtin.ObjectSetPrototypeOf, source::Builtin.ReflectGetPrototypeOf] {
+        heap.fault = source::Fault.None; job.detail.clear();
+        source::prototype_builtin(job, b, source::Value.Undefined, [form, p]);
+        assert(heap.fault == source::Fault.UnsupportedOperand && !source::catchable(heap.fault) && job.detail.len > 0 && source::node(heap, form.id()).proto.is_hole());
+    }
+    // isPrototypeOf fails by name on a form argument, on a chain that
+    // reaches a form, and on a proxy on the chain, even for a primitive this.
+    heap.fault = source::Fault.None; let heir = source::allocate(heap, source::Node { kind: node_kind::Object, proto: form });
+    let viaproxy = source::allocate(heap, source::Node { kind: node_kind::Object, proto: x });
+    for c in [[source::object(source::object_prototype_row()), form], [source::object(source::object_prototype_row()), heir], [source::number(1), viaproxy]] {
+        heap.fault = source::Fault.None; job.detail.clear(); heap.proxy_method = -1;
+        source::prototype_builtin(job, source::Builtin.ObjectPrototypeIsPrototypeOf, c[0], [c[1]]);
+        assert(heap.fault == source::Fault.UnsupportedOperand && !source::catchable(heap.fault) && (job.detail.len > 0 || heap.proxy_method == proxy_method::GetPrototypeOf));
+    }
+    // The realm's `__proto__` pair.
+    heap.fault = source::Fault.None;
+    assert(source::realm_valid(heap.nodes, heap.accessors, heap.global, heap.call_method) && heap.accessors[source::proto_pair()].set == setter);
+    heap.accessors[source::proto_pair()].set = source::Value.Undefined;
+    assert(!source::realm_valid(heap.nodes, heap.accessors, heap.global, heap.call_method));
+    print("prototype boundaries: protected, owned and foreign rows fault NativeBoundary unchanged unless the prototype is the same; Object.prototype immutable; Empty kept; proxies and forms fail by name; the __proto__ pair validated passed");
 }
 // The fault contracts (decision 3, light-cljs-891, forms): a row the job
 // did not allocate (below protected_nodes or owned_nodes, or in a foreign

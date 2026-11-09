@@ -112,11 +112,17 @@ enum Builtin {
     ObjectPrototypeDefineGetter, ObjectPrototypeDefineSetter, ObjectPrototypeLookupGetter, ObjectPrototypeLookupSetter,
     // [[Extensible]] and integrity levels (light-cljs-882; integrity.goose).
     ObjectPreventExtensions, ObjectIsExtensible, ObjectSeal, ObjectIsSealed, ObjectFreeze, ObjectIsFrozen, ReflectIsExtensible, ReflectPreventExtensions,
+    // Prototypes (light-cljs-883; prototypes.goose): Object.create (a
+    // native frame with a properties argument), Object.setPrototypeOf,
+    // Object.prototype.isPrototypeOf, the getter and setter of
+    // Object.prototype's `__proto__`, and Reflect.getPrototypeOf and
+    // setPrototypeOf.
+    ObjectCreate, ObjectSetPrototypeOf, ObjectPrototypeIsPrototypeOf, ObjectPrototypeProtoGetter, ObjectPrototypeProtoSetter, ReflectGetPrototypeOf, ReflectSetPrototypeOf,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[125] = [
+let BUILTINS: BuiltinInfo[132] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -189,6 +195,10 @@ let BUILTINS: BuiltinInfo[125] = [
     BuiltinInfo { which: Builtin.ObjectSeal, name: "seal", length: 1 }, BuiltinInfo { which: Builtin.ObjectIsSealed, name: "isSealed", length: 1 },
     BuiltinInfo { which: Builtin.ObjectFreeze, name: "freeze", length: 1 }, BuiltinInfo { which: Builtin.ObjectIsFrozen, name: "isFrozen", length: 1 },
     BuiltinInfo { which: Builtin.ReflectIsExtensible, name: "isExtensible", length: 1 }, BuiltinInfo { which: Builtin.ReflectPreventExtensions, name: "preventExtensions", length: 1 },
+    BuiltinInfo { which: Builtin.ObjectCreate, name: "create", length: 2 }, BuiltinInfo { which: Builtin.ObjectSetPrototypeOf, name: "setPrototypeOf", length: 2 },
+    BuiltinInfo { which: Builtin.ObjectPrototypeIsPrototypeOf, name: "isPrototypeOf", length: 1 },
+    BuiltinInfo { which: Builtin.ObjectPrototypeProtoGetter, name: "get __proto__" }, BuiltinInfo { which: Builtin.ObjectPrototypeProtoSetter, name: "set __proto__", length: 1 },
+    BuiltinInfo { which: Builtin.ReflectGetPrototypeOf, name: "getPrototypeOf", length: 1 }, BuiltinInfo { which: Builtin.ReflectSetPrototypeOf, name: "setPrototypeOf", length: 2 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -262,7 +272,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[58] = [
+let REALM_FUNCTIONS: Method[65] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -312,6 +322,12 @@ let REALM_FUNCTIONS: Method[58] = [
     // [[Extensible]] and integrity levels (light-cljs-882; integrity.goose).
     Method { which: Builtin.ObjectPreventExtensions, holder: 12 }, Method { which: Builtin.ObjectIsExtensible, holder: 12 }, Method { which: Builtin.ObjectSeal, holder: 12 }, Method { which: Builtin.ObjectIsSealed, holder: 12 },
     Method { which: Builtin.ObjectFreeze, holder: 12 }, Method { which: Builtin.ObjectIsFrozen, holder: 12 }, Method { which: Builtin.ReflectIsExtensible, holder: 34 }, Method { which: Builtin.ReflectPreventExtensions, holder: 34 },
+    // Prototypes (light-cljs-883; prototypes.goose). The `__proto__` getter
+    // and setter are no properties: Object.prototype's `__proto__` accessor
+    // (proto_pair) holds them.
+    Method { which: Builtin.ObjectCreate, holder: 12 }, Method { which: Builtin.ObjectSetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectPrototypeIsPrototypeOf, holder: 1 },
+    Method { which: Builtin.ObjectPrototypeProtoGetter, holder: 1 }, Method { which: Builtin.ObjectPrototypeProtoSetter, holder: 1 },
+    Method { which: Builtin.ReflectGetPrototypeOf, holder: 34 }, Method { which: Builtin.ReflectSetPrototypeOf, holder: 34 },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -354,9 +370,9 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[187] = [
+let PENDING: PendingName[181] = [
     // Object.prototype
-    PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
+    PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
     PendingName { holder: 3, key: "fill" }, PendingName { holder: 3, key: "filter" }, PendingName { holder: 3, key: "find" }, PendingName { holder: 3, key: "findIndex" }, PendingName { holder: 3, key: "findLast" },
@@ -367,10 +383,10 @@ let PENDING: PendingName[187] = [
     PendingName { holder: 3, key: "toLocaleString" }, PendingName { holder: 3, key: "toReversed" }, PendingName { holder: 3, key: "toSorted" }, PendingName { holder: 3, key: "toSpliced" },
     PendingName { holder: 3, key: "unshift" }, PendingName { holder: 3, key: "with" },
     // Object
-    PendingName { holder: 12, key: "assign" }, PendingName { holder: 12, key: "create" },
+    PendingName { holder: 12, key: "assign" },
     PendingName { holder: 12, key: "entries" }, PendingName { holder: 12, key: "fromEntries" },
     PendingName { holder: 12, key: "getOwnPropertyDescriptors" }, PendingName { holder: 12, key: "getOwnPropertyNames" }, PendingName { holder: 12, key: "getOwnPropertySymbols" }, PendingName { holder: 12, key: "groupBy" },
-    PendingName { holder: 12, key: "keys" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
+    PendingName { holder: 12, key: "keys" }, PendingName { holder: 12, key: "values" },
     // Symbol (symbol_row(); its well-known symbols are real)
     PendingName { holder: 51, key: "prototype" }, PendingName { holder: 51, key: "for" }, PendingName { holder: 51, key: "keyFor" },
     // %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction%
@@ -378,11 +394,10 @@ let PENDING: PendingName[187] = [
     PendingName { holder: 38, key: "constructor" }, PendingName { holder: 39, key: "constructor" }, PendingName { holder: 40, key: "constructor" },
     // Reflect (reflect_row()): apply and construct are light-cljs-851's,
     // defineProperty, deleteProperty and getOwnPropertyDescriptor light-cljs-881's,
-    // isExtensible and preventExtensions light-cljs-882's; the other six
-    // belong to the objects and classes area (light-cljs-766).
-    PendingName { holder: 34, key: "get" },
-    PendingName { holder: 34, key: "getPrototypeOf" }, PendingName { holder: 34, key: "has" }, PendingName { holder: 34, key: "ownKeys" },
-    PendingName { holder: 34, key: "set" }, PendingName { holder: 34, key: "setPrototypeOf" },
+    // isExtensible and preventExtensions light-cljs-882's, getPrototypeOf
+    // and setPrototypeOf light-cljs-883's; the other four belong to the
+    // objects and classes area (light-cljs-766).
+    PendingName { holder: 34, key: "get" }, PendingName { holder: 34, key: "has" }, PendingName { holder: 34, key: "ownKeys" }, PendingName { holder: 34, key: "set" },
     // %IteratorPrototype% (its helpers), %GeneratorPrototype% and
     // %Promise.prototype% (light-cljs-790; the Promise area makes the last's).
     PendingName { holder: 23, key: "constructor" }, PendingName { holder: 23, key: "drop" }, PendingName { holder: 23, key: "every" }, PendingName { holder: 23, key: "filter" },
@@ -504,6 +519,9 @@ fn effect_builtin(b: Builtin) -> bool { return b == Builtin.Gensym || b == Built
 // The pending property's slot: an accessor naming the realm's pending pair.
 inline fn pending() -> Value { return Value.Accessor { a: 0 }; }
 inline fn is_pending(v: Value) -> bool { return match v { Accessor x => x.a == 0, _ => false }; }
+// Object.prototype's `__proto__` accessor (light-cljs-883): accessor row 2,
+// after the pending pair and %ThrowTypeError%'s.
+inline fn proto_pair() -> i64 { return 2; }
 // A read, write or definition reached pending property k: UnsupportedOperand,
 // naming k for the report (Heap.pending, fail).
 fn pending_fault(heap: Heap&, k: Value) { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; heap.pending = k; } }
@@ -523,6 +541,10 @@ fn pending_detail(job: Job&) {
 fn prototype(heap: const Heap&, o: i64) -> Value {
     let p = node(heap, o).proto;
     if !p.is_hole() { return p; }
+    return kind_prototype(heap, o);
+}
+// What Empty means as node o's [[Prototype]] (prototype).
+fn kind_prototype(heap: const Heap&, o: i64) -> Value {
     if !heap.global.is_object() { return Value.Null; }
     return match node(heap, o).kind {
         node_kind::Object, node_kind::Arguments => object(object_prototype_row()), node_kind::Array => object(array_prototype_row()), node_kind::Builtin, node_kind::BoundFunction => object(function_prototype_row()), node_kind::Error => object(error_prototype_row(0)),
@@ -557,7 +579,7 @@ fn error_prototype(heap: const Heap&, o: i64) -> bool {
 // row 0 and Function.prototype.call as the call method. Their properties are
 // validated with every other row's.
 fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, call: Value) -> bool {
-    if nodes.len < realm_nodes() || accessors.len < 1 || !accessors[0].get.is_undefined() || !accessors[0].set.is_undefined() || !global.is_object() || global.id() != global_row() { return false; }
+    if nodes.len < realm_nodes() || accessors.len <= proto_pair() || !accessors[0].get.is_undefined() || !accessors[0].set.is_undefined() || !global.is_object() || global.id() != global_row() { return false; }
     let kinds: i64[] = [node_kind::Object, node_kind::Object, node_kind::Builtin, node_kind::Array];
     for k, o in kinds { if nodes[o].kind != k { return false; } }
     if !nodes[object_prototype_row()].proto.is_null() || nodes[function_prototype_row()].function != code(Builtin.FunctionPrototype) { return false; }
@@ -589,6 +611,9 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     // %GeneratorFunction.prototype% and its siblings (light-cljs-857).
     for k in FUNCTION_KIND_TAGS.len { let n .= nodes[function_kind_prototype_row(k)]; if n.kind != node_kind::Object || !n.proto.is_object() || n.proto.id() != function_prototype_row() { return false; } }
     for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != node_kind::Builtin || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
+    // Object.prototype's `__proto__` pair (light-cljs-883) holds its getter and setter.
+    let pp .= accessors[proto_pair()]; let getter = realm_function_row(Builtin.ObjectPrototypeProtoGetter); let setter = realm_function_row(Builtin.ObjectPrototypeProtoSetter);
+    if !pp.get.is_object() || pp.get.id() != getter || !pp.set.is_object() || pp.set.id() != setter { return false; }
     // ExceptionInfo.prototype (light-cljs-872) and the ExceptionInfo function (light-cljs-875).
     let e .= nodes[exception_info_prototype_row()];
     if e.kind != node_kind::Object || !e.proto.is_object() || e.proto.id() != error_prototype_row(0) { return false; }
@@ -665,6 +690,18 @@ fn build_realm(heap: Heap&) -> bool {
             thrower_pair = Value.Accessor { a: a as u32 };
             let names: Name[2] = [Name { text: "caller" }, Name { text: "arguments" }];
             for n in names { let k = key_named(heap, n.text); if heap.fault != Fault.None || !add_own(heap, m.holder, k, Value.Accessor { a: a as u32 }, attr_configurable()) { return false; } }
+            continue;
+        }
+        // Object.prototype.__proto__ (light-cljs-883; ECMAScript 20.1.3.10):
+        // one accessor pair, the getter's row and the setter's next to it,
+        // configurable, not enumerable.
+        if m.which == Builtin.ObjectPrototypeProtoSetter { continue; }
+        if m.which == Builtin.ObjectPrototypeProtoGetter {
+            let a = add_accessor(heap, Pair { get: object(fixed_rows() + j), set: object(fixed_rows() + j + 1) });
+            if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
+            if a != proto_pair() { heap.fault = Fault.InvalidState; return false; }
+            let k = key_named(heap, "__proto__");
+            if heap.fault != Fault.None || !add_own(heap, m.holder, k, Value.Accessor { a: a as u32 }, attr_configurable()) { return false; }
             continue;
         }
         if !realm_value(heap, m.holder, BUILTINS[code(m.which)].name, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
@@ -1519,18 +1556,10 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
             return construct_error(job, b, error_type(b), args);
         },
-        ObjectGetPrototypeOf => {
-            let v = arg(args, 0);
-            // QuickJS's js_object_getPrototypeOf words this "not an object".
-            if v.tag() <= value_tag::Null { return type_error(job, "not an object"); }
-            // ToObject's wrapper inherits its realm prototype; none is made.
-            if !v.is_object() { let p = primitive_prototype(v); return if p.is_object() { p } else { unsupported_step(job, b, "Symbol and BigInt prototypes") }; }
-            let kind = node(heap, v.id()).kind;
-            // A proxy's [[GetPrototypeOf]] outside for-in fails by name (proxy.goose).
-            if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::GetPrototypeOf); return Value.Undefined; }
-            if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::BoundFunction && kind != node_kind::Error && kind != node_kind::Arguments && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator { return unsupported_step(job, b, "a runtime form"); }
-            return prototype(heap, v.id());
-        },
+        // Prototypes (light-cljs-883; prototypes.goose). Object.create runs
+        // as a native frame (native_start).
+        ObjectGetPrototypeOf, ObjectSetPrototypeOf, ObjectPrototypeIsPrototypeOf, ObjectPrototypeProtoGetter, ObjectPrototypeProtoSetter, ReflectGetPrototypeOf, ReflectSetPrototypeOf => { return prototype_builtin(job, b, receiver, args); },
+        ObjectCreate => { return unsupported_step(job, b, "called outside a native frame"); },
         ObjectIs => { return boolean(same_value(heap, arg(args, 0), arg(args, 1))); },
         ObjectHasOwn, ObjectPrototypeHasOwnProperty => {
             let own = b == Builtin.ObjectHasOwn;
