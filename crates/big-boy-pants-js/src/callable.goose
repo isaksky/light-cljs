@@ -148,6 +148,9 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
         if i == edges { colors[id] = 2; stack.pop(); continue; }
         stack[stack.len - 1].next += 1;
         let v = edge(s, n, i, c); if c.error != snapshot::Error.None { return false; }
+        // A symbol a job made never leaves it (light-cljs-885; cells.goose
+        // publish_cells names the failure first).
+        if source::symbol_node(v) >= 0 { return fail(c); }
         if !v.is_object() { continue; }
         // A frozen base graph must not capture any producer-private object.
         if id < base && v.id() >= base { return fail(c, snapshot::Error.Link); }

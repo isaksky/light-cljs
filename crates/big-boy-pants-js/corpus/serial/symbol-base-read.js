@@ -1,7 +1,7 @@
 function symbolBaseRead() {
-  // A property read on a Symbol base fails by name (light-cljs-833):
-  // %Symbol.prototype% is the objects area's (light-cljs-766). The fault is
-  // not an exception, so the catch below never runs.
-  const s = Symbol.iterator;
-  try { return s["x"]; } catch (e) { return 1; }
+  // Property reads and method calls on a Symbol base go through
+  // %Symbol.prototype% (light-cljs-885), as on numbers and strings
+  // (light-cljs-833); a missing property reads undefined.
+  const s = Symbol('x');
+  return s.description + s.toString() + String(s["x"]);
 }

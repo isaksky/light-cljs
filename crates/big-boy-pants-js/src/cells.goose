@@ -571,9 +571,19 @@ fn expected(job: Job&, v: Value) -> cells::Flat {
 // publication carries (a form graph names just the cell). The cells'
 // states go in `initial`, for store_initial once the publication's
 // places are known.
+//
+// A symbol a job made (a symbol row, light-cljs-885; symbols.goose) never
+// leaves its job: a publication whose value is one, or reaches one through
+// a value link, fails here by name before anything is published. The same
+// symbol in another job could only be a different row, and no registry is
+// shared across jobs (decision 3), so neither a unique nor a registered
+// symbol could keep its identity. A well-known symbol, the same index in
+// every program, publishes as before.
+fn unshareable_symbol() -> u8[] { return str("symbol-unshareable a symbol made by a job (not shareable)"); }
 fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: Initial[>..]&) -> u8[] {
     var marks: bool[>..] = []; marks.resize(heap.nodes.len, false);
     var work:  i64[>..<] = []; var atoms: i64[>..] = [];
+    if symbol_node(root) >= 0 { return unshareable_symbol(); }
     if root.is_object() && root.id() < heap.nodes.len { work.push(root.id()); marks[root.id()] = true; }
     while work.len > 0 {
         let o = work.pop(); let n = node(heap, o);
@@ -588,6 +598,7 @@ fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: I
         for e in edges { if e.is_accessor() { let p = pair(heap, e); accessors.push(p.get); accessors.push(p.set); } }
         edges.append(accessors);
         for v in edges {
+            if symbol_node(v) >= 0 { return unshareable_symbol(); }
             if v.is_object() && v.id() >= floor && v.id() < heap.nodes.len && !marks[v.id()] { marks[v.id()] = true; work.push(v.id()); }
         }
     }

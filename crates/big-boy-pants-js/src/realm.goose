@@ -122,11 +122,14 @@ enum Builtin {
     // Reflect.has (light-cljs-884; object_statics.goose), Statics native frames.
     ObjectKeys, ObjectValues, ObjectEntries, ObjectGetOwnPropertyNames, ObjectGetOwnPropertySymbols, ObjectGetOwnPropertyDescriptors, ObjectAssign, ObjectFromEntries, ObjectGroupBy,
     ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToLocaleString, ReflectOwnKeys, ReflectHas,
+    // Symbol.for and keyFor, and Symbol.prototype's methods and
+    // `description` getter (light-cljs-885; symbols.goose).
+    SymbolFor, SymbolKeyFor, SymbolPrototypeToString, SymbolPrototypeValueOf, SymbolPrototypeDescription, SymbolPrototypeToPrimitive,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[145] = [
+let BUILTINS: BuiltinInfo[151] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -209,6 +212,9 @@ let BUILTINS: BuiltinInfo[145] = [
     BuiltinInfo { which: Builtin.ObjectFromEntries, name: "fromEntries", length: 1 }, BuiltinInfo { which: Builtin.ObjectGroupBy, name: "groupBy", length: 2 },
     BuiltinInfo { which: Builtin.ObjectPrototypePropertyIsEnumerable, name: "propertyIsEnumerable", length: 1 }, BuiltinInfo { which: Builtin.ObjectPrototypeToLocaleString, name: "toLocaleString" },
     BuiltinInfo { which: Builtin.ReflectOwnKeys, name: "ownKeys", length: 1 }, BuiltinInfo { which: Builtin.ReflectHas, name: "has", length: 2 },
+    BuiltinInfo { which: Builtin.SymbolFor, name: "for", length: 1 }, BuiltinInfo { which: Builtin.SymbolKeyFor, name: "keyFor", length: 1 },
+    BuiltinInfo { which: Builtin.SymbolPrototypeToString, name: "toString" }, BuiltinInfo { which: Builtin.SymbolPrototypeValueOf, name: "valueOf" },
+    BuiltinInfo { which: Builtin.SymbolPrototypeDescription, name: "get description" }, BuiltinInfo { which: Builtin.SymbolPrototypeToPrimitive, name: "[Symbol.toPrimitive]", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -262,7 +268,11 @@ let function_kind::Generator: i64 = 0;
 let function_kind::Async: i64 = 1;
 let function_kind::AsyncGenerator: i64 = 2;
 inline fn function_kind_prototype_row(k: i64) -> i64 { return 38 + k; }
-inline fn fixed_rows() -> i64 { return 41; }
+// %Symbol.prototype% (light-cljs-885; symbols.goose), an ordinary object
+// inheriting %Object.prototype%, not a wrapper: the [[Prototype]] of symbol
+// wrappers and the prototype a symbol primitive's property reads start at.
+inline fn symbol_prototype_row() -> i64 { return 41; }
+inline fn fixed_rows() -> i64 { return 42; }
 struct Name { text: u8[..24] }
 let FUNCTION_KIND_TAGS: Name[3] = [Name { text: "GeneratorFunction" }, Name { text: "AsyncFunction" }, Name { text: "AsyncGeneratorFunction" }];
 // The function_kind:: of closure o's code, -1 for an ordinary function.
@@ -282,7 +292,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[78] = [
+let REALM_FUNCTIONS: Method[84] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -345,6 +355,13 @@ let REALM_FUNCTIONS: Method[78] = [
     Method { which: Builtin.ObjectGroupBy, holder: 12 }, Method { which: Builtin.ObjectKeys, holder: 12 }, Method { which: Builtin.ObjectValues, holder: 12 },
     Method { which: Builtin.ObjectPrototypePropertyIsEnumerable, holder: 1 }, Method { which: Builtin.ObjectPrototypeToLocaleString, holder: 1 },
     Method { which: Builtin.ReflectHas, holder: 34 }, Method { which: Builtin.ReflectOwnKeys, holder: 34 },
+    // Symbol.for and keyFor on the Symbol function (symbol_row()), and
+    // Symbol.prototype's methods (light-cljs-885; symbols.goose): its
+    // @@toPrimitive is keyed by the well-known symbol, and its `description`
+    // getter is no property but the getter of its accessor pair.
+    Method { which: Builtin.SymbolFor, holder: 52 }, Method { which: Builtin.SymbolKeyFor, holder: 52 },
+    Method { which: Builtin.SymbolPrototypeToString, holder: 41 }, Method { which: Builtin.SymbolPrototypeValueOf, holder: 41 },
+    Method { which: Builtin.SymbolPrototypeDescription, holder: 41 }, Method { which: Builtin.SymbolPrototypeToPrimitive, holder: 41 },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -387,7 +404,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[168] = [
+let PENDING: PendingName[165] = [
     // Object.prototype
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
@@ -399,8 +416,6 @@ let PENDING: PendingName[168] = [
     PendingName { holder: 3, key: "toLocaleString" }, PendingName { holder: 3, key: "toReversed" }, PendingName { holder: 3, key: "toSorted" }, PendingName { holder: 3, key: "toSpliced" },
     PendingName { holder: 3, key: "unshift" }, PendingName { holder: 3, key: "with" },
     // Object
-    // Symbol (symbol_row(); its well-known symbols are real)
-    PendingName { holder: 51, key: "prototype" }, PendingName { holder: 51, key: "for" }, PendingName { holder: 51, key: "keyFor" },
     // %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction%
     // (function_kind_prototype_row; the generators area, light-cljs-768).
     PendingName { holder: 38, key: "constructor" }, PendingName { holder: 39, key: "constructor" }, PendingName { holder: 40, key: "constructor" },
@@ -567,12 +582,13 @@ fn kind_prototype(heap: const Heap&, o: i64) -> Value {
     };
 }
 // The wrapper type (WRAPPER_NAMES) of primitive v, -1 for one without a
-// wrapper here: undefined and null have none, and Symbol and BigInt
-// wrappers belong to their areas (light-cljs-766, light-cljs-771).
+// wrapper type here: undefined and null have none, a Symbol wrapper
+// (light-cljs-885) has its own checks (symbols.goose this_symbol), and
+// BigInt wrappers belong to their area (light-cljs-771).
 fn wrapper_type(v: Value) -> i64 { return match v { Number => 0, String => 1, Bool => 2, _ => -1 }; }
 // The realm's prototype for primitive v's wrapper (ToObject's), Null for a
-// primitive without one.
-fn primitive_prototype(v: Value) -> Value { let t = wrapper_type(v); return if t < 0 { Value.Null } else { object(wrapper_prototype_row(t)) }; }
+// primitive without one: a symbol's is %Symbol.prototype% (light-cljs-885).
+fn primitive_prototype(v: Value) -> Value { if v.is_symbol() { return object(symbol_prototype_row()); } let t = wrapper_type(v); return if t < 0 { Value.Null } else { object(wrapper_prototype_row(t)) }; }
 // Whether node o is a realm row: the image owner made it in initialize.
 inline fn realm_row(o: i64) -> bool { return o >= 0 && o < realm_nodes(); }
 // Whether a compiler job reads node o through its prototype chain although
@@ -609,6 +625,8 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     // The iterator prototypes inherit %IteratorPrototype%.
     let iterator_prototypes: i64[] = [array_iterator_prototype_row(), string_iterator_prototype_row()];
     for o in iterator_prototypes { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != iterator_prototype_row() { return false; } }
+    // Symbol.prototype is an ordinary object (light-cljs-885).
+    if nodes[symbol_prototype_row()].kind != node_kind::Object || !nodes[symbol_prototype_row()].proto.is_object() || nodes[symbol_prototype_row()].proto.id() != object_prototype_row() { return false; }
     // Reflect is an ordinary object (light-cljs-851).
     if nodes[reflect_row()].kind != node_kind::Object || !nodes[reflect_row()].proto.is_object() || nodes[reflect_row()].proto.id() != object_prototype_row() { return false; }
     // The arguments templates (light-cljs-854): shape-mode, three properties,
@@ -669,6 +687,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Arguments }); rows.push(Node { kind: node_kind::Arguments });
     rows.push(Node { kind: node_kind::Object, proto: Value.Null });
     for k in FUNCTION_KIND_TAGS.len { rows.push(Node { kind: node_kind::Object, proto: object(function_prototype_row()) }); }
+    rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(error_prototype_row(0)) });
@@ -709,6 +728,17 @@ fn build_realm(heap: Heap&) -> bool {
         // one accessor pair, the getter's row and the setter's next to it,
         // configurable, not enumerable.
         if m.which == Builtin.ObjectPrototypeProtoSetter { continue; }
+        // Symbol.prototype[@@toPrimitive] (ECMAScript 20.4.3.5),
+        // configurable only, and its `description` (20.4.3.2), an accessor
+        // with no setter, configurable (light-cljs-885).
+        if m.which == Builtin.SymbolPrototypeToPrimitive { if !add_own(heap, m.holder, Value.Symbol { s: well_known::ToPrimitive }, object(fixed_rows() + j), attr_configurable()) { return false; } continue; }
+        if m.which == Builtin.SymbolPrototypeDescription {
+            let a = add_accessor(heap, Pair { get: object(fixed_rows() + j) });
+            if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
+            let k = key_named(heap, "description");
+            if heap.fault != Fault.None || !add_own(heap, m.holder, k, Value.Accessor { a: a as u32 }, attr_configurable()) { return false; }
+            continue;
+        }
         if m.which == Builtin.ObjectPrototypeProtoGetter {
             let a = add_accessor(heap, Pair { get: object(fixed_rows() + j), set: object(fixed_rows() + j + 1) });
             if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
@@ -749,10 +779,13 @@ fn build_realm(heap: Heap&) -> bool {
     if !realm_value(heap, function_kind_prototype_row(function_kind::Generator), "prototype", object(generator_prototype_row()), attr_configurable()) { return false; }
     // Reflect[@@toStringTag] (ECMAScript 28.1.14).
     if !add_own(heap, reflect_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Reflect"), attr_configurable()) { return false; }
+    // Symbol.prototype and its `constructor`, and its @@toStringTag (ECMAScript
+    // 20.4.3.6), configurable only (light-cljs-885).
+    if !link_constructor(heap, symbol_row(), symbol_prototype_row()) || !add_own(heap, symbol_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Symbol"), attr_configurable()) { return false; }
     // The well-known symbols, Symbol's non-writable, non-enumerable,
     // non-configurable data properties; their values are the exporter's
     // fixed indices (decision 2), so they take no rows.
-    assert(REALM_FUNCTIONS[symbol_row() - fixed_rows()].which == Builtin.SymbolFunction);
+    assert(REALM_FUNCTIONS[symbol_row() - fixed_rows()].which == Builtin.SymbolFunction && REALM_FUNCTIONS[realm_function_row(Builtin.SymbolFor) - fixed_rows()].holder == symbol_row());
     var s: i64 = 0;
     while export_well_known_symbol(s).len > 0 { if !realm_value(heap, symbol_row(), export_well_known_symbol(s), Value.Symbol { s: s as u32 }, 0) { return false; } s += 1; }
     // The global object's own properties.
@@ -763,9 +796,6 @@ fn build_realm(heap: Heap&) -> bool {
     for t in ERROR_NAMES.len { if !realm_value(heap, global_row(), ERROR_NAMES[t].text, object(error_constructor_row(t)), attr_writable() | attr_configurable()) { return false; } }
     if !realm_value(heap, global_row(), "NaN", number(0.0 / 0.0), 0) || !realm_value(heap, global_row(), "Infinity", number(1.0 / 0.0), 0) || !realm_value(heap, global_row(), "undefined", Value.Undefined, 0) { return false; }
     for p in PENDING {
-        // Symbol's pending names sit on symbol_row(), which moves when a
-        // REALM_FUNCTIONS entry is added before it.
-        assert(p.key != "keyFor" || p.holder == symbol_row());
         let k: Value = if p.symbol >= 0 { Value.Symbol { s: p.symbol as u32 } } else { key_named(heap, p.key) };
         if heap.fault != Fault.None || !add_own(heap, p.holder, k, pending(), attr_configurable()) { return false; }
     }
@@ -895,15 +925,16 @@ inline fn arg(args: const Value[:], i: i64) -> Value { return if i < args.len { 
 //
 // ToObject(v): an object is itself; a number, string or boolean is a new
 // wrapper inheriting its realm prototype; undefined and null are a
-// TypeError. A Symbol or BigInt wrapper fails by name: they are the objects
-// and BigInt areas' (light-cljs-766, light-cljs-771).
+// TypeError; a symbol is a new wrapper inheriting %Symbol.prototype%
+// (light-cljs-885). A BigInt wrapper fails by name: it is the BigInt
+// area's (light-cljs-771).
 fn to_object(job: Job&, v: Value) -> Value {
     if v.is_object() { return v; }
     if v.tag() <= value_tag::Null { return type_error(job, "cannot convert to object"); }
     return wrap(job, v, primitive_prototype(v));
 }
 fn wrap(job: Job&, v: Value, proto: Value) -> Value {
-    if wrapper_type(v) < 0 { unsupported_detail(job, if v.is_symbol() { "ToObject: Symbol wrapper objects" } else { "ToObject: BigInt wrapper objects" }); return Value.Undefined; }
+    if wrapper_type(v) < 0 && !v.is_symbol() { unsupported_detail(job, "ToObject: BigInt wrapper objects"); return Value.Undefined; }
     return allocate(job.heap, Node { kind: node_kind::Wrapper, value: v, proto: proto });
 }
 // thisNumberValue, thisStringValue and thisBooleanValue for built-in b: the
@@ -944,8 +975,9 @@ fn wrapper_value(job: Job&, b: Builtin, t: i64, args: const Value[:], construct:
     }
     if args.len == 0 { return key_named(heap, ""); }
     if v.is_symbol() && !construct {
-        var units: u8[>..] = []; units.append("Symbol(Symbol."); units.append(export_well_known_symbol(symbol_index(v))); units.push(41);
-        return text(heap, units);
+        var units: u16[>..] = []; append_descriptive(heap, v, units);
+        if !units_fit(heap, units.len) { memory(heap); return Value.Undefined; }
+        return string(heap, units);
     }
     if v.is_bigint() { return unsupported_step(job, b, "a BigInt argument"); }
     if v.is_object() { return unsupported_step(job, b, if convertible(heap, v) { "ToString of an object outside a call instruction" } else { "ToString of a light-cljs runtime value" }); }
@@ -1305,7 +1337,9 @@ fn object_tag_text(job: Job&, receiver: Value, tag: Value) -> Value {
     if tag.is_string() { append_utf16(heap, tag, units); }
     else {
         let wrapped = if receiver.is_object() { if node(heap, receiver.id()).kind == node_kind::Wrapper { node(heap, receiver.id()).value } else { Value.Undefined } } else { receiver };
-        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else { match node(heap, receiver.id()).kind { node_kind::Array => "Array", node_kind::Closure, node_kind::Builtin, node_kind::BoundFunction => "Function", node_kind::Error => "Error", node_kind::Arguments => "Arguments", _ => "Object" } };
+        // A symbol or its wrapper without a string @@toStringTag is "Object"
+        // (light-cljs-885), as any kind without a builtinTag.
+        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else if !receiver.is_object() { "Object" } else { match node(heap, receiver.id()).kind { node_kind::Array => "Array", node_kind::Closure, node_kind::Builtin, node_kind::BoundFunction => "Function", node_kind::Error => "Error", node_kind::Arguments => "Arguments", _ => "Object" } };
         for c in name { units.push(c); }
     }
     units.push(93);
@@ -1633,7 +1667,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         // The built-in iterators that run no JavaScript (light-cljs-844; iterators.goose).
         ArrayPrototypeValues, ArrayPrototypeKeys, ArrayPrototypeEntries => { return array_iterator(job, b, receiver); },
         StringIteratorPrototypeNext => { return string_iterator_next(job, receiver); },
-        SymbolFunction => { return unsupported_step(job, b, "creating symbols"); },
+        // Symbol values (light-cljs-885; symbols.goose).
+        SymbolFunction, SymbolFor, SymbolKeyFor, SymbolPrototypeToString, SymbolPrototypeValueOf, SymbolPrototypeDescription, SymbolPrototypeToPrimitive => { return symbol_builtin(job, b, receiver, args); },
         NativeCoreBinding => { return core_binding(job, b, arg(args, 0)); },
         Atom, Deref, Reset, CompareAndSet, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator => { return cell_builtin(job, b, args); },
         Swap, SwapVals, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, FunctionPrototypeHasInstance, IsInstance => { return unsupported_step(job, b, "called from a native frame"); },

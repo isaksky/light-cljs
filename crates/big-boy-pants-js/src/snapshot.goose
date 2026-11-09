@@ -18,6 +18,9 @@ struct Header {
     ends:    i64[24] = [0; 24], limits: source::Limits = source::Limits {},
     work:    i64     = 0, global: source::Value = source::Value.Undefined, call_method: source::Value = source::Value.Undefined,
     boot:    i64     = 0, initializers: i64 = 0, producers: i64 = 0, property_rows: i64 = 0,
+    // The Symbol.for registry's newest symbol (source::Heap.registry,
+    // light-cljs-885), or Null.
+    registry: source::Value = source::Value.Null,
 }
 struct Snapshot {
     header:     Header          = Header {},
@@ -156,9 +159,10 @@ fn dictionary(n: const source::Node&) -> bool { return named(n.kind) && n.initia
 // A run of property records: a dictionary's, or a key list's (node_kind::KeyList, the
 // keys a for-in walk or an object spread visits; source::Node).
 fn record_run(n: const source::Node&) -> bool { return dictionary(n) || n.kind == node_kind::KeyList; }
-// A property key: an interned string (source::intern) or a well-known symbol.
+// A property key: an interned string (source::intern) or a symbol, a
+// well-known one or a symbol row (light-cljs-885).
 fn key_value<T>(s: const T&, k: source::Value) -> bool {
-    return match k { String x => range(x.s, 1, s.strings.len) && s.strings[x.s].key, Symbol x => export_well_known_symbol(x.s).len > 0, _ => false };
+    return match k { String x => range(x.s, 1, s.strings.len) && s.strings[x.s].key, Symbol x => source::symbol_payload(s.nodes, x.s), _ => false };
 }
 // Own properties (light-cljs-787, source::Node). Dictionary runs of records
 // are exclusive (an object writes its run in place), hold keyed records up to
@@ -436,12 +440,15 @@ fn payload_bytes<T>(s: const T&) -> i64 {
          + bytes_of(s.sites).len + bytes_of(s.site_sources).len + bytes_of(s.site_records).len;
 }
 fn footprint<T>(s: const T&) -> i64 { let empty: Snapshot[] = [Snapshot {}]; return bytes_of(empty).len + payload_bytes(s); }
+// Whether v is a symbol row Symbol.for registered (light-cljs-885).
+fn registered<T>(s: const T&, v: source::Value) -> bool { let r = source::symbol_node(v); return r >= 0 && r < s.nodes.len && s.nodes[r].kind == node_kind::JsSymbol && s.nodes[r].initialized; }
 fn value<T>(s: const T&, v: source::Value, code: bool = false, constant: bool = false) -> bool {
     // Symbol and BigInt constants carry no runtime value (source::load).
     return match v {
         // A well-known symbol is also a row value (the realm's Symbol
-        // properties, light-cljs-788).
-        Symbol x => export_well_known_symbol(x.s).len > 0,
+        // properties, light-cljs-788), and so is a symbol row
+        // (light-cljs-885), which code never names.
+        Symbol x => if code || constant { export_well_known_symbol(x.s).len > 0 } else { source::symbol_payload(s.nodes, x.s) },
         BigInt x => (code || constant) && x.b == 0,
         Empty, Accessor => false,
         Object o => !code && range(o.o, 1, s.nodes.len),
@@ -566,6 +573,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     if !value(s, s.header.global) || !s.header.global.is_object() || s.nodes[s.header.global.id()].kind != node_kind::Object { return reject(c, Error.Link); }
     if !value(s, s.header.call_method) || !s.header.call_method.is_object() || s.nodes[s.header.call_method.id()].kind != node_kind::Builtin || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
     if !source::realm_valid(s.nodes, s.accessors, s.header.global, s.header.call_method) { return reject(c, Error.Link); }
+
     // A header names a run of its own table; a wide run must need two bytes
     // (some unit above 255), so the encoding stays canonical (source::Str).
     for r in s.strings {
@@ -602,10 +610,15 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if !poll(c, r.count + 1) { return false; }
         if source::has_text(r) && !utf8(s.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
     }
-    var has_memo = false; var array_holes: i64 = 0;
+    var has_memo = false; var array_holes: i64 = 0; var registrations: i64 = 0;
     for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < node_kind::Object || n.kind > node_kind::MappedBinding { return reject(c, Error.Unsupported); }
+        if n.kind < node_kind::Object || n.kind > node_kind::JsSymbol { return reject(c, Error.Unsupported); }
+        // A symbol row (light-cljs-885) has a description, a string or (not
+        // registered) undefined, and nothing else but, registered, a link to
+        // the symbol registered before it, an earlier row.
+        if n.kind == node_kind::JsSymbol && (!n.value.is_string() && (n.initialized || !n.value.is_undefined()) || !n.namespace_value.is_null() && (!n.initialized || !registered(s, n.namespace_value) || source::symbol_node(n.namespace_value) >= row) || n.count != 0 || n.start != 0 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.function != 0 || n.length != 0 || !n.proto.is_hole() || !n.metadata.is_undefined() || n.non_extensible) { return reject(c, Error.Link); }
+        if n.kind == node_kind::JsSymbol && n.initialized { registrations += 1; }
         // A proxy (light-cljs-845, proxy.goose) holds an object target, an
         // earlier row, and an object handler, and nothing else.
         if n.kind == node_kind::Proxy && (!n.value.is_object() || n.value.id() >= row || !n.namespace_value.is_object() || n.count != 0 || n.start != 0 || !n.proto.is_null()) { return reject(c, Error.Link); }
@@ -619,9 +632,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // iteration and no element run, and iterates an object, a string
         // (a string iteration) or, done, nothing.
         if n.kind == node_kind::Iterator && (n.function > iteration::CodePoints || n.count != 0 || n.start != 0 || !n.value.is_undefined() && (if n.function == iteration::CodePoints { !n.value.is_string() } else { !n.value.is_object() })) { return reject(c, Error.Link); }
-        // A primitive wrapper (22, light-cljs-832) holds a number, string or
-        // boolean and keeps no element run.
-        if n.kind == node_kind::Wrapper && (source::wrapper_type(n.value) < 0 || n.count != 0 || n.start != 0) { return reject(c, Error.Link); }
+        // A primitive wrapper (22, light-cljs-832) holds a number, string,
+        // boolean or symbol (light-cljs-885) and keeps no element run.
+        if n.kind == node_kind::Wrapper && (source::wrapper_type(n.value) < 0 && !n.value.is_symbol() || n.count != 0 || n.start != 0) { return reject(c, Error.Link); }
         // A generator (20) names its activation or nothing and has a state,
         // 0 to 3; a promise (21) names its state row (light-cljs-790).
         if n.kind == node_kind::Generator && (n.length > generator_state::Completed || n.function != source::no_row() && !cont_is(s, n.function, 0) || n.length != generator_state::Completed && n.function == source::no_row()) || n.kind == node_kind::Promise && !cont_is(s, n.function, 2) { return reject(c, Error.Link); }
@@ -677,6 +690,16 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if (n.kind == node_kind::Symbol || n.kind == node_kind::Keyword) && (!n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string()) || n.kind == node_kind::Scalar && n.value.tag() > value_tag::String { return reject(c, Error.Link); }
         if !n.metadata.is_undefined() && !n.metadata.is_null() && (!n.metadata.is_object() || s.nodes[n.metadata.id()].kind != node_kind::Map) { return reject(c, Error.Link); }
     }
+    // The registry (light-cljs-885) is a chain from the header through every
+    // registered symbol row, each once: a row off the chain would be a
+    // second symbol for its key.
+    var chained: i64 = 0; var at = s.header.registry;
+    while !at.is_null() {
+        if !poll(c) { return false; }
+        if !registered(s, at) || chained >= registrations { return reject(c, Error.Link); }
+        chained += 1; at = s.nodes[source::symbol_node(at)].namespace_value;
+    }
+    if chained != registrations { return reject(c, Error.Link); }
     if has_memo && !memo_ranges(s, c) { return false; }
     if !property_model(s, c) || !key_runs(s, c) { return false; }
     // Activation runs hold no holes (source::detach refuses one), so every
@@ -692,7 +715,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
 }
 fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64) -> View {
     let code .= heap.code;
-    var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows },
+    var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows, registry: heap.registry },
         code_bytes: code.source_bytes, functions: code.functions, code_constants: code.constants, children: code.children, ops: code.ops, code_units: code.units, code_strings: code.strings,
         nodes:      heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings, latin1: heap.latin1[..source::latin1_len(heap)],
         shapes: heap.shapes, accessors: heap.accessors, keys: heap.keys, conts: heap.conts, sites: code.sites, site_sources: code.site_sources, site_records: code.site_records };
@@ -728,7 +751,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.strings.clear(); code.ins.clear(); code.effects.clear(); code.heights.clear(); code.decoded = 0;
     code.sites.clear(); code.site_sources.clear(); code.site_records.clear();
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
-    heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined;
+    heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined; heap.registry = source::Value.Null;
     heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0; heap.property_rows = 0; heap.image = source::Tops {};
     return true;
 }
@@ -740,7 +763,7 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     // No initialization, producer, publication cache, claim or waiter code.
     code.source_bytes.append(s.code_bytes); code.functions.append(s.functions); code.constants.append(s.code_constants); code.children.append(s.children); code.ops.append(s.ops); code.units.append(s.code_units); code.strings.append(s.code_strings);
     code.sites.append(s.sites); code.site_sources.append(s.site_sources); code.site_records.append(s.site_records); source::decode(code); code.valid = true;
-    heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = s.header.global; heap.call_method = s.header.call_method;
+    heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = s.header.global; heap.call_method = s.header.call_method; heap.registry = s.header.registry;
     heap.boot_count = s.header.boot; heap.initializer_count = s.header.initializers; heap.producer_count = s.header.producers; heap.property_rows = s.header.property_rows;
     // The image install, not an allocation: rows are copied verbatim into
     // empty tables (links count from each table's start, so the
@@ -796,7 +819,7 @@ fn service_row(heap: source::Heap&, from: const Snapshot&, twin: const Snapshot&
 }
 // The heap's state fields, as a restore of this header sets them.
 fn state(h: const Header&, identity: i64, heap: source::Heap&) {
-    heap.identity = identity; heap.limits = h.limits; heap.work = h.work; heap.global = h.global; heap.call_method = h.call_method; heap.fault = source::Fault.None;
+    heap.identity = identity; heap.limits = h.limits; heap.work = h.work; heap.global = h.global; heap.call_method = h.call_method; heap.registry = h.registry; heap.fault = source::Fault.None;
     heap.boot_count = h.boot; heap.initializer_count = h.initializers; heap.producer_count = h.producers; heap.property_rows = h.property_rows;
 }
 fn same_rows<T>(a: const T[:], b: const T[:]) -> bool { return a.len == b.len && bytes_of(a) == bytes_of(b); }
@@ -804,7 +827,7 @@ fn same_rows<T>(a: const T[:], b: const T[:]) -> bool { return a.len == b.len &&
 // byte (tests and BBP_RESET_CHECK=1).
 fn pristine(twin: const Snapshot&, identity: i64, code: const source::Code&, heap: const source::Heap&, bindings: const Binding[:]) -> bool {
     let h = twin.header;
-    if heap.identity != identity || !same_bits(heap.limits, h.limits) || heap.work != h.work || !source::same_bits(heap.global, h.global) || !source::same_bits(heap.call_method, h.call_method) || heap.fault != source::Fault.None || heap.live_jobs != 0 { return false; }
+    if heap.identity != identity || !same_bits(heap.limits, h.limits) || heap.work != h.work || !source::same_bits(heap.global, h.global) || !source::same_bits(heap.call_method, h.call_method) || !source::same_bits(heap.registry, h.registry) || heap.fault != source::Fault.None || heap.live_jobs != 0 { return false; }
     if heap.boot_count != h.boot || heap.initializer_count != h.initializers || heap.producer_count != h.producers || heap.property_rows != h.property_rows || code.decoded != twin.functions.len || code.heights.len != twin.functions.len || code.ins.len != twin.ops.len { return false; }
     return same_rows(code.source_bytes, twin.code_bytes) && same_rows(code.functions, twin.functions) && same_rows(code.constants, twin.code_constants) && same_rows(code.children, twin.children) && same_rows(code.ops, twin.ops) && same_rows(code.units, twin.code_units) && same_rows(code.strings, twin.code_strings)
         && same_rows(code.sites, twin.sites) && same_rows(code.site_sources, twin.site_sources) && same_rows(code.site_records, twin.site_records)

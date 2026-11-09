@@ -20,6 +20,7 @@ import .descriptors;
 import .integrity;
 import .prototypes;
 import .object_statics;
+import .symbols;
 
 namespace source;
 
@@ -33,8 +34,10 @@ var next_identity: i64 = 1;
 // (Latin-1), and otherwise in `heap.units` as UTF-16 (light-cljs-800). The
 // choice is canonical, so equal strings share an encoding. No value carries a session: a heap's rows are
 // the only thing its links count from, so a copied image needs no
-// relocation. Symbol keeps a well-known symbol index and BigInt no payload
-// (constants only: `Const` fails Unsupported on both). Empty marks an array
+// relocation. Symbol keeps a well-known symbol index below symbol_floor()
+// or, at and above it, a symbol row (node_kind::JsSymbol, light-cljs-885);
+// BigInt keeps no payload (constants only: `Const` fails Unsupported on
+// it). Empty marks an array
 // hole; it never leaves an array run (`valid` refuses it elsewhere). As an
 // object header's prototype, Empty stands for the realm's %Object.prototype%,
 // which does not exist yet (light-cljs-787; see Node). Accessor is internal
@@ -87,6 +90,40 @@ inline fn num(v: Value) -> f64 { return match v { Number x => x.v, _ => 0 }; }
 inline fn flag(v: Value) -> bool { return match v { Bool x => x.v, _ => false }; }
 // A Symbol constant's well-known index.
 fn symbol_index(v: Value) -> i64 { return match v { Symbol x => x.s, _ => -1 }; }
+// Symbol values (light-cljs-885; docs/javascript-coverage.md, decision 2):
+// a Symbol payload below symbol_floor() is a well-known symbol's index
+// (export_well_known_symbol, the realm's Symbol properties, the same in
+// every program); one at or above it is symbol_floor() plus the node row
+// of a symbol a job made (node_kind::JsSymbol). A symbol row is a plain
+// u32 row like an object's: truncated with the job, checked by snapshots
+// (snapshot::value), moved by in-job reclamation (reclaim.goose relink)
+// and carried by saved continuations, which keep every row they reach.
+inline fn symbol_floor() -> i64 { return 64; }
+// The symbol row of v, or -1 (not a symbol, or a well-known one).
+inline fn symbol_node(v: Value) -> i64 { return match v { Symbol x => if x.s >= symbol_floor() { x.s - symbol_floor() } else { -1 }, _ => -1 }; }
+// The symbol whose row is `row`.
+inline fn symbol_at(row: i64) -> Value { return Value.Symbol { s: (row + symbol_floor()) as u32 }; }
+// Whether Symbol payload s names a symbol in `nodes`: a well-known index,
+// or a symbol row.
+fn symbol_payload(nodes: const Node[:], s: i64) -> bool {
+    if s < symbol_floor() { return export_well_known_symbol(s).len > 0; }
+    let r = s - symbol_floor();
+    return r < nodes.len && nodes[r].kind == node_kind::JsSymbol;
+}
+// Whether v is a symbol row Symbol.for registered.
+fn registered_symbol(heap: const Heap&, v: Value) -> bool { let r = symbol_node(v); return r >= 0 && r < heap.nodes.len && node(heap, r).initialized; }
+// A symbol's description as text: a well-known symbol's `Symbol.name`, a
+// symbol row's description string; false, with nothing appended, for a
+// symbol whose description is undefined.
+fn append_description(heap: const Heap&, v: Value, out: u16[>..]&) -> bool {
+    let r = symbol_node(v);
+    if r < 0 { for c in "Symbol." { out.push(c); } for c in export_well_known_symbol(symbol_index(v)) { out.push(c); } return true; }
+    let d = node(heap, r).value;
+    if !d.is_string() { return false; }
+    append_utf16(heap, d, out); return true;
+}
+// SymbolDescriptiveString(v): "Symbol(" description ")".
+fn append_descriptive(heap: const Heap&, v: Value, out: u16[>..]&) { for c in "Symbol(" { out.push(c); } append_description(heap, v, out); out.push(41); }
 inline fn object(row: i64) -> Value { return Value.Object { o: row as u32 }; }
 // Row access names its table (light-cljs-800): a row of another table, or
 // past this one's end, fails here with the table's name. The explicit check
@@ -402,6 +439,13 @@ let node_kind::ArgumentMap = 26;
 // property; unmapping turns it into an ordinary node_kind::Binding holding
 // the value it had.
 let node_kind::MappedBinding = 27;
+// A symbol a job made (light-cljs-885; symbols.goose), named by the Symbol
+// values symbol_at gives, never by an Object value: value=its description,
+// a string or undefined; initialized=Symbol.for registered it, its
+// description then being its key; namespace_value=the symbol registered
+// before it, or Null (the chain Heap.registry starts). It has no
+// properties, prototype or element run, and nothing writes it.
+let node_kind::JsSymbol = 28;
 // A map's or set's traversal order (its node's `length`; light-cljs-877),
 // as the V8 build's runtime (src/js_runtime.js) has it: an array map or a
 // hash map or set, the Pants engine's FormMap::Positional and Hashed
@@ -565,6 +609,13 @@ root struct Heap {
     // byte array it reaches through Job.heap: Goose's shrink check would
     // then refuse every caller of run that holds a byte view.)
     latin1_spare: i64 = 0,
+    // The Symbol.for registry (light-cljs-885; symbols.goose): the newest
+    // registered symbol, whose row links the one registered before it
+    // (node_kind::JsSymbol), or Null. A state field, so the worker reset
+    // and snapshots restore it (snapshot::Header) and reclamation keeps
+    // and moves the symbols it reaches; there is no lookup structure
+    // outside the rows.
+    registry: Value = Value.Null,
 }
 // Native frames (light-cljs-786, decision 4): an operation that must run
 // JavaScript from inside an instruction or built-in pushes a frame of
@@ -984,8 +1035,8 @@ inline fn latin1_len(heap: const Heap&) -> i64 { return heap.latin1.len - heap.l
 fn valid(heap: Heap&, v: Value) -> bool {
     if heap.fault != Fault.None { return false; }
     return match v {
-        // A well-known symbol (the realm's Symbol properties) is a value.
-        Symbol x => if export_well_known_symbol(x.s).len > 0 { true } else { heap.fault = Fault.InvalidState; false },
+        // A well-known symbol (the realm's Symbol properties) or a symbol row.
+        Symbol x => if symbol_payload(heap.nodes, x.s) { true } else { heap.fault = if x.s - symbol_floor() >= heap.nodes.len { Fault.StaleID } else { Fault.InvalidState }; false },
         Empty, BigInt, Accessor => { heap.fault = Fault.InvalidState; false },
         Object o => if o.o < heap.nodes.len { true } else { heap.fault = Fault.StaleID; false },
         String s => if s.s < heap.strings.len { true } else { heap.fault = Fault.StaleID; false },
@@ -1226,14 +1277,9 @@ fn string_to_number(heap: Heap&, s: Value) -> f64 {
     var i = start; while i < end { let u = unit(heap, s, i); if u > 127 { return 0.0 / 0.0; } text.push(u as u8); i += 1; }
     return number::parse_literal(text);
 }
-// A property key (light-cljs-787): a string, or a well-known symbol, which
-// valid() refuses as a value but which is a key like any other.
-fn key_valid(heap: Heap&, k: Value) -> bool {
-    if !k.is_symbol() { return valid(heap, k); }
-    if heap.fault != Fault.None { return false; }
-    if export_well_known_symbol(symbol_index(k)).len == 0 { heap.fault = Fault.InvalidState; return false; }
-    return true;
-}
+// A property key (light-cljs-787): a string or a symbol, whose values are
+// valid (light-cljs-885).
+inline fn key_valid(heap: Heap&, k: Value) -> bool { return valid(heap, k); }
 // ToPropertyKey of a primitive (light-cljs-826; the Pants engine's
 // vm/property.rs to_property_key): a string or symbol is its own key and any
 // other primitive its ToString, so `-0` gives "0", 1.5 "1.5", true "true" and
@@ -1882,7 +1928,8 @@ fn set_computed_name(job: Job&, prefix: Value) {
     if !f.is_object() || !valid(heap, f) || !lazy_function(heap, f.id()) || !prefix.is_string() { heap.fault = Fault.InvalidState; return; }
     var units: u16[>..] = [];
     append_utf16(heap, prefix, units);
-    if k.is_symbol() { for c in "[Symbol." { units.push(c); } for c in export_well_known_symbol(symbol_index(k)) { units.push(c); } units.push(93); }
+    // A symbol's description in brackets, nothing for an undefined one.
+    if k.is_symbol() { var d: u16[>..] = []; if append_description(heap, k, d) { units.push(91); units.append(d[..]); units.push(93); } }
     else if k.is_string() { append_utf16(heap, k, units); }
     else if k.is_number() { let s = to_string(heap, k); if heap.fault != Fault.None { return; } append_utf16(heap, s, units); }
     else { heap.fault = Fault.InvalidState; return; }
@@ -2414,8 +2461,9 @@ fn own_property(heap: Heap&, object: Value, k: Value) -> Value, bool {
 // answers its own `length` and indices, then the lookup starts at the
 // primitive's realm prototype (primitive_prototype), and a getter found
 // there runs with the primitive itself as receiver. Undefined and null are
-// a TypeError; a Symbol or BigInt base has no prototype here yet
-// (UnsupportedOperand, which get_property names).
+// a TypeError; a symbol's is %Symbol.prototype% (light-cljs-885), and a
+// BigInt base has no prototype here yet (UnsupportedOperand, which
+// get_property names).
 fn read(heap: Heap&, object: Value, k: Value) -> Value, Value {
     if !valid(heap, object) || !key_valid(heap, k) { return Value.Undefined, Value.Undefined; }
     if !k.is_string() && !k.is_symbol() { heap.fault = Fault.InvalidState; return Value.Undefined, Value.Undefined; }
@@ -2449,7 +2497,8 @@ fn get(heap: Heap&, object: Value, k: Value) -> Value {
 // setter found on the chain runs with the primitive as receiver; anything
 // else refuses the write (a TypeError in strict code), since a primitive
 // takes no own property and a string's `length` and indices are read-only.
-// A Symbol or BigInt base fails UnsupportedOperand (set_property names it).
+// A symbol base is the same (light-cljs-885); a BigInt base fails
+// UnsupportedOperand (set_property names it).
 fn write(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     if !valid(heap, object) || !key_valid(heap, k) || !valid(heap, value) { return Value.Undefined, false; }
     if !k.is_string() && !k.is_symbol() { heap.fault = if object.tag() <= value_tag::Null { Fault.TypeError } else { Fault.UnsupportedOperand }; return Value.Undefined, false; }
@@ -2736,7 +2785,7 @@ fn primitive_text(heap: const Heap&, v: Value, out: u16[>..]&) {
         Bool b => { bytes.append(if b.v { "true" } else { "false" }); },
         Number n => { number::append_decimal(bytes, n.v); },
         String => { append_utf16(heap, v, out); return; },
-        Symbol => { bytes.append("Symbol(Symbol."); bytes.append(export_well_known_symbol(symbol_index(v))); bytes.push(')'); },
+        Symbol => { append_descriptive(heap, v, out); return; },
         BigInt => { bytes.append("a BigInt"); },
         _ => { bytes.append("an object"); },
     }
@@ -4070,10 +4119,14 @@ fn convertible(heap: const Heap&, v: Value) -> bool {
 // first argument first, and with which hint (light-cljs-832): Number(o) and
 // String(o) of an object run its ToPrimitive (hint number; hint string, then
 // ToString) in a Convert frame, and the call runs again on the primitive.
-fn argument_converts(heap: const Heap&, f: Value, args: const Value[:]) -> bool, Hint {
+// Symbol(o) and Symbol.for(o) convert o as String(o) does (light-cljs-885),
+// but only when called: a construction (`constructing`) of either throws
+// before it converts anything.
+fn argument_converts(heap: const Heap&, f: Value, args: const Value[:], constructing: bool = false) -> bool, Hint {
     if args.len == 0 || !convertible(heap, args[0]) || !f.is_object() || f.id() >= heap.nodes.len || node(heap, f.id()).kind != node_kind::Builtin { return false, Hint.Default; }
     let b = builtin_of(heap, f.id());
-    return b == Builtin.Number || b == Builtin.String, if b == Builtin.String { Hint.String } else { Hint.Number };
+    let symbol = !constructing && (b == Builtin.SymbolFunction || b == Builtin.SymbolFor);
+    return b == Builtin.Number || b == Builtin.String || symbol, if b == Builtin.Number { Hint.Number } else { Hint.String };
 }
 // Start the resumable ToPrimitive with `hint` of the `count` operands whose
 // first lies `depth` below the operand top (Native.Convert): a native frame
@@ -4872,7 +4925,7 @@ inline fn construct_at(job: Job&, top: i64, at: i64, argc: i64) -> bool {
     if constructible(heap, callee) { return invoke(job, top, at, argc, false); }
     // new Number(o), new String(o): the construction runs again on the
     // primitive (light-cljs-832).
-    let converts, hint = argument_converts(heap, callee, job.operands[(job.operands.len - argc)..]);
+    let converts, hint = argument_converts(heap, callee, job.operands[(job.operands.len - argc)..], true);
     if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, argc); in_place(job, top, at); return false; }
     job.frames[top].pc = at + 1; construct(job, argc);
     return in_place(job, top, at);
@@ -4918,10 +4971,13 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
         let b = builtin_of(heap, callee.id());
         let first, _ = own_element(heap, array, skip);
         if heap.fault != Fault.None { return -1; }
-        if (b == Builtin.Number || b == Builtin.String) && convertible(heap, first) {
+        // Symbol(o) and Symbol.for(o) convert o as String(o) does, but only
+        // when called (light-cljs-885; argument_converts).
+        let symbol = !constructs && (b == Builtin.SymbolFunction || b == Builtin.SymbolFor);
+        if (b == Builtin.Number || b == Builtin.String || symbol) && convertible(heap, first) {
             if job.operands.len >= heap.limits.stack - job.locals.len { heap.fault = Fault.StackLimit; return -1; }
             job.operands.push(first); job.frames[top].pc = at;
-            start_convert(job, if b == Builtin.String { Hint.String } else { Hint.Number }, b == Builtin.String, 1, 1);
+            start_convert(job, if b == Builtin.Number { Hint.Number } else { Hint.String }, b != Builtin.Number, 1, 1);
             return -1;
         }
         if !constructs && (b == Builtin.Vec || b == Builtin.Into) {
@@ -5372,9 +5428,9 @@ fn property_fault(job: Job&, base: Value, k: Value, named: bool, write: bool) {
     if job.heap.fault == Fault.UnsupportedOperand { primitive_gap(job, base); }
     else if job.heap.fault == Fault.TypeError && base.tag() <= value_tag::Null && job.detail.len == 0 { base_error(job, base, k, named, write); }
 }
-// A property access on a Symbol or BigInt base fails by name (decision 1):
-// %Symbol.prototype% and %BigInt.prototype% are the objects and BigInt
-// areas' (light-cljs-766, light-cljs-771).
+// A property access on a BigInt base fails by name (decision 1):
+// %BigInt.prototype% is the BigInt area's (light-cljs-771). (A symbol
+// base reads %Symbol.prototype% since light-cljs-885.)
 fn primitive_gap(job: Job&, base: Value) {
     if !base.is_symbol() && !base.is_bigint() { return; }
     job.detail.clear();
@@ -5402,7 +5458,7 @@ fn named_error(job: Job&, fault: Fault, before: const u8[:], k: Value, after: co
 // errors below and the callee names of not-a-function errors.
 fn append_key(heap: Heap&, k: Value, out: u16[>..]&) {
     if k.is_string() { append_utf16(heap, k, out); return; }
-    if k.is_symbol() { for c in "Symbol." { out.push(c); } for c in export_well_known_symbol(symbol_index(k)) { out.push(c); } return; }
+    if k.is_symbol() { append_description(heap, k, out); return; }
     if k.is_number() { var digits: u8[>..] = []; number::append_decimal(digits, k.num()); for c in digits { out.push(c); } }
 }
 // The TypeError of a property read (`write` false) or write on an undefined
@@ -6103,9 +6159,9 @@ fn start_is_instance(job: Job&, c: Value, x: Value, base: i64) {
 // when the GetIterator frame they leave above their own finishes, so the
 // consumer's next step pops it either way.
 //
-// A symbol is not iterable: %Symbol.prototype% (the objects area's,
-// light-cljs-766) has no @@iterator, and no JavaScript can reach it to add
-// one while it is pending. Arrays, strings and arguments objects iterate
+// A symbol is not iterable unless %Symbol.prototype% (light-cljs-885)
+// gains an @@iterator, which a compiler job cannot write; its read goes
+// through that prototype like any primitive's. Arrays, strings and arguments objects iterate
 // with the realm's built-in iterators (light-cljs-844, iterators.goose).
 //
 // Failing by name (decision 1): a BigInt iterable (the BigInt area's), a
@@ -6127,7 +6183,6 @@ fn get_iterator(job: Job&, iterable: Value) {
     // GetMethod(v, @@iterator) of undefined or null is a property read's
     // TypeError, as QuickJS's JS_GetIterator words it.
     if v.tag() <= value_tag::Null { base_error(job, v, Value.Symbol { s: well_known::Iterator }, true, false); return; }
-    if v.is_symbol() { type_error(job, "value is not iterable"); return; }
     if !iteration_object(job, v, "the iterable") { return; }
     let m, getter = read(heap, v, Value.Symbol { s: well_known::Iterator });
     if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, v); }
@@ -6414,7 +6469,7 @@ fn for_in_yield(job: Job&, at: i64, k: Value, more: bool) {
 // symbols included, before object rest copies them: an index as a number
 // (as ToPropertyKey gives it), a name as a string. A string's are its indices
 // and `length`; undefined and null are a TypeError; other primitives have
-// none. Symbols have no values yet, so a symbol key fails UnsupportedOperand.
+// none. A symbol key is listed as itself (light-cljs-885).
 fn own_keys_op(job: Job&) {
     let heap .= job.heap;
     let source = job.operands.pop();
@@ -6426,7 +6481,7 @@ fn own_keys_op(job: Job&) {
     let array = allocate(heap, Node { kind: node_kind::Array });
     if !array.is_object() { return; }
     for e, i in keys {
-        if !e.key.is_string() { heap.fault = Fault.UnsupportedOperand; return; }
+        if !e.key.is_string() && !e.key.is_symbol() { heap.fault = Fault.UnsupportedOperand; return; }
         if !set_element(heap, array, i, if e.index >= 0 { number(e.index) } else { e.key }) { return; }
     }
     job.operands.push(array);

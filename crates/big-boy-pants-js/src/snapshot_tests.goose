@@ -799,6 +799,13 @@ fn suspended_continuations() {
     waits = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(object_statics_resumed, copy(w))); waits += 1; }
     assert(waits == 12);
+    // Symbol values (light-cljs-885): symbol rows and the Symbol.for
+    // registry across a wait, in place and from a saved continuation.
+    let symbols = embed_file("../corpus/serial/symbols-wait.gsp");
+    heap_program::join(thread_spawn(symbols_wait, str(symbols), false));
+    heap_program::join(thread_spawn(symbols_wait, str(symbols), true));
+    assert(qget<bool>()); let sw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(sw)));
+    heap_program::join(thread_spawn(symbols_reused, str(symbols)));
     print("suspended continuations: a dependency wait keeps them in place or carries them, with its whole stack as rows (native frames included), in a saved continuation; a reused worker's next job cannot reach them");
 }
 // Run suspended-wait.js to its dependency wait, with a generator and an
@@ -1289,6 +1296,76 @@ thread_fn object_statics_resumed(saved: Waiting) {
     assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "vDsDnDeDkDgDrDoDtDhDlD:1,5,7,2,true,m,[object T],true,L"));
     assert(source::retire(job));
     assert(qput(false));
+}
+// symbols-wait.js (light-cljs-885) to its one wait: answered in place,
+// or after the stack was saved with its symbol rows and the registry (the
+// snapshot header) and restored in a fresh heap (symbols_resumed). The
+// saved image is refused when its registry names an unregistered symbol,
+// a registered symbol links one that is not earlier, or a value names a
+// row that is no symbol as a symbol.
+thread_fn symbols_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    assert(source::registered_symbol(heap, heap.registry));
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    assert(source::same_bits(image.header.registry, heap.registry));
+    var unique: i64 = -1; var registered: i64 = -1;
+    for n, row in image.nodes { if n.kind == node_kind::JsSymbol { if n.initialized { registered = row; } else { unique = row; } } }
+    assert(unique >= 0 && registered >= 0);
+    var bad = copy(image); bad.header.registry = source::symbol_at(unique);
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    var chain = copy(image); chain.nodes[registered].namespace_value = source::symbol_at(registered);
+    check = snapshot::Control {}; assert(!snapshot::validate(chain, check) && check.error == snapshot::Error.Link);
+    var named = copy(image); named.header.registry = source::symbol_at(source::object_prototype_row());
+    check = snapshot::Control {}; assert(!snapshot::validate(named, check) && check.error == snapshot::Error.Link);
+    // Every registered symbol is on the chain: a Null head disconnects one.
+    var cut = copy(image); cut.header.registry = source::Value.Null;
+    check = snapshot::Control {}; assert(!snapshot::validate(cut, check) && check.error == snapshot::Error.Link);
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// A reused worker (light-cljs-795) runs symbols-wait.js twice: each job
+// registers symbols, the reset restores the image's empty registry with
+// its tables, and the second job registers afresh at the same rows.
+thread_fn symbols_reused(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var pc = source::Code {}; snapshot_test::append(pc, bytes);
+    var parent = source::Heap { code: pc }; assert(source::initialize(parent));
+    var c = snapshot::Control {}; let base = snapshot::capture(parent, [], c); assert(c.error == snapshot::Error.None && base.header.registry.is_null());
+    let identity = source::reserve_identity(); let rows: i64[0] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, r));
+    var first = source::Value.Null;
+    for round in 2 {
+        var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+        assert(source::run(job, -1) == tiny::Outcome.Yielded && source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(source::registered_symbol(heap, heap.registry));
+        if round == 0 { first = heap.registry; } else { assert(source::same_bits(heap.registry, first)); }
+        assert(source::retire(job));
+        assert(!snapshot::pristine(base, identity, code, heap, bindings));
+        assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings) && heap.registry.is_null());
+    }
+}
+thread_fn symbols_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    assert(source::same_bits(heap.registry, saved.image.header.registry));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+    assert(source::retire(job));
 }
 thread_fn builtin_iterator_resumed(saved: Waiting) {
     defer { heap_program::finish(); }

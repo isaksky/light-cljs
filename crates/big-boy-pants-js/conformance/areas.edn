@@ -201,6 +201,9 @@
   "bbp/objects_statics_keys" {:area :objects-classes}
   "bbp/objects_statics_assign_entries" {:area :objects-classes}
   "bbp/objects_statics_quickjs" {:area :objects-classes :pants-gap "the Pants engine has no Object.groupBy, Object.getOwnPropertySymbols, Object.prototype.propertyIsEnumerable or toLocaleString"}
+  "bbp/symbols_values_and_keys" {:area :objects-classes :pants-gap "the Pants engine has no Object.getOwnPropertySymbols and refuses writes to built-in objects such as %Symbol.prototype%"}
+  "bbp/symbols_prototype_and_wrappers" {:area :objects-classes}
+  "bbp/symbols_registry" {:area :objects-classes :pants-gap "the Pants engine has no Object.getOwnPropertySymbols"}
   "bbp/objects_prototype_quickjs" {:area :objects-classes :pants-gap "the Pants engine has no Object.prototype.isPrototypeOf, refuses Object.create's properties argument and changing a function's prototype (rust/src/vm/prototype.rs set_prototype_of, object_create), has no Number.prototype for Object.getPrototypeOf(1), and throws where Reflect.setPrototypeOf of a built-in object answers false"}
   "bbp/realm_builtin_functions" {:area :core-builtins}
   "bbp/realm_errors" {:area :exceptions}

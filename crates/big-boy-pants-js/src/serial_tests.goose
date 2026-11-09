@@ -916,7 +916,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/symbols.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
@@ -1263,10 +1263,12 @@ fn primitive_methods() {
     heap_program::join(thread_spawn(primitive_rounds, str(bytes), 0)); let none = qget<Rounds>();
     heap_program::join(thread_spawn(primitive_rounds, str(bytes), 300)); let many = qget<Rounds>();
     assert(none.result == 0 && many.result == 600 && many.rows == none.rows);
-    // A Symbol base's read or write fails by name, past a `catch`.
-    for image in [embed_file("../corpus/serial/symbol-base-read.gsp"), embed_file("../corpus/serial/symbol-base-write.gsp")] {
-        check(image, "Fault.UnsupportedOperand:property-access-on-a-Symbol:-%Symbol.prototype%", source::Fault.UnsupportedOperand);
-    }
+    // A Symbol base reads and writes through %Symbol.prototype%
+    // (light-cljs-885), and symbol rows, keys and the Symbol.for registry
+    // survive every budget cut.
+    check(embed_file("../corpus/serial/symbol-base-read.gsp"), "utf16:[120,83,121,109,98,111,108,40,120,41,117,110,100,101,102,105,110,101,100]");
+    check(embed_file("../corpus/serial/symbol-base-write.gsp"), "number:1.0");
+    check(embed_file("../corpus/serial/symbols.gsp"), "boolean:true");
 }
 fn scripts() {
     check(embed_file("../corpus/serial/script-declarations.gsp"), "boolean:true");
@@ -1332,7 +1334,8 @@ thread_fn realm_model(bytes: u8[]) {
     let descriptor = source::get(heap, object_fn, source::text(heap, "getOwnPropertyDescriptor"));
     assert(symbol_fn.id() == source::symbol_row() && descriptor.is_object() && source::node(heap, descriptor.id()).kind == node_kind::Builtin && heap.fault == source::Fault.None);
     assert(source::own_entry(heap, symbol_fn, key(heap, "for")).found && !source::own_entry(heap, descriptor, key(heap, "for")).found && !source::own_entry(heap, descriptor, key(heap, "prototype")).found);
-    source::get(heap, symbol_fn, source::text(heap, "keyFor")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    // Symbol.keyFor is a built-in since light-cljs-885.
+    let key_for = source::get(heap, symbol_fn, source::text(heap, "keyFor")); assert(heap.fault == source::Fault.None && key_for.is_object() && source::builtin_of(heap, key_for.id()) == source::Builtin.SymbolKeyFor);
     let a = source::allocate(heap, source::Node { kind: node_kind::Array }); let o = source::allocate(heap, source::Node { kind: node_kind::Object });
     assert(source::prototype(heap, a.id()) == source::object(source::array_prototype_row()) && source::prototype(heap, o.id()) == source::object(source::object_prototype_row()));
     assert(source::prototype(heap, source::object_prototype_row()).is_null() && source::prototype(heap, heap.call_method.id()) == source::object(source::function_prototype_row()));
@@ -1468,7 +1471,7 @@ thread_fn property_model() {
     let getter = source::closure(heap, 0, []); let setter_fn = source::closure(heap, 0, []);
     let base = source::allocate(heap, source::Node { kind: node_kind::Object }); let a = key(heap, "a"); let g = key(heap, "g");
     assert(source::define_own(heap, base.id(), a, getter, source::attrs_accessor(), 1) && source::define_own(heap, base.id(), a, setter_fn, source::attrs_accessor(), 2));
-    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 6); // after the realm's pending pair, its caller/arguments pair (light-cljs-853) and its __proto__ pair (light-cljs-883)
+    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 7); // after the realm's pending pair, its caller/arguments pair (light-cljs-853), its __proto__ pair (light-cljs-883) and Symbol.prototype's description pair (light-cljs-885)
     let child = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::set_prototype(heap, child.id(), base));
     for target in [base, child] {
         let v, found = source::lookup(heap, target, a); assert(v.is_undefined() && found == getter);

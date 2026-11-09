@@ -2338,12 +2338,63 @@ fn goose_compiler_printer_fails_by_name() {
             "(defmacro m [] (str str)) (def x (m))",
             "UnsupportedOperand:str:-the-source-text-of-a-light-cljs-runtime-function",
         ),
-        (
-            "(defmacro m [] (pr-str js/Symbol.iterator)) (def x (m))",
-            "UnsupportedOperand:prStr:-printing-a-Symbol",
-        ),
     ] {
         crate::compile_with_macros(source, &mut crate::MacroHost::new()).unwrap();
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let mut host = crate::MacroHost::new();
+        host.use_goose_source_macros(session.clone()).unwrap();
+        let message = crate::compile_with_macros(source, &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains(detail), "{source}: {message}");
+        session.close();
+        drop(host);
+        cleaned(&session);
+    }
+}
+/// Symbol values (light-cljs-885): inside one job, a macro's own symbols,
+/// registered ones included, behave as the V8 build's, and `str` prints one
+/// as its descriptive string.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_symbols_match_v8() {
+    macro_errors_match_v8(
+        r#"(let [s (js/Symbol "d") o (js* "{}")] (aset o s 1) [(str s) (str (js/Symbol)) (js* "typeof ~{}" s) (.-description s) (aget o s) (js* "~{} === ~{}" s s) (js* "~{} === Symbol('d')" s) (identical? (js/Symbol.for "k") (js/Symbol.for "k")) (js/Symbol.keyFor (js/Symbol.for "k")) (js* "Symbol.keyFor(~{}) === undefined" s) (js* "Object(~{}) instanceof Symbol" s) (str (js/Symbol.for "k") js/Symbol.iterator)])"#,
+        None,
+    );
+    // pr-str, and str of a collection, print a symbol as the V8 build's
+    // runtime does: #object[Symbol(description)].
+    macro_errors_match_v8(
+        r#"(let [s (js/Symbol "d")] [(pr-str s) (pr-str [s (js/Symbol) (js/Symbol.for "é")]) (str [s]) (pr-str js/Symbol.iterator) (pr-str {:k s})])"#,
+        None,
+    );
+}
+/// A symbol a job made never leaves it (light-cljs-885; cells.goose
+/// publish_cells): a definition that holds one, unique or registered,
+/// directly or in a collection, fails by name when a macro reads it, as a
+/// cell value holding one does; a macro's own symbols stay usable.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_job_symbols_are_not_shareable() {
+    for (source, detail) in [
+        (
+            r#"(def r (js/Symbol.for "k")) (defmacro m [] (str (identical? r (js/Symbol.for "k")))) (def x (m))"#,
+            "symbol-unshareable",
+        ),
+        (
+            r#"(def u (js/Symbol "u")) (defmacro m [] (str u)) (def x (m))"#,
+            "symbol-unshareable",
+        ),
+        (
+            r#"(def v [1 (js/Symbol "u") (js/Symbol.for "k")]) (defmacro m [] (count v)) (def x (m))"#,
+            "symbol-unshareable",
+        ),
+        (
+            r#"(def a (atom 0)) (defmacro m [] (do (reset! a (js/Symbol.for "k")) 1)) (def x (m))"#,
+            "cannot-share-a-symbol",
+        ),
+    ] {
         let session = GooseSession::start(&runner(), 1).unwrap();
         let mut host = crate::MacroHost::new();
         host.use_goose_source_macros(session.clone()).unwrap();
@@ -3009,11 +3060,10 @@ fn goose_compiler_rejects_shared_writes_before_mutation() {
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_names_unsupported_builtin_steps() {
+    // (Object(Symbol.iterator), a step light-cljs-885 implemented, was the
+    // built-in step here; Number.prototype.toString's radix 16 is one.)
     for (body, name) in [
-        (
-            "Object(Symbol.iterator)",
-            "ToObject:-Symbol-wrapper-objects",
-        ),
+        ("(255).toString(16)", "a-radix-other-than-10"),
         ("[1].filter((x) => x)", "pending-filter"),
     ] {
         let source = format!(
@@ -6978,10 +7028,16 @@ fn goose_compiler_compile_time_code_installs_no_extension() {
             error.contains("macro app.main/setup: Goose: ERROR"),
             "{body}: {error}"
         );
+        // A reify site is a unit's symbol (`__lightUnitReify`), which a
+        // helper reaching it may not publish (light-cljs-885).
         assert!(
-            ["Fault.UnsupportedOperand", "Fault.NativeBoundary"]
-                .iter()
-                .any(|fault| error.contains(fault)),
+            [
+                "Fault.UnsupportedOperand",
+                "Fault.NativeBoundary",
+                "symbol-unshareable",
+            ]
+            .iter()
+            .any(|fault| error.contains(fault)),
             "{body}: {error}"
         );
         session.close();

@@ -579,6 +579,39 @@ that can start a native frame (`conditional_native`, formerly the error
 built-ins' `error_native`) runs a @@toStringTag getter or a key object's
 ToPrimitive in the same frame.
 
+*As landed by light-cljs-885 (Symbol values):* a symbol a job makes is a
+row of the node table, `node_kind::JsSymbol` (its description, a string or
+undefined; whether Symbol.for registered it; and the symbol registered
+before it), not a table of its own, so the node table's limit, truncation,
+snapshot copy and reclamation cover it. A `Value.Symbol` payload below
+`symbol_floor()` (64) is still a well-known symbol's index, the same in
+every program and taking no row; one at or above it is the floor plus the
+symbol's node row. Values stay the 9-byte enum; `===`, `Object.is`,
+SameValueZero and property keys (shapes and records compare key words)
+compare the payload, so a symbol is its own identity and no comparison
+path changed. The Symbol.for registry is a chain through the registered
+rows whose head is a heap state field (`Heap.registry`, carried in the
+snapshot header): the worker reset restores it with the heap's other
+state, saved continuations and definition snapshots carry it, and
+reclamation keeps and moves every registered symbol; Symbol.for walks the
+chain, so no lookup structure lives outside the rows (decision 3).
+Reclamation also moves every symbol payload above its floor in values,
+shapes, records, frames and continuations (`reclaim.goose` relink).
+*Identity across jobs:* a symbol never leaves the job that made it. A
+publication (a prepared definition or produced helper) whose value is or
+reaches one fails by name (`symbol-unshareable`, `cells.goose`
+publish_cells; `callable.goose` refuses one too), and a cell value holding
+any symbol already failed (`a symbol or bigint value`). A registered
+symbol is refused as well: comparing registered symbols by key across jobs
+would need either key comparison in every symbol `===` and key lookup or a
+shared registry, and no workload needs it yet; a well-known symbol, an
+index, publishes as before. %Symbol.prototype% is realm row 41, an
+ordinary object (its methods plain built-ins in `src/symbols.goose`; the
+description conversion of Symbol(o) and Symbol.for(o) runs in the call
+instruction's Convert frame, as String(o)'s does), the [[Prototype]] of
+Symbol wrappers (`node_kind::Wrapper` holding a symbol) and where a symbol
+primitive's property reads and writes start (`primitive_prototype`).
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

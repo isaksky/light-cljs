@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "118f30712b7f3b506986d9a761fbe21f7e3cd2be1f9f09ac0bb8db3892f63367",
+  "5a80ccd2366bd7aff93950096d503f5fb0e6fd043c369c201944699151882905",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -606,13 +606,21 @@
   "corpus/serial/suspended-wait.js"
   "9b140ad77096771a2de0ec9c4e9c1e858eace97f14a5bcf35ce695e9781c0f5f",
   "corpus/serial/symbol-base-read.gsp"
-  "11dd03ecc4fb948c1e5ebc0705ec77b04e72028423bedefe92326bff5544f71b",
+  "b82939629be4b92fbb1374cfb51b948b5aa01812fe10f2e93a8f9f28a19fa781",
   "corpus/serial/symbol-base-read.js"
-  "c4ccaad2cf07d48fce508334c4f70be1bfe3192d216a149d8d0551d28947719a",
+  "8a7c250df64e4148ac6d1f8faa3aa36c8646579dc77d077d05e6a3f1e43f6c98",
   "corpus/serial/symbol-base-write.gsp"
-  "53b27569c9cbf654cc142c6205fe30411371ed631bb8bc59ce3887f880ba648f",
+  "03e21af6feec5022be15852c5ba12076326bb4b40c6a4ff8d1f54877515f2a1a",
   "corpus/serial/symbol-base-write.js"
-  "ff74f6aadfcf6146c3294084a1a428338908a6fb28b94a2a67214fe52fc1e8e6",
+  "777c28257d06da0048f7f02098c391fdf236325c0b22582c53aba83cb0a9c88b",
+  "corpus/serial/symbols-wait.gsp"
+  "2827ff2b040c206fa67e6b0d0415324d23d353f278bd3fb6eb9b5caeb0d423d9",
+  "corpus/serial/symbols-wait.js"
+  "b35ceb9b89dcbf9026252238dce5ab10f5edbaf11cf44d660f6a350e01f0e6bb",
+  "corpus/serial/symbols.gsp"
+  "d6cfaace0ed6fe48a21adee7a7d95afa683869d428b5c4d2f5f5c283ef458cd6",
+  "corpus/serial/symbols.js"
+  "150f438ecae3f3b7af08ab172da3b18e6eaca3ad9e7a8edb3abd8cdb395ed862",
   "corpus/serial/tagged-templates.gsp"
   "3e93a20ecbf9c8121165ea0e905c8f914975462bea5de68219a9d569dcda9e9b",
   "corpus/serial/tagged-templates.js"

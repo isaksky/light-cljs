@@ -2102,9 +2102,10 @@ mod serial_tests {
             // Reads and calls on primitive bases through their prototypes
             // (light-cljs-833); serial_tests.goose compares node rows.
             ("primitive-methods", "number:400"),
-            // A Symbol base fails by name on Goose (serial_tests.goose).
-            ("symbol-base-read", "goose"),
-            ("symbol-base-write", "goose"),
+            // A Symbol base reads and writes through %Symbol.prototype%
+            // (light-cljs-885; serial_tests.goose).
+            ("symbol-base-read", "string:xSymbol(x)undefined"),
+            ("symbol-base-write", "number:1"),
             // Reclamation inside a job (light-cljs-847): loops far past the
             // Goose job's row limits, live values held by generators,
             // promises, for-of and a native frame across collections, and
@@ -2138,6 +2139,13 @@ mod serial_tests {
             // engine lacks (Object.groupBy, hasOwn, toLocaleString).
             ("object-statics", "goose"),
             ("object-statics-wait", "goose"),
+            // Symbol values (light-cljs-885): symbol rows, symbol keys and
+            // the Symbol.for registry at every budget cut and collection
+            // (serial_tests.goose).
+            ("symbols", "boolean:true"),
+            // and across a dependency wait, saved and restored with its
+            // continuation (snapshot_tests.goose).
+            ("symbols-wait", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

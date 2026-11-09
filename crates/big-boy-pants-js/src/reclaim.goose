@@ -117,10 +117,12 @@ root struct Evacuation {
     // the value each would keep once detached.
     cells: i64[>..] = [], kept_values: Value[>..] = [],
 }
-// An object or string link (an accessor pair's halves hold no accessor).
+// An object, symbol row (light-cljs-885) or string link (an accessor
+// pair's halves hold no accessor).
 fn mark_link(e: Evacuation&, heap: const Heap&, v: Value) {
     match v {
-        Object x => { let i = x.o - e.floor.nodes; if i >= 0 && e.nodes[i] == 0 { e.nodes[i] = 1; e.work.push(x.o); } },
+        Object x => { mark_object(e, x.o); },
+        Symbol => { let r = symbol_node(v); if r >= 0 { mark_object(e, r); } },
         String x => { mark_string(e, heap, x.s); },
         _ => {},
     }
@@ -201,6 +203,8 @@ fn mark_roots(e: Evacuation&, job: const Job&) {
     for s in heap.shapes { mark(e, heap, s.key); }
     for v in heap.constants { mark(e, heap, v); }
     mark(e, heap, heap.global); mark(e, heap, heap.call_method); mark(e, heap, heap.pending);
+    // The Symbol.for registry keeps every registered symbol (light-cljs-885).
+    mark(e, heap, heap.registry);
     for f in job.frames { mark_frame(e, heap, f); }
     for v in job.locals { mark(e, heap, v); }
     for v in job.operands { mark(e, heap, v); }
@@ -305,6 +309,7 @@ fn reseat(x: u32&, to: i64) -> bool {
 fn relink(e: const Evacuation&, v: Value&) -> bool {
     match v {
         Object x => { if x.o >= e.floor.nodes { let r = node_link(e, x.o); if r != x.o { v = Value.Object { o: r }; return true; } } },
+        Symbol => { let o = symbol_node(v); if o >= e.floor.nodes { let r = node_link(e, o as u32); if r != o { v = symbol_at(r); return true; } } },
         String x => { if x.s >= e.floor.strings { let r = link(e.strings[..], e.floor.strings, x.s); if r != x.s { v = Value.String { s: r as u32 }; return true; } } },
         Accessor x => { if x.a >= e.floor.accessors { let r = link(e.accessors[..], e.floor.accessors, x.a); if r != x.a { v = Value.Accessor { a: r as u32 }; return true; } } },
         _ => {},
@@ -313,7 +318,7 @@ fn relink(e: const Evacuation&, v: Value&) -> bool {
 }
 // A weak link: undefined when only it named the row.
 fn relink_weak(e: const Evacuation&, v: Value&) {
-    let dead = match v { Object x => !kept(e.nodes[..], e.floor.nodes, x.o), String x => !kept(e.strings[..], e.floor.strings, x.s), _ => false };
+    let dead = match v { Object x => !kept(e.nodes[..], e.floor.nodes, x.o), Symbol => symbol_node(v) >= 0 && !kept(e.nodes[..], e.floor.nodes, symbol_node(v)), String x => !kept(e.strings[..], e.floor.strings, x.s), _ => false };
     if dead { v = Value.Undefined; } else { relink(e, v); }
 }
 fn relink(e: const Evacuation&, n: Node&) -> bool {
@@ -399,7 +404,7 @@ fn reindex(e: const Evacuation&, heap: Heap&) {
 }
 fn rewrite_job(e: const Evacuation&, job: Job&) {
     let heap .= job.heap;
-    relink(e, heap.global); relink(e, heap.call_method); relink(e, heap.pending);
+    relink(e, heap.global); relink(e, heap.call_method); relink(e, heap.pending); relink(e, heap.registry);
     for i in heap.shapes.len { relink(e, heap.shapes[i].key); }
     for i in heap.constants.len { relink(e, heap.constants[i]); }
     for i in job.frames.len { relink(e, job.frames[i]); }

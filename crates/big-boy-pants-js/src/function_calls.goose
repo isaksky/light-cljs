@@ -234,7 +234,7 @@ fn forward_run(job: Job&, at: i64, constructs: bool) {
     if constructs {
         // new Number(o), new String(o): the first argument converts first,
         // in place, and this step runs again on the primitive.
-        let converts, hint = argument_converts(heap, f, job.operands[base..]);
+        let converts, hint = argument_converts(heap, f, job.operands[base..], true);
         if converts { start_convert(job, hint, hint == Hint.String, 1, argc); return; }
         // Construct(target, args, newTarget), with target below its arguments.
         job.frames.pop();

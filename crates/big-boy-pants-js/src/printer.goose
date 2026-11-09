@@ -43,7 +43,8 @@ namespace source;
 // form_hash. A hash-ordered map or set whose
 // keys hash by identity in the V8 build (an atom, a function, a JavaScript
 // object) fails by name. A lazy sequence, a process-wide cell's value, a
-// JavaScript array or plain object, a Symbol and a BigInt fail by name too.
+// JavaScript array or plain object and a BigInt fail by name too; a
+// Symbol prints as #object[Symbol(description)] (light-cljs-885).
 
 // A PrintFrame's layout: what separates its items and closes it.
 enum PrintKind { Seq, Map, Fields, Wrapped }
@@ -186,7 +187,14 @@ fn print_one(job: Job&, b: Builtin, p: Printer&, v: Value) -> bool {
         },
         String => { if !room(job, p, 2 * str_len(heap, x) + 2) { return false; } emit_readable(heap, p, x); return true; },
         Object => {},
-        _ => { unsupported_step(job, b, if x.is_symbol() { "printing a Symbol" } else { "printing a BigInt" }); return false; },
+        // A symbol prints as the V8 build's runtime prints one,
+        // #object[Symbol(description)] (light-cljs-885; js_runtime.js printWriter).
+        Symbol => {
+            var units: u16[>..] = []; for c in "#object[" { units.push(c); } append_descriptive(heap, x, units); units.push(93);
+            if !room(job, p, units.len) { return false; }
+            p.out.append(units[..]); return true;
+        },
+        _ => { unsupported_step(job, b, "printing a BigInt"); return false; },
     }
     let n .= node(heap, x.id());
     let kind = n.kind;
@@ -330,8 +338,11 @@ fn core_str(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             Bool => { emit(p, if x.flag() { "true" } else { "false" }); continue; },
             Number => { emit_number(p, x.num()); continue; },
             Symbol => {
-                // String(symbol) is its SymbolDescriptiveString.
-                emit(p, "Symbol(Symbol."); emit(p, export_well_known_symbol(symbol_index(x))); emit(p, ")"); continue;
+                // String(symbol) is its SymbolDescriptiveString, a
+                // well-known symbol's or a job's (light-cljs-885).
+                var units: u16[>..] = []; append_descriptive(heap, x, units);
+                if !room(job, p, units.len) { return Value.Undefined; }
+                p.out.append(units[..]); continue;
             },
             Object => {},
             _ => { return unsupported_step(job, b, "a BigInt argument"); },

@@ -1,7 +1,8 @@
 function symbolBaseWrite() {
-  // A property write on a Symbol base fails by name (light-cljs-833), as a
-  // read does (symbol-base-read.js); the catch never runs.
-  const s = Symbol.iterator;
-  try { s.x = 1; } catch (e) { return 1; }
+  'use strict';
+  // A property write on a Symbol base finds no setter on %Symbol.prototype%
+  // (light-cljs-885), so strict code throws a TypeError.
+  const s = Symbol('x');
+  try { s.x = 1; } catch (e) { return e instanceof TypeError ? 1 : 3; }
   return 2;
 }
