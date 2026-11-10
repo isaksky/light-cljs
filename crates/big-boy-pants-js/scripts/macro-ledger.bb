@@ -54,7 +54,9 @@
 (def root (fs/parent directory))
 (def repository (fs/canonicalize (fs/path root "../..")))
 (def ledger-dir (fs/path root "macro-ledger"))
-(def target (fs/path (or (System/getenv "CARGO_TARGET_DIR") (str (fs/path repository "target")))))
+;; Absolute, a relative CARGO_TARGET_DIR read from the repository, where
+;; this script runs Cargo: idiom projects and their builds run elsewhere.
+(def target (let [t (fs/path (or (System/getenv "CARGO_TARGET_DIR") "target"))] (if (fs/absolute? t) t (fs/path repository t))))
 (def out-dir (fs/path target "macro-ledger"))
 (def goose (or (System/getenv "GOOSE") "goose"))
 
@@ -160,7 +162,7 @@
       {:error (let [e (clean-error dir (:err r))] (if (str/blank? e) (str "exit " (:exit r) " with no output") e))})))
 
 (defn node [dir file js]
-  (let [f (str (fs/path dir file))]
+  (let [f (str (fs/absolutize (fs/path dir file)))]
     (spit f js)
     (let [r (run-process {:dir dir :env base-env :timeout 30} "node" f)]
       (if (= 0 (:exit r)) (str/trim (:out r)) (str "node failed: " (last (str/split-lines (str (:err r)))))))))
@@ -191,21 +193,66 @@
                   (str fault ": a built-in's step")))
     "other refusals"))
 
+;; An idiom's outcome from its V8 and Goose builds, each {:js output} or
+;; {:error message}; g is nil when V8 refused and Goose was not built. Only
+;; the output's bytes count: a differing output is no pass even when it
+;; prints the same expansion.
+(defn score [v8 g]
+  (cond (not (:js v8)) {:result :v8-refuses :v8-error (bounded (:error v8) 600)}
+        (= (:js v8) (:js g)) {:result :pass}
+        (:js g) {:result :differs :reason "output differs"}
+        :else {:result :fail :reason (reason (:error g)) :goose-error (bounded (:error g) 700)}))
+
+;; What --check reports over the selected idioms' rows.
+(defn check-outcome [selected-idioms rows expected]
+  (let [selected (set (map :id selected-idioms))
+        rows (filter (comp selected :id) rows)
+        expected (set (filter selected expected))
+        passes (set (map :id (filter #(= :pass (:result %)) rows)))
+        recorded (set (map :id (filter :v8-refuses selected-idioms)))
+        refused (set (map :id (filter #(= :v8-refuses (:result %)) rows)))]
+    {:expected expected
+     :regressions (sort (remove passes expected))
+     :new-passes (sort (remove expected passes))
+     :refusal-changes (sort (concat (remove recorded refused) (remove refused recorded)))}))
+
+;; The scoring and check rules, checked on every run.
+(let [v8 {:js "out"} other {:js "out2"}
+      native "macro probe.m/p: Goose: ERROR 1 Fault.NativeBoundary:no-core-leaf-take function=6 pc=21 emitted-span=298:299 writes=0; definition macros/probe/m.cljc:6:1 (bytes 79..131)"
+      preparation "macro probe.m/p: Goose: ERROR 1 preparation-symbol-unshareable a symbol made by a job (not shareable) function=-1 pc=-1 emitted-span=-1:-1; definition macros/probe/m.cljc:6:1 (bytes 79..131)"
+      compiler "macro probe.m/p: Goose: probe.m/render is a declaration-bundle product; definition macros/probe/m.cljc:9:1 (bytes 79..131)"]
+  (assert (= {:result :pass} (score v8 v8)))
+  (assert (= {:result :differs :reason "output differs"} (score v8 other)))
+  (assert (= :fail (:result (score v8 {:error native}))))
+  (assert (= native (:goose-error (score v8 {:error native}))))
+  (assert (= :v8-refuses (:result (score {:error "x"} nil))))
+  (assert (= "Fault.NativeBoundary:no-core-leaf-take" (reason native)))
+  (assert (= "preparation-symbol-unshareable a symbol made by a job (not shareable)" (reason preparation)))
+  (assert (= "Goose: probe.m/render is a declaration-bundle product" (reason compiler)))
+  (assert (= "Fault.NativeBoundary:no-core-leaf" (kind "Fault.NativeBoundary:no-core-leaf-take")))
+  (assert (= "Fault.NativeBoundary: a built-in's step" (kind "Fault.NativeBoundary:mapSeq:-no-core-leaf-map-over-a-vector")))
+  (assert (= "Fault.UnsupportedOperand:pending" (kind "Fault.UnsupportedOperand:pending-indexOf")))
+  (assert (= "Fault.DependencyNeed" (kind "Fault.DependencyNeed")))
+  (assert (= "other refusals" (kind (reason compiler))))
+  (let [idioms [{:id "a"} {:id "b"} {:id "c"} {:id "d" :v8-refuses "r"} {:id "e"}]
+        rows [{:id "a" :result :pass} {:id "b" :result :differs} {:id "c" :result :pass}
+              {:id "d" :result :pass} {:id "e" :result :v8-refuses}]
+        outcome (check-outcome idioms rows #{"a" "b" "z"})]
+    (assert (= #{"a" "b"} (:expected outcome)))
+    (assert (= ["b"] (:regressions outcome)))
+    (assert (= ["c" "d"] (:new-passes outcome)))
+    (assert (= ["d" "e"] (:refusal-changes outcome)))
+    (assert (= {:expected #{"a" "b"} :regressions ["b"] :new-passes [] :refusal-changes []}
+               (check-outcome (take 2 idioms) rows #{"a" "b" "c"})))))
+
 (defn run-idiom [light runner {:keys [id v8-refuses] :as idiom}]
   (let [dir (str (fs/path out-dir "work" id))
         _ (project! dir idiom)
-        v8 (build light dir base-env)]
-    (if-not (:js v8)
-      (cond-> {:id id :result :v8-refuses :v8-error (bounded (:error v8) 600)}
-        v8-refuses (assoc :recorded v8-refuses))
-      (let [g (build light dir (assoc base-env "LIGHT_CLJS_GOOSE_RUNNER" runner "LIGHT_CLJS_GOOSE_WORKERS" "1"))
-            row (cond-> {:id id}
-                  v8-refuses (assoc :recorded v8-refuses))]
-        (cond
-          (= (:js v8) (:js g)) (assoc row :result :pass)
-          (:js g) (assoc row :result :differs :reason "output differs"
-                         :v8-prints (node dir "v8.mjs" (:js v8)) :goose-prints (node dir "goose.mjs" (:js g)))
-          :else (assoc row :result :fail :reason (reason (:error g)) :goose-error (bounded (:error g) 700)))))))
+        v8 (build light dir base-env)
+        g (when (:js v8) (build light dir (assoc base-env "LIGHT_CLJS_GOOSE_RUNNER" runner "LIGHT_CLJS_GOOSE_WORKERS" "1")))
+        row (merge (cond-> {:id id} v8-refuses (assoc :recorded v8-refuses)) (score v8 g))]
+    (cond-> row
+      (= :differs (:result row)) (assoc :v8-prints (node dir "v8.mjs" (:js v8)) :goose-prints (node dir "goose.mjs" (:js g))))))
 
 ;; ---------------------------------------------------------------- tools
 (defn shell! [& command] (println "+" (str/join " " command)) (flush) (apply p/shell {:dir (str repository)} command))
@@ -241,8 +288,8 @@
 
 (def counts (frequencies (map :result rows)))
 (def scored (remove #(= :v8-refuses (:result %)) rows))
-(println)
-(println "Goose refusals by kind and reason (the idioms each reason stops):")
+(when (pos? (get counts :fail 0))
+  (println "\nGoose refusals by kind and reason (the idioms each reason stops):"))
 (doseq [[k failures] (sort-by (fn [[k group]] [(- (count group)) k]) (group-by (comp kind :reason) (filter #(= :fail (:result %)) rows)))]
   (println (str "\n" k ": " (count failures) (if (= 1 (count failures)) " idiom" " idioms")))
   (doseq [[r group] (sort-by (fn [[r group]] [(- (count group)) r]) (group-by :reason failures))]
@@ -266,18 +313,14 @@
                            (with-out-str (pprint/pprint (vec (sort passes))))))
   (println "wrote" expected-file (count passes) "idioms"))
 (when (:check options)
-  (let [selected (set (map :id idioms))
-        expected (set (filter selected expected))
-        regressions (sort (remove passes expected))
-        new-passes (sort (remove expected passes))
-        recorded (set (map :id (filter :v8-refuses idioms)))
-        refused (set (map :id (filter #(= :v8-refuses (:result %)) rows)))
-        refusal-changes (sort (concat (remove recorded refused) (remove refused recorded)))
+  (let [{:keys [expected regressions new-passes refusal-changes]} (check-outcome idioms rows expected)
         by-id (into {} (map (juxt :id identity) rows))]
     (doseq [id new-passes] (println "NEW PASS (add it to expected-pass.edn):" id))
     (doseq [id regressions] (println "REGRESSION:" id "-" (:reason (by-id id))))
     (doseq [id refusal-changes]
-      (println "V8 REFUSAL CHANGED:" id "-" (if (refused id) (str "V8 now refuses: " (bounded (:v8-error (by-id id)) 200)) "V8 now builds it; drop its :v8-refuses")))
+      (println "V8 REFUSAL CHANGED:" id "-" (if (= :v8-refuses (:result (by-id id)))
+                                               (str "V8 now refuses: " (bounded (:v8-error (by-id id)) 200))
+                                               "V8 now builds it; drop its :v8-refuses")))
     (println (format "check: %d expected passes, %d regressions, %d unlisted passes, %d V8 refusal changes"
                      (count expected) (count regressions) (count new-passes) (count refusal-changes)))
     (when (or (seq regressions) (seq new-passes) (seq refusal-changes)) (System/exit 1))))
