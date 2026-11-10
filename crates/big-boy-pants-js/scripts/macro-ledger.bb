@@ -359,14 +359,22 @@
   (let [from (or (str/index-of text start) (fail! "no `" start "` where the core-boot step reads it"))]
     (subs text from (or (str/index-of text end from) (fail! "no end of `" start "`")))))
 
+;; The sources the lists are read from, by role.
+(defn source-texts []
+  {:intrinsics (slurp (str (fs/path rust "src/frontend/intrinsics.rs")))
+   :instr (slurp (str (fs/path rust "src/vm/instr.rs")))
+   :vm (slurp (str (fs/path root "src" "source_vm.goose")))
+   :realm (slurp (str (fs/path root "src" "realm.goose")))
+   :schema (slurp (str (fs/path root "src" "export_schema.goose")))})
+
 ;; `__rt` member -> what it lowers to, {:opcode Name} or {:form-op Name}, read
-;; from the frontend's intrinsic table (rust/src/frontend/intrinsics.rs); the
-;; three lowerings that name no opcode there emit the one rust/src/frontend/
-;; lower.rs emits for them.
-(defn intrinsic-lowerings []
-  (let [table (section (slurp (str (fs/path rust "src/frontend/intrinsics.rs"))) "pub(crate) const INTRINSICS" "\n];")
-        form-names (into {} (map (comp vec rest) (re-seq #"FormOp::(\w+) => \"(\w+)\""
-                                                         (section (slurp (str (fs/path rust "src/vm/instr.rs"))) "pub const fn intrinsic(self)" "\n    }\n"))))
+;; from the frontend's intrinsic table (rust/src/frontend/intrinsics.rs) and
+;; FormOp::intrinsic (rust/src/vm/instr.rs); the three lowerings that name
+;; no opcode there emit the one rust/src/frontend/lower.rs emits for them.
+(defn intrinsic-table [{:keys [intrinsics]}] (section intrinsics "pub(crate) const INTRINSICS" "\n];"))
+(defn intrinsic-lowerings [{:keys [instr] :as sources}]
+  (let [table (intrinsic-table sources)
+        form-names (into {} (map (comp vec rest) (re-seq #"FormOp::(\w+) => \"(\w+)\"" (section instr "pub const fn intrinsic(self)" "\n    }\n"))))
         emitted {"Call" "CallMethod" "HostEffect" "HostEffect" "Need" "Need"}]
     (merge (into {} (for [[_ m op] (re-seq #"op\(\"(\w+)\", \d+, Opcode::(\w+)\)" table)] [m {:opcode op}]))
            (into {} (for [[_ m lowering op] (re-seq #"name: \"(\w+)\",\s*arity: [^\n]*\n\s*lowering: Lowering::(\w+)(?:\(Opcode::(\w+)\))?" table)]
@@ -377,19 +385,17 @@
 ;; The opcodes the Goose VM decodes into an instruction and the form
 ;; operations its form_op has an arm for (src/source_vm.goose); every other
 ;; one fails by name when it runs.
-(defn goose-implemented []
-  (let [vm (slurp (str (fs/path root "src" "source_vm.goose")))]
-    {:opcode (set (map second (re-seq #"opcode::(\w+)" (section vm "fn instruction(op: Op) -> Ins {" "\n}\n"))))
-     :form-op (set (map second (re-seq #"form_op::(\w+)" (section vm "fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {" "\n}\n"))))}))
+(defn goose-implemented [{:keys [vm]}]
+  {:opcode (set (map second (re-seq #"opcode::(\w+)" (section vm "fn instruction(op: Op) -> Ins {" "\n}\n"))))
+   :form-op (set (map second (re-seq #"form_op::(\w+)" (section vm "fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {" "\n}\n"))))})
 
 ;; The realm's PENDING properties (src/realm.goose), each {:holder, the
 ;; holder's JavaScript name from the realm's fixed-row functions, :kind
 ;; :global, :static (a constructor's) or :property, :key}, a well-known
 ;; symbol's key spelled @@name.
 (defn camel [words] (apply str (map str/capitalize words)))
-(defn realm-pending []
-  (let [realm (slurp (str (fs/path root "src" "realm.goose")))
-        names (fn [table] (mapv second (re-seq #"text: \"(\w+)\"" (or (re-find (re-pattern (str "let " table ":[^\n]*")) realm) (fail! "no " table " in realm.goose")))))
+(defn realm-pending [{:keys [realm schema]}]
+  (let [names (fn [table] (mapv second (re-seq #"text: \"(\w+)\"" (or (re-find (re-pattern (str "let " table ":[^\n]*")) realm) ""))))
         families {"wrapper" (names "WRAPPER_NAMES") "error" (names "ERROR_NAMES") "function_kind" (names "FUNCTION_KIND_TAGS")}
         holder (fn [function family-name]
                  (let [words (str/split function #"_") role (last words)
@@ -403,11 +409,31 @@
                                    :let [table (some (fn [[family t]] (when (str/starts-with? f family) t)) families)]
                                    [i entry] (map-indexed vector table)]
                                [(+ (parse-long n) i) (holder f entry)])))
-        symbols (into {} (for [[_ i s] (re-seq #"(\d+) => \"(\w+)\"" (section (slurp (str (fs/path root "src" "export_schema.goose"))) "fn export_well_known_symbol(" "\n}\n"))]
-                           [(parse-long i) s]))]
+        symbols (into {} (for [[_ i s] (re-seq #"(\d+) => \"(\w+)\"" (section schema "fn export_well_known_symbol(" "\n}\n"))] [(parse-long i) s]))]
     (for [[_ row key symbol] (re-seq #"PendingName \{ holder: (\d+), key: \"([^\"]*)\"(?:, symbol: (\d+))? \}" (section realm "let PENDING:" "\n];"))]
       (merge (rows (parse-long row) {:holder (str "row " row) :kind :property})
-             (if symbol {:key (str "@@" (symbols (parse-long symbol)))} {:key key})))))
+             (if symbol {:key (str "@@" (symbols (parse-long symbol) (str "symbol " symbol)))} {:key key})))))
+
+;; That the readers above read the real sources whole: every intrinsic of
+;; the table, every PENDING entry the table's length declares, each with a
+;; named holder and key, and only operations the schema defines.
+(defn check-readers! [sources]
+  (let [table (intrinsic-table sources)
+        entries (+ (count (re-seq #"\bIntrinsic \{" table)) (count (re-seq #"\bop\(\"" table)) (count (re-seq #"\bform_op\(FormOp::" table)))
+        lowerings (intrinsic-lowerings sources)
+        declared (some-> (re-find #"let PENDING: PendingName\[(\d+)\]" (:realm sources)) second parse-long)
+        pending (realm-pending sources)
+        implemented (goose-implemented sources)
+        defined (fn [space] (set (map second (re-seq (re-pattern (str "(?m)^let " space "::(\\w+) =")) (:schema sources)))))]
+    (when-not (= entries (count lowerings)) (fail! "read " (count lowerings) " of the " entries " intrinsics in rust/src/frontend/intrinsics.rs"))
+    (when-not (= declared (count pending)) (fail! "read " (count pending) " of the " declared " PENDING entries in src/realm.goose"))
+    (when-let [bad (seq (filter #(or (str/starts-with? (:holder %) "row ") (str/starts-with? (:key %) "@@symbol") (str/blank? (:key %))) pending))]
+      (fail! "PENDING entries with no named holder or key: " (pr-str bad)))
+    (doseq [[how space] [[:opcode "opcode"] [:form-op "form_op"]]]
+      (when (empty? (implemented how)) (fail! "read no implemented " space " from src/source_vm.goose"))
+      (when-let [bad (seq (remove (defined space) (concat (implemented how) (keep how (vals lowerings)))))]
+        (fail! space " names src/export_schema.goose does not define: " (str/join " " (sort (set bad))))))))
+
 
 ;; How often the code uses a pending property: a global as a free name, a
 ;; constructor's static as Holder.key, a well-known symbol as Symbol.name,
@@ -427,14 +453,83 @@
 
 ;; What the profile's code uses that Goose lacks: [missing-rt pending], each
 ;; a sequence of maps with :uses, the count in the code.
-(defn boot-gaps [code]
-  (let [lowerings (intrinsic-lowerings) implemented (goose-implemented)
+(defn boot-gaps [code sources]
+  (let [lowerings (intrinsic-lowerings sources) implemented (goose-implemented sources)
         members (frequencies (map second (re-seq #"__rt\s*\.\s*([A-Za-z_$][\w$]*)" code)))]
     [(for [[m n] (sort members)
            :let [[how op] (first (lowerings m {:unknown m}))]
            :when (not (contains? (get implemented how #{}) op))]
        {:member m :lowering how :op op :uses n})
-     (for [p (realm-pending) :let [n (uses code p)] :when (pos? n)] (assoc p :uses n))]))
+     (for [p (realm-pending sources) :let [n (uses code p)] :when (pos? n)] (assoc p :uses n))]))
+
+;; The readers over a small source of each kind.
+(let [sources {:intrinsics (str "pub(crate) const INTRINSICS: &[Intrinsic] = &[\n"
+                                "    Intrinsic {\n        name: \"call\",\n        arity: Arity::AtLeast(2),\n        lowering: Lowering::Call,\n    },\n"
+                                "    Intrinsic {\n        name: \"vector\",\n        arity: Arity::Any,\n        lowering: Lowering::Counted(Opcode::NewVector),\n    },\n"
+                                "    op(\"count\", 1, Opcode::Count),\n    form_op(FormOp::Seal),\n    form_op(FormOp::CljFirst),\n];\n")
+               :instr (str "    pub const fn intrinsic(self) -> &'static str {\n        match self {\n"
+                           "            FormOp::Seal => \"seal\",\n            FormOp::CljFirst => \"cljFirst\",\n        }\n    }\n")
+               :vm (str "fn instruction(op: Op) -> Ins {\n    return match op.code { opcode::CallMethod => Ins.Call, opcode::Count => Ins.Count, _ => Ins.Unsupported };\n}\n"
+                        "fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {\n    match op { form_op::CljFirst => { return a; }, _ => { return b; } }\n}\n"
+                        "fn other() { opcode::NewVector; form_op::Seal; }\n")
+               :realm (str "inline fn global_row() -> i64 { return 0; }\ninline fn array_prototype_row() -> i64 { return 3; }\n"
+                           "inline fn array_constructor_row() -> i64 { return 14; }\ninline fn wrapper_prototype_row(t: i64) -> i64 { return 26 + t; }\n"
+                           "let WRAPPER_NAMES: Name[3] = [Name { text: \"Number\" }, Name { text: \"String\" }, Name { text: \"Boolean\" }];\n"
+                           "let PENDING: PendingName[6] = [\n    // Array.prototype\n"
+                           "    PendingName { holder: 0, key: \"Map\" }, PendingName { holder: 3, key: \"slice\" }, PendingName { holder: 14, key: \"from\" },\n"
+                           "    PendingName { holder: 27, key: \"padEnd\" }, PendingName { holder: 0, key: \"Date\" }, PendingName { holder: 14, key: \"\", symbol: 1 },\n];\n")
+               :schema "fn export_well_known_symbol(index: i64) -> const u8[:] {\n    return match index {\n        0 => \"iterator\",\n        1 => \"asyncIterator\",\n    };\n}\n"}
+      code (code-only (str "const m = new Map(); // Date\nconst s = 'WeakMap Date'; x.slice(1); __rt.seal(a); __rt.vector(1); __rt.call(o, f);\n"
+                           "__rt.cljFirst(s); __rt.count(v); Array.from(y); /* __rt.lazySeq(z) */ s.padEnd(2); Symbol.asyncIterator;"))]
+  (assert (= {"call" {:opcode "CallMethod"} "vector" {:opcode "NewVector"} "count" {:opcode "Count"} "seal" {:form-op "Seal"} "cljFirst" {:form-op "CljFirst"}}
+             (intrinsic-lowerings sources)))
+  (assert (= {:opcode #{"CallMethod" "Count"} :form-op #{"CljFirst"}} (goose-implemented sources)))
+  (assert (= [["globalThis" "Map"] ["Array.prototype" "slice"] ["Array" "from"] ["String.prototype" "padEnd"] ["globalThis" "Date"] ["Array" "@@asyncIterator"]]
+             (map (juxt :holder :key) (realm-pending sources))))
+  (assert (= [[{:member "seal" :lowering :form-op :op "Seal" :uses 1} {:member "vector" :lowering :opcode :op "NewVector" :uses 1}]
+              [["Map" 1] ["slice" 1] ["from" 1] ["padEnd" 1] ["@@asyncIterator" 1]]]
+             (let [[missing pending] (boot-gaps code sources)] [missing (map (juxt :key :uses) pending)]))))
+
+;; The boot's outcome from the exporter's and the runner's processes, each
+;; {:exit :out :err} (the runner's nil when the export did not succeed): an
+;; export refusal only for goose_export's named refusals (exit 3,
+;; unsupported:..., or 2, syntax:...); a classified runner outcome only from
+;; a runner that exited 0 with its outcome map and its heap counters; every
+;; other result a :timeout or an :infrastructure failure, which never
+;; passes --check or is recorded.
+(def classified #{:returned :thrown :rejected :unsupported :limit})
+(defn boot-outcome [e r]
+  (let [line (str (first (str/split-lines (str (:out e)))))
+        exported (re-matches #"exported:(\d+):(\d+)" line)
+        lines (str/split-lines (str (:out r)))
+        read (fn [s] (try (edn/read-string s) (catch Exception _ nil)))
+        outcome (read (first lines))
+        heap (:heap (read (second lines)))]
+    (cond (= :timeout (:exit e)) {:status :timeout :detail (str "export " (:err e))}
+          (and (= 3 (:exit e)) (str/starts-with? line "unsupported:")) {:status :export-refused :detail line}
+          (and (= 2 (:exit e)) (str/starts-with? line "syntax:")) {:status :export-refused :detail line}
+          (not (and (= 0 (:exit e)) exported)) {:status :infrastructure :detail (bounded (str "export exit " (:exit e) ": " line " " (:err e)) 300)}
+          :else
+          (merge {:export {:functions (parse-long (nth exported 1)) :instructions (parse-long (nth exported 2))}}
+                 (cond (= :timeout (:exit r)) {:status :timeout :detail (:err r)}
+                       (and (= 0 (:exit r)) (map? outcome) (classified (:status outcome)) (int? (:steps outcome))
+                            (every? #(int? (get heap %)) [:nodes :values :properties :units]))
+                       (assoc (select-keys outcome [:status :fault :detail :operation :value :steps :span]) :rows heap)
+                       :else {:status :infrastructure
+                              :detail (bounded (str "runner exit " (:exit r) ": " (or (:reason outcome) (str (:out r) (:err r)))) 300)})))))
+(let [ok {:exit 0 :out "exported:3:9\n"}
+      run {:exit 0 :out "{:status :returned :value \"n\" :steps 7}\n{:heap {:nodes 1 :values 2 :properties 3 :units 4}}\n"}]
+  (assert (= {:export {:functions 3 :instructions 9} :status :returned :value "n" :steps 7 :rows {:nodes 1 :values 2 :properties 3 :units 4}}
+             (boot-outcome ok run)))
+  (assert (= :export-refused (:status (boot-outcome {:exit 3 :out "unsupported:module"} nil))))
+  (assert (= :timeout (:status (boot-outcome {:exit :timeout :out "" :err "timed out"} nil))))
+  (assert (= :infrastructure (:status (boot-outcome {:exit 1 :out "error:x.js: denied"} nil))))
+  (assert (= :infrastructure (:status (boot-outcome {:exit 0 :out "garbage"} nil))))
+  (assert (= :timeout (:status (boot-outcome ok {:exit :timeout :out "" :err "timed out"}))))
+  ;; An outcome printed by a runner that then failed, or without its heap counters.
+  (assert (= :infrastructure (:status (boot-outcome ok (assoc run :exit 134)))))
+  (assert (= :infrastructure (:status (boot-outcome ok (update run :out #(first (str/split-lines %)))))))
+  (assert (= :infrastructure (:status (boot-outcome ok {:exit 1 :out "{:status :infrastructure :reason \"cannot read program\"}"})))))
 
 ;; Boot the profile: export, run, and the outcome as a row.
 (defn boot! []
@@ -446,23 +541,17 @@
         _ (spit js (str "const rt = " profile ";\nObject.keys(rt.core).length;\n"))
         _ (fs/delete-if-exists image)
         e (run-process {:dir repository :env base-env :timeout (:timeout options)} exporter js image)
-        line (str (first (str/split-lines (str (:out e)))))
-        base {:profile-bytes (count (.getBytes ^String profile "UTF-8")) :code (code-only profile)}]
-    (if-let [[_ f i] (and (= 0 (:exit e)) (re-matches #"exported:(\d+):(\d+)" line))]
-      (let [started (System/nanoTime)
-            r (run-process {:dir repository :env base-env :timeout (:timeout options)} boot-runner image "heap")
-            seconds (/ (- (System/nanoTime) started) 1e9)
-            [outcome-line heap-line] (str/split-lines (str (:out r)))
-            outcome (try (edn/read-string outcome-line) (catch Exception _ nil))
-            [start] (:span outcome)]
-        (merge base
-               {:export {:functions (parse-long f) :instructions (parse-long i) :image-bytes (fs/size image)}
-                :seconds seconds :rows (try (some-> heap-line edn/read-string :heap) (catch Exception _ nil))}
-               (cond (= :timeout (:exit r)) {:status :timeout :detail (:err r)}
-                     (not (map? outcome)) {:status :infrastructure :detail (bounded (str "runner exit " (:exit r) ": " (:out r) (:err r)) 300)}
-                     :else (select-keys outcome [:status :fault :detail :operation :value :reason :steps]))
-               (when start (assoc (source-line (fs/read-all-bytes js) start) :byte start))))
-      (merge base {:status :export-refused :detail (bounded (if (str/blank? line) (str "exit " (:exit e) ": " (:err e)) line) 300)}))))
+        started (System/nanoTime)
+        r (when (and (= 0 (:exit e)) (fs/exists? image))
+            (run-process {:dir repository :env base-env :timeout (:timeout options)} boot-runner image "heap"))
+        seconds (/ (- (System/nanoTime) started) 1e9)
+        outcome (boot-outcome e r)
+        [start] (:span outcome)]
+    (cond-> (merge {:profile-bytes (count (.getBytes ^String profile "UTF-8")) :code (code-only profile)}
+                   (dissoc outcome :span))
+      (:export outcome) (assoc-in [:export :image-bytes] (fs/size image))
+      r (assoc :seconds seconds)
+      start (merge (assoc (source-line (fs/read-all-bytes js) start) :byte start)))))
 
 ;; A stop's identity, and its place in the boot: an export refusal before
 ;; every run, a completed boot after every stop, a timeout or an
@@ -525,7 +614,9 @@
     (when (:seconds b)
       (println (format "core boot: the run took %.2f s; table rows %s: %s" (:seconds b) (if (= :returned (:status b)) "used" "at the stop")
                        (str/join " " (for [k [:nodes :values :properties :units]] (str (name k) " " (get (:rows b) k)))))))
-    (print-gaps! (boot-gaps (:code b)))
+    (let [sources (source-texts)]
+      (check-readers! sources)
+      (print-gaps! (boot-gaps (:code b) sources)))
     (spit (str (fs/path out-dir "core-boot.edn")) (with-out-str (pprint/pprint (dissoc b :code))))
     (when (:write-expected options)
       (when (#{:timeout :infrastructure} (:status b)) (fail! "core boot: will not record a " (name (:status b)) ": " (:detail b)))

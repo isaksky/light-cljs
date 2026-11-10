@@ -76,7 +76,12 @@
           (assert (= 1 (:exit result))) (assert (= "load:Error.Version\n" (:out result))))
         ;; The conformance runner's outcome contract (scripts/conformance.bb):
         ;; exactly one EDN map, exit 0 for classified outcomes, 1 for
-        ;; infrastructure failures.
+        ;; infrastructure failures. A classified outcome carries :steps, the
+        ;; instructions the job executed (the macro ledger's core-boot step
+        ;; measures progress by it, light-cljs-917), the faulting instruction
+        ;; counted: type-error.js throws at its fourth instruction and
+        ;; global-missing.js at its first. These images are checked in, so
+        ;; the counts change only with the VM's counting.
         (let [conformance (str (fs/path temporary "conformance"))]
           (run! goose "build" (str (fs/path root "src/conformance.goose")) "-o" conformance)
           ;; A runaway case: the runner gives a case no steps or work budget
@@ -91,10 +96,10 @@
             (when-not ended (process/destroy-tree runaway) (deref runaway 5000 nil))
             (assert (nil? ended) (str "conformance runner ended corpus/serial/loop.gsp instead of running until killed: " (:out ended))))
           (doseq [[image exit expected]
-                  [["corpus/serial/calls.gsp" 0 {:status :returned}]
-                   ["corpus/serial/type-error.gsp" 0 {:status :thrown :value "error:TypeError"}]
-                   ["corpus/serial/global-missing.gsp" 0 {:status :thrown :value "error:ReferenceError"}]
-                   ["corpus/serial/unsupported-reached.gsp" 0 {:status :unsupported :fault "Fault.Unsupported" :operation "using_check"}]
+                  [["corpus/serial/calls.gsp" 0 {:status :returned :steps 52}]
+                   ["corpus/serial/type-error.gsp" 0 {:status :thrown :value "error:TypeError" :steps 4}]
+                   ["corpus/serial/global-missing.gsp" 0 {:status :thrown :value "error:ReferenceError" :steps 1}]
+                   ["corpus/serial/unsupported-reached.gsp" 0 {:status :unsupported :fault "Fault.Unsupported" :operation "using_check" :steps 66}]
                    [path 1 {:status :infrastructure :reason "load:Error.Version"}]
                    ["corpus/missing.gsp" 1 {:status :infrastructure :reason "cannot read program"}]]]
             (let [result (process/shell {:continue true :out :string :err :string} conformance (if (fs/absolute? image) image (str (fs/path root image))))
