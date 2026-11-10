@@ -35,10 +35,10 @@ fn payload(a: const Artifact&) -> i64 { return bytes_of(a.keys).len + bytes_of(a
 fn footprint(a: const Artifact&) -> i64 { let empty: Artifact[] = [Artifact {}]; return bytes_of(empty).len + payload(a); }
 fn context(heap: const source::Heap&, base: const snapshot::Snapshot&, imports: const Imports&, c: Control&) -> bool {
     if heap.live_jobs != 0 || heap.fault != source::Fault.None { return reject(c, Error.Boundary); }
-    if base.header.version != 3 || base.header.checkpoint <= 0 || heap.identity <= 0 || heap.nodes.len < base.nodes.len || imports.base != base.header.checkpoint || imports.session != heap.identity { return reject(c, Error.Context); }
+    if base.header.version != 4 || base.header.checkpoint <= 0 || heap.identity <= 0 || heap.nodes.len < base.nodes.len || imports.base != base.header.checkpoint || imports.session != heap.identity { return reject(c, Error.Context); }
     let code .= heap.code;
     if !poll(c, base.code_bytes.len + base.ops.len + base.functions.len + base.code_constants.len + base.children.len + base.code_units.len) { return false; }
-    if !code.valid || code.source_bytes != base.code_bytes || bytes_of(code.functions) != bytes_of(base.functions) || source::plain_rows(code.constants) != source::plain_rows(base.code_constants) || code.children != base.children || bytes_of(code.ops) != bytes_of(base.ops) || code.units != base.code_units || code.strings != base.code_strings || bytes_of(code.sites) != bytes_of(base.sites) || bytes_of(code.site_sources) != bytes_of(base.site_sources) || code.site_records != base.site_records { return reject(c, Error.Context); }
+    if !code.valid || code.source_bytes != base.code_bytes || bytes_of(code.functions) != bytes_of(base.functions) || source::plain_rows(code.constants) != source::plain_rows(base.code_constants) || code.children != base.children || bytes_of(code.ops) != bytes_of(base.ops) || code.units != base.code_units || code.strings != base.code_strings || bytes_of(code.sites) != bytes_of(base.sites) || bytes_of(code.site_sources) != bytes_of(base.site_sources) || code.site_records != base.site_records || bytes_of(code.patterns) != bytes_of(base.patterns) || bytes_of(code.pattern_ops) != bytes_of(base.pattern_ops) { return reject(c, Error.Context); }
     return true;
 }
 fn origin(heap: const source::Heap&, base: const snapshot::Snapshot&, imports: const Imports&, slot: i64, c: Control&) -> Key {

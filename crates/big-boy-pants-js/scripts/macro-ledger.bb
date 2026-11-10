@@ -396,8 +396,10 @@
 ;; The realm's PENDING properties (src/realm.goose), each {:holder, the
 ;; holder's JavaScript name from the realm's fixed-row functions, :kind
 ;; :global, :static (a constructor's) or :property, :key}, a well-known
-;; symbol's key spelled @@name.
-(defn camel [words] (apply str (map str/capitalize words)))
+;; symbol's key spelled @@name. A holder is a row number or a row function
+;; (`regexp_prototype_row()`; a REALM_FUNCTIONS row's, `fixed_rows() + N`,
+;; is its constructor), a symbol an index or a `well_known::` name.
+(defn camel [words] (apply str (map #(get {"regexp" "RegExp"} % (str/capitalize %)) words)))
 (defn realm-pending [{:keys [realm schema]}]
   (let [names (fn [table] (mapv second (re-seq #"text: \"(\w+)\"" (or (re-find (re-pattern (str "let " table ":[^\n]*")) realm) ""))))
         families {"wrapper" (names "WRAPPER_NAMES") "error" (names "ERROR_NAMES") "function_kind" (names "FUNCTION_KIND_TAGS")}
@@ -413,10 +415,18 @@
                                    :let [table (some (fn [[family t]] (when (str/starts-with? f family) t)) families)]
                                    [i entry] (map-indexed vector table)]
                                [(+ (parse-long n) i) (holder f entry)])))
-        symbols (into {} (for [[_ i s] (re-seq #"(\d+) => \"(\w+)\"" (section schema "fn export_well_known_symbol(" "\n}\n"))] [(parse-long i) s]))]
-    (for [[_ row key symbol] (re-seq #"PendingName \{ holder: (\d+), key: \"([^\"]*)\"(?:, symbol: (\d+))? \}" (section realm "let PENDING:" "\n];"))]
-      (merge (rows (parse-long row) {:holder (str "row " row) :kind :property})
-             (if symbol {:key (str "@@" (symbols (parse-long symbol) (str "symbol " symbol)))} {:key key})))))
+        named (merge (into {} (for [[_ f] (re-seq #"inline fn (\w+)_row\(\) -> i64 \{ return \d+; \}" realm)] [f (holder f nil)]))
+                     (into {} (for [[_ f] (re-seq #"inline fn (\w+)_row\(\) -> i64 \{ return fixed_rows\(\) \+ \d+; \}" realm)]
+                                [f {:holder (camel (str/split f #"_")) :kind :static}])))
+        symbols (into {} (for [[_ i s] (re-seq #"(\d+) => \"(\w+)\"" (section schema "fn export_well_known_symbol(" "\n}\n"))] [(parse-long i) s]))
+        symbol-name (fn [s] (if-let [[_ n] (re-matches #"well_known::(\w+)" s)]
+                              (str (str/lower-case (subs n 0 1)) (subs n 1))
+                              (symbols (parse-long s) (str "symbol " s))))]
+    (for [[_ row key symbol] (re-seq #"PendingName \{ holder: (\d+|\w+_row\(\)), key: \"([^\"]*)\"(?:, symbol: (\d+|well_known::\w+))? \}" (section realm "let PENDING:" "\n];"))]
+      (merge (if-let [[_ f] (re-matches #"(\w+)_row\(\)" row)]
+               (named f {:holder (str "row " row) :kind :property})
+               (rows (parse-long row) {:holder (str "row " row) :kind :property}))
+             (if symbol {:key (str "@@" (symbol-name symbol))} {:key key})))))
 
 ;; That the readers above read the real sources whole: every intrinsic of
 ;; the table, every PENDING entry the table's length declares, each with a
@@ -480,17 +490,19 @@
                          "fn other() { form_op::Seal; }\n")
                :realm (str "inline fn global_row() -> i64 { return 0; }\ninline fn array_prototype_row() -> i64 { return 3; }\n"
                            "inline fn array_constructor_row() -> i64 { return 14; }\ninline fn wrapper_prototype_row(t: i64) -> i64 { return 26 + t; }\n"
+                           "inline fn regexp_prototype_row() -> i64 { return 43; }\ninline fn regexp_row() -> i64 { return fixed_rows() + 132; }\n"
                            "let WRAPPER_NAMES: Name[3] = [Name { text: \"Number\" }, Name { text: \"String\" }, Name { text: \"Boolean\" }];\n"
-                           "let PENDING: PendingName[6] = [\n    // Array.prototype\n"
+                           "let PENDING: PendingName[8] = [\n    // Array.prototype\n"
                            "    PendingName { holder: 0, key: \"Map\" }, PendingName { holder: 3, key: \"slice\" }, PendingName { holder: 14, key: \"from\" },\n"
-                           "    PendingName { holder: 27, key: \"padEnd\" }, PendingName { holder: 0, key: \"Date\" }, PendingName { holder: 14, key: \"\", symbol: 1 },\n];\n")
+                           "    PendingName { holder: 27, key: \"padEnd\" }, PendingName { holder: 0, key: \"Date\" }, PendingName { holder: 14, key: \"\", symbol: 1 },\n"
+                           "    PendingName { holder: regexp_row(), key: \"escape\" }, PendingName { holder: regexp_prototype_row(), key: \"\", symbol: well_known::MatchAll },\n];\n")
                :schema "fn export_well_known_symbol(index: i64) -> const u8[:] {\n    return match index {\n        0 => \"iterator\",\n        1 => \"asyncIterator\",\n    };\n}\n"}
       code (code-only (str "const m = new Map(); // Date\nconst s = 'WeakMap Date'; x.slice(1); __rt.seal(a); __rt.vector(1); __rt.call(o, f);\n"
                            "__rt.cljFirst(s); __rt.count(v); Array.from(y); /* __rt.lazySeq(z) */ s.padEnd(2); Symbol.asyncIterator;"))]
   (assert (= {"call" {:opcode "CallMethod"} "vector" {:opcode "NewVector"} "count" {:opcode "Count"} "seal" {:form-op "Seal"} "cljFirst" {:form-op "CljFirst"}}
              (intrinsic-lowerings sources)))
   (assert (= {:opcode #{"CallMethod" "Count"} :form-op #{"CljFirst" "CljPeek"}} (goose-implemented sources)))
-  (assert (= [["globalThis" "Map"] ["Array.prototype" "slice"] ["Array" "from"] ["String.prototype" "padEnd"] ["globalThis" "Date"] ["Array" "@@asyncIterator"]]
+  (assert (= [["globalThis" "Map"] ["Array.prototype" "slice"] ["Array" "from"] ["String.prototype" "padEnd"] ["globalThis" "Date"] ["Array" "@@asyncIterator"] ["RegExp" "escape"] ["RegExp.prototype" "@@matchAll"]]
              (map (juxt :holder :key) (realm-pending sources))))
   (assert (= [[{:member "seal" :lowering :form-op :op "Seal" :uses 1} {:member "vector" :lowering :opcode :op "NewVector" :uses 1}]
               [["Map" 1] ["slice" 1] ["from" 1] ["padEnd" 1] ["@@asyncIterator" 1]]]

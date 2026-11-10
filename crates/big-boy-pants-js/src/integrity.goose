@@ -74,7 +74,7 @@ namespace source;
 // The kinds with [[Extensible]]: every JavaScript object kind with own
 // properties (snapshot.goose named).
 fn integrity_kind(kind: i64) -> bool {
-    return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Arguments || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::BoundFunction;
+    return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Arguments || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::RegExp || kind == node_kind::BoundFunction;
 }
 // IsExtensible(object) for Goose callers (proxy invariants): a proxy's fails
 // by name, as does a form's.

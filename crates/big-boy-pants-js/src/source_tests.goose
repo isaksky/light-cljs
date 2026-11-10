@@ -50,12 +50,14 @@ fn main() {
     // Version 2 predates the direct-eval site bit (light-cljs-823), version 3
     // the function source text (light-cljs-853), version 4 the simple
     // parameter list bit (light-cljs-854), version 5 the eval-site section
-    // (light-cljs-858).
+    // (light-cljs-858), version 6 the regular-expression section
+    // (light-cljs-932).
     set_word(bad[..], 4, 2); assert(program::validate(bad) == program::Error.Version);
     set_word(bad[..], 4, 3); assert(program::validate(bad) == program::Error.Version);
     set_word(bad[..], 4, 4); assert(program::validate(bad) == program::Error.Version);
     set_word(bad[..], 4, 5); assert(program::validate(bad) == program::Error.Version);
-    set_word(bad[..], 4, 6); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
+    set_word(bad[..], 4, 6); assert(program::validate(bad) == program::Error.Version);
+    set_word(bad[..], 4, 7); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
     set_word(bad[..], 12, program::word(macro, 12));
     let l = program::layout(macro);
     set_word(bad[..], l.functions, 4294967295); assert(program::validate(bad) == program::Error.Range);
@@ -130,6 +132,7 @@ fn main() {
         assert(image.valid && image.bytes[..] == original[..]);
     }
     eval_sites(embed_file("../corpus/serial/direct-eval-reached.gsp"));
+    patterns(embed_file("../corpus/serial/regexp-construction.gsp"));
     print("source export: arithmetic=27.5, control=7307, wide=299; macro inspection; malformed/truncation/transaction/eval-site checks passed");
 }
 // The eval-site section (GSP version 6, light-cljs-858) of an image with one
@@ -167,19 +170,54 @@ fn eval_sites(good: const u8[:]) {
     set_word(bad[..], receiver + 8, eval_role::Binding); assert(program::validate(bad) == program::Error.Operation);
     set_word(bad[..], receiver + 8, program::word(good, receiver + 8)); assert(program::validate(bad) == program::Error.None);
     // The marked call without its site row: a Reference error.
-    var bare: u8[>..] = []; bare.append(good[..l.tail]); for n in [0, 0, 0] { push_word(bare, n); }
+    var bare: u8[>..] = []; bare.append(good[..l.tail]); for n in [0, 0, 0, 0, 0, 0] { push_word(bare, n); }
+    assert(program::validate(bare) == program::Error.Reference);
+}
+// The regular-expression section (GSP version 7, light-cljs-932) of an
+// image with literals: each malformed program row or op row is refused.
+fn patterns(good: const u8[:]) {
+    assert(program::validate(good) == program::Error.None);
+    for n in good.len { assert(program::validate(good[..n]) != program::Error.None); }
+    let l = program::layout(good); let p = program::pattern_layout(good, l.patterns);
+    let np = program::word(good, p.counts); assert(np >= 2);
+    var bad: u8[>..] = []; bad.append(good);
+    let row = p.rows; let words = pattern_row::Words * 4;
+    // A row names no literal instruction, or two rows one; rows ascend.
+    let op = program::word(good, row);
+    for n in [op - 1, program::word(good, 24), program::word(good, row + words)] { set_word(bad[..], row, n); assert(program::validate(bad) == program::Error.Reference); }
+    set_word(bad[..], row, op);
+    // Flags and failures in range; a failure has no rows; runs tile.
+    set_word(bad[..], row + 4, 256); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], row + 4, program::word(good, row + 4));
+    set_word(bad[..], row + 4, regexp_flag::Unicode | regexp_flag::UnicodeSets); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], row + 4, program::word(good, row + 4));
+    set_word(bad[..], row + 8, regexp_failure::Unsupported + 1); assert(program::validate(bad) == program::Error.Operation);
+    set_word(bad[..], row + 8, regexp_failure::Syntax); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], row + 8, program::word(good, row + 8));
+    set_word(bad[..], row + 20, 1); assert(program::validate(bad) == program::Error.Range); set_word(bad[..], row + 20, 0);
+    set_word(bad[..], row + 12, program::word(good, row + 12) + 1); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], row + 12, program::word(good, row + 12));
+    // Op rows: an unknown kind or flag, an operand past its range, a
+    // last instruction other than Accept.
+    let first = p.ops; let n = program::word(good, row + 24);
+    set_word(bad[..], first, regexp_op::Name + 1); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], first, program::word(good, first));
+    set_word(bad[..], first, program::word(good, first) | 65536); assert(program::validate(bad) == program::Error.Operation);
+    set_word(bad[..], first, program::word(good, first) | (regexp_op_flag::Negative << 8)); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], first, program::word(good, first));
+    let last = first + (n - 1) * 20;
+    assert(program::word(good, last) == regexp_op::Accept);
+    set_word(bad[..], last, regexp_op::Jump); set_word(bad[..], last + 4, n); assert(program::validate(bad) == program::Error.Operation);
+    set_word(bad[..], last + 4, 0); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], last, regexp_op::Accept);
+    assert(program::validate(bad) == program::Error.None);
+    // A literal instruction without its row.
+    var bare: u8[>..] = []; bare.append(good[..p.counts]); for x in [0, 0, 0] { push_word(bare, x); }
     assert(program::validate(bare) == program::Error.Reference);
 }
 
 fn push_word(bytes: u8[>..]&, value: i64) { for i in 4 { bytes.push(((value >> (8 * i)) & 255) as u8); } }
 fn depth_limit(count: i64, expected: program::Error) {
     var bytes: u8[>..] = []; bytes.append("GSP\0");
-    for n in [6, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
+    for n in [7, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
     for i in count {
         for n in [i * 2, 2, 0, 0, i, if i + 1 < count { 1 } else { 0 }, 0, 0, 0, 0, 0, 0, 0, 0, 0] { push_word(bytes, n); }
     }
     for i in (count - 1) { push_word(bytes, i + 1); }
     for i in count { for n in [export_descriptor(opcode::Undefined), 0, 0, 0, 0, export_descriptor(opcode::Return), 0, 0, 0, 1] { push_word(bytes, n); } }
-    for n in [0, 0, 0] { push_word(bytes, n); }
+    for n in [0, 0, 0, 0, 0, 0] { push_word(bytes, n); }
     assert(program::validate(bytes) == expected);
 }

@@ -19,7 +19,10 @@ use crate::vm::instr::{Opcode, OperandKind};
 /// pool: each direct-eval site's capture sources as validated rows and its
 /// whole scope as an opaque record ([`encode_eval_site`]); version-5 readers
 /// refuse it.
-pub const VERSION: u32 = 6;
+/// Version 7 (light-cljs-932) adds the regular-expression section after
+/// the eval-site records: every `RegExpLiteral`'s compiled pattern
+/// ([`PATTERN_WORDS`]); version-6 readers refuse it.
+pub const VERSION: u32 = 7;
 /// The u32 words of a function row (60 bytes): instruction start/count,
 /// constant start/count, child start/count, params, locals, captures,
 /// name-unit start/count, JS length, flags, source-text byte start/end.
@@ -318,6 +321,489 @@ const EVAL_ROLES: [&str; 6] = [
 ];
 pub const EVAL_CELL: u32 = 1 << 8;
 
+/// The regular-expression section (GSP version 7, light-cljs-932): every
+/// `RegExpLiteral`'s pattern, compiled here by the Pants engine's parser and
+/// matcher compiler (`regexp::parse`, `regexp::matcher::compile`), so the
+/// Goose VM neither parses patterns nor carries Unicode property tables. The
+/// section follows the eval-site records: three u32 counts (programs, op
+/// rows, UTF-16 units), then the program rows ([`PATTERN_WORDS`] words), the
+/// op rows (5 words) and the units. Each program owns a contiguous run of op
+/// rows and of units, in program order:
+///
+/// * program row: the literal's instruction row (a run-time pattern's,
+///   [`export_pattern`], is [`RUNTIME_PATTERN`]); its flags
+///   ([`REGEXP_FLAGS`] bits); its [`RegExpFailure`]; its capture groups
+///   (group zero included; 0 when it failed) and repeat slots; its op run's
+///   first row and its instruction, member and name counts; its unit run's
+///   first unit and count.
+/// * op rows, word 0 the [`RegExpOp`] in bits 0..7 and [`REGEXP_OP_FLAGS`]
+///   in bits 8..15, words 1..4 its operands `a`..`d`: first the matcher's
+///   instructions (`regexp::matcher::Instruction`, in its order; targets and
+///   member positions are indices into the program's run), then the member
+///   rows a Class or Backreference names, then one Name row per capture
+///   group after group zero.
+/// * units: the failure's message, or the capture names' text.
+///
+/// Operands: Char a=its code point (canonicalized under ignore case, as the
+/// matcher compares); Class a=first member, b=member count (Range rows
+/// a..=b and Escape rows a=[`REGEXP_ESCAPES`] index; a property escape and
+/// any v-mode set already lowered to ranges); Assert a=[`REGEXP_ASSERTIONS`]
+/// index; Backreference a=first member, b=count (Capture rows a=group);
+/// Start and End a=group; Clear a=first group, b=last; Split and Jump
+/// a=target; RepeatInit and RepeatBegin a=slot; RepeatHead a=slot, b=min,
+/// c=max ([`REPEAT_UNBOUNDED`] for none), d=end target, its body the next
+/// instruction; RepeatEnd a=slot, b=min, c=head target; Look a=end target;
+/// Name a=its text's first unit within the program's unit run, b=its
+/// length, c=1 when the group is named. A count above
+/// `REPEAT_UNBOUNDED - 1` is stored as that: the matcher's step budget
+/// (`MAX_MATCH_STEPS`, one step an instruction) ends any search long
+/// before a repeat counts so far.
+///
+/// A literal whose compilation fails exports the failure, which the VM
+/// raises when the literal is evaluated (`false && /\p{Script=Greek}/u` is
+/// false): [`RegExpFailure::Syntax`] with the parser's message,
+/// [`RegExpFailure::Limit`] (the compilation step limit, a RangeError) or
+/// [`RegExpFailure::Unsupported`] naming a feature the matcher compiler
+/// refuses (lookbehind), which the VM fails by name.
+pub const PATTERN_WORDS: usize = 11;
+/// A run-time pattern's instruction row ([`export_pattern`]).
+pub const RUNTIME_PATTERN: u32 = u32::MAX;
+/// RepeatHead's max for an unbounded repeat (`regexp_repeat::Unbounded`).
+pub const REPEAT_UNBOUNDED: u32 = u32::MAX;
+/// The kind of a regular-expression op row (`regexp_op::` in the generated
+/// schema): the matcher's instructions, then the member and name rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RegExpOp {
+    Char,
+    Dot,
+    Class,
+    Assert,
+    Backreference,
+    Start,
+    End,
+    Clear,
+    Split,
+    Jump,
+    RepeatInit,
+    RepeatHead,
+    RepeatBegin,
+    RepeatEnd,
+    Look,
+    LookEnd,
+    Accept,
+    Range,
+    Escape,
+    Capture,
+    Name,
+}
+const REGEXP_OPS: [RegExpOp; 21] = [
+    RegExpOp::Char,
+    RegExpOp::Dot,
+    RegExpOp::Class,
+    RegExpOp::Assert,
+    RegExpOp::Backreference,
+    RegExpOp::Start,
+    RegExpOp::End,
+    RegExpOp::Clear,
+    RegExpOp::Split,
+    RegExpOp::Jump,
+    RegExpOp::RepeatInit,
+    RegExpOp::RepeatHead,
+    RegExpOp::RepeatBegin,
+    RegExpOp::RepeatEnd,
+    RegExpOp::Look,
+    RegExpOp::LookEnd,
+    RegExpOp::Accept,
+    RegExpOp::Range,
+    RegExpOp::Escape,
+    RegExpOp::Capture,
+    RegExpOp::Name,
+];
+/// An op row's flag bits (bits 8..15 of its first word; `regexp_op_flag::`):
+/// a Char's, Class's, Assert's or Backreference's ignore case, an Assert's
+/// multiline, a Dot's dotAll, a Class's inversion, a RepeatHead's
+/// greediness, a Look's negation.
+const REGEXP_OP_FLAGS: [(&str, u32); 6] = [
+    ("IgnoreCase", 1),
+    ("Multiline", 2),
+    ("DotAll", 4),
+    ("Inverted", 8),
+    ("Greedy", 16),
+    ("Negative", 32),
+];
+fn op_flag(name: &str) -> u32 {
+    REGEXP_OP_FLAGS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|&(_, bit)| bit)
+        .expect("op flag")
+}
+/// A pattern's flags (`regexp_flag::`), one bit each in the order
+/// `RegExp.prototype.flags` lists them, dgimsuvy.
+const REGEXP_FLAGS: [&str; 8] = [
+    "HasIndices",
+    "Global",
+    "IgnoreCase",
+    "Multiline",
+    "DotAll",
+    "Unicode",
+    "UnicodeSets",
+    "Sticky",
+];
+fn flag_bits(f: crate::regexp::parse::Flags) -> u32 {
+    [
+        f.has_indices,
+        f.global,
+        f.ignore_case,
+        f.multiline,
+        f.dot_all,
+        f.unicode,
+        f.unicode_sets,
+        f.sticky,
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, &on)| u32::from(on) << i)
+    .sum()
+}
+/// An Assert's kind (`regexp_assertion::`), in `regexp::ir::Assertion`'s order.
+const REGEXP_ASSERTIONS: [&str; 4] = ["Start", "End", "WordBoundary", "NotWordBoundary"];
+/// A class escape (`regexp_escape::`), in `regexp::ir::ClassEscape`'s order.
+const REGEXP_ESCAPES: [&str; 6] = ["Digit", "NotDigit", "Word", "NotWord", "Space", "NotSpace"];
+/// Why a pattern has no program (`regexp_failure::`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegExpFailure {
+    None,
+    Syntax,
+    Limit,
+    Unsupported,
+}
+const REGEXP_FAILURES: [RegExpFailure; 4] = [
+    RegExpFailure::None,
+    RegExpFailure::Syntax,
+    RegExpFailure::Limit,
+    RegExpFailure::Unsupported,
+];
+
+/// Compiled patterns in the section's layout ([`PATTERN_WORDS`]).
+#[derive(Default)]
+struct Patterns {
+    rows: Vec<[u32; PATTERN_WORDS]>,
+    ops: Vec<[u32; 5]>,
+    units: Vec<u16>,
+}
+
+impl Patterns {
+    /// Compile `pattern` with `flags` and append its program row, op rows
+    /// and units; `op` is the literal's instruction row or
+    /// [`RUNTIME_PATTERN`]. A compilation failure is a row, not an error;
+    /// only the section's resource bounds are errors.
+    fn push(
+        &mut self,
+        op: u32,
+        pattern: &crate::JsString,
+        flags: &crate::JsString,
+        source: &str,
+    ) -> Result<(), SyntaxError> {
+        use crate::regexp::{matcher, parse};
+        let op_start = bounded(self.ops.len(), MAX_RECORDS, source)?;
+        let unit_start = bounded(self.units.len(), MAX_RECORDS, source)?;
+        let failed = |failure: RegExpFailure, message: &str, bits: u32| {
+            let units: Vec<u16> = message.encode_utf16().collect();
+            (failure, bits, None, units)
+        };
+        let (failure, bits, program, mut units) = match parse::parse(pattern, flags) {
+            Err(e) => failed(
+                RegExpFailure::Syntax,
+                &format!("{} at UTF-16 offset {}", e.message, e.offset),
+                0,
+            ),
+            Ok(parsed) => {
+                let bits = flag_bits(parsed.flags);
+                match matcher::compile(&parsed) {
+                    Ok(program) => (
+                        RegExpFailure::None,
+                        bits,
+                        Some((program, parsed.captures)),
+                        Vec::new(),
+                    ),
+                    Err(matcher::MatchError::LimitExceeded) => failed(
+                        RegExpFailure::Limit,
+                        "regular expression step limit exceeded",
+                        bits,
+                    ),
+                    Err(matcher::MatchError::Unsupported(feature)) => {
+                        failed(RegExpFailure::Unsupported, feature, bits)
+                    }
+                    Err(e) => failed(RegExpFailure::Syntax, &e.to_string(), bits),
+                }
+            }
+        };
+        let mut ops = Vec::new();
+        let (mut captures, mut repeats, mut instructions, mut members, mut names) = (0, 0, 0, 0, 0);
+        if let Some((program, capture_names)) = program {
+            let encoded = encode_program(&program, &capture_names, &mut ops, &mut units).map_err(
+                |message| problem(source, SyntaxErrorKind::Internal, Span::new(0, 0), message),
+            )?;
+            (instructions, members, names) = encoded;
+            captures = bounded(program.captures(), MAX_RECORDS, source)?;
+            repeats = bounded(program.repeats(), MAX_RECORDS, source)?;
+        }
+        bounded(
+            self.ops.len().saturating_add(ops.len()),
+            MAX_RECORDS,
+            source,
+        )?;
+        bounded(
+            self.units.len().saturating_add(units.len()),
+            MAX_RECORDS,
+            source,
+        )?;
+        bounded(self.rows.len() + 1, MAX_RECORDS, source)?;
+        self.rows.push([
+            op,
+            bits,
+            failure as u32,
+            captures,
+            repeats,
+            op_start,
+            instructions,
+            members,
+            names,
+            unit_start,
+            units.len() as u32,
+        ]);
+        self.ops.extend(ops);
+        self.units.extend(units);
+        Ok(())
+    }
+    fn write(&self, bytes: &mut Vec<u8>) {
+        let word = |out: &mut Vec<u8>, n: u32| out.extend_from_slice(&n.to_le_bytes());
+        for n in [self.rows.len(), self.ops.len(), self.units.len()] {
+            word(bytes, n as u32);
+        }
+        for row in &self.rows {
+            for &n in row {
+                word(bytes, n);
+            }
+        }
+        for row in &self.ops {
+            for &n in row {
+                word(bytes, n);
+            }
+        }
+        for n in &self.units {
+            bytes.extend_from_slice(&n.to_le_bytes());
+        }
+    }
+}
+
+/// Write one compiled program's op rows (instructions, members, names) and
+/// its capture names' units; its instruction, member and name counts.
+fn encode_program(
+    program: &crate::regexp::matcher::Program,
+    capture_names: &[Option<crate::JsString>],
+    ops: &mut Vec<[u32; 5]>,
+    units: &mut Vec<u16>,
+) -> Result<(u32, u32, u32), &'static str> {
+    use crate::regexp::ir::{Assertion, ClassEscape, ClassMember};
+    use crate::regexp::matcher::Instruction as I;
+    let count = |n: usize| u32::try_from(n).map_err(|_| "regular expression program too large");
+    let instructions = program.instructions();
+    let mut members: Vec<[u32; 5]> = Vec::new();
+    let row = |kind: RegExpOp, flags: u32, a: u32, b: u32, c: u32, d: u32| {
+        [kind as u32 | flags << 8, a, b, c, d]
+    };
+    let ignore = |on: bool| if on { op_flag("IgnoreCase") } else { 0 };
+    let clamp = |n: u64| {
+        u32::try_from(n)
+            .unwrap_or(REPEAT_UNBOUNDED - 1)
+            .min(REPEAT_UNBOUNDED - 1)
+    };
+    let first = instructions.len();
+    for (index, instruction) in instructions.iter().enumerate() {
+        let member = count(first + members.len())?;
+        let encoded = match instruction {
+            I::Char(c, ic) => row(RegExpOp::Char, ignore(*ic), *c, 0, 0, 0),
+            I::Dot(dot_all) => row(
+                RegExpOp::Dot,
+                if *dot_all { op_flag("DotAll") } else { 0 },
+                0,
+                0,
+                0,
+                0,
+            ),
+            I::Class(class, ic) => {
+                for m in &class.members {
+                    match m {
+                        ClassMember::Literal(c) => {
+                            members.push(row(RegExpOp::Range, 0, *c, *c, 0, 0))
+                        }
+                        ClassMember::Range(a, b) => {
+                            members.push(row(RegExpOp::Range, 0, *a, *b, 0, 0))
+                        }
+                        ClassMember::Escape(e) => {
+                            let kind = match e {
+                                ClassEscape::Digit => 0,
+                                ClassEscape::NotDigit => 1,
+                                ClassEscape::Word => 2,
+                                ClassEscape::NotWord => 3,
+                                ClassEscape::Space => 4,
+                                ClassEscape::NotSpace => 5,
+                            };
+                            members.push(row(RegExpOp::Escape, 0, kind, 0, 0, 0));
+                        }
+                        ClassMember::Property { property, inverted } => {
+                            for (a, b) in property.lowered(*inverted, *ic) {
+                                members.push(row(RegExpOp::Range, 0, a, b, 0, 0));
+                            }
+                        }
+                        ClassMember::StringProperty(_) => {
+                            return Err("a string property in a compiled class");
+                        }
+                    }
+                }
+                let flags = ignore(*ic)
+                    | if class.inverted {
+                        op_flag("Inverted")
+                    } else {
+                        0
+                    };
+                row(
+                    RegExpOp::Class,
+                    flags,
+                    member,
+                    count(first + members.len())? - member,
+                    0,
+                    0,
+                )
+            }
+            I::Assert(a, multiline, ic) => {
+                let kind = match a {
+                    Assertion::Start => 0,
+                    Assertion::End => 1,
+                    Assertion::WordBoundary => 2,
+                    Assertion::NotWordBoundary => 3,
+                };
+                let flags = ignore(*ic) | if *multiline { op_flag("Multiline") } else { 0 };
+                row(RegExpOp::Assert, flags, kind, 0, 0, 0)
+            }
+            I::Backreference(ids, ic) => {
+                for &id in ids {
+                    members.push(row(RegExpOp::Capture, 0, count(id)?, 0, 0, 0));
+                }
+                row(
+                    RegExpOp::Backreference,
+                    ignore(*ic),
+                    member,
+                    count(ids.len())?,
+                    0,
+                    0,
+                )
+            }
+            I::Start(c) => row(RegExpOp::Start, 0, count(*c)?, 0, 0, 0),
+            I::End(c) => row(RegExpOp::End, 0, count(*c)?, 0, 0, 0),
+            I::Clear(a, b) => row(RegExpOp::Clear, 0, count(*a)?, count(*b)?, 0, 0),
+            I::Split(t) => row(RegExpOp::Split, 0, count(*t)?, 0, 0, 0),
+            I::Jump(t) => row(RegExpOp::Jump, 0, count(*t)?, 0, 0, 0),
+            I::RepeatInit(s) => row(RegExpOp::RepeatInit, 0, count(*s)?, 0, 0, 0),
+            I::RepeatHead {
+                slot,
+                min,
+                max,
+                greedy,
+                body,
+                end,
+            } => {
+                if *body != index + 1 {
+                    return Err("a repeat whose body does not follow its head");
+                }
+                let max = max.map_or(REPEAT_UNBOUNDED, clamp);
+                let flags = if *greedy { op_flag("Greedy") } else { 0 };
+                row(
+                    RegExpOp::RepeatHead,
+                    flags,
+                    count(*slot)?,
+                    clamp(*min),
+                    max,
+                    count(*end)?,
+                )
+            }
+            I::RepeatBegin(s) => row(RegExpOp::RepeatBegin, 0, count(*s)?, 0, 0, 0),
+            I::RepeatEnd { slot, min, head } => row(
+                RegExpOp::RepeatEnd,
+                0,
+                count(*slot)?,
+                clamp(*min),
+                count(*head)?,
+                0,
+            ),
+            I::Look { end, negative } => {
+                let flags = if *negative { op_flag("Negative") } else { 0 };
+                row(RegExpOp::Look, flags, count(*end)?, 0, 0, 0)
+            }
+            I::LookEnd => row(RegExpOp::LookEnd, 0, 0, 0, 0, 0),
+            I::Accept => row(RegExpOp::Accept, 0, 0, 0, 0, 0),
+        };
+        ops.push(encoded);
+    }
+    let member_count = count(members.len())?;
+    ops.extend(members);
+    let names = program.captures().saturating_sub(1);
+    if capture_names.len() != names {
+        return Err("capture names do not match the compiled program");
+    }
+    let base = units.len();
+    for name in capture_names {
+        match name {
+            Some(name) => {
+                let at = count(units.len() - base)?;
+                units.extend_from_slice(name.code_units());
+                ops.push(row(RegExpOp::Name, 0, at, count(name.len())?, 1, 0));
+            }
+            None => ops.push(row(RegExpOp::Name, 0, 0, 0, 0, 0)),
+        }
+    }
+    Ok((count(instructions.len())?, member_count, count(names)?))
+}
+
+/// Compile a pattern the Goose VM received while a job runs (`new
+/// RegExp(pattern, flags)`, light-cljs-932): `units` is the flags' UTF-16
+/// units, `flag_units` of them, then the pattern's. The result is a
+/// regular-expression section ([`PATTERN_WORDS`]) of exactly one program
+/// whose instruction row is [`RUNTIME_PATTERN`]; invalid flags or pattern
+/// are its [`RegExpFailure::Syntax`] with the parser's message, which the
+/// VM throws as a SyntaxError. Never runs code. Parsing and compiling use
+/// explicit stacks, so it runs on the caller's thread.
+pub fn export_pattern(units: &[u16], flag_units: usize) -> Result<Vec<u8>, SyntaxError> {
+    if flag_units > units.len() {
+        return Err(problem(
+            "",
+            SyntaxErrorKind::Internal,
+            Span::new(0, 0),
+            "pattern flags outside the run-time compiler's input",
+        ));
+    }
+    bounded(units.len(), MAX_SOURCE, "")?;
+    let to_string = |u: &[u16]| {
+        crate::JsString::from_code_units(u).ok_or_else(|| {
+            problem(
+                "",
+                SyntaxErrorKind::TooLarge,
+                Span::new(0, 0),
+                "pattern too long",
+            )
+        })
+    };
+    let flags = to_string(&units[..flag_units])?;
+    let pattern = to_string(&units[flag_units..])?;
+    let mut patterns = Patterns::default();
+    patterns.push(RUNTIME_PATTERN, &pattern, &flags, "")?;
+    let mut bytes = Vec::new();
+    patterns.write(&mut bytes);
+    Ok(bytes)
+}
+
 /// The opaque record of a direct-eval site: the whole [`EvalSite`] but its
 /// offset, which the Goose VM hands back unchanged to the run-time compiler
 /// ([`RuntimeMode::DirectEval`], [`decode_eval_site`]). Little endian:
@@ -573,6 +1059,8 @@ struct Tables {
     sites: Vec<[u32; 5]>,
     site_sources: Vec<[u32; 3]>,
     site_records: Vec<u8>,
+    /// The regular-expression section (version 7, light-cljs-932).
+    patterns: Patterns,
     operations: BTreeSet<&'static str>,
     string_constants: BTreeSet<String>,
     form_operations: BTreeSet<String>,
@@ -720,6 +1208,36 @@ impl Tables {
                 0
             };
             bounded(self.instructions.len() + 1, MAX_RECORDS, source)?;
+            // A regular-expression literal's constant is its flags, NUL and
+            // pattern (`regexp_literal`); its program row is this
+            // instruction's (version 7, light-cljs-932).
+            if opcode == Opcode::RegExpLiteral {
+                let Some(Primitive::String(encoded)) = spec.constants.get(arg as usize) else {
+                    return Err(problem(
+                        source,
+                        SyntaxErrorKind::Internal,
+                        Span::new(0, 0),
+                        "regexp literal without its string constant in Goose export",
+                    ));
+                };
+                let units = encoded.code_units();
+                let Some(split) = units.iter().position(|&u| u == 0) else {
+                    return Err(problem(
+                        source,
+                        SyntaxErrorKind::Internal,
+                        Span::new(0, 0),
+                        "invalid regexp literal constant in Goose export",
+                    ));
+                };
+                let part = |u: &[u16]| crate::JsString::from_code_units(u).expect("substring fits");
+                let row = self.instructions.len() as u32;
+                self.patterns.push(
+                    row,
+                    &part(&units[split + 1..]),
+                    &part(&units[..split]),
+                    source,
+                )?;
+            }
             self.instructions.push([
                 u32::from(opcode as u8) | (tag << 8) | ((size as u32) << 16) | site,
                 arg,
@@ -1038,6 +1556,8 @@ fn encode(
         }
     }
     bytes.extend_from_slice(&tables.site_records);
+    // The regular-expression section (version 7, [`PATTERN_WORDS`]).
+    tables.patterns.write(&mut bytes);
     Ok(Export {
         bytes,
         functions: tables.functions.len(),
@@ -1138,6 +1658,40 @@ pub fn inspection_schema() -> String {
         text.push_str(&format!("let eval_role::{role} = {code};\n"));
     }
     text.push_str(&format!("let eval_role::Cell = {EVAL_CELL};\n"));
+    text.push_str(&format!(
+        "\n// The regular-expression section (GSP version 7, light-cljs-932): a\n\
+         // program row's words, a run-time pattern's instruction row, and\n\
+         // RepeatHead's max for an unbounded repeat.\n\
+         let pattern_row::Words = {PATTERN_WORDS};\n\
+         let pattern_row::Runtime = {RUNTIME_PATTERN};\n\
+         let regexp_repeat::Unbounded = {REPEAT_UNBOUNDED};\n\
+         // A regular-expression op row's kind (bits 0..7 of its first word):\n\
+         // the matcher's instructions, then member and name rows.\n"
+    ));
+    for (code, op) in REGEXP_OPS.iter().enumerate() {
+        assert_eq!(*op as usize, code);
+        text.push_str(&format!("let regexp_op::{op:?} = {code};\n"));
+    }
+    text.push_str("// An op row's flags (bits 8..15 of its first word).\n");
+    for (name, bit) in REGEXP_OP_FLAGS {
+        text.push_str(&format!("let regexp_op_flag::{name} = {bit};\n"));
+    }
+    text.push_str("// A pattern's flags, one bit each in dgimsuvy order.\n");
+    for (i, name) in REGEXP_FLAGS.iter().enumerate() {
+        text.push_str(&format!("let regexp_flag::{name} = {};\n", 1 << i));
+    }
+    text.push_str("// An Assert's kind and a class escape (an Escape row's a).\n");
+    for (code, name) in REGEXP_ASSERTIONS.iter().enumerate() {
+        text.push_str(&format!("let regexp_assertion::{name} = {code};\n"));
+    }
+    for (code, name) in REGEXP_ESCAPES.iter().enumerate() {
+        text.push_str(&format!("let regexp_escape::{name} = {code};\n"));
+    }
+    text.push_str("// Why a pattern has no program (a program row's third word).\n");
+    for (code, failure) in REGEXP_FAILURES.iter().enumerate() {
+        assert_eq!(*failure as usize, code);
+        text.push_str(&format!("let regexp_failure::{failure:?} = {code};\n"));
+    }
     text.push_str(
         "\n// Every opcode's tables; -1, false or \"\" for an unassigned byte.\n\
          fn export_descriptor(op: i64) -> i64 {\n    return match op {\n",
@@ -1310,10 +1864,10 @@ mod tests {
         }
         // No descriptor sets bits 25..31.
         assert!(rows(&export, 3).iter().all(|row| row[0] >> 24 <= 1));
-        assert_eq!(VERSION, 6);
+        assert_eq!(VERSION, 7);
         assert_eq!(
             u32::from_le_bytes(export.bytes[4..8].try_into().unwrap()),
-            6
+            7
         );
         // Version 6 (light-cljs-858): one site row per marked call, in row
         // order, its sources in capture order and its record the site.
@@ -1373,8 +1927,123 @@ mod tests {
             .map(|i| std::array::from_fn(|w| word(at + (i * 3 + w) * 4)))
             .collect();
         at += nsrc * 12;
-        assert_eq!(at + nrec, bytes.len());
-        (sites, sources, bytes[at..].to_vec())
+        // The regular-expression section (version 7) ends the image.
+        assert_eq!(pattern_section(bytes, at + nrec).3, bytes.len());
+        (sites, sources, bytes[at..at + nrec].to_vec())
+    }
+    /// A regular-expression section starting at `at` (version 7): its
+    /// program rows, op rows and units, and where it ends.
+    #[allow(clippy::type_complexity)]
+    fn pattern_section(
+        bytes: &[u8],
+        mut at: usize,
+    ) -> (Vec<[u32; PATTERN_WORDS]>, Vec<[u32; 5]>, Vec<u16>, usize) {
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let (np, nops, nu) = (
+            word(at) as usize,
+            word(at + 4) as usize,
+            word(at + 8) as usize,
+        );
+        at += 12;
+        let rows = (0..np)
+            .map(|i| std::array::from_fn(|w| word(at + (i * PATTERN_WORDS + w) * 4)))
+            .collect();
+        at += np * PATTERN_WORDS * 4;
+        let ops = (0..nops)
+            .map(|i| std::array::from_fn(|w| word(at + (i * 5 + w) * 4)))
+            .collect();
+        at += nops * 20;
+        let units = (0..nu)
+            .map(|i| u16::from_le_bytes([bytes[at + 2 * i], bytes[at + 2 * i + 1]]))
+            .collect();
+        (rows, ops, units, at + nu * 2)
+    }
+    /// The image's regular-expression section (version 7, light-cljs-932).
+    #[allow(clippy::type_complexity)]
+    fn image_patterns(export: &Export) -> (Vec<[u32; PATTERN_WORDS]>, Vec<[u32; 5]>, Vec<u16>) {
+        let bytes = &export.bytes;
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let mut at = 32 + word(8) as usize;
+        for (t, width) in [FUNCTION_WORDS * 4, 12, 4, 20, 2].iter().enumerate() {
+            at += word(12 + 4 * t) as usize * width;
+        }
+        at += 12 + word(at) as usize * 20 + word(at + 4) as usize * 12 + word(at + 8) as usize;
+        let (rows, ops, units, end) = pattern_section(bytes, at);
+        assert_eq!(end, bytes.len());
+        (rows, ops, units)
+    }
+    /// Every regexp literal exports its compiled program, keyed by its
+    /// instruction row; a property escape is lowered to ranges; a literal
+    /// that does not compile exports its failure; a run-time pattern is one
+    /// program with the run-time row (light-cljs-932).
+    #[test]
+    fn regexp_literals_export_compiled_programs() {
+        let source = r"let a = /a(?<n>b)?c*/gi; let b = /[\d\p{Script=Greek}]/u; false && /a{18446744073709551616}/u; false && /(?<=a)b/; a; b;";
+        let export = export_source("regexp.js", source).unwrap();
+        let instructions = rows(&export, 3);
+        let (rows, ops, units) = image_patterns(&export);
+        assert_eq!(rows.len(), 4);
+        let literal = Opcode::RegExpLiteral as u32;
+        for row in &rows {
+            assert_eq!(instructions[row[0] as usize][0] & 255, literal);
+        }
+        assert!(rows.windows(2).all(|w| w[0][0] < w[1][0]));
+        let code = |name: &str| {
+            REGEXP_OPS
+                .iter()
+                .position(|op| format!("{op:?}") == name)
+                .unwrap() as u32
+        };
+        // /a(?<n>b)?c*/gi: global and ignoreCase, two groups, one named.
+        let a = rows[0];
+        assert_eq!(a[1], 2 | 4);
+        assert_eq!(a[2], RegExpFailure::None as u32);
+        assert_eq!((a[3], a[5], a[8]), (2, 0, 1));
+        let run = &ops[a[5] as usize..(a[5] + a[6] + a[7] + a[8]) as usize];
+        assert_eq!(run[a[6] as usize - 1][0], code("Accept"));
+        assert!(
+            run[..a[6] as usize]
+                .iter()
+                .any(|op| op[0] & 255 == code("RepeatHead") && op[3] == REPEAT_UNBOUNDED)
+        );
+        let name = run[(a[6] + a[7]) as usize];
+        assert_eq!((name[0], name[3]), (code("Name"), 1));
+        let text = &units[(a[9] + name[1]) as usize..(a[9] + name[1] + name[2]) as usize];
+        assert_eq!(String::from_utf16(text).unwrap(), "n");
+        // [\d\p{Script=Greek}] under u: one class whose members are the
+        // escape and Greek's ranges.
+        let b = rows[1];
+        assert_eq!((b[1], b[2], b[8]), (32, 0, 0));
+        let run = &ops[b[5] as usize..(b[5] + b[6] + b[7]) as usize];
+        let class = run.iter().find(|op| op[0] & 255 == code("Class")).unwrap();
+        let members = &run[class[1] as usize..(class[1] + class[2]) as usize];
+        assert_eq!(members[0][0], code("Escape"));
+        assert!(
+            members[1..]
+                .iter()
+                .all(|m| m[0] == code("Range") && m[1] <= m[2])
+        );
+        assert!(members[1..].iter().any(|m| m[1] <= 0x3b1 && 0x3b1 <= m[2]));
+        // The capacity failure and the refused lookbehind.
+        assert_eq!(rows[2][2], RegExpFailure::Syntax as u32);
+        assert_eq!(
+            (rows[3][2], rows[3][6]),
+            (RegExpFailure::Unsupported as u32, 0)
+        );
+        let message = &units[rows[3][9] as usize..(rows[3][9] + rows[3][10]) as usize];
+        assert_eq!(String::from_utf16(message).unwrap(), "lookbehind");
+        // A run-time pattern: flags then pattern units.
+        let units: Vec<u16> = "gx|".encode_utf16().collect();
+        let (rows, _, _, end) = pattern_section(&export_pattern(&units, 1).unwrap(), 0);
+        assert_eq!(
+            (rows.len(), rows[0][0], rows[0][1], rows[0][2]),
+            (1, RUNTIME_PATTERN, 2, 0)
+        );
+        assert!(end > 0);
+        let (rows, _, units, _) = pattern_section(&export_pattern(&units, 2).unwrap(), 0);
+        assert_eq!(rows[0][2], RegExpFailure::Syntax as u32);
+        assert!(String::from_utf16(&units).unwrap().contains("flag"));
+        assert!(export_pattern(&units, units.len() + 1).is_err());
     }
     /// A site record round-trips; a malformed or inconsistent one is refused.
     #[test]
@@ -2202,6 +2871,16 @@ mod serial_tests {
             // and across a dependency wait, saved and restored with its
             // continuation (snapshot_tests.goose).
             ("symbols-wait", "goose"),
+            // RegExp objects (light-cljs-932): the constructor's frame over
+            // a pattern object of getters with a newTarget whose `prototype`
+            // is a getter, the flags getter's and toString's frames,
+            // literals and run-time patterns at every budget cut and
+            // collection (serial_tests.goose).
+            ("regexp-construction", "boolean:true"),
+            // and compilation failures: a literal's, raised when evaluated,
+            // the step limit's RangeError and a refused lookbehind's named
+            // fault, which Node and the Pants engine do not share.
+            ("regexp-failures", "goose"),
             // Base classes (light-cljs-886): constructors, eager
             // prototypes, methods, accessors, fields and static blocks at
             // every budget cut and collection (serial_tests.goose).

@@ -1153,7 +1153,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-set-delete.gsp"), embed_file("../corpus/serial/proxy-traps.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/proxy-copy.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
@@ -1532,6 +1532,14 @@ fn primitive_methods() {
     check(embed_file("../corpus/serial/symbol-base-read.gsp"), "utf16:[120,83,121,109,98,111,108,40,120,41,117,110,100,101,102,105,110,101,100]");
     check(embed_file("../corpus/serial/symbol-base-write.gsp"), "number:1.0");
     check(embed_file("../corpus/serial/symbols.gsp"), "boolean:true");
+    // RegExp objects (light-cljs-932): the RegExp, flags and toString
+    // frames over getters and conversions, literals and run-time patterns
+    // (job code rows) at every budget cut.
+    check(embed_file("../corpus/serial/regexp-construction.gsp"), "boolean:true");
+    // Compilation failures (light-cljs-932): a literal's SyntaxError when
+    // evaluated, the step limit's RangeError and invalid flags, all
+    // caught; then a live lookbehind literal's named fault, uncaught.
+    check(embed_file("../corpus/serial/regexp-failures.gsp"), "Fault.UnsupportedOperand:RegExp:-lookbehind", source::Fault.UnsupportedOperand);
     // Base classes (light-cljs-886): class constructors with their eager
     // prototypes, methods, accessors, instance fields run by the
     // constructor's frame, static fields and blocks, and Reflect.construct
@@ -1749,7 +1757,7 @@ thread_fn property_model() {
     let getter = source::closure(heap, 0, []); let setter_fn = source::closure(heap, 0, []);
     let base = source::allocate(heap, source::Node { kind: node_kind::Object }); let a = key(heap, "a"); let g = key(heap, "g");
     assert(source::define_own(heap, base.id(), a, getter, source::attrs_accessor(), 1) && source::define_own(heap, base.id(), a, setter_fn, source::attrs_accessor(), 2));
-    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 7); // after the realm's pending pair, its caller/arguments pair (light-cljs-853), its __proto__ pair (light-cljs-883) and Symbol.prototype's description pair (light-cljs-885)
+    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 18); // after the realm's pending pair, its caller/arguments pair (light-cljs-853), its __proto__ pair (light-cljs-883), Symbol.prototype's description pair (light-cljs-885) and RegExp's eleven getter pairs (light-cljs-932)
     let child = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::set_prototype(heap, child.id(), base));
     for target in [base, child] {
         let v, found = source::lookup(heap, target, a); assert(v.is_undefined() && found == getter);
@@ -2460,14 +2468,14 @@ fn duplicate_image(dup: i64, width: i64) -> u8[] {
     for i in (width - 1) { ops.push(opcode::Pop); }
     ops.push(opcode::Return);
     var bytes: u8[>..] = []; bytes.append("GSP\0");
-    // Version 6, no source, one function, no constants or children.
-    for n in [6, 0, 1, 0, 0, ops.len, 0] { push_word(bytes, n); }
+    // Version 7, no source, one function, no constants or children.
+    for n in [7, 0, 1, 0, 0, ops.len, 0] { push_word(bytes, n); }
     // The function: its instruction run, no constants, children, parameters,
     // locals, captures, name or source text; flags 1 marks it strict.
     for n in [0, ops.len, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0] { push_word(bytes, n); }
     for op, i in ops { for n in [export_descriptor(op), 0, 0, 0, i] { push_word(bytes, n); } }
-    // An empty eval-site section.
-    for n in [0, 0, 0] { push_word(bytes, n); }
+    // Empty eval-site and regular-expression sections.
+    for n in [0, 0, 0, 0, 0, 0] { push_word(bytes, n); }
     return str(bytes);
 }
 thread_fn duplicate_run(bytes: u8[], width: i64) {

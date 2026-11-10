@@ -13,7 +13,153 @@ root struct Image { bytes: u8[>..] = [], valid: bool = false }
 // byte start and length), the source rows (3 words: an eval_source:: kind, a
 // local or capture index, a role word whose bits 0..7 are an eval_role:: and
 // whose eval_role::Cell bit marks a binding cell) and the records' bytes.
-struct Layout { source: i64, functions: i64, constants: i64, children: i64, instructions: i64, units: i64, tail: i64 = 0, sites: i64 = 0, sources: i64 = 0, records: i64 = 0, end: i64 }
+// The regular-expression section (version 7, light-cljs-932) follows the
+// records at `patterns` (PatternLayout); `end` is its end.
+struct Layout { source: i64, functions: i64, constants: i64, children: i64, instructions: i64, units: i64, tail: i64 = 0, sites: i64 = 0, sources: i64 = 0, records: i64 = 0, patterns: i64 = 0, end: i64 }
+// The regular-expression section (GSP version 7, light-cljs-932; the
+// exporter's PATTERN_WORDS documents it): at `counts` three u32 counts
+// (programs, op rows, UTF-16 units), then the program rows
+// (pattern_row::Words words), the op rows (5 words) and the units. A
+// run-time pattern (runtime_compile.goose) is such a section alone, of one
+// program whose instruction row is pattern_row::Runtime.
+struct PatternLayout { counts: i64, rows: i64 = 0, ops: i64 = 0, units: i64 = 0, end: i64 }
+// One compiled regular expression (light-cljs-932): the bbp Rust
+// frontend's matcher program for a pattern and its flags, as the Code
+// tables hold it. `op` is a literal's instruction row (`literal`), or for a
+// run-time pattern the code's instruction count when it was compiled, so the
+// rows stay in ascending `op` order; `flags` are regexp_flag:: bits; a
+// `failure` (regexp_failure::) has no program, its message being its units.
+// Otherwise `start` is its first row in the op table: `instructions`
+// instructions, then `members` member rows, then `names` capture-name rows,
+// one per group after group zero; `captures` counts group zero, `repeats`
+// the repeat slots; `units`/`unit_count` its run of the code units (the
+// failure's message or the capture names' text).
+struct Pattern { op: u32, literal: bool, flags: u8, failure: u8, captures: u32, repeats: u32, start: u32, instructions: u32, members: u32, names: u32, units: u32, unit_count: u32 }
+// One op row (regexp_op::, its regexp_op_flag:: bits and operands a to d;
+// positions and targets are indices into its program's run).
+struct PatternOp { kind: u8, flags: u8, a: u32, b: u32, c: u32, d: u32 }
+fn pattern_layout(bytes: const u8[:], at: i64) -> PatternLayout {
+    if at < 0 || at > bytes.len - 12 { return PatternLayout { counts: at, rows: at + 12, ops: at + 12, units: at + 12, end: at + 12 }; }
+    let rows = at + 12; let ops = rows + word(bytes, at) * pattern_row::Words * 4; let units = ops + word(bytes, at + 4) * 20;
+    return PatternLayout { counts: at, rows: rows, ops: ops, units: units, end: units + word(bytes, at + 8) * 2 };
+}
+// Program row r of a section whose bounds were checked, its unit run still
+// relative to the section's units.
+fn pattern_at(bytes: const u8[:], p: PatternLayout, r: i64) -> Pattern {
+    let at = p.rows + r * pattern_row::Words * 4;
+    return Pattern { op: word(bytes, at) as u32, literal: word(bytes, at) != pattern_row::Runtime, flags: word(bytes, at + 4) as u8, failure: word(bytes, at + 8) as u8, captures: word(bytes, at + 12) as u32, repeats: word(bytes, at + 16) as u32,
+        start: word(bytes, at + 20) as u32, instructions: word(bytes, at + 24) as u32, members: word(bytes, at + 28) as u32, names: word(bytes, at + 32) as u32, units: word(bytes, at + 36) as u32, unit_count: word(bytes, at + 40) as u32 };
+}
+fn pattern_op(bytes: const u8[:], p: PatternLayout, i: i64) -> PatternOp {
+    let at = p.ops + i * 20; let head = word(bytes, at);
+    return PatternOp { kind: (head & 255) as u8, flags: ((head >> 8) & 255) as u8, a: word(bytes, at + 4) as u32, b: word(bytes, at + 8) as u32, c: word(bytes, at + 12) as u32, d: word(bytes, at + 16) as u32 };
+}
+// The program row of literal instruction row `op` of a validated image's
+// section, or -1.
+fn literal_pattern(bytes: const u8[:], p: PatternLayout, op: i64) -> i64 {
+    var lo: i64 = 0; var hi = word(bytes, p.counts);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if word(bytes, p.rows + mid * pattern_row::Words * 4) < op { lo = mid + 1; } else { hi = mid; }
+    }
+    return if lo < word(bytes, p.counts) && word(bytes, p.rows + lo * pattern_row::Words * 4) == op { lo } else { -1 };
+}
+// The regexp_op_flag:: bits an op kind may carry.
+fn op_flags(kind: i64) -> i64 {
+    return match kind {
+        regexp_op::Char, regexp_op::Backreference => regexp_op_flag::IgnoreCase,
+        regexp_op::Dot => regexp_op_flag::DotAll,
+        regexp_op::Class => regexp_op_flag::IgnoreCase | regexp_op_flag::Inverted,
+        regexp_op::Assert => regexp_op_flag::IgnoreCase | regexp_op_flag::Multiline,
+        regexp_op::RepeatHead => regexp_op_flag::Greedy,
+        regexp_op::Look => regexp_op_flag::Negative,
+        _ => 0,
+    };
+}
+// Whether program p's run `ops` (its instructions, members and names) and
+// its `units` of text form a program the matcher can run without a check:
+// every kind, flag and operand in range, every target an instruction, every
+// group and repeat slot the program's, every Class member a Range or
+// Escape and every Backreference member a Capture, the names one per
+// group, the instructions ending in Accept. A failure has no rows. The
+// image validator (validate_patterns) and snapshot validation
+// (snapshot::patterns_valid) share it.
+fn pattern_valid(p: Pattern, ops: const PatternOp[:], units: const u16[:]) -> bool {
+    if p.flags & regexp_flag::Unicode != 0 && p.flags & regexp_flag::UnicodeSets != 0 { return false; }
+    if p.failure != regexp_failure::None {
+        return p.failure <= regexp_failure::Unsupported && p.captures == 0 && p.repeats == 0 && p.instructions == 0 && p.members == 0 && p.names == 0 && ops.len == 0 && units.len == p.unit_count;
+    }
+    let n: i64 = p.instructions; let members: i64 = p.members; let captures: i64 = p.captures; let repeats: i64 = p.repeats;
+    if n == 0 || captures == 0 || p.names != captures - 1 || ops.len != n + members + captures - 1 || units.len != p.unit_count || captures > 1048576 || repeats > 1048576 { return false; }
+    if ops[n - 1].kind as i64 != regexp_op::Accept { return false; }
+    for x, i in ops {
+        let kind: i64 = x.kind; let a: i64 = x.a; let b: i64 = x.b; let c: i64 = x.c; let d: i64 = x.d;
+        if i < n {
+            if kind > regexp_op::Accept || x.flags & ~op_flags(kind) != 0 { return false; }
+            let ok = match kind {
+                regexp_op::Char => a <= 1114111 && b == 0 && c == 0 && d == 0,
+                regexp_op::Class, regexp_op::Backreference => {
+                    var fits = a >= n && b <= n + members - a && c == 0 && d == 0 && (kind == regexp_op::Class || b > 0);
+                    if fits { for m in ops[a..(a + b)] { let mk: i64 = m.kind; if (if kind == regexp_op::Class { mk != regexp_op::Range && mk != regexp_op::Escape } else { mk != regexp_op::Capture }) { fits = false; } } }
+                    fits
+                },
+                regexp_op::Assert => a <= regexp_assertion::NotWordBoundary && b == 0 && c == 0 && d == 0,
+                regexp_op::Start, regexp_op::End => a >= 1 && a < captures && b == 0 && c == 0 && d == 0,
+                regexp_op::Clear => a >= 1 && a <= b && b < captures && c == 0 && d == 0,
+                regexp_op::Split, regexp_op::Jump, regexp_op::Look => a < n && b == 0 && c == 0 && d == 0,
+                regexp_op::RepeatInit, regexp_op::RepeatBegin => a < repeats && b == 0 && c == 0 && d == 0,
+                regexp_op::RepeatHead => a < repeats && b <= c && d < n && i + 1 < n,
+                regexp_op::RepeatEnd => a < repeats && c < n && d == 0,
+                _ => a == 0 && b == 0 && c == 0 && d == 0,
+            };
+            if !ok { return false; }
+        } else if i < n + members {
+            if x.flags != 0 || c != 0 || d != 0 { return false; }
+            let ok = match kind {
+                regexp_op::Range => a <= b && b <= 1114111,
+                regexp_op::Escape => a <= regexp_escape::NotSpace && b == 0,
+                regexp_op::Capture => a >= 1 && a < captures && b == 0,
+                _ => false,
+            };
+            if !ok { return false; }
+        } else {
+            // A name: its text's range in the program's units, or none.
+            if kind != regexp_op::Name || x.flags != 0 || d != 0 || c > 1 || c == 0 && (a != 0 || b != 0) || !range(a, b, units.len) { return false; }
+        }
+    }
+    return true;
+}
+// The section at `at` of an image with `ni` instructions (`image`) or a
+// run-time pattern (one program, pattern_row::Runtime): its counts within
+// the image limits, its programs ascending by literal row and each one
+// tiling the op rows and units in order and valid (pattern_valid). Whether
+// every literal instruction has its program the caller checks.
+fn validate_patterns(bytes: const u8[:], p: PatternLayout, ni: i64, image: bool) -> Error {
+    if p.counts < 0 || p.rows > bytes.len { return Error.Truncated; }
+    let np = word(bytes, p.counts); let nops = word(bytes, p.counts + 4); let nu = word(bytes, p.counts + 8);
+    if np > 1048576 || nops > 1048576 || nu > 1048576 { return Error.Limits; }
+    if p.end > bytes.len { return Error.Truncated; }
+    if p.end < bytes.len { return Error.Trailing; }
+    if !image && np != 1 { return Error.Range; }
+    var ops: i64            = 0; var units: i64 = 0; var previous: i64 = -1;
+    var run: PatternOp[>..] = []; var text: u16[>..] = [];
+    for i in nops { if word(bytes, p.ops + i * 20) > 65535 { return Error.Operation; } }
+    for r in np {
+        let at = p.rows + r * pattern_row::Words * 4;
+        if word(bytes, at + 4) > 255 || word(bytes, at + 8) > regexp_failure::Unsupported { return Error.Operation; }
+        let x = pattern_at(bytes, p, r);
+        if image && (!x.literal || x.op <= previous || x.op >= ni) || !image && x.literal { return Error.Reference; }
+        previous = x.op;
+        let total: i64 = x.instructions + x.members + x.names;
+        if x.start != ops || x.units != units || !range(ops, total, nops) || !range(units, x.unit_count, nu) { return Error.Range; }
+        run.clear(); for i in total { run.push(pattern_op(bytes, p, ops + i)); }
+        text.clear(); for i in x.unit_count { text.push(unit(bytes, p.units, units + i) as u16); }
+        if !pattern_valid(x, run, text) { return Error.Operation; }
+        ops += total; units += x.unit_count;
+    }
+    if ops != nops || units != nu { return Error.Range; }
+    return Error.None;
+}
 fn word(bytes: const u8[:], offset: i64) -> i64 {
     var n: i64 = 0;
     for i in 4 { n |= (bytes[offset + i] as i64) << (8 * i); }
@@ -29,9 +175,10 @@ fn layout(bytes: const u8[:]) -> Layout {
     let units = instructions + word(bytes, 24) * 20;
     let tail = units + word(bytes, 28) * 2;
     // Bytes too short for the section's counts end past the image.
-    if tail < 0 || tail > bytes.len - 12 { return Layout { source: source, functions: functions, constants: constants, children: children, instructions: instructions, units: units, tail: tail, sites: tail + 12, sources: tail + 12, records: tail + 12, end: tail + 12 }; }
+    if tail < 0 || tail > bytes.len - 12 { return Layout { source: source, functions: functions, constants: constants, children: children, instructions: instructions, units: units, tail: tail, sites: tail + 12, sources: tail + 12, records: tail + 12, patterns: tail + 12, end: tail + 12 }; }
     let sites = tail + 12; let sources = sites + word(bytes, tail) * 20; let records = sources + word(bytes, tail + 4) * 12;
-    return Layout { source: source, functions: functions, constants: constants, children: children, instructions: instructions, units: units, tail: tail, sites: sites, sources: sources, records: records, end: records + word(bytes, tail + 8) };
+    let patterns = records + word(bytes, tail + 8);
+    return Layout { source: source, functions: functions, constants: constants, children: children, instructions: instructions, units: units, tail: tail, sites: sites, sources: sources, records: records, patterns: patterns, end: pattern_layout(bytes, patterns).end };
 }
 // The eval site whose call is instruction row `op` of a validated image, or -1.
 fn site_row(bytes: const u8[:], l: Layout, op: i64) -> i64 {
@@ -111,7 +258,9 @@ fn validate(bytes: const u8[:]) -> Error {
     // Version 5 (light-cljs-854): function flags bit 19 marks a simple
     // parameter list (function_row::SimpleParameters).
     // Version 6 (light-cljs-858): the eval-site section (Layout).
-    if word(bytes, 4) != 6 { return Error.Version; }
+    // Version 7 (light-cljs-932): the regular-expression section
+    // (PatternLayout), one program per RegExpLiteral instruction.
+    if word(bytes, 4) != 7 { return Error.Version; }
     if word(bytes, 8) > 8388608 || word(bytes, 12) == 0 || word(bytes, 12) > 65536 { return Error.Limits; }
     for offset in [16, 20, 24, 28] { if word(bytes, offset) > 1048576 { return Error.Limits; } }
     let l = layout(bytes);
@@ -157,6 +306,12 @@ fn validate(bytes: const u8[:]) -> Error {
         previous = op; sources += count; records += word(bytes, at + 16);
     }
     if sources != word(bytes, l.tail + 4) || records != word(bytes, l.tail + 8) { return Error.Range; }
+    // Regular expressions (version 7): ascending literal rows, each program
+    // valid; every RegExpLiteral instruction has its row (counted below).
+    let pl = pattern_layout(bytes, l.patterns);
+    let patterns = validate_patterns(bytes, pl, ni, true);
+    if patterns != Error.None { return patterns; }
+    var literals:   i64       = 0;
     var used:       bool[>..] = []; used.resize(ni, false);
     var child_used: bool[>..] = []; child_used.resize(nf, false); child_used[0] = true;
     var depths:     i64[>..]  = []; depths.resize(nf, 0);
@@ -217,8 +372,10 @@ fn validate(bytes: const u8[:]) -> Error {
             if kind == operand::Const && arg >= constant_count || kind == operand::Local && arg >= locals || kind == operand::Function && arg >= child_count || kind == operand::Capture && arg >= captures { return Error.Reference; }
             if kind == operand::Const && export_name_operand(op) && word(bytes, l.constants + (constants + arg) * 12) != constant::String { return Error.Reference; }
             if kind == operand::Target && !branch(bytes, base, count, arg) { return Error.Branch; }
+            if op == opcode::RegExpLiteral { if literal_pattern(bytes, pl, start + i) < 0 { return Error.Reference; } literals += 1; }
         }
     }
+    if literals != word(bytes, pl.counts) { return Error.Reference; }
     for flag in used { if !flag { return Error.Range; } }
     for flag in child_used { if !flag { return Error.Reference; } }
     return Error.None;

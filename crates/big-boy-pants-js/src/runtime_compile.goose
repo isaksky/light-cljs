@@ -29,6 +29,10 @@ extern fn compile_runtime(out: u8[>..]&, units: const u16&, count: i64, mode: i3
 let runtime_mode::IndirectEval: i32 = 0;
 let runtime_mode::DynamicFunction: i32 = 1;
 let runtime_mode::DirectEval: i32 = 2;
+// A regular expression (light-cljs-932, compile_pattern): the units are
+// the flags', `parameter_units` of them, then the pattern's; the answer is
+// a regular-expression section of one program (program::PatternLayout).
+let runtime_mode::Pattern: i32 = 3;
 let runtime_status::Image: i32 = 0;
 let runtime_status::SyntaxError: i32 = 1;
 let runtime_status::Refused: i32 = 2;
@@ -75,7 +79,10 @@ fn compile_code(job: Job&, what: const u8[:], units: const u16[:], mode: i32, st
     if failure != program::Error.None { var why: u8[>..] = []; format(why, "the run-time compiler's image fails validation (", failure, ")"); return runtime_unsupported(job, what, why); }
     var part = Code {};
     if !load(part, image) { var why: u8[>..] = []; format(why, "the run-time compiler's image fails its flow check (", part.error, ")"); return runtime_unsupported(job, what, why); }
-    if part.ops.len > heap.limits.code - job.compiled_ops { heap.fault = Fault.MemoryLimit; return -1; }
+    // Its regular-expression programs' rows count as its instructions do
+    // (light-cljs-932).
+    let rows = part.ops.len + part.pattern_ops.len;
+    if rows > heap.limits.code - job.compiled_ops { heap.fault = Fault.MemoryLimit; return -1; }
     // Every code table stays within what a snapshot of it admits
     // (snapshot::code_valid: 65,536 functions, 8 MiB of source), so a
     // continuation that captures the job's code never fails on it.
@@ -83,7 +90,10 @@ fn compile_code(job: Job&, what: const u8[:], units: const u16[:], mode: i32, st
     // So do its direct-eval site tables (light-cljs-858), each within a
     // snapshot table's 8,388,608 rows.
     if part.sites.len > 8388608 - code.sites.len || part.site_sources.len > 8388608 - code.site_sources.len || part.site_records.len > 8388608 - code.site_records.len { heap.fault = Fault.MemoryLimit; return -1; }
-    if !charge(heap, part.ops.len) { return -1; }
+    // and so do its regular-expression tables and the code units
+    // (light-cljs-932).
+    if part.patterns.len > 8388608 - code.patterns.len || part.pattern_ops.len > 8388608 - code.pattern_ops.len || part.units.len > 8388608 - code.units.len { heap.fault = Fault.MemoryLimit; return -1; }
+    if !charge(heap, rows) { return -1; }
     // Code constants and heap constants share their rows (initialize): the
     // new constants' strings become heap strings, as a session's appended
     // unit's do (compiler_session.goose append).
@@ -99,8 +109,55 @@ fn compile_code(job: Job&, what: const u8[:], units: const u16[:], mode: i32, st
     // Eval code's var and function declarations make configurable global
     // properties (global_op): the root knows it is eval code.
     code.functions[root].eval = mode != runtime_mode::DynamicFunction;
-    job.compiled_ops += part.ops.len;
+    job.compiled_ops += rows;
     return root;
+}
+// Compile the pattern of `new RegExp(pattern, flags)` (light-cljs-932;
+// regexp_object.goose), both strings, and append its program to the job's
+// code: its row in Code.patterns, or -1 with the heap's fault set. The run-time
+// compiler parses the flags and the pattern and compiles the matcher
+// program (runtime_mode::Pattern); its section is validated
+// (program::validate_patterns) before any row joins the code. A failure is
+// the program's (regexp_object.goose pattern_failure): invalid flags or
+// pattern a SyntaxError with the parser's message. The program's op rows
+// count against Limits.code as eval's instructions do, its text and rows
+// against the work budget; the worker's reset truncates them, and
+// snapshots, saved continuations and callable publications carry them as
+// code rows. Its `op` is the code's instruction count now, which keeps the
+// table in ascending `op` order.
+fn compile_pattern(job: Job&, pattern: Value, flags: Value) -> i64 {
+    let heap .= job.heap;
+    let code = job.writable_code;
+    if code == null { return runtime_unsupported(job, "RegExp", "the job's code is not writable here"); }
+    var units: u16[>..] = []; append_utf16(heap, flags, units);
+    let flag_units = units.len; append_utf16(heap, pattern, units);
+    if !charge(heap, units.len + 1) { return -1; }
+    let count = units.len; if units.len == 0 { units.push(0); }
+    var record: u8[>..] = [0];
+    var out:    u8[>..] = []; var line: i64 = 0; var column: i64 = 0;
+    let status = compile_runtime(out, units[0], count, runtime_mode::Pattern, false, flag_units, record[0], 0, line, column);
+    if status != runtime_status::Image { return runtime_unsupported(job, "RegExp", out); }
+    let pl = program::pattern_layout(out, 0);
+    let failure = program::validate_patterns(out, pl, 0, false);
+    if failure != program::Error.None { var why: u8[>..] = []; format(why, "the run-time compiler's pattern fails validation (", failure, ")"); return runtime_unsupported(job, "RegExp", why); }
+    var p = program::pattern_at(out, pl, 0);
+    let rows: i64 = p.instructions + p.members + p.names;
+    if p.failure != regexp_failure::None {
+        job.detail.clear();
+        if p.failure == regexp_failure::Unsupported { for c in "RegExp: " { job.detail.push(c); } }
+        for i in p.unit_count { job.detail.push(program::unit(out, pl.units, i) as u16); }
+        heap.fault = if p.failure == regexp_failure::Syntax { Fault.SyntaxError } else if p.failure == regexp_failure::Limit { Fault.RangeError } else { Fault.UnsupportedOperand };
+        return -1;
+    }
+    if rows > heap.limits.code - job.compiled_ops || rows > 8388608 - code.pattern_ops.len || code.patterns.len >= 8388608 || p.unit_count > 8388608 - code.units.len { heap.fault = Fault.MemoryLimit; return -1; }
+    if !charge(heap, rows) { return -1; }
+    let start = code.pattern_ops.len; let text = code.units.len;
+    for i in rows { code.pattern_ops.push(program::pattern_op(out, pl, i)); }
+    for i in p.unit_count { code.units.push(program::unit(out, pl.units, i) as u16); }
+    p.op = code.ops.len as u32; p.literal = false; p.start = start as u32; p.units = text as u32;
+    code.patterns.push(p);
+    job.compiled_ops += rows;
+    return code.patterns.len - 1;
 }
 // The global `eval` called other than as a direct-eval site (bbp-106;
 // ECMAScript PerformEval with direct false, QuickJS js_global_eval): a

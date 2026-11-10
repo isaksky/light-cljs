@@ -89,7 +89,7 @@ fn is_constructor(heap: const Heap&, f: Value) -> bool {
 // built-in is a TypeError (construct).
 fn constructor_builtin(b: Builtin) -> bool {
     return match b {
-        Object, Function, Array, Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, Number, String, Boolean, Proxy, SymbolFunction => true,
+        Object, Function, Array, Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError, Number, String, Boolean, Proxy, SymbolFunction, RegExp => true,
         // The V8 build's identical and range are arrow functions, no constructors
         // (light-cljs-876, light-cljs-877).
         Identical, Range => false,

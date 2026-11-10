@@ -79,6 +79,16 @@ namespace source;
 // that only follows the conversions without running user code
 // (toFixed's range check after ToIntegerOrInfinity) is the body's.
 //
+// RegExp's built-ins (light-cljs-932; regexp_object.goose) plan nothing
+// (plan::None): the constructor's ToString of the pattern and the flags
+// is conditional (an undefined one is "", a RegExp pattern gives its own
+// text, an IsRegExp pattern's are its `source` and `flags`) and follows
+// IsRegExp's @@match read, the identity rule's `constructor` read and
+// newTarget's `prototype`, so its RegExp frame converts them in phases of
+// its own; RegExp.prototype.toString converts what it reads, also in its
+// frame; the getters and RegExp[@@species] take no arguments, and the
+// getters check their receiver's slot without converting it.
+//
 // The frame's state is its operands and fields (callee the built-in
 // function object, input newTarget, argument_count the argument count,
 // index the next position, pc 0), so in-job reclamation

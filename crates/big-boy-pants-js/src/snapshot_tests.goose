@@ -2857,7 +2857,7 @@ thread_fn finite_map_malformed(parent: FiniteMap, mode: i64) {
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
         assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), restore) && restore.error == snapshot::Error.Link && restore.copied_bytes == 0);
         let empty = snapshot::borrow(target, roots, 1);
-        assert(snapshot::ends(empty) == [0; 24] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
+        assert(snapshot::ends(empty) == [0; 26] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
         var retry = snapshot::Control {}; assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), retry));
     }
 }

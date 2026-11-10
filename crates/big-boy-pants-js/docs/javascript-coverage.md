@@ -224,6 +224,53 @@ it opens the library at program start and fails the program when it is
 missing, so the 200k runner would pay for it at every start. *A JavaScript
 parser in Goose*: forbidden (no second parser).
 
+*As landed by light-cljs-932 (RegExp objects and compiled patterns):* bbp's
+Rust frontend compiles every regular expression; Goose parses no pattern
+and carries no Unicode table. GSP version 7 adds a regular-expression
+section after the eval-site records: one program per `RegExpLiteral`
+instruction, keyed by its instruction row, holding the Pants engine's own
+matcher program (`regexp::matcher::compile`, read through
+`Program::instructions`): its flags, capture and repeat counts, the
+instructions as op rows (`regexp_op::`, `regexp_op_flag::`,
+`regexp_assertion::` and `regexp_escape::` are generated names), then the
+member rows a Class or Backreference names and one name row per capture
+group, and its units (the names' text). The exporter lowers every Unicode
+property escape, Script and Script_Extensions included, with its
+complement and its case-folded ranges under ignore case
+(`UnicodeProperty::lowered`, tested against `contains`), into code-point
+ranges, and v-flag sets are already ranges, so `\d`, `\w` and `\s` stay
+the only class escapes. A literal that does not compile exports its
+failure (the parser's message, the compilation step limit, or a feature
+the matcher compiler refuses, lookbehind), raised when the literal is
+evaluated: a SyntaxError, a RangeError, or for the refused feature an
+UnsupportedOperand naming it (`RegExp: lookbehind`). The loader validates
+the section (`program::validate_patterns`, `pattern_valid`: kinds, flags,
+operands, targets within the instructions, groups and repeat slots within
+the program's counts, Class members ranges or escapes and Backreference
+members groups, one name row per group, Accept last) and appends it to
+`Code.patterns` and `Code.pattern_ops`, its text after the code units;
+snapshot validation runs the same check (`snapshot::patterns_valid`,
+header version 4, ends 24 and 25), and truncation, extension, callable
+publications, the artifact base check and the worker byte measure carry
+the two tables as they carry the eval sites. `new RegExp(pattern, flags)`
+compiles at run time through the run-time compiler's mode 3
+(`runtime_mode::Pattern`, `export_pattern`): the flags' and the
+pattern's units, the answer a section of one program, validated before
+its rows join the job's code (`compile_pattern`), counted against
+`Limits.code`, truncated by the worker's reset; invalid flags or pattern
+are that program's SyntaxError. A run-time program's `op` is the code's
+instruction count when it was compiled, so the table stays in ascending
+`op` order and a literal's program is a binary search away. Measured on
+the conformance runner (macOS, release frontend library, median of 11
+runs, under load): 1,000 `new RegExp('a' + i)` take 5.8 ms against 3.5 ms
+for the same loop making only the strings, about 2 µs a compilation
+(conversion, the boundary, validation and the appended rows); 1,000
+`new RegExp('[\\p{L}\\d_]+(?:' + i + ')*', 'giu')`, whose class lowers to
+several hundred ranges with its case folding, take 32 ms, about 28 µs
+each. Every compilation appends its rows (against `Limits.code`): there is
+no per-job cache keyed by pattern and flags, which a workload that
+compiles one pattern in a loop would need first.
+
 **Form opcodes.** The light-cljs collection opcodes (`NewFormList`,
 `FormOp`, `NewVector` and the rest) stay in the one append-only registry and
 decode into the same `Ins` enum; their execution stays in the form module. If
@@ -713,6 +760,29 @@ Object.hasOwn and hasOwnProperty stay plain built-ins, but every caller
 that can start a native frame (`conditional_native`, formerly the error
 built-ins' `error_native`) runs a @@toStringTag getter or a key object's
 ToPrimitive in the same frame.
+
+*As landed by light-cljs-932 (RegExp objects):* a RegExp is one
+`node_kind::RegExp` row, an ordinary object with internal slots: `function`
+its program's row in `Code.patterns` (a code row, which in-job
+reclamation never moves), `value` its pattern text, its first own property
+`lastIndex` (writable, neither enumerable nor configurable) from the realm's
+template row's shape (`regexp_template_row`, fixed row 44; fixed row 43 is
+%RegExp.prototype%, an ordinary object). Each evaluation of a literal makes
+a new object sharing the program, its pattern text a view of the literal's
+constant. The constructor, `RegExp.prototype.flags` and `toString` are
+RegExp native frames (`Native.RegExp`; regexp_object.goose) whose steps each
+take the one value they asked for: IsRegExp's @@match read (a reusable step,
+`start_is_regexp` and `is_regexp_answer`, for the String methods), the
+identity rule's `constructor`, an IsRegExp pattern's `source` and `flags`,
+newTarget's `prototype` (after those reads and before the conversions, as
+the Pants engine orders them; QuickJS converts first), ToString of the
+pattern, then of the flags, then the compilation; a construction skips the
+early `prototype` read other built-ins make. The flag getters, `source`
+(EscapeRegExpPattern) and RegExp[@@species] are plain. exec, test, compile,
+RegExp.escape and the symbol methods but @@match are pending; @@match is a
+function object, since IsRegExp reads it, whose call fails by name until
+light-cljs-770's matching children. A RegExp is a mutable JavaScript
+object: a publication or cell value that reaches one is refused.
 
 *As landed by light-cljs-885 (Symbol values):* a symbol a job makes is a
 row of the node table, `node_kind::JsSymbol` (its description, a string or

@@ -28,14 +28,22 @@
 //! eval (light-cljs-858) against the site whose opaque record, as the image
 //! carries it ([`encode_eval_site`]), is the `site_len` bytes at `site`; a
 //! record that does not decode is refused. `strict` is 0 in mode 2: the
-//! site says whether the caller is strict.
+//! site says whether the caller is strict. Mode 3 (light-cljs-932) compiles
+//! a regular expression for `new RegExp(pattern, flags)`: the units are the
+//! flags', `parameter_units` of them, then the pattern's, and status 0's
+//! buffer is a regular-expression section of one program
+//! ([`export_pattern`]), an invalid pattern or invalid flags being its
+//! failure row rather than status 1. `strict` is 0 in mode 3.
 //!
 //! [`export_runtime`]: big_boy_pants_js::frontend::goose::export_runtime
+//! [`export_pattern`]: big_boy_pants_js::frontend::goose::export_pattern
 //! [`encode_eval_site`]: big_boy_pants_js::frontend::goose::encode_eval_site
 //! [`SyntaxError`]: big_boy_pants_js::frontend::SyntaxError
 
 use big_boy_pants_js::frontend::SyntaxErrorKind;
-use big_boy_pants_js::frontend::goose::{RuntimeMode, decode_eval_site, export_runtime};
+use big_boy_pants_js::frontend::goose::{
+    RuntimeMode, decode_eval_site, export_pattern, export_runtime,
+};
 
 const IMAGE: i32 = 0;
 const SYNTAX_ERROR: i32 = 1;
@@ -48,6 +56,15 @@ fn compile(
     parameter_units: i64,
     site: &[u8],
 ) -> (i32, Vec<u8>, i64, i64) {
+    if mode == 3 {
+        if strict != 0 || parameter_units < 0 || parameter_units as u64 > units.len() as u64 {
+            return (REFUSED, b"bad run-time compiler arguments".to_vec(), 0, 0);
+        }
+        return match export_pattern(units, parameter_units as usize) {
+            Ok(section) => (IMAGE, section, 0, 0),
+            Err(e) => (REFUSED, e.message.into_bytes(), 0, 0),
+        };
+    }
     let mode = match (mode, strict) {
         (0, 0 | 1) => RuntimeMode::IndirectEval {
             strict: strict == 1,

@@ -3,12 +3,12 @@
 ;; record to be advanced (--write-expected) when it gets further. :stop's
 ;; status, fault, detail, operation, value and line identify the stop;
 ;; :steps orders two stops; the rest is reported only.
-{:export {:functions 2240, :instructions 135217, :image-bytes 3818417},
+{:export {:functions 2240, :instructions 135217, :image-bytes 3835705},
  :stop
  {:status :unsupported,
   :fault "Fault.UnsupportedOperand",
-  :detail "pending RegExp",
-  :line "const sharedIntrinsicRegExp = RegExp;",
-  :steps 8753,
-  :byte 80193,
-  :line-number 1103}}
+  :detail "pending Map",
+  :line "const internedKeywords = new Map();",
+  :steps 8978,
+  :byte 81666,
+  :line-number 1130}}

@@ -76,6 +76,8 @@
   "bbp/classes_source_text" {:area :objects-classes :pants-gap "the Pants engine has no Function.prototype.toString (UnsupportedOperand at get_field)"}
   "bbp/super_properties" {:area :objects-classes}
   "bbp/super_properties_sloppy" {:area :objects-classes :mode :sloppy}
+  "bbp/regexp_construction" {:area :date-regexp}
+  "bbp/regexp_flags_and_source" {:area :date-regexp}
   "bbp/reflect_get_set_receivers" {:area :objects-classes}
   "bbp/proxy_get_traps" {:area :objects-classes}
   "bbp/proxy_has_traps" {:area :objects-classes}

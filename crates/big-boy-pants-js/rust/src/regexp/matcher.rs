@@ -57,8 +57,27 @@ pub struct Program {
     has_indices: bool,
 }
 
+impl Program {
+    /// The compiled instructions, which the Goose exporter writes into an
+    /// image (light-cljs-932); matching here never reads them through this.
+    pub(crate) fn instructions(&self) -> &[Instruction] {
+        &self.code
+    }
+    /// Capture groups, group zero (the whole match) included.
+    pub(crate) fn captures(&self) -> usize {
+        self.captures
+    }
+    /// Repeat state slots.
+    pub(crate) fn repeats(&self) -> usize {
+        self.repeats
+    }
+}
+
+/// One matcher instruction. Crate-visible so the Goose exporter can write a
+/// compiled program as it is (light-cljs-932, [`Program::instructions`]);
+/// only [`compile`] makes them. Targets are instruction indices.
 #[derive(Clone, Debug)]
-enum Instruction {
+pub(crate) enum Instruction {
     Char(u32, bool),
     Dot(bool),
     Class(CharacterClass, bool),

@@ -419,6 +419,68 @@ let eval_role::SuperHome = 4;
 let eval_role::SuperFields = 5;
 let eval_role::Cell = 256;
 
+// The regular-expression section (GSP version 7, light-cljs-932): a
+// program row's words, a run-time pattern's instruction row, and
+// RepeatHead's max for an unbounded repeat.
+let pattern_row::Words = 11;
+let pattern_row::Runtime = 4294967295;
+let regexp_repeat::Unbounded = 4294967295;
+// A regular-expression op row's kind (bits 0..7 of its first word):
+// the matcher's instructions, then member and name rows.
+let regexp_op::Char = 0;
+let regexp_op::Dot = 1;
+let regexp_op::Class = 2;
+let regexp_op::Assert = 3;
+let regexp_op::Backreference = 4;
+let regexp_op::Start = 5;
+let regexp_op::End = 6;
+let regexp_op::Clear = 7;
+let regexp_op::Split = 8;
+let regexp_op::Jump = 9;
+let regexp_op::RepeatInit = 10;
+let regexp_op::RepeatHead = 11;
+let regexp_op::RepeatBegin = 12;
+let regexp_op::RepeatEnd = 13;
+let regexp_op::Look = 14;
+let regexp_op::LookEnd = 15;
+let regexp_op::Accept = 16;
+let regexp_op::Range = 17;
+let regexp_op::Escape = 18;
+let regexp_op::Capture = 19;
+let regexp_op::Name = 20;
+// An op row's flags (bits 8..15 of its first word).
+let regexp_op_flag::IgnoreCase = 1;
+let regexp_op_flag::Multiline = 2;
+let regexp_op_flag::DotAll = 4;
+let regexp_op_flag::Inverted = 8;
+let regexp_op_flag::Greedy = 16;
+let regexp_op_flag::Negative = 32;
+// A pattern's flags, one bit each in dgimsuvy order.
+let regexp_flag::HasIndices = 1;
+let regexp_flag::Global = 2;
+let regexp_flag::IgnoreCase = 4;
+let regexp_flag::Multiline = 8;
+let regexp_flag::DotAll = 16;
+let regexp_flag::Unicode = 32;
+let regexp_flag::UnicodeSets = 64;
+let regexp_flag::Sticky = 128;
+// An Assert's kind and a class escape (an Escape row's a).
+let regexp_assertion::Start = 0;
+let regexp_assertion::End = 1;
+let regexp_assertion::WordBoundary = 2;
+let regexp_assertion::NotWordBoundary = 3;
+let regexp_escape::Digit = 0;
+let regexp_escape::NotDigit = 1;
+let regexp_escape::Word = 2;
+let regexp_escape::NotWord = 3;
+let regexp_escape::Space = 4;
+let regexp_escape::NotSpace = 5;
+// Why a pattern has no program (a program row's third word).
+let regexp_failure::None = 0;
+let regexp_failure::Syntax = 1;
+let regexp_failure::Limit = 2;
+let regexp_failure::Unsupported = 3;
+
 // Every opcode's tables; -1, false or "" for an unassigned byte.
 fn export_descriptor(op: i64) -> i64 {
     return match op {
