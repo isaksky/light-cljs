@@ -47,7 +47,9 @@
             :let [workers (str (fs/path root "src" source))]]
       (run! goose "check" workers)
       (run! goose "build" workers "--debug" "-o" executable)
-      (run! executable)
+      ;; serial_tests' debug build samples its long budget-cut and limit-point
+      ;; sweeps; its native build runs every one (light-cljs-927).
+      (apply run! executable (when (= source "serial_tests.goose") ["--sampled"]))
       (run! goose "build" workers "-o" executable)
       (run! executable))
     (run! goose "check" driver)

@@ -649,6 +649,11 @@ cumulative charges remain. The next job can run on the same session if budgets
 permit. `serial_tests.goose` compares all frame PCs, operands, locals, results,
 ordered writes, heap tables and allocator cursors at every instruction cut
 against single-step execution, including zero budgets and calls/branches.
+Its native build cuts and limits every instruction; `smoke.bb` runs the debug
+build with `--sampled`, which cuts a long image at a stride, at its first and
+last instructions, wherever a native frame or a promise job runs next and at
+the first occurrence of each pair of consecutive instructions, and limits it
+at a stride and at its first and last points.
 
 The **checkpoint boundary** is admission with no live job: after initialization,
 or after every preceding job has been explicitly retired with `source::retire`.

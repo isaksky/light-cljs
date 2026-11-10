@@ -4,6 +4,7 @@ import .source_vm;
 import .vm;
 import .heap_program;
 import .snapshot;
+import dictionary;
 
 fn decode(code: source::Code&, bytes: const u8[:]) {
     var image = program::Image {}; assert(program::install(image, bytes) == program::Error.None);
@@ -57,7 +58,7 @@ fn same_state(a: const State&, b: const State&) {
     assert(a.conts == b.conts && a.queue == b.queue && a.draining == b.draining && a.entry == b.entry && a.handlers == b.handlers && a.lexicals == b.lexicals && a.templates == b.templates && a.random == b.random);
     assert(a.units[..] == b.units[..] && a.latin1[..] == b.latin1[..] && a.identity == b.identity && a.work == b.work && a.heap_fault == b.heap_fault);
 }
-struct Run { status: tiny::Status, steps: i64 }
+struct Run { status: tiny::Status, steps: i64, identity: i64 = 0 }
 // States that differ only in Latin-1 bytes are different states.
 thread_fn latin1_state_differs(a: State, b: State) { same_state(a, b); }
 fn latin1_state_check() {
@@ -155,6 +156,8 @@ fn named_function(code: const source::Code&, name: const u8[:]) -> i64 {
     abort("no function of that name");
     return -1;
 }
+// The uncut run: its result, fault, counts and identity, and its final
+// state, in which every cut's side a must end too.
 thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault, setup: i64) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
@@ -173,7 +176,8 @@ thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault, setup: i6
         // A named built-in step an UnsupportedOperand did not implement.
         var text: u8[>..] = []; source::describe_fault(text, code, job); assert(text[..] == expected);
     }
-    assert(qput(Run { status: job.status, steps: job.steps }));
+    assert(qput(Run { status: job.status, steps: job.steps, identity: heap.identity }));
+    assert(qput(state(job)));
 }
 // One uncut run of `bytes` with limits.stack `stack` (0: the default) that
 // completes with `expected`; 65,536 `next` calls pass the default
@@ -197,51 +201,149 @@ thread_fn spread_limits(bytes: u8[], stack: i64, expected: u8[]) {
     if output[..] != want[..] { print("spread_limits: ", output); }
     assert(output[..] == want[..]);
 }
-// Side a of one cut: publishes its state at the three comparison points.
-thread_fn check_cut(bytes: u8[], cut: i64, run: Run, fault: source::Fault, setup: i64) {
-    defer { heap_program::finish(); }
-    var code = source::Code {}; decode(code, bytes);
-    var h1 = source::Heap { code: code }; assert(source::initialize(h1)); install(h1, setup);
-    let e1 = source::closure(h1, 0, []);
-    var a = source::Job { heap: h1, writable_code: code };
+// Budget cuts (light-cljs-801, light-cljs-927). For every cut c from 0 to the
+// uncut run's steps, two fresh runs: side a stops after one in-place slice
+// of c instructions and resumes to its end; side b runs c one-instruction
+// slices and then the rest uncut. Their states when they started, at the cut
+// and at their ends must be equal, and side a's end must be the uncut run's.
+// A sweep lane runs both sides of a cut, one after the other on its renewed
+// heap; lane i takes every sweep_lanes-th cut from i. With --sampled (the
+// debug build in smoke.bb) a long image is cut at check_survey's points
+// only; the native build cuts every instruction.
+// Side a's states when it started, at the cut and at its end.
+struct Sides { start: State, at: State, done: State }
+fn cut_side(code: source::Code&, heap: source::Heap&, cut: i64, run: Run, fault: source::Fault) -> Sides {
+    let e1 = source::closure(heap, 0, []);
+    var a = source::Job { heap: heap, writable_code: code };
     assert(source::start(a, e1, []));
-    let before = h1.work;
-    assert(source::run(a, 0) == tiny::Outcome.Yielded && a.steps == 0 && h1.work == before);
-    assert(qput(state(a)));
+    let before = heap.work;
+    assert(source::run(a, 0) == tiny::Outcome.Yielded && a.steps == 0 && heap.work == before);
+    let start = state(a);
     source::run(a, cut);
-    assert(qput(state(a)));
+    let at = state(a);
     assert(source::claim(a) == (a.status == tiny::Status.Ready));
     if a.claimed {
         assert(source::run(a, 1) == tiny::Outcome.Busy);
         source::run_claimed(a, 0);
     }
-    source::run(a, -1); assert(qput(state(a)));
+    source::run(a, -1); let done = state(a);
     assert(a.status == run.status && a.fault == fault && a.steps == run.steps);
     let stable = a.steps; source::run(a, -1); assert(a.steps == stable);
+    assert(source::retire(a));
+    return Sides { start: copy(start), at: copy(at), done: copy(done) };
 }
-// Side b of the same cut, one instruction per slice, against side a's states.
-thread_fn check_steps(bytes: u8[], cut: i64, setup: i64) {
-    defer { heap_program::finish(); }
-    var code = source::Code {}; decode(code, bytes);
-    let first = qget<State>();
-    var h2 = source::Heap { code: code }; assert(source::initialize(h2)); install(h2, setup);
-    // Two differential executions of one logical session image.
-    // Values carry no session, so only the heap's arena label differs.
-    h2.identity = first.identity;
-    let e2 = source::closure(h2, 0, []);
-    var b = source::Job { heap: h2, writable_code: code };
+// Side b of the same cut, one instruction a slice, against side a's states.
+fn step_side(code: source::Code&, heap: source::Heap&, cut: i64, a: const Sides&) {
+    let e2 = source::closure(heap, 0, []);
+    var b = source::Job { heap: heap, writable_code: code };
     assert(source::start(b, e2, []));
-    let started = state(b); same_state(first, started);
+    let started = state(b); same_state(a.start, started);
     for i in cut { source::run(b, 1); }
-    let cut_a = qget<State>(); let cut_b = state(b); same_state(cut_a, cut_b);
-    source::run(b, -1); let done_a = qget<State>(); let done_b = state(b); same_state(done_a, done_b);
+    let cut_b = state(b); same_state(a.at, cut_b);
+    source::run(b, -1); let done_b = state(b); same_state(a.done, done_b);
+    assert(source::retire(b));
+}
+// The sampled cuts of one image, in order.
+struct Cuts { at: i64[] }
+// The points a lane ran.
+struct Swept { points: i64 }
+thread_fn check_lane(bytes: u8[], run: Run, fault: source::Fault, setup: i64, done: State, lane: i64, lanes: i64, every: bool, cuts: i64[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = [];
+    var points: i64 = 0;
+    var i = lane;
+    while i < (if every { run.steps + 1 } else { cuts.len }) {
+        let cut = if every { i } else { cuts[i] };
+        // Differential executions of one logical session image: values carry
+        // no session, so only the heap's arena label differs, and both sides
+        // take the uncut run's.
+        renew(code, heap, bindings, bytes, setup); heap.identity = run.identity;
+        let a = cut_side(code, heap, cut, run, fault); same_state(done, a.done);
+        renew(code, heap, bindings, bytes, setup); heap.identity = run.identity;
+        step_side(code, heap, cut, a);
+        points += 1; i += lanes;
+    }
+    assert(qput(Swept { points: points }));
 }
 fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = source::Fault.None, setup: i64 = 0) {
-    heap_program::join(thread_spawn(check_run, str(bytes), str(expected), fault, setup)); let run = qget<Run>();
-    for cut in (run.steps + 1) {
-        heap_program::join(thread_spawn(check_cut, str(bytes), cut, run, fault, setup));
-        heap_program::join(thread_spawn(check_steps, str(bytes), cut, setup));
+    heap_program::join(thread_spawn(check_run, str(bytes), str(expected), fault, setup)); let run = qget<Run>(); let done = qget<State>();
+    let started = clock_ns();
+    let every = !sampled || !long_sweep(run.steps);
+    let cuts = survey(bytes, setup, run.steps, every);
+    // A sampled list always has the image's first and last cut.
+    assert(every || cuts.at.len >= 2 && cuts.at[0] == 0 && cuts.at[cuts.at.len - 1] == run.steps);
+    var lanes: i64[>..] = [];
+    for i in sweep_lanes { lanes.push(thread_spawn(check_lane, str(bytes), run, fault, setup, copy(done), i, sweep_lanes, every, copy(cuts.at))); }
+    var points: i64 = 0;
+    for lane in lanes { heap_program::join(lane); let s = qget<Swept>(); points += s.points; }
+    assert(points == (if every { run.steps + 1 } else { cuts.at.len }));
+    progress("budget cuts", run.steps, "step", points, every, started);
+}
+// Sweep lanes (light-cljs-927). A lane is a thread program with one heap,
+// which runs one fresh run after another: renew empties the heap and its
+// code with the worker reset (snapshot::reset) and builds them again as a
+// new thread program builds them, decoded, initialized and installed, and
+// starts over the fields the reset leaves to a job's end. A thread program
+// of its own for every run spent most of the sweeps' time creating and
+// mapping it (half of it system time), and running several at once made
+// that cost grow. main sets `sampled` (the --sampled argument) and
+// sweep_lanes, the lanes a sweep runs at once, before any sweep.
+var sampled:     bool = false;
+var sweep_lanes: i64  = 1;
+fn renew(code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding[>..]&, bytes: const u8[:], setup: i64) {
+    assert(snapshot::reset(code, heap, bindings));
+    heap.pending = source::Value.Undefined; heap.proxy_method = -1; heap.proxy_at = source::Value.Undefined; heap.proxy_key = source::Value.Undefined;
+    heap.slack = source::Slack {}; heap.reclaim = false; heap.reclaims = 0;
+    decode(code, bytes); assert(source::initialize(heap)); install(heap, setup);
+}
+// A long sweep's progress line, so a slow build never looks hung.
+fn progress(what: const u8[:], count: i64, unit: const u8[:], points: i64, every: bool, started: i64) {
+    if count < 1000 { return; }
+    print("serial source VM: ", what, " of a ", count, "-", unit, " image: ", points, if every { " (every one)" } else { " sampled" }, " in ", (clock_ns() - started) / 1000000, " ms");
+}
+// The sampled cuts (--sampled) of an image longer than 2 * sample_points
+// steps: its first and last sample_edge, every stride-th, every one where a
+// native frame or a promise job runs next (a resumable frame's state), and
+// the first of each kind of boundary: an instruction followed by another,
+// keyed by both opcodes and whether the frame depth changed. One run in
+// one-instruction slices finds them.
+let sample_points: i64 = 128;
+let sample_edge:   i64 = 16;
+// Whether --sampled reduces a sweep over `count` points.
+fn long_sweep(count: i64) -> bool { return count > 2 * sample_points; }
+thread_fn check_survey(bytes: u8[], setup: i64, steps: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap)); install(heap, setup);
+    let entry = source::closure(heap, 0, []);
+    var b = source::Job { heap: heap, writable_code: code }; assert(source::start(b, entry, []));
+    var seen = dictionary<i64, bool> {}; let stride = max(1, (steps + sample_points - 1) / sample_points);
+    var cuts: i64[>..] = [];
+    var depth = b.frames.len; var previous = resume_key(code, b);
+    for cut in (steps + 1) {
+        let next = resume_key(code, b);
+        if sampled_cut(seen, stride, cut, steps, previous, next, b.frames.len != depth) { cuts.push(cut); }
+        depth = b.frames.len; previous = next;
+        if cut < steps { source::run(b, 1); }
     }
+    assert(qput(Cuts { at: copy(cuts) }));
+}
+fn survey(bytes: const u8[:], setup: i64, steps: i64, every: bool) -> Cuts {
+    if every { return Cuts { at: [] }; }
+    heap_program::join(thread_spawn(check_survey, str(bytes), setup, steps)); return qget<Cuts>();
+}
+// What runs next: a bytecode frame's opcode (an opaque key), or -1 for a
+// native frame or a promise job.
+fn resume_key(code: const source::Code&, job: const source::Job&) -> i64 {
+    if job.frames.len == 0 { return -1; }
+    let f = job.frames[job.frames.len - 1];
+    return if f.function < 0 || f.pc < 0 || f.pc >= code.ops.len { -1 } else { code.ops[f.pc].code };
+}
+fn sampled_cut(seen: dictionary<i64, bool>&, stride: i64, cut: i64, steps: i64, previous: i64, next: i64, moved: bool) -> bool {
+    if next < 0 { return true; }
+    assert(previous < 65535 && next < 65535);
+    let first = seen.insert(((previous + 1) * 65536 + next) * 2 + (if moved { 1 } else { 0 }), true);
+    return first || cut < sample_edge || cut > steps - sample_edge || cut % stride == 0;
 }
 // Limit points (light-cljs-801). The dispatch loop runs a frame in place and
 // takes the exact limit checks only when its fuel is spent; one instruction a
@@ -250,6 +352,10 @@ fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = sourc
 // what the run needs, one uncut run and one run in slices of one instruction
 // must stop at the same instruction with the same fault and counts, and
 // leave the same state. kind 0 limits.steps, 1 limits.work, 2 limits.stack.
+// Sweep lanes run them (light-cljs-927), the uncut run and then the sliced
+// one on the lane's renewed heap, lane i taking every sweep_lanes-th limit
+// from i. With --sampled a long count is limited at sampled_limit's points
+// only; the native build limits every point.
 struct Need { steps: i64, work: i64, stack: i64 }
 thread_fn limit_need(bytes: u8[]) {
     defer { heap_program::finish(); }
@@ -265,36 +371,86 @@ thread_fn limit_need(bytes: u8[]) {
     assert(job.status == tiny::Status.Complete && job.fault == source::Fault.None);
     assert(qput(Need { steps: job.steps, work: heap.work - work, stack: stack }));
 }
-thread_fn limit_side(bytes: u8[], kind: i64, limit: i64, sliced: bool, identity: i64) {
-    defer { heap_program::finish(); }
-    var code = source::Code {}; decode(code, bytes);
-    var heap = source::Heap { code: code }; assert(source::initialize(heap));
-    if identity != 0 { heap.identity = identity; }
+// The state a run under one limit leaves, uncut or one instruction a slice.
+fn limited(heap: source::Heap&, kind: i64, limit: i64, sliced: bool) -> State {
     let entry = source::closure(heap, 0, []);
     var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     if kind == 0 { heap.limits.steps = limit; } else if kind == 1 { heap.limits.work = heap.work + limit; } else { heap.limits.stack = limit; }
     if sliced { while source::run(job, 1) == tiny::Outcome.Yielded {} } else { source::run(job, -1); }
     // Neither count overruns its limit, not even by instructions run in place.
     assert(job.steps <= heap.limits.steps && heap.work <= heap.limits.work);
-    assert(qput(state(job)));
+    let left = state(job); assert(source::retire(job));
+    return left;
+}
+thread_fn limit_lane(bytes: u8[], need: Need, lane: i64, lanes: i64, every: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = [];
+    var points: i64 = 0;
+    for kind in 3 {
+        let count = if kind == 0 { need.steps } else if kind == 1 { need.work } else { need.stack };
+        var limit = lane;
+        while limit <= count {
+            if every || sampled_limit(kind, limit, count) {
+                renew(code, heap, bindings, bytes, 0); let whole = limited(heap, kind, limit, false);
+                // The sliced run takes the uncut run's identity, as one logical session.
+                renew(code, heap, bindings, bytes, 0); heap.identity = whole.identity; let sliced = limited(heap, kind, limit, true);
+                same_state(whole, sliced);
+                // A work limit a helper's own charge meets fails with that
+                // helper's fault (key_is, for one, answers false and its caller
+                // reports UnsupportedOperand), on both sides alike.
+                let fault = if kind == 0 { source::Fault.InstructionLimit } else { source::Fault.StackLimit };
+                if limit < count { assert(whole.status == tiny::Status.Failed && (kind == 1 || whole.fault == fault)); }
+                if kind == 0 { assert(whole.steps == min(limit, need.steps)); }
+                if limit == count { assert(whole.status == tiny::Status.Complete); }
+                points += 1;
+            }
+            limit += lanes;
+        }
+    }
+    assert(qput(Swept { points: points }));
 }
 fn limit_points(bytes: const u8[:]) {
     heap_program::join(thread_spawn(limit_need, str(bytes))); let need = qget<Need>();
-    for kind in 3 {
-        let count = if kind == 0 { need.steps } else if kind == 1 { need.work } else { need.stack };
-        for limit in (count + 1) {
-            heap_program::join(thread_spawn(limit_side, str(bytes), kind, limit, false, 0)); let whole = qget<State>();
-            heap_program::join(thread_spawn(limit_side, str(bytes), kind, limit, true, whole.identity)); let sliced = qget<State>();
-            same_state(whole, sliced);
-            // A work limit a helper's own charge meets fails with that
-            // helper's fault (key_is, for one, answers false and its caller
-            // reports UnsupportedOperand), on both sides alike.
-            let fault = if kind == 0 { source::Fault.InstructionLimit } else { source::Fault.StackLimit };
-            if limit < count { assert(whole.status == tiny::Status.Failed && (kind == 1 || whole.fault == fault)); }
-            if kind == 0 { assert(whole.steps == min(limit, need.steps)); }
-            if limit == count { assert(whole.status == tiny::Status.Complete); }
-        }
-    }
+    let started = clock_ns();
+    var lanes: i64[>..] = [];
+    for i in sweep_lanes { lanes.push(thread_spawn(limit_lane, str(bytes), need, i, sweep_lanes, !sampled)); }
+    var points: i64 = 0;
+    for lane in lanes { heap_program::join(lane); let s = qget<Swept>(); points += s.points; }
+    progress("limit points", need.steps + need.work + need.stack, "point", points, !sampled, started);
+}
+// The sampled limits (--sampled): every stack limit (a run needs few), and
+// of a longer instruction or work count its first and last sample_edge
+// points and every stride-th.
+fn sampled_limit(kind: i64, limit: i64, count: i64) -> bool {
+    let stride = max(1, (count + sample_points - 1) / sample_points);
+    return kind == 2 || !long_sweep(count) || limit < sample_edge || limit > count - sample_edge || limit % stride == 0;
+}
+// The sampled sweeps' choices (light-cljs-927) on made-up runs, so a
+// change to them shows here and not as a debug build that quietly tests
+// less.
+fn sampling_policy() {
+    assert(!long_sweep(2 * sample_points) && long_sweep(2 * sample_points + 1));
+    // A 1,000-step image: stride 8, edges 0..15 and 985..1000.
+    var seen = dictionary<i64, bool> {};
+    let steps: i64 = 1000; let stride = max(1, (steps + sample_points - 1) / sample_points);
+    assert(stride == 8);
+    for cut in sample_edge { assert(sampled_cut(seen, stride, cut, steps, opcode::Add, opcode::Add, false)); }
+    for cut in (steps - sample_edge + 1)..(steps + 1) { assert(sampled_cut(seen, stride, cut, steps, opcode::Add, opcode::Add, false)); }
+    // A boundary seen before is cut on the stride only.
+    assert(!sampled_cut(seen, stride, 17, steps, opcode::Add, opcode::Add, false) && sampled_cut(seen, stride, 24, steps, opcode::Add, opcode::Add, false));
+    // The first of each boundary is cut once: an instruction pair, in order,
+    // and the same pair across a frame-depth change.
+    assert(sampled_cut(seen, stride, 17, steps, opcode::Add, opcode::Return, false) && !sampled_cut(seen, stride, 18, steps, opcode::Add, opcode::Return, false));
+    assert(sampled_cut(seen, stride, 19, steps, opcode::Add, opcode::Return, true) && !sampled_cut(seen, stride, 21, steps, opcode::Add, opcode::Return, true));
+    assert(sampled_cut(seen, stride, 22, steps, opcode::Return, opcode::Add, false) && !sampled_cut(seen, stride, 23, steps, opcode::Return, opcode::Add, false));
+    // A native frame or a promise job next (resume_key -1) is always cut.
+    assert(sampled_cut(seen, stride, 25, steps, opcode::Add, -1, false) && sampled_cut(seen, stride, 26, steps, opcode::Add, -1, false));
+    // Limits: every stack limit; every point of a short count; of a long
+    // one (257 points: stride 3) its edges and stride only.
+    assert(sampled_limit(2, 100, 1000) && sampled_limit(0, 100, 2 * sample_points) && sampled_limit(1, 101, 2 * sample_points));
+    let count = 2 * sample_points + 1;
+    assert(sampled_limit(1, 5, count) && sampled_limit(1, count - 15, count) && sampled_limit(0, 99, count));
+    assert(!sampled_limit(1, 100, count) && !sampled_limit(0, count - 16, count) && !sampled_limit(1, 16, count));
 }
 fn limits(bytes: const u8[:]) {
     for kind in 3 { heap_program::join(thread_spawn(initialization_limit, str(bytes), kind)); }
@@ -674,6 +830,14 @@ fn wrong_rows() {
     print("serial source VM: every row helper family refuses a wrong-table row by its table name");
 }
 fn main() {
+    // --sampled: smoke.bb's debug build samples the long sweeps; the native
+    // build, without it, runs every budget cut and limit point.
+    let arguments = args();
+    sampled = arguments.len == 2 && arguments[1] == "--sampled";
+    assert(arguments.len == 1 || sampled);
+    sweep_lanes = min(8, max(1, hardware_threads() / 3));
+    print("serial source VM: ", if sampled { "sampled" } else { "every" }, " budget cut and limit point, ", sweep_lanes, " sweep lanes");
+    sampling_policy();
     array_lengths(); latin1_state_check();
     wrong_rows();
     heap_program::join(thread_spawn(latin1_strings)); heap_program::join(thread_spawn(primitive_to_string_limits)); heap_program::join(thread_spawn(string_to_number_budget)); heap_program::join(thread_spawn(inline_slots));

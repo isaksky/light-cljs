@@ -9,6 +9,10 @@ namespace heap_program;
 // copies main's session-identity counter into the worker; `finish` hands the
 // worker's counter back and `join` adopts it, so identities stay unique
 // across the sequence exactly as they were when the functions shared a program.
+// Workers that run at once (serial_tests' sweep lanes, light-cljs-927) start
+// from the same counter and hand theirs back in any order, so `join` keeps
+// the highest; one at a time, the joined worker's counter is never below
+// main's. Such workers share no heap, so their heaps' identities may repeat.
 struct Identity { next: i64 }
 fn finish() { assert(qput(Identity { next: source::next_identity })); }
-fn join(thread: i64) { assert(thread_wait(thread)); let i = qget<Identity>(); source::next_identity = i.next; }
+fn join(thread: i64) { assert(thread_wait(thread)); let i = qget<Identity>(); source::next_identity = max(source::next_identity, i.next); }
