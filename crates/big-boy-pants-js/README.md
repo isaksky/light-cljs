@@ -13,8 +13,9 @@ JavaScript (group `goose-javascript`). Read [AGENTS.md](AGENTS.md) first.
 | --- | --- |
 | `src/` | The Goose runtime: VM, snapshots, scheduler, compiler session, form bridge, and the `*_tests.goose` test programs beside the modules they import |
 | `corpus/` | Captured bytecode images, jobs and expectations used by the tests (`corpus/manifest.edn` records their sources) |
-| `scripts/` | Babashka entry points: `smoke.bb`, `compiler.bb`, `correctness.bb`, `regenerate.bb`, `conformance.bb`, benchmarks |
+| `scripts/` | Babashka entry points: `smoke.bb`, `compiler.bb`, `correctness.bb`, `regenerate.bb`, `conformance.bb`, `macro-ledger.bb`, benchmarks |
 | `conformance/` | The JavaScript conformance harness's area map (`areas.edn`), expected Goose passes (`expected-pass.edn`) and bbp-authored cases (`cases/`); see `scripts/conformance.bb` |
+| `macro-ledger/` | The macro-idiom ledger's idioms (`idioms.edn`) and expected Goose passes (`expected-pass.edn`); see [Macro-idiom ledger](#macro-idiom-ledger) |
 | `evidence/` | Measurement reports and raw archives |
 | `docs/` | Design notes |
 | `rust/` | The first, Rust implementation (package `big-boy-pants-js`). Its parser and bytecode compiler still produce what Goose executes (`rust/src/frontend/goose.rs` exports it), and its VM is the reference oracle for porting JavaScript semantics. See [rust/README.md](rust/README.md). |
@@ -314,6 +315,51 @@ linked conversation. Byte equality with that recovered text was verified; the
 note remains untracked, with original `master` HEAD and all other status
 unchanged. This establishes recovery from the conversation, not an independent
 proof of the missing file's historical bytes.
+
+## Macro-idiom ledger
+
+`scripts/macro-ledger.bb` (light-cljs-916) scores the Goose compiler path on
+ordinary macro idioms against the V8 path: the macro-facing scoreboard beside
+`scripts/conformance.bb`'s JavaScript one. Each idiom in
+`macro-ledger/idioms.edn` is ClojureScript source that a macro evaluates over
+the argument form `[1 2 3 {:a 1 :b "s"} foo/bar :k "str" (f 4 5)]`, returning
+the result quoted. The script writes one tiny project per idiom under
+`target/macro-ledger/work/`, builds it with `light-cljs release bench
+--optimize advanced --jobs 1 --no-cache` once on the V8 path and once with
+`LIGHT_CLJS_GOOSE_RUNNER` and one Goose worker, and scores a pass when the
+Goose output is byte-identical to V8's. Goose refusals print grouped by what
+they name (`Fault.NativeBoundary:no-core-leaf-take`, the spellings of
+`boundary_detail` in `src/source_vm.goose`), so a pellet sees which idioms the
+step it adds unlocks. An idiom V8 itself refuses records why (`:v8-refuses`)
+and is not scored.
+
+```sh
+bb crates/big-boy-pants-js/scripts/macro-ledger.bb --check
+```
+
+This builds light-cljs with `--features goose-macros` and, when a Goose source
+is newer than it, the runner (`src/compiler_session.goose`, about 26 s), then
+builds the 175 idioms twice in about 3 s with four jobs. `--check` fails on a
+regression against `macro-ledger/expected-pass.edn`, on a pass that file does
+not list (add it), and when V8's refusals differ from `idioms.edn`;
+`--write-expected` rewrites the list. `--idiom ID` selects idioms, `--no-build`
+with `--light` and `--runner` uses tools as they are. Every row, with the
+Goose error of each refusal, is written to `target/macro-ledger/ledger.edn`.
+
+Starting point (cac1986d, November 10, 2026): 27 of 172 scored idioms pass.
+The 162 rows of the review's probe score the same 24 of 159 as at 1781f980;
+of the 13 idioms added with the ledger (a helper in another namespace, a
+helper returning a function, `defonce` state shared by two macros, `binding`
+of a user var, `with-out-str`, `macroexpand-1`, an `&env` local lookup,
+clojure.string and clojure.walk from a helper, cljs.reader with tagged
+readers, a record and protocol in a helper, and a string-concatenating,
+a hiccup-walking and a schema-validating library macro reduced to their
+general form), `helper-other-ns`, `macroexpand-1` and `env-locals-lookup`
+pass. Of the 145 refusals, 103 are a missing core leaf, 18 a form operation,
+8 a pending String, Number or Array method, 5 a dependency need
+(clojure.set and clojure.walk), 4 a missing global, 3 a built-in's step,
+2 a missing `rt` member and 2 compiler-side refusals (a protocol extension,
+a job-made symbol in a preparation).
 
 ## Corpus and coverage
 

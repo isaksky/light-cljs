@@ -1,0 +1,185 @@
+;; Macro idioms scored by scripts/macro-ledger.bb (light-cljs-916). Each :body
+;; is ClojureScript source a macro evaluates with x bound to the argument
+;; form [1 2 3 {:a 1 :b "s"} foo/bar :k "str" (f 4 5)]; the macro returns
+;; (list 'quote result). The other keys are described in the script's header.
+;;
+;; The Fable review's probe of November 9, 2026 (162 idioms).
+[{:id "map-inc", :body "(map inc (take 3 x))"}
+ {:id "mapv", :body "(mapv str x)"}
+ {:id "filter", :body "(filter number? x)"}
+ {:id "remove", :body "(remove number? x)"}
+ {:id "reduce", :body "(reduce + 0 (filter number? x))"}
+ {:id "reduce-noinit", :body "(reduce + (filter number? x))"}
+ {:id "mapcat", :body "(mapcat (fn [v] [v v]) (take 2 x))"}
+ {:id "partition", :body "(partition 2 x)"}
+ {:id "partition-all", :body "(partition-all 3 x)"}
+ {:id "interleave", :body "(interleave (take 3 x) [:a :b :c])"}
+ {:id "interpose", :body "(interpose :sep (take 3 x))"}
+ {:id "take-drop", :body "[(take 2 x) (drop 6 x)]"}
+ {:id "take-while", :body "(take-while number? x)"}
+ {:id "drop-while", :body "(drop-while number? x)"}
+ {:id "concat", :body "(concat (take 2 x) [9] (drop 6 x))"}
+ {:id "apply", :body "(apply + (filter number? x))"}
+ {:id "apply-str", :body "(apply str (filter number? x))"}
+ {:id "reverse", :body "(reverse x)"}
+ {:id "sort", :body "(sort (filter number? [3 1 2]))"}
+ {:id "sort-by", :body "(sort-by - [3 1 2])"}
+ {:id "distinct", :body "(distinct [1 1 2 3 3])"}
+ {:id "group-by", :body "(group-by number? (take 5 x))"}
+ {:id "frequencies", :body "(frequencies [1 1 2])"}
+ {:id "some", :body "(some keyword? x)"}
+ {:id "every", :body "(every? number? (take 3 x))"}
+ {:id "keep", :body "(keep (fn [v] (when (number? v) (inc v))) x)"}
+ {:id "map-indexed", :body "(map-indexed vector (take 3 x))"}
+ {:id "zipmap", :body "(zipmap [:a :b :c] (take 3 x))"}
+ {:id "into-vec", :body "(into [] (take 3 x))"}
+ {:id "into-map", :body "(into {} [[:a 1] [:b 2]])"}
+ {:id "into-set", :body "(into #{} (take 3 x))"}
+ {:id "range", :body "(vec (range 5))"}
+ {:id "range-lazy", :body "(take 3 (range))"}
+ {:id "repeat", :body "(repeat 3 :a)"}
+ {:id "iterate", :body "(take 3 (iterate inc 1))"}
+ {:id "butlast-last", :body "[(butlast x) (last x)]"}
+ {:id "second-nth", :body "[(second x) (nth x 2) (nth x 99 :none)]"}
+ {:id "first-rest-next", :body "[(first x) (rest x) (next x)]"}
+ {:id "flatten", :body "(flatten [1 [2 [3]]])"}
+ {:id "count-empty", :body "[(count x) (empty? x) (seq [])]"}
+ {:id "cons-conj", :body "[(cons 0 x) (conj x 9) (conj (list 1) 0)]"}
+ {:id "conj-variadic", :body "(conj [1] 2 3 4)"}
+ {:id "list-star", :body "(list* 1 2 [3 4])"}
+ {:id "vec-subvec", :body "[(vec (list 1 2)) (subvec x 1 3) (peek x) (pop [1 2 3])]"}
+ {:id "assoc-dissoc", :body "(dissoc (assoc (nth x 3) :c 3 :d 4) :a)"}
+ {:id "update", :body "(update (nth x 3) :a inc)"}
+ {:id "merge", :body "(merge (nth x 3) {:z 1} {:a 2})"}
+ {:id "merge-with", :body "(merge-with + {:a 1} {:a 2})"}
+ {:id "get-in-assoc-in", :body "[(get-in {:a {:b 1}} [:a :b]) (assoc-in {} [:a :b] 1) (update-in {:a {:b 1}} [:a :b] inc)]"}
+ {:id "select-keys", :body "(select-keys (nth x 3) [:a])"}
+ {:id "keys-vals", :body "[(keys (nth x 3)) (vals (nth x 3))]"}
+ {:id "contains-find", :body "[(contains? (nth x 3) :a) (find (nth x 3) :a)]"}
+ {:id "reduce-kv", :body "(reduce-kv (fn [m k v] (assoc m v k)) {} (nth x 3))"}
+ {:id "destructure-keys", :body "(let [{:keys [a b] :or {a 0}} (nth x 3)] [a b])"}
+ {:id "destructure-seq", :body "(let [[a b & more :as all] x] [a b (count more) (count all)])"}
+ {:id "map-seq", :body "(seq (nth x 3))"}
+ {:id "map-over-map", :body "(map (fn [[k v]] [v k]) (nth x 3))"}
+ {:id "into-map-xform", :body "(into {} (map (fn [[k v]] [v k])) (nth x 3))"}
+ {:id "big-map", :body "(assoc (zipmap (range 20) (range 20)) :k 1)"}
+ {:id "hash-map-fn", :body "(hash-map :a 1 :b 2)"}
+ {:id "sorted-map", :body "(sorted-map :b 1 :a 2)"}
+ {:id "set-ops", :body "[(conj #{1} 2) (disj #{1 2} 1) (contains? #{1} 1) (set [1 1 2])]"}
+ {:id "clojure-set", :body "(clojure.set/union #{1} #{2})", :requires [clojure.set]}
+ {:id "symbol-ops", :body "[(symbol \"a\" \"b\") (symbol \"c\") (name (nth x 4)) (namespace (nth x 4))]"}
+ {:id "keyword-ops", :body "[(keyword \"a\" \"b\") (keyword \"c\") (name :x/y) (namespace :x/y)]"}
+ {:id "gensym", :body "(let [g (gensym \"g\")] (list 'let [g 1] g))"}
+ {:id "auto-gensym", :body "`(let [v# 1] v#)"}
+ {:id "with-meta", :body "(meta (with-meta (nth x 4) {:tag 'String}))"}
+ {:id "vary-meta", :body "(meta (vary-meta [1] assoc :k 1))"}
+ {:id "meta-form", :body "(select-keys (meta &form) [:line :column])"}
+ {:id "env-ns", :body "(str (:name (:ns &env)))"}
+ {:id "env-locals", :body "(vec (keys (:locals &env)))"}
+ {:id "preds", :body "[(symbol? (nth x 4)) (keyword? :a) (string? \"s\") (map? {}) (vector? []) (seq? '(1)) (list? '(1)) (set? #{}) (coll? []) (fn? inc) (nil? nil) (some? 1) (number? 1) (integer? 1) (boolean? true) (sequential? []) (associative? {})]"}
+ {:id "equality", :body "[(= [1 2] '(1 2)) (= {:a 1} {:a 1}) (not= 1 2) (identical? :a :a) (= 'a 'a)]"}
+ {:id "str", :body "(str \"a\" 1 :k 'sym nil [1 2] {:a 1})"}
+ {:id "pr-str", :body "(pr-str x)"}
+ {:id "subs", :body "(subs \"hello\" 1 3)"}
+ {:id "str-join", :body "(clojure.string/join \", \" (take 3 x))", :requires [clojure.string]}
+ {:id "str-split", :body "(clojure.string/split \"a,b,c\" #\",\")", :requires [clojure.string]}
+ {:id "str-replace", :body "(clojure.string/replace \"a-b-c\" \"-\" \"_\")", :requires [clojure.string]}
+ {:id "str-replace-re", :body "(clojure.string/replace \"a-b-c\" #\"-\" \"_\")", :requires [clojure.string]}
+ {:id "str-case", :body "[(clojure.string/upper-case \"ab\") (clojure.string/lower-case \"AB\") (clojure.string/capitalize \"ab\")]", :requires [clojure.string]}
+ {:id "str-preds", :body "[(clojure.string/starts-with? \"abc\" \"a\") (clojure.string/ends-with? \"abc\" \"c\") (clojure.string/includes? \"abc\" \"b\") (clojure.string/blank? \" \")]", :requires [clojure.string]}
+ {:id "str-trim", :body "(clojure.string/trim \"  a \")", :requires [clojure.string]}
+ {:id "re-find", :body "(re-find #\"\\d+\" \"ab12c\")"}
+ {:id "re-matches", :body "(re-matches #\"(\\w+)-(\\d+)\" \"ab-12\")"}
+ {:id "re-seq", :body "(re-seq #\"\\d\" \"a1b2\")"}
+ {:id "re-pattern", :body "(re-find (re-pattern \"b+\") \"abbc\")"}
+ {:id "str-count", :body "[(count \"abc\") (seq \"ab\") (first \"ab\") (char? \\a)]"}
+ {:id "math", :body "[(inc 1) (dec 1) (+ 1 2.5) (* 2 3) (/ 6 4) (mod 7 3) (rem -7 3) (quot 7 2) (max 1 2) (min 1 2) (bit-and 6 3) (bit-or 4 1) (bit-shift-left 1 4)]"}
+ {:id "math-preds", :body "[(zero? 0) (pos? 1) (neg? -1) (even? 2) (odd? 3) (< 1 2 3) (>= 3 3)]"}
+ {:id "js-math", :body "[(js/Math.floor 2.5) (js/Math.max 1 2) (js/parseInt \"42\") (.toFixed 1.5 1)]"}
+ {:id "js-string-methods", :body "[(.toUpperCase \"ab\") (.-length \"abc\") (.indexOf \"abc\" \"c\") (.slice \"abcd\" 1 3) (.charAt \"abc\" 1)]"}
+ {:id "js-array", :body "(let [a (array 1 2 3)] (.push a 4) [(alength a) (aget a 0) (vec a)])"}
+ {:id "js-obj", :body "(let [o (js-obj \"a\" 1)] (aset o \"b\" 2) [(aget o \"a\") (.-b o)])"}
+ {:id "into-array", :body "(vec (into-array [1 2 3]))"}
+ {:id "js-keys-json", :body "(js/JSON.stringify (clj->js {:a [1 2]}))"}
+ {:id "js-to-clj", :body "(js->clj (js/JSON.parse \"{\\\"a\\\":[1,2]}\"))"}
+ {:id "when-if-let", :body "[(when-let [a (first x)] a) (if-let [a nil] 1 2) (when-some [a 0] a) (if-some [a nil] 1 2)]"}
+ {:id "cond-case", :body "[(cond (nil? x) 1 :else 2) (case (first x) 1 :one :other) (condp = (first x) 1 :one 2 :two) (case :k (:a :k) :hit :miss)]"}
+ {:id "and-or-not", :body "[(and 1 2) (or nil 3) (not nil) (if-not nil 1 2) (when-not nil 1)]"}
+ {:id "threading", :body "[(-> 1 inc (+ 2)) (->> x (filter number?) (map inc)) (some-> nil inc) (cond-> 1 true inc) (as-> 1 v (+ v 1))]"}
+ {:id "loop-recur", :body "(loop [i 0 acc []] (if (< i 3) (recur (inc i) (conj acc i)) acc))"}
+ {:id "for", :body "(for [a [1 2] b [:x :y] :when (odd? a)] [a b])"}
+ {:id "doseq-atom", :body "(let [a (atom [])] (doseq [v (take 3 x)] (swap! a conj v)) @a)"}
+ {:id "dotimes", :body "(let [a (atom 0)] (dotimes [i 4] (swap! a + i)) @a)"}
+ {:id "atom-ops", :body "(let [a (atom {})] (swap! a assoc :k 1) (reset! a (update @a :k inc)) [(deref a) (compare-and-set! a @a 5)])"}
+ {:id "volatile", :body "(let [v (volatile! 0)] (vswap! v inc) @v)"}
+ {:id "try-catch", :body "(try (throw (ex-info \"boom\" {:a 1})) (catch :default e [(ex-message e) (ex-data e)]))"}
+ {:id "try-js-error", :body "(try (throw (js/Error. \"bad\")) (catch js/Error e (.-message e)) (finally nil))"}
+ {:id "assert", :body "(try (assert (= 1 2) \"nope\") (catch :default e :caught))"}
+ {:id "letfn", :body "(letfn [(ev? [n] (if (zero? n) true (od? (dec n)))) (od? [n] (if (zero? n) false (ev? (dec n))))] (ev? 10))"}
+ {:id "fn-arity", :body "(let [f (fn ([a] a) ([a b] (+ a b)) ([a b & r] (count r)))] [(f 1) (f 1 2) (f 1 2 3 4)])"}
+ {:id "fn-varargs-kw", :body "(let [f (fn [a & {:keys [k]}] [a k])] (f 1 :k 2))"}
+ {:id "partial-comp", :body "[((partial + 1) 2) ((comp inc inc) 1) ((juxt first count) [1 2]) ((complement nil?) 1) ((constantly 1) 2) (identity 3)]"}
+ {:id "fnil-memoize", :body "[((fnil inc 0) nil) ((memoize inc) 1) ((every-pred number? pos?) 1) ((some-fn nil? number?) 1)]"}
+ {:id "anon-fn", :body "(map #(* % 2) [1 2])"}
+ {:id "kw-as-fn", :body "[(:a (nth x 3)) ((nth x 3) :a) (:zz (nth x 3) :dflt) (#{1} 1) ([1 2] 0) (get [1 2] 5 :nf)]"}
+ {:id "transduce", :body "[(into [] (comp (map inc) (filter odd?)) [1 2 3]) (transduce (map inc) + 0 [1 2]) (sequence (map inc) [1 2])]"}
+ {:id "lazy-seq", :body "(take 3 ((fn f [n] (lazy-seq (cons n (f (inc n))))) 0))"}
+ {:id "delay-force", :body "(let [d (delay 1)] [(realized? d) @d (realized? d)])"}
+ {:id "doall-dorun", :body "(doall (map inc [1 2]))"}
+ {:id "walk-postwalk", :body "(clojure.walk/postwalk (fn [v] (if (number? v) (inc v) v)) x)", :requires [clojure.walk]}
+ {:id "walk-prewalk", :body "(clojure.walk/prewalk-replace {:k :j} x)", :requires [clojure.walk]}
+ {:id "walk-keywordize", :body "(clojure.walk/keywordize-keys {\"a\" 1})", :requires [clojure.walk]}
+ {:id "tree-seq", :body "(filter number? (tree-seq coll? seq [1 [2 [3]]]))"}
+ {:id "syntax-quote-splice", :body "`(do ~@(map (fn [v] `(inc ~v)) (take 3 x)) ~(first x))"}
+ {:id "form-build", :body "(list 'if (first x) (cons 'do (rest x)) nil)"}
+ {:id "seq-on-form", :body "[(seq? (last x)) (first (last x)) (count (last x)) (vec (rest (last x)))]"}
+ {:id "compare", :body "[(compare 1 2) (compare \"a\" \"b\") (compare :a :b)]"}
+ {:id "hash", :body "[(hash :a) (hash \"a\") (hash [1 2])]"}
+ {:id "name-munge", :body "(munge \"a-b?\")"}
+ {:id "format-like", :body "(str (.padStart \"7\" 3 \"0\") (.toString 255 16))"}
+ {:id "parse", :body "[(parse-long \"42\") (parse-double \"1.5\") (js/Number \"3\")]"}
+ {:id "char-ops", :body "[(int \\a) (char 98) (str \\a \\b)]"}
+ {:id "rand-none", :body "(count (shuffle [1 2 3]))"}
+ {:id "not-empty-seq", :body "[(not-empty []) (not-empty [1]) (empty [1 2]) (not-any? nil? [1])]"}
+ {:id "split-ops", :body "[(split-at 2 [1 2 3]) (split-with odd? [1 2 3]) (partition-by odd? [1 1 2])]"}
+ {:id "take-nth-last", :body "[(take-nth 2 [1 2 3 4]) (take-last 2 [1 2 3]) (drop-last [1 2 3]) (nthrest [1 2 3] 1)]"}
+ {:id "dedupe-etc", :body "[(dedupe [1 1 2]) (replace {1 :a} [1 2]) (reductions + [1 2 3]) (take 3 (cycle [1 2]))]"}
+ {:id "min-max-key", :body "[(max-key count \"a\" \"bb\") (min-key count \"a\" \"bb\")]"}
+ {:id "update-vals", :body "[(update-vals {:a 1} inc) (update-keys {:a 1} name)]"}
+ {:id "mapv-multi", :body "(mapv + [1 2] [10 20])"}
+ {:id "map-multi", :body "(map vector [1 2] [:a :b] [\"x\" \"y\"])"}
+ {:id "nested-data", :body "{:a [1 #{2} '(3 \"s\")] :b {:c nil :d true}}"}
+ {:id "defrecord-use", :body "(do (defrecord R [a]) (:a (->R 1)))"}
+ {:id "protocol-use", :body "(do (defprotocol P (pm [this])) (extend-type string P (pm [this] (count this))) (pm \"abc\"))"}
+ {:id "multimethod", :body "(do (defmulti mm first) (defmethod mm :a [_] 1) (mm [:a]))"}
+ {:id "deftype-use", :body "(do (deftype T [a]) (.-a (T. 1)))"}
+ {:id "reify-use", :body "(count (reify ICounted (-count [_] 7)))"}
+ {:id "satisfies-instance", :body "[(satisfies? ISeq '(1)) (instance? js/Error (js/Error. \"x\"))]"}
+ {:id "edn-read", :body "(cljs.reader/read-string \"{:a [1 2]}\")", :requires [cljs.reader]}
+ {:id "date-now", :body "(number? (js/Date.now))"}
+ {:id "regex-js", :body "(.test (js/RegExp. \"a+\") \"caat\")"}
+ {:id "string-builder", :body "(let [sb (goog.string.StringBuffer.)] (.append sb \"a\") (str sb))", :requires [goog.string], :v8-refuses "goog is not defined: macro code has no Closure Library"}
+ {:id "type-of", :body "[(type 1) (= (type \"s\") js/String)]", :v8-refuses "a function in a macro's result is not a form (type returns a constructor)"}
+ {:id "binding-dynamic", :body "(binding [*print-length* 2] (pr-str [1 2 3 4]))"}
+ {:id "print-side", :body "(do (println \"side\") 1)", :v8-refuses "println in a macro needs *print-fn*, which the V8 build's macro environment does not set"}
+ {:id "helper-fn", :body "(helper (first x))"}
+ {:id "helper-recursive", :body "(helper-walk x)"}
+ {:id "helper-def-data", :body "(get helper-table :b)"}
+ {:id "helper-atom-registry", :body "(do (swap! registry conj (first x)) (count @registry))"}
+ ;; Added by light-cljs-916: helpers in other namespaces, shared state,
+ ;; dynamic binding, printing, the expansion environment, the standard
+ ;; libraries from a helper, records and protocols, and three library
+ ;; macros reduced to their general form.
+ {:id "helper-other-ns", :body "(u/twice (first x))", :requires [[probe.util :as u]], :files {"macros/probe/util.cljc" "(ns probe.util)\n(defn twice [v] (* 2 v))\n"}}
+ {:id "helper-returns-fn", :body "[((adder 10) (first x)) (map (adder 1) (take 2 x))]", :defs "(defn adder [n] (fn [v] (+ n v)))"}
+ {:id "defonce-two-macros", :body "@seen", :defs "(defonce seen (atom []))\n(defmacro note [v] (swap! seen conj v) nil)", :main "(m/note :one)\n(m/note :two)"}
+ {:id "binding-user-var", :body "[(depth) (binding [*depth* 2] (depth)) (depth)]", :defs "(def ^:dynamic *depth* 0)\n(defn depth [] *depth*)"}
+ {:id "with-out-str", :body "(with-out-str (print \"a\" 1) (pr :k))"}
+ {:id "macroexpand-1", :body "(macroexpand-1 '(when a b))"}
+ {:id "env-locals-lookup", :body "[(contains? (:locals &env) 'loc) (some? (get (:locals &env) 'loc)) (get (:locals &env) 'nope)]"}
+ {:id "helper-ns-string-walk", :body "(t/labels (nth x 3))", :requires [[probe.text :as t]], :files {"macros/probe/text.cljc" "(ns probe.text (:require [clojure.string :as str] [clojure.walk :as walk]))\n(defn labels [form] (walk/postwalk (fn [v] (if (keyword? v) (str/upper-case (name v)) v)) form))\n"}}
+ {:id "edn-read-tagged", :body "(cljs.reader/read-string {:readers {'p (fn [v] [:p v])}} \"[#p 1 {:a #p :b}]\")", :requires [cljs.reader]}
+ {:id "helper-record-protocol", :body "(render-all [:a :b])", :defs "(defprotocol Render (render [this]))\n(defrecord Tag [n] Render (render [_] (str \"<\" (name n) \">\")))\n(defn render-all [ks] (mapv (comp render ->Tag) ks))"}
+ {:id "lib-string-concat", :body "(concat-template [\"a\" \"b\" (nth x 4) nil \"c\" (last x) \"d\"])", :defs "(defn concat-template [params]\n  (let [parts (into [] (comp (filter some?) (partition-by string?) (mapcat (fn [part] (if (string? (first part)) [(apply str part)] (map (fn [o] (list 'js* \"(~{})\" o)) part))))) params)]\n    (cons 'js* (cons (reduce str (pr-str \"\") (repeat (count parts) \"+~{}\")) parts))))"}
+ {:id "lib-hiccup-walk", :body "(compile-html [:div#main.box {:title \"t\"} [:span.a.b (nth x 6)] (last x) [:br]])", :requires [clojure.string], :defs "(defn parse-tag [k]\n  (let [[_ tag id classes] (re-matches #\"([^.#]+)(?:#([^.]+))?((?:\\.[^.#]+)*)\" (name k))]\n    [tag id (when (seq classes) (clojure.string/join \" \" (remove empty? (clojure.string/split classes #\"\\.\"))))]))\n(defn compile-html [h]\n  (if (vector? h)\n    (let [[k & more] h\n          [tag id class] (parse-tag k)\n          attrs (if (map? (first more)) (first more) {})\n          children (if (map? (first more)) (rest more) more)\n          attrs (cond-> attrs id (assoc :id id) class (assoc :className class))]\n      (list* 'create-element tag (into {} (map (fn [[a v]] [(name a) v])) attrs) (map compile-html children)))\n    h))"}
+ {:id "lib-schema-validator", :body "[(explain {:a 'int? :b 'str? :c 'kw?} (nth x 3)) (validator {:a 'int? :b 'str?})]", :defs "(def predicates {'int? integer? 'str? string? 'kw? keyword?})\n(defn explain [schema value]\n  (reduce-kv (fn [errors k pred] (let [v (get value k)] (if ((get predicates pred) v) errors (assoc errors k (list pred v))))) {} schema))\n(defn validator [schema]\n  (list 'fn '[m] (cons 'and (map (fn [[k pred]] (list pred (list 'get 'm k))) schema))))"}]
