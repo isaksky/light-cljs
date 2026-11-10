@@ -784,7 +784,7 @@ thread_fn integrity_malformed(saved: snapshot::Snapshot, mode: i64) {
     }
 }
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); heap_program::join(thread_spawn(binding_modes)); heap_program::join(thread_spawn(struct_kinds)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); heap_program::join(thread_spawn(binding_modes)); heap_program::join(thread_spawn(struct_kinds)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); regexp_saved_frames(); regexp_code_transport(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its
@@ -2741,6 +2741,283 @@ thread_fn runtime_eval_consumer(base: snapshot::Snapshot, wire: u8[]) {
     let result = snapshot_test::invoke(heap, imported, [source::number(1)]);
     assert(result.is_number() && result.num() == 42.0);
     var valid = snapshot::Control {}; let finished = snapshot::capture(heap, roots, valid); assert(valid.error == snapshot::Error.None);
+}
+// RegExp objects across dependency waits (regexp-wait.js, light-cljs-942):
+// eleven waits, wait w in a phase of one RegExp native frame
+// (REGEXP_WAITS[w] at pc REGEXP_PCS[w]) while a literal's object and a
+// run-time pattern's, whose program is a job code row, stay live. Run in
+// place, collected at every wait; or by a worker over the fixture's image
+// to its first wait and from there, wait by wait, saved and resumed
+// without replay in another program, alternately restored in a fresh heap
+// and installed over a reused worker's image (snapshot::extend), whose
+// reset cuts the job's rows, its pattern rows included. A saved RegExp
+// frame past its last phase, a RegExp row naming no program and a
+// run-time program whose op rows moved are refused. The matcher's frames
+// (exec, test and the symbol methods) add their waits to the fixture and
+// to these tables.
+let REGEXP_WAITS: source::Builtin[11] = [
+    source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp,
+    source::Builtin.RegExpPrototypeFlags, source::Builtin.RegExpPrototypeFlags, source::Builtin.RegExpPrototypeToString, source::Builtin.RegExpPrototypeToString,
+];
+// The constructor's phases (the identity rule's call, then
+// Reflect.construct with a newTarget whose `prototype` is a getter), the
+// flags getter's FLAG_NAMES reads of `global` and `sticky`, and
+// toString's `source` read and flags conversion.
+let REGEXP_PCS: i64[11] = [regexp_pc::Match, regexp_pc::Constructor, regexp_pc::Source, regexp_pc::Flags, regexp_pc::PatternText, regexp_pc::FlagsText, regexp_pc::Prototype, 1, 7, 0, 1];
+let REGEXP_RESULT = "mDcDsDfDxDyDpDgDkDSDFD:a(b)?c,gi,3,xy*,my,q+,gu,xy*,d,true,gy,/src/fl,/q+|a(b)?c/v,true";
+// The programs the job compiles at run time: made's, called's,
+// constructed's and later's.
+let REGEXP_COMPILED: i64 = 4;
+fn regexp_saved_frames() {
+    let bytes = embed_file("../corpus/serial/regexp-wait.gsp");
+    heap_program::join(thread_spawn(regexp_wait_in_place, str(bytes)));
+    heap_program::join(thread_spawn(suspension_parent, str(bytes))); let base = qget<snapshot::Snapshot>();
+    heap_program::join(thread_spawn(regexp_wait_first, copy(base)));
+    var waits: i64 = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(regexp_wait_resumed, copy(base), copy(w), waits % 2 == 1)); waits += 1; }
+    assert(waits == REGEXP_WAITS.len + 1);
+    print("snapshot regexp frames: the RegExp constructor's, flags getter's and toString's frames wait in every phase, collected in place or saved with literal and run-time programs and resumed without replay, restored or installed over a reused worker's image whose reset cuts the job's pattern rows");
+}
+// The one RegExp native frame of a job at wait w, and the RegExp objects
+// it keeps: at least one of a literal's program and one of a run-time
+// program (`made`).
+fn regexp_wait_frame(job: const source::Job&, w: i64) {
+    let heap .= job.heap;
+    var found: i64 = -1; var count: i64 = 0;
+    for f, i in job.frames { match f.native { RegExp r => { if r.which == REGEXP_WAITS[w] { found = i; } count += 1; }, _ => {} } }
+    assert(count == 1 && found >= 0 && job.frames[found].pc == REGEXP_PCS[w]);
+    var literal: i64 = 0; var compiled: i64 = 0;
+    for n in heap.nodes { if n.kind == node_kind::RegExp { if heap.code.patterns[n.function].literal { literal += 1; } else { compiled += 1; } } }
+    assert(literal >= 1 && compiled >= 1);
+    // The newTarget wait's pattern is `made`, of a run-time program.
+    if REGEXP_WAITS[w] == source::Builtin.RegExp && REGEXP_PCS[w] == regexp_pc::Prototype {
+        let f = job.frames[found]; assert(source::is_regexp_object(heap, f.receiver) && !source::regexp_program(heap, f.receiver.id()).literal && f.callee.is_object());
+    }
+}
+thread_fn regexp_wait_in_place(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let patterns = code.patterns.len; assert(patterns == 2);
+    var job = source::Job { heap: heap, effects_enabled: true, writable_code: code }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    var waits: i64 = 0;
+    loop {
+        collect_at_wait(job, heap);
+        regexp_wait_frame(job, waits);
+        waits += 1;
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    }
+    assert(waits == REGEXP_WAITS.len && source::key_is(heap, job.result, REGEXP_RESULT) && code.patterns.len == patterns + REGEXP_COMPILED);
+    assert(source::retire(job));
+}
+// A worker over the fixture's image runs the job to its first wait, with
+// `made`'s program the one row above the image's, and saves it; its reset
+// cuts that row, and the next job compiles the pattern again at that row.
+thread_fn regexp_wait_first(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    let identity = source::reserve_identity(); let rows: i64[] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, r) && snapshot::truncate(base, rows, identity, code, heap, bindings));
+    for run in 2 {
+        let dep = source::builtin(heap, 8);
+        var job = source::Job { heap: heap, effects_enabled: true, owned_nodes: base.nodes.len, writable_code: code };
+        assert(source::start(job, bindings[0].value, [dep]) && source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+        regexp_wait_frame(job, 0);
+        assert(code.patterns.len == base.patterns.len + 1 && !code.patterns[base.patterns.len].literal && code.pattern_ops.len > base.pattern_ops.len);
+        if run == 0 { regexp_wait_save(job, heap, bindings, base, 0); } else { assert(source::suspend_stack(job, -1) >= 0 && source::retire(job, true)); }
+        assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
+        assert(code.patterns.len == base.patterns.len && code.pattern_ops.len == base.pattern_ops.len && code.units.len == base.code_units.len);
+    }
+}
+// Collect at wait w and save the job's stack as a continuation: its heap's
+// snapshot validates, sits over the fixture's image, and is refused with a
+// saved RegExp frame at a phase past its last (mode 0), a RegExp row
+// naming no program (1) or a run-time program whose op rows moved (2).
+fn regexp_wait_save(job: source::Job&, heap: source::Heap&, bindings: const snapshot::Binding[:], base: const snapshot::Snapshot&, w: i64) {
+    collect_at_wait(job, heap);
+    regexp_wait_frame(job, w);
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
+    let service: i64[] = []; assert(snapshot::over_image(image, base, service) && image.patterns.len > base.patterns.len);
+    for mode in 3 {
+        var bad = copy(image); var changed = false;
+        match mode {
+            0 => {
+                for i in a.frame_count {
+                    let row = a.frames + i;
+                    match image.conts[row] { Frame x => { var f = x.f; match f.native { RegExp r => { f.pc = 8; changed = true; }, _ => {} } bad.conts[row] = source::Cont.Frame { f: f }; }, _ => {} }
+                }
+            },
+            1 => { for n, i in image.nodes { if !changed && n.kind == node_kind::RegExp { bad.nodes[i].function = image.patterns.len as u32; changed = true; } } },
+            _ => { for p, i in image.patterns { if !changed && !p.literal { bad.patterns[i].start += 1; changed = true; } } },
+        }
+        assert(changed);
+        var refused = snapshot::Control {}; assert(!snapshot::validate(bad, refused) && refused.error == (if mode == 2 { snapshot::Error.Code } else { snapshot::Error.Link }));
+    }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args, wait: w }));
+}
+// Resume a saved wait: restored in a fresh heap, or (reuse) installed over
+// a reused worker's image and reset after the job. The answer resumes the
+// job where it waited (the log in REGEXP_RESULT would repeat a replayed
+// read); it runs to its next wait, saved in turn, or completes with the
+// run-time programs of every resume before it.
+thread_fn regexp_wait_resumed(base: snapshot::Snapshot, saved: Waiting, reuse: bool) {
+    defer { heap_program::finish(); }
+    let identity = source::reserve_identity(); let rows: i64[] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    if reuse {
+        assert(snapshot::restore(base, code, heap, bindings, identity, r) && snapshot::truncate(base, rows, identity, code, heap, bindings));
+        var x = snapshot::Control {}; assert(snapshot::extend(saved.image, base, rows, code, heap, bindings, source::reserve_identity(), x));
+    } else {
+        assert(snapshot::restore(saved.image, code, heap, bindings, identity, r));
+    }
+    assert(code.patterns.len == saved.image.patterns.len && code.pattern_ops.len == saved.image.pattern_ops.len);
+    var job = source::Job { heap: heap, effects_enabled: true, owned_nodes: base.nodes.len, writable_code: code };
+    assert(source::resume_stack(job, saved.stack));
+    regexp_wait_frame(job, saved.wait);
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded {
+        assert(job.effect_pending && job.effect_kind == 8);
+        regexp_wait_save(job, heap, bindings, base, saved.wait + 1);
+    } else {
+        assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, REGEXP_RESULT) && saved.wait + 1 == REGEXP_WAITS.len);
+        assert(code.patterns.len == base.patterns.len + REGEXP_COMPILED);
+        assert(source::retire(job));
+        assert(qput(false));
+    }
+    if reuse { assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings) && code.patterns.len == base.patterns.len); }
+}
+// Pattern code across workers (light-cljs-942; callable.goose install): a
+// producer over an image with regular-expression literals of its own runs
+// an indirect eval whose script compiles a pattern at run time and makes a
+// closure whose calls evaluate three literals (one with a named group,
+// whose name is a code unit run) and compile another pattern. Its
+// publication's code suffix carries the literal and run-time programs. A
+// consumer whose code already has other literals and run-time programs
+// refuses publications whose suffix programs reach into the base's code,
+// op rows or units, whose literal row lost its mark, or whose base
+// programs differ; then installs it, its programs behind the consumer's,
+// calls it, and captures a snapshot that validates and restores in another
+// program, where the closure runs again.
+let TRANSPORT_SCRIPT = "const tag = new RegExp('r+', 'y').flags; const make = function () { return /(?<w>x)(y)?z/m; }; (function probe(s) { const a = make(); const b = /q\\/w/su; a.lastIndex = 2; return [a.source, a.flags, a.lastIndex, b.source, b.flags, tag, new RegExp(s, 'i').source, String(/n+/g), a !== make()].join(); })";
+let TRANSPORT_RESULT = "(?<w>x)(y)?z,m,2,q\\/w,su,y,k+,/n+/g,true";
+fn regexp_code_transport() {
+    let bytes = embed_file("../corpus/serial/regexp-wait.gsp");
+    heap_program::join(thread_spawn(suspension_parent, str(bytes))); let base = qget<snapshot::Snapshot>();
+    assert(base.patterns.len > 0);
+    heap_program::join(thread_spawn(regexp_transport_producer, copy(base))); let p = qget<Published>();
+    heap_program::join(thread_spawn(regexp_transport_consumer, copy(base), copy(p.wire))); let finished = qget<Saved>();
+    heap_program::join(thread_spawn(regexp_transport_restored, copy(finished.image)));
+    print("snapshot regexp code transport: an eval-compiled closure's literal and run-time programs travel in its publication's code suffix to a consumer with programs of its own, relocated behind them; malformed suffix programs are refused and the consumer's snapshot validates and restores");
+}
+// Call `callee` with `args` in a job that may compile into `code`.
+fn regexp_call(code: source::Code&, heap: source::Heap&, callee: source::Value, args: const source::Value[:]) -> source::Value {
+    var job = source::Job { heap: heap, writable_code: code }; assert(source::start(job, callee, args));
+    assert(source::run(job, -1) == tiny::Outcome.Complete); let result = job.result; assert(source::retire(job)); return result;
+}
+thread_fn regexp_transport_producer(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    let identity = source::reserve_identity(); let rows: i64[] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, r) && snapshot::truncate(base, rows, identity, code, heap, bindings));
+    var job = source::Job { heap: heap, owned_nodes: heap.nodes.len, writable_code: code };
+    let units = source::utf16(heap, source::text(heap, TRANSPORT_SCRIPT));
+    let root = source::compile_code(job, "eval", units, runtime_mode::IndirectEval, false, 0); assert(root == base.functions.len);
+    assert(source::start(job, source::closure(heap, root, []), [], heap.global) && source::run(job, -1) == tiny::Outcome.Complete);
+    let probe = job.result; assert(source::retire(job));
+    assert(probe.is_object() && source::node(heap, probe.id()).kind == node_kind::Closure);
+    // The eval code's three literal programs, then the script's run-time
+    // one, follow the image's; the named group's name is a run of units.
+    var literals: i64 = 0; var compiled: i64 = 0; var named: i64 = 0;
+    for x in code.patterns[base.patterns.len..] { if x.literal { literals += 1; } else { compiled += 1; } if x.unit_count > 0 { named += 1; } }
+    assert(literals == 3 && compiled == 1 && named >= 1 && !code.patterns[code.patterns.len - 1].literal);
+    var encoding = snapshot::Control {}; var wire: u8[>..] = []; assert(callable::encode(heap, base, probe, wire, encoding, source::reserve_identity()));
+    assert(encoding.error == snapshot::Error.None);
+    assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
+    assert(qput(Published { wire: copy(wire), entry: root, runtime: bindings[0].value, rt_cell: source::Value.Undefined, two: source::Value.Undefined, forms: source::Value.Undefined, cell: source::Value.Undefined, function: probe }));
+}
+thread_fn regexp_transport_consumer(base: snapshot::Snapshot, wire: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
+    // The consumer's own code: regexp-construction.js's literals, its
+    // constants as heap constants too, and the run-time programs its job
+    // compiles.
+    let first = code.constants.len; let own = snapshot_test::append(code, embed_file("../corpus/serial/regexp-construction.gsp"));
+    for k in code.constants[first..] { var value = k; if k.is_string() { value = source::string(heap, source::code_chars(code, k)); } source::add_constants(heap, [value]); }
+    let ran = regexp_call(code, heap, source::closure(heap, own, []), []); assert(ran.is_bool() && ran.flag());
+    var literals: i64 = 0; var compiled: i64 = 0;
+    for x in code.patterns[base.patterns.len..] { if x.literal { literals += 1; } else { compiled += 1; } }
+    assert(literals > 0 && compiled > 0);
+    let ops = code.ops.len; let patterns = code.patterns.len; let pattern_ops = code.pattern_ops.len; let code_units = code.units.len; let nodes = heap.nodes.len;
+    // Malformed suffix programs install nothing: one whose op row (0),
+    // pattern op rows (1) or name units (2) lie in the base's code, a
+    // literal row without its mark (3), and a base program that differs
+    // from the consumer's (4).
+    let records, parsed = from_bytes<callable::Publication[>..]>(wire); assert(parsed && records.len == 1);
+    for original in records {
+        let e = original.base.ends;
+        for mode in 5 {
+            var bad = copy(original); var changed = false;
+            for x, i in original.image.patterns {
+                if changed || i < e[24] && mode != 4 || i >= e[24] && mode == 4 { continue; }
+                match mode {
+                    0 => { bad.image.patterns[i].op = 0; changed = true; },
+                    1 => { bad.image.patterns[i].start = 0; changed = true; },
+                    2 => { if x.unit_count > 0 { bad.image.patterns[i].units = 0; changed = true; } },
+                    3 => { if x.literal { bad.image.patterns[i].literal = false; changed = true; } },
+                    _ => { bad.image.patterns[i].flags ^= 1; changed = true; },
+                }
+            }
+            assert(changed);
+            var encoded: u8[>..] = []; to_bytes([bad], encoded);
+            var check = snapshot::Control {}; callable::decode_install(encoded, base.header, code, heap, check);
+            assert(check.error == snapshot::Error.Code && code.patterns.len == patterns && code.pattern_ops.len == pattern_ops && code.ops.len == ops && code.units.len == code_units && heap.nodes.len == nodes);
+        }
+    }
+    var check = snapshot::Control {}; let imported = callable::decode_install(wire, base.header, code, heap, check);
+    assert(check.error == snapshot::Error.None && imported.is_object());
+    // The suffix programs sit behind the consumer's, each the producer's
+    // relocated: its instruction row behind the consumer's instructions (a
+    // literal's a RegExpLiteral), its op rows and name units behind the
+    // consumer's, with the producer's contents.
+    assert(code.patterns.len == patterns + 4);
+    for original in records {
+        let s .= original.image; let e = original.base.ends;
+        for k in 4 {
+            let x = code.patterns[patterns + k]; let y = s.patterns[e[24] + k];
+            let total: i64 = y.instructions + y.members + y.names; let from: i64 = y.start; let to: i64 = x.start;
+            assert(x.literal == y.literal && x.flags == y.flags && x.captures == y.captures && x.instructions == y.instructions && x.members == y.members && x.names == y.names && x.unit_count == y.unit_count);
+            assert(x.op == y.op + ops - e[4] && to == from + pattern_ops - e[25] && (x.unit_count == 0 || x.units == y.units + code_units - e[5]));
+            assert(bytes_of(code.pattern_ops[to..(to + total)]) == bytes_of(s.pattern_ops[from..(from + total)]));
+            let a: i64 = x.units; let b: i64 = y.units; let n: i64 = y.unit_count; assert(code.units[a..(a + n)] == s.code_units[b..(b + n)]);
+            if x.literal { assert(code.ops[x.op].code == opcode::RegExpLiteral); }
+        }
+    }
+    let result = regexp_call(code, heap, imported, [source::text(heap, "k+")]);
+    assert(source::key_is(heap, result, TRANSPORT_RESULT) && code.patterns.len == patterns + 5);
+    roots.push(snapshot::Binding { id: 2, generation: 1, value: imported });
+    var valid = snapshot::Control {}; let finished = snapshot::capture(heap, roots, valid); assert(valid.error == snapshot::Error.None);
+    var again = snapshot::Control {}; assert(snapshot::validate(finished, again));
+    assert(qput(Saved { image: copy(finished) }));
+}
+// The consumer's snapshot restores in another program, and the installed
+// closure runs there with the same answer.
+thread_fn regexp_transport_restored(image: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(image, code, heap, bindings, source::reserve_identity(), r) && bindings.len == 2);
+    let result = regexp_call(code, heap, bindings[1].value, [source::text(heap, "k+")]);
+    assert(source::key_is(heap, result, TRANSPORT_RESULT));
 }
 thread_fn suspension_parent(bytes: u8[]) {
     defer { heap_program::finish(); }

@@ -2881,6 +2881,12 @@ mod serial_tests {
             // the step limit's RangeError and a refused lookbehind's named
             // fault, which Node and the Pants engine do not share.
             ("regexp-failures", "goose"),
+            // and across dependency waits in every phase of the
+            // constructor's, the flags getter's and toString's frames, with
+            // literal and run-time programs, saved and restored or installed
+            // over a reused worker's image (light-cljs-942;
+            // snapshot_tests.goose).
+            ("regexp-wait", "goose"),
             // Base classes (light-cljs-886): constructors, eager
             // prototypes, methods, accessors, fields and static blocks at
             // every budget cut and collection (serial_tests.goose).
