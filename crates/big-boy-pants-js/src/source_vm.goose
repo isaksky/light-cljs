@@ -252,7 +252,7 @@ enum Ins {
     Const { k: u32 }, Undefined, Load { slot: u32 }, Store { slot: u32 }, Pop, Dup, Dup2, Dup3, Binary { op: u8 }, Not,
     Jump { to: u32 }, JumpUnless { to: u32 }, Return, NewObject { bare: bool }, NewArray, Try { to: u32 }, Throw, EndTry,
     Unary { op: u8 }, Numeric2, Closure { child: u32, home: bool }, Call { argc: u32 }, CallMethod { argc: u32 },
-    Arguments, MappedArguments, Rest { skip: u32 }, Callee, Capture { slot: u32 }, NewCell { immutable: bool },
+    Arguments, MappedArguments, Rest { skip: u32 }, Callee, Capture { slot: u32 }, NewCell { immutable: bool, sealable: bool },
     InitCell, ReadCell, WriteCell, GetNamed { k: u32 }, GetIndexed, SetNamed { k: u32, strict: bool }, DefineNamed { k: u32, half: u8 },
     SetIndexed { strict: bool }, DefineIndexed { half: u8 }, SetProto, Delete { strict: bool }, In, Append, ResolveThis, This { sloppy: bool }, Global, GetGlobal { k: u32, throws: bool },
     Literal { kind: u8, count: u32 }, Form { op: u32 }, ToString, Unsupported { opcode: u8 },
@@ -556,6 +556,16 @@ let vector_flavor::MapEntry = 1;
 // as the V8 build's Cons. A conj onto a cons is a cons whose rest is it.
 let list_flavor::Plain = 0;
 let list_flavor::Cons = 1;
+// A binding cell's mode, its node's `length` (light-cljs-919;
+// form_ops.goose, "Sealing"): Ordinary, a cell `immutable` says is fixed
+// (NewFixedCell) or mutable (NewCell); Sealable, a NewSealableCell's, which
+// only its declaring function's own code assigns (the Rust lowering proves
+// it), mutable until __rt.sealBindings or __rt.sealReachable seals it;
+// Sealed, sealed: immutable, initialized, and an assignment a TypeError.
+// Unmapping a parameter's cell makes it Ordinary.
+let binding_mode::Ordinary: u32 = 0;
+let binding_mode::Sealable: u32 = 1;
+let binding_mode::Sealed: u32 = 2;
 inline fn integer_range(n: Node) -> bool { return n.kind == node_kind::Concat && n.length == seq_flavor::IntegerRange; }
 inline fn hash_ordered(n: Node) -> bool { return (n.kind == node_kind::Map || n.kind == node_kind::Set) && n.length == map_order::Hash; }
 // Errors, generators, promises, wrappers and iterators are ordinary objects
@@ -976,7 +986,7 @@ fn instruction(op: Op) -> Ins {
         opcode::CallSpread, opcode::CallMethodSpread => if op.direct_eval { Ins.DirectEval { argc: 0, method: op.code == opcode::CallMethodSpread, spread: true } } else { Ins.CallSpread { method: op.code == opcode::CallMethodSpread } },
         opcode::ConstructSpread => Ins.ConstructSpread, opcode::CheckSpreadArguments => Ins.CheckSpread,
         opcode::NewArguments => Ins.Arguments, opcode::NewMappedArguments => Ins.MappedArguments, opcode::Rest => Ins.Rest { skip: a }, opcode::CurrentFunction => Ins.Callee, opcode::GetCapture => Ins.Capture { slot: a },
-        opcode::NewCell, opcode::NewSealableCell => Ins.NewCell { immutable: false }, opcode::NewFixedCell => Ins.NewCell { immutable: true },
+        opcode::NewCell => Ins.NewCell { immutable: false, sealable: false }, opcode::NewSealableCell => Ins.NewCell { immutable: false, sealable: true }, opcode::NewFixedCell => Ins.NewCell { immutable: true, sealable: false },
         opcode::CellInit => Ins.InitCell, opcode::CellGet => Ins.ReadCell, opcode::CellSet => Ins.WriteCell,
         opcode::GetField => Ins.GetNamed { k: a }, opcode::GetElem => Ins.GetIndexed,
         opcode::PutField => Ins.SetNamed { k: a, strict: false }, opcode::PutFieldStrict => Ins.SetNamed { k: a, strict: true }, opcode::PutElem => Ins.SetIndexed { strict: false }, opcode::PutElemStrict => Ins.SetIndexed { strict: true }, opcode::AppendElement => Ins.Append,
@@ -4964,7 +4974,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Callee => { job.operands.push(job.frames[top].callee); },
                 Capture c => { let row .= node(heap, job.frames[top].callee.id()); job.operands.push(slot(heap, row.start + c.slot)); },
                 NewCell c => {
-                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: node_kind::Binding, immutable: c.immutable }); job.operands.push(v);
+                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: node_kind::Binding, immutable: c.immutable, length: if c.sealable { binding_mode::Sealable } else { binding_mode::Ordinary } }); job.operands.push(v);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -5196,7 +5206,8 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     }
                     if waiting { job.operands.resize(base); }
                     else {
-                        let value = form_op(heap, op, job.operands[base..]);
+                        // The operations that need the job (form_ops.goose job_form_op).
+                        let value = if job_form(op) { job_form_op(job, op, job.operands[base]) } else { form_op(heap, op, job.operands[base..]) };
                         if heap.fault == Fault.HostEffect { core_error(job, op, base); }
                         job.operands.resize(base); job.operands.push(value);
                     }
@@ -5903,7 +5914,10 @@ fn cell(job: Job&, op: i64) {
         if op != opcode::CellGet && !writable(job, cell.id()) { image_write(job, Value.Undefined, "a closure variable"); return; }
         // The write log keeps no cell writes (light-cljs-801): nothing reads them.
         let row .= node_mut(heap, cell.id());
-        if op == opcode::CellGet || op == opcode::CellSet {
+        // A sealed binding (binding_mode::Sealed, light-cljs-919) refuses an
+        // assignment from any code with a TypeError, as the Pants engine's does.
+        if op != opcode::CellGet && row.initialized && row.immutable && row.length == binding_mode::Sealed { job.detail.clear(); for c in "assignment to a sealed binding" { job.detail.push(c); } heap.fault = Fault.TypeError; }
+        else if op == opcode::CellGet || op == opcode::CellSet {
             if !row.initialized { heap.fault = Fault.ReferenceError; }
             else if op == opcode::CellSet && row.immutable { heap.fault = Fault.ConstAssignment; }
             else if op == opcode::CellGet { job.operands.push(row.value); }
@@ -6029,7 +6043,7 @@ fn unmap(heap: Heap&, o: i64, i: i64, c: i64, value: Value) {
 // map is the caller's (unmap clears its entry; in-job reclamation detaches
 // the cells of an object it discards, reclaim.goose).
 fn detach_cell(heap: Heap&, c: i64, value: Value) {
-    let cell .= node_mut(heap, c); cell.kind = node_kind::Binding; cell.value = value; cell.length = 0; cell.namespace_value = Value.Null;
+    let cell .= node_mut(heap, c); cell.kind = node_kind::Binding; cell.value = value; cell.length = binding_mode::Ordinary; cell.namespace_value = Value.Null;
 }
 // [[Get]] of key k on the object popped (GetNamed, GetIndexed), a getter
 // running with it as receiver, or with `receiver` when that is not Empty

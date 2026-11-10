@@ -1659,6 +1659,65 @@ produced in its own frozen initializer scope, not the demander's) and the scope 
 compiles such a helper namespace, used from eight namespaces, to the V8
 build's JavaScript at slots 1/2/4/8 and under the scheduler's stress seeds.
 
+### The shared core's sharing vocabulary (light-cljs-919, November 10, 2026)
+
+The real cljs.core that Goose is to run is the shared-heap profile of the
+runtime (`src/js_shared_profile.js`, assembled with `src/js_runtime.js`
+into `runtime_manifest::SHARED_RUNTIME`). It was written for the Pants
+engine, where values cross tasks by category, so its boot ends by sealing
+what it built (`sharedProfileBoot`: a walk that calls `__rt.seal` on every
+object a top-level binding reaches and catches the TypeError of what a seal
+cannot take, then `__rt.sealReachable` over the bindings), and a few units
+seal a registry or vocabulary as they make it. Goose shares nothing between
+workers: once booted, the core is rows of the coordinator's image that every
+job inherits and no job may write (a write faults `NativeBoundary` before it
+mutates). The image boundary therefore already gives what sealing gives the
+Pants engine, and Goose's meaning of each operation is the state the Pants
+engine's leaves, with the same answers (`src/form_ops.goose`, "Sealing";
+the Pants engine's `rust/src/vm/seal.rs`):
+
+| Operation | Goose meaning | Why |
+|---|---|---|
+| `seal(v)` (16 uses) | `v`, frozen in place (`integrity.goose` SetIntegrityLevel) when it is an ordinary object, array, or a function whose own properties are made, and a concise method's home object in turn (a static method's class, the class's `prototype`). A primitive, form, built-in function, realm intrinsic, lazy closure (no own property made yet) and an object frozen already come back as they are. An object with private elements or other internal slots (error, wrapper, arguments object, iterator), a proxy, promise, generator or atom: a TypeError. A row the job did not allocate that is not frozen: `NativeBoundary`. | A Pants seal freezes the object and makes it a realm-like intrinsic; Goose needs no sharing bit, only the frozen state, which code can observe (`Object.isFrozen`, a TypeError on a write). The Pants engine leaves intrinsics and functions without a property record alone and refuses exotic objects with a TypeError the boot's walk relies on; Goose answers alike, except that it freezes every function whose properties exist: once they do, it cannot tell its creation's `length` and `name` from a redefinition (a bound function's, and a class method's, which Goose's class definition makes), and the Pants engine's record-less function becomes immutable at its publication anyway. A row another job owns is the Pants engine's foreign object: changing it is a write to an image row. |
+| `sealBindings(v)` | The number of binding cells sealed: every initialized cell the Rust lowering made with `NewSealableCell` (assigned only by its declaring function's own code) that the job allocated and `v` reaches becomes `binding_mode::Sealed`, immutable; an assignment is a TypeError. Other cells, mutable or the image's, are passed over. | The Pants engine's sealed cell is persistent; Goose's is immutable, so callable.goose's publication check accepts it as it accepts a fixed cell. Goose used to drop the sealable mode at load; the binding's node now keeps it (`length`, `binding_mode::`), which snapshot validation checks and reclamation, continuations and worker images carry with the row. |
+| `sealReachable(v)` (1 use) | `sealBindings`, plus every closure or bound function `v` reaches whose own properties are of its making: the job's are frozen, and the untouched default `prototype` (only a `constructor` naming it) of each is frozen. The number sealed. | The Pants engine's walk seals function property records and default prototypes no JavaScript walk reaches (functions held only by captures). Goose's walk (`reclaim.goose` reach) follows every link a snapshot validates, `constructor` properties and `[[Prototype]]` included, so the Pants engine's separate pass over captured prototypes adds nothing here. |
+| `formReferenceType`, `formWithReferenceType`, `formReferencePayload` | Not implemented: they fail by name (`NativeBoundary`, "form operation formReferenceType"). | The shared profile never calls them (the assembled runtime's `__rt` members, counted on 2026-11-10); they are the Pants build's bounded native-form runtime's (`src/bbp_runtime.js`, the QuickJS reference's type names for its protocol tables), which the Goose path does not run. The profile's brand stores are views over `formKind` (`sharedView`), which Goose answers. Their answers depend on sequence representations (chunked, range, repeat, iterate) that light-cljs-921 builds, so an implementation now would be shaped for a runtime Goose does not execute. |
+| `formCompilerLiteral`, `formLiteralPayload` | Not implemented: they fail by name. | No sharing meaning: they make and read compiler literals (`#js`, `#uuid`, `#inst`, `#queue`, a quoted regex), which the profile's reader and the emitter's quoted literals use at run time, never at boot. Running them needs a node kind, its validation and printing, and a form-bridge tag the compiler can read back; that is a pellet of its own (light-cljs-929). |
+
+The rules stay: a job writes no image row (a seal of a definition's or the
+runtime's object faults unless it is frozen already), and a publication
+still refuses a JavaScript object, frozen or not (`callable.goose`,
+`artifact.goose`). Measured parity: a probe of 39 seal cases (objects,
+arrays with holes, realm intrinsics, the global object, lazy and
+materialized functions, methods, classes, bound functions, getters, the
+refused kinds, sealable and mutable bindings, reachable records and
+prototypes, presealed records, derived classes, private-field classes)
+gives the Pants engine's command line's values on Goose but for the
+functions above (a seal of an untouched bound function, and a static
+method sealReachable reaches, are frozen on Goose) and the wording of the
+TypeErrors (Goose's frozen-object messages, and no "for sharing"). A model
+of the boot's walk (its `seen` set an array, since Goose has no `Set` yet)
+over units shaped like the profile's (a private store, a class brand,
+getters, a sealed vocabulary, a reassigned binding, a counter, a captured
+dispatcher) seals, refuses and counts as the Pants engine does, except that
+its five class methods end frozen.
+
+A seal's and a walk's cost is charged before it runs: sealBindings and
+sealReachable charge a work unit for each row of every table their walk's
+scratch covers.
+
+With these, the core boot (`macro-ledger.bb --step core-boot`) gets past
+its first seal and stops at `RegExp`, a realm name still pending, after
+8,753 instructions instead of 8,404; the boot's later seals run once the
+other gaps are filled.
+
+Tests: `goose_compiler_seals_as_the_shared_core_needs`
+(`src/goose/compiler_tests.rs`: every operation in a macro job, sealing
+through mapped parameters, the boot walk's model, a definition's rows in its
+call job, publication with a sealed binding and with a frozen object),
+`seal_operations` (`src/bridge_tests.goose`: the walk's work charged before
+it runs) and `binding_modes` (`src/snapshot_tests.goose`).
+
 ## Decision 4: control flow
 
 **Decision.** Everything the interpreter suspends or unwinds is data in the

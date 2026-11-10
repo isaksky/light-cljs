@@ -374,7 +374,8 @@ the source line of its span, the instructions executed, the image size, the
 run's time and table rows, and two lists read from the profile's code: the
 `__rt` members it calls that the Goose VM does not implement (no `opcode::`
 arm in `source_vm.goose`'s `instruction`, no `form_op::` arm in its
-`form_op`), and the names it uses that `src/realm.goose` has as PENDING
+`form_op` or in `form_ops.goose`'s `job_form_op`, which has the operations
+that need the job), and the names it uses that `src/realm.goose` has as PENDING
 (methods by name, whatever their receiver). `macro-ledger/core-boot.edn`
 records the stopping point: `--check` fails when the boot stops earlier
 (fewer instructions executed) or elsewhere at the same count, and when it

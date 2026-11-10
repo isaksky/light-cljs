@@ -190,6 +190,28 @@ fn trace_cont(e: Evacuation&, heap: const Heap&, r: i64) {
         Frame x => { mark(e, heap, x.f.callee); mark(e, heap, x.f.receiver); mark(e, heap, x.f.input); mark(e, heap, x.f.output); },
     }
 }
+// The node rows reachable from v by the links this pass follows, with no
+// floor (light-cljs-919: form_ops.goose's seal walk): afterwards e.nodes[r]
+// is nonzero for every row r that v reaches, image rows included. A mapped
+// parameter cell's arguments object counts as reached. Nothing is moved,
+// rewritten or charged; e is the caller's scratch.
+fn reach(e: Evacuation&, heap: const Heap&, v: Value) {
+    let lengths = tops(heap);
+    e.nodes.resize(lengths.nodes + 1, 0); e.values.resize(lengths.values + 1, 0); e.properties.resize(lengths.properties + 1, 0);
+    e.strings.resize(lengths.strings + 1, 0); e.units.resize(lengths.units + 1, 0); e.latin1.resize(lengths.latin1 + 1, 0);
+    e.accessors.resize(lengths.accessors + 1, 0); e.conts.resize(lengths.conts + 1, 0);
+    e.wide.resize(e.units.len, 0); e.narrow.resize(e.latin1.len, 0);
+    mark(e, heap, v);
+    var resolved: i64 = 0;
+    while true {
+        while e.work.len > 0 || e.pending.len > 0 {
+            while e.work.len > 0 { let o = e.work.pop(); trace_node(e, heap, o); }
+            while e.pending.len > 0 { let r = e.pending.pop(); trace_cont(e, heap, r); }
+        }
+        if resolved == e.cells.len { break; }
+        while resolved < e.cells.len { mark_object(e, node(heap, e.cells[resolved]).value.id()); resolved += 1; }
+    }
+}
 fn mark_frame(e: Evacuation&, heap: const Heap&, f: const Frame&) { mark(e, heap, f.callee); mark(e, heap, f.receiver); mark(e, heap, f.input); mark(e, heap, f.output); }
 // Node rows row..row + count, whole.
 fn mark_range(e: Evacuation&, row: i64, count: i64) { for r in max(row, e.floor.nodes)..(row + count) { mark_object(e, r); } }

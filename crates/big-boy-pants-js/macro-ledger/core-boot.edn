@@ -6,10 +6,9 @@
 {:export {:functions 2240, :instructions 135217, :image-bytes 3818417},
  :stop
  {:status :unsupported,
-  :fault "Fault.NativeBoundary",
-  :detail "form operation seal",
-  :line
-  "kinds: __rt.seal([\"vector\", \"list\", \"cons\", \"chunked-cons\", \"lazy-seq\", \"map\", \"set\"]),",
-  :steps 8404,
-  :byte 69475,
-  :line-number 926}}
+  :fault "Fault.UnsupportedOperand",
+  :detail "pending RegExp",
+  :line "const sharedIntrinsicRegExp = RegExp;",
+  :steps 8753,
+  :byte 80193,
+  :line-number 1103}}

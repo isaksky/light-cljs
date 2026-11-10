@@ -74,8 +74,9 @@
 ;; and two lists read from the profile's code (its comments, strings and
 ;; regular expressions removed): the `__rt` members it calls that the Goose
 ;; VM does not implement (no `opcode::` arm in source_vm.goose's
-;; instruction, no `form_op::` arm in its form_op), and the names it uses
-;; that src/realm.goose still has as PENDING.
+;; instruction, no `form_op::` arm in its form_op or in form_ops.goose's
+;; job_form_op), and the names it uses that src/realm.goose still has as
+;; PENDING.
 (require '[babashka.fs :as fs] '[babashka.process :as p]
          '[clojure.edn :as edn] '[clojure.string :as str] '[clojure.pprint :as pprint])
 (import '[java.util.concurrent Executors TimeUnit])
@@ -364,6 +365,7 @@
   {:intrinsics (slurp (str (fs/path rust "src/frontend/intrinsics.rs")))
    :instr (slurp (str (fs/path rust "src/vm/instr.rs")))
    :vm (slurp (str (fs/path root "src" "source_vm.goose")))
+   :ops (slurp (str (fs/path root "src" "form_ops.goose")))
    :realm (slurp (str (fs/path root "src" "realm.goose")))
    :schema (slurp (str (fs/path root "src" "export_schema.goose")))})
 
@@ -383,11 +385,13 @@
                       [(or (form-names op) (fail! "FormOp::" op " has no intrinsic name")) {:form-op op}])))))
 
 ;; The opcodes the Goose VM decodes into an instruction and the form
-;; operations its form_op has an arm for (src/source_vm.goose); every other
-;; one fails by name when it runs.
-(defn goose-implemented [{:keys [vm]}]
+;; operations its form_op (src/source_vm.goose) or, for those that need the
+;; job, job_form_op (src/form_ops.goose) has an arm for; every other one
+;; fails by name when it runs.
+(defn goose-implemented [{:keys [vm ops]}]
   {:opcode (set (map second (re-seq #"opcode::(\w+)" (section vm "fn instruction(op: Op) -> Ins {" "\n}\n"))))
-   :form-op (set (map second (re-seq #"form_op::(\w+)" (section vm "fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {" "\n}\n"))))})
+   :form-op (set (map second (concat (re-seq #"form_op::(\w+)" (section vm "fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {" "\n}\n"))
+                                     (re-seq #"form_op::(\w+)" (section ops "fn job_form_op(job: Job&, op: i64, v: Value) -> Value {" "\n}\n")))))})
 
 ;; The realm's PENDING properties (src/realm.goose), each {:holder, the
 ;; holder's JavaScript name from the realm's fixed-row functions, :kind
@@ -472,6 +476,8 @@
                :vm (str "fn instruction(op: Op) -> Ins {\n    return match op.code { opcode::CallMethod => Ins.Call, opcode::Count => Ins.Count, _ => Ins.Unsupported };\n}\n"
                         "fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {\n    match op { form_op::CljFirst => { return a; }, _ => { return b; } }\n}\n"
                         "fn other() { opcode::NewVector; form_op::Seal; }\n")
+               :ops (str "fn job_form_op(job: Job&, op: i64, v: Value) -> Value {\n    if op == form_op::CljPeek { return v; }\n}\n"
+                         "fn other() { form_op::Seal; }\n")
                :realm (str "inline fn global_row() -> i64 { return 0; }\ninline fn array_prototype_row() -> i64 { return 3; }\n"
                            "inline fn array_constructor_row() -> i64 { return 14; }\ninline fn wrapper_prototype_row(t: i64) -> i64 { return 26 + t; }\n"
                            "let WRAPPER_NAMES: Name[3] = [Name { text: \"Number\" }, Name { text: \"String\" }, Name { text: \"Boolean\" }];\n"
@@ -483,7 +489,7 @@
                            "__rt.cljFirst(s); __rt.count(v); Array.from(y); /* __rt.lazySeq(z) */ s.padEnd(2); Symbol.asyncIterator;"))]
   (assert (= {"call" {:opcode "CallMethod"} "vector" {:opcode "NewVector"} "count" {:opcode "Count"} "seal" {:form-op "Seal"} "cljFirst" {:form-op "CljFirst"}}
              (intrinsic-lowerings sources)))
-  (assert (= {:opcode #{"CallMethod" "Count"} :form-op #{"CljFirst"}} (goose-implemented sources)))
+  (assert (= {:opcode #{"CallMethod" "Count"} :form-op #{"CljFirst" "CljPeek"}} (goose-implemented sources)))
   (assert (= [["globalThis" "Map"] ["Array.prototype" "slice"] ["Array" "from"] ["String.prototype" "padEnd"] ["globalThis" "Date"] ["Array" "@@asyncIterator"]]
              (map (juxt :holder :key) (realm-pending sources))))
   (assert (= [[{:member "seal" :lowering :form-op :op "Seal" :uses 1} {:member "vector" :lowering :opcode :op "NewVector" :uses 1}]

@@ -354,7 +354,7 @@ fn direct_update_boundaries() {
 }
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
-    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(plain_form_operations)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
+    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(plain_form_operations)); heap_program::join(thread_spawn(seal_operations)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
     direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
@@ -811,4 +811,32 @@ thread_fn plain_form_operations() {
     raises(heap, form_op::Compare, [a, one], source::Fault.HostEffect); raises(heap, form_op::Compare, [one, a], source::Fault.HostEffect); raises(heap, form_op::Compare, [a, sym], source::Fault.HostEffect); raises(heap, form_op::Compare, [list, empty_list], source::Fault.HostEffect);
     assert(heap.fault == source::Fault.None);
     print("plain form operations: predicates, names, cons, peek/pop, dissoc/disj, map entries, hash and compare passed");
+}
+
+// light-cljs-919: the seal operations (form_ops.goose job_form_op) on a
+// job's rows: seal freezes an ordinary object, returns a form and a realm
+// intrinsic as they are and refuses an error with a TypeError;
+// sealBindings charges its walk before it starts (a WorkLimit seals
+// nothing) and then seals a sealable cell once.
+thread_fn seal_operations() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, writable_code: code };
+    defer { source::retire(job); }
+    let o = source::allocate(heap, source::Node { kind: node_kind::Object });
+    let vector = source::form_collection(heap, node_kind::Vector, [source::number(1)]);
+    let error = source::allocate(heap, source::Node { kind: node_kind::Error });
+    let cell = source::allocate(heap, source::Node { kind: node_kind::Binding, initialized: true, value: source::number(1), length: binding_mode::Sealable });
+    let intrinsic = source::object(source::array_prototype_row());
+    assert(heap.fault == source::Fault.None);
+    assert(source::job_form_op(job, form_op::Seal, o).id() == o.id() && source::node(heap, o.id()).non_extensible && heap.fault == source::Fault.None);
+    assert(source::job_form_op(job, form_op::Seal, vector).id() == vector.id() && source::job_form_op(job, form_op::Seal, intrinsic).id() == intrinsic.id() && !source::node(heap, intrinsic.id()).non_extensible);
+    assert(source::job_form_op(job, form_op::Seal, source::number(2)).num() == 2 && heap.fault == source::Fault.None);
+    source::job_form_op(job, form_op::Seal, error); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None; job.detail.clear();
+    let limit = heap.limits.work; heap.limits.work = heap.work + 1;
+    source::job_form_op(job, form_op::SealBindings, cell); assert(heap.fault == source::Fault.WorkLimit && source::node(heap, cell.id()).length == binding_mode::Sealable);
+    heap.fault = source::Fault.None; heap.limits.work = limit;
+    assert(source::job_form_op(job, form_op::SealBindings, cell).num() == 1 && source::node(heap, cell.id()).length == binding_mode::Sealed && source::node(heap, cell.id()).immutable);
+    assert(source::job_form_op(job, form_op::SealReachable, cell).num() == 0 && heap.fault == source::Fault.None);
+    print("seal operations: frozen objects, kept forms and intrinsics, refused errors, charged walks and sealed cells passed");
 }

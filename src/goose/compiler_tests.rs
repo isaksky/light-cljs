@@ -3210,9 +3210,11 @@ fn goose_compiler_names_what_a_native_boundary_lacks() {
             "rt => (form,env) => { rt.core.inc.x = 1; return 1; }",
             "Fault.NativeBoundary:write-to-an-image-row:-x ",
         ),
+        // The Pants build's reference types, which Goose leaves to fail by
+        // name (light-cljs-919: the shared core never calls them).
         (
-            "rt => (form,env) => __rt.seal(form)",
-            "Fault.NativeBoundary:form-operation-seal ",
+            "rt => (form,env) => __rt.formReferenceType(form)",
+            "Fault.NativeBoundary:form-operation-formReferenceType ",
         ),
         // A built-in a forwarded call reaches names itself too.
         (
@@ -3234,6 +3236,299 @@ fn goose_compiler_names_what_a_native_boundary_lacks() {
                 && (named.starts_with("preparation-") || !error.0.contains("preparation-")),
             "{body}: {error}"
         );
+        s.close();
+        cleaned(&s);
+    }
+}
+
+/// light-cljs-919: the shared core's sharing vocabulary on Goose
+/// (crates/big-boy-pants-js/src/form_ops.goose, "Sealing"), as the Pants
+/// engine's tests/sealing.rs has it. `__rt.seal` freezes in place what a
+/// job allocated and returns what it cannot change (a primitive, a form, a
+/// realm row) as it is; what it cannot take is a TypeError;
+/// `__rt.sealBindings` seals the bindings only their own function assigns;
+/// `__rt.sealReachable` also freezes the reached functions' properties and
+/// untouched default prototypes. A job still writes no image row, and a
+/// publication still refuses a JavaScript object, frozen or not, while a
+/// sealed binding publishes as a fixed one does. Each body returns the
+/// names of the checks that failed.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_seals_as_the_shared_core_needs() {
+    let checks = r#"const bad = [];
+        const check = (name, ok) => { if (ok !== true) bad.push(name); };
+        const throws = f => { try { f(); return false; } catch (e) { return e instanceof TypeError; } };"#;
+    let jobs = [
+        // seal: objects and arrays frozen in place, shallowly.
+        r#"const child = {}; const o = {a: 1, child};
+        check("identity", __rt.seal(o) === o);
+        check("frozen", Object.isFrozen(o) && !Object.isFrozen(child) && Object.isExtensible(child));
+        check("writes", throws(() => { o.a = 2; }) && throws(() => { o.b = 1; }) && throws(() => { delete o.a; }) && o.a === 1);
+        const a = __rt.seal([1]);
+        check("array", Object.isFrozen(a) && throws(() => { a[0] = 2; }) && throws(() => a.push(3)) && throws(() => { a.length = 0; }) && a[0] === 1 && a.length === 1);
+        check("again", __rt.seal(o) === o && __rt.seal(a) === a);
+        check("primitives", __rt.seal(1) === 1 && __rt.seal("s") === "s" && __rt.seal(null) === null && __rt.seal(undefined) === undefined);
+        check("form", __rt.seal(form) === form);
+        check("realm", __rt.seal(Math) === Math && !Object.isFrozen(Math) && __rt.seal(Object.keys) === Object.keys);"#,
+        // seal: a function's own properties once made; a method's home
+        // object; a class with its prototype.
+        r#"const f = () => 1; f.x = 1;
+        check("function", __rt.seal(f) === f && Object.isFrozen(f) && throws(() => { f.y = 1; }));
+        const lazy = () => 2;
+        check("lazy", __rt.seal(lazy) === lazy && Object.isExtensible(lazy) && lazy() === 2);
+        const hooks = { inc(x) { return x + 1; } };
+        __rt.seal(hooks.inc);
+        check("home", Object.isFrozen(hooks) && hooks.inc(1) === 2);
+        class Point { constructor(x) { this.x = x; } static of(x) { return new Point(x); } }
+        __rt.seal(Point.of);
+        check("class", Object.isFrozen(Point) && Object.isFrozen(Point.prototype) && Point.of(3).x === 3);
+        const bound = (function () {}).bind(null);
+        check("bound", __rt.seal(bound) === bound && Object.isFrozen(bound));
+        // Redefined metadata is the program's: a seal freezes it.
+        const renamed = () => 1; Object.defineProperty(renamed, "name", {value: "other"});
+        const relength = () => 1; Object.defineProperty(relength, "length", {value: 7});
+        check("redefined", Object.isFrozen(__rt.seal(renamed)) && Object.isFrozen(__rt.seal(relength)));
+        const kept = () => 1; kept.name;
+        check("read-metadata", Object.isExtensible(__rt.seal(kept)));"#,
+        // seal: what it cannot take is a TypeError.
+        r#"class Private { #p = 1; }
+        const refused = [["error", new Error("x")], ["proxy", new Proxy({}, {})], ["private", new Private()], ["atom", rt.core.atom(1)], ["arguments", (function () { return arguments; })()]];
+        for (const [name, v] of refused) check(name, throws(() => __rt.seal(v)));"#,
+        // sealBindings: a binding only its own function assigns becomes
+        // immutable; one a nested function assigns stays mutable.
+        r#"let g = 1; const read = () => g; g = 2;
+        const sealed = __rt.sealBindings(read);
+        let assigned = true;
+        try { g = 3; } catch (e) { assigned = !(e instanceof TypeError); }
+        check("bindings", sealed === 1 && !assigned && read() === 2 && __rt.sealBindings(read) === 0);
+        let n = 0; const count = () => ++n;
+        check("mutable", __rt.sealBindings(count) === 0 && count() === 1 && count() === 2);"#,
+        // sealReachable: a captured function's properties and untouched
+        // default prototype; a prototype the program touched is left; a
+        // record a shallow seal took still has its prototype sealed, once.
+        r#"const make = () => { const dispatch = function (x) { return x + 1; }; if (typeof dispatch.prototype !== "object") throw "prototype"; dispatch.arity = 1; return x => dispatch(x) + dispatch.arity; };
+        const use = make();
+        check("reachable", __rt.sealBindings(use) === 0 && __rt.sealReachable(use) === 2 && __rt.sealReachable(use) === 0 && use(40) === 42);
+        const touched = (() => { const d = function () {}; d.prototype.m = () => 0; return () => d; })();
+        check("touched", __rt.sealReachable(touched) === 1 && Object.isFrozen(touched()) && !Object.isFrozen(touched().prototype));
+        const pre = (() => { const p = function (x) { return x; }; if (typeof p.prototype !== "object") throw "prototype"; __rt.seal(p); return x => p(x); })();
+        check("presealed", __rt.sealReachable(pre) === 1 && __rt.sealReachable(pre) === 0 && pre(5) === 5);
+        let t = 1; t = 2; const holder = () => t;
+        check("reachable-bindings", __rt.sealReachable(holder) === 1);
+        const redefined = (() => { const g = () => 1; Object.defineProperty(g, "name", {value: "other"}); return () => g; })();
+        check("redefined-reachable", __rt.sealReachable(redefined) === 1 && Object.isFrozen(redefined()));
+        const statics = (() => { class T { static m() {} } return () => T; })();
+        check("statics", __rt.sealReachable(statics) === 3 && Object.isFrozen(statics()) && Object.isFrozen(statics().prototype) && Object.isFrozen(statics().m));
+        const derived = (() => { class Base {} class Derived extends Base {} return () => new Derived(); })();
+        check("derived", __rt.sealReachable(derived) === 4 && derived() instanceof Object);"#,
+        // The walk reaches a value a mapped parameter holds (its arguments
+        // object's element, or, once a redefinition moved it, its
+        // property): a closure over the parameter reaches it.
+        // Sloppy functions (mapped arguments) come from indirect eval: the
+        // unit itself is strict.
+        r#"const sloppy = (0, eval)("(function (a) { arguments[0] = 9; return a; })");
+        const kept = (0, eval)("(function (a) { Object.defineProperty(arguments, '0', {enumerable: false}); arguments[0] = 5; return a; })");
+        check("sloppy", sloppy(1) === 9 && kept(1) === 5);
+        const dense = (0, eval)("(function (p) { void arguments; return () => p; })");
+        const moved = (0, eval)("(function (p) { Object.defineProperty(arguments, '0', {enumerable: false}); return () => p; })");
+        let s = 1; s = 2; const overS = () => s;
+        let t = 1; t = 2; const overT = () => t;
+        const viaDense = dense(overS), viaMoved = moved(overT);
+        check("mapped-dense", __rt.sealBindings(viaDense) === 1 && __rt.sealBindings(viaDense) === 0 && viaDense() === overS);
+        check("mapped-moved", __rt.sealBindings(viaMoved) === 1 && __rt.sealBindings(viaMoved) === 0 && viaMoved() === overT);
+        let assigned = 0;
+        try { s = 3; assigned += 1; } catch (e) { if (!(e instanceof TypeError)) throw e; }
+        try { t = 3; assigned += 1; } catch (e) { if (!(e instanceof TypeError)) throw e; }
+        check("mapped-sealed", assigned === 0 && overS() === 2 && overT() === 2);"#,
+    ];
+    let s = GooseSession::start(&runner(), 1).unwrap();
+    let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+    for body in jobs {
+        let (f, args, call) = inputs(
+            &e,
+            &format!("rt => (form,env) => {{ {checks} {body} return bad.join(' '); }}"),
+        );
+        let value = e
+            .call(f, &args)
+            .unwrap_or_else(|error| panic!("{body}: {error}"));
+        let output = e
+            .export_form(value, &call, origin(&call), Default::default())
+            .unwrap();
+        assert!(
+            output
+                .data()
+                .value_eq(&Datum::new(DatumKind::String(Vec::<u16>::new().into()))),
+            "{body}: failed {:?}",
+            output.data()
+        );
+    }
+    // The boot's walk (js_shared_profile.js sharedProfileBoot, its `seen`
+    // an array) over units shaped like the profile's: a private store, a
+    // class brand, getters, a sealed vocabulary, a reassigned binding, a
+    // counter, a captured dispatcher. The Pants engine's command line gives
+    // the same text for the same script but for five `frozen` digits: it
+    // leaves the five class methods (`toString`, the store's static `has`,
+    // `get` and `set`, the brand's static `brand`; positions 10, 19-21 and
+    // 25) unfrozen, since its methods have no property record, where
+    // Goose's class definition makes their `length` and `name` and a seal
+    // freezes them.
+    let walk = r#"rt => (form,env) => {
+        const member = (xs, v) => { for (let i = 0; i < xs.length; i++) if (xs[i] === v) return true; return false; };
+        const sharedHost = value => (typeof value === "object" ? value !== null : typeof value === "function");
+        function sharedStore() {
+          const absent = __rt.seal({});
+          const Store = class extends (function (value) { return value; }) {
+            #s;
+            static has(value) { return sharedHost(value) && #s in value && value.#s !== absent; }
+            static get(value) { if (sharedHost(value) && #s in value) { const payload = value.#s; return payload === absent ? undefined : payload; } }
+            static set(value, payload) { if (#s in value) value.#s = payload; else new Store(value).#s = payload; return Store; }
+          };
+          return Store;
+        }
+        const defaults = { counter: 0, get lazyThing() { return 1; }, hooks: {} };
+        const words = __rt.seal(["a", "b"]);
+        const vocabulary = { has: name => member(words, name) };
+        const store = sharedStore();
+        const branded = {};
+        store.set(branded, 7);
+        const ClassBrand = class extends (class { constructor(value) { return value; } }) {
+          #c;
+          constructor(prototype, brand) { super(prototype); this.#c = brand; }
+          static brand(value) { for (let p = Object.getPrototypeOf(value), n = 64; p !== null && n--; p = Object.getPrototypeOf(p)) if (#c in p) return p.#c(value); }
+        };
+        class Keyword { constructor(name) { this.name = name; } toString() { return ":" + this.name; } }
+        function Vector(items) { this.items = items; }
+        Vector.prototype.count = function () { return this.items.length; };
+        const proto = {};
+        new ClassBrand(proto, v => "branded");
+        let seq = x => x;
+        seq = (inner => x => inner(x) + 1)(seq);
+        let counter = 0; const next = () => ++counter;
+        const dispatch = function (x) { return x; }; dispatch.prototype; dispatch.arity = 1;
+        const call = x => dispatch(x);
+        const exports = { core: { seq: x => seq(x), next, call, vocabulary, Keyword, Vector, store, defaults, brand: ClassBrand.brand, proto } };
+        const bindings = [exports, defaults, words, store, branded, ClassBrand, Keyword, Vector, proto];
+        const seen = [];
+        const out = [];
+        let refused = 0;
+        const seal = value => {
+          if (value === null || (typeof value !== "object" && typeof value !== "function") || member(seen, value)) return;
+          seen.push(value);
+          for (const key of Reflect.ownKeys(value)) {
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            if ("value" in descriptor) seal(descriptor.value);
+            else { seal(descriptor.get); seal(descriptor.set); }
+          }
+          const prototype = Object.getPrototypeOf(value);
+          if (prototype !== null && prototype !== Object.prototype && prototype !== Array.prototype && prototype !== Function.prototype) seal(prototype);
+          try { __rt.seal(value); } catch (error) { if (!(error instanceof TypeError)) throw error; refused++; }
+        };
+        for (const binding of bindings) seal(binding);
+        out.push("seen=" + seen.length, "refused=" + refused, "reachable=" + __rt.sealReachable(bindings));
+        out.push("frozen=" + seen.map(v => Object.isFrozen(v) ? 1 : 0).join(""));
+        let wrote = "wrote"; try { seq = null; } catch (e) { wrote = e instanceof TypeError; }
+        out.push("seq-sealed=" + wrote, "seq=" + exports.core.seq(1), "next=" + next() + next());
+        out.push("store=" + store.get(branded) + "/" + store.has({}), "brand=" + ClassBrand.brand(Object.create(proto)));
+        out.push("keyword=" + new Keyword("k") + "/" + new Vector([1, 2]).count());
+        return out.join(" ");
+      }"#;
+    let (f, args, call) = inputs(&e, walk);
+    let output = e
+        .export_form(
+            e.call(f, &args).unwrap(),
+            &call,
+            origin(&call),
+            Default::default(),
+        )
+        .unwrap();
+    let expected = "seen=32 refused=2 reachable=3 frozen=11000101111111111111110110101111 seq-sealed=true seq=2 next=12 store=7/false brand=branded keyword=:k/2";
+    assert!(
+        output.data().value_eq(&Datum::new(DatumKind::String(
+            expected.encode_utf16().collect::<Vec<_>>().into()
+        ))),
+        "{:?}",
+        output.data()
+    );
+    // A definition's rows are the image's in its call job: one the
+    // factory sealed comes back as it is and its cells are passed over;
+    // sealing one it left open is a write to an image row, and so is
+    // sealing the runtime's.
+    let factory = r#"rt => { const kept = __rt.seal({a: 1}); let k = 1; k = 2; const reader = () => k;
+        return (form,env) => __rt.seal(kept) === kept && Object.isFrozen(kept) && __rt.sealBindings(reader) === 0 && __rt.sealReachable(reader) === 0 && reader() === 2; }"#;
+    let (f, args, call) = inputs(&e, factory);
+    let output = e
+        .export_form(
+            e.call(f, &args).unwrap(),
+            &call,
+            origin(&call),
+            Default::default(),
+        )
+        .unwrap();
+    assert!(
+        output
+            .data()
+            .value_eq(&Datum::new(DatumKind::Boolean(true)))
+    );
+    s.close();
+    cleaned(&s);
+    for body in [
+        "rt => { const open = {b: 2}; return (form,env) => __rt.seal(open); }",
+        "rt => (form,env) => __rt.seal(rt.core)",
+    ] {
+        let s = GooseSession::start(&runner(), 1).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let (f, args, _) = inputs(&e, body);
+        let error = e.call(f, &args).unwrap_err();
+        assert!(
+            error
+                .0
+                .contains("Fault.NativeBoundary:write-to-an-image-row:-integrity-level "),
+            "{body}: {error}"
+        );
+        s.close();
+        cleaned(&s);
+    }
+    // Publication: a helper over a binding its initializer reassigned
+    // publishes once sealed, and is refused unsealed; one over a frozen
+    // object is refused as before.
+    for (helper, expected) in [
+        (
+            "rt => { function seq(x) { return x; } seq = (inner => x => inner(x) + 1)(seq); const g = x => seq(x); if (__rt.sealBindings(g) !== 1) throw 'count'; return g; }",
+            None,
+        ),
+        (
+            "rt => { function seq(x) { return x; } seq = (inner => x => inner(x) + 1)(seq); return x => seq(x); }",
+            Some("Error.Unsupported"),
+        ),
+        (
+            "rt => { const o = __rt.seal({n: 41}); return x => o.n + x; }",
+            Some("Error.Unsupported"),
+        ),
+    ] {
+        let s = GooseSession::start(&runner(), 1).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let (f, args, call) = inputs(
+            &e,
+            "rt => (form,env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/sealed')(41)",
+        );
+        serve(&e, &[("fixture/sealed", 42)], move |_| Ok(helper.into()));
+        let result = e.call(f, &args);
+        match expected {
+            Some(expected) => {
+                let message = result.unwrap_err().to_string();
+                assert!(message.contains(expected), "{helper}: {message}");
+            }
+            None => {
+                let output = e
+                    .export_form(result.unwrap(), &call, origin(&call), Default::default())
+                    .unwrap();
+                assert!(
+                    output.data().value_eq(&Datum::new(DatumKind::Integer(42))),
+                    "{helper}: {:?}",
+                    output.data()
+                );
+            }
+        }
         s.close();
         cleaned(&s);
     }

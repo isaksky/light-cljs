@@ -784,7 +784,7 @@ thread_fn integrity_malformed(saved: snapshot::Snapshot, mode: i64) {
     }
 }
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); heap_program::join(thread_spawn(binding_modes)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its
@@ -2966,6 +2966,29 @@ thread_fn form_flavors() {
         var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
     }
     print("snapshot form flavors: map entries, conses with their rest and reduced markers restore, malformed ones refused");
+}
+// light-cljs-919: a binding cell's mode (node `length`, binding_mode)
+// restores as captured; a mode past Sealed, an immutable sealable cell or a
+// sealed cell that is mutable or uninitialized is a Link rejection.
+thread_fn binding_modes() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/arguments.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let sealable = source::allocate(heap, source::Node { kind: node_kind::Binding, initialized: true, value: source::number(1), length: binding_mode::Sealable });
+    let sealed = source::allocate(heap, source::Node { kind: node_kind::Binding, initialized: true, immutable: true, value: source::number(2), length: binding_mode::Sealed });
+    assert(heap.fault == source::Fault.None);
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: sealable }, snapshot::Binding { id: 1, generation: 1, value: sealed }], c); assert(c.error == snapshot::Error.None);
+    {
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+        assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), restore));
+        assert(source::node(target, roots[0].value.id()).length == binding_mode::Sealable && source::node(target, roots[1].value.id()).length == binding_mode::Sealed && source::node(target, roots[1].value.id()).immutable);
+    }
+    for field in 4 {
+        var bad = copy(saved);
+        if field == 0 { bad.nodes[sealable.id()].length = binding_mode::Sealed + 1; } else if field == 1 { bad.nodes[sealable.id()].immutable = true; } else if field == 2 { bad.nodes[sealed.id()].immutable = false; } else { bad.nodes[sealed.id()].initialized = false; }
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    print("snapshot binding modes: sealable and sealed cells restore, malformed modes refused");
 }
 fn argument_ownership() {
     heap_program::join(thread_spawn(argument_parent)); let saved = qget<Saved>();

@@ -3,6 +3,9 @@ import .source_vm;
 import .export_schema;
 import .realm;
 import .printer;
+import .integrity;
+import .private;
+import .reclaim;
 
 namespace source;
 
@@ -432,4 +435,187 @@ fn compare_message(job: Job&, a: Value, b: Value) {
     for c in " to " { job.detail.push(c); }
     append_utf16(heap, y, job.detail);
     heap.fault = Fault.HostEffect;
+}
+
+// ---- Sealing (light-cljs-919; docs/javascript-coverage.md, decision 3,
+// "The shared core's sharing vocabulary"). The shared-heap profile of the
+// runtime (src/js_shared_profile.js) seals what its boot built so that the
+// Pants engine can share it between tasks (rust/src/vm/seal.rs). Goose
+// shares nothing between workers: a booted core is image rows that every job
+// inherits and none may write (decision 3). So sealing here leaves the
+// integrity levels the Pants engine's seal leaves, with its answers:
+//   seal(v)           v, in place. An ordinary object or array the job
+//                     allocated is frozen (integrity.goose set_integrity);
+//                     so is a function with own properties made (a lazy
+//                     closure, the Pants engine's function without a
+//                     property record, stays as it is; see seal_one), and a
+//                     concise method's home object (a static method's class, and so
+//                     its `prototype`) is sealed in turn. A primitive, a
+//                     form, a built-in function, a realm row and an object
+//                     frozen already come back as they are. What a seal
+//                     cannot take is a TypeError, which the boot's walk
+//                     catches: an object with private elements or other
+//                     internal slots (an error, wrapper, arguments object or
+//                     iterator), a proxy, promise, generator or atom. A row
+//                     the job did not allocate and that is not frozen faults
+//                     NativeBoundary before anything changes.
+//   sealBindings(v)   the number of binding cells sealed: every initialized
+//                     binding_mode::Sealable cell the job allocated that v
+//                     reaches becomes Sealed, immutable (an assignment is a
+//                     TypeError; callable.goose's publication check takes
+//                     it as it takes a fixed cell). Every other cell, mutable
+//                     or the image's, is passed over.
+//   sealReachable(v)  sealBindings, and of every closure or bound function v
+//                     reaches whose own properties are made: the job's are
+//                     frozen; then, frozen now or before, its untouched
+//                     default `prototype` (an ordinary object of the job's
+//                     whose every own property is a data `constructor`
+//                     naming the function) is frozen. The number of cells,
+//                     functions and prototypes sealed.
+// The walk reaches what in-job reclamation reaches from v (reclaim.goose
+// reach), through image rows too, and allocates no row; its marks, a
+// scratch entry a row of every table, are the instruction's, and it charges
+// a work unit an entry before it starts (WorkLimit, nothing sealed). It
+// follows prototypes' `constructor` properties and [[Prototype]] links, so
+// a default prototype a closure captures (a derived class captures its
+// base's) brings its constructor along, and the Pants engine's extra pass
+// over captured prototypes has nothing to add here.
+// Publication is unchanged: a frozen object is a JavaScript object still,
+// which a publication refuses (callable.goose, artifact.goose).
+
+// The form operations that need the job, not only its heap: form_op's
+// caller (the Form instruction) dispatches them here.
+inline fn job_form(op: i64) -> bool { return op == form_op::Seal || op == form_op::SealBindings || op == form_op::SealReachable; }
+fn job_form_op(job: Job&, op: i64, v: Value) -> Value {
+    if op == form_op::Seal { return seal_value(job, v); }
+    if op == form_op::SealBindings || op == form_op::SealReachable {
+        let n = seal_reachable(job, v, op == form_op::SealReachable);
+        return if job.heap.fault == Fault.None { number(n) } else { Value.Undefined };
+    }
+    job.heap.fault = Fault.InvalidState; return Value.Undefined;
+}
+// Whether node row o is a realm intrinsic (realm.goose realm_intrinsic: not
+// the global object, which seals like any object, as the Pants engine's
+// does; a heap built without initialize has none).
+inline fn realm_row(heap: const Heap&, o: i64) -> bool { return heap.global.is_object() && realm_intrinsic(o); }
+// Whether a seal returns node o as it is: a form (a light-cljs runtime
+// value, immutable already), a delay's cell, a built-in function or a realm
+// intrinsic (the Pants engine's persistent values, built-ins and intrinsics).
+fn seal_keeps(heap: const Heap&, o: i64) -> bool {
+    if realm_row(heap, o) { return true; }
+    let n = node(heap, o); let kind = n.kind;
+    return kind >= node_kind::List && kind <= node_kind::Concat || kind == node_kind::LazySeq || kind == node_kind::Delay || kind == node_kind::Reduced || kind == node_kind::Builtin || kind == node_kind::Cell && n.length == cell_flavor::Delay;
+}
+// What a seal cannot take, as the Pants engine's TypeError names it.
+fn seal_refusal(heap: const Heap&, o: i64) -> const u8[:] {
+    let kind = node(heap, o).kind;
+    if kind == node_kind::Proxy { return "a Proxy"; }
+    if kind == node_kind::Promise { return "a Promise"; }
+    if kind == node_kind::Generator { return "a generator"; }
+    if kind == node_kind::Atom || kind == node_kind::Cell { return "an atom"; }
+    if kind == node_kind::Array { return "an array with internal slots"; }
+    return "an object with internal slots";
+}
+// Seal one object, not its home object; false with a fault. A lazy closure
+// (source_vm.goose lazy_function: no own property made yet, its `length` and
+// `name` read from its code row) is the Pants engine's function without a
+// property record and stays as it is. Every other function is frozen: once
+// its properties exist, Goose cannot tell its creation's from the
+// program's (a redefined `name`, a bound function's), and the Pants engine
+// leaves only a record-less function unsealed until its publication makes
+// it immutable anyway.
+fn seal_one(job: Job&, v: Value) -> bool {
+    let heap .= job.heap; let o: i64 = v.id(); let kind = node(heap, o).kind;
+    if seal_keeps(heap, o) { return true; }
+    let takes = kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::BoundFunction;
+    if !takes || private_row(heap, v) >= 0 {
+        var message: u8[>..] = []; message.append("cannot seal "); message.append(seal_refusal(heap, o)); message.append(": only ordinary objects, arrays and functions are sealed");
+        type_error(job, message[..]); return false;
+    }
+    if lazy_function(heap, o) { return true; }
+    if test_integrity(job, Builtin.ObjectIsFrozen, v, true) { return true; }
+    if heap.fault != Fault.None { return false; }
+    return set_integrity(job, Builtin.ObjectFreeze, v, true);
+}
+// __rt.seal(v): v, sealed with its home objects (a method's object, a static
+// method's class, the class's prototype: three at most).
+fn seal_value(job: Job&, v: Value) -> Value {
+    let heap .= job.heap;
+    if !v.is_object() || !valid(heap, v) { return v; }
+    var at = v;
+    for step in 3 {
+        if !seal_one(job, at) { return Value.Undefined; }
+        let n = node(heap, at.id());
+        if n.kind != node_kind::Closure || !n.value.is_object() { return v; }
+        at = n.value;
+    }
+    heap.fault = Fault.InvalidState; return Value.Undefined;
+}
+// Whether object p is closure f's untouched default prototype for
+// sealReachable: an ordinary object the job allocated, not frozen, with no
+// private elements, whose every own property is a data `constructor`
+// naming f (none at all counts, as in the Pants engine).
+fn untouched_prototype(job: Job&, p: Value, f: i64) -> bool {
+    let heap .= job.heap;
+    if !p.is_object() || node(heap, p.id()).kind != node_kind::Object || realm_row(heap, p.id()) || !writable(job, p.id()) || private_row(heap, p) >= 0 { return false; }
+    if test_integrity(job, Builtin.ObjectIsFrozen, p, true) || heap.fault != Fault.None { return false; }
+    var keys: OwnKey[>..] = [];
+    if !own_property_keys(heap, p, keys) { return false; }
+    for k in keys {
+        if !key_is(heap, k.key, "constructor") { return false; }
+        let e = own_entry(heap, p, k.key);
+        if heap.fault != Fault.None || !e.found || is_accessor(e.value) || !e.value.is_object() || e.value.id() != f { return false; }
+    }
+    return true;
+}
+// A function's own data property `prototype`, or undefined (find_key: no
+// row is made, and a key never interned names no property).
+fn own_prototype(heap: Heap&, f: i64) -> Value {
+    let k = find_key(heap, "prototype");
+    if k.is_undefined() { return Value.Undefined; }
+    let e = own_entry(heap, object(f), k);
+    return if heap.fault == Fault.None && e.found && !is_accessor(e.value) { e.value } else { Value.Undefined };
+}
+// __rt.sealBindings(v) and, `functions`, __rt.sealReachable(v): the number
+// sealed (see above), with heap.fault set on a failure.
+fn seal_reachable(job: Job&, v: Value, functions: bool) -> i64 {
+    let heap .= job.heap;
+    if !v.is_object() || !valid(heap, v) { return 0; }
+    // The walk's scratch has a row a table row and it visits each row at
+    // most once: its work, charged before it starts.
+    let t = tops(heap);
+    if !charge(heap, t.nodes + t.values + t.properties + t.strings + t.units + t.latin1 + t.accessors + t.conts) { return 0; }
+    var e = Evacuation {};
+    reach(e, heap, v);
+    let rows = heap.nodes.len;
+    var sealed: i64 = 0;
+    for r in rows {
+        if e.nodes[r] == 0 || realm_row(heap, r) { continue; }
+        let n = node(heap, r);
+        if n.kind == node_kind::Binding && n.length == binding_mode::Sealable && n.initialized && writable(job, r) {
+            let c .= node_mut(heap, r); c.length = binding_mode::Sealed; c.immutable = true; sealed += 1;
+        }
+    }
+    if !functions { return sealed; }
+    for r in rows {
+        if e.nodes[r] == 0 || realm_row(heap, r) { continue; }
+        let kind = node(heap, r).kind;
+        if kind != node_kind::Closure && kind != node_kind::BoundFunction || lazy_function(heap, r) { continue; }
+        let f = object(r);
+        var frozen = test_integrity(job, Builtin.ObjectIsFrozen, f, true);
+        if heap.fault != Fault.None { return 0; }
+        if !frozen && writable(job, r) && private_row(heap, f) < 0 {
+            if !set_integrity(job, Builtin.ObjectFreeze, f, true) { return 0; }
+            frozen = true; sealed += 1;
+        }
+        if !frozen || kind != node_kind::Closure { continue; }
+        let p = own_prototype(heap, r);
+        if heap.fault != Fault.None { return 0; }
+        if untouched_prototype(job, p, r) {
+            if !set_integrity(job, Builtin.ObjectFreeze, p, true) { return 0; }
+            sealed += 1;
+        }
+        if heap.fault != Fault.None { return 0; }
+    }
+    return sealed;
 }

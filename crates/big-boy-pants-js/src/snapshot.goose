@@ -819,6 +819,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // no state of its own) 0, 1 or 2, a delay, whose value is its thunk
         // or nothing; a job's own delay (19) none (source::Node, cells.goose).
         if n.kind == node_kind::Atom && n.length > 1 || n.kind == node_kind::Cell && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == node_kind::Delay && n.length != 0 || (n.kind == node_kind::Map || n.kind == node_kind::Set) && n.length > map_order::Hash || n.kind == node_kind::Concat && n.length > seq_flavor::IntegerRange || n.kind == node_kind::Vector && n.length > vector_flavor::MapEntry || n.kind == node_kind::List && n.length > list_flavor::Cons { return reject(c, Error.Link); }
+        // A binding cell's mode (light-cljs-919, source::binding_mode): a
+        // sealable cell is mutable, a sealed one initialized and immutable.
+        if n.kind == node_kind::Binding && (n.length > binding_mode::Sealed || n.length == binding_mode::Sealable && n.immutable || n.length == binding_mode::Sealed && (!n.immutable || !n.initialized)) { return reject(c, Error.Link); }
         if n.kind == node_kind::Array && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
         // An array's `function` holds its attribute flags (light-cljs-881,
         // source::array_flag); only a dictionary array is Attributed, and
