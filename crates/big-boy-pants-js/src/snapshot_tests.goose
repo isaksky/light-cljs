@@ -784,7 +784,7 @@ thread_fn integrity_malformed(saved: snapshot::Snapshot, mode: i64) {
     }
 }
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its
@@ -2932,6 +2932,40 @@ thread_fn traversal_flags() {
         var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
     }
     print("snapshot traversal flags: hash order and integer ranges restore, other values refused");
+}
+// light-cljs-918: a map entry's and a cons's flavor (node `length`), a
+// cons's retained rest and a reduced marker's payload restore as captured;
+// another flavor, or a reduced marker with any other field, is a Link
+// rejection.
+thread_fn form_flavors() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/arguments.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let key = source::form_op(heap, form_op::Keyword, [source::nil(), source::text(heap, "k")]);
+    let entry = source::form_op(heap, form_op::CljFirst, [source::form_collection(heap, node_kind::Map, [key, source::number(1)])]);
+    let tail = source::form_collection(heap, node_kind::Vector, [source::number(2), source::number(3)]);
+    let cons = source::form_op(heap, form_op::CljCons, [source::number(1), tail]);
+    let reduced = source::form_op(heap, form_op::CljReduced, [tail]);
+    assert(heap.fault == source::Fault.None);
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: entry }, snapshot::Binding { id: 1, generation: 1, value: cons }, snapshot::Binding { id: 2, generation: 1, value: reduced }], c); assert(c.error == snapshot::Error.None);
+    {
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+        assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), restore));
+        assert(source::form_op(target, form_op::CljIsMapEntry, [roots[0].value]).flag() && source::node(target, roots[1].value.id()).length == list_flavor::Cons);
+        let rest = source::form_op(target, form_op::CljRest, [roots[1].value]); let payload = source::form_op(target, form_op::CljUnreduced, [roots[2].value]);
+        assert(source::form_equal(target, rest, payload) && source::form_kind(target, payload) == node_kind::Vector && source::form_count(target, rest) == 2 && target.fault == source::Fault.None);
+        source::form_op(target, form_op::CljPeek, [roots[1].value]); assert(target.fault == source::Fault.HostEffect);
+    }
+    for v in [entry, cons] {
+        var bad = copy(saved); bad.nodes[v.id()].length = 2;
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    for field in 3 {
+        var bad = copy(saved); let r = reduced.id();
+        if field == 0 { bad.nodes[r].count = 1; } else if field == 1 { bad.nodes[r].length = 1; } else { bad.nodes[r].namespace_value = source::number(1); }
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    print("snapshot form flavors: map entries, conses with their rest and reduced markers restore, malformed ones refused");
 }
 fn argument_ownership() {
     heap_program::join(thread_spawn(argument_parent)); let saved = qget<Saved>();

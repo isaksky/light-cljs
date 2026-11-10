@@ -236,6 +236,8 @@ fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, cl
         if v.id() < floor { if n.kind == node_kind::Array { return "a mutable JavaScript object"; } continue; }
         if n.kind == node_kind::LazySeq { return "an unrealized lazy sequence"; }
         if n.kind == node_kind::BoundFunction { return "a bound function (a function with properties, a mutable JavaScript object)"; }
+        // A reduced marker (light-cljs-918) is a job's own.
+        if n.kind == node_kind::Reduced { return "a reduced marker"; }
         if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind > node_kind::Concat && n.kind != node_kind::Atom && n.kind != node_kind::Cell && n.kind != node_kind::Delay { return "a mutable JavaScript object"; }
         if n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() { return if n.kind == node_kind::Closure { "a function with properties (a mutable JavaScript object)" } else { "a mutable JavaScript object" }; }
         if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(v.id()); }

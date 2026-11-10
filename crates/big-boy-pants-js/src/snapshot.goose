@@ -780,7 +780,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var owners: i64 = 0; var private_rows: i64 = 0;
     for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < node_kind::Object || n.kind > node_kind::PrivateElements { return reject(c, Error.Unsupported); }
+        if n.kind < node_kind::Object || n.kind > node_kind::Reduced { return reject(c, Error.Unsupported); }
+        // A reduced marker (light-cljs-918) holds its value and nothing else.
+        if n.kind == node_kind::Reduced && (!n.namespace_value.is_null() || !n.metadata.is_undefined() || !n.proto.is_hole() || n.count != 0 || n.start != 0 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.function != 0 || n.length != 0 || n.initialized || n.immutable || n.non_extensible) { return reject(c, Error.Link); }
         // An object's private elements (light-cljs-889) are records
         // (record_run, key_runs) and nothing else; their one owner is
         // checked with its metadata below.
@@ -816,7 +818,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // An atom or volatile (17) has a flavor, 0 or 1; a cell reference (18,
         // no state of its own) 0, 1 or 2, a delay, whose value is its thunk
         // or nothing; a job's own delay (19) none (source::Node, cells.goose).
-        if n.kind == node_kind::Atom && n.length > 1 || n.kind == node_kind::Cell && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == node_kind::Delay && n.length != 0 || (n.kind == node_kind::Map || n.kind == node_kind::Set) && n.length > map_order::Hash || n.kind == node_kind::Concat && n.length > seq_flavor::IntegerRange { return reject(c, Error.Link); }
+        if n.kind == node_kind::Atom && n.length > 1 || n.kind == node_kind::Cell && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == node_kind::Delay && n.length != 0 || (n.kind == node_kind::Map || n.kind == node_kind::Set) && n.length > map_order::Hash || n.kind == node_kind::Concat && n.length > seq_flavor::IntegerRange || n.kind == node_kind::Vector && n.length > vector_flavor::MapEntry || n.kind == node_kind::List && n.length > list_flavor::Cons { return reject(c, Error.Link); }
         if n.kind == node_kind::Array && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
         // An array's `function` holds its attribute flags (light-cljs-881,
         // source::array_flag); only a dictionary array is Attributed, and

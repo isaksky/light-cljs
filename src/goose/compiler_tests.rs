@@ -534,22 +534,10 @@ fn goose_compiler_assembly_leaf_boundaries() {
     s.close();
     cleaned(&s);
     for (body, fault) in [
-        (
-            "const a=[];a.length=-1;return a;",
-            "Fault.RangeError",
-        ),
-        (
-            "const a=[];a.length=1.5;return a;",
-            "Fault.RangeError",
-        ),
-        (
-            "const a=[];a.length=0/0;return a;",
-            "Fault.RangeError",
-        ),
-        (
-            "const a=[];a.length=1/0;return a;",
-            "Fault.RangeError",
-        ),
+        ("const a=[];a.length=-1;return a;", "Fault.RangeError"),
+        ("const a=[];a.length=1.5;return a;", "Fault.RangeError"),
+        ("const a=[];a.length=0/0;return a;", "Fault.RangeError"),
+        ("const a=[];a.length=1/0;return a;", "Fault.RangeError"),
         (
             "const a=[];a.length=4294967296;return a;",
             "Fault.RangeError",
@@ -573,18 +561,14 @@ fn goose_compiler_assembly_leaf_boundaries() {
         // Operands the V8 build's runtime accepts and this one does not
         // implement fail by name, not as a cljs.core Error (light-cljs-873):
         // a JavaScript array as a map entry source, a set of entries (its
-        // iteration order), the first item of a map, set-validator! with a
-        // nil validator on a value that is no reference.
+        // iteration order), set-validator! with a nil validator on a value
+        // that is no reference.
         (
             "return rt.core.into(__rt.formMap(), __rt.formVector([]));",
             "Fault.NativeBoundary",
         ),
         (
             "return __rt.cljConj(__rt.formMap(), __rt.formSet(__rt.formVector(1, 2)));",
-            "Fault.NativeBoundary",
-        ),
-        (
-            "return __rt.cljFirst(__rt.formMap(1, 2));",
             "Fault.NativeBoundary",
         ),
         (
@@ -2161,6 +2145,74 @@ fn goose_compiler_macro_prints_hash_ordered_collections_as_v8() {
         None,
     );
 }
+/// The plain form operations (light-cljs-918; form_ops.goose) in macro code
+/// match the V8 build: the predicates, the keyword and symbol constructors,
+/// cons, peek, dissoc and disj, with-meta, hash, the reduced marker, and
+/// the seq, first, rest, into and vec of a map (map entries), a set and a
+/// string, each result quoted. cljs.core's errors match its messages when
+/// caught and are
+/// uncaught exceptions, never a NativeBoundary, when not.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_plain_form_operations_match_v8() {
+    for body in [
+        "[(list? '(1)) (list? [1]) (list? (rest '(1 2))) (list? (seq [1])) (list? (cons 0 [1])) (seq? (seq [1])) (seq? (cons 0 nil)) (coll? {}) (coll? 1) (coll? :k) (sequential? [1]) (sequential? #{}) (vector? []) (vector? (first {:a 1})) (map-entry? (first {:a 1})) (map-entry? [1 2])]",
+        "[(zero? 0) (zero? -0.0) (zero? 1) (false? false) (false? nil) (reduced? (reduced 1)) (reduced? 1) (unreduced (reduced 2)) (unreduced 3) (reduced? (ensure-reduced 4)) (unreduced (ensure-reduced (reduced 5)))]",
+        "[(keyword \"a\" \"b\") (keyword nil \"c\") (keyword :x :y) (keyword 'n 'm) (keyword \"a/b\") (keyword \"/\") (keyword 'a/b) (keyword :k) (keyword 7) (keyword \"\") (keyword \"a/\") (keyword \"/a\")]",
+        "[(symbol \"a\" \"b\") (symbol nil \"c\") (symbol \"x/y\") (symbol \"a/b/c\") (symbol :q/r) (symbol :s) (symbol 'u) (symbol \"/\")]",
+        "[(cons 0 [1 2]) (cons 0 nil) (cons 0 \"ab\") (cons 0 {:a 1}) (cons 0 #{1}) (cons 0 '(1)) (cons 0 (hash-set 3 1 2))]",
+        "[(peek [1 2]) (peek '(3 4)) (peek nil) (peek []) (peek ()) (peek (first {:a 1}))]",
+        "[(dissoc {:a 1 :b 2} :a) (dissoc {:a 1} :z) (dissoc nil :a) (disj #{1 2} 1) (disj #{1} 5) (disj nil 1) (dissoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9} :e)]",
+        "[(hash :a) (hash \"a\") (hash [1 2]) (hash {:a 1}) (hash #{1}) (hash nil) (hash 1.5) (hash 'x/y) (hash (first {:a 1})) (hash '(1 2))]",
+        "[(meta (with-meta (first {:a 1}) {:x 1})) (map-entry? (with-meta (first {:a 1}) {:x 1})) (with-meta [1] nil) (meta (with-meta (with-meta [1] {:a 1}) nil)) (meta (with-meta 'a {:b 2})) (meta (with-meta (seq [1 2]) {:c 3}))]",
+        "[(map-entry? (assoc (first {:a 1}) 0 :b)) (map-entry? (conj (first {:a 1}) 3)) (map-entry? (vec (first {:a 1}))) (conj (first {:a 1}) 9) (count (first {:a 1})) (nth (first {:a 1}) 1)]",
+        "[(seq {:a 1 :b 2}) (first #{3}) (rest {:a 1 :b 2}) (next {:a 1}) (seq #{1 2}) (seq \"ab\") (first \"xy\") (rest \"xy\") (seq {}) (seq \"\")]",
+        "[(seq {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}) (first {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}) (seq #{1 2 3 4 5 6 7 8 9 10}) (rest #{1 2 3 4 5 6 7 8 9 10})]",
+        "[(into [] {:a 1 :b 2}) (into #{} {:a 1}) (into {} {:b 2}) (vec {:a 1}) (into [] #{1 2}) (vec \"ab\") (vec #{3}) (vec (map (fn [[k v]] [v k]) {:a 1 :b 2}))]",
+        "[(seq (with-meta '(1 2) {:m 1})) (meta (seq (with-meta '(1 2) {:m 1}))) (meta (rest (with-meta '(1 2) {:m 1}))) (let [[a b & more] {:a 1 :b 2 :c 3}] [a b more])]",
+        "(let [{:keys [a b] :as m} {:a 1 :b 2} {c :c :or {c 9}} m] [a b c (seq? (seq m))])",
+        // cljs.core/keyword's keywords are fresh: equal, not identical.
+        "[(identical? (keyword \"a\") :a) (identical? (keyword \"a\") (keyword \"a\")) (identical? (keyword \"a\" \"b\") :a/b) (identical? (keyword 'a) :a) (= (keyword \"a\") :a) (identical? (keyword :a) :a)]",
+        // A map entry's index is exactly 0 or 1; its call takes a fallback.
+        "(let [e (first {:a 1})] [(e 0) (e 2 :missing) (nth e 0.5 :missing) (get e 1) (e 1 :m) (try (e :x) (catch :default x (.-message x))) (e :x :nf) (try (e 0.5) (catch :default x (.-message x))) (try (e 1 2 3) (catch :default x (.-message x)))])",
+        // A cons keeps its rest and is no stack.
+        "[(try (peek (cons 1 [2])) (catch :default e (.-message e))) (peek (cons 1 nil)) (let [xs '(2 3)] (identical? xs (rest (cons 1 xs)))) (list? (rest (cons 1 [2 3]))) (rest (cons 1 [2 3])) (conj (cons 1 '(2)) 0)]",
+        // Variadic conj and assoc and list*, their errors included.
+        "[(conj [1] 2 3 4) (conj '(1) 2 3) (conj #{1} 2 3) (conj {} [:a 1] [:b 2]) (assoc {:a 1} :c 3 :d 4) (assoc [1 2] 0 :x 2 :y) (list* 1 2 [3 4]) (list* [1 2]) (list* 1 nil) (list* 0 {:a 1})]",
+        "[(dissoc (assoc {:a 1 :b \"s\"} :c 3 :d 4) :a) (try (conj 1 2 3) (catch :default e (.-message e))) (try (assoc 1 2 3 4 5) (catch :default e (.-message e))) (try (list* 1 2 3) (catch :default e (.-message e)))]",
+        // A hash map's and set's items, in their traversal order.
+        "(let [m {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}] [(into [] m) (vec m) (into [] (into #{} (range 12))) (vec #{1 2 3 4 5 6 7 8 9 10}) (into [] (dissoc m :a))])",
+        // with-meta of the metadata a collection has is the collection.
+        "(let [m {:a 1} x (with-meta [1] m) l (with-meta '(1) m) s (with-meta #{1} m)] [(identical? x (with-meta x m)) (identical? l (with-meta l m)) (identical? s (with-meta s m)) (identical? x (with-meta x {:a 1}))])",
+    ] {
+        // Quoted, so that the compiler reads returned symbols as data.
+        macro_errors_match_v8(&format!("(list (quote quote) {body})"), None);
+    }
+    for body in [
+        "(try (peek 1) (catch :default e (.-message e)))",
+        "[(try (keyword 1 \"a\") (catch :default e (.-message e))) (try (symbol 1) (catch :default e (.-message e))) (try (symbol \"a\" 1) (catch :default e (.-message e))) (try (symbol nil :a) (catch :default e (.-message e)))]",
+        "[(try (cons 1 2) (catch :default e (.-message e))) (try (cons 1 :k) (catch :default e (.-message e))) (try (dissoc [] 1) (catch :default e (.-message e))) (try (disj {} 1) (catch :default e (.-message e))) (try (peek #{}) (catch :default e (.-message e)))]",
+    ] {
+        macro_errors_match_v8(body, None);
+    }
+    for (body, exception) in [
+        (
+            "(peek 1)",
+            "No protocol method IStack.-peek defined for this value",
+        ),
+        ("(dissoc [] 1)", "dissoc not supported on this type"),
+        ("(disj {} 1)", "disj not supported on this type"),
+        ("(cons 1 2)", "is not ISeqable"),
+        ("(symbol 1)", "no conversion to symbol"),
+        (
+            "(keyword 1 \"a\")",
+            "keyword expects strings or keywords and an optional nil namespace",
+        ),
+    ] {
+        macro_errors_match_v8(body, Some((exception, "HostEffect")));
+    }
+}
 /// A macro argument's map or set with keys or members equal at run time
 /// but not to the reader (1 and 1.0) merges as the V8 build's form bridge
 /// decodes it (light-cljs-879): the first key with the last value, the
@@ -3108,7 +3160,10 @@ fn goose_compiler_names_what_a_native_boundary_lacks() {
             "(map inc x)",
             "Fault.NativeBoundary:mapSeq:-no-core-leaf-map-over-a-vector ",
         ),
-        ("(cons 0 x)", "Fault.NativeBoundary:form-operation-cljCons "),
+        (
+            "(first (lazy-seq x))",
+            "Fault.NativeBoundary:form-operation-lazySeq ",
+        ),
         // A deftype in a macro body fails as its definition is prepared.
         (
             "(do (deftype T [a]) (.-a (T. 1)))",

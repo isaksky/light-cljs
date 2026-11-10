@@ -1390,16 +1390,18 @@ fn get_in(job: Job&, b: Builtin, args: const Value[:]) -> Value {
 // build's runtime's) (light-cljs-873): `from` is seqed first, then each
 // item conj'd as the conj form operation does it, a map target taking
 // entries (map_conj). A target that cannot conj fails only when `from`
-// has an item, with the protocol error. A map's or set's items as a source
-// are in the runtime's iteration order, which this one does not model.
+// has an item, with the protocol error. A map's or set's items are its
+// seq's, entries or members in traversal order, the order the V8 build's
+// into takes them in (light-cljs-918).
 fn into(job: Job&, b: Builtin, args: const Value[:]) -> Value {
     let heap .= job.heap;
     if args.len != 2 { return native_value(heap, code(b), args); }
-    let to = args[0]; let from = form_value(heap, args[1]);
-    if !seq_source(job, from) { return Value.Undefined; }
-    let count = form_count(heap, from); let source = form_kind(heap, from);
+    let to = args[0]; let given = form_value(heap, args[1]);
+    if !seq_source(job, given) { return Value.Undefined; }
+    let count = form_count(heap, given); let source = form_kind(heap, given);
     if count == 0 { return to; }
-    if source == node_kind::Map || source == node_kind::Set { builtin_boundary(job, code(b), "a map or set source"); return Value.Undefined; }
+    let from = if source == node_kind::Map || source == node_kind::Set { form_sequence(heap, given, 0, true) } else { given };
+    if heap.fault != Fault.None { return Value.Undefined; }
     let target = form_kind(heap, to);
     if form_value(heap, to).tag() > value_tag::Null && !(target >= node_kind::List && target <= node_kind::Set || target == node_kind::Concat) {
         let none: u16[0] = []; return runtime_error(job, "No protocol method ICollection/-conj defined for this value", none);

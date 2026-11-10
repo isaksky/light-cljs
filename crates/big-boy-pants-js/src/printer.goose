@@ -234,6 +234,7 @@ fn print_one(job: Job&, b: Builtin, p: Printer&, v: Value) -> bool {
     }
     if kind == node_kind::Cell { unsupported_step(job, b, "printing a process-wide atom, volatile or delay"); return false; }
     if kind == node_kind::LazySeq { unsupported_step(job, b, "printing a lazy sequence"); return false; }
+    if kind == node_kind::Reduced { unsupported_step(job, b, "printing a reduced marker"); return false; }
     if kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction {
         // `#object[name]`, `Function` for a falsy name (*print-fn-bodies* off).
         let name = form_value(heap, data_get(job, b, x, "name"));
@@ -349,7 +350,7 @@ fn core_str(job: Job&, b: Builtin, args: const Value[:]) -> Value {
         }
         let kind = node(heap, x.id()).kind;
         if kind == node_kind::Keyword || kind == node_kind::Symbol { if !emit_named(job, p, x) { return Value.Undefined; } continue; }
-        if kind == node_kind::Atom || kind == node_kind::Cell || kind == node_kind::Delay { emit(p, "[object Object]"); continue; }
+        if kind == node_kind::Atom || kind == node_kind::Cell || kind == node_kind::Delay || kind == node_kind::Reduced { emit(p, "[object Object]"); continue; }
         if kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::LazySeq {
             if !print_all(job, b, p, x) { return Value.Undefined; }
             continue;

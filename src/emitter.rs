@@ -4213,6 +4213,9 @@ impl<'a> Emitter<'a> {
         if self.native_numeric_call(core, args) {
             return true;
         }
+        if self.native_chain(core, args) {
+            return true;
+        }
         let kind_test = |kind: &'static str| -> (&'static str, &'static str, bool, &'static str) {
             ("(__rt.formKind(", "formValue", false, kind)
         };
@@ -4347,6 +4350,7 @@ impl<'a> Emitter<'a> {
             (C::Keyword, 2) => ("", "cljKeywordNs", false, ""),
             (C::Symbol, 1) => ("", "cljSymbol", false, ""),
             (C::Symbol, 2) => ("", "cljSymbolNs", false, ""),
+            (C::ListStar, 1) => ("", "cljSeq", false, ""),
             _ => return false,
         };
         self.output.push_str(before);
@@ -4357,6 +4361,37 @@ impl<'a> Emitter<'a> {
         }
         self.output.push(')');
         self.output.push_str(after);
+        true
+    }
+
+    /// Variadic `conj` and `assoc`, and `list*` of two or more operands
+    /// (light-cljs-918): one binary intrinsic a step, `(conj c x y)` as
+    /// `cljConj(cljConj(c, x), y)`, `(assoc m k v k2 v2)` as two `cljAssoc`s
+    /// and `(list* a b coll)` as `cljCons(a, cljCons(b, coll))`, inside an
+    /// arrow function called on the operands, so that every operand is
+    /// evaluated before the first step runs, as the runtime's variadic
+    /// functions take them. An `assoc` with a key and no value stays the
+    /// runtime's (its arity error).
+    fn native_chain(&mut self, core: crate::CoreFnId, args: &[ExprId]) -> bool {
+        use crate::CoreFnId as C;
+        let n = args.len();
+        let body = match core {
+            C::Conj if n > 2 => {
+                (1..n).fold("a0".to_string(), |c, i| format!("__rt.cljConj({c}, a{i})"))
+            }
+            C::Assoc if n > 3 && n % 2 == 1 => (1..n).step_by(2).fold("a0".to_string(), |m, i| {
+                format!("__rt.cljAssoc({m}, a{i}, a{})", i + 1)
+            }),
+            C::ListStar if n > 1 => (0..n - 1).rev().fold(format!("a{}", n - 1), |s, i| {
+                format!("__rt.cljCons(a{i}, {s})")
+            }),
+            _ => return false,
+        };
+        self.output.push_str("((");
+        self.positional_params(n);
+        write!(self.output, ") => {body})(").unwrap();
+        self.arguments(args);
+        self.output.push(')');
         true
     }
 

@@ -24,6 +24,7 @@ import .symbols;
 import .coerce;
 import .private;
 import .math_object;
+import .form_ops;
 
 namespace source;
 
@@ -487,6 +488,9 @@ let node_kind::JsSymbol = 28;
 // row), its value (Accessor for an accessor) and attr_writable() for a
 // field. JavaScript never sees the node.
 let node_kind::PrivateElements = 29;
+// A reduced marker (light-cljs-918; form_ops.goose): value=the value it
+// wraps, nothing else. It is a form of identity equality, no collection.
+let node_kind::Reduced = 30;
 // A map's or set's traversal order (its node's `length`; light-cljs-877),
 // as the V8 build's runtime (src/js_runtime.js) has it: an array map or a
 // hash map or set, the Pants engine's FormMap::Positional and Hashed
@@ -538,6 +542,20 @@ checkfree inline fn frozen_array(heap: const Heap&, o: i64) -> bool { let n .= n
 // rest is one too.
 let seq_flavor::Sequence = 0;
 let seq_flavor::IntegerRange = 1;
+// A vector's flavor, its node's `length` (light-cljs-918): an ordinary
+// vector, or a map entry, which a map's seq makes (form_ops.goose
+// seq_items). A map entry is a vector in every respect but map-entry?,
+// editable? and empty; an update of one is an ordinary vector.
+let vector_flavor::Plain = 0;
+let vector_flavor::MapEntry = 1;
+// A list's flavor, its node's `length` (light-cljs-918): an ordinary list,
+// or a cons, cljs.core/cons onto a collection: its run holds its item and
+// its collection's seq's items, and its `value` that collection when it
+// is a list or sequence, otherwise its seq (nil for none), which is the
+// cons's rest by identity. A cons is no stack: peek and pop of one fail
+// as the V8 build's Cons. A conj onto a cons is a cons whose rest is it.
+let list_flavor::Plain = 0;
+let list_flavor::Cons = 1;
 inline fn integer_range(n: Node) -> bool { return n.kind == node_kind::Concat && n.length == seq_flavor::IntegerRange; }
 inline fn hash_ordered(n: Node) -> bool { return (n.kind == node_kind::Map || n.kind == node_kind::Set) && n.length == map_order::Hash; }
 // Errors, generators, promises, wrappers and iterators are ordinary objects
@@ -1303,9 +1321,11 @@ fn equal(heap: Heap&, a: Value, b: Value) -> bool {
 // Whether object rows a and b are one keyword (light-cljs-878). The V8
 // build interns keyword literals and the keywords of imported forms: one
 // object per namespace and name, whichever unit, job, publication or cell
-// it came from (a fresh one only from cljs.core/keyword, which fails
-// NativeBoundary here). Every keyword row this VM makes is of that kind
-// (form_op::Keyword, the form bridge, publications, cell values), and a
+// it came from (a fresh one only from cljs.core/keyword). Every keyword
+// row this VM makes is of that kind (form_op::Keyword, the form bridge,
+// publications, cell values) but cljs.core/keyword's (form_ops.goose
+// new_named), which has `initialized` set and is identical only to
+// itself (a cell or publication carries it as an interned one). A
 // keyword row is immutable, with no own properties or metadata, so its
 // namespace and name are its identity: ===, Object.is and identical?
 // compare two keyword rows by them, and nothing JavaScript does can tell
@@ -1315,7 +1335,7 @@ fn equal(heap: Heap&, a: Value, b: Value) -> bool {
 // needs no remapping. A runtime keyword constructor added here must mark
 // its keywords and keep them out of this rule.
 fn same_keyword(heap: Heap&, a: i64, b: i64) -> bool {
-    if node(heap, a).kind != node_kind::Keyword || node(heap, b).kind != node_kind::Keyword { return false; }
+    if node(heap, a).kind != node_kind::Keyword || node(heap, b).kind != node_kind::Keyword || node(heap, a).initialized || node(heap, b).initialized { return false; }
     let an = node(heap, a).value; let bn = node(heap, b).value; let ans = node(heap, a).namespace_value; let bns = node(heap, b).namespace_value;
     if !charge(heap, str_len(heap, an) + str_len(heap, ans)) { return false; }
     if !same_text(heap, an, bn) || ans.is_string() != bns.is_string() { return false; }
@@ -3613,6 +3633,7 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
         if kind == node_kind::Map && !valid(heap, k) { return Value.Undefined; } if !valid(heap, value) { return Value.Undefined; }
     }
     var made = n; made.kind = kind; made.origin = -1; made.start = heap.values.len as u32; made.count = count;
+    if kind == node_kind::Vector { made.length = vector_flavor::Plain; }
     // allocate charges the final work unit before any child append. Nothing
     // below can fail (the preflight reserved the rows); old ranges and
     // occurrence/metadata handles stay intact.
@@ -3656,6 +3677,8 @@ fn form_conj(heap: Heap&, v: Value, value: Value) -> Value {
     if kind != node_kind::List && !valid(heap, value) { return Value.Undefined; }
     // A sequence's conj is a new list, without the sequence's metadata.
     var made = if found == node_kind::Concat { Node { kind: node_kind::List } } else { n }; made.kind = kind; made.origin = -1; made.start = heap.values.len as u32; made.count = count;
+    if kind == node_kind::Vector { made.length = vector_flavor::Plain; }
+    if kind == node_kind::List && made.length == list_flavor::Cons { made.value = x; }
     let result = allocate(heap, made); if heap.fault != Fault.None { return Value.Undefined; }
     if kind == node_kind::List { add_values(heap, [value]); }
     add_values(heap, run(heap, n.start, n.count));
@@ -3730,6 +3753,20 @@ fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
     if heap.fault != Fault.None { return Value.Undefined; }
     if count <= skip { return if empty_nil { nil() } else { form_collection(heap, node_kind::List, []) }; }
     let kind = form_kind(heap, x);
+    // A nonempty list is its own seq and its rest a list over its run, as
+    // the V8 build's List (clj.rs seq and rest; light-cljs-918). A map's,
+    // set's or string's seq is a new sequence of its items (seq_items).
+    if kind == node_kind::List {
+        if skip == 0 { return v; }
+        let l = node(heap, x.id());
+        if l.length == list_flavor::Cons && skip == 1 && l.value.tag() > value_tag::Null { return l.value; }
+        return allocate(heap, Node { kind: node_kind::List, start: (l.start + skip) as u32, count: (l.count - skip) as u32 });
+    }
+    if kind == node_kind::Map || kind == node_kind::Set || x.is_string() {
+        var items: Value[>..] = [];
+        if !seq_items(heap, x, items) { return Value.Undefined; }
+        return new_sequence(heap, items[skip..]);
+    }
     if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
     // An integer range's seq is itself and its rest an integer range, as
     // the V8 build's are.
@@ -3745,7 +3782,7 @@ fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
 // accepts and this one does not implement (a JavaScript array, an object's
 // iteration or text); it fails NativeBoundary, uncatchably. Classifying
 // reads no row the operation would not, and allocates nothing.
-enum CoreError { None, Boundary, OutOfBounds, NthIndex, NthType, CountType, NotSeqable, AssocType, VectorKey, ConjType, InvokeKey, MapEntry }
+enum CoreError { None, Boundary, OutOfBounds, NthIndex, NthType, CountType, NotSeqable, AssocType, VectorKey, ConjType, InvokeKey, MapEntry, Arity, PeekType, PopType, PopEmptyVector, PopEmptyList, DissocType, DisjType, KeywordArgs, SymbolArgs, SymbolConversion, CompareTypes, CompareValues }
 fn core_failed(heap: Heap&, e: CoreError) -> bool {
     if heap.fault != Fault.None { return true; }
     if e == CoreError.None { return false; }
@@ -3758,7 +3795,8 @@ fn core_failed(heap: Heap&, e: CoreError) -> bool {
 fn nth_found(heap: Heap&, x: Value, i: f64) -> bool {
     if x.is_string() { return i > -1 && i < str_len(heap, x); }
     let n = node(heap, x.id());
-    if n.kind == node_kind::Vector || integer_range(n) { return i >= 0 && i < n.count; }
+    // A map entry's index is exactly 0 or 1 (ClojureScript's MapEntry).
+    if n.kind == node_kind::Vector && n.length != vector_flavor::MapEntry || integer_range(n) { return i >= 0 && i < n.count; }
     return i >= 0 && i < n.count && i == trunc(i);
 }
 fn nth_error(heap: Heap&, coll: Value, index: Value, fallback: bool) -> CoreError {
@@ -3824,8 +3862,14 @@ fn conj_error(heap: Heap&, coll: Value, item: Value) -> CoreError, Value {
     return CoreError.None, Value.Undefined;
 }
 // A vector's call: a number index, found as nth finds it.
-fn invoke_error(heap: Heap&, v: Value, index: Value) -> CoreError {
+// A map entry's call (light-cljs-918) takes one or two arguments, any
+// index, and its second argument is the fallback for one it does not find.
+fn invoke_error(heap: Heap&, v: Value, index: Value, arity: Value) -> CoreError {
     let i = form_value(heap, index);
+    if entry_value(heap, v) {
+        if !arity.is_number() || arity.num() != 1 && arity.num() != 2 { return CoreError.Arity; }
+        return if arity.num() == 2 || i.is_number() && nth_found(heap, form_value(heap, v), i.num()) { CoreError.None } else { CoreError.OutOfBounds };
+    }
     if !i.is_number() { return CoreError.InvokeKey; }
     return if nth_found(heap, form_value(heap, v), i.num()) { CoreError.None } else { CoreError.OutOfBounds };
 }
@@ -3879,17 +3923,25 @@ fn seq_source(job: Job&, v: Value) -> bool {
 fn core_error(job: Job&, op: i64, base: i64) {
     let heap .= job.heap; let args = job.operands[base..];
     heap.fault = Fault.None;
-    var e = CoreError.None; var culprit = args[0];
+    var e = CoreError.None; var culprit = args[0]; var second = Value.Undefined;
     match op {
         form_op::CljNth, form_op::CljNthOr => { e = nth_error(heap, args[0], args[1], op == form_op::CljNthOr); },
         form_op::CljCount => { e = count_error(heap, args[0]); },
         form_op::CljSeq, form_op::CljRest, form_op::CljNext, form_op::CljFirst => { e = seq_error(heap, args[0]); },
         form_op::CljAssoc => { e = assoc_error(heap, args[0], args[1]); },
         form_op::CljConj => { let c, v = conj_error(heap, args[0], args[1]); e = c; culprit = v; },
-        form_op::CljInvoke => { e = invoke_error(heap, args[0], args[1]); },
+        form_op::CljInvoke => { e = invoke_error(heap, args[0], args[1], args[3]); },
+        form_op::CljKeywordNs, form_op::CljSymbol, form_op::CljSymbolNs => { e = name_error(heap, op, args); },
+        form_op::CljCons => { e = seq_error(heap, args[1]); culprit = args[1]; },
+        form_op::CljList => { e = seq_error(heap, args[0]); },
+        form_op::CljPeek, form_op::CljPop => { e = stack_error(heap, op, args[0]); },
+        form_op::CljDissoc, form_op::CljDisj => { e = removal_error(heap, op, args[0]); },
+        form_op::Compare => { var r = Rejected {}; let c, ce = compare_values(heap, args[0], args[1], r); e = ce; culprit = r.a; second = r.b; },
         _ => {},
     }
     if heap.fault != Fault.None { return; }
+    if e == CoreError.CompareValues { compare_message(job, culprit, second); return; }
+    if e == CoreError.Arity { arity_error(job, form_value(heap, args[3]).num() as i64); return; }
     if e == CoreError.NotSeqable { not_seqable(job, culprit); return; }
     core_raise(job, e);
 }
@@ -3899,6 +3951,11 @@ fn core_raise(job: Job&, e: CoreError) -> Value {
         OutOfBounds => "Index out of bounds", NthIndex => "Index argument to nth must be a number", NthType => "nth not supported on this type",
         CountType => "count not supported on this type", AssocType => "assoc not supported on this type", VectorKey => "Vector key must be a number",
         ConjType => "conj not supported on this type", InvokeKey => "Key must be integer", MapEntry => "Map conj requires vector entries",
+        PeekType => "No protocol method IStack.-peek defined for this value", PopType => "No protocol method IStack.-pop defined for this value",
+        PopEmptyVector => "Can't pop empty vector", PopEmptyList => "Can't pop empty list", DissocType => "dissoc not supported on this type",
+        DisjType => "disj not supported on this type", KeywordArgs => "keyword expects strings or keywords and an optional nil namespace",
+        SymbolArgs => "symbol expects strings and an optional nil namespace", SymbolConversion => "no conversion to symbol",
+        CompareTypes => "Cannot compare different types",
         _ => "",
     };
     // Only a raised CoreError reaches here.
@@ -3915,11 +3972,22 @@ fn named_supported(heap: Heap&, ns: Value, name: Value) -> bool {
     return true;
 }
 fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
+    // The predicates (form_ops.goose) answer for a lazy sequence without
+    // realizing it.
+    match op {
+        form_op::CljIsAtom, form_op::CljIsColl, form_op::CljIsEditable, form_op::CljIsFalse, form_op::CljIsList, form_op::CljIsMapEntry, form_op::CljIsSeq, form_op::CljIsSequential, form_op::CljIsVector, form_op::CljIsZero, form_op::CljIsReduced, form_op::IsArrayMap, form_op::HasHostKeys => {
+            return if valid(heap, args[0]) { boolean(form_predicate(heap, op, args[0])) } else { Value.Undefined };
+        },
+        _ => {},
+    }
+    // These read a lazy sequence as an opaque operand: they wrap it, return
+    // it or refuse it (light-cljs-918), never realizing it.
+    let opaque = match op { form_op::CljReduced, form_op::CljUnreduced, form_op::CljKeyword, form_op::CljKeywordNs, form_op::CljSymbol, form_op::CljSymbolNs, form_op::Name, form_op::Namespace, form_op::IdentityHash => true, _ => false };
     for v in args {
         if !valid(heap, v) { return Value.Undefined; }
         // Partial/lazy protocol operations are outside this full-demand
         // target slice. Never inspect an uninitialized memo as a form.
-        if v.is_object() && node(heap, v.id()).kind == node_kind::LazySeq { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+        if !opaque && v.is_object() && node(heap, v.id()).kind == node_kind::LazySeq { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
     }
     let a = args[0];
     match op {
@@ -3928,7 +3996,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if !named_supported(heap, a, args[1]) { if heap.fault == Fault.None { heap.fault = Fault.NativeBoundary; } return Value.Undefined; }
             return allocate(heap, Node { kind: if op == form_op::Keyword { node_kind::Keyword } else { node_kind::Symbol }, value: args[1], namespace_value: if a.tag() <= value_tag::Null { nil() } else { a } });
         },
-        form_op::Kind => { let kind = form_kind(heap, a); return match kind { node_kind::List, node_kind::Concat => text(heap, "list"), node_kind::Vector => text(heap, "vector"), node_kind::Map => text(heap, "map"), node_kind::Set => text(heap, "set"), node_kind::Symbol => text(heap, "symbol"), node_kind::Keyword => text(heap, "keyword"), _ => nil() }; },
+        form_op::Kind => { let kind = form_kind(heap, a); return match kind { node_kind::List, node_kind::Concat => text(heap, "list"), node_kind::Vector => text(heap, "vector"), node_kind::Map => text(heap, "map"), node_kind::Set => text(heap, "set"), node_kind::Symbol => text(heap, "symbol"), node_kind::Keyword => text(heap, "keyword"), node_kind::Reduced => text(heap, "reduced"), _ => nil() }; },
         form_op::Count => { return number(form_count(heap, a)); },
         form_op::Nth => { let i = form_value(heap, args[1]); if !i.is_number() || !(i.num() >= -2147483648.0 && i.num() <= 2147483647.0) || i.num() != (i.num() as i64) || i.num() < 0 || i.num() >= form_count(heap, a) { heap.fault = Fault.TypeError; return Value.Undefined; } return form_nth(heap, a, i.num() as i64); },
         form_op::CljCount => { if core_failed(heap, count_error(heap, a)) { return Value.Undefined; } return number(form_count(heap, a)); },
@@ -3967,7 +4035,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         // A JavaScript object's `metadata` is its private elements
         // (light-cljs-889), not metadata.
         form_op::Meta, form_op::CljMeta => { return if a.is_object() && !node(heap, a.id()).metadata.is_undefined() && private_row(heap, a) < 0 { node(heap, a.id()).metadata } else { nil() }; },
-        form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != node_kind::Map) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
+        form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != node_kind::Map) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; if n.kind == node_kind::Vector { n.length = vector_flavor::Plain; } return allocate(heap, n); },
         form_op::Value => { return form_value(heap, a); },
         form_op::CljTruth => { let v = form_value(heap, a); return boolean(v.tag() > value_tag::Null && !(v.is_bool() && !v.flag())); },
         form_op::CljSeq, form_op::CljRest, form_op::CljNext => {
@@ -3976,12 +4044,47 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         },
         form_op::CljFirst => {
             if core_failed(heap, seq_error(heap, a)) { return Value.Undefined; }
-            // A map's first entry and a set's first member are in the
-            // runtime's iteration order, which this one does not model.
+            // A map's first entry and a set's first member, in traversal
+            // order (form_ops.goose seq_items).
             let kind = form_kind(heap, a);
-            if kind == node_kind::Map || kind == node_kind::Set { if form_count(heap, a) == 0 { return nil(); } heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+            if kind == node_kind::Map || kind == node_kind::Set {
+                if form_count(heap, a) == 0 { return nil(); }
+                var items: Value[>..] = [];
+                if !seq_items(heap, a, items) { return Value.Undefined; }
+                return items[0];
+            }
             return form_nth(heap, a, 0);
         },
+        // The plain form operations (light-cljs-918; form_ops.goose).
+        form_op::Name, form_op::Namespace => { return form_name(heap, a, op == form_op::Namespace); },
+        form_op::CljKeyword => { return clj_keyword(heap, a); },
+        form_op::CljKeywordNs, form_op::CljSymbolNs => {
+            if core_failed(heap, name_error(heap, op, args)) { return Value.Undefined; }
+            let keyword = op == form_op::CljKeywordNs;
+            return new_named(heap, if keyword { node_kind::Keyword } else { node_kind::Symbol }, if keyword { keyword_part(heap, a) } else { form_value(heap, a) }, if keyword { keyword_part(heap, args[1]) } else { form_value(heap, args[1]) });
+        },
+        form_op::CljSymbol => { if core_failed(heap, name_error(heap, op, args)) { return Value.Undefined; } return clj_symbol(heap, a); },
+        form_op::CljCons => { if core_failed(heap, seq_error(heap, args[1])) { return Value.Undefined; } return clj_cons(heap, a, args[1]); },
+        form_op::CljList => { if core_failed(heap, seq_error(heap, a)) { return Value.Undefined; } return seq_list(heap, a); },
+        form_op::CljDrop => { return clj_drop(heap, a, args[1]); },
+        form_op::CljPeek => { if core_failed(heap, stack_error(heap, op, a)) { return Value.Undefined; } return clj_peek(heap, a); },
+        form_op::CljPop => { if core_failed(heap, stack_error(heap, op, a)) { return Value.Undefined; } return clj_pop(heap, a); },
+        form_op::CljDissoc, form_op::CljDisj => { if core_failed(heap, removal_error(heap, op, a)) { return Value.Undefined; } return form_remove(heap, a, args[1], op == form_op::CljDisj); },
+        form_op::Dissoc, form_op::Disj => {
+            if form_value(heap, a).tag() <= value_tag::Null { heap.fault = Fault.TypeError; return Value.Undefined; }
+            return form_remove(heap, a, args[1], op == form_op::Disj);
+        },
+        form_op::Empty => { return form_empty(heap, a); },
+        form_op::Keys => { return form_keys(heap, a); },
+        // A set literal of a list's or vector's members, positional as
+        // LiteralMap's map.
+        form_op::LiteralSet => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); if n.count == 0 { return empty_literal(heap, node_kind::Set); } return form_collection(heap, node_kind::Set, run(heap, n.start, n.count)); },
+        form_op::CljWithExportedMeta => { return exported_meta(heap, a, args[1]); },
+        form_op::Hash => { return hash_value(heap, a); },
+        form_op::IdentityHash => { return identity_hash(heap, a); },
+        form_op::Compare => { var r = Rejected {}; let c, e = compare_values(heap, a, args[1], r); if core_failed(heap, e) { return Value.Undefined; } return number(c); },
+        form_op::CljReduced => { return allocate(heap, Node { kind: node_kind::Reduced, value: a }); },
+        form_op::CljUnreduced => { return if a.is_object() && node(heap, a.id()).kind == node_kind::Reduced { node(heap, a.id()).value } else { a }; },
         form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); if n.count == 0 { return empty_literal(heap, node_kind::Map); } return form_collection(heap, node_kind::Map, run(heap, n.start, n.count)); },
         // A map literal with entries in a native macro unit (light-cljs-872):
         // insertion-ordered, equal keys keeping the first key and the last
@@ -4014,7 +4117,9 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             // A vector's call takes one index and ignores any other
             // argument, as the runtime's (light-cljs-873).
             if kind == node_kind::Vector {
-                if core_failed(heap, invoke_error(heap, a, args[1])) { return Value.Undefined; }
+                if core_failed(heap, invoke_error(heap, a, args[1], arity)) { return Value.Undefined; }
+                let i = form_value(heap, args[1]);
+                if entry_value(heap, a) && !(i.is_number() && nth_found(heap, form_value(heap, a), i.num())) { return args[2]; }
                 return form_nth(heap, a, trunc(form_value(heap, args[1]).num()) as i64);
             }
             if !arity.is_number() || (arity.num() != 1 && arity.num() != 2) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
@@ -4061,7 +4166,12 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
         // The generated target maps a nonchunked finite rest list. Vectors,
         // transducers, multiple sources and nested lazy inputs have different
         // demand/chunk semantics and remain explicit boundaries.
-        let input = args[1]; let kind = form_kind(heap, input);
+        // A map or set maps over its seq (its entries or members, one at a
+        // time as a list's, as the V8 build's unchunked map and set seqs).
+        let source = args[1]; let found = form_kind(heap, source);
+        let input = if found == node_kind::Map || found == node_kind::Set { form_sequence(heap, source, 0, true) } else { source };
+        if heap.fault != Fault.None { return Value.Undefined; }
+        let kind = form_kind(heap, input);
         if input.tag() > value_tag::Null && kind != node_kind::List && kind != node_kind::Concat { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
         let count = form_count(heap, input);
         if heap.fault != Fault.None { return Value.Undefined; }
@@ -4127,8 +4237,17 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     // not convert by ToNumber), as `+` does.
     if id == 1 && args.len == 1 { return binary_value(heap, opcode::Plus, args[0], number(1)); }
     if id == 3 && args.len == 1 {
-        let kind = form_kind(heap, args[0]); if kind == node_kind::Vector { return args[0]; }
+        let kind = form_kind(heap, args[0]);
+        // A map entry is an ordinary vector again (light-cljs-918).
+        if kind == node_kind::Vector { if node(heap, args[0].id()).length != vector_flavor::MapEntry { return args[0]; } var plain = node(heap, args[0].id()); plain.length = vector_flavor::Plain; plain.origin = -1; return allocate(heap, plain); }
         if kind == node_kind::List || kind == node_kind::Concat { let n = node(heap, args[0].id()); return form_collection(heap, node_kind::Vector, run(heap, n.start, n.count)); }
+        // A map's entries, a set's members (in traversal order, as the
+        // V8 build's `into` takes them) or a string's units (light-cljs-918).
+        if kind == node_kind::Map || kind == node_kind::Set || form_value(heap, args[0]).is_string() {
+            var items: Value[>..] = [];
+            if !seq_items(heap, args[0], items) { return Value.Undefined; }
+            return form_collection(heap, node_kind::Vector, items);
+        }
     }
     if id == 4 && args.len == 2 {
         var out = args[0]; let count = form_count(heap, args[1]);

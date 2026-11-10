@@ -354,7 +354,7 @@ fn direct_update_boundaries() {
 }
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
-    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
+    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(plain_form_operations)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
     direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
@@ -656,4 +656,159 @@ thread_fn adversarial_forms() {
     var enough = bridge::Control { depth: 257 }; assert(bridge::validate(deep, enough));
     var nodes = bridge::Control { nodes: 256, depth: 257 }; assert(!bridge::validate(deep, nodes) && nodes.error == bridge::Error.Nodes);
     print("adversarial forms: corrupt fields/UTF8 spans preserve committed heap; width=256/depth=257/text/node budgets independent; lone surrogate legal");
+}
+
+// light-cljs-918: the plain form operations (form_ops.goose), each on the
+// operands cljs.core gives it and its errors: a HostEffect fault, which
+// core_error words (the compiler tests compare that wording and the
+// results with the V8 build), a strict operation's TypeError, or a
+// NativeBoundary for an operand this runtime does not implement.
+fn holds(heap: source::Heap&, which: i64, v: source::Value) -> bool { let r = source::form_op(heap, which, [v]); assert(heap.fault == source::Fault.None && r.is_bool()); return r.flag(); }
+fn raises(heap: source::Heap&, which: i64, args: const source::Value[:], fault: source::Fault) { source::form_op(heap, which, args); assert(heap.fault == fault); heap.fault = source::Fault.None; }
+fn spelled(heap: source::Heap&, v: source::Value, text: const u8[:]) -> bool { return v.is_string() && source::same_text(heap, v, source::text(heap, text)); }
+fn named_as(heap: source::Heap&, v: source::Value, kind: i64, ns: const u8[:], name: const u8[:]) -> bool {
+    if source::form_kind(heap, v) != kind { return false; }
+    let n = source::node(heap, v.id());
+    return spelled(heap, n.value, name) && (if ns.len == 0 { n.namespace_value.is_null() } else { spelled(heap, n.namespace_value, ns) });
+}
+thread_fn plain_form_operations() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let zero = source::number(0); let one = source::number(1); let two = source::number(2);
+    let a = source::form_op(heap, form_op::Keyword, [source::nil(), source::text(heap, "a")]); let b = source::form_op(heap, form_op::Keyword, [source::nil(), source::text(heap, "b")]);
+    let sym = source::form_op(heap, form_op::Symbol, [source::text(heap, "n"), source::text(heap, "s")]);
+    let vector = source::form_collection(heap, node_kind::Vector, [one, two]); let list = source::form_collection(heap, node_kind::List, [one, two]);
+    let map = source::form_collection(heap, node_kind::Map, [a, one, b, two]); let set = source::form_collection(heap, node_kind::Set, [one, two]);
+    let map1 = source::form_collection(heap, node_kind::Map, [a, one]);
+    let empty_list = source::form_collection(heap, node_kind::List, []); let empty_vector = source::form_collection(heap, node_kind::Vector, []);
+    let object = source::allocate(heap, source::Node { kind: node_kind::Object });
+    let atom = source::allocate(heap, source::Node { kind: node_kind::Atom, value: one }); let volatile = source::allocate(heap, source::Node { kind: node_kind::Atom, value: one, length: 1 });
+    let lazy = source::allocate(heap, source::Node { kind: node_kind::LazySeq });
+    let hashed = source::form_ordered(heap, node_kind::Map, [a, one, b, two], true);
+    assert(heap.fault == source::Fault.None);
+
+    // A map's seq is map entries, in traversal order; a list is its own seq
+    // and its rest a list; a set's and a string's seqs are their items.
+    let entries = source::form_op(heap, form_op::CljSeq, [map]); let entry = source::form_op(heap, form_op::CljFirst, [map]);
+    assert(source::form_count(heap, entries) == 2 && source::form_equal(heap, entry, source::form_collection(heap, node_kind::Vector, [a, one])) && source::form_equal(heap, source::form_nth(heap, entries, 1), source::form_collection(heap, node_kind::Vector, [b, two])));
+    assert(source::form_count(heap, source::form_op(heap, form_op::CljRest, [map])) == 1 && source::form_op(heap, form_op::CljNext, [map1]).is_null() && source::form_op(heap, form_op::CljFirst, [set]).num() == 1);
+    assert(source::form_op(heap, form_op::CljSeq, [list]).id() == list.id() && source::form_kind(heap, source::form_op(heap, form_op::CljRest, [list])) == node_kind::List);
+    let chars = source::form_op(heap, form_op::CljSeq, [source::text(heap, "ab")]); assert(source::form_count(heap, chars) == 2 && spelled(heap, source::form_nth(heap, chars, 1), "b"));
+    assert(heap.fault == source::Fault.None);
+
+    // Predicates, a lazy sequence's without realizing it.
+    assert(holds(heap, form_op::CljIsList, list) && !holds(heap, form_op::CljIsList, vector) && !holds(heap, form_op::CljIsList, entries) && !holds(heap, form_op::CljIsList, lazy));
+    assert(holds(heap, form_op::CljIsSeq, list) && holds(heap, form_op::CljIsSeq, entries) && holds(heap, form_op::CljIsSeq, lazy) && !holds(heap, form_op::CljIsSeq, vector) && !holds(heap, form_op::CljIsSeq, source::nil()));
+    assert(holds(heap, form_op::CljIsSequential, vector) && holds(heap, form_op::CljIsSequential, lazy) && !holds(heap, form_op::CljIsSequential, map) && !holds(heap, form_op::CljIsSequential, set));
+    assert(holds(heap, form_op::CljIsColl, map) && holds(heap, form_op::CljIsColl, set) && holds(heap, form_op::CljIsColl, entries) && !holds(heap, form_op::CljIsColl, one) && !holds(heap, form_op::CljIsColl, a) && !holds(heap, form_op::CljIsColl, object));
+    assert(holds(heap, form_op::CljIsVector, vector) && holds(heap, form_op::CljIsVector, entry) && !holds(heap, form_op::CljIsVector, list));
+    assert(holds(heap, form_op::CljIsMapEntry, entry) && !holds(heap, form_op::CljIsMapEntry, vector) && !holds(heap, form_op::CljIsMapEntry, map));
+    assert(holds(heap, form_op::CljIsEditable, vector) && !holds(heap, form_op::CljIsEditable, entry) && holds(heap, form_op::CljIsEditable, map) && holds(heap, form_op::CljIsEditable, set) && !holds(heap, form_op::CljIsEditable, list));
+    assert(holds(heap, form_op::CljIsZero, zero) && holds(heap, form_op::CljIsZero, source::number(-0.0)) && !holds(heap, form_op::CljIsZero, one) && !holds(heap, form_op::CljIsZero, source::nil()));
+    assert(holds(heap, form_op::CljIsFalse, source::boolean(false)) && !holds(heap, form_op::CljIsFalse, source::nil()) && !holds(heap, form_op::CljIsFalse, zero));
+    assert(holds(heap, form_op::CljIsAtom, atom) && !holds(heap, form_op::CljIsAtom, volatile) && !holds(heap, form_op::CljIsAtom, map) && !holds(heap, form_op::CljIsAtom, object));
+    assert(holds(heap, form_op::IsArrayMap, map) && holds(heap, form_op::IsArrayMap, set) && !holds(heap, form_op::IsArrayMap, hashed) && !holds(heap, form_op::IsArrayMap, vector));
+    assert(!holds(heap, form_op::HasHostKeys, map) && holds(heap, form_op::HasHostKeys, source::form_collection(heap, node_kind::Map, [object, one])) && holds(heap, form_op::HasHostKeys, source::form_collection(heap, node_kind::Set, [atom])));
+    let reduced = source::form_op(heap, form_op::CljReduced, [vector]);
+    assert(holds(heap, form_op::CljIsReduced, reduced) && !holds(heap, form_op::CljIsReduced, vector) && source::form_op(heap, form_op::CljUnreduced, [reduced]).id() == vector.id() && source::form_op(heap, form_op::CljUnreduced, [two]).num() == 2);
+    // Every other form operation of a lazy sequence stays a boundary.
+    raises(heap, form_op::CljCons, [one, lazy], source::Fault.NativeBoundary);
+    // The operations that only wrap, return or refuse an operand take a
+    // lazy sequence as it is; formKind names a reduced marker.
+    assert(holds(heap, form_op::CljIsReduced, source::form_op(heap, form_op::CljReduced, [lazy])) && source::form_op(heap, form_op::CljUnreduced, [lazy]).id() == lazy.id() && source::form_op(heap, form_op::CljKeyword, [lazy]).is_null());
+    raises(heap, form_op::Name, [lazy], source::Fault.TypeError); raises(heap, form_op::CljSymbol, [lazy], source::Fault.HostEffect);
+    assert(spelled(heap, source::form_op(heap, form_op::Kind, [reduced]), "reduced"));
+    // A map entry's index is exactly 0 or 1; its call takes a fallback
+    // and one or two arguments.
+    assert(source::form_op(heap, form_op::CljNthOr, [entry, source::number(0.5), b]).id() == b.id() && source::form_op(heap, form_op::CljInvoke, [entry, two, b, two]).id() == b.id() && source::form_op(heap, form_op::CljInvoke, [entry, zero, b, one]).id() == a.id());
+    raises(heap, form_op::CljInvoke, [entry, source::number(0.5), source::nil(), one], source::Fault.HostEffect); raises(heap, form_op::CljInvoke, [entry, a, source::nil(), one], source::Fault.HostEffect);
+    raises(heap, form_op::CljInvoke, [entry, one, source::nil(), source::number(3)], source::Fault.HostEffect);
+
+    // Names: a keyword's or symbol's; the constructors as cljs.core's.
+    assert(spelled(heap, source::form_op(heap, form_op::Name, [sym]), "s") && spelled(heap, source::form_op(heap, form_op::Namespace, [sym]), "n") && source::form_op(heap, form_op::Namespace, [a]).is_null());
+    raises(heap, form_op::Name, [one], source::Fault.TypeError); raises(heap, form_op::Namespace, [list], source::Fault.TypeError);
+    assert(named_as(heap, source::form_op(heap, form_op::CljKeyword, [source::text(heap, "x/y")]), node_kind::Keyword, "x", "y") && named_as(heap, source::form_op(heap, form_op::CljKeyword, [source::text(heap, "/")]), node_kind::Keyword, "", "/"));
+    assert(named_as(heap, source::form_op(heap, form_op::CljKeyword, [sym]), node_kind::Keyword, "n", "s") && source::form_op(heap, form_op::CljKeyword, [a]).id() == a.id() && source::form_op(heap, form_op::CljKeyword, [one]).is_null());
+    assert(named_as(heap, source::form_op(heap, form_op::CljKeywordNs, [a, sym]), node_kind::Keyword, "a", "s") && named_as(heap, source::form_op(heap, form_op::CljKeywordNs, [source::nil(), source::text(heap, "c")]), node_kind::Keyword, "", "c"));
+    raises(heap, form_op::CljKeywordNs, [one, source::text(heap, "c")], source::Fault.HostEffect); raises(heap, form_op::CljKeyword, [source::text(heap, "a/b/c")], source::Fault.NativeBoundary);
+    assert(named_as(heap, source::form_op(heap, form_op::CljSymbol, [source::text(heap, "x/y/z")]), node_kind::Symbol, "x", "y/z") && named_as(heap, source::form_op(heap, form_op::CljSymbol, [source::text(heap, "/")]), node_kind::Symbol, "", "/"));
+    let qualified = source::form_op(heap, form_op::CljKeywordNs, [source::text(heap, "q"), source::text(heap, "r")]);
+    assert(named_as(heap, source::form_op(heap, form_op::CljSymbol, [qualified]), node_kind::Symbol, "q", "r") && source::form_op(heap, form_op::CljSymbol, [sym]).id() == sym.id());
+    raises(heap, form_op::CljSymbol, [one], source::Fault.HostEffect); raises(heap, form_op::CljSymbol, [source::text(heap, "/a")], source::Fault.NativeBoundary);
+    assert(named_as(heap, source::form_op(heap, form_op::CljSymbolNs, [source::nil(), source::text(heap, "c")]), node_kind::Symbol, "", "c"));
+    raises(heap, form_op::CljSymbolNs, [a, source::text(heap, "c")], source::Fault.HostEffect); raises(heap, form_op::CljSymbolNs, [source::nil(), one], source::Fault.HostEffect);
+
+    // cons, cljList and cljDrop.
+    let consed = source::form_op(heap, form_op::CljCons, [zero, vector]);
+    assert(source::form_kind(heap, consed) == node_kind::List && source::form_count(heap, consed) == 3 && source::form_nth(heap, consed, 0).num() == 0 && source::form_nth(heap, consed, 2).num() == 2);
+    assert(source::form_count(heap, source::form_op(heap, form_op::CljCons, [zero, source::nil()])) == 1 && holds(heap, form_op::CljIsMapEntry, source::form_nth(heap, source::form_op(heap, form_op::CljCons, [zero, map]), 1)));
+    // A cons keeps its list or sequence as its rest and is no stack; one
+    // onto nil is a list; a conj onto a cons is a cons whose rest is it.
+    let onto = source::form_op(heap, form_op::CljCons, [zero, list]);
+    assert(source::form_op(heap, form_op::CljRest, [onto]).id() == list.id() && source::form_op(heap, form_op::CljNext, [onto]).id() == list.id() && holds(heap, form_op::CljIsList, onto));
+    assert(source::form_kind(heap, source::form_op(heap, form_op::CljRest, [consed])) == node_kind::Concat && source::form_op(heap, form_op::CljPeek, [source::form_op(heap, form_op::CljCons, [zero, source::nil()])]).num() == 0);
+    assert(source::form_op(heap, form_op::CljRest, [source::form_conj(heap, onto, two)]).id() == onto.id());
+    raises(heap, form_op::CljPeek, [consed], source::Fault.HostEffect); raises(heap, form_op::CljPop, [onto], source::Fault.HostEffect);
+    // A keyword cljs.core/keyword makes is fresh: equal, not identical.
+    let fresh = source::form_op(heap, form_op::CljKeyword, [source::text(heap, "a")]);
+    assert(source::form_equal(heap, fresh, a) && !source::same_value(heap, fresh, a) && !source::same_value(heap, fresh, source::form_op(heap, form_op::CljKeyword, [source::text(heap, "a")])) && source::same_value(heap, a, source::form_op(heap, form_op::Keyword, [source::nil(), source::text(heap, "a")])));
+    raises(heap, form_op::CljCons, [zero, one], source::Fault.HostEffect); raises(heap, form_op::CljCons, [zero, object], source::Fault.NativeBoundary);
+    assert(source::form_equal(heap, source::form_op(heap, form_op::CljList, [set]), list) && source::form_kind(heap, source::form_op(heap, form_op::CljList, [source::nil()])) == node_kind::List);
+    let dropped = source::form_op(heap, form_op::CljDrop, [vector, one]);
+    assert(source::form_kind(heap, dropped) == node_kind::Concat && source::form_count(heap, dropped) == 1 && source::form_nth(heap, dropped, 0).num() == 2);
+    assert(source::form_count(heap, source::form_op(heap, form_op::CljDrop, [vector, source::number(5)])) == 0 && source::form_op(heap, form_op::CljDrop, [list, one]).is_null());
+    raises(heap, form_op::CljDrop, [vector, zero], source::Fault.TypeError);
+
+    // peek and pop: a vector's end, a list's front; metadata stays.
+    let marked = source::form_op(heap, form_op::WithMeta, [vector, map1]);
+    assert(source::form_op(heap, form_op::CljPeek, [vector]).num() == 2 && source::form_op(heap, form_op::CljPeek, [list]).num() == 1 && source::form_op(heap, form_op::CljPeek, [source::nil()]).is_null() && source::form_op(heap, form_op::CljPeek, [empty_vector]).is_null());
+    let popped = source::form_op(heap, form_op::CljPop, [marked]);
+    assert(source::form_count(heap, popped) == 1 && source::form_op(heap, form_op::CljMeta, [popped]).id() == map1.id() && source::form_op(heap, form_op::CljPop, [source::nil()]).is_null());
+    let tail = source::form_op(heap, form_op::CljPop, [list]); assert(source::form_kind(heap, tail) == node_kind::List && source::form_nth(heap, tail, 0).num() == 2);
+    assert(!holds(heap, form_op::CljIsMapEntry, source::form_op(heap, form_op::CljPop, [entry])));
+    raises(heap, form_op::CljPop, [empty_vector], source::Fault.HostEffect); raises(heap, form_op::CljPop, [empty_list], source::Fault.HostEffect);
+    raises(heap, form_op::CljPeek, [one], source::Fault.HostEffect); raises(heap, form_op::CljPop, [map], source::Fault.HostEffect);
+
+    // dissoc and disj: absent keys give the collection itself; metadata and
+    // traversal order stay.
+    let removed = source::form_op(heap, form_op::CljDissoc, [map, a]);
+    assert(source::form_count(heap, removed) == 1 && source::form_get(heap, removed, b, source::nil()).num() == 2 && source::form_op(heap, form_op::CljDissoc, [map, source::text(heap, "z")]).id() == map.id() && source::form_op(heap, form_op::CljDissoc, [source::nil(), a]).is_null());
+    assert(order_of(heap, source::form_op(heap, form_op::Dissoc, [hashed, a])) == map_order::Hash && source::form_count(heap, source::form_op(heap, form_op::CljDisj, [set, one])) == 1 && source::form_op(heap, form_op::Disj, [set, zero]).id() == set.id());
+    // A positional map's or set's keys equal once read all go.
+    let doubled = source::form_op(heap, form_op::CljDissoc, [source::form_collection(heap, node_kind::Map, [one, a, one, b, two, a]), one]);
+    assert(source::form_count(heap, doubled) == 1 && !source::form_contains(heap, doubled, one) && source::form_count(heap, source::form_op(heap, form_op::CljDisj, [source::form_collection(heap, node_kind::Set, [one, one, two]), one])) == 1);
+    raises(heap, form_op::CljDissoc, [vector, one], source::Fault.HostEffect); raises(heap, form_op::CljDisj, [map, one], source::Fault.HostEffect);
+    raises(heap, form_op::Dissoc, [source::nil(), a], source::Fault.TypeError); raises(heap, form_op::Disj, [map, one], source::Fault.TypeError);
+
+    // formEmpty, formKeys and formLiteralSet.
+    let emptied = source::form_op(heap, form_op::Empty, [hashed]); assert(source::form_kind(heap, emptied) == node_kind::Map && source::form_count(heap, emptied) == 0 && order_of(heap, emptied) == map_order::Hash);
+    assert(source::form_equal(heap, source::form_op(heap, form_op::Keys, [map]), source::form_collection(heap, node_kind::Vector, [a, b])) && source::form_count(heap, source::form_op(heap, form_op::LiteralSet, [vector])) == 2);
+    assert(source::form_kind(heap, source::form_op(heap, form_op::LiteralSet, [empty_vector])) == node_kind::Set);
+    raises(heap, form_op::Empty, [vector], source::Fault.TypeError); raises(heap, form_op::Keys, [list], source::Fault.TypeError); raises(heap, form_op::LiteralSet, [map], source::Fault.TypeError);
+
+    // with-meta in macro code: nil on a collection without metadata is the
+    // collection; a map entry's copy is an ordinary vector.
+    assert(source::form_op(heap, form_op::CljWithExportedMeta, [vector, source::nil()]).id() == vector.id());
+    let cleared = source::form_op(heap, form_op::CljWithExportedMeta, [marked, source::nil()]); assert(cleared.id() != marked.id() && source::form_op(heap, form_op::CljMeta, [cleared]).is_null());
+    let plain = source::form_op(heap, form_op::CljWithExportedMeta, [entry, map1]); assert(!holds(heap, form_op::CljIsMapEntry, plain) && source::form_op(heap, form_op::CljMeta, [plain]).id() == map1.id());
+    assert(source::form_op(heap, form_op::CljWithExportedMeta, [sym, source::nil()]).id() != sym.id());
+    raises(heap, form_op::CljWithExportedMeta, [a, map1], source::Fault.TypeError); raises(heap, form_op::CljWithExportedMeta, [vector, one], source::Fault.TypeError);
+
+    // hash as the V8 build's (signed); an identity hash; compare.
+    assert(source::form_op(heap, form_op::Hash, [a]).num() == -2123407586 && source::form_op(heap, form_op::Hash, [source::text(heap, "a")]).num() == 1455541201 && source::form_op(heap, form_op::Hash, [vector]).num() == 1185709346);
+    assert(source::form_op(heap, form_op::Hash, [source::form_op(heap, form_op::CljFirst, [map1])]).num() == -325413422 && source::form_op(heap, form_op::Hash, [source::nil()]).num() == 0);
+    raises(heap, form_op::Hash, [object], source::Fault.NativeBoundary);
+    // An image row's identity hash is stable; a job row's fails by name.
+    // (The rows so far become this heap's image, as a worker's are.)
+    heap.image = source::tops(heap);
+    let p = source::object(source::object_prototype_row()); let f = source::object(source::function_prototype_row());
+    assert(p.id() < heap.image.nodes && f.id() < heap.image.nodes && source::form_op(heap, form_op::IdentityHash, [one]).num() == 0 && source::form_op(heap, form_op::IdentityHash, [p]).num() == source::form_op(heap, form_op::IdentityHash, [p]).num() && source::form_op(heap, form_op::IdentityHash, [p]).num() != source::form_op(heap, form_op::IdentityHash, [f]).num());
+    raises(heap, form_op::IdentityHash, [source::form_collection(heap, node_kind::Vector, [one])], source::Fault.NativeBoundary);
+    assert(source::form_op(heap, form_op::Compare, [one, two]).num() == -1 && source::form_op(heap, form_op::Compare, [two, one]).num() == 1 && source::form_op(heap, form_op::Compare, [one, one]).num() == 0);
+    assert(source::form_op(heap, form_op::Compare, [source::text(heap, "a"), source::text(heap, "b")]).num() == -1 && source::form_op(heap, form_op::Compare, [a, b]).num() == -1 && source::form_op(heap, form_op::Compare, [sym, sym]).num() == 0);
+    assert(source::form_op(heap, form_op::Compare, [source::nil(), one]).num() == -1 && source::form_op(heap, form_op::Compare, [one, source::nil()]).num() == 1 && source::form_op(heap, form_op::Compare, [source::boolean(true), source::boolean(false)]).num() == 1);
+    assert(source::form_op(heap, form_op::Compare, [vector, source::form_collection(heap, node_kind::Vector, [one, source::number(3)])]).num() == -1 && source::form_op(heap, form_op::Compare, [vector, empty_vector]).num() == 1);
+    raises(heap, form_op::Compare, [a, one], source::Fault.HostEffect); raises(heap, form_op::Compare, [one, a], source::Fault.HostEffect); raises(heap, form_op::Compare, [a, sym], source::Fault.HostEffect); raises(heap, form_op::Compare, [list, empty_list], source::Fault.HostEffect);
+    assert(heap.fault == source::Fault.None);
+    print("plain form operations: predicates, names, cons, peek/pop, dissoc/disj, map entries, hash and compare passed");
 }

@@ -151,10 +151,12 @@ fn validate_graph(g: const Graph&, c: Control&, sets: i64[>..]&, record: bool) -
         if n.metadata >= 0 && g.nodes[n.metadata].tag != form_tag::Map { return reject(c, Error.Unsupported); }
         if collection(n.tag) && (!range(n.start, n.count, g.children.len) || n.tag == form_tag::Map && n.count % 2 != 0) { return reject(c); }
         // A collection's number is 0, or inside the session 1 for a
-        // hash-ordered map or set (map_order::Hash) or a realized integer
-        // range, a list (seq_flavor::IntegerRange; light-cljs-877), or 2 for
-        // the realm's empty collection of its kind (realm_empty).
-        if collection(n.tag) && n.number != 0 && !(n.number == 1 && c.cells && n.tag != form_tag::Vector) && !(realm_empty(n) && c.cells) { return reject(c); }
+        // hash-ordered map or set (map_order::Hash), a realized integer
+        // range, a list (seq_flavor::IntegerRange; light-cljs-877), or a map
+        // entry, a vector of two items (vector_flavor::MapEntry;
+        // light-cljs-918), or 2 for the realm's empty collection of its kind
+        // (realm_empty).
+        if collection(n.tag) && n.number != 0 && !(n.number == 1 && c.cells && (n.tag != form_tag::Vector || n.count == 2)) && !(realm_empty(n) && c.cells) { return reject(c); }
     }
     // The omitted nodes' own polls and their names' units.
     if !poll(c, o.nodes + o.names) { return false; }
@@ -435,7 +437,7 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     for n, i in g.nodes {
         var node = source::Node { kind: node_kind::Scalar, origin: n.origin, source: if n.source < 0 { source::no_row() } else { (sources + n.source) as u32 }, span_start: n.span_start as u32, span_end: n.span_end as u32 };
         if n.metadata >= 0 { node.metadata = imported_link(heap, g, base, n.metadata, c); }
-        if collection(n.tag) { node.kind = heap_kind(n.tag); node.start = (children + n.start) as u32; node.count = n.count as u32; if m.start.len > 0 && m.start[i] >= 0 { node.start = (children + g.children.len + m.start[i]) as u32; node.count = m.count[i] as u32; } if c.cells && n.number == 1 && n.tag == form_tag::List { node.kind = node_kind::Concat; node.length = seq_flavor::IntegerRange; } else if c.cells && n.number == 1 || !c.cells && (decoded_hash_ordered(n) || n.tag == form_tag::Set && node.count > 8) { node.length = map_order::Hash; } }
+        if collection(n.tag) { node.kind = heap_kind(n.tag); node.start = (children + n.start) as u32; node.count = n.count as u32; if m.start.len > 0 && m.start[i] >= 0 { node.start = (children + g.children.len + m.start[i]) as u32; node.count = m.count[i] as u32; } if c.cells && n.number == 1 && n.tag == form_tag::List { node.kind = node_kind::Concat; node.length = seq_flavor::IntegerRange; } else if c.cells && n.number == 1 && n.tag == form_tag::Vector { node.length = vector_flavor::MapEntry; } else if c.cells && n.number == 1 || !c.cells && (decoded_hash_ordered(n) || n.tag == form_tag::Set && node.count > 8) { node.length = map_order::Hash; } }
         else if n.tag == form_tag::Cell { node = source::Node { kind: node_kind::Cell, function: n.number as u32, length: n.count as u32 }; }
         else if named(n.tag) {
             node.kind = heap_kind(n.tag); node.value = source::import_text(heap, g.units[n.start..(n.start + n.count)]);
@@ -516,9 +518,10 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
             if node.kind >= node_kind::List && node.kind <= node_kind::Set || node.kind == node_kind::Concat {
                 n.tag = tag_of(node.kind); n.start = g.children.len; n.count = node.count;
                 // A hash-ordered map or set keeps its order, an integer
-                // range its flavor, in a cell value or publication; the
+                // range or a map entry its flavor, in a cell value or
+                // publication; the
                 // compiler's forms have neither.
-                if c.cells && (source::hash_ordered(node) || source::integer_range(node)) { n.number = 1; }
+                if c.cells && (source::hash_ordered(node) || source::integer_range(node) || node.kind == node_kind::Vector && node.length == vector_flavor::MapEntry) { n.number = 1; }
                 if c.cells && v.is_object() && heap.global.is_object() && source::empty_form(v.id()) { n.number = 2; }
                 if !poll(c, node.count) { return false; }
                 if !range(node.start, node.count, heap.values.len) { return reject(c); }
