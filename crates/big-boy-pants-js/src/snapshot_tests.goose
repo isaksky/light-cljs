@@ -3009,6 +3009,9 @@ thread_fn struct_kinds() {
     let mutable = source::new_struct(heap, [mtype, source::number(4), source::number(5)]);
     let slot = source::allocate(heap, source::Node { kind: node_kind::InitializerSlot, start: heap.values.len as u32, count: 1, length: 2, initialized: true, value: source::nil(), namespace_value: source::text(heap, "n") }); source::add_values(heap, [record]);
     assert(heap.fault == source::Fault.None);
+    // A declared type (rt.nativeType's) is one whose record copies take its
+    // name's current definition: the flag restores with it.
+    { let declared .= source::node_mut(heap, rtype.id()); declared.initialized = true; }
     source::set_slot(heap, source::node(heap, mutable.id()).start + 1, source::number(6));
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: record }, snapshot::Binding { id: 1, generation: 1, value: mutable }, snapshot::Binding { id: 2, generation: 1, value: slot }], c); assert(c.error == snapshot::Error.None);
     {
@@ -3017,6 +3020,7 @@ thread_fn struct_kinds() {
         let a = source::form_op(target, form_op::Keyword, [source::nil(), source::text(target, "a")]); let f = source::form_op(target, form_op::Keyword, [source::nil(), source::text(target, "e")]);
         let r = roots[0].value;
         assert(source::form_get(target, r, a, source::nil()).num() == 1 && source::form_get(target, r, f, source::nil()).num() == 3 && source::form_count(target, r) == 3 && source::record_value(target, r));
+        assert(source::node(target, source::node(target, r.id()).value.id()).initialized && !source::node(target, source::node(target, roots[1].value.id()).value.id()).initialized);
         assert(source::struct_field(target, roots[1].value, source::text(target, "b")).num() == 6 && !source::node(target, roots[1].value.id()).immutable);
         let s = source::node(target, roots[2].value.id());
         assert(s.kind == node_kind::InitializerSlot && s.length == 2 && s.initialized && source::slot(target, s.start) == r && target.fault == source::Fault.None);

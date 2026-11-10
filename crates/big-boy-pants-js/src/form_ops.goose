@@ -920,13 +920,41 @@ fn ext_index(heap: Heap&, ext: Value, k: Value) -> i64 {
     for i in (e.count / 2) { if form_equal(heap, slot(heap, e.start + i * 2), k) { return i; } if heap.fault != Fault.None { return -1; } }
     return -1;
 }
+// The type a copy of a record of type `ty` takes, the V8 build's
+// recordCopy `Type.currentConstructor?.() ?? Type`: a type a declaration
+// made (native_type; its node `initialized`) copies to the current
+// definition of its name, which is the job's compiler root of that name
+// when the job ran a declaration of it (realm.goose product_target), and
+// otherwise ty itself, the definition the job reads. A root of that name
+// that is no struct type is a TypeError, as `new` of it is.
+fn copy_type(heap: Heap&, ty: Value) -> Value {
+    if !node(heap, ty.id()).initialized || !heap.global.is_object() { return ty; }
+    let roots, held = own_property(heap, heap.global, key_named(heap, "__lightCompilerRoots"));
+    if heap.fault != Fault.None || !held || !roots.is_object() { return ty; }
+    let current, found = own_property(heap, roots, node(heap, ty.id()).value);
+    if heap.fault != Fault.None || !found { return ty; }
+    let c = form_value(heap, current);
+    if form_kind(heap, c) != node_kind::StructType { if heap.fault == Fault.None { heap.fault = Fault.TypeError; } return Value.Undefined; }
+    return c;
+}
+// A copy of record x with field values `fields`, metadata `meta` and
+// extension map `ext` (recordCopy): of its own type, or of its name's
+// current definition, which takes them by position as `new Constructor(...
+// fields, meta, ext)` does (new_struct).
+fn record_copy(heap: Heap&, x: Value, fields: const Value[:], meta: Value, ext: Value) -> Value {
+    let own = node(heap, x.id()).value; let ty = copy_type(heap, own);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    if ty == own { return make_struct(heap, ty, fields, meta, ext); }
+    var args: Value[>..] = [ty]; args.append(fields); args.push(if meta.is_object() { meta } else { nil() }); args.push(ext);
+    return new_struct(heap, args);
+}
 // A record like x (its type and metadata) with field i set to v (i < 0:
 // none) and extension map ext.
 fn record_like(heap: Heap&, x: Value, i: i64, v: Value, ext: Value) -> Value {
     let n = node(heap, x.id());
     var fields: Value[>..] = []; fields.append(run(heap, n.start, n.count));
     if i >= 0 { fields[i] = v; }
-    return make_struct(heap, n.value, fields, n.metadata, ext);
+    return record_copy(heap, x, fields, n.metadata, ext);
 }
 // `(assoc r k v)` (the runtime's IAssociative/-assoc): a new record with
 // that field, or with that extension entry.
@@ -984,7 +1012,8 @@ fn record_with_meta(heap: Heap&, x: Value, m: Value) -> Value {
     let meta = record_map(heap, m);
     if heap.fault != Fault.None { return Value.Undefined; }
     let n = node(heap, x.id());
-    return make_struct(heap, n.value, run(heap, n.start, n.count), meta, n.namespace_value);
+    var fields: Value[>..] = []; fields.append(run(heap, n.start, n.count));
+    return record_copy(heap, x, fields, meta, n.namespace_value);
 }
 // `=` of two structs (form.rs equality): keyed ones by type name and key
 // value; records by type identity, fields and extension maps; a deftype
@@ -1008,8 +1037,12 @@ recursive fn struct_hash(heap: Heap&, x: Value, depth: i64) -> u32, bool {
     // The sum takes the entries in any order: the fields, then the
     // extension map's run.
     var sum: u32 = 0;
+    // Each name is charged before its hash scans it, as form_hash charges
+    // a keyword's.
     for i in n.count {
-        let k = hash_named(heap, slot(heap, t.start + i), nil()) + 2654435769;
+        let name = slot(heap, t.start + i);
+        if !charge(heap, str_len(heap, name)) { return 0, false; }
+        let k = hash_named(heap, name, nil()) + 2654435769;
         let v, ok = form_hash(heap, slot(heap, n.start + i), depth + 1); if !ok { return 0, false; }
         sum = sum + (k ^ v);
     }
@@ -1021,6 +1054,7 @@ recursive fn struct_hash(heap: Heap&, x: Value, depth: i64) -> u32, bool {
             sum = sum + (k ^ v);
         }
     }
+    if !charge(heap, str_len(heap, t.value)) { return 0, false; }
     return sum ^ string_hash(heap, t.value), true;
 }
 // A struct's JavaScript own property `k` (form.rs struct_own_property): a
@@ -1120,7 +1154,10 @@ fn native_type(job: Job&, b: Builtin, args: const Value[:]) -> Value {
     if !specs.is_object() || node(heap, specs.id()).kind != node_kind::Array || form_kind(heap, ty) != node_kind::StructType { return unsupported_step(job, b, "operands the emitter does not make"); }
     if node(heap, specs.id()).length != 0 { return unsupported_step(job, b, "a type with protocol or Object methods (protocol tables, light-cljs-922)"); }
     if truthy(heap, arg(args, 5)) { return unsupported_step(job, b, "a type whose instances are JavaScript objects (a record with mutable fields or a raw body)"); }
-    return allocate(heap, node(heap, ty.id()));
+    // Declared: a copy of its record takes its name's current definition
+    // (copy_type), as the V8 build's record has a currentConstructor.
+    var made = node(heap, ty.id()); made.initialized = true;
+    return allocate(heap, made);
 }
 // globalThis.__lightCompilerProductTarget(name) (light-cljs-920): where a
 // declaration a macro runs directly writes its products (a deftype's or

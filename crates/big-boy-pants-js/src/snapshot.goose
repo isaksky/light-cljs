@@ -798,12 +798,13 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // A struct type (light-cljs-920, source::node_kind::StructType) is
         // immutable and has a name, a run of field then member names
         // (strings, checked with its run below), a type_flavor and a key
-        // field inside it, never a Mutable one's; a struct has its type, a
+        // field inside it, never a Mutable one's, and is declared or not
+        // (initialized); a struct has its type, a
         // field per type field, and a record's extension map and metadata,
         // and is immutable unless its type is Mutable; an initializer slot
         // has a state, 0 to 3, its defined flag, its unit and name, and its
         // value as a run of one.
-        if n.kind == node_kind::StructType && (!n.value.is_string() || n.count % 2 != 0 || n.length > type_flavor::Mutable || n.function > n.count / 2 || n.function != 0 && n.length == type_flavor::Mutable || !n.namespace_value.is_null() || !n.metadata.is_undefined() || !n.proto.is_hole() || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.initialized || !n.immutable || n.non_extensible) { return reject(c, Error.Link); }
+        if n.kind == node_kind::StructType && (!n.value.is_string() || n.count % 2 != 0 || n.length > type_flavor::Mutable || n.function > n.count / 2 || n.function != 0 && n.length == type_flavor::Mutable || !n.namespace_value.is_null() || !n.metadata.is_undefined() || !n.proto.is_hole() || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.immutable || n.non_extensible) { return reject(c, Error.Link); }
         if n.kind == node_kind::Struct && !struct_row(s, n) { return reject(c, Error.Link); }
         if n.kind == node_kind::InitializerSlot && (n.length > 3 || n.count != 1 || !n.metadata.is_undefined() || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.function != 0 || !n.proto.is_hole() || n.immutable || n.non_extensible) { return reject(c, Error.Link); }
         // A reduced marker (light-cljs-918) holds its value and nothing else.

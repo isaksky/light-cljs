@@ -3647,6 +3647,23 @@ fn goose_compiler_runs_struct_type_operations() {
             "make(41)",
             Ok(42),
         ),
+        // A helper whose value is a record, a type or a vector holding a
+        // record, not a function: a callable publication carries it too.
+        (
+            "rt => { const R = __rt.structType('t/R', __rt.formVector('a'), true, null); return __rt.cljAssoc(__rt.structNew(R, 40), __rt.formKeyword(null, 'e'), 2); }",
+            "__rt.cljGet2(make, __rt.formKeyword(null, 'a')) + __rt.cljGet2(make, __rt.formKeyword(null, 'e'))",
+            Ok(42),
+        ),
+        (
+            "rt => __rt.structType('t/R', __rt.formVector('a'), true, null)",
+            "__rt.structTypeOf(__rt.structNew(make, 1)) === make ? __rt.cljGet2(__rt.structNew(make, 42), __rt.formKeyword(null, 'a')) : 0",
+            Ok(42),
+        ),
+        (
+            "rt => { const R = __rt.structType('t/R', __rt.formVector('a'), true, null); return __rt.formVector(__rt.structNew(R, 41), R); }",
+            "__rt.structTypeOf(__rt.cljFirst(make)) === __rt.cljNth(make, 1) ? __rt.cljGet2(__rt.cljFirst(make), __rt.formKeyword(null, 'a')) + 1 : 0",
+            Ok(42),
+        ),
         (
             "rt => { const M = __rt.mutableStructType('t/M', __rt.formVector('a'), false, null); const m = __rt.structNew(M, 1); return x => __rt.structField(m, 'a'); }",
             "make(1)",
@@ -3738,6 +3755,16 @@ fn goose_compiler_struct_types_match_v8() {
         "(defmacro m [] (do (deftype T [a b-c]) (let [t (T. 1 2) u (->T 3 4)] [(.-a t) (.-b-c t) (.-a u) (= t t) (= t (T. 1 2)) (identical? t t) (pr-str t) (str t) (pr-str [t])]))) (def x (m)) (def y (m))",
         "(defn make [v] (do (defrecord P [v]) (->P v))) (defmacro m [] (let [p (make 3) q (make 3)] [(:v p) (count p) (= p q) (pr-str p)])) (def x (m)) (def y (m))",
         "(defmacro m [n] (if (zero? n) 1 (reify Object (toString [_] \"s\")))) (def x (m 0)) (def y (m 0))",
+        // A copy of a record of an earlier definition takes the current one
+        // (the V8 build's currentConstructor), other operations its own.
+        "(defmacro m [] (do (defrecord R [x]) (let [r (->R 1) old (->R 5)] (defrecord R [x]) [(= (assoc r :x 2) (->R 2)) (= (assoc r :z 3) (assoc (->R 1) :z 3)) (= (with-meta r {:m 1}) (->R 1)) (= (dissoc r :missing) (->R 1)) (= (conj r [:x 7]) (->R 7)) (= r (->R 1)) (= r old) (instance? R (assoc r :x 2)) (instance? R r) (:x (assoc old :x 6)) (pr-str (assoc r :z 3))]))) (def x (m)) (def y (m))",
+        // instance? of a struct type.
+        "(defmacro m [] (do (defrecord R [a]) (deftype T [b]) [(instance? R (->R 1)) (instance? T (->R 1)) (instance? R (T. 1)) (instance? T (T. 1)) (instance? R 1) (instance? R nil) (instance? R {:a 1})])) (def x (m)) (def y (m))",
+        // A field named toString or valueOf takes part in String(x).
+        "(defmacro m [] (do (deftype T [toString]) (deftype U [valueOf]) [(try (str (T. 1)) (catch :default e :threw)) (try (pr-str (T. 1)) (catch :default e :threw)) (str (U. 1)) (pr-str (U. 1))])) (def x (m)) (def y (m))",
+        // A record in a process-wide atom, stored by one macro call and read
+        // by others, each its own job.
+        "(def store (atom nil)) (defmacro put [] (do (defrecord R [a]) (reset! store (with-meta (assoc (->R 1) :e 2) {:m 1})) nil)) (defmacro read-it [] (let [r @store] [(:a r) (:e r) (meta r) (count r) (= r @store) (identical? r @store) (pr-str r) (= (hash r) (hash @store))])) (put) (def x (read-it)) (def y (read-it))",
     ] {
         source_matches_v8(source, None);
     }

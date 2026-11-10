@@ -496,7 +496,10 @@ let node_kind::Reduced = 30;
 // the identity of a deftype or defrecord: value=its qualified name (a
 // string), start/count=a run of its field names then its fields' JavaScript
 // member names (count twice the fields, all strings), length=its
-// type_flavor, function=its key field's index plus one (0: no key field).
+// type_flavor, function=its key field's index plus one (0: no key field),
+// initialized=declared (a deftype's or defrecord's evaluation made it,
+// rt.nativeType: a copy of its record takes its name's current definition,
+// form_ops.goose copy_type).
 // A struct, an instance: value=its type, start/count=its field values in
 // the type's order, namespace_value=a record's extension map (a nonempty
 // form map) or Null, metadata=a record's metadata (Undefined: none);
@@ -6990,10 +6993,12 @@ fn start_function_has_instance(job: Job&, receiver: Value, v: Value, base: i64) 
 // otherwise `val(x) instanceof c`, as the instruction runs it
 // (instanceof_op), except that the step after GetMethod(c, @@hasInstance)
 // runs from a HasInstance frame's pc 1, so a built-in method's native frame
-// starts from the dispatch loop, not from this one. The runtime's other
-// cases, a multimethod type and a native struct type, are values this
-// runtime has none of: as the right operand of instanceof such a light-cljs
-// value fails by name.
+// starts from the dispatch loop, not from this one. A struct type
+// (light-cljs-920) answers whether x is a struct of that type
+// (`structTypeOf(x) === c`, as the Pants build's runtime does). The
+// runtime's other case, a multimethod type, is a value this runtime has
+// none of: as the right operand of instanceof such a light-cljs value
+// fails by name.
 fn start_is_instance(job: Job&, c: Value, x: Value, base: i64) {
     let heap .= job.heap;
     job.operands.resize(base);
@@ -7006,6 +7011,7 @@ fn start_is_instance(job: Job&, c: Value, x: Value, base: i64) {
     let v = form_value(heap, x);
     if !valid(heap, c) || heap.fault != Fault.None { return; }
     if !c.is_object() { type_error(job, "invalid 'instanceof' right operand"); return; }
+    if node(heap, c.id()).kind == node_kind::StructType { job.operands.push(boolean(struct_type_of(heap, v) == c)); return; }
     if !convertible(heap, c) { unsupported_detail(job, "instanceof: a light-cljs runtime value as the right operand"); return; }
     let m, getter = lookup(heap, c, Value.Symbol { s: well_known::HasInstance });
     if heap.fault != Fault.None { return; }

@@ -354,7 +354,7 @@ fn direct_update_boundaries() {
 }
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
-    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(plain_form_operations)); heap_program::join(thread_spawn(seal_operations)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
+    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(plain_form_operations)); heap_program::join(thread_spawn(seal_operations)); heap_program::join(thread_spawn(struct_hash_budget)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
     direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
@@ -839,4 +839,26 @@ thread_fn seal_operations() {
     assert(source::job_form_op(job, form_op::SealBindings, cell).num() == 1 && source::node(heap, cell.id()).length == binding_mode::Sealed && source::node(heap, cell.id()).immutable);
     assert(source::job_form_op(job, form_op::SealReachable, cell).num() == 0 && heap.fault == source::Fault.None);
     print("seal operations: frozen objects, kept forms and intrinsics, refused errors, charged walks and sealed cells passed");
+}
+// A record's hash charges its type's and its fields' names before it
+// scans them (light-cljs-920, form_ops.goose struct_hash), as a keyword's
+// hash charges its name: a budget short of them is a WorkLimit.
+thread_fn struct_hash_budget() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var long: u8[>..] = []; for i in 1024 { long.push(120); }
+    let name = source::text(heap, long[..]); let field = source::text(heap, long[..]);
+    let fields = source::form_collection(heap, node_kind::Vector, [field]);
+    let t = source::struct_type(heap, [name, fields, source::boolean(true), source::nil()], false);
+    let r = source::make_struct(heap, t, [source::number(1)], source::Value.Undefined, source::nil());
+    assert(heap.fault == source::Fault.None);
+    let start = heap.work;
+    let h, ok = source::form_hash(heap, r);
+    assert(ok && heap.fault == source::Fault.None && heap.work - start >= 2048);
+    let limit = heap.limits.work; heap.limits.work = heap.work + 100;
+    let again, charged = source::form_hash(heap, r);
+    assert(!charged && heap.fault == source::Fault.WorkLimit);
+    heap.fault = source::Fault.None; heap.limits.work = limit;
+    let same, done = source::form_hash(heap, r); assert(done && same == h);
+    print("struct hash budget: long type and field names charged before their hash passed");
 }

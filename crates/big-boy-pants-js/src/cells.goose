@@ -579,7 +579,9 @@ fn expected(job: Job&, v: Value) -> cells::Flat {
 // or delay `root` reaches through any link, the image's rows (below
 // `floor`) aside. "" or the reason the publication fails; `thunks` is set
 // when a pending delay became a cell, whose thunk only a callable
-// publication carries (a form graph names just the cell). The cells'
+// publication carries (a form graph names just the cell), or when the
+// value reaches a struct type or struct (light-cljs-920), which only a
+// callable publication carries (a form graph has no struct). The cells'
 // states go in `initial`, for store_initial once the publication's
 // places are known.
 //
@@ -599,6 +601,7 @@ fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: I
     while work.len > 0 {
         let o = work.pop(); let n = node(heap, o);
         if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(o); }
+        if n.kind == node_kind::StructType || n.kind == node_kind::Struct { thunks = true; }
         var edges: Value[>..] = [n.value, n.namespace_value, n.metadata, n.proto];
         if snapshot::has_values(n.kind) { for i in n.count { edges.push(slot(heap, n.start + i)); } }
         if snapshot::shaped(n) {

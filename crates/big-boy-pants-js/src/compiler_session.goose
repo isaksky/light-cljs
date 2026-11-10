@@ -488,7 +488,9 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
             var thunks = false; var initial: source::Initial[>..] = []; let refused = source::publish_cells(heap, function, base.nodes.len, thunks, initial);
             if refused.len > 0 { publish(Event { id: id, kind: 3, name: str("helper-", refused), address: address, timing: timing(work, started, sc) }); return; }
             // A value that reaches a pending delay goes as a callable
-            // publication, which carries the delay's thunk (light-cljs-808).
+            // publication, which carries the delay's thunk (light-cljs-808),
+            // and so does one that reaches a struct type or struct
+            // (light-cljs-920).
             let closure = is_closure || thunks;
             control.cells = true;
             var placed: i64[>..] = [];
