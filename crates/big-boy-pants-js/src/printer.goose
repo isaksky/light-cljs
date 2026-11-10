@@ -235,6 +235,23 @@ fn print_one(job: Job&, b: Builtin, p: Printer&, v: Value) -> bool {
     if kind == node_kind::Cell { unsupported_step(job, b, "printing a process-wide atom, volatile or delay"); return false; }
     if kind == node_kind::LazySeq { unsupported_step(job, b, "printing a lazy sequence"); return false; }
     if kind == node_kind::Reduced { unsupported_step(job, b, "printing a reduced marker"); return false; }
+    // A record prints as `#ns.R{:a 1, :b 2}`, its entries in record_pairs
+    // order, and a deftype instance as `#object[ns.T [object Object]]`, a JavaScript
+    // object's constructor name and its String (light-cljs-920; the
+    // runtime's record IPrintWithWriter and its object printer).
+    if kind == node_kind::Struct {
+        let t = node(heap, n.value.id()); let record = t.length == type_flavor::Record;
+        var head: u16[>..] = []; if record { head.push(35); } else { for c in "#object[" { head.push(c); } }
+        type_print_name(heap, t, head);
+        if record { head.push(123); } else { for c in " [object Object]]" { head.push(c); } }
+        if !room(job, p, head.len) { return false; }
+        p.out.append(head[..]);
+        if !record { return true; }
+        var items: Value[>..] = [];
+        if !record_pairs(heap, x, items) { return false; }
+        return print_open_scratch(job, p, PrintKind.Map, PrintClose.Brace, items);
+    }
+    if kind == node_kind::StructType { unsupported_step(job, b, "printing a struct type"); return false; }
     if kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction {
         // `#object[name]`, `Function` for a falsy name (*print-fn-bodies* off).
         let name = form_value(heap, data_get(job, b, x, "name"));
@@ -355,6 +372,9 @@ fn core_str(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             if !print_all(job, b, p, x) { return Value.Undefined; }
             continue;
         }
+        // A record's or deftype instance's toString is Object.prototype's
+        // (light-cljs-920), as in the V8 build.
+        if kind == node_kind::Struct { emit(p, "[object Object]"); continue; }
         if !convertible(heap, x) { return unsupported_step(job, b, "ToString of a light-cljs runtime value"); }
         if !emit_object_string(job, b, p, x) || !print_rest(job, b, p) { return Value.Undefined; }
     }

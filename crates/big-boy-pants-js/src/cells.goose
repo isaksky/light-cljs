@@ -211,6 +211,11 @@ fn form_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, functi
         // A bound function always has own `length` and `name` (light-cljs-852).
         else if n.kind == node_kind::BoundFunction { return "a bound function (a function with properties, a mutable JavaScript object)"; }
         else if n.kind == node_kind::LazySeq { return "an unrealized lazy sequence"; }
+        // A struct type or struct (light-cljs-920) goes by the callable
+        // transport, which carries any immutable row.
+        else if n.kind == node_kind::Struct && !n.immutable { return "a deftype instance with mutable fields"; }
+        else if n.kind == node_kind::StructType || n.kind == node_kind::Struct { functions = true; return ""; }
+        else if n.kind == node_kind::InitializerSlot { return "a compiler initializer slot"; }
         else if n.kind != node_kind::Symbol && n.kind != node_kind::Keyword && n.kind != node_kind::Scalar && n.kind != node_kind::Cell { return "a mutable JavaScript object"; }
     }
     return "";
@@ -238,7 +243,11 @@ fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, cl
         if n.kind == node_kind::BoundFunction { return "a bound function (a function with properties, a mutable JavaScript object)"; }
         // A reduced marker (light-cljs-918) is a job's own.
         if n.kind == node_kind::Reduced { return "a reduced marker"; }
-        if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind > node_kind::Concat && n.kind != node_kind::Atom && n.kind != node_kind::Cell && n.kind != node_kind::Delay { return "a mutable JavaScript object"; }
+        // A struct type and an immutable struct (light-cljs-920) are
+        // shareable; a Mutable type's struct and an initializer slot are not.
+        if n.kind == node_kind::Struct && !n.immutable { return "a deftype instance with mutable fields"; }
+        if n.kind == node_kind::InitializerSlot { return "a compiler initializer slot"; }
+        if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind > node_kind::Concat && n.kind != node_kind::Atom && n.kind != node_kind::Cell && n.kind != node_kind::Delay && !source::shared_struct(n) { return "a mutable JavaScript object"; }
         if n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() { return if n.kind == node_kind::Closure { "a function with properties (a mutable JavaScript object)" } else { "a mutable JavaScript object" }; }
         if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(v.id()); }
         if n.kind == node_kind::Closure { closures.push(v.id()); }

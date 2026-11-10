@@ -1718,6 +1718,48 @@ call job, publication with a sealed binding and with a frozen object),
 `seal_operations` (`src/bridge_tests.goose`: the walk's work charged before
 it runs) and `binding_modes` (`src/snapshot_tests.goose`).
 
+### Struct types (light-cljs-920, November 10, 2026)
+
+A native compile-time unit lowers `deftype` and `defrecord` to the struct
+form operations, and so does the shared core where it builds its own types
+(`structTypeOf`, `structField`, `structNew`, `recordFromMap`). Goose runs
+them over three node kinds (`src/source_vm.goose`, `node_kind::StructType`,
+`Struct` and `InitializerSlot`), with plain `u32` rows and no new table
+(decision 2): a type holds its name, a run of its field names and then its
+members' JavaScript names, its `type_flavor` (deftype, record, or a
+`mutableStructType` deftype) and its key field; a struct holds its type, its
+field values as a run and, for a record, its metadata and extension map. The
+operations, the record methods (a record is a map of its fields under
+unqualified keywords, then its extension entries: get, contains?, count,
+seq, keys, assoc, dissoc, conj, with-meta, `=`, hash and printing as
+`#ns.R{...}`) and the JavaScript view (a frozen object whose own properties
+are its fields under their member names, a record's `__meta`, `__extmap` and
+`__hash` too) are in `src/form_ops.goose`, "Struct types", with the Pants
+engine's semantics (`rust/src/collections/form.rs`, "Structs") and the V8
+build's record methods (`src/js_runtime.js`, `recordMethodTable`).
+
+| Question | Goose's answer | Why |
+|---|---|---|
+| Where a type is made | Each `structType` call makes a new type. A unit's factory makes its types (`__lightUnitType<i>`) when it runs (in the definition's preparation job, or a helper's production), and each evaluation of the deftype or defrecord form (`rt.nativeType`) makes a new type like it, as each evaluation defines a new type in the V8 build. | A type is an immutable value: a callable publication carries it (`callable.goose` graph, `cells.goose`) with a process-wide identity like every published row, so a helper's type is the same type in every job that reads the helper. The Pants build keeps the factory's type for every evaluation, so records of two evaluations compare equal there and not in the V8 build; Goose follows the V8 build. |
+| A mutable deftype | `mutableStructType` makes a `Mutable` type, whose structs (not `immutable`) `structSet` writes in place, in the job that made them; a struct the job did not make is an image row, which `NativeBoundary` refuses. A publication refuses a mutable struct by name. | The Pants engine promotes a published mutable struct's fields to shared versioned cells; Goose's process-wide state is the cell owner's (decision 3), which holds atoms, volatiles and delays, not field storage. Nothing in a macro needs one shared yet. |
+| `rt.nativeType` | The type, for a deftype or defrecord without methods. A type with protocol or `Object` methods fails by name until protocol tables exist (light-cljs-922), and so does one whose instances are its view constructor's JavaScript objects (a record with mutable fields, a raw body). | Without tables a method would be silently missing; the V8 build would find it. |
+| A declaration a macro runs (`(defrecord R [a])` inside a macro body) | `__lightCompilerProductTarget(name)` gives the job's compiler roots object, and the products (the type, `->R`, `map->R`) are written there as the compiler writes its answers; the job reads them back as roots, and the worker's reset drops them with the job. | The Pants build's `directProducts` are roots too. Goose keeps no compile-time root a job wrote: a later job that reads such a name asks the compiler, which has no definition of it, and fails by name. A top-level deftype or defrecord in a helper namespace is a declaration-bundle product, which the compiler path still refuses (`src/compilation_session.rs`). |
+| A reify site | With native forms, a unit's reify site (`__lightUnitReify<i>`) is a struct type of its own, not a `Symbol()`, so a definition or helper that holds one publishes. `rt.reify` itself and the core-protocol calls on its value (count, lookup, ...) need protocol dispatch, and fail by name (`no-rt-member-reify`). | A symbol the job made cannot leave it (light-cljs-885). |
+| Initializer slots | `initializerSlot`, `initializerSlotGet` and `initializerSlotSet`: a node with the unit, name, state, value and defined flag; never published. | The Pants build's root registry (`src/bbp_runtime.js`) uses them; the shared profile does not. |
+
+Snapshot validation checks every new row (`snapshot.goose` `struct_row`);
+reclamation, saved continuations and worker images carry them as rows with
+a value run (`snapshot::has_values`). With these, the macro ledger's
+`defrecord-use` and `deftype-use` idioms pass byte-identical to V8 (39 of
+171), and the core boot's unimplemented `__rt` members went from 24 to 20
+(`structField`, `structNew`, `structTypeOf`, `recordFromMap`); the boot still
+stops at `RegExp`.
+
+Tests: `goose_compiler_runs_struct_type_operations`,
+`goose_compiler_reclamation_moves_struct_type_rows` and the V8-differential
+`goose_compiler_struct_types_match_v8` (`src/goose/compiler_tests.rs`), and
+`struct_kinds` (`src/snapshot_tests.goose`).
+
 ## Decision 4: control flow
 
 **Decision.** Everything the interpreter suspends or unwinds is data in the

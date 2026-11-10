@@ -6,6 +6,8 @@
  "conj-variadic"
  "cons-conj"
  "count-empty"
+ "defrecord-use"
+ "deftype-use"
  "delay-force"
  "destructure-keys"
  "destructure-seq"

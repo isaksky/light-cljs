@@ -3164,10 +3164,11 @@ fn goose_compiler_names_what_a_native_boundary_lacks() {
             "(first (lazy-seq x))",
             "Fault.NativeBoundary:form-operation-lazySeq ",
         ),
-        // A deftype in a macro body fails as its definition is prepared.
+        // A reify runs no rt.reify yet (light-cljs-930); its definition,
+        // whose site is a struct type, prepares (light-cljs-920).
         (
-            "(do (deftype T [a]) (.-a (T. 1)))",
-            "preparation-Fault.NativeBoundary:form-operation-structType ",
+            "(count (reify ICounted (-count [_] 7)))",
+            "Fault.NativeBoundary:no-rt-member-reify ",
         ),
     ] {
         let source = format!("(defmacro m [x] (list 'quote {macro_body})) (m [1 2 3])");
@@ -3531,6 +3532,214 @@ fn goose_compiler_seals_as_the_shared_core_needs() {
         }
         s.close();
         cleaned(&s);
+    }
+}
+
+/// The struct type operations (light-cljs-920; crates/big-boy-pants-js/
+/// src/form_ops.goose, "Struct types"), with the Pants engine's answers:
+/// a deftype's fields by source and member name and its JavaScript view,
+/// a mutable type's writes, a record as a map (get, contains?, count, seq,
+/// keys, assoc, dissoc, conj, with-meta, `=`, hash, printing, map->R), a
+/// keyed type, and the Pants build's initializer slots. Each body returns
+/// the names of the checks that failed.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_runs_struct_type_operations() {
+    let checks = r#"const bad = [];
+        const check = (name, ok) => { if (ok !== true) bad.push(name); };
+        const throws = f => { try { f(); return false; } catch (e) { return e instanceof TypeError; } };
+        const k = n => __rt.formKeyword(null, n);"#;
+    let jobs = [
+        // A deftype: fields by source name and member name, its view.
+        r#"const T = __rt.structType("t/T", __rt.formVector("a", "b-c"), false, __rt.formVector("a", "b_c"));
+        const s = __rt.structNew(T, 1, "x");
+        check("field", __rt.structField(s, "a") === 1 && __rt.structField(s, "b-c") === "x");
+        check("member", s.a === 1 && s.b_c === "x" && s["b-c"] === undefined && Object.keys(s).join() === "a,b_c" && typeof s === "object");
+        check("kind", __rt.formKind(T) === "type" && __rt.formKind(s) === "struct" && __rt.formName(T) === "t/T" && __rt.formNamespace(T) === null);
+        check("type-of", __rt.structTypeOf(s) === T && __rt.structTypeOf(1) === null && __rt.structTypeOf(__rt.formVector()) === null);
+        check("state", __rt.structState(s) === 0 && __rt.structState(1) === 0);
+        check("missing", __rt.structField(__rt.structNew(T), "a") === undefined);
+        check("identity", __rt.formEquals(s, s) && !__rt.formEquals(s, __rt.structNew(T, 1, "x")));
+        check("errors", throws(() => __rt.structField(s, "z")) && throws(() => __rt.structNew(1)) && throws(() => __rt.structSet(s, "a", 2)) && throws(() => __rt.structType(1, __rt.formVector(), false, null)) && throws(() => __rt.structType("n", __rt.formVector("a"), false, __rt.formVector())));
+        check("each-call", __rt.structType("t/T", __rt.formVector("a"), false, null) !== __rt.structType("t/T", __rt.formVector("a"), false, null));"#,
+        // A mutable type: a member's last field wins; structSet writes it.
+        r#"const M = __rt.mutableStructType("t/M", __rt.formVector("x", "y"), false, __rt.formVector("x", "x"));
+        const m = __rt.structNew(M, 1, 2);
+        check("collide", __rt.structField(m, "x") === 2 && __rt.structField(m, "y") === 2 && m.x === 2);
+        check("set", __rt.structSet(m, "y", 5) === 5 && __rt.structField(m, "x") === 5 && m.x === 5 && __rt.structState(m) === 1);
+        const N = __rt.mutableStructType("t/N", __rt.formVector("v"), false, null);
+        const n = __rt.structNew(N, 1);
+        check("write", __rt.structSet(n, "v", 2) === 2 && __rt.structField(n, "v") === 2 && throws(() => __rt.structSet(n, "w", 1)));"#,
+        // A record as a map.
+        r##"const R = __rt.structType("t/R", __rt.formVector("a", "b"), true, null);
+        const r = __rt.structNew(R, 1, 2);
+        check("kind", __rt.formKind(r) === "record" && __rt.cljCount(r) === 2);
+        check("get", __rt.cljGet2(r, k("a")) === 1 && __rt.cljGet(r, k("c"), 9) === 9 && __rt.cljGet2(r, __rt.formKeyword("x", "a")) === null && __rt.cljContains(r, k("b")) && !__rt.cljContains(r, k("c")));
+        const r2 = __rt.cljAssoc(r, k("c"), 3);
+        check("assoc", __rt.cljGet2(r2, k("c")) === 3 && __rt.cljCount(r2) === 3 && __rt.formKind(r2) === "record" && __rt.cljCount(r) === 2 && __rt.cljGet2(__rt.cljAssoc(r, k("a"), 7), k("a")) === 7);
+        check("keys", __rt.formEquals(__rt.formKeys(r2), __rt.formVector(k("a"), k("b"), k("c"))));
+        check("seq", __rt.formEquals(__rt.cljFirst(r), __rt.formVector(k("a"), 1)) && __rt.cljCount(__rt.cljSeq(r2)) === 3);
+        check("equal", __rt.formEquals(r, __rt.structNew(R, 1, 2)) && !__rt.formEquals(r, __rt.structNew(R, 1, 3)) && !__rt.formEquals(r, r2) && !__rt.formEquals(r, __rt.formMap(k("a"), 1, k("b"), 2)) && !__rt.formEquals(r, __rt.structNew(__rt.structType("t/R", __rt.formVector("a", "b"), true, null), 1, 2)));
+        check("hash", __rt.formHash(r) === __rt.formHash(__rt.structNew(R, 1, 2)) && __rt.formHash(r) !== __rt.formHash(r2));
+        const d = __rt.cljDissoc(r2, k("a"));
+        check("dissoc", __rt.formKind(d) === "map" && __rt.cljCount(d) === 2 && __rt.formKind(__rt.cljDissoc(r2, k("c"))) === "record" && __rt.formEquals(__rt.cljDissoc(r2, k("c")), r));
+        check("conj", __rt.cljGet2(__rt.cljConj(r, __rt.formVector(k("z"), 4)), k("z")) === 4 && __rt.cljGet2(__rt.cljConj(r, __rt.formMap(k("a"), 8)), k("a")) === 8);
+        const meta = __rt.formMap(k("m"), true);
+        const rm = __rt.cljWithMeta(r, meta);
+        check("meta", __rt.cljMeta(rm) === meta && __rt.cljMeta(r) === null && __rt.formEquals(rm, r) && __rt.cljMeta(__rt.cljAssoc(rm, k("a"), 0)) === meta && rm.__meta === meta && r.__meta === null);
+        check("view", r.a === 1 && r.__extmap === null && r2.__extmap !== null && Object.keys(r).join() === "a,b,__meta,__extmap,__hash");
+        const f = __rt.recordFromMap(R, __rt.formMap(k("a"), 5, k("q"), 6));
+        check("from-map", __rt.cljGet2(f, k("a")) === 5 && __rt.cljGet2(f, k("b")) === null && __rt.cljGet2(f, k("q")) === 6 && __rt.cljCount(f) === 3 && __rt.formEquals(__rt.recordFromMap(R, r), r) && __rt.cljCount(__rt.recordFromMap(R, null)) === 2);
+        check("record-new", __rt.cljMeta(__rt.structNew(R, 1, 2, meta, null)) === meta && __rt.cljGet2(__rt.structNew(R, 1, 2, null, __rt.formMap(k("e"), 1)), k("e")) === 1 && throws(() => __rt.structNew(R, 1, 2, 3)));
+        check("printed", rt.core.prStr(r2) === "#t.R{:a 1, :b 2, :c 3}" && rt.core.prStr(__rt.structNew(__rt.structType("t/T", __rt.formVector(), false, null))) === "#object[t.T [object Object]]");"##,
+        // A keyed type (the Pants build's Var): equal and hashed by its key.
+        r#"const V = __rt.structType("t/V", __rt.formVector("val", "sym"), 1, null);
+        const a = __rt.structNew(V, 1, k("s")), b = __rt.structNew(V, 2, k("s"));
+        check("keyed", __rt.formEquals(a, b) && __rt.formHash(a) === __rt.formHash(k("s")) && !__rt.formEquals(a, __rt.structNew(V, 1, k("t"))) && throws(() => __rt.structType("t/W", __rt.formVector("a"), 1, null)));"#,
+        // The Pants build's initializer slots.
+        r#"const slot = __rt.initializerSlot(null, "n/x");
+        check("slot", __rt.initializerSlotGet(slot, 0) === null && __rt.initializerSlotGet(slot, 1) === "n/x" && __rt.initializerSlotGet(slot, 2) === 0 && __rt.initializerSlotGet(slot, 3) === null && __rt.initializerSlotGet(slot, 4) === false);
+        const value = {};
+        check("slot-set", __rt.initializerSlotSet(slot, 2, 1) === 1 && __rt.initializerSlotSet(slot, 3, value) === value && __rt.initializerSlotSet(slot, 4, true) === true && __rt.initializerSlotGet(slot, 2) === 1 && __rt.initializerSlotGet(slot, 3) === value && __rt.initializerSlotGet(slot, 4) === true);
+        check("slot-errors", throws(() => __rt.initializerSlotGet(slot, 5)) && throws(() => __rt.initializerSlotSet(slot, 1, 1)) && throws(() => __rt.initializerSlotSet(slot, 2, 4)) && throws(() => __rt.initializerSlotGet({}, 0)));"#,
+    ];
+    let s = GooseSession::start(&runner(), 1).unwrap();
+    let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+    for body in jobs {
+        let (f, args, call) = inputs(
+            &e,
+            &format!("rt => (form,env) => {{ {checks} {body} return bad.join(' '); }}"),
+        );
+        let value = e
+            .call(f, &args)
+            .unwrap_or_else(|error| panic!("{body}: {error}"));
+        let output = e
+            .export_form(value, &call, origin(&call), Default::default())
+            .unwrap();
+        assert!(
+            output
+                .data()
+                .value_eq(&Datum::new(DatumKind::String(Vec::<u16>::new().into()))),
+            "{body}: failed {:?}",
+            output.data()
+        );
+    }
+    s.close();
+    cleaned(&s);
+    // A type one job made, used in another: a helper's initializer makes
+    // the type and a factory over it (a helper production), and each macro
+    // job reads the published helper and builds and reads a record; the
+    // record and type a publication carries, a struct the job did not
+    // make is no job's to write, and a mutable struct is not shareable.
+    for (helper, call, expected) in [
+        (
+            "rt => { const R = __rt.structType('t/R', __rt.formVector('a'), true, null); return x => __rt.structNew(R, x); }",
+            "__rt.cljGet2(make(41), __rt.formKeyword(null, 'a')) + __rt.cljCount(make(0))",
+            Ok(42),
+        ),
+        (
+            "rt => { const R = __rt.structType('t/R', __rt.formVector('a'), true, null); return x => __rt.structTypeOf(__rt.structNew(R, x)) === R ? 42 : 0; }",
+            "make(1)",
+            Ok(42),
+        ),
+        (
+            "rt => { const R = __rt.structType('t/R', __rt.formVector('a'), true, null); const r = __rt.structNew(R, 40); return x => __rt.cljGet2(__rt.cljAssoc(r, __rt.formKeyword(null, 'a'), x + 1), __rt.formKeyword(null, 'a')); }",
+            "make(41)",
+            Ok(42),
+        ),
+        (
+            "rt => { const M = __rt.mutableStructType('t/M', __rt.formVector('a'), false, null); const m = __rt.structNew(M, 1); return x => __rt.structField(m, 'a'); }",
+            "make(1)",
+            Err("Error.Unsupported"),
+        ),
+        (
+            "rt => { const s = __rt.initializerSlot(null, 'n'); return x => __rt.initializerSlotGet(s, 1); }",
+            "make(1)",
+            Err("Error.Unsupported"),
+        ),
+    ] {
+        let s = GooseSession::start(&runner(), 1).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let (f, args, form) = inputs(
+            &e,
+            &format!(
+                "rt => (form,env) => {{ const make = __rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/struct'); return {call}; }}"
+            ),
+        );
+        serve(&e, &[("fixture/struct", 42)], move |_| Ok(helper.into()));
+        // A failed helper ends the session: a second call only after a success.
+        for _ in 0..(if expected.is_ok() { 2 } else { 1 }) {
+            let result = e.call(f, &args);
+            match expected {
+                Err(expected) => {
+                    let message = result.unwrap_err().to_string();
+                    assert!(message.contains(expected), "{helper}: {message}");
+                }
+                Ok(value) => {
+                    let output = e
+                        .export_form(result.unwrap(), &form, origin(&form), Default::default())
+                        .unwrap();
+                    assert!(
+                        output
+                            .data()
+                            .value_eq(&Datum::new(DatumKind::Integer(value))),
+                        "{helper}: {:?}",
+                        output.data()
+                    );
+                }
+            }
+        }
+        s.close();
+        cleaned(&s);
+    }
+}
+/// Collections inside a job (light-cljs-847, reclaim.goose) move struct
+/// rows with every other (light-cljs-920): a published helper's type and
+/// the records it makes, and the job's own type, record with an extension
+/// map, mutable struct and initializer slot read the same after the job
+/// collected, and a later record of the helper's type has its identity.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_reclamation_moves_struct_type_rows() {
+    let body = "rt => (form,env) => { const k = __rt.formKeyword(null, 'a'); const make = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/struct'); const T = __rt.structType('t/T', __rt.formVector('a'), true, null); const r = __rt.cljAssoc(__rt.structNew(T, 1), __rt.formKeyword(null, 'e'), 2); const M = __rt.mutableStructType('t/M', __rt.formVector('v'), false, null); const m = __rt.structNew(M, 3); const s = __rt.initializerSlot(null, 'n'); __rt.initializerSlotSet(s, 3, r); const p = make(4); let o; for (let i = 0; i < 30000; i++) o = [{}, {}, {}, {i}]; __rt.structSet(m, 'v', 5); const q = make(6); return __rt.structTypeOf(p) === __rt.structTypeOf(q) && __rt.cljGet2(p, k) === 4 && __rt.cljGet2(q, k) === 6 && __rt.structTypeOf(r) === T && __rt.cljGet2(r, k) === 1 && __rt.cljGet2(r, __rt.formKeyword(null, 'e')) === 2 && __rt.cljCount(r) === 2 && __rt.structField(m, 'v') === 5 && __rt.initializerSlotGet(s, 3) === r && __rt.formName(T) === 't/T' && o[3].i === 29999; }";
+    let session = GooseSession::start_mode(&runner(), 1, Some("readiness-test")).unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    serve(&e, &[("fixture/struct", 42)], |_| {
+        Ok("rt => { const R = __rt.structType('t/R', __rt.formVector('a'), true, null); return x => __rt.structNew(R, x); }".into())
+    });
+    let (f, args, call) = inputs(&e, body);
+    for _ in 0..2 {
+        let value = e.call(f, &args).unwrap();
+        let form = e
+            .export_form(value, &call, origin(&call), Default::default())
+            .unwrap();
+        assert!(
+            form.data().value_eq(&Datum::new(DatumKind::Boolean(true))),
+            "{form:?}"
+        );
+    }
+    session.close();
+    cleaned(&session);
+    let jobs = assert_threads(&session.trace(), 1);
+    assert!(jobs.reclaims >= 2, "{jobs:?}");
+}
+/// A deftype or defrecord a macro runs, and the record it makes, as the V8
+/// build's compiler runs them (light-cljs-920): the type is its unit
+/// factory's, made in the definition's preparation and used in every call
+/// (each its own job), a direct declaration's products are the job's own
+/// roots, and a definition that holds a reify site publishes (its site is a
+/// struct type, no longer a symbol the job made).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_struct_types_match_v8() {
+    for source in [
+        "(defmacro m [] (do (defrecord R [a b]) (let [r (->R 1 2) r2 (assoc r :c 3)] [(:a r) (get r :b) (get r :c 9) (count r) (contains? r :a) (contains? r :z) (= r (->R 1 2)) (= r (->R 1 3)) (= r r2) (:a (assoc r :a 5)) (count r2) (:c r2) (count (dissoc r2 :a)) (= r (dissoc r2 :c)) (into [] r2) (vec r) (first r) (pr-str r2) (pr-str (dissoc r2 :b)) (= (hash r) (hash (->R 1 2))) (:z (conj r [:z 4])) (meta (with-meta r {:m 1})) (:a (map->R {:a 7 :q 8})) (:q (map->R {:a 7 :q 8})) (count (map->R {:a 7 :q 8})) (coll? r) (vector? r) (seq? r) (str r) (str [r]) (meta (with-meta r {:m 1})) (pr-str (into r {:z 9})) (pr-str (into r [[:a 0] [:y 1]]))]))) (def x (m)) (def y (m))",
+        "(defmacro m [] (do (deftype T [a b-c]) (let [t (T. 1 2) u (->T 3 4)] [(.-a t) (.-b-c t) (.-a u) (= t t) (= t (T. 1 2)) (identical? t t) (pr-str t) (str t) (pr-str [t])]))) (def x (m)) (def y (m))",
+        "(defn make [v] (do (defrecord P [v]) (->P v))) (defmacro m [] (let [p (make 3) q (make 3)] [(:v p) (count p) (= p q) (pr-str p)])) (def x (m)) (def y (m))",
+        "(defmacro m [n] (if (zero? n) 1 (reify Object (toString [_] \"s\")))) (def x (m 0)) (def y (m 0))",
+    ] {
+        source_matches_v8(source, None);
     }
 }
 
@@ -7489,8 +7698,9 @@ fn goose_compiler_compile_time_code_installs_no_extension() {
             error.contains("macro app.main/setup: Goose: ERROR"),
             "{body}: {error}"
         );
-        // A reify site is a unit's symbol (`__lightUnitReify`), which a
-        // helper reaching it may not publish (light-cljs-885).
+        // A reify site is a unit's struct type (`__lightUnitReify`,
+        // light-cljs-920), which a helper publishes, but `rt.reify` and the
+        // protocol calls on its value fail by name.
         assert!(
             [
                 "Fault.UnsupportedOperand",

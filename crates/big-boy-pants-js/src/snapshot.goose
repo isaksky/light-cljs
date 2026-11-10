@@ -61,7 +61,19 @@ fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count 
 // array's element run (light-cljs-804), captures, form children, arguments,
 // a deferred map's memo, a bound function's arguments (light-cljs-852) and
 // an arguments map's cells (light-cljs-860).
-fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq || kind == node_kind::BoundFunction || kind == node_kind::ArgumentMap; }
+fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq || kind == node_kind::BoundFunction || kind == node_kind::ArgumentMap || kind == node_kind::StructType || kind == node_kind::Struct || kind == node_kind::InitializerSlot; }
+fn map_row<S>(s: const S&, v: source::Value) -> bool { return v.is_object() && v.id() < s.nodes.len && s.nodes[v.id()].kind == node_kind::Map; }
+// Whether struct row n (light-cljs-920) has a struct type of as many fields,
+// is immutable unless that type is Mutable, and has an extension map or
+// metadata (form maps) only as a record; no other link or flag.
+fn struct_row<S>(s: const S&, n: source::Node) -> bool {
+    if !n.value.is_object() || n.value.id() >= s.nodes.len { return false; }
+    let t = s.nodes[n.value.id()];
+    if t.kind != node_kind::StructType || n.count != t.count / 2 || n.immutable == (t.length == type_flavor::Mutable) { return false; }
+    let record = t.length == type_flavor::Record;
+    if !n.namespace_value.is_null() && !(record && map_row(s, n.namespace_value)) || !n.metadata.is_undefined() && !(record && map_row(s, n.metadata)) { return false; }
+    return n.proto.is_hole() && n.keys == 0 && n.key_count == 0 && n.key_capacity == 0 && n.shape == 0 && n.function == 0 && n.length == 0 && !n.initialized && !n.non_extensible;
+}
 // An element run (an ordinary object's, an arguments object's or an array's)
 // is exclusive and may hold holes.
 fn elements(kind: i64) -> bool { return kind == node_kind::Object || kind == node_kind::Arguments || kind == node_kind::Array; }
@@ -104,7 +116,9 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
         if !has_values(n.kind) { continue; }
         if !poll(c, n.count) { return false; }
         for slot in n.start..(n.start + n.count) {
-            if n.kind == node_kind::LazySeq || elements(n.kind) || n.kind == node_kind::ArgumentMap {
+            // A mutable struct's fields and an initializer slot's value
+            // (light-cljs-920) are written in place: exclusive too.
+            if n.kind == node_kind::LazySeq || elements(n.kind) || n.kind == node_kind::ArgumentMap || n.kind == node_kind::InitializerSlot || n.kind == node_kind::Struct && !n.immutable {
                 if used[slot] != 0 { return reject(c, Error.Link); }
                 used[slot] = 2;
             } else {
@@ -780,7 +794,18 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var owners: i64 = 0; var private_rows: i64 = 0;
     for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < node_kind::Object || n.kind > node_kind::Reduced { return reject(c, Error.Unsupported); }
+        if n.kind < node_kind::Object || n.kind > node_kind::InitializerSlot { return reject(c, Error.Unsupported); }
+        // A struct type (light-cljs-920, source::node_kind::StructType) is
+        // immutable and has a name, a run of field then member names
+        // (strings, checked with its run below), a type_flavor and a key
+        // field inside it, never a Mutable one's; a struct has its type, a
+        // field per type field, and a record's extension map and metadata,
+        // and is immutable unless its type is Mutable; an initializer slot
+        // has a state, 0 to 3, its defined flag, its unit and name, and its
+        // value as a run of one.
+        if n.kind == node_kind::StructType && (!n.value.is_string() || n.count % 2 != 0 || n.length > type_flavor::Mutable || n.function > n.count / 2 || n.function != 0 && n.length == type_flavor::Mutable || !n.namespace_value.is_null() || !n.metadata.is_undefined() || !n.proto.is_hole() || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.initialized || !n.immutable || n.non_extensible) { return reject(c, Error.Link); }
+        if n.kind == node_kind::Struct && !struct_row(s, n) { return reject(c, Error.Link); }
+        if n.kind == node_kind::InitializerSlot && (n.length > 3 || n.count != 1 || !n.metadata.is_undefined() || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.function != 0 || !n.proto.is_hole() || n.immutable || n.non_extensible) { return reject(c, Error.Link); }
         // A reduced marker (light-cljs-918) holds its value and nothing else.
         if n.kind == node_kind::Reduced && (!n.namespace_value.is_null() || !n.metadata.is_undefined() || !n.proto.is_hole() || n.count != 0 || n.start != 0 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.function != 0 || n.length != 0 || n.initialized || n.immutable || n.non_extensible) { return reject(c, Error.Link); }
         // An object's private elements (light-cljs-889) are records
@@ -849,6 +874,10 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // (light-cljs-886): it is never a lazy closure.
         if n.kind == node_kind::Closure && s.functions[n.function].kind >= constructor::BaseClass && n.key_count == 0 && !n.initialized { return reject(c, Error.Link); }
         if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == node_kind::Map && n.count % 2 != 0 { return reject(c, Error.Link); } }
+        if n.kind == node_kind::StructType {
+            if !poll(c, n.count) { return false; }
+            for v in s.values[n.start..(n.start + n.count)] { if !v.is_string() { return reject(c, Error.Link); } }
+        }
         if elements(n.kind) {
             // A dictionary array (initialized) has records and no run; a dense
             // one has a run, and its named properties in a shape

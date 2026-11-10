@@ -491,6 +491,34 @@ let node_kind::PrivateElements = 29;
 // A reduced marker (light-cljs-918; form_ops.goose): value=the value it
 // wraps, nothing else. It is a form of identity equality, no collection.
 let node_kind::Reduced = 30;
+// Struct types and structs (light-cljs-920; form_ops.goose, "Struct
+// types"; the Pants engine's collections/form.rs "Structs"). A struct type,
+// the identity of a deftype or defrecord: value=its qualified name (a
+// string), start/count=a run of its field names then its fields' JavaScript
+// member names (count twice the fields, all strings), length=its
+// type_flavor, function=its key field's index plus one (0: no key field).
+// A struct, an instance: value=its type, start/count=its field values in
+// the type's order, namespace_value=a record's extension map (a nonempty
+// form map) or Null, metadata=a record's metadata (Undefined: none);
+// `immutable` unless its type is Mutable, whose fields JavaScript and
+// structSet write in place.
+let node_kind::StructType = 31;
+let node_kind::Struct = 32;
+// A compiler initializer slot (light-cljs-920; the Pants engine's
+// vm/initializer.rs): private compiler storage, never published.
+// value=its unit, namespace_value=its name, start/count=a run of one, its
+// value, length=its state (0 to 3), initialized=its defined flag.
+let node_kind::InitializerSlot = 33;
+// A struct type's flavor, its node's `length` (light-cljs-920): a deftype
+// whose instances are immutable, a record, or a deftype made with
+// mutableStructType, whose instances' fields are written in place.
+let type_flavor::Deftype = 0;
+let type_flavor::Record = 1;
+let type_flavor::Mutable = 2;
+// Whether row n is a struct type or an immutable struct, which a
+// publication carries as it carries a form (callable.goose graph,
+// cells.goose).
+fn shared_struct(n: Node) -> bool { return n.kind == node_kind::StructType || n.kind == node_kind::Struct && n.immutable; }
 // A map's or set's traversal order (its node's `length`; light-cljs-877),
 // as the V8 build's runtime (src/js_runtime.js) has it: an array map or a
 // hash map or set, the Pants engine's FormMap::Positional and Hashed
@@ -999,6 +1027,8 @@ fn instruction(op: Op) -> Ins {
         opcode::ThrowError => Ins.ThrowError { kind: if op.arg >= 0 && op.arg < export_selector_count(opcode::ThrowError) { op.arg as u8 } else { 255 } },
         opcode::NewFormList => Ins.Literal { kind: node_kind::List, count: a }, opcode::NewFormVector => Ins.Literal { kind: node_kind::Vector, count: a },
         opcode::NewFormMap => Ins.Literal { kind: node_kind::Map, count: a * 2 }, opcode::NewFormSet => Ins.Literal { kind: node_kind::Set, count: a },
+        // structNew(type, v1, …) (light-cljs-920): its operands are the type and the values.
+        opcode::NewStruct => Ins.Literal { kind: node_kind::Struct, count: a },
         opcode::FormOp => Ins.Form { op: a },
         opcode::PushFinally => Ins.PushFinally { to: a }, opcode::PopFinally => Ins.PopFinally, opcode::EndFinally => Ins.EndFinally, opcode::CallFinally => Ins.CallFinally, opcode::DropCompletion => Ins.DropCompletion,
         opcode::PendingThrow, opcode::PendingException, opcode::PendingCancel => Ins.Pending { what: op.code as u8 },
@@ -2141,6 +2171,9 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             return find_own(heap, o, k);
         },
         node_kind::Builtin, node_kind::BoundFunction => { return find_own(heap, o, k); },
+        // A struct's fields under their member names (light-cljs-920;
+        // form_ops.goose struct_member).
+        node_kind::Struct => { return struct_member(heap, o, k); },
         // A proxy's runs in a native frame (proxy.goose), not here.
         node_kind::Proxy => { proxy_fault(heap, proxy_method::GetOwnProperty); return Own {}; },
         _ => { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } return Own {}; },
@@ -2452,6 +2485,8 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
+    // A struct's member names (light-cljs-920; form_ops.goose struct_keys).
+    if kind == node_kind::Struct { return struct_keys(heap, o, out); }
     if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::BoundFunction && kind != node_kind::Error && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator && kind != node_kind::Arguments || kind == node_kind::Closure && unsupported_prototype(heap, o) {
         // A proxy's runs in a native frame (proxy.goose), not here.
         if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::OwnPropertyKeys); } else { heap.fault = Fault.UnsupportedOperand; }
@@ -3502,6 +3537,8 @@ recursive fn form_hash(heap: Heap&, v: Value, depth: i64 = 0) -> u32, bool {
         for i in n.count { let c, ok = form_hash(heap, slot(heap, n.start + i), depth + 1); if !ok { return 0, false; } h = h * 31 + c; }
         return mix_collection_hash(h, n.count), true;
     }
+    // A record or keyed struct (light-cljs-920; struct_hash).
+    if n.kind == node_kind::Struct { return struct_hash(heap, x, depth); }
     if n.kind == node_kind::Map {
         var sum: u32 = 0;
         for i in (n.count / 2) {
@@ -3560,6 +3597,7 @@ fn form_count(heap: Heap&, v: Value) -> i64 {
     if x.tag() <= value_tag::Null { return 0; }
     if x.is_string() { return str_len(heap, x); }
     if x.is_object() { let n = node(heap, x.id()); if n.kind >= node_kind::List && n.kind <= node_kind::Set || n.kind == node_kind::Concat { return if n.kind == node_kind::Map { n.count / 2 } else { n.count }; } }
+    if record_value(heap, x) { return record_count(heap, x); }
     heap.fault = Fault.TypeError; return 0;
 }
 fn form_nth(heap: Heap&, v: Value, i: i64, fallback: Value = Value.Null) -> Value {
@@ -3580,6 +3618,9 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
     if !x.is_object() { return equal(heap, x, y); }
     let n = node(heap, x.id()); let m = node(heap, y.id());
     if n.kind == node_kind::LazySeq || m.kind == node_kind::LazySeq { heap.fault = Fault.NativeBoundary; return false; }
+    // Records and keyed structs (light-cljs-920; form_ops.goose
+    // struct_equal); a deftype instance or a struct type only to itself.
+    if n.kind == node_kind::Struct && m.kind == node_kind::Struct { return x == y || struct_equal(heap, x, y, depth); }
     if n.kind < node_kind::List || m.kind < node_kind::List || n.kind == node_kind::Error || m.kind == node_kind::Error || n.kind == node_kind::Arguments || m.kind == node_kind::Arguments || n.kind >= node_kind::Generator || m.kind >= node_kind::Generator { return x == y; }
     // An atom is equal only to itself; two references to one cell are one atom.
     if n.kind >= node_kind::KeyList || m.kind >= node_kind::KeyList { return x == y || n.kind == node_kind::Cell && m.kind == node_kind::Cell && n.function == m.function; }
@@ -3706,6 +3747,7 @@ fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
     // stored member, and `fallback` for a value that is no map, set, vector
     // or string (light-cljs-872). A lazy sequence stays a boundary (form_op).
     if kind == node_kind::LazySeq { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    if record_value(heap, x) { return record_get(heap, x, k, fallback); }
     if kind == node_kind::Set {
         let s = node(heap, x.id());
         for i in s.count { let v = slot(heap, s.start + i); if form_equal(heap, v, k) { return v; } if heap.fault != Fault.None { return Value.Undefined; } }
@@ -3728,6 +3770,7 @@ fn form_contains(heap: Heap&, v: Value, k: Value) -> bool {
         for i in (n.count / stride) { if form_equal(heap, slot(heap, n.start + i * stride), k) { return true; } if heap.fault != Fault.None { return false; } }
         return false;
     }
+    if record_value(heap, x) { return record_contains(heap, x, k); }
     heap.fault = Fault.UnsupportedOperand; return false;
 }
 // Eager bounded syntax-quote assembly. Only sequential form ranges and nil
@@ -3772,7 +3815,7 @@ fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
         if l.length == list_flavor::Cons && skip == 1 && l.value.tag() > value_tag::Null { return l.value; }
         return allocate(heap, Node { kind: node_kind::List, start: (l.start + skip) as u32, count: (l.count - skip) as u32 });
     }
-    if kind == node_kind::Map || kind == node_kind::Set || x.is_string() {
+    if kind == node_kind::Map || kind == node_kind::Set || x.is_string() || kind == node_kind::Struct {
         var items: Value[>..] = [];
         if !seq_items(heap, x, items) { return Value.Undefined; }
         return new_sequence(heap, items[skip..]);
@@ -3818,7 +3861,7 @@ fn nth_error(heap: Heap&, coll: Value, index: Value, fallback: bool) -> CoreErro
 }
 fn count_error(heap: Heap&, coll: Value) -> CoreError {
     let x = form_value(heap, coll); let kind = form_kind(heap, x);
-    if x.tag() <= value_tag::Null || x.is_string() || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat { return CoreError.None; }
+    if x.tag() <= value_tag::Null || x.is_string() || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || record_value(heap, x) { return CoreError.None; }
     return if kind == node_kind::Array { CoreError.Boundary } else { CoreError.CountType };
 }
 // seq's: a number, boolean, keyword or symbol is not seqable, with its
@@ -3826,7 +3869,7 @@ fn count_error(heap: Heap&, coll: Value) -> CoreError {
 // runtime seqs, another's text is its toString's).
 fn seq_error(heap: Heap&, coll: Value) -> CoreError {
     let x = form_value(heap, coll); let kind = form_kind(heap, x);
-    if x.tag() <= value_tag::Null || x.is_string() || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::LazySeq { return CoreError.None; }
+    if x.tag() <= value_tag::Null || x.is_string() || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::LazySeq || record_value(heap, x) { return CoreError.None; }
     return if x.is_number() || x.is_bool() || kind == node_kind::Symbol || kind == node_kind::Keyword { CoreError.NotSeqable } else { CoreError.Boundary };
 }
 // assoc's: nil and a map take any key; a vector a number in [0, count],
@@ -3834,7 +3877,7 @@ fn seq_error(heap: Heap&, coll: Value) -> CoreError {
 // failing by name.
 fn assoc_error(heap: Heap&, coll: Value, k: Value) -> CoreError {
     let x = form_value(heap, coll); let kind = form_kind(heap, x);
-    if x.tag() <= value_tag::Null || kind == node_kind::Map { return CoreError.None; }
+    if x.tag() <= value_tag::Null || kind == node_kind::Map || record_value(heap, x) { return CoreError.None; }
     if kind != node_kind::Vector { return CoreError.AssocType; }
     let i = form_value(heap, k); let n = node(heap, x.id()).count;
     if !i.is_number() { return CoreError.VectorKey; }
@@ -3848,6 +3891,7 @@ fn assoc_error(heap: Heap&, coll: Value, k: Value) -> CoreError {
 fn conj_error(heap: Heap&, coll: Value, item: Value) -> CoreError, Value {
     let x = form_value(heap, coll); let kind = form_kind(heap, x);
     if x.tag() <= value_tag::Null || kind >= node_kind::List && kind <= node_kind::Vector || kind == node_kind::Set || kind == node_kind::Concat { return CoreError.None, Value.Undefined; }
+    if record_value(heap, x) { return record_conj_error(heap, item), Value.Undefined; }
     if kind != node_kind::Map { return CoreError.ConjType, Value.Undefined; }
     let y = form_value(heap, item); let entries = form_kind(heap, y);
     // A hash-ordered map's entries go in the runtime's own iteration order
@@ -4006,7 +4050,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if !named_supported(heap, a, args[1]) { if heap.fault == Fault.None { heap.fault = Fault.NativeBoundary; } return Value.Undefined; }
             return allocate(heap, Node { kind: if op == form_op::Keyword { node_kind::Keyword } else { node_kind::Symbol }, value: args[1], namespace_value: if a.tag() <= value_tag::Null { nil() } else { a } });
         },
-        form_op::Kind => { let kind = form_kind(heap, a); return match kind { node_kind::List, node_kind::Concat => text(heap, "list"), node_kind::Vector => text(heap, "vector"), node_kind::Map => text(heap, "map"), node_kind::Set => text(heap, "set"), node_kind::Symbol => text(heap, "symbol"), node_kind::Keyword => text(heap, "keyword"), node_kind::Reduced => text(heap, "reduced"), _ => nil() }; },
+        form_op::Kind => { let kind = form_kind(heap, a); return match kind { node_kind::List, node_kind::Concat => text(heap, "list"), node_kind::Vector => text(heap, "vector"), node_kind::Map => text(heap, "map"), node_kind::Set => text(heap, "set"), node_kind::Symbol => text(heap, "symbol"), node_kind::Keyword => text(heap, "keyword"), node_kind::Reduced => text(heap, "reduced"), node_kind::StructType => text(heap, "type"), node_kind::Struct => text(heap, if record_value(heap, a) { "record" } else { "struct" }), _ => nil() }; },
         form_op::Count => { return number(form_count(heap, a)); },
         form_op::Nth => { let i = form_value(heap, args[1]); if !i.is_number() || !(i.num() >= -2147483648.0 && i.num() <= 2147483647.0) || i.num() != (i.num() as i64) || i.num() < 0 || i.num() >= form_count(heap, a) { heap.fault = Fault.TypeError; return Value.Undefined; } return form_nth(heap, a, i.num() as i64); },
         form_op::CljCount => { if core_failed(heap, count_error(heap, a)) { return Value.Undefined; } return number(form_count(heap, a)); },
@@ -4027,11 +4071,12 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
             let n = node(heap, x.id()); return form_concat(heap, run(heap, n.start, n.count));
         },
-        form_op::Assoc => { return form_assoc(heap, a, args[1], args[2]); },
+        form_op::Assoc => { if record_value(heap, a) { return record_assoc(heap, form_value(heap, a), args[1], args[2]); } return form_assoc(heap, a, args[1], args[2]); },
         form_op::CljAssoc => {
             if core_failed(heap, assoc_error(heap, a, args[1])) { return Value.Undefined; }
             // assoc of nil is a one-entry map, as cljs.core's.
             if form_value(heap, a).tag() <= value_tag::Null { return form_collection(heap, node_kind::Map, [args[1], args[2]]); }
+            if record_value(heap, a) { return record_assoc(heap, form_value(heap, a), args[1], args[2]); }
             return form_assoc(heap, a, args[1], args[2]);
         },
         form_op::Conj => { return form_conj(heap, a, args[1]); },
@@ -4039,13 +4084,16 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             let e, culprit = conj_error(heap, a, args[1]);
             if core_failed(heap, e) { return Value.Undefined; }
             if form_kind(heap, a) == node_kind::Map { return map_conj(heap, a, args[1]); }
+            if record_value(heap, a) { return record_conj(heap, form_value(heap, a), args[1]); }
             return form_conj(heap, a, args[1]);
         },
         form_op::Equals => { return boolean(form_equal(heap, a, args[1])); },
         // A JavaScript object's `metadata` is its private elements
         // (light-cljs-889), not metadata.
         form_op::Meta, form_op::CljMeta => { return if a.is_object() && !node(heap, a.id()).metadata.is_undefined() && private_row(heap, a) < 0 { node(heap, a.id()).metadata } else { nil() }; },
-        form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != node_kind::Map) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; if n.kind == node_kind::Vector { n.length = vector_flavor::Plain; } return allocate(heap, n); },
+        form_op::WithMeta, form_op::CljWithMeta => {
+            if record_value(heap, a) { return record_with_meta(heap, form_value(heap, a), args[1]); }
+            let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != node_kind::Map) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; if n.kind == node_kind::Vector { n.length = vector_flavor::Plain; } return allocate(heap, n); },
         form_op::Value => { return form_value(heap, a); },
         form_op::CljTruth => { let v = form_value(heap, a); return boolean(v.tag() > value_tag::Null && !(v.is_bool() && !v.flag())); },
         form_op::CljSeq, form_op::CljRest, form_op::CljNext => {
@@ -4057,7 +4105,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             // A map's first entry and a set's first member, in traversal
             // order (form_ops.goose seq_items).
             let kind = form_kind(heap, a);
-            if kind == node_kind::Map || kind == node_kind::Set {
+            if kind == node_kind::Map || kind == node_kind::Set || kind == node_kind::Struct {
                 if form_count(heap, a) == 0 { return nil(); }
                 var items: Value[>..] = [];
                 if !seq_items(heap, a, items) { return Value.Undefined; }
@@ -4079,7 +4127,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         form_op::CljDrop => { return clj_drop(heap, a, args[1]); },
         form_op::CljPeek => { if core_failed(heap, stack_error(heap, op, a)) { return Value.Undefined; } return clj_peek(heap, a); },
         form_op::CljPop => { if core_failed(heap, stack_error(heap, op, a)) { return Value.Undefined; } return clj_pop(heap, a); },
-        form_op::CljDissoc, form_op::CljDisj => { if core_failed(heap, removal_error(heap, op, a)) { return Value.Undefined; } return form_remove(heap, a, args[1], op == form_op::CljDisj); },
+        form_op::CljDissoc, form_op::CljDisj => { if core_failed(heap, removal_error(heap, op, a)) { return Value.Undefined; } if op == form_op::CljDissoc && record_value(heap, a) { return record_dissoc(heap, form_value(heap, a), args[1]); } return form_remove(heap, a, args[1], op == form_op::CljDisj); },
         form_op::Dissoc, form_op::Disj => {
             if form_value(heap, a).tag() <= value_tag::Null { heap.fault = Fault.TypeError; return Value.Undefined; }
             return form_remove(heap, a, args[1], op == form_op::Disj);
@@ -4093,6 +4141,12 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         form_op::Hash => { return hash_value(heap, a); },
         form_op::IdentityHash => { return identity_hash(heap, a); },
         form_op::Compare => { var r = Rejected {}; let c, e = compare_values(heap, a, args[1], r); if core_failed(heap, e) { return Value.Undefined; } return number(c); },
+        // Struct types (light-cljs-920; form_ops.goose, "Struct types").
+        form_op::StructType, form_op::MutableStructType => { return struct_type(heap, args, op == form_op::MutableStructType); },
+        form_op::StructField => { return struct_field(heap, a, args[1]); },
+        form_op::StructState => { return struct_state(heap, a); },
+        form_op::StructTypeOf => { return struct_type_of(heap, a); },
+        form_op::RecordFromMap => { return record_from_map(heap, a, args[1]); },
         form_op::CljReduced => { return allocate(heap, Node { kind: node_kind::Reduced, value: a }); },
         form_op::CljUnreduced => { return if a.is_object() && node(heap, a.id()).kind == node_kind::Reduced { node(heap, a.id()).value } else { a }; },
         form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); if n.count == 0 { return empty_literal(heap, node_kind::Map); } return form_collection(heap, node_kind::Map, run(heap, n.start, n.count)); },
@@ -4253,7 +4307,8 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
         if kind == node_kind::List || kind == node_kind::Concat { let n = node(heap, args[0].id()); return form_collection(heap, node_kind::Vector, run(heap, n.start, n.count)); }
         // A map's entries, a set's members (in traversal order, as the
         // V8 build's `into` takes them) or a string's units (light-cljs-918).
-        if kind == node_kind::Map || kind == node_kind::Set || form_value(heap, args[0]).is_string() {
+        // A record's entries too (light-cljs-920).
+        if kind == node_kind::Map || kind == node_kind::Set || form_value(heap, args[0]).is_string() || record_value(heap, args[0]) {
             var items: Value[>..] = [];
             if !seq_items(heap, args[0], items) { return Value.Undefined; }
             return form_collection(heap, node_kind::Vector, items);
@@ -5176,7 +5231,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Literal l => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let base = job.operands.len - (l.count);
-                    let value = if l.count == 0 && l.kind != node_kind::Map { empty_literal(heap, l.kind) } else { form_ordered(heap, l.kind, job.operands[base..], l.kind == node_kind::Map) }; job.operands.resize(base); job.operands.push(value);
+                    let value = if l.kind == node_kind::Struct { new_struct(heap, job.operands[base..]) } else if l.count == 0 && l.kind != node_kind::Map { empty_literal(heap, l.kind) } else { form_ordered(heap, l.kind, job.operands[base..], l.kind == node_kind::Map) }; job.operands.resize(base); job.operands.push(value);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -5207,7 +5262,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if waiting { job.operands.resize(base); }
                     else {
                         // The operations that need the job (form_ops.goose job_form_op).
-                        let value = if job_form(op) { job_form_op(job, op, job.operands[base]) } else { form_op(heap, op, job.operands[base..]) };
+                        let value = if job_form(op) { job_form_op(job, op, job.operands[base..]) } else { form_op(heap, op, job.operands[base..]) };
                         if heap.fault == Fault.HostEffect { core_error(job, op, base); }
                         job.operands.resize(base); job.operands.push(value);
                     }
@@ -5835,7 +5890,8 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
             // map's entries and a set's members are in the runtime's
             // iteration order, which this one does not model.
             else if !seq_source(job, args[1]) {}
-            else if (source == node_kind::Map || source == node_kind::Set) && form_count(heap, args[1]) > 0 { builtin_boundary(job, id, "a map or set source"); }
+            // So are a record's entries (light-cljs-920).
+            else if (source == node_kind::Map || source == node_kind::Set) && form_count(heap, args[1]) > 0 || record_value(heap, args[1]) { builtin_boundary(job, id, "a map, set or record source"); }
             else {
                 let input = args[1]; let callback = args[0]; let out = form_collection(heap, node_kind::Vector, []);
                 form_count(heap, input);
@@ -6566,6 +6622,13 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
     let heap .= job.heap;
     let object = job.operands.pop();
     let result = if chain { object } else { value };
+    // A declaration's product that a macro writes directly (light-cljs-920;
+    // realm.goose product_target): a root of the job's own, as the
+    // compiler's answers are, which the worker's reset drops.
+    if job.root_receiver.is_object() && object == job.root_receiver && k.is_string() {
+        if valid(heap, value) { put(heap, object, k, value); }
+        job.operands.push(result); return;
+    }
     if object.is_object() && !writable(job, object.id()) { image_write(job, k); job.operands.push(result); return; }
     prepare_function(job, object, k, true);
     // OrdinarySet reads an inherited `prototype` too: a lazy one on the

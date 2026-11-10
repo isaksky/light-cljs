@@ -144,11 +144,16 @@ enum Builtin {
     MathMin, MathMax, MathAbs, MathFloor, MathCeil, MathRound, MathSqrt, MathAcos, MathAsin, MathAtan, MathAtan2, MathCos, MathExp, MathLog, MathPow, MathSin, MathTan,
     MathTrunc, MathSign, MathCosh, MathSinh, MathTanh, MathAcosh, MathAsinh, MathAtanh, MathExpm1, MathLog1p, MathLog2, MathLog10, MathCbrt, MathHypot, MathRandom,
     MathF16round, MathFround, MathImul, MathClz32, MathSumPrecise,
+    // rt.nativeType, what a native compile-time unit runs for a deftype or
+    // defrecord, and globalThis.__lightCompilerProductTarget, where a
+    // declaration a macro runs directly writes its products
+    // (light-cljs-920; native_type, product_target).
+    NativeType, ProductTarget,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[200] = [
+let BUILTINS: BuiltinInfo[202] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -263,6 +268,9 @@ let BUILTINS: BuiltinInfo[200] = [
     BuiltinInfo { which: Builtin.MathF16round, name: "f16round", length: 1, plan: plan::OneNumber }, BuiltinInfo { which: Builtin.MathFround, name: "fround", length: 1, plan: plan::OneNumber },
     BuiltinInfo { which: Builtin.MathImul, name: "imul", length: 2, plan: plan::TwoUint32 }, BuiltinInfo { which: Builtin.MathClz32, name: "clz32", length: 1, plan: plan::OneUint32 },
     BuiltinInfo { which: Builtin.MathSumPrecise, name: "sumPrecise", length: 1 },
+    // `nativeType:(fields,specs,record,name,view,mutable,ty,fieldMembers)=>` and
+    // `__lightCompilerProductTarget=name=>`, arrows of src/bbp_runtime.js.
+    BuiltinInfo { which: Builtin.NativeType, name: "nativeType", length: 8 }, BuiltinInfo { which: Builtin.ProductTarget, name: "__lightCompilerProductTarget", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -566,7 +574,7 @@ let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, 
 // The light-cljs runtime leaves boot_runtime installs on `rt` (core false)
 // or `rt.core`, in this order.
 struct Leaf { core: bool, key: u8[..24], which: Builtin }
-let RUNTIME_LEAVES: Leaf[49] = [
+let RUNTIME_LEAVES: Leaf[50] = [
     Leaf { core: true, key: "macroReaderFunction", which: Builtin.MacroReaderFunction }, Leaf { core: true, key: "inc", which: Builtin.Inc },
     Leaf { core: true, key: "mapv", which: Builtin.Mapv }, Leaf { core: true, key: "vec", which: Builtin.Vec }, Leaf { core: true, key: "into", which: Builtin.Into },
     Leaf { core: true, key: "sequence", which: Builtin.Sequence }, Leaf { core: true, key: "mapSeq", which: Builtin.MapSeq }, Leaf { core: true, key: "list", which: Builtin.List },
@@ -618,6 +626,8 @@ let RUNTIME_LEAVES: Leaf[49] = [
     Leaf { core: true, key: "identical", which: Builtin.Identical },
     // range (light-cljs-877; core_range).
     Leaf { core: true, key: "range", which: Builtin.Range },
+    // A deftype's or defrecord's type (light-cljs-920; native_type).
+    Leaf { core: false, key: "nativeType", which: Builtin.NativeType },
 ];
 
 // A built-in's code: its position in BUILTINS.
@@ -666,7 +676,7 @@ fn prototype(heap: const Heap&, o: i64) -> Value {
 fn kind_prototype(heap: const Heap&, o: i64) -> Value {
     if !heap.global.is_object() { return Value.Null; }
     return match node(heap, o).kind {
-        node_kind::Object, node_kind::Arguments => object(object_prototype_row()), node_kind::Array => object(array_prototype_row()), node_kind::Builtin, node_kind::BoundFunction => object(function_prototype_row()), node_kind::Error => object(error_prototype_row(0)),
+        node_kind::Object, node_kind::Arguments, node_kind::Struct => object(object_prototype_row()), node_kind::Array => object(array_prototype_row()), node_kind::Builtin, node_kind::BoundFunction => object(function_prototype_row()), node_kind::Error => object(error_prototype_row(0)),
         node_kind::Closure => { let k = function_kind_of(heap, o); object(if k < 0 { function_prototype_row() } else { function_kind_prototype_row(k) }) },
         node_kind::Wrapper => primitive_prototype(node(heap, o).value),
         _ => Value.Null,
@@ -947,6 +957,11 @@ fn boot_runtime(heap: Heap&) -> Value {
         if !f.is_object() || !builtin_metadata(heap, f.id()) { return Value.Undefined; }
         install_field(heap, if leaf.core { core } else { rt }, leaf.key, f);
     }
+    // Where a declaration a macro runs directly writes its products
+    // (light-cljs-920; product_target).
+    let target = allocate(heap, Node { kind: node_kind::Builtin, function: code(Builtin.ProductTarget) });
+    if !target.is_object() || !builtin_metadata(heap, target.id()) { return Value.Undefined; }
+    install_field(heap, heap.global, "__lightCompilerProductTarget", target);
     if heap.fault == Fault.None { heap.boot_count += 1; }
     return rt;
 }
@@ -1400,10 +1415,11 @@ fn into(job: Job&, b: Builtin, args: const Value[:]) -> Value {
     if !seq_source(job, given) { return Value.Undefined; }
     let count = form_count(heap, given); let source = form_kind(heap, given);
     if count == 0 { return to; }
-    let from = if source == node_kind::Map || source == node_kind::Set { form_sequence(heap, given, 0, true) } else { given };
+    // A map's, set's or record's (light-cljs-920) seq.
+    let from = if source == node_kind::Map || source == node_kind::Set || record_value(heap, given) { form_sequence(heap, given, 0, true) } else { given };
     if heap.fault != Fault.None { return Value.Undefined; }
     let target = form_kind(heap, to);
-    if form_value(heap, to).tag() > value_tag::Null && !(target >= node_kind::List && target <= node_kind::Set || target == node_kind::Concat) {
+    if form_value(heap, to).tag() > value_tag::Null && !(target >= node_kind::List && target <= node_kind::Set || target == node_kind::Concat || record_value(heap, to)) {
         let none: u16[0] = []; return runtime_error(job, "No protocol method ICollection/-conj defined for this value", none);
     }
     var out = to;
@@ -1418,6 +1434,12 @@ fn into(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             if e == CoreError.Boundary { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
             if e != CoreError.None { return core_raise(job, e); }
             out = map_conj(heap, out, item);
+        } else if record_value(heap, out) {
+            // A record takes entries as its conj does (light-cljs-920).
+            let e = record_conj_error(heap, item);
+            if e == CoreError.Boundary { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+            if e != CoreError.None { return core_raise(job, e); }
+            out = record_conj(heap, form_value(heap, out), item);
         } else { out = form_conj(heap, out, item); }
         if heap.fault != Fault.None { return Value.Undefined; }
     }
@@ -1932,6 +1954,8 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         // receiver passes unchanged.
         NativeInterop => { return form_value(heap, arg(args, 0)); },
         DeclarationReceiver => { return arg(args, 0); },
+        NativeType => { return native_type(job, b, args); },
+        ProductTarget => { return product_target(job, b); },
         ExInfo => { return ex_info(job, b, args); },
         // ExceptionInfo called, not constructed (light-cljs-875).
         ExceptionInfo => {

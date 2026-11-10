@@ -394,7 +394,8 @@ mod deferred_storage_tests {
                 .unwrap();
             // Native lazy demand publishes each factory across tasks. A
             // task-owned object token would pass the direct calls above but
-            // fail this publication; symbols are immutable shared values.
+            // fail this publication; a site's struct type is an immutable
+            // shared value.
             let value = engine
                 .evaluate_unit(
                     r#"rt => {
@@ -1069,9 +1070,20 @@ fn emit_js_mode(
             }
             // A local expression number is not a type identity across
             // independently emitted units. Keep opaque site tokens in the
-            // factory's closure, shared by all calls of that factory.
+            // factory's closure, shared by all calls of that factory. With
+            // native forms each is a struct type of its own, which, unlike a
+            // symbol the factory made, a definition or helper that captures
+            // it can publish on the Goose compiler path (light-cljs-920).
             for index in 0..reify_sites {
-                write!(open, "const __lightUnitReify{index} = Symbol(); ").unwrap();
+                if emitter.native_forms {
+                    write!(
+                        open,
+                        "const __lightUnitReify{index} = __rt.structType(\"reify\", __rt.formVector(), false, null); "
+                    )
+                    .unwrap();
+                } else {
+                    write!(open, "const __lightUnitReify{index} = Symbol(); ").unwrap();
+                }
             }
             open.push_str("return ");
             emitter.output.push_str("; })()");

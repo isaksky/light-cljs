@@ -106,7 +106,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
     // cell reference.
     if base < 0 || base > s.nodes.len || s.bindings.len != 1 || !s.bindings[0].value.is_object() { return fail(c, snapshot::Error.Link); }
     let root_kind = s.nodes[s.bindings[0].value.id()].kind;
-    if root_kind != node_kind::Closure && root_kind != node_kind::Cell && (root_kind < node_kind::List || root_kind > node_kind::Concat) { return fail(c, snapshot::Error.Link); }
+    if root_kind != node_kind::Closure && root_kind != node_kind::Cell && (root_kind < node_kind::List || root_kind > node_kind::Concat) && !source::shared_struct(s.nodes[s.bindings[0].value.id()]) { return fail(c, snapshot::Error.Link); }
     if !code_matches(p, heap, c) { return false; }
     if !snapshot::range(0, expected.ends[9], s.units.len) || !snapshot::range(0, expected.ends[9], heap.units.len) || !snapshot::poll(c, expected.ends[9]) { return fail(c, snapshot::Error.Link); }
     if s.units[..expected.ends[9]] != heap.units[..expected.ends[9]] { return fail(c, snapshot::Error.Link); }
@@ -139,7 +139,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
             } else {
                 // A cell reference (18) is shareable; an atom was made one
                 // before the publication (source::publish_cells).
-                if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind > node_kind::Concat && n.kind != node_kind::Cell || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return fail(c); }
+                if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind > node_kind::Concat && n.kind != node_kind::Cell && !source::shared_struct(n) || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return fail(c); }
                 ids[id] = heap.nodes.len + slots.len; slots.push(id);
             }
         }

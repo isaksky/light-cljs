@@ -784,7 +784,7 @@ thread_fn integrity_malformed(saved: snapshot::Snapshot, mode: i64) {
     }
 }
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); heap_program::join(thread_spawn(binding_modes)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); heap_program::join(thread_spawn(binding_modes)); heap_program::join(thread_spawn(struct_kinds)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its
@@ -2989,6 +2989,46 @@ thread_fn binding_modes() {
         var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
     }
     print("snapshot binding modes: sealable and sealed cells restore, malformed modes refused");
+}
+// light-cljs-920: struct types, structs and initializer slots restore as
+// captured (a record still a map of its fields and extension entries, a
+// mutable struct's written field kept); a type with an odd run, a name
+// that is no string or a key past its fields, a struct whose type is none
+// or whose field count, mutability, extension map or metadata disagrees
+// with its type, or a slot's state past 3 is a Link rejection.
+thread_fn struct_kinds() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/arguments.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let e = source::form_op(heap, form_op::Keyword, [source::nil(), source::text(heap, "e")]);
+    let names = source::form_collection(heap, node_kind::Vector, [source::text(heap, "a"), source::text(heap, "b")]);
+    let rtype = source::form_op(heap, form_op::StructType, [source::text(heap, "t/R"), names, source::boolean(true), source::nil()]);
+    let ext = source::form_collection(heap, node_kind::Map, [e, source::number(3)]);
+    let record = source::new_struct(heap, [rtype, source::number(1), source::number(2), source::nil(), ext]);
+    let mtype = source::form_op(heap, form_op::MutableStructType, [source::text(heap, "t/M"), names, source::boolean(false), source::nil()]);
+    let mutable = source::new_struct(heap, [mtype, source::number(4), source::number(5)]);
+    let slot = source::allocate(heap, source::Node { kind: node_kind::InitializerSlot, start: heap.values.len as u32, count: 1, length: 2, initialized: true, value: source::nil(), namespace_value: source::text(heap, "n") }); source::add_values(heap, [record]);
+    assert(heap.fault == source::Fault.None);
+    source::set_slot(heap, source::node(heap, mutable.id()).start + 1, source::number(6));
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: record }, snapshot::Binding { id: 1, generation: 1, value: mutable }, snapshot::Binding { id: 2, generation: 1, value: slot }], c); assert(c.error == snapshot::Error.None);
+    {
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+        assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), restore));
+        let a = source::form_op(target, form_op::Keyword, [source::nil(), source::text(target, "a")]); let f = source::form_op(target, form_op::Keyword, [source::nil(), source::text(target, "e")]);
+        let r = roots[0].value;
+        assert(source::form_get(target, r, a, source::nil()).num() == 1 && source::form_get(target, r, f, source::nil()).num() == 3 && source::form_count(target, r) == 3 && source::record_value(target, r));
+        assert(source::struct_field(target, roots[1].value, source::text(target, "b")).num() == 6 && !source::node(target, roots[1].value.id()).immutable);
+        let s = source::node(target, roots[2].value.id());
+        assert(s.kind == node_kind::InitializerSlot && s.length == 2 && s.initialized && source::slot(target, s.start) == r && target.fault == source::Fault.None);
+    }
+    for field in 10 {
+        var bad = copy(saved); let t = rtype.id(); let x = record.id();
+        if field == 0 { bad.nodes[t].count = 3; } else if field == 1 { bad.nodes[t].function = 3; } else if field == 2 { bad.values[bad.nodes[t].start] = source::number(1); }
+        else if field == 3 { bad.nodes[x].count = 1; } else if field == 4 { bad.nodes[x].immutable = false; } else if field == 5 { bad.nodes[mutable.id()].namespace_value = ext; }
+        else if field == 6 { bad.nodes[x].value = source::number(1); } else if field == 7 { bad.nodes[x].metadata = source::number(1); } else if field == 8 { bad.nodes[slot.id()].length = 4; } else { bad.nodes[slot.id()].count = 0; }
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    print("snapshot struct kinds: types, records, mutable structs and initializer slots restore, malformed ones refused");
 }
 fn argument_ownership() {
     heap_program::join(thread_spawn(argument_parent)); let saved = qget<Saved>();
