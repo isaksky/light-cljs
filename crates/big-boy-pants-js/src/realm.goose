@@ -178,6 +178,8 @@ let BUILTINS: BuiltinInfo[221] = [
     BuiltinInfo { which: Builtin.FunctionPrototypeCall, name: "call", length: 1 }, BuiltinInfo { which: Builtin.FnRest, name: "fnRest", length: 2 },
     BuiltinInfo { which: Builtin.Sequence, name: "sequence", length: 1 }, BuiltinInfo { which: Builtin.MapSeq, name: "mapSeq", length: 2 },
     BuiltinInfo { which: Builtin.List, name: "list" }, BuiltinInfo { which: Builtin.Symbol, name: "symbol", length: 2 },
+    // Its code stays; boot_runtime installs the realm's RegExp in its place
+    // (light-cljs-935), so no row is this built-in.
     BuiltinInfo { which: Builtin.IntrinsicRegExp, name: "intrinsicRegExp" },
     BuiltinInfo { which: Builtin.FunctionPrototype, name: "" }, BuiltinInfo { which: Builtin.Object, name: "Object", length: 1 },
     BuiltinInfo { which: Builtin.Function, name: "Function", length: 1 }, BuiltinInfo { which: Builtin.Array, name: "Array", length: 1 },
@@ -641,7 +643,8 @@ let RUNTIME_LEAVES: Leaf[50] = [
     Leaf { core: true, key: "mapv", which: Builtin.Mapv }, Leaf { core: true, key: "vec", which: Builtin.Vec }, Leaf { core: true, key: "into", which: Builtin.Into },
     Leaf { core: true, key: "sequence", which: Builtin.Sequence }, Leaf { core: true, key: "mapSeq", which: Builtin.MapSeq }, Leaf { core: true, key: "list", which: Builtin.List },
     // The emitted call classifier compares against intrinsicRegExp's
-    // identity; executing regular expressions remains an explicit boundary.
+    // identity: the realm's RegExp constructor itself (light-cljs-935;
+    // boot_runtime), no built-in row of its own.
     Leaf { core: false, key: "symbol", which: Builtin.Symbol }, Leaf { core: false, key: "intrinsicRegExp", which: Builtin.IntrinsicRegExp },
     // gensym numbers in the job's compiler generated-name scope (gensym).
     // Other shared-state leaves are installed explicitly by the compiler.
@@ -1039,6 +1042,9 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, heap.global, "__lightNativeRuntime", rt);
     for leaf in RUNTIME_LEAVES {
         if leaf.which == Builtin.ExceptionInfo { install_field(heap, core, leaf.key, object(exception_info_constructor_row())); continue; }
+        // rt.intrinsicRegExp is the realm's RegExp constructor itself, as the
+        // V8 build's runtime has `intrinsicRegExp = RegExp` (light-cljs-935).
+        if leaf.which == Builtin.IntrinsicRegExp { install_field(heap, rt, leaf.key, object(regexp_row())); continue; }
         let f = allocate(heap, Node { kind: node_kind::Builtin, function: code(leaf.which) });
         if !f.is_object() || !builtin_metadata(heap, f.id()) { return Value.Undefined; }
         install_field(heap, if leaf.core { core } else { rt }, leaf.key, f);

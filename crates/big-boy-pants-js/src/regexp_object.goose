@@ -138,10 +138,17 @@ fn flags_text(heap: Heap&, bits: i64) -> Value {
 // escape (a backslash before one is not doubled), so `/${source}/` parses
 // to the same pattern.
 fn escape_pattern(heap: Heap&, pattern: Value) -> Value {
+    if str_len(heap, pattern) == 0 { return key_named(heap, "(?:)"); }
+    var out: u16[>..] = [];
+    if !escape_units(heap, pattern, out) { return Value.Undefined; }
+    return string(heap, out);
+}
+// escape_pattern's units appended to `out`; false past the work limit.
+fn escape_units(heap: Heap&, pattern: Value, out: u16[>..]&) -> bool {
     let n = str_len(heap, pattern);
-    if n == 0 { return key_named(heap, "(?:)"); }
-    if !charge(heap, n) { return Value.Undefined; }
-    var out: u16[>..] = []; var escaped = false; var class = false;
+    if n == 0 { for c in "(?:)" { out.push(c); } return true; }
+    if !charge(heap, n) { return false; }
+    var escaped = false; var class = false;
     for i in n {
         let c = unit(heap, pattern, i);
         if c == 10 || c == 13 || c == 8232 || c == 8233 {
@@ -156,7 +163,40 @@ fn escape_pattern(heap: Heap&, pattern: Value) -> Value {
         out.push(c);
         escaped = !escaped && c == 92;
     }
-    return string(heap, out);
+    return true;
+}
+// Whether RegExp `o`'s `source` and `flags` are its pattern's and
+// program's: its own properties and prototype are still its template's,
+// so those reads reach %RegExp.prototype%'s getters, which no job changes
+// (decision 3). A shareable regex value's always are.
+fn intrinsic_reads(heap: const Heap&, o: Value) -> bool { return is_regexp_object(heap, o) && template_layout(heap, o) && same_bits(node(heap, o.id()).proto, object(regexp_prototype_row())); }
+// RegExp.prototype.toString of `o` without running JavaScript (the str
+// leaf, printer.goose emit_object_string; light-cljs-935): a RegExp whose
+// own properties and prototype are still its template's reads
+// %RegExp.prototype%'s `source` and `flags` getters, which no job
+// changes (decision 3): `/source/flags`. Another receiver fails by name.
+fn regexp_string(job: Job&, b: Builtin, o: Value) -> Value {
+    let heap .= job.heap;
+    if !intrinsic_reads(heap, o) { return unsupported_step(job, b, "ToString of a RegExp with properties of its own"); }
+    var units: u16[>..] = [47];
+    if !escape_units(heap, node(heap, o.id()).value, units) { return Value.Undefined; }
+    units.push(47);
+    let f = flags_text(heap, regexp_program(heap, o.id()).flags);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    append_utf16(heap, f, units);
+    return string(heap, units);
+}
+// A RegExp's text in the V8 build's form bridge (light-cljs-935;
+// src/js_runtime.js compilerFormBridge `regexSource` and `regexFlags`),
+// appended to `out`: `(?flags)` with the flags it spells but `v`, in
+// dgimsuy order, when it has any, then its `source`. False past the work
+// limit.
+fn regexp_payload(heap: Heap&, o: i64, out: u16[>..]&) -> bool {
+    let bits = regexp_program(heap, o).flags;
+    var letters: u16[>..] = [];
+    for f, i in FLAG_NAMES { if f.letter != 'v' && bits & (1 << i) != 0 { letters.push(f.letter); } }
+    if letters.len > 0 { out.push(40); out.push(63); out.append(letters[..]); out.push(41); }
+    return escape_units(heap, node(heap, o).value, out);
 }
 // The plain RegExp built-ins: the flag getters and `source` (a RegExp's,
 // RegExp.prototype's own answer, a TypeError otherwise) and
@@ -683,4 +723,94 @@ fn match_array(job: Job&, s: Value, p: program::Pattern, caps: const i64[:]) -> 
         if !result_property(heap, pa, "groups", pair_groups) || !result_property(heap, a, "indices", pa) { return Value.Undefined; }
     }
     return a;
+}
+
+// ---- Shareable regex values (light-cljs-935)
+// The Pants engine's regexp/shared.rs and collections/form.rs `new_regex`:
+// `__rt.formRegex(source, flags)` (form_op::Regex), which the shared
+// profile's rePattern and sharedRegExpCall make of every regex the core
+// builds without `g` or `y`, and a regex literal the compiler sends in a
+// macro's arguments (form_bridge.goose, form_tag::Literal). One
+// node_kind::RegExp row laid out as new_regexp lays one out, `immutable`
+// and not extensible: a RegExp in every JavaScript respect (exec, test,
+// the getters and symbol methods through RegExp.prototype, the brand
+// checks) whose `lastIndex` is always 0. Its matching never writes it (a
+// program without `g` or `y`); an assignment of the number 0 is accepted
+// and changes nothing, any other value is the Pants engine's documented
+// unsupported TypeError (shared_last_index), and so are a definition that
+// would make it read-only or give it another value and freezing it (seal
+// and preventExtensions find it sealed already); nothing can be added.
+// Every JavaScript write reaches these checks (assign, define_descriptor,
+// set_integrity), on the job's own value or a published one alike, and no
+// write changes the row.
+//
+// It is shareable (decision 3): a publication or cell value that reaches
+// one goes by the callable transport (cells.goose form_unshareable,
+// publish_cells), whose snapshot carries its row and its program, code
+// rows of the job's (Code.patterns and pattern_ops, the publication's code
+// suffix), and installs it with a process-wide identity (callable.goose
+// graph and install). An ordinary RegExp, mutable, fails publication by
+// name as any mutable JavaScript object does.
+
+// Whether node row n is a shareable regex value.
+inline fn shared_regexp_node(n: const Node&) -> bool { return n.kind == node_kind::RegExp && n.immutable; }
+// Whether node row o is a shareable regex value.
+fn shared_regexp(heap: const Heap&, o: i64) -> bool { return o >= 0 && o < heap.nodes.len && shared_regexp_node(node(heap, o)); }
+// The unsupported writes' messages (the Pants engine's shared.rs and
+// property.rs).
+fn shared_last_index_message() -> const u8[:] { return "unsupported operation: a shared regex value's lastIndex stays 0 (global and sticky regexes are not shared)"; }
+fn shared_writable_message() -> const u8[:] { return "unsupported operation: a shared regex value's lastIndex stays writable"; }
+// An assignment of v to a shareable regex value's `lastIndex` (assign):
+// the number 0, either sign, is accepted and changes nothing; anything
+// else is a TypeError, worded by shared_regexp_wording.
+fn shared_last_index(heap: Heap&, v: Value) -> bool {
+    if v.is_number() && v.num() == 0 { return true; }
+    heap.fault = Fault.TypeError; return false;
+}
+// The message of a TypeError an assignment to shareable regex value
+// `object` raised without one (property_fault, set_or_throw).
+fn shared_regexp_wording(job: Job&, object: Value) {
+    if job.heap.fault != Fault.TypeError || job.detail.len > 0 || !object.is_object() || !shared_regexp(job.heap, object.id()) { return; }
+    for c in shared_last_index_message() { job.detail.push(c); }
+}
+// [[DefineOwnProperty]](k, d) of shareable regex value `object` (k
+// interned; define_descriptor, the Pants engine's property.rs): its one
+// own property, `lastIndex`, takes a compatible data descriptor (writable,
+// neither enumerable nor configurable) whose value, if any,
+// shared_last_index accepts, and changes nothing; a read-only one is the
+// unsupported TypeError; nothing can be added.
+fn define_shared_regexp(job: Job&, k: Value, d: PropertyDescriptor) -> bool {
+    let heap .= job.heap;
+    if !same_bits(k, last_index_key(heap)) || d.has_get || d.has_set || d.has_configurable && d.configurable || d.has_enumerable && d.enumerable { return false; }
+    if d.has_writable && !d.writable { type_error(job, shared_writable_message()); return false; }
+    if d.has_value && !shared_last_index(heap, d.value) { heap.fault = Fault.None; type_error(job, shared_last_index_message()); return false; }
+    return true;
+}
+// A shareable regex value of program row `program` and pattern text
+// `source`.
+fn new_shared_regexp(heap: Heap&, program: i64, source: Value) -> Value {
+    let t .= node(heap, regexp_template_row());
+    return allocate(heap, Node { kind: node_kind::RegExp, function: program as u32, key_count: 1, immutable: true, non_extensible: true, value: source, shape: t.shape, proto: object(regexp_prototype_row()), slots: [number(0), Value.Undefined] });
+}
+// Whether program p matches statefully (`g` or `y`), as no shareable regex
+// value does.
+inline fn stateful_pattern(p: const program::Pattern&) -> bool { return p.flags & (regexp_flag::Global | regexp_flag::Sticky) != 0; }
+// __rt.formRegex(source, flags) (form_op::Regex; the Pants engine's
+// form.rs new_regex): two strings that compile, without `g` or `y`; each
+// refusal is a TypeError naming what was expected, as the Pants engine's
+// wrong-type error does (an invalid pattern's parser message follows). A
+// limit, or a feature bbp's Rust matcher compiler refuses, fails as
+// `new RegExp` does (compile_pattern).
+fn form_regex(job: Job&, source: Value, flags: Value) -> Value {
+    let heap .= job.heap;
+    if !source.is_string() || !flags.is_string() { return type_error(job, "formRegex expects regex source and flags strings"); }
+    let r = compile_pattern(job, source, flags);
+    if r < 0 {
+        if heap.fault != Fault.SyntaxError { return Value.Undefined; }
+        var message: u16[>..] = []; for c in "formRegex expects valid regex source and flags: " { message.push(c); }
+        message.append(job.detail[..]); job.detail.clear(); job.detail.append(message[..]);
+        heap.fault = Fault.TypeError; return Value.Undefined;
+    }
+    if stateful_pattern(heap.code.patterns[r]) { return type_error(job, "formRegex expects regex flags without g or y"); }
+    return new_shared_regexp(heap, r, source);
 }

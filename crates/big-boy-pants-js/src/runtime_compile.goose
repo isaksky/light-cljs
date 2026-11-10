@@ -126,11 +126,18 @@ fn compile_code(job: Job&, what: const u8[:], units: const u16[:], mode: i32, st
 // code rows. Its `op` is the code's instruction count now, which keeps the
 // table in ascending `op` order.
 fn compile_pattern(job: Job&, pattern: Value, flags: Value) -> i64 {
+    if job.writable_code == null { return runtime_unsupported(job, "RegExp", "the job's code is not writable here"); }
+    var units: u16[>..] = []; append_utf16(job.heap, flags, units);
+    let flag_units = units.len; append_utf16(job.heap, pattern, units);
+    return compile_units(job, units, flag_units);
+}
+// compile_pattern of the flags' units and the pattern's, the first
+// `flag_units` of `units` the flags' (a compiler regex literal's,
+// form_bridge.goose compile_literals, light-cljs-935).
+fn compile_units(job: Job&, units: u16[>..]&, flag_units: i64) -> i64 {
     let heap .= job.heap;
     let code = job.writable_code;
     if code == null { return runtime_unsupported(job, "RegExp", "the job's code is not writable here"); }
-    var units: u16[>..] = []; append_utf16(heap, flags, units);
-    let flag_units = units.len; append_utf16(heap, pattern, units);
     if !charge(heap, units.len + 1) { return -1; }
     let count = units.len; if units.len == 0 { units.push(0); }
     var record: u8[>..] = [0];

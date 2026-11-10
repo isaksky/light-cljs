@@ -78,6 +78,9 @@ fn form_name(heap: Heap&, v: Value, qualifier: bool) -> Value {
     if heap.fault != Fault.None { return Value.Undefined; }
     // A struct type's qualified name, as one unqualified name (form.rs name).
     if kind == node_kind::StructType { return if qualifier { nil() } else { node(heap, x.id()).value }; }
+    // A shareable regex value (light-cljs-935), the Pants engine's regex
+    // compiler literal: its tag, unqualified.
+    if kind == node_kind::RegExp && shared_regexp(heap, x.id()) { return if qualifier { nil() } else { text(heap, "regex") }; }
     if kind != node_kind::Keyword && kind != node_kind::Symbol { heap.fault = Fault.TypeError; return Value.Undefined; }
     let n = node(heap, x.id());
     return if qualifier { n.namespace_value } else { n.value };
@@ -500,13 +503,16 @@ fn compare_message(job: Job&, a: Value, b: Value) {
 
 // The form operations that need the job, not only its heap: form_op's
 // caller (the Form instruction) dispatches them here.
-inline fn job_form(op: i64) -> bool { return op == form_op::Seal || op == form_op::SealBindings || op == form_op::SealReachable || op == form_op::StructSet || op == form_op::InitializerSlot || op == form_op::InitializerSlotGet || op == form_op::InitializerSlotSet; }
+// formRegex compiles its pattern into the job's code (light-cljs-935;
+// regexp_object.goose form_regex).
+inline fn job_form(op: i64) -> bool { return op == form_op::Seal || op == form_op::SealBindings || op == form_op::SealReachable || op == form_op::StructSet || op == form_op::InitializerSlot || op == form_op::InitializerSlotGet || op == form_op::InitializerSlotSet || op == form_op::Regex; }
 fn job_form_op(job: Job&, op: i64, v: Value) -> Value { let args: Value[1] = [v]; return job_form_op(job, op, args[..]); }
 fn job_form_op(job: Job&, op: i64, args: const Value[:]) -> Value {
     // The struct field and initializer slot writes check the job's write
     // boundary (light-cljs-920, "Struct types" below).
     if op == form_op::StructSet { return struct_set(job, args); }
     if op == form_op::InitializerSlot || op == form_op::InitializerSlotGet || op == form_op::InitializerSlotSet { return initializer_slot(job, op, args); }
+    if op == form_op::Regex { return form_regex(job, args[0], args[1]); }
     let v = args[0];
     if op == form_op::Seal { return seal_value(job, v); }
     if op == form_op::SealBindings || op == form_op::SealReachable {
@@ -525,7 +531,8 @@ inline fn realm_row(heap: const Heap&, o: i64) -> bool { return heap.global.is_o
 fn seal_keeps(heap: const Heap&, o: i64) -> bool {
     if realm_row(heap, o) { return true; }
     let n = node(heap, o); let kind = n.kind;
-    return kind >= node_kind::List && kind <= node_kind::Concat || kind == node_kind::LazySeq || kind == node_kind::Delay || kind == node_kind::Reduced || kind == node_kind::Builtin || kind == node_kind::Cell && n.length == cell_flavor::Delay;
+    // A shareable regex value (light-cljs-935) is a form, immutable already.
+    return kind >= node_kind::List && kind <= node_kind::Concat || kind == node_kind::LazySeq || kind == node_kind::Delay || kind == node_kind::Reduced || kind == node_kind::Builtin || kind == node_kind::Cell && n.length == cell_flavor::Delay || shared_regexp_node(n);
 }
 // What a seal cannot take, as the Pants engine's TypeError names it.
 fn seal_refusal(heap: const Heap&, o: i64) -> const u8[:] {

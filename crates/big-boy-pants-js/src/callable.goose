@@ -113,7 +113,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
     // cell reference.
     if base < 0 || base > s.nodes.len || s.bindings.len != 1 || !s.bindings[0].value.is_object() { return fail(c, snapshot::Error.Link); }
     let root_kind = s.nodes[s.bindings[0].value.id()].kind;
-    if root_kind != node_kind::Closure && root_kind != node_kind::Cell && (root_kind < node_kind::List || root_kind > node_kind::Concat) && !source::shared_struct(s.nodes[s.bindings[0].value.id()]) { return fail(c, snapshot::Error.Link); }
+    if root_kind != node_kind::Closure && root_kind != node_kind::Cell && (root_kind < node_kind::List || root_kind > node_kind::Concat) && !source::shared_struct(s.nodes[s.bindings[0].value.id()]) && !snapshot::shared_regexp_layout(s, s.nodes[s.bindings[0].value.id()]) { return fail(c, snapshot::Error.Link); }
     if !code_matches(p, heap, c) { return false; }
     if !snapshot::range(0, expected.ends[9], s.units.len) || !snapshot::range(0, expected.ends[9], heap.units.len) || !snapshot::poll(c, expected.ends[9]) { return fail(c, snapshot::Error.Link); }
     if s.units[..expected.ends[9]] != heap.units[..expected.ends[9]] { return fail(c, snapshot::Error.Link); }
@@ -143,6 +143,11 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
                 }
                 if n.kind == node_kind::Array || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) || n.kind == node_kind::MappedBinding || n.kind == node_kind::ArgumentMap { return fail(c); }
                 if !base_node(p, heap, id, c) { return false; } ids[id] = id;
+            } else if snapshot::shared_regexp_layout(s, n) {
+                // A shareable regex value (light-cljs-935): its program is a
+                // code row (code_matches checked the suffix's), its shape
+                // and prototype the realm's, which end the walk.
+                ids[id] = heap.nodes.len + slots.len; slots.push(id);
             } else {
                 // A cell reference (18) is shareable; an atom was made one
                 // before the publication (source::publish_cells).
@@ -206,10 +211,12 @@ fn encode_cell(heap: const source::Heap&, base: snapshot::Header, root: source::
     if slots.len == 0 || slots[0] != root.id() { return fail(c, snapshot::Error.Link); }
     // A captured form outlives its call, as a form cell value does
     // (cells.goose encode): its compiler occurrence and source span mean
-    // nothing to a later expansion, which sees it as built afresh.
+    // nothing to a later expansion, which sees it as built afresh, and
+    // neither does a regex literal's RegExp (light-cljs-935), whose
+    // occurrence another call could take for one of its own.
     for id in slots {
         let k = p.image.nodes[id].kind;
-        if k >= node_kind::List && k <= node_kind::Concat { p.image.nodes[id].origin = -1; p.image.nodes[id].source = source::no_row(); p.image.nodes[id].span_start = 0; p.image.nodes[id].span_end = 0; }
+        if k >= node_kind::List && k <= node_kind::Concat || k == node_kind::RegExp { p.image.nodes[id].origin = -1; p.image.nodes[id].source = source::no_row(); p.image.nodes[id].span_start = 0; p.image.nodes[id].span_end = 0; }
     }
     installed.clear(); installed.append(slots);
     var bytes: u8[>..] = []; to_bytes([p], bytes);
@@ -254,7 +261,7 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     let site_sources = code.site_sources.len - e[22]; let site_records = code.site_records.len - e[23];
     for x in s.sites[e[21]..] { var n = x; n.op += delta[4] as u32; n.sources += site_sources as u32; n.record += site_records as u32; code.sites.push(n); }
     code.site_sources.append(s.site_sources[e[22]..]); code.site_records.append(s.site_records[e[23]..]);
-    let pattern_ops = code.pattern_ops.len - e[25];
+    let pattern_ops = code.pattern_ops.len - e[25]; let patterns = code.patterns.len - e[24];
     for x in s.patterns[e[24]..] { var n = x; n.op += delta[4] as u32; n.start += pattern_ops as u32; n.units += delta[5] as u32; code.patterns.push(n); }
     code.pattern_ops.append(s.pattern_ops[e[25]..]);
     code.units.append(s.code_units[e[5]..]); code.source_bytes.append(s.code_bytes[e[0]..]); source::decode(code);
@@ -269,6 +276,8 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     for id in slots {
         var n = s.nodes[id]; n.value = relocated(n.value, ids, expected.ends[15], strings); n.namespace_value = relocated(n.namespace_value, ids, expected.ends[15], strings); n.metadata = relocated(n.metadata, ids, expected.ends[15], strings);
         if n.kind == node_kind::Closure { n.function = shifted(n.function, e[1], delta[1]) as u32; }
+        // A shareable regex value's program (light-cljs-935), a suffix row.
+        if n.kind == node_kind::RegExp { n.function = shifted(n.function, e[24], patterns) as u32; }
         if snapshot::has_values(n.kind) { n.start = heap.values.len as u32; for v in s.values[s.nodes[id].start..(s.nodes[id].start + n.count)] { source::add_values(heap, [relocated(v, ids, expected.ends[15], strings)]); } }
         if n.source != source::no_row() { n.source += sources as u32; } source::add_nodes(heap, [n]);
     }

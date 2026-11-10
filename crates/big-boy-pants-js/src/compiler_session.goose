@@ -475,7 +475,11 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     let owned = if mode == 1 || mode == 3 || mode == 4 || mode == 5 { saved.owned } else { heap.nodes.len };
     var costs = saved.costs; var control = saved.bridge; var call = source::Value.Undefined; var function = source::Value.Undefined; var next = saved.gensym_next;
     if mode == 0 { function = bindings[1].value; let importing = clock_ns();
-        assert(bridge::decode(graph, work.arguments, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
+        // A regex literal's program compiles into the job's code first
+        // (light-cljs-935); one that does not compile refuses the call.
+        assert(bridge::decode(graph, work.arguments, control)); var programs: i64[>..] = [];
+        if !bridge::compile_literals(job, graph, programs, control) || !bridge::import_graph(heap, graph, args, control, programs) { publish(Event { id: id, kind: 3, name: str("bridge-", control.error), address: address, timing: timing(work, started, sc) }); return; }
+        assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
     } else if mode == 2 {
         let loading = clock_ns(); let entry = append(code, heap, str(directory, "/definition-", work.definition, ".gsp")); assert(entry >= 0); costs[0] += clock_ns() - loading;
         let factory, loaded = leaf(id, code, heap, source::closure(heap, entry, []), [], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !loaded { return; }
@@ -669,7 +673,11 @@ fn serial(directory: const u8[:], code: source::Code&, heap: source::Heap&, rt: 
         if !found { let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
             let factory, a = initialize(id, code, heap, source::closure(heap, entry, []), [], 0, prefix, next); if !a { continue; } let value, b = initialize(id, code, heap, factory, [rt], 0, prefix, next); if !b { continue; } function = value; definitions.push(SerialDefinition { key: key, function: function }); print("PREPARED ", id, " ", key); flush_stdout(); }
         let loaded = clock_ns();
-        var graph = bridge::Graph {}; var c = bridge::Control {}; assert(bridge::decode(graph, call.arguments, c)); var args: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, args, c));
+        var graph = bridge::Graph {}; var c = bridge::Control {}; assert(bridge::decode(graph, call.arguments, c)); var args: source::Value[>..] = [];
+        // Regex literals compile first (light-cljs-935), into the code the
+        // call's own job may extend.
+        var programs: i64[>..] = []; var compiling = source::Job { heap: heap, writable_code: code };
+        assert(bridge::compile_literals(compiling, graph, programs, c) && bridge::import_graph(heap, graph, args, c, programs));
         let ready = clock_ns(); let value = serial_call(directory, id, code, heap, rt, function, args, prefix, next); let invoked = clock_ns();
         var output = bridge::Graph {}; var bytes: u8[>..] = []; assert(bridge::export_graph(heap, [value], output, c, args[0]) && bridge::encode(output, bytes, c));
         let empty = Saved { storage: instrumented }; let metrics = str("0 ", invoked - ready, " ", clock_ns() - started, " ", storage(empty, heap, snapshot::Control {}, bytes.len), " 0");

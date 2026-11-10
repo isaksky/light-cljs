@@ -56,8 +56,26 @@ let form_tag::Vector = 7;
 let form_tag::Map = 8;
 let form_tag::Set = 9;
 let form_tag::Cell = 10;
+// A compiler literal (light-cljs-935): an explicit descriptor the compiler
+// reads as its CompilerLiteral of kind `number`, a literal_tag::, whose
+// payload is its one child (start and count a run of one). Its node in
+// the session: a regex's (literal_tag::Regex, its payload the string
+// `(?flags)source`, the V8 build's compilerFormBridge text, `v` left out)
+// is a RegExp, a shareable regex value (regexp_object.goose) unless its
+// flags hold `g` or `y`, whose lastIndex is the job's own. A RegExp in a
+// result, shareable or not, goes back as one; a global or sticky one is
+// refused. Never in a cell value or publication (Control.cells), which
+// carries a RegExp by the callable transport, and with no metadata, which
+// a RegExp does not keep. light-cljs-929 adds its other descriptors.
+let form_tag::Literal = 11;
+// A compiler literal's descriptor (Form.number): compiler_bridge.rs names
+// the same numbers (literal_tag::REGEX ..), and form_tags_match_the_goose_names
+// keeps the two equal.
+let literal_tag::Regex = 0;
 // List, vector, map or set: a node with children.
 inline fn collection(tag: i64) -> bool { return tag >= form_tag::List && tag <= form_tag::Set; }
+// A collection or a compiler literal: a node with child edges.
+inline fn linked(tag: i64) -> bool { return collection(tag) || tag == form_tag::Literal; }
 // String, symbol or keyword: a node with text.
 inline fn textual(tag: i64) -> bool { return tag >= form_tag::String && tag <= form_tag::Keyword; }
 // Symbol or keyword: a name with an optional namespace.
@@ -131,7 +149,9 @@ fn validate_graph(g: const Graph&, c: Control&, sets: i64[>..]&, record: bool) -
     for n in g.nodes {
         if !poll(c) { return false; }
         if n.tag == form_tag::Cell && (!c.cells || n.number < 0 || n.number > 2147483647 || n.number != (n.number as i64) || n.count < 0 || n.count > 2 || n.metadata >= 0) { return reject(c, Error.Unsupported); }
-        if n.tag < form_tag::Nil || n.tag > form_tag::Cell || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
+        if n.tag == form_tag::Literal && (c.cells || n.number != literal_tag::Regex || n.metadata >= 0) { return reject(c, Error.Unsupported); }
+        if n.tag == form_tag::Literal && (n.count != 1 || !range(n.start, n.count, g.children.len)) { return reject(c); }
+        if n.tag < form_tag::Nil || n.tag > form_tag::Literal || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
         if n.source >= 0 && !range(n.span_start, n.span_end - n.span_start, g.sources[n.source].count) { return reject(c); }
         // An identity source has no text here: the compiler checks those
         // spans' UTF-8 boundaries against its own source.
@@ -167,7 +187,7 @@ fn validate_graph(g: const Graph&, c: Control&, sets: i64[>..]&, record: bool) -
         while stack.len > 0 {
             if !poll(c) { return false; }
             let w = stack[stack.len - 1]; let n = g.nodes[w.id]; states[w.id] = 1;
-            let edge_count = (if collection(n.tag) { n.count } else { 0 }) + (if n.metadata >= 0 { 1 } else { 0 });
+            let edge_count = (if linked(n.tag) { n.count } else { 0 }) + (if n.metadata >= 0 { 1 } else { 0 });
             let next = w.edge + 1;
             if next < edge_count {
                 stack[stack.len - 1].edge = next;
@@ -177,8 +197,10 @@ fn validate_graph(g: const Graph&, c: Control&, sets: i64[>..]&, record: bool) -
             } else {
                 var height: i64 = 1;
                 if n.metadata >= 0 { height = max(height, 1 + heights[n.metadata]); }
-                if collection(n.tag) { for i in n.count { if !poll(c) { return false; } height = max(height, 1 + heights[g.children[n.start + i]]); } }
+                if linked(n.tag) { for i in n.count { if !poll(c) { return false; } height = max(height, 1 + heights[g.children[n.start + i]]); } }
                 if height > c.depth { return reject(c, Error.Depth); }
+                // A regex literal's payload is a string.
+                if n.tag == form_tag::Literal && g.nodes[g.children[n.start]].tag != form_tag::String { return reject(c); }
                 heights[w.id] = height; states[w.id] = 2; stack.pop();
                 if record && (n.tag == form_tag::Map || n.tag == form_tag::Set) { sets.push(w.id); }
             }
@@ -406,14 +428,66 @@ fn imported_link(heap: const source::Heap&, g: const Graph&, base: i64, id: i64,
     if c.cells && realm_empty(n) && heap.global.is_object() { return source::object(source::empty_form_row(heap_kind(n.tag))); }
     return source::object(base + id);
 }
-fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&, c: Control&) -> bool {
+// Where a regex literal's payload's source begins (the Pants engine's
+// RegexCell::from_payload): past a `(?flags)` prefix whose letters are
+// those re-pattern reads (dgimsuxy), its flags between, or 0 for a payload
+// that is all source.
+fn payload_split(text: const u16[:]) -> i64 {
+    if text.len < 3 || text[0] != 40 || text[1] != 63 { return 0; }
+    var at: i64 = 2;
+    while at < text.len && prefix_flag(text[at]) { at += 1; }
+    return if at < text.len && text[at] == 41 { at + 1 } else { 0 };
+}
+inline fn prefix_flag(u: u16) -> bool { return u == 100 || u == 103 || u == 105 || u == 109 || u == 115 || u == 117 || u == 120 || u == 121; }
+// The programs of graph g's regex literals (light-cljs-935), compiled into
+// the job's code before import_graph installs a row: programs[i] the
+// Code.patterns row of literal node i, -1 for any other node, and none at
+// all for a graph without literals. A pattern that does not compile (an
+// `x` flag JavaScript lacks, an invalid pattern) refuses the graph as
+// Unsupported, its fault cleared and its message in the job's detail. A
+// malformed literal compiles nothing: validate refuses the graph.
+fn compile_literals(job: source::Job&, g: const Graph&, programs: i64[>..]&, c: Control&) -> bool {
+    programs.clear();
+    var any = false;
+    for n in g.nodes { if n.tag == form_tag::Literal { any = true; break; } }
+    if !any { return true; }
+    programs.resize(g.nodes.len, -1);
+    for n, i in g.nodes {
+        if n.tag != form_tag::Literal || n.count != 1 || !range(n.start, 1, g.children.len) || g.children[n.start] < 0 || g.children[n.start] >= g.nodes.len { continue; }
+        let p = g.nodes[g.children[n.start]];
+        if p.tag != form_tag::String || !range(p.start, p.count, g.units.len) { continue; }
+        if !poll(c, p.count) { return false; }
+        let text = g.units[p.start..(p.start + p.count)];
+        let split = payload_split(text);
+        var units: u16[>..] = [];
+        if split > 0 { units.append(text[2..(split - 1)]); }
+        let flags = units.len; units.append(text[split..]);
+        let r = source::compile_units(job, units, flags);
+        if r < 0 { job.heap.fault = source::Fault.None; return reject(c, Error.Unsupported); }
+        programs[i] = r;
+    }
+    return true;
+}
+fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&, c: Control&) -> bool { let none: i64[0] = []; return import_graph(heap, g, roots, c, none[..]); }
+// With `programs`, compile_literals' (light-cljs-935): each regex literal
+// becomes a RegExp of its program, its pattern text the payload's source,
+// shareable unless the program is global or sticky (form_tag::Literal); a
+// graph with a literal and no program for it is refused.
+fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&, c: Control&, programs: const i64[:]) -> bool {
     var sets: i64[>..] = [];
     if !validate_graph(g, c, sets, !c.cells) { return false; }
     // Each string occurrence is copied into its own canonical run (Latin-1 or
     // UTF-16), so work counts the units copied, not the shared input table.
-    // An omission's rows (Omitted) count as the graph's own would.
+    // An omission's rows (Omitted) count as the graph's own would. A regex
+    // literal's pattern text is a string of its own, at most its payload's.
     let o = g.omitted; var text: i64 = o.units;
-    for n in g.nodes { if textual(n.tag) { text += n.count; } if named(n.tag) && n.ns_count >= 0 { text += n.ns_count; } }
+    for n, i in g.nodes {
+        if textual(n.tag) { text += n.count; } if named(n.tag) && n.ns_count >= 0 { text += n.ns_count; }
+        if n.tag == form_tag::Literal {
+            if i >= programs.len || programs[i] < 0 || programs[i] >= heap.code.patterns.len || !heap.global.is_object() { return reject(c, Error.Unsupported); }
+            text += g.nodes[g.children[n.start]].count;
+        }
+    }
     let nodes = g.nodes.len + o.nodes; let children = g.children.len + o.children;
     let work = nodes + children + max(g.units.len + o.units, text) + g.bytes.len + g.sources.len + g.roots.len;
     // Final cancellation and capacity checks precede any session installation.
@@ -439,6 +513,15 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
         if n.metadata >= 0 { node.metadata = imported_link(heap, g, base, n.metadata, c); }
         if collection(n.tag) { node.kind = heap_kind(n.tag); node.start = (children + n.start) as u32; node.count = n.count as u32; if m.start.len > 0 && m.start[i] >= 0 { node.start = (children + g.children.len + m.start[i]) as u32; node.count = m.count[i] as u32; } if c.cells && n.number == 1 && n.tag == form_tag::List { node.kind = node_kind::Concat; node.length = seq_flavor::IntegerRange; } else if c.cells && n.number == 1 && n.tag == form_tag::Vector { node.length = vector_flavor::MapEntry; } else if c.cells && n.number == 1 || !c.cells && (decoded_hash_ordered(n) || n.tag == form_tag::Set && node.count > 8) { node.length = map_order::Hash; } }
         else if n.tag == form_tag::Cell { node = source::Node { kind: node_kind::Cell, function: n.number as u32, length: n.count as u32 }; }
+        else if n.tag == form_tag::Literal {
+            // A regex: a RegExp laid out as regexp_object.goose's
+            // new_shared_regexp lays one out, its compiler occurrence kept.
+            let p = g.nodes[g.children[n.start]]; let payload = g.units[p.start..(p.start + p.count)];
+            let shared = !source::stateful_pattern(heap.code.patterns[programs[i]]);
+            node.kind = node_kind::RegExp; node.function = programs[i] as u32; node.key_count = 1; node.value = source::import_text(heap, payload[payload_split(payload)..]);
+            node.shape = source::node(heap, source::regexp_template_row()).shape; node.proto = source::object(source::regexp_prototype_row()); node.slots = [source::number(0), source::Value.Undefined];
+            node.immutable = shared; node.non_extensible = shared;
+        }
         else if named(n.tag) {
             node.kind = heap_kind(n.tag); node.value = source::import_text(heap, g.units[n.start..(n.start + n.count)]);
             if n.ns_count >= 0 { node.namespace_value = source::import_text(heap, g.units[n.ns_start..(n.ns_start + n.ns_count)]); }
@@ -492,7 +575,7 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
     }
     for v in roots { g.roots.push(-1); }
     // Queue entries are edges, with target slots naming roots or a Form field.
-    var queue: Edge[>..] = [];
+    var queue: Edge[>..] = []; var payload: u16[>..] = [];
     for v, i in roots { queue.push(Edge { value: v, parent: -1, field: i }); }
     var cursor: i64 = 0;
     while cursor < queue.len {
@@ -545,6 +628,17 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
                 // A cell reference, inside the session only (Control.cells).
                 if !c.cells { return reject(c, Error.Unsupported); }
                 n.tag = form_tag::Cell; n.number = node.function; n.count = node.length;
+            } else if node.kind == node_kind::RegExp {
+                // A RegExp, shareable or not (light-cljs-935): a regex
+                // literal, its payload the V8 build's compilerFormBridge
+                // text (regexp_object.goose regexp_payload), added after
+                // it. A global or sticky one is refused, as is one in a
+                // cell value or publication (form_tag::Literal).
+                if c.cells || source::stateful_pattern(source::regexp_program(heap, v.id())) { return reject(c, Error.Unsupported); }
+                n.tag = form_tag::Literal; n.number = literal_tag::Regex; n.start = g.children.len; n.count = 1; g.children.push(-1);
+                payload.clear();
+                if !source::regexp_payload(heap, v.id(), payload) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
+                if !poll(c, payload.len) { return false; }
             } else {
                 if node.kind == node_kind::Symbol || node.kind == node_kind::Keyword { n.tag = tag_of(node.kind); x = node.value; }
                 else if x.is_null() { n.tag = form_tag::Nil; } else if x.is_bool() { n.tag = form_tag::Boolean; } else if x.is_number() { n.tag = form_tag::Number; } else if x.is_string() { n.tag = form_tag::String; }
@@ -563,6 +657,13 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
                 if c.error != Error.None { return false; }
             }
             g.nodes.push(n);
+            // A regex literal's payload, a new string with the literal's span.
+            if n.tag == form_tag::Literal {
+                if g.nodes.len >= c.nodes { return reject(c, Error.Nodes); }
+                g.children[n.start] = g.nodes.len; rows.push(-1);
+                g.nodes.push(Form { tag: form_tag::String, start: g.units.len, count: payload.len, source: n.source, span_start: n.span_start, span_end: n.span_end });
+                g.units.append(payload[..]);
+            }
             if !node.metadata.is_undefined() { queue.push(Edge { value: node.metadata, parent: id, field: -1 }); }
             if footprint(g) > c.bytes { return reject(c, Error.Bytes); }
         }

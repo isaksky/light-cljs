@@ -3,7 +3,9 @@
 //! never its text (light-cljs-817): Goose keeps spans against the identity,
 //! and a result's spans are checked against the compiler's own [`Source`].
 use crate::CollectionKind;
-use crate::compiler_data::{Datum, DatumKind, ExpansionOrigin, Form, Name, Source};
+use crate::compiler_data::{
+    CompilerLiteralKind, Datum, DatumKind, ExpansionOrigin, Form, Name, Source,
+};
 use crate::evaluator::{EvalError, ExecutionControl};
 use crate::form_bridge::ConversionLimits;
 use std::{cell::Cell, collections::HashMap};
@@ -127,11 +129,14 @@ mod form_tag {
     pub const SET: u32 = 9;
     /// A cell reference: Goose-only, never in a graph the compiler sends or
     /// accepts.
-    #[cfg(test)]
     pub const CELL: u32 = 10;
+    /// A compiler literal (light-cljs-935): its [`literal_tag`] in the
+    /// node's number and its payload its one child. A regex's payload is
+    /// the string `(?flags)source`, the V8 build's compilerFormBridge text.
+    pub const LITERAL: u32 = 11;
     /// Every tag, with its Goose name.
     #[cfg(test)]
-    pub const NAMED: [(&str, u32); 11] = [
+    pub const NAMED: [(&str, u32); 12] = [
         ("Nil", NIL),
         ("Boolean", BOOLEAN),
         ("Number", NUMBER),
@@ -143,10 +148,15 @@ mod form_tag {
         ("Map", MAP),
         ("Set", SET),
         ("Cell", CELL),
+        ("Literal", LITERAL),
     ];
     /// List, vector, map or set: a node with children.
     pub fn collection(tag: u32) -> bool {
         (LIST..=SET).contains(&tag)
+    }
+    /// A collection or a compiler literal: a node with child edges.
+    pub fn linked(tag: u32) -> bool {
+        collection(tag) || tag == LITERAL
     }
     /// String, symbol or keyword: a node with text.
     pub fn textual(tag: u32) -> bool {
@@ -155,6 +165,23 @@ mod form_tag {
     /// Symbol or keyword: a node with a name and an optional namespace.
     pub fn named(tag: u32) -> bool {
         tag == SYMBOL || tag == KEYWORD
+    }
+}
+/// A compiler literal's descriptor, a [`form_tag::LITERAL`] node's number.
+/// form_bridge.goose names the same numbers (`literal_tag::Regex` ..), and
+/// `form_tags_match_the_goose_names` checks that the two agree.
+/// light-cljs-929 adds the other [`crate::compiler_data::CompilerLiteralKind`]s.
+mod literal_tag {
+    pub const REGEX: u32 = 0;
+    /// Every descriptor, with its Goose name.
+    #[cfg(test)]
+    pub const NAMED: [(&str, u32); 1] = [("Regex", REGEX)];
+}
+/// The descriptor of a compiler literal kind the graph carries.
+fn literal_tag_of(kind: CompilerLiteralKind) -> Option<u32> {
+    match kind {
+        CompilerLiteralKind::Regex => Some(literal_tag::REGEX),
+        _ => None,
     }
 }
 fn bad() -> EvalError {
@@ -308,6 +335,11 @@ fn compatible(
                 same
             }
         }
+        // A regex the call sent (light-cljs-935): Goose spells its payload
+        // as the V8 build's form bridge does, the escaped source and its
+        // flags in dgimsuy order, which may not be the reader's spelling;
+        // its occurrence names it, and the reader's literal is restored.
+        (CompilerLiteral { kind: a, .. }, CompilerLiteral { kind: b, .. }) => a == b,
         _ => false,
     };
     if !same {
@@ -556,6 +588,13 @@ fn tag(d: &Datum) -> Result<u32, EvalError> {
             CollectionKind::Set => form_tag::SET,
             _ => return Err(bad()),
         },
+        // A regex literal (light-cljs-935), whose payload is a string.
+        DatumKind::CompilerLiteral { kind, payload }
+            if literal_tag_of(*kind).is_some()
+                && matches!(payload.kind(), DatumKind::String(_)) =>
+        {
+            form_tag::LITERAL
+        }
         _ => return Err(bad()),
     })
 }
@@ -648,6 +687,17 @@ impl Graph {
                 n.fields[1] = ids.len() as i32;
                 self.children.extend(ids);
             }
+            DatumKind::CompilerLiteral { kind, payload } => {
+                // Goose keeps no metadata on the RegExp it makes.
+                if d.metadata().is_some() {
+                    return Err(bad());
+                }
+                n.number = literal_tag_of(*kind).ok_or_else(bad)? as f64;
+                let id = self.datum(payload, depth + 1, limits, c)?;
+                n.fields[0] = self.children.len() as i32;
+                n.fields[1] = 1;
+                self.children.push(id);
+            }
             _ => {}
         }
         if let Some(meta) = d.metadata() {
@@ -724,6 +774,22 @@ impl Graph {
                 }
                 self.omitted_size += children.len() * 4;
                 self.omitted_children += children.len();
+            }
+            // A regex literal (light-cljs-935): its payload a child, and
+            // the RegExp Goose would make of it a string of its pattern
+            // text, at most the payload's units. Goose compiles its pattern
+            // before the import (form_bridge.goose compile_literals) and
+            // refuses one that does not compile, which an omission cannot
+            // tell, so an environment that holds one is sent whole.
+            DatumKind::CompilerLiteral { payload, .. } => {
+                self.omitted_refused = true;
+                self.omit(payload, depth + 1, limits, c)?;
+                self.omitted_size += 4;
+                self.omitted_children += 1;
+                if let DatumKind::String(text) = payload.kind() {
+                    self.omitted_units += text.len();
+                    self.omitted_strings += 1;
+                }
             }
             _ => {}
         }
@@ -916,15 +982,37 @@ impl Graph {
             return Ok(*id);
         }
         self.charge(depth, l, c)?;
-        if f.node().compiler_payload.is_some() {
-            return Err(bad());
-        }
         let d = f.data();
         let mut n = Node {
             tag: tag(&d)?,
             ..Default::default()
         };
-        if form_tag::collection(n.tag) {
+        // A regex literal (light-cljs-935): its payload's form is its one
+        // child, as a collection's forms are its children.
+        let payload = f.node().compiler_payload.and_then(|id| f.at(id));
+        if n.tag == form_tag::LITERAL {
+            let DatumKind::CompilerLiteral {
+                kind,
+                payload: data,
+            } = d.kind()
+            else {
+                return Err(bad());
+            };
+            if f.metadata().is_some() {
+                return Err(bad());
+            }
+            n.number = literal_tag_of(*kind).ok_or_else(bad)? as f64;
+            // A reader literal's payload may have no form of its own.
+            let id = match payload {
+                Some(payload) => self.form(&payload, depth + 1, l, c)?,
+                None => self.datum(data, depth + 1, l, c)?,
+            };
+            n.fields[0] = self.children.len() as i32;
+            n.fields[1] = 1;
+            self.children.push(id);
+        } else if payload.is_some() {
+            return Err(bad());
+        } else if form_tag::collection(n.tag) {
             let ids = f
                 .children()
                 .iter()
@@ -1170,7 +1258,14 @@ impl Graph {
         }
         // Validate every edge, including unreachable nodes, before recursive conversion.
         for n in &g.nodes {
-            if n.tag > form_tag::SET
+            // A cell reference never comes back; a compiler literal is a
+            // regex (light-cljs-935), its one child a string, no metadata.
+            if n.tag > form_tag::LITERAL
+                || n.tag == form_tag::CELL
+                || n.tag == form_tag::LITERAL
+                    && (n.number != literal_tag::REGEX as f64
+                        || n.fields[1] != 1
+                        || n.fields[4] != -1)
                 || n.fields[4] < -1
                 || n.fields[4] >= nodes as i32
                 || n.fields[6] < -1
@@ -1181,7 +1276,7 @@ impl Graph {
             {
                 return Err(bad());
             }
-            if form_tag::collection(n.tag) {
+            if form_tag::linked(n.tag) {
                 g.segment(&g.children, n.fields[0], n.fields[1])?;
             } else if form_tag::textual(n.tag) {
                 g.segment(&g.units, n.fields[0], n.fields[1])?;
@@ -1226,7 +1321,7 @@ impl Graph {
                 let id = *id;
                 let node = &g.nodes[id];
                 states[id] = 1;
-                let children = if form_tag::collection(node.tag) {
+                let children = if form_tag::linked(node.tag) {
                     g.segment(&g.children, node.fields[0], node.fields[1])?
                 } else {
                     &[]
@@ -1355,6 +1450,21 @@ impl Graph {
                             children: children.into(),
                         }
                     }
+                    // A regex (light-cljs-935): its payload, a string
+                    // (decode checked the descriptor and the child count).
+                    form_tag::LITERAL => {
+                        let child = self.g.segment(&self.g.children, f[0], f[1])?[0] as usize;
+                        let payload = self.visit(child, depth + 1)?;
+                        if !matches!(payload.kind(), DatumKind::String(_))
+                            || payload.metadata().is_some()
+                        {
+                            return Err(bad());
+                        }
+                        DatumKind::CompilerLiteral {
+                            kind: CompilerLiteralKind::Regex,
+                            payload,
+                        }
+                    }
                     _ => return Err(bad()),
                 };
                 let mut d = Datum::new(value);
@@ -1378,10 +1488,19 @@ impl Graph {
                     // keys; light-cljs-879) is the reader's form again, its
                     // children and metadata too, as the V8 build's bridge
                     // restores an unchanged argument (form_bridge.rs retain).
+                    // A regex the call sent (light-cljs-935) is the reader's
+                    // literal again, as V8's bridge restores it: Goose's
+                    // RegExp, which no write changes, writes its payload as
+                    // the V8 build's form bridge writes a RegExp's (the
+                    // escaped `source`, `a/b` as `a\/b`, and its flags in
+                    // dgimsuy order), not as the reader spelled it.
                     let restored = matches!(
                         (d.kind(), original.data.kind()),
                         (DatumKind::Collection { children: a, .. }, DatumKind::Collection { children: b, .. })
                             if a.len() < b.len()
+                    ) || matches!(
+                        original.data.kind(),
+                        DatumKind::CompilerLiteral { .. }
                     );
                     if restored {
                         d = original.data.clone();
@@ -1437,19 +1556,24 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     /// form_bridge.goose declares `let form_tag::<Name> = <n>;` for exactly
-    /// the tags [`form_tag::NAMED`] lists, with the same numbers.
+    /// the tags [`form_tag::NAMED`] lists, with the same numbers, and
+    /// `let literal_tag::<Name> = <n>;` for the compiler literals'
+    /// descriptors [`literal_tag::NAMED`] lists (light-cljs-935).
     #[test]
     fn form_tags_match_the_goose_names() {
         let goose = include_str!("../../crates/big-boy-pants-js/src/form_bridge.goose");
-        let declared: Vec<(&str, u32)> = goose
-            .lines()
-            .filter_map(|line| {
-                let rest = line.strip_prefix("let form_tag::")?;
-                let (name, number) = rest.strip_suffix(';')?.split_once(" = ")?;
-                Some((name, number.parse().expect("a form tag's number")))
-            })
-            .collect();
-        assert_eq!(declared, form_tag::NAMED);
+        let declared = |prefix: &str| -> Vec<(&str, u32)> {
+            goose
+                .lines()
+                .filter_map(|line| {
+                    let rest = line.strip_prefix(prefix)?;
+                    let (name, number) = rest.strip_suffix(';')?.split_once(" = ")?;
+                    Some((name, number.parse().expect("a tag's number")))
+                })
+                .collect()
+        };
+        assert_eq!(declared("let form_tag::"), form_tag::NAMED);
+        assert_eq!(declared("let literal_tag::"), literal_tag::NAMED);
     }
 
     fn control(polls: u64) -> ExecutionControl {

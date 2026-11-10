@@ -228,6 +228,83 @@ thread_fn unsupported_values() {
     var bad = bridge::Control {}; var roots: source::Value[>..] = []; let before = heap.nodes.len;
     assert(!bridge::import_graph(heap, g, roots, bad) && bad.error == bridge::Error.Unsupported && roots.len == 0 && heap.nodes.len == before);
 }
+// light-cljs-935: a regex literal (form_tag::Literal, literal_tag::Regex)
+// whose payload is `(?flags)source` imports as a RegExp of its program,
+// shareable unless global or sticky, and a RegExp without `g` or `y` goes
+// back as one, its payload the V8 build's text (escaped source, flags in
+// dgimsuy order); a global one, a malformed or unknown literal, one with
+// metadata, in a cell graph or without its program, and a pattern that
+// does not compile are refused; snapshot validation refuses a shareable
+// regex value whose layout changed.
+fn literal(g: bridge::Graph&, payload: const u16[:], origin: i64) -> i64 {
+    let text = g.nodes.len; g.nodes.push(bridge::Form { tag: form_tag::String, start: g.units.len, count: payload.len }); g.units.append(payload);
+    g.children.push(text); g.nodes.push(bridge::Form { tag: form_tag::Literal, number: literal_tag::Regex, start: g.children.len - 1, count: 1, origin: origin });
+    return g.nodes.len - 1;
+}
+fn units_of(text: const u8[:]) -> u16[>..] { var out: u16[>..] = []; for c in text { out.push(c); } return out; }
+fn refused(g: const bridge::Graph&, cells: bool) -> bridge::Error { var c = bridge::Control { cells: cells }; var bytes: u8[>..] = []; assert(!bridge::encode(g, bytes, c)); return c.error; }
+thread_fn regex_literals() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, writable_code: code };
+    var g = bridge::Graph {};
+    let shared = literal(g, units_of("(?ms)a/b")[..], 4); let global = literal(g, units_of("(?g)x")[..], -1); let plain = literal(g, units_of("(?:a)")[..], -1);
+    g.children.append([shared, global, plain]); g.nodes.push(bridge::Form { tag: form_tag::Vector, start: g.children.len - 3, count: 3 }); g.roots.push(g.nodes.len - 1);
+    var programs: i64[>..] = []; var c = bridge::Control {}; var roots: source::Value[>..] = [];
+    // Without its programs a literal is refused, before any row is made.
+    let before = heap.nodes.len;
+    assert(!bridge::import_graph(heap, g, roots, c) && c.error == bridge::Error.Unsupported && heap.nodes.len == before);
+    c = bridge::Control {};
+    assert(bridge::compile_literals(job, g, programs, c) && programs.len == g.nodes.len && programs[shared] >= 0 && programs[global] >= 0 && programs[0] == -1);
+    assert(bridge::import_graph(heap, g, roots, c, programs[..]));
+    let v = source::node(heap, roots[0].id()); let a = source::slot(heap, v.start); let x = source::slot(heap, v.start + 1); let p = source::slot(heap, v.start + 2);
+    assert(source::shared_regexp(heap, a.id()) && !source::shared_regexp(heap, x.id()) && source::is_regexp_object(heap, x) && source::shared_regexp(heap, p.id()));
+    assert(source::node(heap, a.id()).non_extensible && !source::node(heap, x.id()).non_extensible && source::node(heap, a.id()).origin == 4);
+    assert(source::regexp_program(heap, a.id()).flags == regexp_flag::Multiline | regexp_flag::DotAll && source::same_text(heap, source::node(heap, a.id()).value, source::text(heap, "a/b")));
+    assert(source::same_text(heap, source::node(heap, p.id()).value, source::text(heap, "(?:a)")) && source::regexp_program(heap, p.id()).flags == 0);
+    // Back to the compiler: the escaped source and its flags; a global one is refused.
+    var out = bridge::Graph {}; var e = bridge::Control { spans: false }; assert(!bridge::export_graph(heap, [roots[0]], out, e) && e.error == bridge::Error.Unsupported);
+    var made = bridge::Graph {}; var m = bridge::Control { spans: false }; let formed = source::form_regex(job, source::text(heap, "c\nd"), source::text(heap, "")); assert(heap.fault == source::Fault.None);
+    assert(bridge::export_graph(heap, [a, p, formed], made, m));
+    var bytes: u8[>..] = []; assert(bridge::encode(made, bytes, m)); var decoded = bridge::Graph {}; assert(bridge::decode(decoded, bytes, m));
+    let ra = decoded.nodes[decoded.roots[0]]; let rp = decoded.nodes[decoded.roots[1]]; let rf = decoded.nodes[decoded.roots[2]];
+    assert(ra.tag == form_tag::Literal && ra.number == literal_tag::Regex && ra.count == 1 && ra.origin == 4 && rp.origin == -1);
+    let pa = decoded.nodes[decoded.children[ra.start]]; let pp = decoded.nodes[decoded.children[rp.start]]; let pf = decoded.nodes[decoded.children[rf.start]];
+    assert(decoded.units[pa.start..(pa.start + pa.count)] == units_of("(?ms)a\\/b")[..] && decoded.units[pp.start..(pp.start + pp.count)] == units_of("(?:a)")[..] && decoded.units[pf.start..(pf.start + pf.count)] == units_of("c\\nd")[..]);
+    // Round trip: the exported literals import again as shareable regex values.
+    var again: source::Value[>..] = []; var r = bridge::Control {}; var reprograms: i64[>..] = [];
+    assert(bridge::compile_literals(job, decoded, reprograms, r) && bridge::import_graph(heap, decoded, again, r, reprograms[..]) && again.len == 3);
+    for value in again { assert(source::shared_regexp(heap, value.id())); }
+    assert(source::regexp_program(heap, again[0].id()).flags == regexp_flag::Multiline | regexp_flag::DotAll && source::same_text(heap, source::node(heap, again[0].id()).value, source::text(heap, "a\\/b")));
+    // Malformed and unsupported literals.
+    // Each mutation is undone before the next.
+    let lit = decoded.roots[0]; let child = decoded.children[ra.start];
+    decoded.nodes[lit].count = 2; decoded.children.push(0); assert(refused(decoded, false) == bridge::Error.Malformed); decoded.nodes[lit].count = 1; decoded.children.pop();
+    decoded.nodes[lit].number = 5; assert(refused(decoded, false) == bridge::Error.Unsupported); decoded.nodes[lit].number = literal_tag::Regex;
+    decoded.nodes[child].tag = form_tag::Number; assert(refused(decoded, false) == bridge::Error.Malformed); decoded.nodes[child].tag = form_tag::String;
+    decoded.nodes.push(bridge::Form { tag: form_tag::Map }); decoded.nodes[lit].metadata = decoded.nodes.len - 1; assert(refused(decoded, false) == bridge::Error.Unsupported); decoded.nodes[lit].metadata = -1; decoded.nodes.pop();
+    assert(refused(decoded, true) == bridge::Error.Unsupported);
+    var whole = bridge::Control {}; var rebytes: u8[>..] = []; assert(bridge::encode(decoded, rebytes, whole));
+    // A pattern that does not compile refuses the graph; its fault is cleared.
+    var bad = bridge::Graph {}; bad.roots.push(literal(bad, units_of("(?x)a")[..], -1)); var bc = bridge::Control {}; var none: i64[>..] = [];
+    assert(!bridge::compile_literals(job, bad, none, bc) && bc.error == bridge::Error.Unsupported && heap.fault == source::Fault.None);
+    // A cell value or publication carries none (form_unshareable sends it by the callable transport).
+    var cell = bridge::Graph {}; var cc = bridge::Control { cells: true, spans: false }; assert(!bridge::export_graph(heap, [a], cell, cc) && cc.error == bridge::Error.Unsupported);
+    // Snapshot validation: the layout new_shared_regexp makes, and no other.
+    var sc = snapshot::Control {}; var image = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: a }], sc); assert(sc.error == snapshot::Error.None);
+    var ok = snapshot::Control {}; assert(snapshot::validate(image, ok));
+    let row = image.nodes[a.id()];
+    for mutation in 4 {
+        if mutation == 0 { image.nodes[a.id()].slots[0] = source::number(1); }
+        else if mutation == 1 { image.nodes[a.id()].non_extensible = false; }
+        else if mutation == 2 { image.nodes[a.id()].function = programs[global] as u32; }
+        else { image.nodes[a.id()].key_count = 2; }
+        var broken = snapshot::Control {}; assert(!snapshot::validate(image, broken) && broken.error == snapshot::Error.Link);
+        image.nodes[a.id()] = row;
+    }
+    var restored = snapshot::Control {}; assert(snapshot::validate(image, restored));
+    print("compiler form bridge: regex literals import as shareable regex values (a global one as the job's own), go back with V8's payload text, and refuse malformed literals; snapshots validate their layout");
+}
 thread_fn primitive_fallback() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
@@ -355,7 +432,7 @@ fn direct_update_boundaries() {
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
     heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(plain_form_operations)); heap_program::join(thread_spawn(seal_operations)); heap_program::join(thread_spawn(struct_hash_budget)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
-    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
+    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(regex_literals)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
 // light-cljs-817: the compiler sends a source's identity and byte length, no

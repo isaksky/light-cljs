@@ -127,6 +127,9 @@ inline fn flag_attrs(writable: bool, enumerable: bool, configurable: bool) -> u8
 fn define_descriptor(job: Job&, object: Value, k: Value, d: PropertyDescriptor) -> bool {
     let heap .= job.heap; let o: i64 = object.id();
     if node(heap, o).kind == node_kind::Proxy { proxy_fault(heap, proxy_method::DefineOwnProperty); return false; }
+    // A shareable regex value, the job's own or published (light-cljs-935):
+    // nothing it accepts changes it.
+    if shared_regexp_node(node(heap, o)) { return define_shared_regexp(job, k, d); }
     let owned = writable(job, o);
     // The compiler's protected rows and root receiver are not read here
     // (listable faults NativeBoundary), and another job's function whose
@@ -481,7 +484,7 @@ fn reflect_delete(job: Job&, b: Builtin, target: Value, kv: Value) -> Value {
     if !target.is_object() { return type_error(job, "Reflect.deleteProperty: the target is not an object"); }
     let k = property_key(job, b, kv);
     if heap.fault != Fault.None { return Value.Undefined; }
-    if !writable(job, target.id()) { image_write(job, k); return Value.Undefined; }
+    if !writable(job, target.id()) && !shared_regexp(heap, target.id()) { image_write(job, k); return Value.Undefined; }
     // A lazy closure's `length` or `name` is made before it goes, as `delete` makes it.
     if k.is_string() && (key_is(heap, k, "length") || key_is(heap, k, "name")) { prepare_function(job, target, k, true); }
     if heap.fault != Fault.None { return Value.Undefined; }

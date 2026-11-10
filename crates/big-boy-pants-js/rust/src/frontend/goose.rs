@@ -2907,6 +2907,11 @@ mod serial_tests {
             // each mode (serial_tests.goose regexp_boundaries); its limits
             // are Goose's and the Pants engine's.
             ("regexp-boundaries", "goose"),
+            // Shareable regex values (light-cljs-935): __rt.formRegex's
+            // RegExp, its fixed lastIndex and refused writes, identity
+            // through RegExp(r) and refused patterns at every budget cut
+            // (serial_tests.goose); Node has no `__rt`.
+            ("regexp-form-values", "goose"),
             // and across dependency waits in every phase of the
             // constructor's, the flags getter's and toString's frames, with
             // literal and run-time programs, saved and restored or installed

@@ -125,6 +125,12 @@ fn test_integrity(job: Job&, b: Builtin, object: Value, frozen: bool) -> bool {
 fn set_integrity(job: Job&, b: Builtin, object: Value, frozen: bool) -> bool {
     let heap .= job.heap; let o: i64 = object.id();
     if !integrity_target(job, b, object, proxy_method::PreventExtensions) { return false; }
+    // A shareable regex value is sealed already, and its `lastIndex` stays
+    // writable (light-cljs-935; the Pants engine's integrity.rs).
+    if shared_regexp_node(node(heap, o)) {
+        if frozen { type_error(job, shared_writable_message()); return false; }
+        return true;
+    }
     // A row the job may not write changes nothing if it is at that level already.
     if !writable(job, o) {
         if test_integrity(job, b, object, frozen) || heap.fault != Fault.None { return heap.fault == Fault.None; }

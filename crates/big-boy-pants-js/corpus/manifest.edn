@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "104133d173ee2b5d6c4d078aa7106991a2abd57483d1e8da282f3a420389fe60",
+  "f97d6bd218f84d49da595a449055926f329f18eabe24401383a6ce74534ec561",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -633,6 +633,10 @@
   "5abf6c707e1a3abfed43b91ed4ce53d9e16ce0dd4524795bc929c1c154b0675b",
   "corpus/serial/regexp-failures.js"
   "94bf3dbf500a8a873fd27c659c90d62d90debc89437b87af55a73d29a0f5af7b",
+  "corpus/serial/regexp-form-values.gsp"
+  "f32012c91a00ebdba36d561f8f1ab2506c306ecb63d28026e34722160aff2534",
+  "corpus/serial/regexp-form-values.js"
+  "f0f1930520fe2a552c7e8b85df6c46e5ea83684f083454e3b2ba16b3565b0c5a",
   "corpus/serial/regexp-ignore-case.gsp"
   "de7b6c93a283291f94c594057715acda96b3b8023cf8f03b5b6e789c94f778d7",
   "corpus/serial/regexp-ignore-case.js"

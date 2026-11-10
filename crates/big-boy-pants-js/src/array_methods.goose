@@ -197,10 +197,13 @@ fn push_step(job: Job&, frame: Frame) {
 // changes (decision 3).
 fn set_or_throw(job: Job&, b: Builtin, o: Value, k: Value, v: Value) -> bool {
     let heap .= job.heap;
-    if !writable(job, o.id()) { image_write(job, k); return false; }
+    // A shareable regex value's own or published (light-cljs-935): assign
+    // changes none of its rows, and its refusal is worded below.
+    if !writable(job, o.id()) && !shared_regexp(heap, o.id()) { image_write(job, k); return false; }
     prepare_function(job, o, k, true);
     if heap.fault != Fault.None { return false; }
     let setter, ok = write(heap, o, k, v);
+    shared_regexp_wording(job, o);
     // A proxy's [[Set]] (light-cljs-890), its answer arriving as a setter's
     // would, a false one a TypeError.
     if proxy_pending(heap, proxy_method::Set) { proxy_take(job, proxy_method::Set, o, v, true); return heap.fault == Fault.None; }

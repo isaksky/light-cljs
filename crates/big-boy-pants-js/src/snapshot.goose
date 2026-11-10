@@ -66,6 +66,16 @@ fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count 
 // an arguments map's cells (light-cljs-860).
 fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq || kind == node_kind::BoundFunction || kind == node_kind::ArgumentMap || kind == node_kind::StructType || kind == node_kind::Struct || kind == node_kind::InitializerSlot; }
 fn map_row<S>(s: const S&, v: source::Value) -> bool { return v.is_object() && v.id() < s.nodes.len && s.nodes[v.id()].kind == node_kind::Map; }
+// Whether row n is a shareable regex value laid out as
+// regexp_object.goose's new_shared_regexp lays one out (light-cljs-935):
+// immutable and not extensible, its one own property `lastIndex` 0 in the
+// realm's RegExp template shape, %RegExp.prototype% its prototype, and a
+// program of the code's without `g` or `y`.
+fn shared_regexp_layout<S>(s: const S&, n: source::Node) -> bool {
+    let t = source::regexp_template_row();
+    if n.kind != node_kind::RegExp || !n.immutable || !n.non_extensible || n.initialized || t >= s.nodes.len || n.function >= s.patterns.len { return false; }
+    return n.shape == s.nodes[t].shape && n.key_count == 1 && n.keys == 0 && n.key_capacity == 0 && source::same_bits(n.proto, source::object(source::regexp_prototype_row())) && source::same_bits(n.slots[0], source::number(0)) && n.slots[1].is_undefined() && n.metadata.is_undefined() && !source::stateful_pattern(s.patterns[n.function]);
+}
 // Whether struct row n (light-cljs-920) has a struct type of as many fields,
 // is immutable unless that type is Mutable, and has an extension map or
 // metadata (form maps) only as a record; no other link or flag.
@@ -878,6 +888,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // program of the code's and holds its pattern text, a string, and
         // no element run.
         if n.kind == node_kind::RegExp && (n.function >= s.patterns.len || s.patterns[n.function].failure != regexp_failure::None || !n.value.is_string() || n.count != 0 || n.start != 0 || n.length != 0 || !n.namespace_value.is_null()) { return reject(c, Error.Link); }
+        // A shareable regex value (light-cljs-935) keeps its layout.
+        if n.kind == node_kind::RegExp && n.immutable && !shared_regexp_layout(s, n) { return reject(c, Error.Link); }
         // A struct type (light-cljs-920, source::node_kind::StructType) is
         // immutable and has a name, a run of field then member names
         // (strings, checked with its run below), a type_flavor and a key

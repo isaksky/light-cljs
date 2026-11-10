@@ -958,7 +958,7 @@ fn proxy_forward_property(job: Job&, at: i64, method: i64, target: Value) {
         return;
     }
     if method == proxy_method::Delete {
-        if !writable(job, target.id()) { image_write(job, k); return; }
+        if !writable(job, target.id()) && !shared_regexp(heap, target.id()) { image_write(job, k); return; }
         // A lazy closure's `length` or `name` is made before it goes (delete_op).
         if key_is(heap, k, "length") || key_is(heap, k, "name") { prepare_function(job, target, k, true); }
         let ok = delete_property(heap, target, k);

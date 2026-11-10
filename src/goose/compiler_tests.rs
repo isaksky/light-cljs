@@ -894,7 +894,11 @@ fn goose_compiler_wrapper_conventions_and_boundaries() {
             "return __rt.cljInvoke(()=>1,null,null,1);",
             Some("Fault.NativeBoundary"),
         ),
-        ("return rt.intrinsicRegExp();", Some("Fault.NativeBoundary")),
+        // rt.intrinsicRegExp is the realm's RegExp (light-cljs-935).
+        (
+            "return rt.intrinsicRegExp===RegExp && rt.intrinsicRegExp('a').test('ba');",
+            None,
+        ),
         ("return rt.core.inc.call(null,40)===41;", None),
         // The emitted prologue's core binding is V8's own-property
         // descriptor of rt.core, its value the leaf itself (light-cljs-807).
@@ -3768,6 +3772,132 @@ fn goose_compiler_struct_types_match_v8() {
     ] {
         source_matches_v8(source, None);
     }
+}
+
+/// Regexes in macro results and arguments (light-cljs-935): a RegExp a
+/// macro returns, made with `js*` until light-cljs-923 gives macros
+/// `re-pattern`, crosses as the V8 build's form bridge encodes it, a regex
+/// literal whose payload is `(?flags)source`, and a regex literal argument
+/// arrives as a shareable regex value that matches, prints and goes back
+/// as V8's does.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_regexes_match_v8() {
+    for source in [
+        r#"(defmacro m [] (js* "/a+b/m")) (def x (m))"#,
+        r#"(defmacro m [] [(js* "new RegExp('a/b', 'is')") (js* "new RegExp('')") 1]) (def x (m))"#,
+        r#"(defmacro m [] (js* "new RegExp('a\\nb', 'du')")) (def x (m))"#,
+        r#"(defmacro m [] {:re (js* "/x/v")}) (def x (m))"#,
+        r#"(defmacro m [r] r) (def x (m #"ab")) (def y (m #"(?m)a/b")) (def z (m #"(?mi)c"))"#,
+        r#"(defmacro m [r] [(.test r "xab") (.-source r) (.-flags r) (str r) (pr-str r) (pr-str [r]) (identical? r r) (instance? js/RegExp r)]) (def x (m #"ab")) (def y (m #"(?m)a/b"))"#,
+        r#"(defmacro m [r] (let [x (.exec r "zab")] [(aget x 0) (.-index x) (.replace "aab" r "-")])) (def x (m #"a(b)?"))"#,
+        r#"(defmacro m [] (pr-str (js* "/a\\/b\\n/"))) (def x (m))"#,
+        // A literal argument kept in an atom is no occurrence of a later
+        // call's: it goes back as itself, beside that call's own.
+        r#"(def store (atom nil)) (defmacro put [r] (do (reset! store r) nil)) (defmacro get-it [x] [@store x]) (put #"stored") (def y (get-it #"other"))"#,
+    ] {
+        source_matches_v8(source, None);
+    }
+    // A global or sticky regex in a result, whose lastIndex is state, fails
+    // by name on Goose; so does a literal argument JavaScript cannot compile,
+    // and printing or str of a RegExp whose `source` could be its own.
+    for (source, expected) in [
+        (
+            r#"(defmacro m [] (js* "/a/g")) (def x (m))"#,
+            "bridge-Error.Unsupported",
+        ),
+        (
+            r#"(defmacro m [] [(js* "new RegExp('a', 'y')")]) (def x (m))"#,
+            "bridge-Error.Unsupported",
+        ),
+        (
+            r#"(defmacro m [r] 1) (def x (m #"(?x)a"))"#,
+            "bridge-Error.Unsupported",
+        ),
+        (
+            r#"(defmacro m [] (pr-str (js* "Object.defineProperty(/a/, 'source', {value: 'b'})"))) (def x (m))"#,
+            "printing-a-RegExp-with-properties-of-its-own",
+        ),
+        (
+            r#"(defmacro m [] (str (js* "Object.setPrototypeOf(/a/, Object.create(RegExp.prototype))"))) (def x (m))"#,
+            "ToString-of-a-RegExp-with-properties-of-its-own",
+        ),
+    ] {
+        let error = goose_compile(source, None).unwrap_err();
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+}
+
+/// Shareable regex values in process-wide state (light-cljs-935): a
+/// regex kept in an atom and read by later jobs is one identity
+/// (compare-and-set! by identity holds, a job's two reads are one object),
+/// matches and keeps its lastIndex at 0; it goes back to the compiler as a
+/// regex literal; a global regex and an ordinary RegExp, mutable JavaScript
+/// objects, fail by name before they change the cell.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_regexes_in_cells_keep_their_identity() {
+    for workers in [1, 2, 4] {
+        let (outcomes, jobs) = cell_session(
+            workers,
+            &[],
+            &[
+                "rt.core.reset(a, rt.vectorFromArray([__rt.formRegex('a+', 'm'), 1])); return 0;",
+                "const v = rt.core.deref(a); const r = __rt.formNth(v, 0); return r === __rt.formNth(rt.core.deref(a), 0) && r.test('caat') && r.flags === 'm' && r.lastIndex === 0 && !Object.isExtensible(r) && r instanceof RegExp && rt.core.compareAndSet(a, v, v);",
+                "return __rt.formNth(rt.core.deref(a), 0);",
+                "rt.core.reset(a, /a/g); return 0;",
+                "rt.core.reset(a, rt.vectorFromArray([new RegExp('a')])); return 0;",
+                "const r = __rt.formNth(rt.core.deref(a), 0); r.lastIndex = 0; let t = false; try { r.lastIndex = 1; } catch (e) { t = e instanceof TypeError; } let u = false; try { Reflect.set(r, 'lastIndex', 2); } catch (e) { u = e instanceof TypeError; } return t && u && r.lastIndex === 0 && RegExp(r) === r && Reflect.set(r, 'lastIndex', 0) && !Reflect.set({}, 'x', 1, r) && Object.assign(r, {lastIndex: 0}) === r && Reflect.deleteProperty(r, 'missing') && !Reflect.deleteProperty(r, 'lastIndex') && __rt.formKind(r) === 'compiler-literal' && __rt.formName(r) === 'regex';",
+            ],
+        );
+        assert_eq!(outcomes[0].as_deref(), Ok("Double(0.0)"), "{outcomes:?}");
+        assert_eq!(outcomes[1].as_deref(), Ok("Boolean(true)"), "{outcomes:?}");
+        let payload: Vec<u16> = "(?m)a+".encode_utf16().collect();
+        assert_eq!(
+            outcomes[2].as_deref(),
+            Ok(format!("CompilerLiteral {{ kind: Regex, payload: String({payload:?}) }}").as_str()),
+            "{outcomes:?}"
+        );
+        for refused in [3, 4] {
+            assert!(
+                outcomes[refused].as_ref().unwrap_err().contains(
+                    "Fault.NativeBoundary:reset:-cannot-share-a-mutable-JavaScript-object"
+                ),
+                "{outcomes:?}"
+            );
+        }
+        assert_eq!(outcomes[5].as_deref(), Ok("Boolean(true)"), "{outcomes:?}");
+        assert_eq!(jobs.cells, 1, "{jobs:?}");
+    }
+}
+
+/// A shareable regex value a macro namespace's definition holds, directly
+/// or in a closure, is published with its program and installed in the
+/// expanding job (light-cljs-935); a macro that keeps one in a process-wide
+/// atom sees the same value in a later expansion.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_publishes_shareable_regexes() {
+    let output = goose_compile(
+        r#"(def re (js* "__rt.formRegex('b+', 'd')"))
+           (defn matcher [] (fn [s] (.test re s)))
+           (def store (atom nil))
+           (defmacro put [] (do (reset! store re) nil))
+           (defmacro check [] [((matcher) "abbc") (.-flags re) (identical? @store re) (.-source @store) (pr-str re)])
+           (put)
+           (def x (check))
+           (def y (check))"#,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        output
+            .matches(r##"[true, "d", true, "b+", "#\"b+\""]"##)
+            .count(),
+        2,
+        "{output}"
+    );
 }
 
 #[test]
@@ -7834,6 +7964,27 @@ fn goose_compiler_a_narrowed_environment_still_refuses_what_goose_cannot_convert
     )
     .unwrap();
     assert!(output.contains("42"));
+    // A regex literal in a left-out entry sends the environment whole
+    // (light-cljs-935): Goose compiles it before the import, so one
+    // JavaScript cannot compile refuses the call as it would unnarrowed,
+    // and a valid one does not.
+    for blind in [
+        "(defmacro blind [] 42)",
+        "(defmacro blind [] (count &env) 42)",
+    ] {
+        let source = format!("(defmacro ignored {{:probe #\"(?x)a\"}} [] nil)\n{blind}\n(blind)");
+        let error = goose_compile(&source, None).unwrap_err();
+        assert!(
+            error.contains("bridge-Error.Unsupported"),
+            "{blind}: {error}"
+        );
+        let source =
+            format!("(defmacro ignored {{:probe #\"a\"}} [] nil)\n{blind}\n(def x (blind))");
+        assert!(
+            goose_compile(&source, None).unwrap().contains("42"),
+            "{blind}"
+        );
+    }
 }
 
 /// The entries a narrowed environment leaves out still take the call's

@@ -156,6 +156,7 @@ fn emit_object_string(job: Job&, b: Builtin, p: Printer&, o: Value) -> bool {
             NumberPrototypeValueOf => this_primitive(job, m, 0, o),
             StringPrototypeToString, StringPrototypeValueOf => this_primitive(job, m, 1, o),
             BooleanPrototypeValueOf, BooleanPrototypeToString => this_primitive(job, m, 2, o),
+            RegExpPrototypeToString => regexp_string(job, b, o),
             _ => { unsupported_step(job, b, "ToString of an object through this built-in"); return false; },
         };
         if heap.fault != Fault.None { return false; }
@@ -257,6 +258,16 @@ fn print_one(job: Job&, b: Builtin, p: Printer&, v: Value) -> bool {
         return print_open_scratch(job, p, PrintKind.Map, PrintClose.Brace, items);
     }
     if kind == node_kind::StructType { unsupported_step(job, b, "printing a struct type"); return false; }
+    // A RegExp prints as the V8 build's printHost prints one: `#"`, its
+    // `source` (EscapeRegExpPattern), `"` (light-cljs-935). One whose
+    // `source` read could reach a property of its own or another
+    // prototype fails by name.
+    if kind == node_kind::RegExp {
+        if !intrinsic_reads(heap, x) { unsupported_step(job, b, "printing a RegExp with properties of its own"); return false; }
+        let s = escape_pattern(heap, n.value);
+        if heap.fault != Fault.None || !room(job, p, str_len(heap, s) + 3) { return false; }
+        emit(p, "#\""); append_utf16(heap, s, p.out); emit(p, "\""); return true;
+    }
     if kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction {
         // `#object[name]`, `Function` for a falsy name (*print-fn-bodies* off).
         let name = form_value(heap, data_get(job, b, x, "name"));

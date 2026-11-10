@@ -2271,7 +2271,11 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     match kind {
-        node_kind::Object, node_kind::Arguments, node_kind::Builtin, node_kind::BoundFunction, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator, node_kind::RegExp => {},
+        node_kind::Object, node_kind::Arguments, node_kind::Builtin, node_kind::BoundFunction, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {},
+        // A shareable regex value's `lastIndex` stays 0 (light-cljs-935;
+        // regexp_object.goose shared_last_index); it has no other own
+        // property and is not extensible, so the rest refuses any other key.
+        node_kind::RegExp => { if node(heap, o).immutable && same_bits(k, last_index_key(heap)) { return Value.Undefined, shared_last_index(heap, value); } },
         node_kind::Array => {
             // A non-writable `length` (light-cljs-881) refuses the write; a
             // name goes on below, where its own non-writable property or
@@ -4081,7 +4085,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if !named_supported(heap, a, args[1]) { if heap.fault == Fault.None { heap.fault = Fault.NativeBoundary; } return Value.Undefined; }
             return allocate(heap, Node { kind: if op == form_op::Keyword { node_kind::Keyword } else { node_kind::Symbol }, value: args[1], namespace_value: if a.tag() <= value_tag::Null { nil() } else { a } });
         },
-        form_op::Kind => { let kind = form_kind(heap, a); return match kind { node_kind::List, node_kind::Concat => text(heap, "list"), node_kind::Vector => text(heap, "vector"), node_kind::Map => text(heap, "map"), node_kind::Set => text(heap, "set"), node_kind::Symbol => text(heap, "symbol"), node_kind::Keyword => text(heap, "keyword"), node_kind::Reduced => text(heap, "reduced"), node_kind::StructType => text(heap, "type"), node_kind::Struct => text(heap, if record_value(heap, a) { "record" } else { "struct" }), _ => nil() }; },
+        form_op::Kind => { let kind = form_kind(heap, a); return match kind { node_kind::List, node_kind::Concat => text(heap, "list"), node_kind::Vector => text(heap, "vector"), node_kind::Map => text(heap, "map"), node_kind::Set => text(heap, "set"), node_kind::Symbol => text(heap, "symbol"), node_kind::Keyword => text(heap, "keyword"), node_kind::Reduced => text(heap, "reduced"), node_kind::StructType => text(heap, "type"), node_kind::Struct => text(heap, if record_value(heap, a) { "record" } else { "struct" }), node_kind::RegExp => if shared_regexp(heap, form_value(heap, a).id()) { text(heap, "compiler-literal") } else { nil() }, _ => nil() }; },
         form_op::Count => { return number(form_count(heap, a)); },
         form_op::Nth => { let i = form_value(heap, args[1]); if !i.is_number() || !(i.num() >= -2147483648.0 && i.num() <= 2147483647.0) || i.num() != (i.num() as i64) || i.num() < 0 || i.num() >= form_count(heap, a) { heap.fault = Fault.TypeError; return Value.Undefined; } return form_nth(heap, a, i.num() as i64); },
         form_op::CljCount => { if core_failed(heap, count_error(heap, a)) { return Value.Undefined; } return number(form_count(heap, a)); },
@@ -6260,7 +6264,7 @@ fn receiver_set(job: Job&, base: Value, k: Value, value: Value, receiver: Value)
         at = prototype(heap, at.id());
     }
     if !receiver.is_object() { return Value.Undefined, false; }
-    if !writable(job, receiver.id()) { image_write(job, k); return Value.Undefined, false; }
+    if !writable(job, receiver.id()) && !shared_regexp(heap, receiver.id()) { image_write(job, k); return Value.Undefined, false; }
     prepare_function(job, receiver, key, true);
     if heap.fault != Fault.None { return Value.Undefined, false; }
     // A proxy receiver is defined on by its [[DefineOwnProperty]]: the
@@ -6280,6 +6284,9 @@ fn receiver_set(job: Job&, base: Value, k: Value, value: Value, receiver: Value)
         let setter, written = assign(heap, receiver, key, value);
         if heap.fault != Fault.None || setter.is_object() { if heap.fault == Fault.None { heap.fault = Fault.InvalidState; } return Value.Undefined, false; }
         ok = written;
+    } else if shared_regexp(heap, receiver.id()) {
+        // A shareable regex value takes no new property (light-cljs-935).
+        ok = false;
     } else {
         ok = define_property(heap, receiver, key, value, attrs_data());
         if heap.fault != Fault.None { return Value.Undefined, false; }
@@ -6293,6 +6300,7 @@ fn receiver_set(job: Job&, base: Value, k: Value, value: Value, receiver: Value)
 fn property_fault(job: Job&, base: Value, k: Value, named: bool, write: bool) {
     if job.heap.fault == Fault.UnsupportedOperand { primitive_gap(job, base); }
     else if job.heap.fault == Fault.TypeError && base.tag() <= value_tag::Null && job.detail.len == 0 { base_error(job, base, k, named, write); }
+    else if job.heap.fault == Fault.TypeError && write { shared_regexp_wording(job, base); }
     // A property write's only RangeError: an array's invalid new length
     // (array_length).
     else if job.heap.fault == Fault.RangeError && job.detail.len == 0 { for c in "invalid array length" { job.detail.push(c); } }
@@ -6671,7 +6679,9 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
         if valid(heap, value) { put(heap, object, k, value); }
         job.operands.push(result); return;
     }
-    if object.is_object() && !writable(job, object.id()) { image_write(job, k); job.operands.push(result); return; }
+    // A published shareable regex value (light-cljs-935) takes the
+    // assignment as the job's own does: assign changes none of its rows.
+    if object.is_object() && !writable(job, object.id()) && !shared_regexp(heap, object.id()) { image_write(job, k); job.operands.push(result); return; }
     prepare_function(job, object, k, true);
     // OrdinarySet reads an inherited `prototype` too: a lazy one on the
     // chain (an object made by Object.create(F), light-cljs-883) is made first.
@@ -6756,7 +6766,9 @@ fn delete_op(job: Job&, strict: bool) {
     var ok = true;
     if object.is_string() { let i = index(heap, k); ok = !(key_is(heap, k, "length") || i >= 0 && i < str_len(heap, object)); }
     else if object.is_object() {
-        if !writable(job, object.id()) { image_write(job, k); return; }
+        // A published shareable regex value deletes nothing (light-cljs-935):
+        // its `lastIndex` is not configurable and it has no other own key.
+        if !writable(job, object.id()) && !shared_regexp(heap, object.id()) { image_write(job, k); return; }
         let key = intern(heap, k);
         if heap.fault != Fault.None { return; }
         // A lazy closure's `length` or `name` is made before it goes.

@@ -41,8 +41,9 @@ namespace source;
 //
 // A value stored into a cell is a primitive, a form graph (forms: lists,
 // vectors, maps, sets, symbols, keywords and scalar occurrences; atoms, each
-// a cell first; and cell references) or, when it reaches a function or a
-// job's own delay, a callable graph (light-cljs-809): published as
+// a cell first; and cell references) or, when it reaches a function, a
+// job's own delay, a struct or a shareable regex value (light-cljs-920,
+// light-cljs-935), a callable graph (light-cljs-809): published as
 // callable::encode publishes a helper, its reachable immutable captures and
 // forms with cells for its atoms and delays, and installed in a loading job
 // as callable::decode_install installs one, once per identity. A built-in
@@ -215,6 +216,9 @@ fn form_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, functi
         // transport, which carries any immutable row.
         else if n.kind == node_kind::Struct && !n.immutable { return "a deftype instance with mutable fields"; }
         else if n.kind == node_kind::StructType || n.kind == node_kind::Struct { functions = true; return ""; }
+        // A shareable regex value (light-cljs-935) too, which carries its
+        // program, code rows a form graph has no place for.
+        else if shared_regexp_node(n) { functions = true; return ""; }
         else if n.kind == node_kind::InitializerSlot { return "a compiler initializer slot"; }
         else if n.kind != node_kind::Symbol && n.kind != node_kind::Keyword && n.kind != node_kind::Scalar && n.kind != node_kind::Cell { return "a mutable JavaScript object"; }
     }
@@ -247,6 +251,9 @@ fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, cl
         // shareable; a Mutable type's struct and an initializer slot are not.
         if n.kind == node_kind::Struct && !n.immutable { return "a deftype instance with mutable fields"; }
         if n.kind == node_kind::InitializerSlot { return "a compiler initializer slot"; }
+        // A shareable regex value (light-cljs-935) goes with its program;
+        // its prototype and shape are the realm's.
+        if shared_regexp_node(n) { work.push(n.value); continue; }
         if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind > node_kind::Concat && n.kind != node_kind::Atom && n.kind != node_kind::Cell && n.kind != node_kind::Delay && !source::shared_struct(n) { return "a mutable JavaScript object"; }
         if n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() { return if n.kind == node_kind::Closure { "a function with properties (a mutable JavaScript object)" } else { "a mutable JavaScript object" }; }
         if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(v.id()); }
@@ -580,8 +587,9 @@ fn expected(job: Job&, v: Value) -> cells::Flat {
 // `floor`) aside. "" or the reason the publication fails; `thunks` is set
 // when a pending delay became a cell, whose thunk only a callable
 // publication carries (a form graph names just the cell), or when the
-// value reaches a struct type or struct (light-cljs-920), which only a
-// callable publication carries (a form graph has no struct). The cells'
+// value reaches a struct type or struct (light-cljs-920) or a shareable
+// regex value (light-cljs-935), which only a callable publication carries
+// (a form graph has no struct, nor a regex's program). The cells'
 // states go in `initial`, for store_initial once the publication's
 // places are known.
 //
@@ -601,7 +609,9 @@ fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: I
     while work.len > 0 {
         let o = work.pop(); let n = node(heap, o);
         if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(o); }
-        if n.kind == node_kind::StructType || n.kind == node_kind::Struct { thunks = true; }
+        // A struct type or struct, and a shareable regex value with its
+        // program (light-cljs-935), go by the callable transport only.
+        if n.kind == node_kind::StructType || n.kind == node_kind::Struct || shared_regexp_node(n) { thunks = true; }
         var edges: Value[>..] = [n.value, n.namespace_value, n.metadata, n.proto];
         if snapshot::has_values(n.kind) { for i in n.count { edges.push(slot(heap, n.start + i)); } }
         if snapshot::shaped(n) {
