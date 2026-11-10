@@ -978,6 +978,7 @@ fn main() {
     properties();
     scripts();
     primitive_methods();
+    regexp_boundaries();
     key_enumeration();
     named_properties();
     heap_program::join(thread_spawn(realm_model, str(embed_file("../corpus/serial/calls.gsp"))));
@@ -1153,7 +1154,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-set-delete.gsp"), embed_file("../corpus/serial/proxy-traps.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/proxy-copy.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
@@ -1520,6 +1521,82 @@ thread_fn primitive_rounds(bytes: u8[], rounds: i64) {
     assert(source::run(job, -1) == tiny::Outcome.Complete && job.fault == source::Fault.None);
     assert(qput(Rounds { result: job.result.num(), rows: heap.nodes.len - nodes }));
 }
+// RegExp matching's limits and ownership (light-cljs-933;
+// regexp-boundaries.js, one run of each mode): a search, then a match's
+// group copies, past the job's remaining work fail WorkLimit, which
+// JavaScript cannot catch, the first before lastIndex is written and the
+// second after; RegExp rows a later job does not own fault NativeBoundary
+// when a global or sticky search would write their lastIndex, in the
+// template's layout and in a dictionary one, and a plain one matches; and
+// the d flag's reserve and five thousand group names complete.
+fn regexp_boundaries() {
+    let bytes = embed_file("../corpus/serial/regexp-boundaries.gsp");
+    heap_program::join(thread_spawn(regexp_work_limit, str(bytes), 0, 1.0));
+    heap_program::join(thread_spawn(regexp_work_limit, str(bytes), 1, 8192.0));
+    heap_program::join(thread_spawn(regexp_image_rows, str(bytes)));
+    heap_program::join(thread_spawn(regexp_boundary_reserve, str(bytes)));
+    print("serial source VM: RegExp matching past the job's work fails WorkLimit (before and after the lastIndex write), an image RegExp's lastIndex write faults NativeBoundary, and the d flag's reserve and many group names pass");
+}
+// Mode `mode` with 600,000 units of work left at its start: WorkLimit,
+// not thrown, its one RegExp's lastIndex `last`.
+thread_fn regexp_work_limit(bytes: u8[], mode: i64, last: f64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    heap.limits.work = heap.work + 600000;
+    var job = source::Job { heap: heap, writable_code: code };
+    let m: f64 = mode;
+    assert(source::start(job, source::closure(heap, 0, []), [source::number(m)]));
+    assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.WorkLimit && !job.thrown);
+    var found: i64 = 0;
+    for n in heap.nodes { if n.kind == node_kind::RegExp { found += 1; assert(n.slots[0].is_number() && n.slots[0].num() == last); } }
+    assert(found == 1 && source::retire(job));
+}
+fn regexp_member(heap: source::Heap&, o: source::Value, name: const u8[:]) -> source::Value {
+    let v, getter = source::lookup(heap, o, source::key_named(heap, name));
+    assert(heap.fault == source::Fault.None && !getter.is_object());
+    return v;
+}
+// Mode 2's RegExps, made by one job, matched by later jobs that do not
+// own them (Job.owned_nodes, as a reused worker's image rows are).
+thread_fn regexp_image_rows(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var first = source::Job { heap: heap, writable_code: code };
+    let two: f64 = 2;
+    assert(source::start(first, source::closure(heap, 0, []), [source::number(two)]) && source::run(first, -1) == tiny::Outcome.Complete);
+    let holder = first.result; assert(source::retire(first));
+    let run = regexp_member(heap, holder, "run");
+    let names: source::Name[4] = [source::Name { text: "plain" }, source::Name { text: "g" }, source::Name { text: "y" }, source::Name { text: "dict" }];
+    for name, i in names {
+        let r = regexp_member(heap, holder, name.text);
+        assert(source::is_regexp_object(heap, r) && source::node(heap, r.id()).initialized == (i == 3));
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len, writable_code: code };
+        assert(source::start(job, run, [r, source::text(heap, "ba")], holder));
+        let outcome = source::run(job, -1);
+        if i == 0 { assert(outcome == tiny::Outcome.Complete && job.result.is_object()); }
+        else {
+            var detail: u16[>..] = []; for c in "write to an image row: lastIndex" { detail.push(c); }
+            assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary && job.detail[..] == detail[..]);
+        }
+        assert(source::retire(job));
+        let last = regexp_member(heap, r, "lastIndex"); assert(last.is_number() && last.num() == 0);
+    }
+}
+// Mode 3, its searches (about 8 million units of work) bounded by their
+// allowance alone, as conformance.goose runs scripts: true.
+thread_fn regexp_boundary_reserve(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    heap.limits.work = heap.work + (1 << 40);
+    var job = source::Job { heap: heap, writable_code: code };
+    let three: f64 = 3;
+    assert(source::start(job, source::closure(heap, 0, []), [source::number(three)]) && source::run(job, -1) == tiny::Outcome.Complete);
+    var output: u8[>..] = []; source::canonical(heap, job.result, output); assert(output[..] == "boolean:true");
+    assert(source::retire(job));
+}
 fn primitive_methods() {
     let bytes = embed_file("../corpus/serial/primitive-methods.gsp");
     check(bytes, "number:400.0");
@@ -1540,6 +1617,14 @@ fn primitive_methods() {
     // evaluated, the step limit's RangeError and invalid flags, all
     // caught; then a live lookbehind literal's named fault, uncaught.
     check(embed_file("../corpus/serial/regexp-failures.gsp"), "Fault.UnsupportedOperand:RegExp:-lookbehind", source::Fault.UnsupportedOperand);
+    // Matching (light-cljs-933): exec's and test's frames over conversions,
+    // a user exec and an `exec` getter, lastIndex updates, named groups,
+    // indices and Unicode mode, with many match results made and dropped,
+    // at every budget cut. The search's step limit is a catchable
+    // RangeError (in regexp-failures above); a case-insensitive instruction
+    // that runs fails by name until Canonicalize (light-cljs-936).
+    check(embed_file("../corpus/serial/regexp-exec.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/regexp-ignore-case.gsp"), "Fault.UnsupportedOperand:test:-case-insensitive-matching", source::Fault.UnsupportedOperand);
     // Base classes (light-cljs-886): class constructors with their eager
     // prototypes, methods, accessors, instance fields run by the
     // constructor's frame, static fields and blocks, and Reflect.construct

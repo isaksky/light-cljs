@@ -78,6 +78,10 @@
   "bbp/super_properties_sloppy" {:area :objects-classes :mode :sloppy}
   "bbp/regexp_construction" {:area :date-regexp}
   "bbp/regexp_flags_and_source" {:area :date-regexp}
+  "bbp/regexp_exec_results" {:area :date-regexp}
+  "bbp/regexp_last_index" {:area :date-regexp}
+  "bbp/regexp_unicode_matching" {:area :date-regexp}
+  "bbp/regexp_matcher_table" {:area :date-regexp}
   "bbp/reflect_get_set_receivers" {:area :objects-classes}
   "bbp/proxy_get_traps" {:area :objects-classes}
   "bbp/proxy_has_traps" {:area :objects-classes}

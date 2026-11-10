@@ -394,7 +394,8 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // callee newTarget (an object or, called, undefined) or from the
         // prototype phase on the prototype; the flags getter awaits read pc
         // with the bits of the reads before it; toString awaits `source` or
-        // `flags`, holding the source's string for the second.
+        // `flags`, holding the source's string for the second; exec and
+        // test (light-cljs-933) await an exec_pc:: phase.
         RegExp r => regexp_frame_valid(s, f, r.which),
         _ => true,
     };
@@ -404,6 +405,16 @@ fn regexp_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Buil
         let proto = f.index & regexp_state::Prototype != 0;
         return f.pc >= regexp_pc::Match && f.pc <= regexp_pc::FlagsText && f.index >= 0 && f.index <= 15 && proto == (f.pc >= regexp_pc::PatternText)
             && (if proto { object_of(s, f.callee, node_kind::None) } else { f.callee.is_undefined() || object_of(s, f.callee, node_kind::None) });
+    }
+    // exec and test (light-cljs-933): exec's receiver is a RegExp, test's
+    // any object until it reads lastIndex, which only a RegExp's frame does
+    // (its next step matches with the receiver's program); past the
+    // argument's conversion each holds its string, and only test reads
+    // `exec` or awaits a callable exec's result.
+    if source::regexp_matching(which) {
+        let test = which == source::Builtin.RegExpPrototypeTest;
+        return object_of(s, f.receiver, if test && f.pc != exec_pc::LastIndex { node_kind::None } else { node_kind::RegExp })
+            && (f.pc == exec_pc::Input || f.input.is_string() && (f.pc == exec_pc::LastIndex || test && (f.pc == exec_pc::Exec || f.pc == exec_pc::Result)));
     }
     if !object_of(s, f.receiver, node_kind::None) { return false; }
     if which == source::Builtin.RegExpPrototypeFlags { return f.pc >= 0 && f.pc < 8 && f.argument_count >= 0 && f.argument_count < (1 << f.pc); }

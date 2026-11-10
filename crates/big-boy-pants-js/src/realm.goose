@@ -158,11 +158,14 @@ enum Builtin {
     // RegExp.prototype[@@match] (light-cljs-932): a function object, since
     // IsRegExp reads it; calling it is light-cljs-937's, a named step until then.
     RegExpPrototypeMatch,
+    // RegExp.prototype.exec and test (light-cljs-933; regexp_object.goose),
+    // RegExp native frames.
+    RegExpPrototypeExec, RegExpPrototypeTest,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[216] = [
+let BUILTINS: BuiltinInfo[218] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -289,6 +292,7 @@ let BUILTINS: BuiltinInfo[216] = [
     BuiltinInfo { which: Builtin.RegExpPrototypeUnicodeSets, name: "get unicodeSets" }, BuiltinInfo { which: Builtin.RegExpPrototypeSticky, name: "get sticky" },
     BuiltinInfo { which: Builtin.RegExpPrototypeHasIndices, name: "get hasIndices" }, BuiltinInfo { which: Builtin.RegExpPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.RegExpSpecies, name: "get [Symbol.species]" }, BuiltinInfo { which: Builtin.RegExpPrototypeMatch, name: "[Symbol.match]", length: 1 },
+    BuiltinInfo { which: Builtin.RegExpPrototypeExec, name: "exec", length: 1 }, BuiltinInfo { which: Builtin.RegExpPrototypeTest, name: "test", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -394,7 +398,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[146] = [
+let REALM_FUNCTIONS: Method[148] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -501,6 +505,8 @@ let REALM_FUNCTIONS: Method[146] = [
     Method { which: Builtin.RegExpPrototypeSticky, holder: regexp_prototype_row() }, Method { which: Builtin.RegExpPrototypeHasIndices, holder: regexp_prototype_row() },
     Method { which: Builtin.RegExpPrototypeToString, holder: regexp_prototype_row() }, Method { which: Builtin.RegExpSpecies, holder: regexp_row() },
     Method { which: Builtin.RegExpPrototypeMatch, holder: regexp_prototype_row() },
+    // RegExp.prototype.exec and test (light-cljs-933).
+    Method { which: Builtin.RegExpPrototypeExec, holder: regexp_prototype_row() }, Method { which: Builtin.RegExpPrototypeTest, holder: regexp_prototype_row() },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -547,7 +553,7 @@ inline fn regexp_row() -> i64 { return fixed_rows() + 132; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[151] = [
+let PENDING: PendingName[149] = [
     // Object.prototype
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
@@ -605,11 +611,11 @@ let PENDING: PendingName[151] = [
     PendingName { holder: 27, key: "big" }, PendingName { holder: 27, key: "blink" }, PendingName { holder: 27, key: "bold" }, PendingName { holder: 27, key: "fixed" },
     PendingName { holder: 27, key: "fontcolor" }, PendingName { holder: 27, key: "fontsize" }, PendingName { holder: 27, key: "italics" }, PendingName { holder: 27, key: "link" },
     PendingName { holder: 27, key: "small" }, PendingName { holder: 27, key: "strike" }, PendingName { holder: 27, key: "sub" }, PendingName { holder: 27, key: "sup" },
-    // RegExp and %RegExp.prototype% (light-cljs-932): matching is
-    // light-cljs-770's later children's (exec and test the second's, the
-    // symbol methods the third's to sixth's; escape and compile the eighth's).
+    // RegExp and %RegExp.prototype% (light-cljs-932): the symbol methods
+    // are light-cljs-770's third to sixth children's, escape and compile
+    // its eighth's (exec and test are light-cljs-933's).
     PendingName { holder: regexp_row(), key: "escape" },
-    PendingName { holder: regexp_prototype_row(), key: "exec" }, PendingName { holder: regexp_prototype_row(), key: "compile" }, PendingName { holder: regexp_prototype_row(), key: "test" },
+    PendingName { holder: regexp_prototype_row(), key: "compile" },
     PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::Replace },
     PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::MatchAll }, PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::Search },
     PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::Split },
@@ -2063,10 +2069,10 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         MathF16round, MathFround, MathImul, MathClz32 => { return math_builtin(job, b, args); },
         MathSumPrecise => { return unsupported_step(job, b, "called outside a native frame"); },
         // RegExp (light-cljs-932; regexp_object.goose): the getters and
-        // @@species are plain; the constructor, flags and toString run as
-        // RegExp native frames (native_start).
+        // @@species are plain; the constructor, flags, toString, exec and
+        // test (light-cljs-933) run as RegExp native frames (native_start).
         RegExpPrototypeSource, RegExpPrototypeGlobal, RegExpPrototypeIgnoreCase, RegExpPrototypeMultiline, RegExpPrototypeDotAll, RegExpPrototypeUnicode, RegExpPrototypeUnicodeSets, RegExpPrototypeSticky, RegExpPrototypeHasIndices, RegExpSpecies => { return regexp_builtin(job, b, receiver); },
-        RegExp, RegExpPrototypeFlags, RegExpPrototypeToString => { return unsupported_step(job, b, "called outside a native frame"); },
+        RegExp, RegExpPrototypeFlags, RegExpPrototypeToString, RegExpPrototypeExec, RegExpPrototypeTest => { return unsupported_step(job, b, "called outside a native frame"); },
         RegExpPrototypeMatch => { return unsupported_step(job, b, "matching (light-cljs-937)"); },
         _ => { return native_value(heap, id, args); },
     }

@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "3c0904fc6204276d46270640408dbaca5fa8af22dc2da87ac0af1d3f2afd7e71",
+  "cf1a36772ddf838498f3795a844f068fdd2e1ed53134237357eef391327b7732",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -617,18 +617,30 @@
   "5e484f309a0eb1c4c9b62babbc9365c74de72b0851ca22a34e0ff6efc60310fe",
   "corpus/serial/reclaim-roots.js"
   "d41bdafa3b4cfc75f66cc2ac9f02ec8a012dcaf0a65a8bc91bf13a531c304b48",
+  "corpus/serial/regexp-boundaries.gsp"
+  "2f774a70b6b4bf1fa24e9cbbad611c537f7a941b1d69886037cd582375c6d228",
+  "corpus/serial/regexp-boundaries.js"
+  "f0ebb49af130670ad750c02cd5101e549f31614589c923fdec42e458bf9a7ff5",
   "corpus/serial/regexp-construction.gsp"
   "b81531f29b0632fe08818997a7420452ef891aa0fdc9e8bdb864fe38d4b79dcd",
   "corpus/serial/regexp-construction.js"
   "5f669ad86aebae6da7cc663535cb9338b7ae9c90f19b91174b4752d7dae1ab8d",
+  "corpus/serial/regexp-exec.gsp"
+  "dbc7e37b20d00e2a6fa7748489abbb2dd45e3fd3b4ea33b17210a70752a739ae",
+  "corpus/serial/regexp-exec.js"
+  "90537836a92881852b0f036296f96a0ede3bb3d69203eca84a60e45f1d8570e1",
   "corpus/serial/regexp-failures.gsp"
-  "4900cbf4018560c4a9e17a55974f788b1d6f41f5c77318c9ac2f837e9164560e",
+  "5abf6c707e1a3abfed43b91ed4ce53d9e16ce0dd4524795bc929c1c154b0675b",
   "corpus/serial/regexp-failures.js"
-  "0912197fb9245dff24336aa23c5e8546a9ddda2921c28c6535d1a1a0ff06d968",
+  "94bf3dbf500a8a873fd27c659c90d62d90debc89437b87af55a73d29a0f5af7b",
+  "corpus/serial/regexp-ignore-case.gsp"
+  "de7b6c93a283291f94c594057715acda96b3b8023cf8f03b5b6e789c94f778d7",
+  "corpus/serial/regexp-ignore-case.js"
+  "6184720fba50d603e9dffc1c62fcc228b5b1d8e5c1b6af30e6d71e5dd564e0be",
   "corpus/serial/regexp-wait.gsp"
-  "a85d8c42f44265a5eccce75602804ac10b93eeccf6b2e7e1bf52288ff0567453",
+  "5e5d210c1aa4a17fb55740caf4e974e71fe8cffc4ec6735e4b12f381fd317004",
   "corpus/serial/regexp-wait.js"
-  "e10900ec0a03f631cd5ea2e783c1643b9959baf92280f8676d654cb12e7ccde4",
+  "091ee3b05e1ae9257ca02e5d3b722973297b449c65775ce88617d4bd48b2254b",
   "corpus/serial/runtime-conversions.gsp"
   "96cb836dd1aecbef1b357bd029d487baed56d1187371a4bc02d0703521ff67f7",
   "corpus/serial/runtime-conversions.js"

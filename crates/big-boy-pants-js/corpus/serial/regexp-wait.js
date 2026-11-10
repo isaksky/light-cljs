@@ -10,8 +10,11 @@ function regexpWait(dep) {
   // identity rule's `constructor`, the pattern's `source` and `flags`,
   // their ToString conversions, newTarget's `prototype`), the flags
   // getter's frame in two flag reads and toString's in its `source` read
-  // and its flags conversion; a run-time pattern and a literal follow the
-  // last wait. 11 waits; completes with REGEXP_RESULT there.
+  // and its flags conversion; exec's frame (light-cljs-933) in its
+  // argument's conversion and its lastIndex's, test's in its argument's
+  // conversion, its `exec` getter and a user exec; a run-time pattern and
+  // a literal follow the last wait. 16 waits; completes with REGEXP_RESULT
+  // there.
   let log = '';
   const literal = /a(b)?c/gi;
   literal.lastIndex = 3;
@@ -34,9 +37,19 @@ function regexpWait(dep) {
     get source() { log += 'S' + dep(); return 'src'; },
     flags: { toString() { log += 'F' + dep(); return 'fl'; } }
   });
+  const found = made.exec({ toString() { log += 'T' + dep(); return 'axyyb'; } });
+  const counted = /(?<d>\d)/g;
+  counted.lastIndex = { valueOf() { log += 'V' + dep(); return 2; } };
+  const digit = counted.exec('1a2b3');
+  const tested = /c$/.test({ toString() { log += 'U' + dep(); return 'abc'; } });
+  const viaGetter = /q/;
+  Object.defineProperty(viaGetter, 'exec', { get() { log += 'E' + dep(); return undefined; } });
+  const user = /z/;
+  user.exec = function (s) { log += 'R' + dep(); return s === 'w' ? {} : null; };
+  const answers = [viaGetter.test('aq'), user.test('w')].join('/');
   const later = new RegExp(called.source + '|' + literal.source, 'v');
   const again = /a(b)?c/gi;
   return log + ':' + [literal.source, literal.flags, literal.lastIndex, made.source, made.flags, called.source, called.flags,
     constructed.source, constructed.flags, Object.getPrototypeOf(constructed) === RegExp.prototype, flags, text, String(later),
-    again !== literal && again.lastIndex === 0 && again.flags === 'gi'].join();
+    again !== literal && again.lastIndex === 0 && again.flags === 'gi', found === null && made.lastIndex === 0, digit.groups.d + digit.index + counted.lastIndex, tested, answers].join();
 }

@@ -2881,6 +2881,20 @@ mod serial_tests {
             // the step limit's RangeError and a refused lookbehind's named
             // fault, which Node and the Pants engine do not share.
             ("regexp-failures", "goose"),
+            // Matching (light-cljs-933): exec's and test's frames over
+            // conversions, a user exec and an `exec` getter, lastIndex,
+            // named groups, indices and Unicode mode at every budget cut
+            // and collection (serial_tests.goose).
+            ("regexp-exec", "boolean:true"),
+            // and a case-insensitive instruction's named fault until
+            // Canonicalize (light-cljs-936), which Node and the Pants
+            // engine do not share.
+            ("regexp-ignore-case", "goose"),
+            // and the job's work limit, an image RegExp's lastIndex
+            // write, the d flag's reserve and many group names, one run of
+            // each mode (serial_tests.goose regexp_boundaries); its limits
+            // are Goose's and the Pants engine's.
+            ("regexp-boundaries", "goose"),
             // and across dependency waits in every phase of the
             // constructor's, the flags getter's and toString's frames, with
             // literal and run-time programs, saved and restored or installed

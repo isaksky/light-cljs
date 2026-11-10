@@ -88,6 +88,10 @@ namespace source;
 // its own; RegExp.prototype.toString converts what it reads, also in its
 // frame; the getters and RegExp[@@species] take no arguments, and the
 // getters check their receiver's slot without converting it.
+// RegExp.prototype.exec and test (light-cljs-933) check their receiver (a
+// RegExp's slot, an object) before ToString of their argument, which a
+// plan would run first, and convert lastIndex after reading `exec` and
+// lastIndex, so their frame converts both in phases of its own.
 //
 // The frame's state is its operands and fields (callee the built-in
 // function object, input newTarget, argument_count the argument count,
