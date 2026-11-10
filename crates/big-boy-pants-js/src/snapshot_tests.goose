@@ -2743,7 +2743,7 @@ thread_fn runtime_eval_consumer(base: snapshot::Snapshot, wire: u8[]) {
     var valid = snapshot::Control {}; let finished = snapshot::capture(heap, roots, valid); assert(valid.error == snapshot::Error.None);
 }
 // RegExp objects across dependency waits (regexp-wait.js, light-cljs-942):
-// sixteen waits, wait w in a phase of one RegExp native frame
+// twenty-seven waits, wait w in a phase of one RegExp native frame
 // (REGEXP_WAITS[w] at pc REGEXP_PCS[w]) while a literal's object and a
 // run-time pattern's, whose program is a job code row, stay live. Run in
 // place, collected at every wait; or by a worker over the fixture's image
@@ -2753,24 +2753,37 @@ thread_fn runtime_eval_consumer(base: snapshot::Snapshot, wire: u8[]) {
 // reset cuts the job's rows, its pattern rows included. A saved RegExp
 // frame past its last phase, a RegExp row naming no program and a
 // run-time program whose op rows moved are refused. The matcher's frames
-// (exec and test, light-cljs-933; the symbol methods later) add their
-// waits to the fixture and to these tables.
-let REGEXP_WAITS: source::Builtin[16] = [
+// (exec and test, light-cljs-933; replace, replaceAll and @@replace,
+// light-cljs-934; the other symbol methods later) add their waits to the
+// fixture and to these tables.
+let REGEXP_WAITS: source::Builtin[27] = [
     source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp,
     source::Builtin.RegExpPrototypeFlags, source::Builtin.RegExpPrototypeFlags, source::Builtin.RegExpPrototypeToString, source::Builtin.RegExpPrototypeToString,
     source::Builtin.RegExpPrototypeExec, source::Builtin.RegExpPrototypeExec, source::Builtin.RegExpPrototypeTest, source::Builtin.RegExpPrototypeTest, source::Builtin.RegExpPrototypeTest,
+    source::Builtin.StringPrototypeReplaceAll, source::Builtin.StringPrototypeReplaceAll, source::Builtin.StringPrototypeReplaceAll, source::Builtin.StringPrototypeReplaceAll,
+    source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace,
+    source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace,
 ];
 // The constructor's phases (the identity rule's call, then
 // Reflect.construct with a newTarget whose `prototype` is a getter), the
 // flags getter's FLAG_NAMES reads of `global` and `sticky`, and
 // toString's `source` read and flags conversion; exec's argument
 // conversion (over `made`, a run-time program) and lastIndex's, and
-// test's argument conversion, `exec` getter and user exec.
-let REGEXP_PCS: i64[16] = [
+// test's argument conversion, `exec` getter and user exec; replaceAll's
+// @@match and @@replace getters, its search value's conversion and its
+// replacer; @@replace's argument conversion, `flags` getter, user exec,
+// a result's `index` getter and a groups getter, then (from String's
+// replace, whose frame the realm's @@replace replaces) a replacer, and an
+// empty match's lastIndex conversion.
+let REGEXP_PCS: i64[27] = [
     regexp_pc::Match, regexp_pc::Constructor, regexp_pc::Source, regexp_pc::Flags, regexp_pc::PatternText, regexp_pc::FlagsText, regexp_pc::Prototype, 1, 7, 0, 1,
     exec_pc::Input, exec_pc::LastIndex, exec_pc::Input, exec_pc::Exec, exec_pc::Result,
+    replace_pc::Match, replace_pc::Method, replace_pc::Search, replace_pc::Callback,
+    symbol_pc::Input, symbol_pc::Flags, symbol_pc::ExecResult, symbol_pc::Position, symbol_pc::Named, symbol_pc::Callback, symbol_pc::Advance,
 ];
-let REGEXP_RESULT = "mDcDsDfDxDyDpDgDkDSDFDTDVDUDEDRD:a(b)?c,gi,3,xy*,my,q+,gu,xy*,d,true,gy,/src/fl,/q+|a(b)?c/v,true,true,223,true,true/true";
+let REGEXP_RESULT = "mDcDsDfDxDyDpDgDkDSDFDTDVDUDEDRDMDPDQDRDADGDXDIDNDCDLD:a(b)?c,gi,3,xy*,my,q+,gu,xy*,d,true,gy,/src/fl,/q+|a(b)?c/v,true,true,223,true,true/true,a+b,a[1n]b[2],xc,.a.b.";
+// A pc past every RegExp frame's last phase (@@replace's symbol_pc::Named).
+let REGEXP_PAST_PHASES: u32 = 18;
 // The programs the job compiles at run time: made's, called's,
 // constructed's and later's.
 let REGEXP_COMPILED: i64 = 4;
@@ -2782,7 +2795,7 @@ fn regexp_saved_frames() {
     var waits: i64 = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(regexp_wait_resumed, copy(base), copy(w), waits % 2 == 1)); waits += 1; }
     assert(waits == REGEXP_WAITS.len + 1);
-    print("snapshot regexp frames: the RegExp constructor's, flags getter's, toString's, exec's and test's frames wait in every phase, collected in place or saved with literal and run-time programs and resumed without replay, restored or installed over a reused worker's image whose reset cuts the job's pattern rows");
+    print("snapshot regexp frames: the RegExp constructor's, flags getter's, toString's, exec's, test's, replaceAll's and @@replace's frames wait in every phase, collected in place or saved with literal and run-time programs and resumed without replay, restored or installed over a reused worker's image whose reset cuts the job's pattern rows");
 }
 // The one RegExp native frame of a job at wait w, and the RegExp objects
 // it keeps: at least one of a literal's program and one of a run-time
@@ -2804,8 +2817,9 @@ thread_fn regexp_wait_in_place(bytes: u8[]) {
     defer { heap_program::finish(); }
     var code = source::Code {}; snapshot_test::append(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
-    // Its literals: two of /a(b)?c/gi, then exec's and test's (light-cljs-933).
-    let patterns = code.patterns.len; assert(patterns == 6);
+    // Its literals: two of /a(b)?c/gi, then exec's and test's (light-cljs-933),
+    // then @@replace's (light-cljs-934).
+    let patterns = code.patterns.len; assert(patterns == 9);
     var job = source::Job { heap: heap, effects_enabled: true, writable_code: code }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
     assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
     var waits: i64 = 0;
@@ -2843,8 +2857,10 @@ thread_fn regexp_wait_first(base: snapshot::Snapshot) {
 // Collect at wait w and save the job's stack as a continuation: its heap's
 // snapshot validates, sits over the fixture's image, and is refused with a
 // saved RegExp frame at a phase past its last (mode 0), a RegExp row
-// naming no program (1), a run-time program whose op rows moved (2) or a
-// test frame in its lastIndex phase whose receiver is no RegExp (3).
+// naming no program (1), a run-time program whose op rows moved (2), a
+// test frame in its lastIndex phase whose receiver is no RegExp (3), a
+// replacement frame whose allowance spent is no number (4) or a
+// replaceAll frame whose scan cursor is far past its string (5).
 fn regexp_wait_save(job: source::Job&, heap: source::Heap&, bindings: const snapshot::Binding[:], base: const snapshot::Snapshot&, w: i64) {
     collect_at_wait(job, heap);
     regexp_wait_frame(job, w);
@@ -2853,13 +2869,13 @@ fn regexp_wait_save(job: source::Job&, heap: source::Heap&, bindings: const snap
     let a = source::activation(heap, stack);
     var c = snapshot::Control {}; let image = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
     let service: i64[] = []; assert(snapshot::over_image(image, base, service) && image.patterns.len > base.patterns.len);
-    for mode in 4 {
+    for mode in 6 {
         var bad = copy(image); var changed = false;
         match mode {
             0 => {
                 for i in a.frame_count {
                     let row = a.frames + i;
-                    match image.conts[row] { Frame x => { var f = x.f; match f.native { RegExp r => { f.pc = 8; changed = true; }, _ => {} } bad.conts[row] = source::Cont.Frame { f: f }; }, _ => {} }
+                    match image.conts[row] { Frame x => { var f = x.f; match f.native { RegExp r => { f.pc = REGEXP_PAST_PHASES; changed = true; }, _ => {} } bad.conts[row] = source::Cont.Frame { f: f }; }, _ => {} }
                 }
             },
             1 => { for n, i in image.nodes { if !changed && n.kind == node_kind::RegExp { bad.nodes[i].function = image.patterns.len as u32; changed = true; } } },
@@ -2868,7 +2884,7 @@ fn regexp_wait_save(job: source::Job&, heap: source::Heap&, bindings: const snap
             // moved to its lastIndex phase with a receiver that is no RegExp
             // (the global object, row 0): that phase matches with the
             // receiver's program, so it is refused (light-cljs-933).
-            _ => {
+            3 => {
                 assert(image.nodes[0].kind != node_kind::RegExp);
                 for i in a.frame_count {
                     let row = a.frames + i;
@@ -2881,7 +2897,40 @@ fn regexp_wait_save(job: source::Job&, heap: source::Heap&, bindings: const snap
                         _ => {},
                     }
                 }
-                if !changed { assert(w < REGEXP_WAITS.len - 2); continue; }
+                if !changed { assert(REGEXP_WAITS[w] != source::Builtin.RegExpPrototypeTest || REGEXP_PCS[w] == exec_pc::Input); continue; }
+            },
+            // A replaceAll frame awaiting its replacer moved to its Scan
+            // phase with a cursor far past its string is refused
+            // (light-cljs-934).
+            5 => {
+                for i in a.frame_count {
+                    let row = a.frames + i;
+                    match image.conts[row] {
+                        Frame x => {
+                            var f = x.f;
+                            match f.native { RegExp r => { if r.which == source::Builtin.StringPrototypeReplaceAll && f.pc == replace_pc::Callback { f.pc = replace_pc::Scan; f.index = 1 << 40; changed = true; } }, _ => {} }
+                            bad.conts[row] = source::Cont.Frame { f: f };
+                        },
+                        _ => {},
+                    }
+                }
+                if !changed { assert(REGEXP_WAITS[w] != source::Builtin.StringPrototypeReplaceAll || REGEXP_PCS[w] != replace_pc::Callback); continue; }
+            },
+            // A replace, replaceAll or @@replace frame (light-cljs-934)
+            // whose allowance spent is no number is refused.
+            _ => {
+                for i in a.frame_count {
+                    let row = a.frames + i;
+                    match image.conts[row] {
+                        Frame x => {
+                            var f = x.f;
+                            match f.native { RegExp r => { if source::replace_native(r.which) { f.output = source::Value.Undefined; changed = true; } }, _ => {} }
+                            bad.conts[row] = source::Cont.Frame { f: f };
+                        },
+                        _ => {},
+                    }
+                }
+                if !changed { assert(!source::replace_native(REGEXP_WAITS[w])); continue; }
             },
         }
         assert(changed);

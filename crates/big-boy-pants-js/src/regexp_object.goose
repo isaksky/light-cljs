@@ -7,6 +7,7 @@ import .array_callbacks;
 import .runtime_compile;
 import .function_calls;
 import .regexp_match;
+import .regexp_replace;
 
 namespace source;
 
@@ -74,8 +75,9 @@ fn regexp_accessor(b: Builtin) -> bool {
     for g in FLAG_GETTERS { if g == b { return true; } }
     return false;
 }
-// Whether built-in b runs as a RegExp native frame (native_start).
-fn regexp_native(b: Builtin) -> bool { return b == Builtin.RegExp || b == Builtin.RegExpPrototypeFlags || b == Builtin.RegExpPrototypeToString || regexp_matching(b); }
+// Whether built-in b runs as a RegExp native frame (native_start):
+// replace, replaceAll and @@replace too (light-cljs-934; regexp_replace.goose).
+fn regexp_native(b: Builtin) -> bool { return b == Builtin.RegExp || b == Builtin.RegExpPrototypeFlags || b == Builtin.RegExpPrototypeToString || regexp_matching(b) || replace_native(b); }
 // Whether built-in b is RegExp.prototype.exec or test (light-cljs-933).
 inline fn regexp_matching(b: Builtin) -> bool { return b == Builtin.RegExpPrototypeExec || b == Builtin.RegExpPrototypeTest; }
 
@@ -217,6 +219,7 @@ fn is_regexp_answer(heap: const Heap&, v: Value, matcher: Value) -> bool { retur
 fn start_regexp_native(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
     if b == Builtin.RegExp { start_regexp(job, args, base, Value.Undefined); return; }
     if regexp_matching(b) { start_exec(job, b, receiver, arg(args, 0), base); return; }
+    if replace_native(b) { start_replace(job, b, receiver, args, base); return; }
     let heap .= job.heap;
     if !receiver.is_object() { type_error(job, if b == Builtin.RegExpPrototypeFlags { "RegExp.prototype.flags getter called on a non-object" } else { "RegExp.prototype.toString called on a non-object" }); return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
@@ -279,6 +282,7 @@ fn regexp_step(job: Job&, frame: Frame, b: Builtin) {
         RegExpPrototypeFlags => { regexp_flags_step(job, frame); },
         RegExpPrototypeToString => { regexp_to_string_step(job, frame); },
         RegExpPrototypeExec, RegExpPrototypeTest => { exec_step(job, frame, b); },
+        StringPrototypeReplace, StringPrototypeReplaceAll, RegExpPrototypeReplace => { replace_step(job, b); },
         _ => { job.heap.fault = Fault.InvalidState; },
     }
 }

@@ -92,6 +92,16 @@ namespace source;
 // RegExp's slot, an object) before ToString of their argument, which a
 // plan would run first, and convert lastIndex after reading `exec` and
 // lastIndex, so their frame converts both in phases of its own.
+// String.prototype.replace and replaceAll and RegExp.prototype[@@replace]
+// (light-cljs-934; regexp_replace.goose) plan nothing either: replace's
+// ToString of its receiver follows GetMethod(searchValue, @@replace)
+// (replaceAll's IsRegExp and `flags` reads before it), which a
+// ThisStep.String would run after; its replacement converts only when it
+// is not callable; @@replace's argument converts first, but its
+// replacement's conversion is conditional too, and every later conversion
+// (flags, lastIndex, each result's length, match, index and captures, a
+// replacer's result, a named group) follows a read or a call. Their frames
+// convert each in a phase of its own.
 //
 // The frame's state is its operands and fields (callee the built-in
 // function object, input newTarget, argument_count the argument count,

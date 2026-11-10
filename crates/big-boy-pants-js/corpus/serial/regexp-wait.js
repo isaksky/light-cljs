@@ -47,9 +47,39 @@ function regexpWait(dep) {
   const user = /z/;
   user.exec = function (s) { log += 'R' + dep(); return s === 'w' ? {} : null; };
   const answers = [viaGetter.test('aq'), user.test('w')].join('/');
+  // replace, replaceAll and @@replace (light-cljs-934): String's frame in
+  // IsRegExp's @@match read, the @@replace getter, the search value's
+  // conversion and a replacer; @@replace's in its argument's conversion,
+  // `flags`, a user exec, a result's `index`, a `$<name>` read through a
+  // groups getter, a replacer, and an empty match's lastIndex conversion.
+  const search = { get [Symbol.match]() { log += 'M' + dep(); return false; }, get [Symbol.replace]() { log += 'P' + dep(); return undefined; }, toString() { log += 'Q' + dep(); return '-'; } };
+  const dashes = 'a-b'.replaceAll(search, () => { log += 'R' + dep(); return '+'; });
+  const digits = /(\d)(?<n>x)?/g;
+  Object.defineProperty(digits, 'flags', { get() { log += 'G' + dep(); return 'g'; } });
+  let execs = 0;
+  digits.exec = function (s) {
+    const m = RegExp.prototype.exec.call(this, s);
+    if (execs++ === 0) {
+      log += 'X' + dep();
+      Object.defineProperty(m, 'index', { get() { log += 'I' + dep(); return 1; } });
+      m.groups = { get n() { log += 'N' + dep(); return 'n'; } };
+    }
+    return m;
+  };
+  const swapped = digits[Symbol.replace]({ toString() { log += 'A' + dep(); return 'a1b2'; } }, '[$1$<n>]');
+  const replaced = 'xy'.replace(/y/, () => { log += 'C' + dep(); return 'c'; });
+  const empty = /(?:)/g;
+  let advanced = 0;
+  empty.exec = function (s) {
+    const m = RegExp.prototype.exec.call(this, s);
+    if (m && advanced++ === 0) { const at = this.lastIndex; this.lastIndex = { valueOf() { log += 'L' + dep(); return at; } }; }
+    return m;
+  };
+  const spaced = 'ab'.replace(empty, '.');
   const later = new RegExp(called.source + '|' + literal.source, 'v');
   const again = /a(b)?c/gi;
   return log + ':' + [literal.source, literal.flags, literal.lastIndex, made.source, made.flags, called.source, called.flags,
     constructed.source, constructed.flags, Object.getPrototypeOf(constructed) === RegExp.prototype, flags, text, String(later),
-    again !== literal && again.lastIndex === 0 && again.flags === 'gi', found === null && made.lastIndex === 0, digit.groups.d + digit.index + counted.lastIndex, tested, answers].join();
+    again !== literal && again.lastIndex === 0 && again.flags === 'gi', found === null && made.lastIndex === 0, digit.groups.d + digit.index + counted.lastIndex, tested, answers,
+    dashes, swapped, replaced, spaced].join();
 }

@@ -395,11 +395,14 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // prototype phase on the prototype; the flags getter awaits read pc
         // with the bits of the reads before it; toString awaits `source` or
         // `flags`, holding the source's string for the second; exec and
-        // test (light-cljs-933) await an exec_pc:: phase.
+        // test (light-cljs-933) await an exec_pc:: phase; replace and
+        // replaceAll a replace_pc::, @@replace a symbol_pc:: (light-cljs-934).
         RegExp r => regexp_frame_valid(s, f, r.which),
         _ => true,
     };
 }
+// The code units of string value v in the snapshot's tables, -1 for none.
+fn string_units<T>(s: const T&, v: source::Value) -> i64 { return if v.is_string() && v.sid() < s.strings.len { s.strings[v.sid()].len } else { -1 }; }
 fn regexp_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Builtin) -> bool {
     if which == source::Builtin.RegExp {
         let proto = f.index & regexp_state::Prototype != 0;
@@ -415,6 +418,30 @@ fn regexp_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Buil
         let test = which == source::Builtin.RegExpPrototypeTest;
         return object_of(s, f.receiver, if test && f.pc != exec_pc::LastIndex { node_kind::None } else { node_kind::RegExp })
             && (f.pc == exec_pc::Input || f.input.is_string() && (f.pc == exec_pc::LastIndex || test && (f.pc == exec_pc::Exec || f.pc == exec_pc::Result)));
+    }
+    // replace and replaceAll (light-cljs-934, regexp_replace.goose) spend
+    // a numbered allowance; from Search on the receiver is its string, from
+    // Replacement on the search value is, and from Scan on the replacement
+    // is a template string or a function, with the scan's cursors within
+    // the receiver: the end of the last occurrence replaced, and where the
+    // scan resumes (one past the end once every occurrence is found) or
+    // the occurrence a replacer was called for. Its steps check the pieces
+    // they read.
+    if which == source::Builtin.StringPrototypeReplace || which == source::Builtin.StringPrototypeReplaceAll {
+        let len = string_units(s, f.receiver);
+        return f.pc >= replace_pc::Match && f.pc <= replace_pc::Callback && f.output.is_number() && f.index >= 0 && f.argument_count >= 0
+            && (f.pc < replace_pc::Search || len >= 0) && (f.pc < replace_pc::Replacement || f.input.is_string())
+            && (f.pc < replace_pc::Scan || (f.callee.is_string() || object_of(s, f.callee, node_kind::None)) && f.argument_count <= len && f.index <= (if f.pc == replace_pc::Scan { len + 1 } else { len }));
+    }
+    // @@replace (light-cljs-934) on an object rx: from Replacement on its
+    // argument's string, from Flags on its template or replacer, while
+    // collecting symbol_flag:: bits and while rendering a result index
+    // within the results (its registers and scratch, being operands, its
+    // steps check).
+    if which == source::Builtin.RegExpPrototypeReplace {
+        return f.pc >= symbol_pc::Input && f.pc <= symbol_pc::Named && object_of(s, f.receiver, node_kind::None) && f.output.is_number() && f.argument_count >= 0
+            && (f.pc <= symbol_pc::Input || f.input.is_string()) && (f.pc <= symbol_pc::Replacement || f.callee.is_string() || object_of(s, f.callee, node_kind::None))
+            && (if f.pc < symbol_pc::Render { f.index >= 0 && f.index <= (symbol_flag::Global | symbol_flag::Unicode) } else { f.index >= 0 && f.index <= f.argument_count && (f.pc == symbol_pc::Render || f.index < f.argument_count) });
     }
     if !object_of(s, f.receiver, node_kind::None) { return false; }
     if which == source::Builtin.RegExpPrototypeFlags { return f.pc >= 0 && f.pc < 8 && f.argument_count >= 0 && f.argument_count < (1 << f.pc); }

@@ -979,6 +979,7 @@ fn main() {
     scripts();
     primitive_methods();
     regexp_boundaries();
+    regexp_replace_limits();
     key_enumeration();
     named_properties();
     heap_program::join(thread_spawn(realm_model, str(embed_file("../corpus/serial/calls.gsp"))));
@@ -1154,7 +1155,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-set-delete.gsp"), embed_file("../corpus/serial/proxy-traps.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/proxy-copy.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/regexp-replace.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
@@ -1584,6 +1585,89 @@ thread_fn regexp_image_rows(bytes: u8[]) {
         let last = regexp_member(heap, r, "lastIndex"); assert(last.is_number() && last.num() == 0);
     }
 }
+// Replacement's limits and ownership (light-cljs-934; regexp-replace-limits.js).
+fn regexp_replace_limits() {
+    let bytes = embed_file("../corpus/serial/regexp-replace-limits.gsp");
+    heap_program::join(thread_spawn(replace_allowance, str(bytes)));
+    heap_program::join(thread_spawn(replace_work_limit, str(bytes), 1));
+    heap_program::join(thread_spawn(replace_work_limit, str(bytes), 3));
+    heap_program::join(thread_spawn(replace_image_rows, str(bytes)));
+    replace_scan_quantum();
+    print("serial source VM: replacement past its allowance is a catchable RangeError (output, collected groups, template scans before a later name, capture counts), its units spent once; past the job's work WorkLimit (output, a search string's scan); an image RegExp's lastIndex reset faults NativeBoundary; scans run in bounded quanta");
+}
+// Mode 0, its operations (several million units of work, more than a
+// million code units) bounded by their allowance alone: true.
+thread_fn replace_allowance(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    heap.limits.work = heap.work + (1 << 40); heap.limits.units = 1 << 24;
+    var job = source::Job { heap: heap, writable_code: code };
+    let zero: f64 = 0;
+    assert(source::start(job, source::closure(heap, 0, []), [source::number(zero)]) && source::run(job, -1) == tiny::Outcome.Complete);
+    var output: u8[>..] = []; source::canonical(heap, job.result, output); assert(output[..] == "boolean:true");
+    assert(source::retire(job));
+}
+// Mode 1 (a replacement's output) or 3 (a search string's scan) with
+// 600,000 units of work left at its start: WorkLimit, not thrown, within
+// that work.
+thread_fn replace_work_limit(bytes: u8[], mode: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    heap.limits.work = heap.work + 600000;
+    var job = source::Job { heap: heap, writable_code: code };
+    let m: f64 = mode;
+    assert(source::start(job, source::closure(heap, 0, []), [source::number(m)]));
+    assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.WorkLimit && !job.thrown && heap.work <= heap.limits.work);
+    assert(source::retire(job));
+}
+// A search string's scan (regexp_replace.goose find_units) stops once its
+// quantum of work is spent and resumes from the first candidate it did not
+// try: 'b' after 200,000 'a's is found in four quanta of 65,536.
+fn replace_scan_quantum() {
+    var hay: u8[>..] = []; hay.resize(200000, 97); hay.push(98);
+    let needle: u8[] = [98];
+    var from: i64 = 0; var quanta: i64 = 0; var found: i64 = -2;
+    while found == -2 {
+        var next: i64 = 0; var work: i64 = 0;
+        found, next, work = source::find_units(hay[..], needle[..], from, source::scan_quantum());
+        assert(work <= source::scan_quantum() && (found != -2 || next > from));
+        from = next; quanta += 1;
+    }
+    assert(found == 200000 && quanta == 4);
+    let missing: u8[] = [99];
+    var p: i64 = 0; var next: i64 = 0; var work: i64 = 0;
+    p, next, work = source::find_units(hay[..], missing[..], 199999, source::scan_quantum());
+    assert(p == -1 && next == 200001);
+}
+// Mode 2's RegExps, made by one job, replaced with by later jobs that do
+// not own them: the plain one replaces, the global one's lastIndex reset
+// faults NativeBoundary before it writes.
+thread_fn replace_image_rows(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var first = source::Job { heap: heap, writable_code: code };
+    let two: f64 = 2;
+    assert(source::start(first, source::closure(heap, 0, []), [source::number(two)]) && source::run(first, -1) == tiny::Outcome.Complete);
+    let holder = first.result; assert(source::retire(first));
+    let run = regexp_member(heap, holder, "run");
+    let names: source::Name[2] = [source::Name { text: "plain" }, source::Name { text: "g" }];
+    for name, i in names {
+        let r = regexp_member(heap, holder, name.text);
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len, writable_code: code };
+        assert(source::start(job, run, [r, source::text(heap, "xa")], holder));
+        let outcome = source::run(job, -1);
+        if i == 0 { assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "x[a]")); }
+        else {
+            var detail: u16[>..] = []; for c in "write to an image row: lastIndex" { detail.push(c); }
+            assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary && job.detail[..] == detail[..]);
+        }
+        assert(source::retire(job));
+        let last = regexp_member(heap, r, "lastIndex"); assert(last.is_number() && last.num() == 0);
+    }
+}
 // Mode 3, its searches (about 8 million units of work) bounded by their
 // allowance alone, as conformance.goose runs scripts: true.
 thread_fn regexp_boundary_reserve(bytes: u8[]) {
@@ -1625,6 +1709,12 @@ fn primitive_methods() {
     // that runs fails by name until Canonicalize (light-cljs-936).
     check(embed_file("../corpus/serial/regexp-exec.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/regexp-ignore-case.gsp"), "Fault.UnsupportedOperand:test:-case-insensitive-matching", source::Fault.UnsupportedOperand);
+    // Replacement (light-cljs-934): a global @@replace whose replacer runs
+    // for every match and whose empty matches advance lastIndex through a
+    // user exec's valueOf, a generic receiver's lastIndex accessors and
+    // result getters, `$<name>` through a groups getter, and replaceAll
+    // over string patterns, at every budget cut.
+    check(embed_file("../corpus/serial/regexp-replace.gsp"), "boolean:true");
     // Base classes (light-cljs-886): class constructors with their eager
     // prototypes, methods, accessors, instance fields run by the
     // constructor's frame, static fields and blocks, and Reflect.construct

@@ -82,6 +82,9 @@
   "bbp/regexp_last_index" {:area :date-regexp}
   "bbp/regexp_unicode_matching" {:area :date-regexp}
   "bbp/regexp_matcher_table" {:area :date-regexp}
+  "bbp/strings_replace_string_patterns" {:area :core-builtins}
+  "bbp/strings_replace_regexp" {:area :date-regexp}
+  "bbp/regexp_symbol_replace" {:area :date-regexp}
   "bbp/reflect_get_set_receivers" {:area :objects-classes}
   "bbp/proxy_get_traps" {:area :objects-classes}
   "bbp/proxy_has_traps" {:area :objects-classes}

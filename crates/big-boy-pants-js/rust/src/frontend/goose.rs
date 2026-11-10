@@ -2886,6 +2886,18 @@ mod serial_tests {
             // named groups, indices and Unicode mode at every budget cut
             // and collection (serial_tests.goose).
             ("regexp-exec", "boolean:true"),
+            // String.prototype.replace and replaceAll and
+            // RegExp.prototype[@@replace] (light-cljs-934): a global
+            // @@replace whose replacer and lastIndex conversion run user
+            // code, a generic receiver's reads, named groups and string
+            // patterns at every budget cut and collection
+            // (serial_tests.goose).
+            ("regexp-replace", "boolean:true"),
+            // and its limits: the Pants engine's replacement allowance as a
+            // catchable RangeError, which Node does not share, the job's
+            // work limit and an image RegExp's lastIndex reset, one run of
+            // each mode (serial_tests.goose regexp_replace_limits).
+            ("regexp-replace-limits", "goose"),
             // and a case-insensitive instruction's named fault until
             // Canonicalize (light-cljs-936), which Node and the Pants
             // engine do not share.
