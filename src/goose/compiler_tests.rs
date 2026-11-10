@@ -949,9 +949,16 @@ fn goose_compiler_wrapper_conventions_and_boundaries() {
             "function f(){return arguments.callee;} return f();",
             Some("Fault.TypeError"),
         ),
+        // Its prototype is %Object.prototype%, which `__proto__` reads
+        // (light-cljs-883). Returned as the macro result, that realm object
+        // is refused by the form bridge, which reports no emitted span.
+        (
+            "function f(){return arguments.__proto__===Object.prototype && Object.getPrototypeOf(arguments)===Object.prototype;} return f();",
+            None,
+        ),
         (
             "function f(){return arguments.__proto__;} return f();",
-            Some("Fault.UnsupportedOperand"),
+            Some("bridge-Error.Unsupported"),
         ),
         (
             "const f=__rt.fnApplyNull(7); return f;",
@@ -964,8 +971,9 @@ fn goose_compiler_wrapper_conventions_and_boundaries() {
         let result = e.call(f, &args);
         if let Some(expected) = expected {
             let error = result.unwrap_err();
+            let bridge = expected.starts_with("bridge-");
             assert!(
-                error.0.contains(expected) && error.0.contains("emitted-span="),
+                error.0.contains(expected) && (bridge || error.0.contains("emitted-span=")),
                 "{body}: {error}"
             );
         } else {
