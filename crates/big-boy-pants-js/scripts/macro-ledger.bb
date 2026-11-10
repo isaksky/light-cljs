@@ -4,21 +4,25 @@
 ;; scores JavaScript against the Pants engine and QuickJS.
 ;;
 ;;   bb crates/big-boy-pants-js/scripts/macro-ledger.bb [options]
+;;     --step NAME        only this step: idioms or core-boot (default both)
 ;;     --idiom ID         only this idiom (repeatable)
 ;;     --jobs N           idioms built in parallel (default 4)
 ;;     --timeout S        seconds per build, counted as a failure (default 120)
 ;;     --check            exit 1 on a regression against macro-ledger/
 ;;                        expected-pass.edn, on a pass it does not list, or
-;;                        when V8's refusals differ from idioms.edn's
+;;                        when V8's refusals differ from idioms.edn's; and
+;;                        when the core boot stops anywhere but at the point
+;;                        macro-ledger/core-boot.edn records
 ;;     --write-expected   rewrite expected-pass.edn with today's passes
-;;                        (every idiom only)
+;;                        (every idiom only) and core-boot.edn with today's
+;;                        stopping point
 ;;     --light PATH       light-cljs built with --features goose-macros
 ;;                        (default <target>/release/light-cljs, built here)
 ;;     --runner PATH      the Goose compiler runner (default
 ;;                        <target>/macro-ledger/runner, built here from
 ;;                        src/compiler_session.goose when a Goose source is
 ;;                        newer)
-;;     --no-build         use --light and --runner as they are
+;;     --no-build         use the tools under the target directory as they are
 ;;
 ;; Each idiom in macro-ledger/idioms.edn becomes one tiny project in
 ;; <target>/macro-ledger/work/ID: a macro namespace probe.m whose macro `p`
@@ -46,6 +50,32 @@
 ;; probe.main before its run function; :v8-refuses, why V8 refuses it.
 ;; Every probe.m also defines the helpers below (helper, helper-walk,
 ;; helper-table, registry).
+;;
+;; The core-boot step (light-cljs-917): how far the real cljs.core, the
+;; shared-heap profile of the runtime (runtime_manifest::SHARED_RUNTIME;
+;; docs/real-core-design.md), boots on Goose. examples/shared_runtime.rs
+;; prints the exact text the compiler embeds; the step wraps it as
+;;   const rt = <text>;
+;;   Object.keys(rt.core).length;
+;; exports that strict script with rust/examples/goose_export and runs the
+;; image on src/conformance.goose's runner, which reports the outcome, the
+;; fault and its detail, the instruction (with its source span) it stopped
+;; at, and the instructions executed (:steps). macro-ledger/core-boot.edn
+;; records the stopping point. A stop is the recorded one when its status,
+;; fault, detail and source line (or a completed boot's value) match;
+;; otherwise the one with more steps got further, an export refusal being
+;; before every run and a completed boot after every stop. --check fails when
+;; the boot stops earlier, and asks for the record to be advanced
+;; (--write-expected) when it gets further; any other change fails too. The
+;; recorded steps, byte offset, line number and export counts are only
+;; reported, so an edit of the runtime text that moves the stop's line does
+;; not fail the check. The step prints the image size and the run's wall
+;; time and table rows (src/census.goose), recorded once the boot completes,
+;; and two lists read from the profile's code (its comments, strings and
+;; regular expressions removed): the `__rt` members it calls that the Goose
+;; VM does not implement (no `opcode::` arm in source_vm.goose's
+;; instruction, no `form_op::` arm in its form_op), and the names it uses
+;; that src/realm.goose still has as PENDING.
 (require '[babashka.fs :as fs] '[babashka.process :as p]
          '[clojure.edn :as edn] '[clojure.string :as str] '[clojure.pprint :as pprint])
 (import '[java.util.concurrent Executors TimeUnit])
@@ -68,6 +98,7 @@
   (loop [args *command-line-args* o {:jobs 4 :timeout 120 :idioms #{}}]
     (if-let [[a & more] (seq args)]
       (case a
+        "--step" (recur (rest more) (assoc o :step (first more)))
         "--idiom" (recur (rest more) (update o :idioms conj (first more)))
         "--jobs" (recur (rest more) (assoc o :jobs (some-> (first more) parse-long)))
         "--timeout" (recur (rest more) (assoc o :timeout (some-> (first more) parse-long)))
@@ -79,6 +110,10 @@
         (fail! "unknown argument " a))
       o)))
 (when-not (and (pos-int? (:jobs options)) (pos-int? (:timeout options))) (fail! "--jobs and --timeout take positive integers"))
+(when-not (contains? #{nil "idioms" "core-boot"} (:step options)) (fail! "--step takes idioms or core-boot"))
+(when (and (= "core-boot" (:step options)) (seq (:idioms options))) (fail! "--idiom selects idioms; --step core-boot runs none"))
+(def idioms-step? (not= "core-boot" (:step options)))
+(def core-boot-step? (not= "idioms" (:step options)))
 
 ;; ---------------------------------------------------------------- idioms
 (def idiom-keys #{:id :body :requires :defs :files :main :v8-refuses})
@@ -254,73 +289,355 @@
     (cond-> row
       (= :differs (:result row)) (assoc :v8-prints (node dir "v8.mjs" (:js v8)) :goose-prints (node dir "goose.mjs" (:js g))))))
 
+;; ---------------------------------------------------------------- core boot
+(def rust (fs/path root "rust"))
+(def boot-dir (fs/path out-dir "core-boot"))
+(def boot-file (str (fs/path ledger-dir "core-boot.edn")))
+(def shared-runtime-tool (str (fs/path target "release" "examples" "shared_runtime")))
+(def exporter (str (fs/path target "release" "examples" "goose_export")))
+(def boot-runner (str (fs/path out-dir "boot-runner")))
+
+;; The line number and trimmed text of the line holding byte `at` of the
+;; UTF-8 bytes b (a runner span is a byte offset into the exported source).
+(defn source-line [^bytes b at]
+  (when (and (int? at) (<= 0 at) (< at (alength b)))
+    (let [newline? #(= 10 (aget b %))
+          start (loop [i at] (if (and (pos? i) (not (newline? (dec i)))) (recur (dec i)) i))
+          end (loop [i at] (if (and (< i (alength b)) (not (newline? i))) (recur (inc i)) i))]
+      {:line-number (inc (count (filter newline? (range start))))
+       :line (bounded (str/trim (String. b (int start) (int (- end start)) "UTF-8")) 160)})))
+
+;; Text a lexer would call code: comments, string and template text and
+;; regular-expression literals become spaces (newlines and template
+;; substitutions stay), so a name found in it is a name the code uses. A
+;; slash starts a regular expression after an operator, an opening bracket,
+;; a keyword such as `return`, or nothing, as in src/js_syntax.rs.
+(def regex-keywords #{"return" "typeof" "instanceof" "in" "of" "new" "delete" "void" "throw" "case" "do" "else" "yield" "await"})
+(defn code-only [^String s]
+  (let [n (.length s) sb (StringBuilder. s)
+        at #(if (< % n) (.charAt s %) \u0000)
+        blank! (fn [from to] (doseq [j (range from (min to n))] (when-not (= \newline (.charAt s j)) (.setCharAt sb j \space))))
+        word? #(or (Character/isLetterOrDigit (char %)) (= \_ %) (= \$ %))
+        ;; The end of the quoted text starting at i (after its closing quote).
+        quoted (fn [i q] (loop [j (inc i)] (let [c (at j)] (cond (>= j n) n (= c \\) (recur (+ j 2)) (= c q) (inc j) (= c \newline) j :else (recur (inc j))))))
+        ;; A regular expression from i: [its closing slash, its end after
+        ;; the flags].
+        regex (fn [i] (loop [j (inc i) class? false]
+                        (let [c (at j)]
+                          (cond (or (>= j n) (= c \newline)) [(min j n) (min j n)] (= c \\) (recur (+ j 2) class?)
+                                (= c \[) (recur (inc j) true) (= c \]) (recur (inc j) false)
+                                (and (= c \/) (not class?)) [j (loop [k (inc j)] (if (word? (at k)) (recur (inc k)) k))]
+                                :else (recur (inc j) class?)))))
+        ;; Template text from i: [end :close] after its closing backtick, or
+        ;; [end :substitution] after a `${`.
+        template (fn [i] (loop [j i] (let [c (at j)] (cond (>= j n) [n :close] (= c \\) (recur (+ j 2)) (= c \`) [(inc j) :close]
+                                                          (and (= c \$) (= \{ (at (inc j)))) [(+ j 2) :substitution] :else (recur (inc j))))))
+        in-template (fn [i braces] (let [[e how] (template i)] (blank! i (if (= how :close) (dec e) (- e 2))) [e (if (= how :close) braces (conj braces 0))]))]
+    (loop [i 0 regex-ok true braces ()]
+      (if (>= i n)
+        (str sb)
+        (let [c (.charAt s i) d (at (inc i))]
+          (cond
+            (Character/isWhitespace c) (recur (inc i) regex-ok braces)
+            (and (= c \/) (= d \/)) (let [e (or (str/index-of s "\n" i) n)] (blank! i e) (recur e regex-ok braces))
+            (and (= c \/) (= d \*)) (let [e (if-let [k (str/index-of s "*/" (+ i 2))] (+ k 2) n)] (blank! i e) (recur e regex-ok braces))
+            (or (= c \") (= c \')) (let [e (quoted i c)] (blank! (inc i) (dec e)) (recur e false braces))
+            (= c \`) (let [[e braces] (in-template (inc i) braces)] (recur e false braces))
+            (and (= c \}) (seq braces) (zero? (first braces))) (let [[e braces] (in-template (inc i) (rest braces))] (recur e false braces))
+            (= c \/) (if regex-ok (let [[close e] (regex i)] (blank! (inc i) close) (recur e false braces)) (recur (inc i) true braces))
+            (word? c) (let [e (loop [k (inc i)] (if (word? (at k)) (recur (inc k)) k))]
+                        (recur e (contains? regex-keywords (subs s i e)) braces))
+            :else (recur (inc i) (not (#{\) \] \}} c))
+                         (cond (empty? braces) braces
+                               (= c \{) (conj (rest braces) (inc (first braces)))
+                               (= c \}) (conj (rest braces) (dec (first braces)))
+                               :else braces))))))))
+
+;; The text of the function or table that starts at `start` in text, up to
+;; `end`, the first one after it.
+(defn section [text start end]
+  (let [from (or (str/index-of text start) (fail! "no `" start "` where the core-boot step reads it"))]
+    (subs text from (or (str/index-of text end from) (fail! "no end of `" start "`")))))
+
+;; `__rt` member -> what it lowers to, {:opcode Name} or {:form-op Name}, read
+;; from the frontend's intrinsic table (rust/src/frontend/intrinsics.rs); the
+;; three lowerings that name no opcode there emit the one rust/src/frontend/
+;; lower.rs emits for them.
+(defn intrinsic-lowerings []
+  (let [table (section (slurp (str (fs/path rust "src/frontend/intrinsics.rs"))) "pub(crate) const INTRINSICS" "\n];")
+        form-names (into {} (map (comp vec rest) (re-seq #"FormOp::(\w+) => \"(\w+)\""
+                                                         (section (slurp (str (fs/path rust "src/vm/instr.rs"))) "pub const fn intrinsic(self)" "\n    }\n"))))
+        emitted {"Call" "CallMethod" "HostEffect" "HostEffect" "Need" "Need"}]
+    (merge (into {} (for [[_ m op] (re-seq #"op\(\"(\w+)\", \d+, Opcode::(\w+)\)" table)] [m {:opcode op}]))
+           (into {} (for [[_ m lowering op] (re-seq #"name: \"(\w+)\",\s*arity: [^\n]*\n\s*lowering: Lowering::(\w+)(?:\(Opcode::(\w+)\))?" table)]
+                      [m {:opcode (or op (emitted lowering) (fail! "intrinsic " m " lowers to " lowering ", which names no opcode"))}]))
+           (into {} (for [[_ op] (re-seq #"form_op\(FormOp::(\w+)\)" table)]
+                      [(or (form-names op) (fail! "FormOp::" op " has no intrinsic name")) {:form-op op}])))))
+
+;; The opcodes the Goose VM decodes into an instruction and the form
+;; operations its form_op has an arm for (src/source_vm.goose); every other
+;; one fails by name when it runs.
+(defn goose-implemented []
+  (let [vm (slurp (str (fs/path root "src" "source_vm.goose")))]
+    {:opcode (set (map second (re-seq #"opcode::(\w+)" (section vm "fn instruction(op: Op) -> Ins {" "\n}\n"))))
+     :form-op (set (map second (re-seq #"form_op::(\w+)" (section vm "fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {" "\n}\n"))))}))
+
+;; The realm's PENDING properties (src/realm.goose), each {:holder, the
+;; holder's JavaScript name from the realm's fixed-row functions, :kind
+;; :global, :static (a constructor's) or :property, :key}, a well-known
+;; symbol's key spelled @@name.
+(defn camel [words] (apply str (map str/capitalize words)))
+(defn realm-pending []
+  (let [realm (slurp (str (fs/path root "src" "realm.goose")))
+        names (fn [table] (mapv second (re-seq #"text: \"(\w+)\"" (or (re-find (re-pattern (str "let " table ":[^\n]*")) realm) (fail! "no " table " in realm.goose")))))
+        families {"wrapper" (names "WRAPPER_NAMES") "error" (names "ERROR_NAMES") "function_kind" (names "FUNCTION_KIND_TAGS")}
+        holder (fn [function family-name]
+                 (let [words (str/split function #"_") role (last words)
+                       base (or family-name (camel (butlast words)))]
+                   (cond (= function "global") {:holder "globalThis" :kind :global}
+                         (= role "prototype") {:holder (str base ".prototype") :kind :property}
+                         (= role "constructor") {:holder base :kind :static}
+                         :else {:holder (camel words) :kind :property})))
+        rows (merge (into {} (for [[_ f n] (re-seq #"inline fn (\w+)_row\(\) -> i64 \{ return (\d+); \}" realm)] [(parse-long n) (holder f nil)]))
+                    (into {} (for [[_ f n] (re-seq #"inline fn (\w+)_row\(\w+: i64\) -> i64 \{ return (\d+) \+ \w+; \}" realm)
+                                   :let [table (some (fn [[family t]] (when (str/starts-with? f family) t)) families)]
+                                   [i entry] (map-indexed vector table)]
+                               [(+ (parse-long n) i) (holder f entry)])))
+        symbols (into {} (for [[_ i s] (re-seq #"(\d+) => \"(\w+)\"" (section (slurp (str (fs/path root "src" "export_schema.goose"))) "fn export_well_known_symbol(" "\n}\n"))]
+                           [(parse-long i) s]))]
+    (for [[_ row key symbol] (re-seq #"PendingName \{ holder: (\d+), key: \"([^\"]*)\"(?:, symbol: (\d+))? \}" (section realm "let PENDING:" "\n];"))]
+      (merge (rows (parse-long row) {:holder (str "row " row) :kind :property})
+             (if symbol {:key (str "@@" (symbols (parse-long symbol)))} {:key key})))))
+
+;; How often the code uses a pending property: a global as a free name, a
+;; constructor's static as Holder.key, a well-known symbol as Symbol.name,
+;; and a prototype's (or another object's) method by name, whatever the
+;; receiver: called (.key(...), .key.call(...)) or read off a prototype
+;; (prototype.key), so a data property of the same name is no use of it.
+(defn uses [code {:keys [holder kind key]}]
+  (let [q #(java.util.regex.Pattern/quote %)
+        pattern (cond (str/starts-with? key "@@") (str "(?<![\\w$.#])Symbol\\s*\\.\\s*" (q (subs key 2)) "(?![\\w$])")
+                      (= kind :global) (str "(?<![\\w$.#])" (q key) "(?![\\w$])")
+                      (= kind :static) (str "(?<![\\w$.#])" (q holder) "\\s*\\.\\s*" (q key) "(?![\\w$])")
+                      :else (str "(?<!\\.\\.)\\.\\s*" (q key) "\\s*(?=\\(|\\.\\s*(?:call|apply|bind)(?![\\w$]))"
+                                 "|(?<![\\w$])prototype\\s*\\.\\s*" (q key) "(?![\\w$])"))]
+    (count (re-seq (re-pattern pattern) code))))
+(assert (= [2 0 1 1] (map #(uses "a.slice(1); b.slice.call(c); d.sub; ...fixed.map(f); Array.from(x); new Map()" %)
+                          [{:kind :property :key "slice"} {:kind :property :key "fixed"} {:kind :static :holder "Array" :key "from"} {:kind :global :key "Map"}])))
+
+;; What the profile's code uses that Goose lacks: [missing-rt pending], each
+;; a sequence of maps with :uses, the count in the code.
+(defn boot-gaps [code]
+  (let [lowerings (intrinsic-lowerings) implemented (goose-implemented)
+        members (frequencies (map second (re-seq #"__rt\s*\.\s*([A-Za-z_$][\w$]*)" code)))]
+    [(for [[m n] (sort members)
+           :let [[how op] (first (lowerings m {:unknown m}))]
+           :when (not (contains? (get implemented how #{}) op))]
+       {:member m :lowering how :op op :uses n})
+     (for [p (realm-pending) :let [n (uses code p)] :when (pos? n)] (assoc p :uses n))]))
+
+;; Boot the profile: export, run, and the outcome as a row.
+(defn boot! []
+  (fs/create-dirs boot-dir)
+  (let [r (run-process {:dir repository :env base-env :timeout (:timeout options)} shared-runtime-tool)
+        _ (when-not (= 0 (:exit r)) (fail! shared-runtime-tool " failed: " (bounded (str (:err r)) 300)))
+        profile (:out r)
+        js (str (fs/path boot-dir "boot.js")) image (str (fs/path boot-dir "boot.gsp"))
+        _ (spit js (str "const rt = " profile ";\nObject.keys(rt.core).length;\n"))
+        _ (fs/delete-if-exists image)
+        e (run-process {:dir repository :env base-env :timeout (:timeout options)} exporter js image)
+        line (str (first (str/split-lines (str (:out e)))))
+        base {:profile-bytes (count (.getBytes ^String profile "UTF-8")) :code (code-only profile)}]
+    (if-let [[_ f i] (and (= 0 (:exit e)) (re-matches #"exported:(\d+):(\d+)" line))]
+      (let [started (System/nanoTime)
+            r (run-process {:dir repository :env base-env :timeout (:timeout options)} boot-runner image "heap")
+            seconds (/ (- (System/nanoTime) started) 1e9)
+            [outcome-line heap-line] (str/split-lines (str (:out r)))
+            outcome (try (edn/read-string outcome-line) (catch Exception _ nil))
+            [start] (:span outcome)]
+        (merge base
+               {:export {:functions (parse-long f) :instructions (parse-long i) :image-bytes (fs/size image)}
+                :seconds seconds :rows (try (some-> heap-line edn/read-string :heap) (catch Exception _ nil))}
+               (cond (= :timeout (:exit r)) {:status :timeout :detail (:err r)}
+                     (not (map? outcome)) {:status :infrastructure :detail (bounded (str "runner exit " (:exit r) ": " (:out r) (:err r)) 300)}
+                     :else (select-keys outcome [:status :fault :detail :operation :value :reason :steps]))
+               (when start (assoc (source-line (fs/read-all-bytes js) start) :byte start))))
+      (merge base {:status :export-refused :detail (bounded (if (str/blank? line) (str "exit " (:exit e) ": " (:err e)) line) 300)}))))
+
+;; A stop's identity, and its place in the boot: an export refusal before
+;; every run, a completed boot after every stop, a timeout or an
+;; infrastructure failure nowhere (it always fails the check).
+(def stop-keys [:status :fault :detail :operation :value :line])
+(defn stop-rank [{:keys [status]}] (case status :export-refused 0 :returned 2 1))
+(defn compare-stop [recorded now]
+  (cond (#{:timeout :infrastructure} (:status now)) :broken
+        (= (select-keys recorded stop-keys) (select-keys now stop-keys)) :same
+        :else (let [c (compare [(stop-rank now) (or (:steps now) 0)] [(stop-rank recorded) (or (:steps recorded) 0)])]
+                (cond (pos? c) :further (neg? c) :earlier :else :changed))))
+(defn describe-stop [{:keys [status fault detail operation value reason steps line line-number byte]}]
+  (str (case status
+         :returned (str "completes with " value)
+         :export-refused (str "is refused by the exporter: " detail)
+         (:unsupported :limit) (str fault (when (or detail operation) (str " (" (or detail operation) ")")))
+         (:thrown :rejected) (str (name status) " " value)
+         (str (some-> status name) (when (or detail reason) (str ": " (or detail reason)))))
+       (when steps (str " after " steps " instructions"))
+       (when line (str "\n    source line " line-number " (byte " byte "): " line))))
+
+;; The scoring rules, checked on every run.
+(let [seal {:status :unsupported :fault "Fault.NativeBoundary" :detail "form operation seal" :steps 8404 :line "kinds: __rt.seal([...])," :byte 69475}]
+  (assert (= :same (compare-stop seal (assoc seal :steps 9000 :byte 70000 :line-number 1))))
+  (assert (= :further (compare-stop seal {:status :unsupported :fault "Fault.UnsupportedOperand" :detail "pending Map" :steps 9000 :line "x"})))
+  (assert (= :earlier (compare-stop seal {:status :thrown :value "error:TypeError" :steps 100})))
+  (assert (= :earlier (compare-stop seal {:status :export-refused :detail "unsupported:x"})))
+  (assert (= :further (compare-stop seal {:status :returned :value "688" :steps 10})))
+  (assert (= :changed (compare-stop seal (assoc seal :detail "form operation sealReachable"))))
+  (assert (= :broken (compare-stop seal {:status :timeout}))))
+(assert (= (code-only "a = 'x//y' // c\nb = /re\\/'/g; `t${u + `v`}w` /* d */ c / 2")
+           "a = '    '     \nb = /     /g; ` ${u + ` `} `         c / 2"))
+(assert (= (code-only "return /[/]x/.test(s) ? {a: 1} : f(x) / y")
+           "return /    /.test(s) ? {a: 1} : f(x) / y"))
+
+(defn print-gaps! [[missing pending]]
+  (let [label (fn [{:keys [member key uses]}] (str (or member key) " (" uses ")"))]
+    (println (str "\ncore boot: __rt members the profile calls that the Goose VM does not implement ("
+                  (count missing) "; uses in the profile's code):"))
+    (doseq [[how group] (sort-by key (group-by :lowering missing))]
+      (println (str "  " (case how :form-op "form operations" :opcode "opcodes" "unknown") ": " (str/join " " (map label group)))))
+    (println (str "\ncore boot: names the profile uses that src/realm.goose has as PENDING (" (count pending)
+                  "; a method by name, whatever its receiver):"))
+    ;; Holders whose used names are the same share a line.
+    (doseq [[items holders] (sort-by (fn [[items holders]] [(- (count items)) holders])
+                                     (for [[items group] (group-by first (for [[holder group] (group-by :holder pending)] [(mapv label group) holder]))]
+                                       [items (str/join ", " (sort (map second group)))]))]
+      (println (str "  " holders ": " (str/join " " items))))))
+
+(defn run-core-boot!
+  "Run the step and print it; false when --check fails."
+  []
+  (let [b (boot!)
+        record (when (fs/exists? boot-file) (edn/read-string (slurp boot-file)))
+        recorded (:stop record)
+        {:keys [functions instructions image-bytes]} (:export b)]
+    (println (str "\ncore boot: the shared-profile runtime (" (:profile-bytes b) " bytes)"
+                  (if (:export b) (str " exports as " functions " functions and " instructions " instructions, a " image-bytes "-byte image") "")))
+    (println (str "core boot: " (if (= :returned (:status b)) "the boot " "the boot stops: ") (describe-stop b)))
+    (when (:seconds b)
+      (println (format "core boot: the run took %.2f s; table rows %s: %s" (:seconds b) (if (= :returned (:status b)) "used" "at the stop")
+                       (str/join " " (for [k [:nodes :values :properties :units]] (str (name k) " " (get (:rows b) k)))))))
+    (print-gaps! (boot-gaps (:code b)))
+    (spit (str (fs/path out-dir "core-boot.edn")) (with-out-str (pprint/pprint (dissoc b :code))))
+    (when (:write-expected options)
+      (when (#{:timeout :infrastructure} (:status b)) (fail! "core boot: will not record a " (name (:status b)) ": " (:detail b)))
+      (spit boot-file (str ";; Where the shared-profile cljs.core boot stops on Goose: `macro-ledger.bb\n"
+                           ";; --check` fails when it stops earlier or elsewhere, and asks for this\n"
+                           ";; record to be advanced (--write-expected) when it gets further. :stop's\n"
+                           ";; status, fault, detail, operation, value and line identify the stop;\n"
+                           ";; :steps orders two stops; the rest is reported only.\n"
+                           (with-out-str
+                             (pprint/pprint (cond-> {:export (:export b)
+                                                     :stop (select-keys b (concat stop-keys [:steps :byte :line-number]))}
+                                              (= :returned (:status b)) (assoc :completed {:seconds (/ (Math/round (* 100.0 (:seconds b))) 100.0) :rows (:rows b)}))))))
+      (println "wrote" boot-file))
+    (if-not (:check options)
+      true
+      (if-not recorded
+        (do (println "BOOT NOT RECORDED: run with --write-expected to record" boot-file) false)
+        (let [outcome (compare-stop recorded b)
+              moved (for [k [:steps :byte :line-number] :when (not= (k recorded) (k b))] (str (name k) " " (k recorded) " -> " (k b)))
+              export (when (and (:export record) (:export b) (not= (:export record) (:export b))) (str "export " (pr-str (:export record)) " -> " (pr-str (:export b))))]
+          (case outcome
+            :same (println (str "core boot check: stops at the recorded point"
+                                (when-let [notes (seq (remove nil? (concat moved [export])))] (str "; changed from the record: " (str/join ", " notes)))))
+            :further (println (str "BOOT ADVANCED (record it with --step core-boot --write-expected): recorded stop "
+                                   (describe-stop recorded) "\n  now " (describe-stop b)))
+            :earlier (println (str "BOOT REGRESSION: the boot stops earlier than recorded: " (describe-stop recorded) "\n  now " (describe-stop b)))
+            :changed (println (str "BOOT STOP CHANGED at the same step: recorded " (describe-stop recorded) "\n  now " (describe-stop b)))
+            :broken (println (str "BOOT BROKEN: " (describe-stop b))))
+          (= :same outcome))))))
+
 ;; ---------------------------------------------------------------- tools
 (defn shell! [& command] (println "+" (str/join " " command)) (flush) (apply p/shell {:dir (str repository)} command))
 (def light (str (fs/absolutize (or (:light options) (fs/path target "release" "light-cljs")))))
 (def runner (str (fs/absolutize (or (:runner options) (fs/path out-dir "runner")))))
+;; A Goose program is rebuilt when a Goose source, C header or build sidecar
+;; under src is newer than it.
+(defn goose-build! [program output]
+  (let [sources (fs/glob (fs/path root "src") "*.{goose,h,build}")
+        newest (apply max (map #(.toMillis (fs/last-modified-time %)) sources))]
+    (when (or (not (fs/exists? output)) (< (.toMillis (fs/last-modified-time output)) newest))
+      (shell! goose "build" (str (fs/path root "src" program)) "-o" output))))
 (fs/create-dirs out-dir)
 (when-not (:no-build options)
-  (when-not (:light options)
-    (shell! "cargo" "build" "--release" "--locked" "--features" "goose-macros" "--bin" "light-cljs"))
-  (when-not (:runner options)
-    ;; The runner is rebuilt when a Goose source, C header or build sidecar
-    ;; beside compiler_session.goose is newer than it.
-    (let [sources (fs/glob (fs/path root "src") "*.{goose,h,build}")
-          newest (apply max (map #(.toMillis (fs/last-modified-time %)) sources))]
-      (when (or (not (fs/exists? runner)) (< (.toMillis (fs/last-modified-time runner)) newest))
-        (shell! goose "build" (str (fs/path root "src" "compiler_session.goose")) "-o" runner)))))
-(doseq [tool [light runner]] (when-not (fs/exists? tool) (fail! "missing tool " tool)))
+  ;; One Cargo run builds light-cljs and the example printing its runtime,
+  ;; which share the library.
+  (let [light? (and idioms-step? (not (:light options)))]
+    (when (or light? core-boot-step?)
+      (apply shell! (concat ["cargo" "build" "--release" "--locked" "--features" "goose-macros"]
+                            (when light? ["--bin" "light-cljs"]) (when core-boot-step? ["--example" "shared_runtime"])))))
+  (when (and idioms-step? (not (:runner options))) (goose-build! "compiler_session.goose" runner))
+  (when core-boot-step?
+    ;; The run-time compiler the runner loads on its first eval
+    ;; (src/runtime_compiler.h) is goose_frontend's library.
+    (shell! "cargo" "build" "--locked" "--release" "-p" "big-boy-pants-js" "--example" "goose_export" "--example" "goose_frontend")
+    (goose-build! "conformance.goose" boot-runner)))
+(doseq [tool (concat (when idioms-step? [light runner]) (when core-boot-step? [shared-runtime-tool exporter boot-runner]))]
+  (when-not (fs/exists? tool) (fail! "missing tool " tool)))
 
 ;; ---------------------------------------------------------------- run
-(def rows
-  (let [pool (Executors/newFixedThreadPool (:jobs options))
-        started (System/nanoTime)
-        futures (mapv (fn [i] (.submit pool ^Callable (fn [] (run-idiom light runner i)))) idioms)
-        results (mapv #(.get %) futures)]
-    (.shutdown pool) (.awaitTermination pool 1 TimeUnit/MINUTES)
-    (println (format "built %d idioms on the V8 and Goose paths in %.1f s with %d jobs"
-                     (count idioms) (/ (- (System/nanoTime) started) 1e9) (:jobs options)))
-    results))
+(defn run-idioms!
+  "Run the idioms and print the ledger; false when --check fails."
+  []
+  (let [rows (let [pool (Executors/newFixedThreadPool (:jobs options))
+                   started (System/nanoTime)
+                   futures (mapv (fn [i] (.submit pool ^Callable (fn [] (run-idiom light runner i)))) idioms)
+                   results (mapv #(.get %) futures)]
+               (.shutdown pool) (.awaitTermination pool 1 TimeUnit/MINUTES)
+               (println (format "built %d idioms on the V8 and Goose paths in %.1f s with %d jobs"
+                                (count idioms) (/ (- (System/nanoTime) started) 1e9) (:jobs options)))
+               results)
+        counts (frequencies (map :result rows))
+        scored (remove #(= :v8-refuses (:result %)) rows)
+        passes (set (map :id (filter #(= :pass (:result %)) rows)))]
+    (spit (str (fs/path out-dir "ledger.edn"))
+          (with-out-str (println ";; Generated by crates/big-boy-pants-js/scripts/macro-ledger.bb; one row per idiom.")
+            (pprint/pprint rows)))
+    (when (pos? (get counts :fail 0))
+      (println "\nGoose refusals by kind and reason (the idioms each reason stops):"))
+    (doseq [[k failures] (sort-by (fn [[k group]] [(- (count group)) k]) (group-by (comp kind :reason) (filter #(= :fail (:result %)) rows)))]
+      (println (str "\n" k ": " (count failures) (if (= 1 (count failures)) " idiom" " idioms")))
+      (doseq [[r group] (sort-by (fn [[r group]] [(- (count group)) r]) (group-by :reason failures))]
+        (println (format "  %3d  %s" (count group) r))
+        (println (str "       " (str/join " " (map :id group))))))
+    (when-let [differs (seq (filter #(= :differs (:result %)) rows))]
+      (println "\nGoose output differs from V8's:")
+      (doseq [r differs] (println (str "  " (:id r) ": V8 prints " (:v8-prints r) "; Goose prints " (:goose-prints r)))))
+    (when-let [refused (seq (filter #(= :v8-refuses (:result %)) rows))]
+      (println "\nV8 refuses (not scored):")
+      (doseq [r refused] (println (str "  " (:id r) ": " (or (:recorded r) (bounded (:v8-error r) 200))))))
+    (println (str "\npass (" (get counts :pass 0) "): " (str/join " " (map :id (filter #(= :pass (:result %)) rows)))))
+    (println (format "\n%d of %d scored idioms pass on Goose (%d fail, %d differ); %d refused by V8"
+                     (get counts :pass 0) (count scored) (get counts :fail 0) (get counts :differs 0) (get counts :v8-refuses 0)))
+    (println "ledger:" (str (fs/path out-dir "ledger.edn")))
+    (when (:write-expected options)
+      (spit expected-file (str ";; Macro idioms that must pass on the Goose compiler path: `macro-ledger.bb\n"
+                               ";; --check` fails when one does not, or when a pass is not listed here.\n"
+                               (with-out-str (pprint/pprint (vec (sort passes))))))
+      (println "wrote" expected-file (count passes) "idioms"))
+    (if-not (:check options)
+      true
+      (let [{:keys [expected regressions new-passes refusal-changes]} (check-outcome idioms rows expected)
+            by-id (into {} (map (juxt :id identity) rows))]
+        (doseq [id new-passes] (println "NEW PASS (add it to expected-pass.edn):" id))
+        (doseq [id regressions] (println "REGRESSION:" id "-" (:reason (by-id id))))
+        (doseq [id refusal-changes]
+          (println "V8 REFUSAL CHANGED:" id "-" (if (= :v8-refuses (:result (by-id id)))
+                                                   (str "V8 now refuses: " (bounded (:v8-error (by-id id)) 200))
+                                                   "V8 now builds it; drop its :v8-refuses")))
+        (println (format "check: %d expected passes, %d regressions, %d unlisted passes, %d V8 refusal changes"
+                         (count expected) (count regressions) (count new-passes) (count refusal-changes)))
+        (not (or (seq regressions) (seq new-passes) (seq refusal-changes)))))))
 
-(spit (str (fs/path out-dir "ledger.edn"))
-      (with-out-str (println ";; Generated by crates/big-boy-pants-js/scripts/macro-ledger.bb; one row per idiom.")
-        (pprint/pprint rows)))
-
-(def counts (frequencies (map :result rows)))
-(def scored (remove #(= :v8-refuses (:result %)) rows))
-(when (pos? (get counts :fail 0))
-  (println "\nGoose refusals by kind and reason (the idioms each reason stops):"))
-(doseq [[k failures] (sort-by (fn [[k group]] [(- (count group)) k]) (group-by (comp kind :reason) (filter #(= :fail (:result %)) rows)))]
-  (println (str "\n" k ": " (count failures) (if (= 1 (count failures)) " idiom" " idioms")))
-  (doseq [[r group] (sort-by (fn [[r group]] [(- (count group)) r]) (group-by :reason failures))]
-    (println (format "  %3d  %s" (count group) r))
-    (println (str "       " (str/join " " (map :id group))))))
-(when-let [differs (seq (filter #(= :differs (:result %)) rows))]
-  (println "\nGoose output differs from V8's:")
-  (doseq [r differs] (println (str "  " (:id r) ": V8 prints " (:v8-prints r) "; Goose prints " (:goose-prints r)))))
-(when-let [refused (seq (filter #(= :v8-refuses (:result %)) rows))]
-  (println "\nV8 refuses (not scored):")
-  (doseq [r refused] (println (str "  " (:id r) ": " (or (:recorded r) (bounded (:v8-error r) 200))))))
-(println (str "\npass (" (get counts :pass 0) "): " (str/join " " (map :id (filter #(= :pass (:result %)) rows)))))
-(println (format "\n%d of %d scored idioms pass on Goose (%d fail, %d differ); %d refused by V8"
-                 (get counts :pass 0) (count scored) (get counts :fail 0) (get counts :differs 0) (get counts :v8-refuses 0)))
-(println "ledger:" (str (fs/path out-dir "ledger.edn")))
-
-(def passes (set (map :id (filter #(= :pass (:result %)) rows))))
-(when (:write-expected options)
-  (spit expected-file (str ";; Macro idioms that must pass on the Goose compiler path: `macro-ledger.bb\n"
-                           ";; --check` fails when one does not, or when a pass is not listed here.\n"
-                           (with-out-str (pprint/pprint (vec (sort passes))))))
-  (println "wrote" expected-file (count passes) "idioms"))
-(when (:check options)
-  (let [{:keys [expected regressions new-passes refusal-changes]} (check-outcome idioms rows expected)
-        by-id (into {} (map (juxt :id identity) rows))]
-    (doseq [id new-passes] (println "NEW PASS (add it to expected-pass.edn):" id))
-    (doseq [id regressions] (println "REGRESSION:" id "-" (:reason (by-id id))))
-    (doseq [id refusal-changes]
-      (println "V8 REFUSAL CHANGED:" id "-" (if (= :v8-refuses (:result (by-id id)))
-                                               (str "V8 now refuses: " (bounded (:v8-error (by-id id)) 200))
-                                               "V8 now builds it; drop its :v8-refuses")))
-    (println (format "check: %d expected passes, %d regressions, %d unlisted passes, %d V8 refusal changes"
-                     (count expected) (count regressions) (count new-passes) (count refusal-changes)))
-    (when (or (seq regressions) (seq new-passes) (seq refusal-changes)) (System/exit 1))))
+(let [idioms-ok (if idioms-step? (run-idioms!) true)
+      boot-ok (if core-boot-step? (run-core-boot!) true)]
+  (when-not (and idioms-ok boot-ok) (System/exit 1)))

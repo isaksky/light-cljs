@@ -15,7 +15,7 @@ JavaScript (group `goose-javascript`). Read [AGENTS.md](AGENTS.md) first.
 | `corpus/` | Captured bytecode images, jobs and expectations used by the tests (`corpus/manifest.edn` records their sources) |
 | `scripts/` | Babashka entry points: `smoke.bb`, `compiler.bb`, `correctness.bb`, `regenerate.bb`, `conformance.bb`, `macro-ledger.bb`, benchmarks |
 | `conformance/` | The JavaScript conformance harness's area map (`areas.edn`), expected Goose passes (`expected-pass.edn`) and bbp-authored cases (`cases/`); see `scripts/conformance.bb` |
-| `macro-ledger/` | The macro-idiom ledger's idioms (`idioms.edn`) and expected Goose passes (`expected-pass.edn`); see [Macro-idiom ledger](#macro-idiom-ledger) |
+| `macro-ledger/` | The macro-idiom ledger's idioms (`idioms.edn`), expected Goose passes (`expected-pass.edn`) and the core boot's recorded stopping point (`core-boot.edn`); see [Macro-idiom ledger](#macro-idiom-ledger) |
 | `evidence/` | Measurement reports and raw archives |
 | `docs/` | Design notes |
 | `rust/` | The first, Rust implementation (package `big-boy-pants-js`). Its parser and bytecode compiler still produce what Goose executes (`rust/src/frontend/goose.rs` exports it), and its VM is the reference oracle for porting JavaScript semantics. See [rust/README.md](rust/README.md). |
@@ -360,6 +360,38 @@ pass. Of the 145 refusals, 103 are a missing core leaf, 18 a form operation,
 (clojure.set and clojure.walk), 4 a missing global, 3 a built-in's step,
 2 a missing `rt` member and 2 compiler-side refusals (a protocol extension,
 a job-made symbol in a preparation).
+
+### Core boot
+
+The ledger's second step (light-cljs-917; `--step core-boot` runs it alone)
+measures how far the real cljs.core boots on Goose: the shared-heap profile
+of the runtime (`runtime_manifest::SHARED_RUNTIME`, docs/real-core-design.md),
+printed exactly as the compiler embeds it by the light-cljs example
+`examples/shared_runtime.rs`, wrapped as `const rt = <text>;
+Object.keys(rt.core).length;`, exported with `rust/examples/goose_export` and
+run on `src/conformance.goose`'s runner. It prints the fault, its detail and
+the source line of its span, the instructions executed, the image size, the
+run's time and table rows, and two lists read from the profile's code: the
+`__rt` members it calls that the Goose VM does not implement (no `opcode::`
+arm in `source_vm.goose`'s `instruction`, no `form_op::` arm in its
+`form_op`), and the names it uses that `src/realm.goose` has as PENDING
+(methods by name, whatever their receiver). `macro-ledger/core-boot.edn`
+records the stopping point: `--check` fails when the boot stops earlier
+(fewer instructions executed) or elsewhere at the same count, and when it
+gets further, until `--write-expected` records the new point; the recorded
+instruction count, byte offset and export counts are reported, not checked.
+Each pellet that moves the boot quotes the stop and the lists it shortened.
+
+Starting point (04ee46ce, November 10, 2026): the 624,477-byte profile
+exports as 2,240 functions and 135,217 instructions, a 3,818,417-byte image,
+and stops after 8,404 instructions with `Fault.NativeBoundary` (form
+operation seal) at line 926, byte 69,475:
+`kinds: __rt.seal(["vector", "list", ...])`. The profile calls 71 `__rt`
+members, 43 of them unimplemented on Goose (34 form operations, 9 opcodes),
+and uses 58 pending names: nine globals (Map, Set, WeakMap, WeakSet, Date,
+RegExp, Promise, ArrayBuffer, DataView), `Array.from`,
+`String.fromCharCode`, and Array, String, Iterator and Promise prototype
+methods.
 
 ## Corpus and coverage
 

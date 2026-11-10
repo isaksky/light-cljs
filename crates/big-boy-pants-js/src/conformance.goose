@@ -25,8 +25,12 @@ import .census;
 //                                       unimplemented opcode's registry name
 //   {:status :limit :fault F ...}       a VM resource limit was reached
 //   {:status :infrastructure :reason R} the image could not be loaded or run
-// V is source::canonical's text. The exit status is 0 for every outcome the
-// runner could classify and 1 for usage or infrastructure failures.
+// V is source::canonical's text. Every classified outcome also carries
+// :steps N, the instructions the job executed before it ended, which the
+// macro ledger's core-boot step (scripts/macro-ledger.bb, light-cljs-917)
+// uses as its measure of how far a script got. The exit status is 0 for
+// every outcome the runner could classify and 1 for usage or infrastructure
+// failures.
 // `conformance PROGRAM.gsp heap` also prints a second map: the job heap's
 // table rows at the end and how many no root reaches (census.goose).
 //   {:heap {:nodes N :values V :properties P :units U :dead-nodes ...}}
@@ -46,7 +50,7 @@ fn located(out: u8[>..]&, status: const u8[:], heap: const source::Heap&, job: c
     }
     if job.fault == source::Fault.Unsupported { out.append(" :operation \""); source::unsupported_operation(out, heap.code, job); out.push('"'); }
     if job.detail.len > 0 { out.append(" :detail \""); for u in job.detail { out.push(u as u8); } out.push('"'); }
-    out.push('}');
+    format(out, " :steps ", job.steps, "}");
 }
 fn main() {
     let arguments = args();
@@ -70,7 +74,7 @@ fn main() {
     // (light-cljs-790), as the QuickJS driver and the Pants engine report it.
     if outcome == tiny::Outcome.Failed && job.fault == source::Fault.UnhandledRejection {
         var value: u8[>..] = []; source::canonical(heap, job.result, value);
-        format(out, "{:status :rejected :value \"", value, "\"}");
+        format(out, "{:status :rejected :value \"", value, "\" :steps ", job.steps, "}");
     } else if outcome == tiny::Outcome.Complete || job.thrown {
         var value: u8[>..] = []; source::canonical(heap, job.result, value);
         // An error object JavaScript made is named by its `name` (a data
@@ -80,17 +84,17 @@ fn main() {
             if heap.fault == source::Fault.None && name.is_string() { value.clear(); value.append("error:"); for i in source::str_len(heap, name) { value.push(source::unit(heap, name, i) as u8); } }
             heap.fault = source::Fault.None;
         }
-        format(out, "{:status :", if job.thrown { "thrown" } else { "returned" }, " :value \"", value, "\"}");
+        format(out, "{:status :", if job.thrown { "thrown" } else { "returned" }, " :value \"", value, "\" :steps ", job.steps, "}");
     } else if outcome == tiny::Outcome.Yielded && job.effect_pending {
         // A host effect (__rt.effect) has no host in this runner.
-        format(out, "{:status :unsupported :fault \"HostEffect\" :effect ", job.effect_kind, "}");
+        format(out, "{:status :unsupported :fault \"HostEffect\" :effect ", job.effect_kind, " :steps ", job.steps, "}");
     } else if outcome != tiny::Outcome.Failed {
         var detail: u8[>..] = []; format(detail, outcome); infrastructure("outcome:", detail); return;
     } else {
         match job.fault {
             // The catchable faults, uncaught, named as the Pants engine and
             // QuickJS name them (light-cljs-786).
-            TypeError, ReferenceError, RangeError, SyntaxError, StackLimit => { format(out, "{:status :thrown :value \"error:", source::error_name(job.fault), "\"}"); },
+            TypeError, ReferenceError, RangeError, SyntaxError, StackLimit => { format(out, "{:status :thrown :value \"error:", source::error_name(job.fault), "\" :steps ", job.steps, "}"); },
             MemoryLimit, WorkLimit, InstructionLimit => { located(out, "limit", heap, job); },
             InvalidState, StaleID, None => { var detail: u8[>..] = []; format(detail, job.fault); infrastructure("fault:", detail); return; },
             _ => { located(out, "unsupported", heap, job); },

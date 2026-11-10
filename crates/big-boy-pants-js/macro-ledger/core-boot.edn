@@ -1,0 +1,15 @@
+;; Where the shared-profile cljs.core boot stops on Goose: `macro-ledger.bb
+;; --check` fails when it stops earlier or elsewhere, and asks for this
+;; record to be advanced (--write-expected) when it gets further. :stop's
+;; status, fault, detail, operation, value and line identify the stop;
+;; :steps orders two stops; the rest is reported only.
+{:export {:functions 2240, :instructions 135217, :image-bytes 3818417},
+ :stop
+ {:status :unsupported,
+  :fault "Fault.NativeBoundary",
+  :detail "form operation seal",
+  :line
+  "kinds: __rt.seal([\"vector\", \"list\", \"cons\", \"chunked-cons\", \"lazy-seq\", \"map\", \"set\"]),",
+  :steps 8404,
+  :byte 69475,
+  :line-number 926}}
