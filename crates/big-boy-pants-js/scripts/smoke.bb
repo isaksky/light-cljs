@@ -77,9 +77,19 @@
         ;; infrastructure failures.
         (let [conformance (str (fs/path temporary "conformance"))]
           (run! goose "build" (str (fs/path root "src/conformance.goose")) "-o" conformance)
+          ;; A runaway case: the runner gives a case no steps or work budget
+          ;; (light-cljs-840), so loop.gsp's `while (true) {}` runs until the
+          ;; harness's per-engine timeout kills it. It must still be running,
+          ;; with nothing printed, at a short deadline (the VM's default
+          ;; budget ends it in milliseconds); then it is killed as
+          ;; conformance.bb kills a timed-out case. Smoke itself ending
+          ;; during the wait kills it too.
+          (let [runaway (process/process {:out :string :err :string :shutdown process/destroy-tree} conformance (str (fs/path root "corpus/serial/loop.gsp")))
+                ended (deref runaway 2000 nil)]
+            (when-not ended (process/destroy-tree runaway) (deref runaway 5000 nil))
+            (assert (nil? ended) (str "conformance runner ended corpus/serial/loop.gsp instead of running until killed: " (:out ended))))
           (doseq [[image exit expected]
                   [["corpus/serial/calls.gsp" 0 {:status :returned}]
-                   ["corpus/serial/loop.gsp" 0 {:status :limit :fault "Fault.InstructionLimit"}]
                    ["corpus/serial/type-error.gsp" 0 {:status :thrown :value "error:TypeError"}]
                    ["corpus/serial/global-missing.gsp" 0 {:status :thrown :value "error:ReferenceError"}]
                    ["corpus/serial/unsupported-reached.gsp" 0 {:status :unsupported :fault "Fault.Unsupported" :operation "using_check"}]
