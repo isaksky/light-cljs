@@ -2510,7 +2510,7 @@ fn set_prototype(job: Job&, object: Value, proto: Value) -> bool {
     // A realm row never changes its prototype, even in a job that may write
     // realm rows (the conformance and execute runners): dense relies on the
     // realm's prototype chains (decision 3).
-    if !writable(job, o) || heap.global.is_object() && realm_row(o) { heap.fault = Fault.NativeBoundary; return false; }
+    if !writable(job, o) || heap.global.is_object() && realm_row(o) { image_write(job, Value.Undefined, "a prototype"); return false; }
     store_prototype(heap, o, proto); return true;
 }
 // OrdinarySetPrototypeOf of node o for Goose callers (tests, which own
@@ -2756,11 +2756,13 @@ fn catches(job: const Job&) -> bool {
 // End the job with `reason` at `frame`'s instruction: no catch or finally
 // block runs. A job cancelling (cancel()) ends Cancelled whatever ended its
 // cleanup, an uncaught exception, a limit or any other fault, as the Pants
-// engine's terminal cleanup does; its thrown value is no result.
+// engine's terminal cleanup does; its thrown value is no result. A
+// NativeBoundary no step named is named by its instruction (boundary_detail).
 fn terminate(job: Job&, reason: Fault, frame: Frame) {
     unwind_natives(job, 0);
     let fault = if job.cancelling { Fault.Cancelled } else { reason };
     if job.cancelling { job.thrown = false; job.result = Value.Undefined; }
+    if fault == Fault.NativeBoundary && job.detail.len == 0 { boundary_detail(job, frame); }
     job.status = tiny::Status.Failed; job.fault = fault; job.fault_function = frame.function; job.fault_pc = frame.pc;
     let code .= job.heap.code;
     job.fault_opcode = if fault == Fault.Unsupported && frame.function >= 0 && frame.pc >= 0 && frame.pc < code.ops.len { code.ops[frame.pc].code } else { -1 };
@@ -2784,6 +2786,77 @@ fn fail(job: Job&, fault: Fault, frame: Frame) {
     }
     terminate(job, reported, frame);
 }
+// ---- What a NativeBoundary names (light-cljs-915)
+// Every NativeBoundary fault names what the Goose runtime lacks in
+// Job.detail, which describe_fault prints after the fault, its spaces as
+// dashes (`Fault.NativeBoundary:no-core-leaf-take`). The spellings, stable
+// for ledgers that grep them:
+//   no core leaf K            a read of rt.core's missing member K
+//                             (nativeCoreBinding's is `nativeCoreBinding:
+//                             no core leaf K`)
+//   no rt member K            a read of rt's missing member K
+//   no global K               a read of the global object's missing K
+//   no image member K         a read of another image object's missing K
+//   write to an image row: K  a write into a row the job did not allocate
+//                             (decision 3), naming the key written or what
+//                             the write changes
+//   B: S                      built-in B's step S (`into: unsupported
+//                             arguments` when B names none; mapSeq's
+//                             `mapSeq: no core leaf map over a vector`,
+//                             realm.goose call_builtin)
+//   form operation N          a form operation by its `__rt` name, when
+//                             its step names nothing more specific
+//   at O                      another instruction, by its registry name
+//   in native frame F         a native frame's operation
+// A step that knows what it lacks sets Job.detail itself (these helpers);
+// boundary_detail names the instruction of any other when the fault ends
+// the job (terminate).
+fn boundary_detail(job: Job&, frame: Frame) {
+    let code .= job.heap.code;
+    job.detail.clear();
+    if frame.function < 0 { var text: u8[>..] = []; format(text, "in native frame ", frame.native); for c in text { job.detail.push(c); } return; }
+    if frame.pc < 0 || frame.pc >= code.ops.len { return; }
+    let op = code.ops[frame.pc];
+    if op.code == opcode::FormOp { for c in "form operation " { job.detail.push(c); } for c in export_form_op_name(op.arg) { job.detail.push(c); } return; }
+    for c in "at " { job.detail.push(c); } for c in export_opcode_name(op.code) { job.detail.push(c); }
+}
+fn boundary(job: Job&, what: const u8[:]) {
+    job.detail.clear(); for c in what { job.detail.push(c); }
+    job.heap.fault = Fault.NativeBoundary;
+}
+// Built-in `id`'s step `what`.
+fn builtin_boundary(job: Job&, id: i64, what: const u8[:]) {
+    job.detail.clear();
+    if id >= 0 && id < BUILTINS.len { for c in BUILTINS[id].name { job.detail.push(c); } job.detail.push(58); job.detail.push(32); }
+    for c in what { job.detail.push(c); }
+    job.heap.fault = Fault.NativeBoundary;
+}
+// A write into a row the job did not allocate, before it mutates: key k,
+// or `what` when the write has no key.
+fn image_write(job: Job&, k: Value, what: const u8[:] = "") {
+    job.detail.clear(); for c in "write to an image row" { job.detail.push(c); }
+    if k.is_string() || k.is_symbol() || k.is_number() { job.detail.push(58); job.detail.push(32); append_key(job.heap, k, job.detail); }
+    else if what.len > 0 { job.detail.push(58); job.detail.push(32); for c in what { job.detail.push(c); } }
+    job.heap.fault = Fault.NativeBoundary;
+}
+// A read of member k the image object `object` does not have. The lookup
+// of rt and rt.core makes nothing (find_key): the fault path allocates no
+// row.
+fn missing_member(job: Job&, object: Value, k: Value) {
+    let heap .= job.heap;
+    let rt = image_member(heap, heap.global, "__lightNativeRuntime");
+    let core = if rt.is_object() { image_member(heap, rt, "core") } else { Value.Undefined };
+    job.detail.clear();
+    for c in (if core.is_object() && object == core { "no core leaf " } else if rt.is_object() && object == rt { "no rt member " } else if object == heap.global { "no global " } else { "no image member " }) { job.detail.push(c); }
+    append_key(heap, k, job.detail);
+    heap.fault = Fault.NativeBoundary;
+}
+fn image_member(heap: Heap&, object: Value, name: const u8[:]) -> Value {
+    let k = find_key(heap, name);
+    if k.is_undefined() || !object.is_object() { return Value.Undefined; }
+    let p = own_entry(heap, object, k);
+    return if p.found && heap.fault == Fault.None { p.value } else { Value.Undefined };
+}
 // Unwind `h`, a handler of a live frame: the frames above its frame are
 // popped (their native frames released) and its heights restored.
 fn unwind_to(job: Job&, h: Handler) -> bool {
@@ -2795,16 +2868,18 @@ fn unwind_to(job: Job&, h: Handler) -> bool {
 }
 // The fault with the unimplemented operation's registry name, for example
 // `Fault.Unsupported:construct` or `Fault.Unsupported:const(BigInt)`.
-// A built-in step or pending property an UnsupportedOperand did not
-// implement follows, its spaces as dashes (Job.detail):
-// `Fault.UnsupportedOperand:Object:-primitive-wrapper-objects`.
+// Job.detail follows on every fault, its spaces as dashes: the built-in
+// step or pending property an UnsupportedOperand did not implement
+// (`Fault.UnsupportedOperand:Object:-primitive-wrapper-objects`), what a
+// NativeBoundary lacks (`Fault.NativeBoundary:no-core-leaf-take`,
+// boundary_detail) or a catchable fault's message.
 fn describe_fault(out: u8[>..]&, code: const Code&, job: const Job&) {
     format(out, job.fault);
     if job.fault == Fault.Unsupported && job.fault_opcode >= 0 { out.push(':'); unsupported_operation(out, code, job); }
     // Printable ASCII, a control character as `?` too, so the text stays
     // one protocol line; bounded as describe_uncaught's (a key in the
     // message can be long).
-    if job.fault != Fault.Unsupported && job.detail.len > 0 {
+    if job.detail.len > 0 {
         out.push(':');
         for u, i in job.detail { if i >= description_limit() { out.append("..."); return; } out.push(if u == 32 { 45 } else if u > 126 || u < 32 { 63 } else { u as u8 }); }
     }
@@ -4071,7 +4146,8 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
 // here, gensym stays an explicit NativeBoundary fault.
 fn gensym(job: Job&, args: const Value[:]) -> Value {
     let heap .= job.heap;
-    if job.gensym_next <= 0 || job.gensym_next >= 9007199254740991 || args.len > 1 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    if job.gensym_next <= 0 || job.gensym_next >= 9007199254740991 { builtin_boundary(job, code(Builtin.Gensym), "outside a generated-name scope or past its count"); return Value.Undefined; }
+    if args.len > 1 { builtin_boundary(job, code(Builtin.Gensym), "more than one argument"); return Value.Undefined; }
     var units: u16[>..] = [];
     if args.len == 0 { units.append([71, 95, 95]); } else {
         // A prefix read from a form arrives as its scalar occurrence.
@@ -4082,12 +4158,12 @@ fn gensym(job: Job&, args: const Value[:]) -> Value {
             let n = node(heap, a.id()); if kind == node_kind::Keyword { units.push(58); }
             if n.namespace_value.is_string() { append_utf16(heap, n.namespace_value, units); units.push(47); }
             append_utf16(heap, n.value, units);
-        } else { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+        } else { builtin_boundary(job, code(Builtin.Gensym), "a prefix other than a string, symbol or keyword"); return Value.Undefined; }
     }
     for b in job.gensym_prefix { units.push(b); }
     for b in str(job.gensym_next) { units.push(b); }
     // V8 reads a name with a slash as a namespace and a name; not supported here.
-    for u in units { if u == 47 { heap.fault = Fault.NativeBoundary; return Value.Undefined; } }
+    for u in units { if u == 47 { builtin_boundary(job, code(Builtin.Gensym), "a name with a slash"); return Value.Undefined; } }
     if !charge(heap, units.len) { return Value.Undefined; }
     let name = allocate(heap, Node { kind: node_kind::Symbol, value: string(heap, units), namespace_value: nil() });
     if heap.fault == Fault.None { job.gensym_next += 1; }
@@ -4097,7 +4173,7 @@ fn gensym(job: Job&, args: const Value[:]) -> Value {
 fn request_effect(job: Job&, id: i64, args: const Value[:], frame: Frame) {
     // A cleanup for a cancellation cannot wait: the request ends it.
     if job.cancelling { job.heap.fault = Fault.Cancelled; return; }
-    if !job.effects_enabled { job.heap.fault = Fault.NativeBoundary; return; }
+    if !job.effects_enabled { builtin_boundary(job, id, "a compiler effect outside a compiler job"); return; }
     if args.len > 8 { job.heap.fault = Fault.EffectContract; return; }
     job.effect_pending = true; job.effect_kind = id; job.effect_count = args.len; job.effect_frame = frame;
     for value, i in args { job.effect_args[i] = value; }
@@ -4117,7 +4193,7 @@ fn demand_map(job: Job&, value: Value) -> bool {
     let heap .= job.heap;
     if !charge(heap) { return false; }
     if !valid(heap, value) || !value.is_object() || node(heap, value.id()).kind != node_kind::LazySeq { return false; }
-    if node(heap, value.id()).initialized { heap.fault = Fault.NativeBoundary; return false; }
+    if node(heap, value.id()).initialized { boundary(job, "a lazy sequence demanded while it is realized"); return false; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return false; }
     let row = node(heap, value.id());
     node_mut(heap, value.id()).initialized = true;
@@ -4887,7 +4963,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 AppendHole => {
                     let object = job.operands[job.operands.len - 1];
                     if !dense(job, object) { heap.fault = Fault.TypeError; break; }
-                    if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; break; }
+                    if !writable(job, object.id()) { image_write(job, Value.Undefined, "an array's elements"); break; }
                     if !array_length(heap, object, number((node(heap, object.id()).length as f64) + 1)) { break; }
                 },
                 Append => {
@@ -4939,7 +5015,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     // job resolves the name (get_global).
                     if job.protected_nodes > 0 {
                         let v, found = own_property(heap, heap.global, k);
-                        if !found && heap.fault == Fault.None { heap.fault = Fault.NativeBoundary; }
+                        if !found && heap.fault == Fault.None { missing_member(job, heap.global, k); }
                         job.operands.push(v);
                     } else { get_global(job, k, g.throws); }
                     if !in_place(job, top, at) { break; }
@@ -4995,7 +5071,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                             // The answer is written into the receiver: only the
                             // compiler roots object or a row the job allocated
                             // (light-cljs-795), never a retained image row.
-                            if !found && heap.fault == Fault.None && !(args[0] == job.root_receiver || writable(job, args[0].id())) { heap.fault = Fault.NativeBoundary; }
+                            if !found && heap.fault == Fault.None && !(args[0] == job.root_receiver || writable(job, args[0].id())) { image_write(job, args[2]); }
                             if !found && heap.fault == Fault.None { request_effect(job, 9, args, frame_at(job, top, at)); waiting = true; }
                         }
                     }
@@ -5498,7 +5574,7 @@ fn bind_this(job: Job&) -> bool {
     let heap .= job.heap;
     let value = job.operands.pop(); let cell = job.operands.pop();
     if !cell.is_object() || node(heap, cell.id()).kind != node_kind::Binding { heap.fault = Fault.InvalidState; return false; }
-    if !writable(job, cell.id()) { heap.fault = Fault.NativeBoundary; return false; }
+    if !writable(job, cell.id()) { image_write(job, Value.Undefined, "a this binding"); return false; }
     let row .= node_mut(heap, cell.id());
     if row.initialized { reference_fault(job, "this can be initialized only once"); return false; }
     row.value = value; row.initialized = true;
@@ -5629,7 +5705,7 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
             // map's entries and a set's members are in the runtime's
             // iteration order, which this one does not model.
             else if !seq_source(job, args[1]) {}
-            else if (source == node_kind::Map || source == node_kind::Set) && form_count(heap, args[1]) > 0 { heap.fault = Fault.NativeBoundary; }
+            else if (source == node_kind::Map || source == node_kind::Set) && form_count(heap, args[1]) > 0 { builtin_boundary(job, id, "a map or set source"); }
             else {
                 let input = args[1]; let callback = args[0]; let out = form_collection(heap, node_kind::Vector, []);
                 form_count(heap, input);
@@ -5705,7 +5781,7 @@ fn cell(job: Job&, op: i64) {
     let value = if op == opcode::CellGet { Value.Undefined } else { job.operands.pop() }; let cell = job.operands.pop();
     if valid(heap, cell) && cell.is_object() && node(heap, cell.id()).kind == node_kind::Binding {
         // A closure environment the job did not allocate is read-only.
-        if op != opcode::CellGet && !writable(job, cell.id()) { heap.fault = Fault.NativeBoundary; return; }
+        if op != opcode::CellGet && !writable(job, cell.id()) { image_write(job, Value.Undefined, "a closure variable"); return; }
         // The write log keeps no cell writes (light-cljs-801): nothing reads them.
         let row .= node_mut(heap, cell.id());
         if op == opcode::CellGet || op == opcode::CellSet {
@@ -5783,7 +5859,7 @@ fn new_mapped_arguments(heap: Heap&, args: const Value[:], callee: Value, params
 fn mapped_cell(job: Job&, op: i64, c: i64, value: Value) {
     let heap .= job.heap;
     let o: i64 = node(heap, c).value.id(); let i: i64 = node(heap, c).length;
-    if op != opcode::CellGet && (!writable(job, c) || !writable(job, o)) { heap.fault = Fault.NativeBoundary; return; }
+    if op != opcode::CellGet && (!writable(job, c) || !writable(job, o)) { image_write(job, Value.Undefined, "a mapped argument"); return; }
     if op == opcode::CellGet { let v = mapped_value(heap, o, i, c); if heap.fault == Fault.None { job.operands.push(v); } return; }
     mapped_write(heap, o, i, c, value);
 }
@@ -5857,7 +5933,7 @@ fn get_property(job: Job&, k: Value, named: bool, receiver: Value = Value.Empty)
     } else if object.is_object() && !realm_intrinsic(object.id()) && object.id() < job.protected_nodes {
         let value, found = own_property(heap, object, k);
         let optional = object == heap.global && (key_is(heap, k, "__lightCompilerRootReceiver") || key_is(heap, k, "__lightCompilerRootContext"));
-        if !found && !optional { heap.fault = Fault.NativeBoundary; } job.operands.push(value);
+        if !found && !optional { missing_member(job, object, k); } job.operands.push(value);
     } else {
         // An accessor's getter runs as a frame entered directly: its return
         // value is the read's result for this frame (light-cljs-787). On a
@@ -5953,7 +6029,7 @@ fn receiver_set(job: Job&, base: Value, k: Value, value: Value, receiver: Value)
         at = prototype(heap, at.id());
     }
     if !receiver.is_object() { return Value.Undefined, false; }
-    if !writable(job, receiver.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined, false; }
+    if !writable(job, receiver.id()) { image_write(job, k); return Value.Undefined, false; }
     prepare_function(job, receiver, key, true);
     if heap.fault != Fault.None { return Value.Undefined, false; }
     // A proxy receiver is defined on by its [[DefineOwnProperty]]: the
@@ -6131,7 +6207,7 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool, eval: bool) {
     let heap .= job.heap;
     if !k.is_string() { heap.fault = Fault.InvalidState; return; }
     let g = heap.global;
-    if !g.is_object() || !writable(job, g.id()) { heap.fault = Fault.NativeBoundary; return; }
+    if !g.is_object() || !writable(job, g.id()) { image_write(job, k); return; }
     let key = intern(heap, k);
     if heap.fault != Fault.None { return; }
     match op {
@@ -6151,7 +6227,7 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool, eval: bool) {
                 if !global_cell(heap, lexical.value) { heap.fault = Fault.InvalidState; return; }
                 if !node(heap, lexical.value.id()).initialized { named_error(job, Fault.ReferenceError, "cannot access '", key, "' before initialization"); return; }
                 if lexical.attrs & attr_writable() == 0 { named_error(job, Fault.TypeError, "assignment to constant variable '", key, "'"); return; }
-                if !writable(job, lexical.value.id()) { heap.fault = Fault.NativeBoundary; return; }
+                if !writable(job, lexical.value.id()) { image_write(job, k); return; }
                 node_mut(heap, lexical.value.id()).value = value; job.operands.push(value); return;
             }
             if strict_put && !has_property(heap, g, key) { if heap.fault == Fault.None { not_defined(job, key); } return; }
@@ -6194,7 +6270,7 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool, eval: bool) {
             let lexical = lexical_entry(job, key);
             if heap.fault != Fault.None { return; }
             if !lexical.found || !global_cell(heap, lexical.value) { heap.fault = Fault.InvalidState; return; }
-            if !writable(job, lexical.value.id()) { heap.fault = Fault.NativeBoundary; return; }
+            if !writable(job, lexical.value.id()) { image_write(job, k); return; }
             let cell .= node_mut(heap, lexical.value.id()); cell.value = value; cell.initialized = true;
         },
         // CheckGlobalVar, CheckGlobalFunction: before any declaration effect
@@ -6357,7 +6433,7 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
     let heap .= job.heap;
     let object = job.operands.pop();
     let result = if chain { object } else { value };
-    if object.is_object() && !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; job.operands.push(result); return; }
+    if object.is_object() && !writable(job, object.id()) { image_write(job, k); job.operands.push(result); return; }
     prepare_function(job, object, k, true);
     // OrdinarySet reads an inherited `prototype` too: a lazy one on the
     // chain (an object made by Object.create(F), light-cljs-883) is made first.
@@ -6408,7 +6484,7 @@ fn define_field(job: Job&, k: Value, value: Value, half: u8, class_member: bool 
     let object = job.operands[job.operands.len - 1];
     if !valid(heap, object) || !key_valid(heap, k) || !valid(heap, value) { return; }
     if !object.is_object() || !k.is_string() && !k.is_symbol() { heap.fault = if object.is_object() { Fault.UnsupportedOperand } else { Fault.TypeError }; return; }
-    if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
+    if !writable(job, object.id()) { image_write(job, k); return; }
     prepare_function(job, object, k, true);
     let key = intern(heap, k);
     if heap.fault != Fault.None { return; }
@@ -6442,7 +6518,7 @@ fn delete_op(job: Job&, strict: bool) {
     var ok = true;
     if object.is_string() { let i = index(heap, k); ok = !(key_is(heap, k, "length") || i >= 0 && i < str_len(heap, object)); }
     else if object.is_object() {
-        if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
+        if !writable(job, object.id()) { image_write(job, k); return; }
         let key = intern(heap, k);
         if heap.fault != Fault.None { return; }
         // A lazy closure's `length` or `name` is made before it goes.
@@ -6812,7 +6888,7 @@ fn iteration_object(job: Job&, v: Value, what: const u8[:]) -> bool {
     // The compiler roots object and protected rows answer only their own
     // names (get_property). A protected array is iterated: its @@iterator is
     // the realm's and its cursor only reads it (light-cljs-844).
-    if job.root_receiver.is_object() && v == job.root_receiver || !realm_intrinsic(v.id()) && v.id() < job.protected_nodes && node(heap, v.id()).kind != node_kind::Array { heap.fault = Fault.NativeBoundary; return false; }
+    if job.root_receiver.is_object() && v == job.root_receiver || !realm_intrinsic(v.id()) && v.id() < job.protected_nodes && node(heap, v.id()).kind != node_kind::Array { boundary(job, "iteration of an image object"); return false; }
     if !convertible(heap, v) {
         job.detail.clear(); for c in "GetIterator: a light-cljs runtime value as " { job.detail.push(c); } for c in what { job.detail.push(c); }
         heap.fault = Fault.UnsupportedOperand; return false;
@@ -6939,7 +7015,7 @@ fn get_iterator_step(job: Job&, frame: Frame) {
 // compiler roots object and protected rows answer missing names by demand,
 // so their keys are not a list.
 fn listable(job: Job&, object: Value) -> bool {
-    if !realm_intrinsic(object.id()) && object.id() < job.protected_nodes || job.root_receiver.is_object() && object == job.root_receiver { job.heap.fault = Fault.NativeBoundary; return false; }
+    if !realm_intrinsic(object.id()) && object.id() < job.protected_nodes || job.root_receiver.is_object() && object == job.root_receiver { boundary(job, "the keys of an image object"); return false; }
     return true;
 }
 // A primitive string's own keys: its indices, enumerable (and, with
@@ -7025,7 +7101,7 @@ fn for_in_next(job: Job&) {
     let it = job.operands.pop();
     if !valid(heap, it) { return; }
     if !it.is_object() || node(heap, it.id()).kind != node_kind::KeyList { heap.fault = Fault.InvalidState; return; }
-    if !writable(job, it.id()) { heap.fault = Fault.NativeBoundary; return; }
+    if !writable(job, it.id()) { image_write(job, Value.Undefined, "a for-in iterator"); return; }
     for_in_walk(job, -1, it.id());
 }
 // The walk of key list o from its position, for the ForIn frame at `at`
@@ -7166,7 +7242,7 @@ fn copy_data(job: Job&) {
     let source = job.operands.pop(); let target = job.operands[job.operands.len - 1];
     if !valid(heap, source) || !valid(heap, target) || source.tag() <= value_tag::Null { return; }
     if !target.is_object() || node(heap, target.id()).kind != node_kind::Object { heap.fault = Fault.UnsupportedOperand; return; }
-    if !writable(job, target.id()) { heap.fault = Fault.NativeBoundary; return; }
+    if !writable(job, target.id()) { image_write(job, Value.Undefined, "copied properties"); return; }
     var keys: OwnKey[>..] = []; var walked = Value.Undefined;
     if source.is_object() {
         if !listable(job, source) { return; }

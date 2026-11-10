@@ -1152,7 +1152,18 @@ pub fn inspection_schema() -> String {
     for op in FormOp::ALL {
         text.push_str(&format!("        form_op::{op:?} => {},\n", op.arity()));
     }
-    text.push_str("        _ => -1,\n    };\n}\n\nfn export_name_operand(op: i64) -> bool {\n    return match op {\n");
+    text.push_str(
+        "        _ => -1,\n    };\n}\n\n\
+         // A form operation's `__rt` intrinsic name, which a fault names.\n\
+         fn export_form_op_name(op: i64) -> const u8[:] {\n    return match op {\n",
+    );
+    for op in FormOp::ALL {
+        text.push_str(&format!(
+            "        form_op::{op:?} => \"{}\",\n",
+            op.intrinsic()
+        ));
+    }
+    text.push_str("        _ => \"\",\n    };\n}\n\nfn export_name_operand(op: i64) -> bool {\n    return match op {\n");
     for op in opcodes().filter(|op| op.operand() == OperandKind::Name) {
         text.push_str(&format!("        {} => true,\n", name(op)));
     }

@@ -958,7 +958,7 @@ fn proxy_forward_property(job: Job&, at: i64, method: i64, target: Value) {
         return;
     }
     if method == proxy_method::Delete {
-        if !writable(job, target.id()) { heap.fault = Fault.NativeBoundary; return; }
+        if !writable(job, target.id()) { image_write(job, k); return; }
         // A lazy closure's `length` or `name` is made before it goes (delete_op).
         if key_is(heap, k, "length") || key_is(heap, k, "name") { prepare_function(job, target, k, true); }
         let ok = delete_property(heap, target, k);
@@ -1294,7 +1294,7 @@ fn proxy_revoke(job: Job&, f: Value) -> Value {
     let p = node(heap, f.id()).value;
     if !p.is_object() { return Value.Undefined; }
     if !is_proxy(heap, p) { heap.fault = Fault.InvalidState; return Value.Undefined; }
-    if !writable(job, f.id()) || !writable(job, p.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    if !writable(job, f.id()) || !writable(job, p.id()) { image_write(job, Value.Undefined, "a proxy's revocation"); return Value.Undefined; }
     node_mut(heap, p.id()).initialized = true;
     node_mut(heap, f.id()).value = Value.Null;
     return Value.Undefined;

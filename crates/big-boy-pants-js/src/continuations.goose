@@ -346,7 +346,7 @@ fn resume_step(job: Job&, frame: Frame) {
     if frame.pc == 0 {
         var state = node(heap, g).length;
         if state == generator_state::Executing { type_error(job, "cannot invoke a running generator"); return; }
-        if !writable(job, g) { heap.fault = Fault.NativeBoundary; return; }
+        if !writable(job, g) { image_write(job, Value.Undefined, "a generator's state"); return; }
         if state == generator_state::SuspendedStart && kind != resume_kind::Next { complete_generator(heap, g); state = generator_state::Completed; }
         if state == generator_state::Completed {
             if kind == resume_kind::Throw { raise(job, frame.output, frame); return; }
@@ -389,11 +389,11 @@ fn add_reaction(job: Job&, q: i64, target: u32, resume: bool) {
     let heap .= job.heap;
     var s = promise_state(heap, q);
     if s.state != promise_status::Pending {
-        if s.state == promise_status::Rejected && !s.handled { if !writable(job, q) { heap.fault = Fault.NativeBoundary; return; } s.handled = true; set_promise_state(heap, q, s); }
+        if s.state == promise_status::Rejected && !s.handled { if !writable(job, q) { image_write(job, Value.Undefined, "a promise's state"); return; } s.handled = true; set_promise_state(heap, q, s); }
         queue_task(job, Task { target: target, resume: resume, value: s.result, rejected: s.state == promise_status::Rejected });
         return;
     }
-    if !writable(job, q) { heap.fault = Fault.NativeBoundary; return; }
+    if !writable(job, q) { image_write(job, Value.Undefined, "a promise's state"); return; }
     let row = add_conts(heap, Cont.Reaction { r: Reaction { target: target, resume: resume } }, 1);
     if row < 0 { return; }
     if s.last != no_row() { var last = reaction(heap, s.last); last.next = row as u32; set_cont(heap, s.last, Cont.Reaction { r: last }); } else { s.first = row as u32; }
@@ -404,7 +404,7 @@ fn settle_promise(job: Job&, p: i64, value: Value, rejected: bool) {
     let heap .= job.heap;
     var s = promise_state(heap, p);
     if s.state != promise_status::Pending { return; }
-    if !writable(job, p) { heap.fault = Fault.NativeBoundary; return; }
+    if !writable(job, p) { image_write(job, Value.Undefined, "a promise's state"); return; }
     var at = s.first;
     while at != no_row() && heap.fault == Fault.None { let x = reaction(heap, at); queue_task(job, Task { target: x.target, resume: x.resume, value: value, rejected: rejected }); at = x.next; }
     if heap.fault != Fault.None { return; }
@@ -511,7 +511,7 @@ fn await_value(job: Job&, top: i64, at: i64) {
     // Registering the reaction writes q's state unless q is fulfilled or a
     // handled rejection: a row the job did not allocate fails first.
     let qs = promise_state(heap, q.id());
-    if (qs.state == promise_status::Pending || qs.state == promise_status::Rejected && !qs.handled) && !writable(job, q.id()) { heap.fault = Fault.NativeBoundary; return; }
+    if (qs.state == promise_status::Pending || qs.state == promise_status::Rejected && !qs.handled) && !writable(job, q.id()) { image_write(job, Value.Undefined, "a promise's state"); return; }
     job.operands.pop();
     let row = detach(job, top, reuse_row(promise_state(heap, p.id()).activation));
     if row < 0 { job.operands.push(v); return; }

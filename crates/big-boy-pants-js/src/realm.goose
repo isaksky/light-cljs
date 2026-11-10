@@ -1322,7 +1322,7 @@ fn exception_info(job: Job&, b: Builtin, fields: const Value[:], receiver: Value
     if !m.is_undefined() { primitive_string(job, b, m); if heap.fault != Fault.None { return Value.Undefined; } }
     let e = if receiver.tag() <= value_tag::Null { heap.global } else { to_object(job, receiver) };
     if heap.fault != Fault.None { return Value.Undefined; }
-    if !writable(job, e.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    if !writable(job, e.id()) { image_write(job, Value.Undefined, "an ExceptionInfo's fields"); return Value.Undefined; }
     let names: Name[3] = [Name { text: "message" }, Name { text: "data" }, Name { text: "cause" }];
     for v, i in fields { if !exception_info_field(job, b, e, names[i].text, v) { return Value.Undefined; } }
     for f in COPIED_ERROR_FIELDS {
@@ -1399,7 +1399,7 @@ fn into(job: Job&, b: Builtin, args: const Value[:]) -> Value {
     if !seq_source(job, from) { return Value.Undefined; }
     let count = form_count(heap, from); let source = form_kind(heap, from);
     if count == 0 { return to; }
-    if source == node_kind::Map || source == node_kind::Set { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    if source == node_kind::Map || source == node_kind::Set { builtin_boundary(job, code(b), "a map or set source"); return Value.Undefined; }
     let target = form_kind(heap, to);
     if form_value(heap, to).tag() > value_tag::Null && !(target >= node_kind::List && target <= node_kind::Set || target == node_kind::Concat) {
         let none: u16[0] = []; return runtime_error(job, "No protocol method ICollection/-conj defined for this value", none);
@@ -1808,8 +1808,25 @@ fn construct_array(job: Job&, args: const Value[:]) -> Value {
 // which run no JavaScript, run to completion here. The runtime leaves
 // delegate to native_value. A step not implemented yet fails
 // UnsupportedOperand, naming the built-in in Job.detail. `id` is the
-// callee's code (its node's `function`).
+// callee's code (its node's `function`). A NativeBoundary its step did not
+// name names the built-in (light-cljs-915), whichever path called it.
 fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Value {
+    let value = builtin_value(job, id, receiver, args);
+    if job.heap.fault == Fault.NativeBoundary && job.detail.len == 0 { unnamed_boundary(job, id, args); }
+    return value;
+}
+// What built-in `id` lacks for `args`: mapSeq, the runtime's `map`, maps
+// only a finite list (native_value), so its other sources lack the core
+// leaf for cljs.core/map (`mapSeq: no core leaf map over a vector`).
+fn unnamed_boundary(job: Job&, id: i64, args: const Value[:]) {
+    if id < 0 || id >= BUILTINS.len || BUILTINS[id].which != Builtin.MapSeq { builtin_boundary(job, id, "unsupported arguments"); return; }
+    // The source is read with the fault set aside (valid refuses a faulted
+    // heap); builtin_boundary sets it again.
+    job.heap.fault = Fault.None;
+    let kind = if args.len == 2 { form_kind(job.heap, args[1]) } else { node_kind::None };
+    builtin_boundary(job, id, if args.len != 2 { "no core leaf map over other than one source" } else { match kind { node_kind::Vector => "no core leaf map over a vector", node_kind::Map => "no core leaf map over a map", node_kind::Set => "no core leaf map over a set", node_kind::LazySeq => "no core leaf map over a lazy sequence", _ => "no core leaf map over this source" } });
+}
+fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Value {
     let heap .= job.heap;
     if id < 0 || id >= BUILTINS.len { heap.fault = Fault.InvalidState; return Value.Undefined; }
     let b = BUILTINS[id].which;

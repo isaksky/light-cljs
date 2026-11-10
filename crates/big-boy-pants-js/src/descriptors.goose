@@ -131,7 +131,7 @@ fn define_descriptor(job: Job&, object: Value, k: Value, d: PropertyDescriptor) 
     // The compiler's protected rows and root receiver are not read here
     // (listable faults NativeBoundary), and another job's function whose
     // properties are not made yet would change.
-    if !owned && (!listable(job, object) || lazy_function(heap, o)) { heap.fault = Fault.NativeBoundary; return false; }
+    if !owned && (!listable(job, object) || lazy_function(heap, o)) { image_write(job, k); return false; }
     // A lazy function property is made first.
     if owned { prepare_function(job, object, k, true); }
     if heap.fault != Fault.None { return false; }
@@ -140,7 +140,7 @@ fn define_descriptor(job: Job&, object: Value, k: Value, d: PropertyDescriptor) 
     if current.found && is_pending(current.value) { pending_fault(heap, k); return false; }
     if node(heap, o).kind == node_kind::Array && key_is(heap, k, "length") { return define_length(job, object, k, current, d, owned); }
     let accessor = accessor_descriptor(d);
-    if !owned { if define_unchanged(heap, current, d) { return true; } heap.fault = Fault.NativeBoundary; return false; }
+    if !owned { if define_unchanged(heap, current, d) { return true; } image_write(job, k); return false; }
     if !current.found {
         if node(heap, o).non_extensible { return false; }
         if accessor {
@@ -207,7 +207,7 @@ fn define_unchanged(heap: Heap&, current: Own, d: PropertyDescriptor) -> bool {
 fn define_length(job: Job&, object: Value, k: Value, current: Own, d: PropertyDescriptor, owned: bool) -> bool {
     let heap .= job.heap;
     // Another job's array takes only a definition that changes nothing.
-    if !owned { if define_unchanged(heap, current, d) { return true; } heap.fault = Fault.NativeBoundary; return false; }
+    if !owned { if define_unchanged(heap, current, d) { return true; } image_write(job, k); return false; }
     var length: f64 = current.value.num();
     if d.has_value {
         let n = primitive_number(job, Builtin.ObjectDefineProperty, d.value);
@@ -481,7 +481,7 @@ fn reflect_delete(job: Job&, b: Builtin, target: Value, kv: Value) -> Value {
     if !target.is_object() { return type_error(job, "Reflect.deleteProperty: the target is not an object"); }
     let k = property_key(job, b, kv);
     if heap.fault != Fault.None { return Value.Undefined; }
-    if !writable(job, target.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    if !writable(job, target.id()) { image_write(job, k); return Value.Undefined; }
     // A lazy closure's `length` or `name` is made before it goes, as `delete` makes it.
     if k.is_string() && (key_is(heap, k, "length") || key_is(heap, k, "name")) { prepare_function(job, target, k, true); }
     if heap.fault != Fault.None { return Value.Undefined; }

@@ -196,7 +196,7 @@ fn push_step(job: Job&, frame: Frame) {
 // changes (decision 3).
 fn set_or_throw(job: Job&, b: Builtin, o: Value, k: Value, v: Value) -> bool {
     let heap .= job.heap;
-    if !writable(job, o.id()) { heap.fault = Fault.NativeBoundary; return false; }
+    if !writable(job, o.id()) { image_write(job, k); return false; }
     prepare_function(job, o, k, true);
     if heap.fault != Fault.None { return false; }
     let setter, ok = write(heap, o, k, v);

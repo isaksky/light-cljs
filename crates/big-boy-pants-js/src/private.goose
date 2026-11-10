@@ -120,7 +120,7 @@ fn put_private(job: Job&) {
         return;
     }
     if p.attrs & attr_writable() == 0 { private_error(job); return; }
-    if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
+    if !writable(job, object.id()) { image_write(job, Value.Undefined, "a private field"); return; }
     var q = p; q.value = value; set_dict_at(heap, private_row(heap, object), i, q);
     job.operands.push(value);
 }
@@ -148,7 +148,7 @@ fn define_private(job: Job&, op: i64) {
     let value = job.operands.pop(); let name = job.operands.pop(); let object = job.operands[job.operands.len - 1];
     if !private_name(job, name) || !valid(heap, object) || !valid(heap, value) { return; }
     if !object.is_object() || !private_holder(node(heap, object.id()).kind) { private_error(job); return; }
-    if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
+    if !writable(job, object.id()) { image_write(job, Value.Undefined, "a private field"); return; }
     let getter = op == opcode::DefinePrivateGetter; let setter = op == opcode::DefinePrivateSetter;
     let i, p = private_find(heap, object, name);
     if heap.fault != Fault.None { return; }

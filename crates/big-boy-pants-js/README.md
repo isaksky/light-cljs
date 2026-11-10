@@ -1161,7 +1161,7 @@ The selected native surface is deliberately small:
 | Runtime `inc`, `mapv`, `vec`, `into` | Native collection operations; `mapv` invokes original source callbacks through explicit resumable frames |
 | Runtime `macroReaderFunction` | Identity adapter for this corpus's directly emitted form ABI; dynamic reader/namespace services are not admitted |
 | Runtime `gensym` | Declared coordinator authority below; serial/pure jobs reject before mutation |
-| Every unlisted form operation | Explicit `NativeBoundary` failure; no effect, replay or foreign evaluation fallback |
+| Every unlisted form operation | Explicit `NativeBoundary` failure naming it (`Fault.NativeBoundary:form-operation-cljCons`; source_vm.goose boundary_detail lists every spelling); no effect, replay or foreign evaluation fallback |
 
 Flat persistent containers copy child handles on update. This implements the
 layout decision in `runtime-design.md`; it does not reproduce the historical

@@ -89,7 +89,7 @@ fn array_iterator(job: Job&, b: Builtin, receiver: Value) -> Value {
     if heap.fault != Fault.None { return Value.Undefined; }
     let o = to_object(job, v);
     if heap.fault != Fault.None { return Value.Undefined; }
-    if job.root_receiver.is_object() && o == job.root_receiver { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    if job.root_receiver.is_object() && o == job.root_receiver { builtin_boundary(job, code(b), "the compiler roots object as the receiver"); return Value.Undefined; }
     if !convertible(heap, o) { return unsupported_step(job, b, "a light-cljs runtime value as the receiver"); }
     let iteration = if b == Builtin.ArrayPrototypeKeys { iteration::Keys } else if b == Builtin.ArrayPrototypeEntries { iteration::Entries } else { iteration::Values };
     return new_cursor(job, o, iteration);
@@ -133,7 +133,7 @@ fn array_next(job: Job&, receiver: Value) {
     if !is_cursor(heap, receiver, false) { type_error(job, "not an Array Iterator"); return; }
     let source = node(heap, receiver.id()).value;
     if source.is_undefined() { next_result(job, -1, Value.Undefined, true); return; }
-    if !writable(job, receiver.id()) { heap.fault = Fault.NativeBoundary; return; }
+    if !writable(job, receiver.id()) { image_write(job, Value.Undefined, "an iterator's position"); return; }
     let i: i64 = node(heap, receiver.id()).length;
     // An array's `length` is its own data property.
     if node(heap, source.id()).kind == node_kind::Array { let len: f64 = node(heap, source.id()).length; array_next_at(job, -1, receiver, source, i, len); return; }
@@ -213,7 +213,7 @@ fn string_iterator_next(job: Job&, receiver: Value) -> Value {
     if !is_cursor(heap, receiver, true) { return type_error(job, "not a String Iterator"); }
     let c = receiver.id(); let s = node(heap, c).value;
     if s.is_undefined() { return iter_result(job, Value.Undefined, true); }
-    if !writable(job, c) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    if !writable(job, c) { image_write(job, Value.Undefined, "an iterator's position"); return Value.Undefined; }
     let i: i64 = node(heap, c).length; let n = str_len(heap, s);
     if i >= n { node_mut(heap, c).value = Value.Undefined; return iter_result(job, Value.Undefined, true); }
     let u = unit(heap, s, i);

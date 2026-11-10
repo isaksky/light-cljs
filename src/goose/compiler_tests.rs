@@ -3089,6 +3089,101 @@ fn goose_compiler_names_unsupported_builtin_steps() {
     }
 }
 
+/// A NativeBoundary names what the Goose runtime lacks (light-cljs-915;
+/// source_vm.goose boundary_detail): a core function by its runtime name,
+/// a built-in step, a form operation by its `__rt` name, an image member or
+/// an image write, in a job and in a preparation, and the compiler's
+/// diagnostic carries it. The ClojureScript macros use core functions and
+/// steps Goose lacks today; when one runs, pick another the runtime lacks.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_names_what_a_native_boundary_lacks() {
+    for (macro_body, named) in [
+        (
+            "(map inc (take 2 x))",
+            "Fault.NativeBoundary:no-core-leaf-take ",
+        ),
+        // `map` runs as the mapSeq leaf, which maps only a finite list.
+        (
+            "(map inc x)",
+            "Fault.NativeBoundary:mapSeq:-no-core-leaf-map-over-a-vector ",
+        ),
+        ("(cons 0 x)", "Fault.NativeBoundary:form-operation-cljCons "),
+        // A deftype in a macro body fails as its definition is prepared.
+        (
+            "(do (deftype T [a]) (.-a (T. 1)))",
+            "preparation-Fault.NativeBoundary:form-operation-structType ",
+        ),
+    ] {
+        let source = format!("(defmacro m [x] (list 'quote {macro_body})) (m [1 2 3])");
+        assert!(
+            crate::compile_with_macros(&source, &mut crate::MacroHost::new()).is_ok(),
+            "{source}"
+        );
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let mut host = crate::MacroHost::new();
+        host.use_goose_source_macros(session.clone()).unwrap();
+        let error = crate::compile_with_macros(&source, &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(named)
+                && error.contains("emitted-span=")
+                && (named.starts_with("preparation-") || !error.contains("preparation-")),
+            "{source}: {error}"
+        );
+        cleaned(&session);
+    }
+    for (body, named) in [
+        (
+            "rt => (form,env) => globalThis.__lightNativeRuntime.core.notACoreLeaf",
+            "Fault.NativeBoundary:no-core-leaf-notACoreLeaf ",
+        ),
+        (
+            "rt => (form,env) => globalThis.__lightNativeRuntime.notAMember",
+            "Fault.NativeBoundary:no-rt-member-notAMember ",
+        ),
+        (
+            "rt => (form,env) => globalThis.gooseAbsentName",
+            "Fault.NativeBoundary:no-global-gooseAbsentName ",
+        ),
+        (
+            "rt => (form,env) => { globalThis.gooseForbidden = 1; return 1; }",
+            "Fault.NativeBoundary:write-to-an-image-row:-gooseForbidden ",
+        ),
+        (
+            "rt => (form,env) => { rt.core.inc.x = 1; return 1; }",
+            "Fault.NativeBoundary:write-to-an-image-row:-x ",
+        ),
+        (
+            "rt => (form,env) => __rt.seal(form)",
+            "Fault.NativeBoundary:form-operation-seal ",
+        ),
+        // A built-in a forwarded call reaches names itself too.
+        (
+            "rt => (form,env) => Reflect.apply(rt.core.mapSeq, null, [rt.core.inc, __rt.formVector(1)])",
+            "Fault.NativeBoundary:mapSeq:-no-core-leaf-map-over-a-vector ",
+        ),
+        (
+            "rt => { globalThis.__lightNativeRuntime.core.notACoreLeaf; return (form,env) => 1; }",
+            "preparation-Fault.NativeBoundary:no-core-leaf-notACoreLeaf ",
+        ),
+    ] {
+        let s = GooseSession::start(&runner(), 1).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let (f, args, _) = inputs(&e, body);
+        let error = e.call(f, &args).unwrap_err();
+        assert!(
+            error.0.contains(named)
+                && error.0.contains("emitted-span=")
+                && (named.starts_with("preparation-") || !error.0.contains("preparation-")),
+            "{body}: {error}"
+        );
+        s.close();
+        cleaned(&s);
+    }
+}
+
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_rejects_root_reads_that_bypass_the_compiler_intrinsic() {

@@ -677,7 +677,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
                 return reference_error(job, if b == Builtin.Vreset { "No protocol method IVolatile/-vreset! defined for this value" } else { no_reset() });
             }
             if node(heap, a.id()).kind == node_kind::Atom {
-                if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+                if !writable(job, a.id()) { image_write(job, Value.Undefined, "an atom's state"); return Value.Undefined; }
                 let old = node(heap, a.id()).value; node_mut(heap, a.id()).value = v;
                 return if b == Builtin.ResetVals { form_collection(heap, node_kind::Vector, [old, v]) } else { v };
             }
@@ -707,7 +707,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             if node(heap, a.id()).kind == node_kind::Atom {
                 let same = form_equal(heap, node(heap, a.id()).value, old); if heap.fault != Fault.None { return Value.Undefined; }
                 if !same { return boolean(false); }
-                if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+                if !writable(job, a.id()) { image_write(job, Value.Undefined, "an atom's state"); return Value.Undefined; }
                 node_mut(heap, a.id()).value = v; return boolean(true);
             }
             // Compare first, as cljs.core does: a miss neither checks nor
@@ -811,7 +811,7 @@ fn swap_commit(job: Job&, at: i64, b: Builtin, r: Value) -> bool {
     if node(heap, a.id()).kind == node_kind::Atom {
         // The V8 build's swap-vals! pairs the state replaced at the store,
         // which the function itself may have reset.
-        if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return true; }
+        if !writable(job, a.id()) { image_write(job, Value.Undefined, "an atom's state"); return true; }
         old = node(heap, a.id()).value; node_mut(heap, a.id()).value = r;
     } else {
         var stored: i64[>..] = [];
@@ -905,7 +905,7 @@ fn force_step(job: Job&, frame: Frame, b: Builtin) {
     if frame.pc == 1 {
         let r = job.operands.pop();
         if n.kind == node_kind::Delay {
-            if !writable(job, d.id()) { heap.fault = Fault.NativeBoundary; return; }
+            if !writable(job, d.id()) { image_write(job, Value.Undefined, "a delay's state"); return; }
             node_mut(heap, d.id()).value = Value.Null; node_mut(heap, d.id()).namespace_value = r;
             finish_native(job, frame, r); return;
         }

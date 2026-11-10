@@ -263,7 +263,7 @@ fn use_value(job: Job&, at: i64, b: Builtin, k: Value, v: Value) -> bool {
     }
     if b != Builtin.ObjectAssign { heap.fault = Fault.InvalidState; return false; }
     // Set(to, key, value, true).
-    if !writable(job, out.id()) { heap.fault = Fault.NativeBoundary; return false; }
+    if !writable(job, out.id()) { image_write(job, k); return false; }
     prepare_function(job, out, k, true);
     prepare_function(job, out, k, false);
     // An array target's `length` set to an object (light-cljs-893): two
@@ -611,7 +611,7 @@ fn reflect_access(job: Job&, at: i64, b: Builtin, k: Value) {
     let value = frame.output;
     var setter = Value.Undefined; var ok = false;
     if receiver == o {
-        if !writable(job, o.id()) { heap.fault = Fault.NativeBoundary; return; }
+        if !writable(job, o.id()) { image_write(job, k); return; }
         prepare_function(job, o, k, true);
         prepare_function(job, o, k, false);
         if heap.fault != Fault.None { return; }

@@ -103,7 +103,7 @@ fn prevent_extensions(job: Job&, b: Builtin, object: Value) -> bool {
     let heap .= job.heap; let o: i64 = object.id();
     if !integrity_target(job, b, object, proxy_method::PreventExtensions) { return false; }
     if node(heap, o).non_extensible { return true; }
-    if !writable(job, o) { heap.fault = Fault.NativeBoundary; return false; }
+    if !writable(job, o) { image_write(job, Value.Undefined, "extensibility"); return false; }
     // A lazy closure's properties come first (the Pants engine's function.rs).
     prepare_function(job, object, Value.Undefined, true);
     if heap.fault != Fault.None { return false; }
@@ -128,7 +128,7 @@ fn set_integrity(job: Job&, b: Builtin, object: Value, frozen: bool) -> bool {
     // A row the job may not write changes nothing if it is at that level already.
     if !writable(job, o) {
         if test_integrity(job, b, object, frozen) || heap.fault != Fault.None { return heap.fault == Fault.None; }
-        heap.fault = Fault.NativeBoundary; return false;
+        image_write(job, Value.Undefined, "integrity level"); return false;
     }
     if !prevent_extensions(job, b, object) { return false; }
     let kind = node(heap, o).kind;

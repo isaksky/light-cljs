@@ -829,6 +829,24 @@ fn wrong_rows() {
     }
     print("serial source VM: every row helper family refuses a wrong-table row by its table name");
 }
+// describe_fault appends Job.detail on every fault kind (light-cljs-915):
+// after an Unsupported fault's operation too, its spaces as dashes and a
+// control character as `?`, bounded at description_limit units.
+thread_fn fault_details() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code };
+    var job = source::Job { heap: heap, writable_code: code };
+    job.fault = source::Fault.Unsupported; job.fault_opcode = opcode::Construct;
+    var text: u8[>..] = []; source::describe_fault(text, code, job); assert(text[..] == "Fault.Unsupported:construct");
+    for c in "a step\n" { job.detail.push(c); }
+    text.clear(); source::describe_fault(text, code, job); assert(text[..] == "Fault.Unsupported:construct:a-step?");
+    job.fault = source::Fault.NativeBoundary; job.fault_opcode = -1; job.detail.clear();
+    for i in source::description_limit() + 5 { job.detail.push(120); }
+    text.clear(); source::describe_fault(text, code, job);
+    let head = "Fault.NativeBoundary:";
+    assert(text.len == head.len + source::description_limit() + 3 && text[..head.len] == head && text[(text.len - 3)..] == "...");
+    print("serial source VM: a fault's description carries Job.detail on every fault kind, bounded");
+}
 fn main() {
     // --sampled: smoke.bb's debug build samples the long sweeps; the native
     // build, without it, runs every budget cut and limit point.
@@ -840,6 +858,7 @@ fn main() {
     sampling_policy();
     array_lengths(); latin1_state_check();
     wrong_rows();
+    heap_program::join(thread_spawn(fault_details));
     heap_program::join(thread_spawn(latin1_strings)); heap_program::join(thread_spawn(primitive_to_string_limits)); heap_program::join(thread_spawn(string_to_number_budget)); heap_program::join(thread_spawn(inline_slots));
     check(embed_file("../corpus/synthetic/arithmetic.gsp"), "number:27.5");
     check(embed_file("../corpus/synthetic/control_flow.gsp"), "number:7307.0");
