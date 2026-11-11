@@ -105,6 +105,8 @@ let mutate_stage::Copy = 10;
 fn array_mutator(b: Builtin) -> bool {
     return match b {
         ArrayPrototypePop, ArrayPrototypeShift, ArrayPrototypeUnshift, ArrayPrototypeSplice, ArrayPrototypeReverse, ArrayPrototypeFill, ArrayPrototypeCopyWithin, ArrayPrototypeToSpliced => true,
+        // sort and toSorted run in this frame too (light-cljs-910; array_sort.goose).
+        ArrayPrototypeSort, ArrayPrototypeToSorted => true,
         _ => false,
     };
 }
@@ -120,6 +122,8 @@ inline fn mutate_put(job: Job&, base: i64, slot: i64, n: i64) { job.operands[bas
 // base, which become the frame's scratch and the copied arguments.
 fn start_array_mutator(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
     let heap .= job.heap;
+    // sort and toSorted check their comparator before anything is read.
+    if array_sorter(b) && !arg(args, 0).is_undefined() && !is_callable(heap, arg(args, 0)) { type_error(job, "the comparator must be a function or undefined"); return; }
     let o = to_object(job, receiver);
     if heap.fault != Fault.None { return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
@@ -141,7 +145,7 @@ fn array_mutator_step(job: Job&, frame: Frame, b: Builtin) {
     let done = mutate_number(job, base, mutate_slot::Done); let stage = mutate_number(job, base, mutate_slot::Stage);
     if done < 0 || done > mutate_memos() || !mutator_stage(b, stage) { heap.fault = Fault.InvalidState; return; }
     for i in mutate_slot::Stage..mutate_slot::Held { if !job.operands[base + i].is_number() { heap.fault = Fault.InvalidState; return; } }
-    if (b == Builtin.ArrayPrototypeSplice && stage >= mutate_stage::Collect || b == Builtin.ArrayPrototypeToSpliced && stage == mutate_stage::Copy) && !frame.output.is_object() { heap.fault = Fault.InvalidState; return; }
+    if (b == Builtin.ArrayPrototypeSplice && stage >= mutate_stage::Collect || b == Builtin.ArrayPrototypeToSpliced && stage == mutate_stage::Copy || b == Builtin.ArrayPrototypeToSorted && stage != mutate_stage::Setup) && !frame.output.is_object() { heap.fault = Fault.InvalidState; return; }
     match frame.pc {
         mutate_pc::Length => {
             let len, done = length_value(job, b);
@@ -187,6 +191,7 @@ fn array_mutator_step(job: Job&, frame: Frame, b: Builtin) {
                     ArrayPrototypeCopyWithin => { copy_within_unit(job, m); },
                     ArrayPrototypeSplice => { splice_unit(job, m); },
                     ArrayPrototypeToSpliced => { to_spliced_unit(job, m); },
+                    ArrayPrototypeSort, ArrayPrototypeToSorted => { sort_unit(job, m, b); },
                     _ => { heap.fault = Fault.InvalidState; },
                 }
             }
@@ -292,15 +297,48 @@ fn micro_create(job: Job&, m: Micro&, a: Value, i: i64, v: Value) {
     if replayed { return; }
     if array_store(job, m.at, a, i, v, mutate_pc::Await) { micro_record(job, m, Value.Undefined); } else { m.stop = true; }
 }
-// ToIntegerOrInfinity(v): an object's ToNumber in a Convert frame above the
-// frame, a primitive's here, without ending the step.
-fn micro_number(job: Job&, m: Micro&, b: Builtin, v: Value) -> f64 {
+// ToIntegerOrInfinity(v).
+fn micro_number(job: Job&, m: Micro&, b: Builtin, v: Value) -> f64 { return to_integer_or_infinity(micro_to_number(job, m, b, v)); }
+// Call(f, this_value, args) on the general call path (call_accessor): its
+// result arrives at pc Await.
+fn micro_call(job: Job&, m: Micro&, f: Value, this_value: Value, args: const Value[:]) -> Value {
+    let replayed, memo = micro_replay(job, m);
+    if replayed { return memo; }
+    micro_wait(job, m);
+    call_accessor(job, f, this_value, args);
+    return Value.Undefined;
+}
+// ToString(v): an object's in a Convert frame above the frame, a
+// primitive's here, without ending the step.
+fn micro_string(job: Job&, m: Micro&, b: Builtin, v: Value) -> Value {
+    let heap .= job.heap;
+    let replayed, memo = micro_replay(job, m);
+    if replayed {
+        if memo.is_string() { return memo; }
+        let s = primitive_string(job, b, memo);
+        if heap.fault != Fault.None { m.stop = true; }
+        return s;
+    }
+    let f = form_value(heap, v);
+    if f.is_object() {
+        if !convertible(heap, f) { unsupported_step(job, b, "ToString of a light-cljs runtime value"); m.stop = true; return Value.Undefined; }
+        if push_operand(job, f) { micro_wait(job, m); start_convert(job, Hint.String, true, 1, 1); } else { m.stop = true; }
+        return Value.Undefined;
+    }
+    let s = primitive_string(job, b, f);
+    if heap.fault != Fault.None { m.stop = true; return Value.Undefined; }
+    micro_record(job, m, s, false);
+    return s;
+}
+// ToNumber(v): an object's in a Convert frame above the frame, a
+// primitive's here, without ending the step.
+fn micro_to_number(job: Job&, m: Micro&, b: Builtin, v: Value) -> f64 {
     let heap .= job.heap;
     let replayed, memo = micro_replay(job, m);
     if replayed {
         let n = primitive_number(job, b, memo);
         if heap.fault != Fault.None { m.stop = true; return 0; }
-        return to_integer_or_infinity(n);
+        return n;
     }
     let f = form_value(heap, v);
     if f.is_object() {
@@ -311,7 +349,7 @@ fn micro_number(job: Job&, m: Micro&, b: Builtin, v: Value) -> f64 {
     let n = primitive_number(job, b, f);
     if heap.fault != Fault.None { m.stop = true; return 0; }
     micro_record(job, m, number(n), false);
-    return to_integer_or_infinity(n);
+    return n;
 }
 // A relative index against len: from the end when negative, clamped to
 // [0, len].
@@ -369,6 +407,7 @@ fn mutator_stage(b: Builtin, stage: i64) -> bool {
         ArrayPrototypeCopyWithin => stage == mutate_stage::Setup || stage == mutate_stage::Move,
         ArrayPrototypeSplice => stage >= mutate_stage::Setup && stage <= mutate_stage::MoveUp,
         ArrayPrototypeToSpliced => stage == mutate_stage::Setup || stage == mutate_stage::Copy,
+        ArrayPrototypeSort, ArrayPrototypeToSorted => stage == mutate_stage::Setup || stage == mutate_stage::Collect || stage == mutate_stage::Sort || stage == mutate_stage::Write,
         _ => false,
     };
 }

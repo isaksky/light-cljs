@@ -829,8 +829,9 @@ root struct Heap {
 //                and indexOf, lastIndexOf, includes and at (light-cljs-908;
 //                array_search.goose) and the mutators pop, shift, unshift,
 //                splice, reverse, fill, copyWithin and toSpliced
-//                (light-cljs-909; array_mutators.goose), its Builtin the
-//                payload.
+//                (light-cljs-909; array_mutators.goose) with sort and
+//                toSorted (light-cljs-910; array_sort.goose), its Builtin
+//                the payload.
 //   BuiltinIterator  %ArrayIteratorPrototype%.next and
 //                String.prototype[@@iterator] (light-cljs-844;
 //                iterators.goose, which gives their fields and phases),

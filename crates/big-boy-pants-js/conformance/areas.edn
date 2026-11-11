@@ -56,6 +56,9 @@
   "bbp/arrays_mutators_observable_order" {:area :core-builtins}
   "bbp/arrays_mutators_proxy" {:area :core-builtins :pants-gap "the Pants engine refuses the set trap (\"unsupported Proxy trap: set\", rust/src/vm/proxy.rs)"}
   "bbp/arrays_search" {:area :core-builtins}
+  "bbp/arrays_sort" {:area :core-builtins}
+  "bbp/arrays_sort_observable_order" {:area :core-builtins}
+  "bbp/arrays_sort_proxy" {:area :core-builtins :pants-gap "the Pants engine refuses the set trap (\"unsupported Proxy trap: set\", rust/src/vm/proxy.rs)"}
   "bbp/arrays_species" {:area :core-builtins}
   "bbp/arrays_species_proxy" {:area :core-builtins :pants-gap "the Pants engine refuses the defineProperty trap (\"unsupported Proxy trap: defineProperty\", rust/src/vm/proxy.rs) and a definition on a built-in object (Array's @@species)"}
   "bbp/arrays_to_spliced" {:area :core-builtins :pants-gap "the Pants engine has no Array.prototype.toSpliced"}

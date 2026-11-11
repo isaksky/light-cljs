@@ -10,6 +10,7 @@ import .regexp_object;
 import .collections;
 import .array_search;
 import .array_mutators;
+import .array_sort;
 
 namespace source;
 
@@ -183,11 +184,14 @@ enum Builtin {
     // The Array.prototype methods that mutate their receiver, and toSpliced
     // (light-cljs-909; array_mutators.goose), ArrayMethod native frames.
     ArrayPrototypePop, ArrayPrototypeShift, ArrayPrototypeUnshift, ArrayPrototypeSplice, ArrayPrototypeReverse, ArrayPrototypeFill, ArrayPrototypeCopyWithin, ArrayPrototypeToSpliced,
+    // Array.prototype.sort and toSorted (light-cljs-910; array_sort.goose),
+    // in the mutators' frame.
+    ArrayPrototypeSort, ArrayPrototypeToSorted,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[259] = [
+let BUILTINS: BuiltinInfo[261] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -347,6 +351,8 @@ let BUILTINS: BuiltinInfo[259] = [
     BuiltinInfo { which: Builtin.ArrayPrototypeUnshift, name: "unshift", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeSplice, name: "splice", length: 2 },
     BuiltinInfo { which: Builtin.ArrayPrototypeReverse, name: "reverse" }, BuiltinInfo { which: Builtin.ArrayPrototypeFill, name: "fill", length: 1 },
     BuiltinInfo { which: Builtin.ArrayPrototypeCopyWithin, name: "copyWithin", length: 2 }, BuiltinInfo { which: Builtin.ArrayPrototypeToSpliced, name: "toSpliced", length: 2 },
+    // sort and toSorted (light-cljs-910): no plan.
+    BuiltinInfo { which: Builtin.ArrayPrototypeSort, name: "sort", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeToSorted, name: "toSorted", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -456,7 +462,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[189] = [
+let REALM_FUNCTIONS: Method[191] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -591,6 +597,8 @@ let REALM_FUNCTIONS: Method[189] = [
     Method { which: Builtin.ArrayPrototypePop, holder: 3 }, Method { which: Builtin.ArrayPrototypeShift, holder: 3 }, Method { which: Builtin.ArrayPrototypeUnshift, holder: 3 },
     Method { which: Builtin.ArrayPrototypeSplice, holder: 3 }, Method { which: Builtin.ArrayPrototypeReverse, holder: 3 }, Method { which: Builtin.ArrayPrototypeFill, holder: 3 },
     Method { which: Builtin.ArrayPrototypeCopyWithin, holder: 3 }, Method { which: Builtin.ArrayPrototypeToSpliced, holder: 3 },
+    // Array.prototype.sort and toSorted (light-cljs-910; array_sort.goose).
+    Method { which: Builtin.ArrayPrototypeSort, holder: 3 }, Method { which: Builtin.ArrayPrototypeToSorted, holder: 3 },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -641,15 +649,15 @@ inline fn set_row() -> i64 { return fixed_rows() + 159; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[141] = [
+let PENDING: PendingName[139] = [
     // Object.prototype
     // Array.prototype
     PendingName { holder: 3, key: "concat" },
 
     PendingName { holder: 3, key: "flat" },
 
-    PendingName { holder: 3, key: "slice" }, PendingName { holder: 3, key: "sort" },
-    PendingName { holder: 3, key: "toLocaleString" }, PendingName { holder: 3, key: "toReversed" }, PendingName { holder: 3, key: "toSorted" },
+    PendingName { holder: 3, key: "slice" },
+    PendingName { holder: 3, key: "toLocaleString" }, PendingName { holder: 3, key: "toReversed" },
     PendingName { holder: 3, key: "with" },
     // Object
     // %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction%
@@ -2119,7 +2127,7 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         ArrayPrototypeMap, ArrayPrototypeForEach, ArrayPrototypePush, ArrayPrototypeJoin, ArrayPrototypeToString, ArrayIteratorPrototypeNext, StringPrototypeIterator,
         ArrayPrototypeFilter, ArrayPrototypeReduce, ArrayPrototypeReduceRight, ArrayPrototypeSome, ArrayPrototypeEvery, ArrayPrototypeFlatMap, ArrayPrototypeFind, ArrayPrototypeFindIndex, ArrayPrototypeFindLast, ArrayPrototypeFindLastIndex,
         ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypeIncludes, ArrayPrototypeAt,
-        ArrayPrototypePop, ArrayPrototypeShift, ArrayPrototypeUnshift, ArrayPrototypeSplice, ArrayPrototypeReverse, ArrayPrototypeFill, ArrayPrototypeCopyWithin, ArrayPrototypeToSpliced => { return unsupported_step(job, b, "called from a native frame"); },
+        ArrayPrototypePop, ArrayPrototypeShift, ArrayPrototypeUnshift, ArrayPrototypeSplice, ArrayPrototypeReverse, ArrayPrototypeFill, ArrayPrototypeCopyWithin, ArrayPrototypeToSpliced, ArrayPrototypeSort, ArrayPrototypeToSorted => { return unsupported_step(job, b, "called from a native frame"); },
         // Array[@@species] (light-cljs-908) returns its receiver.
         ArraySpecies => { return receiver; },
         // The built-in iterators that run no JavaScript (light-cljs-844; iterators.goose).

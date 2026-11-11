@@ -928,6 +928,13 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(array_mutators_wait, str(shifting), false));
     heap_program::join(thread_spawn(array_mutators_wait, str(shifting), true));
     assert(qget<bool>()); let sw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(sw)));
+    // sort (light-cljs-910): a wait in the comparator above the sort frame,
+    // mid-merge, in place and from a saved continuation that a fresh heap
+    // resumes without repeating a comparison.
+    let sorting = embed_file("../corpus/serial/array-sort-wait.gsp");
+    heap_program::join(thread_spawn(array_sort_wait, str(sorting), false));
+    heap_program::join(thread_spawn(array_sort_wait, str(sorting), true));
+    let tw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(tw)));
     // Base classes (light-cljs-886): a wait inside newTarget's `prototype`
     // getter, above the Construct frame, in place and from a saved
     // continuation; an image whose class constructor looks lazy is refused.
@@ -2628,6 +2635,29 @@ thread_fn array_mutators_wait(bytes: u8[], save: bool) {
         var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
     }
     assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// array-sort-wait.js (light-cljs-910) to its wait in the comparator's third
+// call, above the sort frame in its Sort stage with both scratch arrays:
+// answered in place, or saved (symbols_resumed answers it).
+thread_fn array_sort_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8 && job.frames.len == 3);
+    let sorting = match job.frames[1].native { ArrayMethod c => c.which == source::Builtin.ArrayPrototypeSort, _ => false };
+    let base = job.frames[1].operand_base;
+    assert(sorting && job.frames[1].pc == mutate_pc::Await && job.frames[1].argument_count == 5 && job.frames[1].index == 1);
+    assert(job.operands[base + mutate_slot::Stage].num() == mutate_stage::Sort && job.operands[base + mutate_slot::Q].num() == 5 && job.frames[1].callee.is_object() && job.frames[1].receiver.is_object());
+    assert(heap.nodes[job.frames[1].callee.id()].kind == node_kind::Array && heap.nodes[job.frames[1].callee.id()].length == 5);
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
     assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
 }
 // A reused worker (light-cljs-795) runs math-random-wait.js twice: the reset

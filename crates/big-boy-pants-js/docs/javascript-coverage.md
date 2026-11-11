@@ -2156,6 +2156,24 @@ indexed setter can exist (the standalone runner's job owns the realm and
 takes the units). A restored frame whose scratch is malformed (memo count,
 stage, numbers, result) fails InvalidState at its next step.
 
+*As landed by light-cljs-910 (sort and toSorted):* a stable bottom-up merge
+sort in the mutators' frame (`src/array_sort.goose`), as units over the same
+primitives plus `micro_call`, `micro_string` and `micro_to_number`. The
+collected values that are not undefined live in a plain array the job
+allocates (the frame's `callee`), merged into a second one (`receiver`); a
+pass over, the two swap and the run width doubles. The cursors are the
+frame's numbers, so a saved or collected sort resumes mid-merge. One
+comparison is one unit and ends its step whether or not it ran JavaScript:
+the comparator's call and its result's ToNumber, or the two ToString
+conversions of the default order, which run at every comparison as the
+specification writes SortCompare (the Pants engine does the same; QuickJS
+converts each element once). The right element is taken only when the
+comparator's result is greater than zero, and the comparator is called
+with (left, right), which gives the oracles' call order on the rows that log
+it. sort writes the sorted values, then the undefineds, with Set, and
+deletes the indices the holes leave; a dense receiver with every element
+present is collected and, if still unchanged, written back in one step each.
+
 *As landed by light-cljs-900 (receiver and argument conversions):* a
 built-in whose body is a plain Goose function but whose receiver or
 arguments take ToNumber, ToString or an integer conversion (Math, the

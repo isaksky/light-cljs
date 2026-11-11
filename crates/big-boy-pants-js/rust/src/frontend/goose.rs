@@ -2729,6 +2729,15 @@ mod serial_tests {
             // and toSpliced alone, at every budget cut and collection
             // (serial_tests.goose); the Pants engine lacks it.
             ("array-to-spliced", "goose"),
+            // sort and toSorted (light-cljs-910): the resumable merge sort
+            // with a user comparator, the default order over toString,
+            // holes, an array-like with accessors and a throwing
+            // comparator, at every budget cut and collection
+            // (serial_tests.goose).
+            ("array-sort", "boolean:true"),
+            // and across a dependency wait in the comparator, mid-merge,
+            // saved and restored (snapshot_tests.goose).
+            ("array-sort-wait", "goose"),
             // Array.prototype.push, join and toString as native frames (light-cljs-842).
             ("array-push-join", "boolean:true"),
             // Bound functions through Forward frames (light-cljs-852).

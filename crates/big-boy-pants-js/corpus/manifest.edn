@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "f2bdbd95e84202ce579159270c0372f21372d8ff9681291adb600b6bccb5eefd",
+  "e04718ffb1bbfe8e0d9ee1505ab552ade81d05eb85c346c6ed21d59ef2dbac0b",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -237,6 +237,14 @@
   "9b840d367a2d5d96755c77f7445c1b512a44ad7871aa7074a41aec8a16000475",
   "corpus/serial/array-push-receiver.js"
   "e5e73cecf645f9be641f46b52dc286a90dd9fd156cc04603d0c753014fabdc5c",
+  "corpus/serial/array-sort-wait.gsp"
+  "52f880d52d317e89dd76253280f930e1a81383f5bc2bd6297d93e0e4e33fd378",
+  "corpus/serial/array-sort-wait.js"
+  "d688f36d4b387c35ff5b1f276e23d49342c9a8c88005e90f9d4d74ba3e9524bc",
+  "corpus/serial/array-sort.gsp"
+  "f30b31eb6286f99109126949a7602f18b90968287f7ebd14ef7227732a40232a",
+  "corpus/serial/array-sort.js"
+  "5104ddd00cb33ccd8f46429cacf3a149a3b6fc96158ca76e9347419f2af25ece",
   "corpus/serial/array-to-spliced.gsp"
   "b8d3343e316ee2368b367126d6904bdd6c4a9f441f54c6af01c4d19ed4bcdba8",
   "corpus/serial/array-to-spliced.js"
