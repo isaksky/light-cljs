@@ -1186,7 +1186,7 @@ fn reclamation() {
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/async.gsp")), source::Fault.None, 0, 0));
     // Forced collections at every budget cut and at other phases.
     for image in [embed_file("../corpus/serial/generators.gsp"), embed_file("../corpus/serial/async.gsp"), embed_file("../corpus/serial/generator-loop.gsp"), embed_file("../corpus/serial/for-of.gsp"), embed_file("../corpus/serial/builtin-iterators.gsp"),
-                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-callback-methods.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
+                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-callback-methods.gsp"), embed_file("../corpus/serial/array-mutators.gsp"), embed_file("../corpus/serial/array-to-spliced.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-set-delete.gsp"), embed_file("../corpus/serial/proxy-traps.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/proxy-copy.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
                   embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/regexp-replace.gsp"), embed_file("../corpus/serial/regexp-form-values.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp"),
@@ -1270,6 +1270,12 @@ fn control_flow() {
     // methods (light-cljs-908): deleting callbacks, a species constructor
     // behind getters, conversions and a proxy's has trap.
     check(embed_file("../corpus/serial/array-callback-methods.gsp"), "boolean:true");
+    // pop, shift, unshift, splice, reverse, fill and copyWithin
+    // (light-cljs-909): every Get, HasProperty, Set and delete a step of
+    // its own, over holes, accessors, a proxy and a species constructor.
+    check(embed_file("../corpus/serial/array-mutators.gsp"), "boolean:true");
+    // and toSpliced, which the Pants engine lacks.
+    check(embed_file("../corpus/serial/array-to-spliced.gsp"), "boolean:true");
     // push, join and toString (light-cljs-842): a push onto an array-like
     // through its `length` getter, valueOf and setters, and joins whose
     // elements and separator run toString, at every cut.
@@ -2131,7 +2137,7 @@ thread_fn named_model() {
     // The pending %Array.prototype%: its pending names fail by name, other
     // names are absent; its @@iterator is `values` (light-cljs-844) and its
     // @@unscopables the realm's null-prototype object (light-cljs-855).
-    source::get(heap, b, source::text(heap, "pop")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    source::get(heap, b, source::text(heap, "toLocaleString")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     let unscopables = source::get(heap, b, source::Value.Symbol { s: well_known::Unscopables });
     assert(heap.fault == source::Fault.None && unscopables == source::object(source::array_unscopables_row()) && source::prototype(heap, unscopables.id()).is_null());
     assert(source::get(heap, unscopables, source::text(heap, "flatMap")) == source::boolean(true) && source::get(heap, unscopables, source::text(heap, "push")).is_undefined());

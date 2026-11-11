@@ -919,6 +919,15 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(array_callbacks_wait, str(filtering), false));
     heap_program::join(thread_spawn(array_callbacks_wait, str(filtering), true));
     assert(qget<bool>()); let aw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(aw)));
+    // The Array mutators (light-cljs-909): a wait in an element getter above
+    // shift's frame, in place and from a saved continuation that a fresh
+    // heap resumes without replaying a primitive; a saved frame without its
+    // receiver, in a phase shift does not have or with more memos than a
+    // unit holds is refused.
+    let shifting = embed_file("../corpus/serial/array-mutators-wait.gsp");
+    heap_program::join(thread_spawn(array_mutators_wait, str(shifting), false));
+    heap_program::join(thread_spawn(array_mutators_wait, str(shifting), true));
+    assert(qget<bool>()); let sw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(sw)));
     // Base classes (light-cljs-886): a wait inside newTarget's `prototype`
     // getter, above the Construct frame, in place and from a saved
     // continuation; an image whose class constructor looks lazy is refused.
@@ -2558,6 +2567,55 @@ thread_fn array_callbacks_wait(bytes: u8[], save: bool) {
                             if mode == 0 { f.input = source::Value.Undefined; changed = true; }
                             if mode == 1 { f.output = source::Value.Undefined; changed = true; }
                             if mode == 2 { f.pc = callbacks_pc::InnerVisit; changed = true; }
+                        },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        assert(changed);
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// array-mutators-wait.js (light-cljs-909) to its wait in the getter of
+// element 2, above shift's frame, which has moved one element down and
+// holds HasProperty(2)'s memo: answered in place, or saved (symbols_resumed
+// answers it), the image refused when the saved frame's receiver is gone
+// (mode 0), its phase is splice's (1) or its argument count is negative (2).
+thread_fn array_mutators_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8 && job.frames.len == 3);
+    let shifting = match job.frames[1].native { ArrayMethod c => c.which == source::Builtin.ArrayPrototypeShift, _ => false };
+    let base = job.frames[1].operand_base;
+    assert(shifting && job.frames[1].pc == mutate_pc::Await && job.frames[1].argument_count == 4 && job.frames[1].index == 0);
+    assert(job.operands[base + mutate_slot::Stage].num() == mutate_stage::Move && job.operands[base + mutate_slot::P].num() == 2 && job.operands[base + mutate_slot::Done].num() == 1 && job.operands[base + mutate_slot::Held].is_string());
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    for mode in 3 {
+        var bad = copy(image); var changed = false;
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        ArrayMethod => {
+                            if mode == 0 { f.input = source::Value.Undefined; changed = true; }
+                            if mode == 1 { f.pc = callbacks_pc::Created; changed = true; }
+                            if mode == 2 { f.index = -1; changed = true; }
                         },
                         _ => {},
                     }

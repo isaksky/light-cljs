@@ -340,7 +340,10 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         HasInstance => f.pc >= 1 && f.pc <= 5 && f.pc != 4 && (f.pc != 5 || f.callee.is_undefined() || object_of(s, f.callee, node_kind::None)),
         // Array.prototype.push, join and toString and the search methods
         // (light-cljs-908) read their object (light-cljs-842).
-        ArrayMethod => object_of(s, f.input, node_kind::None),
+        // The mutators (light-cljs-909; array_mutators.goose) hold their
+        // argument count and are in one of their phases, the species ones
+        // splice's alone; their step function checks the scratch operands.
+        ArrayMethod m => object_of(s, f.input, node_kind::None) && (!source::array_mutator(m.which) || f.index >= 0 && f.argument_count >= 0 && (f.pc >= mutate_pc::Length && f.pc <= mutate_pc::Await || m.which == source::Builtin.ArrayPrototypeSplice && f.pc >= callbacks_pc::Constructor && f.pc <= callbacks_pc::Created)),
         // The Array callback methods (light-cljs-789, -908) walk their
         // object within its length, each in the phases its method has (the
         // species phases are map's, filter's and flatMap's, the inner walk

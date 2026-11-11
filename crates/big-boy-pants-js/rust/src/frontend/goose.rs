@@ -2716,6 +2716,19 @@ mod serial_tests {
             // and filter across a dependency wait in its callback, saved
             // and restored (snapshot_tests.goose).
             ("array-callback-methods-wait", "goose"),
+            // The Array mutators (light-cljs-909): shift, unshift, splice,
+            // reverse, copyWithin, fill and pop over holes, accessors, a
+            // proxy's has trap and a species constructor, each Get, Set and
+            // delete its own step, and the dense fast paths, at every
+            // budget cut and collection (serial_tests.goose).
+            ("array-mutators", "boolean:true"),
+            // and shift across a dependency wait in an element getter,
+            // saved and restored, with toSpliced, which the Pants engine
+            // lacks (snapshot_tests.goose).
+            ("array-mutators-wait", "goose"),
+            // and toSpliced alone, at every budget cut and collection
+            // (serial_tests.goose); the Pants engine lacks it.
+            ("array-to-spliced", "goose"),
             // Array.prototype.push, join and toString as native frames (light-cljs-842).
             ("array-push-join", "boolean:true"),
             // Bound functions through Forward frames (light-cljs-852).
@@ -2785,7 +2798,7 @@ mod serial_tests {
             ("getter-value-of", "boolean:true"),
             ("function-name", "string:f"),
             ("function-keys", "boolean:true"),
-            ("unsupported-array-method", "number:1"),
+            ("unsupported-array-method", "number:2"),
             ("unsupported-generator-prototype", "boolean:true"),
             // Generators, async functions and promise jobs (light-cljs-790).
             // `async` checks its order in a promise job: a wrong one is an

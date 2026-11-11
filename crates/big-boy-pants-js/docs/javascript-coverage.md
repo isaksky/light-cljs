@@ -2127,6 +2127,35 @@ headers: `Array.prototype.find.call('xy', f)` passes `f` the primitive, not
 its wrapper object, and `Array.prototype.at` on a proxy asks the `has` trap
 first.
 
+*As landed by light-cljs-909 (the mutators and toSpliced):* `pop`, `shift`,
+`unshift`, `splice`, `reverse`, `fill`, `copyWithin` and `toSpliced`
+(`src/array_mutators.goose`) are `Native.ArrayMethod` frames whose general
+steps are written as *units over memoized primitives* instead of one phase
+per await point. A unit (one element moved, one pair swapped, the argument
+conversions) is straight-line Goose over `micro_has`, `micro_get`,
+`micro_set`, `micro_delete`, `micro_create` and `micro_number`; a primitive
+that runs records its result in the frame's next memo operand and ends the
+step, its JavaScript (a getter, setter, proxy trap or valueOf) running above
+the frame and answering at the one `Await` phase; the next step runs the
+unit again from its top, the primitives already done answering from their
+memos, until the unit completes and advances the stage's cursors. So every
+Get, HasProperty, Set and delete is its own step, nothing runs twice, and
+the eight methods share three phases where a phase per await point would
+need about forty. The frame's state is scratch operands (`mutate_slot::`:
+the memo count and six memos, the stage, four numbers, one held value)
+followed by the call's arguments. splice shares map's ArraySpeciesCreate
+steps (its delete count is the length asked for). The fast paths edit the
+element run in one step when the receiver is a dense array the job made,
+with the realm's prototype and every element below its length present
+(`mutator_dense`), checked after the arguments are converted, since a
+valueOf may change the receiver. An array longer than 65,536 elements takes
+the units, so one step never moves more than that; and a fast path that
+would create an own element (unshift, a growing splice, fill over holes)
+runs only for a job that cannot write the realm's prototypes, where no
+indexed setter can exist (the standalone runner's job owns the realm and
+takes the units). A restored frame whose scratch is malformed (memo count,
+stage, numbers, result) fails InvalidState at its next step.
+
 *As landed by light-cljs-900 (receiver and argument conversions):* a
 built-in whose body is a plain Goose function but whose receiver or
 arguments take ToNumber, ToString or an integer conversion (Math, the

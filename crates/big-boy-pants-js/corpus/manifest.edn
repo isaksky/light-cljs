@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "389b3329cd87e8d403990bca14a7bb4541ecc08730cd430d18db3216d8860936",
+  "f2bdbd95e84202ce579159270c0372f21372d8ff9681291adb600b6bccb5eefd",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -217,6 +217,14 @@
   "b5b93b1a9cc7f2455f60da205eeebaadb4144b649af0f3182eadd950a5e452c3",
   "corpus/serial/array-length-definition.js"
   "d634b4d54c60892c7f553d16de1f8e31808bc0d3599e696ebb7b7c7824342ad2",
+  "corpus/serial/array-mutators-wait.gsp"
+  "07e9da8b32c237d6500045dccead5c81b38cd3f4c7b653950aeb83ca3f323ec7",
+  "corpus/serial/array-mutators-wait.js"
+  "b74fe7e4ce091e2df2cba5ec53b1952e9172fe31f5d3ddeb27215670dde96d00",
+  "corpus/serial/array-mutators.gsp"
+  "1373f5b0616deed75e2ee68a2ddf3b99019c07e7d0d8ec7cdf88683c4a417006",
+  "corpus/serial/array-mutators.js"
+  "bba8ae32d3c3e215840c97e2137576785eaaf0ae96fa33294fc7f3dca58b5bb9",
   "corpus/serial/array-names.gsp"
   "95b70ee913d2d225dbe5b58d803141e3ff60e057dc6cbeacd412984fa4bd5cb1",
   "corpus/serial/array-names.js"
@@ -229,6 +237,10 @@
   "9b840d367a2d5d96755c77f7445c1b512a44ad7871aa7074a41aec8a16000475",
   "corpus/serial/array-push-receiver.js"
   "e5e73cecf645f9be641f46b52dc286a90dd9fd156cc04603d0c753014fabdc5c",
+  "corpus/serial/array-to-spliced.gsp"
+  "b8d3343e316ee2368b367126d6904bdd6c4a9f441f54c6af01c4d19ed4bcdba8",
+  "corpus/serial/array-to-spliced.js"
+  "8a16cb65625aa71832bdda49cbb3f94719ff2a40e8e5a4923e9d0f09ec95dd4f",
   "corpus/serial/async-entry.gsp"
   "2fd79e7c3439d2e9e17954d4d8af5c2053350df78bee590fd444e58c97c8f278",
   "corpus/serial/async-entry.js"
@@ -802,9 +814,9 @@
   "corpus/serial/unsettled.js"
   "ead804c1e583d80e648ea4b6388d3e999da3a667923dec3cbf03ee306e12cb9d",
   "corpus/serial/unsupported-array-method.gsp"
-  "6f704ff12d5b91340a74a934813bb1e474cd0a79e1576ea12cde92f95c15e25d",
+  "09024b841c6d9b8f980cc402720430d5a48efeca0772222c19508913f4bae839",
   "corpus/serial/unsupported-array-method.js"
-  "f17c55716bc7891e65c97c6c691f6a56ca9c0e0753b1c552f05bc148b1d40255",
+  "eba139afda545c1f3edef0e3ecbf93057c3a9c6670dd67a12895ad30e12556af",
   "corpus/serial/unsupported-coercion.gsp"
   "e96b9bb150ded673e7135430e05f4c134a17c9f084a47b3dc1a91ed432de08d5",
   "corpus/serial/unsupported-coercion.js"

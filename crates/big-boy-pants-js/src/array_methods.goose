@@ -73,7 +73,7 @@ namespace source;
 inline fn array_method(b: Builtin) -> bool { return b == Builtin.ArrayPrototypePush || b == Builtin.ArrayPrototypeJoin || b == Builtin.ArrayPrototypeToString; }
 // Whether b is an Array.prototype built-in a native frame may start above
 // itself as a method it calls (a ToPrimitive method, toString's join).
-fn array_native(b: Builtin) -> bool { return array_method(b) || array_callback(b) || array_search(b); }
+fn array_native(b: Builtin) -> bool { return array_method(b) || array_callback(b) || array_search(b) || array_mutator(b); }
 // 2^53 - 1, ToLength's bound.
 inline fn max_safe_integer() -> f64 { return 9007199254740991.0; }
 
@@ -130,7 +130,8 @@ fn array_method_step(job: Job&, frame: Frame, b: Builtin) {
         ArrayPrototypeJoin => { join_step(job, frame); },
         ArrayPrototypeToString => { to_string_step(job, frame); },
         // The search methods (light-cljs-908; array_search.goose).
-        _ => { if array_search(b) { array_search_step(job, frame, b); } else { job.heap.fault = Fault.InvalidState; } },
+        // and the mutators (light-cljs-909; array_mutators.goose).
+        _ => { if array_search(b) { array_search_step(job, frame, b); } else if array_mutator(b) { array_mutator_step(job, frame, b); } else { job.heap.fault = Fault.InvalidState; } },
     }
 }
 // ToLength of the length value at the operand top for the frame at `at`, or

@@ -56,7 +56,7 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return array_callback(b) || array_search(b) || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b) || prototype_native(b) || statics_native(b) || b == Builtin.MathSumPrecise || regexp_native(b); }
+fn native_builtin(b: Builtin) -> bool { return array_callback(b) || array_search(b) || array_mutator(b) || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b) || prototype_native(b) || statics_native(b) || b == Builtin.MathSumPrecise || regexp_native(b); }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
@@ -100,6 +100,8 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
     if iterator_native(b) { start_iterator(job, b, receiver, base); return; }
     // The search methods (light-cljs-908; array_search.goose).
     if array_search(b) { start_array_search(job, b, receiver, args, base); return; }
+    // The mutators and toSpliced (light-cljs-909; array_mutators.goose).
+    if array_mutator(b) { start_array_mutator(job, b, receiver, args, base); return; }
     // The callback methods (light-cljs-789, -908).
     if array_callback(b) { start_array_callbacks(job, b, receiver, args, base); return; }
     // push, join and toString (light-cljs-842; array_methods.goose), last:
@@ -346,7 +348,13 @@ fn species_value(job: Job&, at: i64, b: Builtin, s: Value) -> bool {
     construct(job, 1);
     return false;
 }
-inline fn species_length(job: const Job&, at: i64, b: Builtin) -> f64 { return if b == Builtin.ArrayPrototypeMap { job.frames[at].argument_count } else { 0.0 }; }
+// The length ArraySpeciesCreate asks for: map's is the receiver's, splice's
+// its delete count (array_mutators.goose), filter's and flatMap's 0.
+fn species_length(job: const Job&, at: i64, b: Builtin) -> f64 {
+    if b == Builtin.ArrayPrototypeMap { return job.frames[at].argument_count; }
+    if b == Builtin.ArrayPrototypeSplice { return job.operands[job.frames[at].operand_base + mutate_slot::Q].num(); }
+    return 0.0;
+}
 fn species_plain(job: Job&, at: i64, b: Builtin) -> bool {
     let a = array_species_create(job, b, job.frames[at].input, species_length(job, at, b));
     if job.heap.fault != Fault.None { return false; }
