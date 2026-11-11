@@ -101,6 +101,7 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
     // The search methods (light-cljs-908; array_search.goose).
     if array_search(b) { start_array_search(job, b, receiver, args, base); return; }
     // The mutators and toSpliced (light-cljs-909; array_mutators.goose).
+    if copier_static(b) { start_array_static(job, b, receiver, args, base); return; }
     if array_mutator(b) { start_array_mutator(job, b, receiver, args, base); return; }
     // The callback methods (light-cljs-789, -908).
     if array_callback(b) { start_array_callbacks(job, b, receiver, args, base); return; }
@@ -353,6 +354,8 @@ fn species_value(job: Job&, at: i64, b: Builtin, s: Value) -> bool {
 fn species_length(job: const Job&, at: i64, b: Builtin) -> f64 {
     if b == Builtin.ArrayPrototypeMap { return job.frames[at].argument_count; }
     if b == Builtin.ArrayPrototypeSplice { return job.operands[job.frames[at].operand_base + mutate_slot::Q].num(); }
+    // slice's count (array_copy.goose); concat and flat ask for 0.
+    if b == Builtin.ArrayPrototypeSlice { return job.operands[job.frames[at].operand_base + mutate_slot::S].num(); }
     return 0.0;
 }
 fn species_plain(job: Job&, at: i64, b: Builtin) -> bool {

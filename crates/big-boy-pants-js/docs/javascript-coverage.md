@@ -2174,6 +2174,29 @@ it. sort writes the sorted values, then the undefineds, with Set, and
 deletes the indices the holes leave; a dense receiver with every element
 present is collected and, if still unchanged, written back in one step each.
 
+*As landed by light-cljs-911 (the copiers, Array.of and Array.from):*
+`slice`, `concat`, `flat`, `toReversed`, `with`, `Array.of` and `Array.from`
+(`src/array_copy.goose`) are units in the same frame, with four more
+primitives: `micro_get_key` (Get by any key, through a primitive's
+prototype), `micro_construct`, `micro_iterator` (GetIteratorFromMethod) and
+`micro_length`. slice, concat and flat share map's ArraySpeciesCreate steps.
+flat's FlattenIntoArray is a walk over a stack of levels in a plain array
+the job allocates (a source, its next index and its length a level), never
+Goose recursion; a level past the frame limit is the catchable stack
+overflow, as a nested call would be. concat, Array.of and Array.from read
+no receiver length, so their frames start at the units. Array.from over an
+iterable reads `@@iterator` once (GetMethod), then steps the iterator with
+`next`, `done` and `value` as primitives of one unit and maps and defines
+the item in another, during which the frame holds a Catch handler
+(`mutate_pc::Caught`): an abrupt completion there keeps the exception,
+closes the iterator in a unit of its own under a second handler
+(`Closed`, which drops whatever `return` does) and rethrows it. The handler
+is pushed idempotently at the top of the guarded unit, since a unit runs
+once a primitive. A saved continuation carries the handler with the frame
+(`snapshot_tests.goose` array_from_wait). With this the shared-profile
+core's boot passes its `Array.from` and stops at `String.prototype.split`
+(light-cljs-904).
+
 *As landed by light-cljs-900 (receiver and argument conversions):* a
 built-in whose body is a plain Goose function but whose receiver or
 arguments take ToNumber, ToString or an integer conversion (Math, the

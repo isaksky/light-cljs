@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "e04718ffb1bbfe8e0d9ee1505ab552ade81d05eb85c346c6ed21d59ef2dbac0b",
+  "340b27c953a47609f15d45c32ce9b80b30140e67f1075155c9da773b9beade8c",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -205,6 +205,14 @@
   "b7f264fe5657895c7e0b4518c160a7c842cd1a99d1cf834a67248b44d02921df",
   "corpus/serial/array-callbacks.js"
   "41b0f59caa4ffe4a39b4c77671dd72419bd4871cbdaa8f0be52e9524a968b96d",
+  "corpus/serial/array-copy.gsp"
+  "f974469afc9682a806c10b1548ce81e37f8cdcde0e47e25b61c75dc071b0f328",
+  "corpus/serial/array-copy.js"
+  "2dbc71e7edc85a5d34ad1f6042d34bc4fa5e700e37ab6a45b82eabba203cae29",
+  "corpus/serial/array-from-wait.gsp"
+  "a54e2f17f7e104374c7a5a342a4a9cc3dc9129b7a3d7d2ec43ffa8b80b21917b",
+  "corpus/serial/array-from-wait.js"
+  "2dd050f913457b938784b1f2b74b6601c14ec6bccbbf0c74df2a9256bade34f7",
   "corpus/serial/array-join-strings.gsp"
   "596767d939d8cc838104621c7ae7804a370baea524ed80fb3b0df33a92215c66",
   "corpus/serial/array-join-strings.js"
@@ -822,9 +830,9 @@
   "corpus/serial/unsettled.js"
   "ead804c1e583d80e648ea4b6388d3e999da3a667923dec3cbf03ee306e12cb9d",
   "corpus/serial/unsupported-array-method.gsp"
-  "09024b841c6d9b8f980cc402720430d5a48efeca0772222c19508913f4bae839",
+  "1be8164a15c41a591eefc3f18aec72cf9b97bde85371746a40cc0432200752c4",
   "corpus/serial/unsupported-array-method.js"
-  "eba139afda545c1f3edef0e3ecbf93057c3a9c6670dd67a12895ad30e12556af",
+  "aa56b3f01a025b7458d5d450dd3936b55767aecad6d599cb4b33c1bbba7e38ff",
   "corpus/serial/unsupported-coercion.gsp"
   "e96b9bb150ded673e7135430e05f4c134a17c9f084a47b3dc1a91ed432de08d5",
   "corpus/serial/unsupported-coercion.js"

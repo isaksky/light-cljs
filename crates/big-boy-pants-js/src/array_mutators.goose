@@ -73,6 +73,10 @@ namespace source;
 let mutate_pc::Length = 0;
 let mutate_pc::Run = 1;
 let mutate_pc::Await = 2;
+// Array.from's Catch handlers (array_copy.goose): the exception that closes
+// the iterator, and `return`'s own.
+let mutate_pc::Caught = 3;
+let mutate_pc::Closed = 4;
 let mutate_slot::Done = 0;
 let mutate_slot::Memo = 1;
 let mutate_slot::Stage = 7;
@@ -107,7 +111,8 @@ fn array_mutator(b: Builtin) -> bool {
         ArrayPrototypePop, ArrayPrototypeShift, ArrayPrototypeUnshift, ArrayPrototypeSplice, ArrayPrototypeReverse, ArrayPrototypeFill, ArrayPrototypeCopyWithin, ArrayPrototypeToSpliced => true,
         // sort and toSorted run in this frame too (light-cljs-910; array_sort.goose).
         ArrayPrototypeSort, ArrayPrototypeToSorted => true,
-        _ => false,
+        // and the copiers (light-cljs-911; array_copy.goose).
+        _ => array_copier(b),
     };
 }
 // A unit's walk over its primitives: the frame, its operand base, how many
@@ -159,20 +164,23 @@ fn array_mutator_step(job: Job&, frame: Frame, b: Builtin) {
             job.operands[base + mutate_slot::Memo + completed] = v; mutate_put(job, base, mutate_slot::Done, completed + 1);
             job.frames[at].pc = mutate_pc::Run;
         },
-        // splice's ArraySpeciesCreate (array_callbacks.goose): its result
-        // made, the removed elements are collected.
+        mutate_pc::Caught => { copier_caught(job, at, b, false); },
+        mutate_pc::Closed => { copier_caught(job, at, b, true); },
+        // ArraySpeciesCreate for splice, slice, concat and flat
+        // (array_callbacks.goose): its result made, the elements are
+        // collected.
         callbacks_pc::Constructor => {
-            if b != Builtin.ArrayPrototypeSplice { heap.fault = Fault.InvalidState; return; }
+            if !copier_species(b) { heap.fault = Fault.InvalidState; return; }
             job.frames[at].pc = mutate_pc::Run;
             if species_constructor(job, at, b, job.operands.pop()) { mutate_put(job, base, mutate_slot::Stage, mutate_stage::Collect); }
         },
         callbacks_pc::Species => {
-            if b != Builtin.ArrayPrototypeSplice { heap.fault = Fault.InvalidState; return; }
+            if !copier_species(b) { heap.fault = Fault.InvalidState; return; }
             job.frames[at].pc = mutate_pc::Run;
             if species_value(job, at, b, job.operands.pop()) { mutate_put(job, base, mutate_slot::Stage, mutate_stage::Collect); }
         },
         callbacks_pc::Created => {
-            if b != Builtin.ArrayPrototypeSplice { heap.fault = Fault.InvalidState; return; }
+            if !copier_species(b) { heap.fault = Fault.InvalidState; return; }
             job.frames[at].output = job.operands.pop(); job.frames[at].pc = mutate_pc::Run;
             mutate_put(job, base, mutate_slot::Stage, mutate_stage::Collect);
         },
@@ -192,7 +200,7 @@ fn array_mutator_step(job: Job&, frame: Frame, b: Builtin) {
                     ArrayPrototypeSplice => { splice_unit(job, m); },
                     ArrayPrototypeToSpliced => { to_spliced_unit(job, m); },
                     ArrayPrototypeSort, ArrayPrototypeToSorted => { sort_unit(job, m, b); },
-                    _ => { heap.fault = Fault.InvalidState; },
+                    _ => { copy_unit(job, m, b); },
                 }
             }
         },
@@ -408,6 +416,12 @@ fn mutator_stage(b: Builtin, stage: i64) -> bool {
         ArrayPrototypeSplice => stage >= mutate_stage::Setup && stage <= mutate_stage::MoveUp,
         ArrayPrototypeToSpliced => stage == mutate_stage::Setup || stage == mutate_stage::Copy,
         ArrayPrototypeSort, ArrayPrototypeToSorted => stage == mutate_stage::Setup || stage == mutate_stage::Collect || stage == mutate_stage::Sort || stage == mutate_stage::Write,
+        ArrayPrototypeSlice => stage == mutate_stage::Setup || stage == mutate_stage::Collect || stage == mutate_stage::Finish,
+        ArrayPrototypeConcat => stage == mutate_stage::Setup || stage == mutate_stage::Collect || stage == mutate_stage::Items || stage == mutate_stage::Finish,
+        ArrayPrototypeFlat => stage == mutate_stage::Setup || stage == mutate_stage::Collect,
+        ArrayPrototypeToReversed, ArrayPrototypeWith => stage == mutate_stage::Setup || stage == mutate_stage::Copy,
+        ArrayOf => stage == mutate_stage::Setup || stage == mutate_stage::Items || stage == mutate_stage::Finish,
+        ArrayFrom => stage == mutate_stage::Setup || stage == mutate_stage::Items || stage == mutate_stage::Finish || stage >= mutate_stage::Step && stage <= mutate_stage::Like,
         _ => false,
     };
 }

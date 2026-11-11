@@ -7,9 +7,9 @@
  :stop
  {:status :unsupported,
   :fault "Fault.UnsupportedOperand",
-  :detail "pending from",
+  :detail "pending split",
   :line
-  "const kindTables = Array.from({length: 16}, () => Array(9).fill(() => noBranch));",
-  :steps 13854,
-  :byte 97396,
-  :line-number 1394}}
+  "const protocolMaskNames = \"IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref...",
+  :steps 14257,
+  :byte 98006,
+  :line-number 1395}}

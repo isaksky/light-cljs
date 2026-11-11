@@ -342,8 +342,10 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // (light-cljs-908) read their object (light-cljs-842).
         // The mutators (light-cljs-909; array_mutators.goose) hold their
         // argument count and are in one of their phases, the species ones
-        // splice's alone; their step function checks the scratch operands.
-        ArrayMethod m => object_of(s, f.input, node_kind::None) && (!source::array_mutator(m.which) || f.index >= 0 && f.argument_count >= 0 && (f.pc >= mutate_pc::Length && f.pc <= mutate_pc::Await || m.which == source::Builtin.ArrayPrototypeSplice && f.pc >= callbacks_pc::Constructor && f.pc <= callbacks_pc::Created)),
+        // splice's, slice's, concat's and flat's, the handler ones
+        // Array.from's (light-cljs-911; array_copy.goose); their step
+        // function checks the scratch operands.
+        ArrayMethod m => object_of(s, f.input, node_kind::None) && (!source::array_mutator(m.which) || f.index >= 0 && f.argument_count >= 0 && (f.pc >= mutate_pc::Length && f.pc <= mutate_pc::Await || m.which == source::Builtin.ArrayFrom && (f.pc == mutate_pc::Caught || f.pc == mutate_pc::Closed) || source::copier_species(m.which) && f.pc >= callbacks_pc::Constructor && f.pc <= callbacks_pc::Created)),
         // The Array callback methods (light-cljs-789, -908) walk their
         // object within its length, each in the phases its method has (the
         // species phases are map's, filter's and flatMap's, the inner walk

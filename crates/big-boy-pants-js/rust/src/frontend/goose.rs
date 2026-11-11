@@ -2738,6 +2738,16 @@ mod serial_tests {
             // and across a dependency wait in the comparator, mid-merge,
             // saved and restored (snapshot_tests.goose).
             ("array-sort-wait", "goose"),
+            // The Array methods that copy (light-cljs-911): slice, concat,
+            // flat, toReversed, with, Array.of and Array.from over holes,
+            // getters, proxies, a species constructor and user iterators
+            // that are and are not closed, at every budget cut and
+            // collection (serial_tests.goose).
+            ("array-copy", "boolean:true"),
+            // and Array.from across a dependency wait in its map function,
+            // under its Catch handler, saved and restored
+            // (snapshot_tests.goose).
+            ("array-from-wait", "goose"),
             // Array.prototype.push, join and toString as native frames (light-cljs-842).
             ("array-push-join", "boolean:true"),
             // Bound functions through Forward frames (light-cljs-852).

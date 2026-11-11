@@ -52,6 +52,9 @@
   "bbp/array_map_length_to_primitive" {:area :core-builtins}
   "bbp/array_map_species" {:area :core-builtins}
   "bbp/arrays_callbacks" {:area :core-builtins}
+  "bbp/arrays_copy" {:area :core-builtins}
+  "bbp/arrays_from_and_of" {:area :core-builtins}
+  "bbp/arrays_from_constructor" {:area :core-builtins :pants-gap "the Pants engine refuses a custom constructor as `this` (\"Array.from custom constructors are not supported\") and the set and defineProperty traps"}
   "bbp/arrays_mutators" {:area :core-builtins}
   "bbp/arrays_mutators_observable_order" {:area :core-builtins}
   "bbp/arrays_mutators_proxy" {:area :core-builtins :pants-gap "the Pants engine refuses the set trap (\"unsupported Proxy trap: set\", rust/src/vm/proxy.rs)"}
