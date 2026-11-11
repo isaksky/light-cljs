@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "296416be8243ff6b4a130c585a7b7fdbe3e408563f9b4748fc6187ca26d5739b",
+  "389b3329cd87e8d403990bca14a7bb4541ecc08730cd430d18db3216d8860936",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -193,6 +193,14 @@
   "5adec0291a4273fc7db8d415676abe5e43de2234f7e170596377543a4f16b5e9",
   "corpus/serial/arguments.js"
   "4d1cf4908fff75dd6fdb86d256346603562798519216bd59eb84f9bd06c1d613",
+  "corpus/serial/array-callback-methods-wait.gsp"
+  "9f75dca9d96378694cb8b6554d8929d644654d9ee0cc97bb39be649fad754bb0",
+  "corpus/serial/array-callback-methods-wait.js"
+  "e79100352d7b03494e658ea0f3417f76e042f754ba1f1057897dd68ce6c986f5",
+  "corpus/serial/array-callback-methods.gsp"
+  "9c06a733680355f9d7d2f1f10ed1d2f8fbf6ca876369f103bd05fd8f5d6082e1",
+  "corpus/serial/array-callback-methods.js"
+  "d1a4b5c0dc949f9aa2461623dc96e6355afbb382aeb0719c3fe078b7c09e379e",
   "corpus/serial/array-callbacks.gsp"
   "b7f264fe5657895c7e0b4518c160a7c842cd1a99d1cf834a67248b44d02921df",
   "corpus/serial/array-callbacks.js"

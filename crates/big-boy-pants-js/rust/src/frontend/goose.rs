@@ -2707,6 +2707,15 @@ mod serial_tests {
             ("to-primitive", "boolean:true"),
             // Array.prototype.map and forEach as native frames (light-cljs-789).
             ("array-callbacks", "boolean:true"),
+            // The other callback methods and the search methods
+            // (light-cljs-908): filter and reduce with a deleting callback,
+            // early exits, flatMap, a species constructor behind getters,
+            // conversions and a proxy's has trap, at every budget cut and
+            // collection (serial_tests.goose).
+            ("array-callback-methods", "boolean:true"),
+            // and filter across a dependency wait in its callback, saved
+            // and restored (snapshot_tests.goose).
+            ("array-callback-methods-wait", "goose"),
             // Array.prototype.push, join and toString as native frames (light-cljs-842).
             ("array-push-join", "boolean:true"),
             // Bound functions through Forward frames (light-cljs-852).

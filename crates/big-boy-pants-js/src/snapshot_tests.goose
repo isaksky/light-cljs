@@ -911,6 +911,14 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(collection_wait, str(collecting), false));
     heap_program::join(thread_spawn(collection_wait, str(collecting), true));
     assert(qget<bool>()); let mw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(mw)));
+    // The Array callback methods (light-cljs-908): a wait in filter's
+    // callback above its ArrayCallbacks frame, in place and from a saved
+    // continuation that a fresh heap resumes without replaying an element;
+    // a saved frame without its receiver or its result is refused.
+    let filtering = embed_file("../corpus/serial/array-callback-methods-wait.gsp");
+    heap_program::join(thread_spawn(array_callbacks_wait, str(filtering), false));
+    heap_program::join(thread_spawn(array_callbacks_wait, str(filtering), true));
+    assert(qget<bool>()); let aw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(aw)));
     // Base classes (light-cljs-886): a wait inside newTarget's `prototype`
     // getter, above the Construct frame, in place and from a saved
     // continuation; an image whose class constructor looks lazy is refused.
@@ -2501,6 +2509,55 @@ thread_fn collection_wait(bytes: u8[], save: bool) {
                         Collection => {
                             if mode == 0 { f.receiver = f.callee; changed = true; }
                             if mode == 1 { f.output = source::Value.Undefined; changed = true; }
+                        },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        assert(changed);
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// array-callback-methods-wait.js (light-cljs-908) to its wait in filter's
+// callback, above the ArrayCallbacks frame that has kept one element:
+// answered in place, or saved (symbols_resumed answers it), the image
+// refused when the saved frame's receiver (mode 0) or result (1) is gone or
+// its phase is one filter does not have (2: flatMap's inner walk).
+thread_fn array_callbacks_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8 && job.frames.len == 3);
+    let filtering = match job.frames[1].native { ArrayCallbacks c => c.which == source::Builtin.ArrayPrototypeFilter, _ => false };
+    let base = job.frames[1].operand_base;
+    assert(filtering && job.frames[1].pc == callbacks_pc::Result && job.frames[1].index == 1 && job.frames[1].output.is_object() && heap.nodes[job.frames[1].output.id()].length == 1);
+    assert(job.operands[base + callbacks_slot::Kept].is_object() && job.operands[base + callbacks_slot::To].num() == 1);
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    for mode in 3 {
+        var bad = copy(image); var changed = false;
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        ArrayCallbacks => {
+                            if mode == 0 { f.input = source::Value.Undefined; changed = true; }
+                            if mode == 1 { f.output = source::Value.Undefined; changed = true; }
+                            if mode == 2 { f.pc = callbacks_pc::InnerVisit; changed = true; }
                         },
                         _ => {},
                     }

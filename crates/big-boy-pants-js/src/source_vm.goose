@@ -801,8 +801,10 @@ root struct Heap {
 //                above it (light-cljs-895; copy_pc:: names its phases),
 //                as do object rest's OwnKeys and IsEnumerable of a proxy.
 //   ArrayCallbacks  a built-in that calls back into JavaScript, its Builtin
-//                the payload: Array.prototype.map and forEach
-//                (array_callbacks.goose, which gives its fields and phases).
+//                the payload: Array.prototype.map, forEach, filter, some,
+//                every, reduce, reduceRight, flatMap and the find family
+//                (light-cljs-789, -908; array_callbacks.goose, which gives
+//                its fields, scratch operands and phases).
 //   Swap         swap! and swap-vals! (light-cljs-799; cells.goose, which
 //                gives its fields and phases), its Builtin the payload.
 //   Force        force, deref and derefProtocol of a delay (light-cljs-808;
@@ -823,8 +825,9 @@ root struct Heap {
 //                Object.prototype.isPrototypeOf shares). Its result
 //                replaces the operation's operands at operand_base.
 //   ArrayMethod  Array.prototype.push, join and toString (light-cljs-842;
-//                array_methods.goose, which gives their fields and phases),
-//                its Builtin the payload.
+//                array_methods.goose, which gives their fields and phases)
+//                and indexOf, lastIndexOf, includes and at (light-cljs-908;
+//                array_search.goose), its Builtin the payload.
 //   BuiltinIterator  %ArrayIteratorPrototype%.next and
 //                String.prototype[@@iterator] (light-cljs-844;
 //                iterators.goose, which gives their fields and phases),

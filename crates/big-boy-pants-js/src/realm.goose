@@ -8,6 +8,7 @@ import .number_text;
 import .math_object;
 import .regexp_object;
 import .collections;
+import .array_search;
 
 namespace source;
 
@@ -171,11 +172,18 @@ enum Builtin {
     // @@species, plain.
     Map, MapPrototypeSet, MapPrototypeGet, MapPrototypeHas, MapPrototypeDelete, MapPrototypeClear, MapPrototypeSize, MapSpecies,
     Set, SetPrototypeAdd, SetPrototypeHas, SetPrototypeDelete, SetPrototypeClear, SetPrototypeSize, SetSpecies,
+    // Array[@@species], plain; the remaining Array.prototype callback
+    // methods, ArrayCallbacks native frames (array_callbacks.goose); and
+    // the search methods, ArrayMethod native frames (array_search.goose)
+    // (light-cljs-908).
+    ArraySpecies, ArrayPrototypeFilter, ArrayPrototypeReduce, ArrayPrototypeReduceRight, ArrayPrototypeSome, ArrayPrototypeEvery, ArrayPrototypeFlatMap,
+    ArrayPrototypeFind, ArrayPrototypeFindIndex, ArrayPrototypeFindLast, ArrayPrototypeFindLastIndex,
+    ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypeIncludes, ArrayPrototypeAt,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[236] = [
+let BUILTINS: BuiltinInfo[251] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -317,6 +325,18 @@ let BUILTINS: BuiltinInfo[236] = [
     BuiltinInfo { which: Builtin.Set, name: "Set" }, BuiltinInfo { which: Builtin.SetPrototypeAdd, name: "add", length: 1 }, BuiltinInfo { which: Builtin.SetPrototypeHas, name: "has", length: 1 },
     BuiltinInfo { which: Builtin.SetPrototypeDelete, name: "delete", length: 1 }, BuiltinInfo { which: Builtin.SetPrototypeClear, name: "clear" }, BuiltinInfo { which: Builtin.SetPrototypeSize, name: "get size" },
     BuiltinInfo { which: Builtin.SetSpecies, name: "get [Symbol.species]" },
+    // Array[@@species] and Array.prototype's remaining callback methods
+    // and search methods (light-cljs-908): no plan (coerce.goose); the
+    // search methods convert fromIndex after reading the length, in their
+    // frame.
+    BuiltinInfo { which: Builtin.ArraySpecies, name: "get [Symbol.species]" }, BuiltinInfo { which: Builtin.ArrayPrototypeFilter, name: "filter", length: 1 },
+    BuiltinInfo { which: Builtin.ArrayPrototypeReduce, name: "reduce", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeReduceRight, name: "reduceRight", length: 1 },
+    BuiltinInfo { which: Builtin.ArrayPrototypeSome, name: "some", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeEvery, name: "every", length: 1 },
+    BuiltinInfo { which: Builtin.ArrayPrototypeFlatMap, name: "flatMap", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeFind, name: "find", length: 1 },
+    BuiltinInfo { which: Builtin.ArrayPrototypeFindIndex, name: "findIndex", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeFindLast, name: "findLast", length: 1 },
+    BuiltinInfo { which: Builtin.ArrayPrototypeFindLastIndex, name: "findLastIndex", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeIndexOf, name: "indexOf", length: 1 },
+    BuiltinInfo { which: Builtin.ArrayPrototypeLastIndexOf, name: "lastIndexOf", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeIncludes, name: "includes", length: 1 },
+    BuiltinInfo { which: Builtin.ArrayPrototypeAt, name: "at", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -426,7 +446,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[166] = [
+let REALM_FUNCTIONS: Method[181] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -550,6 +570,13 @@ let REALM_FUNCTIONS: Method[166] = [
     Method { which: Builtin.SetPrototypeAdd, holder: set_prototype_row() }, Method { which: Builtin.SetPrototypeHas, holder: set_prototype_row() }, Method { which: Builtin.SetPrototypeDelete, holder: set_prototype_row() },
     Method { which: Builtin.SetPrototypeClear, holder: set_prototype_row() }, Method { which: Builtin.SetPrototypeSize, holder: set_prototype_row() },
     Method { which: Builtin.SetSpecies, holder: set_row() },
+    // Array[@@species] and Array.prototype's remaining callback and search
+    // methods (light-cljs-908; array_callbacks.goose, array_search.goose).
+    Method { which: Builtin.ArraySpecies, holder: 14 }, Method { which: Builtin.ArrayPrototypeFilter, holder: 3 }, Method { which: Builtin.ArrayPrototypeReduce, holder: 3 },
+    Method { which: Builtin.ArrayPrototypeReduceRight, holder: 3 }, Method { which: Builtin.ArrayPrototypeSome, holder: 3 }, Method { which: Builtin.ArrayPrototypeEvery, holder: 3 },
+    Method { which: Builtin.ArrayPrototypeFlatMap, holder: 3 }, Method { which: Builtin.ArrayPrototypeFind, holder: 3 }, Method { which: Builtin.ArrayPrototypeFindIndex, holder: 3 },
+    Method { which: Builtin.ArrayPrototypeFindLast, holder: 3 }, Method { which: Builtin.ArrayPrototypeFindLastIndex, holder: 3 }, Method { which: Builtin.ArrayPrototypeIndexOf, holder: 3 },
+    Method { which: Builtin.ArrayPrototypeLastIndexOf, holder: 3 }, Method { which: Builtin.ArrayPrototypeIncludes, holder: 3 }, Method { which: Builtin.ArrayPrototypeAt, holder: 3 },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -600,15 +627,15 @@ inline fn set_row() -> i64 { return fixed_rows() + 159; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[164] = [
+let PENDING: PendingName[149] = [
     // Object.prototype
     // Array.prototype
-    PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
-    PendingName { holder: 3, key: "fill" }, PendingName { holder: 3, key: "filter" }, PendingName { holder: 3, key: "find" }, PendingName { holder: 3, key: "findIndex" }, PendingName { holder: 3, key: "findLast" },
-    PendingName { holder: 3, key: "findLastIndex" }, PendingName { holder: 3, key: "flat" }, PendingName { holder: 3, key: "flatMap" }, PendingName { holder: 3, key: "includes" },
-    PendingName { holder: 3, key: "indexOf" }, PendingName { holder: 3, key: "lastIndexOf" },
-    PendingName { holder: 3, key: "pop" }, PendingName { holder: 3, key: "reduce" }, PendingName { holder: 3, key: "reduceRight" }, PendingName { holder: 3, key: "reverse" },
-    PendingName { holder: 3, key: "shift" }, PendingName { holder: 3, key: "slice" }, PendingName { holder: 3, key: "some" }, PendingName { holder: 3, key: "sort" }, PendingName { holder: 3, key: "splice" },
+    PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" },
+    PendingName { holder: 3, key: "fill" },
+    PendingName { holder: 3, key: "flat" },
+
+    PendingName { holder: 3, key: "pop" }, PendingName { holder: 3, key: "reverse" },
+    PendingName { holder: 3, key: "shift" }, PendingName { holder: 3, key: "slice" }, PendingName { holder: 3, key: "sort" }, PendingName { holder: 3, key: "splice" },
     PendingName { holder: 3, key: "toLocaleString" }, PendingName { holder: 3, key: "toReversed" }, PendingName { holder: 3, key: "toSorted" }, PendingName { holder: 3, key: "toSpliced" },
     PendingName { holder: 3, key: "unshift" }, PendingName { holder: 3, key: "with" },
     // Object
@@ -628,7 +655,7 @@ let PENDING: PendingName[164] = [
     PendingName { holder: 23, key: "", symbol: 4 }, PendingName { holder: 24, key: "constructor" },
     PendingName { holder: 25, key: "constructor" }, PendingName { holder: 25, key: "then" }, PendingName { holder: 25, key: "catch" }, PendingName { holder: 25, key: "finally" },
     // Array
-    PendingName { holder: 14, key: "from" }, PendingName { holder: 14, key: "of" }, PendingName { holder: 14, key: "fromAsync" }, PendingName { holder: 14, key: "", symbol: 8 },
+    PendingName { holder: 14, key: "from" }, PendingName { holder: 14, key: "of" }, PendingName { holder: 14, key: "fromAsync" },
     // The global object's other standard names.
     PendingName { holder: 0, key: "AggregateError" }, PendingName { holder: 0, key: "ArrayBuffer" }, PendingName { holder: 0, key: "Atomics" }, PendingName { holder: 0, key: "BigInt" },
     PendingName { holder: 0, key: "BigInt64Array" }, PendingName { holder: 0, key: "BigUint64Array" }, PendingName { holder: 0, key: "DataView" },
@@ -977,6 +1004,14 @@ fn build_realm(heap: Heap&) -> bool {
         // The size getters and Map[@@species] and Set[@@species]
         // (light-cljs-943; ECMAScript 24.1.3.10, 24.2.3.9, 24.1.2.2 and
         // 24.2.2.2): accessors with no setter, configurable.
+        // Array[@@species] (light-cljs-908; ECMAScript 23.1.2.5): an accessor
+        // with no setter, configurable.
+        if m.which == Builtin.ArraySpecies {
+            let a = add_accessor(heap, Pair { get: object(fixed_rows() + j) });
+            if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
+            if !add_own(heap, m.holder, Value.Symbol { s: well_known::Species }, Value.Accessor { a: a as u32 }, attr_configurable()) { return false; }
+            continue;
+        }
         if collection_accessor(m.which) {
             let a = add_accessor(heap, Pair { get: object(fixed_rows() + j) });
             if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
@@ -2068,7 +2103,11 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         FunctionPrototypeCall, FunctionPrototypeApply, ReflectApply, ReflectConstruct, FunctionPrototypeBind => { return unsupported_step(job, b, "called outside a native frame"); },
         // The dispatch loop runs these as native frames (native_start); a
         // caller that runs a built-in to completion here cannot.
-        ArrayPrototypeMap, ArrayPrototypeForEach, ArrayPrototypePush, ArrayPrototypeJoin, ArrayPrototypeToString, ArrayIteratorPrototypeNext, StringPrototypeIterator => { return unsupported_step(job, b, "called from a native frame"); },
+        ArrayPrototypeMap, ArrayPrototypeForEach, ArrayPrototypePush, ArrayPrototypeJoin, ArrayPrototypeToString, ArrayIteratorPrototypeNext, StringPrototypeIterator,
+        ArrayPrototypeFilter, ArrayPrototypeReduce, ArrayPrototypeReduceRight, ArrayPrototypeSome, ArrayPrototypeEvery, ArrayPrototypeFlatMap, ArrayPrototypeFind, ArrayPrototypeFindIndex, ArrayPrototypeFindLast, ArrayPrototypeFindLastIndex,
+        ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypeIncludes, ArrayPrototypeAt => { return unsupported_step(job, b, "called from a native frame"); },
+        // Array[@@species] (light-cljs-908) returns its receiver.
+        ArraySpecies => { return receiver; },
         // The built-in iterators that run no JavaScript (light-cljs-844; iterators.goose).
         ArrayPrototypeValues, ArrayPrototypeKeys, ArrayPrototypeEntries => { return array_iterator(job, b, receiver); },
         StringIteratorPrototypeNext => { return string_iterator_next(job, receiver); },

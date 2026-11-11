@@ -2097,6 +2097,36 @@ a return through `run` to `native_step`, with its step accounting and frame
 row copies. Keeping a callback's return in the loop when its caller is a
 native frame is the next cut.
 
+*As landed by light-cljs-908 (the other callback methods, the search methods
+and ArraySpeciesCreate):* `filter`, `some`, `every`, `reduce`, `reduceRight`,
+`flatMap`, `find`, `findIndex`, `findLast` and `findLastIndex` run in map's
+frame (`Native.ArrayCallbacks`), not in frames of their own: the walk
+(HasProperty, Get, the callback, their getters and proxy traps) is the same,
+and only what a method does with the callback's result differs. State the
+frame's fields cannot hold (reduce's "has a value yet", filter's kept
+element and next result index, flatMap's inner walk) lives in scratch
+operands at the frame's operand base (`callbacks_slot::`), below the values
+its phases await, so reclamation, saved continuations and snapshots carry it
+as they carry any operand. ArraySpeciesCreate reads `constructor` and
+`@@species` and constructs the species as frame steps
+(`callbacks_pc::Constructor`, `Species`, `Created`); the realm's `Array`
+answers without the reads, because its `@@species` getter is an image row no
+job can redefine (decision 3) and `Construct(Array, [n])` is `ArrayCreate(n)`.
+Results are filled with CreateDataPropertyOrThrow (`array_store`): a dense
+array the job made with the realm's prototype stores in its run, any other
+object through `[[DefineOwnProperty]]`, a proxy's as its trap's frame
+(`Stored`). `indexOf`, `lastIndexOf`, `includes` and `at`
+(`src/array_search.goose`) share `Native.ArrayMethod` with `push` and `join`;
+they convert `fromIndex` in their frame, after the length, as the
+specification orders it (so no plan), and a step that runs no JavaScript
+visits up to 1,024 indices, each a work unit, so a long search still crosses
+budget cuts. A callback that is itself a native-frame built-in runs through
+a Forward frame, as an accessor's does. Two QuickJS deviations surfaced while
+pinning the slices, both left out of the oracle rows and noted in their
+headers: `Array.prototype.find.call('xy', f)` passes `f` the primitive, not
+its wrapper object, and `Array.prototype.at` on a proxy asks the `has` trap
+first.
+
 *As landed by light-cljs-900 (receiver and argument conversions):* a
 built-in whose body is a plain Goose function but whose receiver or
 arguments take ToNumber, ToString or an integer conversion (Math, the

@@ -338,8 +338,16 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // A HasInstance frame awaits one of its phases (light-cljs-834);
         // pc 4 is retired (light-cljs-900).
         HasInstance => f.pc >= 1 && f.pc <= 5 && f.pc != 4 && (f.pc != 5 || f.callee.is_undefined() || object_of(s, f.callee, node_kind::None)),
-        // Array.prototype.push, join and toString read their object (light-cljs-842).
+        // Array.prototype.push, join and toString and the search methods
+        // (light-cljs-908) read their object (light-cljs-842).
         ArrayMethod => object_of(s, f.input, node_kind::None),
+        // The Array callback methods (light-cljs-789, -908) walk their
+        // object within its length, each in the phases its method has (the
+        // species phases are map's, filter's and flatMap's, the inner walk
+        // flatMap's; the step function checks the scratch operands); map,
+        // filter and flatMap hold their result once ArraySpeciesCreate
+        // made it.
+        ArrayCallbacks a => object_of(s, f.input, node_kind::None) && f.pc >= callbacks_pc::Length && f.pc <= callbacks_pc::InnerStored && (f.pc < callbacks_pc::InnerLength || a.which == source::Builtin.ArrayPrototypeFlatMap) && (f.pc < callbacks_pc::Constructor || source::callbacks_species(a.which)) && f.argument_count >= 0 && f.index >= -1 && (!source::callbacks_species(a.which) || f.pc == callbacks_pc::Length || f.pc >= callbacks_pc::Constructor && f.pc <= callbacks_pc::Created || object_of(s, f.output, node_kind::None)),
         // A GetIterator frame awaits one of its three phases; from `next`'s
         // getter on, it holds the iterator (light-cljs-843).
         GetIterator => f.pc >= 1 && f.pc <= 3 && (f.pc != 3 || object_of(s, f.input, node_kind::None)),

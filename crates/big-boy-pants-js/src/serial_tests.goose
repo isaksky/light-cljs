@@ -1186,7 +1186,7 @@ fn reclamation() {
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/async.gsp")), source::Fault.None, 0, 0));
     // Forced collections at every budget cut and at other phases.
     for image in [embed_file("../corpus/serial/generators.gsp"), embed_file("../corpus/serial/async.gsp"), embed_file("../corpus/serial/generator-loop.gsp"), embed_file("../corpus/serial/for-of.gsp"), embed_file("../corpus/serial/builtin-iterators.gsp"),
-                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
+                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-callback-methods.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-set-delete.gsp"), embed_file("../corpus/serial/proxy-traps.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/proxy-copy.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
                   embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/regexp-replace.gsp"), embed_file("../corpus/serial/regexp-form-values.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp"),
@@ -1266,6 +1266,10 @@ fn control_flow() {
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");
+    // filter, reduce, some, every, the find family, flatMap and the search
+    // methods (light-cljs-908): deleting callbacks, a species constructor
+    // behind getters, conversions and a proxy's has trap.
+    check(embed_file("../corpus/serial/array-callback-methods.gsp"), "boolean:true");
     // push, join and toString (light-cljs-842): a push onto an array-like
     // through its `length` getter, valueOf and setters, and joins whose
     // elements and separator run toString, at every cut.
@@ -1900,9 +1904,10 @@ thread_fn realm_model(bytes: u8[]) {
     let iterator = source::get(heap, symbol, source::text(heap, "iterator"));
     assert(heap.fault == source::Fault.None && iterator.is_symbol() && source::valid(heap, iterator) && source::equal(heap, iterator, source::Value.Symbol { s: 0 }));
     var text: u8[>..] = []; source::canonical(heap, iterator, text); assert(text[..] == "symbol");
-    source::get(heap, a, source::text(heap, "filter")); assert(heap.fault == source::Fault.UnsupportedOperand);
-    heap.fault = source::Fault.None; assert(source::key_is(heap, heap.pending, "filter")); heap.pending = source::Value.Undefined;
-    assert(source::has_property(heap, a, key(heap, "filter")) && !source::has_property(heap, o, key(heap, "filter")));
+    // A pending name (`filter` was one until light-cljs-908).
+    source::get(heap, a, source::text(heap, "toLocaleString")); assert(heap.fault == source::Fault.UnsupportedOperand);
+    heap.fault = source::Fault.None; assert(source::key_is(heap, heap.pending, "toLocaleString")); heap.pending = source::Value.Undefined;
+    assert(source::has_property(heap, a, key(heap, "toLocaleString")) && source::has_property(heap, a, key(heap, "filter")) && !source::has_property(heap, o, key(heap, "filter")));
     // map and forEach are real built-ins (light-cljs-789), with length 1.
     let map = source::get(heap, a, source::text(heap, "map")); let for_each = source::get(heap, a, source::text(heap, "forEach"));
     assert(heap.fault == source::Fault.None && source::builtin_of(heap, map.id()) == source::Builtin.ArrayPrototypeMap && source::builtin_of(heap, for_each.id()) == source::Builtin.ArrayPrototypeForEach);
@@ -2021,7 +2026,7 @@ thread_fn property_model() {
     let getter = source::closure(heap, 0, []); let setter_fn = source::closure(heap, 0, []);
     let base = source::allocate(heap, source::Node { kind: node_kind::Object }); let a = key(heap, "a"); let g = key(heap, "g");
     assert(source::define_own(heap, base.id(), a, getter, source::attrs_accessor(), 1) && source::define_own(heap, base.id(), a, setter_fn, source::attrs_accessor(), 2));
-    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 22); // after the realm's pending pair, its caller/arguments pair (light-cljs-853), its __proto__ pair (light-cljs-883), Symbol.prototype's description pair (light-cljs-885), RegExp's eleven getter pairs (light-cljs-932) and Map's and Set's size and @@species getter pairs (light-cljs-943)
+    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 23); // after the realm's pending pair, its caller/arguments pair (light-cljs-853), its __proto__ pair (light-cljs-883), Symbol.prototype's description pair (light-cljs-885), RegExp's eleven getter pairs (light-cljs-932), Map's and Set's size and @@species getter pairs (light-cljs-943) and Array's @@species getter pair (light-cljs-908)
     let child = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::set_prototype(heap, child.id(), base));
     for target in [base, child] {
         let v, found = source::lookup(heap, target, a); assert(v.is_undefined() && found == getter);
@@ -2074,10 +2079,11 @@ thread_fn property_model() {
     // both are simply absent.
     let found = source::get(heap, c3, source::text(heap, "toString")); assert(heap.fault == source::Fault.None && found.is_object() && source::node(heap, found.id()).kind == node_kind::Builtin);
     // (Object.prototype has no pending name since light-cljs-884: an array
-    // reads Array.prototype's pending `at`.)
+    // reads Array.prototype's pending `toLocaleString`; `at` was that
+    // name until light-cljs-908.)
     let listing = source::allocate(heap, source::Node { kind: node_kind::Array });
-    source::get(heap, listing, source::text(heap, "at")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
-    assert(source::set_prototype(heap, c1.id(), source::nil()) && source::get(heap, c3, source::text(heap, "toString")).is_undefined() && source::get(heap, c3, source::text(heap, "at")).is_undefined() && heap.fault == source::Fault.None);
+    source::get(heap, listing, source::text(heap, "toLocaleString")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(source::set_prototype(heap, c1.id(), source::nil()) && source::get(heap, c3, source::text(heap, "toString")).is_undefined() && source::get(heap, c3, source::text(heap, "toLocaleString")).is_undefined() && heap.fault == source::Fault.None);
     // Past shape_limit() keys an object turns to dictionary mode.
     let big = source::allocate(heap, source::Node { kind: node_kind::Object });
     for i in source::shape_limit() + 1 { assert(source::put(heap, big, source::text(heap, str("k", i)), source::number(i))); }

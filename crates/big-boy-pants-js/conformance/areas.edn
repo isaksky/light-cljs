@@ -51,6 +51,10 @@
   "bbp/array_map" {:area :core-builtins}
   "bbp/array_map_length_to_primitive" {:area :core-builtins}
   "bbp/array_map_species" {:area :core-builtins}
+  "bbp/arrays_callbacks" {:area :core-builtins}
+  "bbp/arrays_search" {:area :core-builtins}
+  "bbp/arrays_species" {:area :core-builtins}
+  "bbp/arrays_species_proxy" {:area :core-builtins :pants-gap "the Pants engine refuses the defineProperty trap (\"unsupported Proxy trap: defineProperty\", rust/src/vm/proxy.rs) and a definition on a built-in object (Array's @@species)"}
   "bbp/array_push" {:area :core-builtins}
   "bbp/array_join_to_string" {:area :core-builtins}
   "bbp/core_builtin_conversions" {:area :core-builtins}
