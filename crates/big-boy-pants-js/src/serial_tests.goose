@@ -978,6 +978,7 @@ fn main() {
     properties();
     scripts();
     primitive_methods();
+    maps_and_sets();
     regexp_boundaries();
     regexp_replace_limits();
     key_enumeration();
@@ -1021,6 +1022,39 @@ thread_fn reclaim_cuts(bytes: u8[], expected: u8[], slice: i64, every: i64) {
     if job.status != tiny::Status.Complete { var fault: u8[>..] = []; source::describe_fault(fault, code, job); print("reclaim_cuts: slice ", slice, " cut ", cuts, " ", fault, " function=", job.fault_function, " pc=", job.fault_pc, " thrown=", job.thrown); flush_stdout(); }
     assert(job.status == tiny::Status.Complete && (cuts > 0 || slice > 1));
     var output: u8[>..] = []; source::canonical(heap, job.result, output); assert(output[..] == expected);
+    assert(image_valid(heap));
+    source::retire(job);
+}
+// Whether every Map and Set of the heap finds each live key at its entry
+// (light-cljs-943; collections.goose find_entry).
+fn collections_consistent(heap: const source::Heap&) -> bool {
+    for o in heap.nodes.len {
+        let n = heap.nodes[o];
+        if n.kind != node_kind::Collection || n.count == 0 { continue; }
+        let flavor: i64 = n.length; let stride = source::entry_stride(flavor); let start: i64 = n.start; let used: i64 = n.function;
+        for p in used {
+            let k = heap.values[start + p * stride];
+            if !k.is_hole() && source::find_entry(heap, o, k, source::entry_hash(heap, k)) != p { return false; }
+        }
+    }
+    return true;
+}
+// map-set-construction.js (light-cljs-943) in slices of 7 instructions, a
+// collection inside the job at every cut: the collections that move the
+// maps' object and symbol keys rebuild their indexes, every collection
+// finds each of its keys afterwards, and the job's lookups answer.
+thread_fn collection_rehash(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+    while source::run(job, 7) == tiny::Outcome.Yielded && !job.effect_pending {
+        heap.reclaim = true; source::reclaim(job);
+        assert(collections_consistent(heap));
+    }
+    if job.status != tiny::Status.Complete || heap.rehashes == 0 { var fault: u8[>..] = []; source::describe_fault(fault, code, job); print("collection_rehash: ", job.status, " ", fault, " rehashes ", heap.rehashes, " reclaims ", heap.reclaims); flush_stdout(); }
+    assert(job.status == tiny::Status.Complete && heap.rehashes > 0);
+    var output: u8[>..] = []; source::canonical(heap, job.result, output); assert(output[..] == "boolean:true");
     assert(image_valid(heap));
     source::retire(job);
 }
@@ -1155,7 +1189,8 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-set-delete.gsp"), embed_file("../corpus/serial/proxy-traps.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/proxy-copy.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/regexp-replace.gsp"), embed_file("../corpus/serial/regexp-form-values.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/regexp-replace.gsp"), embed_file("../corpus/serial/regexp-form-values.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp"),
+                  embed_file("../corpus/serial/map-set-construction.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
@@ -1681,6 +1716,54 @@ thread_fn regexp_boundary_reserve(bytes: u8[]) {
     var output: u8[>..] = []; source::canonical(heap, job.result, output); assert(output[..] == "boolean:true");
     assert(source::retire(job));
 }
+// Map and Set (light-cljs-943): the constructors' Collection frames over a
+// user iterator, getter entries, a subclass's `set`, a closing TypeError
+// and the array fast path, and maps keyed by job objects and symbols, at
+// every budget cut (and, in reclamation_cases, with a collection at every
+// cut, after which every lookup still answers).
+fn maps_and_sets() {
+    check(embed_file("../corpus/serial/map-set-construction.gsp"), "boolean:true");
+    heap_program::join(thread_spawn(collection_rehash, str(embed_file("../corpus/serial/map-set-construction.gsp"))));
+    heap_program::join(thread_spawn(collection_image_rows, str(embed_file("../corpus/serial/map-set-image.gsp"))));
+    print("serial source VM: Map and Set construction at every budget cut, their indexes rebuilt by collections that move their keys, and collections a later job does not own read but not written");
+}
+// map-set-image.js (light-cljs-943): a job's Map and Set, refused by a
+// publication and kept by a snapshot, read by later jobs that do not own
+// them, whose writes fault NativeBoundary, the collections unchanged.
+thread_fn collection_image_rows(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let floor = heap.nodes.len;
+    var first = source::Job { heap: heap };
+    assert(source::start(first, source::closure(heap, 0, []), []) && source::run(first, -1) == tiny::Outcome.Complete);
+    let holder = first.result; assert(source::retire(first));
+    // A publication that reaches the job's collections fails by name
+    // (cells.goose publish_cells), and the image with them, keyword-form
+    // keys included, validates as a snapshot.
+    var thunks = false; var initial: source::Initial[>..] = [];
+    let refused = source::publish_cells(heap, holder, floor, thunks, initial);
+    assert(refused[..] == "collection-unshareable a Map or Set made by a job (a mutable JavaScript object)");
+    var sc = snapshot::Control {}; let image = snapshot::capture(heap, [], sc); assert(sc.error == snapshot::Error.None && image.nodes.len == heap.nodes.len);
+    let m = regexp_member(heap, holder, "m"); let s = regexp_member(heap, holder, "s"); let k = regexp_member(heap, holder, "k");
+    assert(source::is_collection(heap, m, collection::Map) && source::is_collection(heap, s, collection::Set));
+    {
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len };
+        assert(source::start(job, regexp_member(heap, holder, "read"), [m, s, k], holder) && source::run(job, -1) == tiny::Outcome.Complete);
+        assert(source::key_is(heap, job.result, "ab4truetruetrue2undefinedfalsefalsecdfalse"));
+        assert(source::retire(job));
+    }
+    let writers: source::Name[6] = [source::Name { text: "setMap" }, source::Name { text: "deleteMap" }, source::Name { text: "clearMap" }, source::Name { text: "addSet" }, source::Name { text: "deleteSet" }, source::Name { text: "clearSet" }];
+    for w, i in writers {
+        let target = if i < 3 { m } else { s };
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len };
+        assert(source::start(job, regexp_member(heap, holder, w.text), [target, k], holder));
+        var detail: u16[>..] = []; for c in (if i < 3 { "write to an image row: a Map entry" } else { "write to an image row: a Set entry" }) { detail.push(c); }
+        assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary && job.detail[..] == detail[..]);
+        assert(source::retire(job));
+        assert(source::collection_size(source::node(heap, m.id())) == 4 && source::collection_size(source::node(heap, s.id())) == 2);
+    }
+}
 fn primitive_methods() {
     let bytes = embed_file("../corpus/serial/primitive-methods.gsp");
     check(bytes, "number:400.0");
@@ -1938,7 +2021,7 @@ thread_fn property_model() {
     let getter = source::closure(heap, 0, []); let setter_fn = source::closure(heap, 0, []);
     let base = source::allocate(heap, source::Node { kind: node_kind::Object }); let a = key(heap, "a"); let g = key(heap, "g");
     assert(source::define_own(heap, base.id(), a, getter, source::attrs_accessor(), 1) && source::define_own(heap, base.id(), a, setter_fn, source::attrs_accessor(), 2));
-    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 18); // after the realm's pending pair, its caller/arguments pair (light-cljs-853), its __proto__ pair (light-cljs-883), Symbol.prototype's description pair (light-cljs-885) and RegExp's eleven getter pairs (light-cljs-932)
+    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 22); // after the realm's pending pair, its caller/arguments pair (light-cljs-853), its __proto__ pair (light-cljs-883), Symbol.prototype's description pair (light-cljs-885), RegExp's eleven getter pairs (light-cljs-932) and Map's and Set's size and @@species getter pairs (light-cljs-943)
     let child = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::set_prototype(heap, child.id(), base));
     for target in [base, child] {
         let v, found = source::lookup(heap, target, a); assert(v.is_undefined() && found == getter);
@@ -2398,11 +2481,12 @@ thread_fn sparse_array() {
     var code = source::Code {}; decode(code, embed_file("../corpus/serial/mutations.gsp"));
     {
         var h = source::Heap { code: code }; assert(source::initialize(h));
+        let realm = h.values.len;
         let a = source::allocate(h, source::Node { kind: node_kind::Array }); let k = source::text(h, "length");
         assert(source::put(h, a, source::key(h, source::number(0)), source::number(5)));
         assert(source::put(h, a, source::key(h, source::number(524287)), source::number(1)));
         assert(source::put(h, a, source::key(h, source::number(524288)), source::number(2)));
-        assert(h.nodes[a.id()].initialized && h.nodes[a.id()].count == 0 && h.nodes[a.id()].length == 524289 && h.values.len < 1024);
+        assert(h.nodes[a.id()].initialized && h.nodes[a.id()].count == 0 && h.nodes[a.id()].length == 524289 && h.values.len - realm < 1024);
         assert(source::get(h, a, source::key(h, source::number(524287))).num() + source::get(h, a, source::key(h, source::number(524288))).num() == 3);
         assert(source::get(h, a, source::key(h, source::number(0))).num() == 5 && source::get(h, a, source::key(h, source::number(7))).is_undefined());
         assert(source::put(h, a, k, source::number(524288)) && source::get(h, a, source::key(h, source::number(524288))).is_undefined() && source::get(h, a, source::key(h, source::number(524287))).num() == 1);

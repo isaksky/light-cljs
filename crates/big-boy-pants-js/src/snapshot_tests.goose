@@ -902,6 +902,15 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(sum_precise_wait, str(summing), false));
     heap_program::join(thread_spawn(sum_precise_wait, str(summing), true));
     assert(qget<bool>()); let spw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(spw)));
+    // Map and Set (light-cljs-943): a wait in `next` above a Collection
+    // frame, in place and from a saved continuation that a fresh heap
+    // resumes without replaying an entry; a saved frame whose collection or
+    // adder is gone, and a collection whose index names an entry past its
+    // used ones, misplaces an entry or holds a key twice, are refused.
+    let collecting = embed_file("../corpus/serial/map-set-construction-wait.gsp");
+    heap_program::join(thread_spawn(collection_wait, str(collecting), false));
+    heap_program::join(thread_spawn(collection_wait, str(collecting), true));
+    assert(qget<bool>()); let mw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(mw)));
     // Base classes (light-cljs-886): a wait inside newTarget's `prototype`
     // getter, above the Construct frame, in place and from a saved
     // continuation; an image whose class constructor looks lazy is refused.
@@ -2431,6 +2440,67 @@ thread_fn sum_precise_wait(bytes: u8[], save: bool) {
                             if mode == 1 { bad.values[image.nodes[f.output.id()].start + 3] = source::number(0.5); }
                             if mode == 2 { f.callee = source::Value.Undefined; }
                             changed = true;
+                        },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        assert(changed);
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// map-set-construction-wait.js (light-cljs-943) to its wait in `next`,
+// above the Collection frame that has stored one entry: answered in place,
+// or saved (symbols_resumed answers it), the image refused when the saved
+// frame's collection is its iterator record (mode 0) or its adder is gone
+// (1), or the collection's index names an entry it has not used (2), puts
+// its entry past the Empty slot the key's probe stops at (3) or holds the
+// same key twice (4).
+thread_fn collection_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8 && job.frames.len == 3);
+    let collecting = match job.frames[1].native { Collection c => c.which == source::Builtin.Map, _ => false };
+    assert(collecting && job.frames[1].pc == collection_pc::Step && job.frames[1].receiver.is_object());
+    let map = job.frames[1].receiver.id(); assert(source::collection_size(heap.nodes[map]) == 1);
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")) && source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    for mode in 5 {
+        var bad = copy(image); var changed = false;
+        let n = image.nodes[map]; let capacity = source::entry_capacity(n); let start: i64 = n.start; let index: i64 = start + capacity * 2; let mask = 2 * capacity - 1;
+        var home: i64 = -1; for j in 2 * capacity { if home < 0 && image.values[index + j].is_number() { home = j; } }
+        assert(home >= 0 && image.values[index + ((home + 1) & mask)].is_hole());
+        // The run's index slots follow its entries: the one entry's names
+        // entry 3 (mode 2), moves past an Empty slot its key's probe stops
+        // at (3), or a second entry with the same key is indexed behind it (4).
+        if mode == 2 { bad.values[index + home] = source::number(3); changed = true; }
+        if mode == 3 { bad.values[index + ((home + 1) & mask)] = image.values[index + home]; bad.values[index + home] = source::Value.Empty; changed = true; }
+        if mode == 4 {
+            bad.values[start + 2] = image.values[start]; bad.values[start + 3] = source::number(5); bad.values[index + ((home + 1) & mask)] = source::number(1);
+            bad.nodes[map].function = 2; bad.nodes[map].value = source::number(2); changed = true;
+        }
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        Collection => {
+                            if mode == 0 { f.receiver = f.callee; changed = true; }
+                            if mode == 1 { f.output = source::Value.Undefined; changed = true; }
                         },
                         _ => {},
                     }

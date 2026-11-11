@@ -1,5 +1,6 @@
 import std;
 import os;
+import math;
 import .source_vm;
 import .export_schema;
 import .program;
@@ -63,8 +64,9 @@ fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count 
 // Kinds whose start/count name a run of values: an ordinary object's or an
 // array's element run (light-cljs-804), captures, form children, arguments,
 // a deferred map's memo, a bound function's arguments (light-cljs-852) and
-// an arguments map's cells (light-cljs-860).
-fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq || kind == node_kind::BoundFunction || kind == node_kind::ArgumentMap || kind == node_kind::StructType || kind == node_kind::Struct || kind == node_kind::InitializerSlot; }
+// an arguments map's cells (light-cljs-860), and a Map's or Set's entries
+// and index (light-cljs-943).
+fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq || kind == node_kind::BoundFunction || kind == node_kind::ArgumentMap || kind == node_kind::StructType || kind == node_kind::Struct || kind == node_kind::InitializerSlot || kind == node_kind::Collection; }
 fn map_row<S>(s: const S&, v: source::Value) -> bool { return v.is_object() && v.id() < s.nodes.len && s.nodes[v.id()].kind == node_kind::Map; }
 // Whether row n is a shareable regex value laid out as
 // regexp_object.goose's new_shared_regexp lays one out (light-cljs-935):
@@ -130,8 +132,9 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
         if !poll(c, n.count) { return false; }
         for slot in n.start..(n.start + n.count) {
             // A mutable struct's fields and an initializer slot's value
-            // (light-cljs-920) are written in place: exclusive too.
-            if n.kind == node_kind::LazySeq || elements(n.kind) || n.kind == node_kind::ArgumentMap || n.kind == node_kind::InitializerSlot || n.kind == node_kind::Struct && !n.immutable {
+            // (light-cljs-920) are written in place: exclusive too, as a
+            // collection's run is (light-cljs-943).
+            if n.kind == node_kind::LazySeq || elements(n.kind) || n.kind == node_kind::ArgumentMap || n.kind == node_kind::InitializerSlot || n.kind == node_kind::Struct && !n.immutable || n.kind == node_kind::Collection {
                 if used[slot] != 0 { return reject(c, Error.Link); }
                 used[slot] = 2;
             } else {
@@ -201,7 +204,7 @@ fn index_text<T>(s: const T&, k: source::Value, i: i64) -> bool {
 // arrays and closures (light-cljs-805), built-in functions and error objects
 // (light-cljs-788), generators, promises and primitive wrappers, iterators,
 // bound functions and arguments objects (light-cljs-854).
-fn named(kind: i64) -> bool { return kind >= node_kind::Object && kind <= node_kind::Closure || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::RegExp || kind == node_kind::BoundFunction; }
+fn named(kind: i64) -> bool { return kind >= node_kind::Object && kind <= node_kind::Closure || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::RegExp || kind == node_kind::Collection || kind == node_kind::BoundFunction; }
 // A shape-mode object, dense array or closure: without `initialized`.
 fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initialized; }
 // A dictionary-mode object, a dictionary array or a closure's records.
@@ -408,11 +411,136 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // test (light-cljs-933) await an exec_pc:: phase; replace and
         // replaceAll a replace_pc::, @@replace a symbol_pc:: (light-cljs-934).
         RegExp r => regexp_frame_valid(s, f, r.which),
+        // A Collection frame (light-cljs-943, collections.goose): its
+        // collection of the constructor's flavor; from the adder on, the
+        // adder; the iterable until the record arrives, then the record (in
+        // the fast path, the array); while a result's `done` and `value` or
+        // an entry's "0" are read, that object.
+        Collection x => collection_frame_valid(s, f, x.which),
         _ => true,
     };
 }
 // The code units of string value v in the snapshot's tables, -1 for none.
 fn string_units<T>(s: const T&, v: source::Value) -> i64 { return if v.is_string() && v.sid() < s.strings.len { s.strings[v.sid()].len } else { -1 }; }
+fn collection_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Builtin) -> bool {
+    let flavor = if which == source::Builtin.Map { collection::Map } else if which == source::Builtin.Set { collection::Set } else { -1 };
+    if flavor < 0 || !object_of(s, f.receiver, node_kind::Collection) || s.nodes[f.receiver.id()].length != flavor || f.pc < collection_pc::Adder || f.pc > collection_pc::Fast { return false; }
+    if f.pc == collection_pc::Adder { return f.output.is_undefined() && f.callee.tag() > value_tag::Null; }
+    if !object_of(s, f.output, node_kind::None) { return false; }
+    if f.pc == collection_pc::Fast { return object_of(s, f.callee, node_kind::Array) && f.index >= 0; }
+    if f.pc == collection_pc::Record { return f.callee.tag() > value_tag::Null; }
+    if !object_of(s, f.callee, node_kind::Object) { return false; }
+    return f.pc != collection_pc::Done && f.pc != collection_pc::Item && f.pc != collection_pc::Key || object_of(s, f.input, node_kind::None);
+}
+// A Map or Set (light-cljs-943, source::node_kind::Collection;
+// collections.goose): a flavor, its size a Number, Null as namespace_value,
+// and its run: none (count 0, nothing used, size 0) or `capacity` entries,
+// a power of two at least collection_minimum(), of entry_stride values
+// each, then 2 * capacity index slots. An entry below `function` is live
+// (a key that is neither -0 nor an accessor, and a Map's value no
+// accessor) or a tombstone (all Empty), as many live as its size; past
+// `function` every entry is Empty. An index slot is Empty or a Number, the
+// position of an entry below `function`, each at most once, and every live
+// entry's position is there, reached by its key's probe with no equal key
+// before it. The holes its run holds (Empty values, which
+// validate counts with array holes), -1 for an invalid row, or -2 when
+// the validation's budget ran out (poll).
+fn collection_holes<T>(s: const T&, n: const source::Node&, c: Control&) -> i64 {
+    if n.length > collection::Set || !n.value.is_number() || !n.namespace_value.is_null() { return -1; }
+    let size_value = n.value.num();
+    if !(size_value >= 0 && size_value <= 4294967295.0) || trunc(size_value) != size_value { return -1; }
+    let size: i64 = size_value as i64; let used: i64 = n.function; let count: i64 = n.count;
+    if count == 0 { return if used == 0 && size == 0 { 0 } else { -1 }; }
+    let flavor: i64 = n.length; let stride = source::entry_stride(flavor);
+    if count % (stride + 2) != 0 { return -1; }
+    let capacity = count / (stride + 2);
+    if capacity < source::collection_minimum() || (capacity & (capacity - 1)) != 0 || used > capacity || size > used { return -1; }
+    let start: i64 = n.start; let run = s.values[start..(start + count)];
+    var holes: i64 = 0; var live: i64 = 0;
+    for i in capacity {
+        let k = run[i * stride]; let v = if stride == 2 { run[i * stride + 1] } else { source::Value.Empty };
+        if i >= used || k.is_hole() { if !k.is_hole() || !v.is_hole() { return -1; } holes += stride; continue; }
+        if source::is_accessor(k) || k.is_number() && k.num() == 0 && 1.0 / k.num() < 0 || stride == 2 && (v.is_hole() || source::is_accessor(v)) { return -1; }
+        live += 1;
+    }
+    if live != size { return -1; }
+    var seen:    bool[>..] = []; seen.resize(used, false);
+    var indexed: i64       = 0;
+    for j in 2 * capacity {
+        let x = run[capacity * stride + j];
+        if x.is_hole() { holes += 1; continue; }
+        if !x.is_number() { return -1; }
+        let p = x.num();
+        if !(p >= 0 && p < used) || trunc(p) != p { return -1; }
+        let at: i64 = p as i64;
+        if seen[at] { return -1; }
+        seen[at] = true;
+        if !run[at * stride].is_hole() { indexed += 1; }
+    }
+    if indexed != live { return -1; }
+    // Placement (linear probing, as the interned-key index is checked): a
+    // live entry's probe from its key's hash reaches its slot before any
+    // Empty slot and passes no live entry with an equal key, so every key
+    // is found and none is there twice.
+    let mask = 2 * capacity - 1;
+    for j in 2 * capacity {
+        let x = run[capacity * stride + j];
+        if x.is_hole() { continue; }
+        let k = run[(x.num() as i64) * stride];
+        if k.is_hole() { continue; }
+        var at: i64 = collection_key_hash(s, k) & mask;
+        while at != j {
+            if !poll(c) { return -2; }
+            let y = run[capacity * stride + at];
+            if y.is_hole() { return -1; }
+            let other = run[(y.num() as i64) * stride];
+            if !other.is_hole() && same_collection_key(s, other, k) { return -1; }
+            at = (at + 1) & mask;
+        }
+    }
+    return holes;
+}
+// The hash collections.goose entry_hash gives key k, over a snapshot's
+// tables: a string's units' FNV-1a (key_hash), a keyword form's name's
+// and namespace's, any other key by its value or row. A keyword row whose
+// name is no string, which its own check refuses, hashes by its row.
+fn collection_key_hash<T>(s: const T&, k: source::Value) -> u32 {
+    return match k {
+        String x => source::string_entry_hash(key_hash(s, s.strings[x.s])),
+        Object x => {
+            let n = s.nodes[x.o];
+            if n.kind != node_kind::Keyword || n.initialized || !n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string() { source::plain_entry_hash(k) } else {
+                source::keyword_entry_hash(key_hash(s, s.strings[n.value.sid()]), n.namespace_value.is_string(), if n.namespace_value.is_string() { key_hash(s, s.strings[n.namespace_value.sid()]) } else { 0 })
+            }
+        },
+        _ => source::plain_entry_hash(k),
+    };
+}
+// Unit i of string header r of a snapshot.
+inline fn unit_at<T>(s: const T&, r: source::Str, i: i64) -> u32 { return if r.wide { s.units[r.start + i] } else { s.latin1[r.start + i] }; }
+fn same_strings<T>(s: const T&, a: source::Value, b: source::Value) -> bool {
+    if a.sid() == b.sid() { return true; }
+    let x = s.strings[a.sid()]; let y = s.strings[b.sid()];
+    if x.len != y.len { return false; }
+    for i in x.len { if unit_at(s, x, i) != unit_at(s, y, i) { return false; } }
+    return true;
+}
+// A keyword form row of a snapshot that compares by name (same_keyword).
+fn keyword_row<T>(s: const T&, o: i64) -> bool { let n = s.nodes[o]; return n.kind == node_kind::Keyword && !n.initialized && n.value.is_string() && (n.namespace_value.is_null() || n.namespace_value.is_string()); }
+// SameValueZero of two keys of a snapshot's collection (collections.goose
+// same_entry_key).
+fn same_collection_key<T>(s: const T&, a: source::Value, b: source::Value) -> bool {
+    return match a {
+        Number x => b.is_number() && (x.v == b.num() || x.v != x.v && b.num() != b.num()),
+        String => b.is_string() && same_strings(s, a, b),
+        Object x => b.is_object() && (x.o == b.id() || keyword_row(s, x.o) && keyword_row(s, b.id()) && same_strings(s, s.nodes[x.o].value, s.nodes[b.id()].value) && s.nodes[x.o].namespace_value.is_string() == s.nodes[b.id()].namespace_value.is_string() && (!s.nodes[x.o].namespace_value.is_string() || same_strings(s, s.nodes[x.o].namespace_value, s.nodes[b.id()].namespace_value))),
+        Symbol x => b.is_symbol() && x.s == source::symbol_index(b),
+        Bool x => b.is_bool() && x.v == b.flag(),
+        Undefined => b.is_undefined(),
+        Null => b.is_null(),
+        _ => false,
+    };
+}
 fn regexp_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Builtin) -> bool {
     if which == source::Builtin.RegExp {
         let proto = f.index & regexp_state::Prototype != 0;
@@ -883,7 +1011,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var owners: i64 = 0; var private_rows: i64 = 0;
     for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < node_kind::Object || n.kind > node_kind::RegExp { return reject(c, Error.Unsupported); }
+        if n.kind < node_kind::Object || n.kind > node_kind::Collection { return reject(c, Error.Unsupported); }
         // A RegExp (light-cljs-932, source::node_kind::RegExp) names a compiled
         // program of the code's and holds its pattern text, a string, and
         // no element run.
@@ -956,7 +1084,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // records, and it walks an object or nothing.
         if (n.kind == node_kind::Object || n.kind == node_kind::Arguments) && n.length != 0 || n.kind == node_kind::KeyList && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }
         if !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 || !n.proto.is_hole() && !n.proto.is_null() && (!n.proto.is_object() || !value(s, n.proto)) { return reject(c, Error.Link); }
-        has_memo = has_memo || shaped(n) && n.key_capacity > 0 || n.kind == node_kind::ArgumentMap && n.count > 0;
+        has_memo = has_memo || shaped(n) && n.key_capacity > 0 || n.kind == node_kind::ArgumentMap && n.count > 0 || n.kind == node_kind::Collection && n.count > 0;
         if !argument_links(s, n, row, c) { return reject(c, Error.Link); }
         if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
         // The compiler checks an identity source's UTF-8 boundaries.
@@ -970,6 +1098,15 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // (light-cljs-886): it is never a lazy closure.
         if n.kind == node_kind::Closure && s.functions[n.function].kind >= constructor::BaseClass && n.key_count == 0 && !n.initialized { return reject(c, Error.Link); }
         if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == node_kind::Map && n.count % 2 != 0 { return reject(c, Error.Link); } }
+        // A Map or Set (light-cljs-943): its run's layout (collection_holes),
+        // whose holes are allowed, as an array's are.
+        if n.kind == node_kind::Collection {
+            if !poll(c, n.count) { return false; }
+            let h = collection_holes(s, n, c);
+            if h == -2 { return false; }
+            if h < 0 { return reject(c, Error.Link); }
+            array_holes += h;
+        }
         if n.kind == node_kind::StructType {
             if !poll(c, n.count) { return false; }
             for v in s.values[n.start..(n.start + n.count)] { if !v.is_string() { return reject(c, Error.Link); } }

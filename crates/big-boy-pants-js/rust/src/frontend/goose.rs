@@ -2918,6 +2918,19 @@ mod serial_tests {
             // over a reused worker's image (light-cljs-942;
             // snapshot_tests.goose).
             ("regexp-wait", "goose"),
+            // Map and Set (light-cljs-943): their constructors' Collection
+            // frames over a user iterator, getter entries, a subclass's
+            // `set` and the array fast path, and maps keyed by job objects
+            // and symbols, at every budget cut and collection
+            // (serial_tests.goose).
+            ("map-set-construction", "boolean:true"),
+            // and across a dependency wait in `next` above the Collection
+            // frame, saved and restored (snapshot_tests.goose).
+            ("map-set-construction-wait", "goose"),
+            // and collections a later job does not own: reads answer,
+            // writes fault NativeBoundary (serial_tests.goose
+            // collection_image_rows); the result is an object.
+            ("map-set-image", "goose"),
             // Base classes (light-cljs-886): constructors, eager
             // prototypes, methods, accessors, fields and static blocks at
             // every budget cut and collection (serial_tests.goose).

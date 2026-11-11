@@ -8,7 +8,9 @@
 // date_regexp_and_wrapper_subclasses_keep_internal_slots), 271-277 (the
 // Function row of buffer_typed_array_and_function_subclasses), 285-288
 // (Proxy is no heritage), 302-309 (bound_builtin_super_and_argument_forwarding),
-// 477 (an Error subclass converting its message) and 630-637
+// 477 (an Error subclass converting its message), 61-75
+// (collection_subclasses_use_derived_set_and_add, its Map and Set rows;
+// light-cljs-943) and 630-637
 // (new_target_prototype_getter_resumes_once_and_propagates_errors, with
 // Reflect.construct and a bound newTarget for its `new Proxy(B, {})`, whose
 // [[Construct]] is light-cljs-891's), with light-cljs-766's planner rows
@@ -16,8 +18,8 @@
 // constructor this VM has takes its object's prototype from newTarget
 // (GetPrototypeFromConstructor, through a getter once, before its steps),
 // arrays stay exotic, errors keep their brand, wrappers their primitive.
-// Left out: Map, Set, Promise, Date, RegExp, typed array and ArrayBuffer
-// parents (light-cljs-768 to -770), SuppressedError (light-cljs-772),
+// Left out: WeakMap and WeakSet (light-cljs-945), Promise, Date, RegExp,
+// typed array and ArrayBuffer parents (light-cljs-768 to -770), SuppressedError (light-cljs-772),
 // BigInt (light-cljs-771) and Intl.Segmenter (light-cljs-774). Each row is a
 // `row(...)` check; the script completes with the number of rows, or minus
 // the first failing row's number.
@@ -72,4 +74,9 @@ function getter(get) { const G = (function () {}).bind(null); Object.definePrope
 { class A extends Array {} let B = A.bind(null,1); let a = new B(2); row(a instanceof A && a.length === 2 && a[0] === 1 && a[1] === 2); }
 { let B = Array.bind(null,1); B.prototype = Array.prototype; class A extends B {} let a = new A(2); row(a instanceof A && a.length === 2 && a[0] === 1 && a[1] === 2); }
 { class E extends Error {} row(new E({toString(){return 'x';}}).message === 'x'); }
+// collection_subclasses_use_derived_set_and_add (builtin_subclasses.rs line 61): a
+// subclass's own `set` and `add` store the iterable's entries (light-cljs-943).
+{ let calls = 0; class M extends Map { set(k,v) { calls++; return super.set(k,v+1); } } let m = new M([[1,2],[3,4]]); row(m instanceof M && m instanceof Map && m.get(1) === 3 && calls === 2 && m.size === 2); }
+{ let calls = 0; class S extends Set { add(k) { calls++; return super.add(k+1); } } let s = new S([1,2]); row(s instanceof S && s instanceof Set && s.has(2) && s.has(3) && calls === 2); }
+{ let reads = 0; let G = getter(() => { reads++; return Map.prototype; }); let m = Reflect.construct(Map, [[[1, 2]]], G); row(reads === 1 && Object.getPrototypeOf(m) === Map.prototype && m.get(1) === 2); }
 failed === 0 ? rows : -failed;

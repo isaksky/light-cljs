@@ -601,6 +601,11 @@ fn expected(job: Job&, v: Value) -> cells::Flat {
 // symbol could keep its identity. A well-known symbol, the same index in
 // every program, publishes as before.
 fn unshareable_symbol() -> u8[] { return str("symbol-unshareable a symbol made by a job (not shareable)"); }
+// A Map or Set a job made (light-cljs-943; collections.goose) is a mutable
+// JavaScript object: a publication that reaches one fails here by name, a
+// prepared definition's as a helper's (whose callable graph refuses it
+// too). An image's collection, which no job writes, is the image's row.
+fn unshareable_collection() -> u8[] { return str("collection-unshareable a Map or Set made by a job (a mutable JavaScript object)"); }
 fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: Initial[>..]&) -> u8[] {
     var marks: bool[>..] = []; marks.resize(heap.nodes.len, false);
     var work:  i64[>..<] = []; var atoms: i64[>..] = [];
@@ -608,6 +613,7 @@ fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: I
     if root.is_object() && root.id() < heap.nodes.len { work.push(root.id()); marks[root.id()] = true; }
     while work.len > 0 {
         let o = work.pop(); let n = node(heap, o);
+        if n.kind == node_kind::Collection { return unshareable_collection(); }
         if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(o); }
         // A struct type or struct, and a shareable regex value with its
         // program (light-cljs-935), go by the callable transport only.

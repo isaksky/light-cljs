@@ -5,13 +5,15 @@
 // properties, shadowing and receivers; Object.getPrototypeOf and
 // Object.getOwnPropertyDescriptor reads (the planner's rows, light-cljs-766);
 // and the rows of object_to_string.rs builtin_and_intrinsic_tags (line 25)
-// and user_tags_and_proxy_dispatch (100) for the values Goose has today.
+// and user_tags_and_proxy_dispatch (100) for the values Goose has today,
+// with intrinsic_tag_descriptors_and_fallbacks's Map and Set rows (lines
+// 160, 161, 202 and 203; light-cljs-943).
 // Left out: `__rt` rows and opcode checks; Object.hasOwn and
 // Object.prototype.hasOwnProperty, which the Pants engine does not have (they are
 // objects_own_property_reads, scored against QuickJS alone); a proxy's
 // @@toStringTag read (light-cljs-890); the tags of Symbol (light-cljs-885), BigInt (light-cljs-771), JSON
 // (light-cljs-767), Date and RegExp (light-cljs-770), Promise and async
-// generators (light-cljs-768), Map, Set, weak collections, typed arrays and
+// generators (light-cljs-768), weak collections, typed arrays and
 // ArrayBuffer (light-cljs-769), disposable stacks (light-cljs-772), Intl
 // (light-cljs-774), SuppressedError, and Proxy dispatch (light-cljs-890).
 // Each row is a `row(...)` check; the script completes with the number of
@@ -201,4 +203,13 @@ row(Object.prototype.toString.call(''[Symbol.iterator]()) === '[object String It
 // The planner's rows (light-cljs-766).
 row((Object.prototype.toString.call({[Symbol.toStringTag]: 'T'})) === "[object T]");
 row((Object.prototype.toString.call([]) + Object.prototype.toString.call(null) + Object.prototype.toString.call(function () {})) === "[object Array][object Null][object Function]");
+// The Map and Set tags (object_to_string.rs lines 50, 51, 129, 140, 160,
+// 161, 202 and 203; light-cljs-943): %Map.prototype%'s and
+// %Set.prototype%'s @@toStringTag, and the builtin tag Object once an
+// object hides it or leaves the prototype.
+row(Object.prototype.toString.call(new Map()) === '[object Map]' && Object.prototype.toString.call(new Set()) === '[object Set]');
+{ let o = new Map(); Object.defineProperty(o, Symbol.toStringTag, {get() { Object.setPrototypeOf(o, null); return undefined; }}); row(Object.prototype.toString.call(o) === '[object Object]'); }
+{ let o = new Map(); Object.defineProperty(o, Symbol.toStringTag, {value: 1}); row(Object.prototype.toString.call(o) === '[object Object]'); }
+for (let [p, tag] of [[Map.prototype, 'Map'], [Set.prototype, 'Set']]) { let d = Object.getOwnPropertyDescriptor(p, Symbol.toStringTag); row(d.value === tag && !d.writable && !d.enumerable && d.configurable && Object.prototype.toString.call(p) === '[object ' + tag + ']'); }
+for (let o of [new Map(), new Set()]) { Object.setPrototypeOf(o, null); row(Object.prototype.toString.call(o) === '[object Object]'); }
 failed === 0 ? rows : -failed;

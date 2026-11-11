@@ -50,7 +50,9 @@ namespace source;
 // them (Job.logged_values, for a host that reads them: execute.goose's
 // typed outcome): one that only the log names becomes undefined there (the
 // compiler counts entries and reads keys). The interned-key index is weak
-// too: it is rebuilt from the live key headers.
+// too: it is rebuilt from the live key headers. So is the index of a Map or
+// Set (light-cljs-943; collections.goose) whose object or symbol-row keys
+// moved, since those keys hash by their rows (rehash_collections).
 //
 // The pass reaches the same links snapshot::validate checks: a node's
 // values, element or capture run (has_values), shape-mode overflow run or
@@ -446,6 +448,33 @@ fn rewrite_job(e: const Evacuation&, job: Job&) {
     for i in job.cell_rows.len { job.cell_rows[i].row = moved_row(e.nodes[..], e.floor.nodes, job.cell_rows[i].row); }
     for i in job.foreign.len { job.foreign[i] = moved_row(e.nodes[..], e.floor.nodes, job.foreign[i]) as u32; }
 }
+// The first node row the slide moved (rows below it kept their places; every
+// kept row at or above it moved down), or the table's length when none did.
+fn first_moved(e: const Evacuation&, heap: const Heap&) -> i64 {
+    for i in e.nodes.len - 1 { if e.nodes[i + 1] == e.nodes[i] { return e.floor.nodes + i; } }
+    return heap.nodes.len;
+}
+// Rebuild the index of every Map and Set (light-cljs-943) one of whose live
+// keys is an object (but a keyword form, which hashes by its name) or a
+// symbol row that the slide moved: those hash by their rows. A collection
+// below `owned` is one the job may not write, an image row, whose keys are
+// image rows that never move. Charges nothing, as the collection does not.
+fn rehash_collections(e: const Evacuation&, heap: Heap&, owned: i64) {
+    let moved = first_moved(e, heap);
+    if moved >= heap.nodes.len { return; }
+    for o in min(owned, heap.nodes.len)..heap.nodes.len {
+        if node(heap, o).kind != node_kind::Collection || node(heap, o).count == 0 { continue; }
+        let n = node(heap, o);
+        let flavor: i64 = n.length; let stride = entry_stride(flavor); let start: i64 = n.start; let used: i64 = n.function;
+        var stale = false; var p: i64 = 0;
+        while !stale && p < used {
+            let k = slot(heap, start + p * stride);
+            match k { Object x => { stale = x.o >= moved && !keyword_key(heap, x.o); }, Symbol => { stale = symbol_node(k) >= moved; }, _ => {} }
+            p += 1;
+        }
+        if stale { reindex_run(heap, o); heap.rehashes += 1; }
+    }
+}
 // The collection, at a safe point (run_claimed). Only the heap's one live
 // job collects, and only a job that armed (start, resume_stack).
 fn reclaim(job: Job&) {
@@ -485,6 +514,7 @@ fn reclaim(job: Job&) {
     slide_latin1(e, heap);
     reindex(e, heap);
     rewrite_job(e, job);
+    rehash_collections(e, heap, max(job.owned_nodes, job.protected_nodes));
     heap.reclaims += 1;
     set_margins(heap);
 }

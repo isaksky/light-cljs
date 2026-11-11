@@ -26,6 +26,7 @@ import .private;
 import .math_object;
 import .form_ops;
 import .regexp_object;
+import .collections;
 
 namespace source;
 
@@ -198,7 +199,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64), Construct => 10001, Coerce c => -9001 - (code(c.which) as i64) * 2 - (if c.construct { 1 } else { 0 }), SumPrecise => 11001, RegExp r => -12001 - (code(r.which) as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64), Construct => 10001, Coerce c => -9001 - (code(c.which) as i64) * 2 - (if c.construct { 1 } else { 0 }), SumPrecise => 11001, RegExp r => -12001 - (code(r.which) as i64), Collection c => -13001 - (code(c.which) as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -527,6 +528,13 @@ let node_kind::InitializerSlot = 33;
 // (a code row: an image literal's or one its job compiled), value=its
 // pattern text (a string). Its first own property is `lastIndex`.
 let node_kind::RegExp = 34;
+// A Map or Set object (light-cljs-943; collections.goose), an ordinary
+// object with internal slots: length=its flavor (collection::),
+// start/count=its run of entries then index slots in heap.values (count
+// 0: no run yet), function=the entries used in the run, value=its size (a
+// Number). It keeps its own properties in a shape or records, as a RegExp
+// does, and no element run.
+let node_kind::Collection = 35;
 // A struct type's flavor, its node's `length` (light-cljs-920): a deftype
 // whose instances are immutable, a record, or a deftype made with
 // mutableStructType, whose instances' fields are written in place.
@@ -720,9 +728,10 @@ root struct Heap {
     live_jobs: i64   = 0,
     // Reclamation inside a job (light-cljs-847, reclaim.goose): each table's
     // margin below its limit while a job runs; a collection asked for at the
-    // next safe point; and the collections this heap ran (the JOBS line).
-    // None of it is part of a snapshot.
-    slack: Slack = Slack {}, reclaim: bool = false, reclaims: i64 = 0,
+    // next safe point; and the collections this heap ran (the JOBS line),
+    // and the Map and Set indexes they rebuilt (light-cljs-943; tests read
+    // it). None of it is part of a snapshot.
+    slack: Slack = Slack {}, reclaim: bool = false, reclaims: i64 = 0, rehashes: i64 = 0,
     // The Latin-1 table's last latin1_spare bytes are a collection's
     // leftovers, not rows: the table's length is latin1.len - latin1_spare,
     // and add_latin1 writes over them first. (A collection cannot shrink a
@@ -877,10 +886,13 @@ root struct Heap {
 //   RegExp       the RegExp constructor, RegExp.prototype.flags and
 //                toString (light-cljs-932; regexp_object.goose, which
 //                gives their fields and phases), its Builtin the payload.
+//   Collection   new Map(iterable) and new Set(iterable) (light-cljs-943;
+//                collections.goose, which gives its fields and phases),
+//                its constructor the payload.
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct, Coerce { which: Builtin, construct: bool }, SumPrecise, RegExp { which: Builtin } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct, Coerce { which: Builtin, construct: bool }, SumPrecise, RegExp { which: Builtin }, Collection { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -2174,6 +2186,9 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             if i < 0 { return Own { found: true, value: number(str_len(heap, s)), attrs: 0 }; }
             return Own { found: true, index: i, value: unit_string(heap, s, i), attrs: attr_enumerable() };
         },
+        // A Map's or Set's run is its entries and index, no element run
+        // (light-cljs-943): its index keys are shape keys or records.
+        node_kind::Collection => { return find_own(heap, o, k); },
         node_kind::Object, node_kind::Arguments, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator, node_kind::RegExp => {
             if node(heap, o).count > 0 {
                 let i = element_key(heap, k);
@@ -2271,7 +2286,7 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     match kind {
-        node_kind::Object, node_kind::Arguments, node_kind::Builtin, node_kind::BoundFunction, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {},
+        node_kind::Object, node_kind::Arguments, node_kind::Builtin, node_kind::BoundFunction, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator, node_kind::Collection => {},
         // A shareable regex value's `lastIndex` stays 0 (light-cljs-935;
         // regexp_object.goose shared_last_index); it has no other own
         // property and is not extensible, so the rest refuses any other key.
@@ -2395,7 +2410,7 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
             return true;
         }
     }
-    if kind == node_kind::Object || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator || kind == node_kind::RegExp { return define_own(heap, o, k, value, attrs, half); }
+    if kind == node_kind::Object || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator || kind == node_kind::RegExp || kind == node_kind::Collection { return define_own(heap, o, k, value, attrs, half); }
     if kind == node_kind::Array {
         if key_is(heap, k, "length") {
             if half != half::Complete || !value.is_number() { if heap.fault == Fault.None { heap.fault = Fault.InvalidState; } return false; }
@@ -2464,7 +2479,8 @@ fn define_array_length(heap: Heap&, object: Value, length: i64, writable: bool) 
 fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
     let o: i64 = object.id();
     match node(heap, o).kind {
-        node_kind::Builtin, node_kind::BoundFunction => { return delete_own(heap, o, k); },
+        // A Map or Set keeps no element run either (light-cljs-943; own_entry).
+        node_kind::Builtin, node_kind::BoundFunction, node_kind::Collection => { return delete_own(heap, o, k); },
         node_kind::Object, node_kind::Arguments, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator, node_kind::RegExp => {
             let i = element_key(heap, k);
             if heap.fault != Fault.None { return false; }
@@ -2522,7 +2538,7 @@ fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     // A struct's member names (light-cljs-920; form_ops.goose struct_keys).
     if kind == node_kind::Struct { return struct_keys(heap, o, out); }
-    if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::BoundFunction && kind != node_kind::Error && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator && kind != node_kind::RegExp && kind != node_kind::Arguments || kind == node_kind::Closure && unsupported_prototype(heap, o) {
+    if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::BoundFunction && kind != node_kind::Error && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator && kind != node_kind::RegExp && kind != node_kind::Collection && kind != node_kind::Arguments || kind == node_kind::Closure && unsupported_prototype(heap, o) {
         // A proxy's runs in a native frame (proxy.goose), not here.
         if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::OwnPropertyKeys); } else { heap.fault = Fault.UnsupportedOperand; }
         return false;
@@ -4473,6 +4489,7 @@ fn native_step(job: Job&) {
         Coerce c => { coerce_step(job, frame, c.which, c.construct); },
         SumPrecise => { sum_precise_step(job, frame); },
         RegExp r => { regexp_step(job, frame, r.which); },
+        Collection c => { collection_step(job, frame, c.which); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -4623,7 +4640,7 @@ fn finish_native(job: Job&, frame: Frame, result: Value) {
 fn convertible(heap: const Heap&, v: Value) -> bool {
     if !v.is_object() { return false; }
     let kind = node(heap, v.id()).kind;
-    return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::RegExp || kind == node_kind::Proxy || kind == node_kind::Arguments;
+    return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::RegExp || kind == node_kind::Collection || kind == node_kind::Proxy || kind == node_kind::Arguments;
 }
 // Start the resumable ToPrimitive with `hint` of the `count` operands whose
 // first lies `depth` below the operand top (Native.Convert): a native frame
@@ -5733,6 +5750,10 @@ fn construct_builtin(job: Job&, b: Builtin, f: Value, nt: Value, base: i64, prot
         // new RegExp(...) (light-cljs-932; regexp_object.goose): its frame
         // reads newTarget's `prototype` after the pattern's properties.
         RegExp => { start_regexp(job, job.operands[(base + 1)..], base, nt); return; },
+        // new Map(...) and new Set(...) (light-cljs-943; collections.goose):
+        // the object with newTarget's `prototype`, then its iterable in a
+        // Collection frame, which delivers the object at `base`.
+        Map, Set => { start_collection(job, b, job.operands[(base + 1)..], base, proto); return; },
         _ => { unsupported_step(job, b, "construct"); return; },
     }
     if heap.fault != Fault.None { return; }

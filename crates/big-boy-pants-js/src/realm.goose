@@ -7,6 +7,7 @@ import .coerce;
 import .number_text;
 import .math_object;
 import .regexp_object;
+import .collections;
 
 namespace source;
 
@@ -164,11 +165,17 @@ enum Builtin {
     // String.prototype.replace and replaceAll and RegExp.prototype[@@replace]
     // (light-cljs-934; regexp_replace.goose), RegExp native frames.
     StringPrototypeReplace, StringPrototypeReplaceAll, RegExpPrototypeReplace,
+    // Map and Set (light-cljs-943; collections.goose): the constructors,
+    // which construct only and run their iterable in a Collection native
+    // frame; their prototypes' keyed methods and size getters and their
+    // @@species, plain.
+    Map, MapPrototypeSet, MapPrototypeGet, MapPrototypeHas, MapPrototypeDelete, MapPrototypeClear, MapPrototypeSize, MapSpecies,
+    Set, SetPrototypeAdd, SetPrototypeHas, SetPrototypeDelete, SetPrototypeClear, SetPrototypeSize, SetSpecies,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[221] = [
+let BUILTINS: BuiltinInfo[236] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -302,6 +309,14 @@ let BUILTINS: BuiltinInfo[221] = [
     // no plan.
     BuiltinInfo { which: Builtin.StringPrototypeReplace, name: "replace", length: 2 }, BuiltinInfo { which: Builtin.StringPrototypeReplaceAll, name: "replaceAll", length: 2 },
     BuiltinInfo { which: Builtin.RegExpPrototypeReplace, name: "[Symbol.replace]", length: 2 },
+    // Map and Set (light-cljs-943): no conversions (coerce.goose); the
+    // getters are named "get <key>".
+    BuiltinInfo { which: Builtin.Map, name: "Map" }, BuiltinInfo { which: Builtin.MapPrototypeSet, name: "set", length: 2 }, BuiltinInfo { which: Builtin.MapPrototypeGet, name: "get", length: 1 },
+    BuiltinInfo { which: Builtin.MapPrototypeHas, name: "has", length: 1 }, BuiltinInfo { which: Builtin.MapPrototypeDelete, name: "delete", length: 1 }, BuiltinInfo { which: Builtin.MapPrototypeClear, name: "clear" },
+    BuiltinInfo { which: Builtin.MapPrototypeSize, name: "get size" }, BuiltinInfo { which: Builtin.MapSpecies, name: "get [Symbol.species]" },
+    BuiltinInfo { which: Builtin.Set, name: "Set" }, BuiltinInfo { which: Builtin.SetPrototypeAdd, name: "add", length: 1 }, BuiltinInfo { which: Builtin.SetPrototypeHas, name: "has", length: 1 },
+    BuiltinInfo { which: Builtin.SetPrototypeDelete, name: "delete", length: 1 }, BuiltinInfo { which: Builtin.SetPrototypeClear, name: "clear" }, BuiltinInfo { which: Builtin.SetPrototypeSize, name: "get size" },
+    BuiltinInfo { which: Builtin.SetSpecies, name: "get [Symbol.species]" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -368,7 +383,11 @@ inline fn math_row() -> i64 { return 42; }
 // `lastIndex` (writable only), gives every RegExp its shape (new_regexp).
 inline fn regexp_prototype_row() -> i64 { return 43; }
 inline fn regexp_template_row() -> i64 { return 44; }
-inline fn fixed_rows() -> i64 { return 45; }
+// %Map.prototype% and %Set.prototype% (light-cljs-943; collections.goose),
+// ordinary objects inheriting %Object.prototype%, neither a collection.
+inline fn map_prototype_row() -> i64 { return 45; }
+inline fn set_prototype_row() -> i64 { return 46; }
+inline fn fixed_rows() -> i64 { return 47; }
 struct Name { text: u8[..24] }
 let FUNCTION_KIND_TAGS: Name[3] = [Name { text: "GeneratorFunction" }, Name { text: "AsyncFunction" }, Name { text: "AsyncGeneratorFunction" }];
 // The function_kind:: of closure o's code, -1 for an ordinary function.
@@ -407,7 +426,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[151] = [
+let REALM_FUNCTIONS: Method[166] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -520,6 +539,17 @@ let REALM_FUNCTIONS: Method[151] = [
     // keyed by the well-known symbol (light-cljs-934).
     Method { which: Builtin.StringPrototypeReplace, holder: 27 }, Method { which: Builtin.StringPrototypeReplaceAll, holder: 27 },
     Method { which: Builtin.RegExpPrototypeReplace, holder: regexp_prototype_row() },
+    // The global Map and Set (light-cljs-943; collections.goose), rows
+    // map_row() and set_row(), each followed by its prototype's methods
+    // and `size` getter, in QuickJS's order, and its @@species.
+    Method { which: Builtin.Map, holder: 0 },
+    Method { which: Builtin.MapPrototypeSet, holder: map_prototype_row() }, Method { which: Builtin.MapPrototypeGet, holder: map_prototype_row() }, Method { which: Builtin.MapPrototypeHas, holder: map_prototype_row() },
+    Method { which: Builtin.MapPrototypeDelete, holder: map_prototype_row() }, Method { which: Builtin.MapPrototypeClear, holder: map_prototype_row() }, Method { which: Builtin.MapPrototypeSize, holder: map_prototype_row() },
+    Method { which: Builtin.MapSpecies, holder: map_row() },
+    Method { which: Builtin.Set, holder: 0 },
+    Method { which: Builtin.SetPrototypeAdd, holder: set_prototype_row() }, Method { which: Builtin.SetPrototypeHas, holder: set_prototype_row() }, Method { which: Builtin.SetPrototypeDelete, holder: set_prototype_row() },
+    Method { which: Builtin.SetPrototypeClear, holder: set_prototype_row() }, Method { which: Builtin.SetPrototypeSize, holder: set_prototype_row() },
+    Method { which: Builtin.SetSpecies, holder: set_row() },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -563,10 +593,14 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 inline fn proxy_row() -> i64 { return fixed_rows() + 34; }
 // The RegExp function's row, its REALM_FUNCTIONS entry, the 133rd (light-cljs-932).
 inline fn regexp_row() -> i64 { return fixed_rows() + 132; }
+// The Map and Set functions' rows, their REALM_FUNCTIONS entries, the
+// 152nd and 160th (light-cljs-943).
+inline fn map_row() -> i64 { return fixed_rows() + 151; }
+inline fn set_row() -> i64 { return fixed_rows() + 159; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[146] = [
+let PENDING: PendingName[164] = [
     // Object.prototype
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
@@ -600,9 +634,9 @@ let PENDING: PendingName[146] = [
     PendingName { holder: 0, key: "BigInt64Array" }, PendingName { holder: 0, key: "BigUint64Array" }, PendingName { holder: 0, key: "DataView" },
     PendingName { holder: 0, key: "Date" }, PendingName { holder: 0, key: "FinalizationRegistry" }, PendingName { holder: 0, key: "Float32Array" }, PendingName { holder: 0, key: "Float64Array" },
     PendingName { holder: 0, key: "Int8Array" }, PendingName { holder: 0, key: "Int16Array" }, PendingName { holder: 0, key: "Int32Array" }, PendingName { holder: 0, key: "Iterator" },
-    PendingName { holder: 0, key: "JSON" }, PendingName { holder: 0, key: "Map" },
+    PendingName { holder: 0, key: "JSON" },
     PendingName { holder: 0, key: "Promise" },
-    PendingName { holder: 0, key: "Set" }, PendingName { holder: 0, key: "SharedArrayBuffer" },
+    PendingName { holder: 0, key: "SharedArrayBuffer" },
     PendingName { holder: 0, key: "Uint8Array" }, PendingName { holder: 0, key: "Uint8ClampedArray" }, PendingName { holder: 0, key: "Uint16Array" }, PendingName { holder: 0, key: "Uint32Array" },
     PendingName { holder: 0, key: "WeakMap" }, PendingName { holder: 0, key: "WeakRef" }, PendingName { holder: 0, key: "WeakSet" }, PendingName { holder: 0, key: "decodeURI" },
     PendingName { holder: 0, key: "decodeURIComponent" }, PendingName { holder: 0, key: "encodeURI" }, PendingName { holder: 0, key: "encodeURIComponent" }, PendingName { holder: 0, key: "escape" },
@@ -632,6 +666,17 @@ let PENDING: PendingName[146] = [
     PendingName { holder: regexp_prototype_row(), key: "compile" },
     PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::MatchAll }, PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::Search },
     PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::Split },
+    // Map, Set and their prototypes (light-cljs-943): iteration and forEach
+    // are light-cljs-944's; Map.groupBy, getOrInsert, getOrInsertComputed
+    // and the Set methods that take another set light-cljs-953's.
+    PendingName { holder: map_row(), key: "groupBy" },
+    PendingName { holder: map_prototype_row(), key: "getOrInsert" }, PendingName { holder: map_prototype_row(), key: "getOrInsertComputed" }, PendingName { holder: map_prototype_row(), key: "forEach" },
+    PendingName { holder: map_prototype_row(), key: "values" }, PendingName { holder: map_prototype_row(), key: "keys" }, PendingName { holder: map_prototype_row(), key: "entries" },
+    PendingName { holder: map_prototype_row(), key: "", symbol: well_known::Iterator },
+    PendingName { holder: set_prototype_row(), key: "forEach" }, PendingName { holder: set_prototype_row(), key: "isDisjointFrom" }, PendingName { holder: set_prototype_row(), key: "isSubsetOf" },
+    PendingName { holder: set_prototype_row(), key: "isSupersetOf" }, PendingName { holder: set_prototype_row(), key: "intersection" }, PendingName { holder: set_prototype_row(), key: "difference" },
+    PendingName { holder: set_prototype_row(), key: "symmetricDifference" }, PendingName { holder: set_prototype_row(), key: "union" }, PendingName { holder: set_prototype_row(), key: "values" },
+    PendingName { holder: set_prototype_row(), key: "keys" }, PendingName { holder: set_prototype_row(), key: "entries" }, PendingName { holder: set_prototype_row(), key: "", symbol: well_known::Iterator },
 ];
 // The type names `typeof` gives, interned with the realm.
 let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, Name { text: "boolean" }, Name { text: "number" }, Name { text: "string" }, Name { text: "symbol" }, Name { text: "bigint" }, Name { text: "function" }];
@@ -800,6 +845,8 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     // prototype, since every RegExp takes its shape (new_regexp).
     let rp .= nodes[regexp_prototype_row()]; let rt .= nodes[regexp_template_row()];
     if rp.kind != node_kind::Object || !rp.proto.is_object() || rp.proto.id() != object_prototype_row() || rt.kind != node_kind::Object || rt.initialized || rt.shape == 0 || rt.key_count != 1 || rt.count != 0 || !rt.proto.is_null() || !same_bits(rt.slots[0], number(0)) { return false; }
+    // %Map.prototype% and %Set.prototype% (light-cljs-943) are ordinary objects.
+    for o in [map_prototype_row(), set_prototype_row()] { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != object_prototype_row() { return false; } }
     // The arguments templates (light-cljs-854): shape-mode, three properties,
     // no elements, `length` 0 and @@iterator %Array.prototype.values%.
     for mapped in [false, true] {
@@ -861,6 +908,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: Value.Null });
+    rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(error_prototype_row(0)) });
@@ -923,6 +971,16 @@ fn build_realm(heap: Heap&) -> bool {
             let a = add_accessor(heap, Pair { get: object(fixed_rows() + j) });
             if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
             let k: Value = if m.which == Builtin.RegExpSpecies { Value.Symbol { s: well_known::Species } } else { key_named(heap, BUILTINS[code(m.which)].name[4..]) };
+            if heap.fault != Fault.None || !add_own(heap, m.holder, k, Value.Accessor { a: a as u32 }, attr_configurable()) { return false; }
+            continue;
+        }
+        // The size getters and Map[@@species] and Set[@@species]
+        // (light-cljs-943; ECMAScript 24.1.3.10, 24.2.3.9, 24.1.2.2 and
+        // 24.2.2.2): accessors with no setter, configurable.
+        if collection_accessor(m.which) {
+            let a = add_accessor(heap, Pair { get: object(fixed_rows() + j) });
+            if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
+            let k: Value = if m.which == Builtin.MapSpecies || m.which == Builtin.SetSpecies { Value.Symbol { s: well_known::Species } } else { key_named(heap, "size") };
             if heap.fault != Fault.None || !add_own(heap, m.holder, k, Value.Accessor { a: a as u32 }, attr_configurable()) { return false; }
             continue;
         }
@@ -990,6 +1048,12 @@ fn build_realm(heap: Heap&) -> bool {
     // `constructor`, and the template's `lastIndex`, writable only.
     assert(REALM_FUNCTIONS[regexp_row() - fixed_rows()].which == Builtin.RegExp);
     if !link_constructor(heap, regexp_row(), regexp_prototype_row()) || !realm_value(heap, regexp_template_row(), "lastIndex", number(0), attr_writable()) { return false; }
+    // Map and Set (light-cljs-943): `prototype` and `constructor`, and the
+    // prototypes' @@toStringTag (ECMAScript 24.1.3.13, 24.2.3.12),
+    // configurable only.
+    assert(REALM_FUNCTIONS[map_row() - fixed_rows()].which == Builtin.Map && REALM_FUNCTIONS[set_row() - fixed_rows()].which == Builtin.Set);
+    if !link_constructor(heap, map_row(), map_prototype_row()) || !link_constructor(heap, set_row(), set_prototype_row()) { return false; }
+    if !add_own(heap, map_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Map"), attr_configurable()) || !add_own(heap, set_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Set"), attr_configurable()) { return false; }
     var s: i64 = 0;
     while export_well_known_symbol(s).len > 0 { if !realm_value(heap, symbol_row(), export_well_known_symbol(s), Value.Symbol { s: s as u32 }, 0) { return false; } s += 1; }
     // The global object's own properties.
@@ -2095,6 +2159,12 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         // replace, replaceAll and @@replace (light-cljs-934) run as RegExp native frames too.
         StringPrototypeReplace, StringPrototypeReplaceAll, RegExpPrototypeReplace => { return unsupported_step(job, b, "called outside a native frame"); },
         RegExpPrototypeMatch => { return unsupported_step(job, b, "matching (light-cljs-937)"); },
+        // Map and Set (light-cljs-943; collections.goose): a constructor
+        // called is a TypeError (construct makes the object); the keyed
+        // methods, the size getters and @@species are plain.
+        Map, Set => { return type_error(job, if b == Builtin.Map { "Constructor Map requires 'new'" } else { "Constructor Set requires 'new'" }); },
+        MapPrototypeGet, MapPrototypeSet, MapPrototypeHas, MapPrototypeDelete, MapPrototypeClear, MapPrototypeSize, MapSpecies,
+        SetPrototypeAdd, SetPrototypeHas, SetPrototypeDelete, SetPrototypeClear, SetPrototypeSize, SetSpecies => { return collection_builtin(job, b, receiver, args); },
         _ => { return native_value(heap, id, args); },
     }
 }

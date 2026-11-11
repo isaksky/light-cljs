@@ -784,6 +784,57 @@ function object, since IsRegExp reads it, whose call fails by name until
 light-cljs-770's matching children. A RegExp is a mutable JavaScript
 object: a publication or cell value that reaches one is refused.
 
+*As landed by light-cljs-943 (Map and Set):* a Map or Set is one
+`node_kind::Collection` row (collections.goose), an ordinary object with
+internal slots: `length` its flavor (`collection::Map`, `collection::Set`;
+WeakMap and WeakSet, light-cljs-945, add weak flavors), `start` and `count`
+its run of `heap.values`, `function` the entries the run has used and
+`value` its size. The run is `capacity` entries (a power of two, at least
+4) of a key and a value (a Set's key alone), then `2 * capacity` index
+slots: an open-addressed, linear-probing table whose slots are Empty or a
+Number, an entry's position, so it is never more than half full. A deleted
+entry is a tombstone (Empty key and value) that keeps the order for live
+iteration (light-cljs-944); an append to a full run rebuilds it at the
+smallest capacity of at least twice the live entries, compacting in place
+when that is its capacity (a map that sets and deletes one key forever
+keeps one small run, bbp-287) and otherwise into a new run whose
+predecessor is garbage for reclamation or the job's truncation; `clear`
+drops the run. *Why one run of values and no index table:* the index is
+table rows, as decision 3 asks, but a table of its own would add a table to
+the heap, its tops, limits, margins, snapshot ends and version, truncation,
+extension, publication checks and reclamation slide; slots in the value
+table get all of that from the run's owner (`has_values`), at 9 bytes a
+slot rather than 4. Snapshot validation (`collection_holes`) checks the
+layout, tombstones and canonical keys, that every index slot names a used
+entry at most once and every live entry is indexed, and that each live
+entry's probe from its key's hash reaches it with no equal key before it
+(`collection_key_hash` hashes over the snapshot's tables as
+`entry_hash` does over the heap's). Keys are
+SameValueZero: numbers by value (-0 stored as +0, every NaN one key),
+strings by code units whatever their header (`key_hash`, FNV-1a over the
+units), keyword forms by namespace and name as `===` compares them
+(`same_keyword`; their hash is their name's and namespace's FNV-1a), other objects and symbols by their rows; a BigInt key
+fails by name until light-cljs-771. *Why row hashes and not a stable
+identity hash:* light-cljs-928's per-object hash has not landed, and only
+in-job reclamation moves rows (a snapshot, a saved continuation and the
+worker reset keep them where they are; publications and cells refuse
+collections), so reclamation rebuilds the index of every collection one of
+whose object or symbol-row keys it moved (`rehash_collections`), and
+nothing else pays. The keyed methods, the `size` getters and @@species are
+plain built-ins; the constructors are Collection native frames over their
+iterable (AddEntriesFromIterable, one entry a step, IteratorClose on an
+abrupt completion after GetIterator), with a fast path for a dense array
+of the realm's prototype while the realm's array iteration and adder are
+unchanged, which nothing can observe and which gives way to the protocol,
+through a cursor at that element, at a hole or an entry it cannot read
+directly. A collection has no element run: its index keys are shape keys
+or records like a RegExp's. Collections are mutable JavaScript objects:
+a prepared definition or helper that reaches a job's collection fails by
+name (`publish_cells`, `collection-unshareable`), as do cell values, while
+an image's collection, which no job writes, is the image's row; a write
+into an image collection faults NativeBoundary before it changes
+anything.
+
 *As landed by light-cljs-885 (Symbol values):* a symbol a job makes is a
 row of the node table, `node_kind::JsSymbol` (its description, a string or
 undefined; whether Symbol.for registered it; and the symbol registered
