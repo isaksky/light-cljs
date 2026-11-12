@@ -784,6 +784,19 @@ fn activation_valid<T>(s: const T&, a: source::Activation, c: Control&) -> bool 
         let native = match f.native { None => false, _ => true };
         if f.function == source::no_row() {
             if !native || f.argument_count < 0 || !native_valid(s, f) { return reject(c, Error.Link); }
+            // Split's scanner owns exactly one numeric cursor operand and
+            // cannot have a child frame. Validate it before restoring a
+            // continuation that will index the operand run directly.
+            match f.native {
+                StringMethod m => {
+                    if m.which == source::Builtin.StringPrototypeSplit && f.pc == string_pc::SplitScan {
+                        if i + 1 != count || operands - f.operand_base != 1 { return reject(c, Error.Link); }
+                        let cursor = s.values[a.values + locals + f.operand_base];
+                        if !cursor.is_number() || !(cursor.num() >= 0 && cursor.num() <= f.index) || trunc(cursor.num()) != cursor.num() { return reject(c, Error.Link); }
+                    }
+                },
+                _ => {},
+            }
         } else {
             if f.function >= s.functions.len || native { return reject(c, Error.Link); }
             let code = s.functions[f.function];
@@ -1407,7 +1420,7 @@ fn string_frame_valid<T>(s: const T&, f: source::SavedFrame, b: source::Builtin)
         if f.pc == string_pc::SplitLimit { return true; }
         if !f.callee.is_number() || !(f.callee.num() >= 0 && f.callee.num() <= 4294967295) || trunc(f.callee.num()) != f.callee.num() { return false; }
         if f.pc == string_pc::SplitSeparator { return true; }
-        if !f.input.is_string() || !f.output.is_object() || s.nodes[f.output.id()].kind != node_kind::Array { return false; }
+        if !f.input.is_string() || !f.output.is_object() || s.nodes[f.output.id()].kind != node_kind::Array || s.nodes[f.output.id()].length >= f.callee.num() { return false; }
         let len = s.strings[f.receiver.sid()].len as i64; let size = s.strings[f.input.sid()].len as i64;
         return f.index >= 0 && f.index <= len && f.argument_count >= 0 && (if size == 0 { f.argument_count == 0 } else { f.argument_count < size && f.index + f.argument_count <= len });
     }

@@ -3036,6 +3036,26 @@ thread_fn string_saving(bytes: u8[]) {
             }
         }
         var invalid = snapshot::Control {}; assert(changed && !snapshot::validate(bad, invalid) && invalid.error == snapshot::Error.Link);
+        for i in a.frame_count {
+            let row = a.frames + i;
+            match image.conts[row] {
+                Frame x => { match x.f.native {
+                    StringMethod m => {
+                        if m.which == source::Builtin.StringPrototypeSplit && x.f.pc == string_pc::SplitScan {
+                            var broken = copy(image);
+                            broken.values[a.values + a.locals + x.f.operand_base] = source::Value.Undefined;
+                            var why = snapshot::Control {}; assert(!snapshot::validate(broken, why) && why.error == snapshot::Error.Link);
+                            var absent = copy(image);
+                            var shortened = a; shortened.operands -= 1;
+                            absent.conts[stack] = source::Cont.Activation { a: shortened };
+                            var missing = snapshot::Control {}; assert(!snapshot::validate(absent, missing) && missing.error == snapshot::Error.Link);
+                        }
+                    },
+                    _ => {},
+                } },
+                _ => {},
+            }
+        }
         heap_program::join(thread_spawn(string_saved, copy(image), stack));
         assert(source::resume_stack(job, stack)); saved += 1;
     }
