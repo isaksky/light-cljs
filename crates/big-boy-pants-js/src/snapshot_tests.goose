@@ -787,7 +787,9 @@ thread_fn integrity_malformed(saved: snapshot::Snapshot, mode: i64) {
 fn main() {
     let arguments = args();
     if arguments.len == 2 && arguments[1] == "--collections" { collection_iteration_snapshots(); return; }
+    if arguments.len == 2 && arguments[1] == "--array-runs" { array_run_validation(); return; }
     assert(arguments.len == 1);
+    array_run_validation();
     dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); heap_program::join(thread_spawn(binding_modes)); heap_program::join(thread_spawn(struct_kinds)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); collection_iteration_snapshots(); runtime_code(); runtime_eval_callable_publication(); regexp_saved_frames(); regexp_code_transport(); heap_program::join(thread_spawn(live_boundary));
 }
 
@@ -3944,4 +3946,109 @@ thread_fn callable_limit(base: snapshot::Snapshot, original: callable::Publicati
     assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc));
     var check = snapshot::Control {}; if limit == 0 { check.bytes = wire_bytes; } else { check.work = 1; }
     callable::install(original, base.header, target_code, target, check); assert(check.error != snapshot::Error.None && target.nodes.len == base.nodes.len && target_code.functions.len == base.functions.len);
+}
+
+// Array runs are writable over their whole capacity, including holes beyond
+// length. Neither another array nor an immutable view (a closure's captures)
+// may alias them. Keep these cases separate from the general malformed fixture.
+fn array_run_validation() {
+    heap_program::join(thread_spawn(array_run_parent)); let saved = qget<Saved>();
+    heap_program::join(thread_spawn(array_run_roundtrip, copy(saved.image)));
+    for mode in 17 { heap_program::join(thread_spawn(array_run_malformed, copy(saved.image), mode)); }
+    print("snapshot array range/head/ownership/hole confinement and atomic rejection passed: 17 malformed images");
+}
+thread_fn array_run_parent() {
+    defer { heap_program::finish(); }
+    var code = source::Code {};
+    code.functions.push(source::Function { start: 0, count: 2, constants: 0, children: 0, params: 0, locals: 0, captures: 1, strict: true });
+    code.ops.push(source::Op { code: opcode::GetCapture, arg: 0, offset: 0, start: 0, end: 0, depth: 0 });
+    code.ops.push(source::Op { code: opcode::Return, arg: 0, offset: 3, start: 0, end: 0, depth: 1 });
+    source::decode(code); code.valid = true;
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let before = source::closure(heap, 0, [source::number(41)]);
+    let a = source::allocate(heap, source::Node { kind: node_kind::Array });
+    let b = source::allocate(heap, source::Node { kind: node_kind::Array });
+    let truncated = source::allocate(heap, source::Node { kind: node_kind::Array });
+    let empty = source::allocate(heap, source::Node { kind: node_kind::Array });
+    // Full runs make alias rejection depend on ownership, not double-counted
+    // holes. The truncated run has both an interior hole and spare capacity.
+    for i in 4 {
+        let k = source::key(heap, source::number(i));
+        assert(source::put(heap, a, k, source::number(i + 10)) && source::put(heap, b, k, source::number(i + 20)));
+        if i != 1 { assert(source::put(heap, truncated, k, source::number(i + 30))); }
+    }
+    assert(source::put(heap, truncated, source::text(heap, "length"), source::number(3)));
+    let after = source::closure(heap, 0, [source::number(42)]);
+    let form = source::form_collection(heap, node_kind::Vector, [source::number(7)]);
+    // Retired runs can leave unowned values, but never unowned holes.
+    source::add_values(heap, [source::Value.Undefined]);
+    source::node_mut(heap, empty.id()).start = heap.values.len as u32;
+    var roots: snapshot::Binding[>..] = [];
+    for v, i in [a, b, truncated, empty, before, after, form] { roots.push(snapshot::Binding { id: i, generation: 1, value: v }); }
+    assert(before.id() < a.id() && after.id() > a.id());
+    for v in [a, b, truncated] { assert(source::node(heap, v.id()).count == 4 && !source::node(heap, v.id()).initialized); }
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, roots, c); assert(c.error == snapshot::Error.None);
+    assert(qput(Saved { image: copy(saved) }));
+}
+thread_fn array_run_roundtrip(saved: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var c = snapshot::Control {}; assert(snapshot::validate(saved, c));
+    var wire: u8[>..] = []; var enc = snapshot::Control {}; assert(snapshot::encode(saved, wire, enc));
+    var dec = snapshot::Control {}; let decoded = snapshot::decode(wire, dec); assert(decoded.len == 1 && dec.error == snapshot::Error.None);
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+    for image in decoded { assert(snapshot::restore(image, code, heap, roots, source::reserve_identity(), restore)); }
+    let truncated = roots[2].value; let n = source::node(heap, truncated.id());
+    assert(n.length == 3 && n.count == 4 && source::slot(heap, n.start + 1).is_hole() && source::slot(heap, n.start + 3).is_hole());
+    assert(source::get(heap, truncated, source::key(heap, source::number(1))).is_undefined());
+    assert(snapshot_test::invoke(heap, roots[4].value, []).num() == 41 && snapshot_test::invoke(heap, roots[5].value, []).num() == 42);
+    assert(source::put(heap, roots[0].value, source::key(heap, source::number(0)), source::number(99)));
+    assert(source::get(heap, roots[1].value, source::key(heap, source::number(0))).num() == 20);
+    assert(source::put(heap, truncated, source::text(heap, "length"), source::number(4)));
+    assert(source::get(heap, truncated, source::key(heap, source::number(3))).is_undefined());
+}
+thread_fn array_run_malformed(saved: snapshot::Snapshot, mode: i64) {
+    defer { heap_program::finish(); }
+    var bad = copy(saved);
+    let a = bad.bindings[0].value.id(); let b = bad.bindings[1].value.id(); let truncated = bad.bindings[2].value.id(); let empty = bad.bindings[3].value.id();
+    let before = bad.bindings[4].value.id(); let after = bad.bindings[5].value.id(); let form = bad.bindings[6].value.id();
+    match mode {
+        0 => { bad.nodes[a].start = bad.values.len as u32; },
+        1 => { bad.nodes[a].count = (bad.values.len - bad.nodes[a].start + 1) as u32; },
+        2 => { bad.nodes[a].start = 4294967295; },
+        3 => { bad.nodes[a].count = 4294967295; },
+        // Even empty runs have checked heads; one-past-end is valid only
+        // with zero count. A dictionary array must not retain a dense run.
+        4 => { bad.nodes[empty].start = (bad.values.len + 1) as u32; },
+        5 => { bad.nodes[a].initialized = true; },
+        // Exact and partial overlap, in either traversal order, without holes.
+        6 => { bad.nodes[b].start = bad.nodes[a].start; },
+        7 => { bad.nodes[b].start = bad.nodes[a].start + 3; bad.nodes[b].count = 1; bad.nodes[b].length = 1; },
+        8 => { bad.nodes[a].start = bad.nodes[b].start + 3; bad.nodes[a].count = 1; bad.nodes[a].length = 1; },
+        9 => { bad.nodes[before].start = bad.nodes[a].start; },
+        10 => { bad.nodes[after].start = bad.nodes[a].start; },
+        // Spare capacity is owned too, even when a closure only sees a hole.
+        11 => { bad.nodes[after].start = bad.nodes[truncated].start + 3; },
+        // Holes in captures, form children and unowned storage are refused.
+        12 => { bad.values[bad.nodes[before].start] = source::Value.Empty; },
+        13 => { bad.values[bad.nodes[form].start] = source::Value.Empty; },
+        14 => { bad.values[bad.values.len - 1] = source::Value.Empty; },
+        15 => { bad.values[bad.nodes[truncated].start + 3] = source::number(1); },
+        16 => { bad.nodes[a].length = 3; },
+        _ => { abort("unexpected array run mode"); },
+    }
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    var encoded: u8[>..] = []; encoded.append("unchanged"); var enc = snapshot::Control {};
+    assert(!snapshot::encode(bad, encoded, enc) && enc.error == snapshot::Error.Link && encoded == "unchanged" && enc.copied_bytes == 0);
+    // Bypass encode's validation to exercise decode's independent boundary.
+    var wire: u8[>..] = []; to_bytes([bad], wire); var dec = snapshot::Control {};
+    let rejected = snapshot::decode(wire, dec); assert(rejected.len == 0 && dec.error == snapshot::Error.Link);
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = [];
+    var initial: u8[>..] = []; to_bytes([snapshot::borrow(heap, roots, 1).header], initial);
+    var restore = snapshot::Control {};
+    assert(!snapshot::restore(bad, code, heap, roots, source::reserve_identity(), restore) && restore.error == snapshot::Error.Link && restore.copied_bytes == 0);
+    let unchanged = snapshot::borrow(heap, roots, 1);
+    var actual: u8[>..] = []; to_bytes([unchanged.header], actual);
+    assert(snapshot::ends(unchanged) == [0; 26] && actual == initial);
+    assert(!code.valid && code.ins.len == 0 && code.effects.len == 0 && code.heights.len == 0 && code.decoded == 0 && code.error == tiny::LoadError.None && code.error_pc == -1);
+    assert(roots.len == 0 && heap.fault == source::Fault.None && heap.live_jobs == 0 && !heap.image_written);
 }
