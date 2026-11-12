@@ -12,7 +12,7 @@ function mapSetImage() {
   const m = new Map([[1, "a"], [k, "b"], [__rt.formKeyword(null, "kw"), "c"], [__rt.formKeyword("ns", "kw"), "d"]]);
   const s = new Set(["x", k]);
   return {
-    m, s, k,
+    m, s, k, it: m.values(), si: s.values(),
     read(m, s, k) { return "" + m.get(1) + m.get(k) + m.size + m.has(k) + s.has("x") + s.has(k) + s.size + m.get(2) + m.delete(2) + s.delete("y") + m.get(__rt.formKeyword(null, "kw")) + m.get(__rt.formKeyword("ns", "kw")) + m.has(__rt.formKeyword("ns", "other")); },
     setMap(m) { m.set(3, "c"); },
     deleteMap(m, k) { m.delete(k); },
@@ -20,5 +20,12 @@ function mapSetImage() {
     addSet(s) { s.add("z"); },
     deleteSet(s) { s.delete("x"); },
     clearSet(s) { s.clear(); },
+    iterate(m, s, k) {
+      let out = '', visits = 0;
+      m.forEach(v => out += v);
+      s.forEach((v, key, self) => { if (v === key && self === s) visits++; });
+      return out === 'abcd' && [...m.values()].join() === 'a,b,c,d' && [...m.keys()][1] === k && [...s.keys()][1] === k && visits === 2;
+    },
+    advance(it) { return it.next(); },
   };
 }

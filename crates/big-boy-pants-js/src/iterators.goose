@@ -54,8 +54,8 @@ namespace source;
 //                                   ToString: an object's in a Convert frame
 //   pc 0  awaits the string
 //
-// Not implemented yet, each a named UnsupportedOperand (decision 1): Map,
-// Set and typed-array iterators (light-cljs-769), a BigInt receiver of
+// Not implemented yet, each a named UnsupportedOperand (decision 1):
+// typed-array iterators (light-cljs-769), a BigInt receiver of
 // String.prototype[@@iterator] and a light-cljs runtime value as a source.
 // (A built-in getter runs on the general call path, light-cljs-881.)
 
@@ -64,12 +64,20 @@ let iteration::Values = 0;
 let iteration::Keys = 1;
 let iteration::Entries = 2;
 let iteration::CodePoints = 3;
+let iteration::MapKeys = 4;
+let iteration::MapValues = 5;
+let iteration::MapEntries = 6;
+let iteration::SetValues = 7;
+let iteration::SetEntries = 8;
+fn map_iteration(kind: i64) -> bool { return kind >= iteration::MapKeys && kind <= iteration::MapEntries; }
+fn set_iteration(kind: i64) -> bool { return kind == iteration::SetValues || kind == iteration::SetEntries; }
 // Whether b runs as a BuiltinIterator native frame.
 inline fn iterator_native(b: Builtin) -> bool { return b == Builtin.ArrayIteratorPrototypeNext || b == Builtin.StringPrototypeIterator; }
 // Whether v is a cursor of an array iteration (`strings` false) or a string one.
 fn is_cursor(heap: const Heap&, v: Value, strings: bool) -> bool {
     if !v.is_object() || v.id() >= heap.nodes.len || node(heap, v.id()).kind != node_kind::Iterator { return false; }
-    return (node(heap, v.id()).function == iteration::CodePoints) == strings;
+    let kind = node(heap, v.id()).function;
+    return if strings { kind == iteration::CodePoints } else { kind <= iteration::Entries };
 }
 // A new cursor over `source`, a job row.
 fn new_cursor(job: Job&, source: Value, iteration: i64) -> Value {

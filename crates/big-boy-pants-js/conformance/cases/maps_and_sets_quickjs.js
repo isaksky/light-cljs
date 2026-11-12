@@ -13,6 +13,13 @@
 // the number of rows, or minus the first failing row's number.
 var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
+// light-cljs-944: the Pants engine reports ForeignObject on its iterator
+// prototype used as a next receiver; JavaScript requires a TypeError.
+for (let it of [new Map().entries(), new Set().values()]) {
+  let p = Object.getPrototypeOf(it); let caught;
+  try { p.next.call(p); } catch (e) { caught = e.name; }
+  row(caught === 'TypeError');
+}
 row([Map.length, Set.length, Map[Symbol.species] === Map, Set[Symbol.species] === Set].join() === "0,0,true,true");
 { let d = Object.getOwnPropertyDescriptor(Map, Symbol.species); row(typeof d.get === 'function' && d.set === undefined && !d.enumerable && d.configurable && d.get.name === 'get [Symbol.species]' && d.get.length === 0); }
 { let d = Object.getOwnPropertyDescriptor(Set, Symbol.species); row(typeof d.get === 'function' && d.set === undefined && !d.enumerable && d.configurable && d.get.name === 'get [Symbol.species]'); }

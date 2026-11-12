@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "2cde146aa40d94e028fc8c2f423205db749cc4d5113db83619ba7db5baf18eb1",
+  "4ce095846d69098b0f3f124c5138b3490b95294a187a074d887fee32657cd972",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -518,9 +518,17 @@
   "corpus/serial/map-set-construction.js"
   "10f96bbf92bc4b6fe455fd00f34a810acb80a6f6d6acad18bf9982e38095ed41",
   "corpus/serial/map-set-image.gsp"
-  "49256e964128beeb571d68c564a646a5530e1013c6d26f17f74409b1773a721a",
+  "a2a8399c62b6b6869c0fef0a3f15f582eb862471ace8ac1e59e76dbf87ff9c4f",
   "corpus/serial/map-set-image.js"
-  "e353ab140e7ac44de82399ceb2ca99c5deff896cfeff00f4e834556fc22bbf1f",
+  "857938812dbf83643450e83458016d6b91dcce4cca1c3dff326eb27e2b28db71",
+  "corpus/serial/map-set-iteration-wait.gsp"
+  "0c7aa930132a4d6fff8a5d9399f7a59461306511b00f023479e9039d07ee4093",
+  "corpus/serial/map-set-iteration-wait.js"
+  "efe8195b8bc4b0aa4fbe5217fb37b7f4e1f36b61c5092fb5ad3e23c874a9c133",
+  "corpus/serial/map-set-iteration.gsp"
+  "1437176867ebaa96ede46f0f9c25986822226948d8e31d8ed3cfea2ca99721e8",
+  "corpus/serial/map-set-iteration.js"
+  "c59890a9ff943cddf35454cc67fdacb498607fc7a5d4e8deae3408d88453ea67",
   "corpus/serial/math-random-wait.gsp"
   "63535c54e68e9b8279c50deafccec493fc0b2e9b578ede4e1fd22dc2b4c3c207",
   "corpus/serial/math-random-wait.js"

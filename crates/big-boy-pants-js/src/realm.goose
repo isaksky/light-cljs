@@ -194,11 +194,14 @@ enum Builtin {
     ArrayPrototypeSlice, ArrayPrototypeConcat, ArrayPrototypeFlat, ArrayPrototypeToReversed, ArrayPrototypeWith, ArrayOf, ArrayFrom,
     // String code units, statics and search (light-cljs-903).
     StringFromCharCode, StringFromCodePoint, StringRaw, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeCodePointAt, StringPrototypeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeIncludes, StringPrototypeStartsWith, StringPrototypeEndsWith, StringPrototypeIsWellFormed, StringPrototypeToWellFormed,
+    // Live Map and Set iteration (light-cljs-944; collections.goose).
+    MapPrototypeKeys, MapPrototypeValues, MapPrototypeEntries, MapPrototypeForEach, MapIteratorPrototypeNext,
+    SetPrototypeValues, SetPrototypeEntries, SetPrototypeForEach, SetIteratorPrototypeNext,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[282] = [
+let BUILTINS: BuiltinInfo[291] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -379,6 +382,11 @@ let BUILTINS: BuiltinInfo[282] = [
     BuiltinInfo { which: Builtin.StringPrototypeEndsWith, name: "endsWith", length: 1, plan: plan::StringReceiver },
     BuiltinInfo { which: Builtin.StringPrototypeIsWellFormed, name: "isWellFormed", plan: plan::StringReceiver },
     BuiltinInfo { which: Builtin.StringPrototypeToWellFormed, name: "toWellFormed", plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.MapPrototypeKeys, name: "keys" }, BuiltinInfo { which: Builtin.MapPrototypeValues, name: "values" },
+    BuiltinInfo { which: Builtin.MapPrototypeEntries, name: "entries" }, BuiltinInfo { which: Builtin.MapPrototypeForEach, name: "forEach", length: 1 },
+    BuiltinInfo { which: Builtin.MapIteratorPrototypeNext, name: "next" },
+    BuiltinInfo { which: Builtin.SetPrototypeValues, name: "values" }, BuiltinInfo { which: Builtin.SetPrototypeEntries, name: "entries" },
+    BuiltinInfo { which: Builtin.SetPrototypeForEach, name: "forEach", length: 1 }, BuiltinInfo { which: Builtin.SetIteratorPrototypeNext, name: "next" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -449,7 +457,9 @@ inline fn regexp_template_row() -> i64 { return 44; }
 // ordinary objects inheriting %Object.prototype%, neither a collection.
 inline fn map_prototype_row() -> i64 { return 45; }
 inline fn set_prototype_row() -> i64 { return 46; }
-inline fn fixed_rows() -> i64 { return 47; }
+inline fn map_iterator_prototype_row() -> i64 { return 47; }
+inline fn set_iterator_prototype_row() -> i64 { return 48; }
+inline fn fixed_rows() -> i64 { return 49; }
 struct Name { text: u8[..24] }
 let FUNCTION_KIND_TAGS: Name[3] = [Name { text: "GeneratorFunction" }, Name { text: "AsyncFunction" }, Name { text: "AsyncGeneratorFunction" }];
 // The function_kind:: of closure o's code, -1 for an ordinary function.
@@ -488,7 +498,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[212] = [
+let REALM_FUNCTIONS: Method[221] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -644,6 +654,11 @@ let REALM_FUNCTIONS: Method[212] = [
     Method { which: Builtin.StringPrototypeEndsWith, holder: 27 },
     Method { which: Builtin.StringPrototypeIsWellFormed, holder: 27 },
     Method { which: Builtin.StringPrototypeToWellFormed, holder: 27 },
+    Method { which: Builtin.MapPrototypeKeys, holder: map_prototype_row() }, Method { which: Builtin.MapPrototypeValues, holder: map_prototype_row() },
+    Method { which: Builtin.MapPrototypeEntries, holder: map_prototype_row() }, Method { which: Builtin.MapPrototypeForEach, holder: map_prototype_row() },
+    Method { which: Builtin.MapIteratorPrototypeNext, holder: map_iterator_prototype_row() },
+    Method { which: Builtin.SetPrototypeValues, holder: set_prototype_row() }, Method { which: Builtin.SetPrototypeEntries, holder: set_prototype_row() },
+    Method { which: Builtin.SetPrototypeForEach, holder: set_prototype_row() }, Method { which: Builtin.SetIteratorPrototypeNext, holder: set_iterator_prototype_row() },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -694,7 +709,7 @@ inline fn set_row() -> i64 { return fixed_rows() + 159; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[118] = [
+let PENDING: PendingName[108] = [
     // Object.prototype
     // Array.prototype
 
@@ -754,17 +769,14 @@ let PENDING: PendingName[118] = [
     PendingName { holder: regexp_prototype_row(), key: "compile" },
     PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::MatchAll }, PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::Search },
     PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::Split },
-    // Map, Set and their prototypes (light-cljs-943): iteration and forEach
-    // are light-cljs-944's; Map.groupBy, getOrInsert, getOrInsertComputed
-    // and the Set methods that take another set light-cljs-953's.
+    // Map, Set and their prototypes: Map.groupBy, getOrInsert,
+    // getOrInsertComputed and the Set methods that take another set are
+    // light-cljs-953's.
     PendingName { holder: map_row(), key: "groupBy" },
-    PendingName { holder: map_prototype_row(), key: "getOrInsert" }, PendingName { holder: map_prototype_row(), key: "getOrInsertComputed" }, PendingName { holder: map_prototype_row(), key: "forEach" },
-    PendingName { holder: map_prototype_row(), key: "values" }, PendingName { holder: map_prototype_row(), key: "keys" }, PendingName { holder: map_prototype_row(), key: "entries" },
-    PendingName { holder: map_prototype_row(), key: "", symbol: well_known::Iterator },
-    PendingName { holder: set_prototype_row(), key: "forEach" }, PendingName { holder: set_prototype_row(), key: "isDisjointFrom" }, PendingName { holder: set_prototype_row(), key: "isSubsetOf" },
+    PendingName { holder: map_prototype_row(), key: "getOrInsert" }, PendingName { holder: map_prototype_row(), key: "getOrInsertComputed" },
+    PendingName { holder: set_prototype_row(), key: "isDisjointFrom" }, PendingName { holder: set_prototype_row(), key: "isSubsetOf" },
     PendingName { holder: set_prototype_row(), key: "isSupersetOf" }, PendingName { holder: set_prototype_row(), key: "intersection" }, PendingName { holder: set_prototype_row(), key: "difference" },
-    PendingName { holder: set_prototype_row(), key: "symmetricDifference" }, PendingName { holder: set_prototype_row(), key: "union" }, PendingName { holder: set_prototype_row(), key: "values" },
-    PendingName { holder: set_prototype_row(), key: "keys" }, PendingName { holder: set_prototype_row(), key: "entries" }, PendingName { holder: set_prototype_row(), key: "", symbol: well_known::Iterator },
+    PendingName { holder: set_prototype_row(), key: "symmetricDifference" }, PendingName { holder: set_prototype_row(), key: "union" },
 ];
 // The type names `typeof` gives, interned with the realm.
 let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, Name { text: "boolean" }, Name { text: "number" }, Name { text: "string" }, Name { text: "symbol" }, Name { text: "bigint" }, Name { text: "function" }];
@@ -922,7 +934,7 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
         if p.kind != node_kind::Wrapper || wrapper_type(p.value) != t || !p.proto.is_object() || p.proto.id() != object_prototype_row() || c.kind != node_kind::Builtin || c.function != code(b) { return false; }
     }
     // The iterator prototypes inherit %IteratorPrototype%.
-    let iterator_prototypes: i64[] = [array_iterator_prototype_row(), string_iterator_prototype_row()];
+    let iterator_prototypes: i64[] = [array_iterator_prototype_row(), string_iterator_prototype_row(), map_iterator_prototype_row(), set_iterator_prototype_row()];
     for o in iterator_prototypes { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != iterator_prototype_row() { return false; } }
     // Symbol.prototype is an ordinary object (light-cljs-885).
     if nodes[symbol_prototype_row()].kind != node_kind::Object || !nodes[symbol_prototype_row()].proto.is_object() || nodes[symbol_prototype_row()].proto.id() != object_prototype_row() { return false; }
@@ -997,6 +1009,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: Value.Null });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
+    rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(error_prototype_row(0)) });
@@ -1115,6 +1128,12 @@ fn build_realm(heap: Heap&) -> bool {
     // configurable only (ECMAScript 23.1.3.41).
     for n in UNSCOPABLE_NAMES { if !realm_value(heap, array_unscopables_row(), n.text, boolean(true), attr_writable() | attr_enumerable() | attr_configurable()) { return false; } }
     if !add_own(heap, array_prototype_row(), Value.Symbol { s: well_known::Unscopables }, object(array_unscopables_row()), attr_configurable()) { return false; }
+    // Collection aliases are the same function objects, including their names.
+    if !add_own(heap, map_prototype_row(), Value.Symbol { s: well_known::Iterator }, object(realm_function_row(Builtin.MapPrototypeEntries)), attr_writable() | attr_configurable())
+        || !add_own(heap, set_prototype_row(), Value.Symbol { s: well_known::Iterator }, object(realm_function_row(Builtin.SetPrototypeValues)), attr_writable() | attr_configurable())
+        || !add_own(heap, set_prototype_row(), key_named(heap, "keys"), object(realm_function_row(Builtin.SetPrototypeValues)), attr_writable() | attr_configurable())
+        || !add_own(heap, map_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Map Iterator"), attr_configurable())
+        || !add_own(heap, set_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Set Iterator"), attr_configurable()) { return false; }
     // %ArrayIteratorPrototype%[@@toStringTag] and %StringIteratorPrototype%[@@toStringTag].
     if !add_own(heap, array_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Array Iterator"), attr_configurable()) || !add_own(heap, string_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "String Iterator"), attr_configurable()) { return false; }
     // %GeneratorPrototype%[@@toStringTag] and %Promise.prototype%[@@toStringTag].
@@ -2192,6 +2211,9 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         // The built-in iterators that run no JavaScript (light-cljs-844; iterators.goose).
         ArrayPrototypeValues, ArrayPrototypeKeys, ArrayPrototypeEntries => { return array_iterator(job, b, receiver); },
         StringIteratorPrototypeNext => { return string_iterator_next(job, receiver); },
+        MapPrototypeKeys, MapPrototypeValues, MapPrototypeEntries, SetPrototypeValues, SetPrototypeEntries => { return collection_iterator(job, b, receiver); },
+        MapIteratorPrototypeNext, SetIteratorPrototypeNext => { return collection_next(job, b, receiver); },
+        MapPrototypeForEach, SetPrototypeForEach => { return unsupported_step(job, b, "a callback needs a native frame"); },
         // Symbol values (light-cljs-885; symbols.goose).
         SymbolFunction, SymbolFor, SymbolKeyFor, SymbolPrototypeToString, SymbolPrototypeValueOf, SymbolPrototypeDescription, SymbolPrototypeToPrimitive => { return symbol_builtin(job, b, receiver, args); },
         NativeCoreBinding => { return core_binding(job, b, arg(args, 0)); },

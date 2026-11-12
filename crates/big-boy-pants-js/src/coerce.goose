@@ -108,6 +108,9 @@ namespace source;
 // converting it, the getters and @@species take no arguments, and the
 // constructors convert nothing (their iterable's protocol runs in their
 // Collection frame).
+// Map and Set iteration and forEach (light-cljs-944) also use plan::None:
+// receiver brands are checked without conversion, and callback and
+// thisArg are used as supplied.
 //
 // The frame's state is its operands and fields (callee the built-in
 // function object, input newTarget, argument_count the argument count,

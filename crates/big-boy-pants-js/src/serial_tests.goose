@@ -853,9 +853,11 @@ fn main() {
     let arguments = args();
     sampled = arguments.len == 2 && arguments[1] == "--sampled";
     let strings = arguments.len == 2 && arguments[1] == "--strings";
-    assert(arguments.len == 1 || sampled || strings);
+    let collections = arguments.len == 2 && arguments[1] == "--collections";
+    assert(arguments.len == 1 || sampled || strings || collections);
     sweep_lanes = min(8, max(1, hardware_threads() / 3));
     print("serial source VM: ", if sampled { "sampled" } else { "every" }, " budget cut and limit point, ", sweep_lanes, " sweep lanes");
+    if collections { maps_and_sets(); collection_iteration_checks(); return; }
     string_methods_checks();
     if strings { return; }
     sampling_policy();
@@ -982,6 +984,7 @@ fn main() {
     scripts();
     primitive_methods();
     maps_and_sets();
+    collection_iteration_checks();
     regexp_boundaries();
     regexp_replace_limits();
     key_enumeration();
@@ -1746,6 +1749,56 @@ fn maps_and_sets() {
     heap_program::join(thread_spawn(collection_image_rows, str(embed_file("../corpus/serial/map-set-image.gsp"))));
     print("serial source VM: Map and Set construction at every budget cut, their indexes rebuilt by collections that move their keys, and collections a later job does not own read but not written");
 }
+// Live Map and Set cursors and callbacks (light-cljs-944), at every cut,
+// limit and forced collection; direct churn keeps a cursor alive while
+// compacting the same small run 100,000 times.
+fn collection_iteration_checks() {
+    let bytes = embed_file("../corpus/serial/map-set-iteration.gsp");
+    check(bytes, "boolean:true");
+    limit_points(bytes);
+    heap_program::join(thread_spawn(reclaim_cuts, str(bytes), "boolean:true", 1, 1));
+    heap_program::join(thread_spawn(collection_churn, str(bytes)));
+    print("serial Map and Set iteration: every budget cut, limits, forced collection and bounded churn with live cursors");
+}
+thread_fn collection_churn(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+    for flavor in [collection::Map, collection::Set] {
+        // Dead rows before the live objects make reclamation move them.
+        source::allocate(heap, source::Node { kind: node_kind::Object });
+        var m = source::new_collection(heap, flavor, source::object(if flavor == collection::Map { source::map_prototype_row() } else { source::set_prototype_row() }));
+        for i in 4 { assert(source::put_entry(heap, m.id(), source::number(i), source::number(i * 10))); }
+        let method = if flavor == collection::Map { source::Builtin.MapPrototypeKeys } else { source::Builtin.SetPrototypeValues };
+        let next = if flavor == collection::Map { source::Builtin.MapIteratorPrototypeNext } else { source::Builtin.SetIteratorPrototypeNext };
+        var cursor = source::collection_iterator(job, method, m);
+        let first = source::collection_next(job, next, cursor);
+        assert(source::get(heap, first, source::text(heap, "value")) == source::number(0));
+        for i in 3 { source::remove_entry(heap, m.id(), i); }
+        let held = heap.values.len;
+        for i in 100000 {
+            assert(source::put_entry(heap, m.id(), source::number(9), source::number(i)));
+            let p = source::find_entry(heap, m.id(), source::number(9), source::entry_hash(heap, source::number(9))); assert(p >= 0);
+            source::remove_entry(heap, m.id(), p);
+        }
+        assert(source::entry_capacity(source::node(heap, m.id())) == source::collection_minimum() && heap.values.len == held);
+        assert(source::put_entry(heap, m.id(), source::number(9), source::number(90)));
+        let base = job.operands.len; assert(source::push_operand(job, m) && source::push_operand(job, cursor));
+        heap.reclaim = true; source::reclaim(job);
+        m = job.operands[base]; cursor = job.operands[base + 1];
+        assert(image_valid(heap));
+        for expected in [3, 9] {
+            let r = source::collection_next(job, next, cursor);
+            assert(source::get(heap, r, source::text(heap, "value")) == source::number(expected));
+        }
+        let done = source::collection_next(job, next, cursor);
+        assert(source::get(heap, done, source::text(heap, "done")) == source::boolean(true) && source::node(heap, cursor.id()).value.is_undefined());
+        assert(image_valid(heap));
+        job.operands.resize(base);
+    }
+    assert(heap.fault == source::Fault.None); assert(source::retire(job));
+}
 // map-set-image.js (light-cljs-943): a job's Map and Set, refused by a
 // publication and kept by a snapshot, read by later jobs that do not own
 // them, whose writes fault NativeBoundary, the collections unchanged.
@@ -1770,6 +1823,21 @@ thread_fn collection_image_rows(bytes: u8[]) {
         var job = source::Job { heap: heap, owned_nodes: heap.nodes.len };
         assert(source::start(job, regexp_member(heap, holder, "read"), [m, s, k], holder) && source::run(job, -1) == tiny::Outcome.Complete);
         assert(source::key_is(heap, job.result, "ab4truetruetrue2undefinedfalsefalsecdfalse"));
+        assert(source::retire(job));
+    }
+    // Iteration reads image collections, but advancing a cursor made by
+    // the earlier job would write an image row (light-cljs-944).
+    {
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len };
+        assert(source::start(job, regexp_member(heap, holder, "iterate"), [m, s, k], holder) && source::run(job, -1) == tiny::Outcome.Complete);
+        assert(job.result == source::boolean(true)); assert(source::retire(job));
+    }
+    for field in [source::Name { text: "it" }, source::Name { text: "si" }] {
+        let cursor = regexp_member(heap, holder, field.text); let before = source::node(heap, cursor.id());
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len };
+        assert(source::start(job, regexp_member(heap, holder, "advance"), [cursor], holder));
+        assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary);
+        assert(source::node(heap, cursor.id()).value == before.value && source::node(heap, cursor.id()).namespace_value == before.namespace_value);
         assert(source::retire(job));
     }
     let writers: source::Name[6] = [source::Name { text: "setMap" }, source::Name { text: "deleteMap" }, source::Name { text: "clearMap" }, source::Name { text: "addSet" }, source::Name { text: "deleteSet" }, source::Name { text: "clearSet" }];

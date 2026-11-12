@@ -835,6 +835,41 @@ an image's collection, which no job writes, is the image's row; a write
 into an image collection faults NativeBoundary before it changes
 anything.
 
+*As landed by light-cljs-944 (Map and Set iteration):* every used entry
+also keeps an exact Number insertion position after its key and value
+(after the key for a Set). The collection's `namespace_value` holds its
+next position. Appends increase it, updates leave it alone, and `clear`
+drops the run without resetting it. Deleted entries keep their position
+while their key and value become Empty. Rebuilds copy positions with live
+entries, so a binary search finds the next position after any compaction
+or growth. This needs neither cursor registration nor a live-cursor count:
+even a map that sets and deletes a key 100,000 times with a live cursor
+keeps one small run. Positions stop at the largest exact Number integer
+with WorkLimit rather than wrapping (every append already spends work).
+
+The two collection iterator prototypes are fixed realm rows inheriting
+%IteratorPrototype%, with their own next and toStringTag. Cursors use
+`node_kind::Iterator`, an `iteration::MapKeys`, `MapValues`, `MapEntries`,
+`SetValues` or `SetEntries` kind, `value` the collection (Undefined once
+done), and `namespace_value` the next position. A done cursor releases its
+collection and stays done; a cursor not yet done sees later appends,
+including appends after clear. Collection iterator next is plain Goose.
+ForEach uses a `Native.CollectionForEach` frame, with input the collection,
+callee the callback, receiver thisArg, and index its next insertion
+position; each step visits one entry, tombstones included, or consumes
+one callback result. It re-reads the collection after every callback.
+The generic frame and node tracing and copying in reclaim.goose and
+continuations.goose already preserve all these links and positions;
+snapshot.goose validates collection positions, their strict order in the
+run, cursor brands and positions, and forEach frame phases and fields.
+The serial and snapshot tests force reclamation across live cursors and
+callbacks and migrate suspended Map and Set forEach calls without replay.
+Conversion plans are None: receivers are branded without conversion,
+and keys, values, callbacks and thisArg are used as supplied.
+For-of, spread, destructuring and Array.from use the existing protocol;
+generator delegation still fails at the existing named
+`generator_yield_star` opcode (the generators area).
+
 *As landed by light-cljs-885 (Symbol values):* a symbol a job makes is a
 row of the node table, `node_kind::JsSymbol` (its description, a string or
 undefined; whether Symbol.for registered it; and the symbol registered

@@ -23,13 +23,17 @@ namespace source;
 //   length    its flavor (collection::Map or collection::Set; the weak
 //             flavors are light-cljs-945's)
 //   start     its run in heap.values: `capacity` entries of
-//   count     entry_stride values (a Map's key and value, a Set's key),
+//   count     entry_stride values (key, a Map's value, insertion number),
 //             then 2 * capacity index slots; count is capacity times
 //             (stride + 2), and 0 for a collection with no run yet
 //   function  the entries used in the run, live or deleted
 //   value     its size, the live entries, as a Number
-// A deleted entry is a tombstone, its key and value Empty, so the entries
-// keep their insertion order; entries past `function` are Empty too. The
+//   namespace_value  the next insertion number (never reset by clear)
+// A deleted entry is a tombstone, its key and value Empty, its insertion
+// number kept, so binary search can recover a cursor after compaction.
+// Insertion numbers increase on appends, not updates, and survive rebuilds;
+// iterators and forEach keep the next number, never a physical offset.
+// Entries keep their insertion order; entries past `function` are Empty too. The
 // index is open-addressed with linear probing over 2 * capacity slots,
 // each Empty or a Number, an entry position: every live entry's position
 // is in it once (a tombstone's may be), so it is never more than half
@@ -68,8 +72,11 @@ let collection::Map = 0;
 let collection::Set = 1;
 // The smallest entry capacity of a run.
 inline fn collection_minimum() -> i64 { return 4; }
-// The values an entry takes: a Map's key and value, a Set's key.
-inline fn entry_stride(flavor: i64) -> i64 { return if flavor == collection::Map { 2 } else { 1 }; }
+// The values an entry takes: key, a Map's value, insertion position.
+inline fn entry_stride(flavor: i64) -> i64 { return if flavor == collection::Map { 3 } else { 2 }; }
+// Positions are exact Numbers. Exhaustion is a work limit, never a wrap.
+inline fn collection_position_limit() -> f64 { return 9007199254740991.0; }
+fn collection_position(v: Value) -> bool { return v.is_number() && v.num() >= 0 && v.num() <= collection_position_limit() && trunc(v.num()) == v.num(); }
 // Whether v is a collection of `flavor`.
 fn is_collection(heap: const Heap&, v: Value, flavor: i64) -> bool {
     if !v.is_object() || v.id() >= heap.nodes.len { return false; }
@@ -222,11 +229,13 @@ fn rebuild_run(heap: Heap&, o: i64) -> bool {
             let k = slot(heap, old + i * stride);
             if k.is_hole() { continue; }
             if p != i {
-                set_slot(heap, old + p * stride, k); set_slot(heap, old + i * stride, Value.Empty);
-                if stride == 2 { set_slot(heap, old + p * stride + 1, slot(heap, old + i * stride + 1)); set_slot(heap, old + i * stride + 1, Value.Empty); }
+                for j in stride { set_slot(heap, old + p * stride + j, slot(heap, old + i * stride + j)); set_slot(heap, old + i * stride + j, Value.Empty); }
             }
             p += 1;
         }
+        // Deleted entries kept positions for binary search. Once the live
+        // prefix is compacted, unused entries must be entirely Empty.
+        for j in (p * stride)..(used * stride) { set_slot(heap, old + j, Value.Empty); }
         node_mut(heap, o).function = p as u32;
         reindex_run(heap, o);
         return true;
@@ -237,8 +246,7 @@ fn rebuild_run(heap: Heap&, o: i64) -> bool {
     for i in used {
         let k = slot(heap, old + i * stride);
         if k.is_hole() { continue; }
-        set_slot(heap, at + p * stride, k);
-        if stride == 2 { set_slot(heap, at + p * stride + 1, slot(heap, old + i * stride + 1)); }
+        for j in stride { set_slot(heap, at + p * stride + j, slot(heap, old + i * stride + j)); }
         p += 1;
     }
     // No node owns the old run now: holes may live only in the runs their
@@ -266,6 +274,8 @@ fn reindex_run(heap: Heap&, o: i64) {
 // Append the entry of canonical key k (hash h, not present) and value v
 // to collection o; false with a fault.
 fn append_entry(heap: Heap&, o: i64, k: Value, v: Value, h: u32) -> bool {
+    let position = node(heap, o).namespace_value.num();
+    if position >= collection_position_limit() { heap.fault = Fault.WorkLimit; return false; }
     if node(heap, o).count == 0 || node(heap, o).function >= entry_capacity(node(heap, o)) {
         if !rebuild_run(heap, o) { return false; }
     }
@@ -273,10 +283,11 @@ fn append_entry(heap: Heap&, o: i64, k: Value, v: Value, h: u32) -> bool {
     let flavor: i64 = n.length; let stride = entry_stride(flavor); let capacity = entry_capacity(n);
     let start:  i64 = n.start; let p: i64 = n.function;
     set_slot(heap, start + p * stride, k);
-    if stride == 2 { set_slot(heap, start + p * stride + 1, v); }
+    if flavor == collection::Map { set_slot(heap, start + p * stride + 1, v); }
+    set_slot(heap, start + p * stride + stride - 1, number(position));
     index_entry(heap, start + capacity * stride, 2 * capacity, h, p);
     let size: f64 = collection_size(n) + 1;
-    let m .= node_mut(heap, o); m.function = (p + 1) as u32; m.value = number(size);
+    let m .= node_mut(heap, o); m.function = (p + 1) as u32; m.value = number(size); m.namespace_value = number(position + 1);
     return true;
 }
 // Set entry k of collection o to v (a Set's v is unused): its value when
@@ -287,7 +298,7 @@ fn put_entry(heap: Heap&, o: i64, k: Value, v: Value) -> bool {
     let p = find_entry(heap, o, key, h);
     if p < 0 { return append_entry(heap, o, key, v, h); }
     let n .= node(heap, o);
-    if n.length == collection::Map { let at: i64 = n.start + p * 2 + 1; set_slot(heap, at, v); }
+    if n.length == collection::Map { let at: i64 = n.start + p * entry_stride(collection::Map) + 1; set_slot(heap, at, v); }
     return true;
 }
 // Delete the entry at position p of collection o: a tombstone.
@@ -295,7 +306,7 @@ fn remove_entry(heap: Heap&, o: i64, p: i64) {
     let n = node(heap, o);
     let flavor: i64 = n.length; let stride = entry_stride(flavor); let start: i64 = n.start;
     set_slot(heap, start + p * stride, Value.Empty);
-    if stride == 2 { set_slot(heap, start + p * stride + 1, Value.Empty); }
+    if flavor == collection::Map { set_slot(heap, start + p * stride + 1, Value.Empty); }
     let size: f64 = collection_size(n) - 1;
     node_mut(heap, o).value = number(size);
 }
@@ -311,7 +322,7 @@ fn clear_entries(heap: Heap&, o: i64) -> bool {
 }
 // A new, empty collection of `flavor` with prototype `proto`.
 fn new_collection(heap: Heap&, flavor: i64, proto: Value) -> Value {
-    return allocate(heap, Node { kind: node_kind::Collection, length: flavor as u32, value: number(0), proto: proto });
+    return allocate(heap, Node { kind: node_kind::Collection, length: flavor as u32, value: number(0), namespace_value: number(0), proto: proto });
 }
 // Whether the job may write collection o; otherwise its NativeBoundary.
 fn collection_writable(job: Job&, o: i64) -> bool {
@@ -357,7 +368,7 @@ fn collection_builtin(job: Job&, b: Builtin, receiver: Value, args: const Value[
     }
     let key = canonical_key(k);
     let p = find_entry(heap, o, key, entry_hash(heap, key));
-    if b == Builtin.MapPrototypeGet { return if p < 0 { Value.Undefined } else { slot(heap, node(heap, o).start + p * 2 + 1) }; }
+    if b == Builtin.MapPrototypeGet { return if p < 0 { Value.Undefined } else { slot(heap, node(heap, o).start + p * entry_stride(collection::Map) + 1) }; }
     if b == Builtin.MapPrototypeHas || b == Builtin.SetPrototypeHas { return boolean(p >= 0); }
     if b == Builtin.MapPrototypeDelete || b == Builtin.SetPrototypeDelete {
         if p < 0 { return boolean(false); }
@@ -365,6 +376,91 @@ fn collection_builtin(job: Job&, b: Builtin, receiver: Value, args: const Value[
         remove_entry(heap, o, p); return boolean(true);
     }
     heap.fault = Fault.InvalidState; return Value.Undefined;
+}
+
+// ---- Live traversal (light-cljs-944)
+// Recover a logical position after growth or compaction. Tombstones keep
+// their position, so the ordered run can be searched without scanning an
+// old prefix. The caller visits at most one entry (including tombstones)
+// per native step. A plain next charges each tombstone it skips.
+fn seek_entry(heap: Heap&, o: i64, position: i64) -> i64 {
+    let n = node(heap, o); let flavor: i64 = n.length; let stride = entry_stride(flavor);
+    let start: i64 = n.start; var lo: i64 = 0; var hi: i64 = n.function;
+    while lo < hi {
+        if !charge(heap) { return -1; }
+        let mid = lo + (hi - lo) / 2;
+        if slot(heap, start + mid * stride + stride - 1).num() < position { lo = mid + 1; } else { hi = mid; }
+    }
+    return if lo < n.function { lo } else { -1 };
+}
+fn collection_for_each(b: Builtin) -> bool { return b == Builtin.MapPrototypeForEach || b == Builtin.SetPrototypeForEach; }
+// CreateMapIterator / CreateSetIterator: branded receivers, no conversion.
+fn collection_iterator(job: Job&, b: Builtin, receiver: Value) -> Value {
+    let map = b == Builtin.MapPrototypeKeys || b == Builtin.MapPrototypeValues || b == Builtin.MapPrototypeEntries;
+    if !is_collection(job.heap, receiver, if map { collection::Map } else { collection::Set }) { return type_error(job, if map { "not a Map" } else { "not a Set" }); }
+    let kind = match b { MapPrototypeKeys => iteration::MapKeys, MapPrototypeValues => iteration::MapValues, MapPrototypeEntries => iteration::MapEntries, SetPrototypeEntries => iteration::SetEntries, _ => iteration::SetValues };
+    return allocate(job.heap, Node { kind: node_kind::Iterator, function: kind as u32, value: receiver, namespace_value: number(0), proto: object(if map { map_iterator_prototype_row() } else { set_iterator_prototype_row() }) });
+}
+// %MapIteratorPrototype%.next / %SetIteratorPrototype%.next. A done
+// cursor releases its source. Each entry pair is a fresh two-element array.
+fn collection_next(job: Job&, b: Builtin, receiver: Value) -> Value {
+    let heap .= job.heap; let map = b == Builtin.MapIteratorPrototypeNext;
+    if !receiver.is_object() || receiver.id() >= heap.nodes.len || node(heap, receiver.id()).kind != node_kind::Iterator || (if map { !map_iteration(node(heap, receiver.id()).function) } else { !set_iteration(node(heap, receiver.id()).function) }) { return type_error(job, if map { "not a Map Iterator" } else { "not a Set Iterator" }); }
+    let c = receiver.id(); let source = node(heap, c).value;
+    if source.is_undefined() { return iter_result(job, Value.Undefined, true); }
+    if !writable(job, c) { image_write(job, Value.Undefined, "an iterator's position"); return Value.Undefined; }
+    let n = node(heap, source.id()); let flavor: i64 = n.length; let stride = entry_stride(flavor); let start: i64 = n.start;
+    var p = seek_entry(heap, source.id(), node(heap, c).namespace_value.num() as i64);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    while p >= 0 && p < n.function {
+        if !charge(heap) { return Value.Undefined; }
+        let at = start + p * stride; let k = slot(heap, at);
+        if !k.is_hole() {
+            node_mut(heap, c).namespace_value = number(slot(heap, at + stride - 1).num() + 1);
+            let kind = node(heap, c).function;
+            let v = if map { slot(heap, at + 1) } else { k };
+            var result = if kind == iteration::MapKeys { k } else { v };
+            if kind == iteration::MapEntries || kind == iteration::SetEntries {
+                result = allocate(heap, Node { kind: node_kind::Array });
+                if heap.fault != Fault.None || !set_element(heap, result, 0, k) || !set_element(heap, result, 1, v) { return Value.Undefined; }
+            }
+            return iter_result(job, result, false);
+        }
+        p += 1;
+    }
+    node_mut(heap, c).value = Value.Undefined;
+    return iter_result(job, Value.Undefined, true);
+}
+
+// Native.CollectionForEach holds input the collection, callee the callback,
+// receiver thisArg and index the next insertion number. Each Next step
+// visits one entry; Call discards the callback's result. All linked values
+// are ordinary frame fields, carried by continuations and reclamation.
+let for_each_pc::Next = 0;
+let for_each_pc::Call = 1;
+fn start_collection_for_each(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
+    let heap .= job.heap; let map = b == Builtin.MapPrototypeForEach;
+    if !is_collection(heap, receiver, if map { collection::Map } else { collection::Set }) { type_error(job, if map { "not a Map" } else { "not a Set" }); return; }
+    let callback = arg(args, 0); let this_arg = arg(args, 1);
+    if !is_callable(heap, callback) { type_error(job, "forEach callback is not callable"); return; }
+    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+    job.operands.resize(base);
+    job.frames.push(Frame { function: -1, pc: for_each_pc::Next, local_base: job.locals.len, operand_base: base, callee: callback, receiver: this_arg, input: receiver, native: Native.CollectionForEach { which: b } });
+}
+fn collection_for_each_step(job: Job&, frame: Frame) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    if frame.pc == for_each_pc::Call { job.operands.pop(); job.frames[at].pc = for_each_pc::Next; return; }
+    if frame.pc != for_each_pc::Next { heap.fault = Fault.InvalidState; return; }
+    let o = frame.input.id(); let p = seek_entry(heap, o, frame.index);
+    if heap.fault != Fault.None { return; }
+    if p < 0 { finish_native(job, frame, Value.Undefined); return; }
+    let n = node(heap, o); let flavor: i64 = n.length; let stride = entry_stride(flavor); let entry: i64 = n.start + p * stride;
+    job.frames[at].index = (slot(heap, entry + stride - 1).num() as i64) + 1;
+    let k = slot(heap, entry);
+    if k.is_hole() { return; }
+    let v = if flavor == collection::Map { slot(heap, entry + 1) } else { k };
+    job.frames[at].pc = for_each_pc::Call;
+    call_accessor(job, frame.callee, frame.receiver, [v, k, frame.input]);
 }
 
 // ---- Construction

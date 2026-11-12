@@ -784,7 +784,12 @@ thread_fn integrity_malformed(saved: snapshot::Snapshot, mode: i64) {
     }
 }
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); heap_program::join(thread_spawn(binding_modes)); heap_program::join(thread_spawn(struct_kinds)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); regexp_saved_frames(); regexp_code_transport(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() {
+    let arguments = args();
+    if arguments.len == 2 && arguments[1] == "--collections" { collection_iteration_snapshots(); return; }
+    assert(arguments.len == 1);
+    dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); heap_program::join(thread_spawn(binding_modes)); heap_program::join(thread_spawn(struct_kinds)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); collection_iteration_snapshots(); runtime_code(); runtime_eval_callable_publication(); regexp_saved_frames(); regexp_code_transport(); heap_program::join(thread_spawn(live_boundary));
+}
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its
@@ -2485,6 +2490,97 @@ thread_fn sum_precise_wait(bytes: u8[], save: bool) {
     assert(qput(true));
     assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
 }
+// map-set-iteration-wait.js (light-cljs-944): callbacks and independent
+// cursors across compaction, clear, collection and two migrations.
+fn collection_iteration_snapshots() {
+    let bytes = embed_file("../corpus/serial/map-set-iteration-wait.gsp");
+    heap_program::join(thread_spawn(collection_iteration_wait, str(bytes), false));
+    heap_program::join(thread_spawn(collection_iteration_wait, str(bytes), true));
+    for round in 2 {
+        let saved = qget<Waiting>();
+        heap_program::join(thread_spawn(collection_iteration_resumed, copy(saved), round));
+    }
+    print("snapshot Map and Set iteration: forEach and live iterators collected at waits, saved, validated and migrated without replay");
+}
+// The callbacks wait after compaction (Map), or clear and append (Set).
+// Saved frame, cursor brand/position and entry ordering are checked before
+// transport. Both native variants resume with their logical position.
+fn iteration_saved(job: source::Job&) -> Waiting {
+    let heap .= job.heap;
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    var cursor: i64 = -1;
+    for n, i in image.nodes { if n.kind == node_kind::Iterator && (source::map_iteration(n.function) || source::set_iteration(n.function)) && n.value.is_object() { cursor = i; } }
+    assert(cursor >= 0);
+    for mode in 8 {
+        var bad = copy(image); var changed = false;
+        if mode == 4 { bad.nodes[cursor].value = source::object(source::object_prototype_row()); changed = true; }
+        if mode == 5 { bad.nodes[cursor].namespace_value = source::number(0.5); changed = true; }
+        if mode == 6 { bad.nodes[cursor].function = iteration::CodePoints; changed = true; }
+        if mode == 7 {
+            let collection = image.nodes[cursor].value.id(); let n = image.nodes[collection]; let flavor: i64 = n.length; let stride = source::entry_stride(flavor);
+            bad.values[n.start + stride - 1] = n.namespace_value; changed = true;
+        }
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        CollectionForEach => {
+                            if mode == 0 { f.input = source::Value.Undefined; changed = true; }
+                            if mode == 1 { f.callee = source::Value.Undefined; changed = true; }
+                            if mode == 2 { f.index = (image.nodes[f.input.id()].namespace_value.num() as i64) + 1; changed = true; }
+                            if mode == 3 { f.pc = for_each_pc::Call + 1; changed = true; }
+                        },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        assert(changed);
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    return Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args };
+}
+fn iteration_waiting(job: source::Job&) {
+    assert(job.effect_pending && job.effect_kind == 8);
+    var count: i64 = 0;
+    for f in job.frames { match f.native { CollectionForEach => { count += 1; assert(f.pc == for_each_pc::Call && f.index > 0); }, _ => {} } }
+    assert(count == 1);
+    job.heap.reclaim = true; source::reclaim(job);
+    assert(job.heap.fault == source::Fault.None);
+}
+thread_fn collection_iteration_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    var waits: i64 = 0;
+    while source::run(job, -1) == tiny::Outcome.Yielded {
+        iteration_waiting(job); waits += 1;
+        if save { assert(qput(iteration_saved(job))); return; }
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+    }
+    assert(waits == 2 && job.status == tiny::Status.Complete && source::key_is(heap, job.result, "D:true"));
+    assert(source::retire(job));
+}
+thread_fn collection_iteration_resumed(saved: Waiting, round: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var c = snapshot::Control {}; var bindings: snapshot::Binding[>..] = [];
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), c));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack)); job.steps = saved.steps; job.registered = true; heap.live_jobs += 1;
+    job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; job.effect_args = saved.args;
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if round == 0 { assert(outcome == tiny::Outcome.Yielded); iteration_waiting(job); assert(qput(iteration_saved(job))); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "D:true")); assert(source::retire(job));
+}
 // map-set-construction-wait.js (light-cljs-943) to its wait in `next`,
 // above the Collection frame that has stored one entry: answered in place,
 // or saved (symbols_resumed answers it), the image refused when the saved
@@ -2511,7 +2607,7 @@ thread_fn collection_wait(bytes: u8[], save: bool) {
     var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
     for mode in 5 {
         var bad = copy(image); var changed = false;
-        let n = image.nodes[map]; let capacity = source::entry_capacity(n); let start: i64 = n.start; let index: i64 = start + capacity * 2; let mask = 2 * capacity - 1;
+        let n = image.nodes[map]; let capacity = source::entry_capacity(n); let start: i64 = n.start; let stride = source::entry_stride(collection::Map); let index: i64 = start + capacity * stride; let mask = 2 * capacity - 1;
         var home: i64 = -1; for j in 2 * capacity { if home < 0 && image.values[index + j].is_number() { home = j; } }
         assert(home >= 0 && image.values[index + ((home + 1) & mask)].is_hole());
         // The run's index slots follow its entries: the one entry's names
@@ -2520,7 +2616,8 @@ thread_fn collection_wait(bytes: u8[], save: bool) {
         if mode == 2 { bad.values[index + home] = source::number(3); changed = true; }
         if mode == 3 { bad.values[index + ((home + 1) & mask)] = image.values[index + home]; bad.values[index + home] = source::Value.Empty; changed = true; }
         if mode == 4 {
-            bad.values[start + 2] = image.values[start]; bad.values[start + 3] = source::number(5); bad.values[index + ((home + 1) & mask)] = source::number(1);
+            bad.values[start + stride] = image.values[start]; bad.values[start + stride + 1] = source::number(5); bad.values[start + stride + stride - 1] = source::number(1); bad.values[index + ((home + 1) & mask)] = source::number(1);
+            bad.nodes[map].namespace_value = source::number(2);
             bad.nodes[map].function = 2; bad.nodes[map].value = source::number(2); changed = true;
         }
         for i in a.frame_count {

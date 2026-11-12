@@ -359,7 +359,7 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // An array iterator's `next` awaits its length or an element and
         // holds an array cursor, its source object and index;
         // String.prototype[@@iterator] awaits its string (light-cljs-844).
-        BuiltinIterator m => if m.which == source::Builtin.ArrayIteratorPrototypeNext { f.pc >= 0 && f.pc <= 1 && f.index >= 0 && object_of(s, f.input, node_kind::Iterator) && s.nodes[f.input.id()].function != iteration::CodePoints && object_of(s, f.receiver, node_kind::None) } else { m.which == source::Builtin.StringPrototypeIterator && f.pc == 0 },
+        BuiltinIterator m => if m.which == source::Builtin.ArrayIteratorPrototypeNext { f.pc >= 0 && f.pc <= 1 && f.index >= 0 && object_of(s, f.input, node_kind::Iterator) && s.nodes[f.input.id()].function <= iteration::Entries && object_of(s, f.receiver, node_kind::None) } else { m.which == source::Builtin.StringPrototypeIterator && f.pc == 0 },
         // A ForIn frame awaits one of its three phases over its key list; a
         // Proxy frame runs one of its methods on a proxy (light-cljs-845 and
         // -890, proxy.goose): an enumeration method from pc 3 with the key
@@ -431,11 +431,25 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // the fast path, the array); while a result's `done` and `value` or
         // an entry's "0" are read, that object.
         Collection x => collection_frame_valid(s, f, x.which),
+        CollectionForEach x => source::collection_for_each(x.which) && (f.pc == for_each_pc::Next || f.pc == for_each_pc::Call)
+            && object_of(s, f.input, node_kind::Collection) && s.nodes[f.input.id()].length == (if x.which == source::Builtin.MapPrototypeForEach { collection::Map } else { collection::Set })
+            && object_of(s, f.callee, node_kind::None) && callable_kind(s.nodes[f.callee.id()].kind)
+            && f.index >= 0 && f.index <= s.nodes[f.input.id()].namespace_value.num(),
         _ => true,
     };
 }
 // The code units of string value v in the snapshot's tables, -1 for none.
 fn string_units<T>(s: const T&, v: source::Value) -> i64 { return if v.is_string() && v.sid() < s.strings.len { s.strings[v.sid()].len } else { -1 }; }
+fn iterator_valid<T>(s: const T&, n: const source::Node&) -> bool {
+    if n.count != 0 || n.start != 0 || n.function > iteration::SetEntries { return false; }
+    if source::map_iteration(n.function) || source::set_iteration(n.function) {
+        if !source::collection_position(n.namespace_value) || n.length != 0 { return false; }
+        if n.value.is_undefined() { return true; }
+        return object_of(s, n.value, node_kind::Collection) && s.nodes[n.value.id()].length == (if source::map_iteration(n.function) { collection::Map } else { collection::Set })
+            && n.namespace_value.num() <= s.nodes[n.value.id()].namespace_value.num();
+    }
+    return n.value.is_undefined() || (if n.function == iteration::CodePoints { n.value.is_string() } else { object_of(s, n.value, node_kind::None) });
+}
 fn collection_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Builtin) -> bool {
     let flavor = if which == source::Builtin.Map { collection::Map } else if which == source::Builtin.Set { collection::Set } else { -1 };
     if flavor < 0 || !object_of(s, f.receiver, node_kind::Collection) || s.nodes[f.receiver.id()].length != flavor || f.pc < collection_pc::Adder || f.pc > collection_pc::Fast { return false; }
@@ -447,12 +461,12 @@ fn collection_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::
     return f.pc != collection_pc::Done && f.pc != collection_pc::Item && f.pc != collection_pc::Key || object_of(s, f.input, node_kind::None);
 }
 // A Map or Set (light-cljs-943, source::node_kind::Collection;
-// collections.goose): a flavor, its size a Number, Null as namespace_value,
+// collections.goose): a flavor, its size and next insertion position Numbers,
 // and its run: none (count 0, nothing used, size 0) or `capacity` entries,
 // a power of two at least collection_minimum(), of entry_stride values
 // each, then 2 * capacity index slots. An entry below `function` is live
 // (a key that is neither -0 nor an accessor, and a Map's value no
-// accessor) or a tombstone (all Empty), as many live as its size; past
+// accessor) or a tombstone (Empty key/value, position kept), as many live as its size; past
 // `function` every entry is Empty. An index slot is Empty or a Number, the
 // position of an entry below `function`, each at most once, and every live
 // entry's position is there, reached by its key's probe with no equal key
@@ -460,7 +474,7 @@ fn collection_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::
 // validate counts with array holes), -1 for an invalid row, or -2 when
 // the validation's budget ran out (poll).
 fn collection_holes<T>(s: const T&, n: const source::Node&, c: Control&) -> i64 {
-    if n.length > collection::Set || !n.value.is_number() || !n.namespace_value.is_null() { return -1; }
+    if n.length > collection::Set || !n.value.is_number() || !source::collection_position(n.namespace_value) { return -1; }
     let size_value = n.value.num();
     if !(size_value >= 0 && size_value <= 4294967295.0) || trunc(size_value) != size_value { return -1; }
     let size: i64 = size_value as i64; let used: i64 = n.function; let count: i64 = n.count;
@@ -470,11 +484,15 @@ fn collection_holes<T>(s: const T&, n: const source::Node&, c: Control&) -> i64 
     let capacity = count / (stride + 2);
     if capacity < source::collection_minimum() || (capacity & (capacity - 1)) != 0 || used > capacity || size > used { return -1; }
     let start: i64 = n.start; let run = s.values[start..(start + count)];
-    var holes: i64 = 0; var live: i64 = 0;
+    var holes: i64 = 0; var live: i64 = 0; var previous: f64 = -1;
     for i in capacity {
-        let k = run[i * stride]; let v = if stride == 2 { run[i * stride + 1] } else { source::Value.Empty };
-        if i >= used || k.is_hole() { if !k.is_hole() || !v.is_hole() { return -1; } holes += stride; continue; }
-        if source::is_accessor(k) || k.is_number() && k.num() == 0 && 1.0 / k.num() < 0 || stride == 2 && (v.is_hole() || source::is_accessor(v)) { return -1; }
+        let k = run[i * stride]; let v = if flavor == collection::Map { run[i * stride + 1] } else { source::Value.Empty };
+        let position = run[i * stride + stride - 1];
+        if i >= used { for j in stride { if !run[i * stride + j].is_hole() { return -1; } } holes += stride; continue; }
+        if !source::collection_position(position) || position.num() <= previous || position.num() >= n.namespace_value.num() { return -1; }
+        previous = position.num();
+        if k.is_hole() { if !v.is_hole() { return -1; } holes += stride - 1; continue; }
+        if source::is_accessor(k) || k.is_number() && k.num() == 0 && 1.0 / k.num() < 0 || flavor == collection::Map && (v.is_hole() || source::is_accessor(v)) { return -1; }
         live += 1;
     }
     if live != size { return -1; }
@@ -1071,7 +1089,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // A built-in iterator (light-cljs-844, iterators.goose) has an
         // iteration and no element run, and iterates an object, a string
         // (a string iteration) or, done, nothing.
-        if n.kind == node_kind::Iterator && (n.function > iteration::CodePoints || n.count != 0 || n.start != 0 || !n.value.is_undefined() && (if n.function == iteration::CodePoints { !n.value.is_string() } else { !n.value.is_object() })) { return reject(c, Error.Link); }
+        if n.kind == node_kind::Iterator && !iterator_valid(s, n) { return reject(c, Error.Link); }
         // A primitive wrapper (22, light-cljs-832) holds a number, string,
         // boolean or symbol (light-cljs-885) and keeps no element run.
         if n.kind == node_kind::Wrapper && (source::wrapper_type(n.value) < 0 && !n.value.is_symbol() || n.count != 0 || n.start != 0) { return reject(c, Error.Link); }

@@ -2969,6 +2969,10 @@ mod serial_tests {
             // and symbols, at every budget cut and collection
             // (serial_tests.goose).
             ("map-set-construction", "boolean:true"),
+            // Live Map/Set iterators and forEach callbacks (light-cljs-944),
+            // including compaction, clear and appends across budget cuts.
+            ("map-set-iteration", "boolean:true"),
+            ("map-set-iteration-wait", "goose"),
             // and across a dependency wait in `next` above the Collection
             // frame, saved and restored (snapshot_tests.goose).
             ("map-set-construction-wait", "goose"),

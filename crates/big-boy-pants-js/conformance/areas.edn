@@ -101,8 +101,10 @@
   "bbp/regexp_matcher_table" {:area :date-regexp}
   "bbp/strings_replace_string_patterns" {:area :core-builtins}
   "bbp/maps_and_sets" {:area :collections-weak}
-  "bbp/maps_and_sets_quickjs" {:area :collections-weak :pants-gap "the Pants engine gives Map.length 1, has no Map[Symbol.species] or Set[Symbol.species] getters and refuses writes to Array.prototype and %ArrayIteratorPrototype%"}
+  "bbp/maps_and_sets_quickjs" {:area :collections-weak :pants-gap "the Pants engine gives Map.length 1, has no Map[Symbol.species] or Set[Symbol.species] getters, refuses writes to Array.prototype and %ArrayIteratorPrototype%, and faults ForeignObject for next on a Map/Set iterator prototype"}
   "bbp/map_set_iterable_construction" {:area :collections-weak}
+  "bbp/map_set_iteration" {:area :collections-weak}
+  "bbp/map_set_for_each" {:area :collections-weak}
   "bbp/strings_replace_regexp" {:area :date-regexp}
   "bbp/regexp_symbol_replace" {:area :date-regexp}
   "bbp/reflect_get_set_receivers" {:area :objects-classes}
