@@ -788,8 +788,10 @@ fn main() {
     let arguments = args();
     if arguments.len == 2 && arguments[1] == "--collections" { collection_iteration_snapshots(); return; }
     if arguments.len == 2 && arguments[1] == "--array-runs" { array_run_validation(); return; }
+    if arguments.len == 2 && arguments[1] == "--callable-direct-eval" { callable_direct_eval_relocation(); return; }
     assert(arguments.len == 1);
     array_run_validation();
+    callable_direct_eval_relocation();
     dormant_constants(); callable_publication(); heap_program::join(thread_spawn(traversal_flags)); heap_program::join(thread_spawn(form_flavors)); heap_program::join(thread_spawn(binding_modes)); heap_program::join(thread_spawn(struct_kinds)); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); integrity_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); collection_iteration_snapshots(); runtime_code(); runtime_eval_callable_publication(); regexp_saved_frames(); regexp_code_transport(); heap_program::join(thread_spawn(live_boundary));
 }
 
@@ -4051,4 +4053,105 @@ thread_fn array_run_malformed(saved: snapshot::Snapshot, mode: i64) {
     assert(snapshot::ends(unchanged) == [0; 26] && actual == initial);
     assert(!code.valid && code.ins.len == 0 && code.effects.len == 0 && code.heights.len == 0 && code.decoded == 0 && code.error == tiny::LoadError.None && code.error_pc == -1);
     assert(roots.len == 0 && heap.fault == source::Fault.None && heap.live_jobs == 0 && !heap.image_written);
+}
+
+// Direct-eval sites in a callable publication (light-cljs-865): the base's
+// site stays shared, while the suffix's op, capture-source run and opaque
+// record move past unrelated consumer sites. Both closures compile their
+// eval against the installed scope and read their own captured const.
+fn callable_direct_eval_relocation() {
+    heap_program::join(thread_spawn(callable_direct_eval_base)); let saved = qget<Saved>();
+    heap_program::join(thread_spawn(callable_direct_eval_producer, copy(saved.image))); let wire = qget<u8[]>();
+    heap_program::join(thread_spawn(callable_direct_eval_consumer, copy(saved.image), copy(wire)));
+    print("callable direct eval: shared base and relocated suffix sites execute, installed code validates, and suffix sites below the base are refused");
+}
+// Compile only the script that makes the closure: its direct eval runs
+// later, in the consumer, with writable code and the relocated site tables.
+fn callable_direct_eval_script(heap: source::Heap&, code: source::Code&, text: const u8[:]) -> source::Value {
+    var job = source::Job { heap: heap, writable_code: code };
+    let units = source::utf16(heap, source::text(heap, text));
+    let root = source::compile_code(job, "eval", units, runtime_mode::IndirectEval, false, 0); assert(root >= 0);
+    assert(source::start(job, source::closure(heap, root, []), [], heap.global) && source::run(job, -1) == tiny::Outcome.Complete);
+    let result = job.result; assert(source::retire(job));
+    assert(result.is_object() && source::node(heap, result.id()).kind == node_kind::Closure);
+    return result;
+}
+thread_fn callable_direct_eval_base() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let shared = callable_direct_eval_script(heap, code, "const baseValue = 10; (function sharedEval() { 'use strict'; return eval('baseValue + 1'); })");
+    var c = snapshot::Control {}; let base = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: shared }], c);
+    assert(c.error == snapshot::Error.None && base.sites.len == 1 && base.site_sources.len > 0 && base.site_records.len > 0);
+    assert(qput(Saved { image: copy(base) }));
+}
+thread_fn callable_direct_eval_producer(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), r));
+    let published = callable_direct_eval_script(heap, code, "const suffixValue = 40; (function relocatedEval() { 'use strict'; return eval('suffixValue + 2'); })");
+    let n = source::node(heap, published.id()); assert(n.function >= base.functions.len && n.count == 1);
+    // The frontend conservatively emits NewCell for eval-visible consts.
+    // Give this fixture the initialized immutable binding a publication
+    // requires, as callable_producer does for its synthetic captures.
+    let captured = heap.values[n.start]; assert(captured.is_object());
+    let binding .= heap.nodes[captured.id()]; assert(binding.kind == node_kind::Binding && binding.initialized && binding.value.is_number() && binding.value.num() == 40.0);
+    binding.immutable = true;
+    assert(code.sites.len == base.sites.len + 1 && code.site_sources.len > base.site_sources.len && code.site_records.len > base.site_records.len);
+    var c = snapshot::Control {}; var wire: u8[>..] = [];
+    assert(callable::encode(heap, base, published, wire, c, source::reserve_identity()) && c.error == snapshot::Error.None);
+    let message: u8[] = copy(wire); assert(qput(message));
+}
+thread_fn callable_direct_eval_consumer(base: snapshot::Snapshot, wire: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), r));
+    // Two sites using a local, unlike the producer's captured binding. This
+    // makes every suffix delta nonzero and the source runs distinguishable.
+    let unrelated = callable_direct_eval_script(heap, code, "(function unrelatedEval() { 'use strict'; const local = 900; return eval('local + 1') + eval('local + 2'); })");
+    let ops = code.ops.len; let sites = code.sites.len; let sources = code.site_sources.len; let records = code.site_records.len;
+    assert(sites == base.sites.len + 2 && sources > base.site_sources.len && records > base.site_records.len);
+    var before_control = snapshot::Control {}; let before = snapshot::capture(heap, roots, before_control); assert(before_control.error == snapshot::Error.None);
+    let publications, parsed = from_bytes<callable::Publication[>..]>(wire); assert(parsed && publications.len == 1);
+    for p in publications {
+        let suffix = p.image.sites[base.sites.len];
+        for mode in 3 {
+            var bad = copy(p); let site .= bad.image.sites[base.sites.len];
+            match mode {
+                0 => { site.op = (base.ops.len - 1) as u32; },
+                1 => { site.sources = (base.site_sources.len - 1) as u32; },
+                _ => { site.record = (base.site_records.len - 1) as u32; },
+            }
+            // Exercise code_prefix's cross-owner guard directly as well as
+            // installation's full validation of the malformed publication.
+            var prefix = snapshot::Control {}; assert(!callable::code_matches(bad, heap, prefix) && prefix.error == snapshot::Error.Code);
+            var rejected = snapshot::Control {}; let no = callable::install(bad, base.header, code, heap, rejected);
+            assert(no.is_undefined() && rejected.error == snapshot::Error.Code);
+            var after_control = snapshot::Control {}; var after = snapshot::capture(heap, roots, after_control); assert(after_control.error == snapshot::Error.None);
+            after.header.checkpoint = before.header.checkpoint;
+            var left: u8[>..] = []; var right: u8[>..] = []; to_bytes([before], left); to_bytes([after], right); assert(left == right);
+        }
+        var c = snapshot::Control {}; let imported = callable::decode_install(wire, base.header, code, heap, c);
+        assert(c.error == snapshot::Error.None && imported.is_object());
+        assert(code.sites.len == sites + 1 && code.site_sources.len == sources + p.image.site_sources.len - base.site_sources.len && code.site_records.len == records + p.image.site_records.len - base.site_records.len);
+        let moved = code.sites[sites];
+        assert(moved.op == suffix.op + ops - base.ops.len && moved.sources == suffix.sources + sources - base.site_sources.len && moved.record == suffix.record + records - base.site_records.len);
+        assert(moved.count == suffix.count && moved.length == suffix.length);
+        assert(bytes_of(code.sites[..sites]) == bytes_of(before.sites) && bytes_of(code.site_sources[..sources]) == bytes_of(before.site_sources) && code.site_records[..records] == before.site_records);
+        assert(bytes_of(code.site_sources[moved.sources..(moved.sources + moved.count)]) == bytes_of(p.image.site_sources[suffix.sources..(suffix.sources + suffix.count)]));
+        assert(code.site_records[moved.record..(moved.record + moved.length)] == p.image.site_records[suffix.record..(suffix.record + suffix.length)]);
+        // Capture before execution too: validation must see the relocated
+        // code, even before its eval appends more code to these tables.
+        roots.push(snapshot::Binding { id: 1, generation: 1, value: imported });
+        var installed_control = snapshot::Control {}; let installed = snapshot::capture(heap, roots, installed_control);
+        assert(installed_control.error == snapshot::Error.None); var valid = snapshot::Control {}; assert(snapshot::validate(installed, valid));
+        for closure, i in [roots[0].value, imported, unrelated] {
+            var job = source::Job { heap: heap, writable_code: code };
+            assert(source::start(job, closure, []) && source::run(job, -1) == tiny::Outcome.Complete);
+            assert(job.result.is_number() && job.result.num() == [11.0, 42.0, 1803.0][i] && job.compiled_ops > 0);
+            assert(source::retire(job));
+        }
+        var finished_control = snapshot::Control {}; let finished = snapshot::capture(heap, roots, finished_control);
+        assert(finished_control.error == snapshot::Error.None); var finished_valid = snapshot::Control {}; assert(snapshot::validate(finished, finished_valid));
+    }
 }
