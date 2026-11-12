@@ -854,10 +854,38 @@ fn number_formatting_checks() {
     for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(bytes), str("boolean:true"), slice, 1)); }
     heap_program::join(thread_spawn(number_formatting_saving, str(bytes)));
     heap_program::join(thread_spawn(number_formatting_work, str(bytes)));
+    heap_program::join(thread_spawn(number_digit_limits, str(bytes)));
 }
-// Save a live Coerce frame for each method, restore it into a fresh worker,
-// and finish there. The JavaScript result checks the callback log, so a
-// repeated receiver read or argument conversion fails after migration too.
+// The Pants number_*_digit_conversion_is_bounded tests: direct strings,
+// valueOf results and fallback toString results, 4096 versus 4097 UTF-16
+// units. Wide strings start with whitespace accepted by StringToNumber.
+// Nonfinite receivers still convert their argument before returning.
+thread_fn number_digit_limits(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    for method in 3 {
+        for length in [4096, 4097] { for wide in [false, true] { for shape in 3 { for receiver in [1.0, 1.0 / 0.0] {
+            var units: u16[>..] = [];
+            for i in length - 1 { units.push(if wide && i == 0 { 0x2000 } else { '0' }); }
+            units.push('2');
+            let text = source::string(heap, units);
+            let name = source::text(heap, match method { 0 => "toFixed", 1 => "toExponential", _ => "toPrecision" });
+            let entry = source::closure(heap, named_function(code, "boundedDigits"), []);
+            var job = source::Job { heap: heap };
+            assert(source::start(job, entry, [text, name, source::number(shape), source::boolean(length > 4096), source::number(receiver)]));
+            while source::run(job, 1) == tiny::Outcome.Yielded { heap.reclaim = true; source::reclaim(job); }
+            if job.status != tiny::Status.Complete || !job.result.is_bool() || !job.result.flag() { print("digit limit: method ", method, " length ", length, " wide ", wide, " shape ", shape, " receiver ", receiver); }
+            assert(job.status == tiny::Status.Complete && job.result.is_bool() && job.result.flag());
+            assert(source::retire(job));
+        } } } }
+    }
+    print("serial source VM: Number digit conversions bound direct, valueOf and fallback strings at 4096 UTF-16 units, collected at every cut");
+}
+// Restore every yielded state while a formatting Coerce frame is live,
+// including getter/valueOf bodies after their observable log writes and
+// Convert awaiting and consuming their results. Finish each in a fresh
+// worker; the JavaScript callback log requires every conversion exactly once.
 thread_fn number_formatting_saved(image: snapshot::Snapshot, stack: i64) {
     defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var c = snapshot::Control {};
@@ -867,32 +895,51 @@ thread_fn number_formatting_saved(image: snapshot::Snapshot, stack: i64) {
     assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.is_bool() && job.result.flag());
     assert(source::retire(job));
 }
+struct NumberConversionCoverage {
+    started:  bool = false, getter: bool = false, getter_result: bool = false,
+    value_of: bool = false, value_of_result: bool = false, converted: bool = false,
+}
 thread_fn number_formatting_saving(bytes: u8[]) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
-    var seen = dictionary<i64, bool> {}; var stack: i64 = -1; var saved: i64 = 0;
+    var coverage: NumberConversionCoverage[4] = [NumberConversionCoverage {}, NumberConversionCoverage {}, NumberConversionCoverage {}, NumberConversionCoverage {}];
+    var stack:    i64                         = -1; var saved: i64 = 0;
     while source::run(job, 1) == tiny::Outcome.Yielded {
         var which: i64 = -1;
-        for f in job.frames {
+        for f, i in job.frames {
             match f.native {
-                Coerce m => { match m.which {
-                    NumberPrototypeToString, NumberPrototypeToFixed, NumberPrototypeToExponential, NumberPrototypeToPrecision => { which = source::code(m.which); },
-                    _ => {},
-                } },
+                Coerce m => {
+                    which = match m.which { NumberPrototypeToString => 0, NumberPrototypeToFixed => 1, NumberPrototypeToExponential => 2, NumberPrototypeToPrecision => 3, _ => -1 };
+                    if which < 0 { continue; }
+                    let seen .= coverage[which]; seen.started = true;
+                    if i + 1 >= job.frames.len { continue; }
+                    let conversion = job.frames[i + 1];
+                    match conversion.native {
+                        Convert c => {
+                            let running = i + 2 < job.frames.len;
+                            if conversion.pc == convert_pc::Getter { if running { seen.getter = true; } else { seen.getter_result = true; } }
+                            if conversion.pc == convert_pc::Result { if running { seen.value_of = true; } else { seen.value_of_result = true; } }
+                            if conversion.index > 0 { seen.converted = true; }
+                        },
+                        _ => {},
+                    }
+                },
                 _ => {},
             }
         }
-        if which < 0 || seen.contains(which) { continue; }
-        seen.insert(which, true); saved += 1;
+        if which < 0 { continue; }
+        saved += 1;
         stack = source::suspend_stack(job, stack); assert(stack >= 0);
         var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c, 0, true); assert(c.error == snapshot::Error.None);
         heap_program::join(thread_spawn(number_formatting_saved, copy(image), stack));
         assert(source::resume_stack(job, stack));
     }
-    assert(saved == 4 && job.status == tiny::Status.Complete && job.result.is_bool() && job.result.flag());
+    for c in coverage { assert(c.started && c.getter && c.getter_result && c.value_of && c.value_of_result && c.converted); }
+    assert(saved > 4 && job.status == tiny::Status.Complete && job.result.is_bool() && job.result.flag());
     assert(source::retire(job));
+    print("serial source VM: Number formatting restored at all ", saved, " conversion cuts, including running getters/valueOf and pending results for all four methods");
 }
 // Digit work is charged even when the returned string is short. A limit
 // sufficient for the result's allocation alone must still refuse the call.

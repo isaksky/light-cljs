@@ -1416,6 +1416,23 @@ fn wrapper_index(b: Builtin) -> i64 { var t: i64 = 0; for w, i in WRAPPER_BUILTI
 // conversion, which construct runs before newTarget's `prototype` is read
 // (light-cljs-887); converting it again gives itself.
 fn wrapper_primitive(job: Job&, b: Builtin, args: const Value[:]) -> Value { return wrapper_value(job, b, wrapper_index(b), args, true); }
+// Bound digit-count parsing before StringToNumber scans a string, including
+// one returned by ToPrimitive (converted calls this same check). The Pants
+// number_digit_count limit is method-specific; radix conversion has none.
+fn number_digit_conversion_allowed(job: Job&, b: Builtin, v: Value) -> bool {
+    let method: const u8[:] = match b {
+        NumberPrototypeToFixed => "toFixed",
+        NumberPrototypeToExponential => "toExponential",
+        NumberPrototypeToPrecision => "toPrecision",
+        _ => { return true; },
+    };
+    if !v.is_string() || str_len(job.heap, v) <= 4096 { return true; }
+    job.detail.clear();
+    for c in method { job.detail.push(c); }
+    for c in " digit conversion limit of 4096 UTF-16 units exceeded" { job.detail.push(c); }
+    job.heap.fault = Fault.RangeError;
+    return false;
+}
 // Number.prototype.toString(radix), toFixed, toExponential and toPrecision
 // (light-cljs-902; bbp-149..151). The shared plan (coerce.goose) validates
 // thisNumberValue before an object's argument converts. Only an originally
@@ -1427,6 +1444,7 @@ fn number_to_string(job: Job&, b: Builtin, receiver: Value, args: const Value[:]
     if heap.fault != Fault.None { return Value.Undefined; }
     let r = form_value(heap, arg(args, 0));
     if r.is_undefined() && (b == Builtin.NumberPrototypeToString || b == Builtin.NumberPrototypeToPrecision) { return to_string(heap, x); }
+    if !number_digit_conversion_allowed(job, b, r) { return Value.Undefined; }
     let n = primitive_number(job, b, r);
     if heap.fault != Fault.None { return Value.Undefined; }
     let count = to_integer_or_infinity(n); let value = x.num();

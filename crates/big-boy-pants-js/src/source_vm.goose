@@ -906,6 +906,9 @@ root struct Heap {
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
+let convert_pc::Method = 0;
+let convert_pc::Result = 1;
+let convert_pc::Getter = 2;
 enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct, Coerce { which: Builtin, construct: bool }, SumPrecise, RegExp { which: Builtin }, Collection { which: Builtin }, StringMethod { which: Builtin }, CollectionForEach { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
@@ -4667,7 +4670,7 @@ fn convertible(heap: const Heap&, v: Value) -> bool {
 // under hint string ToString (String(o) and new String(o), light-cljs-832).
 fn start_convert(job: Job&, hint: Hint, finish: bool, count: i64, depth: i64) {
     if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return; }
-    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: Value.Undefined, argument_count: depth, native: Native.Convert { hint: hint, finish: finish, count: count as u8, method: 0 } });
+    job.frames.push(Frame { function: -1, pc: convert_pc::Method, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: Value.Undefined, argument_count: depth, native: Native.Convert { hint: hint, finish: finish, count: count as u8, method: 0 } });
 }
 // Whether a binary operator's operands convert first: `+` and the
 // relational operators convert both, in source order (binary_hint);
@@ -4750,11 +4753,11 @@ fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, me
         return;
     }
     let slot = frame.operand_base - frame.argument_count + frame.index;
-    if frame.pc == 1 {
+    if frame.pc == convert_pc::Result {
         // A scalar form (node_kind::Scalar: a primitive with its provenance, as a
         // helper's value arrives) is its primitive.
         let result = form_value(heap, job.operands.pop());
-        job.frames[at].pc = 0;
+        job.frames[at].pc = convert_pc::Method;
         if result.is_object() {
             if method == 0 { type_error(job, "cannot convert object to primitive value"); return; }
             job.frames[at].native = Native.Convert { hint: hint, finish: finish, count: count, method: method + 1 };
@@ -4767,14 +4770,14 @@ fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, me
     if !convertible(heap, v) { converted(job, at, slot, v, hint, finish, count); return; }
     if method >= 3 { type_error(job, "cannot convert object to primitive value"); return; }
     var m = Value.Undefined;
-    if frame.pc == 2 { m = job.operands.pop(); job.frames[at].pc = 0; }
+    if frame.pc == convert_pc::Getter { m = job.operands.pop(); job.frames[at].pc = convert_pc::Method; }
     else {
         let k: Value = if method == 0 { Value.Symbol { s: well_known::ToPrimitive } } else { key_named(heap, if (method == 1) == (hint == Hint.String) { "toString" } else { "valueOf" }) };
         if heap.fault != Fault.None { return; }
         let value, getter = lookup(heap, v, k);
         if heap.fault != Fault.None { return; }
         if getter.is_object() {
-            job.frames[at].pc = 2;
+            job.frames[at].pc = convert_pc::Getter;
             if node(heap, getter.id()).kind == node_kind::Closure { enter(job, getter, v, []); } else { call_accessor(job, getter, v, []); }
             return;
         }
@@ -4798,7 +4801,7 @@ fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, me
 // Call conversion method m with receiver v: its result arrives at pc 1.
 fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:]) {
     let heap .= job.heap;
-    job.frames[at].pc = 1;
+    job.frames[at].pc = convert_pc::Result;
     if node(heap, m.id()).kind == node_kind::Closure { enter(job, m, v, args); return; }
     if is_bound(heap, m) { start_bound(job, m, v, args, job.operands.len); return; }
     // A built-in that converts its receiver or arguments (light-cljs-900).
@@ -4829,6 +4832,16 @@ fn converted(job: Job&, at: i64, slot: i64, p: Value, hint: Hint, finish: bool, 
         if heap.fault != Fault.None { return; }
         job.operands[slot] = s;
     } else if finish && hint != Hint.String && !p.is_number() {
+        // A formatting plan's argument can return a string from valueOf,
+        // toString or @@toPrimitive. Enforce its bound before ToNumber
+        // loses that string's length; unrelated conversions have no cap.
+        if at > 0 {
+            let parent = job.frames[at - 1];
+            match parent.native {
+                Coerce m => { if slot == parent.operand_base + 1 && !number_digit_conversion_allowed(job, m.which, p) { return; } },
+                _ => {},
+            }
+        }
         let n = numeric(heap, p);
         if heap.fault == Fault.TypeError && job.detail.len == 0 { for ch in "Cannot convert a Symbol value to a number" { job.detail.push(ch); } }
         if heap.fault != Fault.None { return; }

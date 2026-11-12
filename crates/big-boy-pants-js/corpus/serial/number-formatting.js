@@ -2,6 +2,23 @@ function numberFormatting() {
   // light-cljs-902: every cut and collection must keep thisNumberValue and
   // each argument conversion, without replaying a getter or callback.
   'use strict';
+  // Called by serial_tests.goose with strings at either side of the Pants
+  // digit-conversion bound. Keep this separate from the every-cut corpus.
+  function boundedDigits(text, method, shape, oversized, receiver) {
+    let calls = 0;
+    const digits = shape === 0 ? text : shape === 1
+      ? {valueOf() { calls++; return text; }}
+      : {valueOf() { calls++; return {}; }, toString() { calls++; return text; }};
+    try {
+      const result = receiver[method](digits);
+      const expected = receiver === Infinity ? 'Infinity'
+        : method === 'toFixed' ? '1.00' : method === 'toExponential' ? '1.00e+0' : '1.0';
+      return !oversized && result === expected && calls === shape;
+    } catch (e) {
+      return oversized && e instanceof RangeError && calls === shape
+        && e.message === method + ' digit conversion limit of 4096 UTF-16 units exceeded';
+    }
+  }
   let order = '';
   function count(tag, value) {
     return {get valueOf() {
