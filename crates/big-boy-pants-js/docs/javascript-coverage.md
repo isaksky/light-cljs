@@ -431,6 +431,17 @@ array's or function's pending prototype). ToPrimitive runs a `valueOf` or
 `toString` getter in its native frame (pc 2), then calls the method it
 returned. Publication rejects a closure with own properties as mutable.
 
+*As landed by light-cljs-839 (callee TypeError messages):* failed `new`
+operations quote the callable's string data `name`, own or on its immediate
+prototype, as QuickJS's `JS_ThrowTypeErrorNotAConstructor` and
+`get_prop_string` do. The diagnostic never invokes getters, Proxy traps or
+name conversions. Existing exported function names suffice; no callee span
+or image change is needed. The pellet's premise about call errors was
+incorrect for pinned QuickJS: invalid ordinary and spread calls say only
+"not a function". A primitive constructor operand does too. The Pants
+engine quotes constructor source expressions and non-callable types instead;
+the broader diagnostic case records that difference as `:pants-gap`.
+
 *As landed by light-cljs-845 (Proxy for for-in):* `src/proxy.goose` adds
 node kind 24 (`node_kind::Proxy`), whose internal slots are its target
 (`value`, always an earlier row) and handler (`namespace_value`). A

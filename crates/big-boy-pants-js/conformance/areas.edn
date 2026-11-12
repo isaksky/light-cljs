@@ -453,6 +453,7 @@
   ;; bbp-38 objects, properties, prototypes, classes and symbols
   "quickjs/test_language.js/test_delete" {:area :objects-classes}
   "quickjs/test_language.js/test_constructor" {:area :objects-classes}
+  "bbp/callee_type_error_messages" {:area :objects-classes :pants-gap "the Pants engine names the source expression in constructor errors (rust/src/vm/dispatch.rs not_a_constructor), whereas QuickJS uses only a string data name without invoking getters or Proxy traps; its invalid calls name the value's type, whereas QuickJS says not a function"}
   "quickjs/test_language.js/test_prototype" {:area :objects-classes}
   "quickjs/test_language.js/test_class" {:area :objects-classes}
   "quickjs/test_language.js/test_object_literal" {:area :objects-classes}

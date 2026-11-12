@@ -1305,7 +1305,7 @@ fn fault_words(fault: Fault, op: i64) -> const u8[:] {
         StackLimit => "stack overflow",
         RangeError => "invalid array length",
         ReferenceError => if op == opcode::CellInit || op == opcode::CellGet || op == opcode::CellSet { "lexical variable is not initialized" } else { "variable is not defined" },
-        TypeError => match op { opcode::Call, opcode::CallMethod => "not a function", opcode::Construct => "not a constructor", opcode::PutField, opcode::PutElem, opcode::PutFieldStrict, opcode::PutElemStrict => "cannot set property", opcode::In => "invalid 'in' operand", opcode::Plus, opcode::ToString => "Cannot convert a Symbol value to a string",
+        TypeError => match op { opcode::Call, opcode::CallMethod, opcode::CallSpread, opcode::CallMethodSpread => "not a function", opcode::Construct, opcode::ConstructSpread => "not a constructor", opcode::PutField, opcode::PutElem, opcode::PutFieldStrict, opcode::PutElemStrict => "cannot set property", opcode::In => "invalid 'in' operand", opcode::Plus, opcode::ToString => "Cannot convert a Symbol value to a string",
             // ToNumber of a symbol (light-cljs-827); `+` without a string
             // operand names its conversion in Job.detail (symbol_detail).
             opcode::Neg, opcode::ToNumber, opcode::ToNumeric, opcode::Inc, opcode::Dec, opcode::ToNumberPair, opcode::Sub, opcode::Mul, opcode::Div, opcode::Rem, opcode::Lt, opcode::Gt, opcode::Le, opcode::Ge, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe => "Cannot convert a Symbol value to a number",
@@ -1332,6 +1332,40 @@ fn type_error(job: Job&, message: const u8[:]) -> Value {
     job.detail.clear(); for c in message { job.detail.push(c); }
     if job.heap.fault == Fault.None { job.heap.fault = Fault.TypeError; }
     return Value.Undefined;
+}
+// QuickJS's JS_ThrowTypeErrorNotAConstructor and get_prop_string: quote a
+// callable's string data `name`, own or on its immediate prototype. This
+// is a diagnostic read, never [[Get]]: no getter, Proxy trap or conversion
+// runs. A lazy closure's name already comes from the exported function row
+// (function_name), so callee-expression spans need not change the image.
+// QuickJS's JS_CallConstructorInternal calls primitives "not a function";
+// an object without a usable name is "not a constructor". Ordinary invalid
+// calls also say "not a function", without a source name.
+fn not_constructor(job: Job&, callee: Value) {
+    let heap .= job.heap;
+    if !callee.is_object() { type_error(job, "not a function"); return; }
+    var name = Value.Undefined;
+    if callable(heap, callee) {
+        var at = callee;
+        for level in 2 {
+            if lazy_function(heap, at.id()) { name = function_name(heap, at.id()); break; }
+            let key = find_key(heap, "name");
+            if key.is_undefined() { break; }
+            let p = find_own(heap, at.id(), key);
+            if heap.fault != Fault.None { return; }
+            if p.found { name = p.value; break; }
+            at = prototype(heap, at.id());
+            if !at.is_object() { break; }
+        }
+    }
+    if heap.fault != Fault.None { return; }
+    if !name.is_string() { type_error(job, "not a constructor"); return; }
+    job.detail.clear(); append_utf16(heap, name, job.detail);
+    // QuickJS formats the name with %s, ending at an embedded NUL.
+    var end: i64 = 0; while end < job.detail.len && job.detail[end] != 0 { end += 1; }
+    job.detail.resize(end);
+    for c in " is not a constructor" { job.detail.push(c); }
+    heap.fault = Fault.TypeError;
 }
 inline fn arg(args: const Value[:], i: i64) -> Value { return if i < args.len { args[i] } else { Value.Undefined }; }
 

@@ -5684,7 +5684,7 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
             if push_frame(job, f, cell, job.operands[(base + 1)..], false, base, nt) { job.operands.resize(base); }
             return;
         }
-        if code_kind == constructor::None { heap.fault = Fault.TypeError; return; }
+        if code_kind == constructor::None { not_constructor(job, f); return; }
         // A `prototype` getter on newTarget (a bound function's or an
         // object's on its chain, Reflect.construct's) runs as a frame above
         // a Construct native frame, which then enters the constructor
@@ -5703,16 +5703,17 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
     // A bound function's [[Construct]] runs in a Forward frame, newTarget
     // the bound function or Reflect.construct's (light-cljs-852).
     if kind == node_kind::BoundFunction {
-        if !is_constructor(heap, f) { heap.fault = Fault.TypeError; return; }
+        if !is_constructor(heap, f) { not_constructor(job, f); return; }
         start_bound(job, f, nt, job.operands[(base + 1)..], base, true);
         return;
     }
     // A proxy's [[Construct]] runs as its Proxy frame with newTarget
     // (light-cljs-891; proxy.goose proxy_call).
     if kind == node_kind::Proxy { if proxy_call(job, f, nt, job.operands[(base + 1)..], base, true) { job.operands.resize(base); } return; }
-    if kind != node_kind::Builtin { heap.fault = Fault.TypeError; return; }
+    if kind != node_kind::Builtin { not_constructor(job, f); return; }
     let b = builtin_of(heap, f.id());
-    if !constructor_builtin(b) || b == Builtin.SymbolFunction { heap.fault = Fault.TypeError; return; }
+    if !constructor_builtin(b) { not_constructor(job, f); return; }
+    if b == Builtin.SymbolFunction { not_constructor(job, nt); return; }
     // A built-in that makes its object from newTarget's `prototype`
     // (GetPrototypeFromConstructor, light-cljs-887: a class extending it, or
     // Reflect.construct) reads it first; a getter there runs as a frame
@@ -6382,7 +6383,7 @@ fn named_error(job: Job&, fault: Fault, before: const u8[:], k: Value, after: co
 // (JS_AtomGetStr): a string as its code units (an index key is already its
 // digits, key()), a symbol as its description (`Symbol.iterator` for a
 // well-known one), a number as its ToString. Shared by the property-access
-// errors below and the callee names of not-a-function errors.
+// errors below.
 fn append_key(heap: Heap&, k: Value, out: u16[>..]&) {
     if k.is_string() { append_utf16(heap, k, out); return; }
     if k.is_symbol() { append_description(heap, k, out); return; }
