@@ -1172,6 +1172,24 @@ fn build_realm(heap: Heap&) -> bool {
     for n in TYPE_NAMES { key_named(heap, n.text); }
     if heap.fault != Fault.None { return false; }
     assert(heap.nodes.len == realm_nodes());
+    return compact_realm_slots(heap);
+}
+// Shape overflow growth leaves old slot runs behind while the realm is
+// built. Keep only the current runs before this immutable image is copied
+// into every prepared definition (light-cljs-903's 200k gate). Object rows,
+// shapes, properties, capacities and observable values keep their identity;
+// only these private slot offsets move. Realm nodes have no element runs.
+fn compact_realm_slots(heap: Heap&) -> bool {
+    if !charge(heap, heap.nodes.len + heap.values.len) { return false; }
+    var live: Value[>..] = [];
+    for n, row in heap.nodes {
+        assert(n.count == 0);
+        if n.initialized || n.key_capacity == 0 { continue; }
+        let start = live.len;
+        live.append(heap.values[n.keys..(n.keys + n.key_capacity)]);
+        node_mut(heap, row).keys = start as u32;
+    }
+    heap.values.clear(); heap.values.append(live);
     return true;
 }
 // Built-in function o's `length` and `name` from BUILTINS (configurable

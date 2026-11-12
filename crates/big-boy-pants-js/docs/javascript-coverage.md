@@ -2325,7 +2325,10 @@ converting the search value. String.raw reads and converts each piece and
 substitution in order, keeping a captured length and re-reading each index.
 Output pieces are canonical job strings and flatten through the existing
 concat_pieces helper. The serial cases exercise every budget cut, limits,
-collection, and saved phases restored in another thread program.
+collection, and saved phases restored in another thread program. Realm
+construction packs its current shape overflow runs before publication,
+dropping the obsolete runs left by growth. This keeps the larger realm
+within the unchanged prepared-definition memory budget of the 200k gate.
 
 ## Decision 6: realm setup
 
