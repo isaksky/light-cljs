@@ -197,11 +197,14 @@ enum Builtin {
     // Live Map and Set iteration (light-cljs-944; collections.goose).
     MapPrototypeKeys, MapPrototypeValues, MapPrototypeEntries, MapPrototypeForEach, MapIteratorPrototypeNext,
     SetPrototypeValues, SetPrototypeEntries, SetPrototypeForEach, SetIteratorPrototypeNext,
+    // Exact number text after the shared thisNumberValue/Integer plan
+    // (light-cljs-902; number_text.goose).
+    NumberPrototypeToFixed, NumberPrototypeToExponential, NumberPrototypeToPrecision,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[291] = [
+let BUILTINS: BuiltinInfo[294] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -387,6 +390,9 @@ let BUILTINS: BuiltinInfo[291] = [
     BuiltinInfo { which: Builtin.MapIteratorPrototypeNext, name: "next" },
     BuiltinInfo { which: Builtin.SetPrototypeValues, name: "values" }, BuiltinInfo { which: Builtin.SetPrototypeEntries, name: "entries" },
     BuiltinInfo { which: Builtin.SetPrototypeForEach, name: "forEach", length: 1 }, BuiltinInfo { which: Builtin.SetIteratorPrototypeNext, name: "next" },
+    BuiltinInfo { which: Builtin.NumberPrototypeToFixed, name: "toFixed", length: 1, plan: plan::NumberRadix },
+    BuiltinInfo { which: Builtin.NumberPrototypeToExponential, name: "toExponential", length: 1, plan: plan::NumberRadix },
+    BuiltinInfo { which: Builtin.NumberPrototypeToPrecision, name: "toPrecision", length: 1, plan: plan::NumberRadix },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -498,7 +504,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[221] = [
+let REALM_FUNCTIONS: Method[224] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -659,6 +665,9 @@ let REALM_FUNCTIONS: Method[221] = [
     Method { which: Builtin.MapIteratorPrototypeNext, holder: map_iterator_prototype_row() },
     Method { which: Builtin.SetPrototypeValues, holder: set_prototype_row() }, Method { which: Builtin.SetPrototypeEntries, holder: set_prototype_row() },
     Method { which: Builtin.SetPrototypeForEach, holder: set_prototype_row() }, Method { which: Builtin.SetIteratorPrototypeNext, holder: set_iterator_prototype_row() },
+    Method { which: Builtin.NumberPrototypeToFixed, holder: wrapper_prototype_row(0) },
+    Method { which: Builtin.NumberPrototypeToExponential, holder: wrapper_prototype_row(0) },
+    Method { which: Builtin.NumberPrototypeToPrecision, holder: wrapper_prototype_row(0) },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -709,7 +718,7 @@ inline fn set_row() -> i64 { return fixed_rows() + 159; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[108] = [
+let PENDING: PendingName[105] = [
     // Object.prototype
     // Array.prototype
 
@@ -747,7 +756,7 @@ let PENDING: PendingName[108] = [
     PendingName { holder: 0, key: "unescape" },
     // %Number.prototype% (light-cljs-832; the core-builtins area makes
     // them, light-cljs-767; Number's statics are light-cljs-900's).
-    PendingName { holder: 26, key: "toExponential" }, PendingName { holder: 26, key: "toFixed" }, PendingName { holder: 26, key: "toPrecision" }, PendingName { holder: 26, key: "toLocaleString" },
+    PendingName { holder: 26, key: "toLocaleString" },
     // String and %String.prototype%.
 
     PendingName { holder: 27, key: "concat" },
@@ -1407,24 +1416,39 @@ fn wrapper_index(b: Builtin) -> i64 { var t: i64 = 0; for w, i in WRAPPER_BUILTI
 // conversion, which construct runs before newTarget's `prototype` is read
 // (light-cljs-887); converting it again gives itself.
 fn wrapper_primitive(job: Job&, b: Builtin, args: const Value[:]) -> Value { return wrapper_value(job, b, wrapper_index(b), args, true); }
-// Number.prototype.toString(radix): radix 10, or undefined, is the number's
-// ToString; a radix outside 2 to 36 is a RangeError and another one fails
-// by name (bbp-149, the core-builtins area, light-cljs-767).
+// Number.prototype.toString(radix), toFixed, toExponential and toPrecision
+// (light-cljs-902; bbp-149..151). The shared plan (coerce.goose) validates
+// thisNumberValue before an object's argument converts. Only an originally
+// undefined argument selects a default: Convert finishes an object's
+// ToNumber, so a returned undefined arrives here as NaN.
 fn number_to_string(job: Job&, b: Builtin, receiver: Value, args: const Value[:]) -> Value {
     let heap .= job.heap;
     let x = this_primitive(job, b, 0, receiver);
     if heap.fault != Fault.None { return Value.Undefined; }
     let r = form_value(heap, arg(args, 0));
-    if !r.is_undefined() {
-        if r.is_object() { return unsupported_step(job, b, "an object radix"); }
-        let n = primitive_number(job, b, r);
-        if heap.fault != Fault.None { return Value.Undefined; }
-        // ToIntegerOrInfinity: NaN is 0.
-        let radix = if n != n { 0.0 } else { trunc(n) };
-        if radix < 2 || radix > 36 { job.detail.clear(); for c in "radix must be between 2 and 36" { job.detail.push(c); } heap.fault = Fault.RangeError; return Value.Undefined; }
-        if radix != 10 { return unsupported_step(job, b, "a radix other than 10"); }
+    if r.is_undefined() && (b == Builtin.NumberPrototypeToString || b == Builtin.NumberPrototypeToPrecision) { return to_string(heap, x); }
+    let n = primitive_number(job, b, r);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    let count = to_integer_or_infinity(n); let value = x.num();
+    let finite = value == value && value <= 1.7976931348623157e308 && value >= -1.7976931348623157e308;
+    if !finite && (b == Builtin.NumberPrototypeToExponential || b == Builtin.NumberPrototypeToPrecision) { return to_string(heap, x); }
+    let minimum: i64 = if b == Builtin.NumberPrototypeToString { 2 } else if b == Builtin.NumberPrototypeToPrecision { 1 } else { 0 };
+    let maximum: i64 = if b == Builtin.NumberPrototypeToString { 36 } else { 100 };
+    if count < minimum || count > maximum {
+        job.detail.clear();
+        let message = if b == Builtin.NumberPrototypeToString { "radix must be between 2 and 36" } else { "number of digits out of range" };
+        for c in message { job.detail.push(c); } heap.fault = Fault.RangeError; return Value.Undefined;
     }
-    return to_string(heap, x);
+    var text: u8[>..] = []; var work: i64 = 0;
+    match b {
+        NumberPrototypeToString => { work = number::append_radix(text, value, count as i64); },
+        NumberPrototypeToFixed => { work = number::append_fixed(text, value, count as i64); },
+        NumberPrototypeToExponential => { work = number::append_significant(text, value, if r.is_undefined() { 0 } else { (count as i64) + 1 }, true); },
+        NumberPrototypeToPrecision => { work = number::append_significant(text, value, count as i64, false); },
+        _ => { heap.fault = Fault.InvalidState; return Value.Undefined; },
+    }
+    if !charge(heap, work) { return Value.Undefined; }
+    return source::text(heap, text);
 }
 // The global number functions and Number's predicates (light-cljs-900;
 // ECMAScript 19.2.2 to 19.2.5 and 21.1.2.2 to 21.1.2.5; the Pants engine's
@@ -2237,7 +2261,7 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         Boolean => { return wrapper_value(job, b, 2, args, false); },
         NumberPrototypeValueOf => { return this_primitive(job, b, 0, receiver); },
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeCodePointAt, StringPrototypeAt => { return string_access_builtin(job, b, receiver, args); },
-        NumberPrototypeToString => { return number_to_string(job, b, receiver, args); },
+        NumberPrototypeToString, NumberPrototypeToFixed, NumberPrototypeToExponential, NumberPrototypeToPrecision => { return number_to_string(job, b, receiver, args); },
         StringPrototypeValueOf, StringPrototypeToString => { return this_primitive(job, b, 1, receiver); },
         BooleanPrototypeValueOf => { return this_primitive(job, b, 2, receiver); },
         BooleanPrototypeToString => {

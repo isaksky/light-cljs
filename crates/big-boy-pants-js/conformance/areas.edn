@@ -73,6 +73,8 @@
   "bbp/core_builtin_conversions" {:area :core-builtins}
   "bbp/core_global_number_functions" {:area :core-builtins}
   "bbp/core_number_statics" {:area :core-builtins}
+  "bbp/number_radix_text" {:area :core-builtins}
+  "bbp/number_fixed_exponential_precision" {:area :core-builtins}
   "bbp/math_functions" {:area :core-builtins}
   "bbp/math_conversions" {:area :core-builtins}
   "bbp/math_sum_precise" {:area :core-builtins}

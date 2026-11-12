@@ -137,8 +137,8 @@ let plan::OneNumber: u8 = 4;
 let plan::OneString: u8 = 5;
 // parseInt(string, radix): ToString, then ToInt32.
 let plan::ParseInt: u8 = 6;
-// Number.prototype.toString(radix): thisNumberValue, then
-// ToIntegerOrInfinity.
+// Number.prototype.toString(radix), toFixed, toExponential and toPrecision:
+// thisNumberValue, then ToIntegerOrInfinity (light-cljs-902).
 let plan::NumberRadix: u8 = 7;
 // Math.atan2(y, x) and Math.pow(base, exponent): ToNumber of both
 // (light-cljs-901; math_object.goose).

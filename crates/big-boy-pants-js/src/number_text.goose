@@ -1,4 +1,5 @@
 import std;
+import binary;
 
 namespace number;
 
@@ -52,6 +53,170 @@ fn shortest(x: f64, digits: u8[>..]&) -> i64 {
     var lead: i64 = 0; while lead < all.len - 1 && all[lead] == '0' { lead += 1; }
     var end = all.len; while end > lead + 1 && all[end - 1] == '0' { end -= 1; }
     digits.append(all[lead..end]); return point + exponent - lead;
+}
+// Number formatting leaves (light-cljs-902; rust/src/number.rs and
+// value/string.rs number_to_string_radix; QuickJS js_dtoa). All scratch is
+// local: 80 little-endian 32-bit limbs cover the largest exact decimal
+// coefficient (2547 bits). Radix remainders use a denominator of 2^1075.
+// Binary64 bounds every loop independently of JavaScript arguments. Work
+// counts limb operations and generated digits; the caller charges it before
+// publishing the result. append_decimal's shortest decimal path is unchanged.
+struct Natural { limbs: u64[80] = [0; 80], used: i64 = 0 }
+fn bits(x: f64) -> u64 { let a: f64[1] = [x]; let b, ok = binary::read_u64le(bytes_of(a), 0); assert(ok); return b; }
+fn shifted(value: u64, shift: i64) -> Natural {
+    var n = Natural {}; let one: u64 = 1;
+    for bit in 64 {
+        if (value & (one << bit)) != 0 { let at = shift + bit; n.limbs[at / 32] = n.limbs[at / 32] | (one << (at % 32)); n.used = at / 32 + 1; }
+    }
+    return n;
+}
+fn normalize(n: Natural&) { while n.used > 0 && n.limbs[n.used - 1] == 0 { n.used -= 1; } }
+fn multiply(n: Natural&, by: u64, work: i64&) {
+    var carry: u64 = 0; work += n.used;
+    for i in n.used { carry += n.limbs[i] * by; n.limbs[i] = carry & 4294967295; carry = carry >> 32; }
+    if carry != 0 { assert(n.used < n.limbs.len); n.limbs[n.used] = carry; n.used += 1; }
+}
+fn divide(n: Natural&, by: u64, work: i64&) -> u8 {
+    var rest: u64 = 0; var i = n.used; work += n.used;
+    while i > 0 { i -= 1; let v = (rest << 32) | n.limbs[i]; n.limbs[i] = v / by; rest = v % by; }
+    normalize(n); return rest as u8;
+}
+fn compare(a: const Natural&, b: const Natural&, work: i64&) -> i64 {
+    work += 1;
+    if a.used != b.used { return if a.used < b.used { -1 } else { 1 }; }
+    var i = a.used;
+    while i > 0 { i -= 1; work += 1; if a.limbs[i] != b.limbs[i] { return if a.limbs[i] < b.limbs[i] { -1 } else { 1 }; } }
+    return 0;
+}
+fn subtract(a: Natural, b: const Natural&, work: i64&) -> Natural {
+    var out = a; var borrow: u64 = 0; work += a.used;
+    for i in a.used {
+        let v = 4294967296 + a.limbs[i] - b.limbs[i] - borrow;
+        out.limbs[i] = v & 4294967295; borrow = if v < 4294967296 { 1 } else { 0 };
+    }
+    assert(borrow == 0); normalize(out); return out;
+}
+// Exact positive decimal digits d and point n, x = 0.d * 10^n. Cancel
+// denominator twos, then m / 2^k = m * 5^k / 10^k, with no float scaling.
+fn exact_decimal(x: f64, digits: u8[>..]&, work: i64&) -> i64 {
+    if x == 0 { digits.push('0'); work += 1; return 1; }
+    let b = bits(x); let biased: i64 = ((b >> 52) & 2047) as i64;
+    var m = (b & 4503599627370495) | (if biased == 0 { 0 } else { 4503599627370496 });
+    var e = max(biased, 1) - 1075;
+    while e < 0 && (m & 1) == 0 { m = m >> 1; e += 1; work += 1; }
+    var n = shifted(m, max(e, 0));
+    for i in max(-e, 0) { multiply(n, 5, work); }
+    var reverse: u8[>..] = [];
+    while n.used > 0 { reverse.push('0' + divide(n, 10, work)); }
+    var i = reverse.len; while i > 0 { i -= 1; digits.push(reverse[i]); work += 1; }
+    return digits.len - max(-e, 0);
+}
+// Round positive exact digits, ties up. keep can lie before the first digit;
+// a carry changes the decimal point. The sign belongs to the caller, so a
+// negative nonzero input which rounds to zero still prints its minus sign.
+fn round_digits(digits: u8[>..]&, point: i64, keep: i64) -> i64 {
+    if keep >= digits.len { return point; }
+    let up = keep >= 0 && digits[keep] >= '5';
+    digits.resize(max(keep, 0));
+    if up {
+        var i = digits.len;
+        while i > 0 && digits[i - 1] == '9' { i -= 1; digits[i] = '0'; }
+        if i == 0 { digits.resize(digits.len + 1, '0'); digits[0] = '1'; return point + 1; }
+        digits[i - 1] += 1;
+    }
+    if digits.len == 0 { digits.push('0'); return 1; }
+    return point;
+}
+fn append_plain(out: u8[>..]&, digits: const u8[:], point: i64, places: i64) {
+    if point <= 0 { out.push('0'); }
+    else { for i in point { out.push(if i < digits.len { digits[i] } else { '0' }); } }
+    if places > 0 {
+        out.push('.');
+        for i in places { let at = point + i; out.push(if at >= 0 && at < digits.len { digits[at] } else { '0' }); }
+    }
+}
+fn append_exponent(out: u8[>..]&, digits: const u8[:], point: i64) {
+    out.push(digits[0]); if digits.len > 1 { out.push('.'); out.append(digits[1..]); }
+    out.push('e'); out.push(if point > 0 { '+' } else { '-' }); format(out, if point > 0 { point - 1 } else { 1 - point });
+}
+fn append_fixed(out: u8[>..]&, x: f64, places: i64) -> i64 {
+    if x != x || x >= 1e21 || x <= -1e21 { append_decimal(out, x); return out.len; }
+    if x < 0 { out.push('-'); }
+    var digits: u8[>..] = []; var work: i64 = 0;
+    let n = exact_decimal(if x < 0 { -x } else { x }, digits, work);
+    let point = round_digits(digits, n, n + places);
+    append_plain(out, digits, point, places); return work + out.len;
+}
+// precision == 0 requests shortest digits (toExponential(undefined));
+// otherwise precision is the number of significant digits, 1..101.
+fn append_significant(out: u8[>..]&, x: f64, precision: i64, exponential: bool) -> i64 {
+    if x != x || x > 1.7976931348623157e308 || x < -1.7976931348623157e308 { append_decimal(out, x); return out.len; }
+    if x < 0 { out.push('-'); }
+    let magnitude = if x < 0 { -x } else { x };
+    var digits: u8[>..] = []; var work: i64 = 0; var point: i64 = 1;
+    if precision == 0 { if magnitude == 0 { digits.push('0'); } else { point = shortest(magnitude, digits); } }
+    else {
+        point = exact_decimal(magnitude, digits, work);
+        point = round_digits(digits, point, precision);
+        digits.resize(precision, '0');
+    }
+    if exponential || point <= -6 || point > precision { append_exponent(out, digits, point); }
+    else { append_plain(out, digits, point, max(digits.len - point, 0)); }
+    return work + out.len;
+}
+// Radix 2..36, exact integer digits and the shortest fractional prefix
+// inside x's binary64 rounding interval. Boundary equality follows the even
+// significand; the lower interval at a normal power of two is half as wide.
+fn append_radix(out: u8[>..]&, x: f64, radix: i64) -> i64 {
+    if radix == 10 || x != x || x == 0 || x > 1.7976931348623157e308 || x < -1.7976931348623157e308 { append_decimal(out, x); return out.len; }
+    let b = bits(if x < 0 { -x } else { x }); let biased: i64 = ((b >> 52) & 2047) as i64;
+    let m = (b & 4503599627370495) | (if biased == 0 { 0 } else { 4503599627370496 });
+    let e = max(biased, 1) - 1075; let r = radix as u64;
+    var integer = shifted(if e >= 0 { m } else if -e < 64 { m >> -e } else { 0 }, max(e, 0));
+    var reverse: u8[>..] = []; var work: i64 = 0;
+    while true { reverse.push(divide(integer, r, work)); if integer.used == 0 { break; } }
+    var digits: u8[>..] = []; var i = reverse.len;
+    while i > 0 { i -= 1; digits.push(reverse[i]); }
+    var integer_len = digits.len;
+    if e < 0 {
+        let one: u64 = 1;
+        let fraction = if -e >= 64 { m } else { m & ((one << -e) - 1) };
+        var remainder = shifted(fraction, e + 1075);
+        if remainder.used > 0 {
+            let denominator = shifted(1, 1075); let half = shifted(1, 1074);
+            var upper = shifted(1, e + 1074);
+            var lower = shifted(1, e + 1074 - (if biased > 1 && m == 4503599627370496 { 1 } else { 0 }));
+            let inclusive = (m & 1) == 0;
+            for step in 1075 {
+                multiply(remainder, r, work);
+                digits.push((remainder.limbs[33] >> 19) as u8);
+                remainder.limbs[33] = remainder.limbs[33] & 524287; normalize(remainder);
+                multiply(lower, r, work); multiply(upper, r, work);
+                let below = compare(remainder, lower, work);
+                let rest = subtract(denominator, remainder, work); let above = compare(rest, upper, work);
+                let down = below < 0 || inclusive && below == 0;
+                let up = above < 0 || inclusive && above == 0;
+                if !down && !up { continue; }
+                let side = compare(remainder, half, work);
+                var parity: i64 = 0; for d in digits { parity = (parity * radix + d) & 1; }
+                if up && (!down || side > 0 || side == 0 && parity != 0) {
+                    var at = digits.len;
+                    while at > 0 {
+                        at -= 1; digits[at] += 1;
+                        if digits[at] != radix { break; }
+                        digits[at] = 0;
+                        if at == 0 { digits.resize(digits.len + 1, 0); digits[0] = 1; integer_len += 1; }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    while digits.len > integer_len && digits[digits.len - 1] == 0 { digits.resize(digits.len - 1); }
+    if x < 0 { out.push('-'); }
+    let alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+    for d, at in digits { if at == integer_len { out.push('.'); } out.push(alphabet[d]); }
+    return work + out.len;
 }
 // StringToNumber of a StringNumericLiteral (ECMAScript 7.1.4.1.1; the Pants
 // engine's rust/src/value/string.rs string_to_number, QuickJS js_atof with
