@@ -7,13 +7,13 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "ed4a293f53283bc814917454c25016e745401aa4d8755af0cbfb5054cae859e8",
+  "65c120de1307e10e45946659972d2543dc59d19243de2512ea094aea66d805bc",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
   "fd2799f27679ad704b33ef4a2c40f25cefe66243acea1fed17a2f5724490efa1",
   "crates/big-boy-pants-js/scripts/regenerate.bb"
-  "445c05c9f5749d137821cb89532bcbd01b57061e4dbb6376e9d7fc7b56b099f4",
+  "7c4a79339c19747cfca2a528f5caaeb078dce7dba248ed26b558145a30fa4b25",
   "src/bbp_reader.js"
   "2c7ef129e25ff2c337148df604a3d447ce63795fc1146b022cbfe45eba703c2a",
   "src/bbp_runtime.js"
@@ -777,6 +777,10 @@
   "52c475306c973e71dbe7935843550a99fb5b5b5021bc800a39d1edf899546949",
   "corpus/serial/spread-limits.js"
   "91027446d5facdb3de91d10b798026b30eec96818729220296734763bb0ab6e3",
+  "corpus/serial/string-case.gsp"
+  "99806291a1ad85a96e31130cafbfbe584205208f3aba59042c7927d5529b115c",
+  "corpus/serial/string-case.js"
+  "15c5100281994d684e1dd52234ae90123812e08954a1caddacba175710b340c8",
   "corpus/serial/string-html.gsp"
   "753f86061dff0ca446ca53ebff64c1924cc45a311c10f52f052c9fdca41f1dc6",
   "corpus/serial/string-html.js"
@@ -858,9 +862,9 @@
   "corpus/serial/unsettled.js"
   "ead804c1e583d80e648ea4b6388d3e999da3a667923dec3cbf03ee306e12cb9d",
   "corpus/serial/unsupported-array-method.gsp"
-  "1be8164a15c41a591eefc3f18aec72cf9b97bde85371746a40cc0432200752c4",
+  "cc3aaed7ee63967031b0c4a2253d8998c9c82eaaaee04e30003526097d39cce6",
   "corpus/serial/unsupported-array-method.js"
-  "aa56b3f01a025b7458d5d450dd3936b55767aecad6d599cb4b33c1bbba7e38ff",
+  "6acdd0e98a87faf8c45a9ae764986c9d321f23f767a63720d112dcf9cbd1dc76",
   "corpus/serial/unsupported-coercion.gsp"
   "e96b9bb150ded673e7135430e05f4c134a17c9f084a47b3dc1a91ed432de08d5",
   "corpus/serial/unsupported-coercion.js"

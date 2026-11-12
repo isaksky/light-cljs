@@ -2972,11 +2972,12 @@ fn duplicates() {
 // limit and collection checks, plus saved continuations in each distinct
 // StringMethod phase, restored into a fresh thread program's heap.
 fn string_methods_checks() {
-    for bytes in [embed_file("../corpus/serial/string-methods.gsp"), embed_file("../corpus/serial/string-scans.gsp"), embed_file("../corpus/serial/string-split.gsp")] {
+    for bytes, i in [embed_file("../corpus/serial/string-methods.gsp"), embed_file("../corpus/serial/string-scans.gsp"), embed_file("../corpus/serial/string-split.gsp"), embed_file("../corpus/serial/string-case.gsp")] {
         check(bytes, "boolean:true");
         limit_points(bytes);
         heap_program::join(thread_spawn(reclaim_cuts, str(bytes), str("boolean:true"), 1, 1));
-        heap_program::join(thread_spawn(string_saving, str(bytes)));
+        // string-case.js reads locale lists (light-cljs-905).
+        heap_program::join(thread_spawn(string_saving, str(bytes), i == 3));
     }
     // CreateHTML runs no StringMethod frame: no saved phases (light-cljs-904).
     let html = embed_file("../corpus/serial/string-html.gsp");
@@ -3008,7 +3009,7 @@ thread_fn string_saved(image: snapshot::Snapshot, stack: i64) {
     assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.is_bool() && job.result.flag());
     assert(source::retire(job));
 }
-thread_fn string_saving(bytes: u8[]) {
+thread_fn string_saving(bytes: u8[], locale_lists: bool) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
@@ -3016,7 +3017,7 @@ thread_fn string_saving(bytes: u8[]) {
     var seen = dictionary<i64, bool> {}; var stack: i64 = -1; var saved: i64 = 0;
     // The padding and split phases whose top frame lost its operand was
     // refused (light-cljs-904), by pc.
-    var refused = dictionary<i64, bool> {}; var splitting = false;
+    var refused = dictionary<i64, bool> {}; var splitting = false; var locales = false;
     while source::run(job, 1) == tiny::Outcome.Yielded {
         var sample = false;
         for f, i in job.frames {
@@ -3054,8 +3055,8 @@ thread_fn string_saving(bytes: u8[]) {
                             broken.values[a.values + a.locals + x.f.operand_base] = source::Value.Undefined;
                             var why = snapshot::Control {}; assert(!snapshot::validate(broken, why) && why.error == snapshot::Error.Link);
                         }
-                        if (m.which == source::Builtin.StringPrototypeSplit || source::string_pad(m.which)) && i + 1 == a.frame_count {
-                            splitting = true;
+                        if (m.which == source::Builtin.StringPrototypeSplit || source::string_pad(m.which) || source::string_locale_case(m.which)) && i + 1 == a.frame_count {
+                            if source::string_locale_case(m.which) { locales = true; } else { splitting = true; }
                             var absent = copy(image);
                             var shortened = a; shortened.operands -= 1;
                             absent.conts[stack] = source::Cont.Activation { a: shortened };
@@ -3073,5 +3074,9 @@ thread_fn string_saving(bytes: u8[]) {
     }
     assert(saved > 0 && job.status == tiny::Status.Complete && job.result.is_bool() && job.result.flag());
     if splitting { for pc in string_pc::PadFill..(string_pc::SplitScan + 1) { assert(refused.contains(pc)); } }
+    // A locale list's frame on top owns its awaited value, none at the
+    // next element (light-cljs-905).
+    assert(locales == locale_lists);
+    if locales { for pc in string_pc::LocaleLength..(string_pc::LocaleValue + 1) { assert(refused.contains(pc)); } }
     assert(source::retire(job));
 }

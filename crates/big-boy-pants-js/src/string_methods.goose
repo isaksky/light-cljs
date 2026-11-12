@@ -7,6 +7,7 @@ import .array_callbacks;
 import .array_methods;
 import .regexp_object;
 import .regexp_replace;
+import .string_case;
 
 namespace source;
 
@@ -53,7 +54,7 @@ inline fn string_predicate(b: Builtin) -> bool { return b == Builtin.StringProto
 inline fn string_search(b: Builtin) -> bool { return b == Builtin.StringPrototypeIndexOf || b == Builtin.StringPrototypeLastIndexOf || string_predicate(b); }
 inline fn string_points(b: Builtin) -> bool { return b == Builtin.StringFromCharCode || b == Builtin.StringFromCodePoint; }
 inline fn string_well_formed(b: Builtin) -> bool { return b == Builtin.StringPrototypeIsWellFormed || b == Builtin.StringPrototypeToWellFormed; }
-inline fn string_native(b: Builtin) -> bool { return string_points(b) || string_search(b) || string_well_formed(b) || b == Builtin.StringRaw || string_pad(b) || b == Builtin.StringPrototypeSplit; }
+inline fn string_native(b: Builtin) -> bool { return string_points(b) || string_search(b) || string_well_formed(b) || b == Builtin.StringRaw || string_pad(b) || b == Builtin.StringPrototypeSplit || string_locale_case(b); }
 inline fn string_lead(u: i64) -> bool { return u >= 0xd800 && u <= 0xdbff; }
 inline fn string_trail(u: i64) -> bool { return u >= 0xdc00 && u <= 0xdfff; }
 
@@ -95,6 +96,8 @@ fn string_number(job: Job&, b: Builtin) -> bool, f64 {
 }
 fn start_string_method(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
     if string_pad(b) || b == Builtin.StringPrototypeSplit { start_string_transform(job, b, receiver, args, base); return; }
+    // toLocaleUpperCase and toLocaleLowerCase (light-cljs-905; string_case.goose).
+    if string_locale_case(b) { start_locale_case(job, b, receiver, args, base); return; }
     let heap .= job.heap;
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     let needle = arg(args, 0); let position = arg(args, 1);
@@ -120,6 +123,7 @@ fn start_string_method(job: Job&, b: Builtin, receiver: Value, args: const Value
 }
 fn string_method_step(job: Job&, frame: Frame, b: Builtin) {
     if string_pad(b) || b == Builtin.StringPrototypeSplit { string_transform_step(job, frame, b); return; }
+    if string_locale_case(b) { locale_case_step(job, frame, b); return; }
     if frame.pc == string_pc::Finish {
         let base = frame.operand_base + (if string_points(b) || b == Builtin.StringRaw { frame.argument_count } else { 0 });
         let s = concat_pieces(job, job.operands[base..]);

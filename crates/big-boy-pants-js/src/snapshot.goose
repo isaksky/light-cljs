@@ -791,6 +791,9 @@ fn activation_valid<T>(s: const T&, a: source::Activation, c: Control&) -> bool 
             match f.native {
                 StringMethod m => {
                     if (m.which == source::Builtin.StringPrototypeSplit || source::string_pad(m.which)) && i + 1 == count && operands - f.operand_base != 1 { return reject(c, Error.Link); }
+                    // A locale list's frame pops its one awaited value in
+                    // every phase but the next element's (light-cljs-905).
+                    if source::string_locale_case(m.which) && i + 1 == count && operands - f.operand_base != (if f.pc == string_pc::LocaleElement { 0 } else { 1 }) { return reject(c, Error.Link); }
                     if m.which == source::Builtin.StringPrototypeSplit && f.pc == string_pc::SplitScan {
                         if i + 1 != count { return reject(c, Error.Link); }
                         let cursor = s.values[a.values + locals + f.operand_base];
@@ -1480,6 +1483,17 @@ fn release(r: Resources&, bytes: i64) { assert(r.active > 0 && bytes >= 0 && byt
 // StringMethod's state is entirely Values and operand pieces, preserved
 // by SavedFrame and reclamation's general frame traversal (light-cljs-903).
 fn string_frame_valid<T>(s: const T&, f: source::SavedFrame, b: source::Builtin) -> bool {
+    // A locale list's frame (light-cljs-905): the converted receiver, the
+    // list object, then its length, the next index and the first element's
+    // rules, if one was read.
+    if source::string_locale_case(b) {
+        if !f.receiver.is_string() || !f.input.is_object() || f.pc < string_pc::LocaleLength || f.pc > string_pc::LocaleValue { return false; }
+        if f.pc == string_pc::LocaleLength { return f.index == 0 && f.output.is_undefined(); }
+        let n = f.callee;
+        if !n.is_number() || !(n.num() >= 0 && n.num() <= 9007199254740991.0) || trunc(n.num()) != n.num() || f.index < 0 || (f.index as f64) > n.num() || f.pc != string_pc::LocaleElement && (f.index as f64) >= n.num() { return false; }
+        if f.output.is_undefined() { return true; }
+        return f.output.is_number() && (f.output.num() == case_rules::Root || f.output.num() == case_rules::Turkic || f.output.num() == case_rules::Lithuanian);
+    }
     if source::string_pad(b) { return f.pc == string_pc::PadFill && f.receiver.is_string() && f.callee.is_number() && f.callee.num() > s.strings[f.receiver.sid()].len && f.callee.num() <= 9007199254740991.0 && trunc(f.callee.num()) == f.callee.num(); }
     if b == source::Builtin.StringPrototypeSplit {
         if f.pc < string_pc::SplitMethod || f.pc > string_pc::SplitScan { return false; }

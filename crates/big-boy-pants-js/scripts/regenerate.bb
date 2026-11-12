@@ -107,6 +107,8 @@
 (run! "cargo" "test" "--locked" "--features" "bbp-macros" "--lib"
       "compiler_bootstrap::goose_capture::" "--" "--test-threads=1")
 (run! "cargo" "test" "--locked" "-p" "big-boy-pants-js" "--lib" "frontend::goose::" "--" "--test-threads=3")
+;; The String methods' Unicode 17 tables (light-cljs-905), src/unicode_data.goose.
+(apply run! "bb" (str (fs/path directory "unicode-data.bb")) (when check? ["--check"]))
 (doseq [path (sort (fs/glob (fs/path root "corpus") "*.jobs.edn"))]
   (let [input (edn/read-string (slurp (str path)))]
     (jobs! input)

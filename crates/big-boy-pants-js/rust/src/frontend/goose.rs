@@ -2900,6 +2900,9 @@ mod serial_tests {
             ("string-scans", "goose"),
             // Split's delegated protocol and conditional padding conversions.
             ("string-split", "boolean:true"),
+            // Case mapping and normalization after their conversions, and a
+            // locale list's frame (light-cljs-905).
+            ("string-case", "boolean:true"),
             // CreateHTML's nullish attributes, which QuickJS rejects and the
             // Pants engine lacks (light-cljs-904).
             ("string-html", "goose"),

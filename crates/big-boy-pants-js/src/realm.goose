@@ -13,6 +13,7 @@ import .array_mutators;
 import .array_sort;
 import .array_copy;
 import .string_methods;
+import .string_case;
 
 namespace source;
 
@@ -202,11 +203,14 @@ enum Builtin {
     NumberPrototypeToFixed, NumberPrototypeToExponential, NumberPrototypeToPrecision,
     // Extraction, padding, trimming, repetition, split and Annex B (light-cljs-904).
     StringPrototypeSubstring, StringPrototypeSubstr, StringPrototypeSlice, StringPrototypeConcat, StringPrototypePadStart, StringPrototypePadEnd, StringPrototypeRepeat, StringPrototypeTrim, StringPrototypeTrimStart, StringPrototypeTrimEnd, StringPrototypeSplit, StringPrototypeAnchor, StringPrototypeBig, StringPrototypeBlink, StringPrototypeBold, StringPrototypeFixed, StringPrototypeFontcolor, StringPrototypeFontsize, StringPrototypeItalics, StringPrototypeLink, StringPrototypeSmall, StringPrototypeStrike, StringPrototypeSub, StringPrototypeSup,
+    // Case mapping and normalization with Unicode 17 data (light-cljs-905;
+    // string_case.goose); the locale-sensitive two run as StringMethod frames.
+    StringPrototypeToUpperCase, StringPrototypeToLowerCase, StringPrototypeToLocaleUpperCase, StringPrototypeToLocaleLowerCase, StringPrototypeNormalize,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[318] = [
+let BUILTINS: BuiltinInfo[323] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -419,6 +423,11 @@ let BUILTINS: BuiltinInfo[318] = [
     BuiltinInfo { which: Builtin.StringPrototypeStrike, name: "strike", length: 0, plan: plan::StringReceiver },
     BuiltinInfo { which: Builtin.StringPrototypeSub, name: "sub", length: 0, plan: plan::StringReceiver },
     BuiltinInfo { which: Builtin.StringPrototypeSup, name: "sup", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeToUpperCase, name: "toUpperCase", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeToLowerCase, name: "toLowerCase", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeToLocaleUpperCase, name: "toLocaleUpperCase", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeToLocaleLowerCase, name: "toLocaleLowerCase", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeNormalize, name: "normalize", length: 0, plan: plan::StringAttribute },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -530,7 +539,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[248] = [
+let REALM_FUNCTIONS: Method[253] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -718,6 +727,11 @@ let REALM_FUNCTIONS: Method[248] = [
     Method { which: Builtin.StringPrototypeStrike, holder: wrapper_prototype_row(1) },
     Method { which: Builtin.StringPrototypeSub, holder: wrapper_prototype_row(1) },
     Method { which: Builtin.StringPrototypeSup, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeToUpperCase, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeToLowerCase, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeToLocaleUpperCase, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeToLocaleLowerCase, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeNormalize, holder: wrapper_prototype_row(1) },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -768,7 +782,7 @@ inline fn set_row() -> i64 { return fixed_rows() + 159; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[79] = [
+let PENDING: PendingName[74] = [
     // Object.prototype
     // Array.prototype
 
@@ -811,8 +825,8 @@ let PENDING: PendingName[79] = [
 
     PendingName { holder: 27, key: "match" }, PendingName { holder: 27, key: "matchAll" }, PendingName { holder: 27, key: "search" },
 
-    PendingName { holder: 27, key: "toLowerCase" }, PendingName { holder: 27, key: "toUpperCase" }, PendingName { holder: 27, key: "toLocaleLowerCase" },
-    PendingName { holder: 27, key: "toLocaleUpperCase" }, PendingName { holder: 27, key: "normalize" }, PendingName { holder: 27, key: "localeCompare" },
+    // localeCompare is Intl.Collator's (light-cljs-774).
+    PendingName { holder: 27, key: "localeCompare" },
 
     // RegExp and %RegExp.prototype% (light-cljs-932): the symbol methods
     // are light-cljs-770's fourth to sixth children's, escape and compile
@@ -2391,6 +2405,8 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         NumberPrototypeValueOf => { return this_primitive(job, b, 0, receiver); },
         StringPrototypeSubstring, StringPrototypeSubstr, StringPrototypeSlice, StringPrototypeConcat, StringPrototypeRepeat, StringPrototypeTrim, StringPrototypeTrimStart, StringPrototypeTrimEnd, StringPrototypeAnchor, StringPrototypeBig, StringPrototypeBlink, StringPrototypeBold, StringPrototypeFixed, StringPrototypeFontcolor, StringPrototypeFontsize, StringPrototypeItalics, StringPrototypeLink, StringPrototypeSmall, StringPrototypeStrike, StringPrototypeSub, StringPrototypeSup => { return string_transform_builtin(job, b, receiver, args); },
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeCodePointAt, StringPrototypeAt => { return string_access_builtin(job, b, receiver, args); },
+        // Case mapping and normalization (light-cljs-905; string_case.goose).
+        StringPrototypeToUpperCase, StringPrototypeToLowerCase, StringPrototypeNormalize => { return string_case_builtin(job, b, receiver, args); },
         NumberPrototypeToString, NumberPrototypeToFixed, NumberPrototypeToExponential, NumberPrototypeToPrecision => { return number_to_string(job, b, receiver, args); },
         StringPrototypeValueOf, StringPrototypeToString => { return this_primitive(job, b, 1, receiver); },
         BooleanPrototypeValueOf => { return this_primitive(job, b, 2, receiver); },
@@ -2453,7 +2469,8 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         // test (light-cljs-933) run as RegExp native frames (native_start).
         RegExpPrototypeSource, RegExpPrototypeGlobal, RegExpPrototypeIgnoreCase, RegExpPrototypeMultiline, RegExpPrototypeDotAll, RegExpPrototypeUnicode, RegExpPrototypeUnicodeSets, RegExpPrototypeSticky, RegExpPrototypeHasIndices, RegExpSpecies => { return regexp_builtin(job, b, receiver); },
         StringPrototypePadStart, StringPrototypePadEnd, StringPrototypeSplit,
-        StringFromCharCode, StringFromCodePoint, StringRaw, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeIncludes, StringPrototypeStartsWith, StringPrototypeEndsWith, StringPrototypeIsWellFormed, StringPrototypeToWellFormed => { return unsupported_step(job, b, "called outside a native frame"); },
+        StringFromCharCode, StringFromCodePoint, StringRaw, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeIncludes, StringPrototypeStartsWith, StringPrototypeEndsWith, StringPrototypeIsWellFormed, StringPrototypeToWellFormed,
+        StringPrototypeToLocaleUpperCase, StringPrototypeToLocaleLowerCase => { return unsupported_step(job, b, "called outside a native frame"); },
         RegExp, RegExpPrototypeFlags, RegExpPrototypeToString, RegExpPrototypeExec, RegExpPrototypeTest => { return unsupported_step(job, b, "called outside a native frame"); },
         // replace, replaceAll and @@replace (light-cljs-934) run as RegExp native frames too.
         StringPrototypeReplace, StringPrototypeReplaceAll, RegExpPrototypeReplace => { return unsupported_step(job, b, "called outside a native frame"); },

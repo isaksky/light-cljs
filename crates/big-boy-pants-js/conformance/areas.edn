@@ -71,6 +71,9 @@
   "bbp/strings_search" {:area :core-builtins}
   "bbp/strings_extract_and_pad" {:area :core-builtins}
   "bbp/strings_split" {:area :core-builtins}
+  "bbp/strings_case_mapping" {:area :core-builtins}
+  "bbp/strings_locale_case" {:area :core-builtins}
+  "bbp/strings_normalize" {:area :core-builtins}
   "bbp/strings_quickjs_annex_b" {:area :core-builtins :pants-gap "the Pants engine lacks substr, trimLeft/trimRight and Annex B HTML methods"}
   "bbp/strings_quickjs_well_formed" {:area :core-builtins :pants-gap "the Pants engine lacks String.prototype.isWellFormed and toWellFormed"}
   "bbp/core_builtin_conversions" {:area :core-builtins}
