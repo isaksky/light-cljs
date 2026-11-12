@@ -1399,6 +1399,18 @@ fn release(r: Resources&, bytes: i64) { assert(r.active > 0 && bytes >= 0 && byt
 // StringMethod's state is entirely Values and operand pieces, preserved
 // by SavedFrame and reclamation's general frame traversal (light-cljs-903).
 fn string_frame_valid<T>(s: const T&, f: source::SavedFrame, b: source::Builtin) -> bool {
+    if source::string_pad(b) { return f.pc == string_pc::PadFill && f.receiver.is_string() && f.callee.is_number() && f.callee.num() > s.strings[f.receiver.sid()].len && f.callee.num() <= 9007199254740991.0 && trunc(f.callee.num()) == f.callee.num(); }
+    if b == source::Builtin.StringPrototypeSplit {
+        if f.pc < string_pc::SplitMethod || f.pc > string_pc::SplitScan { return false; }
+        if f.pc <= string_pc::SplitText { return true; }
+        if !f.receiver.is_string() { return false; }
+        if f.pc == string_pc::SplitLimit { return true; }
+        if !f.callee.is_number() || !(f.callee.num() >= 0 && f.callee.num() <= 4294967295) || trunc(f.callee.num()) != f.callee.num() { return false; }
+        if f.pc == string_pc::SplitSeparator { return true; }
+        if !f.input.is_string() || !f.output.is_object() || s.nodes[f.output.id()].kind != node_kind::Array { return false; }
+        let len = s.strings[f.receiver.sid()].len as i64; let size = s.strings[f.input.sid()].len as i64;
+        return f.index >= 0 && f.index <= len && f.argument_count >= 0 && (if size == 0 { f.argument_count == 0 } else { f.argument_count < size && f.index + f.argument_count <= len });
+    }
     if source::string_points(b) { return (f.pc == string_pc::Points || f.pc == string_pc::PointValue || f.pc == string_pc::Finish) && f.argument_count >= 0 && f.index >= 0 && f.index <= f.argument_count && (f.pc != string_pc::PointValue || f.index < f.argument_count) && (f.pc != string_pc::Finish || f.index == f.argument_count); }
     if source::string_search(b) {
         if !f.receiver.is_string() || f.pc < string_pc::Match || f.pc > string_pc::Scan { return false; }

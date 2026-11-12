@@ -200,11 +200,13 @@ enum Builtin {
     // Exact number text after the shared thisNumberValue/Integer plan
     // (light-cljs-902; number_text.goose).
     NumberPrototypeToFixed, NumberPrototypeToExponential, NumberPrototypeToPrecision,
+    // Extraction, padding, trimming, repetition, split and Annex B (light-cljs-904).
+    StringPrototypeSubstring, StringPrototypeSubstr, StringPrototypeSlice, StringPrototypeConcat, StringPrototypePadStart, StringPrototypePadEnd, StringPrototypeRepeat, StringPrototypeTrim, StringPrototypeTrimStart, StringPrototypeTrimEnd, StringPrototypeSplit, StringPrototypeAnchor, StringPrototypeBig, StringPrototypeBlink, StringPrototypeBold, StringPrototypeFixed, StringPrototypeFontcolor, StringPrototypeFontsize, StringPrototypeItalics, StringPrototypeLink, StringPrototypeSmall, StringPrototypeStrike, StringPrototypeSub, StringPrototypeSup,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[294] = [
+let BUILTINS: BuiltinInfo[318] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -393,6 +395,30 @@ let BUILTINS: BuiltinInfo[294] = [
     BuiltinInfo { which: Builtin.NumberPrototypeToFixed, name: "toFixed", length: 1, plan: plan::NumberRadix },
     BuiltinInfo { which: Builtin.NumberPrototypeToExponential, name: "toExponential", length: 1, plan: plan::NumberRadix },
     BuiltinInfo { which: Builtin.NumberPrototypeToPrecision, name: "toPrecision", length: 1, plan: plan::NumberRadix },
+    BuiltinInfo { which: Builtin.StringPrototypeSubstring, name: "substring", length: 2, plan: plan::StringRange },
+    BuiltinInfo { which: Builtin.StringPrototypeSubstr, name: "substr", length: 2, plan: plan::StringRange },
+    BuiltinInfo { which: Builtin.StringPrototypeSlice, name: "slice", length: 2, plan: plan::StringRange },
+    BuiltinInfo { which: Builtin.StringPrototypeConcat, name: "concat", length: 1, plan: plan::StringConcat },
+    BuiltinInfo { which: Builtin.StringPrototypePadStart, name: "padStart", length: 1, plan: plan::StringPosition },
+    BuiltinInfo { which: Builtin.StringPrototypePadEnd, name: "padEnd", length: 1, plan: plan::StringPosition },
+    BuiltinInfo { which: Builtin.StringPrototypeRepeat, name: "repeat", length: 1, plan: plan::StringPosition },
+    BuiltinInfo { which: Builtin.StringPrototypeTrim, name: "trim", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeTrimStart, name: "trimStart", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeTrimEnd, name: "trimEnd", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeSplit, name: "split", length: 2, plan: plan::None },
+    BuiltinInfo { which: Builtin.StringPrototypeAnchor, name: "anchor", length: 1, plan: plan::StringAttribute },
+    BuiltinInfo { which: Builtin.StringPrototypeBig, name: "big", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeBlink, name: "blink", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeBold, name: "bold", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeFixed, name: "fixed", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeFontcolor, name: "fontcolor", length: 1, plan: plan::StringAttribute },
+    BuiltinInfo { which: Builtin.StringPrototypeFontsize, name: "fontsize", length: 1, plan: plan::StringAttribute },
+    BuiltinInfo { which: Builtin.StringPrototypeItalics, name: "italics", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeLink, name: "link", length: 1, plan: plan::StringAttribute },
+    BuiltinInfo { which: Builtin.StringPrototypeSmall, name: "small", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeStrike, name: "strike", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeSub, name: "sub", length: 0, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeSup, name: "sup", length: 0, plan: plan::StringReceiver },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -504,7 +530,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[224] = [
+let REALM_FUNCTIONS: Method[248] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -668,6 +694,30 @@ let REALM_FUNCTIONS: Method[224] = [
     Method { which: Builtin.NumberPrototypeToFixed, holder: wrapper_prototype_row(0) },
     Method { which: Builtin.NumberPrototypeToExponential, holder: wrapper_prototype_row(0) },
     Method { which: Builtin.NumberPrototypeToPrecision, holder: wrapper_prototype_row(0) },
+    Method { which: Builtin.StringPrototypeSubstring, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeSubstr, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeSlice, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeConcat, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypePadStart, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypePadEnd, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeRepeat, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeTrim, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeTrimStart, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeTrimEnd, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeSplit, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeAnchor, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeBig, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeBlink, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeBold, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeFixed, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeFontcolor, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeFontsize, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeItalics, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeLink, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeSmall, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeStrike, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeSub, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeSup, holder: wrapper_prototype_row(1) },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -718,7 +768,7 @@ inline fn set_row() -> i64 { return fixed_rows() + 159; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[105] = [
+let PENDING: PendingName[79] = [
     // Object.prototype
     // Array.prototype
 
@@ -759,17 +809,11 @@ let PENDING: PendingName[105] = [
     PendingName { holder: 26, key: "toLocaleString" },
     // String and %String.prototype%.
 
-    PendingName { holder: 27, key: "concat" },
+    PendingName { holder: 27, key: "match" }, PendingName { holder: 27, key: "matchAll" }, PendingName { holder: 27, key: "search" },
 
-    PendingName { holder: 27, key: "match" }, PendingName { holder: 27, key: "matchAll" }, PendingName { holder: 27, key: "search" }, PendingName { holder: 27, key: "split" },
-    PendingName { holder: 27, key: "substring" }, PendingName { holder: 27, key: "substr" }, PendingName { holder: 27, key: "slice" }, PendingName { holder: 27, key: "repeat" },
-    PendingName { holder: 27, key: "padEnd" }, PendingName { holder: 27, key: "padStart" },
-    PendingName { holder: 27, key: "trim" }, PendingName { holder: 27, key: "trimEnd" }, PendingName { holder: 27, key: "trimRight" }, PendingName { holder: 27, key: "trimStart" },
-    PendingName { holder: 27, key: "trimLeft" }, PendingName { holder: 27, key: "toLowerCase" }, PendingName { holder: 27, key: "toUpperCase" }, PendingName { holder: 27, key: "toLocaleLowerCase" },
-    PendingName { holder: 27, key: "toLocaleUpperCase" }, PendingName { holder: 27, key: "normalize" }, PendingName { holder: 27, key: "localeCompare" }, PendingName { holder: 27, key: "anchor" },
-    PendingName { holder: 27, key: "big" }, PendingName { holder: 27, key: "blink" }, PendingName { holder: 27, key: "bold" }, PendingName { holder: 27, key: "fixed" },
-    PendingName { holder: 27, key: "fontcolor" }, PendingName { holder: 27, key: "fontsize" }, PendingName { holder: 27, key: "italics" }, PendingName { holder: 27, key: "link" },
-    PendingName { holder: 27, key: "small" }, PendingName { holder: 27, key: "strike" }, PendingName { holder: 27, key: "sub" }, PendingName { holder: 27, key: "sup" },
+    PendingName { holder: 27, key: "toLowerCase" }, PendingName { holder: 27, key: "toUpperCase" }, PendingName { holder: 27, key: "toLocaleLowerCase" },
+    PendingName { holder: 27, key: "toLocaleUpperCase" }, PendingName { holder: 27, key: "normalize" }, PendingName { holder: 27, key: "localeCompare" },
+
     // RegExp and %RegExp.prototype% (light-cljs-932): the symbol methods
     // are light-cljs-770's fourth to sixth children's, escape and compile
     // its eighth's (exec and test are light-cljs-933's, @@replace
@@ -1137,6 +1181,9 @@ fn build_realm(heap: Heap&) -> bool {
     // configurable only (ECMAScript 23.1.3.41).
     for n in UNSCOPABLE_NAMES { if !realm_value(heap, array_unscopables_row(), n.text, boolean(true), attr_writable() | attr_enumerable() | attr_configurable()) { return false; } }
     if !add_own(heap, array_prototype_row(), Value.Symbol { s: well_known::Unscopables }, object(array_unscopables_row()), attr_configurable()) { return false; }
+    // Annex B trim aliases share their function objects and canonical names.
+    if !realm_value(heap, wrapper_prototype_row(1), "trimLeft", object(realm_function_row(Builtin.StringPrototypeTrimStart)), attr_writable() | attr_configurable())
+        || !realm_value(heap, wrapper_prototype_row(1), "trimRight", object(realm_function_row(Builtin.StringPrototypeTrimEnd)), attr_writable() | attr_configurable()) { return false; }
     // Collection aliases are the same function objects, including their names.
     if !add_own(heap, map_prototype_row(), Value.Symbol { s: well_known::Iterator }, object(realm_function_row(Builtin.MapPrototypeEntries)), attr_writable() | attr_configurable())
         || !add_own(heap, set_prototype_row(), Value.Symbol { s: well_known::Iterator }, object(realm_function_row(Builtin.SetPrototypeValues)), attr_writable() | attr_configurable())
@@ -2325,6 +2372,7 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         String => { return wrapper_value(job, b, 1, args, false); },
         Boolean => { return wrapper_value(job, b, 2, args, false); },
         NumberPrototypeValueOf => { return this_primitive(job, b, 0, receiver); },
+        StringPrototypeSubstring, StringPrototypeSubstr, StringPrototypeSlice, StringPrototypeConcat, StringPrototypeRepeat, StringPrototypeTrim, StringPrototypeTrimStart, StringPrototypeTrimEnd, StringPrototypeAnchor, StringPrototypeBig, StringPrototypeBlink, StringPrototypeBold, StringPrototypeFixed, StringPrototypeFontcolor, StringPrototypeFontsize, StringPrototypeItalics, StringPrototypeLink, StringPrototypeSmall, StringPrototypeStrike, StringPrototypeSub, StringPrototypeSup => { return string_transform_builtin(job, b, receiver, args); },
         StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeCodePointAt, StringPrototypeAt => { return string_access_builtin(job, b, receiver, args); },
         NumberPrototypeToString, NumberPrototypeToFixed, NumberPrototypeToExponential, NumberPrototypeToPrecision => { return number_to_string(job, b, receiver, args); },
         StringPrototypeValueOf, StringPrototypeToString => { return this_primitive(job, b, 1, receiver); },
@@ -2387,6 +2435,7 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         // @@species are plain; the constructor, flags, toString, exec and
         // test (light-cljs-933) run as RegExp native frames (native_start).
         RegExpPrototypeSource, RegExpPrototypeGlobal, RegExpPrototypeIgnoreCase, RegExpPrototypeMultiline, RegExpPrototypeDotAll, RegExpPrototypeUnicode, RegExpPrototypeUnicodeSets, RegExpPrototypeSticky, RegExpPrototypeHasIndices, RegExpSpecies => { return regexp_builtin(job, b, receiver); },
+        StringPrototypePadStart, StringPrototypePadEnd, StringPrototypeSplit,
         StringFromCharCode, StringFromCodePoint, StringRaw, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeIncludes, StringPrototypeStartsWith, StringPrototypeEndsWith, StringPrototypeIsWellFormed, StringPrototypeToWellFormed => { return unsupported_step(job, b, "called outside a native frame"); },
         RegExp, RegExpPrototypeFlags, RegExpPrototypeToString, RegExpPrototypeExec, RegExpPrototypeTest => { return unsupported_step(job, b, "called outside a native frame"); },
         // replace, replaceAll and @@replace (light-cljs-934) run as RegExp native frames too.

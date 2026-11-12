@@ -155,7 +155,11 @@ let plan::OneUint32: u8 = 11;
 // raw interleaves property reads with conversions (string_methods.goose).
 let plan::StringReceiver: u8 = 12;
 let plan::StringPosition: u8 = 13;
-let PLANS: Plan[14] = [
+// String extraction's two indices, concat's arguments, HTML's attribute.
+let plan::StringRange: u8 = 14;
+let plan::StringConcat: u8 = 15;
+let plan::StringAttribute: u8 = 16;
+let PLANS: Plan[17] = [
     Plan { this_step: ThisStep.None, steps: [Step.None, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
     Plan { this_step: ThisStep.None, steps: [Step.Numeric, Step.None, Step.None, Step.None], rest: Step.None, construct: true },
     Plan { this_step: ThisStep.None, steps: [Step.String, Step.None, Step.None, Step.None], rest: Step.None, construct: true },
@@ -170,6 +174,9 @@ let PLANS: Plan[14] = [
     Plan { this_step: ThisStep.None, steps: [Step.Uint32, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
     Plan { this_step: ThisStep.String, steps: [Step.None, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
     Plan { this_step: ThisStep.String, steps: [Step.Integer, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
+    Plan { this_step: ThisStep.String, steps: [Step.Integer, Step.Integer, Step.None, Step.None], rest: Step.None, construct: false },
+    Plan { this_step: ThisStep.String, steps: [Step.String, Step.String, Step.String, Step.String], rest: Step.String, construct: false },
+    Plan { this_step: ThisStep.String, steps: [Step.String, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
 ];
 inline fn step_at(p: const Plan&, i: i64) -> Step { return if i < p.steps.len { p.steps[i] } else { p.rest }; }
 // The plan row of built-in function object f.

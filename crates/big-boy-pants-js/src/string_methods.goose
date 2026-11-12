@@ -53,7 +53,7 @@ inline fn string_predicate(b: Builtin) -> bool { return b == Builtin.StringProto
 inline fn string_search(b: Builtin) -> bool { return b == Builtin.StringPrototypeIndexOf || b == Builtin.StringPrototypeLastIndexOf || string_predicate(b); }
 inline fn string_points(b: Builtin) -> bool { return b == Builtin.StringFromCharCode || b == Builtin.StringFromCodePoint; }
 inline fn string_well_formed(b: Builtin) -> bool { return b == Builtin.StringPrototypeIsWellFormed || b == Builtin.StringPrototypeToWellFormed; }
-inline fn string_native(b: Builtin) -> bool { return string_points(b) || string_search(b) || string_well_formed(b) || b == Builtin.StringRaw; }
+inline fn string_native(b: Builtin) -> bool { return string_points(b) || string_search(b) || string_well_formed(b) || b == Builtin.StringRaw || string_pad(b) || b == Builtin.StringPrototypeSplit; }
 inline fn string_lead(u: i64) -> bool { return u >= 0xd800 && u <= 0xdbff; }
 inline fn string_trail(u: i64) -> bool { return u >= 0xdc00 && u <= 0xdfff; }
 
@@ -94,6 +94,7 @@ fn string_number(job: Job&, b: Builtin) -> bool, f64 {
     return true, primitive_number(job, b, v);
 }
 fn start_string_method(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
+    if string_pad(b) || b == Builtin.StringPrototypeSplit { start_string_transform(job, b, receiver, args, base); return; }
     let heap .= job.heap;
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     let needle = arg(args, 0); let position = arg(args, 1);
@@ -118,6 +119,7 @@ fn start_string_method(job: Job&, b: Builtin, receiver: Value, args: const Value
     }
 }
 fn string_method_step(job: Job&, frame: Frame, b: Builtin) {
+    if string_pad(b) || b == Builtin.StringPrototypeSplit { string_transform_step(job, frame, b); return; }
     if frame.pc == string_pc::Finish {
         let base = frame.operand_base + (if string_points(b) || b == Builtin.StringRaw { frame.argument_count } else { 0 });
         let s = concat_pieces(job, job.operands[base..]);
@@ -291,4 +293,241 @@ fn string_well_formed_step(job: Job&, f: Frame, b: Builtin) {
         if b == Builtin.StringPrototypeIsWellFormed { finish_native(job, f, boolean(true)); }
         else { job.frames[at].index = i; job.frames[at].pc = string_pc::Finish; }
     } else { job.frames[at].index = i; }
+}
+
+// Extraction and construction after the conversion plan (light-cljs-904).
+// No user code runs here. Substrings share their source's unit run when
+// the encoding stays canonical. Scans and all result units are charged;
+// length and memory checks precede construction of a long result.
+inline fn max_string_length() -> i64 { return 1073741823; }
+inline fn string_pad(b: Builtin) -> bool { return b == Builtin.StringPrototypePadStart || b == Builtin.StringPrototypePadEnd; }
+fn string_result_room(job: Job&, len: f64) -> bool {
+    if len > max_string_length() { range_error(job, "string too long"); return false; }
+    let heap .= job.heap;
+    if !units_fit(heap, len as i64) || heap.strings.len - heap.image.strings >= heap.limits.units { return memory(heap); }
+    return charge(heap, len as i64);
+}
+inline fn string_relative(n: f64, len: i64) -> i64 { return if n < 0 { max(len + n, 0.0) as i64 } else { min(n, len) as i64 }; }
+fn string_extract(job: Job&, b: Builtin, s: Value, args: const Value[:]) -> Value {
+    let heap .= job.heap; let len = str_len(heap, s);
+    let first = to_integer_or_infinity(primitive_number(job, b, arg(args, 0)));
+    let end_arg = form_value(heap, arg(args, 1));
+    let second = if end_arg.is_undefined() { len as f64 } else { to_integer_or_infinity(primitive_number(job, b, end_arg)) };
+    if heap.fault != Fault.None { return Value.Undefined; }
+    var start = if b == Builtin.StringPrototypeSubstring { min(max(first, 0.0), len) as i64 } else { string_relative(first, len) };
+    var end = if b == Builtin.StringPrototypeSubstring { min(max(second, 0.0), len) as i64 }
+        else if b == Builtin.StringPrototypeSubstr { start + min(max(second, 0.0), len - start) as i64 }
+        else { string_relative(second, len) };
+    if b == Builtin.StringPrototypeSubstring && start > end { let swap = start; start = end; end = swap; }
+    end = max(start, end);
+    if !charge(heap, end - start) { return Value.Undefined; }
+    return substring(heap, s, start, end);
+}
+fn string_repeat(job: Job&, b: Builtin, s: Value, count: Value) -> Value {
+    let heap .= job.heap;
+    let n = to_integer_or_infinity(primitive_number(job, b, count));
+    if heap.fault != Fault.None { return Value.Undefined; }
+    if n < 0 || n == 1.0 / 0.0 { range_error(job, "invalid repeat count"); return Value.Undefined; }
+    let len = str_len(heap, s);
+    if n == 0 || len == 0 { return key_named(heap, ""); }
+    if n > max_string_length() / (len as f64) { range_error(job, "string too long"); return Value.Undefined; }
+    let total = (n * len) as i64;
+    if !string_result_room(job, total) { return Value.Undefined; }
+    var units: u16[>..] = [];
+    for i in n as i64 { append_utf16(heap, s, units); }
+    return import_text(heap, units);
+}
+fn string_trim(job: Job&, b: Builtin, s: Value) -> Value {
+    let heap .= job.heap; let len = str_len(heap, s);
+    if !charge(heap, len) { return Value.Undefined; }
+    var start: i64 = 0; var end = len;
+    if b != Builtin.StringPrototypeTrimEnd { while start < end && str_white_space(unit(heap, s, start)) { start += 1; } }
+    if b != Builtin.StringPrototypeTrimStart { while end > start && str_white_space(unit(heap, s, end - 1)) { end -= 1; } }
+    return substring(heap, s, start, end);
+}
+fn string_concat(job: Job&, b: Builtin, s: Value, args: const Value[:]) -> Value {
+    let heap .= job.heap; var pieces: Value[>..] = [s]; var total = str_len(heap, s);
+    for a in args {
+        let piece = primitive_string(job, b, a);
+        if heap.fault != Fault.None { return Value.Undefined; }
+        let n = str_len(heap, piece);
+        if n > max_string_length() - total { range_error(job, "string too long"); return Value.Undefined; }
+        if !charge(heap, n) { return Value.Undefined; }
+        total += n; pieces.push(piece);
+    }
+    if !charge(heap, str_len(heap, s)) { return Value.Undefined; }
+    return concat_pieces(job, pieces);
+}
+struct HtmlMethod { which: Builtin, tag: u8[..6], attribute: u8[..5] = "" }
+let HTML_METHODS: HtmlMethod[13] = [
+    HtmlMethod { which: Builtin.StringPrototypeAnchor, tag: "a", attribute: "name" },
+    HtmlMethod { which: Builtin.StringPrototypeBig, tag: "big" }, HtmlMethod { which: Builtin.StringPrototypeBlink, tag: "blink" },
+    HtmlMethod { which: Builtin.StringPrototypeBold, tag: "b" }, HtmlMethod { which: Builtin.StringPrototypeFixed, tag: "tt" },
+    HtmlMethod { which: Builtin.StringPrototypeFontcolor, tag: "font", attribute: "color" }, HtmlMethod { which: Builtin.StringPrototypeFontsize, tag: "font", attribute: "size" },
+    HtmlMethod { which: Builtin.StringPrototypeItalics, tag: "i" }, HtmlMethod { which: Builtin.StringPrototypeLink, tag: "a", attribute: "href" },
+    HtmlMethod { which: Builtin.StringPrototypeSmall, tag: "small" }, HtmlMethod { which: Builtin.StringPrototypeStrike, tag: "strike" },
+    HtmlMethod { which: Builtin.StringPrototypeSub, tag: "sub" }, HtmlMethod { which: Builtin.StringPrototypeSup, tag: "sup" },
+];
+fn string_html(job: Job&, b: Builtin, s: Value, args: const Value[:]) -> Value {
+    let heap .= job.heap;
+    for m in HTML_METHODS {
+        if m.which != b { continue; }
+        let a = if m.attribute.len > 0 { primitive_string(job, b, arg(args, 0)) } else { Value.Undefined };
+        if heap.fault != Fault.None { return Value.Undefined; }
+        var size = 5 + 2 * m.tag.len + str_len(heap, s);
+        if m.attribute.len > 0 {
+            let len = str_len(heap, a);
+            if !charge(heap, len) { return Value.Undefined; }
+            size += m.attribute.len + 4 + len;
+            for i in len { if unit(heap, a, i) == '"' { size += 5; } }
+        }
+        if !string_result_room(job, size) { return Value.Undefined; }
+        var out: u16[>..] = []; out.push('<'); for c in m.tag { out.push(c); }
+        if m.attribute.len > 0 {
+            out.push(' '); for c in m.attribute { out.push(c); } out.push('='); out.push('"');
+            for i in str_len(heap, a) { let u = unit(heap, a, i); if u == '"' { for c in "&quot;" { out.push(c); } } else { out.push(u); } }
+            out.push('"');
+        }
+        out.push('>'); append_utf16(heap, s, out); out.push('<'); out.push('/'); for c in m.tag { out.push(c); } out.push('>');
+        return import_text(heap, out);
+    }
+    heap.fault = Fault.InvalidState; return Value.Undefined;
+}
+fn string_transform_builtin(job: Job&, b: Builtin, receiver: Value, args: const Value[:]) -> Value {
+    let s = string_receiver(job, b, receiver);
+    if job.heap.fault != Fault.None { return Value.Undefined; }
+    match b {
+        StringPrototypeSubstring, StringPrototypeSubstr, StringPrototypeSlice => { return string_extract(job, b, s, args); },
+        StringPrototypeConcat => { return string_concat(job, b, s, args); },
+        StringPrototypeRepeat => { return string_repeat(job, b, s, arg(args, 0)); },
+        StringPrototypeTrim, StringPrototypeTrimStart, StringPrototypeTrimEnd => { return string_trim(job, b, s); },
+        _ => { return string_html(job, b, s, args); },
+    }
+}
+
+// Padding converts the filler only after the target length requires it.
+// Split has no plan: GetMethod(@@split) precedes ToString of the receiver,
+// then ToUint32(limit), then ToString(separator), even when the limit is 0.
+// All state is held by ordinary frame Values/operands, including the fresh
+// result array. Reclamation and saved continuations trace it normally.
+let string_pc::PadFill = 14;
+let string_pc::SplitMethod = 15;
+let string_pc::SplitDelegate = 16;
+let string_pc::SplitText = 17;
+let string_pc::SplitLimit = 18;
+let string_pc::SplitSeparator = 19;
+let string_pc::SplitScan = 20;
+fn start_string_transform(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
+    let heap .= job.heap;
+    let o = form_value(heap, receiver); let first = form_value(heap, arg(args, 0)); let second = form_value(heap, arg(args, 1));
+    if o.is_null() || o.is_undefined() { type_error(job, "String method requires a receiver"); return; }
+    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+    if string_pad(b) {
+        let s = string_receiver(job, b, o);
+        if heap.fault != Fault.None { return; }
+        let len = to_length(primitive_number(job, b, first));
+        if heap.fault != Fault.None { return; }
+        if len <= str_len(heap, s) { job.operands.resize(base); deliver(job, s); return; }
+        job.operands.resize(base);
+        job.frames.push(Frame { function: -1, pc: string_pc::PadFill, local_base: job.locals.len, operand_base: base, receiver: s, callee: number(len), native: Native.StringMethod { which: b } });
+        push_operand(job, if second.is_undefined() { key_named(heap, " ") } else { second });
+        return;
+    }
+    job.operands.resize(base);
+    job.frames.push(Frame { function: -1, pc: if first.is_undefined() || first.is_null() { string_pc::SplitText } else { string_pc::SplitMethod }, local_base: job.locals.len, operand_base: base, receiver: o, input: first, callee: second, native: Native.StringMethod { which: b } });
+    if first.is_undefined() || first.is_null() { push_operand(job, o); }
+    else { get_any(job, b, first, Value.Symbol { s: well_known::Split }); }
+}
+fn string_pad_result(job: Job&, b: Builtin, s: Value, filler: Value, target: f64) -> Value {
+    let heap .= job.heap; let len = str_len(heap, s); let fill = str_len(heap, filler);
+    if fill == 0 { return s; }
+    if !string_result_room(job, target) { return Value.Undefined; }
+    let extra = (target as i64) - len;
+    var out: u16[>..] = [];
+    if b == Builtin.StringPrototypePadEnd { append_utf16(heap, s, out); }
+    for i in extra { out.push(unit(heap, filler, i % fill)); }
+    if b == Builtin.StringPrototypePadStart { append_utf16(heap, s, out); }
+    return import_text(heap, out);
+}
+fn string_transform_step(job: Job&, f: Frame, b: Builtin) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    match f.pc {
+        string_pc::PadFill => {
+            let ready, s = regexp_text(job, b);
+            if !ready || heap.fault != Fault.None { return; }
+            let result = string_pad_result(job, b, f.receiver, s, f.callee.num());
+            if heap.fault == Fault.None { finish_native(job, f, result); }
+        },
+        string_pc::SplitMethod => {
+            let m = form_value(heap, job.operands.pop());
+            if m.is_undefined() || m.is_null() { job.frames[at].pc = string_pc::SplitText; push_operand(job, f.receiver); return; }
+            if !is_callable(heap, m) { type_error(job, "Symbol.split is not a function"); return; }
+            job.frames[at].pc = string_pc::SplitDelegate;
+            call_accessor(job, m, f.input, [f.receiver, f.callee]);
+        },
+        string_pc::SplitDelegate => { finish_native(job, f, job.operands.pop()); },
+        string_pc::SplitText => {
+            let ready, s = regexp_text(job, b);
+            if !ready || heap.fault != Fault.None { return; }
+            job.frames[at].receiver = s; job.frames[at].pc = string_pc::SplitLimit; push_operand(job, f.callee);
+        },
+        string_pc::SplitLimit => {
+            let ready, n = string_number(job, b);
+            if !ready || heap.fault != Fault.None { return; }
+            job.frames[at].callee = number(if f.callee.is_undefined() { 4294967295 } else { to_uint32(n) });
+            job.frames[at].pc = string_pc::SplitSeparator; push_operand(job, f.input);
+        },
+        string_pc::SplitSeparator => {
+            let ready, s = regexp_text(job, b);
+            if !ready || heap.fault != Fault.None { return; }
+            let array = new_array(heap, []);
+            if heap.fault != Fault.None { return; }
+            if f.callee.num() == 0 { finish_native(job, f, array); return; }
+            if f.input.is_undefined() {
+                if set_element(heap, array, 0, f.receiver) { finish_native(job, f, array); }
+                return;
+            }
+            job.frames[at].input = s; job.frames[at].output = array;
+            job.frames[at].pc = string_pc::SplitScan;
+            push_operand(job, number(0)); // the end of the last separator
+        },
+        string_pc::SplitScan => { string_split_scan(job, f); },
+        _ => { heap.fault = Fault.InvalidState; },
+    }
+}
+fn string_split_piece(job: Job&, f: Frame, start: i64, end: i64) -> bool {
+    let heap .= job.heap;
+    if !charge(heap, end - start + 1) { return false; }
+    let s = substring(heap, f.receiver, start, end);
+    return heap.fault == Fault.None && set_element(heap, f.output, node(heap, f.output.id()).length, s);
+}
+fn string_split_scan(job: Job&, f: Frame) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    let len = str_len(heap, f.receiver); let size = str_len(heap, f.input);
+    if size == 0 {
+        if f.index == len { finish_native(job, f, f.output); return; }
+        if !string_split_piece(job, f, f.index, f.index + 1) { return; }
+        job.frames[at].index += 1;
+        if node(heap, f.output.id()).length >= f.callee.num() { finish_native(job, f, f.output); }
+        return;
+    }
+    var p = f.index; var matched = f.argument_count;
+    for visited in string_quantum() {
+        if p > len - size {
+            if string_split_piece(job, f, job.operands[f.operand_base].num() as i64, len) { finish_native(job, f, f.output); }
+            return;
+        }
+        if !charge(heap) { return; }
+        if unit(heap, f.receiver, p + matched) == unit(heap, f.input, matched) {
+            matched += 1;
+            if matched == size {
+                if !string_split_piece(job, f, job.operands[f.operand_base].num() as i64, p) { return; }
+                p += size; job.operands[f.operand_base] = number(p);
+                job.frames[at].index = p; job.frames[at].argument_count = 0;
+                if node(heap, f.output.id()).length >= f.callee.num() { finish_native(job, f, f.output); }
+                return;
+            }
+        } else { p += 1; matched = 0; }
+    }
+    job.frames[at].index = p; job.frames[at].argument_count = matched;
 }

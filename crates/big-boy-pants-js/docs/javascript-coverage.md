@@ -2378,6 +2378,23 @@ construction packs its current shape overflow runs before publication,
 dropping the obsolete runs left by growth. This keeps the larger realm
 within the unchanged prepared-definition memory budget of the 200k gate.
 
+*As landed by light-cljs-904 (String extraction, construction and split):*
+`substring`, Annex B `substr`, `slice`, `concat`, `repeat`, the trims and
+Annex B HTML methods use the conversion plans, then plain Goose functions
+over primitives. The scans and result units charge work, and construction
+checks the string length and job memory limits before allocating. Substrings
+share an existing unit run when its encoding stays canonical. `padStart`
+and `padEnd` use a StringMethod frame to convert the filler only when the
+target length requires it. `split` uses the same frame: its `@@split`
+getter and delegated call precede the receiver's conversion, then the limit
+and separator convert in order. String separator comparisons run in bounded
+steps, and each result is stored in a fresh array. All state is held by
+frame Values and operands, carried by reclamation and saved continuations;
+snapshot validation checks the added phases. `trimLeft` and `trimRight`
+share the `trimStart` and `trimEnd` function objects. The Annex B oracle
+slice uses defined HTML attributes because QuickJS rejects nullish ones;
+CreateHTML converts those values with ToString.
+
 ## Decision 6: realm setup
 
 **Decision.** The realm builder is Goose code that runs once, in the session

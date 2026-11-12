@@ -2972,7 +2972,7 @@ fn duplicates() {
 // limit and collection checks, plus saved continuations in each distinct
 // StringMethod phase, restored into a fresh thread program's heap.
 fn string_methods_checks() {
-    for bytes in [embed_file("../corpus/serial/string-methods.gsp"), embed_file("../corpus/serial/string-scans.gsp")] {
+    for bytes in [embed_file("../corpus/serial/string-methods.gsp"), embed_file("../corpus/serial/string-scans.gsp"), embed_file("../corpus/serial/string-split.gsp")] {
         check(bytes, "boolean:true");
         limit_points(bytes);
         heap_program::join(thread_spawn(reclaim_cuts, str(bytes), str("boolean:true"), 1, 1));

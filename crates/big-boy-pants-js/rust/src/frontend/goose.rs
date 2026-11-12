@@ -2898,6 +2898,8 @@ mod serial_tests {
             // (light-cljs-903), at every budget cut and collection.
             ("string-methods", "goose"),
             ("string-scans", "goose"),
+            // Split's delegated protocol and conditional padding conversions.
+            ("string-split", "boolean:true"),
             // and through the light-cljs runtime's mapv, deferred map and
             // swap! callbacks, which the Pants engine does not have.
             ("runtime-conversions", "goose"),
