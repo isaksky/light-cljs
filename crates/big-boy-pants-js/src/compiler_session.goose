@@ -205,7 +205,10 @@ struct Jobs {
     reclaims: i64 = 0,
 }
 struct Produced { key: i64, data: u8[], callable: bool = false }
-struct Prepared { key: i64, heap: snapshot::Snapshot }
+// A prepared definition: its snapshot as the rows it adds to the base image
+// (light-cljs-960), which the budget charges; each start rebuilds the whole
+// snapshot from the base and these rows (snapshot::rebase).
+struct Prepared { key: i64, rows: snapshot::Delta }
 struct SerialDefinition { key: i64, function: source::Value }
 // A helper answer (an `A` command) the coordinator holds until its waiter,
 // job `id` at wait `sequence`, takes it: the helper's unit (-1 for a missing
@@ -626,7 +629,8 @@ fn storage(saved: const Saved&, heap: const source::Heap&, sc: snapshot::Control
 }
 fn release(running: Running[>..]&, address: i64) -> Running, bool { for r, i in running { if r.address == address { let out = r; running.swap_remove(i); return out, true; } } return Running { id: 0 }, false; }
 fn footprint(saved: const Saved&) -> i64 { return snapshot::footprint(saved.heap) + bytes_of(saved.writes).len + bytes_of(saved.queue).len + bytes_of(saved.rejections).len + bytes_of(saved.templates).len; }
-fn identity(saved: const Saved&) -> i64 { var id = source::reserve_identity(); while id == saved.heap.header.base || id == saved.heap.header.checkpoint { id = source::reserve_identity(); } return id; }
+fn identity(header: const snapshot::Header&) -> i64 { var id = source::reserve_identity(); while id == header.base || id == header.checkpoint { id = source::reserve_identity(); } return id; }
+fn identity(saved: const Saved&) -> i64 { return identity(saved.heap.header); }
 // Measurement control: a single retained heap, no snapshots or execution
 // threads. The bounded benchmark's pure shared helper is emitted on demand by
 // the actual compiler, then evaluated and retained in this heap. This control
@@ -708,6 +712,13 @@ fn worker_table_bytes() -> i64 {
     var text: u8[>..] = []; if !env("BBP_WORKER_TABLE_BYTES", text) { return 16777216; }
     let n, ok = parse_int(text); assert(ok && n >= 0); return n;
 }
+// BBP_RETAINED_BYTES: the bytes the coordinator retains for the session, in
+// prepared definitions (their rows over the base image, light-cljs-960),
+// produced helpers and saved continuations; 64 MiB unless a test sets less.
+fn retained_bytes() -> i64 {
+    var text: u8[>..] = []; if !env("BBP_RETAINED_BYTES", text) { return 67108864; }
+    let n, ok = parse_int(text); assert(ok && n >= 0 && n <= 67108864); return n;
+}
 // Whether a job can be given to a worker now: an idle one, or a new one.
 fn available(counts: const Counts&) -> bool { return counts.idle > 0 || counts.live < counts.reapers; }
 // The coordinator's job workers: their threads by serial, the base image they
@@ -778,7 +789,7 @@ fn main() {
         print("{:snapshot-bytes ", snapshot::footprint(base), " :capture-copy-bytes ", sc.copied_bytes, " :capture-ns ", sc.capture_ns, " :raw-copy-repeats 1000 :raw-copy-ns ", copy_ns, " :raw-barrier-only-ns ", barrier_ns, " :raw-copy-payload-bytes ", snapshot::payload_bytes(base) * 1000, " :validation-ns ", validation_ns, " :validation-visits ", validation.visited, " :validation-peak-bytes ", validation.validation_peak, " :restore-ns ", restore.restore_ns, " :restore-copy-bytes ", restore.copied_bytes, " :peak-rss-native ", peak_memory(), " :checksum ", checksum, "}"); return;
     }
     let deterministic = arguments.len == 4 && arguments[3] == "dispatch-test"; let cleanup_test = arguments.len == 4 && arguments[3] == "cleanup-abort-test"; let tracing = instrumented || deterministic || cleanup_test || (arguments.len == 4 && arguments[3] == "readiness-test");
-    let retention = retained_workers(); var counts = Counts { reapers: limit + retention, retention: retention }; var stats = Jobs {};
+    let retention = retained_workers(); let budget = retained_bytes(); var counts = Counts { reapers: limit + retention, retention: retention }; var stats = Jobs {};
     // The reset check (light-cljs-795): in the test modes and with
     // BBP_RESET_CHECK=1, every worker compares its image with the twin after
     // every reset, and its digest with the coordinator's tables'. A traced
@@ -842,7 +853,7 @@ fn main() {
                 let checkpoint = source::reserve_identity(); assert(qput(Answer { address: event.address, mode: 0, checkpoint: checkpoint })); running.push(Running { id: event.id, thread: owner.thread, address: event.address, checkpoint: checkpoint }); continue;
             }
             // A finished job's result graph leaves with its reply below; it is not retained.
-            let bytes = if event.kind == 1 { footprint(event.saved) } else if event.kind == 5 { event.data.len } else { 0 }; if bytes > 67108864 - retained { abandon(event); print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; let metrics = if event.metrics.len > 0 { str(event.metrics, " ", sleep_ns, " ", clock_ns() - beginning) } else { str("") }; if event.kind != 2 && metrics.len > 0 { print("METRIC ", event.id, " ", metrics); } if event.kind == 5 { print("COST ", event.id, " ", event.name); }
+            let bytes = if event.kind == 1 { footprint(event.saved) } else if event.kind == 5 { event.data.len } else { 0 }; if bytes > budget - retained { abandon(event); print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; let metrics = if event.metrics.len > 0 { str(event.metrics, " ", sleep_ns, " ", clock_ns() - beginning) } else { str("") }; if event.kind != 2 && metrics.len > 0 { print("METRIC ", event.id, " ", metrics); } if event.kind == 5 { print("COST ", event.id, " ", event.name); }
             if event.census[0] >= 0 { var text: u8[>..] = []; format(text, "CENSUS 0 ", event.id, " ", event.kind); for n in event.census { format(text, " ", n); } print(text); }
             if event.kind == 1 { stats.saves += 1; if waiting.len >= 128 { abandon(event); print("ERROR ", event.id, " waiter-budget"); } else { waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved), delay: event.delay, epoch: event.epoch }); if event.delay >= 0 { print("WAIT ", event.id, " ", event.delay); } else { print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); } } }
             else if event.kind == 5 { produced.push(Produced { key: event.key, data: copy(event.data), callable: event.callable });
@@ -882,8 +893,10 @@ fn main() {
         for call, position in queue { if position < received { continue; } if closing || running.len >= limit || !available(counts) { break; }
             progress = true; received += 1; let id = call.id; let key = call.key; let prefix .= call.prefix; var next = call.next; var index: i64 = -1;
             for p, i in prepared { if p.key == key { index = i; break; } }
-            if index < 0 { let checkpoint, ok = prepare(base, directory, id, key, prefix, next); if !ok { continue; } let bytes = snapshot::footprint(checkpoint); if prepared.len >= 1024 || bytes > 67108864 - retained { print("ERROR ", id, " definition-budget"); flush_stdout(); continue; } retained += bytes; index = prepared.len; prepared.push(Prepared { key: key, heap: copy(checkpoint) }); }
-            for p in prepared { if p.key != key { continue; } let handing = clock_ns(); let spawning = stats.spawn_ns; let initial = Saved { heap: copy(p.heap), base: base.header, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(prefix), gensym_next: next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: id, identity: identity(initial), mode: 0, helper: [], key: -1, checkpoint: checkpoint, blocking: retention > 0, definition: key, arguments: copy(call.arguments) }; dispatch(work, base, pool, counts, stats); stats.handoff_ns += clock_ns() - handing - (stats.spawn_ns - spawning); running.push(Running { id: id, address: checkpoint, checkpoint: checkpoint }); since_trim += 1; if tracing { print("START ", id); flush_stdout(); } break; } }
+            // The budget charges a definition the rows it adds to the base
+            // image (light-cljs-960); a snapshot not over the base is refused.
+            if index < 0 { let checkpoint, ok = prepare(base, directory, id, key, prefix, next); if !ok { continue; } let rows, over = snapshot::delta(checkpoint, base); if !over { print("ERROR ", id, " definition-image"); flush_stdout(); continue; } let bytes = snapshot::delta_footprint(rows); if prepared.len >= 1024 || bytes > budget - retained { print("ERROR ", id, " definition-budget"); flush_stdout(); continue; } retained += bytes; index = prepared.len; prepared.push(Prepared { key: key, rows: copy(rows) }); }
+            for p in prepared { if p.key != key { continue; } let handing = clock_ns(); let spawning = stats.spawn_ns; let checkpoint = source::reserve_identity(); var work = Work { saved: Saved { heap: snapshot::rebase(p.rows, base), protected: base.nodes.len, storage: instrumented, base: base.header, gensym_prefix: copy(prefix), gensym_next: next }, id: id, identity: identity(p.rows.above.header), mode: 0, helper: [], key: -1, checkpoint: checkpoint, blocking: retention > 0, definition: key, arguments: copy(call.arguments) }; dispatch(work, base, pool, counts, stats); stats.handoff_ns += clock_ns() - handing - (stats.spawn_ns - spawning); running.push(Running { id: id, address: checkpoint, checkpoint: checkpoint }); since_trim += 1; if tracing { print("START ", id); flush_stdout(); } break; } }
         // Release inactive continuation owners and their budget after dispatch.
         { var inactive: i64 = 0; for w in waiting { if !w.active { inactive += 1; if w.address == 0 { retained -= footprint(w.saved); } } } if inactive == waiting.len { waiting.clear(); } else if inactive > 0 { var active: Waiting[>..] = []; for w in waiting { if w.active { active.push(copy(w)); } } waiting = copy(active); } }
         // The admitted calls leave the queue, and their payloads with them;

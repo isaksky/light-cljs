@@ -194,7 +194,8 @@ layout/lifetime probe; it does not execute macros or measure performance.
 Since light-cljs-784 the live `compiler_session.goose` runs every dispatch (a
 macro start, a helper production, a resume of a saved continuation) in a
 contained job worker spawned for it by the coordinator, which owns the session
-image: the realm, the base snapshot and the prepared definition snapshots. A
+image: the realm, the base snapshot and the prepared definitions, kept as the
+rows their snapshots add to the base (light-cljs-960). A
 job worker starts with empty VM tables, restores the flat snapshot its spawn
 copied, and its exit frees everything the job allocated; nothing is reset or
 reused between jobs. `limit + retention` reapers only join job workers and

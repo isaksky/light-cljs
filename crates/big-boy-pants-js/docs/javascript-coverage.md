@@ -1561,6 +1561,28 @@ job workers".
   image key runs) a continuation's compiler services wrote. The tables equal
   a fresh restore's row for row, with the job's image tops at its lengths, so
   limits count what the job adds, as before.
+- *Prepared definitions* (light-cljs-960). The coordinator keeps each
+  prepared definition as what its snapshot adds to the base image
+  (`snapshot::Delta`), not as a whole copy that repeats the image: every
+  table's rows from the base's length on, the header and bindings, and as
+  patches the image rows the snapshot holds differently. Only the tables a
+  job writes below the image's lengths can have those: service rows and their
+  property and element rows, transitions from image shapes, keys interned
+  into the image's key index. `snapshot::delta` refuses a snapshot whose
+  append-only tables differ below the base's lengths (`ERROR id
+  definition-image`). Each start rebuilds the whole snapshot from the base and
+  these rows (`snapshot::rebase`, byte for byte the preparer's), which the
+  worker validates and installs with `extend` as before. The session's 64 MiB
+  retained budget charges a definition the bytes of its rows
+  (`snapshot::delta_footprint`); `BBP_RETAINED_BYTES` can only lower it, for
+  the test that a definition is charged its rows and not a copy
+  (`goose_compiler_prepared_definitions_charge_their_rows_over_the_image`). On the 200k project (one worker, an
+  instrumented runner) the 615 definitions took 61.3 MB as whole copies,
+  each repeating the 81.3 KB base image, and take 11.7 MB this way (19.1 KB
+  on average, at most 32.9 KB; 2,675 key-index patches, no shape or row
+  patches). The session's peak retained bytes, produced helpers and saved
+  continuations included, fell from 66.1 MB (light-cljs-904's measure,
+  within 1 MB of the 64 MiB budget) to 16.5 MB.
 - *The reset* (`snapshot::truncate`) cuts every table, code tables included,
   to the twin's length and restores the service rows and the heap's state
   fields from the twin: about 0.3 microseconds a job on the 200k project,

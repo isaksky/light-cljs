@@ -6789,6 +6789,63 @@ fn goose_compiler_cell_swap_across_helper_suspension() {
     }
 }
 
+/// light-cljs-960: the coordinator charges a prepared definition the rows it
+/// adds to the base image, not a whole copy that repeats the image (the
+/// realm and the booted runtime, about 80 KB). Under a retained budget of
+/// 256 KiB (BBP_RETAINED_BYTES), which four such copies pass (charging
+/// copies refuses the fourth definition), eight small definitions are
+/// admitted and run. One whose rows alone pass the budget
+/// (a 300,000-character string) is refused by name; the definitions
+/// admitted before it still run, and a later small one is admitted.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_prepared_definitions_charge_their_rows_over_the_image() {
+    let session = GooseSession::start_env(
+        &runner(),
+        1,
+        Some("readiness-test"),
+        &[("BBP_RETAINED_BYTES", "262144".to_owned())],
+    )
+    .unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let raw = raw_inputs(&e);
+    let mut id = 0;
+    let mut call = |key: u64, source: &str| {
+        session
+            .export(
+                &session.directory.join(format!("definition-{key}.gsp")),
+                source,
+            )
+            .unwrap();
+        id += 1;
+        let rx = submit_key(&session, &raw.bytes, id, key);
+        raw_outcome(&raw, &rx)
+    };
+    for key in 1..=8 {
+        let outcome = call(key, &format!("rt => (form, env) => {key}"));
+        assert_eq!(outcome, Ok(format!("Double({key}.0)")), "{key}");
+    }
+    let large = call(
+        9,
+        "rt => { const s = 'x'.repeat(300000); return (form, env) => s.length; }",
+    );
+    assert!(
+        large
+            .as_ref()
+            .is_err_and(|e| e.contains("definition-budget")),
+        "{large:?}"
+    );
+    assert_eq!(
+        call(1, "rt => (form, env) => 1").as_deref(),
+        Ok("Double(1.0)")
+    );
+    assert_eq!(
+        call(10, "rt => (form, env) => 10").as_deref(),
+        Ok("Double(10.0)")
+    );
+    raw_close(&session, 1, 10);
+}
+
 /// A root read in a fixture's JavaScript.
 fn root(name: &str) -> String {
     format!("__rt.cljReadRoot(globalThis.__lightCompilerRoots, null, '{name}')")

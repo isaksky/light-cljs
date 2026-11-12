@@ -346,17 +346,44 @@ thread_fn truncated_parent() {
     var d = snapshot::Control {}; let image = snapshot::capture(derived, db, d); assert(d.error == snapshot::Error.None);
     assert(qput(Derived { base: copy(base), derived: copy(image), service: service.id() }));
 }
+// Two snapshots with the same header and rows, byte for byte.
+fn same_snapshot(a: const snapshot::Snapshot&, b: const snapshot::Snapshot&) -> bool {
+    var x: u8[>..] = []; var y: u8[>..] = []; var c = snapshot::Control {};
+    return snapshot::encode(a, x, c) && snapshot::encode(b, y, c) && x[..] == y[..];
+}
+// A snapshot kept as its rows over the base (light-cljs-960) rebuilds to
+// itself, and holds only what it adds to the base.
+fn kept_over(s: const snapshot::Snapshot&, base: const snapshot::Snapshot&) -> snapshot::Delta {
+    let d, ok = snapshot::delta(s, base); assert(ok); let rebuilt = snapshot::rebase(d, base); assert(same_snapshot(rebuilt, s));
+    let patches = bytes_of(d.node_rows).len + bytes_of(d.nodes).len + bytes_of(d.value_rows).len + bytes_of(d.values).len + bytes_of(d.property_rows).len + bytes_of(d.properties).len + bytes_of(d.shape_rows).len + bytes_of(d.shapes).len + bytes_of(d.key_rows).len + bytes_of(d.keys).len;
+    let empty: snapshot::Delta[] = [snapshot::Delta {}];
+    assert(snapshot::payload_bytes(d.above) == snapshot::payload_bytes(s) - snapshot::payload_bytes(base) + bytes_of(base.bindings).len && snapshot::delta_footprint(d) == bytes_of(empty).len + snapshot::payload_bytes(d.above) + patches);
+    return copy(d);
+}
 thread_fn truncated_worker(base: snapshot::Snapshot, derived: snapshot::Snapshot, service: i64) {
     defer { heap_program::finish(); }
     let identity = source::reserve_identity(); let rows: i64[1] = [service];
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
     assert(snapshot::restore(base, code, heap, bindings, identity, r)); assert(snapshot::truncate(base, rows, identity, code, heap, bindings));
     assert(snapshot::pristine(base, identity, code, heap, bindings) && snapshot::over_image(derived, base, rows));
+    // The derived snapshot over the base: its rows above it, and patches for
+    // the transition its new object took from the image's empty shape and
+    // its four keys in the image's key index.
+    let kept = kept_over(derived, base);
+    assert(kept.node_rows.len == 0 && kept.value_rows.len == 0 && kept.property_rows.len == 0 && kept.above.nodes.len == derived.nodes.len - base.nodes.len && kept.above.functions.len > 0);
+    assert(kept.shape_rows.len == 1 && kept.shape_rows[0] == 0 && kept.key_rows.len == 4);
+    assert(snapshot::delta_footprint(kept) < snapshot::footprint(derived) - snapshot::payload_bytes(base) + bytes_of(base.bindings).len + 1024);
+    // Not over the base: an append-only table's image row differs, or a
+    // table is shorter than the base's.
+    var moved = copy(derived); moved.units[0] = moved.units[0] + 1; let unused, refused = snapshot::delta(moved, base); assert(!refused);
+    let reversed, shorter = snapshot::delta(base, derived); assert(!shorter);
+    let rebuilt = snapshot::rebase(kept, base);
     for n in [3, 20, 1] {
         // Installed over the image, the derived snapshot's tables are a
-        // fresh restore's, row for row.
+        // fresh restore's, row for row; so are its rebuilt rows' (rebase).
         let job_identity = source::reserve_identity(); var c = snapshot::Control {};
-        assert(snapshot::extend(derived, base, rows, code, heap, bindings, job_identity, c));
+        let installed = if n == 20 { snapshot::extend(rebuilt, base, rows, code, heap, bindings, job_identity, c) } else { snapshot::extend(derived, base, rows, code, heap, bindings, job_identity, c) };
+        assert(installed);
         assert(snapshot::pristine(derived, job_identity, code, heap, bindings) && heap.image.nodes == derived.nodes.len);
         assert(c.copied_bytes == snapshot::payload_bytes(derived) - snapshot::payload_bytes(base));
         // A destination not at the image refuses another install.
@@ -372,10 +399,17 @@ thread_fn truncated_worker(base: snapshot::Snapshot, derived: snapshot::Snapshot
         assert(source::install_field(heap, source::object(service), "1", source::number(n)) && source::install_field(heap, source::object(service), "9", source::number(9)));
         assert(source::node(heap, service).count > 4);
         assert(!snapshot::pristine(base, identity, code, heap, bindings));
+        // A snapshot of these tables keeps the service's image rows as
+        // patches, and rebuilds to itself.
+        var w = snapshot::Control {}; let written = snapshot::capture(heap, bindings, w); assert(w.error == snapshot::Error.None);
+        let service_kept = kept_over(written, base); var patched = false; for r in service_kept.node_rows { if r as i64 == service { patched = true; } }
+        assert(patched && service_kept.value_rows.len > 0);
         assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
     }
-    // An image row other than a service row is not the image's.
+    // An image row other than a service row is not the image's; kept over
+    // the base, it is a patch.
     var changed = copy(derived); changed.nodes[0].immutable = !changed.nodes[0].immutable; assert(!snapshot::over_image(changed, base, rows));
+    let changed_kept = kept_over(changed, base); assert(changed_kept.node_rows.len == 1 && changed_kept.node_rows[0] == 0);
     print("reused worker image: install over the image equals restore, truncation and service rows restore the twin");
 }
 // Shapes and interned keys on a reused worker (light-cljs-787, amended by
@@ -417,6 +451,12 @@ thread_fn layout_worker(base: snapshot::Snapshot) {
         assert(source::put(heap, p, source::text(heap, "x"), source::number(3)) && source::put(heap, p, source::text(heap, "y"), source::number(4)));
         assert(source::node(heap, p.id()).shape == source::node(heap, point.id()).shape && source::node(heap, p.id()).shape < image.shapes);
         assert(source::put(heap, p, source::text(heap, "z"), source::number(5)) && source::node(heap, p.id()).shape >= image.shapes && heap.image_written);
+        // Kept over the base (light-cljs-960), these tables patch the image
+        // shape's new child and the key index's new slot.
+        if run == 0 {
+            var c = snapshot::Control {}; let written = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
+            let kept = kept_over(written, base); assert(kept.shape_rows.len > 0 && kept.key_rows.len > 0);
+        }
         var keys:  source::Value[>..] = []; assert(source::own_keys(heap, p, keys) && keys.len == 3);
         var state: u8[>..]            = source::plain_rows(heap.shapes); state.append(bytes_of(heap.keys)); state.append(bytes_of(heap.strings)); state.append(source::plain_rows(keys));
         for k in keys { for u in source::utf16(heap, k) { state.push(u as u8); } }

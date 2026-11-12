@@ -1385,6 +1385,72 @@ fn extend(s: const Snapshot&, twin: const Snapshot&, service: const i64[:], code
     bindings.clear(); bindings.append(s.bindings);
     c.copied_bytes += payload_bytes(s) - payload_bytes(twin); return true;
 }
+// A snapshot over a base image, kept as what it adds to that image
+// (light-cljs-960): the coordinator keeps each prepared definition so, not as
+// a whole copy that repeats the base, and rebuilds the whole snapshot
+// (rebase) for every job it starts from one, which the job's worker
+// validates and installs over its image as before (extend). `above` holds
+// the snapshot's header and bindings and every table's rows from the base's
+// length on. The patches are the image rows the snapshot holds differently
+// from the base, by row, in the tables a job writes below the image's
+// lengths: the rows of compiler services and their property and element
+// rows (nodes, values, properties), transitions from image shapes (shapes)
+// and keys interned into the image's key index (keys; a rehash rewrites
+// it). Every other table is append-only: delta refuses a snapshot whose rows
+// below the base's length differ there. So rebase(delta(s, base), base) is
+// s, byte for byte. `image` names the base (its checkpoint identity).
+struct Delta {
+    image:      i64   = 0, above: Snapshot = Snapshot {},
+    node_rows:  u32[] = [], nodes: source::Node[] = [], value_rows: u32[] = [], values: source::Value[] = [], property_rows: u32[] = [], properties: source::Property[] = [],
+    shape_rows: u32[] = [], shapes: source::Shape[] = [], key_rows: u32[] = [], keys: source::KeySlot[] = [],
+}
+// Whether `rows` starts with `image`'s rows.
+fn over<T>(rows: const T[:], image: const T[:]) -> bool { return rows.len >= image.len && same_rows(rows[..image.len], image); }
+// The rows below image's length where `rows` differs from `image`, and their
+// contents in `rows`.
+fn changed<T>(rows: const T[:], image: const T[:], at: u32[>..]&, out: T[>..]&) {
+    if same_rows(rows[..image.len], image) { return; }
+    for e, i in image { if !same_rows(rows[i..(i + 1)], image[i..(i + 1)]) { at.push(i as u32); out.push(rows[i]); } }
+}
+// `s` as rows over `base`; false when s is not over base: a table shorter
+// than base's, or an append-only table whose rows below base's length are
+// not base's.
+fn delta(s: const Snapshot&, base: const Snapshot&) -> Delta, bool {
+    if !(over(s.code_bytes, base.code_bytes) && over(s.functions, base.functions) && over(s.code_constants, base.code_constants) && over(s.children, base.children) && over(s.ops, base.ops) && over(s.code_units, base.code_units) && over(s.code_strings, base.code_strings)
+         && over(s.units, base.units) && over(s.strings, base.strings) && over(s.constants, base.constants) && over(s.bytes, base.bytes) && over(s.sources, base.sources) && over(s.latin1, base.latin1) && over(s.accessors, base.accessors) && over(s.conts, base.conts)
+         && over(s.sites, base.sites) && over(s.site_sources, base.site_sources) && over(s.site_records, base.site_records) && over(s.patterns, base.patterns) && over(s.pattern_ops, base.pattern_ops)) { return Delta {}, false; }
+    if s.nodes.len < base.nodes.len || s.values.len < base.values.len || s.properties.len < base.properties.len || s.shapes.len < base.shapes.len || s.keys.len < base.keys.len { return Delta {}, false; }
+    var node_rows:     u32[>..] = []; var nodes: source::Node[>..] = []; changed(s.nodes, base.nodes, node_rows, nodes);
+    var value_rows:    u32[>..] = []; var values: source::Value[>..] = []; changed(s.values, base.values, value_rows, values);
+    var property_rows: u32[>..] = []; var properties: source::Property[>..] = []; changed(s.properties, base.properties, property_rows, properties);
+    var shape_rows:    u32[>..] = []; var shapes: source::Shape[>..] = []; changed(s.shapes, base.shapes, shape_rows, shapes);
+    var key_rows:      u32[>..] = []; var keys: source::KeySlot[>..] = []; changed(s.keys, base.keys, key_rows, keys);
+    return Delta { image: base.header.checkpoint, above: Snapshot { header: s.header,
+            code_bytes: s.code_bytes[base.code_bytes.len..], functions: s.functions[base.functions.len..], code_constants: s.code_constants[base.code_constants.len..], children: s.children[base.children.len..], ops: s.ops[base.ops.len..], code_units: s.code_units[base.code_units.len..], code_strings: s.code_strings[base.code_strings.len..],
+            nodes:      s.nodes[base.nodes.len..], values: s.values[base.values.len..], properties: s.properties[base.properties.len..], units: s.units[base.units.len..], strings: s.strings[base.strings.len..], constants: s.constants[base.constants.len..], bytes: s.bytes[base.bytes.len..], sources: s.sources[base.sources.len..], bindings: copy(s.bindings), latin1: s.latin1[base.latin1.len..],
+            shapes:     s.shapes[base.shapes.len..], accessors: s.accessors[base.accessors.len..], keys: s.keys[base.keys.len..], conts: s.conts[base.conts.len..],
+            sites: s.sites[base.sites.len..], site_sources: s.site_sources[base.site_sources.len..], site_records: s.site_records[base.site_records.len..], patterns: s.patterns[base.patterns.len..], pattern_ops: s.pattern_ops[base.pattern_ops.len..] },
+        node_rows: node_rows[..], nodes: nodes[..], value_rows: value_rows[..], values: values[..], property_rows: property_rows[..], properties: properties[..], shape_rows: shape_rows[..], shapes: shapes[..], key_rows: key_rows[..], keys: keys[..] }, true;
+}
+fn joined<T>(image: const T[:], rows: const T[:]) -> T[>..] { var out: T[>..] = []; out.append(image); out.append(rows); return out; }
+fn patched<T>(image: const T[:], rows: const T[:], at: const u32[:], contents: const T[:]) -> T[>..] { var out = joined(image, rows); for r, i in at { out[r] = contents[i]; } return out; }
+// The whole snapshot `d` keeps over `base`, which must be the base it was
+// taken over.
+fn rebase(d: const Delta&, base: const Snapshot&) -> Snapshot {
+    assert(d.image == base.header.checkpoint); let a .= d.above;
+    return Snapshot { header: a.header,
+        code_bytes: joined(base.code_bytes, a.code_bytes), functions: joined(base.functions, a.functions), code_constants: joined(base.code_constants, a.code_constants), children: joined(base.children, a.children), ops: joined(base.ops, a.ops), code_units: joined(base.code_units, a.code_units), code_strings: joined(base.code_strings, a.code_strings),
+        nodes:      patched(base.nodes, a.nodes, d.node_rows, d.nodes), values: patched(base.values, a.values, d.value_rows, d.values), properties: patched(base.properties, a.properties, d.property_rows, d.properties),
+        units:      joined(base.units, a.units), strings: joined(base.strings, a.strings), constants: joined(base.constants, a.constants), bytes: joined(base.bytes, a.bytes), sources: joined(base.sources, a.sources), bindings: copy(a.bindings), latin1: joined(base.latin1, a.latin1),
+        shapes:     patched(base.shapes, a.shapes, d.shape_rows, d.shapes), accessors: joined(base.accessors, a.accessors), keys: patched(base.keys, a.keys, d.key_rows, d.keys), conts: joined(base.conts, a.conts),
+        sites: joined(base.sites, a.sites), site_sources: joined(base.site_sources, a.site_sources), site_records: joined(base.site_records, a.site_records), patterns: joined(base.patterns, a.patterns), pattern_ops: joined(base.pattern_ops, a.pattern_ops) };
+}
+// The bytes a Delta holds, as footprint counts a snapshot's.
+fn delta_footprint(d: const Delta&) -> i64 {
+    let empty: Delta[] = [Delta {}];
+    return bytes_of(empty).len + payload_bytes(d.above) + bytes_of(d.node_rows).len + bytes_of(d.nodes).len + bytes_of(d.value_rows).len + bytes_of(d.values).len + bytes_of(d.property_rows).len + bytes_of(d.properties).len
+         + bytes_of(d.shape_rows).len + bytes_of(d.shapes).len + bytes_of(d.key_rows).len + bytes_of(d.keys).len;
+}
 // Optional local codec: Goose's checked flat image format plus our semantic
 // version/allocator checks. This is compiler-ABI-specific, not a wire standard.
 fn encode(s: const Snapshot&, out: u8[>..]&, c: Control&) -> bool {
