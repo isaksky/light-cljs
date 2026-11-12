@@ -7,13 +7,14 @@
 // and the rows of object_to_string.rs builtin_and_intrinsic_tags (line 25)
 // and user_tags_and_proxy_dispatch (100) for the values Goose has today,
 // with intrinsic_tag_descriptors_and_fallbacks's Map and Set rows (lines
-// 160, 161, 202 and 203; light-cljs-943).
+// 160, 161, 202 and 203; light-cljs-943) and the WeakMap and WeakSet tags
+// (lines 52, 53, 162 and 163; light-cljs-945).
 // Left out: `__rt` rows and opcode checks; Object.hasOwn and
 // Object.prototype.hasOwnProperty, which the Pants engine does not have (they are
 // objects_own_property_reads, scored against QuickJS alone); a proxy's
 // @@toStringTag read (light-cljs-890); the tags of Symbol (light-cljs-885), BigInt (light-cljs-771), JSON
 // (light-cljs-767), Date and RegExp (light-cljs-770), Promise and async
-// generators (light-cljs-768), weak collections, typed arrays and
+// generators (light-cljs-768), WeakRef, typed arrays and
 // ArrayBuffer (light-cljs-769), disposable stacks (light-cljs-772), Intl
 // (light-cljs-774), SuppressedError, and Proxy dispatch (light-cljs-890).
 // Each row is a `row(...)` check; the script completes with the number of
@@ -212,4 +213,8 @@ row(Object.prototype.toString.call(new Map()) === '[object Map]' && Object.proto
 { let o = new Map(); Object.defineProperty(o, Symbol.toStringTag, {value: 1}); row(Object.prototype.toString.call(o) === '[object Object]'); }
 for (let [p, tag] of [[Map.prototype, 'Map'], [Set.prototype, 'Set']]) { let d = Object.getOwnPropertyDescriptor(p, Symbol.toStringTag); row(d.value === tag && !d.writable && !d.enumerable && d.configurable && Object.prototype.toString.call(p) === '[object ' + tag + ']'); }
 for (let o of [new Map(), new Set()]) { Object.setPrototypeOf(o, null); row(Object.prototype.toString.call(o) === '[object Object]'); }
+// The WeakMap and WeakSet tags (object_to_string.rs lines 52, 53, 162 and
+// 163; light-cljs-945).
+row(Object.prototype.toString.call(new WeakMap()) === '[object WeakMap]' && Object.prototype.toString.call(new WeakSet()) === '[object WeakSet]');
+for (let [p, tag] of [[WeakMap.prototype, 'WeakMap'], [WeakSet.prototype, 'WeakSet']]) { let d = Object.getOwnPropertyDescriptor(p, Symbol.toStringTag); row(d.value === tag && !d.writable && !d.enumerable && d.configurable && Object.prototype.toString.call(p) === '[object ' + tag + ']'); }
 failed === 0 ? rows : -failed;

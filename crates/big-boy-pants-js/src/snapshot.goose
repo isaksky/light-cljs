@@ -451,7 +451,7 @@ fn iterator_valid<T>(s: const T&, n: const source::Node&) -> bool {
     return n.value.is_undefined() || (if n.function == iteration::CodePoints { n.value.is_string() } else { object_of(s, n.value, node_kind::None) });
 }
 fn collection_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Builtin) -> bool {
-    let flavor = if which == source::Builtin.Map { collection::Map } else if which == source::Builtin.Set { collection::Set } else { -1 };
+    let flavor = source::constructor_flavor(which);
     if flavor < 0 || !object_of(s, f.receiver, node_kind::Collection) || s.nodes[f.receiver.id()].length != flavor || f.pc < collection_pc::Adder || f.pc > collection_pc::Fast { return false; }
     if f.pc == collection_pc::Adder { return f.output.is_undefined() && f.callee.tag() > value_tag::Null; }
     if !object_of(s, f.output, node_kind::None) { return false; }
@@ -460,21 +460,23 @@ fn collection_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::
     if !object_of(s, f.callee, node_kind::Object) { return false; }
     return f.pc != collection_pc::Done && f.pc != collection_pc::Item && f.pc != collection_pc::Key || object_of(s, f.input, node_kind::None);
 }
-// A Map or Set (light-cljs-943, source::node_kind::Collection;
-// collections.goose): a flavor, its size and next insertion position Numbers,
-// and its run: none (count 0, nothing used, size 0) or `capacity` entries,
-// a power of two at least collection_minimum(), of entry_stride values
-// each, then 2 * capacity index slots. An entry below `function` is live
-// (a key that is neither -0 nor an accessor, and a Map's value no
-// accessor) or a tombstone (Empty key/value, position kept), as many live as its size; past
-// `function` every entry is Empty. An index slot is Empty or a Number, the
-// position of an entry below `function`, each at most once, and every live
-// entry's position is there, reached by its key's probe with no equal key
-// before it. The holes its run holds (Empty values, which
-// validate counts with array holes), -1 for an invalid row, or -2 when
-// the validation's budget ran out (poll).
+// A Map, Set, WeakMap or WeakSet (light-cljs-943, light-cljs-945,
+// source::node_kind::Collection; collections.goose): a flavor, its size and
+// next insertion position Numbers, and its run: none (count 0, nothing
+// used, size 0) or `capacity` entries, a power of two at least
+// collection_minimum(), of entry_stride values each, then 2 * capacity
+// index slots. An entry below `function` is live (a key that is neither -0
+// nor an accessor, and a Map's or WeakMap's value no accessor; a weak
+// flavor's key one CanBeHeldWeakly accepts: an object, or a symbol
+// Symbol.for did not register) or a tombstone (Empty key/value, position
+// kept), as many live as its size; past `function` every entry is Empty.
+// An index slot is Empty or a Number, the position of an entry below
+// `function`, each at most once, and every live entry's position is there,
+// reached by its key's probe with no equal key before it. The holes its
+// run holds (Empty values, which validate counts with array holes), -1 for
+// an invalid row, or -2 when the validation's budget ran out (poll).
 fn collection_holes<T>(s: const T&, n: const source::Node&, c: Control&) -> i64 {
-    if n.length > collection::Set || !n.value.is_number() || !source::collection_position(n.namespace_value) { return -1; }
+    if n.length > collection::WeakSet || !n.value.is_number() || !source::collection_position(n.namespace_value) { return -1; }
     let size_value = n.value.num();
     if !(size_value >= 0 && size_value <= 4294967295.0) || trunc(size_value) != size_value { return -1; }
     let size: i64 = size_value as i64; let used: i64 = n.function; let count: i64 = n.count;
@@ -486,13 +488,14 @@ fn collection_holes<T>(s: const T&, n: const source::Node&, c: Control&) -> i64 
     let start: i64 = n.start; let run = s.values[start..(start + count)];
     var holes: i64 = 0; var live: i64 = 0; var previous: f64 = -1;
     for i in capacity {
-        let k = run[i * stride]; let v = if flavor == collection::Map { run[i * stride + 1] } else { source::Value.Empty };
+        let k = run[i * stride]; let v = if source::valued_flavor(flavor) { run[i * stride + 1] } else { source::Value.Empty };
         let position = run[i * stride + stride - 1];
         if i >= used { for j in stride { if !run[i * stride + j].is_hole() { return -1; } } holes += stride; continue; }
         if !source::collection_position(position) || position.num() <= previous || position.num() >= n.namespace_value.num() { return -1; }
         previous = position.num();
         if k.is_hole() { if !v.is_hole() { return -1; } holes += stride - 1; continue; }
-        if source::is_accessor(k) || k.is_number() && k.num() == 0 && 1.0 / k.num() < 0 || flavor == collection::Map && (v.is_hole() || source::is_accessor(v)) { return -1; }
+        if source::is_accessor(k) || k.is_number() && k.num() == 0 && 1.0 / k.num() < 0 || source::valued_flavor(flavor) && (v.is_hole() || source::is_accessor(v)) { return -1; }
+        if source::weak_flavor(flavor) && !k.is_object() && (!k.is_symbol() || registered(s, k)) { return -1; }
         live += 1;
     }
     if live != size { return -1; }

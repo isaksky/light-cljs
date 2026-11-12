@@ -2991,6 +2991,22 @@ mod serial_tests {
             // writes fault NativeBoundary (serial_tests.goose
             // collection_image_rows); the result is an object.
             ("map-set-image", "goose"),
+            // WeakMap and WeakSet (light-cljs-945): their constructors'
+            // Collection frames over a user iterator, getter entries, a
+            // subclass's `set`, keys they cannot hold closing the iterator
+            // and the array fast path giving way, keyed by job objects and
+            // symbols, at every budget cut and collection
+            // (serial_tests.goose).
+            ("weak-collections", "boolean:true"),
+            // and across a dependency wait in `next` above a WeakMap's and
+            // a WeakSet's Collection frame, saved and restored
+            // (snapshot_tests.goose).
+            ("weak-collections-wait", "goose"),
+            ("weak-set-wait", "goose"),
+            // and weak collections a later job does not own: reads answer,
+            // writes fault NativeBoundary (serial_tests.goose
+            // weak_image_rows); the result is an object.
+            ("weak-collections-image", "goose"),
             // Base classes (light-cljs-886): constructors, eager
             // prototypes, methods, accessors, fields and static blocks at
             // every budget cut and collection (serial_tests.goose).

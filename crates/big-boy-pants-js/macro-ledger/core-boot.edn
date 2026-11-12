@@ -7,9 +7,7 @@
  :stop
  {:status :unsupported,
   :fault "Fault.UnsupportedOperand",
-  :detail "pending split",
-  :line
-  "const protocolMaskNames = \"IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref...",
-  :steps 14257,
-  :byte 98006,
-  :line-number 1395}}
+  :line "for (const key of Reflect.ownKeys(value)) {",
+  :steps 2374812,
+  :byte 15573,
+  :line-number 239}}

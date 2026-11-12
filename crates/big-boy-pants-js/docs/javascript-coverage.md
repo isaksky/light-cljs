@@ -883,6 +883,40 @@ For-of, spread, destructuring and Array.from use the existing protocol;
 generator delegation still fails at the existing named
 `generator_yield_star` opcode (the generators area).
 
+*As landed by light-cljs-945 (WeakMap and WeakSet):* a WeakMap or WeakSet
+is the same `node_kind::Collection` row in a weak flavor
+(`collection::WeakMap`, `collection::WeakSet`), laid out as a Map's or a
+Set's run (insertion positions included, which nothing iterates), so the
+run, its index, construction through the Collection frame, the write
+check, publication refusal, snapshot validation and reclamation's rehash
+are one code path. *Why not a run without positions:* a weak collection is
+never iterated, so a position slot is spare, but one layout keeps
+`rebuild_run`, `append_entry` and snapshot validation free of a layout
+switch for one value a key. Keys are what CanBeHeldWeakly accepts
+(`held_weakly`): an object, or a symbol that Symbol.for did not register
+(a well-known symbol or a job's `Symbol()`; a symbol row's `initialized`
+marks a registered one). They hash and compare as a Map's object and
+symbol keys do, by row (a keyword form by namespace and name, as `===`
+compares it), so in-job reclamation rebuilds their index when it moves
+their keys. WeakMap.prototype.set and WeakSet.prototype.add throw a
+TypeError for any other key, also as the realm's adder inside a
+construction, which closes the iterator; get, has and delete answer
+undefined or false for one. The array fast path gives way to the protocol
+at such a key, since the TypeError closes an iterator whose `return` a
+script may define on %IteratorPrototype%. %WeakMap.prototype% and
+%WeakSet.prototype% are fixed realm rows; both constructors' `length` is
+0 (the Pants engine gives WeakMap 1, so that row is QuickJS-only);
+WeakMap.prototype's getOrInsert and getOrInsertComputed stay pending for
+light-cljs-953. Snapshot validation also refuses a weak flavor's key that
+CanBeHeldWeakly refuses. *Liveness:* ECMA-262 leaves it to the
+implementation to approximate, so until light-cljs-951 makes the entries
+ephemerons, in-job reclamation traces a weak collection's keys and values
+strongly, as a Map's, and the job's truncation drops them with the job's
+other rows: an entry whose key nothing else reaches stays until the job
+ends. A publication or cell value that reaches one fails as a Map's does
+(`collection-unshareable`), and a write into one the job did not allocate
+faults NativeBoundary.
+
 *As landed by light-cljs-885 (Symbol values):* a symbol a job makes is a
 row of the node table, `node_kind::JsSymbol` (its description, a string or
 undefined; whether Symbol.for registered it; and the symbol registered

@@ -530,8 +530,9 @@ let node_kind::InitializerSlot = 33;
 // (a code row: an image literal's or one its job compiled), value=its
 // pattern text (a string). Its first own property is `lastIndex`.
 let node_kind::RegExp = 34;
-// A Map or Set object (light-cljs-943; collections.goose), an ordinary
-// object with internal slots: length=its flavor (collection::),
+// A Map, Set, WeakMap or WeakSet object (light-cljs-943, light-cljs-945;
+// collections.goose), an ordinary object with internal slots: length=its
+// flavor (collection::),
 // start/count=its run of entries then index slots in heap.values (count
 // 0: no run yet), function=the entries used in the run, value=its size (a
 // Number). It keeps its own properties in a shape or records, as a RegExp
@@ -5780,10 +5781,11 @@ fn construct_builtin(job: Job&, b: Builtin, f: Value, nt: Value, base: i64, prot
         // new RegExp(...) (light-cljs-932; regexp_object.goose): its frame
         // reads newTarget's `prototype` after the pattern's properties.
         RegExp => { start_regexp(job, job.operands[(base + 1)..], base, nt); return; },
-        // new Map(...) and new Set(...) (light-cljs-943; collections.goose):
-        // the object with newTarget's `prototype`, then its iterable in a
+        // new Map(...) and new Set(...) (light-cljs-943; collections.goose),
+        // and new WeakMap(...) and new WeakSet(...) (light-cljs-945): the
+        // object with newTarget's `prototype`, then its iterable in a
         // Collection frame, which delivers the object at `base`.
-        Map, Set => { start_collection(job, b, job.operands[(base + 1)..], base, proto); return; },
+        Map, Set, WeakMap, WeakSet => { start_collection(job, b, job.operands[(base + 1)..], base, proto); return; },
         _ => { unsupported_step(job, b, "construct"); return; },
     }
     if heap.fault != Fault.None { return; }

@@ -300,6 +300,8 @@
  "bbp/use_strict_completion_string"
  "bbp/var_statement_completion"
  "bbp/void_comma_conditional"
+ "bbp/weak_maps_and_sets"
+ "bbp/weak_maps_and_sets_quickjs"
  "bbp/while_do_while"
  "bbp/with_closures_and_calls"
  "bbp/with_resolution"

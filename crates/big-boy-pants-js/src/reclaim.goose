@@ -52,7 +52,13 @@ namespace source;
 // compiler counts entries and reads keys). The interned-key index is weak
 // too: it is rebuilt from the live key headers. So is the index of a Map or
 // Set (light-cljs-943; collections.goose) whose object or symbol-row keys
-// moved, since those keys hash by their rows (rehash_collections).
+// moved, since those keys hash by their rows (rehash_collections), and of a
+// WeakMap or WeakSet (light-cljs-945), the same Collection rows. Their
+// entries are not weak yet: until light-cljs-951 makes them ephemerons, a
+// WeakMap's or WeakSet's run is traced as a Map's is (has_values), keys and
+// values strongly, which ECMA-262 permits (liveness is the
+// implementation's to approximate); the job's truncation drops them with
+// the job's other rows.
 //
 // The pass reaches the same links snapshot::validate checks: a node's
 // values, element or capture run (has_values), shape-mode overflow run or
@@ -454,7 +460,8 @@ fn first_moved(e: const Evacuation&, heap: const Heap&) -> i64 {
     for i in e.nodes.len - 1 { if e.nodes[i + 1] == e.nodes[i] { return e.floor.nodes + i; } }
     return heap.nodes.len;
 }
-// Rebuild the index of every Map and Set (light-cljs-943) one of whose live
+// Rebuild the index of every Map, Set, WeakMap and WeakSet (light-cljs-943,
+// light-cljs-945) one of whose live
 // keys is an object (but a keyword form, which hashes by its name) or a
 // symbol row that the slide moved: those hash by their rows. A collection
 // below `owned` is one the job may not write, an image row, whose keys are

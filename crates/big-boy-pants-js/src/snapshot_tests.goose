@@ -957,9 +957,22 @@ fn suspended_continuations() {
     // adder is gone, and a collection whose index names an entry past its
     // used ones, misplaces an entry or holds a key twice, are refused.
     let collecting = embed_file("../corpus/serial/map-set-construction-wait.gsp");
-    heap_program::join(thread_spawn(collection_wait, str(collecting), false));
-    heap_program::join(thread_spawn(collection_wait, str(collecting), true));
+    heap_program::join(thread_spawn(collection_wait, str(collecting), false, collection::Map));
+    heap_program::join(thread_spawn(collection_wait, str(collecting), true, collection::Map));
     assert(qget<bool>()); let mw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(mw)));
+    // WeakMap and WeakSet (light-cljs-945): the same wait above a WeakMap's
+    // and a WeakSet's Collection frame, resumed without replay; a weak
+    // entry whose key is a number or a registered symbol is refused, one
+    // whose key is an object, a job's unregistered symbol or a well-known
+    // symbol kept.
+    let weakening = embed_file("../corpus/serial/weak-collections-wait.gsp");
+    heap_program::join(thread_spawn(collection_wait, str(weakening), false, collection::WeakMap));
+    heap_program::join(thread_spawn(collection_wait, str(weakening), true, collection::WeakMap));
+    assert(qget<bool>()); let ww = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(ww)));
+    let weak_set = embed_file("../corpus/serial/weak-set-wait.gsp");
+    heap_program::join(thread_spawn(collection_wait, str(weak_set), false, collection::WeakSet));
+    heap_program::join(thread_spawn(collection_wait, str(weak_set), true, collection::WeakSet));
+    assert(qget<bool>()); let sw = qget<Waiting>(); heap_program::join(thread_spawn(symbols_resumed, copy(sw)));
     // The Array callback methods (light-cljs-908): a wait in filter's
     // callback above its ArrayCallbacks frame, in place and from a saved
     // continuation that a fresh heap resumes without replaying an element;
@@ -2631,14 +2644,21 @@ thread_fn collection_iteration_resumed(saved: Waiting, round: i64) {
 // frame's collection is its iterator record (mode 0) or its adder is gone
 // (1), or the collection's index names an entry it has not used (2), puts
 // its entry past the Empty slot the key's probe stops at (3) or holds the
-// same key twice (4).
-thread_fn collection_wait(bytes: u8[], save: bool) {
+// same key twice (4). weak-collections-wait.js and weak-set-wait.js
+// (light-cljs-945) wait so above a WeakMap's and a WeakSet's frame
+// (`flavor`), each job having registered a symbol with Symbol.for; the one
+// entry's key, alone in an index that places it at its hash, validates as
+// an object (5), the job's unregistered symbol (8) or a well-known symbol
+// (9), and is refused as a number (6) or the registered symbol (7), which
+// CanBeHeldWeakly refuses.
+thread_fn collection_wait(bytes: u8[], save: bool, flavor: i64) {
     defer { heap_program::finish(); }
+    let weak = source::weak_flavor(flavor);
     var code = source::Code {}; snapshot_test::append(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
     assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8 && job.frames.len == 3);
-    let collecting = match job.frames[1].native { Collection c => c.which == source::Builtin.Map, _ => false };
+    let collecting = match job.frames[1].native { Collection c => source::constructor_flavor(c.which) == flavor, _ => false };
     assert(collecting && job.frames[1].pc == collection_pc::Step && job.frames[1].receiver.is_object());
     let map = job.frames[1].receiver.id(); assert(source::collection_size(heap.nodes[map]) == 1);
     if !save {
@@ -2649,9 +2669,22 @@ thread_fn collection_wait(bytes: u8[], save: bool) {
     assert(source::retire(job, true));
     let a = source::activation(heap, stack);
     var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
-    for mode in 5 {
+    // The registered symbol (the registry's newest) and an unregistered
+    // symbol row the job made.
+    let registered = image.header.registry; var plain = source::Value.Undefined;
+    for x, row in image.nodes { if x.kind == node_kind::JsSymbol && !x.initialized { plain = source::symbol_at(row); } }
+    assert(!weak || source::symbol_node(registered) >= 0 && plain.is_symbol());
+    for mode in (if weak { 10 } else { 5 }) {
         var bad = copy(image); var changed = false;
-        let n = image.nodes[map]; let capacity = source::entry_capacity(n); let start: i64 = n.start; let stride = source::entry_stride(collection::Map); let index: i64 = start + capacity * stride; let mask = 2 * capacity - 1;
+        let n = image.nodes[map]; let capacity = source::entry_capacity(n); let start: i64 = n.start; let stride = source::entry_stride(flavor); let index: i64 = start + capacity * stride; let mask = 2 * capacity - 1;
+        if mode >= 5 {
+            let known: source::Value = source::Value.Symbol { s: well_known::Iterator };
+            let key = if mode == 5 { source::object(source::object_prototype_row()) } else if mode == 6 { source::number(7) } else if mode == 7 { registered } else if mode == 8 { plain } else { known };
+            bad.values[start] = key;
+            for j in 2 * capacity { bad.values[index + j] = source::Value.Empty; }
+            let at: i64 = source::plain_entry_hash(key) & mask;
+            bad.values[index + at] = source::number(0); changed = true;
+        }
         var home: i64 = -1; for j in 2 * capacity { if home < 0 && image.values[index + j].is_number() { home = j; } }
         assert(home >= 0 && image.values[index + ((home + 1) & mask)].is_hole());
         // The run's index slots follow its entries: the one entry's names
@@ -2660,7 +2693,8 @@ thread_fn collection_wait(bytes: u8[], save: bool) {
         if mode == 2 { bad.values[index + home] = source::number(3); changed = true; }
         if mode == 3 { bad.values[index + ((home + 1) & mask)] = image.values[index + home]; bad.values[index + home] = source::Value.Empty; changed = true; }
         if mode == 4 {
-            bad.values[start + stride] = image.values[start]; bad.values[start + stride + 1] = source::number(5); bad.values[start + stride + stride - 1] = source::number(1); bad.values[index + ((home + 1) & mask)] = source::number(1);
+            bad.values[start + stride] = image.values[start]; bad.values[start + stride + stride - 1] = source::number(1); bad.values[index + ((home + 1) & mask)] = source::number(1);
+            if source::valued_flavor(flavor) { bad.values[start + stride + 1] = source::number(5); }
             bad.nodes[map].namespace_value = source::number(2);
             bad.nodes[map].function = 2; bad.nodes[map].value = source::number(2); changed = true;
         }
@@ -2682,7 +2716,9 @@ thread_fn collection_wait(bytes: u8[], save: bool) {
             }
         }
         assert(changed);
-        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+        var check = snapshot::Control {};
+        if mode == 5 || mode == 8 || mode == 9 { assert(snapshot::validate(bad, check)); continue; }
+        assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
     }
     assert(qput(true));
     assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));

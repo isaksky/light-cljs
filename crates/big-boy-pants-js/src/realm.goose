@@ -206,11 +206,17 @@ enum Builtin {
     // Case mapping and normalization with Unicode 17 data (light-cljs-905;
     // string_case.goose); the locale-sensitive two run as StringMethod frames.
     StringPrototypeToUpperCase, StringPrototypeToLowerCase, StringPrototypeToLocaleUpperCase, StringPrototypeToLocaleLowerCase, StringPrototypeNormalize,
+    // WeakMap and WeakSet (light-cljs-945; collections.goose): the
+    // constructors, which construct only and run their iterable in a
+    // Collection native frame as Map's and Set's do, and their prototypes'
+    // keyed methods, plain.
+    WeakMap, WeakMapPrototypeSet, WeakMapPrototypeGet, WeakMapPrototypeHas, WeakMapPrototypeDelete,
+    WeakSet, WeakSetPrototypeAdd, WeakSetPrototypeHas, WeakSetPrototypeDelete,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[323] = [
+let BUILTINS: BuiltinInfo[332] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -428,6 +434,13 @@ let BUILTINS: BuiltinInfo[323] = [
     BuiltinInfo { which: Builtin.StringPrototypeToLocaleUpperCase, name: "toLocaleUpperCase", length: 0, plan: plan::StringReceiver },
     BuiltinInfo { which: Builtin.StringPrototypeToLocaleLowerCase, name: "toLocaleLowerCase", length: 0, plan: plan::StringReceiver },
     BuiltinInfo { which: Builtin.StringPrototypeNormalize, name: "normalize", length: 0, plan: plan::StringAttribute },
+    // WeakMap and WeakSet (light-cljs-945): no conversions (coerce.goose).
+    // Both constructors' `length` is 0 (ECMAScript 24.3.2, 24.4.2).
+    BuiltinInfo { which: Builtin.WeakMap, name: "WeakMap" }, BuiltinInfo { which: Builtin.WeakMapPrototypeSet, name: "set", length: 2 },
+    BuiltinInfo { which: Builtin.WeakMapPrototypeGet, name: "get", length: 1 }, BuiltinInfo { which: Builtin.WeakMapPrototypeHas, name: "has", length: 1 },
+    BuiltinInfo { which: Builtin.WeakMapPrototypeDelete, name: "delete", length: 1 },
+    BuiltinInfo { which: Builtin.WeakSet, name: "WeakSet" }, BuiltinInfo { which: Builtin.WeakSetPrototypeAdd, name: "add", length: 1 },
+    BuiltinInfo { which: Builtin.WeakSetPrototypeHas, name: "has", length: 1 }, BuiltinInfo { which: Builtin.WeakSetPrototypeDelete, name: "delete", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -500,7 +513,11 @@ inline fn map_prototype_row() -> i64 { return 45; }
 inline fn set_prototype_row() -> i64 { return 46; }
 inline fn map_iterator_prototype_row() -> i64 { return 47; }
 inline fn set_iterator_prototype_row() -> i64 { return 48; }
-inline fn fixed_rows() -> i64 { return 49; }
+// %WeakMap.prototype% and %WeakSet.prototype% (light-cljs-945;
+// collections.goose), ordinary objects inheriting %Object.prototype%.
+inline fn weak_map_prototype_row() -> i64 { return 49; }
+inline fn weak_set_prototype_row() -> i64 { return 50; }
+inline fn fixed_rows() -> i64 { return 51; }
 struct Name { text: u8[..24] }
 let FUNCTION_KIND_TAGS: Name[3] = [Name { text: "GeneratorFunction" }, Name { text: "AsyncFunction" }, Name { text: "AsyncGeneratorFunction" }];
 // The function_kind:: of closure o's code, -1 for an ordinary function.
@@ -539,7 +556,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[253] = [
+let REALM_FUNCTIONS: Method[262] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -732,6 +749,15 @@ let REALM_FUNCTIONS: Method[253] = [
     Method { which: Builtin.StringPrototypeToLocaleUpperCase, holder: wrapper_prototype_row(1) },
     Method { which: Builtin.StringPrototypeToLocaleLowerCase, holder: wrapper_prototype_row(1) },
     Method { which: Builtin.StringPrototypeNormalize, holder: wrapper_prototype_row(1) },
+    // The global WeakMap and WeakSet (light-cljs-945; collections.goose),
+    // rows weak_map_row() and weak_set_row(), each followed by its
+    // prototype's methods in QuickJS's order.
+    Method { which: Builtin.WeakMap, holder: 0 },
+    Method { which: Builtin.WeakMapPrototypeSet, holder: weak_map_prototype_row() }, Method { which: Builtin.WeakMapPrototypeGet, holder: weak_map_prototype_row() },
+    Method { which: Builtin.WeakMapPrototypeHas, holder: weak_map_prototype_row() }, Method { which: Builtin.WeakMapPrototypeDelete, holder: weak_map_prototype_row() },
+    Method { which: Builtin.WeakSet, holder: 0 },
+    Method { which: Builtin.WeakSetPrototypeAdd, holder: weak_set_prototype_row() }, Method { which: Builtin.WeakSetPrototypeHas, holder: weak_set_prototype_row() },
+    Method { which: Builtin.WeakSetPrototypeDelete, holder: weak_set_prototype_row() },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -779,6 +805,10 @@ inline fn regexp_row() -> i64 { return fixed_rows() + 132; }
 // 152nd and 160th (light-cljs-943).
 inline fn map_row() -> i64 { return fixed_rows() + 151; }
 inline fn set_row() -> i64 { return fixed_rows() + 159; }
+// The WeakMap and WeakSet functions' rows, their REALM_FUNCTIONS entries,
+// the 254th and 259th (light-cljs-945).
+inline fn weak_map_row() -> i64 { return fixed_rows() + 253; }
+inline fn weak_set_row() -> i64 { return fixed_rows() + 258; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
@@ -815,7 +845,7 @@ let PENDING: PendingName[74] = [
     PendingName { holder: 0, key: "Promise" },
     PendingName { holder: 0, key: "SharedArrayBuffer" },
     PendingName { holder: 0, key: "Uint8Array" }, PendingName { holder: 0, key: "Uint8ClampedArray" }, PendingName { holder: 0, key: "Uint16Array" }, PendingName { holder: 0, key: "Uint32Array" },
-    PendingName { holder: 0, key: "WeakMap" }, PendingName { holder: 0, key: "WeakRef" }, PendingName { holder: 0, key: "WeakSet" }, PendingName { holder: 0, key: "decodeURI" },
+    PendingName { holder: 0, key: "WeakRef" }, PendingName { holder: 0, key: "decodeURI" },
     PendingName { holder: 0, key: "decodeURIComponent" }, PendingName { holder: 0, key: "encodeURI" }, PendingName { holder: 0, key: "encodeURIComponent" }, PendingName { holder: 0, key: "escape" },
     PendingName { holder: 0, key: "unescape" },
     // %Number.prototype% (light-cljs-832; the core-builtins area makes
@@ -844,6 +874,9 @@ let PENDING: PendingName[74] = [
     PendingName { holder: set_prototype_row(), key: "isDisjointFrom" }, PendingName { holder: set_prototype_row(), key: "isSubsetOf" },
     PendingName { holder: set_prototype_row(), key: "isSupersetOf" }, PendingName { holder: set_prototype_row(), key: "intersection" }, PendingName { holder: set_prototype_row(), key: "difference" },
     PendingName { holder: set_prototype_row(), key: "symmetricDifference" }, PendingName { holder: set_prototype_row(), key: "union" },
+    // WeakMap.prototype's getOrInsert and getOrInsertComputed (QuickJS's
+    // js_weak_map_proto_funcs) are light-cljs-953's too.
+    PendingName { holder: weak_map_prototype_row(), key: "getOrInsert" }, PendingName { holder: weak_map_prototype_row(), key: "getOrInsertComputed" },
 ];
 // The type names `typeof` gives, interned with the realm.
 let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, Name { text: "boolean" }, Name { text: "number" }, Name { text: "string" }, Name { text: "symbol" }, Name { text: "bigint" }, Name { text: "function" }];
@@ -1012,8 +1045,10 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     // prototype, since every RegExp takes its shape (new_regexp).
     let rp .= nodes[regexp_prototype_row()]; let rt .= nodes[regexp_template_row()];
     if rp.kind != node_kind::Object || !rp.proto.is_object() || rp.proto.id() != object_prototype_row() || rt.kind != node_kind::Object || rt.initialized || rt.shape == 0 || rt.key_count != 1 || rt.count != 0 || !rt.proto.is_null() || !same_bits(rt.slots[0], number(0)) { return false; }
-    // %Map.prototype% and %Set.prototype% (light-cljs-943) are ordinary objects.
-    for o in [map_prototype_row(), set_prototype_row()] { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != object_prototype_row() { return false; } }
+    // %Map.prototype% and %Set.prototype% (light-cljs-943), and
+    // %WeakMap.prototype% and %WeakSet.prototype% (light-cljs-945), are
+    // ordinary objects.
+    for o in [map_prototype_row(), set_prototype_row(), weak_map_prototype_row(), weak_set_prototype_row()] { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != object_prototype_row() { return false; } }
     // The arguments templates (light-cljs-854): shape-mode, three properties,
     // no elements, `length` 0 and @@iterator %Array.prototype.values%.
     for mapped in [false, true] {
@@ -1077,6 +1112,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: Value.Null });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
+    rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(error_prototype_row(0)) });
@@ -1239,6 +1275,12 @@ fn build_realm(heap: Heap&) -> bool {
     assert(REALM_FUNCTIONS[map_row() - fixed_rows()].which == Builtin.Map && REALM_FUNCTIONS[set_row() - fixed_rows()].which == Builtin.Set);
     if !link_constructor(heap, map_row(), map_prototype_row()) || !link_constructor(heap, set_row(), set_prototype_row()) { return false; }
     if !add_own(heap, map_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Map"), attr_configurable()) || !add_own(heap, set_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Set"), attr_configurable()) { return false; }
+    // WeakMap and WeakSet (light-cljs-945): `prototype` and `constructor`,
+    // and the prototypes' @@toStringTag (ECMAScript 24.3.3.6, 24.4.3.5),
+    // configurable only.
+    assert(REALM_FUNCTIONS[weak_map_row() - fixed_rows()].which == Builtin.WeakMap && REALM_FUNCTIONS[weak_set_row() - fixed_rows()].which == Builtin.WeakSet);
+    if !link_constructor(heap, weak_map_row(), weak_map_prototype_row()) || !link_constructor(heap, weak_set_row(), weak_set_prototype_row()) { return false; }
+    if !add_own(heap, weak_map_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "WeakMap"), attr_configurable()) || !add_own(heap, weak_set_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "WeakSet"), attr_configurable()) { return false; }
     var s: i64 = 0;
     while export_well_known_symbol(s).len > 0 { if !realm_value(heap, symbol_row(), export_well_known_symbol(s), Value.Symbol { s: s as u32 }, 0) { return false; } s += 1; }
     // The global object's own properties.
@@ -2481,6 +2523,10 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         Map, Set => { return type_error(job, if b == Builtin.Map { "Constructor Map requires 'new'" } else { "Constructor Set requires 'new'" }); },
         MapPrototypeGet, MapPrototypeSet, MapPrototypeHas, MapPrototypeDelete, MapPrototypeClear, MapPrototypeSize, MapSpecies,
         SetPrototypeAdd, SetPrototypeHas, SetPrototypeDelete, SetPrototypeClear, SetPrototypeSize, SetSpecies => { return collection_builtin(job, b, receiver, args); },
+        // WeakMap and WeakSet (light-cljs-945; collections.goose), as Map and Set.
+        WeakMap, WeakSet => { return type_error(job, if b == Builtin.WeakMap { "Constructor WeakMap requires 'new'" } else { "Constructor WeakSet requires 'new'" }); },
+        WeakMapPrototypeGet, WeakMapPrototypeSet, WeakMapPrototypeHas, WeakMapPrototypeDelete,
+        WeakSetPrototypeAdd, WeakSetPrototypeHas, WeakSetPrototypeDelete => { return collection_builtin(job, b, receiver, args); },
         _ => { return native_value(heap, id, args); },
     }
 }

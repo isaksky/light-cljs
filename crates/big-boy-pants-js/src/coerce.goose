@@ -102,7 +102,8 @@ namespace source;
 // (flags, lastIndex, each result's length, match, index and captures, a
 // replacer's result, a named group) follows a read or a call. Their frames
 // convert each in a phase of its own.
-// Map and Set (light-cljs-943; collections.goose) plan nothing either:
+// Map and Set (light-cljs-943; collections.goose), and WeakMap and WeakSet
+// (light-cljs-945), plan nothing either:
 // their keyed methods take keys and values as they are (SameValueZero,
 // with no ToPropertyKey) and check their receiver's internal slots without
 // converting it, the getters and @@species take no arguments, and the

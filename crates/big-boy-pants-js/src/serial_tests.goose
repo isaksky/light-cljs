@@ -1312,7 +1312,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-set-delete.gsp"), embed_file("../corpus/serial/proxy-traps.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/proxy-copy.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
                   embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/regexp-replace.gsp"), embed_file("../corpus/serial/regexp-form-values.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp"),
-                  embed_file("../corpus/serial/map-set-construction.gsp")] {
+                  embed_file("../corpus/serial/map-set-construction.gsp"), embed_file("../corpus/serial/weak-collections.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
@@ -1864,6 +1864,59 @@ fn maps_and_sets() {
     heap_program::join(thread_spawn(collection_rehash, str(embed_file("../corpus/serial/map-set-construction.gsp"))));
     heap_program::join(thread_spawn(collection_image_rows, str(embed_file("../corpus/serial/map-set-image.gsp"))));
     print("serial source VM: Map and Set construction at every budget cut, their indexes rebuilt by collections that move their keys, and collections a later job does not own read but not written");
+    weak_maps_and_sets();
+}
+// WeakMap and WeakSet (light-cljs-945): the same Collection frames over a
+// user iterator, a subclass's `set`, keys they cannot hold closing the
+// iterator and leaving the fast path, keyed by job objects and symbols, at
+// every budget cut (and, in reclamation_cases, with a collection at every
+// cut), their indexes rebuilt by collections that move their keys; and
+// weak collections a later job does not own, read but not written.
+fn weak_maps_and_sets() {
+    let bytes = embed_file("../corpus/serial/weak-collections.gsp");
+    check(bytes, "boolean:true");
+    heap_program::join(thread_spawn(collection_rehash, str(bytes)));
+    heap_program::join(thread_spawn(weak_image_rows, str(embed_file("../corpus/serial/weak-collections-image.gsp"))));
+    print("serial source VM: WeakMap and WeakSet construction at every budget cut, their indexes rebuilt by collections that move their keys, and weak collections a later job does not own read but not written");
+}
+// weak-collections-image.js (light-cljs-945): a job's WeakMap and WeakSet,
+// refused by a publication and kept by a snapshot, read by later jobs that
+// do not own them (a key they cannot hold still a TypeError for set and
+// add), whose writes fault NativeBoundary, the collections unchanged.
+thread_fn weak_image_rows(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let floor = heap.nodes.len;
+    var first = source::Job { heap: heap };
+    assert(source::start(first, source::closure(heap, 0, []), []) && source::run(first, -1) == tiny::Outcome.Complete);
+    let holder = first.result; assert(source::retire(first));
+    let m = regexp_member(heap, holder, "m"); let w = regexp_member(heap, holder, "w"); let k = regexp_member(heap, holder, "k"); let s = regexp_member(heap, holder, "s");
+    assert(source::is_collection(heap, m, collection::WeakMap) && source::is_collection(heap, w, collection::WeakSet) && !source::is_collection(heap, m, collection::Map));
+    // A publication of either fails by name (the holder's symbol would
+    // fail first, as symbol-unshareable).
+    for root in [m, w] {
+        var thunks = false; var initial: source::Initial[>..] = [];
+        let refused = source::publish_cells(heap, root, floor, thunks, initial);
+        assert(refused[..] == "collection-unshareable a Map, Set, WeakMap or WeakSet made by a job (a mutable JavaScript object)");
+    }
+    assert(image_valid(heap));
+    {
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len };
+        assert(source::start(job, regexp_member(heap, holder, "read"), [m, w, k, s], holder) && source::run(job, -1) == tiny::Outcome.Complete);
+        assert(source::key_is(heap, job.result, "abtruefalsetruetruefalsefalseundefinedTypeErrorTypeError"));
+        assert(source::retire(job));
+    }
+    let writers: source::Name[4] = [source::Name { text: "setMap" }, source::Name { text: "deleteMap" }, source::Name { text: "addSet" }, source::Name { text: "deleteSet" }];
+    for wr, i in writers {
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len };
+        assert(source::start(job, regexp_member(heap, holder, wr.text), [m, w, k], holder));
+        var detail: u16[>..] = []; for c in (if i < 2 { "write to an image row: a WeakMap entry" } else { "write to an image row: a WeakSet entry" }) { detail.push(c); }
+        assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary && job.detail[..] == detail[..]);
+        assert(source::retire(job));
+        assert(source::collection_size(source::node(heap, m.id())) == 2 && source::collection_size(source::node(heap, w.id())) == 2);
+    }
+    assert(image_valid(heap));
 }
 // Live Map and Set cursors and callbacks (light-cljs-944), at every cut,
 // limit and forced collection; direct churn keeps a cursor alive while
@@ -1931,7 +1984,7 @@ thread_fn collection_image_rows(bytes: u8[]) {
     // keys included, validates as a snapshot.
     var thunks = false; var initial: source::Initial[>..] = [];
     let refused = source::publish_cells(heap, holder, floor, thunks, initial);
-    assert(refused[..] == "collection-unshareable a Map or Set made by a job (a mutable JavaScript object)");
+    assert(refused[..] == "collection-unshareable a Map, Set, WeakMap or WeakSet made by a job (a mutable JavaScript object)");
     var sc = snapshot::Control {}; let image = snapshot::capture(heap, [], sc); assert(sc.error == snapshot::Error.None && image.nodes.len == heap.nodes.len);
     let m = regexp_member(heap, holder, "m"); let s = regexp_member(heap, holder, "s"); let k = regexp_member(heap, holder, "k");
     assert(source::is_collection(heap, m, collection::Map) && source::is_collection(heap, s, collection::Set));

@@ -113,6 +113,8 @@
   "bbp/map_set_iterable_construction" {:area :collections-weak}
   "bbp/map_set_iteration" {:area :collections-weak}
   "bbp/map_set_for_each" {:area :collections-weak}
+  "bbp/weak_maps_and_sets" {:area :collections-weak :mode :sloppy}
+  "bbp/weak_maps_and_sets_quickjs" {:area :collections-weak :pants-gap "the Pants engine gives WeakMap.length 1 and refuses writes to %IteratorPrototype% and %ArrayIteratorPrototype%"}
   "bbp/strings_replace_regexp" {:area :date-regexp}
   "bbp/regexp_symbol_replace" {:area :date-regexp}
   "bbp/reflect_get_set_receivers" {:area :objects-classes}

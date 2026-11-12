@@ -601,11 +601,12 @@ fn expected(job: Job&, v: Value) -> cells::Flat {
 // symbol could keep its identity. A well-known symbol, the same index in
 // every program, publishes as before.
 fn unshareable_symbol() -> u8[] { return str("symbol-unshareable a symbol made by a job (not shareable)"); }
-// A Map or Set a job made (light-cljs-943; collections.goose) is a mutable
-// JavaScript object: a publication that reaches one fails here by name, a
-// prepared definition's as a helper's (whose callable graph refuses it
-// too). An image's collection, which no job writes, is the image's row.
-fn unshareable_collection() -> u8[] { return str("collection-unshareable a Map or Set made by a job (a mutable JavaScript object)"); }
+// A Map, Set, WeakMap or WeakSet a job made (light-cljs-943,
+// light-cljs-945; collections.goose) is a mutable JavaScript object: a
+// publication that reaches one fails here by name, a prepared definition's
+// as a helper's (whose callable graph refuses it too). An image's
+// collection, which no job writes, is the image's row.
+fn unshareable_collection() -> u8[] { return str("collection-unshareable a Map, Set, WeakMap or WeakSet made by a job (a mutable JavaScript object)"); }
 fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: Initial[>..]&) -> u8[] {
     var marks: bool[>..] = []; marks.resize(heap.nodes.len, false);
     var work:  i64[>..<] = []; var atoms: i64[>..] = [];

@@ -20,8 +20,9 @@ namespace source;
 //
 // A Map or Set is one node_kind::Collection row, an ordinary object (own
 // properties, integrity levels, prototype) with internal slots:
-//   length    its flavor (collection::Map or collection::Set; the weak
-//             flavors are light-cljs-945's)
+//   length    its flavor (collection::Map, collection::Set, and the weak
+//             flavors collection::WeakMap and collection::WeakSet of
+//             light-cljs-945, below)
 //   start     its run in heap.values: `capacity` entries of
 //   count     entry_stride values (key, a Map's value, insertion number),
 //             then 2 * capacity index slots; count is capacity times
@@ -66,14 +67,39 @@ namespace source;
 // (decision 3); reads of image collections work. The constructors run
 // their iterable argument in a Collection native frame (decision 4), one
 // entry a step (decision 5); see "Construction" below.
+//
+// WeakMap and WeakSet (light-cljs-945; ECMAScript 24.3, 24.4; the Pants
+// engine's object/weak_map.rs and vm/builtin.rs, QuickJS's
+// js_map_constructor, js_map_set, js_map_get, js_map_has and js_map_delete
+// with MAGIC_WEAK, and js_weakref_is_target) are the same Collection rows
+// in the weak flavors, laid out as a Map and a Set are (insertion
+// positions included, which nothing iterates), so the run, its index,
+// construction, the write check, publication refusal, snapshot validation
+// and reclamation's rehash are the same code. Their keys are what
+// CanBeHeldWeakly accepts (held_weakly): an object, or a symbol that
+// Symbol.for did not register; they hash and compare by identity as a
+// Map's object and symbol keys do (a keyword form by namespace and name,
+// as `===` compares it). WeakMap.prototype.set and WeakSet.prototype.add
+// throw a TypeError for any other key; get, has and delete answer
+// undefined or false for one. They have no size, clear, forEach or
+// iterators. Liveness is the implementation's to approximate: until
+// light-cljs-951 makes their entries ephemerons, in-job reclamation traces
+// their keys and values strongly, as a Map's, and the job's truncation
+// drops them with their rows.
 
 // A collection's flavor, its node's `length`.
 let collection::Map = 0;
 let collection::Set = 1;
+let collection::WeakMap = 2;
+let collection::WeakSet = 3;
+// Whether a flavor's entries hold a value beside their key: Map and WeakMap.
+inline fn valued_flavor(flavor: i64) -> bool { return flavor == collection::Map || flavor == collection::WeakMap; }
+// Whether a flavor's keys are held weakly: WeakMap and WeakSet.
+inline fn weak_flavor(flavor: i64) -> bool { return flavor == collection::WeakMap || flavor == collection::WeakSet; }
 // The smallest entry capacity of a run.
 inline fn collection_minimum() -> i64 { return 4; }
-// The values an entry takes: key, a Map's value, insertion position.
-inline fn entry_stride(flavor: i64) -> i64 { return if flavor == collection::Map { 3 } else { 2 }; }
+// The values an entry takes: key, a Map's or WeakMap's value, insertion position.
+inline fn entry_stride(flavor: i64) -> i64 { return if valued_flavor(flavor) { 3 } else { 2 }; }
 // Positions are exact Numbers. Exhaustion is a work limit, never a wrap.
 inline fn collection_position_limit() -> f64 { return 9007199254740991.0; }
 fn collection_position(v: Value) -> bool { return v.is_number() && v.num() >= 0 && v.num() <= collection_position_limit() && trunc(v.num()) == v.num(); }
@@ -87,19 +113,39 @@ fn is_collection(heap: const Heap&, v: Value, flavor: i64) -> bool {
 fn entry_capacity(n: const Node&) -> i64 { let count: i64 = n.count; let flavor: i64 = n.length; return count / (entry_stride(flavor) + 2); }
 // Collection row n's size.
 inline fn collection_size(n: const Node&) -> i64 { return n.value.num() as i64; }
-// Whether built-in b belongs to Map (its constructor, its prototype's
-// methods and getter, its @@species) rather than Set.
-fn map_builtin(b: Builtin) -> bool {
-    return match b { Map, MapPrototypeGet, MapPrototypeSet, MapPrototypeHas, MapPrototypeDelete, MapPrototypeClear, MapPrototypeSize, MapSpecies => true, _ => false };
+// The flavor plain collection built-in b (collection_method) or collection
+// constructor b belongs to: its receiver's or its object's.
+fn builtin_flavor(b: Builtin) -> i64 {
+    return match b {
+        Map, MapPrototypeGet, MapPrototypeSet, MapPrototypeHas, MapPrototypeDelete, MapPrototypeClear, MapPrototypeSize, MapSpecies => collection::Map,
+        WeakMap, WeakMapPrototypeGet, WeakMapPrototypeSet, WeakMapPrototypeHas, WeakMapPrototypeDelete => collection::WeakMap,
+        WeakSet, WeakSetPrototypeAdd, WeakSetPrototypeHas, WeakSetPrototypeDelete => collection::WeakSet,
+        _ => collection::Set,
+    };
+}
+// The flavor collection constructor b makes, -1 for another built-in
+// (snapshot validation of a Collection frame).
+fn constructor_flavor(b: Builtin) -> i64 {
+    return match b { Map => collection::Map, Set => collection::Set, WeakMap => collection::WeakMap, WeakSet => collection::WeakSet, _ => -1 };
 }
 // Whether built-in b is a plain collection built-in (collection_builtin).
 fn collection_method(b: Builtin) -> bool {
     return match b {
         MapPrototypeGet, MapPrototypeSet, MapPrototypeHas, MapPrototypeDelete, MapPrototypeClear, MapPrototypeSize, MapSpecies,
-        SetPrototypeAdd, SetPrototypeHas, SetPrototypeDelete, SetPrototypeClear, SetPrototypeSize, SetSpecies => true,
+        SetPrototypeAdd, SetPrototypeHas, SetPrototypeDelete, SetPrototypeClear, SetPrototypeSize, SetSpecies,
+        WeakMapPrototypeGet, WeakMapPrototypeSet, WeakMapPrototypeHas, WeakMapPrototypeDelete,
+        WeakSetPrototypeAdd, WeakSetPrototypeHas, WeakSetPrototypeDelete => true,
         _ => false,
     };
 }
+// The %Map.prototype%-like row of `flavor`, its objects' default prototype.
+fn collection_prototype_row(flavor: i64) -> i64 {
+    return if flavor == collection::Map { map_prototype_row() } else if flavor == collection::Set { set_prototype_row() } else if flavor == collection::WeakMap { weak_map_prototype_row() } else { weak_set_prototype_row() };
+}
+// CanBeHeldWeakly(v) (ECMAScript 9.13): an object, or a symbol Symbol.for
+// did not register (a well-known symbol or a job's Symbol()). A weak
+// flavor's keys are these.
+fn held_weakly(heap: const Heap&, v: Value) -> bool { return v.is_object() || v.is_symbol() && !registered_symbol(heap, v); }
 // Whether built-in b is an accessor's getter: the size getters and
 // @@species (realm.goose build_realm).
 fn collection_accessor(b: Builtin) -> bool { return b == Builtin.MapPrototypeSize || b == Builtin.SetPrototypeSize || b == Builtin.MapSpecies || b == Builtin.SetSpecies; }
@@ -283,22 +329,23 @@ fn append_entry(heap: Heap&, o: i64, k: Value, v: Value, h: u32) -> bool {
     let flavor: i64 = n.length; let stride = entry_stride(flavor); let capacity = entry_capacity(n);
     let start:  i64 = n.start; let p: i64 = n.function;
     set_slot(heap, start + p * stride, k);
-    if flavor == collection::Map { set_slot(heap, start + p * stride + 1, v); }
+    if valued_flavor(flavor) { set_slot(heap, start + p * stride + 1, v); }
     set_slot(heap, start + p * stride + stride - 1, number(position));
     index_entry(heap, start + capacity * stride, 2 * capacity, h, p);
     let size: f64 = collection_size(n) + 1;
     let m .= node_mut(heap, o); m.function = (p + 1) as u32; m.value = number(size); m.namespace_value = number(position + 1);
     return true;
 }
-// Set entry k of collection o to v (a Set's v is unused): its value when
-// k is present, else a new entry; false with a fault. The caller checked
-// that the job may write o and charged the operation.
+// Set entry k of collection o to v (a Set's or WeakSet's v is unused): its
+// value when k is present, else a new entry; false with a fault. The
+// caller checked that the job may write o, that a weak flavor may hold k
+// (held_weakly) and charged the operation.
 fn put_entry(heap: Heap&, o: i64, k: Value, v: Value) -> bool {
     let key = canonical_key(k); let h = entry_hash(heap, key);
     let p = find_entry(heap, o, key, h);
     if p < 0 { return append_entry(heap, o, key, v, h); }
-    let n .= node(heap, o);
-    if n.length == collection::Map { let at: i64 = n.start + p * entry_stride(collection::Map) + 1; set_slot(heap, at, v); }
+    let n .= node(heap, o); let flavor: i64 = n.length;
+    if valued_flavor(flavor) { let at: i64 = n.start + p * entry_stride(flavor) + 1; set_slot(heap, at, v); }
     return true;
 }
 // Delete the entry at position p of collection o: a tombstone.
@@ -306,7 +353,7 @@ fn remove_entry(heap: Heap&, o: i64, p: i64) {
     let n = node(heap, o);
     let flavor: i64 = n.length; let stride = entry_stride(flavor); let start: i64 = n.start;
     set_slot(heap, start + p * stride, Value.Empty);
-    if flavor == collection::Map { set_slot(heap, start + p * stride + 1, Value.Empty); }
+    if valued_flavor(flavor) { set_slot(heap, start + p * stride + 1, Value.Empty); }
     let size: f64 = collection_size(n) - 1;
     node_mut(heap, o).value = number(size);
 }
@@ -327,30 +374,38 @@ fn new_collection(heap: Heap&, flavor: i64, proto: Value) -> Value {
 // Whether the job may write collection o; otherwise its NativeBoundary.
 fn collection_writable(job: Job&, o: i64) -> bool {
     if writable(job, o) { return true; }
-    image_write(job, Value.Undefined, if node(job.heap, o).length == collection::Map { "a Map entry" } else { "a Set entry" });
+    let flavor: i64 = node(job.heap, o).length;
+    image_write(job, Value.Undefined, if flavor == collection::Map { "a Map entry" } else if flavor == collection::Set { "a Set entry" } else if flavor == collection::WeakMap { "a WeakMap entry" } else { "a WeakSet entry" });
     return false;
 }
-// A key built-in b cannot take yet: a BigInt (light-cljs-771).
+// A key built-in b cannot take yet: a BigInt (light-cljs-771). A weak
+// flavor never gets here: a BigInt is no key it can hold (weak_key_error).
 fn bigint_key(job: Job&, b: Builtin) -> Value {
     job.detail.clear();
-    for c in (if map_builtin(b) { "Map key: BigInt (light-cljs-771)" } else { "Set key: BigInt (light-cljs-771)" }) { job.detail.push(c); }
+    for c in (if builtin_flavor(b) == collection::Map { "Map key: BigInt (light-cljs-771)" } else { "Set key: BigInt (light-cljs-771)" }) { job.detail.push(c); }
     if job.heap.fault == Fault.None { job.heap.fault = Fault.UnsupportedOperand; }
     return Value.Undefined;
 }
+// WeakMap.prototype.set's and WeakSet.prototype.add's TypeError for a key
+// CanBeHeldWeakly refuses (QuickJS's message).
+fn weak_key_error(job: Job&, flavor: i64) -> Value { return type_error(job, if flavor == collection::WeakMap { "invalid value used as WeakMap key" } else { "invalid value used as WeakSet key" }); }
 // The work an operation on key k costs: one, and a string's length, which
 // hashing and comparing it read.
 inline fn key_work(heap: const Heap&, k: Value) -> i64 { return 1 + str_len(heap, k); }
 
 // ---- The plain built-ins
 // Map.prototype's get, set, has, delete, clear and size, Set.prototype's
-// add, has, delete, clear and size, and @@species (its receiver). A
-// receiver that is not a collection of the method's flavor is a TypeError.
+// add, has, delete, clear and size, @@species (its receiver), and
+// WeakMap.prototype's get, set, has and delete and WeakSet.prototype's add,
+// has and delete (light-cljs-945). A receiver that is not a collection of
+// the method's flavor is a TypeError, a Map for a WeakMap method too.
 fn collection_builtin(job: Job&, b: Builtin, receiver: Value, args: const Value[:]) -> Value {
     let heap .= job.heap;
     if b == Builtin.MapSpecies || b == Builtin.SetSpecies { return receiver; }
-    let map = map_builtin(b);
-    if !is_collection(heap, receiver, if map { collection::Map } else { collection::Set }) {
-        return type_error(job, if map { "Map method called on an object that is not a Map" } else { "Set method called on an object that is not a Set" });
+    let flavor = builtin_flavor(b);
+    if !is_collection(heap, receiver, flavor) {
+        return type_error(job, if flavor == collection::Map { "Map method called on an object that is not a Map" } else if flavor == collection::Set { "Set method called on an object that is not a Set" }
+            else if flavor == collection::WeakMap { "WeakMap method called on an object that is not a WeakMap" } else { "WeakSet method called on an object that is not a WeakSet" });
     }
     let o: i64 = receiver.id();
     if b == Builtin.MapPrototypeSize || b == Builtin.SetPrototypeSize { let size: f64 = collection_size(node(heap, o)); return number(size); }
@@ -360,17 +415,26 @@ fn collection_builtin(job: Job&, b: Builtin, receiver: Value, args: const Value[
         clear_entries(heap, o); return Value.Undefined;
     }
     let k = arg(args, 0);
+    let adds = b == Builtin.MapPrototypeSet || b == Builtin.SetPrototypeAdd || b == Builtin.WeakMapPrototypeSet || b == Builtin.WeakSetPrototypeAdd;
+    // A key a weak flavor cannot hold: set and add throw, get, has and
+    // delete find nothing (ECMAScript 24.3.3.2 to 24.3.3.5, 24.4.3.1 to
+    // 24.4.3.4).
+    if weak_flavor(flavor) && !held_weakly(heap, k) {
+        if !charge(heap) { return Value.Undefined; }
+        if adds { return weak_key_error(job, flavor); }
+        return if b == Builtin.WeakMapPrototypeGet { Value.Undefined } else { boolean(false) };
+    }
     if k.is_bigint() { return bigint_key(job, b); }
     if !valid(heap, k) || !charge(heap, key_work(heap, k)) { return Value.Undefined; }
-    if b == Builtin.MapPrototypeSet || b == Builtin.SetPrototypeAdd {
+    if adds {
         if !collection_writable(job, o) || !put_entry(heap, o, k, arg(args, 1)) { return Value.Undefined; }
         return receiver;
     }
     let key = canonical_key(k);
     let p = find_entry(heap, o, key, entry_hash(heap, key));
-    if b == Builtin.MapPrototypeGet { return if p < 0 { Value.Undefined } else { slot(heap, node(heap, o).start + p * entry_stride(collection::Map) + 1) }; }
-    if b == Builtin.MapPrototypeHas || b == Builtin.SetPrototypeHas { return boolean(p >= 0); }
-    if b == Builtin.MapPrototypeDelete || b == Builtin.SetPrototypeDelete {
+    if b == Builtin.MapPrototypeGet || b == Builtin.WeakMapPrototypeGet { return if p < 0 { Value.Undefined } else { slot(heap, node(heap, o).start + p * entry_stride(flavor) + 1) }; }
+    if b == Builtin.MapPrototypeHas || b == Builtin.SetPrototypeHas || b == Builtin.WeakMapPrototypeHas || b == Builtin.WeakSetPrototypeHas { return boolean(p >= 0); }
+    if b == Builtin.MapPrototypeDelete || b == Builtin.SetPrototypeDelete || b == Builtin.WeakMapPrototypeDelete || b == Builtin.WeakSetPrototypeDelete {
         if p < 0 { return boolean(false); }
         if !collection_writable(job, o) { return Value.Undefined; }
         remove_entry(heap, o, p); return boolean(true);
@@ -464,7 +528,8 @@ fn collection_for_each_step(job: Job&, frame: Frame) {
 }
 
 // ---- Construction
-// new Map(iterable) and new Set(iterable) (ECMAScript 24.1.1.1, 24.2.1.1;
+// new Map(iterable), new Set(iterable), new WeakMap(iterable) and new
+// WeakSet(iterable) (ECMAScript 24.1.1.1, 24.2.1.1, 24.3.1.1, 24.4.1.1;
 // AddEntriesFromIterable 24.1.1.2): the object comes first, from
 // newTarget's `prototype` (construct reads it), then for an iterable other
 // than undefined or null a Collection native frame (Native.Collection, its
@@ -472,25 +537,29 @@ fn collection_for_each_step(job: Job&, frame: Frame) {
 // asked for: Get(collection, "set" or "add") once (a getter above it; a
 // TypeError when not callable, before GetIterator), GetIterator, then per
 // entry IteratorStep (`next`, the result's `done` and `value`, getters
-// above), for a Map a TypeError when the item is not an object, its "0"
-// and "1", then the adder called with the collection as `this` (a
+// above), for a Map or WeakMap a TypeError when the item is not an object,
+// its "0" and "1", then the adder called with the collection as `this` (a
 // subclass's own `set` or `add` runs as a frame above). From the item on,
 // the frame holds a Catch handler at collection_pc::Close (object_statics
 // close_guard), so an abrupt completion of those reads or the adder closes
 // the iterator: its `return` is read and called, and whatever it does the
 // original exception is rethrown. An exception from `next`, `done` or
-// `value` does not close it. The realm's own %Map.prototype.set% or
-// %Set.prototype.add% as the adder on its flavor stores the entry without
-// a call, which nothing observes.
+// `value` does not close it. The realm's own %Map.prototype.set%,
+// %Set.prototype.add%, %WeakMap.prototype.set% or %WeakSet.prototype.add%
+// as the adder on its flavor stores the entry without a call, which
+// nothing observes; a weak flavor's throws its TypeError for a key it
+// cannot hold there, which closes the iterator as the call's would.
 //
 // The fast path (collection_pc::Fast) skips the protocol where nothing
 // could observe it: a dense array of the realm's %Array.prototype% with no
 // own properties, while %Array.prototype%[@@iterator] is still
 // %Array.prototype.values% and %ArrayIteratorPrototype%.next still its
 // own, and the realm's adder. Its steps take element `index` of the array
-// (and, for a Map, an entry that is a dense array's own elements 0 and 1),
-// one a step. An element it cannot take so (a hole, which reads through
-// the prototype chain, or another entry) leaves the fast path: a cursor
+// (and, for a Map or WeakMap, an entry that is a dense array's own
+// elements 0 and 1), one a step. An element it cannot take so (a hole,
+// which reads through the prototype chain, another entry, or a key a weak
+// flavor cannot hold, whose TypeError closes an iterator whose `return`
+// a script may have defined) leaves the fast path: a cursor
 // over the array at that element and the record of the next that was read
 // at the start take its place, and the protocol goes on from there, as if
 // it had run from the start (an array iterator's `next` reads the length
@@ -523,12 +592,14 @@ let collection_pc::Return = 9;   // the iterator's `return` from its getter
 let collection_pc::Closed = 10;  // `return`'s result, or its exception
 let collection_pc::Fast = 11;    // the next element of a dense array, no protocol
 
-// new Map(...) or new Set(...) (b), its object's prototype `proto` (Empty:
-// the realm's), its operand base `base` (construct_builtin).
+// new Map(...), new Set(...), new WeakMap(...) or new WeakSet(...) (b), its
+// object's prototype `proto` (Empty: the realm's), its operand base `base`
+// (construct_builtin).
 fn start_collection(job: Job&, b: Builtin, args: const Value[:], base: i64, proto: Value) {
     let heap .= job.heap;
-    let map = b == Builtin.Map;
-    let c = new_collection(heap, if map { collection::Map } else { collection::Set }, if proto.is_object() { proto } else { object(if map { map_prototype_row() } else { set_prototype_row() }) });
+    let flavor = constructor_flavor(b);
+    let map = valued_flavor(flavor);
+    let c = new_collection(heap, flavor, if proto.is_object() { proto } else { object(collection_prototype_row(flavor)) });
     if heap.fault != Fault.None { return; }
     let iterable = form_value(heap, arg(args, 0));
     if heap.fault != Fault.None { return; }
@@ -542,7 +613,12 @@ fn start_collection(job: Job&, b: Builtin, args: const Value[:], base: i64, prot
 // behaves alike).
 fn builtin_is(heap: const Heap&, v: Value, which: Builtin) -> bool { return v.is_object() && v.id() < heap.nodes.len && node(heap, v.id()).kind == node_kind::Builtin && builtin_of(heap, v.id()) == which; }
 // Whether `adder` is the realm's adder for collection constructor b.
-fn realm_adder(heap: const Heap&, b: Builtin, adder: Value) -> bool { return builtin_is(heap, adder, if b == Builtin.Map { Builtin.MapPrototypeSet } else { Builtin.SetPrototypeAdd }); }
+fn realm_adder(heap: const Heap&, b: Builtin, adder: Value) -> bool {
+    return builtin_is(heap, adder, if b == Builtin.Map { Builtin.MapPrototypeSet } else if b == Builtin.Set { Builtin.SetPrototypeAdd } else if b == Builtin.WeakMap { Builtin.WeakMapPrototypeSet } else { Builtin.WeakSetPrototypeAdd });
+}
+// Whether collection constructor b's entries are key-value pairs (Map,
+// WeakMap) rather than values (Set, WeakSet).
+inline fn entry_pairs(b: Builtin) -> bool { return b == Builtin.Map || b == Builtin.WeakMap; }
 // Whether array v's elements are what its iteration would visit (see
 // "The fast path"): a dense array of the realm's prototype with no own
 // named properties, the realm's array iteration unchanged.
@@ -601,7 +677,10 @@ fn take_adder(job: Job&, at: i64, b: Builtin, adder: Value) {
     let heap .= job.heap;
     let f = form_value(heap, adder);
     if heap.fault != Fault.None { return; }
-    if !is_callable(heap, f) { type_error(job, if b == Builtin.Map { "Map: 'set' is not a function" } else { "Set: 'add' is not a function" }); return; }
+    if !is_callable(heap, f) {
+        type_error(job, if b == Builtin.Map { "Map: 'set' is not a function" } else if b == Builtin.Set { "Set: 'add' is not a function" } else if b == Builtin.WeakMap { "WeakMap: 'set' is not a function" } else { "WeakSet: 'add' is not a function" });
+        return;
+    }
     job.frames[at].output = f;
     let iterable = job.frames[at].callee;
     if realm_adder(heap, b, f) && fast_source(heap, iterable) { job.frames[at].pc = collection_pc::Fast; job.frames[at].index = 0; return; }
@@ -634,12 +713,13 @@ fn entry_done(job: Job&, at: i64, b: Builtin, done: bool) {
     if ready { take_entry(job, at, b, v); }
 }
 // Item v arrived: from here an abrupt completion closes the iterator. A
-// Set adds it; a Map's must be an object, whose "0" is read.
+// Set or WeakSet adds it; a Map's or WeakMap's must be an object, whose
+// "0" is read.
 fn take_entry(job: Job&, at: i64, b: Builtin, v: Value) {
     let heap .= job.heap;
     job.frames[at].input = Value.Undefined;
     close_guard(job, at, collection_pc::Close);
-    if b == Builtin.Set { add_entry(job, at, b, v, Value.Undefined); return; }
+    if !entry_pairs(b) { add_entry(job, at, b, v, Value.Undefined); return; }
     let e = form_value(heap, v);
     if heap.fault != Fault.None { return; }
     if !e.is_object() { type_error(job, "iterator value is not an entry object"); return; }
@@ -656,20 +736,24 @@ fn take_entry_key(job: Job&, at: i64, b: Builtin, k: Value) {
     if ready { add_entry(job, at, b, k, v); return; }
     job.frames[at].input = k;
 }
-// Call the adder with key k and value v (a Set's v unused): the realm's
-// adder stores the entry here; any other runs above this frame and its
-// result arrives at pc Added.
+// Call the adder with key k and value v (a Set's or WeakSet's v unused):
+// the realm's adder stores the entry here (a weak flavor's throws for a key
+// it cannot hold, which the frame's handler catches and closes the
+// iterator for); any other runs above this frame and its result arrives
+// at pc Added.
 fn add_entry(job: Job&, at: i64, b: Builtin, k: Value, v: Value) {
     let heap .= job.heap;
     let adder = job.frames[at].output; let c = job.frames[at].receiver;
     if realm_adder(heap, b, adder) {
+        let flavor = constructor_flavor(b);
+        if weak_flavor(flavor) && !held_weakly(heap, k) { if charge(heap) { weak_key_error(job, flavor); } return; }
         if k.is_bigint() { bigint_key(job, b); return; }
         if !valid(heap, k) || !charge(heap, key_work(heap, k)) || !put_entry(heap, c.id(), k, v) { return; }
         close_unguard(job, at, collection_pc::Close);
         next_entry(job, at, b); return;
     }
     job.frames[at].pc = collection_pc::Added; job.frames[at].input = Value.Undefined;
-    if b == Builtin.Map { call_accessor(job, adder, c, [k, v]); } else { call_accessor(job, adder, c, [k]); }
+    if entry_pairs(b) { call_accessor(job, adder, c, [k, v]); } else { call_accessor(job, adder, c, [k]); }
 }
 // IteratorClose after an abrupt completion: the exception e arrived at the
 // frame's handler. `return` is read and called with a handler of its own
@@ -709,9 +793,12 @@ fn fast_step(job: Job&, at: i64, b: Builtin) {
     let n = node(heap, a.id());
     if i >= n.length { finish_native(job, frame, frame.receiver); return; }
     let item = if i < n.count { slot(heap, n.start + i) } else { Value.Empty };
-    if item.is_hole() || b == Builtin.Map && !fast_pair(heap, item) { leave_fast(job, at, b); return; }
+    if item.is_hole() || entry_pairs(b) && !fast_pair(heap, item) { leave_fast(job, at, b); return; }
     var k = item; var v = Value.Undefined;
-    if b == Builtin.Map { let e = node(heap, item.id()); k = slot(heap, e.start); v = slot(heap, e.start + 1); }
+    if entry_pairs(b) { let e = node(heap, item.id()); k = slot(heap, e.start); v = slot(heap, e.start + 1); }
+    // A key a weak flavor cannot hold throws, which closes the iterator:
+    // the protocol, from this element, reads its `return`.
+    if weak_flavor(constructor_flavor(b)) && !held_weakly(heap, k) { leave_fast(job, at, b); return; }
     if k.is_bigint() { bigint_key(job, b); return; }
     if !valid(heap, k) || !charge(heap, key_work(heap, k)) || !put_entry(heap, frame.receiver.id(), k, v) { return; }
     job.frames[at].index = i + 1;
