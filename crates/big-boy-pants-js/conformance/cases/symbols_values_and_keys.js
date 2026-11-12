@@ -6,8 +6,7 @@
 // them), the TypeErrors of converting one to a number or a string, and
 // throwing and catching one, and %Symbol.prototype% changed by JavaScript
 // (an @@iterator added, @@toStringTag removed or not a string). Left out: `__rt` rows and the waits of
-// `__rt.need`; String.raw (pending in the core-builtins area,
-// light-cljs-767). Each row is a `row(...)` check; the script completes with
+// `__rt.need`. Each row is a `row(...)` check; the script completes with
 // the number of rows, or minus the first failing row's number.
 var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
@@ -46,6 +45,8 @@ row(name(() => new Error(Symbol())) === "TypeError");
 row(name(() => `${Symbol()}`) === "TypeError");
 row(name(() => String({toString() { return Symbol(); }})) === "TypeError");
 row(name(() => new String(Symbol())) === "TypeError");
+row(name(() => String.raw`x${Symbol()}y`) === "TypeError");
+row(name(() => String.raw({raw: [Symbol()]})) === "TypeError");
 { let caught = false; try { new Symbol(); } catch (e) { caught = e instanceof TypeError && e instanceof Error && Object.getPrototypeOf(e) === TypeError.prototype && e.name === 'TypeError'; } row(caught); }
 // new Symbol(o) throws before it converts o.
 { let log = ''; row(name(() => new Symbol({toString() { log += 't'; return 'x'; }})) === "TypeError" && log === ''); }

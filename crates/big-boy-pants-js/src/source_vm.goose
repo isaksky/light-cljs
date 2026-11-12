@@ -27,6 +27,7 @@ import .math_object;
 import .form_ops;
 import .regexp_object;
 import .collections;
+import .string_methods;
 
 namespace source;
 
@@ -199,7 +200,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64), Construct => 10001, Coerce c => -9001 - (code(c.which) as i64) * 2 - (if c.construct { 1 } else { 0 }), SumPrecise => 11001, RegExp r => -12001 - (code(r.which) as i64), Collection c => -13001 - (code(c.which) as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001, ErrorConstruct e => -5001 - (code(e.which) as i64), ErrorText => -6001, Descriptor d => -7001 - (code(d.which) as i64), Statics s => -8001 - (code(s.which) as i64), Construct => 10001, Coerce c => -9001 - (code(c.which) as i64) * 2 - (if c.construct { 1 } else { 0 }), SumPrecise => 11001, RegExp r => -12001 - (code(r.which) as i64), Collection c => -13001 - (code(c.which) as i64), StringMethod s => -14001 - (code(s.which) as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -901,7 +902,7 @@ root struct Heap {
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct, Coerce { which: Builtin, construct: bool }, SumPrecise, RegExp { which: Builtin }, Collection { which: Builtin } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction, ErrorConstruct { which: Builtin }, ErrorText, Descriptor { which: Builtin }, Statics { which: Builtin }, Construct, Coerce { which: Builtin, construct: bool }, SumPrecise, RegExp { which: Builtin }, Collection { which: Builtin }, StringMethod { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -4495,6 +4496,7 @@ fn native_step(job: Job&) {
         Descriptor d => { descriptor_step(job, frame, d.which); },
         Statics s => { statics_step(job, frame, s.which); },
         Construct => { construct_step(job, frame); },
+        StringMethod s => { string_method_step(job, frame, s.which); },
         Coerce c => { coerce_step(job, frame, c.which, c.construct); },
         SumPrecise => { sum_precise_step(job, frame); },
         RegExp r => { regexp_step(job, frame, r.which); },
@@ -4631,7 +4633,7 @@ fn builtin_callback(job: Job&, callee: Value, receiver: Value, arg: Value, frame
     else if coerces(job.heap, callee, receiver, [arg]) { start_coerce(job, callee, receiver, [arg], job.operands.len); }
     else if forces(job.heap, b, [arg]) { start_force(job, b, arg, job.operands.len); }
     else if effect_builtin(b) { request_effect(job, id, [arg], frame); }
-    else if forwarding(b) || b == Builtin.MathSumPrecise || regexp_native(b) { native_start(job, b, receiver, [arg], job.operands.len); }
+    else if forwarding(b) || b == Builtin.MathSumPrecise || regexp_native(b) || string_native(b) { native_start(job, b, receiver, [arg], job.operands.len); }
     else if conditional_native(b) { start_conditional_native(job, b, receiver, [arg], job.operands.len); }
     else { let v = call_plain(job, callee, receiver, [arg]); job.operands.push(v); }
 }
@@ -4799,7 +4801,7 @@ fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:])
     let b = builtin_of(heap, m.id());
     // An Array.prototype native frame (Array.prototype.toString, light-cljs-842)
     // runs above this one; its result arrives at pc 1.
-    if array_native(b) || forwarding(b) { native_start(job, b, v, args, job.operands.len); return; }
+    if array_native(b) || forwarding(b) || string_native(b) { native_start(job, b, v, args, job.operands.len); return; }
     // Function.prototype.toString (light-cljs-853): its FunctionText frame, if it needs one.
     if b == Builtin.FunctionPrototypeToString { start_function_text(job, v, job.operands.len); return; }
     // Error.prototype.toString (light-cljs-870): its ErrorText frame, if it needs one.

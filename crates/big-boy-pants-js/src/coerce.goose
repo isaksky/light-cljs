@@ -22,7 +22,7 @@ namespace source;
 //              (Number.prototype's methods). It runs before any argument.
 //   steps      the Step of each of the first four arguments, in order;
 //   rest       the Step of every later argument (Math.max, min and hypot:
-//              Number; String.fromCharCode: Uint16);
+//              Number);
 //   construct  whether [[Construct]] converts too (new Number(o), new
 //              String(o)); otherwise only a call does, so Symbol's
 //              construction throws before anything converts.
@@ -148,7 +148,14 @@ let plan::Numbers: u8 = 9;
 // Math.imul(x, y): ToUint32 of both; Math.clz32(x): ToUint32.
 let plan::TwoUint32: u8 = 10;
 let plan::OneUint32: u8 = 11;
-let PLANS: Plan[12] = [
+// String methods' unconditional receiver conversion; code-unit access
+// also converts its position. Searches convert later arguments in their
+// native frame, after IsRegExp where required. String's statics use no
+// plan: fromCodePoint validates each point before the next converts, and
+// raw interleaves property reads with conversions (string_methods.goose).
+let plan::StringReceiver: u8 = 12;
+let plan::StringPosition: u8 = 13;
+let PLANS: Plan[14] = [
     Plan { this_step: ThisStep.None, steps: [Step.None, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
     Plan { this_step: ThisStep.None, steps: [Step.Numeric, Step.None, Step.None, Step.None], rest: Step.None, construct: true },
     Plan { this_step: ThisStep.None, steps: [Step.String, Step.None, Step.None, Step.None], rest: Step.None, construct: true },
@@ -161,6 +168,8 @@ let PLANS: Plan[12] = [
     Plan { this_step: ThisStep.None, steps: [Step.Number, Step.Number, Step.Number, Step.Number], rest: Step.Number, construct: false },
     Plan { this_step: ThisStep.None, steps: [Step.Uint32, Step.Uint32, Step.None, Step.None], rest: Step.None, construct: false },
     Plan { this_step: ThisStep.None, steps: [Step.Uint32, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
+    Plan { this_step: ThisStep.String, steps: [Step.None, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
+    Plan { this_step: ThisStep.String, steps: [Step.Integer, Step.None, Step.None, Step.None], rest: Step.None, construct: false },
 ];
 inline fn step_at(p: const Plan&, i: i64) -> Step { return if i < p.steps.len { p.steps[i] } else { p.rest }; }
 // The plan row of built-in function object f.

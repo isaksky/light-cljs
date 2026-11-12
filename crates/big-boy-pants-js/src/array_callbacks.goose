@@ -8,6 +8,7 @@ import .descriptors;
 import .prototypes;
 import .object_statics;
 import .regexp_object;
+import .string_methods;
 
 namespace source;
 
@@ -56,12 +57,13 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return array_callback(b) || array_search(b) || array_mutator(b) || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b) || prototype_native(b) || statics_native(b) || b == Builtin.MathSumPrecise || regexp_native(b); }
+fn native_builtin(b: Builtin) -> bool { return array_callback(b) || array_search(b) || array_mutator(b) || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b) || prototype_native(b) || statics_native(b) || b == Builtin.MathSumPrecise || regexp_native(b) || string_native(b); }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
 // pushes its result there.
 fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
+    if string_native(b) { start_string_method(job, b, receiver, args, base); return; }
     // swap! and swap-vals! (cells.goose).
     if b == Builtin.Swap || b == Builtin.SwapVals { var copied: Value[>..] = []; copied.append(args); start_swap(job, b, copied, base); return; }
     // Function.prototype.call and apply, Reflect.apply and Reflect.construct

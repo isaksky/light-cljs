@@ -2891,6 +2891,10 @@ mod serial_tests {
             // (serial_tests.goose); its @@hasInstance row is one the Pants
             // engine refuses.
             ("number-conversions", "goose"),
+            // String native conversions, raw getters and bounded scans
+            // (light-cljs-903), at every budget cut and collection.
+            ("string-methods", "goose"),
+            ("string-scans", "goose"),
             // and through the light-cljs runtime's mapv, deferred map and
             // swap! callbacks, which the Pants engine does not have.
             ("runtime-conversions", "goose"),

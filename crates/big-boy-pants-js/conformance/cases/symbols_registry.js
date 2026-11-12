@@ -18,9 +18,9 @@ row(Symbol.keyFor(Symbol.iterator) === undefined);
 row(Symbol.for(1) === Symbol.for('1') && Symbol.for() === Symbol.for('undefined') && Symbol.for(null) === Symbol.for('null'));
 row(Symbol.for('a' + 'bc') === Symbol.for('abc') && Symbol.for('') !== Symbol.for('undefined') && Symbol.keyFor(Symbol.for('')) === '');
 row(Symbol.keyFor(Symbol.iterator) === undefined && Symbol.keyFor(Symbol.toPrimitive) === undefined);
-// (String.fromCharCode and charCodeAt are pending, light-cljs-767: the
-// lone surrogate is a literal here.)
-{ let hi = '\uD800'; row(Symbol.for(hi + '') === Symbol.for('\uD800')); }
+// String code units are preserved in registry keys (light-cljs-903).
+{ let hi = String.fromCharCode(0xD800); row(Symbol.for(hi + '') === Symbol.for('\uD800')); }
+row(Symbol.keyFor(Symbol.for(String.fromCharCode(0xD800))).charCodeAt(0) === 0xD800);
 row(Symbol.for('\uD800') !== Symbol.for('�') && Symbol.keyFor(Symbol.for('\uD800')) === '\uD800' && Symbol.keyFor(Symbol.for('\uD800')).length === 1);
 { let n = 0; row(Symbol.for({toString() { n++; return 'abc'; }}) === Symbol.for('abc') && n === 1); }
 row(Symbol.for({toString() { return undefined; }}) === Symbol.for('undefined'));

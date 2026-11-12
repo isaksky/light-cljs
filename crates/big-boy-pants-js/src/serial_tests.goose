@@ -852,9 +852,12 @@ fn main() {
     // build, without it, runs every budget cut and limit point.
     let arguments = args();
     sampled = arguments.len == 2 && arguments[1] == "--sampled";
-    assert(arguments.len == 1 || sampled);
+    let strings = arguments.len == 2 && arguments[1] == "--strings";
+    assert(arguments.len == 1 || sampled || strings);
     sweep_lanes = min(8, max(1, hardware_threads() / 3));
     print("serial source VM: ", if sampled { "sampled" } else { "every" }, " budget cut and limit point, ", sweep_lanes, " sweep lanes");
+    string_methods_checks();
+    if strings { return; }
     sampling_policy();
     array_lengths(); latin1_state_check();
     wrong_rows();
@@ -2779,4 +2782,79 @@ thread_fn duplicate_run(bytes: u8[], width: i64) {
 fn duplicates() {
     heap_program::join(thread_spawn(duplicate_run, duplicate_image(opcode::Dup2, 2), 2));
     heap_program::join(thread_spawn(duplicate_run, duplicate_image(opcode::Dup3, 3), 3));
+}
+
+// String statics and methods (light-cljs-903): the existing every-cut,
+// limit and collection checks, plus saved continuations in each distinct
+// StringMethod phase, restored into a fresh thread program's heap.
+fn string_methods_checks() {
+    for bytes in [embed_file("../corpus/serial/string-methods.gsp"), embed_file("../corpus/serial/string-scans.gsp")] {
+        check(bytes, "boolean:true");
+        limit_points(bytes);
+        heap_program::join(thread_spawn(reclaim_cuts, str(bytes), str("boolean:true"), 1, 1));
+        heap_program::join(thread_spawn(string_saving, str(bytes)));
+    }
+    heap_program::join(thread_spawn(string_large, str(embed_file("../corpus/serial/string-scans.gsp"))));
+    print("serial String methods: every budget cut, limits, collection, saved phases and 65,536 arguments passed");
+}
+thread_fn string_large(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code, limits: source::Limits { steps: 1 << 40, work: 1 << 40 } }; assert(source::initialize(heap));
+    // The JavaScript apply/spread argument-list limit is 65,535 (QuickJS:
+    // 65,534). The String native itself accepts a larger argument run.
+    var arguments: source::Value[>..] = [];
+    for i in 65536 { arguments.push(source::number(i)); }
+    var job = source::Job { heap: heap, registered: true }; heap.live_jobs += 1;
+    source::native_start(job, source::Builtin.StringFromCharCode, source::Value.Undefined, arguments, 0);
+    assert(source::run(job, -1) == tiny::Outcome.Complete && source::str_len(heap, job.result) == 65536);
+    for i in 65536 { assert(source::unit(heap, job.result, i) == i); }
+    assert(source::retire(job));
+}
+thread_fn string_saved(image: snapshot::Snapshot, stack: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var c = snapshot::Control {};
+    assert(snapshot::restore(image, code, heap, bindings, source::reserve_identity(), c));
+    var job = source::Job { heap: heap };
+    assert(source::resume_stack(job, stack)); job.registered = true; heap.live_jobs += 1;
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.is_bool() && job.result.flag());
+    assert(source::retire(job));
+}
+thread_fn string_saving(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+    var seen = dictionary<i64, bool> {}; var stack: i64 = -1; var saved: i64 = 0;
+    while source::run(job, 1) == tiny::Outcome.Yielded {
+        var sample = false;
+        for f in job.frames {
+            match f.native {
+                StringMethod m => {
+                    let key = (source::code(m.which) as i64) * 100 + f.pc * 2 + (if f.index > 0 { 1 } else { 0 });
+                    if !seen.contains(key) { seen.insert(key, true); sample = true; }
+                },
+                _ => {},
+            }
+        }
+        if !sample { continue; }
+        stack = source::suspend_stack(job, stack); assert(stack >= 0);
+        var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c, 0, true);
+        assert(c.error == snapshot::Error.None);
+        // A phase that no StringMethod implements is never admitted.
+        var bad = copy(image); var changed = false;
+        let a = source::activation(heap, stack);
+        for i in a.frame_count {
+            let row = a.frames + i;
+            match bad.conts[row] {
+                Frame x => { var f = x.f; match f.native { StringMethod => { f.pc = 100; bad.conts[row] = source::Cont.Frame { f: f }; changed = true; }, _ => {} } },
+                _ => {},
+            }
+        }
+        var invalid = snapshot::Control {}; assert(changed && !snapshot::validate(bad, invalid) && invalid.error == snapshot::Error.Link);
+        heap_program::join(thread_spawn(string_saved, copy(image), stack));
+        assert(source::resume_stack(job, stack)); saved += 1;
+    }
+    assert(saved > 0 && job.status == tiny::Status.Complete && job.result.is_bool() && job.result.flag());
+    assert(source::retire(job));
 }

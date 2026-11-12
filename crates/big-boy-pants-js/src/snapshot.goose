@@ -414,6 +414,7 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // operands (snapshot frame checks bound them), and the next
         // position; a construction's newTarget is an object.
         Coerce c => f.pc == 0 && object_of(s, f.callee, node_kind::Builtin) && s.nodes[f.callee.id()].function < source::BUILTINS.len && source::BUILTINS[s.nodes[f.callee.id()].function].which == c.which && source::BUILTINS[s.nodes[f.callee.id()].function].plan != plan::None && f.argument_count >= 0 && f.index >= 0 && f.index <= f.argument_count + 1 && (!c.construct || object_of(s, f.input, node_kind::None)),
+        StringMethod m => string_frame_valid(s, f, m.which),
         SumPrecise => sum_frame_valid(s, f),
         // A RegExp frame (light-cljs-932, regexp_object.goose): the
         // constructor awaits one of its phases with its state bits, its
@@ -1376,3 +1377,26 @@ fn reserve(r: Resources&, bytes: i64) -> bool {
     r.active += 1; r.retained += bytes; r.peak = max(r.peak, r.retained); return true;
 }
 fn release(r: Resources&, bytes: i64) { assert(r.active > 0 && bytes >= 0 && bytes <= r.retained); r.active -= 1; r.retained -= bytes; }
+
+// StringMethod's state is entirely Values and operand pieces, preserved
+// by SavedFrame and reclamation's general frame traversal (light-cljs-903).
+fn string_frame_valid<T>(s: const T&, f: source::SavedFrame, b: source::Builtin) -> bool {
+    if source::string_points(b) { return (f.pc == string_pc::Points || f.pc == string_pc::PointValue || f.pc == string_pc::Finish) && f.argument_count >= 0 && f.index >= 0 && f.index <= f.argument_count && (f.pc != string_pc::PointValue || f.index < f.argument_count) && (f.pc != string_pc::Finish || f.index == f.argument_count); }
+    if source::string_search(b) {
+        if !f.receiver.is_string() || f.pc < string_pc::Match || f.pc > string_pc::Scan { return false; }
+        if f.pc == string_pc::Match { return source::string_predicate(b) && f.input.is_object(); }
+        if f.pc == string_pc::Needle { return true; }
+        if !f.input.is_string() { return false; }
+        if f.pc == string_pc::Position { return true; }
+        let len = s.strings[f.receiver.sid()].len as i64; let size = s.strings[f.input.sid()].len as i64;
+        return size > 0 && f.index >= -1 && f.index <= len + 1 && f.argument_count >= 0 && f.argument_count < size;
+    }
+    if source::string_well_formed(b) { return (f.pc == string_pc::WellFormed || f.pc == string_pc::Finish && b == source::Builtin.StringPrototypeToWellFormed) && f.receiver.is_string() && f.index >= 0 && f.index <= s.strings[f.receiver.sid()].len && (f.pc != string_pc::Finish || f.index == s.strings[f.receiver.sid()].len); }
+    if b != source::Builtin.StringRaw || f.pc < string_pc::Raw || f.pc > string_pc::SubstitutionCopy && f.pc != string_pc::Finish || !f.receiver.is_object() || f.argument_count < 1 || f.index < 0 { return false; }
+    if f.pc == string_pc::Raw || f.pc == string_pc::Length { return f.index == 0; }
+    if !f.callee.is_number() || f.callee.num() < 1 || f.callee.num() > 9007199254740991.0 || trunc(f.callee.num()) != f.callee.num() || f.index >= f.callee.num() { return false; }
+    if f.pc == string_pc::Finish { return f.index + 1 == f.callee.num(); }
+    if f.pc == string_pc::Substitution || f.pc == string_pc::SubstitutionCopy { if f.index + 1 >= f.argument_count { return false; } }
+    if f.pc == string_pc::PieceCopy || f.pc == string_pc::SubstitutionCopy { return f.input.is_string() && f.output.is_number() && f.output.num() >= 0 && f.output.num() <= s.strings[f.input.sid()].len && trunc(f.output.num()) == f.output.num(); }
+    return true;
+}

@@ -2311,6 +2311,22 @@ path for the realm, and `Function.prototype.toString` and stack traces that
 pretend the code is native; and it would rewrite semantics that the Pants
 engine already specifies as resumable native code.
 
+*As landed by light-cljs-903 (String code units and search):*
+`string_methods.goose` adds String.fromCharCode, fromCodePoint and raw,
+charAt, charCodeAt, codePointAt and at, indexOf, lastIndexOf, includes,
+startsWith and endsWith, and isWellFormed and toWellFormed. Code-unit access
+is plain after a receiver/position conversion plan. The other operations
+use Native.StringMethod: its existing frame Values and operands hold all
+state, so reclamation and SavedFrame transport need no new table. Scans,
+raw-piece work and primitive construction use bounded batches, charging
+units and comparisons. fromCodePoint converts and validates one argument
+before touching a later object; search predicates read @@match before
+converting the search value. String.raw reads and converts each piece and
+substitution in order, keeping a captured length and re-reading each index.
+Output pieces are canonical job strings and flatten through the existing
+concat_pieces helper. The serial cases exercise every budget cut, limits,
+collection, and saved phases restored in another thread program.
+
 ## Decision 6: realm setup
 
 **Decision.** The realm builder is Goose code that runs once, in the session

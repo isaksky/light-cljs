@@ -12,6 +12,7 @@ import .array_search;
 import .array_mutators;
 import .array_sort;
 import .array_copy;
+import .string_methods;
 
 namespace source;
 
@@ -191,11 +192,13 @@ enum Builtin {
     // The Array methods that copy and the statics Array.of and Array.from
     // (light-cljs-911; array_copy.goose), in the mutators' frame.
     ArrayPrototypeSlice, ArrayPrototypeConcat, ArrayPrototypeFlat, ArrayPrototypeToReversed, ArrayPrototypeWith, ArrayOf, ArrayFrom,
+    // String code units, statics and search (light-cljs-903).
+    StringFromCharCode, StringFromCodePoint, StringRaw, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeCodePointAt, StringPrototypeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeIncludes, StringPrototypeStartsWith, StringPrototypeEndsWith, StringPrototypeIsWellFormed, StringPrototypeToWellFormed,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[268] = [
+let BUILTINS: BuiltinInfo[282] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -362,6 +365,20 @@ let BUILTINS: BuiltinInfo[268] = [
     BuiltinInfo { which: Builtin.ArrayPrototypeFlat, name: "flat" }, BuiltinInfo { which: Builtin.ArrayPrototypeToReversed, name: "toReversed" },
     BuiltinInfo { which: Builtin.ArrayPrototypeWith, name: "with", length: 2 }, BuiltinInfo { which: Builtin.ArrayOf, name: "of" },
     BuiltinInfo { which: Builtin.ArrayFrom, name: "from", length: 1 },
+    BuiltinInfo { which: Builtin.StringFromCharCode, name: "fromCharCode", length: 1 },
+    BuiltinInfo { which: Builtin.StringFromCodePoint, name: "fromCodePoint", length: 1 },
+    BuiltinInfo { which: Builtin.StringRaw, name: "raw", length: 1 },
+    BuiltinInfo { which: Builtin.StringPrototypeCharAt, name: "charAt", length: 1, plan: plan::StringPosition },
+    BuiltinInfo { which: Builtin.StringPrototypeCharCodeAt, name: "charCodeAt", length: 1, plan: plan::StringPosition },
+    BuiltinInfo { which: Builtin.StringPrototypeCodePointAt, name: "codePointAt", length: 1, plan: plan::StringPosition },
+    BuiltinInfo { which: Builtin.StringPrototypeAt, name: "at", length: 1, plan: plan::StringPosition },
+    BuiltinInfo { which: Builtin.StringPrototypeIndexOf, name: "indexOf", length: 1, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeLastIndexOf, name: "lastIndexOf", length: 1, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeIncludes, name: "includes", length: 1, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeStartsWith, name: "startsWith", length: 1, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeEndsWith, name: "endsWith", length: 1, plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeIsWellFormed, name: "isWellFormed", plan: plan::StringReceiver },
+    BuiltinInfo { which: Builtin.StringPrototypeToWellFormed, name: "toWellFormed", plan: plan::StringReceiver },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -471,7 +488,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[198] = [
+let REALM_FUNCTIONS: Method[212] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -613,6 +630,20 @@ let REALM_FUNCTIONS: Method[198] = [
     Method { which: Builtin.ArrayPrototypeSlice, holder: 3 }, Method { which: Builtin.ArrayPrototypeConcat, holder: 3 }, Method { which: Builtin.ArrayPrototypeFlat, holder: 3 },
     Method { which: Builtin.ArrayPrototypeToReversed, holder: 3 }, Method { which: Builtin.ArrayPrototypeWith, holder: 3 },
     Method { which: Builtin.ArrayOf, holder: 14 }, Method { which: Builtin.ArrayFrom, holder: 14 },
+    Method { which: Builtin.StringFromCharCode, holder: 30 },
+    Method { which: Builtin.StringFromCodePoint, holder: 30 },
+    Method { which: Builtin.StringRaw, holder: 30 },
+    Method { which: Builtin.StringPrototypeCharAt, holder: 27 },
+    Method { which: Builtin.StringPrototypeCharCodeAt, holder: 27 },
+    Method { which: Builtin.StringPrototypeCodePointAt, holder: 27 },
+    Method { which: Builtin.StringPrototypeAt, holder: 27 },
+    Method { which: Builtin.StringPrototypeIndexOf, holder: 27 },
+    Method { which: Builtin.StringPrototypeLastIndexOf, holder: 27 },
+    Method { which: Builtin.StringPrototypeIncludes, holder: 27 },
+    Method { which: Builtin.StringPrototypeStartsWith, holder: 27 },
+    Method { which: Builtin.StringPrototypeEndsWith, holder: 27 },
+    Method { which: Builtin.StringPrototypeIsWellFormed, holder: 27 },
+    Method { which: Builtin.StringPrototypeToWellFormed, holder: 27 },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -663,7 +694,7 @@ inline fn set_row() -> i64 { return fixed_rows() + 159; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[132] = [
+let PENDING: PendingName[118] = [
     // Object.prototype
     // Array.prototype
 
@@ -703,10 +734,9 @@ let PENDING: PendingName[132] = [
     // them, light-cljs-767; Number's statics are light-cljs-900's).
     PendingName { holder: 26, key: "toExponential" }, PendingName { holder: 26, key: "toFixed" }, PendingName { holder: 26, key: "toPrecision" }, PendingName { holder: 26, key: "toLocaleString" },
     // String and %String.prototype%.
-    PendingName { holder: 30, key: "fromCharCode" }, PendingName { holder: 30, key: "fromCodePoint" }, PendingName { holder: 30, key: "raw" },
-    PendingName { holder: 27, key: "at" }, PendingName { holder: 27, key: "charCodeAt" }, PendingName { holder: 27, key: "charAt" }, PendingName { holder: 27, key: "concat" },
-    PendingName { holder: 27, key: "codePointAt" }, PendingName { holder: 27, key: "isWellFormed" }, PendingName { holder: 27, key: "toWellFormed" }, PendingName { holder: 27, key: "indexOf" },
-    PendingName { holder: 27, key: "lastIndexOf" }, PendingName { holder: 27, key: "includes" }, PendingName { holder: 27, key: "endsWith" }, PendingName { holder: 27, key: "startsWith" },
+
+    PendingName { holder: 27, key: "concat" },
+
     PendingName { holder: 27, key: "match" }, PendingName { holder: 27, key: "matchAll" }, PendingName { holder: 27, key: "search" }, PendingName { holder: 27, key: "split" },
     PendingName { holder: 27, key: "substring" }, PendingName { holder: 27, key: "substr" }, PendingName { holder: 27, key: "slice" }, PendingName { holder: 27, key: "repeat" },
     PendingName { holder: 27, key: "padEnd" }, PendingName { holder: 27, key: "padStart" },
@@ -2166,6 +2196,7 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         String => { return wrapper_value(job, b, 1, args, false); },
         Boolean => { return wrapper_value(job, b, 2, args, false); },
         NumberPrototypeValueOf => { return this_primitive(job, b, 0, receiver); },
+        StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeCodePointAt, StringPrototypeAt => { return string_access_builtin(job, b, receiver, args); },
         NumberPrototypeToString => { return number_to_string(job, b, receiver, args); },
         StringPrototypeValueOf, StringPrototypeToString => { return this_primitive(job, b, 1, receiver); },
         BooleanPrototypeValueOf => { return this_primitive(job, b, 2, receiver); },
@@ -2227,6 +2258,7 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         // @@species are plain; the constructor, flags, toString, exec and
         // test (light-cljs-933) run as RegExp native frames (native_start).
         RegExpPrototypeSource, RegExpPrototypeGlobal, RegExpPrototypeIgnoreCase, RegExpPrototypeMultiline, RegExpPrototypeDotAll, RegExpPrototypeUnicode, RegExpPrototypeUnicodeSets, RegExpPrototypeSticky, RegExpPrototypeHasIndices, RegExpSpecies => { return regexp_builtin(job, b, receiver); },
+        StringFromCharCode, StringFromCodePoint, StringRaw, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeIncludes, StringPrototypeStartsWith, StringPrototypeEndsWith, StringPrototypeIsWellFormed, StringPrototypeToWellFormed => { return unsupported_step(job, b, "called outside a native frame"); },
         RegExp, RegExpPrototypeFlags, RegExpPrototypeToString, RegExpPrototypeExec, RegExpPrototypeTest => { return unsupported_step(job, b, "called outside a native frame"); },
         // replace, replaceAll and @@replace (light-cljs-934) run as RegExp native frames too.
         StringPrototypeReplace, StringPrototypeReplaceAll, RegExpPrototypeReplace => { return unsupported_step(job, b, "called outside a native frame"); },
