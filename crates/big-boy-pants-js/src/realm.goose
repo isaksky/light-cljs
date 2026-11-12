@@ -1360,11 +1360,24 @@ fn not_constructor(job: Job&, callee: Value) {
     }
     if heap.fault != Fault.None { return; }
     if !name.is_string() { type_error(job, "not a constructor"); return; }
-    job.detail.clear(); append_utf16(heap, name, job.detail);
-    // QuickJS formats the name with %s, ending at an embedded NUL.
-    var end: i64 = 0; while end < job.detail.len && job.detail[end] != 0 { end += 1; }
-    job.detail.resize(end);
-    for c in " is not a constructor" { job.detail.push(c); }
+    // JS_ThrowError2's char buf[256] holds at most 255 UTF-8 bytes of
+    // "%s is not a constructor". Count encoded bytes without allocating
+    // the entire name; %s ends at NUL. JS_NewString replaces a sequence
+    // split by that byte limit with one U+FFFD, retaining lone surrogates.
+    let message_bytes: i64 = 255;
+    job.detail.clear();
+    var bytes: i64 = 0; var i: i64 = 0;
+    while i < str_len(heap, name) && bytes < message_bytes {
+        let u = unit(heap, name, i);
+        if u == 0 { break; }
+        let pair = u >= 0xd800 && u <= 0xdbff && i + 1 < str_len(heap, name) && unit(heap, name, i + 1) >= 0xdc00 && unit(heap, name, i + 1) <= 0xdfff;
+        let width = if pair { 4 } else if u < 0x80 { 1 } else if u < 0x800 { 2 } else { 3 };
+        if bytes + width > message_bytes { job.detail.push(0xfffd); bytes = message_bytes; break; }
+        job.detail.push(u);
+        if pair { i += 1; job.detail.push(unit(heap, name, i)); }
+        bytes += width; i += 1;
+    }
+    for c in " is not a constructor" { if bytes == message_bytes { break; } job.detail.push(c); bytes += 1; }
     heap.fault = Fault.TypeError;
 }
 inline fn arg(args: const Value[:], i: i64) -> Value { return if i < args.len { args[i] } else { Value.Undefined }; }
