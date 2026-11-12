@@ -784,13 +784,15 @@ fn activation_valid<T>(s: const T&, a: source::Activation, c: Control&) -> bool 
         let native = match f.native { None => false, _ => true };
         if f.function == source::no_row() {
             if !native || f.argument_count < 0 || !native_valid(s, f) { return reject(c, Error.Link); }
-            // Split's scanner owns exactly one numeric cursor operand and
-            // cannot have a child frame. Validate it before restoring a
-            // continuation that will index the operand run directly.
+            // Every phase of padding and split pops or indexes exactly one
+            // operand when it runs, so a top frame must own exactly one (a
+            // lower one gets its operand from the frame above it). Split's
+            // scanner owns its numeric cursor and cannot have a child frame.
             match f.native {
                 StringMethod m => {
+                    if (m.which == source::Builtin.StringPrototypeSplit || source::string_pad(m.which)) && i + 1 == count && operands - f.operand_base != 1 { return reject(c, Error.Link); }
                     if m.which == source::Builtin.StringPrototypeSplit && f.pc == string_pc::SplitScan {
-                        if i + 1 != count || operands - f.operand_base != 1 { return reject(c, Error.Link); }
+                        if i + 1 != count { return reject(c, Error.Link); }
                         let cursor = s.values[a.values + locals + f.operand_base];
                         if !cursor.is_number() || !(cursor.num() >= 0 && cursor.num() <= f.index) || trunc(cursor.num()) != cursor.num() { return reject(c, Error.Link); }
                     }

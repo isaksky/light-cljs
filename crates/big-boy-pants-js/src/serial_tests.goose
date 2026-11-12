@@ -2978,6 +2978,10 @@ fn string_methods_checks() {
         heap_program::join(thread_spawn(reclaim_cuts, str(bytes), str("boolean:true"), 1, 1));
         heap_program::join(thread_spawn(string_saving, str(bytes)));
     }
+    // CreateHTML runs no StringMethod frame: no saved phases (light-cljs-904).
+    let html = embed_file("../corpus/serial/string-html.gsp");
+    check(html, "boolean:true"); limit_points(html);
+    heap_program::join(thread_spawn(reclaim_cuts, str(html), str("boolean:true"), 1, 1));
     heap_program::join(thread_spawn(string_large, str(embed_file("../corpus/serial/string-scans.gsp"))));
     print("serial String methods: every budget cut, limits, collection, saved phases and 65,536 arguments passed");
 }
@@ -3010,12 +3014,16 @@ thread_fn string_saving(bytes: u8[]) {
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
     var seen = dictionary<i64, bool> {}; var stack: i64 = -1; var saved: i64 = 0;
+    // The padding and split phases whose top frame lost its operand was
+    // refused (light-cljs-904), by pc.
+    var refused = dictionary<i64, bool> {}; var splitting = false;
     while source::run(job, 1) == tiny::Outcome.Yielded {
         var sample = false;
-        for f in job.frames {
+        for f, i in job.frames {
             match f.native {
                 StringMethod m => {
-                    let key = (source::code(m.which) as i64) * 100 + f.pc * 2 + (if f.index > 0 { 1 } else { 0 });
+                    let top = i + 1 == job.frames.len;
+                    let key = (source::code(m.which) as i64) * 1000 + f.pc * 4 + (if f.index > 0 { 1 } else { 0 }) + (if top { 2 } else { 0 });
                     if !seen.contains(key) { seen.insert(key, true); sample = true; }
                 },
                 _ => {},
@@ -3045,10 +3053,14 @@ thread_fn string_saving(bytes: u8[]) {
                             var broken = copy(image);
                             broken.values[a.values + a.locals + x.f.operand_base] = source::Value.Undefined;
                             var why = snapshot::Control {}; assert(!snapshot::validate(broken, why) && why.error == snapshot::Error.Link);
+                        }
+                        if (m.which == source::Builtin.StringPrototypeSplit || source::string_pad(m.which)) && i + 1 == a.frame_count {
+                            splitting = true;
                             var absent = copy(image);
                             var shortened = a; shortened.operands -= 1;
                             absent.conts[stack] = source::Cont.Activation { a: shortened };
                             var missing = snapshot::Control {}; assert(!snapshot::validate(absent, missing) && missing.error == snapshot::Error.Link);
+                            refused.insert(x.f.pc, true);
                         }
                     },
                     _ => {},
@@ -3060,5 +3072,6 @@ thread_fn string_saving(bytes: u8[]) {
         assert(source::resume_stack(job, stack)); saved += 1;
     }
     assert(saved > 0 && job.status == tiny::Status.Complete && job.result.is_bool() && job.result.flag());
+    if splitting { for pc in string_pc::PadFill..(string_pc::SplitScan + 1) { assert(refused.contains(pc)); } }
     assert(source::retire(job));
 }
