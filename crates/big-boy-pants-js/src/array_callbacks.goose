@@ -10,6 +10,7 @@ import .object_statics;
 import .regexp_object;
 import .string_methods;
 import .collections;
+import .date;
 
 namespace source;
 
@@ -58,7 +59,7 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return array_callback(b) || array_search(b) || array_mutator(b) || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b) || prototype_native(b) || statics_native(b) || b == Builtin.MathSumPrecise || regexp_native(b) || string_native(b) || collection_for_each(b); }
+fn native_builtin(b: Builtin) -> bool { return array_callback(b) || array_search(b) || array_mutator(b) || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function || b == Builtin.IsInstance || descriptor_native(b) || prototype_native(b) || statics_native(b) || b == Builtin.MathSumPrecise || regexp_native(b) || string_native(b) || collection_for_each(b) || date_native(b); }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
@@ -66,6 +67,8 @@ fn native_builtin(b: Builtin) -> bool { return array_callback(b) || array_search
 fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
     if collection_for_each(b) { start_collection_for_each(job, b, receiver, args, base); return; }
     if string_native(b) { start_string_method(job, b, receiver, args, base); return; }
+    // Date.UTC, the setters, toJSON and @@toPrimitive (light-cljs-940; date.goose).
+    if date_native(b) { start_date(job, b, receiver, args, base); return; }
     // swap! and swap-vals! (cells.goose).
     if b == Builtin.Swap || b == Builtin.SwapVals { var copied: Value[>..] = []; copied.append(args); start_swap(job, b, copied, base); return; }
     // Function.prototype.call and apply, Reflect.apply and Reflect.construct
@@ -493,7 +496,7 @@ fn array_call(job: Job&, at: i64, b: Builtin, args: const Value[:]) {
         if forwarding(cb) { native_start(job, cb, this_arg, args, job.operands.len); return; }
         // So do the Object statics (light-cljs-884; object_statics.goose)
         // and Math.sumPrecise (light-cljs-901; math_object.goose).
-        if statics_native(cb) || cb == Builtin.MathSumPrecise || regexp_native(cb) { native_start(job, cb, this_arg, args, job.operands.len); return; }
+        if statics_native(cb) || cb == Builtin.MathSumPrecise || regexp_native(cb) || date_native(cb) { native_start(job, cb, this_arg, args, job.operands.len); return; }
         // So do the error built-ins when a step runs JavaScript (light-cljs-870).
         if conditional_native(cb) { start_conditional_native(job, cb, this_arg, args, job.operands.len); return; }
         if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq { unsupported_step(job, b, "a host-effect built-in callback"); return; }

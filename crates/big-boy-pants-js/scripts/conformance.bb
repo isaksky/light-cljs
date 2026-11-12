@@ -55,7 +55,9 @@
 ;; QuickJS: `qjs --std --experimental` (std/os globals, as QuickJS's Makefile
 ;; runs test_builtin.js, and Intl, as it runs test_intl.js) with a driver that
 ;; evaluates the case as a global script; strict cases get a leading
-;; `"use strict"; void 0;` there.
+;; `"use strict"; void 0;` there. QuickJS runs with TZ=UTC (light-cljs-940):
+;; local time is UTC time on Goose and in the Pants engine (their only and
+;; default zone), and QuickJS takes its zone from the environment.
 (require '[babashka.fs :as fs] '[babashka.process :as p]
          '[clojure.edn :as edn] '[clojure.string :as str] '[clojure.pprint :as pprint])
 (import '[java.util.concurrent Executors TimeUnit])
@@ -173,8 +175,8 @@
 ;; ---------------------------------------------------------------- processes
 (defn run-process
   "Run a command with a deadline; returns {:exit :out :err} or {:timeout true}."
-  [command & {:keys [dir]}]
-  (let [proc (p/process command (cond-> {:out :string :err :string :extra-env {"BBP_FRONTEND_LIBRARY" frontend-library}} dir (assoc :dir (str dir))))
+  [command & {:keys [dir env]}]
+  (let [proc (p/process command (cond-> {:out :string :err :string :extra-env (merge {"BBP_FRONTEND_LIBRARY" frontend-library} env)} dir (assoc :dir (str dir))))
         result (deref proc (* 1000 (:timeout options)) ::timeout)]
     (if (= result ::timeout)
       (do (p/destroy-tree proc) (deref proc 5000 nil) {:timeout true})
@@ -273,13 +275,15 @@
 })();
 ")
 
+;; QuickJS's local time zone: UTC, the Goose and Pants engines' (see Engines).
+(def quickjs-env {"TZ" "UTC"})
 (defn run-quickjs [{:keys [mode source]}]
   (if (= mode :module)
-    (let [r (run-process [qjs "--std" "--experimental" "-m" source] :dir (fs/parent source))]
+    (let [r (run-process [qjs "--std" "--experimental" "-m" source] :dir (fs/parent source) :env quickjs-env)]
       (cond (:timeout r) {:status :timeout}
             (zero? (:exit r)) {:status :returned :value [:undefined]}
             :else {:status :thrown :value (error-name (first-line (:err r))) :detail (first-line (:err r))}))
-    (let [r (run-process [qjs "--std" "--experimental" (str (fs/path out-dir "quickjs-driver.js")) source (name mode)])]
+    (let [r (run-process [qjs "--std" "--experimental" (str (fs/path out-dir "quickjs-driver.js")) source (name mode)] :env quickjs-env)]
       (if (:timeout r) {:status :timeout}
           (let [line (last (filter #(str/starts-with? % "{:status") (str/split-lines (:out r))))
                 outcome (some-> line edn/read-string)]

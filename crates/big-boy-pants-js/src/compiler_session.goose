@@ -775,6 +775,10 @@ thread_fn profile_restore(base: snapshot::Snapshot, identity: i64) {
 // The coordinator builds the base image and no other heap; preparation and
 // every job run in thread programs it spawns.
 fn main() {
+    // The system clock is this embedder's input (light-cljs-940; date.goose):
+    // Date.now() and new Date() read it, as in the V8 build. Every worker
+    // this program spawns inherits the setting with its globals.
+    source::date_clock = clock_mode::System;
     let arguments = args(); assert(arguments.len == 3 || arguments.len == 4); var directory: u8[>..] = []; directory.append(arguments[1]); let limit, valid = parse_int(arguments[2]); assert(valid && limit >= 1 && limit <= 8);
     let beginning = clock_ns(); var code = source::Code {}; assert(load(code, str(directory, "/base.gsp")) >= 0); let loaded = clock_ns(); var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let roots = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::install_field(heap, heap.global, "__lightCompilerRoots", roots));
     let published = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::install_field(heap, heap.global, "__lightPublishedHelpers", published));

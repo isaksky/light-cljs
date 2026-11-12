@@ -959,6 +959,73 @@ ends. A publication or cell value that reaches one fails as a Map's does
 (`collection-unshareable`), and a write into one the job did not allocate
 faults NativeBoundary.
 
+*As landed by light-cljs-940 (Date objects):* a Date is one
+`node_kind::Date` row (36; `src/date.goose`), an ordinary object whose
+[[DateValue]] is its `value`, a Number that is NaN or an integer TimeClip
+gives (never -0), with own properties in a shape or records as a
+collection's, no element run and no new table. Setting the slot is no
+property write: a frozen Date's time value changes (as on both oracles),
+and one in a row the job did not allocate faults NativeBoundary first.
+%Date.prototype% is fixed realm row 52, an ordinary object (not a Date).
+Snapshot validation checks the time value, and a publication or cell value
+that reaches a job's Date fails by name (`date-unshareable`), since its
+slot is mutable. Time arithmetic is plain f64 and i64 in the
+specification's order with every product and sum its own rounding: the
+Pants engine's MakeDay (whole years of a month floored exactly, the
+Gregorian day count in i64 converted once) for years within ±2.5e16,
+where 365 times the year still fits; beyond that the day is approximate, a
+result that falls outside TimeClip's range by more than the
+approximation's error is NaN as before, and a combination that could
+cancel back into range fails by name (the Pants engine's i128 count
+answers it; QuickJS gives NaN for any year past ±275760, so no oracle row
+agrees there). *Clock and zone:* both
+are embedder inputs (decision 3), a thread program's `date_clock` global
+that its spawned workers copy: the compiler session supplies the system
+clock (`os` time_ns, as the V8 build has one), the conformance runner
+none (Date.now(), new Date() and Date() throw a catchable RangeError, the
+Pants engine's command line's answer), the serial tests a fixed one. A
+clock read is a leaf input, no job state. The zone is UTC everywhere, so
+local fields are UTC fields and getTimezoneOffset is 0; conformance.bb
+runs QuickJS with TZ=UTC so local-time rows agree. Named zones would need
+QuickJS's pinned time-zone tables as static data; the V8 build's zone is
+the machine's.
+
+Date.now, getTime, valueOf, the getters, getTimezoneOffset, toISOString
+and Annex B getYear are plain built-ins; Date called as a function reads
+the clock and then fails by name (its string is light-cljs-941's, with
+Date.parse, toString and the other string formats, which stay pending, as
+do the locale forms). Date.UTC, setTime, every setter (UTC, local and
+Annex B setYear), toJSON, @@toPrimitive and the constructor are Date
+native frames (`Native.Date`, `date_pc::`), *not* light-cljs-900 plans:
+a setter reads its time value before converting its arguments (the
+frame's `output`; `d.setUTCHours({valueOf() { d.setTime(0); return 18 }})`
+keeps the original date), which a plan converting first could not; the
+constructor's one argument takes a Date's slot without ToPrimitive and
+parses a string; and Date.UTC and the constructor convert no more than
+seven arguments, where a plan's `rest` converts every later one. Each
+argument converts by ToNumber in a Convert frame above (a primitive in
+place, a symbol's TypeError ending the walk), one a step, so cuts, limits
+and suspensions fall between them; a call whose arguments are all
+primitive runs without a frame. The constructor reads newTarget's
+`prototype` after its conversions (OrdinaryCreateFromConstructor comes
+last), so `construct` skips its early read for Date as for RegExp.
+@@toPrimitive pushes a Convert frame that starts at OrdinaryToPrimitive's
+methods (method 1), toString first for "string" and "default"; toJSON
+runs ToPrimitive with hint number, then Get and Call of `toISOString`.
+Seen while pinning the slices: QuickJS accepts an "integer" hint, computes
+MakeDay's year as a floating-point sum (huge months answer otherwise), and
+reads setYear's time value after converting its argument; those rows stay
+out. *Compile-time values:* form equality, `hash` and `compare` take two
+Dates by time value (`form_equal`, `form_hash`, `compare_values`; a NaN
+Date equals only itself, hashes as 0 and compares equal), as the V8
+build's structuralEqualPair, `valueOf() | 0` and compareKeys, and the
+printer writes the V8 build's printHost `#inst "...-00:00"` (an invalid
+Date's RangeError). The V8 build calls `valueOf` and `toISOString` there,
+so Goose reads the slot only for a Date without own properties whose
+prototype is %Date.prototype% (`intrinsic_date`); another Date fails by
+name. The form bridge still refuses a Date (an unsupported object); its
+`instant` compiler literal is light-cljs-963's.
+
 *As landed by light-cljs-885 (Symbol values):* a symbol a job makes is a
 row of the node table, `node_kind::JsSymbol` (its description, a string or
 undefined; whether Symbol.for registered it; and the symbol registered

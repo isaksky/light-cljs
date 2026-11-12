@@ -3026,6 +3026,12 @@ mod serial_tests {
             // writes fault NativeBoundary (serial_tests.goose
             // weak_image_rows); the result is an object.
             ("weak-collections-image", "goose"),
+            // Date objects (light-cljs-940): setters, the constructor,
+            // Date.UTC, toJSON and @@toPrimitive whose conversions run
+            // valueOf methods and getters above their Date frames, at every
+            // budget cut and collection, with serial_tests.goose's fixed
+            // clock and with none; the oracles' clocks are their own.
+            ("date-setters", "goose"),
             // Base classes (light-cljs-886): constructors, eager
             // prototypes, methods, accessors, fields and static blocks at
             // every budget cut and collection (serial_tests.goose).

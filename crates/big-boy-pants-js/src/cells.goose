@@ -607,6 +607,10 @@ fn unshareable_symbol() -> u8[] { return str("symbol-unshareable a symbol made b
 // as a helper's (whose callable graph refuses it too). An image's
 // collection, which no job writes, is the image's row.
 fn unshareable_collection() -> u8[] { return str("collection-unshareable a Map, Set, WeakMap or WeakSet made by a job (a mutable JavaScript object)"); }
+// A Date a job made (light-cljs-940; date.goose) is mutable too: its time
+// value changes in place (setTime and the setters), so it is refused as a
+// collection is.
+fn unshareable_date() -> u8[] { return str("date-unshareable a Date made by a job (a mutable JavaScript object)"); }
 fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: Initial[>..]&) -> u8[] {
     var marks: bool[>..] = []; marks.resize(heap.nodes.len, false);
     var work:  i64[>..<] = []; var atoms: i64[>..] = [];
@@ -615,6 +619,7 @@ fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: I
     while work.len > 0 {
         let o = work.pop(); let n = node(heap, o);
         if n.kind == node_kind::Collection { return unshareable_collection(); }
+        if n.kind == node_kind::Date { return unshareable_date(); }
         if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(o); }
         // A struct type or struct, and a shareable regex value with its
         // program (light-cljs-935), go by the callable transport only.

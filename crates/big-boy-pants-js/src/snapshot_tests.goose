@@ -107,8 +107,18 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             23 => { bad.header.limits.nodes = -1; }, 24 => { bad.nodes[0].metadata = bad.bindings[5].value; }, 25 => { bad.nodes[bad.header.global.id()].keys = 4294967295; },
             26 => { bad.header.call_method = source::object(bad.nodes.len); }, 27 => { bad.header.call_method = bad.header.global; },
             // Key runs are exclusive over their whole capacity: another node
-            // claiming the global's run, even only its spare rows, is refused.
-            28 => { let g = bad.header.global.id(); let o = if g == 0 { 1 } else { 0 }; bad.nodes[o].keys = bad.nodes[g].keys; bad.nodes[o].key_capacity = bad.nodes[g].key_capacity; },
+            // claiming a shape-mode object's run, even only its spare rows, is
+            // refused: the global's while it is shape-mode, else (the realm's
+            // global holds 65 properties since light-cljs-940 and is a
+            // dictionary, its records in the property table) the first other
+            // shape-mode object's with an overflow run.
+            28 => {
+                var t: i64 = bad.header.global.id();
+                if bad.nodes[t].initialized || bad.nodes[t].key_capacity == 0 { t = -1; for n, i in bad.nodes { if t < 0 && i > 1 && n.kind == node_kind::Object && !n.initialized && n.key_capacity > 0 { t = i; } } }
+                assert(t >= 0); let o = if t == 1 { 0 } else { 1 };
+                assert(bad.nodes[o].kind == node_kind::Object && !bad.nodes[o].initialized || o == bad.header.global.id());
+                bad.nodes[o].keys = bad.nodes[t].keys; bad.nodes[o].key_capacity = bad.nodes[t].key_capacity;
+            },
             // A shape-mode object has its shape's key count (light-cljs-787).
             29 => { let g = bad.header.global.id(); assert(source::overflow(bad.nodes[g]) > 0); bad.nodes[g].key_count -= 1; },
             // Strings keep a canonical encoding (light-cljs-800): a wide run

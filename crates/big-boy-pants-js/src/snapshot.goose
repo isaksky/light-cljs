@@ -204,7 +204,7 @@ fn index_text<T>(s: const T&, k: source::Value, i: i64) -> bool {
 // arrays and closures (light-cljs-805), built-in functions and error objects
 // (light-cljs-788), generators, promises and primitive wrappers, iterators,
 // bound functions and arguments objects (light-cljs-854).
-fn named(kind: i64) -> bool { return kind >= node_kind::Object && kind <= node_kind::Closure || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::RegExp || kind == node_kind::Collection || kind == node_kind::BoundFunction; }
+fn named(kind: i64) -> bool { return kind >= node_kind::Object && kind <= node_kind::Closure || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::RegExp || kind == node_kind::Collection || kind == node_kind::Date || kind == node_kind::BoundFunction; }
 // A shape-mode object, dense array or closure: without `initialized`.
 fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initialized; }
 // A dictionary-mode object, a dictionary array or a closure's records.
@@ -431,6 +431,8 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // the fast path, the array); while a result's `done` and `value` or
         // an entry's "0" are read, that object.
         Collection x => collection_frame_valid(s, f, x.which),
+        // A Date frame (light-cljs-940, date.goose) awaits a date_pc:: phase.
+        Date d => date_frame_valid(s, f, d.which),
         CollectionForEach x => source::collection_for_each(x.which) && (f.pc == for_each_pc::Next || f.pc == for_each_pc::Call)
             && object_of(s, f.input, node_kind::Collection) && s.nodes[f.input.id()].length == (if x.which == source::Builtin.MapPrototypeForEach { collection::Map } else { collection::Set })
             && object_of(s, f.callee, node_kind::None) && callable_kind(s.nodes[f.callee.id()].kind)
@@ -457,6 +459,27 @@ fn iterator_valid<T>(s: const T&, n: const source::Node&) -> bool {
             && n.namespace_value.num() <= s.nodes[n.value.id()].namespace_value.num();
     }
     return n.value.is_undefined() || (if n.function == iteration::CodePoints { n.value.is_string() } else { object_of(s, n.value, node_kind::None) });
+}
+// A Date frame (light-cljs-940, date.goose): converting the constructor's,
+// Date.UTC's or a setter's arguments (at most seven, a setter's at most its
+// count, the next index within them; a setter's Date and time value read
+// first, the constructor's newTarget if it is not Date itself); the
+// constructor's one argument's ToPrimitive or newTarget's `prototype`
+// getter with the time value; toJSON's object; @@toPrimitive's receiver.
+fn date_frame_valid<T>(s: const T&, f: source::SavedFrame, b: source::Builtin) -> bool {
+    let construct = b == source::Builtin.Date;
+    let target = f.callee.is_undefined() || object_of(s, f.callee, node_kind::None);
+    if f.pc == date_pc::Fields {
+        if f.argument_count < 0 || f.argument_count > 7 || f.index < 0 || f.index > f.argument_count { return false; }
+        if construct { return target && f.receiver.is_undefined() && f.output.is_undefined(); }
+        if b == source::Builtin.DateUTC { return f.receiver.is_undefined() && f.output.is_undefined() && f.callee.is_undefined(); }
+        return source::date_setter(b) && f.argument_count <= source::setter_count(b) && object_of(s, f.receiver, node_kind::Date) && f.output.is_number() && source::valid_time_value(f.output.num());
+    }
+    if f.pc == date_pc::Primitive { return construct && target && f.argument_count == 1 && f.index == 0; }
+    if f.pc == date_pc::Prototype { return construct && object_of(s, f.callee, node_kind::None) && f.output.is_number() && source::valid_time_value(f.output.num()) && f.argument_count == 0; }
+    if f.pc >= date_pc::JsonPrimitive && f.pc <= date_pc::JsonResult { return b == source::Builtin.DatePrototypeToJSON && object_of(s, f.receiver, node_kind::None); }
+    if f.pc == date_pc::Ordinary { return b == source::Builtin.DatePrototypeToPrimitive && object_of(s, f.receiver, node_kind::None); }
+    return false;
 }
 fn collection_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Builtin) -> bool {
     let flavor = source::constructor_flavor(which);
@@ -1129,7 +1152,10 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var owners: i64 = 0; var private_rows: i64 = 0;
     for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < node_kind::Object || n.kind > node_kind::Collection { return reject(c, Error.Unsupported); }
+        if n.kind < node_kind::Object || n.kind > node_kind::Date { return reject(c, Error.Unsupported); }
+        // A Date (light-cljs-940, source::node_kind::Date) holds a time value
+        // TimeClip gives and no element run.
+        if n.kind == node_kind::Date && (!n.value.is_number() || !source::valid_time_value(n.value.num()) || n.count != 0 || n.start != 0 || n.length != 0 || n.function != 0 || !n.namespace_value.is_null()) { return reject(c, Error.Link); }
         // A RegExp (light-cljs-932, source::node_kind::RegExp) names a compiled
         // program of the code's and holds its pattern text, a string, and
         // no element run.

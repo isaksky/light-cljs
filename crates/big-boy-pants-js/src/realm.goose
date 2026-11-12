@@ -14,6 +14,7 @@ import .array_sort;
 import .array_copy;
 import .string_methods;
 import .string_case;
+import .date;
 
 namespace source;
 
@@ -218,11 +219,23 @@ enum Builtin {
     // %RegExpStringIteratorPrototype%.next (light-cljs-937;
     // regexp_symbols.goose), RegExp native frames, as @@match is.
     StringPrototypeMatch, StringPrototypeMatchAll, StringPrototypeSearch, RegExpPrototypeMatchAll, RegExpPrototypeSearch, RegExpPrototypeSplit, RegExpStringIteratorPrototypeNext,
+    // Date (light-cljs-940; date.goose): the constructor, Date.now and
+    // Date.UTC, and Date.prototype's methods in QuickJS's order. Date.UTC,
+    // setTime, the setters, toJSON and @@toPrimitive are Date native frames;
+    // the rest are plain.
+    Date, DateNow, DateUTC,
+    DatePrototypeValueOf, DatePrototypeToPrimitive, DatePrototypeToISOString, DatePrototypeGetTimezoneOffset, DatePrototypeGetTime, DatePrototypeGetYear,
+    DatePrototypeGetFullYear, DatePrototypeGetUTCFullYear, DatePrototypeGetMonth, DatePrototypeGetUTCMonth, DatePrototypeGetDate, DatePrototypeGetUTCDate,
+    DatePrototypeGetHours, DatePrototypeGetUTCHours, DatePrototypeGetMinutes, DatePrototypeGetUTCMinutes, DatePrototypeGetSeconds, DatePrototypeGetUTCSeconds,
+    DatePrototypeGetMilliseconds, DatePrototypeGetUTCMilliseconds, DatePrototypeGetDay, DatePrototypeGetUTCDay,
+    DatePrototypeSetTime, DatePrototypeSetMilliseconds, DatePrototypeSetUTCMilliseconds, DatePrototypeSetSeconds, DatePrototypeSetUTCSeconds,
+    DatePrototypeSetMinutes, DatePrototypeSetUTCMinutes, DatePrototypeSetHours, DatePrototypeSetUTCHours, DatePrototypeSetDate, DatePrototypeSetUTCDate,
+    DatePrototypeSetMonth, DatePrototypeSetUTCMonth, DatePrototypeSetYear, DatePrototypeSetFullYear, DatePrototypeSetUTCFullYear, DatePrototypeToJSON,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[339] = [
+let BUILTINS: BuiltinInfo[381] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -453,6 +466,29 @@ let BUILTINS: BuiltinInfo[339] = [
     BuiltinInfo { which: Builtin.StringPrototypeSearch, name: "search", length: 1 }, BuiltinInfo { which: Builtin.RegExpPrototypeMatchAll, name: "[Symbol.matchAll]", length: 1 },
     BuiltinInfo { which: Builtin.RegExpPrototypeSearch, name: "[Symbol.search]", length: 1 }, BuiltinInfo { which: Builtin.RegExpPrototypeSplit, name: "[Symbol.split]", length: 2 },
     BuiltinInfo { which: Builtin.RegExpStringIteratorPrototypeNext, name: "next" },
+    // Date (light-cljs-940): no plans (date.goose says why).
+    BuiltinInfo { which: Builtin.Date, name: "Date", length: 7 }, BuiltinInfo { which: Builtin.DateNow, name: "now" }, BuiltinInfo { which: Builtin.DateUTC, name: "UTC", length: 7 },
+    BuiltinInfo { which: Builtin.DatePrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.DatePrototypeToPrimitive, name: "[Symbol.toPrimitive]", length: 1 },
+    BuiltinInfo { which: Builtin.DatePrototypeToISOString, name: "toISOString" }, BuiltinInfo { which: Builtin.DatePrototypeGetTimezoneOffset, name: "getTimezoneOffset" },
+    BuiltinInfo { which: Builtin.DatePrototypeGetTime, name: "getTime" }, BuiltinInfo { which: Builtin.DatePrototypeGetYear, name: "getYear" },
+    BuiltinInfo { which: Builtin.DatePrototypeGetFullYear, name: "getFullYear" }, BuiltinInfo { which: Builtin.DatePrototypeGetUTCFullYear, name: "getUTCFullYear" },
+    BuiltinInfo { which: Builtin.DatePrototypeGetMonth, name: "getMonth" }, BuiltinInfo { which: Builtin.DatePrototypeGetUTCMonth, name: "getUTCMonth" },
+    BuiltinInfo { which: Builtin.DatePrototypeGetDate, name: "getDate" }, BuiltinInfo { which: Builtin.DatePrototypeGetUTCDate, name: "getUTCDate" },
+    BuiltinInfo { which: Builtin.DatePrototypeGetHours, name: "getHours" }, BuiltinInfo { which: Builtin.DatePrototypeGetUTCHours, name: "getUTCHours" },
+    BuiltinInfo { which: Builtin.DatePrototypeGetMinutes, name: "getMinutes" }, BuiltinInfo { which: Builtin.DatePrototypeGetUTCMinutes, name: "getUTCMinutes" },
+    BuiltinInfo { which: Builtin.DatePrototypeGetSeconds, name: "getSeconds" }, BuiltinInfo { which: Builtin.DatePrototypeGetUTCSeconds, name: "getUTCSeconds" },
+    BuiltinInfo { which: Builtin.DatePrototypeGetMilliseconds, name: "getMilliseconds" }, BuiltinInfo { which: Builtin.DatePrototypeGetUTCMilliseconds, name: "getUTCMilliseconds" },
+    BuiltinInfo { which: Builtin.DatePrototypeGetDay, name: "getDay" }, BuiltinInfo { which: Builtin.DatePrototypeGetUTCDay, name: "getUTCDay" },
+    BuiltinInfo { which: Builtin.DatePrototypeSetTime, name: "setTime", length: 1 },
+    BuiltinInfo { which: Builtin.DatePrototypeSetMilliseconds, name: "setMilliseconds", length: 1 }, BuiltinInfo { which: Builtin.DatePrototypeSetUTCMilliseconds, name: "setUTCMilliseconds", length: 1 },
+    BuiltinInfo { which: Builtin.DatePrototypeSetSeconds, name: "setSeconds", length: 2 }, BuiltinInfo { which: Builtin.DatePrototypeSetUTCSeconds, name: "setUTCSeconds", length: 2 },
+    BuiltinInfo { which: Builtin.DatePrototypeSetMinutes, name: "setMinutes", length: 3 }, BuiltinInfo { which: Builtin.DatePrototypeSetUTCMinutes, name: "setUTCMinutes", length: 3 },
+    BuiltinInfo { which: Builtin.DatePrototypeSetHours, name: "setHours", length: 4 }, BuiltinInfo { which: Builtin.DatePrototypeSetUTCHours, name: "setUTCHours", length: 4 },
+    BuiltinInfo { which: Builtin.DatePrototypeSetDate, name: "setDate", length: 1 }, BuiltinInfo { which: Builtin.DatePrototypeSetUTCDate, name: "setUTCDate", length: 1 },
+    BuiltinInfo { which: Builtin.DatePrototypeSetMonth, name: "setMonth", length: 2 }, BuiltinInfo { which: Builtin.DatePrototypeSetUTCMonth, name: "setUTCMonth", length: 2 },
+    BuiltinInfo { which: Builtin.DatePrototypeSetYear, name: "setYear", length: 1 },
+    BuiltinInfo { which: Builtin.DatePrototypeSetFullYear, name: "setFullYear", length: 3 }, BuiltinInfo { which: Builtin.DatePrototypeSetUTCFullYear, name: "setUTCFullYear", length: 3 },
+    BuiltinInfo { which: Builtin.DatePrototypeToJSON, name: "toJSON", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -532,7 +568,10 @@ inline fn weak_set_prototype_row() -> i64 { return 50; }
 // %RegExpStringIteratorPrototype% (light-cljs-937; regexp_symbols.goose),
 // an ordinary object inheriting %IteratorPrototype%.
 inline fn regexp_string_iterator_prototype_row() -> i64 { return 51; }
-inline fn fixed_rows() -> i64 { return 52; }
+// %Date.prototype% (light-cljs-940; date.goose), an ordinary object
+// inheriting %Object.prototype%, not a Date (ECMAScript 21.4.4).
+inline fn date_prototype_row() -> i64 { return 52; }
+inline fn fixed_rows() -> i64 { return 53; }
 struct Name { text: u8[..24] }
 let FUNCTION_KIND_TAGS: Name[3] = [Name { text: "GeneratorFunction" }, Name { text: "AsyncFunction" }, Name { text: "AsyncGeneratorFunction" }];
 // The function_kind:: of closure o's code, -1 for an ordinary function.
@@ -571,7 +610,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[269] = [
+let REALM_FUNCTIONS: Method[311] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -781,6 +820,33 @@ let REALM_FUNCTIONS: Method[269] = [
     Method { which: Builtin.RegExpPrototypeMatchAll, holder: regexp_prototype_row() }, Method { which: Builtin.RegExpPrototypeSearch, holder: regexp_prototype_row() },
     Method { which: Builtin.RegExpPrototypeSplit, holder: regexp_prototype_row() },
     Method { which: Builtin.RegExpStringIteratorPrototypeNext, holder: regexp_string_iterator_prototype_row() },
+    // The global Date (light-cljs-940; date.goose), row date_row(), its
+    // statics now and UTC (parse is pending for light-cljs-941), then
+    // Date.prototype's methods in QuickJS's order; its string formats are
+    // pending (light-cljs-941) and @@toPrimitive is keyed by the symbol.
+    Method { which: Builtin.Date, holder: 0 },
+    Method { which: Builtin.DateNow, holder: date_row() }, Method { which: Builtin.DateUTC, holder: date_row() },
+    Method { which: Builtin.DatePrototypeValueOf, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeToPrimitive, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeToISOString, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetTimezoneOffset, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeGetTime, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetYear, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeGetFullYear, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetUTCFullYear, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeGetMonth, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetUTCMonth, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeGetDate, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetUTCDate, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeGetHours, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetUTCHours, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeGetMinutes, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetUTCMinutes, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeGetSeconds, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetUTCSeconds, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeGetMilliseconds, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetUTCMilliseconds, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeGetDay, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeGetUTCDay, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeSetTime, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeSetMilliseconds, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeSetUTCMilliseconds, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeSetSeconds, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeSetUTCSeconds, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeSetMinutes, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeSetUTCMinutes, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeSetHours, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeSetUTCHours, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeSetDate, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeSetUTCDate, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeSetMonth, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeSetUTCMonth, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeSetYear, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeSetFullYear, holder: date_prototype_row() }, Method { which: Builtin.DatePrototypeSetUTCFullYear, holder: date_prototype_row() },
+    Method { which: Builtin.DatePrototypeToJSON, holder: date_prototype_row() },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -832,10 +898,12 @@ inline fn set_row() -> i64 { return fixed_rows() + 159; }
 // the 254th and 259th (light-cljs-945).
 inline fn weak_map_row() -> i64 { return fixed_rows() + 253; }
 inline fn weak_set_row() -> i64 { return fixed_rows() + 258; }
+// The Date function's row, its REALM_FUNCTIONS entry, the 270th (light-cljs-940).
+inline fn date_row() -> i64 { return fixed_rows() + 269; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[68] = [
+let PENDING: PendingName[77] = [
     // Object.prototype
     // Array.prototype
 
@@ -862,8 +930,18 @@ let PENDING: PendingName[68] = [
     // The global object's other standard names.
     PendingName { holder: 0, key: "AggregateError" }, PendingName { holder: 0, key: "ArrayBuffer" }, PendingName { holder: 0, key: "Atomics" }, PendingName { holder: 0, key: "BigInt" },
     PendingName { holder: 0, key: "BigInt64Array" }, PendingName { holder: 0, key: "BigUint64Array" }, PendingName { holder: 0, key: "DataView" },
-    PendingName { holder: 0, key: "Date" }, PendingName { holder: 0, key: "FinalizationRegistry" }, PendingName { holder: 0, key: "Float32Array" }, PendingName { holder: 0, key: "Float64Array" },
+    PendingName { holder: 0, key: "FinalizationRegistry" }, PendingName { holder: 0, key: "Float32Array" }, PendingName { holder: 0, key: "Float64Array" },
+    // Date.parse and Date.prototype's string formats (light-cljs-941; the
+    // locale forms are Intl.DateTimeFormat's, light-cljs-774).
+    PendingName { holder: date_row(), key: "parse" }, PendingName { holder: date_prototype_row(), key: "toString" },
+    PendingName { holder: date_prototype_row(), key: "toUTCString" }, PendingName { holder: date_prototype_row(), key: "toGMTString" },
+    PendingName { holder: date_prototype_row(), key: "toDateString" }, PendingName { holder: date_prototype_row(), key: "toTimeString" },
+    PendingName { holder: date_prototype_row(), key: "toLocaleString" }, PendingName { holder: date_prototype_row(), key: "toLocaleDateString" },
+    PendingName { holder: date_prototype_row(), key: "toLocaleTimeString" },
     PendingName { holder: 0, key: "Int8Array" }, PendingName { holder: 0, key: "Int16Array" }, PendingName { holder: 0, key: "Int32Array" }, PendingName { holder: 0, key: "Iterator" },
+    // Intl (ECMA-402; the Intl area, light-cljs-774), a global of both oracles:
+    // a read fails by name rather than as an undefined global (light-cljs-940).
+    PendingName { holder: 0, key: "Intl" },
     PendingName { holder: 0, key: "JSON" },
     PendingName { holder: 0, key: "Promise" },
     PendingName { holder: 0, key: "SharedArrayBuffer" },
@@ -1064,9 +1142,9 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     let rp .= nodes[regexp_prototype_row()]; let rt .= nodes[regexp_template_row()];
     if rp.kind != node_kind::Object || !rp.proto.is_object() || rp.proto.id() != object_prototype_row() || rt.kind != node_kind::Object || rt.initialized || rt.shape == 0 || rt.key_count != 1 || rt.count != 0 || !rt.proto.is_null() || !same_bits(rt.slots[0], number(0)) { return false; }
     // %Map.prototype% and %Set.prototype% (light-cljs-943), and
-    // %WeakMap.prototype% and %WeakSet.prototype% (light-cljs-945), are
-    // ordinary objects.
-    for o in [map_prototype_row(), set_prototype_row(), weak_map_prototype_row(), weak_set_prototype_row()] { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != object_prototype_row() { return false; } }
+    // %WeakMap.prototype% and %WeakSet.prototype% (light-cljs-945), and
+    // %Date.prototype% (light-cljs-940), are ordinary objects.
+    for o in [map_prototype_row(), set_prototype_row(), weak_map_prototype_row(), weak_set_prototype_row(), date_prototype_row()] { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != object_prototype_row() { return false; } }
     // The arguments templates (light-cljs-854): shape-mode, three properties,
     // no elements, `length` 0 and @@iterator %Array.prototype.values%.
     for mapped in [false, true] {
@@ -1132,6 +1210,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
+    rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(error_prototype_row(0)) });
@@ -1175,7 +1254,9 @@ fn build_realm(heap: Heap&) -> bool {
         // Symbol.prototype[@@toPrimitive] (ECMAScript 20.4.3.5),
         // configurable only, and its `description` (20.4.3.2), an accessor
         // with no setter, configurable (light-cljs-885).
-        if m.which == Builtin.SymbolPrototypeToPrimitive { if !add_own(heap, m.holder, Value.Symbol { s: well_known::ToPrimitive }, object(fixed_rows() + j), attr_configurable()) { return false; } continue; }
+        // Date.prototype[@@toPrimitive] (ECMAScript 21.4.4.45), configurable
+        // only (light-cljs-940).
+        if m.which == Builtin.SymbolPrototypeToPrimitive || m.which == Builtin.DatePrototypeToPrimitive { if !add_own(heap, m.holder, Value.Symbol { s: well_known::ToPrimitive }, object(fixed_rows() + j), attr_configurable()) { return false; } continue; }
         // RegExp.prototype[@@match] (light-cljs-932), writable and configurable.
         if m.which == Builtin.RegExpPrototypeMatch { if !add_own(heap, m.holder, Value.Symbol { s: well_known::Match }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; } continue; }
         // RegExp.prototype[@@replace] (light-cljs-934), writable and configurable.
@@ -1310,6 +1391,9 @@ fn build_realm(heap: Heap&) -> bool {
     assert(REALM_FUNCTIONS[weak_map_row() - fixed_rows()].which == Builtin.WeakMap && REALM_FUNCTIONS[weak_set_row() - fixed_rows()].which == Builtin.WeakSet);
     if !link_constructor(heap, weak_map_row(), weak_map_prototype_row()) || !link_constructor(heap, weak_set_row(), weak_set_prototype_row()) { return false; }
     if !add_own(heap, weak_map_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "WeakMap"), attr_configurable()) || !add_own(heap, weak_set_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "WeakSet"), attr_configurable()) { return false; }
+    // Date and Date.prototype (light-cljs-940): `prototype` and `constructor`.
+    assert(REALM_FUNCTIONS[date_row() - fixed_rows()].which == Builtin.Date);
+    if !link_constructor(heap, date_row(), date_prototype_row()) { return false; }
     var s: i64 = 0;
     while export_well_known_symbol(s).len > 0 { if !realm_value(heap, symbol_row(), export_well_known_symbol(s), Value.Symbol { s: s as u32 }, 0) { return false; } s += 1; }
     // The global object's own properties.
@@ -2060,7 +2144,7 @@ fn object_tag_text(job: Job&, receiver: Value, tag: Value) -> Value {
         // tag's read (tag_lookup); one since does not change the answer.
         let proxy = is_proxy(heap, receiver);
         let array = proxy && is_array(heap, receiver);
-        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else if !receiver.is_object() { "Object" } else if proxy { if array { "Array" } else if proxy_callable(heap, receiver) { "Function" } else { "Object" } } else { match node(heap, receiver.id()).kind { node_kind::Array => "Array", node_kind::Closure, node_kind::Builtin, node_kind::BoundFunction => "Function", node_kind::Error => "Error", node_kind::Arguments => "Arguments", node_kind::RegExp => "RegExp", _ => "Object" } };
+        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else if !receiver.is_object() { "Object" } else if proxy { if array { "Array" } else if proxy_callable(heap, receiver) { "Function" } else { "Object" } } else { match node(heap, receiver.id()).kind { node_kind::Array => "Array", node_kind::Closure, node_kind::Builtin, node_kind::BoundFunction => "Function", node_kind::Error => "Error", node_kind::Arguments => "Arguments", node_kind::RegExp => "RegExp", node_kind::Date => "Date", _ => "Object" } };
         for c in name { units.push(c); }
     }
     units.push(93);
@@ -2559,6 +2643,16 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         WeakMap, WeakSet => { return type_error(job, if b == Builtin.WeakMap { "Constructor WeakMap requires 'new'" } else { "Constructor WeakSet requires 'new'" }); },
         WeakMapPrototypeGet, WeakMapPrototypeSet, WeakMapPrototypeHas, WeakMapPrototypeDelete,
         WeakSetPrototypeAdd, WeakSetPrototypeHas, WeakSetPrototypeDelete => { return collection_builtin(job, b, receiver, args); },
+        // Date (light-cljs-940; date.goose): Date called, Date.now, the
+        // getters and toISOString are plain; Date.UTC, the setters, toJSON
+        // and @@toPrimitive run as Date native frames (native_start).
+        DateUTC, DatePrototypeToPrimitive, DatePrototypeToJSON, DatePrototypeSetTime, DatePrototypeSetMilliseconds, DatePrototypeSetUTCMilliseconds, DatePrototypeSetSeconds, DatePrototypeSetUTCSeconds,
+        DatePrototypeSetMinutes, DatePrototypeSetUTCMinutes, DatePrototypeSetHours, DatePrototypeSetUTCHours, DatePrototypeSetDate, DatePrototypeSetUTCDate,
+        DatePrototypeSetMonth, DatePrototypeSetUTCMonth, DatePrototypeSetYear, DatePrototypeSetFullYear, DatePrototypeSetUTCFullYear => { return unsupported_step(job, b, "called outside a native frame"); },
+        Date, DateNow, DatePrototypeValueOf, DatePrototypeToISOString, DatePrototypeGetTimezoneOffset, DatePrototypeGetTime, DatePrototypeGetYear,
+        DatePrototypeGetFullYear, DatePrototypeGetUTCFullYear, DatePrototypeGetMonth, DatePrototypeGetUTCMonth, DatePrototypeGetDate, DatePrototypeGetUTCDate,
+        DatePrototypeGetHours, DatePrototypeGetUTCHours, DatePrototypeGetMinutes, DatePrototypeGetUTCMinutes, DatePrototypeGetSeconds, DatePrototypeGetUTCSeconds,
+        DatePrototypeGetMilliseconds, DatePrototypeGetUTCMilliseconds, DatePrototypeGetDay, DatePrototypeGetUTCDay => { return date_builtin(job, b, receiver, args); },
         _ => { return native_value(heap, id, args); },
     }
 }

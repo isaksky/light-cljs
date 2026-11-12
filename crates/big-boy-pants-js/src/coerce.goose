@@ -116,6 +116,12 @@ namespace source;
 // converting it, the getters and @@species take no arguments, and the
 // constructors convert nothing (their iterable's protocol runs in their
 // Collection frame).
+// Date (light-cljs-940; date.goose) plans nothing: its setters read the
+// receiver's time value before converting their arguments, which a plan
+// would convert first; the constructor's one argument takes a Date's slot
+// without ToPrimitive; and Date.UTC and the constructor convert at most
+// seven arguments, where a plan's `rest` converts every later one. Their
+// Date frames convert in phases of their own.
 //
 // The frame's state is its operands and fields (callee the built-in
 // function object, input newTarget, argument_count the argument count,

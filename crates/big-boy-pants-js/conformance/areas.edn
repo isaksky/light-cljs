@@ -120,6 +120,9 @@
   "bbp/regexp_symbol_match_search" {:area :date-regexp}
   "bbp/regexp_match_all" {:area :date-regexp}
   "bbp/regexp_symbol_split" {:area :date-regexp}
+  "bbp/date_time_values" {:area :date-regexp}
+  "bbp/date_fields" {:area :date-regexp}
+  "bbp/date_quickjs_json_and_annex_b" {:area :date-regexp :pants-gap "the Pants engine fails Date.prototype.toJSON UnsupportedOperand (date_json_serialization), has no Annex B getYear or setYear and gives Date.UTC.length 2"}
   "bbp/reflect_get_set_receivers" {:area :objects-classes}
   "bbp/proxy_get_traps" {:area :objects-classes}
   "bbp/proxy_has_traps" {:area :objects-classes}

@@ -968,10 +968,15 @@ fn main() {
     let strings = arguments.len == 2 && arguments[1] == "--strings";
     let collections = arguments.len == 2 && arguments[1] == "--collections";
     let numbers = arguments.len == 2 && arguments[1] == "--numbers";
-    assert(arguments.len == 1 || sampled || strings || collections || numbers);
+    let dates_only = arguments.len == 2 && arguments[1] == "--dates";
+    assert(arguments.len == 1 || sampled || strings || collections || numbers || dates_only);
+    // Goose tests use a fixed clock (light-cljs-940; date.goose): every
+    // thread program this one spawns inherits it with its globals.
+    source::date_clock = clock_mode::Fixed; source::date_clock_time = 1506098258091.0;
     sweep_lanes = min(8, max(1, hardware_threads() / 3));
     print("serial source VM: ", if sampled { "sampled" } else { "every" }, " budget cut and limit point, ", sweep_lanes, " sweep lanes");
     if collections { maps_and_sets(); collection_iteration_checks(); return; }
+    if dates_only { dates(); return; }
     number_formatting_checks();
     if numbers { return; }
     string_methods_checks();
@@ -1101,6 +1106,7 @@ fn main() {
     primitive_methods();
     maps_and_sets();
     collection_iteration_checks();
+    dates();
     regexp_boundaries();
     regexp_replace_limits();
     regexp_symbol_limits();
@@ -1910,6 +1916,75 @@ fn maps_and_sets() {
     heap_program::join(thread_spawn(collection_image_rows, str(embed_file("../corpus/serial/map-set-image.gsp"))));
     print("serial source VM: Map and Set construction at every budget cut, their indexes rebuilt by collections that move their keys, and collections a later job does not own read but not written");
     weak_maps_and_sets();
+}
+// Date objects (light-cljs-940): setters, the constructor, Date.UTC, toJSON
+// and @@toPrimitive whose conversions run above their Date frames, at every
+// budget cut and with a collection at every cut (the frames hold the Date,
+// its time value read first, converted fields and newTarget), with the
+// tests' fixed clock and, in a thread program of its own, with none: then
+// Date.now(), new Date() and Date() throw a catchable RangeError.
+thread_fn date_clockless(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    source::date_clock = clock_mode::None; check(bytes, "number:0.0");
+}
+// Dates as compile-time values (light-cljs-940): form equality, hash and
+// compare by time value and the printer's `#inst`, as the V8 build's
+// structuralEqualPair, hash, compareKeys and printHost.
+// Whether MakeDate(MakeDay(y, m, d), 0) is exact and the day before the epoch.
+fn exact_day(y: f64, m: f64, d: f64) -> bool { let f: f64[7] = [y, m, d, 0.0, 0.0, 0.0, 0.0]; let exact, t = source::fields_time(f); return exact && t == -86400000.0; }
+fn date_form_values() {
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/date-setters.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap };
+    let nan: f64 = 0.0 / 0.0;
+    let a = source::new_date(job, 1506098258091.0, source::Value.Undefined); let b = source::new_date(job, 1506098258091.0, source::Value.Undefined);
+    let c = source::new_date(job, 0.0, source::Value.Undefined); let n = source::new_date(job, nan, source::Value.Undefined); let m = source::new_date(job, nan, source::Value.Undefined);
+    let early = source::new_date(job, -62198755200000.0, source::Value.Undefined);
+    assert(heap.fault == source::Fault.None);
+    assert(source::form_equal(heap, a, b) && !source::form_equal(heap, a, c) && source::form_equal(heap, n, n) && !source::form_equal(heap, n, m));
+    assert(!source::form_equal(heap, a, source::number(1506098258091.0)) && !source::form_equal(heap, source::number(1506098258091.0), a));
+    // 1506098258091 | 0 is -1435262805.
+    let h = source::hash_value(heap, a); let z = source::hash_value(heap, n);
+    assert(heap.fault == source::Fault.None && h.num() == -1435262805.0 && z.num() == 0.0 && source::same_bits(h, source::hash_value(heap, b)));
+    var r = source::Rejected {};
+    let up, e1 = source::compare_values(heap, a, c, r); let down, e2 = source::compare_values(heap, c, a, r); let same, e3 = source::compare_values(heap, n, c, r);
+    assert(up == 1 && down == -1 && same == 0 && e1 == source::CoreError.None && e2 == source::CoreError.None && e3 == source::CoreError.None);
+    let x, e4 = source::compare_values(heap, a, source::number(1.0), r); let y, e5 = source::compare_values(heap, source::number(1.0), a, r);
+    assert(e4 == source::CoreError.CompareValues && e5 == source::CoreError.CompareValues);
+    var out: u8[>..] = [];
+    source::canonical(heap, source::pr_str(job, source::Builtin.PrStr, [a, early]), out);
+    assert(heap.fault == source::Fault.None);
+    var expected: u8[>..] = []; source::canonical(heap, source::text(heap, "#inst \"2017-09-22T16:37:38.091-00:00\" #inst \"-000001-01-01T00:00:00.000-00:00\""), expected);
+    assert(out[..] == expected[..]);
+    // An invalid Date's toISOString throws, as in the V8 build.
+    source::pr_str(job, source::Builtin.PrStr, [n]);
+    assert(heap.fault == source::Fault.RangeError);
+    heap.fault = source::Fault.None; job.detail.clear();
+    // A Date with an own property could answer through its own valueOf or
+    // toISOString in the V8 build: the form operations and the printer fail
+    // by name instead of reading its slot.
+    assert(source::install_field(heap, b, "valueOf", source::number(5.0)));
+    assert(!source::form_equal(heap, a, b) && heap.fault == source::Fault.NativeBoundary); heap.fault = source::Fault.None;
+    source::hash_value(heap, b); assert(heap.fault == source::Fault.NativeBoundary); heap.fault = source::Fault.None;
+    let w, e6 = source::compare_values(heap, a, b, r); assert(e6 == source::CoreError.Boundary);
+    source::pr_str(job, source::Builtin.PrStr, [b]); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None; job.detail.clear();
+    assert(!source::form_equal(heap, a, source::object(source::date_prototype_row())) && heap.fault == source::Fault.None);
+    // MakeDay's exact day count for years within ±2.5e16 (the Pants
+    // engine's date_utc_huge_year_cancellation rows and a year of 1e16),
+    // where a day the size of the year cancels back into range.
+    assert(exact_day(35184372088833.0, 0.0, -12850828021936060.0) && exact_day(35184372088833.0, 2.0, -12850828021936120.0) && exact_day(-35184372088833.0, 0.0, 12850828023375116.0) && exact_day(-35184372088833.0, 2.0, 12850828023375056.0) && exact_day(10000000000000000.0, 0.0, -3652424999999280640.0));
+    // Beyond ±2.5e16 the day is approximate: a sum far outside TimeClip's
+    // range is NaN after TimeClip, one that could cancel is refused.
+    let far:    f64[7] = [1e20, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]; let far_exact, far_t = source::fields_time(far); assert(far_exact && source::time_clip(far_t) != source::time_clip(far_t));
+    let cancel: f64[7] = [1e20, 0.0, -36524250000000000000000.0, 0.0, 0.0, 0.0, 0.0]; let cancel_exact, cancel_t = source::fields_time(cancel); assert(!cancel_exact);
+}
+fn dates() {
+    date_form_values();
+    let image = embed_file("../corpus/serial/date-setters.gsp");
+    check(image, "number:1.0");
+    heap_program::join(thread_spawn(date_clockless, str(image)));
+    for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("number:1.0"), slice, if slice == 1 { 211 } else { 1 })); }
+    print("serial source VM: Date frames at every budget cut and collection, with a fixed clock and with none");
 }
 // WeakMap and WeakSet (light-cljs-945): the same Collection frames over a
 // user iterator, a subclass's `set`, keys they cannot hold closing the

@@ -268,6 +268,16 @@ fn print_one(job: Job&, b: Builtin, p: Printer&, v: Value) -> bool {
         if heap.fault != Fault.None || !room(job, p, str_len(heap, s) + 3) { return false; }
         emit(p, "#\""); append_utf16(heap, s, p.out); emit(p, "\""); return true;
     }
+    // A Date prints as the V8 build's printHost prints one: `#inst "`, its
+    // toISOString with the Z as -00:00, `"` (light-cljs-940); an invalid
+    // one's RangeError. One whose `toISOString` read could reach a property
+    // of its own or another prototype fails by name.
+    if kind == node_kind::Date {
+        if !intrinsic_date(n) { unsupported_step(job, b, "printing a Date with properties of its own or another prototype"); return false; }
+        let s = iso_string(job, n.value.num());
+        if heap.fault != Fault.None || !room(job, p, str_len(heap, s) + 14) { return false; }
+        emit(p, "#inst \""); append_utf16(heap, s, p.out); p.out.pop(); emit(p, "-00:00\""); return true;
+    }
     if kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction {
         // `#object[name]`, `Function` for a falsy name (*print-fn-bodies* off).
         let name = form_value(heap, data_get(job, b, x, "name"));

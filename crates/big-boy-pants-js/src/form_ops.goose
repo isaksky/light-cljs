@@ -411,6 +411,17 @@ recursive fn compare_values(heap: Heap&, a: Value, b: Value, r: Rejected&, depth
         return (if x.num() < y.num() { -1 } else if x.num() > y.num() { 1 } else { 0 }), CoreError.None;
     }
     let xk = form_kind(heap, x); let yk = form_kind(heap, y);
+    // A Date with a Date by time value (a NaN one equal to any), as the V8
+    // build's compareKeys; with anything else neither compares
+    // (light-cljs-940).
+    if xk == node_kind::Date {
+        if yk != node_kind::Date { r.a = x; r.b = y; return 0, CoreError.CompareValues; }
+        // Their valueOf calls are the intrinsic's only for Dates without own
+        // properties or another prototype (intrinsic_date).
+        if !intrinsic_date(node(heap, x.id())) || !intrinsic_date(node(heap, y.id())) { return 0, CoreError.Boundary; }
+        let p = node(heap, x.id()).value.num(); let q = node(heap, y.id()).value.num();
+        return (if p < q { -1 } else if p > q { 1 } else { 0 }), CoreError.None;
+    }
     let xn = xk == node_kind::Keyword || xk == node_kind::Symbol; let yn = yk == node_kind::Keyword || yk == node_kind::Symbol;
     if xn || yn {
         if !xn || !yn || xk != yk { return 0, CoreError.CompareTypes; }

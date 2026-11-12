@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "036b6645734dd03412b55e2704a330da2ce4406b3e8e2f0b5230e597bc1ba652",
+  "a0da46009826549b7ec4ab5e0d189ea480a2da3acad6f69f6311de2a511e9ba6",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -345,6 +345,10 @@
   "f22f8ed93906f922f8c1ac71da1d14b6d48a939ff534977c5767f7559c1c51fe",
   "corpus/serial/control.js"
   "e503ed5568ad0c8f961ecbc5f1d2a417f2d7a6231bc640237b300d307910f029",
+  "corpus/serial/date-setters.gsp"
+  "59e00a63a4c195cd2bddb71e5e580dfe27bba9b480cd8e8f9a33cff85c4fca3a",
+  "corpus/serial/date-setters.js"
+  "d6c23d1ffb09e5fec5b5c59fcbbb1d567966dd63bb57287ec33587f5dc5ba75b",
   "corpus/serial/define-property-frames.gsp"
   "8791c0fe9ea9545d64b98880716e5026100116d1eef2c192be2827f0f6133207",
   "corpus/serial/define-property-frames.js"

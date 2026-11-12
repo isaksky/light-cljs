@@ -5,6 +5,7 @@ import .realm;
 import .array_callbacks;
 import .function_calls;
 import .regexp_object;
+import .date;
 
 namespace source;
 
@@ -341,7 +342,7 @@ fn to_string_step(job: Job&, frame: Frame) {
     let c = builtin_of(heap, f.id());
     // A built-in that converts its receiver runs in a Coerce frame (light-cljs-900).
     if coerces(heap, f, frame.input, []) { start_coerce(job, f, frame.input, [], job.operands.len); return; }
-    if array_native(c) || forwarding(c) || regexp_native(c) || string_native(c) { native_start(job, c, frame.input, [], job.operands.len); return; }
+    if array_native(c) || forwarding(c) || regexp_native(c) || string_native(c) || date_native(c) { native_start(job, c, frame.input, [], job.operands.len); return; }
     if conditional_native(c) { start_conditional_native(job, c, frame.input, [], job.operands.len); return; }
     if effect_builtin(c) || native_builtin(c) || c == Builtin.Mapv || c == Builtin.MapSeq || c == Builtin.FunctionPrototypeCall || forces(heap, c, []) { unsupported_step(job, b, "a host-effect or native-frame built-in as join"); return; }
     let r = call_plain(job, f, frame.input, []);
