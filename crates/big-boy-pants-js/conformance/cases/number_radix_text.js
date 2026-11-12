@@ -30,10 +30,21 @@ row(throwsRange(() => NaN.toString(1)) && throwsRange(() => Infinity.toString(37
 row(throwsRange(() => (10).toString({[Symbol.toPrimitive](hint) { return undefined; }})));
 // Exact power-of-two radices, including both ends of binary64.
 row((5e-324).toString(2) === '0.' + Array(1074).join('0') + '1');
-row(Number.MIN_VALUE.toString(16) === '0.' + Array(269).join('0') + '04');
+row(Number.MIN_VALUE.toString(16) === '0.' + Array(269).join('0') + '4');
 row(Number.MAX_VALUE.toString(2) === Array(54).join('1') + Array(972).join('0'));
 row((1000000000000000128).toString(16) === 'de0b6b3a7640080');
+// Odd-radix ties use the parity of the whole coefficient.
+row((1.5).toString(3) === '1.' + Array(34).join('1'));
+row((2.5).toString(3) === '2.' + Array(33).join('1') + '2');
+row((-1.5).toString(3) === '-1.' + Array(34).join('1'));
+row((2 ** -1022).toString(16) === '0.' + Array(256).join('0') + '4');
 for (let radix = 2; radix <= 36; radix++) {
   for (const x of [-65535, -255, -1, 0, 1, 255, 65535]) row(parseInt(x.toString(radix), radix) === x);
+}
+for (let radix = 2; radix <= 36; radix++) {
+  for (const x of [5e-324, 2 ** -1022, 0.1, 0.5, 1.3, 1 - 2 ** -53]) {
+    const text = x.toString(radix);
+    row(text.length <= 1077 && text[text.length - 1] !== '0');
+  }
 }
 failed === 0 ? rows : -failed;

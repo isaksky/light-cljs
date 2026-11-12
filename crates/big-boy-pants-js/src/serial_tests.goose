@@ -847,6 +847,72 @@ thread_fn fault_details() {
     assert(text.len == head.len + source::description_limit() + 3 && text[..head.len] == head && text[(text.len - 3)..] == "...");
     print("serial source VM: a fault's description carries Job.detail on every fault kind, bounded");
 }
+fn number_formatting_checks() {
+    let bytes = embed_file("../corpus/serial/number-formatting.gsp");
+    check(bytes, "boolean:true");
+    limit_points(bytes);
+    for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(bytes), str("boolean:true"), slice, 1)); }
+    heap_program::join(thread_spawn(number_formatting_saving, str(bytes)));
+    heap_program::join(thread_spawn(number_formatting_work, str(bytes)));
+}
+// Save a live Coerce frame for each method, restore it into a fresh worker,
+// and finish there. The JavaScript result checks the callback log, so a
+// repeated receiver read or argument conversion fails after migration too.
+thread_fn number_formatting_saved(image: snapshot::Snapshot, stack: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var c = snapshot::Control {};
+    assert(snapshot::restore(image, code, heap, bindings, source::reserve_identity(), c));
+    var job = source::Job { heap: heap };
+    assert(source::resume_stack(job, stack)); job.registered = true; heap.live_jobs += 1;
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.is_bool() && job.result.flag());
+    assert(source::retire(job));
+}
+thread_fn number_formatting_saving(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+    var seen = dictionary<i64, bool> {}; var stack: i64 = -1; var saved: i64 = 0;
+    while source::run(job, 1) == tiny::Outcome.Yielded {
+        var which: i64 = -1;
+        for f in job.frames {
+            match f.native {
+                Coerce m => { match m.which {
+                    NumberPrototypeToString, NumberPrototypeToFixed, NumberPrototypeToExponential, NumberPrototypeToPrecision => { which = source::code(m.which); },
+                    _ => {},
+                } },
+                _ => {},
+            }
+        }
+        if which < 0 || seen.contains(which) { continue; }
+        seen.insert(which, true); saved += 1;
+        stack = source::suspend_stack(job, stack); assert(stack >= 0);
+        var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c, 0, true); assert(c.error == snapshot::Error.None);
+        heap_program::join(thread_spawn(number_formatting_saved, copy(image), stack));
+        assert(source::resume_stack(job, stack));
+    }
+    assert(saved == 4 && job.status == tiny::Status.Complete && job.result.is_bool() && job.result.flag());
+    assert(source::retire(job));
+}
+// Digit work is charged even when the returned string is short. A limit
+// sufficient for the result's allocation alone must still refuse the call.
+thread_fn number_formatting_work(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap };
+    for b in [source::Builtin.NumberPrototypeToString, source::Builtin.NumberPrototypeToFixed, source::Builtin.NumberPrototypeToExponential, source::Builtin.NumberPrototypeToPrecision] {
+        let count: i64 = if b == source::Builtin.NumberPrototypeToString { 7 } else { 2 };
+        let before = heap.work;
+        let value = source::number_to_string(job, b, source::number(1.3), [source::number(count)]);
+        assert(heap.fault == source::Fault.None && value.is_string());
+        let allowance = 2 * source::str_len(heap, value) + 64;
+        assert(heap.work - before > allowance);
+        let limit = heap.limits.work; heap.limits.work = heap.work + allowance;
+        source::number_to_string(job, b, source::number(1.3), [source::number(count)]);
+        assert(heap.fault == source::Fault.WorkLimit); heap.fault = source::Fault.None; heap.limits.work = limit;
+    }
+}
 fn main() {
     // --sampled: smoke.bb's debug build samples the long sweeps; the native
     // build, without it, runs every budget cut and limit point.
@@ -854,10 +920,13 @@ fn main() {
     sampled = arguments.len == 2 && arguments[1] == "--sampled";
     let strings = arguments.len == 2 && arguments[1] == "--strings";
     let collections = arguments.len == 2 && arguments[1] == "--collections";
-    assert(arguments.len == 1 || sampled || strings || collections);
+    let numbers = arguments.len == 2 && arguments[1] == "--numbers";
+    assert(arguments.len == 1 || sampled || strings || collections || numbers);
     sweep_lanes = min(8, max(1, hardware_threads() / 3));
     print("serial source VM: ", if sampled { "sampled" } else { "every" }, " budget cut and limit point, ", sweep_lanes, " sweep lanes");
     if collections { maps_and_sets(); collection_iteration_checks(); return; }
+    number_formatting_checks();
+    if numbers { return; }
     string_methods_checks();
     if strings { return; }
     sampling_policy();

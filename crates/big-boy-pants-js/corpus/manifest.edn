@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "4ce095846d69098b0f3f124c5138b3490b95294a187a074d887fee32657cd972",
+  "b0df450c09e95d5b539c3a4dfaa0e01f0c620bc1acd39264481130df73454ece",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -569,6 +569,10 @@
   "31fc974097eff354ca37b0501cec2695e44668a1aaaa384e9ceeead8df8032d3",
   "corpus/serial/number-conversions.js"
   "a9bd4aaef13e1717d16eb27d348fed48a2305f3eba6375bb42dcfcdc50342a52",
+  "corpus/serial/number-formatting.gsp"
+  "b0dda4146899b6d3b9bdf04729a4a547b10b899a2f51cf15313cef13bbebe7d1",
+  "corpus/serial/number-formatting.js"
+  "430ae35e7e78a58be03f67e768bf96d9b04fd6475d358528977cbc8582850818",
   "corpus/serial/numbers.gsp"
   "b9aa916a25d0b3a8171ce7bbb296a4a544476991c2886814975010a9a66ebc8a",
   "corpus/serial/numbers.js"

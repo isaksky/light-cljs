@@ -80,8 +80,15 @@ for (const method of ['toExponential', 'toPrecision']) {
   row(log === 'vs');
 }
 // The full exact coefficient matters at 100 digits, even for subnormals.
-row((0.1).toExponential(100) === '1.000000000000000055511151231257827021181583404541015625' + Array(48).join('0') + 'e-1');
+row((0.1).toExponential(100) === '1.000000000000000055511151231257827021181583404541015625' + Array(47).join('0') + 'e-1');
 row((1.25 - 2 ** -52).toFixed(1) === '1.2' && (1.25 + 2 ** -52).toFixed(1) === '1.3');
 row((1.25 - 2 ** -52).toPrecision(2) === '1.2' && (1.25 + 2 ** -52).toPrecision(2) === '1.3');
 row((1.45).toFixed(1) + ',' + (8.345).toFixed(2) + ',' + (1.005).toFixed(2) + ',' + (5e-7).toFixed(7) + ',' + (123.456).toExponential() + ',' + (NaN).toPrecision(3) === '1.4,8.35,1.00,0.0000005,1.23456e+2,NaN');
+row((9.999).toFixed(2) === '10.00' && (0.999).toFixed(2) === '1.00');
+row((0.00999).toFixed(2) === '0.01' && (0.005).toFixed(2) === '0.01');
+row((-5e-324).toFixed(100) === '-0.' + Array(101).join('0'));
+row(Number.MAX_VALUE.toExponential() === '1.7976931348623157e+308' && (2 ** -1022).toExponential() === '2.2250738585072014e-308');
+row(Number.MAX_VALUE.toPrecision(3) === '1.80e+308' && (2 ** -1022).toPrecision(3) === '2.23e-308');
+row((1000000000000000.25).toExponential(16) === '1.0000000000000003e+15');
+row((1).toExponential(100) === '1.' + Array(101).join('0') + 'e+0' && (1).toPrecision(100) === '1.' + Array(100).join('0'));
 failed === 0 ? rows : -failed;

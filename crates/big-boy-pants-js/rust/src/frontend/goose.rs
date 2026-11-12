@@ -2891,6 +2891,9 @@ mod serial_tests {
             // (serial_tests.goose); its @@hasInstance row is one the Pants
             // engine refuses.
             ("number-conversions", "goose"),
+            // Number formatting argument conversions at every budget cut
+            // and collection (light-cljs-902; serial_tests.goose).
+            ("number-formatting", "boolean:true"),
             // String native conversions, raw getters and bounded scans
             // (light-cljs-903), at every budget cut and collection.
             ("string-methods", "goose"),
