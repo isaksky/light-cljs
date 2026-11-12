@@ -13,6 +13,7 @@ row(Set.prototype.keys === Set.prototype.values && Set.prototype[Symbol.iterator
   let m = new Map([[1, 'a'], [2, 'b'], [3, 'c']]);
   row([...m.keys()].join() === '1,2,3' && [...m.values()].join() === 'a,b,c' && [...m].join('|') === '1,a|2,b|3,c');
   row([...new Map(m)].join('|') === [...m].join('|'));
+  row(Array.from(m, ([k, v]) => k + v).join() === '1a,2b,3c');
   let [a, b, ...rest] = m;
   row(a.join() === '1,a' && b.join() === '2,b' && rest[0].join() === '3,c');
 }

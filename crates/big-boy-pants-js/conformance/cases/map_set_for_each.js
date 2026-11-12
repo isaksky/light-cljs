@@ -35,4 +35,18 @@ for (let C of [Map, Set]) {
   let that = {}; let ok = true; c.forEach(function (v, k, self) { 'use strict'; if (this !== that || self !== c || arguments.length !== 3 || (C === Set && v !== k)) ok = false; }, that); row(ok);
 }
 { let a = {}, b = {}, m = new Map([[a, 1], [b, 2]]); m.forEach((v, k) => m.delete(k)); row(m.size === 0); }
+// map_for_each_live_iteration's 1,000 distinct object keys and values.
+{
+  let m = new Map(), tab = [], receiver = {}, i = 0, ok = true;
+  for (let n = 0; n < 1000; n++) { let k = {id: n}, v = {}; tab.push([k, v]); m.set(k, v); }
+  let result = m.forEach(function (v, k, self) {
+    if (k !== tab[i][0] || v !== tab[i][1] || self !== m || this !== receiver || !m.has(k)) ok = false;
+    i++; if (!m.delete(k) || m.has(k)) ok = false;
+  }, receiver);
+  row(ok && i === 1000 && m.size === 0 && result === undefined);
+}
+{ let m = new Map([[1, 10], [2, 20], [3, 30]]), seen = ''; m.forEach((v, k) => { seen += k + ':' + v + ';'; if (k === 1) { m.delete(2); m.set(3, 31); m.set(4, 40); } }); row(seen === '1:10;3:31;4:40;'); }
+{ let ok = false; new Map([[1, 2]]).forEach(function () { 'use strict'; ok = this === undefined; }); row(ok); }
+{ let out = []; new Set([1, 2]).forEach(Array.prototype.push.bind(out)); row(out[0] === 1 && out[1] === 1 && out[3] === 2 && out[4] === 2 && out.length === 6); }
+{ let n = 0; let callback = new Proxy(() => n++, {}); new Map([[1, 2], [3, 4]]).forEach(callback); row(n === 2); }
 failed ? -failed : rows;
