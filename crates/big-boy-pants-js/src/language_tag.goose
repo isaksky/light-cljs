@@ -10,7 +10,7 @@ namespace locale;
 // script (4 letters) and region (2 letters or 3 digits); distinct variants
 // (5 to 8 alphanumerics, or 4 starting with a digit); distinct singleton
 // extensions, a `u` extension's attributes and keys with types of 3 to 8
-// alphanumerics (and the legacy `co-phonebook`), a `t` extension's
+// alphanumerics (and the legacy `co-phonebook` and `co-dictionary`), a `t` extension's
 // language and fields, any other extension's subtags of 2 to 8
 // alphanumerics; then `x` private use subtags of 1 to 8 alphanumerics.
 // Case is not significant; at most 511 ASCII units and 63 subtags. This
@@ -95,7 +95,9 @@ fn unicode_extension(text: const u8[:], starts: const i64[:], ends: const i64[:]
         while j < to && ends[j] - starts[j] != 2 { j += 1; }
         if first < j {
             let value = text[starts[first]..ends[j - 1]];
-            if !(same(key, "co") && same(value, "phonebook")) && !unicode_type(value) { return false; }
+            // The legacy collation types phonebook and dictionary are
+            // aliases (phonebk, dict) before the type's length is checked.
+            if !(same(key, "co") && (same(value, "phonebook") || same(value, "dictionary"))) && !unicode_type(value) { return false; }
         }
     }
     return true;

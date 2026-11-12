@@ -2979,12 +2979,31 @@ fn string_methods_checks() {
         // string-case.js reads locale lists (light-cljs-905).
         heap_program::join(thread_spawn(string_saving, str(bytes), i == 3));
     }
+    language_tags();
     // CreateHTML runs no StringMethod frame: no saved phases (light-cljs-904).
     let html = embed_file("../corpus/serial/string-html.gsp");
     check(html, "boolean:true"); limit_points(html);
     heap_program::join(thread_spawn(reclaim_cuts, str(html), str("boolean:true"), 1, 1));
     heap_program::join(thread_spawn(string_large, str(embed_file("../corpus/serial/string-scans.gsp"))));
     print("serial String methods: every budget cut, limits, collection, saved phases and 65,536 arguments passed");
+}
+// The locale tags toLocaleUpperCase and toLocaleLowerCase accept
+// (light-cljs-905; language_tag.goose): the Pants engine's
+// intl_language_tag_parse_and_canonicalize vectors (rust/src/intl/tag.rs)
+// and its legacy collation aliases, which QuickJS and Node reject, so no
+// oracle-compared case holds them.
+fn language_tags() {
+    let valid = ["EN-latn-us", "de-u-co-phonebook", "en-u-nu-latn-ca-gregory", "sh", "in-ID", "en-554", "en-u-kn-true", "en-u-kn-yes-ms-imperial-tz-cnckg", "en-t-a0-names", "en-fonipa-1996", "en-t-z0-foo-a0-bar", "en-u-foo-foo-ca-gregory-ca-buddhist", "en-u-kb-yes-kc-yes-kh-yes-kk-yes-kn-yes", "en-u-zzz-aaa-ca-islamicc", "en-b-foo-a-bar-x-Z-A", "ja-Latn-hepburn-heploc", "en-t-DE-latn-de-h0-hybrid", "tr-u-co-dictionary", "lt-LT", "az-Latn-AZ"];
+    let invalid = ["", "en-", "x", "123", "abcd", "en_US", "en-abc", "en-u", "en-a-a-foo", "en-u-a1-foo", "en-t-h0", "en-t-de-h0", "en-abcde-ABCDE", "en-a-foo-a-bar", "en-x", "en-x-123456789", "en-ü", "tr-u-co-dictionarx", "tr-u-ca-dictionary", "-en", "en--us"];
+    for t in valid {
+        var units: u16[>..] = []; for c in t { units.push(c); }
+        assert(locale::language_subtag(units) == 2);
+    }
+    var trv: u16[>..] = []; for c in "trv-u-co-phonebk" { trv.push(c); }
+    assert(locale::language_subtag(trv) == 3);
+    for t in invalid { var units: u16[>..] = []; for c in t { units.push(c); } assert(locale::language_subtag(units) == -1); }
+    var wide: u16[>..] = []; for c in "en-" { wide.push(c); } wide.push(0xfc);
+    assert(locale::language_subtag(wide) == -1);
 }
 thread_fn string_large(bytes: u8[]) {
     defer { heap_program::finish(); }
