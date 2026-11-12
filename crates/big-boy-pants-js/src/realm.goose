@@ -163,7 +163,8 @@ enum Builtin {
     RegExp, RegExpPrototypeFlags, RegExpPrototypeSource, RegExpPrototypeGlobal, RegExpPrototypeIgnoreCase, RegExpPrototypeMultiline, RegExpPrototypeDotAll,
     RegExpPrototypeUnicode, RegExpPrototypeUnicodeSets, RegExpPrototypeSticky, RegExpPrototypeHasIndices, RegExpPrototypeToString, RegExpSpecies,
     // RegExp.prototype[@@match] (light-cljs-932): a function object, since
-    // IsRegExp reads it; calling it is light-cljs-937's, a named step until then.
+    // IsRegExp reads it; a RegExp native frame since light-cljs-937
+    // (regexp_symbols.goose).
     RegExpPrototypeMatch,
     // RegExp.prototype.exec and test (light-cljs-933; regexp_object.goose),
     // RegExp native frames.
@@ -212,11 +213,16 @@ enum Builtin {
     // keyed methods, plain.
     WeakMap, WeakMapPrototypeSet, WeakMapPrototypeGet, WeakMapPrototypeHas, WeakMapPrototypeDelete,
     WeakSet, WeakSetPrototypeAdd, WeakSetPrototypeHas, WeakSetPrototypeDelete,
+    // String.prototype.match, matchAll and search, RegExp.prototype's
+    // @@matchAll, @@search and @@split, and
+    // %RegExpStringIteratorPrototype%.next (light-cljs-937;
+    // regexp_symbols.goose), RegExp native frames, as @@match is.
+    StringPrototypeMatch, StringPrototypeMatchAll, StringPrototypeSearch, RegExpPrototypeMatchAll, RegExpPrototypeSearch, RegExpPrototypeSplit, RegExpStringIteratorPrototypeNext,
 }
 // A built-in's code (its position here, a node's `function`), its `name`,
 // its `length` and its conversion plan (coerce.goose; plan::None for none).
 struct BuiltinInfo { which: Builtin, name: u8[..32], length: u8 = 0, plan: u8 = 0 }
-let BUILTINS: BuiltinInfo[332] = [
+let BUILTINS: BuiltinInfo[339] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -441,6 +447,12 @@ let BUILTINS: BuiltinInfo[332] = [
     BuiltinInfo { which: Builtin.WeakMapPrototypeDelete, name: "delete", length: 1 },
     BuiltinInfo { which: Builtin.WeakSet, name: "WeakSet" }, BuiltinInfo { which: Builtin.WeakSetPrototypeAdd, name: "add", length: 1 },
     BuiltinInfo { which: Builtin.WeakSetPrototypeHas, name: "has", length: 1 }, BuiltinInfo { which: Builtin.WeakSetPrototypeDelete, name: "delete", length: 1 },
+    // Their conversions follow a method lookup or a receiver check
+    // (coerce.goose): no plan.
+    BuiltinInfo { which: Builtin.StringPrototypeMatch, name: "match", length: 1 }, BuiltinInfo { which: Builtin.StringPrototypeMatchAll, name: "matchAll", length: 1 },
+    BuiltinInfo { which: Builtin.StringPrototypeSearch, name: "search", length: 1 }, BuiltinInfo { which: Builtin.RegExpPrototypeMatchAll, name: "[Symbol.matchAll]", length: 1 },
+    BuiltinInfo { which: Builtin.RegExpPrototypeSearch, name: "[Symbol.search]", length: 1 }, BuiltinInfo { which: Builtin.RegExpPrototypeSplit, name: "[Symbol.split]", length: 2 },
+    BuiltinInfo { which: Builtin.RegExpStringIteratorPrototypeNext, name: "next" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -517,7 +529,10 @@ inline fn set_iterator_prototype_row() -> i64 { return 48; }
 // collections.goose), ordinary objects inheriting %Object.prototype%.
 inline fn weak_map_prototype_row() -> i64 { return 49; }
 inline fn weak_set_prototype_row() -> i64 { return 50; }
-inline fn fixed_rows() -> i64 { return 51; }
+// %RegExpStringIteratorPrototype% (light-cljs-937; regexp_symbols.goose),
+// an ordinary object inheriting %IteratorPrototype%.
+inline fn regexp_string_iterator_prototype_row() -> i64 { return 51; }
+inline fn fixed_rows() -> i64 { return 52; }
 struct Name { text: u8[..24] }
 let FUNCTION_KIND_TAGS: Name[3] = [Name { text: "GeneratorFunction" }, Name { text: "AsyncFunction" }, Name { text: "AsyncGeneratorFunction" }];
 // The function_kind:: of closure o's code, -1 for an ordinary function.
@@ -556,7 +571,7 @@ let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.Rang
 // row function (symbol_row, proxy_row), so a fixed row added before them
 // moves it with them.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[262] = [
+let REALM_FUNCTIONS: Method[269] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -758,6 +773,14 @@ let REALM_FUNCTIONS: Method[262] = [
     Method { which: Builtin.WeakSet, holder: 0 },
     Method { which: Builtin.WeakSetPrototypeAdd, holder: weak_set_prototype_row() }, Method { which: Builtin.WeakSetPrototypeHas, holder: weak_set_prototype_row() },
     Method { which: Builtin.WeakSetPrototypeDelete, holder: weak_set_prototype_row() },
+    // String.prototype.match, matchAll and search; RegExp.prototype's
+    // @@matchAll, @@search and @@split, keyed by the well-known symbols;
+    // and %RegExpStringIteratorPrototype%.next (light-cljs-937).
+    Method { which: Builtin.StringPrototypeMatch, holder: wrapper_prototype_row(1) }, Method { which: Builtin.StringPrototypeMatchAll, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.StringPrototypeSearch, holder: wrapper_prototype_row(1) },
+    Method { which: Builtin.RegExpPrototypeMatchAll, holder: regexp_prototype_row() }, Method { which: Builtin.RegExpPrototypeSearch, holder: regexp_prototype_row() },
+    Method { which: Builtin.RegExpPrototypeSplit, holder: regexp_prototype_row() },
+    Method { which: Builtin.RegExpStringIteratorPrototypeNext, holder: regexp_string_iterator_prototype_row() },
 ];
 // cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
 // REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
@@ -812,7 +835,7 @@ inline fn weak_set_row() -> i64 { return fixed_rows() + 258; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[74] = [
+let PENDING: PendingName[68] = [
     // Object.prototype
     // Array.prototype
 
@@ -851,21 +874,16 @@ let PENDING: PendingName[74] = [
     // %Number.prototype% (light-cljs-832; the core-builtins area makes
     // them, light-cljs-767; Number's statics are light-cljs-900's).
     PendingName { holder: 26, key: "toLocaleString" },
-    // String and %String.prototype%.
-
-    PendingName { holder: 27, key: "match" }, PendingName { holder: 27, key: "matchAll" }, PendingName { holder: 27, key: "search" },
-
-    // localeCompare is Intl.Collator's (light-cljs-774).
+    // String and %String.prototype%: match, matchAll and search are
+    // light-cljs-937's; localeCompare is Intl.Collator's (light-cljs-774).
     PendingName { holder: 27, key: "localeCompare" },
 
-    // RegExp and %RegExp.prototype% (light-cljs-932): the symbol methods
-    // are light-cljs-770's fourth to sixth children's, escape and compile
-    // its eighth's (exec and test are light-cljs-933's, @@replace
-    // light-cljs-934's).
+    // RegExp and %RegExp.prototype% (light-cljs-932): escape and compile
+    // are light-cljs-770's eighth child's (exec and test are
+    // light-cljs-933's, @@replace light-cljs-934's, the other symbol
+    // methods light-cljs-937's).
     PendingName { holder: regexp_row(), key: "escape" },
     PendingName { holder: regexp_prototype_row(), key: "compile" },
-    PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::MatchAll }, PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::Search },
-    PendingName { holder: regexp_prototype_row(), key: "", symbol: well_known::Split },
     // Map, Set and their prototypes: Map.groupBy, getOrInsert,
     // getOrInsertComputed and the Set methods that take another set are
     // light-cljs-953's.
@@ -1034,7 +1052,7 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
         if p.kind != node_kind::Wrapper || wrapper_type(p.value) != t || !p.proto.is_object() || p.proto.id() != object_prototype_row() || c.kind != node_kind::Builtin || c.function != code(b) { return false; }
     }
     // The iterator prototypes inherit %IteratorPrototype%.
-    let iterator_prototypes: i64[] = [array_iterator_prototype_row(), string_iterator_prototype_row(), map_iterator_prototype_row(), set_iterator_prototype_row()];
+    let iterator_prototypes: i64[] = [array_iterator_prototype_row(), string_iterator_prototype_row(), map_iterator_prototype_row(), set_iterator_prototype_row(), regexp_string_iterator_prototype_row()];
     for o in iterator_prototypes { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != iterator_prototype_row() { return false; } }
     // Symbol.prototype is an ordinary object (light-cljs-885).
     if nodes[symbol_prototype_row()].kind != node_kind::Object || !nodes[symbol_prototype_row()].proto.is_object() || nodes[symbol_prototype_row()].proto.id() != object_prototype_row() { return false; }
@@ -1113,6 +1131,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
+    rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(error_prototype_row(0)) });
@@ -1161,6 +1180,13 @@ fn build_realm(heap: Heap&) -> bool {
         if m.which == Builtin.RegExpPrototypeMatch { if !add_own(heap, m.holder, Value.Symbol { s: well_known::Match }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; } continue; }
         // RegExp.prototype[@@replace] (light-cljs-934), writable and configurable.
         if m.which == Builtin.RegExpPrototypeReplace { if !add_own(heap, m.holder, Value.Symbol { s: well_known::Replace }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; } continue; }
+        // RegExp.prototype[@@matchAll], [@@search] and [@@split]
+        // (light-cljs-937), writable and configurable.
+        if m.which == Builtin.RegExpPrototypeMatchAll || m.which == Builtin.RegExpPrototypeSearch || m.which == Builtin.RegExpPrototypeSplit {
+            let s = if m.which == Builtin.RegExpPrototypeMatchAll { well_known::MatchAll } else if m.which == Builtin.RegExpPrototypeSearch { well_known::Search } else { well_known::Split };
+            if !add_own(heap, m.holder, Value.Symbol { s: s as u32 }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
+            continue;
+        }
         if m.which == Builtin.SymbolPrototypeDescription {
             let a = add_accessor(heap, Pair { get: object(fixed_rows() + j) });
             if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
@@ -1240,6 +1266,9 @@ fn build_realm(heap: Heap&) -> bool {
         || !add_own(heap, set_prototype_row(), key_named(heap, "keys"), object(realm_function_row(Builtin.SetPrototypeValues)), attr_writable() | attr_configurable())
         || !add_own(heap, map_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Map Iterator"), attr_configurable())
         || !add_own(heap, set_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Set Iterator"), attr_configurable()) { return false; }
+    // %RegExpStringIteratorPrototype%[@@toStringTag] (ECMAScript 22.2.9.2.2,
+    // light-cljs-937), configurable only.
+    if !add_own(heap, regexp_string_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "RegExp String Iterator"), attr_configurable()) { return false; }
     // %ArrayIteratorPrototype%[@@toStringTag] and %StringIteratorPrototype%[@@toStringTag].
     if !add_own(heap, array_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Array Iterator"), attr_configurable()) || !add_own(heap, string_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "String Iterator"), attr_configurable()) { return false; }
     // %GeneratorPrototype%[@@toStringTag] and %Promise.prototype%[@@toStringTag].
@@ -2516,7 +2545,10 @@ fn builtin_value(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> V
         RegExp, RegExpPrototypeFlags, RegExpPrototypeToString, RegExpPrototypeExec, RegExpPrototypeTest => { return unsupported_step(job, b, "called outside a native frame"); },
         // replace, replaceAll and @@replace (light-cljs-934) run as RegExp native frames too.
         StringPrototypeReplace, StringPrototypeReplaceAll, RegExpPrototypeReplace => { return unsupported_step(job, b, "called outside a native frame"); },
-        RegExpPrototypeMatch => { return unsupported_step(job, b, "matching (light-cljs-937)"); },
+        // match, matchAll, search and the symbol methods (light-cljs-937;
+        // regexp_symbols.goose) run as RegExp native frames too.
+        RegExpPrototypeMatch, StringPrototypeMatch, StringPrototypeMatchAll, StringPrototypeSearch, RegExpPrototypeMatchAll, RegExpPrototypeSearch, RegExpPrototypeSplit,
+        RegExpStringIteratorPrototypeNext => { return unsupported_step(job, b, "called outside a native frame"); },
         // Map and Set (light-cljs-943; collections.goose): a constructor
         // called is a TypeError (construct makes the object); the keyed
         // methods, the size getters and @@species are plain.

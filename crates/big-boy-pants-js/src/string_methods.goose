@@ -7,6 +7,8 @@ import .array_callbacks;
 import .array_methods;
 import .regexp_object;
 import .regexp_replace;
+import .regexp_symbols;
+import .collections;
 import .string_case;
 
 namespace source;
@@ -466,6 +468,10 @@ fn string_transform_step(job: Job&, f: Frame, b: Builtin) {
             let m = form_value(heap, job.operands.pop());
             if m.is_undefined() || m.is_null() { job.frames[at].pc = string_pc::SplitText; push_operand(job, f.receiver); return; }
             if !is_callable(heap, m) { type_error(job, "Symbol.split is not a function"); return; }
+            // The realm's @@split (light-cljs-937; regexp_symbols.goose)
+            // answers in this frame's place: its frame replaces this one,
+            // at the same operand base, as replace's @@replace does.
+            if f.input.is_object() && builtin_is(heap, m, Builtin.RegExpPrototypeSplit) { symbol_takeover(job, at, Builtin.RegExpPrototypeSplit, f.input, f.receiver, f.callee); return; }
             job.frames[at].pc = string_pc::SplitDelegate;
             call_accessor(job, m, f.input, [f.receiver, f.callee]);
         },

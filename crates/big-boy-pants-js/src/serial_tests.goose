@@ -1103,6 +1103,7 @@ fn main() {
     collection_iteration_checks();
     regexp_boundaries();
     regexp_replace_limits();
+    regexp_symbol_limits();
     key_enumeration();
     named_properties();
     heap_program::join(thread_spawn(realm_model, str(embed_file("../corpus/serial/calls.gsp"))));
@@ -1311,7 +1312,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-callback-methods.gsp"), embed_file("../corpus/serial/array-mutators.gsp"), embed_file("../corpus/serial/array-to-spliced.gsp"), embed_file("../corpus/serial/array-sort.gsp"), embed_file("../corpus/serial/array-copy.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/proxy-get.gsp"), embed_file("../corpus/serial/proxy-set-delete.gsp"), embed_file("../corpus/serial/proxy-traps.gsp"), embed_file("../corpus/serial/proxy-integrity.gsp"), embed_file("../corpus/serial/proxy-copy.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/regexp-replace.gsp"), embed_file("../corpus/serial/regexp-form-values.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp"),
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp"), embed_file("../corpus/serial/error-frames.gsp"), embed_file("../corpus/serial/define-property-frames.gsp"), embed_file("../corpus/serial/array-length-definition.gsp"), embed_file("../corpus/serial/integrity-levels.gsp"), embed_file("../corpus/serial/object-statics.gsp"), embed_file("../corpus/serial/number-conversions.gsp"), embed_file("../corpus/serial/symbols.gsp"), embed_file("../corpus/serial/regexp-construction.gsp"), embed_file("../corpus/serial/regexp-exec.gsp"), embed_file("../corpus/serial/regexp-replace.gsp"), embed_file("../corpus/serial/regexp-symbols.gsp"), embed_file("../corpus/serial/regexp-form-values.gsp"), embed_file("../corpus/serial/classes.gsp"), embed_file("../corpus/serial/derived-classes.gsp"), embed_file("../corpus/serial/private-elements.gsp"), embed_file("../corpus/serial/math-sum-precise.gsp"), embed_file("../corpus/serial/math-random.gsp"),
                   embed_file("../corpus/serial/map-set-construction.gsp"), embed_file("../corpus/serial/weak-collections.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
@@ -1759,6 +1760,50 @@ thread_fn regexp_image_rows(bytes: u8[]) {
     }
 }
 // Replacement's limits and ownership (light-cljs-934; regexp-replace-limits.js).
+// The symbol methods' limits and ownership (light-cljs-937;
+// regexp-symbol-limits.js): mode 0 bounded by its allowance alone (true),
+// mode 1 with 600,000 units of work left (WorkLimit, as replace's), and
+// image rows: a global RegExp's lastIndex reset and a live iterator's next
+// fault NativeBoundary, a plain RegExp matches and searches, a done
+// iterator answers.
+fn regexp_symbol_limits() {
+    let bytes = embed_file("../corpus/serial/regexp-symbol-limits.gsp");
+    heap_program::join(thread_spawn(replace_allowance, str(bytes)));
+    heap_program::join(thread_spawn(replace_work_limit, str(bytes), 1));
+    heap_program::join(thread_spawn(symbol_image_rows, str(bytes)));
+    print("serial source VM: the RegExp symbol methods past their allowance throw a catchable RangeError (execs, match strings, split pieces and captures), past the job's work WorkLimit; an image RegExp's lastIndex reset and an image iterator's next fault NativeBoundary");
+}
+// A later job's call of the image holder's `call` on its `argument` and
+// "xa": the string `expected`, the number 1 for neither, or with `detail`
+// NativeBoundary.
+struct SymbolProbe { call: u8[..8], argument: u8[..8], expected: u8[..8], detail: u8[..64] = "" }
+thread_fn symbol_image_rows(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var first = source::Job { heap: heap, writable_code: code };
+    let two: f64 = 2;
+    assert(source::start(first, source::closure(heap, 0, []), [source::number(two)]) && source::run(first, -1) == tiny::Outcome.Complete);
+    let holder = first.result; assert(source::retire(first));
+    let probes: SymbolProbe[5] = [
+        SymbolProbe { call: "match", argument: "plain", expected: "1:a" }, SymbolProbe { call: "search", argument: "plain", expected: "" },
+        SymbolProbe { call: "match", argument: "g", expected: "", detail: "write to an image row: lastIndex" },
+        SymbolProbe { call: "next", argument: "done", expected: "true" }, SymbolProbe { call: "next", argument: "live", expected: "", detail: "write to an image row: an iterator's position" },
+    ];
+    for p in probes {
+        let f = regexp_member(heap, holder, p.call); let a = regexp_member(heap, holder, p.argument);
+        var job = source::Job { heap: heap, owned_nodes: heap.nodes.len, writable_code: code };
+        assert(source::start(job, f, [a, source::text(heap, "xa")], holder));
+        let outcome = source::run(job, -1);
+        if p.detail.len > 0 {
+            var detail: u16[>..] = []; for c in p.detail { detail.push(c); }
+            assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary && job.detail[..] == detail[..]);
+        } else if p.expected.len > 0 { assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, p.expected)); }
+        else { assert(outcome == tiny::Outcome.Complete && job.result.is_number() && job.result.num() == 1); }
+        assert(source::retire(job));
+    }
+    let last = regexp_member(heap, regexp_member(heap, holder, "g"), "lastIndex"); assert(last.is_number() && last.num() == 0);
+}
 fn regexp_replace_limits() {
     let bytes = embed_file("../corpus/serial/regexp-replace-limits.gsp");
     heap_program::join(thread_spawn(replace_allowance, str(bytes)));
@@ -2054,6 +2099,17 @@ fn primitive_methods() {
     // result getters, `$<name>` through a groups getter, and replaceAll
     // over string patterns, at every budget cut.
     check(embed_file("../corpus/serial/regexp-replace.gsp"), "boolean:true");
+    // match, matchAll, search and split (light-cljs-937): a global @@match
+    // over a delegating exec whose empty matches convert lastIndex, a
+    // generic receiver's @@search, a matchAll iteration and a split over
+    // objects a species getter's constructor makes, whose exec, lastIndex
+    // reads and limit run user code, and many matches, iterators and
+    // pieces made and dropped, at every budget cut.
+    check(embed_file("../corpus/serial/regexp-symbols.gsp"), "boolean:true");
+    // and on a primitive regexp: the symbol method read from its prototype
+    // through a getter, called with the primitive and the receiver
+    // unconverted; the realm's method refusing it; a null one falling back.
+    check(embed_file("../corpus/serial/regexp-symbols-primitive.gsp"), "boolean:true");
     // Shareable regex values (light-cljs-935): __rt.formRegex's RegExp
     // matching, replacing and branded as any, its lastIndex fixed at 0
     // (writes of 0 accepted, others and freezing a TypeError, nothing

@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "dac0c2afa4ebd5d6cb428ae61ee56a9d70f693f7231a2883b986e543c9c5cbec",
+  "036b6645734dd03412b55e2704a330da2ce4406b3e8e2f0b5230e597bc1ba652",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -709,10 +709,22 @@
   "1c5e0eac6af69a11c7440935666d39ef74be9bc9ec1e4cbda0b20b6288153b15",
   "corpus/serial/regexp-replace.js"
   "12be2e198bf42bdc2bebdf8f181b7d8e7206804236c067fe81e568414bfd94c2",
+  "corpus/serial/regexp-symbol-limits.gsp"
+  "ea2d81694ac1a3111c458baa53f0dab27f0b94c9339cbaa8c54a742595946305",
+  "corpus/serial/regexp-symbol-limits.js"
+  "1ef1a498a2aa88623ec5140797f20839ba9334bedc02779923f8aa68d4d64869",
+  "corpus/serial/regexp-symbols-primitive.gsp"
+  "aabfe7df6d4a44628b8cc03fc1e037b84e5fb525c852e0adac4fd9f3caa3b437",
+  "corpus/serial/regexp-symbols-primitive.js"
+  "6f9cea71cce40a20b68b6340f0b2d03bbfd4d6aeda039bc02b4e25560e8d97f0",
+  "corpus/serial/regexp-symbols.gsp"
+  "65efea6b3977507495842cbf780efd3d04527aa029e23be7c368b4f033c0df92",
+  "corpus/serial/regexp-symbols.js"
+  "13ec07fbca1cf44a3f21ab7a7656fa9e0c6731a9da77fad3b2f17e68dadbde98",
   "corpus/serial/regexp-wait.gsp"
-  "2adc0858a6e6d69e7abd97e790094eec1117c34a4510bf80eac40c043e9e438d",
+  "1785e7c3e502a5336d8918a13cc1109091762ff797e7794c4d98a19df943cada",
   "corpus/serial/regexp-wait.js"
-  "b60049b70f0c0c924a9757062ed7f2247536e4b4b7c91392335522c68c62dc82",
+  "27475eec94c0391e61e37c04faa8a1afd81b8db538856d55c1a6c17bfaf18529",
   "corpus/serial/runtime-conversions.gsp"
   "96cb836dd1aecbef1b357bd029d487baed56d1187371a4bc02d0703521ff67f7",
   "corpus/serial/runtime-conversions.js"

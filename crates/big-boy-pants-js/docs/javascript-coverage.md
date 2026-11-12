@@ -797,6 +797,48 @@ function object, since IsRegExp reads it, whose call fails by name until
 light-cljs-770's matching children. A RegExp is a mutable JavaScript
 object: a publication or cell value that reaches one is refused.
 
+*As landed by light-cljs-937 (match, matchAll, search and the symbol
+methods):* String.prototype.match, matchAll and search,
+RegExp.prototype[@@match], [@@matchAll], [@@search] and [@@split], and
+%RegExpStringIteratorPrototype%.next are RegExp native frames
+(`src/regexp_symbols.goose`), as @@replace is: each phase awaits one value
+(a read, a conversion, a call or construction, a setter's return), a step
+chains at most 64 phases without JavaScript and ends after every built-in
+search and every element a split appends. The String methods read the
+symbol method (GetV, as V8 and the Pants engine do; QuickJS reads objects
+only), after matchAll's IsRegExp and "g" check, and otherwise convert the
+receiver and construct %RegExp% from the regexp (both oracles construct,
+rather than the specification's RegExpCreate, so a RegExp argument keeps
+its own source and flags) before invoking the method on it. The realm's own
+symbol method answers in the String frame's place (its frame replaces the
+String one at the same operand base), and String.prototype.split's @@split
+delegation (light-cljs-904) does the same for @@split. RegExpExec is
+@@replace's: a user `exec` (an object or null required) or the built-in
+search after ToLength(lastIndex). @@matchAll and @@split take
+SpeciesConstructor (`constructor`, then @@species) and construct the
+matcher or the sticky splitter through `construct`, so a species
+constructor, a bound function or a proxy runs as any construction does.
+Each operation has the Pants engine's 1,000,000-unit allowance (an exec a
+unit, each element @@match or @@split appends one and a string's units),
+past which the catchable
+RangeError "RegExp symbol work limit exceeded" (QuickJS has no such limit).
+A RegExp String Iterator is a `node_kind::Iterator` row of
+`iteration::RegExpString`: `value` its matcher, `namespace_value` its
+string, `length` its global and Unicode bits, both links dropped once done;
+%RegExpStringIteratorPrototype% is fixed row 51 (inheriting
+%IteratorPrototype%, with `next` and @@toStringTag), so every
+REALM_FUNCTIONS row moved up one. `next` on an iterator the job did not
+allocate faults NativeBoundary before it runs anything. Frames hold their
+state in frame fields and six registers at the operand base (the result,
+the exec result in use, split's cursors and capture counters), so in-job
+reclamation and saved continuations carry them as they carry any frame;
+snapshot validation (`symbols_frame_valid`, `iterator_valid`) checks each
+frame's phase for its built-in, its allowance, flag bits, string, limit,
+matcher or iterator, and split's cursors in the saved operands. Every
+RegExpCreate, matcher and splitter compiles its program at run time, as the
+specification's constructions do; the programs are job code rows the
+worker's reset truncates.
+
 *As landed by light-cljs-943 (Map and Set):* a Map or Set is one
 `node_kind::Collection` row (collections.goose), an ordinary object with
 internal slots: `length` its flavor (`collection::Map`, `collection::Set`;

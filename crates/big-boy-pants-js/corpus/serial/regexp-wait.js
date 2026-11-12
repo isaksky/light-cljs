@@ -13,8 +13,8 @@ function regexpWait(dep) {
   // and its flags conversion; exec's frame (light-cljs-933) in its
   // argument's conversion and its lastIndex's, test's in its argument's
   // conversion, its `exec` getter and a user exec; a run-time pattern and
-  // a literal follow the last wait. 16 waits; completes with REGEXP_RESULT
-  // there.
+  // a literal follow the last wait. 61 waits, the later frames' listed
+  // below; completes with REGEXP_RESULT there.
   let log = '';
   const literal = /a(b)?c/gi;
   literal.lastIndex = 3;
@@ -76,10 +76,61 @@ function regexpWait(dep) {
     return m;
   };
   const spaced = 'ab'.replace(empty, '.');
+  // match, matchAll, search and split (light-cljs-937): String's matchAll
+  // frame in IsRegExp's @@match read, `flags`, the @@matchAll getter, a
+  // user @@matchAll and its receiver's conversion; @@match's in its
+  // argument's conversion, `flags`, lastIndex's reset, a user exec, a
+  // result's "0", an empty match's lastIndex conversion and its write;
+  // @@search's lastIndex reads and writes and a result's `index`;
+  // @@matchAll's `constructor` and @@species getters, the species
+  // constructor, the lastIndex conversion and the matcher's lastIndex
+  // write; the iterator's next in its `exec` getter, a user exec, a
+  // result's "0", an empty match's lastIndex conversion and write; and
+  // @@split's limit conversion, the splitter's lastIndex writes and read,
+  // a result's `length` and a capture.
+  const lookalike = {
+    get [Symbol.match]() { log += 'a' + dep(); return true; },
+    get flags() { log += 'b' + dep(); return 'g'; },
+    get [Symbol.matchAll]() { log += 'd' + dep(); return function (s) { log += 'e' + dep(); return s.length; }; }
+  };
+  const delegated = 'xyz'.matchAll(lookalike);
+  const converted = [...String.prototype.matchAll.call({ toString() { log += 'h' + dep(); return 'abab'; } }, 'b')].map(m => m.index).join('');
+  let at = 0, calls = 0;
+  const matcher = {
+    get flags() { log += 'i' + dep(); return 'g'; },
+    set lastIndex(v) { log += 'j' + dep(); at = v; },
+    get lastIndex() { return { valueOf() { log += 'l' + dep(); return at; } }; },
+    exec(s) { log += 'n' + dep(); return calls++ < 1 ? { get 0() { log += 'o' + dep(); return ''; } } : null; }
+  };
+  const matched = RegExp.prototype[Symbol.match].call(matcher, { toString() { log += 'q' + dep(); return 'st'; } }).length;
+  let saved = 3;
+  const searcher = {
+    get lastIndex() { log += 'r' + dep(); return saved; }, set lastIndex(v) { log += 't' + dep(); saved = v; },
+    exec() { saved = 1; return { get index() { log += 'u' + dep(); return 2; } }; }
+  };
+  const searched = RegExp.prototype[Symbol.search].call(searcher, 'abc');
+  let position = 0, nexts = 0;
+  const Species = function (r, f) {
+    log += 'v' + dep();
+    Object.defineProperty(this, 'lastIndex', { get() { return { valueOf() { log += 'O' + dep(); return position; } }; }, set(v) { log += 'K' + dep(); position = v; } });
+    Object.defineProperty(this, 'exec', { get() { log += 'W' + dep(); return function (s) { log += 'w' + dep(); return nexts++ < 1 ? { get 0() { log += 'z' + dep(); return ''; }, index: position } : null; }; } });
+  };
+  const iterable = {
+    get constructor() { log += 'B' + dep(); return { get [Symbol.species]() { log += 'H' + dep(); return Species; } }; },
+    flags: 'g', lastIndex: { valueOf() { log += 'J' + dep(); return 1; } }
+  };
+  const step = RegExp.prototype[Symbol.matchAll].call(iterable, 'pq').next();
+  let cut = 0, splits = 0;
+  const splitter = {
+    set lastIndex(v) { log += 'Y' + dep(); cut = v; },
+    get lastIndex() { log += 'Z' + dep(); return cut + 1; },
+    exec(s) { return splits++ < 1 ? { get length() { log += '1' + dep(); return 2; }, get 1() { log += '2' + dep(); return 'C'; } } : null; }
+  };
+  const pieces = RegExp.prototype[Symbol.split].call({ constructor: { [Symbol.species]: function () { return splitter; } }, flags: '' }, 'ab', { valueOf() { log += '3' + dep(); return 5; } }).join('/');
   const later = new RegExp(called.source + '|' + literal.source, 'v');
   const again = /a(b)?c/gi;
   return log + ':' + [literal.source, literal.flags, literal.lastIndex, made.source, made.flags, called.source, called.flags,
     constructed.source, constructed.flags, Object.getPrototypeOf(constructed) === RegExp.prototype, flags, text, String(later),
     again !== literal && again.lastIndex === 0 && again.flags === 'gi', found === null && made.lastIndex === 0, digit.groups.d + digit.index + counted.lastIndex, tested, answers,
-    dashes, swapped, replaced, spaced].join();
+    dashes, swapped, replaced, spaced, delegated, converted, matched, searched, step.value.index + String(step.done) + position, pieces].join();
 }

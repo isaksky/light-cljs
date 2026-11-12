@@ -3166,7 +3166,7 @@ thread_fn runtime_eval_consumer(base: snapshot::Snapshot, wire: u8[]) {
     var valid = snapshot::Control {}; let finished = snapshot::capture(heap, roots, valid); assert(valid.error == snapshot::Error.None);
 }
 // RegExp objects across dependency waits (regexp-wait.js, light-cljs-942):
-// twenty-seven waits, wait w in a phase of one RegExp native frame
+// sixty-one waits, wait w in a phase of one RegExp native frame
 // (REGEXP_WAITS[w] at pc REGEXP_PCS[w]) while a literal's object and a
 // run-time pattern's, whose program is a job code row, stay live. Run in
 // place, collected at every wait; or by a worker over the fixture's image
@@ -3177,15 +3177,25 @@ thread_fn runtime_eval_consumer(base: snapshot::Snapshot, wire: u8[]) {
 // frame past its last phase, a RegExp row naming no program and a
 // run-time program whose op rows moved are refused. The matcher's frames
 // (exec and test, light-cljs-933; replace, replaceAll and @@replace,
-// light-cljs-934; the other symbol methods later) add their waits to the
-// fixture and to these tables.
-let REGEXP_WAITS: source::Builtin[27] = [
+// light-cljs-934; match, matchAll, search, split and the RegExp String
+// Iterator's next, light-cljs-937) add their waits to the fixture and to
+// these tables.
+let REGEXP_WAITS: source::Builtin[61] = [
     source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp, source::Builtin.RegExp,
     source::Builtin.RegExpPrototypeFlags, source::Builtin.RegExpPrototypeFlags, source::Builtin.RegExpPrototypeToString, source::Builtin.RegExpPrototypeToString,
     source::Builtin.RegExpPrototypeExec, source::Builtin.RegExpPrototypeExec, source::Builtin.RegExpPrototypeTest, source::Builtin.RegExpPrototypeTest, source::Builtin.RegExpPrototypeTest,
     source::Builtin.StringPrototypeReplaceAll, source::Builtin.StringPrototypeReplaceAll, source::Builtin.StringPrototypeReplaceAll, source::Builtin.StringPrototypeReplaceAll,
     source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace,
     source::Builtin.RegExpPrototypeReplace, source::Builtin.RegExpPrototypeReplace,
+    source::Builtin.StringPrototypeMatchAll, source::Builtin.StringPrototypeMatchAll, source::Builtin.StringPrototypeMatchAll, source::Builtin.StringPrototypeMatchAll, source::Builtin.StringPrototypeMatchAll,
+    source::Builtin.RegExpPrototypeMatch, source::Builtin.RegExpPrototypeMatch, source::Builtin.RegExpPrototypeMatch, source::Builtin.RegExpPrototypeMatch, source::Builtin.RegExpPrototypeMatch,
+    source::Builtin.RegExpPrototypeMatch, source::Builtin.RegExpPrototypeMatch, source::Builtin.RegExpPrototypeMatch,
+    source::Builtin.RegExpPrototypeSearch, source::Builtin.RegExpPrototypeSearch, source::Builtin.RegExpPrototypeSearch, source::Builtin.RegExpPrototypeSearch, source::Builtin.RegExpPrototypeSearch,
+    source::Builtin.RegExpPrototypeMatchAll, source::Builtin.RegExpPrototypeMatchAll, source::Builtin.RegExpPrototypeMatchAll, source::Builtin.RegExpPrototypeMatchAll, source::Builtin.RegExpPrototypeMatchAll,
+    source::Builtin.RegExpStringIteratorPrototypeNext, source::Builtin.RegExpStringIteratorPrototypeNext, source::Builtin.RegExpStringIteratorPrototypeNext, source::Builtin.RegExpStringIteratorPrototypeNext,
+    source::Builtin.RegExpStringIteratorPrototypeNext,
+    source::Builtin.RegExpPrototypeSplit, source::Builtin.RegExpPrototypeSplit, source::Builtin.RegExpPrototypeSplit, source::Builtin.RegExpPrototypeSplit, source::Builtin.RegExpPrototypeSplit,
+    source::Builtin.RegExpPrototypeSplit,
 ];
 // The constructor's phases (the identity rule's call, then
 // Reflect.construct with a newTarget whose `prototype` is a getter), the
@@ -3197,19 +3207,38 @@ let REGEXP_WAITS: source::Builtin[27] = [
 // replacer; @@replace's argument conversion, `flags` getter, user exec,
 // a result's `index` getter and a groups getter, then (from String's
 // replace, whose frame the realm's @@replace replaces) a replacer, and an
-// empty match's lastIndex conversion.
-let REGEXP_PCS: i64[27] = [
+// empty match's lastIndex conversion; String's matchAll in IsRegExp's
+// @@match, `flags` and @@matchAll getters, a user @@matchAll and its
+// receiver's conversion; a generic @@match in its argument's conversion,
+// `flags`, the lastIndex reset, a user exec, a result's "0", an empty
+// match's lastIndex conversion and write and the next exec; a generic
+// @@search in its lastIndex reads and writes and a result's `index`; a
+// generic @@matchAll in its `constructor` and @@species getters, the
+// species constructor, the lastIndex conversion and the matcher's
+// lastIndex setter; its iterator's next in the matcher's `exec` getter,
+// its exec, a result's "0" and an empty match's lastIndex conversion and
+// write; and a generic @@split in its limit's conversion, the splitter's
+// lastIndex setter and getter, a result's `length`, a capture and the next
+// position's lastIndex setter.
+let REGEXP_PCS: i64[61] = [
     regexp_pc::Match, regexp_pc::Constructor, regexp_pc::Source, regexp_pc::Flags, regexp_pc::PatternText, regexp_pc::FlagsText, regexp_pc::Prototype, 1, 7, 0, 1,
     exec_pc::Input, exec_pc::LastIndex, exec_pc::Input, exec_pc::Exec, exec_pc::Result,
     replace_pc::Match, replace_pc::Method, replace_pc::Search, replace_pc::Callback,
     symbol_pc::Input, symbol_pc::Flags, symbol_pc::ExecResult, symbol_pc::Position, symbol_pc::Named, symbol_pc::Callback, symbol_pc::Advance,
+    dispatch_pc::Match, dispatch_pc::Flags, dispatch_pc::Method, dispatch_pc::Delegate, dispatch_pc::Text,
+    sym_pc::Input, sym_pc::Flags, sym_pc::Reset, sym_pc::ExecResult, sym_pc::MatchText, sym_pc::Advance, sym_pc::AdvanceSet, sym_pc::ExecResult,
+    sym_pc::SearchSaved, sym_pc::SearchZero, sym_pc::SearchCurrent, sym_pc::SearchRestore, sym_pc::SearchIndex,
+    sym_pc::Constructor, sym_pc::Species, sym_pc::Created, sym_pc::CopyIndex, sym_pc::CopySet,
+    sym_pc::Exec, sym_pc::ExecResult, sym_pc::MatchText, sym_pc::Advance, sym_pc::AdvanceSet,
+    sym_pc::SplitLimit, sym_pc::SplitSet, sym_pc::SplitEnd, sym_pc::SplitLength, sym_pc::SplitCapture, sym_pc::SplitSet,
 ];
-let REGEXP_RESULT = "mDcDsDfDxDyDpDgDkDSDFDTDVDUDEDRDMDPDQDRDADGDXDIDNDCDLD:a(b)?c,gi,3,xy*,my,q+,gu,xy*,d,true,gy,/src/fl,/q+|a(b)?c/v,true,true,223,true,true/true,a+b,a[1n]b[2],xc,.a.b.";
-// A pc past every RegExp frame's last phase (@@replace's symbol_pc::Named).
-let REGEXP_PAST_PHASES: u32 = 18;
+let REGEXP_RESULT = "mDcDsDfDxDyDpDgDkDSDFDTDVDUDEDRDMDPDQDRDADGDXDIDNDCDLDaDbDdDeDhDqDiDjDnDoDlDjDnDrDtDrDtDuDBDHDvDJDKDWDwDzDODKD3DYDZD1D2DYD:a(b)?c,gi,3,xy*,my,q+,gu,xy*,d,true,gy,/src/fl,/q+|a(b)?c/v,true,true,223,true,true/true,a+b,a[1n]b[2],xc,.a.b.,3,13,1,2,1false2,/C/b";
+// A pc past every RegExp frame's last phase (@@split's sym_pc::SplitCapture).
+let REGEXP_PAST_PHASES: u32 = 25;
 // The programs the job compiles at run time: made's, called's,
-// constructed's and later's.
-let REGEXP_COMPILED: i64 = 4;
+// constructed's and later's, and (light-cljs-937) String matchAll's
+// RegExpCreate and the matcher @@matchAll constructs from it.
+let REGEXP_COMPILED: i64 = 6;
 fn regexp_saved_frames() {
     let bytes = embed_file("../corpus/serial/regexp-wait.gsp");
     heap_program::join(thread_spawn(regexp_wait_in_place, str(bytes)));
@@ -3218,7 +3247,7 @@ fn regexp_saved_frames() {
     var waits: i64 = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(regexp_wait_resumed, copy(base), copy(w), waits % 2 == 1)); waits += 1; }
     assert(waits == REGEXP_WAITS.len + 1);
-    print("snapshot regexp frames: the RegExp constructor's, flags getter's, toString's, exec's, test's, replaceAll's and @@replace's frames wait in every phase, collected in place or saved with literal and run-time programs and resumed without replay, restored or installed over a reused worker's image whose reset cuts the job's pattern rows");
+    print("snapshot regexp frames: the RegExp constructor's, flags getter's, toString's, exec's, test's, replaceAll's, @@replace's, matchAll's, @@match's, @@search's, @@matchAll's, its iterator's and @@split's frames wait in every phase, collected in place or saved with literal and run-time programs and resumed without replay, restored or installed over a reused worker's image whose reset cuts the job's pattern rows");
 }
 // The one RegExp native frame of a job at wait w, and the RegExp objects
 // it keeps: at least one of a literal's program and one of a run-time
@@ -3282,8 +3311,9 @@ thread_fn regexp_wait_first(base: snapshot::Snapshot) {
 // saved RegExp frame at a phase past its last (mode 0), a RegExp row
 // naming no program (1), a run-time program whose op rows moved (2), a
 // test frame in its lastIndex phase whose receiver is no RegExp (3), a
-// replacement frame whose allowance spent is no number (4) or a
-// replaceAll frame whose scan cursor is far past its string (5).
+// replacement or symbol frame whose allowance spent is no number (4), a
+// replaceAll frame whose scan cursor is far past its string (5) or a split
+// frame whose position is far past its string (6, light-cljs-937).
 fn regexp_wait_save(job: source::Job&, heap: source::Heap&, bindings: const snapshot::Binding[:], base: const snapshot::Snapshot&, w: i64) {
     collect_at_wait(job, heap);
     regexp_wait_frame(job, w);
@@ -3292,7 +3322,7 @@ fn regexp_wait_save(job: source::Job&, heap: source::Heap&, bindings: const snap
     let a = source::activation(heap, stack);
     var c = snapshot::Control {}; let image = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
     let service: i64[] = []; assert(snapshot::over_image(image, base, service) && image.patterns.len > base.patterns.len);
-    for mode in 6 {
+    for mode in 7 {
         var bad = copy(image); var changed = false;
         match mode {
             0 => {
@@ -3339,21 +3369,34 @@ fn regexp_wait_save(job: source::Job&, heap: source::Heap&, bindings: const snap
                 }
                 if !changed { assert(REGEXP_WAITS[w] != source::Builtin.StringPrototypeReplaceAll || REGEXP_PCS[w] != replace_pc::Callback); continue; }
             },
-            // A replace, replaceAll or @@replace frame (light-cljs-934)
-            // whose allowance spent is no number is refused.
+            // A split frame's next position (light-cljs-937) far past its
+            // string is refused.
+            6 => {
+                for i in a.frame_count {
+                    let row = a.frames + i;
+                    match image.conts[row] {
+                        Frame x => { match x.f.native { RegExp r => { if r.which == source::Builtin.RegExpPrototypeSplit { let at: i64 = a.values + a.locals + x.f.operand_base + sym_reg::Q; bad.values[at] = source::number(1 << 40); changed = true; } }, _ => {} } },
+                        _ => {},
+                    }
+                }
+                if !changed { assert(REGEXP_WAITS[w] != source::Builtin.RegExpPrototypeSplit); continue; }
+            },
+            // A replace, replaceAll or @@replace frame (light-cljs-934), or
+            // a symbol method's (light-cljs-937), whose allowance spent is
+            // no number is refused.
             _ => {
                 for i in a.frame_count {
                     let row = a.frames + i;
                     match image.conts[row] {
                         Frame x => {
                             var f = x.f;
-                            match f.native { RegExp r => { if source::replace_native(r.which) { f.output = source::Value.Undefined; changed = true; } }, _ => {} }
+                            match f.native { RegExp r => { if source::replace_native(r.which) || source::symbols_native(r.which) && !source::string_symbol(r.which) { f.output = source::Value.Undefined; changed = true; } }, _ => {} }
                             bad.conts[row] = source::Cont.Frame { f: f };
                         },
                         _ => {},
                     }
                 }
-                if !changed { assert(!source::replace_native(REGEXP_WAITS[w])); continue; }
+                if !changed { assert(!source::replace_native(REGEXP_WAITS[w]) && (!source::symbols_native(REGEXP_WAITS[w]) || source::string_symbol(REGEXP_WAITS[w]))); continue; }
             },
         }
         assert(changed);

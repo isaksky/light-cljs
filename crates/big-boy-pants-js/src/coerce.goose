@@ -101,7 +101,14 @@ namespace source;
 // replacement's conversion is conditional too, and every later conversion
 // (flags, lastIndex, each result's length, match, index and captures, a
 // replacer's result, a named group) follows a read or a call. Their frames
-// convert each in a phase of its own.
+// convert each in a phase of its own. String.prototype.match, matchAll and
+// search (light-cljs-937; regexp_symbols.goose) plan nothing for the same
+// reason as replace (their receiver's ToString follows the method lookup);
+// RegExp.prototype's @@match, @@matchAll, @@search and @@split check that
+// their receiver is an object before ToString of their argument, which a
+// plan would run first, and @@split's ToUint32 of its limit follows the
+// splitter's construction; the RegExp String Iterator's `next` takes no
+// argument.
 // Map and Set (light-cljs-943; collections.goose), and WeakMap and WeakSet
 // (light-cljs-945), plan nothing either:
 // their keyed methods take keys and values as they are (SameValueZero,

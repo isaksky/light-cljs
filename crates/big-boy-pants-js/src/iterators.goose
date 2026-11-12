@@ -69,6 +69,9 @@ let iteration::MapValues = 5;
 let iteration::MapEntries = 6;
 let iteration::SetValues = 7;
 let iteration::SetEntries = 8;
+// A RegExp String Iterator (light-cljs-937; regexp_symbols.goose): `value`
+// its matcher, `namespace_value` its string, `length` its flag bits.
+let iteration::RegExpString = 9;
 fn map_iteration(kind: i64) -> bool { return kind >= iteration::MapKeys && kind <= iteration::MapEntries; }
 fn set_iteration(kind: i64) -> bool { return kind == iteration::SetValues || kind == iteration::SetEntries; }
 // Whether b runs as a BuiltinIterator native frame.

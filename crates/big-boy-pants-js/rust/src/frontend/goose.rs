@@ -2963,6 +2963,25 @@ mod serial_tests {
             // each mode (serial_tests.goose regexp_boundaries); its limits
             // are Goose's and the Pants engine's.
             ("regexp-boundaries", "goose"),
+            // String.prototype.match, matchAll, search and split with
+            // RegExps and RegExp.prototype's @@match, @@matchAll, @@search
+            // and @@split (light-cljs-937): a delegating exec whose empty
+            // matches convert lastIndex, a generic @@search, a matchAll
+            // iteration and a split over species-made objects whose exec,
+            // lastIndex reads and construction run user code, at every
+            // budget cut and collection (serial_tests.goose).
+            ("regexp-symbols", "boolean:true"),
+            // and their limits: the Pants engine's allowance as a catchable
+            // RangeError, which Node does not share, the job's work limit,
+            // and an image RegExp's lastIndex reset and an image iterator's
+            // next faulting NativeBoundary, one run of each mode
+            // (serial_tests.goose regexp_symbol_limits).
+            ("regexp-symbol-limits", "goose"),
+            // and their dispatch on a primitive regexp: GetV from its
+            // prototype, as Node does, where QuickJS reads objects only and
+            // the Pants engine refuses definitions on its built-in
+            // prototypes (serial_tests.goose, at every budget cut).
+            ("regexp-symbols-primitive", "goose"),
             // Shareable regex values (light-cljs-935): __rt.formRegex's
             // RegExp, its fixed lastIndex and refused writes, identity
             // through RegExp(r) and refused patterns at every budget cut

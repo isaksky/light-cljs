@@ -8,6 +8,7 @@ import .runtime_compile;
 import .function_calls;
 import .regexp_match;
 import .regexp_replace;
+import .regexp_symbols;
 
 namespace source;
 
@@ -28,8 +29,8 @@ namespace source;
 // realm's template's shape (regexp_template_row). Each evaluation of a
 // literal makes a new object sharing the immutable program. exec and test
 // (light-cljs-933) are at the end of this file, the matcher in
-// regexp_match.goose; the symbol methods are light-cljs-770's later
-// children's: pending properties of RegExp.prototype.
+// regexp_match.goose; @@replace is in regexp_replace.goose (light-cljs-934)
+// and the other symbol methods in regexp_symbols.goose (light-cljs-937).
 //
 // The constructor (22.2.4.1) runs as a RegExp native frame (decision 4),
 // since IsRegExp, the pattern's `constructor`, `source` and `flags`,
@@ -76,8 +77,10 @@ fn regexp_accessor(b: Builtin) -> bool {
     return false;
 }
 // Whether built-in b runs as a RegExp native frame (native_start):
-// replace, replaceAll and @@replace too (light-cljs-934; regexp_replace.goose).
-fn regexp_native(b: Builtin) -> bool { return b == Builtin.RegExp || b == Builtin.RegExpPrototypeFlags || b == Builtin.RegExpPrototypeToString || regexp_matching(b) || replace_native(b); }
+// replace, replaceAll and @@replace too (light-cljs-934; regexp_replace.goose),
+// and match, matchAll, search, the other symbol methods and the RegExp
+// String Iterator's next (light-cljs-937; regexp_symbols.goose).
+fn regexp_native(b: Builtin) -> bool { return b == Builtin.RegExp || b == Builtin.RegExpPrototypeFlags || b == Builtin.RegExpPrototypeToString || regexp_matching(b) || replace_native(b) || symbols_native(b); }
 // Whether built-in b is RegExp.prototype.exec or test (light-cljs-933).
 inline fn regexp_matching(b: Builtin) -> bool { return b == Builtin.RegExpPrototypeExec || b == Builtin.RegExpPrototypeTest; }
 
@@ -260,6 +263,7 @@ fn start_regexp_native(job: Job&, b: Builtin, receiver: Value, args: const Value
     if b == Builtin.RegExp { start_regexp(job, args, base, Value.Undefined); return; }
     if regexp_matching(b) { start_exec(job, b, receiver, arg(args, 0), base); return; }
     if replace_native(b) { start_replace(job, b, receiver, args, base); return; }
+    if symbols_native(b) { start_symbols(job, b, receiver, args, base); return; }
     let heap .= job.heap;
     if !receiver.is_object() { type_error(job, if b == Builtin.RegExpPrototypeFlags { "RegExp.prototype.flags getter called on a non-object" } else { "RegExp.prototype.toString called on a non-object" }); return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
@@ -323,7 +327,7 @@ fn regexp_step(job: Job&, frame: Frame, b: Builtin) {
         RegExpPrototypeToString => { regexp_to_string_step(job, frame); },
         RegExpPrototypeExec, RegExpPrototypeTest => { exec_step(job, frame, b); },
         StringPrototypeReplace, StringPrototypeReplaceAll, RegExpPrototypeReplace => { replace_step(job, b); },
-        _ => { job.heap.fault = Fault.InvalidState; },
+        _ => { if symbols_native(b) { symbols_step(job, b); } else { job.heap.fault = Fault.InvalidState; } },
     }
 }
 fn regexp_constructor_step(job: Job&, frame: Frame) {

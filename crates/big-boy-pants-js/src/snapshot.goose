@@ -441,7 +441,15 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
 // The code units of string value v in the snapshot's tables, -1 for none.
 fn string_units<T>(s: const T&, v: source::Value) -> i64 { return if v.is_string() && v.sid() < s.strings.len { s.strings[v.sid()].len } else { -1 }; }
 fn iterator_valid<T>(s: const T&, n: const source::Node&) -> bool {
-    if n.count != 0 || n.start != 0 || n.function > iteration::SetEntries { return false; }
+    if n.count != 0 || n.start != 0 || n.function > iteration::RegExpString { return false; }
+    // A RegExp String Iterator (light-cljs-937, regexp_symbols.goose): its
+    // flag bits, and its matcher (any object) with its string, or once done
+    // neither.
+    if n.function == iteration::RegExpString {
+        if n.length > (symbol_flag::Global | symbol_flag::Unicode) { return false; }
+        if n.value.is_undefined() { return n.namespace_value.is_null(); }
+        return object_of(s, n.value, node_kind::None) && string_units(s, n.namespace_value) >= 0;
+    }
     if source::map_iteration(n.function) || source::set_iteration(n.function) {
         if !source::collection_position(n.namespace_value) || n.length != 0 { return false; }
         if n.value.is_undefined() { return true; }
@@ -577,6 +585,7 @@ fn same_collection_key<T>(s: const T&, a: source::Value, b: source::Value) -> bo
     };
 }
 fn regexp_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Builtin) -> bool {
+    if source::symbols_native(which) { return symbols_frame_valid(s, f, which); }
     if which == source::Builtin.RegExp {
         let proto = f.index & regexp_state::Prototype != 0;
         return f.pc >= regexp_pc::Match && f.pc <= regexp_pc::FlagsText && f.index >= 0 && f.index <= 15 && proto == (f.pc >= regexp_pc::PatternText)
@@ -619,6 +628,46 @@ fn regexp_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Buil
     if !object_of(s, f.receiver, node_kind::None) { return false; }
     if which == source::Builtin.RegExpPrototypeFlags { return f.pc >= 0 && f.pc < 8 && f.argument_count >= 0 && f.argument_count < (1 << f.pc); }
     return which == source::Builtin.RegExpPrototypeToString && (f.pc == 0 || f.pc == 1 && f.input.is_string());
+}
+// match, matchAll and search and the symbol methods (light-cljs-937,
+// regexp_symbols.goose). String's frame awaits one of its dispatch_pc::
+// phases: IsRegExp's and the flags' reads only for matchAll's object
+// regexp, from Created on its receiver the string, at Invoke the RegExp
+// made. A symbol frame awaits a sym_pc:: phase of its built-in on an object
+// (a RegExp where it matches with its program, at LastIndex) with its
+// allowance spent, its flag bits and, past its argument's conversion, its
+// string; matchAll's holds its matcher from CopyIndex on, split's its
+// limit (a whole number below 2^32 above the elements made) once
+// converted, next's its iterator. Its registers, being operands, its steps
+// check, and split's cursors also activation_valid.
+fn symbols_frame_valid<T>(s: const T&, f: source::SavedFrame, which: source::Builtin) -> bool {
+    if source::string_symbol(which) {
+        if f.pc > dispatch_pc::Invoke || f.pc <= dispatch_pc::Flags && (which != source::Builtin.StringPrototypeMatchAll || !object_of(s, f.input, node_kind::None)) { return false; }
+        if f.pc >= dispatch_pc::Created && string_units(s, f.receiver) < 0 || f.pc < dispatch_pc::Created && f.receiver.tag() <= value_tag::Null { return false; }
+        return f.pc != dispatch_pc::Invoke || object_of(s, f.callee, node_kind::None);
+    }
+    if !object_of(s, f.receiver, if f.pc == sym_pc::LastIndex { node_kind::RegExp } else { node_kind::None }) || !f.output.is_number() || f.index < 0 || f.index > (symbol_flag::Global | symbol_flag::Unicode) || f.argument_count < 0 { return false; }
+    if f.pc > sym_pc::Input && string_units(s, f.input) < 0 { return false; }
+    let exec = f.pc >= sym_pc::Exec && f.pc <= sym_pc::LastIndex;
+    let advance = f.pc >= sym_pc::MatchText && f.pc <= sym_pc::AdvanceSet;
+    let species = f.pc >= sym_pc::Constructor && f.pc <= sym_pc::Created;
+    match which {
+        RegExpPrototypeMatch => { return f.pc == sym_pc::Input || f.pc == sym_pc::Flags || f.pc == sym_pc::Reset || exec || advance; },
+        RegExpPrototypeSearch => { return f.pc == sym_pc::Input || exec || f.pc >= sym_pc::SearchSaved && f.pc <= sym_pc::SearchIndex; },
+        RegExpPrototypeMatchAll => { return f.pc <= sym_pc::Created || (f.pc == sym_pc::CopyIndex || f.pc == sym_pc::CopySet) && object_of(s, f.callee, node_kind::None); },
+        RegExpPrototypeSplit => {
+            if f.pc == sym_pc::Input || species || f.pc == sym_pc::SplitLimit { return true; }
+            if !exec && f.pc < sym_pc::SplitLoop || f.pc > sym_pc::SplitCapture { return false; }
+            let lim = f.callee;
+            return lim.is_number() && lim.num() >= 1 && lim.num() <= 4294967295.0 && trunc(lim.num()) == lim.num() && (f.argument_count as f64) < lim.num();
+        },
+        RegExpStringIteratorPrototypeNext => {
+            if !exec && !advance || !object_of(s, f.callee, node_kind::Iterator) { return false; }
+            let n = s.nodes[f.callee.id()];
+            return n.function == iteration::RegExpString && f.index == n.length;
+        },
+        _ => { return false; },
+    }
 }
 // A SumPrecise frame (light-cljs-901, math_object.goose) awaits one of its
 // values with its exact sum, an array of sum_layout::Size limbs and flags,
@@ -801,6 +850,22 @@ fn activation_valid<T>(s: const T&, a: source::Activation, c: Control&) -> bool 
                         if i + 1 != count { return reject(c, Error.Link); }
                         let cursor = s.values[a.values + locals + f.operand_base];
                         if !cursor.is_number() || !(cursor.num() >= 0 && cursor.num() <= f.index) || trunc(cursor.num()) != cursor.num() { return reject(c, Error.Link); }
+                    }
+                },
+                // A symbol frame (light-cljs-937) owns its registers; @@split's
+                // cursors p and q are whole numbers at most |S| once S is
+                // converted, with p <= q but while a result's captures are
+                // read (p has moved to the match's end, q follows after).
+                RegExp r => {
+                    if source::symbols_native(r.which) && !source::string_symbol(r.which) {
+                        let top: i64 = if i + 1 < count { match s.conts[a.frames + i + 1] { Frame y => y.f.operand_base, _ => 0 } } else { operands };
+                        if top < f.operand_base + source::sym_registers() { return reject(c, Error.Link); }
+                        if r.which == source::Builtin.RegExpPrototypeSplit {
+                            let p = s.values[a.values + locals + f.operand_base + sym_reg::P]; let q = s.values[a.values + locals + f.operand_base + sym_reg::Q];
+                            let capturing = f.pc == sym_pc::SplitLength || f.pc == sym_pc::SplitCapture;
+                            if !p.is_number() || !q.is_number() || !(p.num() >= 0 && q.num() >= 0) || !capturing && p.num() > q.num() || trunc(p.num()) != p.num() || trunc(q.num()) != q.num() { return reject(c, Error.Link); }
+                            if f.pc > sym_pc::Input && (p.num() > string_units(s, f.input) || q.num() > string_units(s, f.input)) { return reject(c, Error.Link); }
+                        }
                     }
                 },
                 _ => {},

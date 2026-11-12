@@ -193,14 +193,18 @@ fn replace_spend(job: Job&, at: i64, n: i64, job_work: bool = true) -> bool {
     let left = max_replace_work() - spent;
     if n > left && (!job_work || left <= heap.limits.work - heap.work) {
         if job_work && !charge(heap, left) { return false; }
-        return replace_limit(job);
+        return replace_limit(job, at);
     }
     if job_work && !charge(heap, n) { return false; }
     job.frames[at].output = number(spent + n);
     return true;
 }
-fn replace_limit(job: Job&) -> bool {
-    job.detail.clear(); for c in "string replacement work limit exceeded" { job.detail.push(c); }
+// The allowance's RangeError for the frame at `at`, worded as the Pants
+// engine words it: a replacement's, or the other symbol methods'
+// (light-cljs-937; regexp_symbols.goose).
+fn replace_limit(job: Job&, at: i64) -> bool {
+    let replacing = match job.frames[at].native { RegExp r => replace_native(r.which), _ => true };
+    job.detail.clear(); for c in (if replacing { "string replacement work limit exceeded" } else { "RegExp symbol work limit exceeded" }) { job.detail.push(c); }
     job.heap.fault = Fault.RangeError;
     return false;
 }
@@ -574,11 +578,14 @@ fn ask_last_index(job: Job&, b: Builtin, rx: Value) {
 }
 // Set(rx, "lastIndex", n, true): true when its setter now runs above the
 // frame; false when written, or with the fault.
-fn put_last_index(job: Job&, b: Builtin, rx: Value, n: f64) -> bool {
+fn put_last_index(job: Job&, b: Builtin, rx: Value, n: f64) -> bool { return put_last_index_value(job, b, rx, number(n)); }
+// Set(rx, "lastIndex", v, true) of any value v (@@search's restore,
+// light-cljs-937), as put_last_index.
+fn put_last_index_value(job: Job&, b: Builtin, rx: Value, v: Value) -> bool {
     let heap .= job.heap;
     let k = last_index_key(heap);
-    if template_layout(heap, rx) && writable(job, rx.id()) { node_mut(heap, rx.id()).slots[0] = number(n); record(job, rx, k, number(n)); return false; }
-    return set_or_throw(job, b, rx, k, number(n));
+    if template_layout(heap, rx) && writable(job, rx.id()) { node_mut(heap, rx.id()).slots[0] = v; record(job, rx, k, v); return false; }
+    return set_or_throw(job, b, rx, k, v);
 }
 // AdvanceStringIndex(S, i, unicode).
 fn advance_string_index(heap: const Heap&, s: Value, i: f64, unicode: bool) -> f64 {
@@ -739,7 +746,7 @@ fn symbol_render_phase(job: Job&, at: i64) -> bool {
             let len, done = length_value(job, b);
             if !done || heap.fault != Fault.None { return true; }
             let m = if len >= 1 { len - 1 } else { 0 };
-            if m > max_replace_work() { replace_limit(job); return true; }
+            if m > max_replace_work() { replace_limit(job, at); return true; }
             if !replace_spend(job, at, m as i64) { return true; }
             set_register(job, at, symbol_reg::Captures, m as i64);
             let k = index_key(heap, 0);
