@@ -34,6 +34,7 @@
  "range"
  "second-nth"
  "str"
+ "str-preds"
  "str-trim"
  "try-catch"
  "try-js-error"

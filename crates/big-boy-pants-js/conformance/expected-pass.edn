@@ -310,6 +310,7 @@
  "pants/quickjs_test_language_functions"
  "pants/quickjs_test_language_labels"
  "pants/quickjs_test_language_operators"
+ "pants/quickjs_test_language_parsing"
  "pants/quickjs_test_loop_statements"
  "pants/quickjs_test_loop_try_catch"
  "pants/regexp_indices"
