@@ -2393,7 +2393,13 @@ frame Values and operands, carried by reclamation and saved continuations;
 snapshot validation checks the added phases. `trimLeft` and `trimRight`
 share the `trimStart` and `trimEnd` function objects. The Annex B oracle
 slice uses defined HTML attributes because QuickJS rejects nullish ones;
-CreateHTML converts those values with ToString.
+CreateHTML converts those values with ToString. The 24 new function objects
+grew every prepared definition's copy of the image by 2.8 KB, past the 200k
+gate's 64 MiB budget for its 615 prepared definitions. Realm construction now
+also cuts each object's slot run, except the global object's, to the slots
+its properties use, and the runtime's boot sizes the `rt` and `core` runs for
+their fields: the image drops from 82.6 KB to 79.7 KB, below its size before
+this change.
 
 ## Decision 6: realm setup
 

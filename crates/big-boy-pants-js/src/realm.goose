@@ -1251,9 +1251,14 @@ fn build_realm(heap: Heap&) -> bool {
 }
 // Shape overflow growth leaves old slot runs behind while the realm is
 // built. Keep only the current runs before this immutable image is copied
-// into every prepared definition (light-cljs-903's 200k gate). Object rows,
-// shapes, properties, capacities and observable values keep their identity;
-// only these private slot offsets move. Realm nodes have no element runs.
+// into every prepared definition (light-cljs-903's 200k gate), each cut to
+// the slots its properties use (light-cljs-904): the doubling growth's spare
+// slots are a quarter of the realm's values, and a job cannot add to a realm
+// object it does not own (NativeBoundary); a job that owns the realm grows
+// a full run as usual. The global object keeps its spare slots, which the
+// runtime's boot and the compiler session fill. Object rows, shapes,
+// properties and observable values keep their identity; only these private
+// slot offsets and capacities change. Realm nodes have no element runs.
 fn compact_realm_slots(heap: Heap&) -> bool {
     if !charge(heap, heap.nodes.len + heap.values.len) { return false; }
     var live: Value[>..] = [];
@@ -1261,8 +1266,9 @@ fn compact_realm_slots(heap: Heap&) -> bool {
         assert(n.count == 0);
         if n.initialized || n.key_capacity == 0 { continue; }
         let start = live.len;
-        live.append(heap.values[n.keys..(n.keys + n.key_capacity)]);
-        node_mut(heap, row).keys = start as u32;
+        let kept: i64 = if row == global_row() { n.key_capacity } else { max(n.key_count - inline_slots(), 0) };
+        live.append(heap.values[n.keys..(n.keys + kept)]);
+        node_mut(heap, row).keys = start as u32; node_mut(heap, row).key_capacity = kept as u32;
     }
     heap.values.clear(); heap.values.append(live);
     return true;
@@ -1290,7 +1296,11 @@ fn link_constructor(heap: Heap&, c: i64, p: i64) -> bool {
 // leaves (RUNTIME_LEAVES): built once, in the image owner, after the realm.
 fn boot_runtime(heap: Heap&) -> Value {
     if heap.boot_count != 0 { heap.fault = Fault.InvalidState; return Value.Undefined; }
-    let rt = allocate(heap, Node { kind: node_kind::Object }); let core = allocate(heap, Node { kind: node_kind::Object });
+    // rt ("core" and its leaves) and core get overflow runs sized for the
+    // fields installed below, so the image keeps no runs that doubling growth
+    // abandoned (light-cljs-904, as compact_realm_slots for the realm).
+    var fields: i64[2] = [1, 0]; for leaf in RUNTIME_LEAVES { fields[if leaf.core { 1 } else { 0 }] += 1; }
+    let rt = sized_object(heap, fields[0]); let core = sized_object(heap, fields[1]);
     install_field(heap, rt, "core", core);
     install_field(heap, heap.global, "__lightNativeRuntime", rt);
     for leaf in RUNTIME_LEAVES {
@@ -1309,6 +1319,13 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, heap.global, "__lightCompilerProductTarget", target);
     if heap.fault == Fault.None { heap.boot_count += 1; }
     return rt;
+}
+// An ordinary object whose overflow run already holds `fields` properties.
+fn sized_object(heap: Heap&, fields: i64) -> Value {
+    let spilled = max(fields - inline_slots(), 0);
+    let at = add_values(heap, [], spilled);
+    if at < 0 { return Value.Undefined; }
+    return allocate(heap, Node { kind: node_kind::Object, keys: at as u32, key_capacity: spilled as u32 });
 }
 
 // The error type (ERROR_NAMES) a catchable fault raises.
