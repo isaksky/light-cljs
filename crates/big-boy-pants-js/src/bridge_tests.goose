@@ -443,6 +443,114 @@ thread_fn instant_literals() {
     let map = source::node(heap, mr[1].id()); assert(map.count == 2 && source::node(heap, source::slot(heap, map.start).id()).origin == 14 && source::form_value(heap, source::slot(heap, map.start + 1)).num() == 2);
     print("compiler form bridge: instants import as Dates of their time values and go back with them, invalid, cell, malformed and metadata-bearing ones refused, changed arguments lose their occurrence, equal ones merge");
 }
+// light-cljs-965: a hash-ordered map's key or set's member keeps the route
+// its hash had when the collection took it (source_vm.goose "Routes"), a
+// Date's, alone or in a vector, whose setter runs afterwards. Only a
+// collection with such a key carries routes; conj, assoc, disj, empty and
+// with-meta keep them in step; an imported collection's Dates walk at the
+// time values they came with; snapshots validate and restore routes, and a
+// collection inside the job relinks them.
+fn date_at(heap: source::Heap&, time: f64) -> source::Value { return source::allocate(heap, source::Node { kind: node_kind::Date, value: source::number(time), proto: source::object(source::date_prototype_row()) }); }
+// The place in its traversal order of the entry at run position `entry`.
+fn position(heap: source::Heap&, v: source::Value, entry: i64) -> i64 {
+    var order: i64[>..] = []; assert(source::traversal_order(heap, source::node(heap, v.id()), order));
+    for o, i in order { if o == entry { return i; } }
+    return -1;
+}
+fn routes_of(heap: const source::Heap&, v: source::Value) -> source::Value { return source::node(heap, v.id()).value; }
+thread_fn hash_routes() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, writable_code: code };
+    var members: source::Value[>..] = []; for i in [0, 2, 3, 4, 5, 6, 7, 8] { members.push(source::number(i)); }
+    let small = source::form_construct(heap, node_kind::Set, members[..]);
+    // A ninth member promotes; only a set with a Date takes routes: the
+    // Date's hash, its time value, at its run position.
+    let plain = source::form_conj(heap, small, source::number(1.0)); assert(order_of(heap, plain) == map_order::Hash && routes_of(heap, plain).is_undefined());
+    let d = date_at(heap, 1.0); let s = source::form_conj(heap, small, d);
+    let r = source::node(heap, routes_of(heap, s).id());
+    assert(r.kind == node_kind::Vector && r.count == 9 && source::slot(heap, r.start + 8).num() == 1 && source::slot(heap, r.start).is_undefined());
+    // Its setter moves no member: the Date stays second, where hash 1
+    // routed it, not last, where its hash now (9) would.
+    assert(source::set_date_value(job, d, 9.0) && position(heap, s, 8) == 1);
+    let now, ok = source::form_hash(heap, d); assert(ok && now == 9);
+    // conj, disj and with-meta keep the routes in step; disj of the Date
+    // drops them, and an empty set has none.
+    let more = source::form_conj(heap, s, source::number(10.0)); assert(source::node(heap, routes_of(heap, more).id()).count == 10 && position(heap, more, 8) == 1);
+    let fewer = source::form_remove(heap, s, source::number(4.0), true); assert(source::node(heap, routes_of(heap, fewer).id()).count == 8 && position(heap, fewer, 7) == 1);
+    let meta = source::exported_meta(heap, s, source::form_collection(heap, node_kind::Map, [source::number(1.0), source::number(2.0)])); assert(routes_of(heap, meta) == routes_of(heap, s));
+    let gone = source::form_remove(heap, s, d, true); assert(source::form_count(heap, gone) == 8 && routes_of(heap, gone).is_undefined());
+    // A later key that reaches a changed Date's leaf splits it: the Date
+    // keeps its first level (hash 1's) and takes hash 65's below, after 33.
+    let p = date_at(heap, 1.0); let ps = source::form_conj(heap, small, p);
+    assert(source::set_date_value(job, p, 65.0));
+    let split = source::form_conj(heap, ps, source::number(33.0)); let pr = source::slot(heap, source::node(heap, routes_of(heap, split).id()).start + 8);
+    assert(source::route_word(pr) == 65 && source::route_depth(pr) == 1 && position(heap, split, 8) == 2 && position(heap, split, 9) == 1);
+    // A removal merges no leaves up: once 33 has split hash 1's leaf and
+    // gone, 97 parts from the Date at the second level, so the Date, changed
+    // to 129, stays before it.
+    let q = date_at(heap, 1.0); let parted = source::form_remove(heap, source::form_conj(heap, source::form_conj(heap, small, q), source::number(33.0)), source::number(33.0), true);
+    assert(source::route_depth(source::slot(heap, source::node(heap, routes_of(heap, parted).id()).start + 8)) == 1 && source::set_date_value(job, q, 129.0));
+    let after = source::form_conj(heap, parted, source::number(97.0)); assert(position(heap, after, 8) == 1 && position(heap, after, 9) == 2);
+    // A changed Date that no longer hashes here (an own property) cannot
+    // split when a key reaches its leaf: that conj fails by name.
+    let o = date_at(heap, 1.0); let os = source::form_conj(heap, small, o);
+    assert(source::set_date_value(job, o, 65.0) && source::define_own(heap, o.id(), source::key_named(heap, "x"), source::number(1.0), source::attr_writable() | source::attr_configurable()));
+    assert(source::form_conj(heap, os, source::number(33.0)).is_undefined() && heap.fault == source::Fault.NativeBoundary); heap.fault = source::Fault.None;
+    assert(routes_of(heap, source::form_empty(heap, s)).is_undefined());
+    // A map: assoc's promotion takes a Date key's route and a replaced
+    // value keeps the routes row.
+    var pairs: source::Value[>..] = []; for i in [0, 2, 3, 4, 5, 6, 7, 8] { pairs.push(source::number(i)); pairs.push(source::nil()); }
+    let e = date_at(heap, 1.0); let m = source::form_assoc(heap, source::form_construct(heap, node_kind::Map, pairs[..]), e, source::nil());
+    assert(source::set_date_value(job, e, 9.0) && position(heap, m, 8) == 1);
+    let replaced = source::form_assoc(heap, m, e, source::boolean(true)); assert(routes_of(heap, replaced) == routes_of(heap, m) && position(heap, replaced, 8) == 1);
+    // A vector key holding a Date: hash 11 in its low five bits at time
+    // 2, after 7 and before 20, and still there at time 1000.
+    var twenty: source::Value[>..] = []; for i in [0, 2, 3, 4, 5, 6, 7, 20] { twenty.push(source::number(i)); }
+    let v = date_at(heap, 2.0); let holding = source::form_conj(heap, source::form_construct(heap, node_kind::Set, twenty[..]), source::form_collection(heap, node_kind::Vector, [v]));
+    assert(position(heap, holding, 8) == 7 && source::set_date_value(job, v, 1000.0) && position(heap, holding, 8) == 7);
+    // A key with a Date that does not hash here (it holds an atom) takes no
+    // route: a walk of its collection fails by name there instead.
+    let atom = source::allocate(heap, source::Node { kind: node_kind::Atom });
+    let changeable = source::form_collection(heap, node_kind::Vector, [d, atom]); let hk, hok = source::key_hash(heap, changeable);
+    assert(source::hash_may_change(heap, changeable) && !hok && heap.fault == source::Fault.None);
+    let unhashed = source::form_conj(heap, small, source::form_collection(heap, node_kind::Vector, [d, atom]));
+    var none: i64[>..] = []; assert(routes_of(heap, unhashed).is_undefined() && !source::traversal_order(heap, source::node(heap, unhashed.id()), none) && heap.fault == source::Fault.None);
+    // An imported set takes no routes: its Dates walk at the time values
+    // they came with (form_hash `imported`), whatever setters did since.
+    var imported: source::Value[>..] = []; transported(heap, [s], false, imported);
+    let id = source::slot(heap, source::node(heap, imported[0].id()).start + 1);
+    assert(source::node(heap, id.id()).kind == node_kind::Date && time_of(heap, id) == 9 && routes_of(heap, imported[0]).is_undefined());
+    assert(source::set_date_value(job, id, 1.0) && position(heap, imported[0], 1) == 8);
+    let changed, cok = source::form_hash(heap, id); let came, iok = source::form_hash(heap, id, 0, true); assert(cok && iok && changed == 1 && came == 9);
+    // Snapshots: routes are a vector of one u32 word or undefined per
+    // entry, on a hash-ordered collection only; they restore as captured.
+    var sc = snapshot::Control {}; let image = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: s }], sc); assert(sc.error == snapshot::Error.None);
+    var valid = snapshot::Control {}; assert(snapshot::validate(image, valid));
+    {
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+        assert(snapshot::restore(image, dest, target, roots, source::reserve_identity(), restore) && position(target, roots[0].value, 8) == 1);
+    }
+    let row = routes_of(heap, s).id();
+    for mode in 4 {
+        var bad = copy(image);
+        if mode == 0 { bad.nodes[s.id()].length = 0; } else if mode == 1 { bad.nodes[row].count = 8; } else if mode == 2 { bad.values[r.start + 8] = source::number(0.5); } else { bad.nodes[s.id()].value = source::number(1.0); }
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    // A collection inside a job moves a set and its routes past the
+    // garbage below them and relinks both.
+    let entry = source::closure(heap, 0, []);
+    var run = source::Job { heap: heap }; assert(source::start(run, entry, []));
+    for i in 8 { assert(source::allocate(heap, source::Node { kind: node_kind::Object }).is_object()); }
+    let late = date_at(heap, 1.0); let held = source::form_conj(heap, small, late);
+    assert(source::set_date_value(run, late, 9.0));
+    run.operands.push(held);
+    heap.reclaim = true; source::reclaim(run);
+    assert(heap.reclaims == 1 && heap.fault == source::Fault.None);
+    let moved = run.operands.pop(); assert(moved.id() < held.id() && routes_of(heap, moved).id() < held.id() && position(heap, moved, 8) == 1);
+    source::retire(run);
+    print("compiler form bridge: hash-ordered keys keep their routes through Date setters, updates, imports, snapshots and collection");
+}
 thread_fn primitive_fallback() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
@@ -570,7 +678,7 @@ fn direct_update_boundaries() {
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
     heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(plain_form_operations)); heap_program::join(thread_spawn(seal_operations)); heap_program::join(thread_spawn(struct_hash_budget)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
-    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(regex_literals)); heap_program::join(thread_spawn(instant_literals)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
+    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(regex_literals)); heap_program::join(thread_spawn(instant_literals)); heap_program::join(thread_spawn(hash_routes)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
 // light-cljs-817: the compiler sends a source's identity and byte length, no

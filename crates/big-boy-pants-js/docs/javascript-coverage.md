@@ -1056,6 +1056,50 @@ and setFromArray compare Dates by valueOf. A narrowed environment that
 holds an instant is sent whole, as one holding a regex is. The other
 compiler literals (`#uuid`, `#queue`, `#js`) stay light-cljs-929's.
 
+*As landed by light-cljs-965 (hash routes):* the V8 build's hash map or
+set keeps each entry where its key's hash routed it when the collection
+took the key (inserted, promoted or decoded it) and walks those routes
+without hashing again, as ClojureScript's trie does; Goose sorted by each
+key's hash at walk time, so a Date key (or a vector or other collection
+key holding one) whose setter ran afterwards printed, seqed and went back
+to the compiler in another place. A Date is the only value whose hash
+changes after it is taken, so only a key that reaches one keeps a route
+(`hash_may_change`; each collection or record it looks into is a unit of
+work). A hash-ordered map's or set's node `value` is then its routes: a
+vector row whose run holds, per entry in run order, such a key's route (a
+Number: the u32 word whose five-bit chunks, low first, are its leaf's trie
+path, and above it the leaf's depth, 0 to 6, or 7 in a collision node), or
+undefined for a key whose hash cannot change (or did not hash then); a
+collection without such a key has none, so the common case adds no rows
+and no hashing. The routes follow the V8 build's trie leaves: a collection
+that takes its keys at once (`form_ordered`, the promotion past 8 entries)
+takes each such key's hash now and the least depth that tells it from the
+others; a key added later (an assoc or conj onto a hash-ordered
+collection) that reaches a changed key's leaf splits it as hashNodeAssoc
+does (the old key keeps its path to its depth and takes its current hash
+below, a collection or record key the hash the V8 build cached when it was
+taken, and both settle where they part; a Date that no longer hashes here
+fails the update by name; nil sits beside the trie and splits nothing);
+dissoc and disj keep the kept
+entries' routes and depths (removal merges no leaves up) and drop the
+vector with the last Date key; an assoc that replaces a value keeps the
+key's route; empty has none; with-meta shares them. The form bridge's
+import takes no routes: an imported collection's keys hash at walk time
+with every imported Date at the time value it came with (its
+`namespace_value`, light-cljs-963; `form_hash`'s `imported`), which is the
+hash the import took, and the first collection a job derives from it
+(an added key, dissoc, disj, with-meta, a replaced value) gives those
+Dates routes at their least depths first. The vector is an
+ordinary row, so the job's truncation, snapshots (which check its layout),
+reclamation and continuations carry it through `value` with no new link;
+a cell value or publication never holds a Date, so none carries routes.
+Not reproduced: a node that expands past 16 slots into an array node
+moves its leaves one level down and rehashes changed keys for the levels
+below (a transient's capacity times that), and a split that runs past a
+hash's seven chunks, where JavaScript's shifts wrap (both
+light-cljs-967); lookups of changed keys, which the V8 build's trie
+misses, are light-cljs-966.
+
 *As landed by light-cljs-885 (Symbol values):* a symbol a job makes is a
 row of the node table, `node_kind::JsSymbol` (its description, a string or
 undefined; whether Symbol.for registered it; and the symbol registered
