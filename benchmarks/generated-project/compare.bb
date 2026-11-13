@@ -11,7 +11,7 @@
             [clojure.edn]
             [clojure.string :as str]))
 
-(def usage "Usage: bb compare.bb PROJECT-DIR --light BINARY [--runs N] [--warm-jvm N] [--leaf FILE] [--light-only] [--backend v8|goose|all --runner R --phase P --workers W --compiler-slots S --also-light LABEL=BINARY[,goose][,runner=R]]")
+(def usage "Usage: bb compare.bb PROJECT-DIR --light BINARY [--runs N] [--warm-jvm N] [--leaf FILE] [--light-only] [--backend v8|goose|all --runner R --phase P --workers W --compiler-slots S --v8-jobs J --also-light LABEL=BINARY[,goose][,runner=R]]")
 
 (defn parse-also-light
   "LABEL=BINARY, optionally followed by ,goose (that binary runs only Goose cells,
@@ -36,6 +36,7 @@
       "--runner" (recur (rest more) (assoc options :runner (str (fs/absolutize (first more)))))
       "--workers" (recur (rest more) (assoc options :workers (mapv parse-long (str/split (first more) #","))))
       "--compiler-slots" (recur (rest more) (assoc options :compiler-slots (mapv parse-long (str/split (or (first more) "") #","))))
+      "--v8-jobs" (recur (rest more) (assoc options :v8-jobs (mapv parse-long (str/split (or (first more) "") #","))))
       "--also-light" (recur (rest more) (update options :also-light (fnil conj []) (parse-also-light (first more))))
       "--timeout-ms" (recur (rest more) (assoc options :timeout-ms (parse-long (first more))))
       "--light-only" (recur more (assoc options :light-only true))
@@ -310,9 +311,19 @@
      :engines {:v8-platform 0 :v8-isolates 0 :quickjs-runtimes 0 :pants-runtimes 0}
      :trace-scope "bounded early protocol prefix (4096 rows); final JOBS/TRIM/THREADS/CLOSED replace prefix rows; session cost counters cover all jobs"}))
 
-(defn comparison-cells [{:keys [backend workers compiler-slots also-light]}]
-  (let [primary (vec (concat (when (#{"v8" "all"} backend) [{:backend "v8" :workers 1}])
-                            (when (#{"goose" "all"} backend) (map #(hash-map :backend "goose" :workers %) workers))))]
+(defn comparison-cells [{:keys [backend workers compiler-slots v8-jobs also-light]}]
+  (let [v8? (#{"v8" "all"} backend)
+        goose? (#{"goose" "all"} backend)
+        primary (if v8-jobs
+                  ;; V8 at each --jobs count (one isolate per compiler slot), each
+                  ;; placed right before the Goose cell of the same count.
+                  (vec (for [n (sort (distinct (concat (when v8? v8-jobs) (when goose? workers))))
+                             cell [(when (and v8? (some #{n} v8-jobs)) {:backend "v8" :workers 1 :compiler-slots n})
+                                   (when (and goose? (some #{n} workers)) {:backend "goose" :workers n})]
+                             :when cell]
+                         cell))
+                  (vec (concat (when v8? [{:backend "v8" :workers 1}])
+                               (when goose? (map #(hash-map :backend "goose" :workers %) workers)))))]
     (vec (for [cell (if compiler-slots
                       (for [slots compiler-slots cell primary] (assoc cell :compiler-slots slots))
                       primary)
@@ -331,7 +342,7 @@
     (#{"cached" "leaf"} phase) (into ["--cache-dir" (str (fs/path dir "macro-v8-cache"))])
     (not (#{"cached" "leaf"} phase)) (conj "--no-cache")))
 
-(defn macro-main [{:keys [dir light runner backend workers compiler-slots also-light phase runs timeout-ms leaf] :as opts}]
+(defn macro-main [{:keys [dir light runner backend workers compiler-slots v8-jobs also-light phase runs timeout-ms leaf] :as opts}]
   (assert (#{"v8" "goose" "all"} backend))
   (assert (#{"check" "measure" "instrument" "cached" "leaf" "leaf-uncached"} phase))
   (assert (and (pos? runs) (or (not= phase "measure") (>= runs 5))))
@@ -341,6 +352,10 @@
   (assert (apply distinct? "primary" (map :label also-light)) "--also-light labels must be distinct")
   (assert (or (empty? also-light) (not (#{"cached" "leaf" "leaf-uncached"} phase)))
           "--also-light shares one cache/leaf edit; use it with check, measure or instrument")
+  (when v8-jobs
+    (assert (not compiler-slots) "--v8-jobs and --compiler-slots are separate designs; pass one")
+    (assert (and (seq v8-jobs) (apply distinct? v8-jobs) (every? #(and (integer? %) (pos? %)) v8-jobs))
+            "--v8-jobs requires distinct positive integers"))
   (when compiler-slots
     (assert (and (seq compiler-slots) (= (count compiler-slots) (count (distinct compiler-slots)))
                  (every? #(and (integer? %) (pos? %)) compiler-slots))
@@ -358,7 +373,8 @@
                             "LIGHT_CLJS_MACRO_PROBE" "GOOSE_BENCH_INSTRUMENT" "LIGHT_V8_STATS"
                             "GENERATED_COMPARE_TREE" "GOOSE_GENERATED_USAGE" "GOOSE_GENERATED_PROTOCOL"
                             "LIGHT_CLJS_NAMESPACE_WORKERS" "LIGHT_CLJS_FRESH_UNIT_ISOLATES" "LIGHT_CLJS_WAIT_TIMELINE"])
-        results (fs/path dir (str "macro-" phase (when compiler-slots (str "-slots-" (str/join "-" compiler-slots)))))
+        results (fs/path dir (str "macro-" phase (when compiler-slots (str "-slots-" (str/join "-" compiler-slots)))
+                                  (when v8-jobs (str "-v8-jobs-" (str/join "-" v8-jobs)))))
         _ (fs/create-dirs results)
         evidence (fs/path results "samples.edn")
         _ (assert (not (fs/exists? evidence)) (str "Preserve existing samples: " evidence))

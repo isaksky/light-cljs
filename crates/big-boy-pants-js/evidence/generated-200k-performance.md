@@ -1,5 +1,10 @@
 # Generated 200k end-to-end performance
 
+> **Read with [generated-200k-v8-jobs.md](generated-200k-v8-jobs.md).** Every
+> table below runs V8 at `--jobs 1` against Goose at N jobs. V8 at `--jobs N`
+> is parallel too, and in the November 12 check run it was faster than Goose
+> at every equal job count.
+
 November 4, 2026 UTC. **The integrated bridge optimization improves Goose wall
 and CPU time; V8 still wins every full-project cell.** The final five-round
 comparison gives Goose4 **9.516 s versus V8's 6.319 s**, 1.51× the wall time
