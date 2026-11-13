@@ -1154,8 +1154,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if !poll(c) { return false; }
         if n.kind < node_kind::Object || n.kind > node_kind::Date { return reject(c, Error.Unsupported); }
         // A Date (light-cljs-940, source::node_kind::Date) holds a time value
-        // TimeClip gives and no element run.
-        if n.kind == node_kind::Date && (!n.value.is_number() || !source::valid_time_value(n.value.num()) || n.count != 0 || n.start != 0 || n.length != 0 || n.function != 0 || !n.namespace_value.is_null()) { return reject(c, Error.Link); }
+        // TimeClip gives and no element run; one the form bridge imported
+        // (light-cljs-963) also the time value it came with.
+        if n.kind == node_kind::Date && (!n.value.is_number() || !source::valid_time_value(n.value.num()) || n.count != 0 || n.start != 0 || n.length != 0 || n.function != 0 || !n.namespace_value.is_null() && !(n.namespace_value.is_number() && source::valid_time_value(n.namespace_value.num()))) { return reject(c, Error.Link); }
         // A RegExp (light-cljs-932, source::node_kind::RegExp) names a compiled
         // program of the code's and holds its pattern text, a string, and
         // no element run.

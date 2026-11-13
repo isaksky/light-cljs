@@ -132,7 +132,8 @@ mod form_tag {
     pub const CELL: u32 = 10;
     /// A compiler literal (light-cljs-935): its [`literal_tag`] in the
     /// node's number and its payload its one child. A regex's payload is
-    /// the string `(?flags)source`, the V8 build's compilerFormBridge text.
+    /// the string `(?flags)source`, the V8 build's compilerFormBridge text;
+    /// an instant's (light-cljs-963) is the number of its time value.
     pub const LITERAL: u32 = 11;
     /// Every tag, with its Goose name.
     #[cfg(test)]
@@ -173,15 +174,38 @@ mod form_tag {
 /// light-cljs-929 adds the other [`crate::compiler_data::CompilerLiteralKind`]s.
 mod literal_tag {
     pub const REGEX: u32 = 0;
+    /// A Date (light-cljs-963): its payload a number, the time value.
+    pub const INSTANT: u32 = 1;
     /// Every descriptor, with its Goose name.
     #[cfg(test)]
-    pub const NAMED: [(&str, u32); 1] = [("Regex", REGEX)];
+    pub const NAMED: [(&str, u32); 2] = [("Regex", REGEX), ("Instant", INSTANT)];
 }
 /// The descriptor of a compiler literal kind the graph carries.
 fn literal_tag_of(kind: CompilerLiteralKind) -> Option<u32> {
     match kind {
         CompilerLiteralKind::Regex => Some(literal_tag::REGEX),
+        CompilerLiteralKind::Instant => Some(literal_tag::INSTANT),
         _ => None,
+    }
+}
+/// The kind of a compiler literal descriptor, and whether `payload` is the
+/// payload it carries: a regex's a string, an instant's a number.
+fn literal_kind_of(tag: f64) -> Option<CompilerLiteralKind> {
+    if tag == literal_tag::REGEX as f64 {
+        Some(CompilerLiteralKind::Regex)
+    } else if tag == literal_tag::INSTANT as f64 {
+        Some(CompilerLiteralKind::Instant)
+    } else {
+        None
+    }
+}
+fn literal_payload(kind: CompilerLiteralKind, payload: &Datum) -> bool {
+    match kind {
+        CompilerLiteralKind::Regex => matches!(payload.kind(), DatumKind::String(_)),
+        CompilerLiteralKind::Instant => {
+            matches!(payload.kind(), DatumKind::Integer(_) | DatumKind::Double(_))
+        }
+        _ => false,
     }
 }
 fn bad() -> EvalError {
@@ -339,7 +363,30 @@ fn compatible(
         // as the V8 build's form bridge does, the escaped source and its
         // flags in dgimsuy order, which may not be the reader's spelling;
         // its occurrence names it, and the reader's literal is restored.
-        (CompilerLiteral { kind: a, .. }, CompilerLiteral { kind: b, .. }) => a == b,
+        (
+            CompilerLiteral {
+                kind: CompilerLiteralKind::Regex,
+                ..
+            },
+            CompilerLiteral {
+                kind: CompilerLiteralKind::Regex,
+                ..
+            },
+        ) => true,
+        // An instant the call sent (light-cljs-963) keeps its time value:
+        // Goose sends a Date with its occurrence only while its time value
+        // is the one it came with (form_bridge.goose export_rows), as the
+        // V8 build's bridge restores an argument only when it is unchanged.
+        (
+            CompilerLiteral {
+                kind: CompilerLiteralKind::Instant,
+                payload: a,
+            },
+            CompilerLiteral {
+                kind: CompilerLiteralKind::Instant,
+                payload: b,
+            },
+        ) => compatible(a, b, c, depth + 1, limits)?,
         _ => false,
     };
     if !same {
@@ -429,7 +476,7 @@ fn merge_entries(
 }
 /// A class for [`merge_entries`]: data equal by [`run_time_equal`] have
 /// equal classes (numbers by value with -0 as 0, lists and vectors alike by
-/// their children's classes, maps and sets by kind).
+/// their children's classes, maps and sets by kind, instants by time value).
 fn run_time_class(d: &Datum, c: &Budget) -> Result<u64, EvalError> {
     use std::hash::{Hash, Hasher};
     c.check()?;
@@ -454,6 +501,10 @@ fn run_time_class(d: &Datum, c: &Budget) -> Result<u64, EvalError> {
             CollectionKind::Map => 7u8.hash(&mut h),
             _ => 8u8.hash(&mut h),
         },
+        DatumKind::CompilerLiteral { .. } => match instant_time(d) {
+            Some(t) => (10u8, t.to_bits()).hash(&mut h),
+            None => 9u8.hash(&mut h),
+        },
         _ => 9u8.hash(&mut h),
     }
     Ok(h.finish())
@@ -465,13 +516,32 @@ fn number(d: &Datum) -> Option<f64> {
         _ => None,
     }
 }
+/// The time value of the Date an instant's payload makes in Goose
+/// (form_bridge.goose instant_time) and in the V8 build (`new Date(payload)`):
+/// TimeClip of the number, NaN beyond ±8.64e15, +0 for -0 (light-cljs-963).
+fn instant_time(d: &Datum) -> Option<f64> {
+    let DatumKind::CompilerLiteral {
+        kind: CompilerLiteralKind::Instant,
+        payload,
+    } = d.kind()
+    else {
+        return None;
+    };
+    let t = number(payload)?;
+    Some(if t.abs() <= 8.64e15 {
+        t.trunc() + 0.
+    } else {
+        f64::NAN
+    })
+}
 /// Whether two of a compiler form's data are equal at run time, as Goose's
 /// form bridge compares them (form_bridge.goose graph_equal) and
 /// ClojureScript's `=` does once the V8 build decodes them: nil, booleans
 /// and numbers by value (an integer and a double alike), strings, symbols
 /// and keywords by their text, lists and vectors by their children in order
 /// (a list equals a vector), maps and sets by their merged entries: the
-/// same count and each key, then its value, found in the other's.
+/// same count and each key, then its value, found in the other's; instants
+/// by their time values.
 fn run_time_equal(
     a: &Datum,
     b: &Datum,
@@ -485,6 +555,11 @@ fn run_time_equal(
         return Err(EvalError("Goose conversion limit exceeded".into()));
     }
     if let (Some(x), Some(y)) = (number(a), number(b)) {
+        return Ok(x == y);
+    }
+    // Two instants by their Dates' time values, an invalid one equal to
+    // none, as structuralEqualPair compares Dates (light-cljs-963).
+    if let (Some(x), Some(y)) = (instant_time(a), instant_time(b)) {
         return Ok(x == y);
     }
     Ok(match (a.kind(), b.kind()) {
@@ -588,10 +663,10 @@ fn tag(d: &Datum) -> Result<u32, EvalError> {
             CollectionKind::Set => form_tag::SET,
             _ => return Err(bad()),
         },
-        // A regex literal (light-cljs-935), whose payload is a string.
+        // A regex literal (light-cljs-935), whose payload is a string, or
+        // an instant (light-cljs-963), whose payload is a number.
         DatumKind::CompilerLiteral { kind, payload }
-            if literal_tag_of(*kind).is_some()
-                && matches!(payload.kind(), DatumKind::String(_)) =>
+            if literal_tag_of(*kind).is_some() && literal_payload(*kind, payload) =>
         {
             form_tag::LITERAL
         }
@@ -688,7 +763,7 @@ impl Graph {
                 self.children.extend(ids);
             }
             DatumKind::CompilerLiteral { kind, payload } => {
-                // Goose keeps no metadata on the RegExp it makes.
+                // Goose keeps no metadata on the RegExp or Date it makes.
                 if d.metadata().is_some() {
                     return Err(bad());
                 }
@@ -780,7 +855,9 @@ impl Graph {
             // text, at most the payload's units. Goose compiles its pattern
             // before the import (form_bridge.goose compile_literals) and
             // refuses one that does not compile, which an omission cannot
-            // tell, so an environment that holds one is sent whole.
+            // tell, so an environment that holds one is sent whole; so is
+            // one that holds an instant (light-cljs-963), as any compiler
+            // literal.
             DatumKind::CompilerLiteral { payload, .. } => {
                 self.omitted_refused = true;
                 self.omit(payload, depth + 1, limits, c)?;
@@ -1259,11 +1336,12 @@ impl Graph {
         // Validate every edge, including unreachable nodes, before recursive conversion.
         for n in &g.nodes {
             // A cell reference never comes back; a compiler literal is a
-            // regex (light-cljs-935), its one child a string, no metadata.
+            // regex (light-cljs-935) or an instant (light-cljs-963), its one
+            // child its payload, no metadata.
             if n.tag > form_tag::LITERAL
                 || n.tag == form_tag::CELL
                 || n.tag == form_tag::LITERAL
-                    && (n.number != literal_tag::REGEX as f64
+                    && (literal_kind_of(n.number).is_none()
                         || n.fields[1] != 1
                         || n.fields[4] != -1)
                 || n.fields[4] < -1
@@ -1450,20 +1528,22 @@ impl Graph {
                             children: children.into(),
                         }
                     }
-                    // A regex (light-cljs-935): its payload, a string
-                    // (decode checked the descriptor and the child count).
+                    // A regex (light-cljs-935): its payload, a string; an
+                    // instant (light-cljs-963): its payload, a finite
+                    // number, as the V8 build's bridge refuses an invalid
+                    // Date (decode checked the descriptor and the child
+                    // count).
                     form_tag::LITERAL => {
+                        let kind = literal_kind_of(n.number).ok_or_else(bad)?;
                         let child = self.g.segment(&self.g.children, f[0], f[1])?[0] as usize;
                         let payload = self.visit(child, depth + 1)?;
-                        if !matches!(payload.kind(), DatumKind::String(_))
+                        if !literal_payload(kind, &payload)
+                            || matches!(payload.kind(), DatumKind::Double(v) if !v.is_finite())
                             || payload.metadata().is_some()
                         {
                             return Err(bad());
                         }
-                        DatumKind::CompilerLiteral {
-                            kind: CompilerLiteralKind::Regex,
-                            payload,
-                        }
+                        DatumKind::CompilerLiteral { kind, payload }
                     }
                     _ => return Err(bad()),
                 };
@@ -1493,7 +1573,9 @@ impl Graph {
                     // RegExp, which no write changes, writes its payload as
                     // the V8 build's form bridge writes a RegExp's (the
                     // escaped `source`, `a/b` as `a\/b`, and its flags in
-                    // dgimsuy order), not as the reader spelled it.
+                    // dgimsuy order), not as the reader spelled it. So is
+                    // an instant the call sent (light-cljs-963), whose
+                    // time value `compatible` found unchanged.
                     let restored = matches!(
                         (d.kind(), original.data.kind()),
                         (DatumKind::Collection { children: a, .. }, DatumKind::Collection { children: b, .. })
@@ -2038,6 +2120,123 @@ mod tests {
         ] {
             assert!(returned(runs).is_err(), "{runs:?}");
         }
+    }
+    /// An `#inst` reader literal goes to Goose as an instant compiler
+    /// literal (literal_tag::INSTANT) whose payload is its time value, and
+    /// comes back as the reader's literal while its time value stays; a
+    /// changed time value under the same occurrence, a non-finite payload
+    /// and a string payload are malformed; a new instant decodes as one; a
+    /// set whose two instants Goose merged by time value restores the
+    /// reader's set (light-cljs-963).
+    #[test]
+    fn goose_compiler_bridge_carries_instants() {
+        use crate::compiler_reader::{NamespaceView, read_form};
+        let source = crate::compiler_data::Source::new(
+            "instant.cljs",
+            r#"(m #inst "2020-01-01" #{#inst "2020-01-01T00:00:00Z" #inst "2020"})"#,
+        );
+        let call = read_form(&source, &NamespaceView::new("fixture.core", &source))
+            .unwrap()
+            .unwrap();
+        let origin = || ExpansionOrigin {
+            macro_name: Name::new(None, "m"),
+            call: call.span(),
+            definition: None,
+            helpers: vec![],
+        };
+        let limits = ConversionLimits::default();
+        let control = ExecutionControl::new(&Default::default()).unwrap();
+        let budget = || Budget::new(limits.nodes, control.clone());
+        let stored = [super::super::Stored::Form(call.clone(), limits)];
+        let g = Graph::arguments(&stored, limits, &budget()).unwrap();
+        let child = |g: &Graph, node: usize, i: usize| {
+            g.children[g.nodes[node].fields[0] as usize + i] as usize
+        };
+        let literal = child(&g, g.roots[0] as usize, 1);
+        let set = child(&g, g.roots[0] as usize, 2);
+        let payload = child(&g, literal, 0);
+        assert_eq!(
+            (
+                g.nodes[literal].tag,
+                g.nodes[literal].number,
+                g.nodes[literal].fields[1]
+            ),
+            (form_tag::LITERAL, literal_tag::INSTANT as f64, 1)
+        );
+        assert_eq!(
+            (g.nodes[payload].tag, g.nodes[payload].number),
+            (form_tag::NUMBER, 1577836800000.)
+        );
+        // `edit` changes a new conversion of the call (the same node
+        // numbers), whose root becomes `root`.
+        let returned = |root: usize, edit: &dyn Fn(&mut Graph)| {
+            let mut g = Graph::arguments(&stored, limits, &budget()).unwrap();
+            edit(&mut g);
+            g.roots = vec![root as u32];
+            let decoded = Graph::decode(&g.encode().unwrap(), &g.originals, limits, &budget())?;
+            decoded.expansion(&call, origin(), &g.originals, limits, &budget())
+        };
+        let kept = returned(literal, &|_| {}).unwrap();
+        assert!(kept.data().value_eq(&call.children()[1].data()));
+        assert_eq!(kept.span().bytes(), call.children()[1].span().bytes());
+        // Goose sends a payload without an occurrence (form_bridge.goose
+        // export_rows), so the literal's own checks decide: under its
+        // occurrence the same time value is the reader's literal and a
+        // changed one is refused (`compatible`); a new instant whose payload
+        // is not a finite number is malformed.
+        let bare = |g: &mut Graph| g.nodes[payload].fields[5] = -1;
+        let same = returned(literal, &bare).unwrap();
+        assert!(same.data().value_eq(&call.children()[1].data()));
+        assert!(
+            returned(literal, &|g| {
+                bare(g);
+                g.nodes[payload].number = 0.;
+            })
+            .is_err()
+        );
+        let new = |g: &mut Graph| {
+            bare(g);
+            g.nodes[literal].fields[5] = -1;
+        };
+        for number in [f64::NAN, f64::INFINITY] {
+            assert!(
+                returned(literal, &|g| {
+                    new(g);
+                    g.nodes[payload].number = number;
+                })
+                .is_err(),
+                "{number}"
+            );
+        }
+        assert!(
+            returned(literal, &|g| {
+                new(g);
+                g.nodes[payload].tag = form_tag::STRING;
+                g.nodes[payload].fields[0] = 0;
+                g.nodes[payload].fields[1] = 0;
+            })
+            .is_err()
+        );
+        // A new instant: no occurrence, on the literal or its payload.
+        let fresh = returned(literal, &|g| {
+            g.nodes[literal].fields[5] = -1;
+            g.nodes[payload].fields[5] = -1;
+            g.nodes[payload].number = 0.;
+        })
+        .unwrap();
+        let data = fresh.data();
+        let DatumKind::CompilerLiteral {
+            kind: CompilerLiteralKind::Instant,
+            payload: time,
+        } = data.kind()
+        else {
+            panic!("not an instant: {data:?}")
+        };
+        assert!(matches!(time.kind(), DatumKind::Double(t) if *t == 0.));
+        // The set's two instants have one time value: Goose's merge keeps the first.
+        let merged = returned(set, &|g| g.nodes[set].fields[1] = 1).unwrap();
+        assert!(merged.data().value_eq(&call.children()[2].data()));
+        assert!(returned(set, &|g| g.nodes[set].fields[1] = 0).is_err());
     }
     #[test]
     fn goose_compiler_bridge_rejects_truncations_and_unreachable_cycles() {

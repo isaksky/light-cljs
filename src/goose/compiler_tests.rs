@@ -3829,6 +3829,60 @@ fn goose_compiler_regexes_match_v8() {
     }
 }
 
+/// Dates in macro results and arguments (light-cljs-963): a Date a macro
+/// returns crosses as the V8 build's form bridge encodes it, an instant
+/// compiler literal whose payload is its time value, and an `#inst`
+/// argument arrives as a Date that reads, prints and compares as V8's does
+/// and goes back as the reader's literal while its time value is the one
+/// it came with (also once setters changed and restored it); one whose
+/// time value changed goes back as a new instant, and so does every
+/// argument collection that holds it (its unchanged parts as the reader's,
+/// a hash map or set in its traversal order), as the V8 build restores
+/// only unchanged arguments; two `#inst` members of one time value merge as
+/// the V8 build's setFromArray merges them.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_instants_match_v8() {
+    for source in [
+        r#"(defmacro m [] (js/Date. 0)) (def x (m))"#,
+        r#"(defmacro m [] [(js/Date. 1577836800000) {:d (js/Date. -86400000)} 1]) (def x (m))"#,
+        r#"(defmacro m [d] d) (def x (m #inst "2020-01-01")) (def y (m #inst "1969-12-31T23:59:59.999-00:00"))"#,
+        r#"(defmacro m [d] [(.getTime d) (instance? js/Date d) (pr-str d) (= d (js/Date. 1577836800000)) (.toISOString d)]) (def x (m #inst "2020-01-01"))"#,
+        r#"(defmacro m [d] (do (.setTime d 0) d)) (def x (m #inst "2020-01-01"))"#,
+        r#"(defmacro m [d] (do (.setTime d 1577836800000) [d d])) (def x (m #inst "2020-01-01"))"#,
+        r#"(defmacro m [v] (do (.setTime (first v) 0) v)) (def x (m [#inst "2020-01-01" [1 #inst "2021"]]))"#,
+        r#"(defmacro m [v] (do (.setTime (:d v) 0) [v (:e v)])) (def x (m {:d #inst "2020-01-01" :e [#inst "2021"]}))"#,
+        r#"(defmacro m [v] (do (.setTime (first v) 0) (.setTime (first v) 1577836800000) v)) (def x (m [#inst "2020-01-01"]))"#,
+        r#"(defmacro m [v] (do (.setTime (:a v) 0) v)) (def x (m {:a #inst "2020-01-01" :b 1 :c 2 :d 3 :e 4 :f 5 :g 6 :h 7 :i 8 :j 9}))"#,
+        r#"(defmacro m [s] (do (.setTime (get s (js/Date. 1577836800000)) 0) s)) (def x (m #{#inst "2020-01-01" :b :c :d :e :f :g :h :i :j}))"#,
+        r#"(defmacro m [v] (do (.setTime (get v 9) 0) v)) (def x (m {9 #inst "2020" 8 8 7 7 6 6 5 5 4 4 3 3 2 2 1 1}))"#,
+        r#"(defmacro m [d] (do (.setTime d 0) (.setTime d 1577836800000) d)) (def x (m #inst "2020-01-01"))"#,
+        r#"(defmacro m [s] [(count s) (count (conj s (js/Date. 1577836800000)))]) (def x (m #{#inst "2020-01-01" #inst "2020"}))"#,
+        r#"(defmacro m [] `(do ~(js/Date. 5))) (def x (m))"#,
+    ] {
+        source_matches_v8(source, None);
+    }
+    // A set argument whose two `#inst` members Goose merged, its Date
+    // changed and restored, goes back as the reader wrote it on both builds
+    // (V8 restores the unchanged argument), which the analyzer then refuses
+    // for its duplicate member.
+    let source = r#"(defmacro m [s] (let [d (get s (js/Date. 1577836800000))] (.setTime d 0) (.setTime d 1577836800000) s)) (def x (m #{#inst "2020-01-01" #inst "2020"}))"#;
+    let reference = crate::compile_with_macros(source, &mut crate::MacroHost::new())
+        .unwrap_err()
+        .to_string();
+    assert!(reference.contains("duplicate set member"), "{reference}");
+    assert_eq!(goose_compile(source, None).unwrap_err(), reference);
+    // An invalid Date in a result fails by name on both builds.
+    let source = r#"(defmacro m [] [(js/Date. js/NaN)]) (def x (m))"#;
+    let reference = crate::compile_with_macros(source, &mut crate::MacroHost::new())
+        .unwrap_err()
+        .to_string();
+    assert!(reference.contains("invalid instant"), "{reference}");
+    let error = goose_compile(source, None).unwrap_err();
+    assert!(error.contains("bridge-Error.Unsupported"), "{error}");
+}
+
 /// Shareable regex values in process-wide state (light-cljs-935): a
 /// regex kept in an atom and read by later jobs is one identity
 /// (compare-and-set! by identity holds, a job's two reads are one object),

@@ -157,6 +157,7 @@
  {:id "satisfies-instance", :body "[(satisfies? ISeq '(1)) (instance? js/Error (js/Error. \"x\"))]"}
  {:id "edn-read", :body "(cljs.reader/read-string \"{:a [1 2]}\")", :requires [cljs.reader]}
  {:id "date-now", :body "(number? (js/Date.now))"}
+ {:id "inst-result", :body "[(js/Date. 1577836800000) #inst \"1970-01-02\"]"}
  {:id "regex-js", :body "(.test (js/RegExp. \"a+\") \"caat\")"}
  {:id "string-builder", :body "(let [sb (goog.string.StringBuffer.)] (.append sb \"a\") (str sb))", :requires [goog.string], :v8-refuses "goog is not defined: macro code has no Closure Library"}
  {:id "type-of", :body "[(type 1) (= (type \"s\") js/String)]", :v8-refuses "a function in a macro's result is not a form (type returns a constructor)"}

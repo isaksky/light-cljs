@@ -1023,8 +1023,38 @@ printer writes the V8 build's printHost `#inst "...-00:00"` (an invalid
 Date's RangeError). The V8 build calls `valueOf` and `toISOString` there,
 so Goose reads the slot only for a Date without own properties whose
 prototype is %Date.prototype% (`intrinsic_date`); another Date fails by
-name. The form bridge still refuses a Date (an unsupported object); its
-`instant` compiler literal is light-cljs-963's.
+name.
+
+*As landed by light-cljs-963 (Dates across the form bridge):* a Date
+crosses as the V8 build's compilerFormBridge encodes it, a compiler literal
+(form_tag::Literal) of descriptor `literal_tag::Instant` (1; Rust
+`literal_tag::INSTANT`) whose one child is the Number of its time value.
+Export reads the slot alone, as the V8 build's intrinsic getTime does, so
+own properties and another prototype do not matter; an invalid Date (NaN)
+is Unsupported, the V8 build's "invalid instant", as is a Date in a cell
+value or publication (cells.goose refuses it as `date-unshareable` first).
+Import makes a Date of the payload TimeClipped with %Date.prototype%, the
+V8 build's `new Date(payload)`, keeping the literal's compiler occurrence
+in `origin` and the time value it came with in `namespace_value` (Null
+for any other Date; snapshot.goose accepts a time value there). Export
+decides by the final time value, as the V8 build's bridge restores an
+argument only when its canonical data is unchanged (the compiler's
+`compatible` checks the payload): equal, the Date goes back with its
+occurrence and the compiler restores the reader's literal, also after
+setters changed and restored it; different, as a new instant with the
+call's span. An argument's collections are immutable, so one that reaches
+(by children or metadata) an instant without an occurrence holds a
+changed Date: export drops its occurrence too (form_bridge.goose
+`changed_occurrences`, run only for a graph with such an instant), and it
+goes back as a new form with the call's span (a hash-ordered map or set
+in its traversal order, as the V8 build walks it), its unchanged parts
+still as the reader's, where the compiler would otherwise refuse an
+occurrence whose data changed. Map keys and set members that
+are instants of one time value merge on import (graph_equal and key_class;
+the compiler's run_time_equal and run_time_class agree), as mapFromArray
+and setFromArray compare Dates by valueOf. A narrowed environment that
+holds an instant is sent whole, as one holding a regex is. The other
+compiler literals (`#uuid`, `#queue`, `#js`) stay light-cljs-929's.
 
 *As landed by light-cljs-885 (Symbol values):* a symbol a job makes is a
 row of the node table, `node_kind::JsSymbol` (its description, a string or

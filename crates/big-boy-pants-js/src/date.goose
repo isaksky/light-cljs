@@ -21,7 +21,11 @@ namespace source;
 // its own properties in a shape or records, as a Map does, and no element
 // run. Setting the slot is not a property write: a frozen Date's time value
 // changes; one in a row the job did not allocate faults NativeBoundary
-// before it changes (decision 3).
+// before it changes (decision 3). A Date the form bridge made from a
+// compiler instant (light-cljs-963) keeps that instant's occurrence in
+// `origin` and its time value in `namespace_value` (Null for any other
+// Date), so that export sends it back as the compiler's form only while
+// the two time values are equal (form_bridge.goose).
 //
 // Time arithmetic (MakeTime, MakeDay, MakeDate, TimeClip, the fields of a
 // time value) is plain Goose over f64 and i64 in the specification's

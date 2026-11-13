@@ -1270,8 +1270,10 @@ edge, opaque compiler origin token, source index and byte span. `-1` denotes a
 new expansion origin, resolved by the caller's current macro identity; imported
 origin tokens are copied without value-based interning. Reader integer spelling
 is separate from runtime Number payloads. Nil, booleans, Numbers, strings,
-symbols, keywords, lists, vectors, maps and sets are supported; compiler literal
-payloads and mutable/executable objects reject explicitly.
+symbols, keywords, lists, vectors, maps and sets are supported, and so are
+compiler literals of two kinds: a regex (a RegExp, light-cljs-935) and an
+instant (a Date, light-cljs-963, by its time value); the other compiler
+literal kinds and other mutable/executable objects reject explicitly.
 
 Import prevalidates every node/metadata edge, all ranges and IDs, cycles,
 longest DAG paths, node/depth/byte/work limits and cancellation before changing

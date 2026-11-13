@@ -66,12 +66,32 @@ let form_tag::Cell = 10;
 // result, shareable or not, goes back as one; a global or sticky one is
 // refused. Never in a cell value or publication (Control.cells), which
 // carries a RegExp by the callable transport, and with no metadata, which
-// a RegExp does not keep. light-cljs-929 adds its other descriptors.
+// a RegExp does not keep. An instant's (literal_tag::Instant,
+// light-cljs-963; its payload the Number of its time value, the V8 build's
+// `dateTime(v)`) is a new Date (date.goose) of that time value TimeClipped,
+// as the V8 build's `new Date(payload)`; any Date in a result goes back as
+// one, by its [[DateValue]] alone (own properties and prototype play no
+// part, as the V8 build's intrinsic getTime reads it), and an invalid one
+// is refused, as the V8 build's "invalid instant". An imported Date keeps
+// its compiler occurrence and the time value it came with
+// (namespace_value); while its time value is that one it goes back as the
+// compiler's form, otherwise as a new form, and so does each of the
+// argument's collections that holds it (changed_occurrences), as the V8
+// build's bridge compares an argument's final canonical data with what it
+// sent. Never in a cell value or publication either: a Date is mutable
+// (cells.goose refuses it as `date-unshareable` first). light-cljs-929
+// adds the other descriptors.
 let form_tag::Literal = 11;
 // A compiler literal's descriptor (Form.number): compiler_bridge.rs names
 // the same numbers (literal_tag::REGEX ..), and form_tags_match_the_goose_names
 // keeps the two equal.
 let literal_tag::Regex = 0;
+let literal_tag::Instant = 1;
+// The payload tag a known literal descriptor carries: a regex's text, an
+// instant's time value; -1 for any other descriptor.
+inline fn payload_tag(descriptor: f64) -> i64 {
+    return if descriptor == literal_tag::Regex { form_tag::String } else if descriptor == literal_tag::Instant { form_tag::Number } else { -1 };
+}
 // List, vector, map or set: a node with children.
 inline fn collection(tag: i64) -> bool { return tag >= form_tag::List && tag <= form_tag::Set; }
 // A collection or a compiler literal: a node with child edges.
@@ -149,7 +169,7 @@ fn validate_graph(g: const Graph&, c: Control&, sets: i64[>..]&, record: bool) -
     for n in g.nodes {
         if !poll(c) { return false; }
         if n.tag == form_tag::Cell && (!c.cells || n.number < 0 || n.number > 2147483647 || n.number != (n.number as i64) || n.count < 0 || n.count > 2 || n.metadata >= 0) { return reject(c, Error.Unsupported); }
-        if n.tag == form_tag::Literal && (c.cells || n.number != literal_tag::Regex || n.metadata >= 0) { return reject(c, Error.Unsupported); }
+        if n.tag == form_tag::Literal && (c.cells || payload_tag(n.number) < 0 || n.metadata >= 0) { return reject(c, Error.Unsupported); }
         if n.tag == form_tag::Literal && (n.count != 1 || !range(n.start, n.count, g.children.len)) { return reject(c); }
         if n.tag < form_tag::Nil || n.tag > form_tag::Literal || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
         if n.source >= 0 && !range(n.span_start, n.span_end - n.span_start, g.sources[n.source].count) { return reject(c); }
@@ -199,8 +219,8 @@ fn validate_graph(g: const Graph&, c: Control&, sets: i64[>..]&, record: bool) -
                 if n.metadata >= 0 { height = max(height, 1 + heights[n.metadata]); }
                 if linked(n.tag) { for i in n.count { if !poll(c) { return false; } height = max(height, 1 + heights[g.children[n.start + i]]); } }
                 if height > c.depth { return reject(c, Error.Depth); }
-                // A regex literal's payload is a string.
-                if n.tag == form_tag::Literal && g.nodes[g.children[n.start]].tag != form_tag::String { return reject(c); }
+                // A regex literal's payload is a string, an instant's a number.
+                if n.tag == form_tag::Literal && g.nodes[g.children[n.start]].tag != payload_tag(n.number) { return reject(c); }
                 heights[w.id] = height; states[w.id] = 2; stack.pop();
                 if record && (n.tag == form_tag::Map || n.tag == form_tag::Set) { sets.push(w.id); }
             }
@@ -307,14 +327,15 @@ fn units_hash(units: const u16[:]) -> u64 { var h: u64 = 0; for u in units { h =
 // them once imported) have equal classes, and most unequal ones differ:
 // numbers by number_hash (1 and 1.0, 0 and -0 meet), text by its units,
 // lists and vectors (equal to each other) by their children in order, maps
-// and sets by their merged entries in any order. A collection's class is
-// kept, so a shared subgraph is hashed once; nesting is the graph's height,
-// which validate bounds.
+// and sets by their merged entries in any order, instants by their time
+// values. A collection's class is kept, so a shared subgraph is hashed once;
+// nesting is the graph's height, which validate bounds.
 recursive fn key_class(g: const Graph&, m: Merging&, id: i64) -> u64 {
     let n = g.nodes[id];
     if n.tag == form_tag::Nil { return 1; }
     if n.tag == form_tag::Boolean { return if n.number != 0 { 2 } else { 3 }; }
     if n.tag == form_tag::Number { let h: u64 = source::number_hash(n.number); return (4 << 32) | h; }
+    if n.tag == form_tag::Literal && n.number == literal_tag::Instant { let h: u64 = source::number_hash(instant_time(g, n)); return (12 << 32) | h; }
     if n.tag == form_tag::String { return (5 << 32) | units_hash(g.units[n.start..(n.start + n.count)]); }
     if named(n.tag) {
         let space: u64 = if n.ns_count < 0 { 4294967295 } else { units_hash(g.units[n.ns_start..(n.ns_start + n.ns_count)]) };
@@ -338,7 +359,10 @@ fn same_units(g: const Graph&, a_start: i64, a_count: i64, b_start: i64, b_count
 // and keywords by their text, lists and vectors by their children in
 // order (a list equals a vector), maps and sets by their merged runs: the
 // same count and each key, then its value, found in the other's, the first
-// equal key's value. Metadata does not count. A step is a poll.
+// equal key's value; instants by the time values of the Dates they import
+// as (an invalid one equals none), as structuralEqualPair compares two
+// Dates' valueOf (light-cljs-963); two regexes never. Metadata does not
+// count. A step is a poll.
 recursive fn graph_equal(g: const Graph&, m: Merging&, a: i64, b: i64, c: Control&) -> bool {
     if !poll(c) { return false; }
     if a == b { return true; }
@@ -349,6 +373,7 @@ recursive fn graph_equal(g: const Graph&, m: Merging&, a: i64, b: i64, c: Contro
     if x.tag == form_tag::Boolean || x.tag == form_tag::Number { return x.number == y.number; }
     if x.tag == form_tag::String { return same_units(g, x.start, x.count, y.start, y.count); }
     if named(x.tag) { return same_units(g, x.start, x.count, y.start, y.count) && (x.ns_count < 0 && y.ns_count < 0 || x.ns_count >= 0 && y.ns_count >= 0 && same_units(g, x.ns_start, x.ns_count, y.ns_start, y.ns_count)); }
+    if x.tag == form_tag::Literal { return x.number == literal_tag::Instant && y.number == literal_tag::Instant && instant_time(g, x) == instant_time(g, y); }
     if !collection(x.tag) { return false; }
     let count = run_count(g, m, a);
     if count != run_count(g, m, b) { return false; }
@@ -439,21 +464,26 @@ fn payload_split(text: const u16[:]) -> i64 {
     return if at < text.len && text[at] == 41 { at + 1 } else { 0 };
 }
 inline fn prefix_flag(u: u16) -> bool { return u == 100 || u == 103 || u == 105 || u == 109 || u == 115 || u == 117 || u == 120 || u == 121; }
+// The time value of the Date that instant literal node n (validated)
+// imports as: its payload's Number TimeClipped (date.goose time_clip), as
+// the V8 build's `new Date(payload)` makes it (light-cljs-963).
+fn instant_time(g: const Graph&, n: Form) -> f64 { return source::time_clip(g.nodes[g.children[n.start]].number); }
 // The programs of graph g's regex literals (light-cljs-935), compiled into
 // the job's code before import_graph installs a row: programs[i] the
-// Code.patterns row of literal node i, -1 for any other node, and none at
-// all for a graph without literals. A pattern that does not compile (an
-// `x` flag JavaScript lacks, an invalid pattern) refuses the graph as
-// Unsupported, its fault cleared and its message in the job's detail. A
-// malformed literal compiles nothing: validate refuses the graph.
+// Code.patterns row of regex literal node i, -1 for any other node, and
+// none at all for a graph without regex literals (an instant needs none). A
+// pattern that does not compile (an `x` flag JavaScript lacks, an invalid
+// pattern) refuses the graph as Unsupported, its fault cleared and its
+// message in the job's detail. A malformed literal compiles nothing:
+// validate refuses the graph.
 fn compile_literals(job: source::Job&, g: const Graph&, programs: i64[>..]&, c: Control&) -> bool {
     programs.clear();
     var any = false;
-    for n in g.nodes { if n.tag == form_tag::Literal { any = true; break; } }
+    for n in g.nodes { if n.tag == form_tag::Literal && n.number == literal_tag::Regex { any = true; break; } }
     if !any { return true; }
     programs.resize(g.nodes.len, -1);
     for n, i in g.nodes {
-        if n.tag != form_tag::Literal || n.count != 1 || !range(n.start, 1, g.children.len) || g.children[n.start] < 0 || g.children[n.start] >= g.nodes.len { continue; }
+        if n.tag != form_tag::Literal || n.number != literal_tag::Regex || n.count != 1 || !range(n.start, 1, g.children.len) || g.children[n.start] < 0 || g.children[n.start] >= g.nodes.len { continue; }
         let p = g.nodes[g.children[n.start]];
         if p.tag != form_tag::String || !range(p.start, p.count, g.units.len) { continue; }
         if !poll(c, p.count) { return false; }
@@ -472,7 +502,8 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
 // With `programs`, compile_literals' (light-cljs-935): each regex literal
 // becomes a RegExp of its program, its pattern text the payload's source,
 // shareable unless the program is global or sticky (form_tag::Literal); a
-// graph with a literal and no program for it is refused.
+// graph with a regex literal and no program for it is refused. Each instant
+// literal becomes a Date of its time value (instant_time, light-cljs-963).
 fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&, c: Control&, programs: const i64[:]) -> bool {
     var sets: i64[>..] = [];
     if !validate_graph(g, c, sets, !c.cells) { return false; }
@@ -483,8 +514,10 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     let o = g.omitted; var text: i64 = o.units;
     for n, i in g.nodes {
         if textual(n.tag) { text += n.count; } if named(n.tag) && n.ns_count >= 0 { text += n.ns_count; }
-        if n.tag == form_tag::Literal {
-            if i >= programs.len || programs[i] < 0 || programs[i] >= heap.code.patterns.len || !heap.global.is_object() { return reject(c, Error.Unsupported); }
+        // A literal's object needs the realm's prototype; an instant adds no text.
+        if n.tag == form_tag::Literal && !heap.global.is_object() { return reject(c, Error.Unsupported); }
+        if n.tag == form_tag::Literal && n.number == literal_tag::Regex {
+            if i >= programs.len || programs[i] < 0 || programs[i] >= heap.code.patterns.len { return reject(c, Error.Unsupported); }
             text += g.nodes[g.children[n.start]].count;
         }
     }
@@ -513,6 +546,11 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
         if n.metadata >= 0 { node.metadata = imported_link(heap, g, base, n.metadata, c); }
         if collection(n.tag) { node.kind = heap_kind(n.tag); node.start = (children + n.start) as u32; node.count = n.count as u32; if m.start.len > 0 && m.start[i] >= 0 { node.start = (children + g.children.len + m.start[i]) as u32; node.count = m.count[i] as u32; } if c.cells && n.number == 1 && n.tag == form_tag::List { node.kind = node_kind::Concat; node.length = seq_flavor::IntegerRange; } else if c.cells && n.number == 1 && n.tag == form_tag::Vector { node.length = vector_flavor::MapEntry; } else if c.cells && n.number == 1 || !c.cells && (decoded_hash_ordered(n) || n.tag == form_tag::Set && node.count > 8) { node.length = map_order::Hash; } }
         else if n.tag == form_tag::Cell { node = source::Node { kind: node_kind::Cell, function: n.number as u32, length: n.count as u32 }; }
+        else if n.tag == form_tag::Literal && n.number == literal_tag::Instant {
+            // An instant: a Date, as date.goose new_date makes one, its
+            // compiler occurrence kept with the time value it names.
+            node.kind = node_kind::Date; node.value = source::number(instant_time(g, n)); node.namespace_value = node.value; node.proto = source::object(source::date_prototype_row());
+        }
         else if n.tag == form_tag::Literal {
             // A regex: a RegExp laid out as regexp_object.goose's
             // new_shared_regexp lays one out, its compiler occurrence kept.
@@ -575,7 +613,7 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
     }
     for v in roots { g.roots.push(-1); }
     // Queue entries are edges, with target slots naming roots or a Form field.
-    var queue: Edge[>..] = []; var payload: u16[>..] = [];
+    var queue: Edge[>..] = []; var payload: u16[>..] = []; var new_instants = false;
     for v, i in roots { queue.push(Edge { value: v, parent: -1, field: i }); }
     var cursor: i64 = 0;
     while cursor < queue.len {
@@ -639,6 +677,17 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
                 payload.clear();
                 if !source::regexp_payload(heap, v.id(), payload) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
                 if !poll(c, payload.len) { return false; }
+            } else if node.kind == node_kind::Date {
+                // A Date (light-cljs-963): an instant literal, its payload
+                // its time value, added after it. An invalid one (NaN) is
+                // refused, as the V8 build's "invalid instant", as is one
+                // in a cell value or publication (form_tag::Literal). An
+                // imported one whose time value is no longer the one it
+                // came with goes as a new instant (changed_occurrences).
+                if c.cells || !node.value.is_number() || !is_finite(node.value.num()) { return reject(c, Error.Unsupported); }
+                n.tag = form_tag::Literal; n.number = literal_tag::Instant; n.start = g.children.len; n.count = 1; g.children.push(-1);
+                if node.origin >= 0 && !source::same_bits(node.value, node.namespace_value) { node.origin = -1; }
+                if node.origin < 0 { new_instants = true; }
             } else {
                 if node.kind == node_kind::Symbol || node.kind == node_kind::Keyword { n.tag = tag_of(node.kind); x = node.value; }
                 else if x.is_null() { n.tag = form_tag::Nil; } else if x.is_bool() { n.tag = form_tag::Boolean; } else if x.is_number() { n.tag = form_tag::Number; } else if x.is_string() { n.tag = form_tag::String; }
@@ -657,18 +706,78 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
                 if c.error != Error.None { return false; }
             }
             g.nodes.push(n);
-            // A regex literal's payload, a new string with the literal's span.
+            // A regex literal's payload, a new string with the literal's
+            // span; an instant's, a new number with it.
             if n.tag == form_tag::Literal {
                 if g.nodes.len >= c.nodes { return reject(c, Error.Nodes); }
                 g.children[n.start] = g.nodes.len; rows.push(-1);
-                g.nodes.push(Form { tag: form_tag::String, start: g.units.len, count: payload.len, source: n.source, span_start: n.span_start, span_end: n.span_end });
-                g.units.append(payload[..]);
+                if n.number == literal_tag::Instant { g.nodes.push(Form { tag: form_tag::Number, number: node.value.num(), source: n.source, span_start: n.span_start, span_end: n.span_end }); }
+                else {
+                    g.nodes.push(Form { tag: form_tag::String, start: g.units.len, count: payload.len, source: n.source, span_start: n.span_start, span_end: n.span_end });
+                    g.units.append(payload[..]);
+                }
             }
             if !node.metadata.is_undefined() { queue.push(Edge { value: node.metadata, parent: id, field: -1 }); }
             if footprint(g) > c.bytes { return reject(c, Error.Bytes); }
         }
         if edge.parent < 0 { g.roots[edge.field] = id; } else if edge.field < 0 { g.nodes[edge.parent].metadata = id; } else { g.children[edge.field] = id; }
     }
+    if new_instants && !changed_occurrences(heap, g, call, rows, source_ids, c) { return false; }
     if !validate(g, c) { return false; }
     append_graph(out, g); return true;
+}
+// A node of exported graph g with a compiler occurrence that reaches, by
+// child or metadata edges, an instant without one goes back as a new form
+// (light-cljs-963): an argument's collections are immutable, so that
+// instant is a Date of the argument whose time value a setter changed
+// (export_rows sent it without its occurrence), and the V8 build's bridge
+// restores an argument only when its canonical data is unchanged.
+// Such a node takes the call's span, and a hash-ordered map or set its
+// traversal order, as any new form; the parts of it that reach no such
+// instant keep their occurrences. `rows` is each node's heap row, and only
+// a graph with a new instant runs this (export_rows). A fixed point: export
+// numbers most children after their parents, so a pass from the last node
+// settles most graphs, and one over a cycle, which validate refuses next,
+// ends too.
+fn changed_occurrences(heap: source::Heap&, g: Graph&, call: source::Value, rows: const i64[:], source_ids: i64[>..]&, c: Control&) -> bool {
+    var reaches: bool[>..] = []; reaches.resize(g.nodes.len, false);
+    for n, i in g.nodes { if n.tag == form_tag::Literal && n.number == literal_tag::Instant && n.origin < 0 { reaches[i] = true; } }
+    var again = true;
+    while again {
+        again = false;
+        var i = g.nodes.len;
+        while i > 0 {
+            i -= 1;
+            let n = g.nodes[i];
+            if reaches[i] { continue; }
+            let edges = if linked(n.tag) { n.count } else { 0 };
+            if !poll(c, 1 + edges) { return false; }
+            var found = n.metadata >= 0 && reaches[n.metadata];
+            if linked(n.tag) { for k in n.count { if reaches[g.children[n.start + k]] { found = true; break; } } }
+            if found { reaches[i] = true; again = true; }
+        }
+    }
+    let spanned = c.spans && call.is_object() && source::valid(heap, call);
+    var at: i64 = -1; var span_start: i64 = 0; var span_end: i64 = 0;
+    if spanned {
+        let s = source::node(heap, call.id()); span_start = s.span_start; span_end = s.span_end;
+        at = graph_source(heap, s.source, g, source_ids, c);
+        if c.error != Error.None { return false; }
+    }
+    for i in g.nodes.len {
+        if !reaches[i] || g.nodes[i].origin < 0 { continue; }
+        let m .= g.nodes[i]; m.origin = -1;
+        if spanned { m.source = at; m.span_start = span_start; m.span_end = span_end; }
+        if rows[i] < 0 || !source::hash_ordered(source::node(heap, rows[i])) { continue; }
+        var order: i64[>..] = [];
+        if !source::traversal_order(heap, source::node(heap, rows[i]), order) {
+            let failed = heap.fault != source::Fault.None; heap.fault = source::Fault.None;
+            return reject(c, if failed { Error.Heap } else { Error.Unsupported });
+        }
+        let n = g.nodes[i]; let stride: i64 = if n.tag == form_tag::Map { 2 } else { 1 };
+        if !poll(c, n.count) || order.len * stride != n.count { return reject(c); }
+        var run: i64[>..] = []; run.append(g.children[n.start..(n.start + n.count)]);
+        var to = n.start; for e in order { for j in stride { g.children[to] = run[e * stride + j]; to += 1; } }
+    }
+    return true;
 }

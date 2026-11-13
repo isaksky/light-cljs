@@ -305,6 +305,144 @@ thread_fn regex_literals() {
     var restored = snapshot::Control {}; assert(snapshot::validate(image, restored));
     print("compiler form bridge: regex literals import as shareable regex values (a global one as the job's own), go back with V8's payload text, and refuse malformed literals; snapshots validate their layout");
 }
+// light-cljs-963: an instant literal (form_tag::Literal,
+// literal_tag::Instant) whose payload is a Number imports as a Date of that
+// time value TimeClipped, as the V8 build's `new Date(payload)`, and any
+// Date goes back as one with its time value, its own properties and
+// prototype aside; an invalid Date, one in a cell graph, a malformed or
+// metadata-bearing instant are refused. An imported Date whose time value
+// is not the one it came with goes back without its compiler occurrence, as
+// do the argument's collections that hold it (a hash-ordered one in its
+// traversal order). Instants equal by time value merge as map keys and set
+// members.
+fn instant(g: bridge::Graph&, payload: f64, origin: i64) -> i64 {
+    let p = g.nodes.len; g.nodes.push(bridge::Form { tag: form_tag::Number, number: payload });
+    g.children.push(p); g.nodes.push(bridge::Form { tag: form_tag::Literal, number: literal_tag::Instant, start: g.children.len - 1, count: 1, origin: origin });
+    return g.nodes.len - 1;
+}
+fn time_of(heap: const source::Heap&, v: source::Value) -> f64 { let n = source::node(heap, v.id()); assert(n.kind == node_kind::Date && n.value.is_number()); return n.value.num(); }
+thread_fn instant_literals() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, writable_code: code };
+    var g = bridge::Graph {};
+    let day = instant(g, 1577836800000, 4); let fraction = instant(g, -0.5, -1); let beyond = instant(g, 8.64e15 + 1, -1);
+    g.children.append([day, fraction, beyond]); g.nodes.push(bridge::Form { tag: form_tag::Vector, start: g.children.len - 3, count: 3 }); g.roots.push(g.nodes.len - 1);
+    // No program is needed: compile_literals finds no regex.
+    var programs: i64[>..] = []; var c = bridge::Control {}; var roots: source::Value[>..] = [];
+    assert(bridge::compile_literals(job, g, programs, c) && programs.len == 0 && bridge::import_graph(heap, g, roots, c));
+    let v = source::node(heap, roots[0].id()); let a = source::slot(heap, v.start); let z = source::slot(heap, v.start + 1); let nan = source::slot(heap, v.start + 2);
+    assert(time_of(heap, a) == 1577836800000 && source::node(heap, a.id()).origin == 4 && source::same_bits(source::node(heap, a.id()).proto, source::object(source::date_prototype_row())));
+    assert(time_of(heap, z) == 0 && 1.0 / time_of(heap, z) > 0 && time_of(heap, nan) != time_of(heap, nan) && source::intrinsic_date(source::node(heap, a.id())));
+    // Back to the compiler: the time value; a fresh Date has no occurrence,
+    // and a Date with an own property and another prototype still goes by
+    // its time value, as the V8 build's intrinsic getTime reads it.
+    let fresh = source::allocate(heap, source::Node { kind: node_kind::Date, value: source::number(86400000), proto: source::object(source::date_prototype_row()) });
+    let odd = source::allocate(heap, source::Node { kind: node_kind::Date, value: source::number(-1000), proto: source::object(source::regexp_prototype_row()) });
+    assert(source::define_own(heap, odd.id(), source::key_named(heap, "x"), source::number(1), source::attr_writable() | source::attr_configurable()) && !source::intrinsic_date(source::node(heap, odd.id())));
+    var made = bridge::Graph {}; var m = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [a, fresh, odd, a], made, m));
+    var bytes: u8[>..] = []; assert(bridge::encode(made, bytes, m)); var decoded = bridge::Graph {}; assert(bridge::decode(decoded, bytes, m));
+    let ra = decoded.nodes[decoded.roots[0]]; let rf = decoded.nodes[decoded.roots[1]]; let ro = decoded.nodes[decoded.roots[2]];
+    assert(ra.tag == form_tag::Literal && ra.number == literal_tag::Instant && ra.count == 1 && ra.origin == 4 && rf.origin == -1 && decoded.roots[3] == decoded.roots[0]);
+    let pa = decoded.nodes[decoded.children[ra.start]]; let pf = decoded.nodes[decoded.children[rf.start]]; let po = decoded.nodes[decoded.children[ro.start]];
+    assert(pa.tag == form_tag::Number && pa.number == 1577836800000 && pa.origin == -1 && pf.number == 86400000 && po.number == -1000);
+    // Round trip: the exported instants import again as Dates of those time values.
+    var again: source::Value[>..] = []; var r = bridge::Control {}; assert(bridge::import_graph(heap, decoded, again, r) && again.len == 4 && again[3] == again[0]);
+    assert(time_of(heap, again[0]) == 1577836800000 && time_of(heap, again[1]) == 86400000 && time_of(heap, again[2]) == -1000 && source::node(heap, again[2].id()).key_count == 0);
+    // An invalid Date is refused, as the V8 build's "invalid instant", and
+    // so is any Date in a cell value or publication.
+    var invalid = bridge::Graph {}; var ic = bridge::Control { spans: false }; assert(!bridge::export_graph(heap, [roots[0]], invalid, ic) && ic.error == bridge::Error.Unsupported && invalid.nodes.len == 0);
+    var cell = bridge::Graph {}; var cc = bridge::Control { cells: true, spans: false }; assert(!bridge::export_graph(heap, [a], cell, cc) && cc.error == bridge::Error.Unsupported);
+    // An imported Date goes back with its occurrence while its time value
+    // is the one it came with, also after a setter changed it and another
+    // restored it, and as a new instant otherwise. (Float literals: an
+    // integer literal for its f64 parameter beside the Value miscompiles in
+    // goose v2026.3-267, a C type error.)
+    assert(source::set_date_value(job, a, 0.0) && time_of(heap, a) == 0);
+    var changed = bridge::Graph {}; var ch = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [a], changed, ch) && changed.nodes[changed.roots[0]].origin == -1);
+    assert(source::set_date_value(job, a, 1577836800000.0));
+    var restored_date = bridge::Graph {}; var rd = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [a], restored_date, rd) && restored_date.nodes[restored_date.roots[0]].origin == 4);
+    // Snapshot validation: an imported Date's time value it came with is a
+    // time value too (an invalid one's is NaN), and nothing else.
+    var sc = snapshot::Control {}; var image = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: roots[0] }], sc); assert(sc.error == snapshot::Error.None);
+    var ok = snapshot::Control {}; assert(snapshot::validate(image, ok));
+    let row = image.nodes[a.id()];
+    for mutation in 3 {
+        image.nodes[a.id()].namespace_value = if mutation == 0 { source::number(0.5) } else if mutation == 1 { source::number(-0.0) } else { source::boolean(true) };
+        var broken = snapshot::Control {}; assert(!snapshot::validate(image, broken) && broken.error == snapshot::Error.Link);
+        image.nodes[a.id()] = row;
+    }
+    // An argument's collections that reach a changed Date, by children or
+    // metadata, go back as new forms too; their unchanged parts, and
+    // collections that reach only unchanged Dates, keep their occurrences.
+    // A new Date in a new vector changes nothing else.
+    var held = bridge::Graph {};
+    let h1 = instant(held, 1000, 21); held.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 23 }); let one = held.nodes.len - 1;
+    held.children.push(one); held.nodes.push(bridge::Form { tag: form_tag::Vector, start: held.children.len - 1, count: 1, origin: 22 }); let inner = held.nodes.len - 1;
+    held.children.append([h1, inner]); held.nodes.push(bridge::Form { tag: form_tag::Vector, start: held.children.len - 2, count: 2, origin: 20 }); held.roots.push(held.nodes.len - 1);
+    let h2 = instant(held, 2000, 26); held.nodes.push(bridge::Form { tag: form_tag::Number, number: 7, origin: 27 }); let key = held.nodes.len - 1;
+    held.children.append([key, h2]); held.nodes.push(bridge::Form { tag: form_tag::Map, start: held.children.len - 2, count: 2, origin: 25 }); let meta = held.nodes.len - 1;
+    held.nodes.push(bridge::Form { tag: form_tag::Vector, start: held.children.len, metadata: meta, origin: 24 }); held.roots.push(held.nodes.len - 1);
+    let h3 = instant(held, 3000, 29); held.children.push(h3); held.nodes.push(bridge::Form { tag: form_tag::Vector, start: held.children.len - 1, count: 1, origin: 28 }); held.roots.push(held.nodes.len - 1);
+    var hc = bridge::Control {}; var hr: source::Value[>..] = []; assert(bridge::import_graph(heap, held, hr, hc));
+    let first = source::slot(heap, source::node(heap, hr[0].id()).start); let tagged = source::slot(heap, source::node(heap, source::node(heap, hr[1].id()).metadata.id()).start + 1);
+    assert(source::set_date_value(job, first, 0.0) && source::set_date_value(job, tagged, 0.0));
+    let made_date = source::allocate(heap, source::Node { kind: node_kind::Date, value: source::number(5.0), proto: source::object(source::date_prototype_row()) });
+    let fresh_vector = source::allocate(heap, source::Node { kind: node_kind::Vector, start: source::add_values(heap, [made_date, hr[2]]) as u32, count: 2 });
+    var back = bridge::Graph {}; var bc = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [hr[0], hr[1], fresh_vector], back, bc));
+    let b0 = back.nodes[back.roots[0]]; let b1 = back.nodes[back.roots[1]]; let b2 = back.nodes[back.roots[2]];
+    assert(b0.origin == -1 && back.nodes[back.children[b0.start]].origin == -1 && back.nodes[back.children[b0.start + 1]].origin == 22);
+    assert(b1.origin == -1 && back.nodes[b1.metadata].origin == -1 && back.nodes[back.children[back.nodes[b1.metadata].start]].origin == 27);
+    let kept = back.nodes[back.children[b2.start + 1]];
+    assert(b2.origin == -1 && back.nodes[back.children[b2.start]].origin == -1 && kept.origin == 28 && back.nodes[back.children[kept.start]].origin == 29);
+    // Restored to the time values they came with, both arguments go back whole.
+    assert(source::set_date_value(job, first, 1000.0) && source::set_date_value(job, tagged, 2000.0));
+    var whole_back = bridge::Graph {}; var wb = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [hr[0], hr[1]], whole_back, wb));
+    assert(whole_back.nodes[whole_back.roots[0]].origin == 20 && whole_back.nodes[whole_back.roots[1]].origin == 24 && whole_back.nodes[whole_back.nodes[whole_back.roots[1]].metadata].origin == 25);
+    // A hash-ordered map that holds a changed Date goes in its traversal
+    // order, as a new one does; with its occurrence, in the order it came.
+    var big = bridge::Graph {}; var start_keys: i64[>..] = [];
+    for k in 17 {
+        big.nodes.push(bridge::Form { tag: form_tag::Number, number: 17 - k, origin: 40 + 2 * k }); start_keys.push(big.nodes.len - 1);
+        if k == 0 { start_keys.push(instant(big, 1000, 41)); } else { big.nodes.push(bridge::Form { tag: form_tag::Number, number: k, origin: 41 + 2 * k }); start_keys.push(big.nodes.len - 1); }
+    }
+    let run = big.children.len; big.children.append(start_keys[..]); big.nodes.push(bridge::Form { tag: form_tag::Map, start: run, count: 34, origin: 39 }); big.roots.push(big.nodes.len - 1);
+    var gc = bridge::Control {}; var gr: source::Value[>..] = []; assert(bridge::import_graph(heap, big, gr, gc));
+    let hashed = source::node(heap, gr[0].id()); assert(source::hash_ordered(hashed));
+    var order: i64[>..] = []; assert(source::traversal_order(heap, hashed, order) && order.len == 17);
+    var unchanged = bridge::Graph {}; var uc = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [gr[0]], unchanged, uc));
+    let um = unchanged.nodes[unchanged.roots[0]]; assert(um.origin == 39);
+    for k in 17 { assert(unchanged.nodes[unchanged.children[um.start + 2 * k]].number == (17 - k) as f64); }
+    assert(source::set_date_value(job, source::slot(heap, hashed.start + 1), 0.0));
+    var reordered = bridge::Graph {}; var ro2 = bridge::Control { spans: false }; assert(bridge::export_graph(heap, [gr[0]], reordered, ro2));
+    let rm = reordered.nodes[reordered.roots[0]]; var moved = false; assert(rm.origin == -1);
+    for e, k in order {
+        assert(reordered.nodes[reordered.children[rm.start + 2 * k]].number == (17 - e) as f64);
+        if e != k { moved = true; }
+    }
+    assert(moved);
+    // Malformed and unsupported instants; each mutation is undone before the next.
+    let lit = decoded.roots[0]; let child = decoded.children[ra.start];
+    decoded.nodes[child].tag = form_tag::String; decoded.nodes[child].count = 0; assert(refused(decoded, false) == bridge::Error.Malformed); decoded.nodes[child].tag = form_tag::Number;
+    decoded.nodes[lit].number = literal_tag::Regex; assert(refused(decoded, false) == bridge::Error.Malformed); decoded.nodes[lit].number = literal_tag::Instant;
+    decoded.nodes[lit].number = 2; assert(refused(decoded, false) == bridge::Error.Unsupported); decoded.nodes[lit].number = literal_tag::Instant;
+    decoded.nodes.push(bridge::Form { tag: form_tag::Map }); decoded.nodes[lit].metadata = decoded.nodes.len - 1; assert(refused(decoded, false) == bridge::Error.Unsupported); decoded.nodes[lit].metadata = -1; decoded.nodes.pop();
+    assert(refused(decoded, true) == bridge::Error.Unsupported);
+    var whole = bridge::Control {}; var rebytes: u8[>..] = []; assert(bridge::encode(decoded, rebytes, whole));
+    // Map keys and set members equal by time value merge (1000 and 1000.5
+    // clip to one time value), as the V8 build's mapFromArray and
+    // setFromArray compare Dates; invalid ones never do, and a regex never
+    // equals an instant.
+    var merged = bridge::Graph {};
+    let s1 = instant(merged, 1000, 10); let s2 = instant(merged, 1000.5, 11); let s3 = instant(merged, 0.0 / 0.0, 12); let s4 = instant(merged, 0.0 / 0.0, 13);
+    let k1 = instant(merged, 5, 14); let k2 = instant(merged, 5, 15); merged.nodes.push(bridge::Form { tag: form_tag::Number, number: 1 }); let v1 = merged.nodes.len - 1; merged.nodes.push(bridge::Form { tag: form_tag::Number, number: 2 }); let v2 = merged.nodes.len - 1;
+    var start = merged.children.len; merged.children.append([s1, s2, s3, s4]); merged.nodes.push(bridge::Form { tag: form_tag::Set, start: start, count: 4 }); merged.roots.push(merged.nodes.len - 1);
+    start = merged.children.len; merged.children.append([k1, v1, k2, v2]); merged.nodes.push(bridge::Form { tag: form_tag::Map, start: start, count: 4 }); merged.roots.push(merged.nodes.len - 1);
+    var mc = bridge::Control {}; var mr: source::Value[>..] = []; assert(bridge::import_graph(heap, merged, mr, mc));
+    let set = source::node(heap, mr[0].id()); assert(set.count == 3 && source::node(heap, source::slot(heap, set.start).id()).origin == 10 && time_of(heap, source::slot(heap, set.start)) == 1000);
+    let map = source::node(heap, mr[1].id()); assert(map.count == 2 && source::node(heap, source::slot(heap, map.start).id()).origin == 14 && source::form_value(heap, source::slot(heap, map.start + 1)).num() == 2);
+    print("compiler form bridge: instants import as Dates of their time values and go back with them, invalid, cell, malformed and metadata-bearing ones refused, changed arguments lose their occurrence, equal ones merge");
+}
 thread_fn primitive_fallback() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
@@ -432,7 +570,7 @@ fn direct_update_boundaries() {
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
     heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(plain_form_operations)); heap_program::join(thread_spawn(seal_operations)); heap_program::join(thread_spawn(struct_hash_budget)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(realm_empties)); heap_program::join(thread_spawn(merged_keys));
-    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(regex_literals)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
+    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(regex_literals)); heap_program::join(thread_spawn(instant_literals)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
 // light-cljs-817: the compiler sends a source's identity and byte length, no
