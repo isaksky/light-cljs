@@ -412,15 +412,15 @@ const PEEK = ["(ns demo.main)\n(defmacro peek [] (js/String (.-leaked js/globalT
 check(compile(["demo/main.cljs"], LEAK, "demo.main", "none", true, false, false, false).error == null, "macros: the leaking compile failed");
 const peeked = compile(["demo/main.cljs"], PEEK, "demo.main", "none", true, false, false, false);
 check(hosted(peeked.js) === "undefined", `macros: a global leaked into the next compile: ${peeked.error ?? hosted(peeked.js)}`);
-// Without the page's macro host the module has no engine for macros, which
-// every program needs (`when` is one): the compile fails with the build's
-// diagnostic and leaves the module usable.
+// Without the page's macro host the module has no engine for the macros a
+// program defines itself (core macros such as `when` expand natively): the
+// compile fails with the build's diagnostic and leaves the module usable.
 {
   const pageHost = globalThis.lightCljsMacroHost;
   delete globalThis.lightCljsMacroHost;
   let hostless;
   try {
-    hostless = compile(["demo/main.cljs"], ["(ns demo.main)\n(when true 1)\n"], "demo.main", "none", true, false, false, false);
+    hostless = compile(["demo/main.cljs"], ["(ns demo.main)\n(defmacro one [] 1)\n(one)\n"], "demo.main", "none", true, false, false, false);
   } finally {
     globalThis.lightCljsMacroHost = pageHost;
   }
@@ -428,7 +428,7 @@ check(hosted(peeked.js) === "undefined", `macros: a global leaked into the next 
     hostless.js == null && String(hostless.error).includes("this light-cljs build embeds no QuickJS: run compiler macros through a ScriptHost"),
     `macros without a macro host: ${hostless.error ?? hostless.js?.slice(0, 100)}`,
   );
-  const again = compile(["demo/main.cljs"], ["(ns demo.main)\n(when true 1)\n"], "demo.main", "none", true, false, false, false);
+  const again = compile(["demo/main.cljs"], ["(ns demo.main)\n(defmacro one [] 1)\n(one)\n"], "demo.main", "none", true, false, false, false);
   check(hosted(again.js) === "1", `macros after a compile without a macro host: ${again.error ?? hosted(again.js)}`);
 }
 console.log(`macros in this engine: ${macroCompiles} compiles as the embedded QuickJS gave them`);

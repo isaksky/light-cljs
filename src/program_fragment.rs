@@ -165,6 +165,9 @@ impl SharedPrefix {
         }
     }
 
+    // No caller yet: the published-append path that 0041cda4 added for
+    // experimental Pants namespace builds.
+    #[allow(dead_code)]
     pub(crate) fn published(mut self, publication: std::sync::Arc<Publication>) -> Self {
         self.publication = Some(publication);
         self
@@ -274,6 +277,9 @@ pub(crate) struct Publication {
     js: PublishedIds,
 }
 impl Publication {
+    // No caller yet: the published-append path that 0041cda4 added for
+    // experimental Pants namespace builds.
+    #[allow(dead_code)]
     pub(crate) fn expr(&self, id: ExprId) -> ExprId {
         ExprId(self.exprs.map(id.0))
     }
@@ -302,6 +308,9 @@ pub(crate) fn append(
     append_impl(target, fragment, shared, update_shared_globals, own_namespace, names, None)
 }
 
+// No caller yet: the published-append path that 0041cda4 added for
+// experimental Pants namespace builds.
+#[allow(dead_code)]
 pub(crate) fn append_published(
     target: &mut Program,
     fragment: &Program,
