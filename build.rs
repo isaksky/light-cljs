@@ -98,14 +98,14 @@ fn main() {
 /// The trees and files whose every byte the compiler identity covers: the
 /// crate's sources (the embedded runtime, bootstrap, core macros and
 /// bundled first-party libraries are under `src/`), this script, the
-/// manifest and lock file, and the vendored engines with their patches.
-const IDENTITY_INPUTS: [&str; 9] = [
+/// manifest and lock file (which pins the prebuilt V8 crate), and the
+/// vendored QuickJS and V8 headers.
+const IDENTITY_INPUTS: [&str; 8] = [
     "src",
     "build.rs",
     "Cargo.toml",
     "Cargo.lock",
     "vendor/rquickjs-sys",
-    "vendor/v8",
     "vendor/v8-headers",
     "crates/big-boy-pants-js/src",
     "crates/big-boy-pants-js/Cargo.toml",

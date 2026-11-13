@@ -84,12 +84,14 @@ Both packages use the root `Cargo.lock`, build profiles and `target/` directory.
 The playground and vendored engines remain outside the workspace. The workspace
 dependency declares the local engine path used by the optional native macro backend.
 
-The default native build requires Rust 1.91+, babashka (`bb`), Git, curl, tar,
-Python 3, a C/C++ toolchain and libclang. The first build on a machine compiles a pinned V8
-source patch into a per-user cache; later builds in any checkout, worktree or clean
-target directory reuse it (`LIGHT_CLJS_V8_CACHE=require` fails instead of rebuilding). See [engine build details](vendor/v8/README.md),
-including `LIBCLANG_PATH` setup on macOS. Node.js is needed for parts of the test
-suite and for running emitted JavaScript outside the embedded evaluator.
+The default native build requires Rust 1.91+, babashka (`bb`), Git and a C/C++
+toolchain. V8 is the stock prebuilt engine of the pinned `v8` crate, which its build
+script downloads on the first build (pointer compression is on, so the prebuilt
+engines cover macOS and x86_64 Linux). Its macro realm has no `WebAssembly` and
+rejects `maxByteLength`, because stock V8 maps resizable buffers and Wasm memory
+outside the allocator that charges the macro memory limit (`RESTRICTED_BUFFERS` in
+`src/v8_evaluator.rs`). Node.js is needed for parts of the test suite and for
+running emitted JavaScript outside the embedded evaluator.
 
 ```sh
 cargo build --release
@@ -862,14 +864,7 @@ evaluators or compilation session: add `--no-default-features --features quickjs
 above. Tests whose expectations differ by engine branch on
 `cfg!(feature = "v8-macros")`. CI ([.github/workflows/conformance.yml](.github/workflows/conformance.yml))
 runs Clippy and the suite once per backend (`fast-tests` with V8, `quickjs-tests`
-without), and its `v8-engine` job keeps the patched V8 in the Actions cache, keyed
-by the files that decide the engine ([engine cache](vendor/v8/README.md#machine-wide-engine-cache)),
-and hands it to the other V8 jobs, which build with `LIGHT_CLJS_V8_CACHE=require`.
-A run that finds the engine cached adds a few minutes for that job; the first run
-after a change to the engine's inputs builds V8 from source, an estimated 2 to 4
-hours on a 4-vCPU runner, before the V8 jobs start. GitHub also evicts a cache
-that no run has read for 7 days, and a branch's first run reads only its own and
-the default branch's caches.
+without); the V8 jobs download the prebuilt engine like a local build.
 
 `size_ratchet` (`tests/compiler/size_ratchet.rs`) pins the emitted size of a few
 small programs (`tests/support/ratchet_fixtures.rs`) at each `--optimize` level

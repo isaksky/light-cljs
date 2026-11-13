@@ -1,9 +1,11 @@
-# Headers for the V8 stack-limit shim
+# Headers for the V8 C++ shims
 
 `include/` is an unmodified copy of the V8 headers shipped in rusty_v8 152.2.0
-(V8 15.2.124.1). The C++ shim only exposes the public `Isolate::SetStackLimit`
-method missing from the pinned Rust binding. It links against the same V8
-archive as the Rust crate; these files do not build another engine.
+(V8 15.2.124.1). The C++ shims in `src/v8_*.cc` only use public V8 API the
+pinned Rust binding lacks: `Isolate::SetStackLimit` and an
+`ArrayBuffer::Allocator` subclass that charges the macro memory budget. They
+link against the crate's stock prebuilt V8 archive; these files do not build
+another engine.
 
 The upstream BSD license is in `LICENSE`, obtained from
 https://raw.githubusercontent.com/v8/v8/15.2.124.1/LICENSE.

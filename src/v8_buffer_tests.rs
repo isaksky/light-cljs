@@ -54,7 +54,7 @@ fn heap_and_backing_stores_share_one_session_budget() {
     let mut failures = Vec::new();
     for source in [
         "[new Array(5 * 1024 * 1024).fill(1), new ArrayBuffer(20 * 1024 * 1024)]",
-        "[new SharedArrayBuffer(20 * 1024 * 1024, {maxByteLength: 24 * 1024 * 1024}), new Array(5 * 1024 * 1024).fill(1)]",
+        "[new SharedArrayBuffer(20 * 1024 * 1024), new Array(5 * 1024 * 1024).fill(1)]",
     ] {
         let evaluator = session();
         let result = evaluator.evaluate_js(source);
@@ -87,10 +87,6 @@ fn combined_storage_below_the_limit_is_not_double_counted() {
     for buffer in [
         "new ArrayBuffer(12 * 1024 * 1024)",
         "new SharedArrayBuffer(12 * 1024 * 1024)",
-        "new ArrayBuffer(12 * 1024 * 1024, {maxByteLength: 32 * 1024 * 1024})",
-        "new SharedArrayBuffer(12 * 1024 * 1024, {maxByteLength: 32 * 1024 * 1024})",
-        "new WebAssembly.Memory({initial: 192, maximum: 1024})",
-        "new WebAssembly.Memory({initial: 192, maximum: 1024, shared: true})",
     ] {
         let evaluator = session();
         assert_eq!(
@@ -114,8 +110,7 @@ fn combined_budget_interrupts_a_loop_after_heap_growth() {
     let error = evaluator
         .evaluate_js(
             r#"(() => {
-        globalThis.keep = [new SharedArrayBuffer(20 * 1024 * 1024,
-            {maxByteLength: 24 * 1024 * 1024}), new Array(5 * 1024 * 1024).fill(1)];
+        globalThis.keep = [new SharedArrayBuffer(20 * 1024 * 1024), new Array(5 * 1024 * 1024).fill(1)];
         while (true) {}
     })()"#,
         )
@@ -139,7 +134,7 @@ fn combined_budget_covers_runtime_initialization() {
             ..Default::default()
         },
         || {
-            "globalThis.keep = [new SharedArrayBuffer(20 * 1024 * 1024, {maxByteLength: 24 * 1024 * 1024}), new Array(5 * 1024 * 1024).fill(1)]; while (true) {}".into()
+            "globalThis.keep = [new SharedArrayBuffer(20 * 1024 * 1024), new Array(5 * 1024 * 1024).fill(1)]; while (true) {}".into()
         },
     );
     let Err(error) = result else {
@@ -194,7 +189,7 @@ fn collect(evaluator: &V8Evaluator) {
 }
 
 #[test]
-fn backing_store_budgets_cover_construction_growth_and_aggregate_storage() {
+fn backing_store_budgets_cover_construction_and_aggregate_storage() {
     let mut failures = Vec::new();
     for (name, expression) in [
         ("fixed ArrayBuffer", "new ArrayBuffer(33 * 1024 * 1024)"),
@@ -203,48 +198,12 @@ fn backing_store_budgets_cover_construction_growth_and_aggregate_storage() {
             "new SharedArrayBuffer(33 * 1024 * 1024)",
         ),
         (
-            "resizable ArrayBuffer",
-            "new ArrayBuffer(33 * 1024 * 1024, { maxByteLength: 34 * 1024 * 1024 })",
-        ),
-        (
-            "growable SharedArrayBuffer",
-            "new SharedArrayBuffer(33 * 1024 * 1024, { maxByteLength: 34 * 1024 * 1024 })",
-        ),
-        (
-            "ArrayBuffer.resize",
-            "(() => { const b = new ArrayBuffer(8, { maxByteLength: 34 * 1024 * 1024 }); b.resize(33 * 1024 * 1024); return b; })()",
-        ),
-        (
-            "SharedArrayBuffer.grow",
-            "(() => { const b = new SharedArrayBuffer(8, { maxByteLength: 34 * 1024 * 1024 }); b.grow(33 * 1024 * 1024); return b; })()",
-        ),
-        (
-            "Wasm memory",
-            "new WebAssembly.Memory({ initial: 528, maximum: 1024 })",
-        ),
-        (
-            "shared Wasm memory",
-            "new WebAssembly.Memory({ initial: 528, maximum: 1024, shared: true })",
-        ),
-        (
-            "Wasm memory.grow",
-            "(() => { const m = new WebAssembly.Memory({ initial: 1, maximum: 1024 }); m.grow(527); return m; })()",
-        ),
-        (
-            "shared Wasm memory.grow",
-            "(() => { const m = new WebAssembly.Memory({ initial: 1, maximum: 1024, shared: true }); m.grow(527); return m; })()",
-        ),
-        (
             "aggregate fixed buffers",
             "Array.from({length: 8}, () => new ArrayBuffer(5 * 1024 * 1024))",
         ),
         (
-            "aggregate growable buffers",
-            "Array.from({length: 8}, () => new SharedArrayBuffer(5 * 1024 * 1024, {maxByteLength: 6 * 1024 * 1024}))",
-        ),
-        (
             "aggregate mixed buffers",
-            "[new ArrayBuffer(8 * 1024 * 1024), new SharedArrayBuffer(8 * 1024 * 1024), new ArrayBuffer(8 * 1024 * 1024, {maxByteLength: 9 * 1024 * 1024}), new SharedArrayBuffer(9 * 1024 * 1024, {maxByteLength: 10 * 1024 * 1024})]",
+            "[new ArrayBuffer(12 * 1024 * 1024), new SharedArrayBuffer(12 * 1024 * 1024), new ArrayBuffer(12 * 1024 * 1024)]",
         ),
     ] {
         let evaluator = V8Evaluator::new(EvaluatorOptions {
@@ -277,10 +236,7 @@ fn backing_store_budgets_cover_construction_growth_and_aggregate_storage() {
 fn backing_store_failure_cannot_be_hidden_by_javascript_catch() {
     for expression in [
         "new ArrayBuffer(33 * 1024 * 1024)",
-        "new SharedArrayBuffer(33 * 1024 * 1024, {maxByteLength: 34 * 1024 * 1024})",
-        "new ArrayBuffer(8, {maxByteLength: 34 * 1024 * 1024}).resize(33 * 1024 * 1024)",
-        "new SharedArrayBuffer(8, {maxByteLength: 34 * 1024 * 1024}).grow(33 * 1024 * 1024)",
-        "new WebAssembly.Memory({initial: 1, maximum: 1024}).grow(527)",
+        "new SharedArrayBuffer(33 * 1024 * 1024)",
     ] {
         let evaluator = session();
         let error = evaluator
@@ -303,9 +259,7 @@ fn backing_store_budget_applies_during_runtime_startup() {
             timeout: std::time::Duration::from_secs(5),
             ..Default::default()
         },
-        || {
-            "try { new SharedArrayBuffer(33 * 1024 * 1024, {maxByteLength: 34 * 1024 * 1024}); } catch (_) {} while (true) {}".into()
-        },
+        || "try { new SharedArrayBuffer(33 * 1024 * 1024); } catch (_) {} while (true) {}".into(),
     );
     let Err(error) = result else {
         panic!("startup must fail")
@@ -313,117 +267,57 @@ fn backing_store_budget_applies_during_runtime_startup() {
     assert!(error.0.contains("memory limit exhausted"), "{error}");
 }
 
+/// Stock V8 maps these outside the `ArrayBuffer::Allocator` the budget
+/// charges, so the macro realm leaves them out (`RESTRICTED_BUFFERS`).
 #[test]
-fn wasm_memory_grow_instruction_cannot_silently_exceed_the_budget() {
-    let evaluator = session();
-    // (module (memory (export "m") 1 1024)
-    //   (func (export "g") (param i32) (result i32)
-    //     local.get 0 memory.grow))
-    let error = evaluator
-        .evaluate_js(
-            r#"(() => {
-        const module = new WebAssembly.Module(new Uint8Array([
-            0,97,115,109,1,0,0,0,
-            1,6,1,96,1,127,1,127,
-            3,2,1,0,
-            5,5,1,1,1,128,8,
-            7,9,2,1,109,2,0,1,103,0,0,
-            10,8,1,6,0,32,0,64,0,11
-        ]));
-        return new WebAssembly.Instance(module).exports.g(527);
-    })()"#,
-        )
-        .unwrap_err();
-    assert!(error.0.contains("memory limit exhausted"), "{error}");
-}
-
-#[test]
-fn invalid_growth_is_a_catchable_language_error_without_budget_failure() {
+fn storage_outside_the_allocator_is_unavailable_and_catchable() {
     let evaluator = session();
     assert_eq!(
         number(
             &evaluator,
             r#"(() => {
         let caught = 0;
-        for (const grow of [
-            () => new ArrayBuffer(1, {maxByteLength: 65536}).resize(65537),
-            () => new SharedArrayBuffer(1, {maxByteLength: 65536}).grow(65537),
-            () => new WebAssembly.Memory({initial: 1, maximum: 1}).grow(1)
-        ]) { try { grow(); } catch (e) { if (e instanceof RangeError) ++caught; } }
-        return caught;
+        for (const make of [
+            () => new ArrayBuffer(8, {maxByteLength: 16}),
+            () => new SharedArrayBuffer(8, {maxByteLength: 16}),
+            () => new (class extends ArrayBuffer {})(8, {maxByteLength: 16}),
+            () => Reflect.construct(ArrayBuffer, [8, {maxByteLength: 16}]),
+        ]) { try { make(); } catch (e) { if (e instanceof TypeError) ++caught; } }
+        return typeof WebAssembly === "undefined" && !("WebAssembly" in globalThis) ? caught : -1;
     })()"#
         ),
-        3.0
+        4.0
     );
     assert_eq!(number(&evaluator, "42"), 42.0);
 }
 
 #[test]
-fn reservations_charge_committed_pages_and_shrink_refunds_them() {
-    let evaluator = session();
-    let before = evaluator.state.buffers.used();
-    assert_eq!(
-        number(
-            &evaluator,
-            "(() => { globalThis.b = new ArrayBuffer(1, {maxByteLength: 1024 * 1024 * 1024}); return b.byteLength; })()"
-        ),
-        1.0
-    );
-    let one_page = evaluator.state.buffers.used() - before;
-    assert!((4096..=65536).contains(&one_page), "{one_page}");
-    assert_eq!(
-        number(
-            &evaluator,
-            "(() => { b.resize(4 * 1024 * 1024); new Uint8Array(b).fill(123); b.resize(1); return b.byteLength; })()"
-        ),
-        1.0
-    );
-    assert_eq!(evaluator.state.buffers.used(), before + one_page);
-    assert_eq!(
-        number(
-            &evaluator,
-            "(() => { b.resize(4 * 1024 * 1024); const a = new Uint8Array(b); return a[0] === 123 && a.subarray(1).every(x => x === 0) ? 1 : 0; })()"
-        ),
-        1.0
-    );
-    assert_eq!(evaluator.state.buffers.used(), before + 4 * 1024 * 1024);
-    assert_eq!(
-        number(
-            &evaluator,
-            "(() => { b.resize(0); return b.byteLength; })()"
-        ),
-        0.0
-    );
-    assert_eq!(evaluator.state.buffers.used(), before);
-}
-
-#[test]
-fn buffer_coercions_and_growth_preserve_native_semantics() {
+fn fixed_buffers_keep_their_native_semantics() {
     let evaluator = session();
     assert_eq!(
         number(
             &evaluator,
             r#"(() => {
-        const calls = [];
-        const size = { valueOf() { calls.push('size'); return 7; } };
-        const options = { get maxByteLength() {
-            calls.push('max'); return { valueOf() { calls.push('max-value'); return 65536; } };
-        }};
-        const b = new ArrayBuffer(size, options);
-        const a = new Uint8Array(b);
-        if (!a.every(x => x === 0)) return 0;
-        a[0] = 19;
-        b.resize({valueOf() { calls.push('resize'); return 32768; }});
-        if (a.length !== 32768 || a[0] !== 19 || !a.subarray(1).every(x => x === 0)) return 0;
-        const s = new SharedArrayBuffer(1, {maxByteLength: 65536});
-        new Uint8Array(s)[0] = 23;
-        s.grow({valueOf() { calls.push('grow'); return 32768; }});
-        if (new Uint8Array(s)[0] !== 23 || !new Uint8Array(s).subarray(1).every(x => x === 0)) return 0;
-        const m = new WebAssembly.Memory({initial: 1, maximum: 4, shared: true});
-        new Uint8Array(m.buffer)[0] = 29;
-        const old = m.grow(1);
-        return old === 1 && m.buffer.byteLength === 131072 && new Uint8Array(m.buffer)[0] === 29
-            && calls.join(',') === 'size,max,max-value,resize,grow' ? 1 : 0;
+        const checks = [];
+        const b = new ArrayBuffer(8, {});
+        checks.push(b.byteLength === 8 && !b.resizable && b.maxByteLength === 8);
+        checks.push(new ArrayBuffer(4, {maxByteLength: undefined}).byteLength === 4);
+        checks.push(b instanceof ArrayBuffer && b.constructor === ArrayBuffer);
+        checks.push(Object.getPrototypeOf(b) === ArrayBuffer.prototype);
+        checks.push(new Uint8Array(4).buffer instanceof ArrayBuffer);
+        checks.push(ArrayBuffer.isView(new DataView(b)) && ArrayBuffer.name === "ArrayBuffer");
+        checks.push(b.slice(2).byteLength === 6 && b.slice(2) instanceof ArrayBuffer);
+        class Sub extends ArrayBuffer {}
+        const s = new Sub(3);
+        checks.push(s instanceof Sub && s instanceof ArrayBuffer && s.byteLength === 3);
+        const shared = new SharedArrayBuffer(4);
+        checks.push(shared instanceof SharedArrayBuffer && shared.constructor === SharedArrayBuffer && !shared.growable);
+        let threw = false;
+        try { ArrayBuffer(1); } catch (e) { threw = e instanceof TypeError; }
+        checks.push(threw);
+        const t = new ArrayBuffer(4).transfer(8);
+        checks.push(t.byteLength === 8 && !t.resizable);
+        return checks.every(Boolean) ? 1 : checks.indexOf(false) + 100;
     })()"#
         ),
         1.0
@@ -434,8 +328,7 @@ fn buffer_coercions_and_growth_preserve_native_semantics() {
 fn unreachable_backing_stores_are_reclaimed_during_allocation_retry() {
     for source in [
         "(() => { for (let i=0; i<40; ++i) { const b = new ArrayBuffer(4*1024*1024); new Uint8Array(b)[0] = i; } return 1; })()",
-        "(() => { for (let i=0; i<40; ++i) { const b = new SharedArrayBuffer(4*1024*1024, {maxByteLength: 8*1024*1024}); new Uint8Array(b)[0] = i; } return 1; })()",
-        "(() => { for (let i=0; i<40; ++i) { const m = new WebAssembly.Memory({initial: 64, maximum: 128}); new Uint8Array(m.buffer)[0] = i; } return 1; })()",
+        "(() => { for (let i=0; i<40; ++i) { const b = new SharedArrayBuffer(4*1024*1024); new Uint8Array(b)[0] = i; } return 1; })()",
     ] {
         let evaluator = session();
         let before = evaluator.state.buffers.used();
@@ -450,20 +343,7 @@ fn unreachable_backing_stores_are_reclaimed_during_allocation_retry() {
 fn backing_store_allocator_lives_until_last_native_owner_drops() {
     for (source, shared) in [
         ("new ArrayBuffer(1048576)", false),
-        ("new ArrayBuffer(1048576, {maxByteLength: 2097152})", false),
         ("new SharedArrayBuffer(1048576)", true),
-        (
-            "new SharedArrayBuffer(1048576, {maxByteLength: 2097152})",
-            true,
-        ),
-        (
-            "new WebAssembly.Memory({initial:16, maximum:32}).buffer",
-            false,
-        ),
-        (
-            "new WebAssembly.Memory({initial:16, maximum:32, shared:true}).buffer",
-            true,
-        ),
     ] {
         let evaluator = session();
         let budget = evaluator.state.buffers.clone();

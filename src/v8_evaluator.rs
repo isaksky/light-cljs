@@ -94,6 +94,13 @@ impl State {
         // Without backing storage the existing near-heap-limit callback owns
         // enforcement. Heap statistics retire V8's allocation areas, so avoid
         // asking for them on every compiler/bridge call or interrupt.
+        if self.buffers.refused() {
+            // V8 already collected garbage and retried before giving up, and
+            // JavaScript may have caught the RangeError it threw instead.
+            self.control.memory_exhausted();
+            isolate.terminate_execution();
+            return;
+        }
         if self.buffers.used() == 0
             || (!force && self.memory_sample.get().elapsed() < Duration::from_millis(5))
         {
@@ -269,6 +276,32 @@ fn platform() -> v8::SharedRef<v8::Platform> {
         })
         .clone()
 }
+/// Runs first in every V8 context. The session budget charges backing
+/// stores through the `ArrayBuffer::Allocator` (`v8_buffers.cc`), but stock
+/// V8 maps resizable `ArrayBuffer`s, growable `SharedArrayBuffer`s and
+/// WebAssembly memory with its page allocator, outside that interface. So
+/// the macro realm has no `WebAssembly`, and a `maxByteLength` option is a
+/// `TypeError`; fixed-length buffers keep their native behavior.
+const RESTRICTED_BUFFERS: &str = r#"(() => {
+  delete globalThis.WebAssembly;
+  for (const name of ["ArrayBuffer", "SharedArrayBuffer"]) {
+    const native = globalThis[name];
+    const restricted = new Proxy(native, {
+      construct(target, args, newTarget) {
+        const options = args[1];
+        if (options !== null && (typeof options === "object" || typeof options === "function")) {
+          if (options.maxByteLength !== undefined) {
+            throw new TypeError(`${name} maxByteLength is not available to macros`);
+          }
+          return Reflect.construct(target, [args[0]], newTarget === restricted ? target : newTarget);
+        }
+        return Reflect.construct(target, args, newTarget === restricted ? target : newTarget);
+      },
+    });
+    Object.defineProperty(native.prototype, "constructor", { value: restricted });
+    Object.defineProperty(globalThis, name, { value: restricted });
+  }
+})()"#;
 fn script<'s>(
     scope: &mut PinScope<'s, '_>,
     source: &str,
@@ -466,7 +499,9 @@ impl V8Evaluator {
             let _execution = self.state.interrupt.enter();
             let scope = &mut v8::ContextScope::new(scope, local);
             v8::tc_scope!(let scope, scope);
-            let result = script(scope, &source()).and_then(|_| {
+            let result = script(scope, RESTRICTED_BUFFERS)
+                .and_then(|_| script(scope, &source()))
+                .and_then(|_| {
                 let services: Local<v8::Object> = script(scope, "__lightEvaluator")?
                     .try_into()
                     .map_err(|_| bridge::error("Invalid evaluator services"))?;

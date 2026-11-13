@@ -197,23 +197,6 @@ class V8_EXPORT ArrayBuffer : public Object {
      */
     virtual PageAllocator* GetPageAllocator() { return nullptr; }
 
-    /**
-     * Optional accounting for page-allocated resizable buffers and Wasm memory.
-     * Ordinary buffers continue to use Allocate/Free. A successful reservation
-     * charges committed bytes, not virtual address-space capacity; it is paired
-     * with release on shrink, failed commitment, or backing-store destruction.
-     * A failed reservation may be retried after garbage collection.
-     *
-     * These methods must be thread-safe and must not call into V8. Shared
-     * allocator ownership keeps them alive through backing-store destruction.
-     */
-    virtual bool HasBackingStoreMemoryBudget() const { return false; }
-    virtual bool ReserveBackingStoreMemory(size_t length) { return true; }
-    virtual void ReleaseBackingStoreMemory(size_t length) {}
-
-    /** Called after an ordinary or page-backed allocation has finally failed. */
-    virtual void BackingStoreAllocationFailed() {}
-
 #if defined(V8_COMPRESS_POINTERS) && \
     !defined(V8_COMPRESS_POINTERS_IN_SHARED_CAGE)
     /**

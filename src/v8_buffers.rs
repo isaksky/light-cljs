@@ -21,6 +21,12 @@ pub(super) struct Budget {
     /// The allowance a worker isolate keeps between jobs, its base and
     /// [`MemoryPool::keep`]; unbounded for any other.
     kept: usize,
+    /// The length of the last reservation the budget refused, or 0. V8
+    /// retries a refused allocation after collecting garbage; a retry that
+    /// fits clears it, and one still set when the evaluator next checks
+    /// memory makes the session terminal, so JavaScript cannot catch its
+    /// way past the limit.
+    refused: AtomicUsize,
     control: ExecutionControl,
 }
 
@@ -28,7 +34,6 @@ pub(super) struct Budget {
 struct Callbacks {
     reserve: unsafe extern "C" fn(*const c_void, usize) -> bool,
     release: unsafe extern "C" fn(*const c_void, usize),
-    failed: unsafe extern "C" fn(*const c_void),
     drop: unsafe extern "C" fn(*const c_void),
 }
 
@@ -61,6 +66,7 @@ impl Budget {
             allowance: AtomicUsize::new(pool.as_ref().map_or(limit, |(_, base)| *base)),
             pool,
             kept,
+            refused: AtomicUsize::new(0),
             control,
         })
     }
@@ -94,6 +100,11 @@ impl Budget {
         self.kept
     }
 
+    /// Whether an allocation was refused and not satisfied by a retry.
+    pub(super) fn refused(&self) -> bool {
+        self.refused.load(Ordering::Relaxed) != 0
+    }
+
     pub(super) fn used(&self) -> usize {
         self.used.load(Ordering::Relaxed)
     }
@@ -114,7 +125,6 @@ impl Budget {
         static CALLBACKS: Callbacks = Callbacks {
             reserve,
             release,
-            failed,
             drop: drop_budget,
         };
         let state = Arc::into_raw(self.clone()).cast();
@@ -147,18 +157,26 @@ unsafe extern "C" fn reserve(state: *const c_void, length: usize) -> bool {
         if next > room {
             // A build's isolate takes what it lacks from the pool, or V8
             // may collect garbage and retry. Failure becomes terminal only
-            // through `failed`, after the engine exhausts its allocation
-            // retries.
+            // when no retry fits (`refused`).
             if state.grow(next - room, next - room) {
                 continue;
             }
+            state.refused.store(length.max(1), Ordering::Relaxed);
             return false;
         }
         match state
             .used
             .compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
         {
-            Ok(_) => return true,
+            Ok(_) => {
+                let _ = state.refused.compare_exchange(
+                    length.max(1),
+                    0,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+                return true;
+            }
             Err(observed) => current = observed,
         }
     }
@@ -168,12 +186,6 @@ unsafe extern "C" fn release(state: *const c_void, length: usize) {
     unsafe { &*state.cast::<Budget>() }
         .used
         .fetch_sub(length, Ordering::Relaxed);
-}
-
-unsafe extern "C" fn failed(state: *const c_void) {
-    unsafe { &*state.cast::<Budget>() }
-        .control
-        .memory_exhausted();
 }
 
 unsafe extern "C" fn drop_budget(state: *const c_void) {

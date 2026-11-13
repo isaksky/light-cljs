@@ -12,9 +12,12 @@ preserves immutable form identity and namespace snapshots while releasing
 session roots on completion. Its timeout, polling and stack limits are terminal;
 the shared interrupt scheduler has no per-idle-session thread. Heap and buffer
 storage share a cooperative memory budget (not an RSS ceiling), including
-resizable/shared buffers and Wasm memory. The initial collection threshold is
-at most 256 MiB; live heaps can grow toward the configured budget. Startup
-requires at least 16 MiB. See [native engine build details](../vendor/v8/README.md).
+shared buffers. Stock V8 maps resizable and growable buffers and Wasm memory
+outside the allocator the budget charges, so the macro realm has no
+`WebAssembly` and rejects `maxByteLength` (`RESTRICTED_BUFFERS` in
+`src/v8_evaluator.rs`). The initial collection threshold is at most 256 MiB;
+live heaps can grow toward the configured budget. Startup requires at least
+16 MiB.
 A third implementation, `host_evaluator::HostEvaluator`, drives the same V8
 services in an engine the embedder supplies through `ScriptHost`; the browser
 playground uses it to run macros in the browser

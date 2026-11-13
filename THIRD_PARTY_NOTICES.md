@@ -90,16 +90,13 @@ committed beyond the adapted files listed above.
 
 ## rusty_v8 and V8
 
-- Rust bindings: <https://github.com/denoland/rusty_v8>, published crate 152.2.0,
-  recorded commit `2768994f664e8a6e3aba27503606c58339136e2a`. Copyright the Deno
-  authors. MIT license in `vendor/v8/LICENSE`.
+- Rust bindings: <https://github.com/denoland/rusty_v8>, the published `v8`
+  crate 152.2.0, an unmodified Cargo dependency with its prebuilt engine.
+  Copyright the Deno authors, MIT license.
 - V8 15.2.124.1: <https://chromium.googlesource.com/v8/v8>. Copyright the V8
-  project authors. BSD license and upstream notices in `vendor/v8/LICENSE.v8`.
-- Vendored Rust bindings/build files are in `vendor/v8`; corresponding public
-  C++ headers are in `vendor/v8-headers/include`. `vendor/v8/engine-budget.patch`
-  extends allocator accounting. `vendor/v8/prepare.bb` verifies the published
-  source crate and pinned ICU/Rust inputs; `vendor/v8/README.md` records the
-  source-build recipe and build-script changes.
+  project authors. BSD license in `vendor/v8-headers/LICENSE`.
+- `vendor/v8-headers/include` is an unmodified copy of the crate's public C++
+  headers, used by the small C++ shims in `src/v8_*.cc`.
 
 ## Other Cargo dependencies
 

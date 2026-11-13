@@ -13,7 +13,7 @@ license = "MIT AND EPL-1.0"
 [workspace]
 members = ["crates/big-boy-pants-js"]
 default-members = ["."]
-exclude = ["vendor/v8", "vendor/rquickjs-sys", "playground/crate"]
+exclude = ["vendor/rquickjs-sys", "playground/crate"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -28,7 +28,7 @@ rquickjs = { version = "=0.14.0", optional = true, default-features = false, fea
 mimalloc = "=0.1.52"
 
 [target.'cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), any(target_os = "macos", target_os = "linux", target_os = "windows")))'.dependencies]
-v8 = { version = "=152.2.0", path = "vendor/v8", optional = true, features = ["v8_enable_pointer_compression"] }
+v8 = { version = "=152.2.0", optional = true, features = ["v8_enable_pointer_compression"] }
 
 [build-dependencies]
 cc = "=1.7.0"

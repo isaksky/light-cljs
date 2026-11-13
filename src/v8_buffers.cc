@@ -10,18 +10,17 @@
 #pragma GCC diagnostic pop
 #endif
 
-// Linking an upstream archive with our extended allocator vtable is unsafe.
-// Only the patched engine exports this versioned ABI marker.
-extern "C" void light_v8_backing_store_budget_abi_v1();
-
 // These callbacks only touch atomic Rust accounting. They never enter V8.
 struct LightBufferBudget {
   bool (*reserve)(const void*, size_t);
   void (*release)(const void*, size_t);
-  void (*failed)(const void*);
   void (*drop)(const void*);
 };
 
+// Charges every fixed-length ArrayBuffer and SharedArrayBuffer to the session
+// budget. Resizable and growable buffers and WebAssembly memory bypass the
+// allocator in stock V8, so the evaluator removes them from the macro realm
+// (v8_evaluator.rs, `RESTRICTED_BUFFERS`).
 class LightBufferAllocator final : public v8::ArrayBuffer::Allocator {
  public:
   LightBufferAllocator(const void* state, const LightBufferBudget* callbacks)
@@ -39,14 +38,6 @@ class LightBufferAllocator final : public v8::ArrayBuffer::Allocator {
     std::free(data);
     callbacks_->release(state_, length);
   }
-  bool HasBackingStoreMemoryBudget() const override { return true; }
-  bool ReserveBackingStoreMemory(size_t length) override {
-    return callbacks_->reserve(state_, length);
-  }
-  void ReleaseBackingStoreMemory(size_t length) override {
-    callbacks_->release(state_, length);
-  }
-  void BackingStoreAllocationFailed() override { callbacks_->failed(state_); }
 
  private:
   const void* state_;
@@ -55,6 +46,5 @@ class LightBufferAllocator final : public v8::ArrayBuffer::Allocator {
 
 extern "C" v8::ArrayBuffer::Allocator* light_v8_buffer_allocator(
     const void* state, const LightBufferBudget* callbacks) {
-  light_v8_backing_store_budget_abi_v1();
   return new (std::nothrow) LightBufferAllocator(state, callbacks);
 }
