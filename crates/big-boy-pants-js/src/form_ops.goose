@@ -286,16 +286,18 @@ fn removal_error(heap: Heap&, op: i64, v: Value) -> CoreError {
 // dissoc and disj): v without every entry whose key is equal (a literal
 // keeps reader-distinct keys that are equal once read, and the V8 build's
 // array map drops them all; it pads its count with undefined entries,
-// which it cannot return, and this one does not), keeping its metadata and
-// traversal order, or v itself when none is; nil stays nil. Another value
-// is a TypeError (the clj forms raise removal_error's error first).
+// which it cannot return, and this one does not), keeping its metadata,
+// traversal order and the routes of the keys it keeps (source_vm.goose
+// "Routes"), or v itself when none is; nil stays nil. Another value is a
+// TypeError (the clj forms raise removal_error's error first).
 fn form_remove(heap: Heap&, v: Value, k: Value, set: bool) -> Value {
     let x = form_value(heap, v); let kind = form_kind(heap, x);
     if heap.fault != Fault.None { return Value.Undefined; }
     if x.tag() <= value_tag::Null { return nil(); }
     if kind != (if set { node_kind::Set } else { node_kind::Map }) { heap.fault = Fault.TypeError; return Value.Undefined; }
     let n = node(heap, x.id()); let stride: i64 = if set { 1 } else { 2 };
-    var kept: Value[>..] = [];
+    let routes = if hash_ordered(n) { route_start(heap, n) } else { -1 };
+    var kept: Value[>..] = []; var kept_routes: Value[>..] = []; var routed = false;
     for i in (n.count / stride) {
         let key = slot(heap, n.start + i * stride);
         let equal = form_equal(heap, key, k);
@@ -303,22 +305,26 @@ fn form_remove(heap: Heap&, v: Value, k: Value, set: bool) -> Value {
         if equal { continue; }
         if !valid(heap, key) { return Value.Undefined; } kept.push(key);
         if !set { let value = slot(heap, n.start + i * 2 + 1); if !valid(heap, value) { return Value.Undefined; } kept.push(value); }
+        if routes >= 0 { let r = slot(heap, routes + i); routed = routed || r.is_number(); kept_routes.push(r); }
     }
     if kept.len == n.count { return v; }
-    if !values_fit(heap, kept.len) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
+    let route_rows = if routed { kept_routes.len } else { 0 };
+    if !values_fit(heap, kept.len + route_rows) || !nodes_fit(heap, if routed { 2 } else { 1 }) { memory(heap); return Value.Undefined; }
     if !charge(heap, kept.len) { return Value.Undefined; }
-    var made = n; made.origin = -1; made.start = heap.values.len as u32; made.count = kept.len as u32;
+    var made = n; made.origin = -1; made.value = Value.Undefined;
+    if routed { made.value = form_collection(heap, node_kind::Vector, kept_routes); if heap.fault != Fault.None { return Value.Undefined; } }
+    made.start = heap.values.len as u32; made.count = kept.len as u32;
     let result = allocate(heap, made); if heap.fault != Fault.None { return Value.Undefined; }
     add_values(heap, kept);
     return result;
 }
 // `formEmpty` (form.rs empty): an empty map or set of v's kind, traversal
-// order and metadata; a TypeError for another value.
+// order and metadata (no routes); a TypeError for another value.
 fn form_empty(heap: Heap&, v: Value) -> Value {
     let x = form_value(heap, v); let kind = form_kind(heap, x);
     if heap.fault != Fault.None { return Value.Undefined; }
     if kind != node_kind::Map && kind != node_kind::Set { heap.fault = Fault.TypeError; return Value.Undefined; }
-    var made = node(heap, x.id()); made.origin = -1; made.start = heap.values.len as u32; made.count = 0;
+    var made = node(heap, x.id()); made.origin = -1; made.value = Value.Undefined; made.start = heap.values.len as u32; made.count = 0;
     return allocate(heap, made);
 }
 // `formKeys` (form.rs entries): a new vector of a map's keys or a set's
@@ -1047,10 +1053,11 @@ recursive fn struct_equal(heap: Heap&, x: Value, y: Value, depth: i64) -> bool {
     return form_equal(heap, n.namespace_value, m.namespace_value, depth + 1);
 }
 // The hash of a record or keyed struct x (form.rs hash): false, with no
-// fault, for a deftype instance (identity-hashed).
-recursive fn struct_hash(heap: Heap&, x: Value, depth: i64) -> u32, bool {
+// fault, for a deftype instance (identity-hashed); `imported` is
+// form_hash's.
+recursive fn struct_hash(heap: Heap&, x: Value, depth: i64, imported: bool = false) -> u32, bool {
     let n = node(heap, x.id()); let t = struct_type_node(heap, x);
-    if t.function != 0 { return form_hash(heap, slot(heap, n.start + t.function - 1), depth + 1); }
+    if t.function != 0 { return form_hash(heap, slot(heap, n.start + t.function - 1), depth + 1, imported); }
     if t.length != type_flavor::Record { return 0, false; }
     // The sum takes the entries in any order: the fields, then the
     // extension map's run.
@@ -1061,14 +1068,14 @@ recursive fn struct_hash(heap: Heap&, x: Value, depth: i64) -> u32, bool {
         let name = slot(heap, t.start + i);
         if !charge(heap, str_len(heap, name)) { return 0, false; }
         let k = hash_named(heap, name, nil()) + 2654435769;
-        let v, ok = form_hash(heap, slot(heap, n.start + i), depth + 1); if !ok { return 0, false; }
+        let v, ok = form_hash(heap, slot(heap, n.start + i), depth + 1, imported); if !ok { return 0, false; }
         sum = sum + (k ^ v);
     }
     if n.namespace_value.is_object() {
         let e = node(heap, n.namespace_value.id());
         for i in (e.count / 2) {
-            let k, kok = form_hash(heap, slot(heap, e.start + i * 2), depth + 1); if !kok { return 0, false; }
-            let v, vok = form_hash(heap, slot(heap, e.start + i * 2 + 1), depth + 1); if !vok { return 0, false; }
+            let k, kok = form_hash(heap, slot(heap, e.start + i * 2), depth + 1, imported); if !kok { return 0, false; }
+            let v, vok = form_hash(heap, slot(heap, e.start + i * 2 + 1), depth + 1, imported); if !vok { return 0, false; }
             sum = sum + (k ^ v);
         }
     }

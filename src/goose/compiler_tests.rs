@@ -3883,6 +3883,50 @@ fn goose_compiler_instants_match_v8() {
     assert!(error.contains("bridge-Error.Unsupported"), "{error}");
 }
 
+/// A hash-ordered map's key or set's member keeps the place its hash had
+/// when the collection took it (light-cljs-965): a Date whose setter runs
+/// afterwards, alone or inside a vector key, prints, seqs and goes back to
+/// the compiler where the V8 build's hash trie keeps it, whether a job's
+/// conj, assoc or hash-map literal took it or the form bridge imported it;
+/// dissoc, disj, with-meta and a later conj or assoc keep it there. A key
+/// taken after its Date changed (a promotion, or a new set) takes the
+/// changed hash, on both builds.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_hash_routes_match_v8() {
+    for source in [
+        // The pellet's reproducers: a job's set, an argument's set.
+        r#"(defmacro m [] (let [d (js/Date. 1) s (conj #{0 2 3 4 5 6 7 8} d)] (.setTime d 9) (pr-str s))) (def x (m))"#,
+        r#"(defmacro m [s] (do (.setTime (get s (js/Date. 1)) 9) s)) (def x (m #{#inst "1970-01-01T00:00:00.001Z" 0 2 3 4 5 6 7 8}))"#,
+        r#"(defmacro m [s] (do (.setTime (get s (js/Date. 1)) 9) [(pr-str s) (vec s) (pr-str (conj s 10)) (pr-str (disj s 4))])) (def x (m #{#inst "1970-01-01T00:00:00.001Z" 0 2 3 4 5 6 7 8}))"#,
+        r#"(defmacro m [] (let [d (js/Date. 1) s (conj #{0 2 3 4 5 6 7 8} d)] (.setTime d 9) [s (conj s 10) (disj s 4) (with-meta s {:a 1})])) (def x (m))"#,
+        // A map with a Date key: promoted by assoc, assoc'd onto a hash
+        // map, a hash-map literal, an argument's.
+        r#"(defmacro m [] (let [d (js/Date. 1) s (assoc {0 0 2 2 3 3 4 4 5 5 6 6 7 7 8 8} d :d)] (.setTime d 9) [(pr-str s) s (seq s) (pr-str (dissoc s 4)) (assoc s 10 10)])) (def x (m))"#,
+        r#"(defmacro m [] (let [d (js/Date. 1) s (assoc {0 0 2 2 3 3 4 4 5 5 6 6 7 7 8 8 10 10} d :d)] (.setTime d 9) [(pr-str s) s])) (def x (m))"#,
+        r#"(defmacro m [] (let [d (js/Date. 1) s {d :d 0 0 2 2 3 3 4 4 5 5 6 6 7 7 8 8}] (.setTime d 9) [(pr-str s) s])) (def x (m))"#,
+        r#"(defmacro m [v] (do (.setTime (loop [es (seq v)] (let [k (first (first es))] (if (instance? js/Date k) k (recur (rest es))))) 9) v)) (def x (m {#inst "1970-01-01T00:00:00.001Z" :d 0 0 2 2 3 3 4 4 5 5 6 6 7 7 8 8}))"#,
+        // A vector key holding a Date, whose hash the V8 build caches.
+        r#"(defmacro m [] (let [d (js/Date. 2) s (conj #{0 2 3 4 5 6 7 20} [d])] (.setTime d 1000) [(pr-str s) s])) (def x (m))"#,
+        r#"(defmacro m [] (let [d (js/Date. 2) s (assoc {0 0 2 2 3 3 4 4 5 5 6 6 7 7 20 20} [d] :d)] (.setTime d 1000) [(pr-str s) s])) (def x (m))"#,
+        r#"(defmacro m [s] (do (.setTime (first (get s [(js/Date. 2)])) 1000) [(pr-str s) s])) (def x (m #{[#inst "1970-01-01T00:00:00.002Z"] 0 2 3 4 5 6 7 20}))"#,
+        // A later key that reaches the changed Date's leaf splits it: the
+        // Date keeps its first level and takes its new hash below, on a
+        // job's set and map and an argument's set; a removal merges no
+        // leaves up.
+        r#"(defmacro m [] (let [d (js/Date. 1) s (conj #{0 2 3 4 5 6 7 8} d)] (.setTime d 65) [(pr-str (conj s 33)) (conj s 33) (pr-str (conj s 97))])) (def x (m))"#,
+        r#"(defmacro m [] (let [d (js/Date. 1) s (assoc {0 0 2 2 3 3 4 4 5 5 6 6 7 7 8 8} d :d)] (.setTime d 65) [(pr-str (assoc s 33 33)) (assoc s 33 33)])) (def x (m))"#,
+        r#"(defmacro m [s] (let [d (get s (js/Date. 1))] (.setTime d 65) [(pr-str (conj s 33)) (conj s 33)])) (def x (m #{#inst "1970-01-01T00:00:00.001Z" 0 2 3 4 5 6 7 8}))"#,
+        r#"(defmacro m [] (let [d (js/Date. 1) s (disj (conj (conj #{0 2 3 4 5 6 7 8} d) 33) 33)] (.setTime d 129) [(pr-str (conj s 97)) (conj s 97)])) (def x (m))"#,
+        // Taken after the change.
+        r#"(defmacro m [] (let [d (js/Date. 9) s (conj #{0 2 3 4 5 6 7} d)] (.setTime d 1) [(pr-str (conj s 8)) (conj s 8)])) (def x (m))"#,
+        r#"(defmacro m [s] (let [d (get s (js/Date. 1))] (.setTime d 9) (pr-str (conj #{0 2 3 4 5 6 7 8} d)))) (def x (m #{#inst "1970-01-01T00:00:00.001Z"}))"#,
+    ] {
+        source_matches_v8(source, None);
+    }
+}
+
 /// Shareable regex values in process-wide state (light-cljs-935): a
 /// regex kept in an atom and read by later jobs is one identity
 /// (compare-and-set! by identity holds, a job's two reads are one object),

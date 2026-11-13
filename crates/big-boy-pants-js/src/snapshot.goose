@@ -89,6 +89,18 @@ fn struct_row<S>(s: const S&, n: source::Node) -> bool {
     if !n.namespace_value.is_null() && !(record && map_row(s, n.namespace_value)) || !n.metadata.is_undefined() && !(record && map_row(s, n.metadata)) { return false; }
     return n.proto.is_hole() && n.keys == 0 && n.key_count == 0 && n.key_capacity == 0 && n.shape == 0 && n.function == 0 && n.length == 0 && !n.initialized && !n.non_extensible;
 }
+// Whether map or set row n has no routes or a hash-ordered one's
+// (light-cljs-965, source_vm.goose "Routes"): a vector whose run holds an
+// entry's route (a Number: a u32 word and a depth, 0 to 7, above it) or
+// Undefined for each entry.
+fn routes_row<S>(s: const S&, n: source::Node, c: Control&) -> bool {
+    if n.value.is_undefined() { return true; }
+    if n.length != map_order::Hash || !n.value.is_object() || n.value.id() >= s.nodes.len { return false; }
+    let r = s.nodes[n.value.id()];
+    if r.kind != node_kind::Vector || r.count != (if n.kind == node_kind::Map { n.count / 2 } else { n.count }) || !range(r.start, r.count, s.values.len) || !poll(c, r.count) { return false; }
+    for v in s.values[r.start..(r.start + r.count)] { if !v.is_undefined() && !(v.is_number() && v.num() >= 0 && v.num() < 34359738368.0 && v.num() == trunc(v.num())) { return false; } }
+    return true;
+}
 // An element run (an ordinary object's, an arguments object's or an array's)
 // is exclusive and may hold holes.
 fn elements(kind: i64) -> bool { return kind == node_kind::Object || kind == node_kind::Arguments || kind == node_kind::Array; }
@@ -1243,6 +1255,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // (light-cljs-886): it is never a lazy closure.
         if n.kind == node_kind::Closure && s.functions[n.function].kind >= constructor::BaseClass && n.key_count == 0 && !n.initialized { return reject(c, Error.Link); }
         if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == node_kind::Map && n.count % 2 != 0 { return reject(c, Error.Link); } }
+        if (n.kind == node_kind::Map || n.kind == node_kind::Set) && !routes_row(s, n, c) { return if c.error == Error.None { reject(c, Error.Link) } else { false }; }
         // A Map or Set (light-cljs-943): its run's layout (collection_holes),
         // whose holes are allowed, as an array's are.
         if n.kind == node_kind::Collection {
