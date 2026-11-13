@@ -122,6 +122,13 @@ compiler slots and native Goose workers independently. These runs use separate
 `macro-PHASE-slots-4-8` result directories and filenames containing both limits;
 the original modes retain their filenames. V8 uses each requested compiler-slot
 count with its single execution worker.
+Without `--v8-jobs`, the V8 cell always runs at `--jobs 1`, so a Goose N cell
+is compared with V8 on one compiler slot. `--v8-jobs 1,2,4,8` instead adds a
+V8 cell at each of those `--jobs` counts, each right before the Goose cell of
+the same count in every round, in `macro-PHASE-v8-jobs-1-2-4-8`. V8 at
+`--jobs N` runs deferred units on N-1 worker isolates (`--stats` prints
+`pool.worker-isolates`); its samples still record `:execution-workers 1`,
+which there means the main isolate's top-level expansion only.
 `--also-light LABEL=BINARY` (repeatable) puts another CLI's cells into the same
 rounds, each right after the primary cell of the same setting, so a predecessor
 and its successor interleave; `LABEL=BINARY,goose` gives that binary only the
