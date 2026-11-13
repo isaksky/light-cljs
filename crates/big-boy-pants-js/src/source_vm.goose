@@ -3692,15 +3692,16 @@ struct OrderKey { key: u64, index: i64 }
 // took its keys with the time values its Dates came with); the first key
 // a job adds to an imported collection (one with a compiler occurrence)
 // gives its changeable keys their imported hashes at their least depths
-// first. The vector is an ordinary row, which the job's truncation,
+// first (as does the first dissoc, disj, with-meta or replacing assoc:
+// imported_routes). The vector is an ordinary row, which the job's truncation,
 // snapshots, reclamation and saved continuations carry through `value`; a
 // collection without a changeable key has none (a cell value or
 // publication, which holds no Date, never has). Not reproduced: a node
 // that expands past 16 slots into an array node moves its leaves one
 // level down, rehashing changed keys for the levels below (and a
-// transient's capacity times that); a collection derived from an imported
-// one without adding a key (dissoc, with-meta) leaves its imported Dates
-// unsplit; and a split that runs past the hash's seven chunks.
+// transient's capacity times that), and a split that runs past the hash's
+// seven chunks, where JavaScript's shifts wrap (light-cljs-967); lookups
+// of changed keys, which the V8 build's trie misses (light-cljs-966).
 //
 // Whether key k's hash may change after a collection takes it (Routes).
 // Each collection or record it looks into is one unit of work; past 128
@@ -3745,12 +3746,13 @@ fn key_hash(heap: Heap&, k: Value, imported: bool = false) -> u32, bool {
     return h, ok && heap.fault == Fault.None;
 }
 // The words of map or set n's entries: a route's word, or its key's hash
-// now, `imported` as form_hash's; hashed[i] false where it does not hash.
-// False on a fault.
+// now, `imported` as form_hash's; hashed[i] false where it does not hash
+// and for nil, which the V8 build keeps beside its trie. False on a fault.
 fn entry_words(heap: Heap&, n: Node, routes: const Value[:], imported: bool, words: u32[>..]&, hashed: bool[>..]&) -> bool {
     let stride: i64 = if n.kind == node_kind::Map { 2 } else { 1 };
     for i in entry_count(n) {
         if i < routes.len && routes[i].is_number() { words.push(route_word(routes[i])); hashed.push(true); continue; }
+        if form_value(heap, slot(heap, n.start + i * stride)).tag() <= value_tag::Null { words.push(0); hashed.push(false); continue; }
         let h, ok = key_hash(heap, slot(heap, n.start + i * stride), imported);
         if heap.fault != Fault.None { return false; }
         words.push(h); hashed.push(ok);
@@ -3798,6 +3800,39 @@ fn route_start(heap: const Heap&, n: const Node&) -> i64 {
     if r.kind != node_kind::Vector || r.count != entry_count(n) { abort("a map's or set's routes do not match its entries"); }
     return r.start;
 }
+// The routes an imported hash-ordered map or set n (a compiler
+// occurrence without routes) gives its changeable keys before a job
+// derives a collection from it (Routes): their imported hashes at their
+// least depths, in `routes`, left empty when it has none, with every
+// entry's word in `words` and `hashed` once it has one. False on a fault.
+fn imported_routes(heap: Heap&, n: Node, routes: Value[>..]&, words: u32[>..]&, hashed: bool[>..]&) -> bool {
+    routes.clear();
+    if !hash_ordered(n) || n.value.is_object() || n.origin < 0 { return true; }
+    let stride: i64 = if n.kind == node_kind::Map { 2 } else { 1 };
+    var changeable: bool[>..] = []; var any = false;
+    for i in entry_count(n) {
+        let c = hash_may_change(heap, slot(heap, n.start + i * stride));
+        if heap.fault != Fault.None { return false; }
+        changeable.push(c); any = any || c;
+    }
+    if !any { return true; }
+    let none: Value[0] = [];
+    if !entry_words(heap, n, none[..], true, words, hashed) { return false; }
+    routes.resize(entry_count(n), Value.Undefined); var routed = false;
+    for i in entry_count(n) { if changeable[i] && hashed[i] { routes[i] = route_of(words[i], least_depth(heap, words[i], words[..], hashed[..], i)); routed = true; } }
+    if heap.fault != Fault.None { return false; }
+    if !routed { routes.clear(); }
+    return true;
+}
+// The routes of a collection a job derives from map or set n with the same
+// keys (with-meta, an assoc that replaces a value): n's, or an imported
+// one's (imported_routes) in a new vector. Undefined with a fault on a
+// fault.
+fn kept_routes(heap: Heap&, n: Node) -> Value {
+    var routes: Value[>..] = []; var words: u32[>..] = []; var hashed: bool[>..] = [];
+    if !imported_routes(heap, n, routes, words, hashed) { return Value.Undefined; }
+    return if routes.len == 0 { n.value } else { form_collection(heap, node_kind::Vector, routes) };
+}
 // The routes of hash-ordered map or set n once it takes key k after its
 // entries (Routes): `out` is left empty when it needs none. Its caller
 // preflights out.len value rows and a node with the collection's rows and
@@ -3805,36 +3840,36 @@ fn route_start(heap: const Heap&, n: const Node&) -> i64 {
 fn added_routes(heap: Heap&, n: Node, k: Value, out: Value[>..]&) -> bool {
     out.clear();
     let entries = entry_count(n); let stride: i64 = if n.kind == node_kind::Map { 2 } else { 1 };
-    let at = route_start(heap, n); let imported = at < 0 && n.origin >= 0;
+    let at = route_start(heap, n);
     let fresh = hash_may_change(heap, k);
     if heap.fault != Fault.None { return false; }
-    if at < 0 && !fresh && !imported { return true; }
-    var routes: Value[>..] = [];
-    if at >= 0 { routes.append(run(heap, at, entries)); } else { routes.resize(entries, Value.Undefined); }
+    if at < 0 && !fresh && n.origin < 0 { return true; }
     // Every entry's word, for a changeable key's least depth.
-    var words: u32[>..] = []; var hashed: bool[>..] = [];
+    var routes: Value[>..] = []; var words: u32[>..] = []; var hashed: bool[>..] = [];
+    if at >= 0 { routes.append(run(heap, at, entries)); } else if !imported_routes(heap, n, routes, words, hashed) { return false; }
+    if routes.len == 0 { if !fresh { return true; } routes.resize(entries, Value.Undefined); }
     // A key without a route was taken unchanged or imported.
-    if (fresh || imported) && !entry_words(heap, n, routes[..], true, words, hashed) { return false; }
-    if imported {
-        var any = false;
-        for i in entries {
-            let c = hashed[i] && hash_may_change(heap, slot(heap, n.start + i * stride));
-            if heap.fault != Fault.None { return false; }
-            if c { routes[i] = route_of(words[i], least_depth(heap, words[i], words[..], hashed[..], i)); any = true; }
-        }
-        if !any && !fresh { return true; }
-    }
-    let h, ok = key_hash(heap, k);
+    if fresh && words.len == 0 && !entry_words(heap, n, routes[..], true, words, hashed) { return false; }
+    // nil goes beside the V8 build's trie, so it splits no leaf.
+    let h, ok = key_hash(heap, k); let beside = form_value(heap, k).tag() <= value_tag::Null;
     if heap.fault != Fault.None { return false; }
-    if ok {
+    if ok && !beside {
         // The leaf of a changeable key whose path the new key's hash
-        // follows past its depth splits.
+        // follows past its depth splits. A Date takes its hash now there; a
+        // collection or record key keeps the hash the V8 build cached when
+        // the collection took it (its route's word).
         for i in routes.len {
             let r = routes[i];
             if !r.is_number() || route_depth(r) >= 7 || shared_levels(route_word(r), h) <= route_depth(r) { continue; }
-            let now, hok = key_hash(heap, slot(heap, n.start + i * stride));
-            if heap.fault != Fault.None { return false; }
-            if !hok { continue; }
+            let key = slot(heap, n.start + i * stride);
+            var now = route_word(r);
+            if form_kind(heap, key) == node_kind::Date {
+                let current, hok = key_hash(heap, key);
+                if heap.fault != Fault.None { return false; }
+                // A Date that does not hash here (intrinsic_date) cannot split.
+                if !hok { heap.fault = Fault.NativeBoundary; return false; }
+                now = current;
+            }
             let one:   u32 = 1; let bits = ((route_depth(r) + 1) * 5) as u32;
             let kept:  u32 = if route_depth(r) >= 6 { 4294967295 } else { (one << bits) - 1 };
             let moved: u32 = (route_word(r) & kept) | (now & ~kept);
@@ -3843,7 +3878,7 @@ fn added_routes(heap: Heap&, n: Node, k: Value, out: Value[>..]&) -> bool {
         }
     }
     var r = Value.Undefined;
-    if fresh && ok { r = route_of(h, least_depth(heap, h, words[..], hashed[..], -1)); }
+    if fresh && ok && !beside { r = route_of(h, least_depth(heap, h, words[..], hashed[..], -1)); }
     if heap.fault != Fault.None { return false; }
     routes.push(r);
     for x in routes { if x.is_number() { out.append(routes[..]); return true; } }
@@ -3974,6 +4009,8 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
     // value's key keeps its own.
     var routes: Value[>..] = [];
     if kind == node_kind::Map && !replacing && hash_ordered(n) && !added_routes(heap, n, k, routes) { return Value.Undefined; }
+    var words: u32[>..] = []; var hashed: bool[>..] = [];
+    if kind == node_kind::Map && replacing && !imported_routes(heap, n, routes, words, hashed) { return Value.Undefined; }
     let route_rows = routes.len;
     if !values_fit(heap, count + route_rows) || !nodes_fit(heap, if route_rows > 0 { 2 } else { 1 }) { memory(heap); return Value.Undefined; }
     if !charge(heap, count) { return Value.Undefined; }
@@ -4406,7 +4443,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         form_op::Meta, form_op::CljMeta => { return if a.is_object() && !node(heap, a.id()).metadata.is_undefined() && private_row(heap, a) < 0 { node(heap, a.id()).metadata } else { nil() }; },
         form_op::WithMeta, form_op::CljWithMeta => {
             if record_value(heap, a) { return record_with_meta(heap, form_value(heap, a), args[1]); }
-            let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != node_kind::Map) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; if n.kind == node_kind::Vector { n.length = vector_flavor::Plain; } return allocate(heap, n); },
+            let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != node_kind::Map) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; if n.kind == node_kind::Map || n.kind == node_kind::Set { n.value = kept_routes(heap, n); if heap.fault != Fault.None { return Value.Undefined; } } n.origin = -1; if n.kind == node_kind::Vector { n.length = vector_flavor::Plain; } return allocate(heap, n); },
         form_op::Value => { return form_value(heap, a); },
         form_op::CljTruth => { let v = form_value(heap, a); return boolean(v.tag() > value_tag::Null && !(v.is_bool() && !v.flag())); },
         form_op::CljSeq, form_op::CljRest, form_op::CljNext => {

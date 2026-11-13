@@ -1077,24 +1077,28 @@ takes each such key's hash now and the least depth that tells it from the
 others; a key added later (an assoc or conj onto a hash-ordered
 collection) that reaches a changed key's leaf splits it as hashNodeAssoc
 does (the old key keeps its path to its depth and takes its current hash
-below, and both settle where they part); dissoc and disj keep the kept
+below, a collection or record key the hash the V8 build cached when it was
+taken, and both settle where they part; a Date that no longer hashes here
+fails the update by name; nil sits beside the trie and splits nothing);
+dissoc and disj keep the kept
 entries' routes and depths (removal merges no leaves up) and drop the
 vector with the last Date key; an assoc that replaces a value keeps the
 key's route; empty has none; with-meta shares them. The form bridge's
 import takes no routes: an imported collection's keys hash at walk time
 with every imported Date at the time value it came with (its
 `namespace_value`, light-cljs-963; `form_hash`'s `imported`), which is the
-hash the import took, and the first key a job adds to it gives those Dates
-routes at their least depths before it descends. The vector is an
+hash the import took, and the first collection a job derives from it
+(an added key, dissoc, disj, with-meta, a replaced value) gives those
+Dates routes at their least depths first. The vector is an
 ordinary row, so the job's truncation, snapshots (which check its layout),
 reclamation and continuations carry it through `value` with no new link;
 a cell value or publication never holds a Date, so none carries routes.
 Not reproduced: a node that expands past 16 slots into an array node
 moves its leaves one level down and rehashes changed keys for the levels
-below (a transient's capacity times that); a collection derived from an
-imported one without adding a key (dissoc, with-meta) leaves its imported
-Dates unsplit; and a split that runs past a hash's seven chunks, where
-JavaScript's shifts wrap.
+below (a transient's capacity times that), and a split that runs past a
+hash's seven chunks, where JavaScript's shifts wrap (both
+light-cljs-967); lookups of changed keys, which the V8 build's trie
+misses, are light-cljs-966.
 
 *As landed by light-cljs-885 (Symbol values):* a symbol a job makes is a
 row of the node table, `node_kind::JsSymbol` (its description, a string or

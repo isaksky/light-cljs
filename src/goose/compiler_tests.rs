@@ -3919,6 +3919,12 @@ fn goose_compiler_hash_routes_match_v8() {
         r#"(defmacro m [] (let [d (js/Date. 1) s (assoc {0 0 2 2 3 3 4 4 5 5 6 6 7 7 8 8} d :d)] (.setTime d 65) [(pr-str (assoc s 33 33)) (assoc s 33 33)])) (def x (m))"#,
         r#"(defmacro m [s] (let [d (get s (js/Date. 1))] (.setTime d 65) [(pr-str (conj s 33)) (conj s 33)])) (def x (m #{#inst "1970-01-01T00:00:00.001Z" 0 2 3 4 5 6 7 8}))"#,
         r#"(defmacro m [] (let [d (js/Date. 1) s (disj (conj (conj #{0 2 3 4 5 6 7 8} d) 33) 33)] (.setTime d 129) [(pr-str (conj s 97)) (conj s 97)])) (def x (m))"#,
+        // nil sits beside the trie; a vector key splits on the hash the V8
+        // build cached; an argument's set derived by disj or with-meta
+        // keeps its Date's imported route.
+        r#"(defmacro m [] (let [d (js/Date. 0) s (conj #{nil 2 3 4 5 6 7 8} d)] (.setTime d 64) [(pr-str (conj s 32)) (conj s 32)])) (def x (m))"#,
+        r#"(defmacro m [] (let [d (js/Date. 2) s (conj #{0 2 3 4 5 6 7 20} [d])] (.setTime d 1000) [(pr-str (conj s 331)) (conj s 331)])) (def x (m))"#,
+        r#"(defmacro m [s] (let [d (get s (js/Date. 1)) t (disj s 4) u (with-meta s {:a 1})] (.setTime d 65) [(pr-str (conj t 33)) (conj t 33) (pr-str (conj u 33))])) (def x (m #{#inst "1970-01-01T00:00:00.001Z" 0 2 3 4 5 6 7 8}))"#,
         // Taken after the change.
         r#"(defmacro m [] (let [d (js/Date. 9) s (conj #{0 2 3 4 5 6 7} d)] (.setTime d 1) [(pr-str (conj s 8)) (conj s 8)])) (def x (m))"#,
         r#"(defmacro m [s] (let [d (get s (js/Date. 1))] (.setTime d 9) (pr-str (conj #{0 2 3 4 5 6 7 8} d)))) (def x (m #{#inst "1970-01-01T00:00:00.001Z"}))"#,

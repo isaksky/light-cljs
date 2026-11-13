@@ -492,6 +492,11 @@ thread_fn hash_routes() {
     let q = date_at(heap, 1.0); let parted = source::form_remove(heap, source::form_conj(heap, source::form_conj(heap, small, q), source::number(33.0)), source::number(33.0), true);
     assert(source::route_depth(source::slot(heap, source::node(heap, routes_of(heap, parted).id()).start + 8)) == 1 && source::set_date_value(job, q, 129.0));
     let after = source::form_conj(heap, parted, source::number(97.0)); assert(position(heap, after, 8) == 1 && position(heap, after, 9) == 2);
+    // A changed Date that no longer hashes here (an own property) cannot
+    // split when a key reaches its leaf: that conj fails by name.
+    let o = date_at(heap, 1.0); let os = source::form_conj(heap, small, o);
+    assert(source::set_date_value(job, o, 65.0) && source::define_own(heap, o.id(), source::key_named(heap, "x"), source::number(1.0), source::attr_writable() | source::attr_configurable()));
+    assert(source::form_conj(heap, os, source::number(33.0)).is_undefined() && heap.fault == source::Fault.NativeBoundary); heap.fault = source::Fault.None;
     assert(routes_of(heap, source::form_empty(heap, s)).is_undefined());
     // A map: assoc's promotion takes a Date key's route and a replaced
     // value keeps the routes row.

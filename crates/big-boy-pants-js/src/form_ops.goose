@@ -296,7 +296,13 @@ fn form_remove(heap: Heap&, v: Value, k: Value, set: bool) -> Value {
     if x.tag() <= value_tag::Null { return nil(); }
     if kind != (if set { node_kind::Set } else { node_kind::Map }) { heap.fault = Fault.TypeError; return Value.Undefined; }
     let n = node(heap, x.id()); let stride: i64 = if set { 1 } else { 2 };
-    let routes = if hash_ordered(n) { route_start(heap, n) } else { -1 };
+    // The routes it keeps: n's, or an imported one's (imported_routes).
+    var routes: Value[>..] = [];
+    if hash_ordered(n) {
+        let at = route_start(heap, n);
+        var words: u32[>..] = []; var hashed: bool[>..] = [];
+        if at >= 0 { routes.append(run(heap, at, n.count / stride)); } else if !imported_routes(heap, n, routes, words, hashed) { return Value.Undefined; }
+    }
     var kept: Value[>..] = []; var kept_routes: Value[>..] = []; var routed = false;
     for i in (n.count / stride) {
         let key = slot(heap, n.start + i * stride);
@@ -305,7 +311,7 @@ fn form_remove(heap: Heap&, v: Value, k: Value, set: bool) -> Value {
         if equal { continue; }
         if !valid(heap, key) { return Value.Undefined; } kept.push(key);
         if !set { let value = slot(heap, n.start + i * 2 + 1); if !valid(heap, value) { return Value.Undefined; } kept.push(value); }
-        if routes >= 0 { let r = slot(heap, routes + i); routed = routed || r.is_number(); kept_routes.push(r); }
+        if routes.len > 0 { let r = routes[i]; routed = routed || r.is_number(); kept_routes.push(r); }
     }
     if kept.len == n.count { return v; }
     let route_rows = if routed { kept_routes.len } else { 0 };
@@ -367,7 +373,9 @@ fn exported_meta(heap: Heap&, v: Value, m: Value) -> Value {
     let entry = kind == node_kind::Vector && n.length == vector_flavor::MapEntry;
     let same = if none { n.metadata.tag() <= value_tag::Null } else { n.metadata.is_object() && n.metadata.id() == meta.id() };
     if same && kind != node_kind::Symbol && !entry { return v; }
-    var made = n; made.metadata = if none { Value.Undefined } else { m }; made.origin = -1;
+    var made = n; made.metadata = if none { Value.Undefined } else { m };
+    if kind == node_kind::Map || kind == node_kind::Set { made.value = kept_routes(heap, n); if heap.fault != Fault.None { return Value.Undefined; } }
+    made.origin = -1;
     if kind == node_kind::Vector { made.length = vector_flavor::Plain; }
     return allocate(heap, made);
 }
