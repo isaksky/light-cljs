@@ -16,7 +16,7 @@ thread; it does not hold at four V8 jobs.
 of wall time, aggregate CPU (user + system, waited children included) and
 peak memory (the compiler command's maximum resident set, GB). These are
 single samples without the quiet gate, so read them as direction, not as
-precise ratios. The five-round measurement follows below when it has run.
+precise ratios. A five-round run follows below.
 
 | Jobs | V8 wall | Goose wall | Goose / V8 | V8 CPU | Goose CPU | V8 peak memory | Goose peak memory |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -41,8 +41,8 @@ Observations:
   `pool.utilization 0.497`, `engines.v8-isolates 5` in a separate `--stats`
   run; at `--jobs 1`, one isolate and no pool.
 - Goose1 here is 8.3 s; on November 6 (`8b0262ee`) it measured 6.851 s under
-  the quiet gate. Whether that is machine load or a slowdown since then is
-  not settled by this run.
+  the quiet gate. The five-round run below, with both compilers interleaved,
+  shows no slowdown since then.
 
 ## The same comparison at earlier commits
 
@@ -104,7 +104,50 @@ bb benchmarks/generated-project/compare.bb target/generated-200k --light target/
 Raw samples: [generated-200k-v8-jobs-check.edn.gz](generated-200k-v8-jobs-check.edn.gz),
 the gzipped `samples.edn` of the check run (one EDN map per line).
 
-Quiet five-round `--phase measure` attempts have so far all stopped at the
-quiet gate before producing a measured sample: 81.4% idle while another
-project's test suite ran, then 85.2% idle and a competing `goose`/`clang`
-build from another session.
+## Five rounds (check phase, `--runs 5`, machine not gated)
+
+The quiet gate (at least 90% idle, no competing build) kept rejecting the
+machine: 81.4%, 85.2% and 64.7% idle, and competing `goose`/`clang` builds
+from another session. The check phase with `--runs 5` runs the same
+schedule as the measure phase without the gate: one warmup per cell, then
+five rounds whose cell order reverses every round. During this run another
+session's native test suite used about four of the 24 logical CPUs. Every
+cell fits in the spare capacity, but the load adds noise, most visibly to
+Goose at one worker.
+
+Today's compiler and the November 6 compiler ran interleaved in one run;
+October 29 ran right after it in a separate run, so compare it with the
+others only loosely. Median wall seconds [minimum, maximum] over five
+samples, then median CPU seconds and median peak memory (GB):
+
+| Jobs | V8, Oct 29 | V8, Nov 6 | Goose, Nov 6 | V8, Nov 12 | Goose, Nov 12 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 8.017 [7.892, 8.990] / 8.60 / 1.088 | 7.511 [7.249, 8.144] / 8.17 / 1.051 | 9.446 [7.765, 9.925] / 9.37 / 0.904 | 7.401 [7.038, 7.806] / 8.05 / 1.053 | 9.508 [8.524, 10.252] / 9.51 / 0.968 |
+| 2 | 6.677 [6.621, 6.923] / 9.75 / 1.185 | 6.021 [5.858, 6.519] / 9.09 / 1.165 | 6.834 [5.830, 7.775] / 9.09 / 0.930 | 6.745 [5.543, 9.605] / 10.68 / 1.180 | 7.060 [6.638, 7.774] / 9.37 / 0.965 |
+| 4 | 5.633 [5.455, 5.812] / 11.44 / 1.398 | 5.236 [4.635, 5.511] / 11.45 / 1.370 | 5.570 [4.715, 5.870] / 9.96 / 0.949 | 4.968 [4.508, 5.216] / 10.97 / 1.361 | 5.935 [4.908, 6.777] / 10.81 / 0.982 |
+| 8 | 5.634 [5.581, 6.118] / 15.11 / 1.606 | 5.034 [4.621, 5.671] / 13.48 / 1.579 | 5.531 [4.784, 5.837] / 11.17 / 0.988 | 5.102 [4.653, 6.199] / 13.35 / 1.583 | 5.747 [5.001, 6.278] / 11.51 / 1.003 |
+
+All 100 samples and 20 warmups exit 0. Every Nov 6 and Nov 12 output is the
+reference `18335556…`, and every Oct 29 output is its `1a75bc87…`, with all
+five oracle outputs and the strict waste check passing.
+
+- **V8 has the lower median at every job count, for both compilers.** At
+  four jobs V8 is ahead by 0.33 s (Nov 6) and 0.97 s (Nov 12); at one job,
+  by about 1.9–2.1 s.
+- **No Goose slowdown between November 6 and today is visible.** Interleaved
+  in the same run, Goose1 is 9.45 s against 9.51 s, and the Goose ranges
+  overlap at every job count. The 7.3 s and 8.3 s single samples above
+  differed because of machine load, not because the compiler changed.
+- **Goose is the more load-sensitive of the two.** Its one-worker CPU time rose
+  with the wall time against the single samples (Nov 6: 7.3 s → 9.4 s CPU;
+  Nov 12: 8.3 s → 9.5 s), more than V8's did (7.0 s → 8.2 s; 7.8 s → 8.1 s). Goose used less peak memory than V8 at every count (0.90–1.00 GB
+  against 1.05–1.61 GB) and less CPU at four and eight jobs.
+- Both paths stop gaining after four jobs.
+
+Raw samples: [Nov 6 and Nov 12](generated-200k-v8-jobs-runs5.edn.gz),
+[Oct 29](generated-200k-v8-jobs-runs5-oct29.edn.gz).
+
+```sh
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --runner target/generated-200k-runner --also-light nov06=NOV06/target/release/light-cljs,runner=NOV06/target/generated-200k-runner --backend all --v8-jobs 1,2,4,8 --phase check --runs 5
+bb benchmarks/generated-project/compare.bb target/generated-200k-oct29 --light OCT29/target/release/light-cljs --backend v8 --v8-jobs 1,2,4,8 --phase check --runs 5
+```
