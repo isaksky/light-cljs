@@ -2031,14 +2031,21 @@ mod tests {
             source_index: 0,
         });
         target.root = ExprId(target.exprs.len() - 1);
-        let output =
+        // The program goes in on stdin: Windows caps a command line at 32 KiB.
+        let mut node =
             std::process::Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-                .args([
-                    "--eval",
-                    &format!("console.log({});", crate::emit_js(&target)),
-                ])
-                .output()
+                .arg("-")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
                 .expect("fragment execution requires Node");
+        std::io::Write::write_all(
+            &mut node.stdin.take().unwrap(),
+            format!("console.log({});", crate::emit_js(&target)).as_bytes(),
+        )
+        .unwrap();
+        let output = node.wait_with_output().unwrap();
         assert!(
             output.status.success(),
             "{}",

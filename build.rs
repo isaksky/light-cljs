@@ -38,6 +38,11 @@ fn main() {
     );
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    // The compiler runs on the main thread, which Windows gives 1 MiB by
+    // default; reserve the 8 MiB macOS and Linux give it.
+    if os == "windows" && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo::rustc-link-arg-bins=/STACK:8388608");
+    }
     // QuickJS is optional on native targets and absent on wasm32.
     if arch != "wasm32" && env::var_os("CARGO_FEATURE_QUICKJS").is_some() {
         println!("cargo::rustc-cfg=light_quickjs");
@@ -51,11 +56,22 @@ fn main() {
         println!("cargo::rerun-if-changed=src/v8_thread_stack.cc");
         println!("cargo::rerun-if-changed=src/v8_buffers.cc");
         println!("cargo::rerun-if-changed=vendor/v8-headers/include");
-        cc::Build::new()
+        let mut shims = cc::Build::new();
+        shims
             .cpp(true)
             .std("c++20")
-            .include("vendor/v8-headers/include")
-            .define("V8_COMPRESS_POINTERS", None)
+            .include("vendor/v8-headers/include");
+        // MSVC reports `__cplusplus` as 199711L without this flag, whatever
+        // `-std:c++20` says, and v8config.h requires C++20 by that macro.
+        if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+            shims.flag("/Zc:__cplusplus");
+        }
+        // Match the engine Cargo.toml selects: the prebuilt pointer-compressed
+        // engines exist only for macOS and x86_64 Linux.
+        if os == "macos" || (os == "linux" && arch == "x86_64") {
+            shims.define("V8_COMPRESS_POINTERS", None);
+        }
+        shims
             .file("src/v8_stack.cc")
             .file("src/v8_thread_stack.cc")
             .file("src/v8_buffers.cc")

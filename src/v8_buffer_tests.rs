@@ -93,7 +93,8 @@ fn combined_storage_below_the_limit_is_not_double_counted() {
             number(
                 &evaluator,
                 &format!(
-                    "(() => {{ globalThis.keep = [new Array(3 * 1024 * 1024).fill(1), {buffer}]; return 777; }})()"
+                    "(() => {{ globalThis.keep = [new Array({elements}).fill(1), {buffer}]; return 777; }})()",
+                    elements = 12 * 1024 * 1024 / SLOT_BYTES
                 )
             ),
             777.0,
@@ -146,10 +147,15 @@ fn combined_budget_covers_runtime_initialization() {
 #[test]
 fn garbage_collection_refreshes_the_heap_share_before_allocation_retry() {
     let evaluator = session();
+    // About 20 MiB of heap on every engine: a forced full collection of a
+    // heap past V8's limit would abort the process.
+    let elements = 20 * 1024 * 1024 / SLOT_BYTES;
     assert_eq!(
         number(
             &evaluator,
-            "(() => { globalThis.discard = new Array(5 * 1024 * 1024).fill(1); return 1; })()"
+            &format!(
+                "(() => {{ globalThis.discard = new Array({elements}).fill(1); return 1; }})()"
+            )
         ),
         1.0
     );

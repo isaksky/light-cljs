@@ -18,6 +18,19 @@ use std::{
 };
 use v8::{Local, PinScope};
 
+/// Bytes a small integer takes in a V8 array: 4 with the pointer-compressed
+/// engines (macOS and x86_64 Linux, see Cargo.toml) and 8 elsewhere, so
+/// tests can size heaps the same on both.
+#[cfg(test)]
+const SLOT_BYTES: usize = if cfg!(any(
+    target_os = "macos",
+    all(target_os = "linux", target_arch = "x86_64")
+)) {
+    4
+} else {
+    8
+};
+
 #[cfg(test)]
 #[path = "v8_buffer_tests.rs"]
 mod buffer_tests;
@@ -107,9 +120,18 @@ impl State {
             return;
         }
         self.memory_sample.set(Instant::now());
-        self.buffers
-            .observe_heap(isolate.get_heap_statistics().used_heap_size());
+        let stats = isolate.get_heap_statistics();
+        self.buffers.observe_heap(stats.used_heap_size());
         if self.buffers.exhausted() {
+            // A forced full collection of a heap already near V8's own limit
+            // can abort the process ("Reached heap limit") instead of
+            // returning; without pointer compression (Windows) a heap gets
+            // there sooner. Past three quarters of it, end the session now.
+            if stats.used_heap_size() / 3 > stats.heap_size_limit() / 4 {
+                self.control.memory_exhausted();
+                isolate.terminate_execution();
+                return;
+            }
             // The first snapshot may include unreachable heap objects and
             // backing stores. Give the collector its normal chance to release
             // them before making the session terminal.
@@ -502,12 +524,12 @@ impl V8Evaluator {
             let result = script(scope, RESTRICTED_BUFFERS)
                 .and_then(|_| script(scope, &source()))
                 .and_then(|_| {
-                let services: Local<v8::Object> = script(scope, "__lightEvaluator")?
-                    .try_into()
-                    .map_err(|_| bridge::error("Invalid evaluator services"))?;
-                *self.state.services.borrow_mut() = Some(bridge::Root::new(scope, services));
-                Ok(())
-            });
+                    let services: Local<v8::Object> = script(scope, "__lightEvaluator")?
+                        .try_into()
+                        .map_err(|_| bridge::error("Invalid evaluator services"))?;
+                    *self.state.services.borrow_mut() = Some(bridge::Root::new(scope, services));
+                    Ok(())
+                });
             result.map_err(|error| {
                 scope
                     .exception()
@@ -1418,15 +1440,16 @@ mod tests {
         };
         let (mut built, mut exhausted) = (0, 0);
         // From three quarters of the worker's share to 2 MiB past it, old
-        // arrays of 256 KiB (64,000 compressed small integers) in steps of
+        // arrays of about 256 KiB (`slots` small integers) in steps of
         // 512 KiB, then young ones the teardown's collection promotes.
         // Without the callback, the teardown at 57 MiB aborted.
         let share = crate::evaluator::WORKER_SHARE >> 18;
+        let slots = 256_000 / SLOT_BYTES;
         for old in (share * 3 / 4..=share + 8).step_by(2) {
             let resources = crate::evaluator::BuildResources::new(&options, 3).unwrap();
             let worker = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
             let result = worker.evaluate_js(&format!(
-                "(() => {{ globalThis.kept = []; for (let i = 0; i < {old}; i++) kept.push(new Array(64000).fill(1)); globalThis.young = []; for (let i = 0; i < 2000; i++) young.push(new Array(64).fill(i)); return kept.length; }})()"
+                "(() => {{ globalThis.kept = []; for (let i = 0; i < {old}; i++) kept.push(new Array({slots}).fill(1)); globalThis.young = []; for (let i = 0; i < 2000; i++) young.push(new Array(64).fill(i)); return kept.length; }})()"
             ));
             match result {
                 Ok(id) => {
