@@ -19,6 +19,12 @@ in the source sections.
 
 ## Summary
 
+In short: light-cljs compiles large programs several times faster than
+shadow-cljs and reloads edits far sooner, but **the JavaScript it produces runs
+3.5 to 7 times slower**, its memory advantage is small once shadow-cljs's heap
+is sized to need, and small apps come out somewhat larger. The scale figures
+come from projects we generate ourselves, and none comes from a quiet machine.
+
 **Where light-cljs is ahead**
 
 - **Compile time on large generated projects.** A clean release build takes
@@ -46,7 +52,8 @@ in the source sections.
 - **Its memory advantage shrinks once shadow-cljs gets only the heap it
   needs.** At shadow-cljs's smallest adequate heap light-cljs uses 0.45x,
   0.62x and 0.85x its peak memory (generated 200k, re-frame-shaped 200k,
-  generated 800k), not the 0.25 to 0.48x of the `-Xmx8g` runs (`6ea2540d`).
+  generated 800k), not the 0.30 to 0.46x it uses against `-Xmx8g` in the same
+  runs (`6ea2540d`).
 - **The dev page of a large app loads slower**: 4.9 to 5.3 s against 2.0 s for
   the generated 200k re-frame app (`fa9856b4`), mostly the app's first run,
   which is the runtime-speed gap again.
@@ -58,7 +65,8 @@ in the source sections.
 - **A rebuild after a one-file edit still grows faster than the program**: 3.95
   to 22.5 s from 200k to 800k lines in the re-frame shape, 5.7x for 4.0x the
   code (`c5dad571`). Set against shadow-cljs's figures from the growth run,
-  it is 0.07 to 0.09x of shadow-cljs's at every size measured.
+  it is 0.07 to 0.09x of shadow-cljs's in the re-frame shape at 200k, 400k
+  and 800k, and 0.10 to 0.15x in the plain shape.
 
 **What the evidence is and is not.** Compile-speed and memory claims at scale
 come from **generated projects** (`benchmarks/generated-project`), which we
@@ -127,6 +135,14 @@ TodoMVC's shadow-cljs figure is computed from the light-cljs median and the
 ratio, both from the same alternated runs. The growth row's two sides come from
 different runs on the same day: light-cljs's from `809302a4` with `--stats`,
 shadow-cljs's from the growth section's alternated runs with `fc31d229`.
+
+**What a compile figure includes.** Neither side bundles in the generated
+projects: both outputs run in Node and take React from `node_modules` at run
+time. In re-frame's examples, shadow-cljs bundles React itself, and
+light-cljs's esbuild step is timed as its own row (0.03 to 0.11 s,
+[build time][ftime]). shadow-cljs 3.5.3 does not lower the language level by
+default (`:output-feature-set :es-unsupported`), so neither side spends time
+lowering.
 
 ## The objections, one by one
 
@@ -199,7 +215,8 @@ on the 200k app; all were filed and two are gone:
 - **The macro edit** was slower (1.43 s against 0.96 s); it is now 255 ms
   ([light-cljs-991][w991], [light-cljs-1001][w1001]).
 - **Startup** took 169 to 175 s against 38 to 40 s; it is now 18.6 to 20.0 s
-  against shadow-cljs's 37.0 to 45.7 s ([light-cljs-992][w992]).
+  against shadow-cljs's 37.0 to 45.7 s, with one shadow-cljs session at
+  102.3 s under load ([light-cljs-992][w992], [light-cljs-993][w993]).
 - **Dev page load is still slower: 4.9 to 5.3 s against 2.0 s**
   ([light-cljs-993][w993]). Loading the 3,077 files in parallel cut it from
   about 8 s; what is left is mostly the app's first run (mounting it and
@@ -256,14 +273,15 @@ Latest ratios, light/shadow:
 | generated workload 800k | 1.51 | 3.50 | 1.17 | `67b1bbec`, `181dc839`, `c755984d` |
 | re-frame-shaped 200k app | 2.72 | 3.69 | 1.05 | `32cb0373`, `cdf39aae`, `c755984d` |
 
-Each column's commit is the latest run that moved it; later runs left first
-output and peak memory within their ranges. In TodoMVC: page load to interactive 1.41, add 1,000 todos 6.95, toggle all 2.68,
-edit one of 1,000 todos 1.21, JavaScript heap with 1,000 todos 1.24 times
-shadow-cljs's.
+Peak memory is at the largest iteration count (40, 16 and 10). Each column's
+commit is the latest run that moved it; later runs left first output and peak
+memory within their ranges. In TodoMVC: page load to interactive 1.41, add
+1,000 todos 6.95, toggle all 2.68, edit one of 1,000 todos 1.21, JavaScript
+heap with 1,000 todos 1.24 times shadow-cljs's.
 
-Four runtime changes in this group cut the gap from about 5x
-([988][r988], [989][r989], [990][r990], [998][r998]): TodoMVC's add step went
-from 10.9x to 6.95x. **It is still the largest loss**, in cljs.core's place:
+Four runtime changes in this group ([988][r988], [989][r989], [990][r990],
+[998][r998]) cut the steady-state ratios from 4.73 to 5.67 (`67b1bbec`) to
+3.50 to 3.75, and TodoMVC's add step from 10.9 to 6.95. **It is still the largest loss**, in cljs.core's place:
 the runtime's protocol lookup, map entries and value-kind tests, and closures.
 light-cljs-1002, building a map seq's entries only when they are read, is
 finished but **not on master**: it is held for the user because it showed no
@@ -334,8 +352,8 @@ missing.
   before every build, the binary's commit and hash, and tool versions. Every
   generated output is checked against the oracle and for leftover unused
   code ([baseline][g968]).
-- **Medians**, of 3 to 10 runs; the one exception is the re-frame-shaped 800k
-  project in the growth run, one round, said there.
+- **Medians**, of 2 to 10 runs, with ranges; the one single run is the
+  re-frame-shaped 800k project in the growth run, said there.
 - **CPU time** is reported everywhere, user and system separately. It showed
   something new: shadow-cljs spends as much or more system CPU than user CPU on
   its clean builds (418 s system against 159 s user at re-frame 200k), which
@@ -359,8 +377,9 @@ scanning earlier namespaces ([994][g994], [994 again][g994b]), untraced
 analysis-loop time ([995][g995]), appending fragments ([996][g996]) and cache
 capture ([997][g997]).
 
-Re-measured on `809302a4`, five alternated rounds against `fc31d229`
-([append][g996]):
+Re-measured on `809302a4`, five alternated rounds against `fc31d229`,
+`--no-cache --stats` builds ([append][g996]); shadow-cljs's column is the
+growth run's:
 
 | Shape | `fc31d229` clean build 200k -> 800k | `809302a4` | shadow-cljs (`fc31d229` day) |
 | --- | --- | --- | --- |
@@ -426,8 +445,12 @@ the reason, it does not ignore it.
   1.2 s against shadow-cljs's 11.6 to 17.4 s, mostly its JVM startup.
 - **Output speed of simple and flow**, and of TodoMVC on any browser but
   Chromium.
-- **shadow-cljs's watch with a faster file watcher**, and either watch on a
-  plain generated project or at 800k.
+- **shadow-cljs's watch with a faster file watcher** (a lower `:fs-watch
+  {:loop-wait N}`), light-cljs's watch with `:reload-strategy :full`, and
+  either watch on a plain generated project or at 800k.
+- **Upstream ClojureScript's test suites run whole** against light-cljs's
+  runtime; only adapted cases and an execution comparison exist.
+- **Output speed or compile speed on a real app larger than flow.**
 - **brotli and language level on the generated projects**, and debugging
   quality of source maps.
 - **flow's size after light-cljs-985 and -984**, which moved the other two
@@ -458,4 +481,75 @@ from 153 to 2 (docs/compiler-cache.md).
 
 ## Independent check
 
-To be filled in by the independent reviewer's objections and our answers.
+A reviewer with no knowledge of light-cljs was given this document up to this
+section, without the link targets, and asked for counter-arguments and what
+would convince it (November 14, 2026). Its verdict: the document is "unusually
+candid about where light-cljs loses", the heap sweep is "sound method", and it
+would believe that release compiles are much faster and the edit loop snappier
+at default settings, but would not switch while the output runs 3.5 to 7 times
+slower and a project needs a porter. Its main objections, most damaging first,
+with our answers:
+
+1. **"The output is 3.5 to 7 times slower, but compile speed leads the
+   summary"; and is the replacement runtime as correct as it is slow?**
+   Agreed on emphasis: the summary now opens with the runtime loss. On
+   correctness, beyond the three apps and re-frame's 118 tests, the test suite
+   carries several hundred cases adapted from upstream ClojureScript's own test
+   files (tests/reference/fixture-origins.tsv), and an execution comparison
+   runs programs through ClojureScript 1.12.134 and light-cljs in Node and
+   compares values, effects and output (tests/reference/README.md). Upstream's
+   test suites were not run whole against the runtime, and output speed was not
+   measured on a real app larger than TodoMVC. Both stay open.
+2. **"The loaded machine can hurt the JVM more than light-cljs"**, shown by
+   shadow-cljs's system CPU exceeding its user CPU. Possible, and not ruled
+   out. The pattern is there at the lowest loads recorded too: at re-frame
+   400k, with a load of 5 to 7.5 before every build, shadow-cljs used 849 s of system
+   CPU against 274 s of user CPU ([growth][g970]). Whether that is normal for
+   shadow-cljs on this virtual machine or contention is unmeasured; a quiet
+   rerun is the first item of "What is unmeasured".
+3. **"The watch comparison mostly measures watcher polling";** shadow-cljs's
+   `:fs-watch {:loop-wait N}` was never lowered. Correct, and now said under
+   objection 2. Each tool's own compile step, which excludes noticing, still
+   differs on the 200k app: 13 ms against 770 ms for a view and 6 ms against
+   3,475 ms for `workload.common`, while the macro edit's steps are close (165
+   to 174 ms against 280 to 300 ms) and TodoMVC's widely required edit is a
+   tie. The random pause was introduced after the fixed pause was seen to put
+   every save at the same point of the poll period, and is reported beside it.
+4. **"The hot-reload work is not the same"**: light-cljs reloads one
+   namespace where shadow-cljs recompiles and reloads its 206 dependents.
+   That is the design difference, and it is what a developer waits for. Its
+   correctness is what the probes check: the page calls the changed function as
+   the page holds it, and the macro probe turns true only when the 8 users'
+   expansions were recompiled and run with the new constant. Dependents are
+   not reloaded by default because their calls look the definition up when
+   they run (docs/dev-workflow.md); a dependent whose top-level effects must
+   run again needs `:reload-strategy :full`, as in shadow-cljs. That strategy
+   was not timed; added to "What is unmeasured".
+5. **"All compile-scale evidence comes from the authors' own generator,"** and
+   the compiler was tuned on it. True: the four growth terms were found on
+   these projects. They were general costs (scans of earlier namespaces and
+   tables), each fixed with byte-identical output, and the generator's
+   library code in the re-frame shape is real. A mid-sized real app timed at
+   scale does not exist in this evidence; Penpot was that app, and the user
+   chose not to rely on it.
+6. **"The release comparisons may not cover the same work"**, and "rebuild,
+   nothing changed" is a workflow no shadow-cljs user runs. The work each
+   figure includes is now stated under the headline table: no bundling on
+   either side in the generated projects, esbuild timed separately in the
+   examples, no lowering by either. The cached release rebuild is a CI-style
+   case, reported because both tools keep a cache there; the developer's loop
+   is objection 2.
+7. **"Ratios are stitched across commits and runs."** True of several rows,
+   each labelled. The November 13 baseline rows are one binary in one
+   alternated session; the growth run is one binary across ten projects. A
+   final single-binary rerun of every row was not done.
+8. **"The real-app evidence comes from ports"**, with spliced expansions,
+   vendored `cljs.test` and vendored libraries. Agreed, and it is why
+   compiling unmodified projects is stated as a non-goal rather than claimed.
+   "Real apps work" means the ports' output runs and passes the same checks.
+
+It also found two inconsistencies, both fixed: the plain-shape rebuild ratio
+was missing beside the re-frame one, and this section was referred to before
+it existed. Its point that the summary's 28 s has no shadow-cljs figure
+measured alongside it is answered in the text: the ratios in the headline
+table are from the alternated `627b9ed5` runs only.
