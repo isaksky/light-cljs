@@ -58,48 +58,48 @@ bb benchmarks/re-frame.bb breakdown simple todomvc --light BIN
 - **React alone** is each toolchain building only those two package imports: a shadow-cljs namespace that requires them, and an esbuild module that imports them.
 - **App code** is the whole file minus React alone. For compressed sizes this difference is an estimate.
 
-**TodoMVC** (rerun 2026-11-14 by light-cljs-980 with the real cljs.spec.alpha in the port and `light-cljs-31f51dcc`; the stub's measured effect is in "2026-11-14: the real cljs.spec.alpha in TodoMVC and flow" below)
+**TodoMVC** (rerun 2026-11-14 by light-cljs-980 with the real cljs.spec.alpha in the port and `light-cljs-31f51dcc`; the stub's measured effect is in "2026-11-14: the real cljs.spec.alpha in TodoMVC and flow" below; light-cljs rows rerun 2026-11-14 by light-cljs-999, asserts elided by default, see "2026-11-14: release elides asserts by default" below)
 
 | Output | Raw bytes | gzip -9 | brotli -q 11 |
 |---|---:|---:|---:|
 | shadow-cljs: whole release file | 500,587 | 137,088 | 114,615 |
 | shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
 | shadow-cljs: app code (difference) | 357,227 | 89,997 | 74,006 |
-| light-cljs + esbuild: whole bundle | 496,296 | 152,899 | 132,028 |
+| light-cljs + esbuild: whole bundle | 484,664 | 150,007 | 129,721 |
 | esbuild: React alone | 142,385 | 45,617 | 39,919 |
-| light-cljs: app code (difference) | 353,911 | 107,282 | 92,109 |
-| light-cljs output as written, without React | 442,317 | 107,222 | 90,562 |
-| light-cljs + esbuild --target=es2015: whole bundle | 508,008 | 155,912 | 134,429 |
+| light-cljs: app code (difference) | 342,279 | 104,390 | 89,802 |
+| light-cljs output as written, without React | 360,850 | 101,252 | 86,253 |
+| light-cljs + esbuild --target=es2015: whole bundle | 496,386 | 152,986 | 132,170 |
 
 Packages imported: react, react-dom/client; npm files in both shadow builds: 7
 
-**simple**
+**simple** (light-cljs rows rerun 2026-11-14 by light-cljs-999, asserts elided by default, see "2026-11-14: release elides asserts by default" below)
 
 | Output | Raw bytes | gzip -9 | brotli -q 11 |
 |---|---:|---:|---:|
 | shadow-cljs: whole release file | 372,279 | 101,065 | 85,573 |
 | shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
 | shadow-cljs: app code (difference) | 228,919 | 53,974 | 44,964 |
-| light-cljs + esbuild: whole bundle | 366,722 | 114,709 | 99,578 |
+| light-cljs + esbuild: whole bundle | 352,675 | 111,339 | 96,838 |
 | esbuild: React alone | 142,385 | 45,617 | 39,919 |
-| light-cljs: app code (difference) | 224,337 | 69,092 | 59,659 |
-| light-cljs output as written, without React | 239,419 | 67,812 | 58,169 |
-| light-cljs + esbuild --target=es2015: whole bundle | 376,232 | 117,164 | 101,600 |
+| light-cljs: app code (difference) | 210,290 | 65,722 | 56,919 |
+| light-cljs output as written, without React | 224,352 | 64,431 | 55,449 |
+| light-cljs + esbuild --target=es2015: whole bundle | 362,112 | 113,764 | 98,669 |
 
 Packages imported: react, react-dom/client; npm files in both shadow builds: 7
 
-**flow** (zprint, sci, rewrite-clj and edamame included; rerun 2026-11-14 by light-cljs-980 with the real cljs.spec.alpha in the port and `light-cljs-31f51dcc`, as TodoMVC above)
+**flow** (zprint, sci, rewrite-clj and edamame included; rerun 2026-11-14 by light-cljs-980 with the real cljs.spec.alpha in the port and `light-cljs-31f51dcc`, as TodoMVC above; light-cljs rows rerun 2026-11-14 by light-cljs-999, asserts elided by default, see "2026-11-14: release elides asserts by default" below)
 
 | Output | Raw bytes | gzip -9 | brotli -q 11 |
 |---|---:|---:|---:|
 | shadow-cljs: whole release file | 1,557,354 | 358,609 | 283,974 |
 | shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
 | shadow-cljs: app code (difference) | 1,413,994 | 311,518 | 243,365 |
-| light-cljs + esbuild: whole bundle | 1,369,365 | 353,707 | 290,362 |
+| light-cljs + esbuild: whole bundle | 1,366,200 | 351,552 | 288,748 |
 | esbuild: React alone | 142,385 | 45,617 | 39,919 |
-| light-cljs: app code (difference) | 1,226,980 | 308,090 | 250,443 |
-| light-cljs output as written, without React | 1,554,840 | 310,921 | 245,693 |
-| light-cljs + esbuild --target=es2015: whole bundle | 1,382,996 | 357,249 | 292,925 |
+| light-cljs: app code (difference) | 1,223,815 | 305,935 | 248,829 |
+| light-cljs output as written, without React | 1,278,110 | 299,219 | 238,458 |
+| light-cljs + esbuild --target=es2015: whole bundle | 1,379,841 | 355,156 | 291,385 |
 
 Packages imported: react, react-dom/client; npm files in both shadow builds: 7
 
@@ -319,6 +319,26 @@ Gzip difference, light-cljs minus shadow-cljs, in bytes, before and after:
 - **TodoMVC's after-step-4 gap** is now in light-cljs's favour, -499 bytes after gzip, while brotli still favours shadow-cljs by 3,184.
 - **After the measurement** the walk engine was changed to read the core functions at each call instead of keeping those of its first call (a `with-redefs` around the first walk was kept). That changes only the engine, which none of the last-step bundles contain.
 - shadow-cljs's own size moved by up to 17 bytes between the two runs (137,097 and 137,102 as built), its usual variation between clean builds.
+
+### 2026-11-14: release elides asserts by default (light-cljs-999)
+
+**Change.** `light-cljs release` now omits every `assert` and `fn` `:pre`/`:post` check unless the build says `:compiler-options {:elide-asserts false}`, as shadow-cljs's release mode does (user decision, 2026-11-14). Dev builds and the flag CLI keep asserts. Before this, light-cljs shipped the asserts that shadow-cljs strips; breakdown step 2 above measured them.
+
+**Setup.** One binary, `light-cljs-5dbf5eda` (its compiler is this pellet's commit), and all three ports made again from porter `shadow-port-tool-983`. "Kept" is the same binary with `LIGHT_CLJS='{:builds {:client {:compiler-options {:elide-asserts false}}}}'`, which is what every earlier release build did; "elided" is the new default. Command: `bb benchmarks/re-frame.bb size simple todomvc flow`. Sizes are deterministic for light-cljs, so one run each. The light-cljs rows of the three tables above are the elided run; they also include compiler changes since `light-cljs-31f51dcc` (light-cljs-986 among them), which is why "output as written" moves far more than the asserts account for. The shadow-cljs rows are not rerun: this run's shadow-cljs sizes are within 144 bytes of them.
+
+Whole bundle (light-cljs + esbuild, with React), in bytes:
+
+| App | Raw kept | Raw elided | gzip kept | gzip elided | brotli kept | brotli elided |
+|---|---:|---:|---:|---:|---:|---:|
+| simple | 361,526 | 352,675 | 113,719 | 111,339 | 98,941 | 96,838 |
+| TodoMVC | 489,757 | 484,664 | 151,539 | 150,007 | 130,962 | 129,721 |
+| flow | 1,373,807 | 1,366,200 | 353,793 | 351,552 | 290,829 | 288,748 |
+
+- **Saved after gzip:** 2,380 bytes in simple, 1,532 in TodoMVC and 2,241 in flow (brotli: 2,103, 1,241 and 2,081). The 1.4 KB that breakdown step 2 measured for TodoMVC holds.
+- **Against shadow-cljs's whole release file after gzip** (this run's shadow-cljs sizes: 101,065, 137,100 and 358,615): simple goes from 12.5% to 10.2% larger, TodoMVC from 10.5% to 9.4% larger, and flow from 1.3% to 2.0% smaller. After brotli: simple 15.6% to 13.2% larger, TodoMVC 14.1% to 13.1% larger, flow 2.4% to 1.6% larger.
+- **App code after gzip** against shadow-cljs's: simple 26.2% to 21.8% larger, TodoMVC 17.7% to 16.0% larger, flow 1.1% to 1.8% smaller. The Findings above predate both this and light-cljs-986, so their percentages are older than the tables.
+- **The apps still work:** `bb benchmarks/re-frame.bb browser todomvc simple flow --compiler light --runs 1` passed every check on the elided builds.
+- **Size ratchet ceilings are unchanged:** tests/compiler/size_ratchet.rs compiles its fixtures through the library with asserts on, not through `release`, so its advanced output does not change.
 
 ## Build time
 

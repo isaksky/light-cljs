@@ -367,7 +367,7 @@ fn defaults_are_todays_flag_defaults_with_releases_advanced() {
         (Setting::FsWatchLoopWait, "100", "100"),
         (Setting::Optimizations, ":none", ":advanced"),
         (Setting::PseudoNames, "false", "false"),
-        (Setting::ElideAsserts, "false", "false"),
+        (Setting::ElideAsserts, "false", "true"),
         (Setting::CljsWarnings, "true", "false"),
         (Setting::MacroExpansions, "1024", "1024"),
         (Setting::MacroNodes, "100000", "100000"),

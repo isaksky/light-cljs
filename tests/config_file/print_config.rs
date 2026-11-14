@@ -272,7 +272,7 @@ const COMMANDS_FLAGS: &str = "\
             :app/size 1}                             ; light-cljs.edn:9:46
    :compiler-options {:optimizations :prepare        ; --optimize prepare, over the release default :advanced
                       :pseudo-names true             ; --pseudo-names, over the default false
-                      :elide-asserts true            ; --elide-asserts, over the default false
+                      :elide-asserts true            ; --elide-asserts, over the release default true
                       :cljs-warnings true            ; --warnings, over the release default false
                       :macro-nodes 5                 ; --macro-nodes 5, over the default 100000
                       :macro-poll-budget 7}          ; --macro-poll-budget 7, over the default 1000000

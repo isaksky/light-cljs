@@ -175,8 +175,10 @@ impl Case {
     }
 
     /// The command line the file's build is: `compile` is `--compile
-    /// --reloadable`, `release` is `--compile --optimize advanced`, and every
-    /// path is the project directory joined with the file's.
+    /// --reloadable`, `release` is `--compile --optimize advanced
+    /// --elide-asserts` (without `--elide-asserts` when the build says
+    /// `:elide-asserts false`), and every path is the project directory
+    /// joined with the file's.
     fn flag_args(&self, project: &Path) -> Vec<String> {
         let at = |path: &str| project.join(path).to_str().unwrap().to_owned();
         let given = |flag: &str| self.flags.contains(&flag);
@@ -193,8 +195,14 @@ impl Case {
         args.push("--compile".into());
         if self.command == "compile" {
             args.push("--reloadable".into());
-        } else if !given("--optimize") {
-            args.extend(strings(&["--optimize", "advanced"]));
+        } else {
+            if !given("--optimize") {
+                args.extend(strings(&["--optimize", "advanced"]));
+            }
+            // Release elides asserts by default, as shadow-cljs's does.
+            if !given("--elide-asserts") && !self.build.contains(":elide-asserts false") {
+                args.push("--elide-asserts".into());
+            }
         }
         args.extend(strings(&["--entry", self.entry]));
         for path in self.paths {
@@ -361,6 +369,13 @@ const RELEASE: &[Case] = &[
         ":compiler-options {:pseudo-names true}",
         &["--pseudo-names"],
     ),
+    // Release elides asserts by default; shadow-cljs's `false` keeps them,
+    // which is `--compile` without `--elide-asserts`.
+    Case::new("release", "app.other").keys(
+        "",
+        ":release {:compiler-options {:elide-asserts false}}",
+        &[],
+    ),
     Case::new("release", "app.other").keys(
         "",
         ":release {:compiler-options {:checked-arrays :warn}}",
@@ -462,6 +477,7 @@ fn environment_values_enter_the_key_as_their_values() {
             "--compile",
             "--optimize",
             "advanced",
+            "--elide-asserts",
             "--entry",
             "app.main",
             "--source-root",
@@ -626,6 +642,7 @@ fn release_features_equals_its_flags() {
         "--compile",
         "--optimize",
         "advanced",
+        "--elide-asserts",
         "--entry",
         "app.main",
         "--source-root",

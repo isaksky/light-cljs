@@ -217,7 +217,7 @@ Shadow-cljs's shape, subcommands with build ids:
 |---|---|---|
 | `light-cljs compile ID [ID ...] [FLAGS]` | dev | `--compile --reloadable --entry NS --source-root ... --out-dir DIR` |
 | `light-cljs watch ID [ID ...] [FLAGS]` | dev | `--watch --entry NS --source-root ... --out-dir DIR --serve PORT` |
-| `light-cljs release ID [ID ...] [FLAGS]` | release | `--compile --optimize advanced --entry NS --source-root ... --out-dir DIR` |
+| `light-cljs release ID [ID ...] [FLAGS]` | release | `--compile --optimize advanced --elide-asserts --entry NS --source-root ... --out-dir DIR` |
 | `light-cljs cljs-repl ID [FLAGS]` (Phase 3) | - | `--repl --connect 127.0.0.1:PORT`, PORT the running watch's, then `(light.dev/repl :ID)` |
 
 **Why subcommands, not flags.** e05a164 chose `--watch --build app` to fit
@@ -313,7 +313,7 @@ conditional, and no discard that hides a duplicate key.
 | `--optimize LEVEL` | `:compiler-options {:optimizations :none\|:prepare\|:advanced}` | build | release (ignored in dev, as shadow-cljs ignores it) |
 | `--define NS/NAME=VALUE` | `:closure-defines {NS/NAME VALUE}`, or under `:compiler-options` | build | release |
 | `--pseudo-names` | `:compiler-options {:pseudo-names true}` | build | release (ignored in dev) |
-| `--elide-asserts` | `:compiler-options {:elide-asserts true}` | build | both |
+| `--elide-asserts` | `:compiler-options {:elide-asserts true}` | build | both (release elides by default; `{:elide-asserts false}` keeps asserts) |
 | `--checked-arrays-warn`, `--checked-arrays-error` | `:compiler-options {:checked-arrays :warn\|:error}` | build | release |
 | `--warnings` | `:compiler-options {:cljs-warnings true}` | build | release (dev implies it) |
 | `--macro-expansions N`, `--macro-nodes N`, `--macro-timeout-ms N`, `--macro-memory-limit N`, `--macro-poll-budget N` | `:compiler-options {:macro-expansions N ...}`, the flag's name as key | build | both |
@@ -439,7 +439,7 @@ only in the file, the commands and messages.
 |---|---|---|
 | `:optimizations` | `:none`, `:prepare` or `:advanced` | `:advanced` in release, as shadow-cljs's; dev builds run at none semantics |
 | `:pseudo-names` | boolean | `false` |
-| `:elide-asserts` | boolean | `false` |
+| `:elide-asserts` | boolean: omit every `assert` and `fn` `:pre`/`:post` check | `true` in release, as shadow-cljs's release mode; `false` in dev. `false` in release keeps asserts |
 | `:checked-arrays` | `:warn` or `:error`; implies `:cljs-warnings`, as the flags do | unset |
 | `:cljs-warnings` | boolean: undeclared Vars and conflicting arities are warnings, not errors | `false` in release, implied in dev |
 | `:closure-defines` | as the build key | `{}` |
@@ -469,6 +469,15 @@ cannot (`:closure-defines` and `:checked-arrays` in dev, a permanent
 deviation, see "Deviations").
 Dev mode means the same for `compile` and `watch`: the settings both
 commands' flags accept.
+
+Release mode elides asserts by default, as shadow-cljs's release mode does
+(light-cljs-999): `:elide-asserts` defaults to true there, so every
+`assert` and `fn` `:pre`/`:post` check is omitted, which is about 1.4 KB
+after gzip in the re-frame examples (benchmarks/re-frame-vs-shadow.md).
+`:compiler-options {:elide-asserts false}`, shadow-cljs's name, in the
+build, its `:release` map, `LIGHT_CLJS` or a `--config-merge` keeps them.
+Dev builds and the flag CLI (`--compile` at every `--optimize` level) keep
+asserts unless `--elide-asserts` or `:elide-asserts true` says otherwise.
 
 ### Not in the file
 
@@ -1001,7 +1010,8 @@ Names are decisions for review; the structure is a sketch.
   #{}` at both levels, `:compile-threads 1`, `:http {:port 9630 :host
   "127.0.0.1"}`, `:fs-watch {:loop-wait 100}`, `:optimizations :advanced`
   in release and `:none` in dev (which runs at none semantics),
-  `:pseudo-names` and `:elide-asserts` false, `:cljs-warnings` false in
+  `:pseudo-names` false, `:elide-asserts` true in release (as shadow-cljs's
+  release mode elides asserts) and false in dev, `:cljs-warnings` false in
   release and true in dev (which implies it), the five macro limits from
   `MacroLimits::default()` and `EvaluatorOptions::default()`, and
   `:cache-level :all`. `:http :strict`, `:nrepl`, `:fs-watch :impl`,

@@ -2927,7 +2927,7 @@ impl BuildSettings {
     fn over(&self, setting: Setting, lower: &SettingValue) -> String {
         if lower.origin.source == ConfigSource::Default {
             let mode = match setting {
-                Setting::Optimizations | Setting::CljsWarnings => {
+                Setting::Optimizations | Setting::ElideAsserts | Setting::CljsWarnings => {
                     format!("{} ", self.mode.name())
                 }
                 _ => String::new(),
@@ -3012,7 +3012,8 @@ fn combine(lower: Option<Slot>, upper: Option<Slot>) -> Option<Slot> {
 }
 
 /// Layer 1, the built-in defaults: today's flag defaults, with release's
-/// `:optimizations :advanced` and the watch's `:http`, `:fs-watch` and cache
+/// `:optimizations :advanced` and `:elide-asserts true` (as shadow-cljs's
+/// release mode) and the watch's `:http`, `:fs-watch` and cache
 /// root ("Schema"). Dev builds run at none semantics and with ClojureScript's
 /// warnings, so dev's `:optimizations` is `:none` and `:cljs-warnings` true.
 fn defaults(mode: BuildMode) -> Slots {
@@ -3044,7 +3045,7 @@ fn defaults(mode: BuildMode) -> Slots {
             keyword(if release { "advanced" } else { "none" }),
         ),
         (Setting::PseudoNames, ValueKind::Boolean(false)),
-        (Setting::ElideAsserts, ValueKind::Boolean(false)),
+        (Setting::ElideAsserts, ValueKind::Boolean(release)),
         (Setting::CljsWarnings, ValueKind::Boolean(!release)),
         (Setting::MacroExpansions, integer(limits.expansions as u128)),
         (Setting::MacroNodes, integer(limits.generated_nodes as u128)),

@@ -647,6 +647,45 @@ fn release_other(project: &Path, args: &[&str]) -> Vec<(PathBuf, Vec<u8>)> {
     tree(&project.join("out/other"))
 }
 
+/// Whether the files in `files` hold build `other`'s assertion message.
+fn holds_assert(files: Vec<(PathBuf, Vec<u8>)>) -> bool {
+    let text: Vec<u8> = files.into_iter().flat_map(|(_, bytes)| bytes).collect();
+    String::from_utf8_lossy(&text).contains("x must be positive")
+}
+
+/// `release` elides asserts by default, as shadow-cljs's release mode does,
+/// at every `:optimizations`; `:compiler-options {:elide-asserts false}`
+/// (shadow-cljs's name) keeps them, and `--elide-asserts` and
+/// `{:elide-asserts true}` change nothing. `compile`'s dev build keeps them.
+#[test]
+fn release_elides_asserts_unless_elide_asserts_is_false() {
+    let (_dir, project) = copy("config-commands-asserts", FIXTURE);
+    let keep = [
+        "--config-merge",
+        "{:compiler-options {:elide-asserts false}}",
+    ];
+    for base in [&[][..], &["--optimize", "none"]] {
+        let plain = release_other(&project, base);
+        assert!(!holds_assert(plain.clone()), "{base:?}");
+        let kept = release_other(&project, &[base, &keep].concat());
+        assert!(holds_assert(kept), "{base:?}");
+        for args in [
+            &["--elide-asserts"][..],
+            &[
+                "--config-merge",
+                "{:compiler-options {:elide-asserts true}}",
+            ],
+        ] {
+            let elided = release_other(&project, &[base, args].concat());
+            assert_eq!(elided, plain, "{base:?} {args:?}");
+        }
+    }
+
+    let _ = fs::remove_dir_all(project.join("out"));
+    succeeds(&project, &["compile", "other"]);
+    assert!(holds_assert(tree(&project.join("out/other"))));
+}
+
 /// The compiler options of a build, given here by `--config-merge` (or
 /// `LIGHT_CLJS` for the top-level `:compile-threads`), reach the build
 /// exactly as their flags do, and a flag after the command wins.
@@ -656,11 +695,6 @@ fn compiler_settings_reach_the_build_as_their_flags_do() {
     for (base, merge, flag) in [
         (
             &["--optimize", "none"][..],
-            "{:elide-asserts true}",
-            "--elide-asserts",
-        ),
-        (
-            &["--optimize", "none"],
             "{:checked-arrays :warn}",
             "--checked-arrays-warn",
         ),
