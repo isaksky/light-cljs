@@ -123,7 +123,7 @@ Three results are worse for light-cljs, recorded as found. Remedies are not desi
 
 **2. Startup: 169 to 175 s against 38 to 40 s.** (Fixed by light-cljs-992: 18.7 to 21.9 s against 38.3 to 102.3 s, see "watch startup after light-cljs-992" below.) `light-cljs watch --stats` on the same build: wall 130.1 s, of which emission 77.5 s, the session's load of the program 46.2 s and analysis 5.5 s (a release build of the same project took 8.6 s uncached with an earlier binary, the project's compare-result.edn). A `sample` of the first 60 s of the startup: 97% of the build thread is in `write_dev_build` → `dev_build::emit_dev_build`, which calls `emitter::emit_js_mode` once per namespace (3,073), and more than half of all its samples are `Arena<GlobalBinding>` lookups inside it: each namespace's emission walks the whole program's globals.
 
-**3. Page load: 8.1 to 9.2 s against 2.1 to 2.3 s,** from navigation to the first render. A separate measurement of the same output served statically: light-cljs's units finish loading 5.0 to 8.8 s after navigation and the app's first run takes another 3.2 s; shadow-cljs's page has loaded and rendered at 1.5 s. Bytes are not the cause: light-cljs's dev output is 40 MB in 3,077 files, shadow-cljs's 95 MB in 3,203. light-cljs's `index.js` (`dev_build::index_text`) appends one script element at a time and waits for its load event before the next, so its 3,077 requests and evaluations run strictly one after another. How much of the 5 to 9 s that serial loading costs, against the evaluation of the units themselves, was not separated.
+**3. Page load: 8.1 to 9.2 s against 2.1 to 2.3 s,** from navigation to the first render. (Narrowed by light-cljs-993: 5.0 and 5.2 s against 2.0 s, see "dev page load after light-cljs-993" below.) A separate measurement of the same output served statically: light-cljs's units finish loading 5.0 to 8.8 s after navigation and the app's first run takes another 3.2 s; shadow-cljs's page has loaded and rendered at 1.5 s. Bytes are not the cause: light-cljs's dev output is 40 MB in 3,077 files, shadow-cljs's 95 MB in 3,203. light-cljs's `index.js` (`dev_build::index_text`) appends one script element at a time and waits for its load event before the next, so its 3,077 requests and evaluations run strictly one after another. How much of the 5 to 9 s that serial loading costs, against the evaluation of the units themselves, was not separated.
 
 docs/dev-workflow.md's target, under 100 ms from save to updated page, holds on TodoMVC (64 ms) but not on the 200k app (193 to 209 ms), since the one-namespace step grows with the program for the reasons in 1. It is still 14 to 34 times faster than shadow-cljs's there.
 
@@ -178,3 +178,32 @@ light-cljs-992 fixed item 2 above. A dev build's units now share what one build 
 - **Edits, no regression** (milliseconds to new code running, median and range of the first pair's 10 edits per cell, against the first baseline session's 5): view 190 (159-231) against 185 (121-1565); `workload.common` 198 (101-225) against 206 (117-225); macro 408 (305-452) against 419 (385-1075). Steps: 67, 60 and 288 ms against 74, 62 and 305 ms. shadow-cljs in the same sessions: 2,938, 6,969 and 974 ms. The second pair agrees: 177, 197 and 362 ms (steps 67, 60 and 276 ms), the second baseline session 183, 178 and 366 ms (steps 67, 58 and 284 ms).
 - **Page load** (item 3, light-cljs-993) is unchanged: 7.2 to 10.5 s against 2.0 to 3.9 s.
 - The per-step whole-program work listed in the light-cljs-991 note (manifest revision, hook listing, garbage collection, polling) is light-cljs-1001's and was not touched.
+
+## 2026-11-14, later: dev page load after light-cljs-993
+
+light-cljs-993 addressed item 3 above. `index.js` used to append one script element and wait for its load event before appending the next, so the 3,077 files were requested and run strictly one after another. It now appends them all at once with `async = false`: the browser fetches them in parallel and still runs them in manifest order, as shadow-cljs's dev loader does. Namespace order, `^:dev/once` and the reload protocol are unchanged. After a file throws or cannot load, the client's `define` skips every later unit, so as before no unit after the failure runs; the promise then rejects.
+
+**Where the time went (separated first).** The same dev output (master `9d06189f`), served statically and opened in headless Chromium, three runs at a load average of 3.7 to 4.4. Before the change, the units finished loading 4.3 to 5.0 s after navigation, and the app had rendered by 7.0 to 7.7 s. A Chromium trace of one load puts 1.35 s of the main thread in evaluating the 3,080 scripts. So about 3 s of the load was waiting on one request at a time. With the files requested at once (the change's output, served statically and through the watch's dev server, four runs at a load average of 4.4 to 4.7), the units finished loading at 1.4 to 1.6 s (1.2 s of it evaluating scripts) and the app rendered at 4.2 to 4.4 s.
+
+The 2.7 s left after loading is the app's first run (`workload.main/main` mounts the app and dispatches 2,100 events). A CPU profile of it puts 2.5 s in the runtime's own functions (map entries, protocol dispatch, keywords). That is the runtime-speed gap benchmarks/runtime-vs-shadow.md measures on release output, where this app's first output takes 4.4 s against 1.4 s. The same profile has 0.7 s inside `define`, the main thread compiling the unit functions as they run. Wrapping each unit function in parentheses, which V8 takes as a hint to compile it eagerly, cut the load to 1.1 to 1.2 s in two of three runs of a hand-edited copy, against 1.4 s without it. That was not done here.
+
+**Setup.** Same kit, app and edits as above. light-cljs is `research/shadow-credibility/bin/light-cljs-951119a3`, the change's commit on master `9d06189f`. There were two sessions per tool on the generated app, in the orders light, shadow then shadow, light, and the same on TodoMVC in the orders shadow, light then light, shadow. A same-day baseline used master's own binary, `light-cljs-9d06189f`: two light-cljs sessions on the generated app and one on TodoMVC, run between the others. **Unreserved:** peer workers were building and testing. The one-minute load average before each session is in the table.
+
+| App | Session | Tool | Page load in Chromium, s | Load average before |
+|---|---|---|---:|---:|
+| generated | 1 | light-cljs, `951119a3` | **5.0** | 15.6 |
+| generated | 1 | shadow-cljs | 2.0 | 8.7 |
+| generated | baseline 1 | light-cljs, master `9d06189f` | 8.2 | 9.0 |
+| generated | 2 | shadow-cljs | 2.0 | 6.7 |
+| generated | 2 | light-cljs, `951119a3` | **5.2** | 9.5 |
+| generated | baseline 2 | light-cljs, master `9d06189f` | 7.8 | 6.2 |
+| TodoMVC | 1 | shadow-cljs | 0.31 | 5.1 |
+| TodoMVC | 1 | light-cljs, `951119a3` | 0.17 | 4.5 |
+| TodoMVC | baseline | light-cljs, master `9d06189f` | 0.22 | 4.3 |
+| TodoMVC | 2 | light-cljs, `951119a3` | 0.17 | 4.0 |
+| TodoMVC | 2 | shadow-cljs | 0.29 | 4.1 |
+
+- **Page load of the generated app:** 5.0 and 5.2 s, against master's 7.8 and 8.2 s and shadow-cljs's 2.0 s in the same invocations. The kit's interval runs from before the browser context opens to the probe seeing the header, which is why it is about 0.8 s above the static measurement. light-cljs is still 2.5 times slower here. The rest is the first run, which is the runtime's speed. Item 3 holds in a smaller form.
+- **TodoMVC page load** did not get worse: 0.17 s in both sessions, against 0.22 s for the baseline and 0.29 to 0.31 s for shadow-cljs.
+- **Edits, no regression** (milliseconds to new code running, median and range of 10 edits per cell, against the baseline's 10): view 183 (157-235) against 190 (118-227); `workload.common` 188 (151-220) against 191 (101-230); macro 363 (334-477) against 406 (325-477). Steps: 70, 61 and 292 ms against 68, 62 and 293 ms. On TodoMVC: 63 and 170 ms against 57 and 163 ms (5 baseline edits). Startup: 18.8 and 19.7 s against 21.6 and 19.7 s.
+- No console errors or uncaught exceptions on either side.
