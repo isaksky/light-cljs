@@ -2,7 +2,12 @@
 (ns clojure.walk)
 (declare walk prewalk postwalk prewalk-replace postwalk-replace keywordize-keys stringify-keys)
 
-(def ^:private walk-engine (js* "((c) => {
+;; The engine is made at its first call and kept in a one-element array, so
+;; that a program which never walks drops this namespace at advanced: an
+;; unused array definition is removable, a top-level js* expression is not.
+(def ^:private walk-engine-cell (array nil))
+(defn- walk-engine [inner outer form mode]
+  (js* "(~{walk-engine-cell}[0] || (~{walk-engine-cell}[0] = ((c) => {
   let depth = 0, calls = 0;
   function frame(value) {
     const shape = c.isList(value) ? 'list' : c.isEntry(value) ? 'entry' : c.isSeq(value) ? 'seq' : c.isRecord(value) ? 'record' : c.isColl(value) ? 'coll' : null;
@@ -71,33 +76,42 @@
     try { return walk(inner, outer, form, mode); }
     finally { --calls; }
   };
-})({seq: ~{seq},first: ~{first},next: ~{next},list: ~{list},apply: ~{apply},conj: ~{conj},empty: ~{empty},meta: ~{meta},withMeta: ~{with-meta},isList: ~{list?},isSeq: ~{seq?},isEntry: ~{map-entry?},isRecord: ~{record?},isColl: ~{coll?},MapEntry: ~{cljs.core/MapEntry},doall: ~{doall},map: ~{map},identity: ~{identity}})"))
-(defn- walk-impl [inner outer form] (walk-engine inner outer form 0))
-(defn- prewalk-impl [f form] (walk-engine f identity form 1))
-(defn- postwalk-impl [f form] (walk-engine f identity form 2))
+})({seq: ~{seq},first: ~{first},next: ~{next},list: ~{list},apply: ~{apply},conj: ~{conj},empty: ~{empty},meta: ~{meta},withMeta: ~{with-meta},isList: ~{list?},isSeq: ~{seq?},isEntry: ~{map-entry?},isRecord: ~{record?},isColl: ~{coll?},MapEntry: ~{cljs.core/MapEntry},doall: ~{doall},map: ~{map},identity: ~{identity}})))(~{inner}, ~{outer}, ~{form}, ~{mode})"))
+
+;; Each public function has a second method that only throws: with two
+;; methods it has a dispatcher, which rejects every other count with
+;; "Invalid arity: N" when the call's count is wrong or the function is
+;; applied or saved. A program that calls it directly with the right count
+;; keeps only the first method at advanced.
+(defn walk {:arglists '([inner outer form])}
+  ([inner outer form] (walk-engine inner outer form 0))
+  ([_ _ _ _] (throw (js/Error. "Invalid arity: 4"))))
+(defn prewalk {:arglists '([f form])}
+  ([f form] (walk-engine f identity form 1))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
+(defn postwalk {:arglists '([f form])}
+  ([f form] (walk-engine f identity form 2))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
 (defn- replacements [smap]
   (if (or (nil? smap) (map? smap)) smap
     (throw (js/Error. "expected replacement map or nil"))))
-(defn- prewalk-replace-impl [smap form]
-  (replacements smap)
-  (prewalk (fn [x] (if (contains? smap x) (get smap x) x)) form))
-(defn- postwalk-replace-impl [smap form]
-  (replacements smap)
-  (postwalk (fn [x] (if (contains? smap x) (get smap x) x)) form))
-(defn- keywordize-keys-impl [m]
-  (postwalk (fn [x] (if (map? x)
-    (into {} (map (fn [[k v]] [(if (string? k) (keyword k) k) v]) x)) x)) m))
-(defn- stringify-keys-impl [m]
-  (postwalk (fn [x] (if (map? x)
-    (into {} (map (fn [[k v]] [(if (keyword? k) (name k) k) v]) x)) x)) m))
-
-;; Preserve the supported native arity boundary for saved/apply calls too.
-(defn- checked-arity [f minimum maximum]
-  (js* "((f, lo, hi) => function(...args) { if (args.length < lo || (hi !== null && args.length > hi)) throw new Error('Invalid arity: ' + args.length); return f(...args); })(~{f}, ~{minimum}, ~{maximum})"))
-(def ^{:arglists '([inner outer form])} walk (checked-arity walk-impl 3 3))
-(def ^{:arglists '([f form])} prewalk (checked-arity prewalk-impl 2 2))
-(def ^{:arglists '([f form])} postwalk (checked-arity postwalk-impl 2 2))
-(def ^{:arglists '([smap form])} prewalk-replace (checked-arity prewalk-replace-impl 2 2))
-(def ^{:arglists '([smap form])} postwalk-replace (checked-arity postwalk-replace-impl 2 2))
-(def ^{:arglists '([m])} keywordize-keys (checked-arity keywordize-keys-impl 1 1))
-(def ^{:arglists '([m])} stringify-keys (checked-arity stringify-keys-impl 1 1))
+(defn prewalk-replace {:arglists '([smap form])}
+  ([smap form]
+   (replacements smap)
+   (prewalk (fn [x] (if (contains? smap x) (get smap x) x)) form))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
+(defn postwalk-replace {:arglists '([smap form])}
+  ([smap form]
+   (replacements smap)
+   (postwalk (fn [x] (if (contains? smap x) (get smap x) x)) form))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
+(defn keywordize-keys {:arglists '([m])}
+  ([m]
+   (postwalk (fn [x] (if (map? x)
+     (into {} (map (fn [[k v]] [(if (string? k) (keyword k) k) v]) x)) x)) m))
+  ([_ _] (throw (js/Error. "Invalid arity: 2"))))
+(defn stringify-keys {:arglists '([m])}
+  ([m]
+   (postwalk (fn [x] (if (map? x)
+     (into {} (map (fn [[k v]] [(if (keyword? k) (name k) k) v]) x)) x)) m))
+  ([_ _] (throw (js/Error. "Invalid arity: 2"))))

@@ -288,10 +288,36 @@ Per namespace in simple, gzip share difference as built, then after steps 2 and 
 **Candidate remedies**, none designed here. Per the group rules, the user decides any design change.
 - **Folding defines read through a function or a def:** light-cljs-984, maybe later. It extends the advanced optimizer and is worth 3.2 to 3.6 KB here.
 - **EDN and cljs.reader reading without namespace registration:** light-cljs-985, maybe later. It splits the reader unit or changes the reflection rule, and is worth up to 9.8 KB in TodoMVC.
-- **Arities in the bundled clojure.set:** light-cljs-986. The bundled clojure.set defines its public functions as values, so every arity is kept; clojure.walk is kept where Closure drops it. This is a small library fix, worth up to 2 KB.
+- **Arities in the bundled clojure.set:** light-cljs-986. The bundled clojure.set defines its public functions as values, so every arity is kept; clojure.walk is kept where Closure drops it. This is a small library fix, worth up to 2 KB. Done: see the next section.
 - **Assertions in release builds:** the porter could write `:release {:compiler-options {:elide-asserts true}}`, or light-cljs's `release` could default to it as shadow-cljs's does. That is a default flip, for the user. Worth 1.4 KB.
 - **The up-front declaration list:** declaring each global where it is defined is worth 0.8 to 1.4 KB. Not filed.
 - **The runtime's compression:** finer slicing for small apps, or a runtime that compresses better, is a design question. It is worth up to 6.3 KB in simple.
+
+### 2026-11-14: bundled clojure.set and clojure.walk keep only what is called (light-cljs-986)
+
+**Change.**
+- **clojure.set and clojure.walk** (`src/compiler_libraries/clojure/`) now define their public functions as ordinary multi-arity `defn`s, as upstream does, instead of values wrapped in an arity-checking function. At advanced a program keeps only the methods it calls, and no dispatcher unless it applies or saves the function. re-frame calls only `difference` with two arguments, so that one method is all that remains of clojure.set.
+- **Arity errors are kept:** a function with one valid count has a second method that only throws, so its dispatcher still rejects any other count with "Invalid arity: N".
+- **clojure.walk's engine** is made at its first call instead of at load, so a program that never walks drops the namespace.
+
+**Setup.** `light-cljs-d7357e63` before (master `c0ee26e6` has the same compiler) and `light-cljs-2c26ffc7` after. Both ports were made again from porter `shadow-port-tool-980` for this run, simple included; the section above used `shadow-port-tool-982` for simple, so its simple baseline is about 300 bytes off this one. Command: `bb benchmarks/re-frame.bb breakdown simple todomvc --light BIN`. The table above is not rerun.
+
+Gzip difference, light-cljs minus shadow-cljs, in bytes, before and after:
+
+| Row | simple before | simple after | TodoMVC before | TodoMVC after |
+|---|---:|---:|---:|---:|
+| clojure.string, set, walk and data, after the last step | +2,010 | -59 | +1,651 | +330 |
+| the same, raw characters of light-cljs's side (shadow-cljs: 5,128 and 6,361) | 13,790 | 5,162 | 13,901 | 7,179 |
+| Whole file, 1. as built | +13,960 | +12,599 | +15,735 | +14,360 |
+| Whole file, 2. + asserts elided | +12,572 | +10,228 | +14,279 | +12,860 |
+| Whole file, 3. + re-frame's defines read directly | +9,282 | +6,862 | +10,667 | +9,212 |
+| Whole file, 4. + no cljs.reader, both compilers | | | +866 | -499 |
+| Whole file brotli, after the last step | +10,469 | +8,475 | +4,320 | +3,184 |
+
+- **The whole file moves more than the row** (simple: 2,420 against 2,069 bytes): the old libraries also reached runtime units (runtime row +6,228 to +6,128), and the up-front declaration list is shorter (the app's own namespaces row +936 to +829).
+- **As built,** before step 3, simple's row is +806 (it was +2,020): reagent's `str-coll` calls `prewalk` in code only `(dev?)` reaches, which stays until the defines fold. shadow-cljs drops it at every step, since Closure folds `goog.DEBUG`.
+- **TodoMVC's after-step-4 gap** is now in light-cljs's favour, -499 bytes after gzip, while brotli still favours shadow-cljs by 3,184.
+- shadow-cljs's own size moved by up to 17 bytes between the two runs (137,097 and 137,102 as built), its usual variation between clean builds.
 
 ## Build time
 

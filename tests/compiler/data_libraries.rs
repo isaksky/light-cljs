@@ -443,3 +443,58 @@ fn upstream_set_and_walk_witnesses_execute_with_full_setup() {
     );
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "true");
 }
+
+/// At `Advanced` a program keeps only the bundled clojure.set arities it calls
+/// and drops a required clojure.walk it never calls, while wrong counts,
+/// `apply` and saved values still get the arity errors (light-cljs-986).
+#[test]
+fn advanced_keeps_only_called_library_arities_and_their_errors() {
+    use super::optimization::{execute, readable};
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compiler::analyze_namespace_entry;
+    use light_cljs::{MacroHost, OptimizationLevel, prepare_application};
+    let sources = Sources::new();
+    let advanced = |body: &str| {
+        sources.write(
+            "probe/main.cljs",
+            &format!("(ns probe.main (:require [clojure.set :as s] [clojure.walk :as w])) {body}"),
+        );
+        let program = analyze_namespace_entry(
+            "probe.main",
+            std::slice::from_ref(sources.0.path()),
+            &mut MacroHost::new(),
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let js = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_js();
+        let value = execute(&format!("console.log(JSON.stringify({js}));"));
+        (value.trim().to_owned(), js)
+    };
+    let (value, js) = advanced("(pr-str (s/difference #{1 2 3} #{2}))");
+    assert_eq!(value, r##""#{1 3}""##);
+    // No dispatcher, no other method of any public function (the throwing
+    // ones included), no other clojure.set function, no walk engine.
+    for absent in [
+        "maxFixedArity",
+        "Invalid arity: 0",
+        "expected map or nil",
+        "walk depth limit",
+    ] {
+        assert!(!js.contains(absent), "{absent}\n{js}");
+    }
+    let (value, _) = advanced(
+        r#"(let [caught (fn [f] (try (f) "none" (catch js/Error e (.-message e))))
+                 saved [s/select w/prewalk]]
+      #js [(caught #(s/difference)) (caught #(s/select odd?)) (caught #(s/select odd? #{} 1))
+           (caught #(s/join #{} #{} {} 1)) (caught #(apply s/intersection []))
+           (caught #((first saved) odd?)) (caught #(w/walk identity identity))
+           (caught #((second saved) identity [1] 2)) (caught #(w/keywordize-keys {} {}))
+           (pr-str (s/difference #{1 2 3} #{2} #{3}))
+           (pr-str (w/postwalk-replace {1 2} [1 [1]]))])"#,
+    );
+    assert_eq!(
+        value,
+        r##"["Invalid arity: 0","Invalid arity: 1","Invalid arity: 3","Invalid arity: 4","Invalid arity: 0","Invalid arity: 1","Invalid arity: 2","Invalid arity: 3","Invalid arity: 2","#{1}","[2 [2]]"]"##
+    );
+}

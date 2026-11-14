@@ -29,8 +29,17 @@
   (let [max (apply max-key k coll)]
     (cons max (remove #(identical? max %) coll))))
 
-(defn- union-impl
+;; The public functions are ordinary multi-arity defns, as upstream writes
+;; them, so a program that calls only some arities keeps only those at
+;; advanced. A function with one valid count gets a second method that only
+;; throws: with two methods it has a dispatcher, which rejects every other
+;; count with "Invalid arity: N" when the call's count is wrong or the
+;; function is applied or saved, as any multi-arity function does. Methods
+;; call the public functions directly, never pass them as values, so an
+;; unused method does not keep a dispatcher.
+(defn union
   "Return a set that is the union of the input sets"
+  {:arglists '([] [s1] [s1 s2] [s1 s2 & sets])}
   ([] #{})
   ([s1] (require-set s1))
   ([s1 s2]
@@ -43,8 +52,9 @@
      (let [bubbled-sets (bubble-max-key count (conj sets s2 s1))]
        (reduce into (first bubbled-sets) (rest bubbled-sets)))))
 
-(defn- intersection-impl
+(defn intersection
   "Return a set that is the intersection of the input sets"
+  {:arglists '([s1] [s1 s2] [s1 s2 & sets])}
   ([] (throw (js/Error. "Invalid arity: 0")))
   ([s1] (require-set s1))
   ([s1 s2]
@@ -59,10 +69,11 @@
   ([s1 s2 & sets]
      (doseq [s (list* s1 s2 sets)] (require-set s))
      (let [bubbled-sets (bubble-max-key #(- (count %)) (conj sets s2 s1))]
-       (reduce intersection (first bubbled-sets) (rest bubbled-sets)))))
+       (reduce #(intersection %1 %2) (first bubbled-sets) (rest bubbled-sets)))))
 
-(defn- difference-impl
+(defn difference
   "Return a set that is the first set without elements of the remaining sets"
+  {:arglists '([s1] [s1 s2] [s1 s2 & sets])}
   ([] (throw (js/Error. "Invalid arity: 0")))
   ([s1] (require-set s1))
   ([s1 s2]
@@ -76,24 +87,29 @@
        (reduce disj s1 s2)))
   ([s1 s2 & sets]
      (doseq [s (list* s1 s2 sets)] (require-set s))
-     (reduce difference s1 (conj sets s2))))
+     (reduce #(difference %1 %2) s1 (conj sets s2))))
 
 
-(defn- select-impl
+(defn select
   "Returns a set of the elements for which pred is true"
-  [pred xset]
+  {:arglists '([pred xset])}
+  ([pred xset]
     (require-set xset)
     (reduce (fn [s k] (if (pred k) s (disj s k)))
             xset xset))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
 
-(defn- project-impl
+(defn project
   "Returns a rel of the elements of xrel with only the keys in ks"
-  [xrel ks]
+  {:arglists '([xrel ks])}
+  ([xrel ks]
     (set (map #(selected-keys % ks) xrel)))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
 
-(defn- rename-keys-impl
+(defn rename-keys
   "Returns the map with the keys in kmap renamed to the vals in kmap"
-  [map kmap]
+  {:arglists '([map kmap])}
+  ([map kmap]
     (require-map map) (require-map kmap)
     (reduce
      (fn [m [old new]]
@@ -101,26 +117,32 @@
          (assoc m new (get map old))
          m))
      (apply dissoc map (keys kmap)) kmap))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
 
-(defn- rename-impl
+(defn rename
   "Returns a rel of the maps in xrel with the keys in kmap renamed to the vals in kmap"
-  [xrel kmap]
+  {:arglists '([xrel kmap])}
+  ([xrel kmap]
     (set (map #(rename-keys % kmap) xrel)))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
 
-(defn- index-impl
+(defn index
   "Returns a map of the distinct values of ks in the xrel mapped to a
   set of the maps in xrel with the corresponding values of ks."
-  [xrel ks]
+  {:arglists '([xrel ks])}
+  ([xrel ks]
     (reduce
      (fn [m x]
        (let [ik (selected-keys x ks)]
          (assoc m ik (conj (get m ik #{}) x))))
      {} xrel))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
 
-(defn- map-invert-impl
+(defn map-invert
   "Returns the map with the vals mapped to the keys."
-  [m]
-  (reduce-kv (fn [result k v] (assoc result v k)) {} m))
+  {:arglists '([m])}
+  ([m] (reduce-kv (fn [result k v] (assoc result v k)) {} m))
+  ([_ _] (throw (js/Error. "Invalid arity: 2"))))
 
 ;; Heterogeneous rows retain the supported relational behavior without relying
 ;; on the unordered set's choice of a first row to infer a shared schema.
@@ -136,10 +158,11 @@
 (defn- uniform-schema? [relation schema]
   (every? (fn [row] (= schema (set (keys (require-map row))))) relation))
 
-(defn- join-impl
+(defn join
   "When passed 2 rels, returns the rel corresponding to the natural
   join. When passed an additional keymap, joins on the corresponding
   keys."
+  {:arglists '([xrel yrel] [xrel yrel km])}
   ([xrel yrel] ;natural join
    (if (and (seq xrel) (seq yrel))
      (let [xkeys (set (keys (first xrel))) ykeys (set (keys (first yrel)))]
@@ -167,50 +190,23 @@
                  (if found
                    (reduce #(conj %1 (merge %2 x)) ret found)
                    ret)))
-             #{} s))))
+             #{} s)))
+  ([_ _ _ _] (throw (js/Error. "Invalid arity: 4"))))
 
-(defn- subset?-impl
+(defn subset?
   "Is set1 a subset of set2?"
-  [set1 set2]
-  (require-set set1) (require-set set2)
-  (and (<= (count set1) (count set2))
-       (every? #(contains? set2 %) set1)))
+  {:arglists '([set1 set2])}
+  ([set1 set2]
+    (require-set set1) (require-set set2)
+    (and (<= (count set1) (count set2))
+         (every? #(contains? set2 %) set1)))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
 
-(defn- superset?-impl
+(defn superset?
   "Is set1 a superset of set2?"
-  [set1 set2]
-  (require-set set1) (require-set set2)
-  (and (>= (count set1) (count set2))
-       (every? #(contains? set1 %) set2)))
-
-
-;; Preserve the supported native arity boundary for saved/apply calls too.
-(defn- checked-arity [f minimum maximum]
-  (js* "((f, lo, hi) => function(...args) { if (args.length < lo || (hi !== null && args.length > hi)) throw new Error('Invalid arity: ' + args.length); return f(...args); })(~{f}, ~{minimum}, ~{maximum})"))
-(def ^{:arglists '([] [s1] [s1 s2] [s1 s2 & sets])} union "Return a set that is the union of the input sets"
-  (checked-arity union-impl 0 nil))
-(def ^{:arglists '([s1] [s1 s2] [s1 s2 & sets])} intersection "Return a set that is the intersection of the input sets"
-  (checked-arity intersection-impl 1 nil))
-(def ^{:arglists '([s1] [s1 s2] [s1 s2 & sets])} difference "Return a set that is the first set without elements of the remaining sets"
-  (checked-arity difference-impl 1 nil))
-(def ^{:arglists '([pred xset])} select "Returns a set of the elements for which pred is true"
-  (checked-arity select-impl 2 2))
-(def ^{:arglists '([xrel ks])} project "Returns a rel of the elements of xrel with only the keys in ks"
-  (checked-arity project-impl 2 2))
-(def ^{:arglists '([map kmap])} rename-keys "Returns the map with the keys in kmap renamed to the vals in kmap"
-  (checked-arity rename-keys-impl 2 2))
-(def ^{:arglists '([xrel kmap])} rename "Returns a rel of the maps in xrel with the keys in kmap renamed to the vals in kmap"
-  (checked-arity rename-impl 2 2))
-(def ^{:arglists '([xrel ks])} index "Returns a map of the distinct values of ks in the xrel mapped to a
-  set of the maps in xrel with the corresponding values of ks."
-  (checked-arity index-impl 2 2))
-(def ^{:arglists '([m])} map-invert "Returns the map with the vals mapped to the keys."
-  (checked-arity map-invert-impl 1 1))
-(def ^{:arglists '([xrel yrel] [xrel yrel km])} join "When passed 2 rels, returns the rel corresponding to the natural
-  join. When passed an additional keymap, joins on the corresponding
-  keys."
-  (checked-arity join-impl 2 3))
-(def ^{:arglists '([set1 set2])} subset? "Is set1 a subset of set2?"
-  (checked-arity subset?-impl 2 2))
-(def ^{:arglists '([set1 set2])} superset? "Is set1 a superset of set2?"
-  (checked-arity superset?-impl 2 2))
+  {:arglists '([set1 set2])}
+  ([set1 set2]
+    (require-set set1) (require-set set2)
+    (and (>= (count set1) (count set2))
+         (every? #(contains? set1 %) set2)))
+  ([_ _ _] (throw (js/Error. "Invalid arity: 3"))))
