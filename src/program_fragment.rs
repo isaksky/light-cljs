@@ -492,11 +492,12 @@ fn append_impl(
             ExprId,
             |id| fragment.namespace_entries.contains_key(id),
         );
-        target.namespace_entries.extend(
-            added
-                .into_iter()
-                .map(|id| ((remap.map_expr)(id), fragment.namespace_entries[&id].clone())),
-        );
+        target.namespace_entries.extend(added.into_iter().map(|id| {
+            (
+                (remap.map_expr)(id),
+                fragment.namespace_entries[&id].clone(),
+            )
+        }));
     }
     for (index, global) in fragment.globals.iter().enumerate().skip(first_global) {
         let scan = || {

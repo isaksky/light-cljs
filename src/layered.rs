@@ -634,7 +634,10 @@ mod tests {
             }
             assert_eq!(map.len(), oracle.len());
         }
-        assert!(own_merges > 10 && base_merges > 1, "{own_merges} {base_merges}");
+        assert!(
+            own_merges > 10 && base_merges > 1,
+            "{own_merges} {base_merges}"
+        );
         frames.push((map.clone(), oracle));
         map.clear();
         for (frame, expected) in frames {

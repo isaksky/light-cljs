@@ -2735,8 +2735,15 @@ mod tests {
             .collect::<Vec<_>>();
         let (first, second) = (environment(&entries[..70]), environment(&entries));
         let mut kept = MeasuredSizes::new();
-        elidable_size_reusing(&first, usize::MAX, 64, &control, &MeasuredSizes::new(), &mut kept)
-            .unwrap();
+        elidable_size_reusing(
+            &first,
+            usize::MAX,
+            64,
+            &control,
+            &MeasuredSizes::new(),
+            &mut kept,
+        )
+        .unwrap();
         assert_eq!(kept.len(), 70);
         let walked = elidable_size(&second, usize::MAX, 64, &control, &mut 0).unwrap();
         for nodes in [0, 1, 50, walked.0 - 1, walked.0, walked.0 + 1, usize::MAX] {
