@@ -1977,7 +1977,8 @@ Setup. `compare.bb DIR --light BIN --light-only --leaf LEAF --runs 3
 binary after the other per project, so not alternated between binaries.
 Parent: the immutable `bin/light-cljs-5ffa22cc` (master `e379d6c5` differs
 from it only in watch code). Change: a release build of the branch after the review fix (the
-landed code; its immutable copy is named below). Before that fix, which
+landed code, `a0383188`, kept as the immutable
+`bin/light-cljs-a0383188`, SHA-256 `6320b68207a37437...`). Before that fix, which
 also reads the Vars function bodies define into the view, a build of the
 first commit (`2e5b59cf`) gave 6.48 s (6.39-6.57) and 9.32 s (9.01-9.83)
 for the edit rebuild, with the same recompiled counts. Every
