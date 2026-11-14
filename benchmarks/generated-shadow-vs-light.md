@@ -1274,15 +1274,19 @@ shadow-cljs in one JVM (4 release builds, as a running server): 44.20 s (113.5 s
 
 Findings, recorded as found:
 
-1. **Load moves shadow-cljs far more than light-cljs.** shadow's 800k clean
-   build ranged from 199.4 to 344.6 s (median 243.5 s, against 176.8 s on the
-   reserved machine on October 29) and its rebuild with nothing changed took
-   172.3 s (147.5 s). light's 800k clean build ranged from 33.9 to 42.7 s;
-   the two rounds that started at the lowest load (3.4 and 4.8) took 33.9 and
-   35.3 s, below October 29's 36.7 s. At 200k, against October 29: light's
-   clean build 6.35 s (7.03 s), rebuild with nothing changed 1.26 s (1.02 s),
-   after a one-file edit 5.19 s (5.14 s); shadow's 41.54 s (40.70 s), 41.67 s
-   (32.43 s, one round at 65.1 s with the load at 26.8) and 38.85 s (32.63 s).
+1. **shadow-cljs's 800k clean build varied most in these runs**, from 199.4
+   to 344.6 s (median 243.5 s, against 176.8 s on the reserved machine on
+   October 29); its rebuild with nothing changed took 172.3 s (147.5 s).
+   light's 800k clean build ranged from 33.9 to 42.7 s; the two rounds that
+   started at the lowest load (3.4 and 4.8) took 33.9 and 35.3 s, below
+   October 29's 36.7 s, while its 800k rebuild with nothing changed took
+   6.45 s (4.76 s). At 200k, against October 29: light's clean build 6.35 s
+   (7.03 s), rebuild with nothing changed 1.26 s (1.02 s), after a one-file
+   edit 5.19 s (5.14 s); shadow's 41.54 s (40.70 s), 41.67 s (32.43 s; its
+   slowest round, 65.1 s, started at load 17.0) and 38.85 s (32.63 s). The
+   load was not controlled, and Node and the light-cljs revision differ from
+   October 29, so these runs do not isolate the effect of load on either
+   compiler.
 2. **shadow-cljs spends a large share of its clean builds in system CPU**:
    129 s system against 127 s user at 200k, and 583 s against 465 s at 800k
    (medians), but 21 to 36 s on its cached rebuilds. light's clean builds use
@@ -1292,9 +1296,12 @@ Findings, recorded as found:
 3. **Growth from 200k to 800k under this load** (clean build medians): light
    6.4x (5.5x between its lowest-load rounds) and shadow 5.9x. These runs were
    not made to measure growth, and a loaded machine says little about it.
-4. **Output.** Every output printed the project oracle's checksum (`484264`
-   at 200k, `189716` at 800k; input 42, 3 iterations) and passed
-   `check-waste.bb --strict`. light's output is slightly smaller than on
+4. **Output.** For each compiler at both sizes, the last clean build's and
+   the last one-file-edit build's output printed the project oracle's
+   checksum (`484264` at 200k, `189716` at 800k; input 42, 3 iterations) and
+   passed `check-waste.bb --strict`; outputs of earlier rounds, of the
+   rebuilds with nothing changed and of the in-JVM builds were not checked
+   separately. light's output is slightly smaller than on
    October 29 (3,449,022 against 3,456,905 bytes at 200k, 13,367,898 against
    13,396,492 at 800k); shadow's is the same size.
 5. **A running shadow-cljs server** (`--warm-jvm 4`, 200k) took 28 to 33 s
