@@ -20,7 +20,7 @@ bb benchmarks/watch-vs-shadow.bb report A.edn B.edn
 - **light-cljs:** an immutable copy of the release binary at master `e5b7832e`, `research/shadow-credibility/bin/light-cljs-e5b7832e`. V8 build. `light-cljs watch BUILD --out-dir DIR --serve 0 --no-nrepl`, default polling (every 100 ms).
 - **shadow-cljs:** 3.5.3, `npx shadow-cljs watch client` for TodoMVC and `clojure -M:shadow watch watch` for the generated app (the project's own alias, `-Xmx8g`). Default file watcher: on macOS that is the JVM's watch service, read every 500 ms (`:fs-watch` unset). OpenJDK 25.0.2.
 - **Other tools:** headless Chromium 1248 through playwright-core 1.64.1, Node 26.12.1, React 18.2.0 (development builds on both sides), esbuild 0.25.10 for light-cljs's React bundle.
-- **Machine:** macOS, 24 cores, 32 GB, **unreserved**. Two other workers ran builds and timings throughout. The one-minute load average before every edit is in the tables: 1.5 to 3.6 for TodoMVC, 4.8 to 11.2 for light-cljs and 9.9 to 15.2 for shadow-cljs on the generated app (the shadow-cljs sessions happened to coincide with a peer's heavier work).
+- **Machine:** macOS, 24 cores, 32 GB, **unreserved**. Two other workers ran builds and timings throughout. The one-minute load average before every edit is in the tables: 1.5 to 3.6 for TodoMVC, 6.3 to 13.0 for light-cljs and 8.2 to 17.7 for shadow-cljs on the generated app (the shadow-cljs sessions happened to coincide with a peer's heavier work).
 - **Runs:** two watch sessions per tool and app, in the orders shadow, light then light, shadow (TodoMVC) and light, shadow then shadow, light (generated app). Each session starts with nothing cached (`.shadow-cljs/builds/ID` and `.light-cljs` removed), opens the page, and runs every scenario: one warm-up edit, then five timed edits, then the file restored. So each cell below pools 10 timed edits.
 
 **Apps.**
@@ -84,43 +84,45 @@ Milliseconds from the save, median (range) of 10 edits.
 
 | Scenario | Tool | Output written | Reload message | New code running | Tool's own step time | Namespaces or files compiled | CPU user + system per edit, s | Load average |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| view (leaf): app.baga.views | light-cljs | 123 (77-170) | 199 (150-312) | 200 (151-317) | 124 (117-239) | 1 (1-1) | 0.17 (0.15-0.27) | 6.8 (5.8-7.7) |
-| view (leaf): app.baga.views | shadow-cljs | 2923 (2873-2949) | 2980 (2935-3006) | 2992 (2946-3042) | 810 (790-830) | 2 (2-2) | 1.15 (1.09-1.48) | 12.3 (10.2-15.2) |
-| widely required: workload.common | light-cljs | 128 (92-148) | 204 (164-225) | 204 (164-225) | 129 (118-133) | 1 (1-1) | 0.17 (0.16-0.20) | 6.6 (5.3-7.9) |
-| widely required: workload.common | shadow-cljs | 5556 (4687-6369) | 5620 (4757-6435) | 6711 (5852-7502) | 3665 (3360-4770) | 206 (206-206) | 53.30 (48.60-65.24) | 11.9 (10.5-13.8) |
-| macro: workload.sobis/hainfoulvei | light-cljs | 1328 (1105-1493) | 1404 (1185-1567) | **1411 (1193-1575)** | **1312 (1125-1432)** | 9 (9-9) | 1.64 (1.41-1.79) | 6.4 (4.8-8.4) |
-| macro: workload.sobis/hainfoulvei | shadow-cljs | 856 (677-1005) | 915 (739-1068) | 957 (781-1114) | 305 (290-490) | 9 (9-9) | 1.31 (1.23-1.47) | 11.1 (9.9-12.3) |
+| view (leaf): app.baga.views | light-cljs | 122 (70-223) | 208 (150-300) | 209 (151-304) | 128 (119-161) | 1 (1-1) | 0.19 (0.17-0.23) | 8.7 (7.2-11.0) |
+| view (leaf): app.baga.views | shadow-cljs | 2891 (2751-4914) | 2948 (2811-4986) | 2961 (2823-4997) | 800 (770-2890) | 2 (2-2) | 1.21 (1.06-3.13) | 14.1 (12.2-16.8) |
+| widely required: workload.common | light-cljs | 114 (90-143) | 192 (162-219) | 193 (164-220) | 132 (118-151) | 1 (1-1) | 0.19 (0.15-0.21) | 8.6 (7.1-10.2) |
+| widely required: workload.common | shadow-cljs | 5430 (3706-6328) | 5492 (3767-6393) | 6603 (4874-7600) | 3640 (3270-4280) | 206 (206-206) | 52.48 (49.00-59.64) | 13.9 (10.9-17.7) |
+| macro: workload.sobis/hainfoulvei | light-cljs | 1340 (1028-1445) | 1417 (1103-1525) | **1425 (1109-1533)** | **1306 (1073-1442)** | 9 (9-9) | 1.66 (1.32-1.80) | 7.6 (6.3-9.4) |
+| macro: workload.sobis/hainfoulvei | shadow-cljs | 856 (832-892) | 918 (887-949) | 962 (929-993) | 295 (270-320) | 9 (9-9) | 1.30 (1.23-1.43) | 14.3 (13.8-15.3) |
 
 | Scenario | Tool | Noticing and other | Step | Output to message | Message to running |
 |---|---|---:|---:|---:|---:|
-| view (leaf) | light-cljs | -3 | 124 | 75 | 1 |
-| view (leaf) | shadow-cljs | 2116 | 810 | 58 | 11 |
-| widely required | light-cljs | -5 | 129 | 75 | 1 |
-| widely required | shadow-cljs | 1883 | 3665 | 65 | 1101 |
-| macro | light-cljs | 17 | 1312 | 76 | 7 |
-| macro | shadow-cljs | 539 | 305 | 62 | 43 |
+| view (leaf) | light-cljs | -16 | 128 | 77 | 1 |
+| view (leaf) | shadow-cljs | 2083 | 800 | 59 | 12 |
+| widely required | light-cljs | -23 | 132 | 76 | 1 |
+| widely required | shadow-cljs | 1671 | 3640 | 62 | 1137 |
+| macro | light-cljs | 17 | 1306 | 77 | 7 |
+| macro | shadow-cljs | 562 | 295 | 58 | 44 |
 
-(light-cljs's "noticing and other" is near zero or negative because its logged step ends after work it does once the files are written; that work is the 75 ms "output to message", see below.)
+(light-cljs's "noticing and other" is near zero or negative because its logged step ends after work it does once the files are written; that work is the 77 ms "output to message", see below.)
 
 | Session | Tool | Startup to first build, s | Page load in Chromium, s | Peak memory during startup, MB | Peak memory while editing, MB | Load average before |
 |---|---|---:|---:|---:|---:|---:|
-| 1 | light-cljs | **155.0** | **8.1** | 1,273 | 1,372 | 4.0 |
-| 1 | shadow-cljs | 36.5 | 2.0 | 2,676 | 5,404 | 5.0 |
-| 2 | shadow-cljs | 38.0 | 2.0 | 2,497 | 4,992 | 9.3 |
-| 2 | light-cljs | **167.6** | **9.6** | 1,298 | 1,398 | 11.2 |
+| 1 | light-cljs | **174.6** | **9.2** | 1,310 | 1,386 | 10.0 |
+| 1 | shadow-cljs | 40.3 | 2.3 | 2,669 | 4,532 | 8.2 |
+| 2 | shadow-cljs | 38.4 | 2.1 | 2,633 | 3,852 | 12.4 |
+| 2 | light-cljs | **168.7** | **8.1** | 1,306 | 1,403 | 13.0 |
 
-- **View and widely required:** light-cljs runs the new code in 200 and 204 ms. shadow-cljs takes 3.0 s for the view and 6.7 s for `workload.common`: about 2 s passes outside its own step (mostly noticing the save, which its watcher does more slowly in this larger tree), it recompiles all 206 namespaces that require `workload.common` (3.7 s, 53 s of CPU), and the page then loads them (1.1 s). light-cljs recompiles the one namespace, since its callers look definitions up when they run.
-- **Peak memory while editing:** 1.4 GB for light-cljs against 5.0 to 5.4 GB for shadow-cljs (`-Xmx8g`, so this reflects the JVM heap it was allowed, as the group context notes).
+An earlier pair of sessions per tool, identical except that the probe read the changed definition's source text instead of calling it (the review of this pellet asked for a call), gave the same picture: new code running in 200, 204 and 1,411 ms for light-cljs and 2,992, 6,711 and 957 ms for shadow-cljs; startup 155 to 168 s against 36.5 to 38 s; page load 8.1 to 9.6 s against 2.0 s.
+
+- **View and widely required:** light-cljs runs the new code in 209 and 193 ms. shadow-cljs takes 3.0 s for the view and 6.6 s for `workload.common`: about 2 s passes outside its own step (mostly noticing the save, which its watcher does more slowly in this larger tree), it recompiles all 206 namespaces that require `workload.common` (3.6 s, 52 s of CPU), and the page then loads them (1.1 s). light-cljs recompiles the one namespace, since its callers look definitions up when they run.
+- **Peak memory while editing:** 1.4 GB for light-cljs against 3.9 to 4.5 GB for shadow-cljs (`-Xmx8g`, so this reflects the JVM heap it was allowed, as the group context notes).
 - No console errors or uncaught exceptions on either side.
 
 ### Where light-cljs is slower
 
 Three results are worse for light-cljs, recorded as found. Remedies are not designed here; per the group's rules they wait for the user. Filed as light-cljs-991 (watch steps), light-cljs-992 (startup) and light-cljs-993 (page load).
 
-**1. The macro edit: 1.41 s against 0.96 s to new code running.** Both tools recompile the same 9 namespaces (the macro namespace and its 8 users). shadow-cljs's step takes 305 ms; light-cljs's takes 1,312 ms, about 140 ms per namespace, while the same per-namespace step on TodoMVC takes 4 ms. shadow-cljs still loses about 540 ms to noticing the save, so light-cljs is slower end to end despite noticing at once. A `sample` profile of six macro saves in a running watch (macOS `sample`, 16 s): 95% of the step thread's busy samples are in `Watch::compile` → `DevSession::load_namespace_file` → `InteractiveCompiler::analyze_forms` → `analyzer::analyze_input`, and 72% of all of them in `RecordLayouts::extend` (src/analyzer.rs:3246, called from `Analyzer::body` at :12405 for every top-level form). A session analysis starts from empty record layouts, so each top-level form of each recompiled namespace scans every expression the 200k program holds. The same scan is in the one-namespace steps (about a quarter of their 124 ms); the rest of those is `Watch::refresh_hooks` (about a third), the dependency manifest's `Watch::revise` (a fifth) and `DevSession::collect_garbage` (a tenth), each of which walks the whole program on every step. They run after the files are written, which fits the 75 ms between the files written and the push.
+**1. The macro edit: 1.43 s against 0.96 s to new code running.** Both tools recompile the same 9 namespaces (the macro namespace and its 8 users). shadow-cljs's step takes 295 ms; light-cljs's takes 1,306 ms, about 145 ms per namespace, while the same per-namespace step on TodoMVC takes 4 ms. shadow-cljs still loses about 560 ms to noticing the save, so light-cljs is slower end to end despite noticing at once. A `sample` profile of six macro saves in a running watch (macOS `sample`, 16 s): 95% of the step thread's busy samples are in `Watch::compile` → `DevSession::load_namespace_file` → `InteractiveCompiler::analyze_forms` → `analyzer::analyze_input`, and 72% of all of them in `RecordLayouts::extend` (src/analyzer.rs:3246, called from `Analyzer::body` at :12405 for every top-level form). A session analysis starts from empty record layouts, so each top-level form of each recompiled namespace scans every expression the 200k program holds. The same scan is in the one-namespace steps (about a quarter of their 128 ms); the rest of those is `Watch::refresh_hooks` (about a third), the dependency manifest's `Watch::revise` (a fifth) and `DevSession::collect_garbage` (a tenth), each of which walks the whole program on every step. They run after the files are written, which fits the 77 ms between the files written and the push.
 
-**2. Startup: 155 to 168 s against 36.5 to 38 s.** `light-cljs watch --stats` on the same build: wall 130.1 s, of which emission 77.5 s, the session's load of the program 46.2 s and analysis 5.5 s (a release build of the same project took 8.6 s uncached with an earlier binary, the project's compare-result.edn). A `sample` of the first 60 s of the startup: 97% of the build thread is in `write_dev_build` → `dev_build::emit_dev_build`, which calls `emitter::emit_js_mode` once per namespace (3,073), and more than half of all its samples are `Arena<GlobalBinding>` lookups inside it: each namespace's emission walks the whole program's globals.
+**2. Startup: 169 to 175 s against 38 to 40 s.** `light-cljs watch --stats` on the same build: wall 130.1 s, of which emission 77.5 s, the session's load of the program 46.2 s and analysis 5.5 s (a release build of the same project took 8.6 s uncached with an earlier binary, the project's compare-result.edn). A `sample` of the first 60 s of the startup: 97% of the build thread is in `write_dev_build` → `dev_build::emit_dev_build`, which calls `emitter::emit_js_mode` once per namespace (3,073), and more than half of all its samples are `Arena<GlobalBinding>` lookups inside it: each namespace's emission walks the whole program's globals.
 
-**3. Page load: 8.1 to 9.6 s against 2.0 s,** from navigation to the first render. A separate measurement of the same output served statically: light-cljs's units finish loading 5.0 to 8.8 s after navigation and the app's first run takes another 3.2 s; shadow-cljs's page has loaded and rendered at 1.5 s. Bytes are not the cause: light-cljs's dev output is 40 MB in 3,077 files, shadow-cljs's 95 MB in 3,203. light-cljs's `index.js` (`dev_build::index_text`) appends one script element at a time and waits for its load event before the next, so its 3,077 requests and evaluations run strictly one after another. How much of the 5 to 9 s that serial loading costs, against the evaluation of the units themselves, was not separated.
+**3. Page load: 8.1 to 9.2 s against 2.1 to 2.3 s,** from navigation to the first render. A separate measurement of the same output served statically: light-cljs's units finish loading 5.0 to 8.8 s after navigation and the app's first run takes another 3.2 s; shadow-cljs's page has loaded and rendered at 1.5 s. Bytes are not the cause: light-cljs's dev output is 40 MB in 3,077 files, shadow-cljs's 95 MB in 3,203. light-cljs's `index.js` (`dev_build::index_text`) appends one script element at a time and waits for its load event before the next, so its 3,077 requests and evaluations run strictly one after another. How much of the 5 to 9 s that serial loading costs, against the evaluation of the units themselves, was not separated.
 
-docs/dev-workflow.md's target, under 100 ms from save to updated page, holds on TodoMVC (64 ms) but not on the 200k app (200 ms), since the one-namespace step grows with the program for the reasons in 1. It is still 15 to 33 times faster than shadow-cljs's there.
+docs/dev-workflow.md's target, under 100 ms from save to updated page, holds on TodoMVC (64 ms) but not on the 200k app (193 to 209 ms), since the one-namespace step grows with the program for the reasons in 1. It is still 14 to 34 times faster than shadow-cljs's there.
