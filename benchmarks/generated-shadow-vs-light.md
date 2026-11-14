@@ -2024,3 +2024,116 @@ measured.
   each against the uncached build at one and four jobs. Penpot's leaf edit
   goes from 153 to 2 recompiled namespaces
   ([compiler-cache.md](compiler-cache.md#declaration-views-for-source-macro-users-light-cljs-347-november-14-2026)).
+
+## Untraced analysis-loop time at 200k and 800k, unreserved machine (November 14, 2026, light-cljs-995)
+
+**Summary.** The growth section above found `trace.other-ms`, the analysis
+time no trace frame covers, growing 10x (plain) and 20x (re-frame shape)
+from 200k to 800k. Two terms caused most of it and are removed in
+`933114f3` (landed as `8d0f6a5e`, the same change rebased onto `e379d6c5`),
+with byte-identical output:
+
+1. **After every namespace's top-level pass, `NamespaceTop::analyze` looked
+   through every program namespace for its own**, which the pass had already
+   added. At re-frame 800k that was about 7 s of 8.3 s (a temporary probe on
+   a loaded machine). The pass now adds its namespace first, on every path,
+   and the second scan is gone. The identical scan at the start of the pass
+   is inside the top-level frame and left to light-cljs-994.
+2. **A unit that defined a protocol copied the program's whole protocol
+   table**, and merging the unit freed that copy: 376 ms of plain 800k's
+   untraced time, 16x its 200k value. The table is now a layered map, as
+   `namespace_entries` already was.
+
+`trace.other-ms` now grows **5.5x (plain) and 8.2x (re-frame)** for 4.0x the
+lines, not the 4.5x the pellet asked for. The rest of the re-frame excess is
+freeing each namespace's reader view (389 ms at 800k against 18 ms at 200k,
+probe), which the top-level pass builds with every macro of the compilation
+(`MacroHost::register_macro_view`): a top-level pass term, left to
+light-cljs-994. Without it both shapes grow about 4.9x (probe).
+
+Setup: base master `21e1a111` and the fix `933114f3`, immutable release
+binaries in `research/shadow-credibility/bin/` (V8 build; SHA-256
+`2768ca8a3ea1c591...` and `21a76e7942a1370f...`), the same machine and
+tools as the growth section. Projects: the `*-970` copies of plain 200k,
+plain 800k and re-frame 200k, and `re-frame-800k-seed42-995`, a copy of the
+shared re-frame 800k project (sources identical). Raw output in
+`research/shadow-credibility/growth-995/` (gitignored).
+
+```sh
+R=research/shadow-credibility
+# three rounds per project, the two binaries alternating within each round:
+(cd $R/projects/PROJECT && /usr/bin/time -l $R/bin/light-cljs-BINARY release bench --no-cache --stats)
+# the fix alone, as in the growth section:
+bb benchmarks/generated-project/compare.bb $R/projects/PROJECT --light $R/bin/light-cljs-933114f3 \
+  --light-commit 933114f3 --leaf src/workload/LEAF.cljs --runs 3 --max-load 1000 --max-repeats 0 \
+  --skip-unchanged --light-only --out $R/growth-995/PROJECT
+bb benchmarks/generated-project/growth.bb --out $R/growth-995/growth $R/growth-995/*-seed42*.edn \
+  $R/growth-995/stats/*.933114f3.*.txt
+```
+
+**The machine was not reserved**: other workers ran throughout, and the
+1-minute load before a build ranged from 2.6 to 23 (it is in the tables).
+Every build of both binaries produced the same output files (one digest per
+project over the six builds), and every compare.bb output printed the
+project oracle's checksum and passed `check-waste.bb --strict`.
+
+### `--stats` builds, binaries alternated
+
+Medians of three `--no-cache --stats` builds (range):
+
+| Project | Binary | trace.other-ms | time.analysis-ms | time.wall-ms | User CPU | Peak memory | Load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| plain 200k | `21e1a111` | 177.6 (177.3-246.2) | 2,362 (2,324-3,364) | 6,882 (6,870-9,835) | 7.05 s (7.04-8.30) | 1.09 GB (1.07-1.10) | 11.0-13.5 |
+| plain 200k | `933114f3` | 116.0 (113.1-121.9) | 2,230 (2,209-2,335) | 6,820 (6,661-6,986) | 7.00 s (6.86-7.11) | 1.06 GB (1.05-1.09) | 9.8-13.9 |
+| plain 800k | `21e1a111` | 1,934.6 (1,803.4-2,053.6) | 16,905 (15,679-18,374) | 39,545 (37,285-43,601) | 40.18 s (37.61-40.56) | 3.82 GB (3.04-3.83) | 6.5-12.3 |
+| plain 800k | `933114f3` | 634.1 (607.5-704.1) | 14,085 (13,769-15,013) | 34,833 (34,375-37,112) | 35.27 s (34.90-35.76) | 3.78 GB (3.38-3.80) | 8.0-15.1 |
+| re-frame 200k | `21e1a111` | 413.3 (388.1-495.8) | 2,753 (2,566-3,116) | 9,482 (8,792-9,809) | 9.01 s (8.63-9.09) | 1.37 GB (1.17-1.38) | 8.3-9.5 |
+| re-frame 200k | `933114f3` | 137.4 (128.2-160.3) | 2,403 (2,278-3,008) | 9,282 (7,909-9,834) | 8.58 s (7.96-8.98) | 1.37 GB (1.36-1.38) | 8.7-9.6 |
+| re-frame 800k | `21e1a111` | 9,612.3 (5,876.3-11,200.4) | 33,987 (22,978-38,363) | 66,298 (51,112-71,360) | 62.37 s (48.15-63.07) | 4.85 GB (4.78-4.89) | 9.0-23.1 |
+| re-frame 800k | `933114f3` | 1,122.4 (1,004.9-1,445.0) | 24,737 (23,048-30,899) | 58,653 (49,152-65,295) | 53.51 s (47.77-56.95) | 4.77 GB (4.74-4.78) | 7.9-21.9 |
+
+| Counter, 200k -> 800k | plain `21e1a111` | plain `933114f3` | re-frame `21e1a111` | re-frame `933114f3` |
+| --- | --- | --- | --- | --- |
+| trace.other-ms | 10.9x | **5.5x** | 23.3x | **8.2x** |
+| time.analysis-ms | 7.2x | 6.3x | 12.3x | 10.3x |
+
+Where the fix's remaining untraced time goes, from a probe build of the fix
+(one build per size, re-frame 800k against 200k): freeing the reader view
+389 against 18 ms (light-cljs-994's term, above), freeing the per-namespace
+analyzer state 233 against 45 ms (5.2x), freeing each merged unit's
+fragment 196 against 40 ms (4.9x); plain shape 109 against 8, 195 against
+44 and 203 against 41 ms. Appending still walks a protocol-defining unit's
+whole protocol table to find its new entries (light-cljs-996).
+
+### compare.bb at 200k and 800k
+
+The fix only, three rounds per project (the growth section's rows are
+`fc31d229`'s; `933114f3` also carries light-cljs-1000's manifest change,
+which shortens the rebuild after a one-file edit):
+
+| Project | Build | `fc31d229` (growth section) | `933114f3` | Load before, `933114f3` |
+| --- | --- | --- | --- | --- |
+| plain 200k | clean build | 6.04 s (5.99-6.42) | 7.88 s (7.32-8.90) | **20.5-21.4** |
+| plain 800k | clean build | 32.50 s (32.34-35.75) | 32.48 s (32.19-32.88) | 6.0-10.6 |
+| re-frame 200k | clean build | 8.82 s (8.34-9.63) | 8.38 s (8.36-8.70) | 16.4-18.1 |
+| re-frame 800k | clean build | 51.08 s (one round) | 50.41 s (44.68-60.60) | 3.3-13.3 |
+| plain 200k | rebuild after a one-file edit | 4.71 s (4.49-4.73) | 5.38 s (5.06-7.10) | 17.9-19.5 |
+| plain 800k | rebuild after a one-file edit | 27.54 s (27.17-27.75) | 24.64 s (24.28-25.64) | 3.3-4.0 |
+| re-frame 200k | rebuild after a one-file edit | 13.64 s (10.69-15.55) | 9.35 s (8.44-9.92) | 11.3-14.5 |
+| re-frame 800k | rebuild after a one-file edit | 82.74 s (one round) | 65.11 s (62.97-75.90) | 2.6-4.8 |
+
+Findings, recorded as found:
+
+1. **The untraced loop time is no longer the steep term**: 5.5x and 8.2x
+   from 200k to 800k against 10.9x and 23.3x for the base on the same day,
+   and 0.6 s and 1.1 s at 800k against 1.9 s and 9.6 s. It is still above
+   the 4.5x asked for; the main remainder is light-cljs-994's.
+2. **Alternated against the base, the fix saves 2.8 s (plain) and 9.3 s
+   (re-frame) of analysis at 800k** (medians of three, loaded machine) and
+   4.9 s and 8.9 s of user CPU.
+3. **compare.bb's clean-build wall times at 800k match the growth
+   section's** (32.48 against 32.50 s, 50.41 against 51.08 s) at different
+   loads; its 200k plain clean build ran at load 20 to 21 and is slower
+   than the growth section's (7.88 against 6.04 s), so the step ratios from
+   these rows (plain 4.1x, re-frame 6.0x) mix loads and are not a growth
+   measurement. The alternated `--stats` rows above are the comparison.
