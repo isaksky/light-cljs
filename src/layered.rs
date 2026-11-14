@@ -6,13 +6,26 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 /// A map whose frames share its entries by reference. Entries are written to
-/// a small layer over a shared base. Both are shared until a write, so a frame
-/// costs two reference increments and a lookup costs two probes. Once the
-/// layer grows past a bound, the two are merged into a new base.
+/// a small layer over a middle layer over a shared base. All three are
+/// shared until a write, so a frame costs three reference increments and a
+/// lookup at most three probes. Once the small layer grows past a bound it
+/// is merged into the middle one, and once that grows past its own bound,
+/// into a new base.
+///
+/// A write after a frame was taken copies the small layer, and a merge
+/// copies the layer merged into while a frame shares it. With bounds of
+/// about the cube root and its square of the map's size, a run of writes,
+/// each after a frame, copies about twice the cube root of the size per
+/// write, where two layers copied the square root (light-cljs-994: a
+/// namespace's top-level pass takes a frame for each definition and
+/// registers the next one's names after it).
 #[derive(Debug)]
 pub struct Layered<K, V> {
     base: Arc<HashMap<K, V>>,
-    /// This map's entries over `base`; `None` removes a base entry.
+    /// Entries over `base`; `None` removes a base entry.
+    mid: Arc<HashMap<K, Option<V>>>,
+    /// This map's entries over `mid` and `base`; `None` removes an entry
+    /// of either.
     own: Arc<HashMap<K, Option<V>>>,
     len: usize,
 }
@@ -30,6 +43,7 @@ impl<K, V> Default for Layered<K, V> {
     fn default() -> Self {
         Self {
             base: Arc::new(HashMap::new()),
+            mid: Arc::new(HashMap::new()),
             own: Arc::new(HashMap::new()),
             len: 0,
         }
@@ -40,6 +54,7 @@ impl<K: Clone, V: Clone> Clone for Layered<K, V> {
     fn clone(&self) -> Self {
         Self {
             base: self.base.clone(),
+            mid: self.mid.clone(),
             own: self.own.clone(),
             len: self.len,
         }
@@ -61,6 +76,21 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
         Q: ?Sized + Hash + Eq,
     {
         match self.own.get(key) {
+            Some(value) => value.as_ref(),
+            None => self.lower(key),
+        }
+    }
+
+    /// The entry for `key` below the own layer.
+    fn lower<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        if self.mid.is_empty() {
+            return self.base.get(key);
+        }
+        match self.mid.get(key) {
             Some(value) => value.as_ref(),
             None => self.base.get(key),
         }
@@ -91,7 +121,7 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
         Q: ?Sized + Hash + Eq + ToOwned<Owned = K>,
     {
         if !self.own.contains_key(key) {
-            let value = self.base.get(key)?.clone();
+            let value = self.lower(key)?.clone();
             // Compact first: the entry must stay in the own layer to be
             // returned from it.
             self.compact();
@@ -103,7 +133,7 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         let previous = match Arc::make_mut(&mut self.own).insert(key.clone(), Some(value)) {
             Some(previous) => previous,
-            None => self.base.get(&key).cloned(),
+            None => self.lower(&key).cloned(),
         };
         if previous.is_none() {
             self.len += 1;
@@ -117,10 +147,10 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
         K: Borrow<Q>,
         Q: ?Sized + Hash + Eq + ToOwned<Owned = K>,
     {
-        let previous = if self.base.contains_key(key) {
+        let previous = if self.lower(key).is_some() {
             match Arc::make_mut(&mut self.own).insert(key.to_owned(), None) {
                 Some(previous) => previous,
-                None => self.base.get(key).cloned(),
+                None => self.lower(key).cloned(),
             }
         } else {
             Arc::make_mut(&mut self.own).remove(key).flatten()
@@ -138,7 +168,13 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
         self.base
             .iter()
-            .filter(|(key, _)| !self.own.contains_key(*key))
+            .filter(|(key, _)| !self.own.contains_key(*key) && !self.mid.contains_key(*key))
+            .chain(
+                self.mid
+                    .iter()
+                    .filter(|(key, _)| !self.own.contains_key(*key))
+                    .filter_map(|(key, value)| value.as_ref().map(|value| (key, value))),
+            )
             .chain(
                 self.own
                     .iter()
@@ -155,35 +191,78 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
     }
 
     /// The keys whose entries may differ between this map and `before`,
-    /// with repeats: when the two share their base, only the keys of their
-    /// own layers, which are bounded; otherwise every key of both. A base
-    /// shared with another map is copied before it is written, so a shared
-    /// base has the same entries in both.
+    /// with repeats: when the two share their base, only the keys of the
+    /// layers over it that they do not share, which are bounded; otherwise
+    /// every key of both. A layer shared with another map is copied before
+    /// it is written, so a shared layer has the same entries in both.
     pub fn changed_keys<'a>(&'a self, before: &'a Self) -> Vec<&'a K> {
-        if Arc::ptr_eq(&self.own, &before.own) && Arc::ptr_eq(&self.base, &before.base) {
-            return Vec::new();
+        if !Arc::ptr_eq(&self.base, &before.base) {
+            return self
+                .base
+                .keys()
+                .chain(self.mid.keys())
+                .chain(self.own.keys())
+                .chain(before.base.keys())
+                .chain(before.mid.keys())
+                .chain(before.own.keys())
+                .collect();
         }
-        if Arc::ptr_eq(&self.base, &before.base) {
-            return self.own.keys().chain(before.own.keys()).collect();
+        let mut changed = Vec::new();
+        if !Arc::ptr_eq(&self.mid, &before.mid) {
+            changed.extend(self.mid.keys().chain(before.mid.keys()));
         }
-        self.base
-            .keys()
-            .chain(self.own.keys())
-            .chain(before.base.keys())
-            .chain(before.own.keys())
-            .collect()
+        if !Arc::ptr_eq(&self.own, &before.own) {
+            changed.extend(self.own.keys().chain(before.own.keys()));
+        }
+        changed
     }
 
-    /// Merge the own layer into the base once it is large next to the base,
-    /// so a frame copies at most that many entries. A base no frame shares
+    /// The most entries the own layer holds before it is merged into the
+    /// middle one, and the middle one before it is merged into the base:
+    /// about the cube root of the map's size and its square, so that
+    /// copying the own layer after a frame, the middle one on a merge into
+    /// it and the base on a merge into that cost about the same per write.
+    fn bounds(&self) -> (usize, usize) {
+        let own = 32 + cube_root(self.len);
+        (own, own * own)
+    }
+
+    /// Merge the own layer into the middle one once it is past its bound,
+    /// and the middle one into the base once that is past its own, so a
+    /// frame copies at most that many entries. A layer no frame shares
     /// takes the entries in place; only a shared one is copied, since
-    /// copying it on every merge makes a run of inserts cost the square
-    /// root of the map per insert (light-cljs-418).
+    /// copying it on every merge makes a run of inserts cost the size of
+    /// the layer per insert (light-cljs-418).
     fn compact(&mut self) {
-        if self.own.len() <= 64 + self.base.len().isqrt() {
+        let (own_bound, mid_bound) = self.bounds();
+        if self.own.len() <= own_bound {
             return;
         }
         let own = std::mem::take(&mut self.own);
+        let base = &self.base;
+        let mid = Arc::make_mut(&mut self.mid);
+        let mut merge = |key: K, value: Option<V>| match value {
+            Some(value) => {
+                mid.insert(key, Some(value));
+            }
+            // A removal stays a removal while the base has the entry.
+            None if base.contains_key(&key) => {
+                mid.insert(key, None);
+            }
+            None => {
+                mid.remove(&key);
+            }
+        };
+        match Arc::try_unwrap(own) {
+            Ok(own) => own.into_iter().for_each(|(key, value)| merge(key, value)),
+            Err(own) => own
+                .iter()
+                .for_each(|(key, value)| merge(key.clone(), value.clone())),
+        }
+        if self.mid.len() <= mid_bound {
+            return;
+        }
+        let mid = std::mem::take(&mut self.mid);
         let merged = Arc::make_mut(&mut self.base);
         let mut merge = |key: K, value: Option<V>| match value {
             Some(value) => {
@@ -193,13 +272,25 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
                 merged.remove(&key);
             }
         };
-        match Arc::try_unwrap(own) {
-            Ok(own) => own.into_iter().for_each(|(key, value)| merge(key, value)),
-            Err(own) => own
+        match Arc::try_unwrap(mid) {
+            Ok(mid) => mid.into_iter().for_each(|(key, value)| merge(key, value)),
+            Err(mid) => mid
                 .iter()
                 .for_each(|(key, value)| merge(key.clone(), value.clone())),
         }
     }
+}
+
+/// The integer cube root of `n`, rounded down.
+fn cube_root(n: usize) -> usize {
+    let mut root = (n as f64).cbrt() as usize;
+    while root * root * root > n {
+        root -= 1;
+    }
+    while (root + 1) * (root + 1) * (root + 1) <= n {
+        root += 1;
+    }
+    root
 }
 
 impl<K, V, Q> std::ops::Index<&Q> for Layered<K, V>
@@ -220,6 +311,7 @@ impl<K: Eq + Hash + Clone, V: Clone> FromIterator<(K, V)> for Layered<K, V> {
         Self {
             len: base.len(),
             base: Arc::new(base),
+            mid: Arc::new(HashMap::new()),
             own: Arc::new(HashMap::new()),
         }
     }
@@ -484,9 +576,11 @@ mod tests {
         let mut map: Layered<String, Vec<u32>> =
             (0..100).map(|i| (format!("k{i}"), vec![i])).collect();
         let frame = map.clone();
-        // 64 + isqrt(100) own entries fit; the next write crosses the bound.
-        for i in 100..174 {
-            map.insert(format!("k{i}"), vec![i]);
+        // Fill the own layer to its bound; the next write crosses it.
+        let mut size = 100;
+        while map.own.len() < map.bounds().0 {
+            map.insert(format!("k{size}"), vec![size]);
+            size += 1;
         }
         map.get_mut("k5").unwrap().push(99);
         assert_eq!(map.get("k5"), Some(&vec![5, 99]));
@@ -494,17 +588,65 @@ mod tests {
         assert_eq!(map.get("k7"), Some(&vec![7, 7]));
         map.entry_or_default("new".to_owned()).push(1);
         assert_eq!(map.get("new"), Some(&vec![1]));
-        assert_eq!(map.len(), 175);
-        assert_eq!(map.iter().count(), 175);
+        let size = size as usize + 1;
+        assert_eq!(map.len(), size);
+        assert_eq!(map.iter().count(), size);
         assert_eq!(map.remove("k5"), Some(vec![5, 99]));
         assert!(!map.contains_key("k5"));
-        assert_eq!(map.len(), 174);
-        assert_eq!(map.keys().count(), 174);
+        assert_eq!(map.len(), size - 1);
+        assert_eq!(map.keys().count(), size - 1);
         assert_eq!(frame.get("k5"), Some(&vec![5]));
         assert_eq!(frame.get("k7"), Some(&vec![7]));
         assert_eq!(frame.len(), 100);
         map.clear();
         assert_eq!(map.len(), 0);
         assert_eq!(frame.len(), 100);
+    }
+
+    /// Frames taken between writes keep what they saw while the writes
+    /// merge the own layer into the middle one and that into the base,
+    /// removals included, and the map agrees with a plain one throughout.
+    #[test]
+    fn frames_keep_their_entries_across_both_merges() {
+        let mut map = Layered::<String, usize>::default();
+        let mut oracle = std::collections::HashMap::<String, usize>::new();
+        let mut frames = Vec::new();
+        let (mut own_merges, mut base_merges) = (0, 0);
+        for i in 0..6000 {
+            let (mid, base) = (map.mid.clone(), map.base.clone());
+            let key = format!("k{}", i % 4500);
+            assert_eq!(map.insert(key.clone(), i), oracle.insert(key, i));
+            if i % 5 == 0 {
+                let gone = format!("k{}", (i * 7) % 4500);
+                assert_eq!(map.remove(&gone), oracle.remove(&gone));
+            }
+            if i % 11 == 0 {
+                let key = format!("k{}", (i * 3) % 4500);
+                if let Some(value) = map.get_mut(&key) {
+                    *value += 1;
+                    *oracle.get_mut(&key).unwrap() += 1;
+                }
+            }
+            own_merges += usize::from(!std::sync::Arc::ptr_eq(&mid, &map.mid));
+            base_merges += usize::from(!std::sync::Arc::ptr_eq(&base, &map.base));
+            if i % 97 == 0 {
+                frames.push((map.clone(), oracle.clone()));
+            }
+            assert_eq!(map.len(), oracle.len());
+        }
+        assert!(own_merges > 10 && base_merges > 1, "{own_merges} {base_merges}");
+        frames.push((map.clone(), oracle));
+        map.clear();
+        for (frame, expected) in frames {
+            assert_eq!(frame.len(), expected.len());
+            assert_eq!(frame.iter().count(), expected.len());
+            for (key, value) in &expected {
+                assert_eq!(frame.get(key), Some(value));
+            }
+            for i in 0..4500 {
+                let key = format!("k{i}");
+                assert_eq!(frame.get(&key), expected.get(&key));
+            }
+        }
     }
 }

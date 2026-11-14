@@ -484,12 +484,18 @@ fn append_impl(
     use crate::shared::Shared;
     let tables = &shared.tables;
     if !Shared::ptr_eq(&fragment.namespace_entries, &tables.namespace_entries) {
+        let added = added_keys(
+            shared.exprs..fragment.exprs.len(),
+            fragment.namespace_entries.len(),
+            fragment.namespace_entries.keys(),
+            |id| id.0,
+            ExprId,
+            |id| fragment.namespace_entries.contains_key(id),
+        );
         target.namespace_entries.extend(
-            fragment
-                .namespace_entries
-                .iter()
-                .filter(|(id, _)| id.0 >= shared.exprs)
-                .map(|(id, ns)| ((remap.map_expr)(*id), ns.clone())),
+            added
+                .into_iter()
+                .map(|id| ((remap.map_expr)(id), fragment.namespace_entries[&id].clone())),
         );
     }
     for (index, global) in fragment.globals.iter().enumerate().skip(first_global) {
@@ -609,64 +615,86 @@ fn append_impl(
         } else {
             Some(&*fragment.protocols)
         };
-    for (global, methods) in protocols.into_iter().flat_map(|protocols| protocols.iter()) {
-        if global.0 < first_global {
-            continue;
-        }
-        let mut methods = methods.clone();
+    let added = protocols.map_or_else(Vec::new, |protocols| {
+        added_keys(
+            first_global..fragment.globals.len(),
+            protocols.len(),
+            protocols.keys(),
+            |global| global.0,
+            GlobalId,
+            |global| protocols.contains_key(global),
+        )
+    });
+    for global in added {
+        let mut methods = fragment.protocols[&global].clone();
         for method in &mut methods {
             remap.global(&mut method.global);
         }
         target
             .protocols
-            .insert(remap.mapped_global(*global), methods);
+            .insert(remap.mapped_global(global), methods);
     }
     if update_shared_globals
         || !Shared::ptr_eq(&fragment.record_constructors, &tables.record_constructors)
     {
-        target.record_constructors.extend(
-            fragment
-                .record_constructors
-                .iter()
-                .filter(|g| g.0 >= first_global)
-                .map(|g| remap.mapped_global(*g)),
+        let added = added_keys(
+            first_global..fragment.globals.len(),
+            fragment.record_constructors.len(),
+            fragment.record_constructors.iter(),
+            |global| global.0,
+            GlobalId,
+            |global| fragment.record_constructors.contains(global),
         );
+        target
+            .record_constructors
+            .extend(added.into_iter().map(|g| remap.mapped_global(g)));
     }
     if !Shared::ptr_eq(&fragment.field_bindings, &tables.field_bindings) {
-        target.field_bindings.extend(
-            fragment
-                .field_bindings
-                .iter()
-                .filter(|(local, _)| local.0 >= shared.locals)
-                .map(|(local, (target, b))| {
-                    let (mut local, mut target) = (*local, *target);
-                    remap.local(&mut local);
-                    remap.recur(&mut target);
-                    (local, (target, *b))
-                }),
+        let added = added_keys(
+            shared.locals..fragment.locals.len(),
+            fragment.field_bindings.len(),
+            fragment.field_bindings.keys(),
+            |local| local.0,
+            LocalId,
+            |local| fragment.field_bindings.contains_key(local),
         );
+        target
+            .field_bindings
+            .extend(added.into_iter().map(|mut local| {
+                let (mut target, b) = fragment.field_bindings[&local];
+                remap.local(&mut local);
+                remap.recur(&mut target);
+                (local, (target, b))
+            }));
     }
     if !Shared::ptr_eq(&fragment.type_methods, &tables.type_methods) {
-        target.type_methods.extend(
-            fragment
-                .type_methods
-                .iter()
-                .filter(|target| target.0 >= shared.recur_targets)
-                .map(|target| {
-                    let mut target = *target;
-                    remap.recur(&mut target);
-                    target
-                }),
+        let added = added_keys(
+            shared.recur_targets..fragment.recur_targets.len(),
+            fragment.type_methods.len(),
+            fragment.type_methods.iter(),
+            |target| target.0,
+            RecurTargetId,
+            |target| fragment.type_methods.contains(target),
         );
+        target
+            .type_methods
+            .extend(added.into_iter().map(|mut target| {
+                remap.recur(&mut target);
+                target
+            }));
     }
     if !Shared::ptr_eq(&fragment.macro_functions, &tables.macro_functions) {
-        target.macro_functions.extend(
-            fragment
-                .macro_functions
-                .iter()
-                .filter(|e| e.0 >= shared.exprs)
-                .map(|e| (remap.map_expr)(*e)),
+        let added = added_keys(
+            shared.exprs..fragment.exprs.len(),
+            fragment.macro_functions.len(),
+            fragment.macro_functions.iter(),
+            |expr| expr.0,
+            ExprId,
+            |expr| fragment.macro_functions.contains(expr),
         );
+        target
+            .macro_functions
+            .extend(added.into_iter().map(|e| (remap.map_expr)(e)));
     }
     target.exprs.extend(
         fragment
@@ -720,6 +748,32 @@ fn append_impl(
         });
     }
     (remap.map_expr)(fragment.root)
+}
+
+/// The keys of a table that a fragment added, those with IDs from `ids` on
+/// (its own, after the shared prefix): looked up one ID at a time when the
+/// fragment added fewer IDs than the table has entries, else found by a
+/// walk of the table. Either way an append costs what the fragment added,
+/// not every entry the program had before it (light-cljs-994). Every key of
+/// a table names an entry of its fragment's arena, below `ids.end`.
+fn added_keys<'a, K: Copy + 'a>(
+    ids: std::ops::Range<usize>,
+    entries: usize,
+    keys: impl Iterator<Item = &'a K>,
+    id: impl Fn(K) -> usize,
+    key: impl Fn(usize) -> K,
+    present: impl Fn(&K) -> bool,
+) -> Vec<K> {
+    if ids.len() < entries {
+        ids.map(key).filter(|k| present(k)).collect()
+    } else {
+        keys.copied()
+            .filter(|k| {
+                debug_assert!(id(*k) < ids.end, "a table key outside its arena");
+                id(*k) >= ids.start
+            })
+            .collect()
+    }
 }
 
 /// A deferred unit's view of `program`: the program itself, frozen so the

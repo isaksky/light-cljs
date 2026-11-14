@@ -349,9 +349,73 @@ fn elidable_size(
 /// How many environments' collections [`elidable_map_environment`] keeps the
 /// sizes of.
 const ELIDABLE_SIZES: usize = 8;
-/// The node counts and heights [`elidable_map_environment`] keeps, by the
-/// collection measured, most recently used last.
-pub(crate) type ElidableSizes = std::cell::RefCell<Vec<(Datum, (usize, usize))>>;
+/// A measured node count and height, kept by the identity of the data
+/// measured, which the entry keeps alive.
+type MeasuredSizes = std::collections::HashMap<usize, (Datum, (usize, usize))>;
+/// How many entries that are collections a collection
+/// [`elidable_map_environment`] walked needs for their sizes to be kept.
+const ELIDABLE_ENTRIES: usize = 64;
+/// The node counts and heights [`elidable_map_environment`] keeps: by the
+/// collection measured, most recently used last, and of the entries that
+/// are collections of the last collection it walked that had many
+/// ([`ELIDABLE_ENTRIES`]).
+#[derive(Default)]
+pub(crate) struct ElidableCache {
+    recent: Vec<(Datum, (usize, usize))>,
+    entries: MeasuredSizes,
+}
+pub(crate) type ElidableSizes = std::cell::RefCell<ElidableCache>;
+/// [`elidable_size`] of the collection `data`, taking the size of each of
+/// its entries that is a collection from `previous`, by identity, when it
+/// is there, and recording the size of each such entry in `next`. A walk
+/// takes exactly the nodes and height it found, within the budget or not at
+/// all, so a kept size answers as the walk would. The map of every macro
+/// the compilation declared is made again after each declaration, with the
+/// same metadata for the macros it had: this walks it in a lookup per macro
+/// rather than every node of their metadata (light-cljs-994).
+fn elidable_size_reusing(
+    data: &Datum,
+    nodes: usize,
+    depth: usize,
+    control: &crate::evaluator::ExecutionControl,
+    previous: &MeasuredSizes,
+    next: &mut MeasuredSizes,
+) -> Option<(usize, usize)> {
+    use crate::compiler_data::DatumKind;
+    if depth == 0 || nodes == 0 {
+        return None;
+    }
+    let mut visited = 1;
+    if let DatumKind::CompilerLiteral { .. } = data.kind() {
+        return None;
+    }
+    let (mut count, mut height) = (1, 1);
+    if let Some(metadata) = data.metadata() {
+        let (n, h) = elidable_size(&metadata, nodes - count, depth - 1, control, &mut visited)?;
+        count += n;
+        height = height.max(h + 1);
+    }
+    if let DatumKind::Collection { children, .. } = data.kind() {
+        for child in children.iter() {
+            let budget = nodes - count;
+            let collection = matches!(child.kind(), DatumKind::Collection { .. });
+            let kept = collection
+                .then(|| previous.get(&child.identity()).map(|(_, size)| *size))
+                .flatten();
+            let (n, h) = match kept {
+                Some((n, h)) if n > budget || h >= depth => return None,
+                Some(size) => size,
+                None => elidable_size(child, budget, depth - 1, control, &mut visited)?,
+            };
+            if collection {
+                next.insert(child.identity(), (child.clone(), (n, h)));
+            }
+            count += n;
+            height = height.max(h + 1);
+        }
+    }
+    Some((count, height))
+}
 /// [`elidable_environment`] for a macro's environment, the same answer with
 /// the same budget left: the size of each collection the map holds is kept
 /// by its identity in `sizes`, most recently used last, so that one shared
@@ -383,7 +447,7 @@ fn elidable_map_environment(
         }
         let identity = child.identity();
         let known = {
-            let mut sizes = sizes.borrow_mut();
+            let sizes = &mut sizes.borrow_mut().recent;
             let position = sizes
                 .iter()
                 .position(|(data, _)| data.identity() == identity);
@@ -395,12 +459,24 @@ fn elidable_map_environment(
             })
         };
         let size = known.or_else(|| {
-            let size = elidable_size(child, *remaining, depth - 1, control, &mut 0)?;
             let mut sizes = sizes.borrow_mut();
-            if sizes.len() == ELIDABLE_SIZES {
-                sizes.remove(0);
+            let mut entries = MeasuredSizes::new();
+            let size = elidable_size_reusing(
+                child,
+                *remaining,
+                depth - 1,
+                control,
+                &sizes.entries,
+                &mut entries,
+            )?;
+            if entries.len() >= ELIDABLE_ENTRIES {
+                sizes.entries = entries;
             }
-            sizes.push((child.clone(), size));
+            let recent = &mut sizes.recent;
+            if recent.len() == ELIDABLE_SIZES {
+                recent.remove(0);
+            }
+            recent.push((child.clone(), size));
             Some(size)
         });
         match size {
@@ -2130,6 +2206,14 @@ mod tests {
             }),
         ]);
         let shared = integers(40).with_metadata(environment(&[integers(5)]));
+        // Maps of many collections, the later ones sharing most entries
+        // with the earlier, whose entries' sizes are kept (light-cljs-994).
+        let entries = (0..80).map(|i| integers(i % 7)).collect::<Vec<_>>();
+        let inventory = |count: usize, extra: &Datum| {
+            let mut values = entries[..count].to_vec();
+            values.push(extra.clone());
+            environment(&values)
+        };
         let environments = [
             environment(&[shared.clone(), integers(3)]),
             environment(&[shared.clone(), nested.clone(), DataBuilder.nil()]),
@@ -2137,9 +2221,13 @@ mod tests {
             environment(&[nested.clone(), integers(2000)]),
             environment(&[]),
             vector(vec![shared.clone()]).with_metadata(environment(&[])),
+            environment(&[inventory(70, &integers(1)), integers(2)]),
+            environment(&[inventory(75, &nested), integers(2)]),
+            environment(&[inventory(80, &literal), integers(2)]),
+            environment(&[inventory(78, &integers(1)), integers(2)]),
         ];
         let control = control();
-        let sizes = std::cell::RefCell::new(Vec::new());
+        let sizes = ElidableSizes::default();
         for _ in 0..2 {
             for env in &environments {
                 for budget in [0, 1, 2, 5, 9, 40, 47, 48, 49, 60, 80, 2003, 2050, 4000] {
@@ -2156,6 +2244,7 @@ mod tests {
                 }
             }
         }
+        assert!(sizes.borrow().entries.len() >= ELIDABLE_ENTRIES);
         // A shared collection stays known while other ones come and go.
         let shared_identity = shared.identity();
         for i in 0..20 {
@@ -2164,6 +2253,7 @@ mod tests {
             assert!(
                 sizes
                     .borrow()
+                    .recent
                     .iter()
                     .any(|(data, _)| data.identity() == shared_identity)
             );
@@ -2177,12 +2267,12 @@ mod tests {
         let env = environment(&[integers(2048)]);
         let control = control();
         control.cancel();
-        let sizes = std::cell::RefCell::new(Vec::new());
+        let sizes = ElidableSizes::default();
         assert!(!elidable_environment(&env, &mut 2051, 128, &control));
         assert!(!elidable_map_environment(
             &env, &mut 2051, 128, &control, &sizes
         ));
-        assert!(sizes.borrow().is_empty());
+        assert!(sizes.borrow().recent.is_empty());
     }
 
     /// Compiling the bootstrap units, as a process's first build does,
@@ -2632,6 +2722,36 @@ mod tests {
             ));
         }
         assert_eq!(outputs, ["[12 [1 9]]", "[12 [1 9]]"]);
+    }
+
+    /// A collection measured with the kept sizes of the entries it shares
+    /// with one measured before gives the walk's answer at every budget and
+    /// depth, and keeps the sizes of its own entries for the next.
+    #[test]
+    fn kept_entry_sizes_answer_as_the_walk_does() {
+        let control = control();
+        let entries = (0..80)
+            .map(|i| vector(vec![integers(i % 4)]))
+            .collect::<Vec<_>>();
+        let (first, second) = (environment(&entries[..70]), environment(&entries));
+        let mut kept = MeasuredSizes::new();
+        elidable_size_reusing(&first, usize::MAX, 64, &control, &MeasuredSizes::new(), &mut kept)
+            .unwrap();
+        assert_eq!(kept.len(), 70);
+        let walked = elidable_size(&second, usize::MAX, 64, &control, &mut 0).unwrap();
+        for nodes in [0, 1, 50, walked.0 - 1, walked.0, walked.0 + 1, usize::MAX] {
+            for depth in [0, 1, 2, 3, walked.1 - 1, walked.1, walked.1 + 1] {
+                let mut next = MeasuredSizes::new();
+                assert_eq!(
+                    elidable_size_reusing(&second, nodes, depth, &control, &kept, &mut next),
+                    elidable_size(&second, nodes, depth, &control, &mut 0),
+                    "{nodes} nodes, depth {depth}"
+                );
+                if nodes == usize::MAX && depth > walked.1 {
+                    assert_eq!(next.len(), 80);
+                }
+            }
+        }
     }
 }
 
