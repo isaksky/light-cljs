@@ -43,7 +43,7 @@ pub(crate) struct CaptureStart {
     bundles: usize,
     /// Frozen clones: they share every entry until the analysis writes one.
     globals_before: crate::arena::Arena<GlobalBinding>,
-    protocols: crate::shared::Shared<HashMap<GlobalId, Vec<ir::ProtocolMethod>>>,
+    protocols: crate::shared::Shared<crate::layered::Layered<GlobalId, Vec<ir::ProtocolMethod>>>,
     record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
     field_bindings: crate::shared::Shared<HashMap<ir::LocalId, (ir::RecurTargetId, bool)>>,
     type_methods: crate::shared::Shared<std::collections::HashSet<ir::RecurTargetId>>,

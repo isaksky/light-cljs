@@ -2676,7 +2676,7 @@ pub struct Program {
     pub exprs: crate::arena::Arena<Expr>,
     pub locals: crate::arena::Arena<LocalBinding>,
     pub recur_targets: crate::arena::Arena<RecurTarget>,
-    pub protocols: crate::shared::Shared<HashMap<GlobalId, Vec<ProtocolMethod>>>,
+    pub protocols: crate::shared::Shared<crate::layered::Layered<GlobalId, Vec<ProtocolMethod>>>,
     pub record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
     pub field_bindings: crate::shared::Shared<HashMap<LocalId, (RecurTargetId, bool)>>,
     pub type_methods: crate::shared::Shared<std::collections::HashSet<RecurTargetId>>,
@@ -4990,14 +4990,6 @@ impl NamespaceTop {
         let units = analyzer.drained.take().unwrap_or_default();
         let checked_array_exprs = std::mem::take(&mut analyzer.checked_array_exprs);
         let defines_macros = analyzer.defines_macros;
-        if !analyzer
-            .program
-            .namespaces
-            .iter()
-            .any(|ns| ns == input.name)
-        {
-            analyzer.program.namespaces.push(input.name.into());
-        }
         self.program = analyzer.program;
         self.globals = analyzer.globals;
         self.record_layouts = std::mem::take(&mut analyzer.record_layouts);
@@ -5124,6 +5116,81 @@ mod namespace_top_tests {
         analysis.merge_all(&host, &mut warnings).unwrap();
         assert_eq!(analysis.pending_merges(), 0);
     }
+
+    #[test]
+    fn every_top_level_pass_lists_its_namespace_once_even_when_its_refers_fail() {
+        let mut host = MacroHost::new();
+        let mut analysis = NamespaceAnalysis::new(&mut host);
+        let mut warnings = Vec::new();
+        for (name, source, refers, fails) in [
+            ("first", "(ns first) (def kept 42) kept", vec![], false),
+            (
+                "refers",
+                "(ns refers) 1",
+                vec![("absent".into(), "first".into(), "absent".into())],
+                true,
+            ),
+            ("body", "(ns body) missing", vec![], true),
+            ("last", "(ns last) 2", vec![], false),
+        ] {
+            let syntax = crate::parse(source).unwrap();
+            let input = NamespaceInput {
+                name,
+                source,
+                syntax: &syntax,
+                aliases: &[],
+                requires: &[],
+            };
+            let resolution = NamespaceResolution {
+                refers,
+                ..Default::default()
+            };
+            let result = analysis.analyze(
+                &input,
+                resolution,
+                true,
+                &mut host,
+                Default::default(),
+                &mut warnings,
+            );
+            assert_eq!(result.is_err(), fails, "{name}");
+        }
+        assert_eq!(
+            analysis.program.namespaces.to_vec(),
+            ["first", "refers", "body", "last"]
+        );
+    }
+
+    #[test]
+    fn a_snapshot_keeps_its_protocols_while_the_program_adds_more() {
+        let mut program = empty_program();
+        let method = |key: &str, global| ProtocolMethod {
+            key: key.into(),
+            global: GlobalId(global),
+            arities: vec![1],
+            variadic: None,
+        };
+        for index in 0..200 {
+            program
+                .protocols
+                .insert(GlobalId(index), vec![method("-m", index + 1000)]);
+        }
+        let snapshot = program.clone();
+        for index in 200..400 {
+            program
+                .protocols
+                .insert(GlobalId(index), vec![method("-m", index + 1000)]);
+        }
+        program
+            .protocols
+            .insert(GlobalId(0), vec![method("-changed", 7)]);
+        assert_eq!(snapshot.protocols.len(), 200);
+        assert_eq!(snapshot.protocols[&GlobalId(0)], vec![method("-m", 1000)]);
+        assert!(!snapshot.protocols.contains_key(&GlobalId(200)));
+        assert_eq!(program.protocols.len(), 400);
+        assert_eq!(program.protocols[&GlobalId(0)], vec![method("-changed", 7)]);
+        assert_eq!(program.protocols.values().count(), 400);
+    }
 }
 
 #[cfg(all(test, feature = "bbp-macros"))]
@@ -5146,6 +5213,19 @@ fn namespace_forms(
 ) -> Result<ExprId, AnalysisError> {
     let source_index = analyzer.source_index;
     {
+        // The pass owns its namespace from the start, so a pass that fails,
+        // even on its refers below, leaves the namespace in the program, and
+        // nothing after the pass looks through every namespace again.
+        // Definition snapshots include their own namespace, so analyzing each
+        // deferred definition need not insert another copy of its reader data.
+        if !analyzer
+            .program
+            .namespaces
+            .iter()
+            .any(|ns| ns == input.name)
+        {
+            analyzer.program.namespaces.push(input.name.into());
+        }
         for (local, namespace, original) in &analyzer.resolution.refers.clone() {
             let runtime = if matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
                 CoreFnId::resolve(original).is_some()
@@ -5177,16 +5257,6 @@ fn namespace_forms(
         } else {
             ExprContext::Discard
         };
-        // Definition snapshots include their own namespace, so analyzing each
-        // deferred definition need not insert another copy of its reader data.
-        if !analyzer
-            .program
-            .namespaces
-            .iter()
-            .any(|ns| ns == input.name)
-        {
-            analyzer.program.namespaces.push(input.name.into());
-        }
         analyzer.program.reader_contexts.insert(
             input.name.into(),
             RuntimeReaderNamespace {

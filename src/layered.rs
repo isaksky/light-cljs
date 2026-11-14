@@ -146,6 +146,10 @@ impl<K: Eq + Hash + Clone, V: Clone> Layered<K, V> {
             )
     }
 
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, value)| value)
+    }
+
     pub fn keys(&self) -> impl Iterator<Item = &K> {
         self.iter().map(|(key, _)| key)
     }

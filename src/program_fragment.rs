@@ -39,7 +39,7 @@ struct SharedTables {
         >,
     >,
     namespace_entries: crate::shared::Shared<crate::layered::Layered<ExprId, String>>,
-    protocols: crate::shared::Shared<HashMap<GlobalId, Vec<ProtocolMethod>>>,
+    protocols: crate::shared::Shared<crate::layered::Layered<GlobalId, Vec<ProtocolMethod>>>,
     record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
     field_bindings: crate::shared::Shared<HashMap<LocalId, (RecurTargetId, bool)>>,
     type_methods: crate::shared::Shared<std::collections::HashSet<RecurTargetId>>,
@@ -575,7 +575,7 @@ fn append_impl(
         } else {
             Some(&*fragment.protocols)
         };
-    for (global, methods) in protocols.into_iter().flatten() {
+    for (global, methods) in protocols.into_iter().flat_map(|protocols| protocols.iter()) {
         if global.0 < first_global {
             continue;
         }
