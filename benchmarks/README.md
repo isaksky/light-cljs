@@ -59,7 +59,11 @@ shadow-cljs build leaves the 1-minute load average at 4 to 6 on the 24-CPU Mac,
 and it takes 2 to 3 minutes to fall back to 2, so 5 rounds of the three
 scenarios take about an hour at 200k and nearly two at 800k. Another job using
 even one core keeps the load above 2: the run then waits `--load-wait` seconds
-per build and repeats rounds, which is the gate working, not a hang. `--light-only` times light-cljs
+per build and repeats rounds, which is the gate working, not a hang. When the
+machine cannot be had to itself, do not wait for it: pass `--max-load 1000`
+so the gate never blocks, and label the results unreserved with the load range
+the report records before every build (the 5-round baseline of November 13,
+2026 ran this way). `--light-only` times light-cljs
 alone; `bb compare.bb` with no arguments lists every option. Results:
 [generated-shadow-vs-light.md](generated-shadow-vs-light.md).
 
