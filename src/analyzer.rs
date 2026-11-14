@@ -2678,7 +2678,8 @@ pub struct Program {
     pub recur_targets: crate::arena::Arena<RecurTarget>,
     pub protocols: crate::shared::Shared<crate::layered::Layered<GlobalId, Vec<ProtocolMethod>>>,
     pub record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
-    pub field_bindings: crate::shared::Shared<HashMap<LocalId, (RecurTargetId, bool)>>,
+    pub field_bindings:
+        crate::shared::Shared<crate::layered::Layered<LocalId, (RecurTargetId, bool)>>,
     pub type_methods: crate::shared::Shared<std::collections::HashSet<RecurTargetId>>,
     /// Runtime macro functions have two implicit parameters but public user arities.
     pub macro_functions: crate::shared::Shared<std::collections::HashSet<ExprId>>,
@@ -4268,9 +4269,25 @@ pub(crate) struct NamespaceAnalysis {
 struct NamespaceMembers {
     indexed: usize,
     members: HashMap<String, crate::arena::Arena<GlobalId>>,
+    /// The program's namespaces among its first `listed`, so that a pass
+    /// finds whether the program has its namespace without reading every
+    /// namespace before it.
+    listed: usize,
+    namespaces: std::collections::HashSet<String>,
 }
 
 impl NamespaceMembers {
+    /// Whether `namespaces`, the program's, has `namespace`.
+    fn lists(&mut self, namespaces: &crate::arena::Arena<String>, namespace: &str) -> bool {
+        if namespaces.len() < self.listed {
+            self.listed = 0;
+            self.namespaces.clear();
+        }
+        self.namespaces
+            .extend(namespaces.range(self.listed..namespaces.len()).cloned());
+        self.listed = namespaces.len();
+        self.namespaces.contains(namespace)
+    }
     /// How many globals `globals` holds, and which of them are `namespace`'s.
     fn of(
         &mut self,
@@ -4921,6 +4938,7 @@ impl NamespaceTop {
                 .index_native_core_writes(input.source, &syntax);
         }
         let namespace_globals = self.members.of(&self.program.globals, input.name);
+        let listed = self.members.lists(&self.program.namespaces, input.name);
         let mut analyzer = Analyzer {
             source: input.source,
             syntax,
@@ -4984,6 +5002,7 @@ impl NamespaceTop {
             result,
             &mut self.deferred_time,
             top_level,
+            listed,
         );
         analyzer.withhold_published();
         let top = analyzer.first_expr..analyzer.program.exprs.len();
@@ -5210,6 +5229,7 @@ fn namespace_forms(
     result: bool,
     deferred_time: &mut Option<std::time::Duration>,
     top_level: crate::compile_trace::Span,
+    listed: bool,
 ) -> Result<ExprId, AnalysisError> {
     let source_index = analyzer.source_index;
     {
@@ -5218,12 +5238,17 @@ fn namespace_forms(
         // nothing after the pass looks through every namespace again.
         // Definition snapshots include their own namespace, so analyzing each
         // deferred definition need not insert another copy of its reader data.
-        if !analyzer
-            .program
-            .namespaces
-            .iter()
-            .any(|ns| ns == input.name)
-        {
+        // Whether the program has it already comes from the coordinator's
+        // index (`listed`), not from reading every namespace before it.
+        debug_assert_eq!(
+            listed,
+            analyzer
+                .program
+                .namespaces
+                .iter()
+                .any(|ns| ns == input.name)
+        );
+        if !listed {
             analyzer.program.namespaces.push(input.name.into());
         }
         for (local, namespace, original) in &analyzer.resolution.refers.clone() {

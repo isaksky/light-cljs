@@ -45,7 +45,8 @@ pub(crate) struct CaptureStart {
     globals_before: crate::arena::Arena<GlobalBinding>,
     protocols: crate::shared::Shared<crate::layered::Layered<GlobalId, Vec<ir::ProtocolMethod>>>,
     record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
-    field_bindings: crate::shared::Shared<HashMap<ir::LocalId, (ir::RecurTargetId, bool)>>,
+    field_bindings:
+        crate::shared::Shared<crate::layered::Layered<ir::LocalId, (ir::RecurTargetId, bool)>>,
     type_methods: crate::shared::Shared<std::collections::HashSet<ir::RecurTargetId>>,
     macro_functions: crate::shared::Shared<std::collections::HashSet<ir::ExprId>>,
     reader_contexts: crate::shared::Shared<

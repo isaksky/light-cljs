@@ -676,6 +676,10 @@ pub(crate) struct MacroTables {
     /// ([`MacroHost::source_macro_names`]); change both through
     /// [`MacroHost::insert_javascript_macro`].
     macro_names: crate::layered::Layered<String, Vec<String>>,
+    /// The reader bindings of `javascript_macros` by qualified name, which
+    /// every reader view shares a snapshot of
+    /// ([`MacroHost::register_macro_view`]); changed with both above.
+    macro_bindings: crate::layered::Layered<Name, crate::compiler_reader::ResolvedBinding>,
     pub(crate) source_bindings: crate::layered::QualifiedNames<SourceBindingKind>,
     /// Which inventory of `javascript_macros` this is, unique in the
     /// process ([`next_macro_version`]), which a macro environment cache
@@ -2168,6 +2172,7 @@ impl MacroHost {
             self.tables.javascript_macros.clear();
             self.tables.macro_version = next_macro_version();
             self.tables.macro_names.clear();
+            self.tables.macro_bindings.clear();
             self.engine.macro_environment = Default::default();
             self.engine.namespace_environment = Default::default();
             self.engine.local_environment = Default::default();
@@ -2651,27 +2656,52 @@ impl MacroHost {
         };
         run().map(Some).map_err(|e| e.to_string())
     }
+    /// Give a reader view every macro of the compilation by its qualified
+    /// name, and by its local name those of the view's namespace and those
+    /// it refers. The qualified bindings are a snapshot of the table the host
+    /// keeps as macros are declared, so a view costs its own namespace's
+    /// macros and refers, not every macro declared before it
+    /// (light-cljs-994).
     pub(crate) fn register_macro_view(&self, view: &mut crate::compiler_reader::NamespaceView) {
-        let mut names = self.tables.javascript_macros.keys().collect::<Vec<_>>();
-        names.sort();
-        for (index, key) in names.into_iter().enumerate() {
-            let (namespace, local) = key.split_once('/').unwrap();
-            let name = Name::new(Some(namespace), local);
-            let binding = crate::compiler_reader::ResolvedBinding {
-                id: crate::compiler_reader::BindingId(usize::MAX / 2 - index),
-                kind: crate::compiler_reader::BindingKind::Macro,
-                name: name.clone(),
-            };
-            view.bindings.insert(name.clone(), binding.clone());
-            if view.namespace == Name::new(None, namespace) {
-                view.bindings
-                    .insert(Name::new(None, local), binding.clone());
+        let macros = &self.tables.macro_bindings;
+        view.macro_bindings = macros.clone();
+        let namespace = String::from_utf16_lossy(view.namespace.name());
+        let mut locals = HashMap::<Name, &crate::compiler_reader::ResolvedBinding>::new();
+        for local in self
+            .tables
+            .macro_names
+            .get(&namespace)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(binding) = macros.get(&Name::new(Some(&namespace), local)) {
+                locals.insert(Name::new(None, local), binding);
             }
-            for (local, target) in &view.refers {
-                if target == &name {
-                    view.bindings.insert(local.clone(), binding.clone());
+        }
+        // A local name the view's namespace and a refer both bind as macros
+        // takes the macro whose qualified name sorts later, as when every
+        // view registered every macro in that order.
+        let key = |name: &Name| {
+            let namespace = name.namespace().map(String::from_utf16_lossy);
+            format!(
+                "{}/{}",
+                namespace.unwrap_or_default(),
+                String::from_utf16_lossy(name.name())
+            )
+        };
+        for (local, target) in &view.refers {
+            let Some(binding) = macros.get(target) else {
+                continue;
+            };
+            match locals.get(local) {
+                Some(own) if key(&own.name) > key(&binding.name) => {}
+                _ => {
+                    locals.insert(local.clone(), binding);
                 }
             }
+        }
+        for (local, binding) in locals {
+            view.bindings.insert(local, binding.clone());
         }
     }
     pub(crate) fn reader_refers(&self, namespace: &str) -> Vec<(String, String, String)> {
@@ -2753,6 +2783,15 @@ impl MacroHost {
             if let Err(position) = names.binary_search_by(|old| old.as_str().cmp(name)) {
                 names.insert(position, name.to_owned());
             }
+            let qualified = Name::new(Some(namespace), name);
+            let binding = crate::compiler_reader::ResolvedBinding {
+                id: crate::compiler_reader::BindingId(
+                    usize::MAX / 2 - self.tables.macro_bindings.len(),
+                ),
+                kind: crate::compiler_reader::BindingKind::Macro,
+                name: qualified.clone(),
+            };
+            self.tables.macro_bindings.insert(qualified, binding);
         }
         self.tables.javascript_macros.insert(key, declaration);
         self.tables.macro_version = next_macro_version();
@@ -3112,6 +3151,60 @@ impl MacroHost {
 mod compiler_pure_tests {
     use super::*;
     use crate::compiler_data::{DataBuilder, Datum, DatumKind};
+
+    #[test]
+    fn a_reader_view_binds_its_own_and_referred_macros_over_a_shared_snapshot_of_the_rest() {
+        use crate::compiler_reader::{BindingKind, NamespaceView};
+        let mut host = MacroHost::new();
+        crate::compile_with_macros("(defmacro b [x] x) (defmacro a [x] x)", &mut host).unwrap();
+        let source = crate::compiler_data::Source::new("view.cljs", "");
+        let resolved = |view: &NamespaceView, name: &Name| {
+            view.binding(name)
+                .map(|binding| (binding.kind, binding.name.clone()))
+        };
+        let local = |name: &str| Name::new(None, name);
+        let qualified = |name: &str| Name::new(Some("cljs.user"), name);
+        let has_macro = |view: &NamespaceView, name: &str| {
+            resolved(view, &qualified(name)) == Some((BindingKind::Macro, qualified(name)))
+        };
+        let mut own = NamespaceView::new("cljs.user", &source);
+        host.register_macro_view(&mut own);
+        assert_eq!(own.bindings.len(), 2);
+        assert_eq!(
+            resolved(&own, &local("a")),
+            Some((BindingKind::Macro, qualified("a")))
+        );
+        assert!(has_macro(&own, "b"));
+        // Another namespace's view holds only the locals it refers; every
+        // macro still resolves by its qualified name.
+        let mut other = NamespaceView::new("other", &source);
+        other.refers.insert(local("m"), qualified("a"));
+        other.refers.insert(local("n"), qualified("absent"));
+        host.register_macro_view(&mut other);
+        assert_eq!(other.bindings.len(), 1);
+        assert_eq!(
+            resolved(&other, &local("m")),
+            Some((BindingKind::Macro, qualified("a")))
+        );
+        assert!(has_macro(&other, "a") && has_macro(&other, "b"));
+        assert_eq!(other.qualify(&local("b")), Name::new(Some("other"), "b"));
+        assert_eq!(other.qualify(&qualified("b")), qualified("b"));
+        // A local both the namespace and a refer bind takes the macro whose
+        // qualified name sorts later, whichever of the two binds it.
+        let mut both = NamespaceView::new("cljs.user", &source);
+        both.refers.insert(local("a"), qualified("b"));
+        both.refers.insert(local("b"), qualified("a"));
+        host.register_macro_view(&mut both);
+        assert_eq!(both.qualify(&local("a")), qualified("b"));
+        assert_eq!(both.qualify(&local("b")), qualified("b"));
+        // A view keeps the macros of when it was made.
+        let declaration = host.tables.javascript_macros.get("cljs.user/a").cloned();
+        host.install_javascript_macro("cljs.user/c".into(), declaration.unwrap());
+        let mut later = NamespaceView::new("cljs.user", &source);
+        host.register_macro_view(&mut later);
+        assert!(has_macro(&later, "c") && !has_macro(&own, "c"));
+        assert_eq!(later.qualify(&local("c")), qualified("c"));
+    }
 
     #[test]
     fn namespace_metadata_crosses_threads_and_rebinds_macros_without_importing_other_namespaces() {

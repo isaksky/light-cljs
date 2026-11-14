@@ -1485,6 +1485,11 @@ pub struct NamespaceView {
     pub refers: HashMap<Name, Name>,
     pub excludes: HashSet<Name>,
     pub bindings: HashMap<Name, ResolvedBinding>,
+    /// Every macro of the compilation by its qualified name: a snapshot of
+    /// the macro host's table, shared with it and with other views
+    /// ([`crate::macro_host::MacroHost::register_macro_view`]). Its names
+    /// are all qualified; `bindings` holds the view's own local names.
+    pub(crate) macro_bindings: crate::layered::Layered<Name, ResolvedBinding>,
     pub declaration_frontier: usize,
     pub source: crate::compiler_data::SourceId,
     core_bindings: std::sync::Arc<HashMap<Name, ResolvedBinding>>,
@@ -1537,6 +1542,7 @@ impl NamespaceView {
             refers: HashMap::new(),
             excludes: HashSet::new(),
             bindings: HashMap::new(),
+            macro_bindings: Default::default(),
             core_bindings,
             declaration_frontier: 0,
             source: source.id(),
@@ -1544,10 +1550,15 @@ impl NamespaceView {
     }
     /// Inspect binding identity/kind without demanding a value or initializer.
     pub fn binding(&self, name: &Name) -> Option<&ResolvedBinding> {
+        self.own_binding(name)
+            .or_else(|| self.own_binding(&self.qualify(name)))
+            .or_else(|| self.core_bindings.get(&self.qualify(name)))
+    }
+    /// A binding the view was given: one of its own or a shared macro's.
+    fn own_binding(&self, name: &Name) -> Option<&ResolvedBinding> {
         self.bindings
             .get(name)
-            .or_else(|| self.bindings.get(&self.qualify(name)))
-            .or_else(|| self.core_bindings.get(&self.qualify(name)))
+            .or_else(|| self.macro_bindings.get(name))
     }
     pub fn qualify(&self, name: &Name) -> Name {
         self.qualify_with(name, None)
@@ -1556,7 +1567,7 @@ impl NamespaceView {
         if let Some(resolved) = bindings.and_then(|lookup| lookup(name)) {
             return resolved;
         }
-        if let Some(binding) = self.bindings.get(name) {
+        if let Some(binding) = self.own_binding(name) {
             return binding.name.clone();
         }
         if let Some(resolved) = self.refers.get(name) {
