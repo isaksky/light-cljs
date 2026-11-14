@@ -529,7 +529,7 @@ bb benchmarks/re-frame-tests.bb --light BIN --runs 3
 - **Runtime:** headless Chromium from playwright-core 1.63.0 (headless shell 1243). Each page is served from disk.
   - esbuild 0.25.12 bundles React 18.2.0 for the light-cljs dev page, and bundles the release build's ES modules.
   - Other versions: reagent 1.2.0, Node 26.12.1, OpenJDK 25.0.2.
-- **Pass rule:** a test passes for a build only if it passes in all three runs. A test whose runs disagree is flaky. The machine was unreserved, but nothing here is timed.
+- **Pass rule:** a test passes in a run only if it ended with no failure or error, and the run finished with no page errors. It passes for a build only if it passes in all three runs; a test whose runs disagree is flaky. The script exits with an error if any run did not finish. The machine was unreserved, but nothing here is timed.
 
 **Reference pass list:** shadow-cljs passed all 118 tests in all three runs. Nothing is excluded.
 

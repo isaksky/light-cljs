@@ -73,6 +73,9 @@
 (defmethod t/report [::results :begin-test-var] [m]
   (swap! results conj {:test (var-name (:var m)) :pass 0 :fail 0 :error 0})
   (publish!))
+(defmethod t/report [::results :end-test-var] [_]
+  (swap! results (fn [rs] (assoc-in rs [(dec (count rs)) :ended] true)))
+  (publish!))
 (defmethod t/report [::results :pass] [m] (t/inc-report-counter! :pass) (record! m))
 (defmethod t/report [::results :fail] [m] (t/inc-report-counter! :fail) (record! m) (default! m))
 (defmethod t/report [::results :error] [m] (t/inc-report-counter! :error) (record! m) (default! m))
@@ -355,12 +358,18 @@ process.stdout.write(JSON.stringify(out) + '\\n');
           (page! out "bundle.js" "globalThis.reFrameTestsInit();")))
     (str out)))
 
-(defn run-page! [project root page timeout-ms]
-  (let [r (json/parse-string (:out (sh! project "node" "drive.mjs" (str root) page (str timeout-ms))) true)]
-    (assoc r :by-test (into {} (map (juxt :test identity) (:results r))))))
+(defn run-page!
+  "One run of the page. A run that did not finish or threw outside cljs.test is :valid false."
+  [project root page timeout-ms]
+  (let [r (json/parse-string (:out (sh! project "node" "drive.mjs" (str root) page (str timeout-ms))) true)
+        valid (and (:done r) (empty? (:pageErrors r)))]
+    (assoc r :valid valid :by-test (into {} (map (juxt :test #(assoc % :valid valid)) (:results r))))))
 
-(defn status [r]
-  (cond (nil? r) :not-run (pos? (:error r)) :error (pos? (:fail r)) :fail :else :pass))
+(defn status
+  "A test passes only when it ended with no failure or error, in a run that finished cleanly."
+  [r]
+  (cond (nil? r) :not-run (pos? (:error r)) :error (pos? (:fail r)) :fail
+        (not (and (:ended r) (:valid r))) :incomplete :else :pass))
 
 (defn summarise
   "One status per test for a build over its runs: the status if every run agrees, else :flaky."
@@ -391,6 +400,10 @@ process.stdout.write(JSON.stringify(out) + '\\n');
       (log "npm install") (sh! project "npm" "install" "--no-audit" "--no-fund")
       (log "shadow-cljs compile test") (sh! project "clojure" "-M:shadow" "compile" "test")
       (when-not (fs/exists? port) (make-port! project port porter))
+      ;; The runner is this script's, which the porter copies unchanged: an existing port gets the
+      ;; current one.
+      (fs/copy (fs/path project "runner" "re_frame_tests" "runner.cljs")
+               (fs/path port "src" "re_frame_tests" "runner.cljs") {:replace-existing true})
       (let [builds [[:shadow (str (fs/path project "out" "shadow"))]
                     [:light-compile (do (log "light-cljs compile test") (build-light! project port light "compile"))]
                     [:light-release (do (log "light-cljs release test") (build-light! project port light "release"))]]
@@ -422,7 +435,9 @@ process.stdout.write(JSON.stringify(out) + '\\n');
         (doseq [[k rs] results, [i r] (map-indexed vector rs)
                 :when (or (not (:done r)) (seq (:pageErrors r)))]
           (println k "run" (inc i) "done:" (:done r) "page errors:" (pr-str (map #(subs % 0 (min 300 (count %))) (:pageErrors r)))))
-        (spit (str (fs/path work "results.edn")) (pr-str {:table table :results results})))
+        (spit (str (fs/path work "results.edn")) (pr-str {:table table :results results}))
+        (when-not (every? :valid (mapcat val results))
+          (throw (ex-info "A run did not finish or had page errors (listed above)" {}))))
       (finally
         (when-not (:work opts) (fs/delete-tree work))))))
 
