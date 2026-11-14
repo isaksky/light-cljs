@@ -86,6 +86,7 @@ pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevF
         },
     ];
     let manifest = DevManifest::new(program);
+    let units = crate::emitter::NamespaceUnits::new(program);
     for (index, namespace) in manifest.namespaces.iter().enumerate() {
         let map = format!("{}.map", namespace.file);
         let mut define = String::from("globalThis.__lightDev.define(");
@@ -93,8 +94,7 @@ pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevF
         define.push_str(", ");
         json_list(&mut define, &namespace.requires);
         define.push_str(", ");
-        let (mut unit, mapping) = crate::emitter::emit_namespace_unit(
-            program,
+        let (mut unit, mapping) = units.emit(
             entries[namespace.name.as_str()],
             index == 0,
             [&define, ");\n"],

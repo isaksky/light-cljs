@@ -649,6 +649,10 @@ struct Interactive<'a> {
     /// For a session's form, the program's namespaces by name, with their
     /// positions, through which the registration finds the registered ones.
     namespace_positions: Option<&'a HashMap<String, usize>>,
+    /// For a dev build unit, the source map names of the whole program's
+    /// functions, found once for every unit of the build
+    /// ([`NamespaceUnits`]) instead of by each.
+    function_names: Option<&'a FunctionNames<'a>>,
 }
 
 /// The globals of each namespace of a program, in ID order.
@@ -696,12 +700,18 @@ fn emit_js_mode(
         .and_then(|application| application.shapes)
         .filter(|_| direct.is_some());
     let terse = direct.is_some() && application.is_some_and(|application| application.terse);
-    let function_names = mapped.then(|| {
+    let shared_names = interactive.and_then(|interactive| interactive.function_names);
+    let own_names = (mapped && shared_names.is_none()).then(|| {
         FunctionNames::new(
             program,
             interactive.map_or(0, |interactive| interactive.first_expr),
         )
     });
+    let function_names = if mapped {
+        shared_names.or(own_names.as_ref())
+    } else {
+        None
+    };
     // The prelude, the `let g<n>;` declarations and the program body.
     let body = |register_namespaces: bool, brand_types: TypeBrands, record_kits: [bool; 2]| {
         #[cfg(test)]
@@ -715,7 +725,7 @@ fn emit_js_mode(
                 mapped,
                 application,
                 direct,
-                function_names: function_names.as_ref(),
+                function_names,
             },
             register_namespaces,
         );
@@ -1153,15 +1163,26 @@ fn helpers(host: bool, package: bool) -> String {
 /// which an interactive form's program retains from earlier forms and its
 /// unit seldom emits, only when one is asked for, so that a unit's cost does
 /// not grow with what the session retains.
+///
+/// The names it keeps are [`FunctionName`]s rather than text, so that it has
+/// no interior-mutable borrow of the program and a dev build's units can
+/// share one ([`NamespaceUnits`]).
 struct FunctionNames<'a> {
     program: &'a Program,
     from: usize,
     /// By ID from `from`.
-    names: Vec<Option<&'a str>>,
+    names: Vec<Option<FunctionName>>,
     /// What the expressions from `from` on name before it, in order, and
     /// whether each replaces a name found earlier.
-    earlier: Vec<(usize, &'a str, bool)>,
-    before: std::cell::OnceCell<Vec<Option<&'a str>>>,
+    earlier: Vec<(usize, FunctionName, bool)>,
+    before: std::cell::OnceCell<Vec<Option<FunctionName>>>,
+}
+
+/// The local or definition whose name a function takes in a source map.
+#[derive(Clone, Copy)]
+enum FunctionName {
+    Local(usize),
+    Global(usize),
 }
 
 impl<'a> FunctionNames<'a> {
@@ -1190,7 +1211,7 @@ impl<'a> FunctionNames<'a> {
     }
     /// Each name the expressions in `range` give, in their order: the
     /// function's ID and whether it replaces a name found earlier.
-    fn scan(&self, range: std::ops::Range<usize>, mut name: impl FnMut(usize, &'a str, bool)) {
+    fn scan(&self, range: std::ops::Range<usize>, mut name: impl FnMut(usize, FunctionName, bool)) {
         let program = self.program;
         let function = |mut id: ExprId| loop {
             match &program.exprs[id.0].kind {
@@ -1204,14 +1225,14 @@ impl<'a> FunctionNames<'a> {
             match &expr.kind {
                 ExprKind::Fn {
                     name: Some(local), ..
-                } => name(index, program.locals[local.0].name.as_str(), true),
+                } => name(index, FunctionName::Local(local.0), true),
                 ExprKind::Def {
                     global,
                     init: Some(init),
                     ..
                 } => {
                     if let Some(id) = function(*init) {
-                        name(id.0, program.globals[global.0].name.as_str(), true);
+                        name(id.0, FunctionName::Global(global.0), true);
                     }
                 }
                 ExprKind::Let { bindings, .. }
@@ -1219,7 +1240,7 @@ impl<'a> FunctionNames<'a> {
                 | ExprKind::Loop { bindings, .. } => {
                     for (local, init) in bindings {
                         if let Some(id) = function(*init) {
-                            name(id.0, program.locals[local.0].name.as_str(), false);
+                            name(id.0, FunctionName::Local(local.0), false);
                         }
                     }
                 }
@@ -1228,8 +1249,13 @@ impl<'a> FunctionNames<'a> {
         }
     }
     fn get(&self, id: usize) -> Option<&'a str> {
+        let program = self.program;
+        let text = |name: FunctionName| match name {
+            FunctionName::Local(local) => program.locals[local].name.as_str(),
+            FunctionName::Global(global) => program.globals[global].name.as_str(),
+        };
         if id >= self.from {
-            return self.names.get(id - self.from).copied().flatten();
+            return self.names.get(id - self.from).copied().flatten().map(text);
         }
         self.before.get_or_init(|| {
             let mut names = vec![None; self.from];
@@ -1248,6 +1274,7 @@ impl<'a> FunctionNames<'a> {
             }
             names
         })[id]
+            .map(text)
     }
 }
 
@@ -9674,6 +9701,7 @@ fn emit_interactive(
         first_expr,
         namespace_globals: indexes.map(|(globals, _)| globals),
         namespace_positions: indexes.map(|(_, positions)| positions),
+        function_names: None,
     };
     let (unit, _, mapping) = emit_js_mode(
         program,
@@ -9690,39 +9718,77 @@ fn emit_interactive(
     (unit, mapping)
 }
 
-/// The unit of a dev build ([`crate::dev_build`]) for the namespace entry
-/// `entry` of `program`: its interactive unit between `before` and `after`,
-/// and the source map of the result. The unit registers its namespace, or
-/// with `every_namespace` every namespace of the program.
-pub(crate) fn emit_namespace_unit(
-    program: &Program,
-    entry: ExprId,
-    every_namespace: bool,
-    [before, after]: [&str; 2],
-) -> (String, SourceMapping) {
-    let own = [program.namespace_entries[&entry].as_str()];
-    let interactive = Interactive {
-        entry: Some(entry),
-        registered: (!every_namespace).then_some(&own[..]),
-        added: &[],
-        around: [before, after],
-        first_expr: 0,
-        namespace_globals: None,
-        namespace_positions: None,
-    };
-    let (unit, _, mapping) = emit_js_mode(
-        program,
-        Some("__lightInteractiveRuntime"),
-        false,
-        Some(interactive),
-        None,
-        false,
-        true,
-        None,
-        false,
-        &[],
-    );
-    (unit, mapping.expect("a mapped emission has a source map"))
+/// What the units of one dev build ([`crate::dev_build`]) of a program share,
+/// found once for the build: the source map names of the program's
+/// functions and its globals by namespace. Each unit then visits only its
+/// namespace's expressions and definitions, so that emitting the build does
+/// not grow with the square of the program (light-cljs-992).
+pub(crate) struct NamespaceUnits<'a> {
+    program: &'a Program,
+    function_names: FunctionNames<'a>,
+    namespace_globals: NamespaceGlobals,
+    namespace_positions: HashMap<String, usize>,
+}
+
+impl<'a> NamespaceUnits<'a> {
+    pub(crate) fn new(program: &'a Program) -> Self {
+        let mut namespace_globals = NamespaceGlobals::new();
+        for (id, global) in program.globals.iter().enumerate() {
+            namespace_globals
+                .entry(global.namespace.clone())
+                .or_default()
+                .push(GlobalId(id));
+        }
+        let mut namespace_positions = HashMap::new();
+        for (position, namespace) in program.namespaces.iter().enumerate() {
+            namespace_positions
+                .entry(namespace.clone())
+                .or_insert(position);
+        }
+        Self {
+            program,
+            function_names: FunctionNames::new(program, 0),
+            namespace_globals,
+            namespace_positions,
+        }
+    }
+
+    /// The unit for the namespace entry `entry` of the program: its
+    /// interactive unit between `before` and `after`, and the source map of
+    /// the result. The unit registers its namespace, or with
+    /// `every_namespace` every namespace of the program.
+    pub(crate) fn emit(
+        &self,
+        entry: ExprId,
+        every_namespace: bool,
+        [before, after]: [&str; 2],
+    ) -> (String, SourceMapping) {
+        let program = self.program;
+        let own = [program.namespace_entries[&entry].as_str()];
+        let interactive = Interactive {
+            entry: Some(entry),
+            registered: (!every_namespace).then_some(&own[..]),
+            added: &[],
+            around: [before, after],
+            first_expr: 0,
+            namespace_globals: Some(&self.namespace_globals),
+            namespace_positions: Some(&self.namespace_positions),
+            function_names: Some(&self.function_names),
+        };
+        let (unit, _, mapping) = emit_js_mode(
+            program,
+            Some("__lightInteractiveRuntime"),
+            false,
+            Some(interactive),
+            None,
+            false,
+            true,
+            None,
+            false,
+            &[],
+        );
+        (unit, mapping.expect("a mapped emission has a source map"))
+    }
 }
 
 /// The registration of the namespaces `registered` of `program` (every
@@ -9765,4 +9831,76 @@ fn quoted(text: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod namespace_unit_tests {
+    use super::*;
+
+    /// A dev build unit emitted on its own, finding the function names and
+    /// the registered globals in the whole program, as each unit did before
+    /// [`NamespaceUnits`]: its text and its source map.
+    fn unit_alone(program: &Program, entry: ExprId, every_namespace: bool) -> (String, String) {
+        let own = [program.namespace_entries[&entry].as_str()];
+        let interactive = Interactive {
+            entry: Some(entry),
+            registered: (!every_namespace).then_some(&own[..]),
+            added: &[],
+            around: ["define(", ");\n"],
+            first_expr: 0,
+            namespace_globals: None,
+            namespace_positions: None,
+            function_names: None,
+        };
+        let (unit, _, mapping) = emit_js_mode(
+            program,
+            Some("__lightInteractiveRuntime"),
+            false,
+            Some(interactive),
+            None,
+            false,
+            true,
+            None,
+            false,
+            &[],
+        );
+        (unit, mapping.unwrap().to_json(None, &[], false))
+    }
+
+    /// The units of a dev build share their function names and global index
+    /// (light-cljs-992) and are byte for byte what each unit emitted on its
+    /// own writes, source maps included.
+    #[test]
+    fn shared_namespace_units_match_units_emitted_alone() {
+        for (example, entry) in [("dev", "app.main"), ("features", "app.main")] {
+            let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/examples"))
+                .join(example);
+            let mut host = crate::MacroHost::new();
+            let (program, _) = crate::compiler::analyze_namespace_entry_with_sources(
+                entry,
+                &[root],
+                &mut host,
+                crate::analyzer::AnalysisOptions::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert!(program.namespaces.len() > 2, "{example}");
+            let units = NamespaceUnits::new(&program);
+            let mut named = false;
+            for (index, namespace) in program.namespaces.iter().enumerate() {
+                let (&entry, _) = program
+                    .namespace_entries
+                    .iter()
+                    .find(|(_, name)| *name == namespace)
+                    .unwrap();
+                let (unit, mapping) = units.emit(entry, index == 0, ["define(", ");\n"]);
+                let shared = (unit, mapping.to_json(None, &[], false));
+                let alone = unit_alone(&program, entry, index == 0);
+                assert_eq!(shared, alone, "{example} {namespace}");
+                assert!(shared.0.contains("registerReaderNamespace"), "{}", shared.0);
+                named |= shared.1.contains("\"names\":[\"");
+            }
+            assert!(named, "{example}: some unit names a function");
+        }
+    }
 }
