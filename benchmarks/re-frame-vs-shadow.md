@@ -58,33 +58,33 @@ bb benchmarks/re-frame.bb breakdown simple todomvc --light BIN
 - **React alone** is each toolchain building only those two package imports: a shadow-cljs namespace that requires them, and an esbuild module that imports them.
 - **App code** is the whole file minus React alone. For compressed sizes this difference is an estimate.
 
-**TodoMVC** (rerun 2026-11-14 by light-cljs-980 with the real cljs.spec.alpha in the port and `light-cljs-31f51dcc`; the stub's measured effect is in "2026-11-14: the real cljs.spec.alpha in TodoMVC and flow" below; light-cljs rows rerun 2026-11-14 by light-cljs-999, asserts elided by default, see "2026-11-14: release elides asserts by default" below; light-cljs rows rerun again 2026-11-14 by light-cljs-985, EDN data reading without namespace registration, see "2026-11-14: EDN data reading is not reflection" below)
+**TodoMVC** (rerun 2026-11-14 by light-cljs-980 with the real cljs.spec.alpha in the port and `light-cljs-31f51dcc`; the stub's measured effect is in "2026-11-14: the real cljs.spec.alpha in TodoMVC and flow" below; light-cljs rows rerun 2026-11-14 by light-cljs-999, asserts elided by default, see "2026-11-14: release elides asserts by default" below; light-cljs rows rerun again 2026-11-14 by light-cljs-985, EDN data reading without namespace registration, see "2026-11-14: EDN data reading is not reflection" below; light-cljs rows rerun again 2026-11-14 by light-cljs-984, constant defs folded through other defs and functions, see "2026-11-14: constant defs fold through other defs and functions" below)
 
 | Output | Raw bytes | gzip -9 | brotli -q 11 |
 |---|---:|---:|---:|
 | shadow-cljs: whole release file | 500,587 | 137,088 | 114,615 |
 | shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
 | shadow-cljs: app code (difference) | 357,227 | 89,997 | 74,006 |
-| light-cljs + esbuild: whole bundle | 451,849 | 141,001 | 122,150 |
+| light-cljs + esbuild: whole bundle | 439,336 | 137,348 | 119,062 |
 | esbuild: React alone | 142,385 | 45,617 | 39,919 |
-| light-cljs: app code (difference) | 309,464 | 95,384 | 82,231 |
-| light-cljs output as written, without React | 327,722 | 92,503 | 78,731 |
-| light-cljs + esbuild --target=es2015: whole bundle | 463,505 | 144,035 | 124,469 |
+| light-cljs: app code (difference) | 296,951 | 91,731 | 79,143 |
+| light-cljs output as written, without React | 314,220 | 89,075 | 75,943 |
+| light-cljs + esbuild --target=es2015: whole bundle | 450,945 | 140,293 | 121,218 |
 
 Packages imported: react, react-dom/client; npm files in both shadow builds: 7
 
-**simple** (light-cljs rows rerun 2026-11-14 by light-cljs-999, asserts elided by default, see "2026-11-14: release elides asserts by default" below)
+**simple** (light-cljs rows rerun 2026-11-14 by light-cljs-999, asserts elided by default, see "2026-11-14: release elides asserts by default" below; rerun again 2026-11-14 by light-cljs-984, constant defs folded through other defs and functions, see "2026-11-14: constant defs fold through other defs and functions" below)
 
 | Output | Raw bytes | gzip -9 | brotli -q 11 |
 |---|---:|---:|---:|
 | shadow-cljs: whole release file | 372,279 | 101,065 | 85,573 |
 | shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
 | shadow-cljs: app code (difference) | 228,919 | 53,974 | 44,964 |
-| light-cljs + esbuild: whole bundle | 352,675 | 111,339 | 96,838 |
+| light-cljs + esbuild: whole bundle | 340,205 | 107,990 | 94,176 |
 | esbuild: React alone | 142,385 | 45,617 | 39,919 |
-| light-cljs: app code (difference) | 210,290 | 65,722 | 56,919 |
-| light-cljs output as written, without React | 224,352 | 64,431 | 55,449 |
-| light-cljs + esbuild --target=es2015: whole bundle | 362,112 | 113,764 | 98,669 |
+| light-cljs: app code (difference) | 197,820 | 62,373 | 54,257 |
+| light-cljs output as written, without React | 210,586 | 61,500 | 52,997 |
+| light-cljs + esbuild --target=es2015: whole bundle | 349,606 | 110,452 | 96,112 |
 
 Packages imported: react, react-dom/client; npm files in both shadow builds: 7
 
@@ -365,6 +365,30 @@ TodoMVC whole file (React included), gzip -9 in bytes, light-cljs minus shadow-c
 - **The app still works:** `bb benchmarks/re-frame.bb browser todomvc --compiler light --runs 1` passed every check, persistence through local storage included.
 - **Shared runtime:** the readable runtime grew by about 290 bytes, so five none/prepare size ratchet ceiling pairs moved up to the next 1,000 (tests/support/ratchet_fixtures.rs). Advanced ceilings are unchanged: no ratchet fixture reads EDN.
 
+### 2026-11-14: constant defs fold through other defs and functions (light-cljs-984)
+
+**Change.** At `--optimize advanced` a def is folded like a `^:const` one when nothing in the program reassigns it (no `set!`, `binding`, `with-redefs`, `js*` hole or second definition) and its one top-level `def` gives it a scalar or symbol literal, a read of another such def, or a call without arguments of a function whose one method takes no parameters and returns such a value; such a call is folded too. The dead branch then goes. This is what re-frame's two flags needed: `(trace/is-trace-enabled?)` around every `with-trace`, and `interop/debug-enabled?`, a def of `goog/DEBUG`. Strings over 16 characters fold only when `^:const`, so long text is not copied to every read. tests/compiler/folding_inlining.rs has the probe (two namespaces, `flags/on?` and `flags/alias?`) and a test that defs reassigned by each of those means never fold.
+
+**Port edit.** The user decided against goog-define flags (2026-11-14). The porter `research/shadow-credibility/shadow-port-tool-984` (983's plus this edit) writes every `(goog-define NAME DEFAULT)` as `(def ^:const NAME DEFAULT)`, the same length so lines stay put; a value the build's base or `:release` `:closure-defines` give the flag is baked into the def (checked with a temporary `:release` define in simple), and the dev ones are dropped as before. `port-report.edn` lists them under `:goog-defines-as-const`: re-frame's `trace-enabled?` and `version` in all three apps. The compat layer's `goog/DEBUG` is a `^:const` def too. The breakdown's step 3 rewrite of `debug-enabled?` now writes a `^:const` def instead of a goog-define.
+
+**Setup.** `light-cljs-1e637c3c` before (master `79337976` has the same compiler) and `light-cljs-8b11492b` after (its compiler is this pellet's commit), both V8 builds. simple and TodoMVC ported from `shadow-port-tool-983` for the breakdown before, and from `shadow-port-tool-984` for everything else (the old compiler gives a goog-define and a `^:const` def the same output, which the size run before confirms: TodoMVC's light-cljs bundle has the raw and gzip sizes of 985's run). Commands: `bb benchmarks/re-frame.bb breakdown simple todomvc --light BIN` and `bb benchmarks/re-frame.bb size simple todomvc --light BIN`. light-cljs's sizes are deterministic, so one run each; load average 5.5 to 7.4 (unreserved). shadow-cljs's whole file moved by up to 8 bytes between runs. flow is not rerun.
+
+Whole file (React included), gzip -9 in bytes, light-cljs minus shadow-cljs:
+
+| Step | simple before | simple after | TodoMVC before | TodoMVC after |
+|---|---:|---:|---:|---:|
+| 1. as built (asserts kept) | +12,814 | +9,266 | +5,362 | +1,633 |
+| 2. + asserts elided (the release default since light-cljs-999) | +10,435 | +6,925 | +3,905 | +258 |
+| 3. + re-frame's defines read directly | +7,036 | +6,923 | +391 | +257 |
+| 4. + no cljs.reader, both compilers | | | -293 | -370 |
+| Brotli, 2. + asserts elided | +11,327 | +8,549 | +7,469 | +4,387 |
+
+- **The rewrite no longer saves anything:** step 3 is within 2 bytes of step 2 in both apps (it was 3,399 and 3,514 bytes). The release default, step 2, is now 111 bytes below what step 3 measured before in simple (107,990 against 108,101) and 139 below in TodoMVC (137,348 against 137,487). The acceptance asked for the as-built row within 100 bytes of the old step 3; as built here still keeps asserts (2,341 bytes in simple), which `release` has elided by default since light-cljs-999, so the release row is the one compared.
+- **Where it went:** re-frame's share as built fell from 13,784 to 11,067 bytes after gzip in simple and from 14,175 to 10,749 in TodoMVC; the rest is the runtime functions only the trace code reached (runtime share 37,920 to 37,378 in simple).
+- **Release size** (the simple and TodoMVC tables above): the whole bundle fell from 111,500 to 107,990 bytes after gzip in simple and from 141,001 to 137,348 in TodoMVC (brotli: 96,924 to 94,176 and 122,144 to 119,062). Against shadow-cljs's whole release file that is 6.9% larger after gzip in simple (it was 10.3%) and 0.2% in TodoMVC (it was 2.8%); after brotli 10.1% and 3.9%. App code after gzip: 15.6% larger in simple, 1.9% in TodoMVC.
+- **The apps still work:** `bb benchmarks/re-frame.bb browser todomvc simple --compiler light --runs 1` passed every check on the new builds.
+- **Size ratchet:** no fixture's output changed, so no ceiling moves.
+
 ## Build time
 
 `bb benchmarks/re-frame.bb time --runs 5`:
@@ -435,6 +459,7 @@ Unreached shims are not in any output and change nothing. The sizes below are ou
 | `:target :browser` becomes `:esm`, bundled by esbuild | shadow-cljs build feature | all | the esbuild wrapper | a self-contained script |
 | `:modules {:client {:init-fn todomvc.core/main}}`: light-cljs has no `:init-fn`. `main` is the module's default export, and the page must call it | shadow-cljs build feature | all | none | the call to `main` |
 | `:release {:build-options {:ns-aliases {day8.re-frame.tracing day8.re-frame.tracing-stubs}}}` dropped; TodoMVC requires neither namespace, so nothing changes | shadow-cljs build feature | TodoMVC | none | none |
+| `(goog-define NAME DEFAULT)` written as `(def ^:const NAME DEFAULT)`, a base or `:release` `:closure-defines` value baked in (porter `shadow-port-tool-984`; port-report `:goog-defines-as-const`): re-frame's `trace-enabled?` and `version`. The compat layer's `goog/DEBUG` is a `^:const` def as well | user decision (2026-11-14): no goog-define flags; light-cljs folds a def nothing reassigns at advanced (light-cljs-984) | all | same code (the flags fold either way) | goog-defines |
 | `:dev {:compiler-options {:closure-defines ...}}` dropped (light-cljs refuses dev-mode defines); `:dev-http` and `:nrepl` translated | shadow-cljs build feature, dev only | all | none in a release build | none in a release build |
 | `:devtools {:preloads [hashp.core]}` dropped: light-cljs has no preloads | shadow-cljs build feature, dev only | flow | none in a release build | none in a release build |
 | `:deps true`: the porter vendors the library sources the build reached into `vendor/` (reagent, secretary, clojure.data, macrovich; flow also zprint, sci, rewrite-clj, edamame, tools.reader) | other: light-cljs resolves no dependencies | all | none | none |

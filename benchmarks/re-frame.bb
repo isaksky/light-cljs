@@ -402,14 +402,17 @@
 ;; out/breakdown; the port is unchanged.
 
 (def define-rewrites
-  "re-frame reads its two defines through a function, (trace/is-trace-enabled?),
+  "re-frame reads its two flags through a function, (trace/is-trace-enabled?),
   and through another def, interop/debug-enabled? (goog.DEBUG). Closure inlines
-  both and drops the code behind them; light-cljs folds only a define read
-  directly. These rewrites read them directly."
+  both and drops the code behind them. light-cljs folded only a flag read
+  directly until light-cljs-984, which folds both; since then these rewrites,
+  which read them directly, should change nothing. The porter turns
+  re-frame's goog-defines into ^:const defs (shadow-port-tool-984), and the
+  rewritten debug-enabled? is one too."
   [["src/re_frame" #"\(trace/is-trace-enabled\?\)" "trace/trace-enabled?"]
    ["src/re_frame" #"\(is-trace-enabled\?\)" "trace-enabled?"]
    ["src/re_frame/interop.cljs" #"\(def \^boolean debug-enabled\? \"@define \{boolean\}\" \^boolean goog/DEBUG\)"
-    "(goog-define debug-enabled? false)"]])
+    "(def ^:const debug-enabled? false)"]])
 
 (def reader-rewrites
   "TodoMVC without cljs.reader, for both compilers: its one read-string (of
