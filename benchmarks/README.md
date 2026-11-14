@@ -10,6 +10,59 @@ TodoMVC and simple with shadow-cljs's builds of the unmodified originals:
 release size raw, gzip and brotli with React counted apart, build time, and
 every port edit by cause (`bb benchmarks/re-frame.bb`).
 
+## The shadow-cljs head-to-head
+
+`generated-project/compare.bb` is the one kit for light-cljs against shadow-cljs.
+It takes any directory with a `light-cljs.edn`, and a `shadow-cljs.edn` there
+or in `--shadow-dir`, and runs release builds of both:
+
+- three scenarios: a **clean build** (light `--no-cache`, shadow with
+  `.shadow-cljs` removed), a **rebuild, nothing changed** (one untimed build
+  fills each cache first) and, with `--leaf FILE`, a **rebuild after a one-file
+  edit**, where each round appends a different unused `defn` to FILE, restored
+  afterwards;
+- `--runs N` rounds of each (default 5), the compilers alternated: each round
+  reverses the previous round's order, so neither always goes first;
+- before every build it waits until the 1-minute load average is at most
+  `--max-load` (default 2, giving up after `--load-wait` seconds, default 900),
+  records it, and repeats a round in which a build started above it (at most
+  `--max-repeats` times, default 3; a round still above is kept and marked);
+- medians and ranges of wall time, user CPU, system CPU and peak memory, from
+  `/usr/bin/time`;
+- `--warm-jvm N` adds N shadow release builds in one JVM, as a running
+  shadow-cljs server does (wall time and CPU per build);
+- the light-cljs commit (`--light-commit`, or read from a `light-cljs-SHA`
+  binary name) and the binary's SHA-256, shadow-cljs, JDK, Node, Clojure CLI
+  and Babashka versions, the machine and the operating system.
+
+It writes `OUT.edn` (every sample, including discarded rounds) and `OUT.md`
+(the tables to paste into a dated report section); `--out OUT` defaults to
+`PROJECT/compare-result`. A generated project's outputs are also checked
+against its oracle and `check-waste.bb --strict`; any other project's report
+gives the bytes and gzip size of the `.js` files each build wrote.
+
+```sh
+# Generated projects: build an immutable binary and name it by commit first.
+cargo build --locked --release
+cp target/release/light-cljs /some/dir/light-cljs-$(git rev-parse --short=8 HEAD)
+bb benchmarks/generated-project/generate.bb /tmp/g200k --seed 42 --lines 200k
+bb benchmarks/generated-project/compare.bb /tmp/g200k --light /some/dir/light-cljs-SHA \
+  --leaf src/workload/babomhol.cljs --warm-jvm 4
+
+# Any other project: name the builds when a file has several, and where shadow lives.
+bb benchmarks/generated-project/compare.bb PORT-DIR --light BIN --shadow-dir UPSTREAM-DIR \
+  --light-build client --shadow-build client --shadow-cmd "npx shadow-cljs" --leaf src/app/core.cljs
+```
+
+Run it with no other heavy work on the machine. Allow for the load gate: a
+shadow-cljs build leaves the 1-minute load average at 4 to 6 on the 24-CPU Mac,
+and it takes 2 to 3 minutes to fall back to 2, so 5 rounds of the three
+scenarios take about an hour at 200k and nearly two at 800k. Another job using
+even one core keeps the load above 2: the run then waits `--load-wait` seconds
+per build and repeats rounds, which is the gate working, not a hang. `--light-only` times light-cljs
+alone; `bb compare.bb` with no arguments lists every option. Results:
+[generated-shadow-vs-light.md](generated-shadow-vs-light.md).
+
 [Compiler collection measurements](compiler.md) separate parse/analyze/emit/total
 compilation, output bytes, fresh CLI/Node costs, and validated resident immutable
 operations. The standard-library `run_compiler.py` driver retains nine-sample

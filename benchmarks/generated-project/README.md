@@ -86,13 +86,15 @@ cache. For timing experiments distinguish warm/cold builds, JVM startup,
 optimization, and execution; the generator itself makes no timing comparison.
 `--stats` can be added to the light commands.
 
-`compare.bb` times advanced builds of one generated project with both compilers,
-uncached and cached, checks each output against the oracle and the waste checker,
-and writes `compare-result.edn` into the project
-([results of October 22, 2026](../generated-shadow-vs-light.md)):
+`compare.bb` times release builds of one project with both compilers, alternated
+and load-gated, as a clean build, a rebuild with nothing changed and a rebuild
+after a one-file edit, checks a generated project's outputs against the oracle
+and the waste checker, and writes `compare-result.edn` and `compare-result.md`
+into the project ([how to run it](../README.md#the-shadow-cljs-head-to-head),
+[results](../generated-shadow-vs-light.md)):
 
 ```sh
-bb benchmarks/generated-project/compare.bb /tmp/cljs-200k --light "$LIGHT" --runs 3 --warm-jvm 4
+bb benchmarks/generated-project/compare.bb /tmp/cljs-200k --light "$LIGHT" --leaf src/workload/babomhol.cljs --warm-jvm 4
 ```
 
 ## The re-frame shape

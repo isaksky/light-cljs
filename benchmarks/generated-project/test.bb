@@ -160,6 +160,129 @@
         (is (= ["src" "macros"] (:source-paths light)))
         (is (= ["src" "macros" "shadow-support"] (:paths shadow)))))))
 
+(defn gate-off
+  "compare.bb options for `runs` rounds whose load gate never waits or repeats."
+  [runs]
+  {:runs runs :max-load 1e9 :load-wait 0 :max-repeats 0})
+
+(deftest compare-options
+  (let [options (compare/parse-options ["proj" "--light" "bin/light-cljs-abc1234"])]
+    (is (= {:runs 5 :max-load 2.0 :load-wait 900 :max-repeats 3 :warm-jvm 0}
+           (select-keys options [:runs :max-load :load-wait :max-repeats :warm-jvm])))
+    (is (fs/absolute? (:dir options)))
+    (is (fs/absolute? (:light options))))
+  (is (= {:runs 3 :max-load 1.5 :shadow-cmd ["npx" "shadow-cljs"] :light-build "client" :light-only true}
+         (select-keys (compare/parse-options ["p" "--light" "b" "--runs" "3" "--max-load" "1.5" "--light-only"
+                                              "--shadow-cmd" " npx  shadow-cljs" "--light-build" "client"])
+                      [:runs :max-load :shadow-cmd :light-build :light-only])))
+  (doseq [args [["p"] ["--light" "b"] ["p" "--light" "b" "--runs" "0"] ["p" "--light" "b" "--max-load" "x"]
+                ["p" "--light" "b" "--runs"] ["p" "q" "--light" "b"] ["p" "--light" "b" "--wat"]]]
+    (is (thrown? Exception (compare/parse-options args)) (pr-str args))))
+
+(deftest compare-statistics
+  (is (= 2 (compare/median [3 1 2])))
+  (is (= 2.5 (compare/median [4 1 3 2])))
+  (let [s (compare/summary [{:wall-s 3.0 :user-s 2.0 :system-s 1.0 :peak-memory-gb 0.3 :load [1.0 0 0]}
+                            {:wall-s 1.0 :user-s 4.0 :system-s 0.5 :peak-memory-gb 0.1 :load [1.5 0 0]}
+                            {:wall-s 2.0 :user-s 3.0 :system-s 2.0 :peak-memory-gb 0.2 :load [0.5 0 0]}]
+                           [])]
+    (is (= 3 (:runs s)))
+    (is (= {:median 2.0 :min 1.0 :max 3.0} (:wall-s s)))
+    (is (= {:median 3.0 :min 2.0 :max 4.0} (:user-s s)))
+    (is (= {:median 1.0 :min 0.5 :max 2.0} (:system-s s)))
+    (is (= {:median 4.5 :min 3.0 :max 5.0} (:cpu-s s)))
+    (is (= {:median 0.2 :min 0.1 :max 0.3} (:peak-memory-gb s)))
+    (is (= {:median 1.0 :min 0.5 :max 1.5} (:load-1m s)))))
+
+(deftest rounds-alternate-and-repeat-loaded-rounds
+  (let [tools [{:tool :light :dir "l" :cmd ["light"]} {:tool :shadow :dir "s" :cmd ["shadow"]}]
+        sample (fn [i] {:wall-s (double i) :user-s 1.0 :system-s 0.1 :peak-memory-gb 0.1})]
+    (testing "the compilers alternate which goes first"
+      (let [builds (atom []) prepared (atom [])
+            result (with-redefs [compare/timed (fn [_ [cmd]] (swap! builds conj cmd) (sample (count @builds)))
+                                 compare/load-average (constantly [0.5 0.5 0.5])]
+                     (compare/rounds {:runs 3 :max-load 2.0 :load-wait 0 :max-repeats 3}
+                                     #(swap! prepared conj %) tools))]
+        (is (= ["light" "shadow" "shadow" "light" "light" "shadow"] @builds))
+        (is (= [0 1 2] @prepared))
+        (is (= [1.0 4.0 5.0] (map :wall-s (get-in result [:light :samples]))))
+        (is (= [0 1 2] (map :round (get-in result [:shadow :samples]))))
+        (is (= [0 1 0] (map :position (get-in result [:light :samples]))))
+        (is (every? empty? (map :discarded (vals result))))))
+    (testing "a round with a build that started above the threshold is repeated"
+      (let [loads (atom [[0.5] [3.0] [0.5] [0.5] [0.5] [0.5]]) prepared (atom [])
+            result (with-redefs [compare/timed (fn [_ _] (sample 1))
+                                 compare/load-average #(let [[l & more] @loads] (reset! loads more) l)]
+                     (compare/rounds {:runs 2 :max-load 2.0 :load-wait 0 :max-repeats 3}
+                                     #(swap! prepared conj %) tools))]
+        (is (= [0 1 2] @prepared) "each attempt gets a fresh number")
+        (is (= [0 1] (map :round (get-in result [:light :samples]))))
+        (is (= [[3.0]] (map :load (get-in result [:shadow :discarded]))))
+        (is (= [[0.5]] (map :load (get-in result [:light :discarded]))))
+        (is (not-any? :over-max-load (mapcat :samples (vals result))))))
+    (testing "after max-repeats the last attempt is kept and marked"
+      (let [result (with-redefs [compare/timed (fn [_ _] (sample 1))
+                                 compare/load-average (constantly [9.0 9.0 9.0])]
+                     (compare/rounds {:runs 1 :max-load 2.0 :load-wait 0 :max-repeats 2} (constantly nil) tools))]
+        (is (= 2 (count (get-in result [:light :discarded]))))
+        (is (= [true] (map :over-max-load (get-in result [:shadow :samples]))))))))
+
+(deftest any-project-with-both-configurations
+  (let [dir (fs/create-temp-dir {:prefix "light-compare-project-"})
+        shadow-dir (fs/path dir "upstream")]
+    (try
+      (fs/create-dirs (fs/path shadow-dir "node_modules/shadow-cljs"))
+      (spit (fs/file dir "light-cljs.edn")
+            "{:source-paths [\"src\"] :builds {:client {:target :esm :output-dir \"out/js\" :x #light-cljs/env [\"X\"]}}}")
+      (spit (fs/file shadow-dir "shadow-cljs.edn")
+            "{:builds {:app {:target :browser :output-dir \"public/js\"} :test {:target :node-test :output-to \"t.js\"}}}")
+      (spit (fs/file shadow-dir "node_modules/shadow-cljs/package.json") "{\"name\": \"shadow-cljs\", \"version\": \"3.2.0\"}")
+      (is (= :client (compare/build-id (fs/file dir "light-cljs.edn") nil)))
+      (is (= :app (compare/build-id (fs/file shadow-dir "shadow-cljs.edn") ":app")))
+      (is (thrown? Exception (compare/build-id (fs/file shadow-dir "shadow-cljs.edn") nil)))
+      (is (thrown? Exception (compare/build-id (fs/file shadow-dir "shadow-cljs.edn") "nope")))
+      (is (= "3.2.0" (compare/shadow-version shadow-dir)))
+      (is (= ["npx" "shadow-cljs"] (compare/default-shadow-cmd shadow-dir)))
+      (spit (fs/file shadow-dir "deps.edn")
+            "{:aliases {:shadow {:extra-deps {thheller/shadow-cljs {:mvn/version \"3.5.3\"}}}}}")
+      (is (= "3.5.3" (compare/shadow-version shadow-dir)))
+      (is (= ["clojure" "-M:shadow"] (compare/default-shadow-cmd shadow-dir)))
+      (let [{:keys [tools generated? light-build shadow-build]}
+            (compare/project {:dir (str dir) :light "/bin/light" :shadow-dir (str shadow-dir) :shadow-build "app"})
+            {:keys [light shadow]} (into {} (map (juxt :tool identity) tools))]
+        (is (not generated?))
+        (is (= [:client :app] [light-build shadow-build]))
+        (is (= ["/bin/light" "release" "client" "--no-cache"] (:clean-cmd light)))
+        (is (= ["clojure" "-M:shadow" "release" "app"] (:cached-cmd shadow)))
+        (is (= (str shadow-dir) (:dir shadow)))
+        (fs/create-dirs (fs/path dir "out/js/nested"))
+        (spit (fs/file dir "out/js/old.js") "stale")
+        (let [since (+ 1000 (System/currentTimeMillis))]
+          (doseq [[file text] [["out/js/client.js" "var a=1;"] ["out/js/nested/chunk.js" "var b=2;"] ["out/js/chunks.json" "{}"]]]
+            (spit (fs/file dir file) text)
+            (fs/set-last-modified-time (fs/path dir file) (java.nio.file.attribute.FileTime/fromMillis since)))
+          (is (= {:files 2 :bytes 16} (select-keys ((:output light) since) [:files :bytes])))))
+      (finally (fs/delete-tree dir)))))
+
+(deftest markdown-report
+  (let [summary (compare/summary [{:wall-s 1.0 :user-s 1.0 :system-s 0.5 :peak-memory-gb 0.5 :load [1.0]}] [])
+        report (compare/markdown
+                {:environment {:light-cljs {:binary "/b/light-cljs-abc1234" :commit "abc1234" :sha256 (apply str (repeat 64 "0"))}
+                               :shadow-cljs "3.5.3" :jdk "openjdk 25" :node "v26" :clojure-cli "Clojure CLI 1.12"
+                               :babashka "1.13" :os "macOS 15" :date "2026-11-13" :machine {:cpu "M3" :cpus 24 :memory-gib 32}}
+                 :options {:runs 1 :max-load 2.0 :max-repeats 3}
+                 :project {:light-build :bench :shadow-build :bench}
+                 :scenarios {:uncached {:light summary :shadow (update-in summary [:wall-s :median] * 4)}}
+                 :outputs {:uncached {:light {:bytes 1000 :gzip 300 :checksum "42" :waste-ok true}
+                                      :shadow {:bytes 1200 :gzip 400 :files 1}}}
+                 :warm-jvm {:builds [{:wall-s 3.0 :cpu-s 5.0}] :process {:peak-memory-gb 2.0}}})]
+    (is (str/includes? report "light-cljs `abc1234`"))
+    (is (str/includes? report "Release builds of light-cljs.edn build `:bench` and shadow-cljs.edn build `:bench`."))
+    (is (str/includes? report "| clean build | light-cljs | 1.00 s (1.00-1.00) | 1.00 s (1.00-1.00) | 0.50 s (0.50-0.50) | 0.500 GB (0.500-0.500) | 1.00-1.00 |"))
+    (is (str/includes? report "| clean build | 0.25 | 1.00 | 1.00 |"))
+    (is (str/includes? report "| clean build | light-cljs | 1,000 | 300 | oracle 42, waste ok |"))
+    (is (str/includes? report "3.00 s (5.0 s CPU)"))))
+
 (def leaf-original
   "Bytes a text round trip would not reproduce: invalid UTF-8, CRLF, no final newline."
   (byte-array (concat (.getBytes "(ns leaf)\r\n(def x \"" "UTF-8") [-1 -2 -128] (.getBytes "\")" "UTF-8"))))
@@ -168,32 +291,34 @@
 
 (deftest leaf-scenario-restores-source-after-failure
   (let [dir (str (fs/create-temp-dir {:prefix "light-leaf-test-"}))
-        sample {:s 1.0 :user-s 1.0 :rss-gb 0.1}
+        sample {:wall-s 1.0 :user-s 1.0 :system-s 0.1 :peak-memory-gb 0.1}
+        leaf (fn [runs check] (compare/leaf-scenario (gate-off runs) [(fs/file dir "leaf.cljs")]
+                                                     [{:tool :light :dir dir :cmd ["build"]}] check))
         edited? #(str/includes? (slurp (fs/file dir "leaf.cljs")) "compare-leaf-edit-")]
     (try
       (fs/write-bytes (fs/file dir "leaf.cljs") leaf-original)
       (testing "a build that throws"
         (with-redefs [compare/timed (fn [_ _] (is (edited?)) (throw (ex-info "build broke" {})))]
           (is (thrown-with-msg? Exception #"build broke"
-                                (compare/leaf-scenario dir 2 "leaf.cljs" ["build"] (constantly {})))))
+                                (leaf 2 (constantly {})))))
         (is (= (vec leaf-original) (leaf-bytes dir))))
       (testing "builds that succeed, then a check that throws"
         (let [builds (atom 0)]
           (with-redefs [compare/timed (fn [_ _] (is (edited?)) (swap! builds inc) sample)]
             (is (thrown-with-msg? Exception #"check broke"
-                                  (compare/leaf-scenario dir 2 "leaf.cljs" ["build"]
-                                                         #(do (is (edited?)) (throw (ex-info "check broke" {})))))))
+                                  (leaf 2 #(do (is (edited?)) (throw (ex-info "check broke" {})))))))
           (is (= 2 @builds)))
         (is (= (vec leaf-original) (leaf-bytes dir))))
       (testing "a run that succeeds"
         (with-redefs [compare/timed (constantly sample)]
-          (is (= {:ok true} (:output (compare/leaf-scenario dir 1 "leaf.cljs" ["build"] (constantly {:ok true}))))))
+          (is (= {:ok true} (:outputs (leaf 1 (constantly {:ok true}))))))
         (is (= (vec leaf-original) (leaf-bytes dir))))
       (testing "a run terminated during its build"
         (let [script (str "(load-file " (pr-str (str (fs/path kit "compare.bb"))) ")"
                           "(with-redefs [generated-project.compare/timed"
                           " (fn [_ _] (println :edited) (flush) (Thread/sleep 60000))]"
-                          " (generated-project.compare/leaf-scenario " (pr-str dir) " 1 \"leaf.cljs\" [] (constantly nil)))")
+                          " (generated-project.compare/leaf-scenario " (pr-str (gate-off 1)) " [" (pr-str (str (fs/file dir "leaf.cljs"))) "]"
+                          " [{:tool :light :dir " (pr-str dir) " :cmd []}] (constantly nil)))")
               proc (process/process {:err :inherit} "bb" "-e" script)]
           ;; The child prints once the edit is on disk, then blocks in the build.
           (is (= ":edited" (.readLine (java.io.BufferedReader. (java.io.InputStreamReader. (:out proc))))))
