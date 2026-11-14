@@ -1559,9 +1559,11 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // 6,942 bytes before light-cljs-291 and 7,453 after: `privateStore` and
     // `kindedStore` for the maps' and transients' stores; 7,867 after
     // light-cljs-358: `get` behind its kinds' branches and the maps' branch;
-    // 8,124 after light-cljs-373: the map entries' kind and `get` branch.
+    // 8,124 after light-cljs-373: the map entries' kind and `get` branch;
+    // 8,137 to 8,328 after light-cljs-989 (2026-11-14): the array maps'
+    // entry class and a keyword key's search with one `IEquiv` lookup.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 8_200, "{} bytes", output.len());
+    assert!(output.len() < 8_400, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -2756,6 +2758,52 @@ fn extensions_reaching_the_collection_kinds_empty_the_tables() {
                     (get sm :a) (count sm) (conj ss 2) (get {:b 2} :b) (count {:b 2}) (conj #{5} 2) (assoc {:b 2} :c 3)
                     (count (list 1 2)) (first (map inc [1])) (seq #{3}) (count (subvec [1 2 3] 1))]))",
         "[7 [:l 0] [:l 0 :nf] [:n 0] [:n 0 :nf] [:c 2] [:a 0 2] [:sl :a] 11 [:sc 2] 2 1 #{5 2} {:b 2, :c 3} 2 2 (3) 6]",
+    );
+}
+
+#[test]
+fn small_maps_keep_their_key_tests_entries_and_hashes() {
+    // light-cljs-989 made array-map entries, their search and map entries
+    // cheaper to build. What a program can observe stays: keys compare by
+    // value (a keyword by namespace and name, though not identical), a key's
+    // own `-equiv` runs once per entry it is compared with, in order, each
+    // key hashes at most once however many versions share its entry, an
+    // existing key is kept on `assoc`, the order of keys, `map-entry?` and
+    // metadata on the entries a seq gives, and which of them are identical.
+    every_level(
+        "(deftype K [n calls]
+           IEquiv (-equiv [_ o] (swap! calls conj [n (when (instance? K o) (.-n o))]) (and (instance? K o) (= n (.-n o))))
+           IHash (-hash [_] (swap! calls conj [:hash n]) n))
+         (let [kw (keyword \"a\" \"b\") other (Keyword. \"a\" \"b\" \"a/b\" nil)
+               m (if (js/Math.random) {:x 1 kw 2 \"s\" 3 5 4 nil 5} nil)
+               calls (atom [])
+               k1 (K. 1 calls) k2 (K. 2 calls)
+               km (array-map k1 :one :y 0 k2 :two)
+               hashes (atom [])
+               hm (array-map (K. 7 hashes) 1 :q 2)
+               hm2 (assoc hm :r 3)
+               h1 (hash hm) h2 (hash hm2)
+               s (seq m) e (first s) big (zipmap (range 8) (range 8))]
+           (pr-str [(identical? kw other) (= kw other) (get m other) (contains? m other) (get m :a/c :nf)
+                    (count (assoc m other 9)) (identical? kw (key (find (assoc m other 9) other))) (get (assoc m other 9) kw)
+                    (keys (assoc m :y 6)) (keys (dissoc m other)) (vals (assoc m \"s\" 7)) (get m nil) (get m 5)
+                    (get km (K. 2 calls)) @calls (do (reset! calls []) (get km :y)) @calls
+                    (find km (K. 9 calls)) (count @calls)
+                    @hashes (= h1 (hash hm)) (= h2 (hash hm2))
+                    (map-entry? e) (vector? e) (meta e) (meta (with-meta e {:m 1})) (= e [:x 1]) (hash e) (= (hash e) (hash [:x 1]))
+                    (identical? e (first s)) (identical? e (first (seq m))) (identical? (find m :x) (find m :x))
+                    (map map-entry? [(first (hash-map :a 1)) (first (sorted-map :a 1)) (find m :x) (first {:a 1})])
+                    (meta (assoc (with-meta {:a 1} {:m 1}) :b 2)) (meta (dissoc (with-meta {:a 1 :b 2} {:m 2}) :a))
+                    (keys (assoc big 8 8)) (keys (assoc big 3 :three)) (= (assoc big 8 8) (zipmap (range 9) (range 9)))
+                    (= m (into {} (seq m))) (= (hash m) (hash (into {} (reverse (seq m)))))]))",
+        "[false true 2 true :nf 5 true 9 (:x :a/b \"s\" 5 nil :y) (:x \"s\" 5 nil) (1 2 7 4 5) 5 4 \
+         :two [[2 1] [2 nil] [2 1] [2 nil] [2 2]] 0 [] nil 3 \
+         [[:hash 7] [:hash 7]] true true \
+         true true nil {:m 1} true 1885214723 true \
+         true false false (true true true true) \
+         {:m 1} {:m 2} \
+         (0 1 2 3 4 5 6 7 8) (0 1 2 3 4 5 6 7) true \
+         true true]",
     );
 }
 

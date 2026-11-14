@@ -340,7 +340,10 @@ const sameEntries = (ex, ey) => {
   ex.forEach((x, i) => {
     const y = ey[i];
     sameKeys(x, y, "entry");
-    if (!Object.isFrozen(x) || !Object.isFrozen(y)) fail("entry not frozen", i);
+    // An array map's entry keeps its key's hash, so it is not frozen
+    // (`ArrayMapEntry`, light-cljs-989); any other entry is a frozen object.
+    if (Object.getPrototypeOf(x) !== Object.getPrototypeOf(y)) fail("entry type", i);
+    if (Object.getPrototypeOf(x) === Object.prototype && (!Object.isFrozen(x) || !Object.isFrozen(y))) fail("entry not frozen", i);
     if (x.key !== y.key || x.value !== y.value || x.hash !== y.hash) fail("entry", i, x.key, y.key, x.value, y.value, x.hash, y.hash);
   });
 };

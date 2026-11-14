@@ -299,8 +299,8 @@
   //@unit installMethods.IEncodeJSKey effect: installMethods when: cljToJs, keyToJs requires: methodKey,
   //@ methodKeys
   methodKeys[17] = methodKey("IEncodeJS");
-  //@unit installMethods.IEquivEquivKey effect: installMethods when: equalPair, objectEquiv
-  //@ requires: methodKey, methodKeys
+  //@unit installMethods.IEquivEquivKey effect: installMethods when: entryIndex, equalPair,
+  //@ objectEquiv requires: methodKey, methodKeys
   methodKeys[18] = methodKey("IEquiv/-equiv");
   //@unit installMethods.IFindFindKey effect: installMethods when: find requires: methodKey,
   //@ methodKeys
@@ -2710,27 +2710,37 @@
     return value;
   }
 
-  //@unit entryIndex requires: equalPair
+  //@unit entryIndex requires: equalPair, keywords, methodKeys, protocolHooks
   // The index of `key` in the entries of an array map, or -1.
   function entryIndex(entries, key) {
     // Canonical array maps compare keys without a hash guard. Keyword equality uses
     // fqn, while hashing uses namespace/name; unusual equal keywords can have
     // different hashes and therefore remain distinct in hash maps.
-    return entries.findIndex(entry =>
-      key == null ? entry.key == null : typeof key === "string" || typeof key === "number"
-        ? key === entry.key : equalPair(key, entry.key));
+    // A keyword without an `IEquiv` of its own compares by spelling, as in
+    // `equalPair`, with its lookup made once (light-cljs-989).
+    const spelling = keywords.get(key)?.spelling;
+    const same = spelling !== undefined && !protocolHooks.builtin?.(key, methodKeys[18], 2)
+      ? other => other === key || keywords.get(other)?.spelling === spelling
+      : key == null ? other => other == null : typeof key === "string" || typeof key === "number"
+        ? other => other === key : other => equalPair(key, other);
+    for (let i = 0; i < entries.length; i++) if (same(entries[i].key)) return i;
+    return -1;
   }
 
-  //@unit putEntry requires: entryHashing, entryIndex, kindHooks
+  //@unit ArrayMapEntry requires: entryHashing
+  // An array map's entry: its key's hash `h`, a shape's or else taken on the
+  // first read of `hash`. Unlike other entries it is not frozen, so as to
+  // keep it; it lives in a map's private payload (light-cljs-989).
+  const ArrayMapEntry = class {
+    constructor(key, value, h) { this.key = key; this.value = value; this.h = h; }
+    get hash() { return this.h === undefined ? this.h = entryHashing.hash(this.key) : this.h; }
+  };
+  //@unit putEntry requires: ArrayMapEntry, entryIndex, kindHooks
   // Builders mutate only fresh unpublished arrays. Entry cells and retained
   // equivalent keys are shared by subsequent immutable versions.
   function putEntry(entries, key, value, kind, edit = null) {
     if (kind === "array-map") {
-      const index = entryIndex(entries, key), retained = index < 0 ? key : entries[index].key;
-      let cachedHash;
-      const entry = Object.freeze({key: retained, value, get hash() {
-        return cachedHash === undefined ? cachedHash = entryHashing.hash(retained) : cachedHash;
-      }});
+      const index = entryIndex(entries, key), entry = new ArrayMapEntry(index < 0 ? key : entries[index].key, value);
       if (index < 0) entries.push(entry); else entries[index] = entry;
       return;
     }
@@ -2802,16 +2812,19 @@
   // Map literal key shapes (light-cljs-220): distinct constant keys, hashed.
   function mapShape(keys, hashes) { return Object.freeze({keys, hashes}); }
   //@unit shapeEntries
-  // The entries mapFromArray makes of a shape's keys and `values`, without
-  // key lookups.
+  // The entries mapFromArray makes of a shape's keys and `values` for a hash
+  // map, without key lookups.
   function shapeEntries({keys, hashes}, values) {
     const entries = [];
     for (let i = 0; i < keys.length; i++) entries.push(Object.freeze({key: keys[i], value: values[i], hash: hashes[i]}));
     return entries;
   }
-  //@unit mapFromShape requires: makeMap, PersistentArrayMapValue, shapeEntries
-  function mapFromShape(shape, values) {
-    return makeMap(PersistentArrayMapValue, shapeEntries(shape, values), "array-map");
+  //@unit mapFromShape requires: ArrayMapEntry, makeMap, PersistentArrayMapValue
+  // As `shapeEntries`, with an array map's entries.
+  function mapFromShape({keys, hashes}, values) {
+    const entries = [];
+    for (let i = 0; i < keys.length; i++) entries.push(new ArrayMapEntry(keys[i], values[i], hashes[i]));
+    return makeMap(PersistentArrayMapValue, entries, "array-map");
   }
   //@unit hashMapShape requires: hashNodeAssoc
   // Past 8 keys, also the trie mapFromArray builds, entry indexes as leaves.
@@ -6214,16 +6227,16 @@
   //@unit updatedMap requires: constructorSlots, kindHooks, makeMap, mapFromEntries, mapKinds, maps,
   //@ mapTypes, meta, preserveMeta, publicCollectionSlots, recordTypes, sortedComparators
   function updatedMap(original, entries, removeRecord = false) {
-    const Type = !removeRecord && recordTypes.get(original);
-    if (mapKinds.get(original) === "sorted-map") {
+    const Type = !removeRecord && recordTypes.get(original), kind = mapKinds.get(original);
+    if (kind === "sorted-map") {
       const prior = maps.get(original);
       if (entries.length === prior.length && entries.every((entry, i) => entry === prior[i])) return original;
       const result = makeMap(mapTypes["sorted-map"], entries, "sorted-map", sortedComparators.get(original)), slots = publicCollectionSlots.get(original);
       if (slots && "cnt" in slots) constructorSlots(result, {cnt: slots.cnt + entries.length - prior.length}, meta(original), null);
       return preserveMeta(original, result);
     }
-    const result = Type ? kindHooks.updatedRecord(Type, entries, mapKinds.get(original))
-      : mapFromEntries(entries, mapKinds.get(original) === "hash-map" || (entries.length > 8 && entries.length > (maps.get(original)?.length ?? 0)));
+    const result = Type ? kindHooks.updatedRecord(Type, entries, kind)
+      : mapFromEntries(entries, kind === "hash-map" || (entries.length > 8 && entries.length > (maps.get(original)?.length ?? 0)));
     const slots = publicCollectionSlots.get(original);
     if (slots?.cnt != null) {
       const cnt = slots.cnt + entries.length - maps.get(original).length;
@@ -7309,9 +7322,14 @@
     const pair = Object.create(MapEntryType.prototype);
     vectors.set(pair, {cnt: 2, shift: 5, root: [], tail: [key, value]}); mapEntries.add(pair); return pair;
   };
-  //@unit mapEntry.vector effect: mapEntry when: makeVector requires: makeVector, mapEntries,
-  //@ mapEntry, MapEntryType
-  mapEntry = (key, value) => { const pair = Object.setPrototypeOf(makeVector([key, value]), MapEntryType.prototype); mapEntries.add(pair); return pair; };
+  //@unit mapEntry.vector effect: mapEntry when: makeVector requires: mapEntries, mapEntry,
+  //@ MapEntryType, vectors
+  // The same as `mapEntry.lean`, with no `Object.setPrototypeOf` of a
+  // vector, an engine's slow path (light-cljs-989).
+  mapEntry = (key, value) => {
+    const pair = Object.create(MapEntryType.prototype);
+    vectors.set(pair, {cnt: 2, shift: 5, root: [], tail: [key, value]}); mapEntries.add(pair); return pair;
+  };
   //@unit recordKeys requires: keyword
   // A record type's field keywords, interned once per type (the members its
   // constructor assigns the fields to are `members`, see `decorateType`).
@@ -7380,8 +7398,8 @@
       if (this.__hash != null) return this.__hash;
       return this.__hash = recordEntriesHash(recordEntries(this, Type), 0) ^ stringHash(typeNames.get(Type) ?? "");
     }]]);
-  //@unit recordMethods.equiv effect: recordMethods when: equalPair, equivProtocol, objectEquiv
-  //@ requires: equalPair, recordMethodTable
+  //@unit recordMethods.equiv effect: recordMethods when: entryIndex, equalPair, equivProtocol,
+  //@ objectEquiv requires: equalPair, recordMethodTable
   recordMethodTable.push(Type => [
     ["IEquiv/-equiv", 2, function (_self, other) {
       return other != null && this.constructor === other.constructor &&
@@ -9695,9 +9713,9 @@
   }
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
   //@ assoc, collectionWithMeta, compareKeys, conj, conjBangOwn, conjMeta, conjTransient,
-  //@ coreMethod, count, derefProtocol, disj, dissoc, equalPair, firstSeq, hash, iterator,
-  //@ metaSupported, name, namespace, notifyWatches, objectEquiv, peek, pop, removeWatchProtocol,
-  //@ restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin,
+  //@ coreMethod, count, derefProtocol, disj, dissoc, entryIndex, equalPair, firstSeq, hash,
+  //@ iterator, metaSupported, name, namespace, notifyWatches, objectEquiv, peek, pop,
+  //@ removeWatchProtocol, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin,
   //@ protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.external effect: extendType when: builtin, publicDeclared requires: externalMethod,
@@ -10522,16 +10540,14 @@
   //@unit loadFile requires: invalidArity
   const loadFile = function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); };
   //@unit core requires: abs, aclone, add, addMethodProtocol, addTap, addWatch, addWatchProtocol,
-  //@ ArrayList, ArrayNode, ArrayNodeIterator, ArrayNodeSeqType, BitmapIndexedNode, Box,
-  //@ HashCollisionNode, HashMapIter, HashMapLite, HashSetIter, NeverEquiv, ObjMap, ObjMapIterator,
-  //@ SetLite, VectorLite, VectorLiteIterator, VectorNode,
-  //@ aget, alength, allNs, alterMeta, ancestors, apply, applyTo, array, arrayChunk, arrayMap,
-  //@ arraySeq, ASeq, aset, assoc, assocBang, assocBangProtocol, assocIn, assocNBangProtocol,
-  //@ assocNProtocol, assocProtocol, asTransientProtocol, Atom, atom, atomFactory, bases, bitAnd,
-  //@ bitAndNot, bitClear, bitCount, bitFlip, bitNot, bitOr, bitSet, bitShiftLeft, bitShiftRight,
-  //@ bitShiftRightZeroFill, bitTest, bitXor, boolean, booleans, boundedCount, butlast, byte, bytes,
-  //@ cat, char, chars, checkedAget, checkedAgetStrict, checkedAset, checkedAsetStrict, chunk,
-  //@ chunkAppend, ChunkBuffer, chunkBuffer, chunkCons, ChunkedCons, chunkedFirstProtocol,
+  //@ aget, alength, allNs, alterMeta, ancestors, apply, applyTo, array, arrayChunk, ArrayList,
+  //@ arrayMap, ArrayNode, ArrayNodeIterator, ArrayNodeSeqType, arraySeq, ASeq, aset, assoc,
+  //@ assocBang, assocBangProtocol, assocIn, assocNBangProtocol, assocNProtocol, assocProtocol,
+  //@ asTransientProtocol, Atom, atom, atomFactory, bases, bitAnd, bitAndNot, bitClear, bitCount,
+  //@ bitFlip, BitmapIndexedNode, bitNot, bitOr, bitSet, bitShiftLeft, bitShiftRight,
+  //@ bitShiftRightZeroFill, bitTest, bitXor, boolean, booleans, boundedCount, Box, butlast, byte,
+  //@ bytes, cat, char, chars, checkedAget, checkedAgetStrict, checkedAset, checkedAsetStrict,
+  //@ chunk, chunkAppend, ChunkBuffer, chunkBuffer, chunkCons, ChunkedCons, chunkedFirstProtocol,
   //@ chunkedNextProtocol, chunkedRestProtocol, ChunkedSeqValue, chunkFirst, chunkNext, chunkRest,
   //@ cljToJs, clone, codeReader, comp, comparator, comparatorProtocol, compareAndSet, compareKeys,
   //@ compareProtocol, compilerMacroVar, complement, completing, concat, configureHostHooks, conj,
@@ -10547,20 +10563,21 @@
   //@ ExceptionInfo, exData, exInfo, exMessage, ffirst, filter, filterv, find, findNs, findProtocol,
   //@ first, firstProtocol, flatten, float, floats, flushWriter, Fn, fnext, fnil, force,
   //@ frequencies, gensym, get, getGlobalHierarchy, getIn, getMethodProtocol, getValidator, greater,
-  //@ greaterEqual, groupBy, haltWhen, hash, hashDouble, hashMap, hashOrderedColl, hashProtocol,
-  //@ hashSet, hashUnorderedColl, hostRandInt, hostRandNth, hostRandomUuid, hostShuffle,
-  //@ IAssociative, IAtom, IChunk, IChunkedNext, IChunkedSeq, ICloneable, ICollection, IComparable,
-  //@ ICounted, identical, identity, IDeref, IDerefWithTimeout, IDrop, IEditableCollection,
-  //@ IEmptyableCollection, IEncodeClojure, IEncodeJS, IEquiv, IFind, IFn, IHash, IIndexed,
-  //@ IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta, implementsProtocol, imul,
-  //@ IMultiFn, INamed, inc, IndexedSeqFactory, IndexedSeqValue, INext, Inst, instMs,
-  //@ instMsProtocol, int, intArray, IntegerRangeFactory, IntegerRangeValue, interleave, interpose,
-  //@ into, intoArray, ints, invokeProtocol, IPending, IPrintWithWriter, IRecord, IReduce, IReset,
-  //@ IReversible, isa, isAny, isArray, isAssociative, isBoolean, isChar, isChunkedSeq, isCloneable,
-  //@ isColl, isCounted, isDelay, isDistinct, isDouble, isEmpty, ISeq, ISeqable, ISequential, ISet,
-  //@ isEven, isFalse, isFloat, isFn, isIdent, isIFind, isIFn, isIndexed, isInfinite, isInst,
-  //@ isInstance, isInt, isInteger, isIterable, isJsSymbol, isKeyword, isList, isMap, isMapEntry,
-  //@ isNaNCore, isNaturalInt, isNegative, isNegativeInt, isNil, isNumber, isObject, isOdd, ISorted,
+  //@ greaterEqual, groupBy, haltWhen, hash, HashCollisionNode, hashDouble, hashMap, HashMapIter,
+  //@ HashMapLite, hashOrderedColl, hashProtocol, hashSet, HashSetIter, hashUnorderedColl,
+  //@ hostRandInt, hostRandNth, hostRandomUuid, hostShuffle, IAssociative, IAtom, IChunk,
+  //@ IChunkedNext, IChunkedSeq, ICloneable, ICollection, IComparable, ICounted, identical,
+  //@ identity, IDeref, IDerefWithTimeout, IDrop, IEditableCollection, IEmptyableCollection,
+  //@ IEncodeClojure, IEncodeJS, IEquiv, IFind, IFn, IHash, IIndexed, IIterable, IKVReduce, IList,
+  //@ ILookup, IMap, IMapEntry, IMeta, implementsProtocol, imul, IMultiFn, INamed, inc,
+  //@ IndexedSeqFactory, IndexedSeqValue, INext, Inst, instMs, instMsProtocol, int, intArray,
+  //@ IntegerRangeFactory, IntegerRangeValue, interleave, interpose, into, intoArray, ints,
+  //@ invokeProtocol, IPending, IPrintWithWriter, IRecord, IReduce, IReset, IReversible, isa, isAny,
+  //@ isArray, isAssociative, isBoolean, isChar, isChunkedSeq, isCloneable, isColl, isCounted,
+  //@ isDelay, isDistinct, isDouble, isEmpty, ISeq, ISeqable, ISequential, ISet, isEven, isFalse,
+  //@ isFloat, isFn, isIdent, isIFind, isIFn, isIndexed, isInfinite, isInst, isInstance, isInt,
+  //@ isInteger, isIterable, isJsSymbol, isKeyword, isList, isMap, isMapEntry, isNaNCore,
+  //@ isNaturalInt, isNegative, isNegativeInt, isNil, isNumber, isObject, isOdd, ISorted,
   //@ isPositive, isPositiveInt, isQualifiedIdent, isQualifiedKeyword, isQualifiedSymbol, isRecord,
   //@ isReduceable, isReduced, isRegex, isReversible, isSeq, isSeqable, isSequential, isSet,
   //@ isSimpleIdent, isSimpleKeyword, isSimpleSymbol, isSome, isSorted, isSpecialSymbol, isString,
@@ -10575,41 +10592,41 @@
   //@ makeHierarchy, mapcat, MapEntryType, mapIndexed, mapSeq, mapv, max, maxKey, memoize, merge,
   //@ mergeWith, meta, metaProtocol, methods, min, minKey, mkBoundFn, mod, MultiFn, MultiFnFactory,
   //@ multiply, munge, mungeStr, name, nameProtocol, Namespace, namespace, NamespaceFactory,
-  //@ namespaceProtocol, newline, next, nextProtocol, nfirst, nnext, NodeSeqType, not, notAny,
-  //@ notEmpty, notEqual, notEvery, notifyWatches, nsName, nth, nthnext, nthProtocol, nthrest,
-  //@ numericEqual, objectArray, parents, parseBoolean, parseDouble, parseLong, parseUuid, partial,
-  //@ partition, partitionAll, partitionBy, partitionV, partitionVAll, peek, peekProtocol,
-  //@ PersistentArrayMapSeqType,
-  //@ PersistentArrayMapValue, persistentBang, persistentBangProtocol, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentQueueValue, PersistentTreeMapFactory,
-  //@ PersistentTreeMapSeqFactory, PersistentTreeSetFactory, PersistentVectorValue, pop, popBang,
-  //@ popBangProtocol, popProtocol, pr, preferMethodProtocol, prefers, primSeq, printCore,
-  //@ printForHost, println, printlnStr, printMetaQ, printStr, prn, prnStr, prnStrWithOpts,
-  //@ protocolSentinel, prSequentialWriter, prSeqWriter, prStr, prStrStar, prStrWithOpts, prWriter,
-  //@ prWriterFn, quot, randomSample, range, RangedIterator, rangedIterator, RangedIteratorFactory,
-  //@ RangeFactory, RangeValue, reader, realized, reduce, Reduced, reduced, reduceKv,
-  //@ reduceProtocol, reductions, reFind, registerReaderNamespace, rem, reMatches, remove,
-  //@ removeAllMethods, removeMethodProtocol, removeTap, removeWatch, removeWatchProtocol,
-  //@ rePattern, repeat, repeatedly, RepeatValue, replace, replicate, requiredGet, reSeq, reset,
-  //@ resetMeta, resetProtocol, resetVals, rest, restProtocol, reverse, rotateLeft, rseq, RSeqType,
-  //@ rseqProtocol, rsubseq, run, satisfies, second, selectKeys, seq, SeqIter, seqIter,
-  //@ SeqIterFactory, seqProtocol, seqToMap, sequence, sequenceIterator, set, setPrintErrFn,
-  //@ setPrintFn, setValidator, short, shorts, some, someFn, someVals, sort, sortBy, sortedMap,
-  //@ sortedMapBy, sortedSeqFromProtocol, sortedSeqProtocol, sortedSet, sortedSetBy, splitAt,
-  //@ splitVAt, splitWith, str, StringBufferWriter, stringHash, stringPrint, subs, subseq, subtract,
-  //@ subvec, SubvecValue, supers, swap, swapProtocol, swapVals, symbolCore, symbolIdentical,
-  //@ SymbolValue, systemTime, TaggedLiteral, taggedLiteral, TaggedLiteralFactory, take, takeLast,
-  //@ takeNth, takeWhile, tapGreater, test, theNs, throwableToMap, toArray, toArray2d, trampoline,
-  //@ transduce, transient, TransientArrayMapType, TransientHashMapType, TransientHashSetType,
-  //@ TransientVectorType, treeMapConstructor, treeMapSeqConstructor, treeSeq, treeSetConstructor,
-  //@ type, uncheckedAdd, uncheckedAddInt, uncheckedByte, uncheckedChar, uncheckedDec,
-  //@ uncheckedDecInt, uncheckedDivideInt, uncheckedDouble, uncheckedFloat, uncheckedGet,
-  //@ uncheckedInc, uncheckedIncInt, uncheckedInt, uncheckedLong, uncheckedMultiply,
-  //@ uncheckedMultiplyInt, uncheckedNegate, uncheckedNegateInt, uncheckedRemainderInt,
-  //@ uncheckedShort, uncheckedSubtract, uncheckedSubtractInt, underive, unreduced,
-  //@ unsignedBitShiftRight, update, updateIn, updateKeys, updateVals, uuid, UUIDFactory, UUIDType,
-  //@ valProtocol, vals, Var, varyMeta, vec, vector, Volatile, volatile, volatileFactory, vreset,
-  //@ vresetProtocol, withMeta, withMetaProtocol, write, writeAll, zipmap
+  //@ namespaceProtocol, NeverEquiv, newline, next, nextProtocol, nfirst, nnext, NodeSeqType, not,
+  //@ notAny, notEmpty, notEqual, notEvery, notifyWatches, nsName, nth, nthnext, nthProtocol,
+  //@ nthrest, numericEqual, objectArray, ObjMap, ObjMapIterator, parents, parseBoolean,
+  //@ parseDouble, parseLong, parseUuid, partial, partition, partitionAll, partitionBy, partitionV,
+  //@ partitionVAll, peek, peekProtocol, PersistentArrayMapSeqType, PersistentArrayMapValue,
+  //@ persistentBang, persistentBangProtocol, PersistentHashMapValue, PersistentHashSetValue,
+  //@ PersistentQueueValue, PersistentTreeMapFactory, PersistentTreeMapSeqFactory,
+  //@ PersistentTreeSetFactory, PersistentVectorValue, pop, popBang, popBangProtocol, popProtocol,
+  //@ pr, preferMethodProtocol, prefers, primSeq, printCore, printForHost, println, printlnStr,
+  //@ printMetaQ, printStr, prn, prnStr, prnStrWithOpts, protocolSentinel, prSequentialWriter,
+  //@ prSeqWriter, prStr, prStrStar, prStrWithOpts, prWriter, prWriterFn, quot, randomSample, range,
+  //@ RangedIterator, rangedIterator, RangedIteratorFactory, RangeFactory, RangeValue, reader,
+  //@ realized, reduce, Reduced, reduced, reduceKv, reduceProtocol, reductions, reFind,
+  //@ registerReaderNamespace, rem, reMatches, remove, removeAllMethods, removeMethodProtocol,
+  //@ removeTap, removeWatch, removeWatchProtocol, rePattern, repeat, repeatedly, RepeatValue,
+  //@ replace, replicate, requiredGet, reSeq, reset, resetMeta, resetProtocol, resetVals, rest,
+  //@ restProtocol, reverse, rotateLeft, rseq, rseqProtocol, RSeqType, rsubseq, run, satisfies,
+  //@ second, selectKeys, seq, SeqIter, seqIter, SeqIterFactory, seqProtocol, seqToMap, sequence,
+  //@ sequenceIterator, set, SetLite, setPrintErrFn, setPrintFn, setValidator, short, shorts, some,
+  //@ someFn, someVals, sort, sortBy, sortedMap, sortedMapBy, sortedSeqFromProtocol,
+  //@ sortedSeqProtocol, sortedSet, sortedSetBy, splitAt, splitVAt, splitWith, str,
+  //@ StringBufferWriter, stringHash, stringPrint, subs, subseq, subtract, subvec, SubvecValue,
+  //@ supers, swap, swapProtocol, swapVals, symbolCore, symbolIdentical, SymbolValue, systemTime,
+  //@ TaggedLiteral, taggedLiteral, TaggedLiteralFactory, take, takeLast, takeNth, takeWhile,
+  //@ tapGreater, test, theNs, throwableToMap, toArray, toArray2d, trampoline, transduce, transient,
+  //@ TransientArrayMapType, TransientHashMapType, TransientHashSetType, TransientVectorType,
+  //@ treeMapConstructor, treeMapSeqConstructor, treeSeq, treeSetConstructor, type, uncheckedAdd,
+  //@ uncheckedAddInt, uncheckedByte, uncheckedChar, uncheckedDec, uncheckedDecInt,
+  //@ uncheckedDivideInt, uncheckedDouble, uncheckedFloat, uncheckedGet, uncheckedInc,
+  //@ uncheckedIncInt, uncheckedInt, uncheckedLong, uncheckedMultiply, uncheckedMultiplyInt,
+  //@ uncheckedNegate, uncheckedNegateInt, uncheckedRemainderInt, uncheckedShort, uncheckedSubtract,
+  //@ uncheckedSubtractInt, underive, unreduced, unsignedBitShiftRight, update, updateIn,
+  //@ updateKeys, updateVals, uuid, UUIDFactory, UUIDType, valProtocol, vals, Var, varyMeta, vec,
+  //@ vector, VectorLite, VectorLiteIterator, VectorNode, Volatile, volatile, volatileFactory,
+  //@ vreset, vresetProtocol, withMeta, withMetaProtocol, write, writeAll, zipmap
   // Every core operation by runtime name, for the shared runtime and reflection;
   // Advanced output reads the values directly (src/runtime_manifest.rs).
   const core = Object.assign(coreCells, {
