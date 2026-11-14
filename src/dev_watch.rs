@@ -432,10 +432,10 @@ struct Scan {
     roots: Vec<PathBuf>,
     files: HashMap<PathBuf, Stamp>,
     /// The names each directory held when the poll last read it, with the
-    /// directory's stamp then, kept only where it had been quiet for
+    /// directory's identity and stamp then, kept only where it had been quiet for
     /// [`QUIET_DIRECTORY`]: while its stamp stays, a poll stamps its
     /// entries again without reading it.
-    listings: HashMap<PathBuf, (Stamp, Rc<[OsString]>)>,
+    listings: HashMap<PathBuf, (DirectoryKey, Stamp, Rc<[OsString]>)>,
     /// [`QUIET_DIRECTORY`], which a test shortens.
     quiet: Duration,
 }
@@ -495,11 +495,11 @@ impl Scan {
             .collect::<Vec<_>>();
         let mut read = HashSet::new();
         while let Some((directory, key, stamp)) = directories.pop() {
-            if !read.insert(key) {
+            if !read.insert(key.to_owned()) {
                 continue;
             }
             let (names, keep) = match self.listings.remove(&directory) {
-                Some((known, names)) if known == stamp => (names, true),
+                Some((same, known, names)) if same == key && known == stamp => (names, true),
                 _ => {
                     let reading = SystemTime::now();
                     let Ok(entries) = fs::read_dir(&directory) else {
@@ -519,7 +519,7 @@ impl Scan {
             };
             visit_entries(&directory, &names, &mut directories, &mut files);
             if keep {
-                listings.insert(directory, (stamp, names));
+                listings.insert(directory, (key, stamp, names));
             }
         }
         self.listings = listings;
@@ -2077,10 +2077,27 @@ impl Watch {
         let graph = self
             .graph
             .revise(&order, &revisions, |name| macros.contains(name));
-        let order = order.into_iter().map(str::to_owned).collect();
+        let order = order.into_iter().map(str::to_owned).collect::<Vec<_>>();
         self.graph = graph;
-        self.applied_with = Some((order, macros));
-        self.applied.extend(revisions);
+        // A revision repeats into the same records only under the order and
+        // macro namespaces it was taken with, and only while no other
+        // namespace's revision added to its record since: an input read
+        // while a helper's compile-time unit ran goes to the helper's
+        // consumers too, which a revision of one of them alone drops again.
+        let context = (order, macros);
+        if self.applied_with.as_ref() != Some(&context) {
+            self.applied.clear();
+        }
+        if revisions
+            .values()
+            .any(|revision| !revision.observations.helper_inputs.is_empty())
+        {
+            self.applied.clear();
+            self.applied_with = None;
+        } else {
+            self.applied_with = Some(context);
+            self.applied.extend(revisions);
+        }
     }
 
     /// The always-compile set of the policy evaluator, by name: the
@@ -2446,5 +2463,50 @@ mod tests {
         poll((&["app/a.cljs"], &[]));
         assert_eq!(scan.files, Scan::new(vec![root.clone()]).files);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A kept listing is of one directory: a symbolic link moved to another
+    /// directory with the same stamp is listed again (light-cljs-1001).
+    #[cfg(unix)]
+    #[test]
+    fn a_poll_lists_a_retargeted_directory_with_the_same_stamp_again() {
+        let base = std::env::temp_dir().join(format!("light-scan-retarget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join("src");
+        for (directory, file) in [("first", "view.cljc"), ("second", "view.cljs")] {
+            fs::create_dir_all(base.join(directory)).unwrap();
+            fs::write(base.join(directory).join(file), "(ns app.view)").unwrap();
+        }
+        fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(base.join("first"), root.join("app")).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(60);
+        for directory in ["first", "second"] {
+            fs::File::open(base.join(directory))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        let stamp = |directory: &str| stamp_of(&fs::metadata(base.join(directory)).unwrap());
+        assert_eq!(
+            stamp("first"),
+            stamp("second"),
+            "the scenario needs equal stamps"
+        );
+        let mut scan = Scan::new(vec![root.clone()]);
+        assert!(
+            scan.listings.contains_key(&root.join("app")),
+            "the listing is kept"
+        );
+        std::os::unix::fs::symlink(base.join("second"), root.join(".app")).unwrap();
+        fs::rename(root.join(".app"), root.join("app")).unwrap();
+        assert_eq!(
+            scan.poll(),
+            (
+                vec![root.join("app/view.cljs")],
+                vec![root.join("app/view.cljc")]
+            )
+        );
+        assert_eq!(scan.files, Scan::new(vec![root.clone()]).files);
+        fs::remove_dir_all(&base).unwrap();
     }
 }

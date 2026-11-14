@@ -1406,6 +1406,26 @@ fn a_retained_helper_resource_is_read_again_after_each_change() {
         );
         assert_eq!(now, fresh);
     }
+    // The resource steps gave the namespaces they compiled the helper's
+    // input; compiled again on their own, those namespaces revise the
+    // dependency manifest as before, though their own revisions repeat
+    // (light-cljs-1001), and the next change of the resource still reaches
+    // the macro's users.
+    let main = watch.source("app/main.cljs");
+    for text in [format!("{main}\n"), main.clone()] {
+        let (lines, step) = watch.save("app/main.cljs", &text);
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(step.contains("app.main"), "{step}");
+    }
+    let (lines, step) = watch.save("app/separator.txt", " : ");
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.contains("app.helper") && step.contains("app.view"),
+        "{step}"
+    );
+    let [now, fresh] = watch.now_and_fresh();
+    assert_eq!(now, record("start\nclicks : [1]\n"), "{step}");
+    assert_eq!(now, fresh);
 }
 
 // --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
