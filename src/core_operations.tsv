@@ -113,6 +113,7 @@ VarClass	Var	fn	-	any	any	effect	invoke	Var
 RangeClass	Range	fn	-	any	any	effect	invoke	RangeValue
 IntegerRangeClass	IntegerRange	fn	-	any	any	effect	invoke	IntegerRangeValue
 NodeSeqClass	NodeSeq	fn	-	any	any	effect	invoke	NodeSeqType
+PersistentArrayMapSeqClass	PersistentArrayMapSeq	fn	-	any	any	effect	invoke	PersistentArrayMapSeqType
 ExceptionInfo	ExceptionInfo	fn	-	any	any	effect	invoke	ExceptionInfo
 ;;
 ;; Protocols

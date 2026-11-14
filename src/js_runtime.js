@@ -504,6 +504,9 @@
   builtinType(IntegerRangeValue, sequencePrototype).prototype[kindOps] = 2;
   //@unit NodeSeqType effect requires: builtinType, sequencePrototype
   const NodeSeqType = builtinType(function () {}, sequencePrototype);
+  //@unit PersistentArrayMapSeqType effect requires: builtinType, sequencePrototype
+  // The seq of an array map, as NodeSeqType is a hash map's.
+  const PersistentArrayMapSeqType = builtinType(function () {}, sequencePrototype);
   //@unit treeMapSeqConstructor.type effect: treeMapSeqConstructor requires: builtinType,
   //@ sequencePrototype, treeMapSeqConstructor
   builtinType(treeMapSeqConstructor, sequencePrototype);
@@ -975,12 +978,13 @@
     : ChunkedSeqValue(value, vectorChunk(value, 0), 0, 0, null, null);
   //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: first, rest, seq
   //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal, NodeSeqType,
-  //@ publicCollectionSlots, view
+  //@ PersistentArrayMapSeqType, publicCollectionSlots, view
   kindHooks.seqMap = value => {
     const treeSlots = publicCollectionSlots.get(value);
     if (treeSlots && "tree" in treeSlots) return kindHooks.seqTree(treeSlots);
     const entries = mapTraversal(value), kind = mapKinds.get(value);
-    return entries.length ? view(kind === "hash-map" ? NodeSeqType : kind === "sorted-map" ? kindHooks.sortedMapSeq : IndexedSeqValue,
+    return entries.length ? view(kind === "hash-map" ? NodeSeqType : kind === "sorted-map" ? kindHooks.sortedMapSeq
+      : kind === "array-map" ? PersistentArrayMapSeqType : IndexedSeqValue,
       Object.freeze(entries.map(entry => mapEntry(entry.key, entry.value))), 0, false, kind) : null;
   };
   //@unit treeMapConstructor.seq effect: treeMapConstructor when: first, rest, seq requires: kindHooks,
@@ -9408,6 +9412,9 @@
   }));
   //@unit NodeSeqType.members effect: NodeSeqType requires: NodeSeqType, seqMethods
   NodeSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit PersistentArrayMapSeqType.members effect: PersistentArrayMapSeqType requires: PersistentArrayMapSeqType,
+  //@ seqMethods
+  PersistentArrayMapSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit ChunkedCons.members effect: ChunkedCons requires: ChunkedCons, seqMethods
   ChunkedCons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit ChunkedCons.fields effect: ChunkedCons when: resetMeta, upstreamMembers requires: cells,
@@ -10470,6 +10477,7 @@
   //@ notEmpty, notEqual, notEvery, notifyWatches, nsName, nth, nthnext, nthProtocol, nthrest,
   //@ numericEqual, objectArray, parents, parseBoolean, parseDouble, parseLong, parseUuid, partial,
   //@ partition, partitionAll, partitionBy, partitionV, partitionVAll, peek, peekProtocol,
+  //@ PersistentArrayMapSeqType,
   //@ PersistentArrayMapValue, persistentBang, persistentBangProtocol, PersistentHashMapValue,
   //@ PersistentHashSetValue, PersistentQueueValue, PersistentTreeMapFactory,
   //@ PersistentTreeMapSeqFactory, PersistentTreeSetFactory, PersistentVectorValue, pop, popBang,
@@ -10515,6 +10523,7 @@
     PersistentQueue: PersistentQueueValue, Repeat: RepeatValue,
     Cycle: CycleValue, Iterate: IterateValue, Range: RangeValue,
     IntegerRange: IntegerRangeValue, NodeSeq: NodeSeqType,
+    PersistentArrayMapSeq: PersistentArrayMapSeqType,
     PersistentTreeMapSeq: treeMapSeqConstructor, Keyword: KeywordValue,
     Symbol: SymbolValue, Reduced, UUID: UUIDType,
     Delay, Eduction,

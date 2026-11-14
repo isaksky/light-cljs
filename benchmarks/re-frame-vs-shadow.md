@@ -12,7 +12,7 @@ Everything here is rerun with `benchmarks/re-frame.bb`:
 
 ```sh
 bb benchmarks/re-frame.bb setup                 # pin shadow-cljs 3.5.3, npm install, esbuild
-bb benchmarks/re-frame.bb port todomvc simple flow --porter research/shadow-credibility/shadow-port-tool-971
+bb benchmarks/re-frame.bb port todomvc simple flow --porter research/shadow-credibility/shadow-port-tool-982
 bb benchmarks/re-frame.bb size todomvc simple flow --light BIN
 bb benchmarks/re-frame.bb origins todomvc simple flow --light BIN
 bb benchmarks/re-frame.bb time todomvc simple flow --runs 5 --light BIN
@@ -231,7 +231,7 @@ Unreached shims are not in any output and change nothing. The sizes below are ou
 | sci 0.3.4 `require-cljs-analyzer-api`: on the JVM it requires `cljs.analyzer.api` and defines a Var, so its expansion has no source form. The catalogue writes `nil` at its one call site, which is what upstream expands it to under self-hosted ClojureScript | JVM-only macro | flow | none | none (a JVM-side definition) |
 | sci 0.3.4 `copy-ns`: its self-hosted branch reads `cljs.analyzer.api/ns-publics`, which light-cljs does not provide and refuses to resolve in the macro's body, where upstream only warns. The catalogue makes that branch throw a clear error; nothing in flow calls `copy-ns` | JVM-only macro | flow | none (macro code) | none |
 | 13 sci macros (`sci.impl.faster/nth-2`, `sci.impl.types/->Node`, `sci.impl.utils/kw-identical?`, `sci.impl.fns/gen-fn` and 9 more), 97 call sites expanded on the JVM and spliced | other: they read `&env` through sci's macrovich-style `?`, and the porter expands such macros on the JVM instead of running them in light-cljs. Not shown to be a light-cljs gap | flow | same code as shadow's expansion | the same expansion |
-| tools.reader 1.6.0 `impl/inspect.cljs`: the catalogue removes `inspect*` methods on `cljs.core/PersistentArrayMapSeq` and `cljs.core/NodeSeq` | compiler gap: `PersistentArrayMapSeq` does not resolve, open: light-cljs-982. `NodeSeq` now resolves on master, so that half of the patch is no longer needed | flow | two one-line methods fewer | two methods that only name a value in an error message |
+| tools.reader 1.6.0 `impl/inspect.cljs`: the measured port removes `inspect*` methods on `cljs.core/PersistentArrayMapSeq` and `cljs.core/NodeSeq` | compiler gap, fixed on master (light-cljs-982): both names resolve to the types of a map seq. The porter `research/shadow-credibility/shadow-port-tool-982` (971's without this catalogue entry) ports flow with the file unmodified, and its light-cljs release builds | flow | two one-line methods fewer in the measured build; none with the 982 porter | two methods that only name a value in an error message |
 | `secretary.core/defroute`, 2 call sites expanded on the JVM and spliced into `todomvc/core.cljs` | JVM-only macro (an `IllegalArgumentException.` branch) | TodoMVC | same code as shadow's expansion | the same expansion |
 | `goog.cljs` (`goog.History`, `getUid`), `goog/events.cljs` (listen, BrowserEvent), `goog/functions.cljs`, `goog/history/EventType.cljs`, `goog/object.cljs`. The porter's report lists `goog.History` and `goog.async.nextTick` as `:missing-goog`, added to the compat layer by hand | Closure Library use: a non-goal, never compiler work | TodoMVC (simple: no History) | 5,578 (simple: 3,707) | 25,194 of Closure Library (simple: 9,235) |
 | flow: the same shims plus `goog/array.cljs` and `goog/string.cljs` (`StringBuffer`, `format`, which rewrite-clj uses). Its report lists `goog.async.nextTick`, `goog.string.StringBuffer` and `goog.string.format` as `:missing-goog`; the compat layer already has all three | Closure Library use: a non-goal | flow | 6,490 | 11,894 of Closure Library |
@@ -242,7 +242,7 @@ Unreached shims are not in any output and change nothing. The sizes below are ou
 | `:devtools {:preloads [hashp.core]}` dropped: light-cljs has no preloads | shadow-cljs build feature, dev only | flow | none in a release build | none in a release build |
 | `:deps true`: the porter vendors the library sources the build reached into `vendor/` (reagent, secretary, clojure.data, macrovich; flow also zprint, sci, rewrite-clj, edamame, tools.reader) | other: light-cljs resolves no dependencies | all | none | none |
 
-**Compiler-gap entries still open on master** after this branch: `cljs.core/pr-writer` (light-cljs-981) and `cljs.core/PersistentArrayMapSeq` (light-cljs-982). The three ns-form and reader gaps and the release panic are fixed. The sci entries are JVM-only macros, port data rather than compiler work. Closure Library entries are recorded as non-goals, not work.
+**Compiler-gap entries still open on master** after this branch: `cljs.core/pr-writer` (light-cljs-981); `cljs.core/PersistentArrayMapSeq` was fixed afterwards (light-cljs-982). The three ns-form and reader gaps and the release panic are fixed. The sci entries are JVM-only macros, port data rather than compiler work. Closure Library entries are recorded as non-goals, not work.
 
 ### Full inventory
 

@@ -84,6 +84,34 @@ fn existing_sequences_dispatch_only_the_requested_protocol() {
 }
 
 #[test]
+fn map_seq_types_resolve_and_dispatch_as_upstream() {
+    // Upstream's seq of an array map is a PersistentArrayMapSeq, and of a
+    // hash map a NodeSeq; libraries dispatch on both names (light-cljs-982).
+    let definitions = r#"(defprotocol Tag (tag [x]))
+                    (extend-type cljs.core/PersistentArrayMapSeq Tag (tag [_] :extended))
+                    (defmulti kind type)
+                    (defmethod kind cljs.core/PersistentArrayMapSeq [_] :array-map-seq)
+                    (defmethod kind cljs.core/NodeSeq [_] :node-seq)
+                    (defmethod kind :default [_] :other)"#;
+    let body = r#"(let [small (seq {:a 1 :b 2})
+                          large (seq (into {} (map (fn [x] [x x]) (range 20))))]
+                      [(kind small) (kind (rest small)) (kind large) (kind (seq [1 2]))
+                       (kind (seq #{1})) (instance? PersistentArrayMapSeq small)
+                       (instance? IndexedSeq small) (= PersistentArrayMapSeq (type small))
+                       (satisfies? Tag small) (tag small) (satisfies? Tag large)
+                       (count small) (counted? small) (vec small)])"#;
+    let expected = "[:array-map-seq :array-map-seq :node-seq :other :other true false true true :extended false 2 true [[:a 1] [:b 2]]]";
+    every_level(&format!("{definitions} (pr-str {body})"), expected);
+    // Macro code sees the same types.
+    every_level(
+        &format!(
+            "{definitions} (defmacro result [] (list (quote quote) {body})) (pr-str (result))"
+        ),
+        expected,
+    );
+}
+
+#[test]
 fn record_field_lookup_uses_keyword_identity_without_equivalence_dispatch() {
     // Upstream defrecord uses keyword case for lookup/contains and
     // keyword-identical? for assoc. An IEquiv override cannot name a field.
