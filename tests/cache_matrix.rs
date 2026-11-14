@@ -1238,8 +1238,10 @@ fn deferred_globals_change_source_macro_reader_views() {
 /// A source macro that lists `all-ns` and finds namespaces with `find-ns`
 /// keeps the uncached build's answer when an earlier namespace that
 /// declares nothing is edited, and so keeps its view. A miss of its own
-/// with the namespaces before it hits lists fewer namespaces than the
-/// uncached build, at the parent commit too: light-cljs-1004.
+/// with the namespaces before it hits lists what the uncached build lists:
+/// `early`, which the uncached build registers when its macro call runs,
+/// is registered when its artifact installs (light-cljs-1004). `late`,
+/// which no unit or macro call names, is listed by neither.
 #[test]
 fn declaration_view_preserves_namespace_inventory_on_mixed_hits() {
     for jobs in ["1", "4"] {
@@ -1247,7 +1249,7 @@ fn declaration_view_preserves_namespace_inventory_on_mixed_hits() {
         let mut files = vec![
             (
                 "mac.cljs",
-                "(ns mac) (defmacro listed [] (pr-str [(sort (map str (all-ns))) (some? (find-ns 'early)) (some? (find-ns 'late))]))",
+                "(ns mac) (defmacro listed [] (pr-str [(sort (map str (all-ns))) (some? (find-ns 'early)) (some? (find-ns 'late)) (map str (all-ns))]))",
             ),
             (
                 "early.cljs",
@@ -1267,8 +1269,32 @@ fn declaration_view_preserves_namespace_inventory_on_mixed_hits() {
             ),
         ]);
         let project = Project::new(&files);
-        project.checked("main", &options);
-        project.cached("main", &options).assert_all_hits(11);
+        let (cold, listed) = project.checked("main", &options);
+        let warm = project.cached("main", &options);
+        warm.assert_all_hits(11);
+        assert_eq!(warm.js, cold.js, "{jobs} jobs");
+        // `user` misses with every namespace before it a hit, so none of
+        // their macro calls runs: it lists what the uncached build lists,
+        // in its order.
+        project.write(
+            "user.cljs",
+            "(ns user (:require [mac :refer [listed]])) (def value (listed)) ; edited",
+        );
+        let (mixed, printed) = project.checked("main", &options);
+        assert_eq!(
+            mixed.rows(),
+            [
+                "user miss source: source changed",
+                "main miss dependencies: dependency user changed"
+            ],
+            "{jobs} jobs"
+        );
+        assert_eq!(mixed.js, cold.js, "{jobs} jobs");
+        assert_eq!(printed, listed);
+        assert!(
+            printed.contains("\"early\" \"mac\" \"user\") true false"),
+            "{jobs} jobs: {printed}"
+        );
         // `early` declares nothing: `user` keeps its view.
         project.write(
             "early.cljs",
@@ -1282,6 +1308,105 @@ fn declaration_view_preserves_namespace_inventory_on_mixed_hits() {
             "{jobs} jobs: {:?}",
             edited.rows()
         );
+    }
+}
+
+/// A registration adds every namespace of its program the registry lacks,
+/// in program order. Where an earlier namespace no longer adds one of them
+/// itself, a hit that registered the others adds it with them, in that
+/// order, as the uncached build's registration does (light-cljs-1004).
+#[test]
+fn installed_registrations_keep_the_registry_order() {
+    for jobs in ["1", "4"] {
+        let options = ["--jobs", jobs];
+        let project = Project::new(&[
+            ("m0.cljs", "(ns m0) (defmacro one [] 1)"),
+            (
+                "a.cljs",
+                "(ns a (:require [m0 :refer [one]])) (def x (one))",
+            ),
+            ("b.cljs", "(ns b) (def y 2)"),
+            (
+                "mac.cljs",
+                "(ns mac) (defmacro listed [] (pr-str (map str (all-ns))))",
+            ),
+            (
+                "user.cljs",
+                "(ns user (:require [mac :refer [listed]])) (def value (listed))",
+            ),
+            (
+                "main.cljs",
+                "(ns main (:require [m0] [a] [b] [mac] [user])) (js/console.log user/value)",
+            ),
+        ]);
+        let (_, before) = project.checked("main", &options);
+        project.cached("main", &options).assert_all_hits(6);
+        // `a` no longer expands a macro, so `mac`'s registration adds it.
+        project.write("a.cljs", "(ns a (:require [m0 :refer [one]])) (def x 1)");
+        let (mixed, after) = project.checked("main", &options);
+        // `mac` is a hit; `a` and `user` are not.
+        assert!(
+            !mixed.rows().iter().any(|row| row.starts_with("mac "))
+                && mixed.rows().iter().any(|row| row.starts_with("user ")),
+            "{jobs} jobs: {:?}",
+            mixed.rows()
+        );
+        assert_eq!(before, after, "{jobs} jobs");
+        assert!(
+            after.contains("\"m0\" \"a\" \"b\" \"mac\" \"user\""),
+            "{after}"
+        );
+    }
+}
+
+/// A namespace whose only source macro call is in a function body is added
+/// to the registry by that unit's analysis: on the coordinator with one job
+/// or an engine-less pool, where installing its artifact adds it too, and
+/// in a pool worker's own registry with worker engines, where installing
+/// adds it to none (light-cljs-1004).
+#[test]
+fn unit_registry_additions_install_where_the_unit_ran() {
+    let isolates = ["--jobs", "4", "--macro-memory-limit", "268435456"];
+    for options in [&["--jobs", "1"][..], &["--jobs", "4"], &isolates] {
+        let project = Project::new(&[
+            (
+                "mac.cljs",
+                "(ns mac) (defmacro listed [] (pr-str (map str (all-ns))))",
+            ),
+            (
+                "early.cljs",
+                "(ns early (:require [mac :refer [listed]])) (defn f [] (listed))",
+            ),
+            (
+                "user.cljs",
+                "(ns user (:require [mac :refer [listed]])) (js/console.log (listed))",
+            ),
+            (
+                "main.cljs",
+                "(ns main (:require [early] [user])) (js/console.log (early/f))",
+            ),
+        ]);
+        let (cold, listed) = project.checked("main", options);
+        let warm = project.cached("main", options);
+        warm.assert_all_hits(4);
+        assert_eq!(warm.js, cold.js, "{options:?}");
+        project.write(
+            "user.cljs",
+            "(ns user (:require [mac :refer [listed]])) (js/console.log (listed)) ; edited",
+        );
+        let (mixed, printed) = project.checked("main", options);
+        assert!(
+            mixed.rows().contains(&"user miss source: source changed"),
+            "{options:?}: {:?}",
+            mixed.rows()
+        );
+        assert_eq!(printed, listed, "{options:?}");
+        if options.len() == 2 {
+            assert!(
+                printed.starts_with("(\"cljs.user\" \"cljs.core\" \"mac\" \"early\" \"user\")"),
+                "{printed}"
+            );
+        }
     }
 }
 

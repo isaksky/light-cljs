@@ -129,6 +129,10 @@ pub(crate) struct UnitCharges {
     /// charges the unit (light-cljs-374).
     observations: Option<Box<crate::dependency_manifest::ObservationLog>>,
     gensyms: Vec<Vec<u16>>,
+    /// What the unit added to its worker's compile-time registry while
+    /// artifacts are captured, which the coordinator adds to its own where
+    /// it charges the unit, as a serial build adds it (light-cljs-1004).
+    namespaces: Vec<crate::namespace_artifact::RegistryEntry>,
     /// What a worker's `--stats-file` trace recorded of the unit and the
     /// units it demanded, which the coordinator records where it charges
     /// the unit (light-cljs-369, [`crate::compile_trace::replay`]).
@@ -150,6 +154,7 @@ impl UnitCharges {
             location: name.to_owned(),
             observations: recorded.observations,
             gensyms: Vec::new(),
+            namespaces: Vec::new(),
             trace: None,
         }
     }
@@ -2030,6 +2035,22 @@ pub(crate) struct CompilationSession {
     /// worker's helper initializer, run again in its isolate, gives again.
     gensym_buffer: RefCell<Vec<Vec<u16>>>,
     gensyms_seen: RefCell<std::collections::HashSet<Vec<u16>>>,
+    /// The namespaces installed artifacts added to the compile-time
+    /// registry before the session started, which it adds when it starts
+    /// ([`Self::reserve_namespaces`]).
+    namespaces_pending: RefCell<Vec<String>>,
+    /// Whether capture reads what the compile-time registry gained.
+    namespaces_logged: Cell<bool>,
+    /// How many of the program's first namespaces installed artifacts have
+    /// added to the registry, or know it has.
+    namespaces_ensured: Cell<usize>,
+    /// What pool workers' units added to their registries, absorbed before
+    /// the session started ([`Self::absorb_namespaces`]), for the next
+    /// [`Self::take_namespaces`].
+    namespaces_absorbed: RefCell<Vec<crate::namespace_artifact::RegistryEntry>>,
+    /// Every namespace logged so far, which a unit's entries are not
+    /// logged again for.
+    namespaces_seen: RefCell<std::collections::HashSet<String>>,
     /// The build's unit pool, with `--jobs N` ([`UnitPool`]).
     pool: RefCell<Option<UnitPool>>,
     /// The last unit, in unit order, a drain point took
@@ -2155,6 +2176,11 @@ impl Default for CompilationSession {
             gensyms_logged: Default::default(),
             gensym_buffer: Default::default(),
             gensyms_seen: Default::default(),
+            namespaces_pending: Default::default(),
+            namespaces_logged: Default::default(),
+            namespaces_ensured: Default::default(),
+            namespaces_absorbed: Default::default(),
+            namespaces_seen: Default::default(),
             pool: Default::default(),
             drained_through: Default::default(),
             tail_ready: Default::default(),
@@ -2718,6 +2744,197 @@ impl CompilationSession {
             .collect::<Result<_, String>>()?;
         Ok((counter, names))
     }
+    /// Start logging the namespaces the compile-time registry gains, which
+    /// `all-ns` and `find-ns` read, for [`Self::take_namespaces`].
+    pub fn log_namespaces(&self) -> Result<(), String> {
+        self.namespaces_logged.set(true);
+        match self.bootstrap() {
+            Some(bootstrap) => Self::take_namespaces_from(bootstrap.evaluator.as_ref()).map(drop),
+            None => Ok(()),
+        }
+    }
+    /// The namespaces the compile-time registry gained since the last call
+    /// or since [`Self::log_namespaces`], in the order it gained them: an
+    /// artifact's [`crate::namespace_artifact::NamespaceArtifact::registry`].
+    pub fn take_namespaces(&self) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
+        if !self.namespaces_logged.get() {
+            return Ok(Vec::new());
+        }
+        if let Some(bootstrap) = self.bootstrap() {
+            self.flush_namespaces(bootstrap.evaluator.as_ref())?;
+        }
+        Ok(std::mem::take(&mut *self.namespaces_absorbed.borrow_mut()))
+    }
+    /// Move what `engine`, this session's, logged into its registry so far
+    /// into what [`Self::take_namespaces`] returns, ahead of what a unit
+    /// charged later adds, as [`Self::flush_gensyms`] does.
+    pub(crate) fn flush_namespaces(&self, engine: &dyn MacroEvaluator) -> Result<(), String> {
+        if !self.namespaces_logged.get() {
+            return Ok(());
+        }
+        let logged = Self::take_namespaces_from(engine)?;
+        let mut seen = self.namespaces_seen.borrow_mut();
+        self.namespaces_absorbed.borrow_mut().extend(
+            logged
+                .into_iter()
+                .filter(|entry| seen.insert(entry.namespace.clone())),
+        );
+        Ok(())
+    }
+    /// Log `entries`, what a deferred unit's analysis added to its engine's
+    /// registry, where the coordinator charges the unit, those not logged
+    /// yet, whichever engine analyzed it, so that its namespace's artifact
+    /// is the same at every `--jobs` (light-cljs-1004). A pool worker's
+    /// registry is its own: the coordinator's does not gain them.
+    fn absorb_namespaces(
+        &self,
+        entries: Vec<crate::namespace_artifact::RegistryEntry>,
+    ) -> Result<(), String> {
+        if entries.is_empty() || !self.namespaces_logged.get() {
+            return Ok(());
+        }
+        let mut seen = self.namespaces_seen.borrow_mut();
+        self.namespaces_absorbed.borrow_mut().extend(
+            entries
+                .into_iter()
+                .filter(|entry| seen.insert(entry.namespace.clone()))
+                .map(|entry| crate::namespace_artifact::RegistryEntry {
+                    unit: true,
+                    ..entry
+                }),
+        );
+        Ok(())
+    }
+    /// Whether the build's pool has workers with engines, which analyze the
+    /// units that expand source macros in their own registries.
+    fn pool_has_engines(&self) -> bool {
+        self.pool
+            .borrow()
+            .as_ref()
+            .is_some_and(|pool| pool.engine_workers > 0)
+    }
+    /// Add `entries`, the namespaces an installed artifact's analysis added
+    /// to the compile-time registry, in its order, as that analysis did:
+    /// before one a registration added, the namespaces of `program` before
+    /// it (`position` finds them) that the registry may lack, as the
+    /// registration added them. Before the session starts, when it starts.
+    /// They are not logged: the next capture is of the analyses after the
+    /// installed one (light-cljs-1004).
+    pub fn reserve_namespaces(
+        &self,
+        entries: &[crate::namespace_artifact::RegistryEntry],
+        program: &crate::arena::Arena<String>,
+        position: impl Fn(&str) -> Option<usize>,
+    ) -> Result<(), String> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        // With engines in the pool, a unit added its namespaces to a worker's
+        // registry, not this one.
+        let units = !self.pool_has_engines();
+        // The program's namespaces before this position are in the
+        // registry, or among `names`.
+        let mut ensured = self.namespaces_ensured.get();
+        let mut names = Vec::new();
+        for entry in entries {
+            if entry.unit && !units {
+                continue;
+            }
+            if entry.registered
+                && let Some(at) = position(&entry.namespace)
+                && at < program.len()
+            {
+                if at > ensured {
+                    names.extend(program.range(ensured..at).cloned());
+                }
+                ensured = ensured.max(at + 1);
+            }
+            names.push(entry.namespace.clone());
+        }
+        self.namespaces_ensured.set(ensured);
+        if self.namespaces_logged.get() {
+            self.namespaces_seen
+                .borrow_mut()
+                .extend(names.iter().cloned());
+        }
+        match self.bootstrap() {
+            Some(bootstrap) => Self::create_namespaces(bootstrap.evaluator.as_ref(), &names),
+            None => {
+                self.namespaces_pending.borrow_mut().extend(names);
+                Ok(())
+            }
+        }
+    }
+    /// Add `names` to `engine`'s registry, unlogged. An engine without the
+    /// compiler's registry hooks (the Pants build's) keeps its own.
+    fn create_namespaces(engine: &dyn MacroEvaluator, names: &[String]) -> Result<(), String> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let mut source = String::from("rt => rt.compilerForms.createNamespaces?.([");
+        for (index, name) in names.iter().enumerate() {
+            if index > 0 {
+                source.push(',');
+            }
+            crate::source_map::json_string(&mut source, name);
+        }
+        source.push_str("]) ?? null");
+        let value = engine.evaluate_unit(&source).map_err(|e| e.to_string())?;
+        engine.release(value).map_err(|e| e.to_string())
+    }
+    /// What the registry gained, logged as `r` and the name for a namespace
+    /// a registration added, `c` and the name for any other.
+    fn take_namespaces_from(
+        engine: &dyn MacroEvaluator,
+    ) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
+        let value = engine
+            .evaluate_unit("rt => rt.compilerForms.takeNamespaces?.() ?? null")
+            .map_err(|e| e.to_string())?;
+        let source = crate::compiler_data::Source::new("<namespaces>", "");
+        let span = source.span(0..0).expect("an empty span");
+        let call = crate::compiler_data::Form::from_data(
+            Datum::new(DatumKind::Nil),
+            span.clone(),
+            crate::compiler_data::Origin::SuppliedData,
+        );
+        let origin = crate::compiler_data::ExpansionOrigin {
+            macro_name: Name::new(None, "all-ns"),
+            call: span,
+            definition: None,
+            helpers: Vec::new(),
+        };
+        let limits = crate::form_bridge::ConversionLimits {
+            nodes: i32::MAX as usize,
+            depth: 2,
+        };
+        let exported = engine.export_form(value, &call, origin, limits);
+        engine.release(value).map_err(|e| e.to_string())?;
+        let data = exported.map_err(|e| e.to_string())?.data();
+        match data.kind() {
+            DatumKind::Nil => Ok(Vec::new()),
+            DatumKind::Collection { children, .. } => children
+                .iter()
+                .map(|name| {
+                    let DatumKind::String(text) = name.kind() else {
+                        return Err("a registered namespace is not a string".to_owned());
+                    };
+                    let text = String::from_utf16(text)
+                        .map_err(|_| "a registered namespace is not text".to_owned())?;
+                    let registered = match text.get(..1) {
+                        Some("r") => true,
+                        Some("c") => false,
+                        _ => return Err(format!("unknown registry log entry {text:?}")),
+                    };
+                    Ok(crate::namespace_artifact::RegistryEntry {
+                        namespace: text[1..].to_owned(),
+                        registered,
+                        unit: false,
+                    })
+                })
+                .collect(),
+            _ => Err("registered namespaces are not a vector".into()),
+        }
+    }
     pub fn new() -> Rc<Self> {
         Rc::new(Self::default())
     }
@@ -2879,6 +3096,13 @@ impl CompilationSession {
         Self::import_gensyms(evaluator.as_ref(), &pending)?;
         if self.gensyms_logged.get() {
             Self::take_gensyms_from(evaluator.as_ref())?;
+        }
+        // The namespaces installed artifacts added to the registry, and the
+        // log of what analyses add to it.
+        let pending = std::mem::take(&mut *self.namespaces_pending.borrow_mut());
+        Self::create_namespaces(evaluator.as_ref(), &pending)?;
+        if self.namespaces_logged.get() {
+            Self::take_namespaces_from(evaluator.as_ref())?;
         }
         self.engine.borrow_mut().bootstrap = Some(bootstrap.clone());
         #[cfg(feature = "bbp-macros")]
@@ -3926,6 +4150,7 @@ impl CompilationSession {
             let UnitCharges {
                 observations,
                 gensyms,
+                namespaces,
                 events,
                 ..
             } = *charges;
@@ -3940,6 +4165,10 @@ impl CompilationSession {
                 log.absorb(*observations);
             }
             if let Err(error) = self.absorb_gensyms(gensyms) {
+                self.shared.fail(id, error.clone(), None);
+                return Err(error);
+            }
+            if let Err(error) = self.absorb_namespaces(namespaces) {
                 self.shared.fail(id, error.clone(), None);
                 return Err(error);
             }
@@ -4111,6 +4340,20 @@ fn analyze_unit(
             } else {
                 Ok(())
             };
+            // And what the unit adds to its engine's registry, on any thread,
+            // which the coordinator logs where it charges the unit: the
+            // coordinator's log so far stays its own (light-cljs-1004).
+            let logs_namespaces = recording.capture && !nested;
+            let session = (!on_worker).then(|| host.session_handle()).flatten();
+            let started_namespaces = match (engine, &session) {
+                (Some(engine), Some(session)) if logs_namespaces => {
+                    session.flush_namespaces(engine)
+                }
+                (Some(engine), None) if logs_namespaces && on_worker => {
+                    CompilationSession::take_namespaces_from(engine).map(drop)
+                }
+                _ => Ok(()),
+            };
             // A unit recorded on its own inside another's recording, on any
             // thread, logs into a log of its own, if the thread logs, and
             // the other's goes on after it, so that its names are its own
@@ -4145,6 +4388,17 @@ fn analyze_unit(
                 events.push(crate::macro_host::UnitEvent::Unmeasured);
                 Vec::new()
             });
+            let namespaces = match engine {
+                Some(engine) if logs_namespaces && (on_worker || session.is_some()) => {
+                    started_namespaces
+                        .and_then(|()| CompilationSession::take_namespaces_from(engine))
+                }
+                _ => Ok(Vec::new()),
+            };
+            let namespaces = namespaces.unwrap_or_else(|_| {
+                events.push(crate::macro_host::UnitEvent::Unmeasured);
+                Vec::new()
+            });
             let charges = UnitCharges {
                 events,
                 macro_depth: host.engine.work.macro_depth.get(),
@@ -4154,6 +4408,7 @@ fn analyze_unit(
                 location,
                 observations: recorded.observations,
                 gensyms,
+                namespaces,
                 trace: None,
             };
             (analysis, Some((charges, started.elapsed())))

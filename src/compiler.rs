@@ -2790,6 +2790,9 @@ fn analyze_entry(
     if capturing && let Some(session) = macros.session_handle() {
         session.begin_capture();
         session.log_gensyms().map_err(NamespaceCompileError::new)?;
+        session
+            .log_namespaces()
+            .map_err(NamespaceCompileError::new)?;
     }
     // Analysis logs what it observes beyond the `ns` forms only while a
     // manifest is recorded, and stops when this compilation ends, however.

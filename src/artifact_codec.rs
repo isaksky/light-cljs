@@ -67,7 +67,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -350,6 +350,7 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
         references,
         names,
         accounting,
+        registry,
         bodies,
         live: _,
     } = artifact;
@@ -459,6 +460,9 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
                         },
                     );
                 }
+                // What the analysis added to the compile-time registry
+                // (light-cljs-1004).
+                out.registry(registry);
             }
         }
         if out.too_deep {
@@ -892,6 +896,21 @@ impl Writer<'_> {
     }
     fn strs(&mut self, items: &[String]) {
         self.list(items, |out, text| out.str(text));
+    }
+    fn registry(&mut self, items: &[RegistryEntry]) {
+        self.list(
+            items,
+            |out,
+             RegistryEntry {
+                 namespace,
+                 registered,
+                 unit,
+             }| {
+                out.str(namespace);
+                out.bool(*registered);
+                out.bool(*unit);
+            },
+        );
     }
     fn pairs(&mut self, items: &[(String, String)]) {
         self.list(items, |out, (a, b)| {
@@ -2217,6 +2236,7 @@ pub fn decode(
             })
         })?;
     }
+    let registry = r.registry()?;
     r.input.end()?;
 
     let artifact = NamespaceArtifact {
@@ -2241,6 +2261,7 @@ pub fn decode(
         },
         names,
         accounting,
+        registry,
         bodies,
         live: Default::default(),
     };
@@ -2590,6 +2611,15 @@ impl<'a> Reader<'a> {
     }
     fn strings(&mut self) -> Result<Vec<String>, DecodeError> {
         self.list(Self::string)
+    }
+    fn registry(&mut self) -> Result<Vec<RegistryEntry>, DecodeError> {
+        self.list(|r| {
+            Ok(RegistryEntry {
+                namespace: r.string()?,
+                registered: r.bool()?,
+                unit: r.bool()?,
+            })
+        })
     }
     fn pairs(&mut self) -> Result<Vec<(String, String)>, DecodeError> {
         self.list(|r| Ok((r.string()?, r.string()?)))
@@ -3850,6 +3880,18 @@ mod tests {
                 unit_depth: u32::MAX,
                 conversion_peak: 41,
             }),
+            registry: vec![
+                RegistryEntry {
+                    namespace: "app.util".into(),
+                    registered: true,
+                    unit: false,
+                },
+                RegistryEntry {
+                    namespace: "app.core".into(),
+                    registered: false,
+                    unit: true,
+                },
+            ],
             bodies: Some(Box::new(Bodies {
                 ir: SemanticIr {
                     exprs: vec![

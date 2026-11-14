@@ -766,6 +766,33 @@ artifact with its real keys. Penpot's numbers are in
   namespace's name and whether it ran a source macro, which bounds the
   registry from above, but a mixed build may still list fewer namespaces
   than an uncached one; no test shows whether it does.
+  *Settled by light-cljs-1004:* it did, at the parent commit too (`user`
+  missing with `early` a hit listed `cljs.core cljs.user mac user` where the
+  uncached build listed `early` as well). The registry keeps its semantics,
+  which docs/compiler.md describes ("Namespace reflection and
+  reading"); what changed is that a hit adds what its analysis added. The
+  compile-time runtime logs each namespace it adds to the registry while
+  artifacts are captured (a `createNs` hook, build.rs), marked as a
+  registration's or another addition, and each artifact records its
+  namespace's log, deferred units included
+  (`NamespaceArtifact::registry`). Installing the artifact adds them in
+  order, unlogged; before one a registration added, it adds the program's
+  earlier namespaces the registry may lack, as the registration adds every
+  namespace of its program it lacks in program order, so the order holds
+  when an earlier namespace no longer adds one itself. A unit's additions
+  are logged where the coordinator charges it, whichever engine analyzed it,
+  so the artifact is the same at every `--jobs`; a pool worker's registry
+  is its own, so with worker engines the coordinator's gains none of them
+  and installing adds none. The key needs no new input: what a hit adds
+  follows from its own analysis, and the declaration chain already keys the
+  earlier namespaces that change the order. `tests/cache_matrix.rs`
+  (`declaration_view_preserves_namespace_inventory_on_mixed_hits`,
+  `installed_registrations_keep_the_registry_order`,
+  `unit_registry_additions_install_where_the_unit_ran`) checks the clean
+  build, the warm build with every namespace a hit and a one-file edit
+  against the uncached build at `--jobs 1` and 4. A namespace a macro
+  makes with `create-ns` is added like the others. The Pants build keeps
+  its own registry (light-cljs-589) and installs nothing into it.
 
 #### A narrower view for source-macro users (proposal, light-cljs-1000)
 

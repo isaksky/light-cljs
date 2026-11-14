@@ -100,6 +100,14 @@ pub struct NamespaceArtifact {
     /// The logical work the namespace charged. An artifact without it is
     /// never installed.
     pub accounting: Option<Accounting>,
+    /// The namespaces the analysis, deferred units included, added to the
+    /// compile-time registry that `all-ns` and `find-ns` read, in the order
+    /// it added them: its own when it ran a source macro, those a unit or
+    /// macro it registered named, those `create-ns` made. A pool worker's
+    /// unit adds to the registry where the unit is charged, as a serial
+    /// build's does. Installing the first part adds them, so that later
+    /// namespaces list what they would after the analysis (light-cljs-1004).
+    pub registry: Vec<RegistryEntry>,
     /// What merging the namespace's deferred units added, which installs
     /// after the next namespace's top-level pass, as the merge appends it
     /// (docs/compiler-concurrency.md, "Stage A"); `None` when it has no
@@ -176,6 +184,23 @@ pub struct Bodies {
     /// would, while installing its first part charges only the rest of
     /// [`NamespaceArtifact::accounting`] (light-cljs-394).
     pub charges: Vec<UnitCharge>,
+}
+
+/// A namespace an analysis added to the compile-time registry
+/// ([`NamespaceArtifact::registry`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegistryEntry {
+    pub namespace: String,
+    /// Whether a registration of a unit's or macro's program added it, as
+    /// it adds every namespace of that program the registry lacks, in
+    /// program order; otherwise a source macro call in it, or `create-ns`.
+    /// Installation adds the program's namespaces before it that the
+    /// registry lacks first, as the registration would have.
+    pub registered: bool,
+    /// Whether a deferred unit's analysis added it, which a build whose
+    /// pool workers have engines does in a worker's registry instead, so
+    /// that installing it there adds it to none.
+    pub unit: bool,
 }
 
 /// One unit's charges at its namespace's drain point ([`Bodies::charges`]).
@@ -1317,6 +1342,7 @@ impl NamespaceArtifact {
             references: Default::default(),
             names: Default::default(),
             accounting: None,
+            registry: Vec::new(),
             bodies: self.bodies.clone(),
             live: Live::default(),
         }

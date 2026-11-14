@@ -165,6 +165,21 @@ declaration costs what it adds rather than the program (light-cljs-423,
 each namespace it names in full, as a macro's reader view may restore the
 earlier context when the macro returns, and the next registration names
 those namespaces in full again.
+
+At compile time, `all-ns`, `find-ns` and `the-ns` read the registry of the
+engine the macro runs in, which follows evaluation rather than source order.
+It holds `cljs.user` and `cljs.core`; every namespace of the program of each
+macro declaration and compile-time unit the engine registered, which is
+every namespace loaded before that definition; the namespace of each source
+macro call made in it; and those `create-ns` made, in the order they were
+added. So a namespace loaded earlier that no registration, call or
+`create-ns` since has named is not listed. With the compiler cache, a
+namespace installed from its artifact adds what its analysis added, in
+order, so a later macro lists what the uncached build lists whichever
+earlier namespaces were hits (light-cljs-1004). With `--jobs` and worker
+engines, a unit a worker analyzes adds to that worker's registry, not to
+the one the top-level macro calls read.
+
 Creating an existing named namespace reuses its identity. `create-ns` accepts
 an optional host object for `.findInternedVar`; no browser global namespace
 traversal is assumed. On source symbols retained in

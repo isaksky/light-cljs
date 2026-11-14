@@ -312,6 +312,27 @@ fn reserve_generated_names(
     }
 }
 
+/// Add what an installed artifact's analysis (`entries`) added to the
+/// compile-time registry, which a later source macro's `all-ns` and
+/// `find-ns` read, as the analysis did (light-cljs-1004).
+fn reserve_registry(
+    entries: &[RegistryEntry],
+    program: &Program,
+    index: &mut InstallIndex,
+    macro_host: &MacroHost,
+) -> Result<(), String> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let Some(session) = macro_host.session_handle() else {
+        return Ok(());
+    };
+    index.extend(program);
+    session.reserve_namespaces(entries, &program.namespaces, |name| {
+        index.namespaces.get(name).copied()
+    })
+}
+
 /// What the artifact names outside itself, resolved before anything changes.
 struct Resolved {
     source_index: usize,
@@ -787,6 +808,7 @@ impl Installer<'_> {
         if self.resolved.new_namespace {
             self.program.namespaces.push(namespace.to_owned());
         }
+        reserve_registry(&artifact.registry, self.program, self.index, macro_host)?;
         // Prepared units and macros keep the namespaces: shared, not copied.
         self.program.namespaces.freeze();
         let program = &*self.program;

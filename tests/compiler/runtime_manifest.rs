@@ -279,6 +279,7 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
         "protocolGetters",
         "reifySites",
         "namespaces",
+        "namespaceLog",
         // The reader's own state, declared at the top of its function
         // (`SHARED_READER_STATE` in build.rs).
         "streams",
@@ -379,6 +380,7 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
         "let gensymLog = null",
         "let gensymScope = null",
         "let demandGate = null",
+        "let namespaceLog = null",
     ] {
         assert!(!SHARED_RUNTIME.contains(name), "{name}");
     }
@@ -519,6 +521,7 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
             "readerViews",
             "environmentExtensions",
             "interpreterDispatch",
+            "namespaceLog",
         ]
         .iter()
         .any(|hook| line.contains(hook))
@@ -531,6 +534,7 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
         "readerViews",
         "environmentExtensions",
         "interpreterDispatch",
+        "namespaceLog",
     ] {
         assert!(
             RUNTIME_SOURCE.contains(name) && !RUNTIME.contains(name),

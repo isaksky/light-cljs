@@ -213,6 +213,13 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   been called in a runtime with `__lightGensym`, it logs each name there,
 ///   so that the compiler's log keeps them in order with the names native
 ///   expansions allocate; a name with a surrogate goes as its code units.
+/// - `createNs` logs the name of each namespace it adds to the registry,
+///   after `c`, once the form bridge's `takeNamespaces` has been called, and
+///   `registerReaderNamespace` those a registration adds, after `r`;
+///   `takeNamespaces` hands over the log and clears it, so that a namespace
+///   artifact records the namespaces its analysis made `all-ns` and
+///   `find-ns` see; `createNamespaces` adds an installed artifact's, unlogged
+///   (`src/compilation_session.rs`, `take_namespaces`; light-cljs-1004).
 /// - `encode` records what each encoding charged its node limit when it
 ///   ends, and `takeEncodePeak` hands over the most that any encoding which
 ///   ended since the last call charged and starts again, so that a
@@ -349,7 +356,22 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         "      for (let i = 8; i < n; i++) if (ordered[i].has(value)) return true; // interpreterDispatch\n",
         "      return false; }; }; // interpreterDispatch\n",
     );
-    const HOOKS: [(&str, &str, &str); 15] = [
+    const HOOKS: [(&str, &str, &str); 18] = [
+        (
+            "  const namespaces = new Map();\n",
+            "",
+            "  let namespaceLog = null; // namespaceLog\n",
+        ),
+        (
+            "    if (!namespaces.has(key)) namespaces.set(key, new Namespace(obj, name));\n",
+            "    if",
+            "    if (namespaceLog !== null && !namespaces.has(key)) namespaceLog.push(\"c\" + key); // namespaceLog\n",
+        ),
+        (
+            "    const ns = createNs(symbol(null, name));\n    if (added && ns.readerContext)",
+            "    const ns",
+            "    if (namespaceLog !== null && !namespaces.has(name)) { namespaceLog.push(\"r\" + name); namespaces.set(name, new Namespace(null, symbol(null, name))); } // namespaceLog\n",
+        ),
         (
             "    const ns = createNs(name);\n    const context = ns.readerContext ?? {aliases: new Map(), refers: new Map(), excludes: new Set(), bindings: new Set()};\n",
             "    const context",
@@ -379,6 +401,8 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
             concat!(
                 "      takeGensyms: () => { const names = Array.isArray(gensymLog) ? gensymLog : []; gensymLog = typeof globalThis.__lightGensym === \"function\" ? true : []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
                 "      takeEncodePeak: () => { const peak = encode.peak ?? 0; encode.peak = 0; return peak; },\n",
+                "      takeNamespaces: () => { const names = namespaceLog ?? []; namespaceLog = []; return vectorFromArray(names); }, // namespaceLog\n",
+                "      createNamespaces: names => { const log = namespaceLog; namespaceLog = null; try { for (const name of names) createNs(symbol(null, name)); } finally { namespaceLog = log; } return null; }, // namespaceLog\n",
                 "      gensymScope: (serial, prefix, retired, native) => { if (retired) for (const ended of retired.split(\",\")) gensymScopes.delete(+ended); if (serial === 0) { gensymScope = null; return null; } let scope = gensymScopes.get(serial); if (scope === undefined) gensymScopes.set(serial, scope = {serial, prefix, count: 0, native: native === true && typeof globalThis.__lightGensym === \"function\"}); gensymScope = scope; return null; }, gensymScopeCount: () => gensymScopes.size,\n",
             ),
         ),
@@ -526,8 +550,10 @@ const SHARED_TASK_STATE: &[&str] = &[
     "protocolGetters",
     "reifySites",
     // The namespace registry `createNs` writes after boot: each task's own
-    // Map, seeded with the boot's `cljs.user` and `cljs.core`.
+    // Map, seeded with the boot's `cljs.user` and `cljs.core`, and the log
+    // of the namespaces it adds while the compiler reads it.
     "namespaces",
+    "namespaceLog",
 ];
 
 /// The state the `reader` unit keeps at the top of its own function (the
@@ -589,6 +615,7 @@ const SHARED_WORDS: &[&str] = &["reservedNames", "readerCoreNames", "specialSymb
 fn shared_hook(hook: &str) -> String {
     let mut text = hook
         .replace("  let gensymLog = null;\n", "")
+        .replace("  let namespaceLog = null; // namespaceLog\n", "")
         .replace(
             "  let gensymScope = null; const gensymScopes = new Map();\n",
             "",

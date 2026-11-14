@@ -186,6 +186,10 @@ pub(crate) fn finish(
         .as_ref()
         .map(|s| s.take_captured())
         .unwrap_or_default();
+    let registry = match &session {
+        Some(session) => session.take_namespaces()?,
+        None => Vec::new(),
+    };
     // A cancelled or failed session leaves no artifact, even of an analysis
     // that returned: what its macros saw may be what the failure left.
     if let Some(reason) = macro_host.halted(input.control) {
@@ -366,6 +370,7 @@ pub(crate) fn finish(
             }
         },
         accounting: accounting(macro_host, input.work),
+        registry,
         bodies: None,
         live: Default::default(),
     };
@@ -425,6 +430,10 @@ pub(crate) fn finish_bodies(
         Some(session) => Some(session.take_gensyms()?),
         None => None,
     };
+    let registry = match &session {
+        Some(session) => session.take_namespaces()?,
+        None => Vec::new(),
+    };
     let unit_charges = session
         .as_ref()
         .map(|s| s.take_unit_charges())
@@ -447,6 +456,11 @@ pub(crate) fn finish_bodies(
         artifact.names.gensym_to = artifact.names.gensym_to.max(gensym_to);
         artifact.names.gensyms.extend(names);
     }
+    // The drain point's additions to the compile-time registry install
+    // with the first part: a pool worker's unit adds them where it is
+    // charged, one of the parts, while a serial build's adds them where it
+    // is analyzed (light-cljs-1004).
+    artifact.registry.extend(registry);
     if !captured_macros.is_empty() {
         return Err("a unit declared a macro".into());
     }
