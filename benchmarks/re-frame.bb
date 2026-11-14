@@ -37,12 +37,16 @@
          '[babashka.process :as process]
          '[cheshire.core :as json]
          '[clojure.edn :as edn]
+         '[edamame.core :as edamame]
          '[clojure.string :as str])
 
 (def repo (fs/parent (fs/parent (fs/absolutize *file*))))
 (def research (fs/path repo "research"))
 (def shadow-version "3.5.3")
 (def esbuild-version "0.25.10")
+;; 1.64.1 drives Chromium revision 1248; setup installs the package only, so
+;; the browser must already be in Playwright's cache (npx playwright install).
+(def playwright-version "1.64.1")
 (def esbuild (str (fs/path research "npm-tools/node_modules/.bin/esbuild")))
 (def macro-limits ["--macro-expansions" "100000000" "--macro-nodes" "4000000000"
                    "--macro-timeout-ms" "3600000" "--macro-memory-limit" "4000000000"
@@ -78,8 +82,9 @@
     (sh! {:dir (str dir)} "npm" "install" "--no-audit" "--no-fund"))
   (fs/create-dirs (fs/path research "npm-tools"))
   (sh! {:dir (str (fs/path research "npm-tools"))} "npm" "install" "--no-audit" "--no-fund"
-       (str "esbuild@" esbuild-version))
-  (println "esbuild" esbuild-version "in" (str (fs/path research "npm-tools"))))
+       (str "esbuild@" esbuild-version) (str "playwright-core@" playwright-version))
+  (println "esbuild" esbuild-version "and playwright-core" playwright-version "in"
+           (str (fs/path research "npm-tools"))))
 
 (defn port [app args]
   (let [porter (str (fs/absolutize (option args "--porter" (fs/path research "shadow-port-tool"))))
@@ -133,10 +138,11 @@
 
 (defn bundle
   "esbuild ENTRY with its npm packages into OUT, minified, as a user ships it;
-  EXTRA adds esbuild flags (a --target)."
+  EXTRA adds esbuild flags (a --target, a --format other than esm)."
   [app entry out & extra]
-  (apply time-l (example app) esbuild (str entry) "--bundle" "--format=esm" "--minify"
-         "--define:process.env.NODE_ENV=\"production\"" (str "--outfile=" out) "--log-level=warning" extra))
+  (apply time-l (example app) esbuild (str entry) "--bundle" "--minify"
+         "--define:process.env.NODE_ENV=\"production\"" (str "--outfile=" out) "--log-level=warning"
+         (concat (when-not (some #(str/starts-with? % "--format") extra) ["--format=esm"]) extra)))
 
 (defn package-imports
   "The packages light-cljs's output imports: bare specifiers after `from` or
@@ -420,6 +426,113 @@
                                                      :unsafe :splice-mismatch :edits-dropped]))))))
 
 ;; ---------------------------------------------------------------------------
+;; bundle and browser: each compiler's release build served with the
+;; example's own resources/public page and checked in headless Chromium
+
+(def compilers [:shadow :light])
+
+(defn browser-dir
+  "APP's resources/public with js/client.js replaced by COMPILER's bundle."
+  [app compiler]
+  (fs/path (example app) "out" (str "browser-" (name compiler))))
+
+(defn init-fn
+  "The port's :init-fn (shadow's module entry function), checked to be the
+  entry namespace's final form: light-cljs's startup chunk exports that form's
+  value, so the bootstrap can call it as shadow calls :init-fn."
+  [app]
+  (let [dir (port-dir app)
+        report (edn/read-string (slurp (fs/file dir "port-report.edn")))
+        f (:value (first (filter #(= [:builds :client :modules :client :init-fn] (:key %)) (:config report))))
+        file (some #(let [p (fs/path dir "src" (str (str/replace (munge (namespace f)) "." "/") %))]
+                      (when (fs/exists? p) p))
+                   [".cljs" ".cljc"])
+        last-form (last (edamame/parse-string-all (slurp (fs/file file))
+                                                       {:all true :read-cond :allow :features #{:cljs}
+                                                        :auto-resolve name}))]
+    (when-not (and (seq? last-form) (= 'defn (first last-form)) (= (name f) (name (second last-form))))
+      (throw (ex-info (str app ": " f " is not the final form of " file "; the bootstrap cannot reach it") {})))
+    f))
+
+(defn bundle-browser
+  "COMPILER's clean release build of APP, ready to serve from browser-dir: the
+  example's resources/public with js/client.js replaced. shadow-cljs's output
+  is used as written. light-cljs's ES module goes through esbuild with its npm
+  packages into one IIFE script, entered by a two-line module that calls the
+  default export, which is the :init-fn (see init-fn). Returns the build's
+  timings and the served file."
+  [app compiler binary]
+  (let [dir (browser-dir app compiler)
+        client (fs/path dir "js/client.js")]
+    (fs/delete-tree dir)
+    (fs/copy-tree (fs/path (example app) "resources/public") dir)
+    (fs/delete-tree (fs/path dir "js"))
+    (fs/create-dirs (fs/parent client))
+    (case compiler
+      :shadow (let [t (shadow-release app)]
+                (fs/copy (:file t) client)
+                (assoc t :served client))
+      :light (let [t (light-release app binary)
+                   f (init-fn app)
+                   entry (fs/path (example app) "out/browser-entry.mjs")]
+               (spit (fs/file entry)
+                     (str "import init from " (pr-str (str "./light-release/" (fs/file-name (:file t)))) ";\n"
+                          "if (typeof init !== \"function\") throw new Error(" (pr-str (str f " is not the startup chunk's default export")) ");\n"
+                          "init();\n"))
+               (assoc t :served client :esbuild (bundle app entry client "--format=iife"))))))
+
+(defn browser-checks
+  "Run benchmarks/re-frame-browser.mjs's checks for APP RUNS times against
+  COMPILER's served build."
+  [app compiler runs]
+  (let [r (process/sh {:err :string :out :string}
+                      "node" (str (fs/path repo "benchmarks/re-frame-browser.mjs"))
+                      "--app" app "--dir" (str (browser-dir app compiler))
+                      "--npm-tools" (str (fs/path research "npm-tools")) "--runs" (str runs))]
+    (when-not (zero? (:exit r)) (throw (ex-info (str "browser checks failed to run\n" (:err r)) {})))
+    (json/parse-string (:out r) true)))
+
+(defn print-browser [app results]
+  (let [runs (count (:runs (val (first results))))
+        rows (distinct (for [[_ r] results run (:runs r) c (:checks run)] (:name c)))
+        passes (fn [c row] (count (for [run (:runs (results c)) ch (:checks run)
+                                        :when (and (= row (:name ch)) (:ok ch))] ch)))
+        clean (fn [c] (count (filter (comp empty? :errors) (:runs (results c)))))
+        snaps (fn [c] (map :snapshots (:runs (results c))))
+        compared? (and (= 2 (count results)) (seq (mapcat identity (snaps :shadow))))
+        same (fn [c] (count (filter #(= % (first (snaps :shadow))) (snaps c))))
+        cell (fn [n] (if (= n runs) (str "pass " n "/" runs) (str "**fail** " n "/" runs)))]
+    (println (str "\n### " app ", " runs " runs each\n"))
+    (println (str "| Check | " (str/join " | " (map {:shadow "shadow-cljs" :light "light-cljs"} (keys results))) " |"))
+    (println (str "|---|" (str/join (repeat (count results) "---|"))))
+    (doseq [row rows]
+      (println (str "| " row " | " (str/join " | " (map #(cell (passes % row)) (keys results))) " |")))
+    (println (str "| no console errors or uncaught exceptions | " (str/join " | " (map #(cell (clean %)) (keys results))) " |"))
+    (when compared?
+      (println (str "| page text after each step equals shadow-cljs's first run | "
+                    (str/join " | " (map #(cell (same %)) (keys results))) " |")))
+    (doseq [[c r] results
+            msg (distinct (concat (for [run (:runs r) ch (:checks run) :when (not (:ok ch))]
+                                    (str (:name ch) ": " (:error ch)))
+                                  (mapcat :errors (:runs r))))]
+      (println (str "\n- " (name c) ": " msg)))
+    (when compared?
+      (doseq [c (keys results)
+              [[step a] [_ b]] (map vector (first (snaps :shadow)) (first (snaps c)))
+              :when (not= a b)]
+        (println (str "\n- " (name c) " differs after " step ":\n```\n" b "\n```\nshadow-cljs:\n```\n" a "\n```"))))))
+
+(defn browser
+  "Bundle APP with each of COMPILERS (unless --no-build) and run the browser
+  checks RUNS times against each, printing a pass/fail table."
+  [app binary args]
+  (let [cs (if-let [c (option args "--compiler" nil)] [(keyword c)] compilers)
+        runs (parse-long (option args "--runs" "3"))]
+    (when-not (some #{"--no-build"} args)
+      (doseq [c cs] (bundle-browser app c binary)))
+    (print-browser app (into (array-map) (for [c cs] [c (browser-checks app c runs)])))))
+
+;; ---------------------------------------------------------------------------
 
 (let [[command & args] *command-line-args*
       apps (take-while #(not (str/starts-with? % "--")) args)]
@@ -430,5 +543,9 @@
     "time" (doseq [app apps] (timing app (light-binary args) (parse-long (option args "--runs" "5"))))
     "inventory" (doseq [app apps] (inventory app (light-binary args)))
     "origins" (doseq [app apps] (print-origins app (origins app (light-binary args))))
-    (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... | time APP... [--runs N] | inventory APP...  [--light BIN] [--porter DIR]")
+    "bundle" (doseq [app apps
+                     c (if-let [c (option args "--compiler" nil)] [(keyword c)] compilers)]
+               (println (str (fs/relativize repo (:served (bundle-browser app c (light-binary args)))))))
+    "browser" (doseq [app apps] (browser app (light-binary args) args))
+    (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... | time APP... [--runs N] | inventory APP... | bundle APP... [--compiler C] | browser APP... [--compiler C] [--runs N] [--no-build]  [--light BIN] [--porter DIR]")
         (System/exit 1))))
