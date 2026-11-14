@@ -220,6 +220,15 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   artifact records the namespaces its analysis made `all-ns` and
 ///   `find-ns` see; `createNamespaces` adds an installed artifact's, unlogged
 ///   (`src/compilation_session.rs`, `take_namespaces`; light-cljs-1004).
+///   `takeNamespaces(true)` starts the log of an analysis a unit pool may
+///   place on a worker; a namespace it adds is marked `pooled`, and every
+///   later touch of a pooled one (`createNs` or a registration) is logged
+///   too, once per log, until an analysis the coordinator always runs
+///   touches it, which clears the mark: with worker engines that touch adds
+///   it to the coordinator's registry, so the artifact records it at every
+///   `--jobs`, and the compiler keeps what each placement logged first
+///   (light-cljs-1006). `createNamespaces` takes each name after `p`
+///   (pooled) or `c`.
 /// - `encode` records what each encoding charged its node limit when it
 ///   ends, and `takeEncodePeak` hands over the most that any encoding which
 ///   ended since the last call charged and starts again, so that a
@@ -365,12 +374,12 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         (
             "    if (!namespaces.has(key)) namespaces.set(key, new Namespace(obj, name));\n",
             "    if",
-            "    if (namespaceLog !== null && !namespaces.has(key)) namespaceLog.push(\"c\" + key); // namespaceLog\n",
+            "    if (namespaceLog !== null) { const known = namespaces.get(key); if (known === undefined) { namespaceLog.push(\"c\" + key); if (namespaceLog.pooled) { const ns = new Namespace(obj, name); ns.pooled = true; namespaces.set(key, ns); } } else if (known.pooled) { if (!namespaceLog.pooled) known.pooled = false; if (!namespaceLog.includes(\"c\" + key) && !namespaceLog.includes(\"r\" + key)) namespaceLog.push(\"c\" + key); } } // namespaceLog\n",
         ),
         (
             "    const ns = createNs(symbol(null, name));\n    if (added && ns.readerContext)",
             "    const ns",
-            "    if (namespaceLog !== null && !namespaces.has(name)) { namespaceLog.push(\"r\" + name); namespaces.set(name, new Namespace(null, symbol(null, name))); } // namespaceLog\n",
+            "    if (namespaceLog !== null) { const known = namespaces.get(name); if (known === undefined) { namespaceLog.push(\"r\" + name); const ns = new Namespace(null, symbol(null, name)); if (namespaceLog.pooled) ns.pooled = true; namespaces.set(name, ns); } else if (known.pooled) { if (!namespaceLog.pooled) known.pooled = false; if (!namespaceLog.includes(\"r\" + name)) namespaceLog.push(\"r\" + name); } } // namespaceLog\n",
         ),
         (
             "    const ns = createNs(name);\n    const context = ns.readerContext ?? {aliases: new Map(), refers: new Map(), excludes: new Set(), bindings: new Set()};\n",
@@ -401,8 +410,8 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
             concat!(
                 "      takeGensyms: () => { const names = Array.isArray(gensymLog) ? gensymLog : []; gensymLog = typeof globalThis.__lightGensym === \"function\" ? true : []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
                 "      takeEncodePeak: () => { const peak = encode.peak ?? 0; encode.peak = 0; return peak; },\n",
-                "      takeNamespaces: () => { const names = namespaceLog ?? []; namespaceLog = []; return vectorFromArray(names); }, // namespaceLog\n",
-                "      createNamespaces: names => { const log = namespaceLog; namespaceLog = null; try { for (const name of names) createNs(symbol(null, name)); } finally { namespaceLog = log; } return null; }, // namespaceLog\n",
+                "      takeNamespaces: pooled => { const names = namespaceLog ?? []; namespaceLog = []; if (pooled === true) namespaceLog.pooled = true; return vectorFromArray(names); }, // namespaceLog\n",
+                "      createNamespaces: names => { const log = namespaceLog; namespaceLog = null; try { for (const entry of names) { const ns = createNs(symbol(null, entry.slice(1))); if (entry[0] === \"p\") ns.pooled = true; else if (ns.pooled) ns.pooled = false; } } finally { namespaceLog = log; } return null; }, // namespaceLog\n",
                 "      gensymScope: (serial, prefix, retired, native) => { if (retired) for (const ended of retired.split(\",\")) gensymScopes.delete(+ended); if (serial === 0) { gensymScope = null; return null; } let scope = gensymScopes.get(serial); if (scope === undefined) gensymScopes.set(serial, scope = {serial, prefix, count: 0, native: native === true && typeof globalThis.__lightGensym === \"function\"}); gensymScope = scope; return null; }, gensymScopeCount: () => gensymScopes.size,\n",
             ),
         ),

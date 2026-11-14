@@ -2040,7 +2040,8 @@ pub(crate) struct CompilationSession {
     gensyms_seen: RefCell<std::collections::HashSet<Vec<u16>>>,
     /// The namespaces installed artifacts added to the compile-time
     /// registry before the session started, which it adds when it starts
-    /// ([`Self::reserve_namespaces`]).
+    /// ([`Self::reserve_namespaces`]), each after `p` or `c`
+    /// ([`Self::create_namespaces`]).
     namespaces_pending: RefCell<Vec<String>>,
     /// Whether capture reads what the compile-time registry gained.
     namespaces_logged: Cell<bool>,
@@ -2051,9 +2052,10 @@ pub(crate) struct CompilationSession {
     /// the session started ([`Self::absorb_namespaces`]), for the next
     /// [`Self::take_namespaces`].
     namespaces_absorbed: RefCell<Vec<crate::namespace_artifact::RegistryEntry>>,
-    /// Every namespace logged so far, which a unit's entries are not
-    /// logged again for.
-    namespaces_seen: RefCell<std::collections::HashSet<String>>,
+    /// Every namespace logged so far, with the [`placement_rank`] of the
+    /// most coordinator-bound placement that logged it: an entry is logged
+    /// again only from a placement of a higher rank (light-cljs-1006).
+    namespaces_seen: RefCell<std::collections::HashMap<String, u8>>,
     /// The build's unit pool, with `--jobs N` ([`UnitPool`]).
     pool: RefCell<Option<UnitPool>>,
     /// The last unit, in unit order, a drain point took
@@ -2754,7 +2756,9 @@ impl CompilationSession {
     pub fn log_namespaces(&self) -> Result<(), String> {
         self.namespaces_logged.set(true);
         match self.bootstrap() {
-            Some(bootstrap) => Self::take_namespaces_from(bootstrap.evaluator.as_ref()).map(drop),
+            Some(bootstrap) => {
+                Self::take_namespaces_from(bootstrap.evaluator.as_ref(), false).map(drop)
+            }
             None => Ok(()),
         }
     }
@@ -2766,32 +2770,59 @@ impl CompilationSession {
             return Ok(Vec::new());
         }
         if let Some(bootstrap) = self.bootstrap() {
-            self.flush_namespaces(bootstrap.evaluator.as_ref())?;
+            self.flush_namespaces(bootstrap.evaluator.as_ref(), false)?;
         }
         Ok(std::mem::take(&mut *self.namespaces_absorbed.borrow_mut()))
     }
     /// Move what `engine`, this session's, logged into its registry so far
     /// into what [`Self::take_namespaces`] returns, ahead of what a unit
-    /// charged later adds, as [`Self::flush_gensyms`] does.
-    pub(crate) fn flush_namespaces(&self, engine: &dyn MacroEvaluator) -> Result<(), String> {
+    /// charged later adds, as [`Self::flush_gensyms`] does. What it logs
+    /// next is of a unit a pool may place with `pooled`, and of an analysis
+    /// the coordinator always runs without.
+    pub(crate) fn flush_namespaces(
+        &self,
+        engine: &dyn MacroEvaluator,
+        pooled: bool,
+    ) -> Result<(), String> {
         if !self.namespaces_logged.get() {
             return Ok(());
         }
-        // The engine logs each namespace once: a pool worker's unit may have
-        // logged it before, in a registry of its own, and this one gains it
-        // now all the same.
-        let logged = Self::take_namespaces_from(engine)?;
-        let mut seen = self.namespaces_seen.borrow_mut();
-        seen.extend(logged.iter().map(|entry| entry.namespace.clone()));
-        self.namespaces_absorbed.borrow_mut().extend(logged);
+        // The coordinator's own analyses. A pool worker's unit may have
+        // logged a namespace before, in a registry of its own, and this one
+        // gains it now all the same; with one job, the engine logs it again
+        // when it touches one only such units added (light-cljs-1006).
+        let logged = Self::take_namespaces_from(engine, pooled)?;
+        self.note_namespaces(logged, None);
         Ok(())
     }
+    /// Log `entries`, placed as `unit` places its analysis, those no
+    /// placement of at least its [`placement_rank`] has logged, so that a
+    /// namespace's artifact is the same at every `--jobs`: each entry is
+    /// where the registry of a coordinator that analyzes placements of that
+    /// rank, and none of a higher one, first gains the namespace.
+    fn note_namespaces(
+        &self,
+        entries: Vec<crate::namespace_artifact::RegistryEntry>,
+        unit: Option<crate::namespace_artifact::UnitDispatch>,
+    ) {
+        let rank = placement_rank(unit);
+        let mut seen = self.namespaces_seen.borrow_mut();
+        self.namespaces_absorbed.borrow_mut().extend(
+            entries
+                .into_iter()
+                .filter(|entry| note_rank(&mut seen, &entry.namespace, rank))
+                .map(|entry| crate::namespace_artifact::RegistryEntry { unit, ..entry }),
+        );
+    }
     /// Log `entries`, what a deferred unit's analysis added to its engine's
-    /// registry, where the coordinator charges the unit, those not logged
-    /// yet, whichever engine analyzed it, so that its namespace's artifact
-    /// is the same at every `--jobs` (light-cljs-1004), marked with the
-    /// unit's `dispatch`, which installing reads (light-cljs-1005). A pool
-    /// worker's registry is its own: the coordinator's does not gain them.
+    /// registry or touched there after only units a pool may place added
+    /// it, where the coordinator charges the unit, whichever engine analyzed
+    /// it, so that its namespace's artifact is the same at every `--jobs`
+    /// (light-cljs-1004), marked with the unit's `dispatch`, which
+    /// installing reads (light-cljs-1005), those no placement of its rank or
+    /// a higher one logged ([`Self::note_namespaces`], light-cljs-1006). A
+    /// pool worker's registry is its own: the coordinator's does not gain
+    /// them.
     fn absorb_namespaces(
         &self,
         entries: Vec<crate::namespace_artifact::RegistryEntry>,
@@ -2800,16 +2831,7 @@ impl CompilationSession {
         if entries.is_empty() || !self.namespaces_logged.get() {
             return Ok(());
         }
-        let mut seen = self.namespaces_seen.borrow_mut();
-        self.namespaces_absorbed.borrow_mut().extend(
-            entries
-                .into_iter()
-                .filter(|entry| seen.insert(entry.namespace.clone()))
-                .map(|entry| crate::namespace_artifact::RegistryEntry {
-                    unit: Some(dispatch),
-                    ..entry
-                }),
-        );
+        self.note_namespaces(entries, Some(dispatch));
         Ok(())
     }
     /// Whether this build analyzes on the coordinator, in its registry, a
@@ -2835,7 +2857,11 @@ impl CompilationSession {
     /// it (`position` finds them) that the registry may lack, as the
     /// registration added them. Before the session starts, when it starts.
     /// They are not logged: the next capture is of the analyses after the
-    /// installed one (light-cljs-1004).
+    /// installed one (light-cljs-1004). Every entry counts as logged, with
+    /// its placement, where this build installs it or not, as it was where
+    /// the analysis ran; a namespace only placements of a lower rank than
+    /// the coordinator's own logged is added `pooled`, so that a later touch
+    /// logs it again, as it would have after that analysis (light-cljs-1006).
     pub fn reserve_namespaces(
         &self,
         entries: &[crate::namespace_artifact::RegistryEntry],
@@ -2849,7 +2875,9 @@ impl CompilationSession {
         // registry, or among `names`.
         let mut ensured = self.namespaces_ensured.get();
         let mut names = Vec::new();
+        let mut seen = self.namespaces_seen.borrow_mut();
         for entry in entries {
+            note_rank(&mut seen, &entry.namespace, placement_rank(entry.unit));
             // With engines in the pool, a unit the pool takes added its
             // namespaces to a worker's registry, not this one.
             if !self.analyzes_on_coordinator(entry.unit) {
@@ -2860,18 +2888,25 @@ impl CompilationSession {
                 && at < program.len()
             {
                 if at > ensured {
-                    names.extend(program.range(ensured..at).cloned());
+                    for name in program.range(ensured..at) {
+                        note_rank(&mut seen, name, COORDINATOR_RANK);
+                        names.push(name.clone());
+                    }
                 }
                 ensured = ensured.max(at + 1);
             }
             names.push(entry.namespace.clone());
         }
         self.namespaces_ensured.set(ensured);
-        if self.namespaces_logged.get() {
-            self.namespaces_seen
-                .borrow_mut()
-                .extend(names.iter().cloned());
-        }
+        // Each after its mark, as the registry's last touch leaves it.
+        let names: Vec<String> = names
+            .into_iter()
+            .map(|name| {
+                let pooled = seen.get(&name).is_some_and(|&rank| rank < COORDINATOR_RANK);
+                format!("{}{name}", if pooled { 'p' } else { 'c' })
+            })
+            .collect();
+        drop(seen);
         match self.bootstrap() {
             Some(bootstrap) => Self::create_namespaces(bootstrap.evaluator.as_ref(), &names),
             None => {
@@ -2880,8 +2915,10 @@ impl CompilationSession {
             }
         }
     }
-    /// Add `names` to `engine`'s registry, unlogged. An engine without the
-    /// compiler's registry hooks (the Pants build's) keeps its own.
+    /// Add `names` to `engine`'s registry, unlogged, each after `p` for one
+    /// whose later touches are logged (`pooled`, see build.rs) or `c`. An
+    /// engine without the compiler's registry hooks (the Pants build's)
+    /// keeps its own.
     fn create_namespaces(engine: &dyn MacroEvaluator, names: &[String]) -> Result<(), String> {
         if names.is_empty() {
             return Ok(());
@@ -2898,12 +2935,17 @@ impl CompilationSession {
         engine.release(value).map_err(|e| e.to_string())
     }
     /// What the registry gained, logged as `r` and the name for a namespace
-    /// a registration added, `c` and the name for any other.
+    /// a registration added, `c` and the name for any other; then the log
+    /// starts again, of a unit a pool may place with `pooled` (build.rs).
     fn take_namespaces_from(
         engine: &dyn MacroEvaluator,
+        pooled: bool,
     ) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
         let value = engine
-            .evaluate_unit("rt => rt.compilerForms.takeNamespaces?.() ?? null")
+            .evaluate_unit(match pooled {
+                true => "rt => rt.compilerForms.takeNamespaces?.(true) ?? null",
+                false => "rt => rt.compilerForms.takeNamespaces?.() ?? null",
+            })
             .map_err(|e| e.to_string())?;
         let source = crate::compiler_data::Source::new("<namespaces>", "");
         let span = source.span(0..0).expect("an empty span");
@@ -3117,7 +3159,7 @@ impl CompilationSession {
         let pending = std::mem::take(&mut *self.namespaces_pending.borrow_mut());
         Self::create_namespaces(evaluator.as_ref(), &pending)?;
         if self.namespaces_logged.get() {
-            Self::take_namespaces_from(evaluator.as_ref())?;
+            Self::take_namespaces_from(evaluator.as_ref(), false)?;
         }
         self.engine.borrow_mut().bootstrap = Some(bootstrap.clone());
         #[cfg(feature = "bbp-macros")]
@@ -4203,6 +4245,40 @@ impl CompilationSession {
         analysis
     }
 }
+/// The rank of a placement, for the compile-time registry's log: the
+/// coordinator analyzes a placement in every build where it analyzes one of
+/// a lower rank. A definition's unit is on the coordinator without engines
+/// in the pool, a declaration bundle also with one engine worker, and a
+/// unit the coordinator keeps or a namespace's own analysis (`None`)
+/// always ([`CompilationSession::pools`], `pools_bundle`).
+fn placement_rank(unit: Option<crate::namespace_artifact::UnitDispatch>) -> u8 {
+    use crate::namespace_artifact::UnitDispatch;
+    match unit {
+        Some(UnitDispatch::Definition) => 0,
+        Some(UnitDispatch::Bundle) => 1,
+        Some(UnitDispatch::Coordinator) | None => COORDINATOR_RANK,
+    }
+}
+
+/// The [`placement_rank`] of what the coordinator always analyzes.
+const COORDINATOR_RANK: u8 = 2;
+
+/// Note that a placement of `rank` logged `namespace`: whether none of
+/// that rank or a higher one had.
+fn note_rank(seen: &mut std::collections::HashMap<String, u8>, namespace: &str, rank: u8) -> bool {
+    match seen.get_mut(namespace) {
+        Some(logged) if *logged >= rank => false,
+        Some(logged) => {
+            *logged = rank;
+            true
+        }
+        None => {
+            seen.insert(namespace.to_owned(), rank);
+            true
+        }
+    }
+}
+
 /// Analyze unit `id` on the thread in slot `thread`, or wait for the thread
 /// that analyzes it, or reuse what an analysis gave. `binding` gives the
 /// engine binding the unit's analysis frame is taken from, and the bootstrap
@@ -4369,14 +4445,18 @@ fn analyze_unit(
             // And what the unit adds to its engine's registry, on any thread,
             // which the coordinator logs where it charges the unit: the
             // coordinator's log so far stays its own (light-cljs-1004).
+            // A unit a pool may place logs, besides what it adds, what it
+            // touches that only such units added (light-cljs-1006).
             let logs_namespaces = recording.capture && !nested;
             let session = (!on_worker).then(|| host.session_handle()).flatten();
+            let pooled = logs_namespaces
+                && placement_rank(Some(shared.lock().units[id].dispatch)) < COORDINATOR_RANK;
             let started_namespaces = match (engine, &session) {
                 (Some(engine), Some(session)) if logs_namespaces => {
-                    session.flush_namespaces(engine)
+                    session.flush_namespaces(engine, pooled)
                 }
                 (Some(engine), None) if logs_namespaces && on_worker => {
-                    CompilationSession::take_namespaces_from(engine).map(drop)
+                    CompilationSession::take_namespaces_from(engine, pooled).map(drop)
                 }
                 _ => Ok(()),
             };
@@ -4417,7 +4497,7 @@ fn analyze_unit(
             let namespaces = match engine {
                 Some(engine) if logs_namespaces && (on_worker || session.is_some()) => {
                     started_namespaces
-                        .and_then(|()| CompilationSession::take_namespaces_from(engine))
+                        .and_then(|()| CompilationSession::take_namespaces_from(engine, false))
                 }
                 _ => Ok(Vec::new()),
             };

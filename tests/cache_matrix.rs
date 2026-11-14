@@ -1553,6 +1553,120 @@ fn worker_registry_additions_do_not_hide_coordinator_additions() {
     assert_eq!(printed, listed);
 }
 
+/// What `later` adds to the registry after `early`, in
+/// [`coordinator_repeats_a_worker_unit_registry_addition`].
+enum Later {
+    /// A definition with `:test` metadata, which the coordinator keeps.
+    TestDefinition,
+    /// A top-level macro call.
+    TopLevel,
+    /// A declaration bundle, which the coordinator keeps with one engine
+    /// worker.
+    Bundle,
+}
+
+/// A namespace a definition's unit in `early` made with `create-ns`, which
+/// a placement in a later namespace that the coordinator analyzes makes
+/// again ([`Later`]). With worker engines the first addition is in a
+/// worker's registry only and the second in the coordinator's; with one
+/// job the registry has it from the first. Each namespace's artifact
+/// records the second as well, with its placement, so that the artifacts
+/// are the same at every `--jobs` and installing them gives each
+/// configuration's coordinator registry: cold, all-hit and one-edit builds
+/// match the uncached build (light-cljs-1006).
+fn coordinator_repeats_a_worker_unit_registry_addition(placement: Later) {
+    let user = "(ns user (:require [mac :refer [listed]])) (js/console.log (listed))";
+    let later = match placement {
+        Later::TestDefinition => {
+            "(ns later (:require [mac :refer [mk]])) (def ^{:test (fn [] nil)} t (mk))"
+        }
+        Later::TopLevel => "(ns later (:require [mac :refer [mk]])) (mk)",
+        Later::Bundle => {
+            "(ns later (:require [mac :refer [mk]])) (defmulti m identity) (defmethod m :a [_] ((mk)))"
+        }
+    };
+    let bundle = matches!(placement, Later::Bundle);
+    let mut files = vec![
+        (
+            "mac.cljs",
+            "(ns mac) (defmacro listed [] (pr-str (sort (remove #{\"early\"} (map str (all-ns)))))) (defmacro mk [] (create-ns 'extra) `(fn [] 1))",
+        ),
+        (
+            "early.cljs",
+            "(ns early (:require [mac :refer [mk]])) (defn f [] ((mk)))",
+        ),
+    ];
+    files.extend(SPACERS);
+    files.extend([
+        ("later.cljs", later),
+        ("user.cljs", user),
+        (
+            "main.cljs",
+            "(ns main (:require [early] [s1] [s2] [s3] [s4] [s5] [s6] [later] [user])) (js/console.log (early/f))",
+        ),
+    ]);
+    let project = Project::new(&files);
+    let serial = ["--jobs", "1", "--macro-memory-limit", "268435456"];
+    let pool = ["--jobs", "4"];
+    let engines = ["--jobs", "4", "--macro-memory-limit", "268435456"];
+    // One worker isolate: the coordinator keeps the declaration bundles.
+    let one_isolate = ["--jobs", "2", "--macro-memory-limit", "134217728"];
+    let mut published: Option<Vec<(String, Vec<u8>)>> = None;
+    for options in [&serial[..], &pool, &engines, &one_isolate] {
+        project.write("user.cljs", user);
+        let _ = fs::remove_dir_all(project.cache());
+        let (cold, listed) = project.checked("main", options);
+        // `later` adds `extra` to the coordinator's registry in every
+        // configuration, a bundle where the coordinator keeps it. The
+        // lister leaves out `early`, which the coordinator registers only
+        // where its unit runs there, and sorts, so that the output, and
+        // `user`'s artifact, are the same at every `--jobs`.
+        assert_eq!(
+            listed.contains("\"extra\" \"later\""),
+            !bundle || options != &engines[..],
+            "{options:?}: {listed}"
+        );
+        let objects = project.objects();
+        if !bundle && (options == &serial[..] || options == &engines[..]) {
+            match &published {
+                None => published = Some(objects),
+                Some(serial) => {
+                    assert!(&objects == serial, "the artifacts differ at {options:?}")
+                }
+            }
+        }
+        let warm = project.cached("main", options);
+        warm.assert_all_hits(11);
+        assert_eq!(warm.js, cold.js, "{options:?}");
+        project.write("user.cljs", &format!("{user} ; edited"));
+        let (mixed, printed) = project.checked("main", options);
+        assert_eq!(
+            mixed.rows(),
+            [
+                "user miss source: source changed",
+                "main miss dependencies: dependency user changed"
+            ],
+            "{options:?}"
+        );
+        assert_eq!(printed, listed, "{options:?}");
+    }
+}
+
+#[test]
+fn coordinator_unit_repeats_a_worker_unit_registry_addition() {
+    coordinator_repeats_a_worker_unit_registry_addition(Later::TestDefinition);
+}
+
+#[test]
+fn top_level_call_repeats_a_worker_unit_registry_addition() {
+    coordinator_repeats_a_worker_unit_registry_addition(Later::TopLevel);
+}
+
+#[test]
+fn bundle_repeats_a_worker_unit_registry_addition() {
+    coordinator_repeats_a_worker_unit_registry_addition(Later::Bundle);
+}
+
 // -- Lowered limits -----------------------------------------------------------
 
 /// `--macro-expansions` below a cached namespace's recorded count is

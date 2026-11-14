@@ -792,18 +792,28 @@ artifact with its real keys. Penpot's numbers are in
   Installing adds an entry where the build's coordinator analyzes such a
   unit (`CompilationSession::pools`, `pools_bundle`), so with worker
   engines it still adds a `:test` definition's, and a bundle's with one
-  engine worker. The coordinator's own additions are logged even when a
-  worker's unit logged the same namespace, while a unit's are not, so
-  with worker engines a namespace a worker's unit added and a
-  coordinator-kept unit then added is not recorded for the latter, and a
-  top-level addition of one is recorded only there, which `--jobs 1` does
-  not log (light-cljs-1006). The key needs no new input: what a hit adds
+  engine worker.
+  *Settled by light-cljs-1006:* a namespace a worker's unit added and a
+  coordinator-kept unit or a top-level call then adds again is recorded for
+  both. Placements are ranked by how often the coordinator analyzes them
+  (a definition's unit, then a bundle, then a coordinator-kept unit or the
+  namespace's own analysis, `placement_rank`), and the log keeps a
+  namespace's first entry of each rank above every earlier one. With one
+  job the registry already has the namespace, so the runtime marks a
+  namespace that only placeable units added (`pooled`, build.rs) and logs
+  its later touches as well, until a placement the coordinator always
+  runs touches it; installing marks the namespaces it adds the same way.
+  So the artifacts stay byte-identical across `--jobs` here too, and each
+  configuration installs the entries of the placements its coordinator
+  analyzes. The key needs no new input: what a hit adds
   follows from its own analysis, and the declaration chain already keys the
   earlier namespaces that change the order. `tests/cache_matrix.rs`
   (`declaration_view_preserves_namespace_inventory_on_mixed_hits`,
   `installed_registrations_keep_the_registry_order`,
   `unit_registry_additions_install_where_the_unit_ran`,
-  `registry_additions_publish_the_same_artifacts_at_every_jobs`) checks the
+  `registry_additions_publish_the_same_artifacts_at_every_jobs`,
+  `coordinator_unit_repeats_a_worker_unit_registry_addition`,
+  `top_level_call_repeats_a_worker_unit_registry_addition`) checks the
   clean build, the warm build with every namespace a hit and a one-file
   edit against the uncached build at `--jobs 1` and 4, with and without
   worker engines, and the artifacts' bytes at one job and with worker
