@@ -267,7 +267,7 @@ fn raw_nsstar_validation_keeps_source_ownership_and_recovers() {
         assert!(error.message.contains(expected), "{body}: {error}");
         assert_eq!(
             error.path.as_ref(),
-            Some(&std::fs::canonicalize(&path).unwrap())
+            Some(&light_cljs::canonical_path::canonicalize(&path).unwrap())
         );
         // Unresolved unused refers retain the existing namespace-header diagnostic.
         let expected_line = if body.contains(":refer [absent]") {
@@ -358,7 +358,7 @@ fn raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership() {
     assert!(error.message.contains("macro"), "{error}");
     assert_eq!(
         error.path.as_ref(),
-        Some(&std::fs::canonicalize(&path).unwrap())
+        Some(&light_cljs::canonical_path::canonicalize(&path).unwrap())
     );
     assert_eq!(error.line_column.unwrap().0, 3);
 }

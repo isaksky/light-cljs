@@ -399,7 +399,8 @@ fn a_connected_runtime_loads_a_saved_change() {
 fn a_compile_error_is_pushed_without_a_load() {
     let mut watch = Watch::start("dev-server-error");
     let view = watch.source("app/view.cljs");
-    let path = fs::canonicalize(watch.dir.join("src/app/view.cljs")).unwrap();
+    let path =
+        light_cljs::canonical_path::canonicalize(watch.dir.join("src/app/view.cljs")).unwrap();
     let path = path.display();
     let runtime = watch.runtime("before", 4);
     runtime.until("message load replay ");
@@ -922,7 +923,8 @@ fn startup_warnings_reach_a_runtime() {
         )
         .unwrap();
     });
-    let path = fs::canonicalize(watch.dir.join("src/app/view.cljs")).unwrap();
+    let path =
+        light_cljs::canonical_path::canonicalize(watch.dir.join("src/app/view.cljs")).unwrap();
     let runtime = watch.runtime("dev", 2);
     runtime.until("message load replay ");
     let (_, warnings) = runtime.until("message ");
@@ -2237,7 +2239,7 @@ fn watch_id_takes_the_next_port_unless_strict_or_given_by_serve() {
 #[test]
 fn a_flag_only_watch_reads_no_configuration_file_and_writes_no_port_file() {
     let dir = TempDir::new("dev-server-flag-only");
-    let dir = fs::canonicalize(&*dir).unwrap();
+    let dir = light_cljs::canonical_path::canonicalize(&*dir).unwrap();
     copy_example(&dir.join("src"));
     fs::write(
         dir.join("light-cljs.edn"),
@@ -2303,7 +2305,8 @@ fn watch_of_two_builds_serves_each_under_its_id_and_the_first_at_the_root() {
         Some("{:http {:port 0}}"),
     );
     let (address, _, serving) = watch.serving();
-    let (dev, dev_b) = (project.join("out/dev"), project.join("out/dev-b"));
+    let out = project.join("out");
+    let (dev, dev_b) = (out.join("dev"), out.join("dev-b"));
     assert_eq!(
         serving,
         format!("light-cljs: serving {} at http://{address}/", dev.display())

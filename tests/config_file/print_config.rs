@@ -55,7 +55,9 @@ fn illustration() -> String {
 /// the child process's current directory names it.
 fn project(label: &str, files: &[(&str, &str)]) -> (TempDir, PathBuf) {
     let dir = TempDir::new(label);
-    let project = fs::canonicalize(&*dir).unwrap().join("project");
+    let project = light_cljs::canonical_path::canonicalize(&*dir)
+        .unwrap()
+        .join("project");
     fs::create_dir_all(&project).unwrap();
     for (name, text) in files {
         fs::write(project.join(name), text).unwrap();

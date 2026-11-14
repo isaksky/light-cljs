@@ -24,7 +24,9 @@ const FIXTURE: &str = concat!(
 /// child process's current directory names it.
 pub(crate) fn copy(label: &str, source: &str) -> (TempDir, PathBuf) {
     let dir = TempDir::new(label);
-    let project = fs::canonicalize(&*dir).unwrap().join("project");
+    let project = light_cljs::canonical_path::canonicalize(&*dir)
+        .unwrap()
+        .join("project");
     copy_tree(Path::new(source), &project);
     (dir, project)
 }
@@ -544,7 +546,9 @@ fn command_errors_have_exact_messages() {
     assert!(!project.join("out").exists() && !project.join(".light-cljs").exists());
 
     // Not found: no light-cljs.edn in the directory or above it.
-    let empty = fs::canonicalize(&*dir).unwrap().join("empty");
+    let empty = light_cljs::canonical_path::canonicalize(&*dir)
+        .unwrap()
+        .join("empty");
     fs::create_dir(&empty).unwrap();
     assert_eq!(
         fails(&empty, &["release", "app"]),
@@ -955,7 +959,9 @@ fn watch_errors_have_exact_messages() {
 #[test]
 fn macro_core_selects_the_build_runtime() {
     let dir = TempDir::new("config-commands-macro-core");
-    let project = fs::canonicalize(&*dir).unwrap().join("project");
+    let project = light_cljs::canonical_path::canonicalize(&*dir)
+        .unwrap()
+        .join("project");
     fs::create_dir_all(project.join("src/app")).unwrap();
     for (name, text) in [
         (

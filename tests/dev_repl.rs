@@ -547,7 +547,9 @@ fn errors_come_back_located() {
     let source = watch.dir.join("src/app/view.cljs");
     let frame = format!(
         "{}:{}:",
-        fs::canonicalize(&source).unwrap().display(),
+        light_cljs::canonical_path::canonicalize(&source)
+            .unwrap()
+            .display(),
         line + 1
     );
     assert!(error[1].contains(&frame), "{frame} in {error:#?}");

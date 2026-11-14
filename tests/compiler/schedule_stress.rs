@@ -830,7 +830,7 @@ fn a_panic_during_discovery_fails_the_build_the_same_way_under_any_schedule() {
             "(ns app.main (:require [app.b] [app.a] [app.c]))",
         );
     let provider = PanickingRoots(light_cljs::source_provider::FileSourceProvider::new(vec![
-        std::fs::canonicalize(sources.root()).unwrap(),
+        light_cljs::canonical_path::canonicalize(sources.root()).unwrap(),
     ]));
     let build = |slots: usize, perturbation: Option<Perturbation>| {
         light_cljs::compiler::analyze_namespace_entry_recorded_with_provider(

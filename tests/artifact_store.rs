@@ -123,7 +123,9 @@ fn compile(root: &Path, entry: &str) -> Built {
     .unwrap_or_else(|error| panic!("{entry} compiles: {error:?}"));
     let keys = NamespaceKeys::compute(&environment, &manifest, &files, entry);
     let metadata = light_cljs::cache_policy::source_metadata(&manifest, &host);
-    let provider = FileSourceProvider::new(vec![fs::canonicalize(root).unwrap()]);
+    let provider = FileSourceProvider::new(vec![
+        light_cljs::canonical_path::canonicalize(root).unwrap(),
+    ]);
     Built {
         manifest,
         files,

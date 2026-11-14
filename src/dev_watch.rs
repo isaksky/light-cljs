@@ -406,7 +406,9 @@ fn scan(roots: &[PathBuf]) -> BTreeMap<PathBuf, Stamp> {
     let mut directories = roots.to_vec();
     let mut read = HashSet::new();
     while let Some(directory) = directories.pop() {
-        if !fs::canonicalize(&directory).is_ok_and(|canonical| read.insert(canonical)) {
+        if !light_cljs::canonical_path::canonicalize(&directory)
+            .is_ok_and(|canonical| read.insert(canonical))
+        {
             continue;
         }
         let Ok(entries) = fs::read_dir(&directory) else {
@@ -569,7 +571,7 @@ fn canonical_roots(options: &Options) -> Result<Vec<PathBuf>> {
         .roots
         .iter()
         .map(|root| {
-            fs::canonicalize(root)
+            light_cljs::canonical_path::canonicalize(root)
                 .map_err(|error| format!("cannot read source root {}: {error}", root.display()))
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -687,7 +689,7 @@ fn start(
             Diagnostic {
                 message: format!("{} [{}]", warning.message, warning.kind),
                 file: Some(
-                    fs::canonicalize(path)
+                    light_cljs::canonical_path::canonicalize(path)
                         .unwrap_or_else(|_| path.clone())
                         .display()
                         .to_string(),
@@ -741,7 +743,7 @@ fn start(
         stats.session_load = Some(started.elapsed());
     }
     crate::print_stats(stats, begun)?;
-    let base = fs::canonicalize(&options.out_dir)?;
+    let base = light_cljs::canonical_path::canonicalize(&options.out_dir)?;
     let mut watch = Watch {
         written: [manifest.to_json(), manifest.index()],
         session,

@@ -31,7 +31,8 @@
 (def trace (kit-file "fixtures/root-edges.trace.tsv"))
 
 (defn dag [file]
-  (:out (shell {:out :string} "bb" (kit-file "dag.bb") file)))
+  ;; println ends lines with the platform's separator: \r\n on Windows.
+  (str/replace (:out (shell {:out :string} "bb" (kit-file "dag.bb") file)) "\r\n" "\n"))
 
 (defn section
   "The heading line that starts with `heading` and the six W rows after it."

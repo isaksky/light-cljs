@@ -9,6 +9,9 @@ use std::{
 };
 
 // Temporary directories removed when their test ends, however it ends.
+#[path = "support/node.rs"]
+#[allow(dead_code)]
+mod node;
 #[path = "support/temp_dir.rs"]
 #[allow(dead_code)]
 mod temp_dir;
@@ -225,10 +228,7 @@ fn compiles_files_and_stdin_to_executable_javascript() {
         String::from_utf8_lossy(&output.stderr)
     );
     let js = String::from_utf8(output.stdout).unwrap();
-    let result = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .args(["--print", &js])
-        .output()
-        .unwrap();
+    let result = node::print(&js).unwrap();
     assert!(result.status.success());
     assert_eq!(result.stdout, b"10\n");
 
@@ -247,10 +247,7 @@ fn compiles_files_and_stdin_to_executable_javascript() {
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     let js = String::from_utf8(output.stdout).unwrap();
-    let result = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .args(["--print", &js])
-        .output()
-        .unwrap();
+    let result = node::print(&js).unwrap();
     assert!(result.status.success());
     assert_eq!(result.stdout, b"1\n");
 }
@@ -382,10 +379,7 @@ fn optimize_selects_the_application_level_for_text_and_namespace_compiles() {
         ] {
             assert_eq!(compiled(&args), expected, "{args:?}");
         }
-        let result = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-            .args(["--print", &expected])
-            .output()
-            .unwrap();
+        let result = node::print(&expected).unwrap();
         assert_eq!(result.stdout, b"42\n", "{level}");
 
         let expected = prepare_application(&namespace, ApplicationOptions::new(level)).emit_js();
@@ -435,10 +429,7 @@ fn define_replaces_goog_define_defaults_at_every_level() {
     .unwrap();
     let root_arg = root.to_str().unwrap();
     let node = |js: &str| {
-        let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-            .args(["--print", js])
-            .output()
-            .unwrap();
+        let output = node::print(js).unwrap();
         String::from_utf8(output.stdout).unwrap()
     };
     for level in OptimizationLevel::ALL {
@@ -605,10 +596,7 @@ fn config_gives_macros_build_configuration_values() {
         compiled(&[&namespace[..1], &flags[..], &namespace[1..]].concat()),
         js
     );
-    let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .args(["--print", &js])
-        .output()
-        .unwrap();
+    let output = node::print(&js).unwrap();
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         ":dev [80 443] nil\n"
@@ -826,12 +814,7 @@ fn elide_asserts_omits_assertions_at_every_level() {
     std::fs::create_dir_all(root.join("app")).unwrap();
     std::fs::write(root.join("app/main.cljs"), format!("(ns app.main) {pre}")).unwrap();
     let root_arg = root.to_str().unwrap();
-    let node = |js: &str| {
-        Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-            .args(["--print", js])
-            .output()
-            .unwrap()
-    };
+    let node = |js: &str| node::print(js).unwrap();
     for level in OptimizationLevel::ALL {
         let name = level.name();
         // `none` and `prepare` emit the `nil` statement an elided assertion
@@ -967,10 +950,7 @@ fn elide_asserts_reaches_the_assert_source_macros_read() {
     #[cfg(feature = "quickjs")]
     let eval = format!("(defmacro m [] {flags}) (m)");
     let node = |js: &str| {
-        let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-            .args(["--print", js])
-            .output()
-            .unwrap();
+        let output = node::print(js).unwrap();
         assert!(output.status.success(), "{js}");
         String::from_utf8(output.stdout).unwrap()
     };
@@ -1047,8 +1027,12 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
     .unwrap();
     let path = |name: &str| root.join(name).to_str().unwrap().to_owned();
     // Node reports the real path of each source.
-    let real = std::fs::canonicalize(&root).unwrap();
-    let real = |name: &str| real.join(name).to_str().unwrap().to_owned();
+    let real = light_cljs::canonical_path::canonicalize(&root).unwrap();
+    // Stack traces print `\` between a relative name's components on Windows.
+    let real = |name: &str| {
+        let name = name.replace('/', std::path::MAIN_SEPARATOR_STR);
+        real.join(name).to_str().unwrap().to_owned()
+    };
     // The runtime line that throws for an index out of bounds.
     let runtime =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/js_runtime.js"))
@@ -2606,10 +2590,7 @@ fn worker_isolates_match_a_fresh_isolate_per_unit() {
         String::from_utf8(output.stdout).unwrap()
     };
     let node = |js: &str| {
-        let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-            .args(["--eval", js])
-            .output()
-            .unwrap();
+        let output = node::eval(js).unwrap();
         String::from_utf8(output.stdout).unwrap()
     };
     let serial = run(&["1"], &[]);

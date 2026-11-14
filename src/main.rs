@@ -394,7 +394,7 @@ impl CompileFlags {
             Some(directory) if !directory.as_os_str().is_empty() => directory.to_path_buf(),
             _ => env::current_dir()?,
         };
-        let base = fs::canonicalize(&base).unwrap_or(base);
+        let base = light_cljs::canonical_path::canonicalize(&base).unwrap_or(base);
         let urls = sources
             .iter()
             .map(|(path, _)| source_url(path, &base))
@@ -437,7 +437,7 @@ impl CompileFlags {
 /// The `sources` entry of the source at `path`: relative to the directory
 /// `base` when the file exists, else the name as given (`<text>.cljc`).
 fn source_url(path: &Path, base: &Path) -> String {
-    let Ok(path) = fs::canonicalize(path) else {
+    let Ok(path) = light_cljs::canonical_path::canonicalize(path) else {
         return path
             .to_string_lossy()
             .split(['/', '\\'])
@@ -506,7 +506,7 @@ fn write_dev_build(
     fs::create_dir_all(out_dir)
         .map_err(|error| format!("cannot create {}: {error}", out_dir.display()))?;
     // Source maps name the sources relative to the build directory.
-    let base = fs::canonicalize(out_dir)?;
+    let base = light_cljs::canonical_path::canonicalize(out_dir)?;
     let urls = sources
         .iter()
         .map(|(path, _)| source_url(path, &base))
@@ -1019,7 +1019,10 @@ fn measure_keys(
     let keys = NamespaceKeys::compute(environment, manifest, files, entry);
     let time = started.elapsed();
     let mut canonical: Vec<PathBuf> = Vec::new();
-    for root in roots.iter().filter_map(|root| fs::canonicalize(root).ok()) {
+    for root in roots
+        .iter()
+        .filter_map(|root| light_cljs::canonical_path::canonicalize(root).ok())
+    {
         if !canonical.contains(&root) {
             canonical.push(root);
         }

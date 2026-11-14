@@ -39,7 +39,9 @@ impl Roots {
         fs::write(path, source).unwrap();
     }
     fn path(&self, root: usize, path: &str) -> PathBuf {
-        fs::canonicalize(self.0[root].path()).unwrap().join(path)
+        light_cljs::canonical_path::canonicalize(self.0[root].path())
+            .unwrap()
+            .join(path)
     }
     fn paths(&self) -> Vec<PathBuf> {
         self.0.iter().map(|root| root.path().clone()).collect()

@@ -543,7 +543,7 @@ fn a_failing_form_leaves_the_previous_unit() {
         let (lines, step) = watch.save("app/view.cljs", &broken);
         assert!(step.starts_with(failed) && step.ends_with(kept), "{step}");
         let path = watch.dir.join("src/app/view.cljs");
-        let path = fs::canonicalize(path).unwrap();
+        let path = light_cljs::canonical_path::canonicalize(path).unwrap();
         assert!(
             lines.len() == 1
                 && lines[0].starts_with(&format!("light-cljs: {}{error}", path.display())),
@@ -576,7 +576,8 @@ fn a_failing_form_leaves_the_previous_unit() {
         )
     );
     let (lines, step) = watch.save("app/view.cljs", &later);
-    let path = fs::canonicalize(watch.dir.join("src/app/view.cljs")).unwrap();
+    let path =
+        light_cljs::canonical_path::canonicalize(watch.dir.join("src/app/view.cljs")).unwrap();
     assert!(
         lines.len() == 1
             && lines[0].starts_with(&format!(
@@ -701,7 +702,7 @@ fn a_new_require_adds_a_unit() {
     );
     fs::remove_file(watch.dir.join("src/app/extra.cljc")).unwrap();
     let (_, line) = watch.until("light-cljs: ");
-    let path = fs::canonicalize(watch.dir.join("src/app")).unwrap();
+    let path = light_cljs::canonical_path::canonicalize(watch.dir.join("src/app")).unwrap();
     assert_eq!(
         line,
         format!(
@@ -730,9 +731,10 @@ fn a_require_cycle_is_refused() {
     let (lines, step) = watch.save("app/macros.cljs", &cyclic);
     assert!(
         lines.len() == 1
-            && lines[0].ends_with(
-                "/app/macros.cljs: namespace dependency cycle: app.macros -> app.view -> app.macros"
-            ),
+            && lines[0].ends_with(&format!(
+                "{0}app{0}macros.cljs: namespace dependency cycle: app.macros -> app.view -> app.macros",
+                std::path::MAIN_SEPARATOR
+            )),
         "{lines:#?}"
     );
     assert!(
@@ -2232,6 +2234,7 @@ fn a_warm_started_session_reads_a_helper_resource_again() {
 /// A namespace whose source is a symbolic link to a file outside the
 /// source roots is watched after a warm start too: editing the target, and
 /// saving a file over the link, each recompile it as in a cold session.
+#[cfg(unix)]
 #[test]
 fn a_warm_started_session_watches_a_linked_source() {
     let mut pair = Pair::start("dev-watch-warm-link", &[], |src| {
@@ -2816,7 +2819,8 @@ fn an_invalid_reread_is_reported_and_the_build_keeps_its_settings() {
         events.next().unwrap(),
         format!(
             "{{\"op\":\"error\",\"step\":1,\"error\":{{\"message\":\"{message}\",\"file\":\"{}\",\"line\":12,\"column\":9}}}}",
-            config.display()
+            // JSON escapes Windows' `\` separators.
+            config.display().to_string().replace('\\', "\\\\")
         )
     );
     let (lines, step) = step_after_polls(&project, &mut watch, "after-invalid");
@@ -2949,7 +2953,7 @@ fn a_reread_moves_the_output_and_the_source_roots() {
         lines,
         ["light-cljs: light-cljs.edn changed the settings of :app; restarting the build"]
     );
-    let moved = project.join("out/moved");
+    let moved = project.join("out").join("moved");
     assert!(
         built.contains(&format!(" into {} in ", moved.display())),
         "{built}"
@@ -3274,7 +3278,7 @@ fn watching_app_and_worker(
         serving,
         format!(
             "light-cljs: serving {} at http://{address}/",
-            project.join("out/app").display()
+            project.join("out").join("app").display()
         )
     );
     let (lines, built) = watch.until("[:app] built ");
@@ -3283,7 +3287,7 @@ fn watching_app_and_worker(
         lines[0],
         format!(
             "light-cljs: serving {} at http://{address}/worker/",
-            project.join("out/worker").display()
+            project.join("out").join("worker").display()
         )
     );
     assert!(
@@ -3294,7 +3298,7 @@ fn watching_app_and_worker(
         built.starts_with("[:app] built app.main (")
             && built.contains(&format!(
                 " namespaces) into {} in ",
-                project.join("out/app").display()
+                project.join("out").join("app").display()
             ))
             && built.ends_with(" ms; watching every 20 ms"),
         "{built}"
@@ -3412,7 +3416,8 @@ fn watch_app_worker_steps_each_build_on_its_own() {
     let (_, step) = worker.until("message load ");
     assert_eq!(step, "message load app.shared");
 
-    let jobs = project.join("src/app/jobs.cljs");
+    // Its error names it with the platform's separators.
+    let jobs = project.join("src").join("app").join("jobs.cljs");
     let text = fs::read_to_string(&jobs).unwrap();
     file_watch::save(&jobs, &text.replace("(* n 21)", "(* n 3)"));
     let (lines, step) = watch.until("[:");
@@ -3590,8 +3595,23 @@ fn a_busy_build_does_not_hold_up_the_other() {
     assert!(unit.contains("latest") && !unit.contains("busy"), "{unit}");
 }
 
-/// The CPU time the process `pid` has used, in seconds, as `ps` reports it.
+/// The CPU time the process `pid` has used, in seconds, as `ps` reports it
+/// (on Windows, as PowerShell's `Get-Process` does).
 fn cpu_seconds(pid: u32) -> f64 {
+    if cfg!(windows) {
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "[string]::Format([cultureinfo]::InvariantCulture, '{{0}}', (Get-Process -Id {pid}).CPU)"
+                ),
+            ])
+            .output()
+            .unwrap();
+        let text = String::from_utf8(output.stdout).unwrap();
+        return text.trim().parse().unwrap_or_else(|_| panic!("{text:?}"));
+    }
     let output = std::process::Command::new("ps")
         .args(["-o", "time=", "-p", &pid.to_string()])
         .output()

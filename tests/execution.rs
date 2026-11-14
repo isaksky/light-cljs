@@ -664,6 +664,18 @@ fn empty_files_and_top_level_forms_execute() {
 
 #[test]
 fn deeply_nested_accepted_source_compiles_and_executes() {
+    // The CLI compiles on a main thread of 8 MiB (build.rs reserves it on
+    // Windows); an unoptimized build needs more than a test thread's 2 MiB
+    // at the parser's nesting limit.
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(deeply_nested_accepted_source)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn deeply_nested_accepted_source() {
     let source = format!("{}0{}", "(let* [] ".repeat(127), ")".repeat(127));
     let js = compile(&source).unwrap();
     assert_eq!(node(&format!("console.log({js});")), "0\n");
@@ -815,7 +827,7 @@ fn reference_build(
             "{:mvn/version \"1.12.134\"}".to_owned(),
         ),
         Reference::Checkout { path, revision } => {
-            let path = fs::canonicalize(path).unwrap_or_else(|error| {
+            let path = light_cljs::canonical_path::canonicalize(path).unwrap_or_else(|error| {
                 panic!(
                     "required checkout unavailable at {}: {error}",
                     path.display()
@@ -843,7 +855,8 @@ fn reference_build(
     let paths = macro_roots
         .iter()
         .map(|path| {
-            let path = fs::canonicalize(path).expect("fixture macro source root must exist");
+            let path = light_cljs::canonical_path::canonicalize(path)
+                .expect("fixture macro source root must exist");
             let path = path.to_str().expect("macro source root must be UTF-8");
             assert!(
                 !path.chars().any(char::is_control),

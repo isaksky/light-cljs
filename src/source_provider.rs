@@ -182,9 +182,13 @@ impl ResourceProvider for FileSourceProvider {
             });
             match metadata {
                 Ok(_) if present => {
-                    let canonical = std::fs::canonicalize(&candidate).map_err(|e| {
-                        LoadError::Provider(format!("cannot resolve {}: {e}", candidate.display()))
-                    })?;
+                    let canonical =
+                        crate::canonical_path::canonicalize(&candidate).map_err(|e| {
+                            LoadError::Provider(format!(
+                                "cannot resolve {}: {e}",
+                                candidate.display()
+                            ))
+                        })?;
                     if !found.contains(&canonical) {
                         found.push(canonical);
                     }
@@ -243,9 +247,9 @@ impl ResourceProvider for FileSourceProvider {
         if let Some(found) = self.roots.iter().find_map(|root| logical(parent, root)) {
             return Some(found);
         }
-        let parent = std::fs::canonicalize(parent).ok()?;
+        let parent = crate::canonical_path::canonicalize(parent).ok()?;
         self.roots.iter().find_map(|root| {
-            let root = std::fs::canonicalize(root).ok()?;
+            let root = crate::canonical_path::canonicalize(root).ok()?;
             logical(&parent, &root)
         })
     }

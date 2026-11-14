@@ -148,7 +148,11 @@ fn namespace_boundaries_retain_file_spans_and_emit_no_partial_javascript() {
             compile_namespace("boundary", std::slice::from_ref(sources.path())).unwrap_err();
         assert_eq!(error.span, Some(span.clone()), "{id}: {error}");
         assert_eq!(error.line_column, Some((2, column)), "{id}: {error}");
-        assert_eq!(error.path, Some(fs::canonicalize(&file).unwrap()), "{id}");
+        assert_eq!(
+            error.path,
+            Some(light_cljs::canonical_path::canonicalize(&file).unwrap()),
+            "{id}"
+        );
         assert!(error.message.contains(message), "{id}: {error}");
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args([

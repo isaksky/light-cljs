@@ -458,7 +458,7 @@ impl DevServer {
         for (name, out_dir, build) in mounts {
             table.push(Arc::new(Shared {
                 name,
-                out_dir: RwLock::new(std::fs::canonicalize(out_dir)?),
+                out_dir: RwLock::new(crate::canonical_path::canonicalize(out_dir)?),
                 runtime_ids: runtime_ids.clone(),
                 state: Mutex::new(State {
                     build,
@@ -564,7 +564,7 @@ impl DevServer {
         warnings: Vec<Diagnostic>,
     ) -> io::Result<()> {
         let shared = &self.site.mounts[id.0 as usize];
-        let out_dir = std::fs::canonicalize(out_dir)?;
+        let out_dir = crate::canonical_path::canonicalize(out_dir)?;
         *shared
             .out_dir
             .write()
@@ -1217,7 +1217,7 @@ fn warnings_message(step: u64, warnings: &[Diagnostic]) -> String {
 fn served_roots(roots: &[PathBuf], mounts: &[Arc<Shared>]) -> Vec<(PathBuf, Vec<String>)> {
     let mut served = Vec::new();
     for root in roots {
-        let Ok(root) = std::fs::canonicalize(root) else {
+        let Ok(root) = crate::canonical_path::canonicalize(root) else {
             continue;
         };
         for mount in mounts {

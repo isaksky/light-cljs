@@ -29,7 +29,9 @@ pub fn features(label: &str) -> (TempDir, PathBuf) {
 /// examples/features.
 pub fn project(label: &str, source: &Path) -> (TempDir, PathBuf) {
     let dir = TempDir::new(label);
-    let project = fs::canonicalize(&*dir).unwrap().join("project");
+    let project = light_cljs::canonical_path::canonicalize(&*dir)
+        .unwrap()
+        .join("project");
     copy_tree(source, &project);
     (dir, project)
 }

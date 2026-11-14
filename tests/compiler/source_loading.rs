@@ -36,7 +36,7 @@ impl Roots {
     fn canonical(&self) -> Vec<PathBuf> {
         self.0
             .iter()
-            .map(|root| fs::canonicalize(root.path()).unwrap())
+            .map(|root| light_cljs::canonical_path::canonicalize(root.path()).unwrap())
             .collect()
     }
 }

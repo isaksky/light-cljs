@@ -643,7 +643,7 @@ fn unit_source_maps_point_node_stack_traces_at_the_sources() {
         .lines()
         .find(|line| line.starts_with("    at "))
         .unwrap_or_else(|| panic!("no stack trace in\n{stderr}"));
-    let util = fs::canonicalize(root.join("app/util.cljs")).unwrap();
+    let util = light_cljs::canonical_path::canonicalize(root.join("app/util.cljs")).unwrap();
     assert_eq!(frame, format!("    at check ({}:5:12)", util.display()));
 }
 

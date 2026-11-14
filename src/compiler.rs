@@ -1185,7 +1185,7 @@ pub(crate) fn locate_source_traced(
             }
             match metadata {
                 Ok(metadata) if metadata.is_file() => {
-                    let canonical = fs::canonicalize(&path).map_err(|e| {
+                    let canonical = crate::canonical_path::canonicalize(&path).map_err(|e| {
                         NamespaceCompileError::new(format!(
                             "cannot resolve {}: {e}",
                             path.display()
@@ -2415,7 +2415,7 @@ fn analyze_from_roots(
     }
     let mut roots: Vec<PathBuf> = Vec::new();
     for root in source_roots {
-        let canonical = fs::canonicalize(root).map_err(|error| {
+        let canonical = crate::canonical_path::canonicalize(root).map_err(|error| {
             NamespaceCompileError::new(format!(
                 "cannot open source root {}: {error}",
                 root.display()

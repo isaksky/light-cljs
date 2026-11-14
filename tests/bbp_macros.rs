@@ -3637,7 +3637,7 @@ fn as_thread_namespace_errors_keep_the_original_step_location() {
     let native = build(true);
     assert_eq!(
         native.path,
-        Some(root.join("app.cljs").canonicalize().unwrap())
+        Some(light_cljs::canonical_path::canonicalize(root.join("app.cljs")).unwrap())
     );
     let span = native.span.clone().unwrap();
     assert_eq!(&source[span], "(let [x] value)");

@@ -598,10 +598,7 @@ fn nrepl_operations_round_trip_through_a_node_runtime() {
     let click = lookup(&mut client, "app.view", "state/click!");
     let file = format!(
         "file={}",
-        watch
-            .dir
-            .join("src/app/state.cljs")
-            .canonicalize()
+        light_cljs::canonical_path::canonicalize(watch.dir.join("src/app/state.cljs"))
             .unwrap()
             .display()
     );

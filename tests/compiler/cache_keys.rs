@@ -117,7 +117,7 @@ impl Project {
         FileSourceProvider::new(
             self.roots()
                 .iter()
-                .map(|root| fs::canonicalize(root).unwrap())
+                .map(|root| light_cljs::canonical_path::canonicalize(root).unwrap())
                 .collect(),
         )
     }

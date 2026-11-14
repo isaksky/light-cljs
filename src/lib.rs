@@ -22,6 +22,7 @@ mod build_services;
 pub mod cache_key;
 pub mod cache_policy;
 pub mod call_shapes;
+pub mod canonical_path;
 mod char_classes;
 pub mod chunks;
 mod compilation_session;

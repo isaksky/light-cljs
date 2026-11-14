@@ -18,6 +18,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+#[path = "support/node.rs"]
+#[allow(dead_code)]
+mod node;
 #[path = "support/temp_dir.rs"]
 #[allow(dead_code)]
 mod temp_dir;
@@ -67,10 +70,7 @@ impl Build {
 }
 
 fn execute(js: &str) -> String {
-    let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .args(["-e", js])
-        .output()
-        .expect("node runs");
+    let output = node::eval(js).expect("node runs");
     assert!(
         output.status.success(),
         "node fails: {}",
