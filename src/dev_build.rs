@@ -282,34 +282,35 @@ pub(crate) fn program_hooks<'a>(
     program: &Program,
     namespaces: impl IntoIterator<Item = &'a String>,
 ) -> [Vec<DevHook>; 2] {
-    let namespaces = namespaces.into_iter().collect::<Vec<_>>();
-    let position = |namespace: &str| {
-        namespaces
-            .iter()
-            .position(|known| known.as_str() == namespace)
-            .unwrap_or(namespaces.len())
-    };
+    // Each namespace's first position, found once rather than per global:
+    // a step runs this over the whole retained program.
+    let mut positions = HashMap::new();
+    let mut count = 0;
+    for (at, namespace) in namespaces.into_iter().enumerate() {
+        positions.entry(namespace.as_str()).or_insert(at);
+        count = at + 1;
+    }
+    let position = |namespace: &str| positions.get(namespace).copied().unwrap_or(count);
+    // Only definitions that a hook flag marks are ordered; the stable sort
+    // keeps their relative order as when every definition was.
     let mut definitions = program
         .globals
         .iter()
         .filter_map(|global| {
             let metadata = global.metadata?;
-            Some((position(&global.namespace), metadata, global))
+            let phases = hook_phases(program, metadata);
+            phases
+                .iter()
+                .any(Option::is_some)
+                .then(|| (position(&global.namespace), metadata, global, phases))
         })
         .collect::<Vec<_>>();
-    definitions.sort_by_key(|&(namespace, metadata, _)| (namespace, metadata.0));
-    ["before-load", "after-load"].map(|phase| {
-        let asynchronous = format!("{phase}-async");
+    definitions.sort_by_key(|&(namespace, metadata, _, _)| (namespace, metadata.0));
+    [0, 1].map(|phase| {
         definitions
             .iter()
-            .filter_map(|&(_, metadata, global)| {
-                let asynchronous = if dev_flag(program, metadata, &asynchronous) {
-                    true
-                } else if dev_flag(program, metadata, phase) {
-                    false
-                } else {
-                    return None;
-                };
+            .filter_map(|&(_, _, global, phases)| {
+                let asynchronous = phases[phase]?;
                 Some(DevHook {
                     name: format!("{}/{}", global.namespace, global.name),
                     asynchronous,
@@ -553,26 +554,53 @@ globalThis.__lightDevLoaded = (async () => {{
     )
 }
 
-/// Whether the metadata map `metadata` has the key `:dev/<name>` with a
-/// value other than `nil` or `false`.
-fn dev_flag(program: &Program, metadata: ExprId, name: &str) -> bool {
+/// The hook phases the metadata map `metadata` marks, before-load then
+/// after-load: for each, `true` if it has `:dev/<phase>-async` with a value
+/// other than `nil` or `false`, else `false` if it has `:dev/<phase>` with
+/// one, else `None`. One pass over the map, its keys compared as UTF-16
+/// without decoding: a watch step checks every definition's metadata.
+fn hook_phases(program: &Program, metadata: ExprId) -> [Option<bool>; 2] {
+    const NAMES: [&str; 4] = [
+        "before-load",
+        "before-load-async",
+        "after-load",
+        "after-load-async",
+    ];
     let ExprKind::Map(entries) = &program.exprs[metadata.0].kind else {
-        return false;
+        return [None; 2];
     };
-    let text = |id: crate::analyzer::StringId| String::from_utf16_lossy(&program.strings[id.0]);
-    entries.as_chunks::<2>().0.iter().any(|[key, value]| {
+    let is = |id: crate::analyzer::StringId, text: &str| {
+        program.strings[id.0]
+            .iter()
+            .copied()
+            .eq(text.encode_utf16())
+    };
+    let mut marked = [false; 4];
+    for [key, value] in entries.as_chunks::<2>().0 {
         let ExprKind::Keyword(literal) = program.exprs[key.0].kind else {
-            return false;
+            continue;
         };
         let literal = &program.named_literals[literal.0];
-        literal
+        if !literal
             .namespace
-            .is_some_and(|namespace| text(namespace) == "dev")
-            && text(literal.name) == name
-            && !matches!(
+            .is_some_and(|namespace| is(namespace, "dev"))
+            || matches!(
                 program.exprs[value.0].kind,
                 ExprKind::Nil | ExprKind::Bool(false)
             )
+        {
+            continue;
+        }
+        if let Some(at) = NAMES.iter().position(|name| is(literal.name, name)) {
+            marked[at] = true;
+        }
+    }
+    [0, 1].map(|phase| {
+        if marked[2 * phase + 1] {
+            Some(true)
+        } else {
+            marked[2 * phase].then_some(false)
+        }
     })
 }
 

@@ -3290,13 +3290,23 @@ struct DeferredUnit {
     may_enter_engine: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many expressions [`RecordLayouts::extend`] scanned on this
+    /// thread, for regressions that a form's analysis scans only what is new.
+    pub(crate) static RECORD_LAYOUT_SCANS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// The field count of each record type, from the first [`ExprKind::DefType`]
 /// declaring it among a program's first `scanned` expressions, extended over
 /// the later ones when a lookup misses and before each top-level form, when
 /// the earlier forms' expressions are final. A namespace's analysis keeps it
-/// for the next (as [`NamespaceAnalysis`]'s program only grows), and a
-/// deferred unit's snapshot carries the one its analysis starts from, so
-/// that a record constructor call no longer searches every expression the
+/// for the next (as [`NamespaceAnalysis`]'s program only grows), a deferred
+/// unit's snapshot carries the one its analysis starts from, and an
+/// interactive session keeps its retained program's for each form's analysis
+/// ([`InteractiveIndexes::record_layouts`]), so that neither a record
+/// constructor call nor a top-level form searches every expression the
 /// program holds.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RecordLayouts {
@@ -3315,10 +3325,12 @@ impl RecordLayouts {
         self.fields.get(&global).copied()
     }
 
-    fn extend(&mut self, exprs: &crate::arena::Arena<Expr>) {
+    pub(crate) fn extend(&mut self, exprs: &crate::arena::Arena<Expr>) {
         if exprs.len() < self.scanned {
             *self = Self::default();
         }
+        #[cfg(test)]
+        RECORD_LAYOUT_SCANS.with(|scans| scans.set(scans.get() + exprs.len() - self.scanned));
         for expr in exprs.range(self.scanned..exprs.len()) {
             if let ExprKind::DefType { global, layout, .. } = &expr.kind
                 && !self.fields.contains_key(global)
@@ -3844,6 +3856,8 @@ pub(crate) struct InteractiveIndexes<'a> {
     pub namespaces: &'a SessionNamespaces,
     /// The arities the retained program's definitions declare.
     pub arities: &'a DiagnosticArities,
+    /// The retained program's record layouts, over all its expressions.
+    pub record_layouts: &'a RecordLayouts,
     /// The retained program's namespaces, by name, with their positions.
     pub namespace_positions: &'a HashMap<String, usize>,
 }
@@ -3971,6 +3985,7 @@ fn analyze_input(
         analyzer.program = previous.clone();
         if let Some(indexes) = indexes {
             interactive_arities = Some(indexes.arities.clone());
+            analyzer.record_layouts = indexes.record_layouts.clone();
             analyzer.globals = indexes.names.clone();
             analyzer.namespace_globals =
                 (previous.globals.len(), indexes.namespace_globals.clone());

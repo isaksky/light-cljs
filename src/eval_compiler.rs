@@ -40,6 +40,9 @@ pub(crate) struct InteractiveCompiler {
     indexed: usize,
     /// The arities the retained program's definitions declare.
     arities: crate::analyzer::DiagnosticArities,
+    /// The retained program's record layouts, which each form's analysis
+    /// starts from instead of scanning every retained expression again.
+    record_layouts: crate::analyzer::RecordLayouts,
     /// How many retained expressions no metadata may reach any more, which
     /// a full compaction drops once they are half of them.
     released: usize,
@@ -87,6 +90,7 @@ impl InteractiveCompiler {
             namespaces: Default::default(),
             indexed: 0,
             arities: Default::default(),
+            record_layouts: Default::default(),
             released: 0,
             defined_ahead: Default::default(),
         }
@@ -215,8 +219,10 @@ impl InteractiveCompiler {
         self.indexed = 0;
         self.index_globals();
         self.arities.clear();
+        self.record_layouts = Default::default();
         if let Some(program) = &self.program {
             crate::analyzer::extend_declared_arities(program, 0, &mut self.arities);
+            self.record_layouts.extend(&program.exprs);
         }
     }
     /// Index the retained program's globals added since the last call.
@@ -535,6 +541,7 @@ impl InteractiveCompiler {
                     .unwrap_or(&empty),
                 namespaces: &self.namespaces,
                 arities: &self.arities,
+                record_layouts: &self.record_layouts,
                 namespace_positions: &self.program_namespaces,
             },
             crate::analyzer::NamespaceAnalysisView {
@@ -575,8 +582,10 @@ impl InteractiveCompiler {
         };
         if rescan.is_none() {
             self.arities.clear();
+            self.record_layouts = Default::default();
         }
         crate::analyzer::extend_declared_arities(&retained, rescan.unwrap_or(0), &mut self.arities);
+        self.record_layouts.extend(&retained.exprs);
         self.program = Some(retained);
         self.index_globals();
         self.touched.insert(self.namespace.clone());
@@ -1367,6 +1376,31 @@ mod tests {
         let program = compiler.program.as_ref().unwrap();
         assert!(program.locals.is_empty());
         assert_eq!(run(&mut compiler, &engine, "(f63)"), "63");
+    }
+    #[test]
+    fn a_form_scans_only_new_expressions_for_record_layouts() {
+        let mut compiler = InteractiveCompiler::new();
+        let engine = crate::evaluator::Evaluator::new(Default::default()).unwrap();
+        run(&mut compiler, &engine, "(defrecord R [a b])");
+        for i in 0..64 {
+            run(
+                &mut compiler,
+                &engine,
+                &format!("(defn f{i} [x] [x (R. x {i})])"),
+            );
+        }
+        let retained = compiler.program.as_ref().unwrap().exprs.len();
+        crate::analyzer::RECORD_LAYOUT_SCANS.with(|scans| scans.set(0));
+        // A later form's constructor call still finds the record's fields
+        // from the retained program's layouts.
+        assert_eq!(run(&mut compiler, &engine, "(:b (R. 1 2))"), "2");
+        assert_eq!(run(&mut compiler, &engine, "(:a (->R 3 4))"), "3");
+        let scanned = crate::analyzer::RECORD_LAYOUT_SCANS.with(|scans| scans.get());
+        // Before, each form's analysis scanned every retained expression.
+        assert!(
+            scanned < retained / 4,
+            "scanned {scanned} of {retained} retained expressions"
+        );
     }
     #[test]
     fn namespaces_entered_before_the_first_form_are_addressable() {
