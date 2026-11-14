@@ -1362,7 +1362,11 @@ done
 Method (`compare.bb --shadow-heaps`, added for this run). Each round runs
 light-cljs at its configured limit, light-cljs at `--macro-memory-limit
 67108864`, then shadow at each heap, and the next round reverses that order.
-Every build is a clean build (light `--no-cache`, shadow with `.shadow-cljs`
+So the shadow heaps run side by side, which suits comparing them with each
+other, but light-cljs is not interleaved between them: its builds and a given
+heap's ran minutes apart, under different load. Peak memory, the measure
+compared here, hardly moves with load (light's ranged by at most 7% over its
+three builds); the light/shadow wall-time ratios are rougher than that. Every build is a clean build (light `--no-cache`, shadow with `.shadow-cljs`
 and its output removed). The heap reaches shadow's JVM as `clojure
 -J-Xmx<size> -M:shadow release bench`: the Clojure CLI puts `-J` options after
 the alias's `-Xmx8g`, and the last `-Xmx` wins (checked:

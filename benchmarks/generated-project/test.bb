@@ -364,7 +364,9 @@
           (is (= "light-cljs.edn's :macro-memory-limit 2147483648 (2 GiB)" (:limit (by-id :light))))
           (is (= "--macro-memory-limit 67108864 (64 MiB)" (:limit (by-id :light-mml67108864))))
           (is (every? :may-fail tools))
-          (is (thrown? Exception (compare/sweep-tools options (assoc project :shadow-cmd ["npx" "shadow-cljs"]) "/gc"))))
+          (is (thrown? Exception (compare/sweep-tools options (assoc project :shadow-cmd ["npx" "shadow-cljs"]) "/gc")))
+          (is (thrown-with-msg? Exception #"override --shadow-heaps"
+                                (compare/sweep-tools options (assoc project :shadow-cmd ["clojure" "-J-Xmx8g" "-M:shadow"]) "/gc"))))
         (testing "the smallest adequate heap and the ratios"
           (let [s (fn [wall peak & [failures]] {:runs 3 :failures (or failures 0) :load-1m {:min 1.0 :max 2.0} :samples []
                                                 :wall-s {:median wall :min wall :max wall} :user-s {:median 1 :min 1 :max 1}

@@ -407,6 +407,8 @@
                                               :may-fail true :after (checked light)))]
     (when (and shadow-heaps (not= "clojure" (first shadow-cmd)))
       (throw (ex-info "--shadow-heaps passes -J-Xmx to the Clojure CLI; the shadow command is not clojure" {:shadow-cmd shadow-cmd})))
+    (when (and shadow-heaps (some #(re-find #"(?i)^-J-(Xmx|XX:MaxHeapSize|XX:MaxRAM)" %) shadow-cmd))
+      (throw (ex-info "--shadow-cmd sets the heap itself, which would override --shadow-heaps" {:shadow-cmd shadow-cmd})))
     (vec
      (concat
       [(light-tool :light (if configured
