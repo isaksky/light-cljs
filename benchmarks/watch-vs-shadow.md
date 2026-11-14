@@ -189,21 +189,23 @@ The 2.7 s left after loading is the app's first run (`workload.main/main` mounts
 
 **Setup.** Same kit, app and edits as above. light-cljs is `research/shadow-credibility/bin/light-cljs-951119a3`, the change's commit on master `9d06189f`. There were two sessions per tool on the generated app, in the orders light, shadow then shadow, light, and the same on TodoMVC in the orders shadow, light then light, shadow. A same-day baseline used master's own binary, `light-cljs-9d06189f`: two light-cljs sessions on the generated app and one on TodoMVC, run between the others. **Unreserved:** peer workers were building and testing. The one-minute load average before each session is in the table.
 
-| App | Session | Tool | Page load in Chromium, s | Load average before |
-|---|---|---|---:|---:|
-| generated | 1 | light-cljs, `951119a3` | **5.0** | 15.6 |
-| generated | 1 | shadow-cljs | 2.0 | 8.7 |
-| generated | baseline 1 | light-cljs, master `9d06189f` | 8.2 | 9.0 |
-| generated | 2 | shadow-cljs | 2.0 | 6.7 |
-| generated | 2 | light-cljs, `951119a3` | **5.2** | 9.5 |
-| generated | baseline 2 | light-cljs, master `9d06189f` | 7.8 | 6.2 |
-| TodoMVC | 1 | shadow-cljs | 0.31 | 5.1 |
-| TodoMVC | 1 | light-cljs, `951119a3` | 0.17 | 4.5 |
-| TodoMVC | baseline | light-cljs, master `9d06189f` | 0.22 | 4.3 |
-| TodoMVC | 2 | light-cljs, `951119a3` | 0.17 | 4.0 |
-| TodoMVC | 2 | shadow-cljs | 0.29 | 4.1 |
+| App | Session | Tool | Page load in Chromium, s | Startup to first build, s | CPU user + system during startup, s | Peak memory during startup, MB | Peak memory while editing, MB | Load average before |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| generated | 1 | light-cljs, `951119a3` | **5.0** | 18.8 | 18.0 + 1.4 | 1,267 | 1,385 | 15.6 |
+| generated | 1 | shadow-cljs | 2.0 | 37.5 | 99.7 + 458.0 | 2,640 | 4,961 | 8.7 |
+| generated | baseline 1 | light-cljs, master `9d06189f` | 8.2 | 21.6 | 19.8 + 2.0 | 1,285 | 1,390 | 9.0 |
+| generated | 2 | shadow-cljs | 2.0 | 37.0 | 99.9 + 445.2 | 2,440 | 4,911 | 6.7 |
+| generated | 2 | light-cljs, `951119a3` | **5.2** | 19.7 | 18.4 + 1.5 | 1,258 | 1,383 | 9.5 |
+| generated | baseline 2 | light-cljs, master `9d06189f` | 7.8 | 19.7 | 18.8 + 1.5 | 1,268 | 1,386 | 6.2 |
+| TodoMVC | 1 | shadow-cljs | 0.31 | 13.7 | 56.6 + 20.2 | 2,256 | 2,268 | 5.1 |
+| TodoMVC | 1 | light-cljs, `951119a3` | 0.17 | 0.5 | 0.5 + 0.1 | 45 | 87 | 4.5 |
+| TodoMVC | baseline | light-cljs, master `9d06189f` | 0.22 | 0.5 | 0.5 + 0.0 | 45 | 88 | 4.3 |
+| TodoMVC | 2 | light-cljs, `951119a3` | 0.17 | 0.6 | 0.5 + 0.1 | 66 | 88 | 4.0 |
+| TodoMVC | 2 | shadow-cljs | 0.29 | 11.7 | 56.8 + 19.3 | 2,168 | 1,745 | 4.1 |
 
-- **Page load of the generated app:** 5.0 and 5.2 s, against master's 7.8 and 8.2 s and shadow-cljs's 2.0 s in the same invocations. The kit's interval runs from before the browser context opens to the probe seeing the header, which is why it is about 0.8 s above the static measurement. light-cljs is still 2.5 times slower here. The rest is the first run, which is the runtime's speed. Item 3 holds in a smaller form.
+The kit measures CPU time and peak memory for the watch's process tree, not for the browser, so page load has wall time only; the main thread's share of it is in the static measurement above.
+
+- **Page load of the generated app:** 5.0 and 5.2 s, against master's 7.8 and 8.2 s and shadow-cljs's 2.0 s in the same invocations. light-cljs is still 2.5 times slower here, and what is left is mostly the first run, which is the runtime's speed. Item 3 holds in a smaller form. The kit's interval starts before the browser context opens and ends when its 20 ms poll sees the header. It reads about 0.8 s above the 4.2 and 4.3 s the static probe gave through the same watch's dev server; that difference was not separated.
 - **TodoMVC page load** did not get worse: 0.17 s in both sessions, against 0.22 s for the baseline and 0.29 to 0.31 s for shadow-cljs.
-- **Edits, no regression** (milliseconds to new code running, median and range of 10 edits per cell, against the baseline's 10): view 183 (157-235) against 190 (118-227); `workload.common` 188 (151-220) against 191 (101-230); macro 363 (334-477) against 406 (325-477). Steps: 70, 61 and 292 ms against 68, 62 and 293 ms. On TodoMVC: 63 and 170 ms against 57 and 163 ms (5 baseline edits). Startup: 18.8 and 19.7 s against 21.6 and 19.7 s.
+- **Edits, no regression** (median and range of 10 edits per cell, against the baseline's 10). Milliseconds to new code running: view 183 (157-235) against 190 (118-227); `workload.common` 188 (151-220) against 191 (101-230); macro 363 (334-477) against 406 (325-477). Steps: 70, 61 and 292 ms against 68, 62 and 293 ms. CPU user + system per edit: 0.10, 0.10 and 0.39 s against 0.10, 0.10 and 0.39 s. On TodoMVC (5 baseline edits): 63 and 170 ms against 57 and 163 ms to new code running, and 0.00 and 0.14 s of CPU per edit against 0.01 and 0.15 s. Startup, CPU time and peak memory are in the table and unchanged within noise.
 - No console errors or uncaught exceptions on either side.

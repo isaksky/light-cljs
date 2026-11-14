@@ -561,7 +561,7 @@ fn index_requests_every_file_at_once_and_runs_them_in_order() {
         "request runtime.js\nrequest client.js\nrequest app.base.js\nrequest app.dep.js\nrequest app.main.js\n\
          script runtime.js\nscript client.js\nscript app.base.js\nbase runs\nscript app.dep.js\ndep runs\n\
          script app.main.js\nmain runs\nresolved started\nreloaded runs\n"
-                );
+    );
 }
 
 /// In a page, an error thrown while a unit runs rejects `__lightDevLoaded`
@@ -593,6 +593,22 @@ fn index_rejects_in_a_page_when_a_file_cannot_load() {
         "request runtime.js\nrequest client.js\nrequest app.base.js\nrequest app.dep.js\nrequest app.main.js\n\
          script runtime.js\nscript client.js\nscript app.dep.js\nscript app.main.js\n\
          rejected cannot load app.base.js\nreloaded runs\n"
+    );
+}
+
+/// In a page, the first failure is the one `__lightDevLoaded` rejects with:
+/// a later file that cannot load does not replace a unit's error.
+#[test]
+fn index_rejects_with_the_first_failure_when_a_later_file_cannot_load() {
+    let dir = TempDir::new("dev-page");
+    let lines = page_lines(&dir, "(throw (js/Error. \"dep failed\"))\n", |out| {
+        fs::remove_file(out.join("app.main.js")).unwrap();
+    });
+    assert_eq!(
+        lines,
+        "request runtime.js\nrequest client.js\nrequest app.base.js\nrequest app.dep.js\nrequest app.main.js\n\
+         script runtime.js\nscript client.js\nscript app.base.js\nbase runs\nscript app.dep.js\ndep runs\n\
+         rejected dep failed\nreloaded runs\n"
     );
 }
 
