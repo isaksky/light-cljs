@@ -34,9 +34,10 @@
 ;; the median and range of the three intervals from the edit's file
 ;; modification time (output written, reload message received, new code
 ;; running in the page), the tool's own step time from its log, the tree's
-;; user and system CPU time per edit and the load average; then startup time
-;; and peak memory. --tools gives the order; run the two orders on
-;; alternate invocations, each with --raw, and `report` pools their edits.
+;; user and system CPU time per edit and the load average; then startup time,
+;; the tree's CPU time until its first build and peak memory. --tools gives
+;; the order; run the two orders on alternate invocations, each with --raw,
+;; and `report` pools their edits.
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
          '[cheshire.core :as json]
@@ -201,6 +202,23 @@
         (recur (concat more (map first (children p))) (assoc acc p (rss p 0)))
         acc))))
 
+(defn cpu-seconds
+  "ps's [[dd-]hh:]mm:ss.ss as seconds."
+  [text]
+  (let [[days clock] (if (str/includes? text "-") (str/split text #"-") ["0" text])]
+    (+ (* 86400 (parse-long days))
+       (reduce (fn [acc x] (+ (* acc 60) (parse-double x))) 0 (str/split clock #":")))))
+
+(defn tree-cpu
+  "User and system CPU seconds of PID and its descendants: [user system]."
+  [pid]
+  (let [rows (for [l (str/split-lines (:out (sh! {} "ps" "-A" "-o" "pid=,ppid=,utime=,stime=")))]
+               (str/split (str/trim l) #"\s+"))
+        pids (set (keys (tree pid)))]
+    (reduce (fn [[u s] [p _ pu ps]]
+              (if (pids (parse-long p)) [(+ u (cpu-seconds pu)) (+ s (cpu-seconds ps))] [u s]))
+            [0.0 0.0] rows)))
+
 (defn now-ms [] (/ (System/nanoTime) 1e6))
 (defn epoch-ms [] (double (System/currentTimeMillis)))
 
@@ -283,6 +301,9 @@
         w (start-watch app tool binary)]
     (try
       (let [[ready-at _] (wait-line w (ready-pattern tool) "first build" 1800000)
+            ;; The tree's CPU time up to its first build, read as soon as
+            ;; the line shows (within the 20 ms the wait polls).
+            startup-cpu (tree-cpu (:pid w))
             [_ [_ url]] (wait-line w (url-pattern tool) "server address" 60000)
             cfg (fs/create-temp-file {:prefix "watch-vs-shadow" :suffix ".json"})
             driver-start (epoch-ms)
@@ -303,6 +324,7 @@
                                 (assoc e :step-ms ms :step-namespaces n :step-logged t)))]
         {:tool tool :load-before load0
          :startup-ms (- ready-at (:start w))
+         :startup-cpu startup-cpu
          :page-load-ms (:pageLoadMs result)
          :startup-peak (apply max 0 (map second (filter #(<= (first %) ready-at) samples)))
          :steady-peak (apply max 0 (map second (filter #(>= (first %) edits-start) samples)))
@@ -367,11 +389,13 @@
       (println (format "| %s | %s | %s | %s | %s | %s |" sc (tool-label tool)
                        (m (diff es :output :step-ms)) (m (keep :step-ms es))
                        (m (diff es :message :output)) (m (diff es :running :message)))))
-    (println "\n| Tool | Startup to first build, s | Page load in Chromium, s | Peak memory during startup, MB | Peak memory while editing, MB | Load average before |")
-    (println "|---|---:|---:|---:|---:|---:|")
-    (doseq [run runs]
-      (println (format "| %s | %.1f | %.1f | %.0f | %.0f | %.1f |" (tool-label (:tool run))
-                       (/ (:startup-ms run) 1000.0) (/ (:page-load-ms run) 1000.0)
+    (println "\n| Tool | Startup to first build, s | CPU user + system during startup, s | Page load in Chromium, s | Peak memory during startup, MB | Peak memory while editing, MB | Load average before |")
+    (println "|---|---:|---:|---:|---:|---:|---:|")
+    (doseq [run runs :let [[user sys] (:startup-cpu run)]]
+      (println (format "| %s | %.1f | %s | %.1f | %.0f | %.0f | %.1f |" (tool-label (:tool run))
+                       (/ (:startup-ms run) 1000.0)
+                       (if user (format "%.1f + %.1f" user sys) "-")
+                       (/ (:page-load-ms run) 1000.0)
                        (/ (:startup-peak run) 1e6) (/ (:steady-peak run) 1e6) (:load-before run))))
     (doseq [run runs e (distinct (:errors run))]
       (println (str "\n- " (tool-label (:tool run)) ": " e)))))
