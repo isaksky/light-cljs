@@ -3,27 +3,6 @@
 (() => {
   "use strict";
 
-  //@unit keywords
-  // Brands and payloads stay private: copying fields or inheriting a value's
-  // prototype cannot turn a host object into a language value.
-  const keywords = new WeakMap();
-  //@unit internedKeywords
-  const internedKeywords = new Map();
-  //@unit vectors
-  // A vector's brand and store (see `vectorTailOffset`) is instead a private
-  // field, with a WeakMap's `has`, `get` and `set`: no host object can have
-  // or copy one either, and adding it to a new value is a property store,
-  // not a WeakMap entry, which a vector built by every `conj` cannot afford.
-  // `new vectors` adds the field `#s` to the value its base constructor
-  // returns, which `set` requires to be a new object.
-  const vectors = class extends (function (value) { return value; }) {
-    #s;
-    static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
-    static get(value) { if (vectors.has(value)) return value.#s; }
-    static set(value, store) { new vectors(value).#s = store; }
-  };
-  //@unit symbols
-  const symbols = new WeakMap();
   //@unit weakMapStores
   // A host whose WeakMap entries cost less than private fields, as the
   // evaluator's reference-counting QuickJS, states so before the runtime
@@ -33,62 +12,102 @@
   // with `canHoldField`, which V8 inlines.
   const weakMapStores = globalThis.lightCljsWeakMapStores === true,
     canHoldField = value => typeof value === "object" ? value !== null : typeof value === "function";
-  //@unit privateStore requires: canHoldField, weakMapStores
-  // A store like a vector's, with a private field of its own: the seq kinds'
-  // stores (`cells`, `views`, `lazyValues`, `chunks`), and those of the other
-  // values that operations build one per call (`reducedValues`, `transients`,
-  // `queues`, `iteratorSeqs`; and `kindedStore`). Each step of a seq builds a
-  // value, and a WeakMap entry per value, which the collector traces as an
-  // ephemeron, cost more than the step (light-cljs-259, light-cljs-291). As
-  // `vectors.set`, `set` requires a new value; `reset` replaces the payload
-  // of a value that has one (light-cljs-237).
-  // The stores share these methods' code, and so V8's feedback for them,
-  // which the seq operations do not feel; `vectors` keeps its own, since
-  // sharing slowed `conj` and `nth` on a vector by a third.
-  function privateStore() {
-    if (weakMapStores) { const store = new WeakMap(); store.reset = store.set; return store; }
-    const Store = class extends (function (value) { return value; }) {
-      #s;
-      static has(value) { return canHoldField(value) && #s in value; }
-      static get(value) { if (canHoldField(value) && #s in value) return value.#s; }
-      static set(value, payload) { new Store(value).#s = payload; }
-      static reset(value, payload) { value.#s = payload; }
+  //@unit payloads requires: canHoldField
+  // The private-field brand of the runtime's collections and seqs: `#s` a
+  // value's payload, `#k` its kind, the number of the store holding it
+  // (`vectors`, `privateStore`, `kindedStore`), and `#m` a map's or set's
+  // kind. One read of `#k` (`kind`) names the store, where kind tests
+  // probed each store's field in turn; no host object can have or copy
+  // them (light-cljs-990). A value is in one store, so `set` requires a new
+  // object. `kindBits` are a store's kinds; `exact` that its `has` is the
+  // kind test alone (hash tries and records widen the maps' and sets').
+  // Kinds 1 to 7 are `payloadStore`'s, 8 map entries, 9 to 12 the rest.
+  const payloads = class extends (function (value) { return value; }) {
+    #s; #k; #m;
+    static kind(value) { return canHoldField(value) && #k in value ? value.#k : 0; }
+    // A store of `kind` with a WeakMap's methods; `reset` replaces a payload
+    // (light-cljs-237), and a kinded store's `kinds` keep `#m`. The stores
+    // share this code and so V8's feedback, which seq operations do not feel.
+    static store(kind, kinded) {
+      return class {
+        static kindBits = 1 << kind;
+        static exact = !kinded;
+        static has(value) { return canHoldField(value) && #k in value && value.#k === kind; }
+        static get(value) { if (canHoldField(value) && #k in value && value.#k === kind) return value.#s; }
+        static set(value, payload) { const brand = new payloads(value); brand.#k = kind; brand.#s = payload; }
+        static reset(value, payload) { value.#s = payload; }
+        static kinds = kinded && {
+          has: value => canHoldField(value) && #k in value && value.#k === kind && value.#m !== undefined,
+          get(value) { if (canHoldField(value) && #k in value && value.#k === kind) return value.#m; },
+          set(value, mapKind) { value.#m = mapKind; return this; }
+        };
+      };
+    }
+    // Vectors, kinds 3 and 8 (map entries), with code of their own: sharing
+    // the stores' feedback slowed `conj` and `nth` on a vector by a third.
+    static vectors = class {
+      static kindBits = 264;
+      static exact = true;
+      static has(value) { return canHoldField(value) && #k in value && (value.#k === 3 || value.#k === 8); }
+      static get(value) { if (payloads.vectors.has(value)) return value.#s; }
+      static set(value, store) { const brand = new payloads(value); brand.#k = 3; brand.#s = store; }
+      static entry(value) { return canHoldField(value) && #k in value && value.#k === 8; }
+      static toEntry(value) { value.#k = 8; }
     };
-    return Store;
+  };
+  //@unit keywords
+  // Brands and payloads stay private: copying fields or inheriting a value's
+  // prototype cannot turn a host object into a language value.
+  const keywords = new WeakMap();
+  //@unit internedKeywords
+  const internedKeywords = new Map();
+  //@unit vectors requires: payloads
+  // A vector's brand and store (see `vectorTailOffset`) is instead a private
+  // field (`payloads`), with a WeakMap's `has`, `get` and `set`: no host
+  // object can have or copy one either, and adding it to a new value is a
+  // property store, not a WeakMap entry, which a vector built by every
+  // `conj` cannot afford. `set` requires a new object.
+  const vectors = payloads.vectors;
+  //@unit symbols
+  const symbols = new WeakMap();
+  //@unit privateStore requires: payloads, weakMapStores
+  // A store like a vector's, in the private fields of `payloads`: the seq
+  // kinds' stores (`cells`, `views`, `lazyValues`, `chunks`), and those of
+  // the other values that operations build one per call (`reducedValues`,
+  // `transients`, `queues`, `iteratorSeqs`; and `kindedStore`), each of the
+  // kind `kind`. Each step of a seq builds a value, and a WeakMap entry per
+  // value, which the collector traces as an ephemeron, cost more than the
+  // step (light-cljs-259, light-cljs-291). As `vectors.set`, `set` requires
+  // a new value; `reset` replaces the payload of a value that has one
+  // (light-cljs-237).
+  function privateStore(kind) {
+    if (weakMapStores) { const store = new WeakMap(); store.reset = store.set; return store; }
+    return payloads.store(kind, false);
   }
-  //@unit kindedStore requires: canHoldField, weakMapStores
+  //@unit kindedStore requires: payloads, weakMapStores
   // The store of the maps and sets outside the hash tries (`maps`, `sets`):
   // a `privateStore` that also keeps a value's kind (`mapKinds`, `setKinds`)
-  // in a second private field, so that a map or set, which each `assoc` or
-  // `conj` builds, gets both with one construction (light-cljs-291). A
-  // value's kind is set after its payload.
-  function kindedStore() {
+  // in a private field of its own, so that a map or set, which each `assoc`
+  // or `conj` builds, gets both with one construction (light-cljs-291). A
+  // value's kind is set after its payload. Its `has` is not exact
+  // (`payloads`): the hash tries and records widen it.
+  function kindedStore(kind) {
     if (weakMapStores) { const store = new WeakMap(); store.reset = store.set; store.kinds = new WeakMap(); return store; }
-    const Store = class extends (function (value) { return value; }) {
-      #s; #k;
-      static has(value) { return canHoldField(value) && #s in value; }
-      static get(value) { if (canHoldField(value) && #s in value) return value.#s; }
-      static set(value, payload) { new Store(value).#s = payload; }
-      static reset(value, payload) { value.#s = payload; }
-      static kinds = {
-        // Not `Store.has`, which the hash tries and records replace.
-        has: value => canHoldField(value) && #s in value && value.#k !== undefined,
-        get(value) { if (canHoldField(value) && #s in value) return value.#k; },
-        set(value, kind) { value.#k = kind; return this; }
-      };
-    };
-    return Store;
+    return payloads.store(kind, true);
   }
   //@unit maps requires: kindedStore
-  const maps = kindedStore();
+  const maps = kindedStore(4);
   //@unit mapKinds requires: maps
   const mapKinds = maps.kinds;
   //@unit sortedComparators
   const sortedComparators = new WeakMap();
-  //@unit mapEntries
-  const mapEntries = new WeakSet();
+  //@unit mapEntries requires: vectors
+  // Map entries are vectors of kind 8 (`payloads`): `add` makes a vector
+  // just built an entry. It was a WeakSet, whose entry cost six times what
+  // building the entry did (light-cljs-989, light-cljs-990).
+  const mapEntries = {has: vectors.entry, add(value) { vectors.toEntry(value); return mapEntries; }};
   //@unit sets requires: kindedStore
-  const sets = kindedStore();
+  const sets = kindedStore(6);
   //@unit setKinds requires: sets
   const setKinds = sets.kinds;
   //@unit mapTypes
@@ -96,15 +115,15 @@
   // of an existing map's kind; `setTypes` likewise for sorted sets.
   const mapTypes = {}, setTypes = {};
   //@unit transients requires: privateStore
-  const transients = privateStore();
+  const transients = privateStore(9);
   //@unit cells requires: privateStore
-  const cells = privateStore();
+  const cells = privateStore(2);
   //@unit views requires: privateStore
-  const views = privateStore();
+  const views = privateStore(1);
   //@unit iteratorSeqs requires: privateStore
-  const iteratorSeqs = privateStore();
+  const iteratorSeqs = privateStore(10);
   //@unit reducedValues requires: privateStore
-  const reducedValues = privateStore();
+  const reducedValues = privateStore(11);
   //@unit stringBufferWriters
   const stringBufferWriters = new WeakSet();
   //@unit constructorHashes
@@ -130,9 +149,9 @@
   //@unit atoms
   const atoms = new WeakMap(), volatiles = new WeakMap();
   //@unit queues requires: privateStore
-  const queues = privateStore();
+  const queues = privateStore(7);
   //@unit lazyValues requires: privateStore
-  const lazyValues = privateStore(), delays = new WeakMap();
+  const lazyValues = privateStore(5), delays = new WeakMap();
   //@unit eductions
   const eductions = new WeakMap();
   //@unit ifnValues
@@ -5628,11 +5647,19 @@
   function nextValue(value) {
     return cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
   }
-  //@unit storesPredicate
+  //@unit storesPredicate requires: canHoldField, payloads
   // Brand inventories are fixed. Build one private inventory per predicate,
   // without allocating an array and invoking a callback for each probe.
-  function storesPredicate(...stores) {
+  // The private-field stores answer together, with one read of the value's
+  // kind (`payloads`, light-cljs-990); only the stores that are not exact,
+  // the WeakMaps and the wider tests of maps and sets (`stores`), are probed
+  // one by one.
+  // No store holds a value that cannot hold a private field.
+  function storesPredicate(...inventory) {
+    const kinds = inventory.reduce((bits, store) => bits | store.kindBits, 0), stores = inventory.filter(store => !store.exact);
     return value => {
+      if (!canHoldField(value)) return false;
+      if (kinds >> payloads.kind(value) & 1) return true;
       for (let i = 0; i < stores.length; i++) if (stores[i].has(value)) return true;
       return false;
     };
@@ -7009,15 +7036,26 @@
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
     return dispatch ?? cell.natives?.get(nativeType(value))?.get(arity) ?? cell.natives?.get("_")?.get(arity);
   }
-  //@unit payloadStore requires: cells, lazyValues, maps, queues, sets, vectors, views
+  //@unit payloadStore requires: cells, lazyValues, maps, payloads, queues, sets, vectors, views
   // Which store of the runtime's collections and seqs holds a value, by a
   // number from 1 to 7, else 0. These are brand checks, which read no
   // property of the value, so no getter or Proxy trap of a host value runs.
-  // A value is in one payload store (`countedValue`).
-  function payloadStore(value) {
-    return views.has(value) ? 1 : cells.has(value) ? 2 : vectors.has(value) ? 3 : maps.has(value) ? 4
-      : lazyValues.has(value) ? 5 : sets.has(value) ? 6 : queues.has(value) ? 7 : 0;
-  }
+  // A value is in one payload store (`countedValue`). The value's kind
+  // (`payloads`) names an exact store at once; the stores that are not
+  // exact are then probed in this order (light-cljs-990).
+  const payloadStore = (stores => {
+    const byKind = [], probed = [];
+    stores.forEach((store, i) => {
+      for (let kind = 1; kind < 31; kind++) if (store.kindBits >> kind & 1) byKind[kind] = i + 1;
+      if (store.exact !== true) probed.push(store, i + 1);
+    });
+    return value => {
+      const number = byKind[payloads.kind(value)];
+      if (number !== undefined) return number;
+      for (let i = 0; i < probed.length; i += 2) if (probed[i].has(value)) return probed[i + 1];
+      return 0;
+    };
+  })([views, cells, vectors, maps, lazyValues, sets, queues]);
   //@unit storeNativeProtocols
   // The core protocols of `publicMethodInfo`'s `stores`.
   const storeNativeProtocols = new Set(["ISeqable", "ISeq", "INext", "IMeta", "ILookup"]);
@@ -7697,7 +7735,7 @@
   function iterate(fn, seed) { return iterateNode(fn, null, seed, true); }
   //@unit chunks requires: privateStore
   // Chunk values expose indexed/count/reduce protocols, without being seqs.
-  const chunks = privateStore(), chunkBuffers = new WeakMap();
+  const chunks = privateStore(12), chunkBuffers = new WeakMap();
   //@unit ChunkBuffer requires: chunkBuffers
   function ChunkBuffer(array, end) {
     const value = Object.create(ChunkBuffer.prototype);

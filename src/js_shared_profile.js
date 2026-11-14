@@ -608,7 +608,7 @@
   // boot seals it and its kinds): a sorted map or a record (light-cljs-666).
   // A form takes no payload: `set` on one throws.
   const maps = {
-    store: kindedStore(),
+    store: kindedStore(4),
     has: value => sharedFormKind(value) === "map" || maps.store.has(value),
     get: value => sharedFormKind(value) === "map" ? sharedMapEntries(sharedFormOf(value)) : maps.store.get(value),
     set(value, payload) {
@@ -653,7 +653,7 @@
   // (`sets.store`): a sorted set (light-cljs-666). A form takes no
   // payload: `set` on one throws.
   const sets = {
-    store: kindedStore(),
+    store: kindedStore(6),
     has: value => sharedFormKind(value) === "set" || sets.store.has(value),
     get: value => sharedFormKind(value) === "set" ? sharedSetMembers(sharedFormOf(value)) : sets.store.get(value),
     set(value, payload) {
@@ -1524,7 +1524,7 @@
   const protocolNames = sharedStore(), protocolValues = new Map(), protocolFunctions = new Map(), protocolVariables = new Map(), protocolGetters = new Map();
   //@unit chunks requires: privateStore, sharedStore
   // Chunk values expose indexed/count/reduce protocols, without being seqs.
-  const chunks = privateStore(), chunkBuffers = sharedStore();
+  const chunks = privateStore(12), chunkBuffers = sharedStore();
   //@unit ChunkedCons requires: count, nth, sharedSeqForm
   // Keep the chunk and the lazy tail in engine storage. In particular, a
   // mapped chunk must not retain the runtime's private ChunkedCell inside

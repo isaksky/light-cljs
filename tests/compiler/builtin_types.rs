@@ -519,8 +519,10 @@ fn a_program_type_opens_the_protocol_hooks() {
     for unit in EXTENSION_MACHINERY {
         assert!(!units.contains(&unit), "{unit}: {units:?}");
     }
-    // 7,558 bytes before light-cljs-291 and 8,043 after (`kindedStore`).
-    assert!(advanced(source).emit_js().len() < 8_500);
+    // 7,558 bytes before light-cljs-291 and 8,043 after (`kindedStore`);
+    // 8,355 to 8,579 after light-cljs-990 (2026-11-14): the stores' kind
+    // brand (`payloads`).
+    assert!(advanced(source).emit_js().len() < 8_600);
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -571,7 +573,9 @@ fn program_types_keep_no_machinery_for_builtin_values() {
         for unit in EXTENSION_MACHINERY {
             assert!(!units.contains(&unit), "{source} keeps `{unit}`");
         }
-        assert!(advanced(source).emit_js().len() < 12_000, "{source}");
+        // 11,867 to 12,178 bytes for the record and vector after
+        // light-cljs-990 (2026-11-14): the stores' kind brand (`payloads`).
+        assert!(advanced(source).emit_js().len() < 13_000, "{source}");
     }
     every_level(record_and_vector, "64");
     // The vector's host-facing methods with records about: items of a program
@@ -905,8 +909,9 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // light-cljs-234, is about 170 bytes more than a WeakMap, and the seq
     // stores' `privateStore`, since light-cljs-259, about 320 more than theirs,
     // and `kindedStore` for the maps and sets, since light-cljs-291, about 490
-    // more (1,876 to 2,361 bytes).
-    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 2_400);
+    // more (1,876 to 2,361 bytes), and the kind brand they share, since
+    // light-cljs-990 (2026-11-14), about 220 more (2,288 to 2,510 bytes).
+    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 2_600);
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -1561,9 +1566,10 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // light-cljs-358: `get` behind its kinds' branches and the maps' branch;
     // 8,124 after light-cljs-373: the map entries' kind and `get` branch;
     // 8,137 to 8,449 after light-cljs-989 (2026-11-14): the array maps'
-    // entry class and a keyword key's longer search.
+    // entry class and a keyword key's longer search; 8,779 after
+    // light-cljs-990 (2026-11-14): the stores' kind brand (`payloads`).
     let output = advanced(target).emit_js();
-    assert!(output.len() < 8_500, "{} bytes", output.len());
+    assert!(output.len() < 8_800, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -2893,3 +2899,113 @@ row_tests!(corpus;
     language_corpus_600(LANGUAGE, 600..700),
     language_corpus_700(LANGUAGE, 700..800),
 );
+
+/// light-cljs-990: the runtime tests a value of its private-field stores by
+/// one kind field (`payloads`) instead of probing each store in turn, and a
+/// map entry carries that kind instead of a WeakSet entry. Every predicate
+/// answers as before for the runtime's values, host values, and values forged
+/// by `Object.create` of a runtime type's prototype or by copying a value's
+/// own properties (a record's methods are its prototype's, so a value
+/// inheriting them is one to `satisfies?`, as it was). The table is what
+/// master `f0f5e81b`'s runtime prints. The Proxy is asked for nothing but
+/// protocol mask and marker properties, `Symbol.iterator` and its prototype:
+/// the kind tests read no property of a host value.
+#[test]
+fn value_kind_predicates_answer_as_the_brand_stores_did() {
+    let source = r#"
+        (defrecord R [a])
+        (let [log (array)
+              handler (js-obj "get" (fn [t k] (.push log (str "get:" (.toString k))) (aget t k))
+                              "has" (fn [t k] (.push log (str "has:" (.toString k))) (js-in k t))
+                              "getPrototypeOf" (fn [t] (.push log "proto") (js/Object.getPrototypeOf t)))
+              proxy (js/Proxy. (js-obj) handler)
+              forge (fn [v] (js/Object.create (js/Object.getPrototypeOf v)))
+              copy (fn [v] (js/Object.defineProperties (forge v) (js/Object.getOwnPropertyDescriptors v)))
+              e (first {:a 1})
+              values [[1 2] e (list 1) () (lazy-seq [1]) (cons 1 nil) (range 3) (range 2.5) {:a 1}
+                      (zipmap (range 20) (range 20)) (sorted-map :a 1) #{1} (into #{} (range 20)) (sorted-set 1)
+                      (conj cljs.core/PersistentQueue.EMPTY 1) (transient []) (transient {}) (subvec [1 2 3] 1)
+                      (->R 1) (assoc (->R 1) :b 2) (seq [1 2]) (seq {:a 1}) (seq (sorted-map :a 1)) (rseq [1 2])
+                      (seq (zipmap (range 20) (range 20))) (iterate inc 0) (repeat 1) (cycle [1]) (reduced 1)
+                      (atom 1) (volatile! 1) :k 'sym "s" 1 nil (array 1) (js-obj) inc proxy
+                      (forge [1]) (copy [1]) (forge e) (copy e) (forge {:a 1}) (copy {:a 1})
+                      (forge (list 1)) (copy (list 1)) (forge #{1}) (forge (lazy-seq [1])) (forge (range 3))
+                      (forge (seq [1 2])) (forge (transient [])) (forge (->R 1))]
+              labels (quote [vector entry list empty-list lazy-seq cons range float-range array-map hash-map sorted-map set hash-set sorted-set queue transient-vector transient-map subvec record record+ vector-seq map-seq sorted-map-seq rseq hash-map-seq iterate repeat cycle reduced atom volatile keyword symbol string number null array object fn proxy forged-vector copied-vector forged-entry copied-entry forged-map copied-map forged-list copied-list forged-set forged-lazy-seq forged-range forged-seq forged-transient forged-record])
+              preds [vector? seq? map? map-entry? set? seqable? coll? sequential? counted? associative? list?
+                     sorted? reversible? record? ifn? indexed? reduced? chunked-seq? reduceable?
+                     #(satisfies? ISeqable %) #(satisfies? ICollection %) #(satisfies? IMeta %)
+                     #(satisfies? IWithMeta %) #(satisfies? IMapEntry %) #(satisfies? ILookup %)
+                     #(satisfies? IPrintWithWriter %) #(satisfies? IEmptyableCollection %)
+                     #(satisfies? IKVReduce %) #(satisfies? IEditableCollection %) #(satisfies? IHash %)
+                     #(satisfies? ICounted %) #(satisfies? INext %) #(satisfies? ISeq %) #(satisfies? IStack %)]]
+          (array (.join (into-array (map (fn [l v] (str l " " (apply str (map #(if (% v) 1 0) preds)))) labels values)) ", ")
+           (.join log " ")))
+    "#;
+    let expected = concat!(
+        "vector 1000011111001011001111101111111001\n",
+        "entry 1001011111001011001111111110011001\n",
+        "list 0100011110100000001111100110011111\n",
+        "empty-list 0100011110100000001111100110011111\n",
+        "lazy-seq 0100011100000000001111100110010110\n",
+        "cons 0100011110100000001111100110011111\n",
+        "range 0100011110000001011111100110011110\n",
+        "float-range 0100011100000000011111100110010110\n",
+        "array-map 0010011011000010001111101111111000\n",
+        "hash-map 0010011011000010001111101111111000\n",
+        "sorted-map 0010011011011010001111101111011000\n",
+        "set 0000111010000010000111101110111000\n",
+        "hash-set 0000111010000010000111101110111000\n",
+        "sorted-set 0000111010011010000111101110011000\n",
+        "queue 0100011110000000000111100110011111\n",
+        "transient-vector 0000000010000011000000001000001000\n",
+        "transient-map 0000000010000010000000001000001000\n",
+        "subvec 1000011111001011001111101111011001\n",
+        "record 0010011011000100000111101101011000\n",
+        "record+ 0010011011000100000111101101011000\n",
+        "vector-seq 0100011110001001001111100110011110\n",
+        "map-seq 0100011110000000001111100110011110\n",
+        "sorted-map-seq 0100011110000000001111100110011110\n",
+        "rseq 0100011100000000001111100110010110\n",
+        "hash-map-seq 0100011100000000001111100110010110\n",
+        "iterate 0100011100000000001111100110000110\n",
+        "repeat 0100011100000000001111100110010110\n",
+        "cycle 0100011100000000001111100110000110\n",
+        "reduced 0000000000000000100000000100010000\n",
+        "atom 0000000000000000000001000100010000\n",
+        "volatile 0000000000000000000000000100010000\n",
+        "keyword 0000000000000010000000000100010000\n",
+        "symbol 0000000000000010000001100100010000\n",
+        "string 0000010000000000000000000000010000\n",
+        "number 0000000000000000000000000000010000\n",
+        "null 0000010010000000000000000000011000\n",
+        "array 0000010000000000000000000000010000\n",
+        "object 0000000000000000000000000000010000\n",
+        "fn 0000000000000010000001000000010000\n",
+        "proxy 0000000000000000000000000000010000\n",
+        "forged-vector 0000010000000000000000000000010000\n",
+        "copied-vector 0000010000000000000000000000010000\n",
+        "forged-entry 0000010000000000000000000000010000\n",
+        "copied-entry 0000010000000000000000000000010000\n",
+        "forged-map 0000010000000000000000000000010000\n",
+        "copied-map 0000010000000000000000000000010000\n",
+        "forged-list 0000010000000000000000000000010000\n",
+        "copied-list 0000010000000000000000000000010000\n",
+        "forged-set 0000010000000000000000000000010000\n",
+        "forged-lazy-seq 0000010000000000000000000000010000\n",
+        "forged-range 0000010000000000000000000000010000\n",
+        "forged-seq 0000010000000000000000000000010000\n",
+        "forged-transient 0000000000000000000000000000010000\n",
+        "forged-record 0010011011000100000111101101011000\n",
+        "get:Symbol(Symbol.iterator) proto\n",
+    );
+    let program = program(source);
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        let script = format!(
+            "const r = {js}; console.log(r[0].split(', ').join('\\n')); \
+             console.log([...new Set(r[1].split(' ').filter(t => !t.startsWith('get:cljs$')))].sort().join(' '));"
+        );
+        assert_eq!(execute(&script), expected, "at {level}");
+    }
+}

@@ -1170,6 +1170,29 @@ short-lived values by reference counting, so an entry costs it less than
 adding a private field, which runs a class's constructors. The runtime reads
 the statement once when it loads and never sniffs the engine; vectors and the
 hash tries keep their private fields in every host.
+
+These private-field stores share one brand class (`payloads`, light-cljs-990):
+a value holds its payload, its kind (the number of the store that holds it) and,
+for a map or set outside the hash tries, its map or set kind, in three private
+fields that one construction adds. A kind test such as `seqable?`, `coll?`, `satisfies?` of a
+core protocol, printing's "is this a runtime value" or the protocol lookup in
+front of the core operations (`payloadStore`) reads the kind once, where it
+probed each store's private field in turn; only the stores that are not private
+fields (the `WeakMap`s of keywords, symbols, vars, atoms and the like) and the
+tests that other brands widen (a hash trie or a record is a map) are still
+probed one by one. A map entry is a vector of its own kind rather than a vector
+plus a `WeakSet` entry, which cost six times what building the entry did. A
+value is in at most one of these stores.
+
+Unforgeability is kept everywhere: every kind test still reads a private field
+that no host object can have, inherit or copy, so a value forged with
+`Object.create` of a runtime type's prototype, or by copying a value's own
+properties, is no vector, map, seq or map entry, as before
+(`builtin_types::value_kind_predicates_answer_as_the_brand_stores_did`). It is
+dropped nowhere: the kind number on a type's prototype (below), which a host
+object can inherit, only picks a branch that then reads the private brand. In
+the QuickJS hosts that state `lightCljsWeakMapStores`, the stores other than
+vectors stay `WeakMap`s and kind tests probe them as before.
 `rest` at the end (including nil) is the empty list, while `next` is nil. Each tail
 is O(1), so complete traversal is linear. String traversal produces UTF-16
 one-unit strings. `conj` of a generic seq produces a seq-cons, distinct from a list.
@@ -1211,9 +1234,10 @@ supplied default (nil when omitted), and `contains?` returns false.
 
 ### Hash maps
 
-An array map (at most 8 keys) stores a frozen entry array, and its kind, in two
-class-private fields that one construction adds (`kindedStore`,
-light-cljs-291), as an array set does its members. A hash map, which an
+An array map (at most 8 keys) stores a frozen entry array, and its kind, in
+class-private fields that one construction adds (`kindedStore`, light-cljs-291;
+the stores' shared brand class since light-cljs-990), as an array set does its
+members. A hash map, which an
 array map becomes at its ninth distinct key and which `hash-map`, larger literals
 and transients build, stores upstream's structure (light-cljs-235): a hash array
 mapped trie of its entries (bitmap nodes, array nodes past 16 children, collision
