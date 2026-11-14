@@ -2137,3 +2137,118 @@ Findings, recorded as found:
    than the growth section's (7.88 against 6.04 s), so the step ratios from
    these rows (plain 4.1x, re-frame 6.0x) mix loads and are not a growth
    measurement. The alternated `--stats` rows above are the comparison.
+
+## The top-level pass's own time at 200k and 800k, unreserved machine (November 14, 2026, light-cljs-994)
+
+**Summary.** The growth section above found the top-level pass's time
+outside the engine growing 6.8x (plain) and 10.1x (re-frame shape) from
+200k to 800k lines, with its cost per KB rising with the namespace's
+position. `53c9139a` removes three terms of it, with byte-identical output:
+
+1. **Each reader view held every macro of the compilation.**
+   `MacroHost::register_macro_view` sorted every macro name and inserted
+   each into the view, and checked every refer against every macro, for
+   each namespace. The host now keeps the macros' reader bindings in a
+   layered map beside its macro table; a view takes a snapshot of it and
+   binds only its own namespace's macros and its refers by local name.
+2. **The pass looked through every program namespace for its own** before
+   adding it (the scan light-cljs-995 left). An index kept as the program
+   grows answers instead.
+3. **A type's method copied the field bindings of every type before it**
+   (`Program::field_bindings`, a shared hash map); it is now a layered map.
+
+Alternated medians against the base on the same day: the top-level pass's
+own time now grows **4.77x (re-frame) and 5.16x (plain)** for 4.0x the
+lines, against 8.14x and 6.88x for the base. The re-frame shape's cost per
+KB is flat across compile order; the plain shape's still rises, more
+slowly than before. **The 4.5x the pellet asked for is met by neither
+shape**, though the re-frame one is close. The untraced loop time
+(`trace.other-ms`, light-cljs-995's measure) now grows 4.20x (re-frame) and
+4.34x (plain), against 5.50x and 5.59x for the base.
+
+Setup: base `24681349` (master `e379d6c5` plus light-cljs-995's
+`8d0f6a5e`) and the fix `53c9139a` (landed as `4fe814ca`, rebased onto
+`446f68ed`), immutable release binaries in
+`research/shadow-credibility/bin/` (V8 build; SHA-256 `062c9f26a4758093...`
+and `4181d3ee588b73b1...`), the same machine and tools as the growth
+section. Projects: the `*-970` copies of plain 200k, plain 800k and
+re-frame 200k, and `re-frame-800k-seed42-995`. Raw output in
+`research/shadow-credibility/growth-994/stats/` (gitignored).
+
+```sh
+R=research/shadow-credibility
+# rounds of builds, the two binaries alternating within each round
+# (three rounds per project, two more for the plain projects):
+(cd $R/projects/PROJECT && rm -rf out/light && uptime && /usr/bin/time -l \
+  $R/bin/light-cljs-BINARY release bench --no-cache --stats --stats-file OUT.tsv)
+```
+
+**The machine was not reserved**: other workers built and ran test suites
+throughout, and the 1-minute load before a build ranged from 2.9 to 21.1
+(per row below). Every build of both binaries produced the same output
+files: one digest of `out/light` per project over its six or ten builds.
+
+### `--stats` builds, binaries alternated
+
+Medians (range) of three builds, five for the plain projects. "Own time"
+is `trace.top-level-ms` less `trace.top-level.engine-ms`:
+
+| Project | Binary | Own time of the top-level pass | trace.other-ms | time.analysis-ms | time.wall-ms | User CPU | System CPU | Peak memory | Load before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| plain 200k | `24681349` | 1,433 (1,213-2,170) | 114.5 (87.7-157.6) | 2,267 (1,893-3,367) | 7,007 (5,824-10,018) | 7.05 s (6.01-8.37) | 0.55 s (0.31-3.20) | 1.06 GB (1.03-1.07) | 3.0-17.6 |
+| plain 200k | `53c9139a` | 1,338 (1,159-1,595) | 116.5 (94.7-129.9) | 2,350 (2,055-2,725) | 7,172 (6,390-8,001) | 7.20 s (6.53-7.71) | 0.61 s (0.39-1.56) | 1.05 GB (1.03-1.05) | 3.1-18.5 |
+| plain 800k | `24681349` | 9,858 (8,981-11,902) | 639.5 (577.3-673.5) | 14,356 (13,055-17,245) | 35,791 (33,341-42,709) | 35.94 s (33.57-36.53) | 2.65 s (2.05-12.54) | 3.68 GB (3.68-3.82) | 4.8-17.4 |
+| plain 800k | `53c9139a` | 6,899 (5,968-10,770) | 505.9 (433.2-687.4) | 13,988 (12,468-19,950) | 35,748 (32,124-50,494) | 34.82 s (32.42-39.27) | 3.06 s (1.75-14.34) | 3.67 GB (2.80-3.67) | 2.9-17.0 |
+| re-frame 200k | `24681349` | 1,895 (1,853-2,275) | 133.9 (132.2-169.2) | 2,385 (2,352-2,860) | 8,529 (8,294-9,998) | 8.25 s (8.23-9.14) | 0.75 s (0.68-1.62) | 1.37 GB (1.36-1.38) | 5.7-21.1 |
+| re-frame 200k | `53c9139a` | 1,430 (1,359-1,615) | 124.9 (111.9-142.9) | 1,957 (1,857-2,198) | 8,673 (7,800-8,772) | 8.10 s (7.81-8.50) | 0.86 s (0.66-1.35) | 1.36 GB (1.36-1.36) | 6.1-21.1 |
+| re-frame 800k | `24681349` | 15,427 (13,936-19,329) | 736.0 (639.6-978.8) | 17,707 (16,002-22,174) | 43,815 (39,357-52,221) | 41.24 s (39.12-48.49) | 2.87 s (2.20-5.00) | 4.76 GB (4.74-4.80) | 7.0-20.9 |
+| re-frame 800k | `53c9139a` | 6,815 (5,600-6,852) | 525.2 (406.8-539.7) | 9,429 (7,829-9,506) | 34,932 (29,898-36,868) | 34.31 s (29.63-34.44) | 3.06 s (2.08-3.75) | 4.79 GB (4.74-4.81) | 6.3-16.1 |
+
+Times in milliseconds unless marked.
+
+| Counter, 200k -> 800k (medians) | plain `24681349` | plain `53c9139a` | re-frame `24681349` | re-frame `53c9139a` |
+| --- | --- | --- | --- | --- |
+| own time of the top-level pass | 6.88x | **5.16x** | 8.14x | **4.77x** |
+| trace.other-ms | 5.59x | **4.34x** | 5.50x | **4.20x** |
+| time.analysis-ms | 6.33x | 5.95x | 7.43x | 4.82x |
+| time.wall-ms | 5.11x | 4.98x | 5.14x | 4.03x |
+
+Own time of the top-level pass per KB of source, by tenth of the
+namespaces in compile order (µs per KB, median over the builds; in the
+re-frame shape the first tenth holds the library namespaces):
+
+| Project | Binary | 1st | 2nd | 3rd | 4th | 5th | 6th | 7th | 8th | 9th | 10th |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| plain 200k | `24681349` | 112 | 120 | 117 | 139 | 137 | 138 | 162 | 169 | 175 | 196 |
+| plain 200k | `53c9139a` | 111 | 114 | 116 | 132 | 129 | 138 | 152 | 148 | 151 | 163 |
+| plain 800k | `24681349` | 127 | 159 | 190 | 217 | 239 | 263 | 301 | 314 | 350 | 351 |
+| plain 800k | `53c9139a` | 119 | 139 | 156 | 167 | 176 | 188 | 194 | 199 | 220 | 223 |
+| re-frame 200k | `24681349` | 132 | 282 | 292 | 309 | 340 | 339 | 363 | 388 | 387 | 342 |
+| re-frame 200k | `53c9139a` | 126 | 205 | 203 | 216 | 223 | 218 | 239 | 240 | 237 | 209 |
+| re-frame 800k | `24681349` | 170 | 550 | 594 | 651 | 886 | 776 | 845 | 911 | 978 | 878 |
+| re-frame 800k | `53c9139a` | 149 | 251 | 260 | 266 | 262 | 260 | 257 | 265 | 248 | 315 |
+
+Findings, recorded as found:
+
+1. **The re-frame shape's top-level pass no longer pays for the namespaces
+   before it**: its cost per KB is flat from the second tenth to the ninth
+   at 800k (248 to 266 µs), against 550 to 978 µs for the base, and its own
+   time is 6.8 s instead of 15.4 s. The build is 8.9 s shorter at 800k
+   (median wall time 34.9 against 43.8 s) and 8.3 s shorter in analysis.
+2. **The plain shape's top-level pass still does**: its cost per KB rises
+   from 119 to 223 µs across the 800k compile order (127 to 351 for the
+   base), and its own time grows 5.16x. Profiles of the plain 800k build
+   (`sample`, the early and late parts of its analysis, and the whole
+   analysis against the 200k one) show no single term left: inside the
+   top-level pass, registering each definition
+   (`MacroHost::register_runtime_var`) grows 5.8x to 7.9x, because the
+   macro host's layered tables copy their top layer, of up to 64 + √n
+   entries, on the first insert after each analysis frame's snapshot; the
+   rest grows uniformly. That term is about 0.2 s of the 6.9 s.
+3. **The plain shape's build is not shorter.** The top-level pass's own time
+   drops by 3.0 s at 800k, but the plain build's analysis time (14.0
+   against 14.4 s) and wall time (35.7 against 35.8 s) do not move: its
+   deferred units, analyzed alongside, take as long as before
+   (`time.deferred-units-ms` about 12 s).
+4. **The untraced loop time now grows within light-cljs-995's 4.5x** in
+   both shapes (4.20x and 4.34x), since the reader views it freed are gone.
