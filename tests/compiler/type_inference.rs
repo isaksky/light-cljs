@@ -305,6 +305,16 @@ fn and_or_become_short_circuits_when_the_first_operand_tests_as_it_is() {
          (pr-str [(same #js [1 2] #js [1 2]) (same #js [1 2] #js [1 3]) (same #js [] #js [1])])",
         "[true false false]",
     );
+    // An `or` or `and` directly in a loop's tail whose other operand recurs
+    // stays a statement too: `recur` has no value form to sit in `||` or `&&`.
+    every_level(
+        "(defn all-ones? [xs n]
+           (loop [i 0] (or (== i n) (if (== 1 (aget xs i)) (recur (inc i)) false))))
+         (defn count-up [n]
+           (loop [i 0] (and (< i n) (if (< i 3) (recur (inc i)) i))))
+         (pr-str [(all-ones? #js [1 1] 2) (all-ones? #js [1 0] 2) (count-up 5) (count-up 2)])",
+        "[true false 3 false]",
+    );
 }
 
 #[test]
