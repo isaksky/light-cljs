@@ -601,17 +601,35 @@ pub(crate) struct DeclarationSource<'a> {
 /// macros' places are not looked for), when a registration's location is not
 /// in its own source, or when a form after that end defines a Var that
 /// existed before it: a redefinition, or the definition of a `declare`d
-/// Var, which code before the end may call.
+/// Var, which code before the end may call. The Vars its units' bodies
+/// define (a `def` in a function) count too, read from their settled
+/// fragments, since they reach the program only at its drain point; when a
+/// fragment cannot be read, or there is no session, the view is `None`,
+/// unknown, and later views cover its whole key.
 pub(crate) fn declaration_view(
     program: &crate::analyzer::Program,
     start: &crate::artifact_capture::CaptureStart,
     session: Option<&crate::compilation_session::CompilationSession>,
     macros: &MacroHost,
     source: &DeclarationSource<'_>,
-) -> crate::dependency_manifest::DeclarationView {
+) -> Option<crate::dependency_manifest::DeclarationView> {
     use crate::compilation_session::RegistrationRecord;
     use crate::sha256::Fingerprint;
     let namespace = source.namespace;
+    let session = session?;
+    let (units, end, _) = session.capture_marks();
+    let registrations = session.captured_registrations(start.registrations()..end);
+    // The globals its units' bodies add (a `def` in a function) reach the
+    // program, and a later macro's reader tables, only when they merge,
+    // after this namespace is keyed: read them from the settled fragments.
+    let bundle_units: Vec<usize> = registrations
+        .iter()
+        .filter_map(|registration| match registration {
+            RegistrationRecord::Bundle(bundle) => Some(bundle.unit),
+            RegistrationRecord::Root { .. } => None,
+        })
+        .collect();
+    let deferred = session.unit_global_names(start.units()..units, namespace, &bundle_units)?;
     let mut interface = Fingerprint::new("light-cljs declaration interface");
     match program.reader_contexts.get(namespace) {
         None => interface.absent(),
@@ -640,6 +658,7 @@ pub(crate) fn declaration_view(
                 .skip(start.globals())
                 .filter(|global| global.namespace == namespace)
                 .map(|global| global.name.as_str())
+                .chain(deferred.iter().map(String::as_str))
                 .filter(|name| {
                     reader_core_name(name) || context.refers.iter().any(|(local, ..)| local == name)
                 })
@@ -654,22 +673,15 @@ pub(crate) fn declaration_view(
         }
     };
     let interface = interface.finish();
-    let registrations = match session {
-        Some(session) => {
-            let (_, end, _) = session.capture_marks();
-            session.captured_registrations(start.registrations()..end)
-        }
-        None => Vec::new(),
-    };
     let declares = macros.declares_source_macros(namespace);
     let bundles = registrations
         .iter()
         .any(|registration| matches!(registration, RegistrationRecord::Bundle(_)));
     if !declares && !bundles {
-        return crate::dependency_manifest::DeclarationView {
+        return Some(crate::dependency_manifest::DeclarationView {
             interface,
             prefix: None,
-        };
+        });
     }
     let whole = source.text.len();
     let lines = crate::compiler_data::Source::new(source.source_name, source.text);
@@ -724,10 +736,10 @@ pub(crate) fn declaration_view(
     .unwrap_or(whole);
     let mut prefix = Fingerprint::new("light-cljs declaration prefix");
     prefix.number(end as u64).text(&source.text[..end]);
-    crate::dependency_manifest::DeclarationView {
+    Some(crate::dependency_manifest::DeclarationView {
         interface,
         prefix: Some(prefix.finish()),
-    }
+    })
 }
 
 /// Whether the compile-time code reader treats `name` as a `cljs.core`

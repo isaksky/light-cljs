@@ -642,9 +642,11 @@ changed" or "earlier namespaces changed". The components:
   compile-time namespace registry), its interface (`DeclarationView`: its
   reader context, and the names of its Vars that shadow a `cljs.core` name
   or one of its refers, the only ones that change a code read with `*ns*`
-  bound to it), and, when it registered a declaration bundle or declared a
-  macro, its declaration key: its key with the source text replaced by the
-  text up to the end of the last top-level form that registered one. The
+  bound to it, counting the Vars a function body defines, which reach the
+  program only when its units merge and are read from the settled units;
+  a namespace whose units cannot be read adds its whole key), and, when it
+  registered a declaration bundle or declared a macro, its declaration
+  key: its key with the source text replaced by the text up to the end of the last top-level form that registered one. The
   other components (dependencies' keys, inputs, view, resolution) decide
   how that prefix compiles, so the key fixes what each of its bundles does
   when a later macro dispatches into it, including the earlier Vars of

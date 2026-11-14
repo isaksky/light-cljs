@@ -3214,33 +3214,34 @@ fn analyze_entry(
                     compile_stats::add(&mut capture_counts.time, started);
                     let started = compile_stats::start(timed);
                     // Keyed now, published once its units merge.
+                    // What a later source macro can see of it (light-cljs-347).
+                    let declarations = cache.is_some().then(|| {
+                        let source = crate::compile_cache::DeclarationSource {
+                            namespace: &file.name,
+                            source_index: index,
+                            source_name: resolution.source_name.as_deref().unwrap_or(&file.name),
+                            text: &file.source,
+                            forms: (file.syntax.roots.iter())
+                                .map(|root| file.syntax.nodes[root.0].span.clone())
+                                .collect(),
+                        };
+                        let session = macros.session_handle();
+                        let program = analysis.program();
+                        crate::compile_cache::declaration_view(
+                            program,
+                            start,
+                            session.as_deref(),
+                            macros,
+                            &source,
+                        )
+                    });
                     let publication = match (cache.as_deref_mut(), &loader.record) {
                         (Some(cache), Some(record)) => Some(cache.analyzed(
                             record,
                             &file.source,
                             macros,
                             analysis.program_namespaces(),
-                            Some(crate::compile_cache::declaration_view(
-                                analysis.program(),
-                                start,
-                                macros.session_handle().as_deref(),
-                                macros,
-                                &crate::compile_cache::DeclarationSource {
-                                    namespace: &file.name,
-                                    source_index: index,
-                                    source_name: resolution
-                                        .source_name
-                                        .as_deref()
-                                        .unwrap_or(&file.name),
-                                    text: &file.source,
-                                    forms: file
-                                        .syntax
-                                        .roots
-                                        .iter()
-                                        .map(|root| file.syntax.nodes[root.0].span.clone())
-                                        .collect(),
-                                },
-                            )),
+                            declarations.flatten(),
                         )),
                         _ => None,
                     };

@@ -2242,6 +2242,54 @@ impl CompilationSession {
             .map(|capture| std::mem::take(&mut capture.charges))
             .unwrap_or_default()
     }
+    /// The names of `namespace`'s globals the analyses of units `units` add
+    /// to their fragments beyond their definition snapshots, which the
+    /// program gets only when they merge at the namespace's drain point, or
+    /// `None` when one of them has no analyzed fragment to read (not
+    /// analyzed yet, failed or released) or capture is off
+    /// (light-cljs-347, `compile_cache::declaration_view`). The units in
+    /// `skip`, declaration bundles', are left out: their products are
+    /// the top-level pass's globals, and their fragments are released.
+    pub(crate) fn unit_global_names(
+        &self,
+        units: std::ops::Range<usize>,
+        namespace: &str,
+        skip: &[usize],
+    ) -> Option<Vec<String>> {
+        let views: Vec<usize> = {
+            let capture = self.capture.borrow();
+            let capture = capture.as_ref()?;
+            units
+                .clone()
+                .map(|unit| {
+                    unit.checked_sub(capture.first_unit)
+                        .and_then(|index| capture.units.get(index))
+                        .map(|entry| entry.view_globals)
+                })
+                .collect::<Option<_>>()?
+        };
+        let c = self.shared.lock();
+        let mut names = Vec::new();
+        for (unit, view) in units.zip(views) {
+            if skip.contains(&unit) {
+                continue;
+            }
+            let program = match &c.units.get(unit)?.state {
+                AnalysisState::Analyzed(program, _) => program.clone(),
+                AnalysisState::Prepared(program, ..) => program.upgrade()?,
+                _ => return None,
+            };
+            names.extend(
+                program
+                    .globals
+                    .iter()
+                    .skip(view)
+                    .filter(|global| global.namespace == namespace)
+                    .map(|global| global.name.clone()),
+            );
+        }
+        Some(names)
+    }
     /// Note the program globals the analysis of `unit` appended.
     pub fn capture_added_globals(&self, unit: usize, added: Vec<usize>) {
         if let Some(capture) = self.capture.borrow_mut().as_mut()

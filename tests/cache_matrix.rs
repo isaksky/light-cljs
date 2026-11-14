@@ -1184,6 +1184,107 @@ fn declaration_view_of_source_macro_users() {
     }
 }
 
+/// Six namespaces, so that `e`'s units merge (its drain point) before the
+/// macro provider after them is compiled.
+const SPACERS: [(&str, &str); 6] = [
+    ("s1.cljs", "(ns s1) (def x 1)"),
+    ("s2.cljs", "(ns s2) (def x 2)"),
+    ("s3.cljs", "(ns s3) (def x 3)"),
+    ("s4.cljs", "(ns s4) (def x 4)"),
+    ("s5.cljs", "(ns s5) (def x 5)"),
+    ("s6.cljs", "(ns s6) (def x 6)"),
+];
+
+/// A Var that a function body defines (`(def map 1)` inside `f`) shadows a
+/// core name for a code read with `*ns*` bound to its namespace, and the
+/// program has it only once the body merges, after the namespace is keyed:
+/// the declaration view reads it from the settled unit (light-cljs-347).
+#[test]
+fn deferred_globals_change_source_macro_reader_views() {
+    for jobs in ["1", "4"] {
+        let options = ["--jobs", jobs];
+        let mut files = vec![("e.cljs", "(ns e) (defn f [] nil)")];
+        files.extend(SPACERS);
+        files.extend([
+            (
+                "mac.cljs",
+                "(ns mac) (defmacro read-in-e [] (binding [*ns* (the-ns 'e)] (pr-str (read-string \"`map\"))))",
+            ),
+            (
+                "user.cljs",
+                "(ns user (:require [mac :refer [read-in-e]])) (def value (read-in-e))",
+            ),
+            (
+                "main.cljs",
+                "(ns main (:require [e] [s1] [s2] [s3] [s4] [s5] [s6] [user])) (js/console.log user/value)",
+            ),
+        ]);
+        let project = Project::new(&files);
+        let (_, before) = project.checked("main", &options);
+        project.cached("main", &options).assert_all_hits(10);
+        project.write("e.cljs", "(ns e) (defn f [] (def map 1))");
+        let (edited, after) = project.checked("main", &options);
+        assert_ne!(before, after, "{jobs} jobs: the read sees e/map");
+        assert!(
+            edited
+                .rows()
+                .contains(&"user miss view: earlier namespaces changed"),
+            "{jobs} jobs: {:?}",
+            edited.rows()
+        );
+    }
+}
+
+/// A source macro that lists `all-ns` and finds namespaces with `find-ns`
+/// keeps the uncached build's answer when an earlier namespace that
+/// declares nothing is edited, and so keeps its view. A miss of its own
+/// with the namespaces before it hits lists fewer namespaces than the
+/// uncached build, at the parent commit too: light-cljs-1004.
+#[test]
+fn declaration_view_preserves_namespace_inventory_on_mixed_hits() {
+    for jobs in ["1", "4"] {
+        let options = ["--jobs", jobs];
+        let mut files = vec![
+            (
+                "mac.cljs",
+                "(ns mac) (defmacro listed [] (pr-str [(sort (map str (all-ns))) (some? (find-ns 'early)) (some? (find-ns 'late))]))",
+            ),
+            (
+                "early.cljs",
+                "(ns early (:require [mac :refer [listed]])) (def x (listed)) (defn g [] 1)",
+            ),
+        ];
+        files.extend(SPACERS);
+        files.extend([
+            ("late.cljs", "(ns late) (def y 1)"),
+            (
+                "user.cljs",
+                "(ns user (:require [mac :refer [listed]])) (def value (listed))",
+            ),
+            (
+                "main.cljs",
+                "(ns main (:require [early] [s1] [s2] [s3] [s4] [s5] [s6] [late] [user])) (js/console.log early/x user/value)",
+            ),
+        ]);
+        let project = Project::new(&files);
+        project.checked("main", &options);
+        project.cached("main", &options).assert_all_hits(11);
+        // `early` declares nothing: `user` keeps its view.
+        project.write(
+            "early.cljs",
+            "(ns early (:require [mac :refer [listed]])) (def x (listed)) (defn g [] 2)",
+        );
+        let (edited, _) = project.checked("main", &options);
+        assert!(
+            !edited
+                .rows()
+                .contains(&"user miss view: earlier namespaces changed"),
+            "{jobs} jobs: {:?}",
+            edited.rows()
+        );
+    }
+}
+
 // -- Lowered limits -----------------------------------------------------------
 
 /// `--macro-expansions` below a cached namespace's recorded count is
