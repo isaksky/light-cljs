@@ -2334,7 +2334,9 @@ hashes and the key each candidate tried computes, stale ones included.
 Setup. Parent: the immutable `bin/light-cljs-a0383188` (SHA-256
 `6320b68207a37437...`, the landed code of light-cljs-347). Change: a release
 build of `42a7e7f6` (the change on master `446f68ed`), kept as the immutable
-`bin/light-cljs-42a7e7f6` (SHA-256 `d8b06873be2f3638...`). Projects: copies
+`bin/light-cljs-42a7e7f6` (SHA-256 `d8b06873be2f3638...`). The landed code
+also reads a candidate whose manifest does not parse whole, to name damage
+as its content hash's failure; no build here takes that path. Projects: copies
 of `research/shadow-credibility/projects/{re-frame,workload}-400k-seed42-1000`,
 leaves `src/workload/bouskoknu.cljs` and `src/workload/babomhol.cljs`. Each
 build ran with the binary's default job count. Raw reports, EDN and
