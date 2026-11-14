@@ -6,6 +6,7 @@
 ;;   bb benchmarks/watch-vs-shadow.bb run APP [--tools shadow,light] [--edits N]
 ;;                                           [--raw FILE] [--log FILE]
 ;;                                           [--timeout-s S] [--light BIN]
+;;   bb benchmarks/watch-vs-shadow.bb report RAW [RAW ...]
 ;;
 ;; APP is todomvc (re-frame's example, research/re-frame/examples/todomvc for
 ;; shadow-cljs and its port research/todomvc-port for light-cljs, as
@@ -35,7 +36,7 @@
 ;; running in the page), the tool's own step time from its log, the tree's
 ;; user and system CPU time per edit and the load average; then startup time
 ;; and peak memory. --tools gives the order; run the two orders on
-;; alternate invocations.
+;; alternate invocations, each with --raw, and `report` pools their edits.
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
          '[cheshire.core :as json]
@@ -326,30 +327,48 @@
 
 (def tool-label {:shadow "shadow-cljs" :light "light-cljs"})
 
-(defn print-results [app binary runs]
-  (println (str "\n### " app "\n"))
-  (println (str "light-cljs " (fs/file-name binary) "; edits after one warm-up per scenario: "
-                (count (remove #(zero? (:i %)) (:edits (first runs))))
-                " / scenario. Milliseconds from the edit's file modification time.\n"))
-  (println "| Scenario | Tool | Output written | Reload message | New code running | Tool's own step time | Namespaces or files compiled | CPU user + system per edit, s | Load average |")
-  (println "|---|---|---:|---:|---:|---:|---:|---:|---:|")
-  (doseq [sc (distinct (map :scenario (mapcat :edits runs)))
-          run runs
-          :let [es (filter #(and (= sc (:scenario %)) (pos? (:i %))) (:edits run))]]
-    (println (format "| %s | %s | %s | %s | %s | %s | %s | %s | %s |" sc (tool-label (:tool run))
-                     (summary (map :output es) "%.0f") (summary (map :message es) "%.0f")
-                     (summary (map :running es) "%.0f") (summary (map :step-ms es) "%.0f")
-                     (summary (map :step-namespaces es) "%.0f")
-                     (summary (map #(+ (:cpuUser %) (:cpuSys %)) es) "%.2f")
-                     (summary (map :load es) "%.1f"))))
-  (println "\n| Tool | Startup to first build, s | Page load in Chromium, s | Peak memory during startup, MB | Peak memory while editing, MB | Load average before |")
-  (println "|---|---:|---:|---:|---:|---:|")
-  (doseq [run runs]
-    (println (format "| %s | %.1f | %.1f | %.0f | %.0f | %.1f |" (tool-label (:tool run))
-                     (/ (:startup-ms run) 1000.0) (/ (:page-load-ms run) 1000.0)
-                     (/ (:startup-peak run) 1e6) (/ (:steady-peak run) 1e6) (:load-before run))))
-  (doseq [run runs e (distinct (:errors run))]
-    (println (str "\n- " (tool-label (:tool run)) ": " e))))
+(defn print-results
+  "Tables for RUNS (from one or more invocations): each scenario's edits of
+  each tool pooled across its runs, warm-up edits left out."
+  [app binary runs]
+  (let [tools (distinct (map :tool runs))
+        timed (fn [tool sc] (for [run runs :when (= tool (:tool run))
+                                  e (:edits run) :when (and (= sc (:scenario e)) (pos? (:i e)))]
+                              e))
+        scenarios (distinct (map :scenario (mapcat :edits runs)))
+        diff (fn [es a b] (when (every? #(and (a %) (b %)) es) (map #(- (a %) (b %)) es)))]
+    (println (str "\n### " app "\n"))
+    (println (str "light-cljs " (fs/file-name binary) "; " (quot (count runs) (count tools)) " watch sessions per tool; "
+                  (count (timed (first tools) (first scenarios)))
+                  " timed edits per scenario and tool, each session's first edit of a scenario a warm-up."
+                  " Milliseconds from the edit's file modification time: median (range).\n"))
+    (println "| Scenario | Tool | Output written | Reload message | New code running | Tool's own step time | Namespaces or files compiled | CPU user + system per edit, s | Load average |")
+    (println "|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    (doseq [sc scenarios tool tools :let [es (timed tool sc)]]
+      (println (format "| %s | %s | %s | %s | %s | %s | %s | %s | %s |" sc (tool-label tool)
+                       (summary (map :output es) "%.0f") (summary (map :message es) "%.0f")
+                       (summary (map :running es) "%.0f") (summary (map :step-ms es) "%.0f")
+                       (summary (map :step-namespaces es) "%.0f")
+                       (summary (map #(+ (:cpuUser %) (:cpuSys %)) es) "%.2f")
+                       (summary (map :load es) "%.1f"))))
+    (println "\nWhere the interval to new code running goes, medians in milliseconds: noticing the edit and"
+             "everything around the tool's own step (output written minus step time), the step, writing to"
+             "the push (reload message minus output written), and the page loading the code (running minus message).\n")
+    (println "| Scenario | Tool | Noticing and other | Step | Output to message | Message to running |")
+    (println "|---|---|---:|---:|---:|---:|")
+    (doseq [sc scenarios tool tools :let [es (timed tool sc)
+                                          m #(if (seq %) (format "%.0f" (double (median %))) "-")]]
+      (println (format "| %s | %s | %s | %s | %s | %s |" sc (tool-label tool)
+                       (m (diff es :output :step-ms)) (m (keep :step-ms es))
+                       (m (diff es :message :output)) (m (diff es :running :message)))))
+    (println "\n| Tool | Startup to first build, s | Page load in Chromium, s | Peak memory during startup, MB | Peak memory while editing, MB | Load average before |")
+    (println "|---|---:|---:|---:|---:|---:|")
+    (doseq [run runs]
+      (println (format "| %s | %.1f | %.1f | %.0f | %.0f | %.1f |" (tool-label (:tool run))
+                       (/ (:startup-ms run) 1000.0) (/ (:page-load-ms run) 1000.0)
+                       (/ (:startup-peak run) 1e6) (/ (:steady-peak run) 1e6) (:load-before run))))
+    (doseq [run runs e (distinct (:errors run))]
+      (println (str "\n- " (tool-label (:tool run)) ": " e)))))
 
 (let [[command app & args] *command-line-args*]
   (case command
@@ -365,5 +384,7 @@
             (when-let [raw (option args "--raw" nil)]
               (spit raw (pr-str {:app app :binary binary :runs runs})))
             (print-results app binary runs))
-    (do (println "usage: bb benchmarks/watch-vs-shadow.bb prepare APP | run APP [--tools shadow,light] [--edits N] [--raw FILE] [--light BIN]")
+    "report" (let [raws (map (comp read-string slurp) (cons app (take-while #(not (str/starts-with? % "--")) args)))]
+               (print-results (:app (first raws)) (:binary (first raws)) (vec (mapcat :runs raws))))
+    (do (println "usage: bb benchmarks/watch-vs-shadow.bb prepare APP | run APP [--tools shadow,light] [--edits N] [--raw FILE] [--log FILE] [--timeout-s S] [--light BIN] | report RAW...")
         (System/exit 1))))

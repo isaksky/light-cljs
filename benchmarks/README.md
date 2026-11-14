@@ -10,6 +10,12 @@ TodoMVC and simple with shadow-cljs's builds of the unmodified originals:
 release size raw, gzip and brotli with React counted apart, build time, and
 every port edit by cause (`bb benchmarks/re-frame.bb`).
 
+[The edit-to-reload loop](watch-vs-shadow.md) times `light-cljs watch` against
+`shadow-cljs watch` on TodoMVC and the generated 200k re-frame app: from a
+save to the output written, the reload message and the new code running in
+headless Chromium, with startup and peak memory
+(`bb benchmarks/watch-vs-shadow.bb`).
+
 ## The shadow-cljs head-to-head
 
 `generated-project/compare.bb` is the one kit for light-cljs against shadow-cljs.
