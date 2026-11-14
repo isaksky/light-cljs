@@ -1754,3 +1754,200 @@ Findings, recorded as found:
    727 s of user CPU in 416 s of wall time (one round), the largest system
    share recorded in these comparisons (see the November 13 baseline's
    finding 2).
+
+## Why a one-file edit rebuilds slower than a clean build at 400k, unreserved machine (November 14, 2026, light-cljs-1000)
+
+**Summary.** The growth section above found light-cljs's rebuild after a
+one-file edit slower than its clean build from 400k up. On the 400k
+projects, one job, three alternated rounds, the same edit (an unused `defn`
+appended to a leaf worker) recompiles **587 of 1,134 namespaces (plain) and
+2,127 of 6,092 (re-frame shape)**, and the rebuild takes **19.46 s against a
+14.76 s clean build (plain) and 30.82 s against 18.77 s (re-frame)**. Three
+things add up to more than a clean build:
+
+1. **The coarse fallback** (docs/compiler-cache.md, "Conservative keys and
+   invalidation") recompiles every later namespace that ran a source macro
+   (504 and 1,550 misses for "earlier namespaces changed"). A probe binary
+   whose view left out the earlier-namespace chain recompiled only the leaf
+   and its reverse require closure (3 and 4 namespaces) in **6.66 s and
+   11.72 s**, with byte-identical output: the fallback costs 13 s and 19 s
+   of this edit. Narrowing it changes the cache's dependency model, so it is
+   proposed, not built (docs/compiler-cache.md, "A narrower view for
+   source-macro users").
+2. **Recompiling with the cache on costs 1.4x to 2.0x per namespace** what a
+   clean build pays, because every recompiled namespace is captured and its
+   observations recorded (the cache-writing cost of light-cljs-461): a
+   cache-writing build with nothing cached takes 25.5 s and 48.8 s against
+   14.8 s and 18.8 s.
+3. **Cache work grows with the edit's reach and with past edits**: 4.8 s
+   (plain) and 13.7 s (re-frame) of validation, decoding, installing,
+   capturing and writing. Validation reads and hashes every retained
+   candidate of a namespace that misses in full before checking its key, so
+   it grew by about 2 s per earlier edit at re-frame 400k (3.3, 5.6, 7.5 s);
+   filed as **light-cljs-1003**.
+
+More jobs do not help: at `--jobs 8` the edit rebuild takes the same wall
+time as at one job (plain 26.8 and 29.1 s against 28.1 s, re-frame 26.5 and
+29.8 s against 28.3 and 30.2 s, loaded machine) for about 2.8x and 1.3x the
+user CPU, since with capture on every deferred unit enters the macro host
+(16,123 of 16,123 against 3,053 at one job, plain) and the coordinator's
+analysis grows from 9.4 s to 17 to 19 s (plain). The clean build does gain
+(plain 14.6 to 10.2 s).
+
+One local fix keeps the model and was built: a manifest no longer lists a
+source-macro user's coarse edges by name, one per earlier namespace, only
+its flag (`0a56a693`). At re-frame 400k that halves the bytes an edit
+rebuild writes (181.9 to 92.8 MB) and cuts what it reads; the wall-time
+gain at 400k is inside the spread, and at re-frame 800k, alternated, the
+edit rebuild takes 68.8 and 66.0 s instead of 75.3 and 84.4 s (below).
+
+Setup. light-cljs master `8eefcf09` as the immutable release binary
+`research/shadow-credibility/bin/light-cljs-8eefcf09` (V8 build, SHA-256
+`3fc36ffd45831688...`); the fix `0a56a693` as `bin/light-cljs-0a56a693`
+(`b87dc83abfd4a7bc...`). The probe binary is `8eefcf09` plus two
+environment switches used only for this measurement and not committed:
+`PROBE_1000_NO_COARSE_VIEW` (the view leaves out the earlier-namespace chain)
+and `PROBE_1000_IMPLICIT_COARSE` (the fix's manifest; the lookup side of the
+fix is always on in it and changes nothing for a listed manifest). Projects:
+`research/shadow-credibility/projects/{workload,re-frame}-400k-seed42-1000`,
+copies of the growth run's projects without outputs or caches; leaves
+`src/workload/babomhol.cljs` and `src/workload/bouskoknu.cljs` as there.
+Raw `--stats` and `/usr/bin/time -l` output, the load before each build and
+an output hash after each build are in
+`research/shadow-credibility/edit-1000-8eefcf09/` (gitignored). Each build
+was `light-cljs release bench --jobs 1 --stats`, with `--no-cache` or its
+mode's own `--cache-dir`, filled by one untimed cache-writing build per mode;
+each round wrote one new `defn` used by all its builds, then ran the clean
+build and one edit rebuild per mode, the modes' order rotating each round.
+All 30 builds of the alternated runs printed one output hash per project.
+
+**The machine was not reserved.** Two other workers (light-cljs-989 and
+light-cljs-992) built and ran test suites throughout. The 1-minute load
+before the alternated builds was 3.7 to 5.1 (plain) and 4.2 to 7.8
+(re-frame; up to 11.0 before the fills). The first, unalternated probe (one
+round per job count, the `--jobs 8` numbers above) ran at load 6 to 50; its
+re-frame clean builds (90 and 61 s at load 27 to 47) are not used.
+
+### Alternated rounds, one job
+
+| Project | Build | Wall time | User CPU | System CPU | Peak memory | Recompiled |
+| --- | --- | --- | --- | --- | --- | --- |
+| plain 400k | clean build | 14.76 s (14.51-16.40) | 15.20 s (15.00-16.85) | 0.96 s (0.83-1.20) | 1.932 GB (1.920-1.937) | 1,134 |
+| plain 400k | one-file edit | 19.46 s (17.88-20.00) | 20.72 s (19.88-21.51) | 1.40 s (1.21-1.72) | 1.969 GB (1.936-2.012) | 587 |
+| plain 400k | one-file edit, fix's manifest | 19.64 s (19.25-19.75) | 21.06 s (20.92-21.20) | 1.45 s (1.39-1.56) | 1.972 GB (1.955-1.997) | 587 |
+| plain 400k | one-file edit, probe without the earlier-namespace view | 6.66 s (6.43-6.78) | 6.20 s (6.09-6.25) | 0.39 s (0.38-0.43) | 1.755 GB (1.713-1.761) | 3 |
+| re-frame 400k | clean build | 18.77 s (18.23-19.66) | 18.88 s (18.36-19.75) | 1.15 s (1.11-1.24) | 2.467 GB (2.436-2.482) | 6,092 |
+| re-frame 400k | one-file edit | 30.82 s (26.81-32.35) | 27.73 s (24.81-27.87) | 2.91 s (2.59-3.44) | 2.502 GB (2.493-2.512) | 2,127 |
+| re-frame 400k | one-file edit, fix's manifest | 29.15 s (26.61-29.27) | 24.79 s (23.87-26.00) | 3.18 s (2.78-3.58) | 2.531 GB (2.531-2.545) | 2,127 |
+| re-frame 400k | one-file edit, probe without the earlier-namespace view | 11.72 s (11.58-11.80) | 9.61 s (9.60-9.74) | 1.14 s (1.10-1.16) | 2.350 GB (2.336-2.367) | 4 |
+
+Where the time goes (`--stats` medians in ms; the cache-writing build with
+nothing cached ran once per mode, the base mode's shown):
+
+| Project | Build | Analysis | Deferred units | Preparation | Emission | Validation | Decoding + installing | Capture | Writing | Read / written |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| plain | clean build | 5,491 | 5,650 | 2,227 | 1,371 | | | | | |
+| plain | cache-writing, nothing cached | 8,525 | 8,351 | 2,295 | 1,371 | 13 | 0 | 1,601 | 2,628 | 0 / 198 MB |
+| plain | one-file edit | 5,558 | 4,849 | 2,041 | 1,332 | 1,714 (875-1,899) | 519 | 1,017 | 1,536 | 318 / 120 MB |
+| plain | probe without the earlier-namespace view | 460 | 20 | 1,849 | 1,311 | 1,250 | 1,521 | 5 | 4 | 198 / 0.3 MB |
+| re-frame | clean build | 6,905 | 5,413 | 3,658 | 2,416 | | | | | |
+| re-frame | cache-writing, nothing cached | 9,808 | 9,273 | 3,378 | 2,316 | 64 | 0 | 12,330 | 5,598 | 0 / 264 MB |
+| re-frame | one-file edit | 4,245 | 5,230 | 3,242 | 2,450 | 5,604 (3,310-7,495) | 782 | 4,582 | 2,766 | 446 / 182 MB |
+| re-frame | one-file edit, fix's manifest | 4,430 | 5,459 | 3,370 | 2,428 | 3,233 (2,784-4,392) | 810 | 4,813 | 2,340 | 267 / 93 MB |
+| re-frame | probe without the earlier-namespace view | 324 | 215 | 2,982 | 2,346 | 3,111 | 1,940 | 16 | 22 | 266 / 1.7 MB |
+
+- **What a leaf edit invalidates.** Plain: the leaf (its source), 82
+  namespaces for a changed dependency and 504 for their view; re-frame: the
+  leaf, 1,550 for their view and 576 for a dependency. The leaf's reverse
+  require closure is 2 and 3 namespaces (`workload.g22`, `workload.main`;
+  `workload.g12`, `app.core`, `workload.main`), exactly what the probe
+  recompiled. Everything else was recompiled only because it ran a source
+  macro after the leaf in source order, or requires a namespace that did.
+- **Why that exceeds a clean build.** The re-frame edit recompiles 35% of
+  the namespaces but spends 61% of the clean build's analysis time and 97% of
+  its deferred-unit time on them: per namespace, analysis costs 2.0 ms
+  against 1.13 ms and a deferred unit 0.30 ms against 0.16 ms (plain: 9.5
+  against 4.8 ms, 0.30 against 0.21 ms). The cache-writing build with
+  nothing cached shows the same factor with no installed namespace (analysis
+  1.42x and 1.55x, deferred units 1.71x and 1.48x the clean build's), so it
+  is capture and observation recording. On top come 4.8 s and 13.7 s of
+  cache work, and the whole-program preparation and emission (3.4 s and
+  5.7 s) that every advanced build pays.
+- **The floor.** With only the closure to recompile, the rebuild is
+  preparation, emission, validation, decoding and installing: 6.7 s and
+  11.7 s, 45% and 62% of a clean build. Validation (1.25 s and 3.1 s) reads
+  and hashes every installed artifact.
+- **Validation grows with past edits.** A namespace that misses reads every
+  candidate its index retains (`--cache-retention`, three by default) in full
+  and checks its SHA-256 before comparing its key, and each earlier edit
+  leaves one more stale candidate: bytes read per edit rebuild 264, 446 and
+  628 MB in rounds one to three at re-frame 400k, validation 3.3, 5.6 and
+  7.5 s; the probe's all-hit rebuilds stay at 266 MB and 3.1 s. Comparing
+  the key first and hashing only the candidate that matches is local:
+  **light-cljs-1003**.
+- **The fix's manifest.** At re-frame 400k the coarse edges' names were half
+  of what each recompiled namespace wrote: bytes written per edit rebuild
+  181.9 to 92.8 MB, read 446 to 267 MB (medians), writing 2.77 to 2.34 s,
+  validation 5.60 to 3.23 s; the cache-writing build with nothing cached
+  48.8 to 36.6 s (one each). The edit rebuild's median moves from 30.82 to
+  29.15 s, inside the base's spread. Plain 400k has a fifth as many
+  namespaces and smaller lists: 119.9 to 111.9 MB written, no change in wall
+  time. The saving grows with the program, since each list grew with its
+  namespace's position.
+
+### The fix, with compare.bb and at 800k
+
+`compare.bb --light-only --leaf ... --runs 3 --skip-unchanged --max-load 1000
+--max-repeats 0` on the re-frame 400k copy, then `--runs 2` on a copy of the
+re-frame 800k project (`re-frame-800k-seed42-1000`, leaf
+`src/workload/badam.cljs`), one binary after the other (so not alternated
+between binaries); every output passed the oracle and the waste check. Raw
+results in `research/shadow-credibility/edit-1000-8eefcf09/kit/`.
+
+| Project | Binary | Clean build | Rebuild after a one-file edit | Load before the edits |
+| --- | --- | --- | --- | --- |
+| re-frame 400k | `8eefcf09` | 18.95 s (18.12-20.06), 2.436 GB | 26.60 s (26.40-28.98), 25.61 s user, 2.523 GB | 4.2-5.2 |
+| re-frame 400k | `0a56a693` | 19.74 s (17.87-19.78), 2.429 GB | 24.91 s (23.41-33.34), 23.68 s user, 2.518 GB | 4.6-4.9 |
+| re-frame 800k | `0a56a693` | 53.19 s (52.76-53.62), 4.750 GB | 91.25 s (89.33-93.17), 81.84 s user, 4.949 GB | **14.7-22.7** |
+| re-frame 800k | `8eefcf09` | 55.30 s (53.23-57.37), 4.769 GB | 76.03 s (72.18-79.87), 72.15 s user, 4.951 GB | 3.5-3.7 |
+
+The fix's 800k edit rebuilds ran while another worker's load peaked (1-minute
+load 14.7 to 22.7, against 3.5 to 3.7 for the base's), and are recorded as
+found. To separate the binaries from the load, the two ran again alternated
+on the same 800k copy, each with its own cache and one untimed fill, two
+edit rounds, `--jobs 1 --stats`, load 2.3 to 2.6, the same output hash for
+all six builds (`research/shadow-credibility/edit-1000-8eefcf09/probe800/`):
+
+| Binary | Cache-writing build, nothing cached | Edit round 1 | Edit round 2 | Bytes written per edit | Bytes read, rounds 1 and 2 | Validation | Writing | Capture |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `8eefcf09` | 113.30 s, 4.960 GB | 75.33 s | 84.44 s | 560.0 MB | 703, 1,074 MB | 8.3, 12.6 s | 6.7, 7.2 s | 19.0, 19.6 s |
+| `0a56a693` | 105.08 s, 4.898 GB | 68.78 s | 66.04 s | 205.0 MB | 347, 552 MB | 4.3, 6.1 s | 4.7, 4.5 s | 19.4, 17.7 s |
+
+At 800k the coarse edges' names were 63% of what an edit rebuild wrote; the
+fix saves 6.6 to 18.4 s of the edit rebuild there. The edit rebuild stays
+slower than the clean build (about 67 s against 53 s): capture (18 to 19 s,
+light-cljs-997), validation that grows with past edits (light-cljs-1003) and
+the coarse fallback remain.
+
+
+Findings, recorded as found:
+
+1. **The rebuild after a one-file edit is slower than a clean build at 400k
+   because of the coarse fallback, recompiling with capture on, and cache
+   work, in that order of size.** Only the first is a dependency-model
+   question; it is put to the user with three remedies
+   (docs/compiler-cache.md, "A narrower view for source-macro users"). The
+   measured bound for an edit that registers no declaration: 19.46 to 6.66 s
+   (plain) and 30.82 to 11.72 s (re-frame), both well under the clean build.
+2. **The require-closure rule rules out two of the three views the fallback
+   covers, and only in the Pants build.** The V8 build does not enforce it
+   (light-cljs-446 is deferred), and neither build restricts the `&env`
+   macro map, so narrowing the view to the require closure is not sound in
+   the build that ships without a language change there.
+3. **`--jobs 8` does not speed up an edit rebuild** while capturing, and
+   costs up to about 2.8x the user CPU (light-cljs-461's cause: with capture
+   on, every unit enters the macro host).
+4. **The coarse edges no longer weigh on artifacts** (`0a56a693`): half the
+   bytes written at re-frame 400k and 63% fewer at 800k, where the edit
+   rebuild gains 6.6 to 18.4 s, with keys, hits and output unchanged. It is
+   still slower than the clean build there (about 67 s against 53 s).

@@ -721,6 +721,92 @@ artifact with its real keys. Penpot's numbers are in
   demanded. That is light-cljs-347, deferred until light-cljs-328 measures
   hit rates.
 
+#### A narrower view for source-macro users (proposal, light-cljs-1000)
+
+*Measured* ([benchmarks/generated-shadow-vs-light.md](../benchmarks/generated-shadow-vs-light.md),
+"Why a one-file edit rebuilds slower than a clean build"): on the generated
+400k projects an unused `defn` appended to a leaf worker recompiles 587 of
+1,134 namespaces (plain) and 2,127 of 6,092 (re-frame shape), 504 and 1,550
+of them for "earlier namespaces changed", and the rebuild takes 19.5 s and
+30.8 s against clean builds of 14.8 s and 18.8 s. A probe binary whose view
+left out the earlier-namespace chain recompiled 3 and 4 namespaces, the edited
+leaf and its reverse require closure, in 6.7 s and 11.7 s with the same
+output. That difference, 13 s and 19 s, is what the coarse fallback costs on
+this edit.
+
+*What the fallback protects against.* A source macro sees three things that
+no edge attributes (the audit above):
+
+1. every declaration bundle registered so far, by any namespace: protocols,
+   types, extensions, multimethods, including a namespace's first one, which a
+   compile-time `satisfies?`, protocol call or multimethod dispatch reads;
+2. every loaded JavaScript macro's metadata and generation, in `&env`'s
+   `:light-cljs/macros`, which `MacroHost` builds from the whole compilation's
+   macro table, not the expanding namespace's requires;
+3. the namespace inventory of `all-ns`, `find-ns` and `the-ns`.
+
+*What the require-closure rule already rules out.* In the Pants build the rule
+(light-cljs-672, README "Require closure (Pants build)") makes 1 and 3
+impossible outside the closure: an extension outside it is not admitted
+(`extension outside require closure`), compile-time state outside it is an
+error naming the missing require, and `find-ns` and `all-ns` do not list it.
+It does not filter 2: the `&env` macro map is the same in both builds. In the
+V8 build, the build that ships, the rule is not built (light-cljs-446 is
+deferred), so none of the three is ruled out there today. Narrowing the view
+to the require closure in the V8 build as it is would let a macro read an
+unrequired namespace's extension and keep a stale expansion.
+
+*Remedies*, each a change to the dependency model, so none is built:
+
+- **A. Declaration-view fingerprint (light-cljs-347 revived).** A coarse
+  namespace's view digests what 1 to 3 contain before it (each bundle's
+  registration in order, each macro's name, metadata and generation, the
+  inventory's names and source identities) instead of every earlier
+  namespace's key, kept as a running chain so that it costs one hash per
+  registration. Exact edges keep covering what the namespace requires.
+  *Saves:* for an edit that registers nothing (a function body, a new `defn`,
+  a constant) the measured bound above, 13 s and 19 s at 400k; an edit that
+  adds or changes a protocol, type, extension, multimethod or macro still
+  recompiles every later source-macro user. *Risks:* the audit must be
+  complete, since a fingerprint that leaves out something a macro can see
+  gives a stale hit; the list above is the audit's, and the fingerprint is
+  only as good as it. No language change, so it holds in both builds.
+  *Tests:* per category, a `cache_matrix` case where the old view missed
+  needlessly (a body edit in an unrequired earlier namespace now hits) and one
+  where a real observation is still caught (a first extension added to an
+  unrequired namespace that a later macro dispatches on, changed macro
+  metadata read through `&env`, a namespace added to `all-ns`), each against
+  the uncached build as oracle, at `--jobs 1` and 4.
+- **B. Require-closure view.** A coarse namespace's view covers its require
+  closure only, which the exact edges already key. *Saves:* the same bound,
+  and also for edits that add declarations outside the closure. *Risks:*
+  sound only where the rule holds for all three views: the V8 build would
+  need light-cljs-446's visibility (a language change in the shipping build,
+  agreed in principle by the user on 2026-10-23 but whose output differences
+  must be reported first) plus a closure-filtered `&env` macro map in both
+  builds. *Tests:* light-cljs-446's `closure_visibility` suite, plus the
+  matrix cases of A showing that an unrequired namespace's change neither
+  changes the output nor misses.
+- **C. Record what each macro run read.** The macro host records the bundles
+  a dispatch consulted, the `&env` macro entries read (a lazily built map) and
+  inventory calls, as observed edges; only an enumeration (`all-ns`, walking
+  the whole `&env` map) stays coarse. *Saves:* most, including declaration
+  edits elsewhere. *Risks:* every read path in the V8 bridge and the
+  compile-time runtime must record; a missed one is a stale hit, and the
+  instrumentation costs time on every macro call. *Tests:* A's matrix plus a
+  test per recorded read path.
+
+A is the smallest sound step and does not depend on the language rule; B
+follows if the V8 build adopts the require-closure rule anyway; C only if
+declaration edits turn out to be common. The decision is the user's.
+
+*As built (light-cljs-1000), keeping the model:* a manifest no longer lists
+the coarse edges by name; the `coarse` flag stands for them and a lookup adds
+them back (`EdgeKinds::stored`, `ManifestPrefix::push_stored`). At re-frame
+400k that halves the bytes a rebuild after a one-file edit writes (182 to
+93 MB); at 800k it cuts them from 560 to 205 MB and the rebuild from 75 to
+84 s to 66 to 69 s.
+
 ## Binary artifacts
 
 Use one immutable artifact per completed namespace, with references to any shared
