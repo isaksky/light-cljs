@@ -2772,13 +2772,13 @@ impl CompilationSession {
         if !self.namespaces_logged.get() {
             return Ok(());
         }
+        // The engine logs each namespace once: a pool worker's unit may have
+        // logged it before, in a registry of its own, and this one gains it
+        // now all the same.
         let logged = Self::take_namespaces_from(engine)?;
         let mut seen = self.namespaces_seen.borrow_mut();
-        self.namespaces_absorbed.borrow_mut().extend(
-            logged
-                .into_iter()
-                .filter(|entry| seen.insert(entry.namespace.clone())),
-        );
+        seen.extend(logged.iter().map(|entry| entry.namespace.clone()));
+        self.namespaces_absorbed.borrow_mut().extend(logged);
         Ok(())
     }
     /// Log `entries`, what a deferred unit's analysis added to its engine's

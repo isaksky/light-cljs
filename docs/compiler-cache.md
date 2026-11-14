@@ -783,7 +783,11 @@ artifact with its real keys. Penpot's numbers are in
   are logged where the coordinator charges it, whichever engine analyzed it,
   so the artifact is the same at every `--jobs`; a pool worker's registry
   is its own, so with worker engines the coordinator's gains none of them
-  and installing adds none. The key needs no new input: what a hit adds
+  and installing adds none. A unit those builds keep on the coordinator
+  (a `:test` definition's) still adds to the coordinator's registry, and
+  installing then omits it: light-cljs-1005. The coordinator's own
+  additions are logged even when a worker's unit logged the same
+  namespace. The key needs no new input: what a hit adds
   follows from its own analysis, and the declaration chain already keys the
   earlier namespaces that change the order. `tests/cache_matrix.rs`
   (`declaration_view_preserves_namespace_inventory_on_mixed_hits`,

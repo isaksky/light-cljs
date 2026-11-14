@@ -1410,6 +1410,47 @@ fn unit_registry_additions_install_where_the_unit_ran() {
     }
 }
 
+/// With worker engines, a namespace a pool worker's unit made with
+/// `create-ns` is in that worker's registry only; a later top-level macro
+/// call that makes it on the coordinator still adds it there, and its
+/// namespace's artifact records it (light-cljs-1004).
+#[test]
+fn worker_registry_additions_do_not_hide_coordinator_additions() {
+    let options = ["--jobs", "4", "--macro-memory-limit", "268435456"];
+    let mut files = vec![
+        (
+            "mac.cljs",
+            "(ns mac) (defmacro listed [] (pr-str (sort (map str (all-ns))))) (defmacro mk [] (create-ns 'extra) nil)",
+        ),
+        (
+            "early.cljs",
+            "(ns early (:require [mac :refer [mk]])) (defn f [] (mk))",
+        ),
+    ];
+    files.extend(SPACERS);
+    files.extend([
+        ("later.cljs", "(ns later (:require [mac :refer [mk]])) (mk)"),
+        (
+            "user.cljs",
+            "(ns user (:require [mac :refer [listed]])) (js/console.log (listed))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [early] [s1] [s2] [s3] [s4] [s5] [s6] [later] [user])) (early/f)",
+        ),
+    ]);
+    let project = Project::new(&files);
+    let (_, listed) = project.checked("main", &options);
+    assert!(listed.contains("\"extra\""), "{listed}");
+    project.cached("main", &options).assert_all_hits(11);
+    project.write(
+        "user.cljs",
+        "(ns user (:require [mac :refer [listed]])) (js/console.log (listed)) ; edited",
+    );
+    let (_, printed) = project.checked("main", &options);
+    assert_eq!(printed, listed);
+}
+
 // -- Lowered limits -----------------------------------------------------------
 
 /// `--macro-expansions` below a cached namespace's recorded count is
