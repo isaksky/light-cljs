@@ -14,6 +14,10 @@
   --seed N             Signed 64-bit seed (default 1)
   --lines N            Approximate nonblank source lines, e.g. 5k, 200k, 800k (default 5k)
   --namespace-lines N  Approximate lines per worker namespace (default 400; minimum 200)
+  --shape SHAPE        plain (default) or re-frame: a runnable re-frame app whose
+                       features use the plain shape's namespaces as utility code
+  --libs DIR           re-frame shape: library sources made by re-frame-libs.bb
+                       (default research/shadow-credibility/re-frame-libs)
   --help               Show this help
 
 OUTPUT-DIR must be absent or empty. Generation requires only Babashka.
@@ -37,6 +41,14 @@ reference interpreter, both compiler configurations, and a waste checker.")
             (throw (ex-info "--namespace-lines must be 200..20000" {})))
           options)
       (= arg "--help") {:help true}
+      (= arg "--shape")
+      (let [v (first more)]
+        (when-not (#{"plain" "re-frame"} v) (throw (ex-info "--shape must be plain or re-frame" {})))
+        (recur (rest more) (if (= v "plain") (dissoc options :shape) (assoc options :shape v))))
+      (= arg "--libs")
+      (if-let [v (first more)]
+        (recur (rest more) (assoc options :libs v))
+        (throw (ex-info "Missing value for --libs" {})))
       (#{"--seed" "--lines" "--namespace-lines"} arg)
       (let [v ((if (= arg "--seed") parse-long size-number) (or (first more) ""))]
         (when-not v (throw (ex-info (str "Invalid or missing value for " arg) {})))
@@ -1352,6 +1364,327 @@ object number string run main tag" #"\s+"))))
                    (+ total (reduce + (map #(code-lines (:source %)) (remove #(= :shim (:role %)) added))))
                    macro)))))))
 
+;;; The re-frame shape (--shape re-frame): the worker namespaces above as shared
+;;; utility code, plus re-frame features (db, events, subs, views namespaces)
+;;; that dispatch, subscribe and render with the real reagent and re-frame.
+;;; model.edn's :features is the event and view model re-frame-oracle.bb
+;;; interprets; the renderer's spelling choices (:style) never reach it.
+
+(def rf-share-of-workers 0.4)
+(def rf-optional-kinds ["remove" "filter" "rename" "clear"])
+(def rf-fixed-keys #{"items" "filter" "next-id" "total" "events" "score" "core" "label" "done" "id"})
+
+(defn rf-feature-model [rng used idx workers]
+  (let [nm (fresh! rng used :ns)
+        fields (vec (for [_ (range (between rng 1 3))]
+                      {:name (fresh! rng used :var) :k (between rng 1 997) :init (rint rng 997)}))
+        optional (vec (filter (fn [_] (chance rng 0.6)) rf-optional-kinds))
+        events (shuffled rng (concat (map #(str "bump-" (:name %)) fields) ["add" "toggle" "compute"] optional))
+        items (vec (for [i (range (between rng 1 3))]
+                     {:id i :label (fresh! rng used :var) :n (rint rng 997) :done (chance rng 0.3)}))]
+    {:ns (str "app." nm) :key nm :title (pascal nm) :fields fields :events events :items items
+     :prefix (subs (fresh! rng used :var) 0 2) :salt (between rng 1 997)
+     :worker (pick rng workers) :dep (when (and (pos? idx) (chance rng 0.6)) (rint rng idx))
+     :style {:cls (rint rng 3) :span (chance rng 0.5) :destructure (chance rng 0.5) :cond (chance rng 0.5)
+             :forms (mapv (fn [_] (if (chance rng 0.5) :form-2 :with-let)) fields)}}))
+
+(defn rf-default-db [{:keys [fields items]}]
+  (merge {:items items :filter :all :next-id (count items)
+          :total (mod (reduce + (map :n items)) modulus) :events 0 :score 0}
+         (into {} (map (fn [{:keys [name init]}] [(keyword name) init]) fields))))
+
+(defn rf-form [x]
+  (cond (map? x) (mapf (map (fn [[k v]] [k (rf-form v)]) x))
+        (vector? x) (mapv rf-form x)
+        :else x))
+
+(defn rf-path [f] (str/replace (str "src/" (str/replace (:ns f) "." "/")) "-" "_"))
+
+(defn rf-db-file [f]
+  {:path (str (rf-path f) "/db.cljs") :role :feature :ns (str (:ns f) ".db")
+   :source (str "(ns " (:ns f) ".db)\n\n"
+                ";; The slice's spec: one predicate per key, checked after every event.\n"
+                "(def spec\n  " (str/replace (text (mapf (concat (for [{:keys [name]} (:fields f)] [(keyword name) 'nat-int?])
+                                             [[:items 'vector?] [:filter (setf [:all :active :done])]
+                                              [:next-id 'nat-int?] [:total 'nat-int?] [:events 'nat-int?]
+                                              [:score 'nat-int?]]))) "\n" "\n  ")
+                ")\n\n"
+                "(defn valid? [slice]\n  (every? (fn [[k pred]] (pred (get slice k))) spec))\n\n"
+                "(def default\n  " (str/replace (text (rf-form (rf-default-db f))) "\n" "\n  ") ")\n")})
+
+(defn rf-events-file [f]
+  (let [k (keyword (:key f)) {:keys [salt prefix worker style]} f
+        f0 (keyword (:name (first (:fields f))))
+        arg-vec (if (:destructure style) "[arg]" "event")
+        arg-of (fn [body] (if (:destructure style) body (str "(let [arg (first event)]\n    " body ")")))
+        handler (fn [kind]
+                  (case kind
+                    "add" (str "(rf/reg-event-fx\n ::add\n [interceptors (rf/inject-cofx :app/clock)]\n"
+                               " (fn [{:keys [db clock]} [_ arg]]\n"
+                               "   {:db (update db " k " add-item arg clock)\n"
+                               "    :fx [[:app/log [" k " arg]]]}))")
+                    "toggle" (str "(rf/reg-event-db\n ::toggle\n [interceptors (rf/path " k ") rf/trim-v]\n"
+                                  " (fn [slice " arg-vec "]\n  "
+                                  (arg-of "(if (seq (:items slice))\n      (update-in slice [:items (mod arg (count (:items slice))) :done] not)\n      slice)")
+                                  "))")
+                    "remove" (str "(rf/reg-event-db\n ::remove\n [interceptors (rf/path " k ")]\n"
+                                  " (fn [{:keys [items] :as slice} [_ arg]]\n"
+                                  "   (let [n (count items)]\n"
+                                  "     (if (> n 1)\n"
+                                  "       (let [i (mod arg n)]\n"
+                                  "         (assoc slice :items (into (subvec items 0 i) (subvec items (inc i)))))\n"
+                                  "       slice))))")
+                    "filter" (str "(rf/reg-event-db\n ::filter\n [interceptors (rf/path " k ") rf/trim-v]\n"
+                                  " (fn [slice " arg-vec "]\n  "
+                                  (arg-of "(assoc slice :filter (nth [:all :active :done] (mod arg 3)))") "))")
+                    "compute" (str "(rf/reg-event-fx\n ::compute\n interceptors\n"
+                                   " (fn [{:keys [db]} [_ arg]]\n"
+                                   "   {:db (assoc-in db [" k " :score]\n"
+                                   "                  (w/run (ac/add arg (get-in db [" k " " f0 "]))))}))")
+                    "rename" (str "(rf/reg-event-db\n ::rename\n [interceptors (rf/path " k ") rf/trim-v]\n"
+                                  " (fn [slice " arg-vec "]\n  "
+                                  (arg-of (str "(if (seq (:items slice))\n"
+                                               "      (let [i (mod arg (count (:items slice)))\n"
+                                               "            label (str (mod arg 10) (get-in slice [:items i :label]))]\n"
+                                               "        (assoc-in slice [:items i :label] (subs label 0 (min 10 (count label)))))\n"
+                                               "      slice)"))
+                                  "))")
+                    "clear" (str "(rf/reg-event-db\n ::clear\n [interceptors (rf/path " k ")]\n"
+                                 " (fn [slice _]\n   (update slice :items #(filterv (complement :done) %))))")
+                    (let [field (subs kind 5) fk (keyword field)
+                          fm (first (filter #(= field (:name %)) (:fields f)))]
+                      (str "(rf/reg-event-db\n ::" kind "\n [interceptors (rf/path " k ") rf/trim-v]\n"
+                           " (fn [slice " arg-vec "]\n  "
+                           (arg-of (str "(update slice " fk " #(ac/add (* " (:k fm) " arg) (inc %)))")) "))"))))]
+    {:path (str (rf-path f) "/events.cljs") :role :feature :ns (str (:ns f) ".events")
+     :source (str "(ns " (:ns f) ".events\n"
+                  "  (:require [re-frame.alpha :as rf]\n"
+                  "            [app.common :as ac]\n"
+                  "            [" (:ns f) ".db :as db]\n"
+                  "            [" worker " :as w]))\n\n"
+                  "(def count-events\n"
+                  "  (rf/->interceptor\n   :id ::count-events\n"
+                  "   :after (fn [context]\n"
+                  "            (if-let [db (rf/get-effect context :db)]\n"
+                  "              (rf/assoc-effect context :db (update-in db [" k " :events] inc))\n"
+                  "              context))))\n\n"
+                  "(def check-db\n"
+                  "  (rf/after (fn [db _]\n"
+                  "              (when-not (db/valid? (get db " k "))\n"
+                  "                (throw (ex-info \"invalid app-db\" {:feature " k "}))))))\n\n"
+                  "(def total\n"
+                  "  (rf/enrich (fn [db _]\n"
+                  "               (assoc-in db [" k " :total] (reduce ac/add 0 (map :n (get-in db [" k " :items])))))))\n\n"
+                  "(def interceptors [count-events check-db total])\n\n"
+                  "(defn- add-item [{:keys [items next-id] :as slice} arg clock]\n"
+                  "  (let [items (if (>= (count items) 8) (subvec items 1) items)]\n"
+                  (if (:destructure style)
+                    (str "    (-> slice\n"
+                         "        (assoc :items (conj items {:id next-id\n"
+                         "                                   :label (str " (pr-str prefix) " (mod (+ arg clock) 97))\n"
+                         "                                   :n (ac/add (* arg " salt ") clock)\n"
+                         "                                   :done false}))\n"
+                         "        (update :next-id inc))))\n\n")
+                    (str "    (assoc slice\n"
+                         "           :items (conj items {:id next-id :label (str " (pr-str prefix) " (mod (+ arg clock) 97))\n"
+                         "                               :n (ac/add (* arg " salt ") clock) :done false})\n"
+                         "           :next-id (inc next-id))))\n\n"))
+                  (str/join "\n\n" (map handler (:events f))) "\n\n"
+                  "(def ids\n  [" (str/join "\n   " (map #(str "::" %) (:events f))) "])\n")}))
+
+(defn rf-subs-file [f features]
+  (let [k (keyword (:key f)) dep (some->> (:dep f) (nth features))
+        f0 (:name (first (:fields f)))]
+    {:path (str (rf-path f) "/subs.cljs") :role :feature :ns (str (:ns f) ".subs")
+     :source (str "(ns " (:ns f) ".subs\n"
+                  "  (:require [re-frame.alpha :as rf]\n"
+                  "            [app.common :as ac]"
+                  (if dep (str "\n            [" (:ns dep) ".subs :as dep]") "") "))\n\n"
+                  "(rf/reg-sub ::slice (fn [db _] (get db " k ")))\n\n"
+                  (str/join (for [{:keys [name]} (:fields f)]
+                              (str "(rf/reg-sub ::" name " :<- [::slice] (fn [slice _] (" (keyword name) " slice)))\n\n")))
+                  "(rf/reg-sub ::items :<- [::slice] (fn [slice _] (:items slice)))\n\n"
+                  "(rf/reg-sub ::filter :<- [::slice] (fn [slice _] (:filter slice)))\n\n"
+                  "(rf/reg-sub ::total :<- [::slice] (fn [slice _] (:total slice)))\n\n"
+                  "(rf/reg-sub ::score (fn [db _] (get-in db [" k " :score])))\n\n"
+                  "(rf/reg-sub\n ::visible\n :<- [::items]\n :<- [::filter]\n"
+                  (if (:cond (:style f))
+                    " (fn [[items shown] _]\n   (cond (= shown :all) items\n         (= shown :done) (filterv :done items)\n         :else (filterv (complement :done) items))))\n\n"
+                    " (fn [[items shown] _]\n   (case shown\n     :all items\n     :done (filterv :done items)\n     (filterv (complement :done) items))))\n\n")
+                  "(rf/reg-sub\n ::summary\n (fn [_ _] [(rf/subscribe [::" f0 "]) (rf/subscribe [::visible])])\n"
+                  " (fn [[value visible] _] (reduce ac/add value (map :n visible))))\n"
+                  (if dep
+                    "\n(rf/reg-sub\n ::cross\n :<- [::summary]\n :<- [::dep/summary]\n (fn [[mine theirs] _] (ac/add (* 3 mine) theirs)))\n"
+                    ""))}))
+
+(defn rf-views-file [S b f]
+  (let [{:keys [style title]} f
+        cls (case (:cls style)
+              0 "(if done \"item done\" \"item\")"
+              1 "[\"item\" (when done \"done\")]"
+              2 "(str \"item\" (when done \" done\"))")
+        span (if (:span style) "[:span.label label]" "[:span {:class \"label\"} label]")
+        item (if (:destructure style)
+               (str "(defn item-view [{:keys [label n done]}]\n  [:li {:class " cls "} " span " \" \" [:b n]])")
+               (str "(defn item-view [item]\n  (let [{:keys [label n done]} item]\n    [:li {:class " cls "}\n     " span " \" \" [:b n]]))"))
+        field-view (fn [{:keys [name]} form]
+                     (if (= form :form-2)
+                       (str "(defn " name "-view []\n  (let [value (rf/subscribe [::subs/" name "])]\n"
+                            "    (fn [] [:div.field " (pr-str (str name " ")) " @value])))")
+                       (str "(defn " name "-view []\n  (r/with-let [value (rf/subscribe [::subs/" name "])]\n"
+                            "    [:div {:class \"field\"} " (pr-str (str name " ")) " @value]))")))]
+    {:path (str (rf-path f) "/views.cljs") :role :feature :ns (str (:ns f) ".views")
+     :source (str "(ns " (:ns f) ".views\n"
+                  "  (:require [reagent.core :as r]\n"
+                  "            [re-frame.alpha :as rf]\n"
+                  "            [\"react-dom\" :as rdom]\n"
+                  "            [" (:ns f) ".subs :as subs]))\n\n"
+                  item "\n\n"
+                  (str/join "\n\n" (map field-view (:fields f) (:forms style))) "\n\n"
+                  "(defn summary-view []\n  (r/with-let [summary (rf/subscribe [::subs/summary])]\n"
+                  "    [:p.summary \"Summary \" @summary]))\n\n"
+                  "(defn stats-view []\n  (r/create-class\n"
+                  "   {:display-name " (pr-str (str (:key f) "-stats")) "\n"
+                  "    :component-did-mount\n"
+                  "    (fn [this] (.setAttribute (rdom/findDOMNode this) \"data-mounted\" \"yes\"))\n"
+                  "    :reagent-render\n"
+                  "    (fn []\n"
+                  "      [:div {:class \"stats\" :title (str \"score \" @(rf/subscribe [::subs/score]))}\n"
+                  "       \"Total \" @(rf/subscribe [::subs/total])])}))\n\n"
+                  "(defn " (fresh! (:rng S) (:names b) :var) " []\n  [:div.unused " (pr-str (marker! S b :view :helper)) "])\n\n"
+                  "(defn root []\n"
+                  "  [:section {:id " (pr-str (str "f-" (:key f))) " :class \"feature\"}\n"
+                  "   [:h2 " (pr-str title) "]\n"
+                  (str/join (for [{:keys [name]} (:fields f)] (str "   [" name "-view]\n")))
+                  "   [summary-view]\n   [stats-view]\n"
+                  "   [:ul.items\n    (for [item @(rf/subscribe [::subs/visible])]\n"
+                  "      ^{:key (:id item)} [item-view item])]"
+                  (if (:dep f) "\n   [:footer \"Cross \" @(rf/subscribe [::subs/cross])]" "")
+                  "])\n")}))
+
+(defn rf-common-file []
+  {:path "src/app/common.cljs" :role :support :ns "app.common"
+   :source (str "(ns app.common\n  (:require [re-frame.alpha :as rf]))\n\n"
+                "(def modulus " modulus ")\n\n"
+                "(defn add [a b] (mod (+ a b) modulus))\n\n"
+                "(defonce clock (atom 0))\n\n(defonce log (atom 0))\n\n"
+                "(rf/reg-cofx :app/clock (fn [coeffects _] (assoc coeffects :clock (swap! clock inc))))\n\n"
+                "(rf/reg-fx\n :app/log\n (fn [[k arg]]\n   (swap! log (fn [h] (mod (+ (* h 31) arg (count (name k))) modulus)))))\n\n"
+                ";; A checksum of data and text that the model's oracle reproduces.\n"
+                "(defn mix [h x] (mod (+ (* h 31) x) modulus))\n\n"
+                "(defn digest-text [h s]\n"
+                "  (loop [i 0 h (mix h (count s))]\n"
+                "    (if (< i (count s)) (recur (inc i) (mix h (.charCodeAt s i))) h)))\n\n"
+                "(defn digest [h x]\n"
+                "  (cond (nil? x) (mix h 1)\n"
+                "        (true? x) (mix h 2)\n"
+                "        (false? x) (mix h 3)\n"
+                "        (number? x) (mix (mix h 4) x)\n"
+                "        (string? x) (digest-text (mix h 5) x)\n"
+                "        (keyword? x) (digest-text (mix h 6) (subs (str x) 1))\n"
+                "        (map? x) (reduce (fn [h [k v]] (digest (digest h k) v))\n"
+                "                         (mix (mix h 8) (count x))\n"
+                "                         (sort-by (fn [[k _]] (str k)) x))\n"
+                "        (sequential? x) (reduce digest (mix (mix h 7) (count x)) x)\n"
+                "        :else (throw (ex-info \"digest: unexpected value\" {:value x}))))\n")})
+
+(defn rf-core-file [features groups]
+  (let [alias (fn [f part] (str (:key f) "-" part))]
+    {:path "src/app/core.cljs" :role :support :ns "app.core"
+     :source (str "(ns app.core\n"
+                  "  (:require [reagent.core :as r]\n"
+                  "            [reagent.dom.client :as rdc]\n"
+                  "            [\"react-dom\" :as rdom]\n"
+                  "            [re-frame.alpha :as rf]\n"
+                  "            [re-frame.db :as rdb]\n"
+                  "            [app.common :as ac]\n"
+                  "            [workload.common :as c]\n"
+                  (str/join (for [g (range groups)] (str "            [workload.g" g " :as g" g "]\n")))
+                  (str/join (for [f features part ["db" "events" "views"]]
+                              (str "            [" (:ns f) "." part " :as " (alias f part) "]\n")))
+                  "            [" (:ns (first features)) ".subs]))\n\n"
+                  "(def features\n  [" (str/join "\n   " (for [f features]
+                                                          (str "[" (keyword (:key f)) " " (alias f "db") "/default "
+                                                               (alias f "events") "/ids " (alias f "views") "/root]")))
+                  "])\n\n"
+                  "(rf/reg-event-db\n :app/boot\n (fn [_ [_ input]]\n"
+                  "   (into {:core (c/pipeline (c/norm input) [" (str/join " " (for [g (range groups)] (str "g" g "/run"))) "])}\n"
+                  "         (map (fn [[k db]] [k db]))\n         features)))\n\n"
+                  "(rf/reg-sub :app/core (fn [db _] (:core db)))\n\n"
+                  "(defn root []\n"
+                  "  (into [:main {:id \"app-root\"} [:header \"Core \" @(rf/subscribe [:app/core])]]\n"
+                  "        (map (fn [[_ _ _ view]] [view]))\n        features))\n\n"
+                  "(def table (mapv #(nth % 2) features))\n\n"
+                  "(defn render! [f] (rdom/flushSync f))\n\n"
+                  "(defn run\n"
+                  "  \"Mounts the app, dispatches a sequence of events seeded by INPUT and\n"
+                  "  ITERATIONS, and returns checksums of app-db and of the rendered markup.\"\n"
+                  "  [input iterations]\n"
+                  "  (let [el (.createElement js/document \"div\")\n"
+                  "        n (count table)]\n"
+                  "    (.appendChild (.-body js/document) el)\n"
+                  "    (rf/dispatch-sync [:app/boot input])\n"
+                  "    (let [root-el (rdc/create-root el)]\n"
+                  "      (render! #(rdc/render root-el [root]))\n"
+                  "      (loop [step 0 x (mod (+ (* input 7) iterations) ac/modulus)]\n"
+                  "        (when (< step (* 3 iterations n))\n"
+                  "          (let [x (mod (+ (* x 7919) 12345) ac/modulus)\n"
+                  "                ids (nth table (mod x n))]\n"
+                  "            (rf/dispatch-sync [(nth ids (mod (quot x n) (count ids))) (mod (quot x 7) 997)])\n"
+                  "            (when (zero? (mod (inc step) n)) (render! r/flush))\n"
+                  "            (recur (inc step) x))))\n"
+                  "      (render! r/flush)\n"
+                  "      (str (ac/digest 0 [@rdb/app-db @ac/log]) \" \" (ac/digest-text 0 (.-innerHTML el))))))\n")}))
+
+(defn rf-main-file []
+  {:path "src/workload/main.cljs" :role :entry :ns "workload.main"
+   :source (str "(ns workload.main\n  (:require [app.core :as app]))\n\n"
+                "(defn main [& args]\n"
+                "  (let [input (js/Number (or (first args) \"1\"))\n"
+                "        iterations (js/Number (or (second args) \"1\"))]\n"
+                "    (when-not (and (<= (count args) 2)\n"
+                "                   (js/Number.isSafeInteger input) (<= 0 input 1000002)\n"
+                "                   (js/Number.isSafeInteger iterations) (<= 1 iterations 1000000))\n"
+                "      (throw (js/Error. \"INPUT must be 0..1000002; ITERATIONS must be 1..1000000\")))\n"
+                "    ;; Headless host: a Node script without a DOM makes one with jsdom.\n"
+                "    (when-not (exists? js/document)\n"
+                "      (let [JSDOM (.-JSDOM (js/require \"jsdom\"))\n"
+                "            dom (JSDOM. \"<!doctype html><html><body></body></html>\")]\n"
+                "        (set! (.-window js/globalThis) (.-window dom))\n"
+                "        (set! (.-document js/globalThis) (.. dom -window -document))))\n"
+                "    (js/console.log (app/run input iterations))))\n")})
+
+(defn re-frame-project [{:keys [seed lines namespace-lines]}]
+  (let [base (project {:seed seed :lines (max 1000 (long (* rf-share-of-workers lines))) :namespace-lines namespace-lines})
+        rng (java.util.Random. (bit-xor seed 0x7265667261))
+        used (atom (set rf-fixed-keys))
+        workers (mapv :ns (:workers (:model base)))
+        groups (count (filter #(= :group (:role %)) (:files base)))
+        S {:rng rng :marker-id (atom (count (:markers base))) :markers (atom [])}
+        base-files (vec (remove #(= :entry (:role %)) (:files base)))
+        fixed [(rf-common-file) (rf-main-file)]
+        fixed-lines (+ (* 6 groups) (reduce + (map (comp code-lines :source) (concat base-files fixed))))]
+    (loop [features [] files [] total fixed-lines]
+      (if (and (seq features) (>= (+ total 4 (* 2 (count features))) lines))
+        (let [core (rf-core-file features groups)]
+          {:model (assoc (:model base) :shape "re-frame" :features (mapv #(dissoc % :style) features))
+           :files (-> base-files (into fixed) (into files) (conj core))
+           :markers (into (:markers base) @(:markers S)) :waste-trees (:waste-trees base)})
+        (let [f (rf-feature-model rng used (count features) workers)
+              b {:ns (str (:ns f) ".views") :tag "V" :names (atom #{"item-view" "summary-view" "stats-view" "root"})}
+              _ (swap! (:names b) into (map #(str (:name %) "-view") (:fields f)))
+              fs [(rf-db-file f) (rf-events-file f) (rf-subs-file f (conj features f)) (rf-views-file S b f)]]
+          (recur (conj features f) (into files fs) (+ total (reduce + (map (comp code-lines :source) fs)))))))))
+
+(defn rf-libs-dir [] (str (fs/normalize (fs/path kit ".." ".." "research" "shadow-credibility" "re-frame-libs"))))
+
+(defn lib-files
+  "Relative path -> text of every file under each of DIRS, in path order."
+  [root dirs]
+  (into (sorted-map)
+        (for [d dirs file (fs/glob (fs/path root d) "**") :when (fs/regular-file? file)]
+          [(str d "/" (fs/relativize (fs/path root d) file)) (slurp (str file))])))
+
 ;;; Output
 
 (defn write-file! [root path text]
@@ -1413,18 +1746,68 @@ object number string run main tag" #"\s+"))))
        "proof of equivalence. Test several seeds and runtime inputs. model.edn is\n"
        "data for oracle.bb, never a constant result supplied to the compiled code.\n"))
 
+(defn rf-generated-readme [{:keys [seed lines namespace-lines]} manifest]
+  (str "# Generated re-frame app\n\n"
+       "Seed " seed ", requested " lines " nonblank lines, " namespace-lines " lines per worker.\n"
+       "Actual: " (:code-lines manifest) " nonblank lines, " (:bytes manifest) " bytes; "
+       (:feature-namespaces manifest) " feature namespaces (db, events, subs, views) and "
+       (:worker-namespaces manifest) " worker namespaces of utility code.\n\n"
+       "The app mounts in jsdom, dispatches a sequence of events seeded by INPUT and\n"
+       "ITERATIONS, and prints two checksums: app-db, then the rendered markup.\n"
+       "oracle.bb computes both from model.edn without reading the sources.\n\n"
+       "```sh\nnpm install   # react, react-dom and jsdom for both compilers\n"
+       "bb oracle.bb 42 3\n"
+       "\"$LIGHT\" release bench\nnode run-light.mjs 42 3\n"
+       "clojure -M:shadow release bench\nnode out/shadow.js 42 3\n"
+       "bb check-waste.bb out/light/workload.main.js out/shadow.js\n```\n\n"
+       "lib/shadow holds re-frame's sources; reagent comes from Maven (deps.edn), as in\n"
+       "re-frame's examples. lib/light holds light-cljs's port of the same libraries;\n"
+       "lib/libs.edn lists every edit by cause.\n"))
+
+(def rf-npm {"react" "18.2.0" "react-dom" "18.2.0" "jsdom" "26.1.0"})
+(def rf-maven {'reagent/reagent "1.2.0" 'net.cgrand/macrovich "0.2.1" 'org.clojure/tools.logging "1.2.4"})
+(def rf-light-roots ["lib/light/vendor" "lib/light/compat" "lib/light/re-frame"])
+
+(defn rf-libraries
+  "The library sources under LIBS (made by re-frame-libs.bb), keyed by their path in the project."
+  [libs]
+  (let [root (fs/absolutize (or libs (rf-libs-dir)))]
+    (when-not (and (fs/directory? (fs/path root "light")) (fs/directory? (fs/path root "shadow"))
+                   (fs/exists? (fs/path root "libs.edn")))
+      (throw (ex-info (str "re-frame library sources not found in " root
+                           "; make them with bb benchmarks/generated-project/re-frame-libs.bb") {})))
+    (into (sorted-map)
+          (map (fn [[path text]] [(str "lib/" path) text]))
+          (assoc (lib-files root ["light" "shadow"]) "libs.edn" (slurp (str (fs/path root "libs.edn")))))))
+
+(defn rf-run-light []
+  (str "// Mounts the light-cljs build in jsdom. JavaScript packages reach light-cljs\n"
+       "// output through globalThis.lightCljsPackages (docs/compiler.md).\n"
+       "import { createRequire } from 'node:module';\n"
+       "const require = createRequire(import.meta.url);\n"
+       "const { JSDOM } = require('jsdom');\n"
+       "const dom = new JSDOM('<!doctype html><html><body></body></html>');\n"
+       "globalThis.window = dom.window;\nglobalThis.document = dom.window.document;\n"
+       "globalThis.lightCljsPackages = {\n"
+       "  'react': require('react'),\n  'react-dom': require('react-dom'),\n  'react-dom/client': require('react-dom/client'),\n};\n"
+       "const { default: main } = await import('./out/light/workload.main.js');\n"
+       "main(...process.argv.slice(2));\n"))
+
 (defn generate! [{:keys [output] :as options}]
-  (let [root (fs/absolutize output)]
+  (let [root (fs/absolutize output)
+        re-frame? (= "re-frame" (:shape options))]
     (when (and (fs/exists? root)
                (or (not (fs/directory? root)) (seq (fs/list-dir root))))
       (throw (ex-info "Output directory must be absent or empty; nothing was overwritten" {:output output})))
-    (let [{:keys [files model markers waste-trees]} (project options)
+    (let [libraries (when re-frame? (rf-libraries (:libs options)))
+          {:keys [files model markers waste-trees]} (if re-frame? (re-frame-project options) (project options))
           sources (map :source (remove #(= :shim (:role %)) files))
           metrics (source-metrics sources)
           manifest (merge
-                    {:format 2 :generator-options (dissoc options :output)
+                    {:format 2 :generator-options (dissoc options :output :libs)
                      :generator-sha256 (into (sorted-map)
-                                             (for [file ["generate.bb" "oracle.bb" "check-waste.bb"]]
+                                             (for [file (cond-> ["generate.bb" "oracle.bb" "check-waste.bb"]
+                                                          re-frame? (conj "re-frame-oracle.bb"))]
                                                [file (sha256 (slurp (fs/file kit file)))]))
                      :worker-namespaces (count (:workers model))
                      :source-namespaces (count (remove #(= :shim (:role %)) files))
@@ -1436,23 +1819,37 @@ object number string run main tag" #"\s+"))))
                                     (-> file (dissoc :source)
                                         (assoc :sha256 (sha256 source) :code-lines (code-lines source)
                                                :bytes (count (.getBytes ^String source "UTF-8"))))) files)}
+                    (when re-frame?
+                      {:feature-namespaces (* 4 (count (:features model)))
+                       :library-sha256 (into (sorted-map) (map (fn [[p t]] [p (sha256 t)])) libraries)})
                     metrics)]
       (doseq [{:keys [path source]} files] (write-file! root path source))
+      (doseq [[path text] libraries] (write-file! root path text))
       (write-file! root "model.edn" (str (pr-str model) "\n"))
       (write-file! root "manifest.edn" (edn-text manifest))
-      (write-file! root "oracle.bb" (slurp (fs/file kit "oracle.bb")))
+      (if re-frame?
+        (do (write-file! root "oracle.bb" (slurp (fs/file kit "re-frame-oracle.bb")))
+            (write-file! root "workload-oracle.bb" (slurp (fs/file kit "oracle.bb"))))
+        (write-file! root "oracle.bb" (slurp (fs/file kit "oracle.bb"))))
       (write-file! root "check-waste.bb" (slurp (fs/file kit "check-waste.bb")))
       (write-file! root "light-cljs.edn"
-                   (edn-text {:source-paths ["src" "macros"]
+                   (edn-text {:source-paths (cond-> ["src" "macros"] re-frame? (into rf-light-roots))
                               :builds {:bench {:target :esm :output-dir "out/light"
                                                :modules {:main {:entries ['workload.main]}}
-                                               :compiler-options {:macro-expansions 10000000 :macro-nodes 1000000000
-                                                                  :macro-timeout-ms 3600000 :macro-memory-limit 2147483648
-                                                                  :macro-poll-budget 100000000000}
+                                               :compiler-options (if re-frame?
+                                                                   ;; The TodoMVC port's budgets: reagent's
+                                                                   ;; macros expand far more than the workers'.
+                                                                   {:macro-expansions 100000000 :macro-nodes 4000000000
+                                                                    :macro-timeout-ms 3600000 :macro-memory-limit 4000000000
+                                                                    :macro-poll-budget 1000000000000}
+                                                                   {:macro-expansions 10000000 :macro-nodes 1000000000
+                                                                    :macro-timeout-ms 3600000 :macro-memory-limit 2147483648
+                                                                    :macro-poll-budget 100000000000})
                                                :build-options {:cache-level :off}}}}))
       (write-file! root "deps.edn"
-                   (edn-text {:paths ["src" "macros" "shadow-support"]
-                              :deps {'thheller/shadow-cljs {:mvn/version "3.5.3"}}
+                   (edn-text {:paths (cond-> ["src" "macros" "shadow-support"] re-frame? (conj "lib/shadow/re-frame"))
+                              :deps (into {'thheller/shadow-cljs {:mvn/version "3.5.3"}}
+                                          (when re-frame? (map (fn [[lib v]] [lib {:mvn/version v}]) rf-maven)))
                               :aliases {:shadow {:jvm-opts ["-Xmx8g"] :main-opts ["-m" "shadow.cljs.devtools.cli"]}}}))
       (write-file! root "shadow-cljs.edn"
                    (edn-text {:deps {:aliases [:shadow]}
@@ -1462,12 +1859,19 @@ object number string run main tag" #"\s+"))))
                                                                   ;; Valid CLJS such as (+ (or (peek v) 3) 1)
                                                                   ;; trips conservative nil inference.
                                                                   :warnings {:invalid-arithmetic false}}}}}))
-      (write-file! root "package.json" "{\"private\":true}\n")
+      (write-file! root "package.json"
+                   (if re-frame?
+                     (str "{\"private\":true,\"dependencies\":{"
+                          (str/join "," (for [[p v] (sort rf-npm)] (str "\"" p "\":\"" v "\""))) "}}\n")
+                     "{\"private\":true}\n"))
       (write-file! root "out/light/package.json" "{\"type\":\"module\"}\n")
       (write-file! root "run-light.mjs"
-                   "import main from './out/light/workload.main.js';\nmain(...process.argv.slice(2));\n")
-      (write-file! root ".gitignore" "out/\n.shadow-cljs/\n.cpcache/\n.light-cljs/\n.nrepl-port\n")
-      (write-file! root "README.md" (generated-readme options manifest))
+                   (if re-frame?
+                     (rf-run-light)
+                     "import main from './out/light/workload.main.js';\nmain(...process.argv.slice(2));\n"))
+      (write-file! root ".gitignore" (str "out/\n.shadow-cljs/\n.cpcache/\n.light-cljs/\n.nrepl-port\n"
+                                          (when re-frame? "node_modules/\n")))
+      (write-file! root "README.md" (if re-frame? (rf-generated-readme options manifest) (generated-readme options manifest)))
       manifest)))
 
 (defn main [args]
