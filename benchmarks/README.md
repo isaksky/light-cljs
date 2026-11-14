@@ -5,6 +5,11 @@
 with an independent model interpreter and mandatory, classified unused code for
 elimination checks.
 
+[re-frame's example apps](re-frame-vs-shadow.md) compare light-cljs's ports of
+TodoMVC and simple with shadow-cljs's builds of the unmodified originals:
+release size raw, gzip and brotli with React counted apart, build time, and
+every port edit by cause (`bb benchmarks/re-frame.bb`).
+
 [Compiler collection measurements](compiler.md) separate parse/analyze/emit/total
 compilation, output bytes, fresh CLI/Node costs, and validated resident immutable
 operations. The standard-library `run_compiler.py` driver retains nine-sample
