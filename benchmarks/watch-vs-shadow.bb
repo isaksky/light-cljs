@@ -69,8 +69,10 @@
 (def generated-dir (fs/path research "watch-vs-shadow/re-frame-200k"))
 
 ;; Each scenario edits one string (or number) of one file, the same text for
-;; both tools; FILE maps tool to path. The probe reads the page text (:dom)
-;; or the source text of a definition (:def) the edit changes.
+;; both tools; FILE maps tool to path. The probe reads the page text (:dom),
+;; calls the function the edit changes (:call), or, for re-frame.loggers's
+;; set-loggers!, whose message shows only when its assertion fails, reads its
+;; source text (:def). See benchmarks/watch-vs-shadow.mjs.
 (def apps
   {"todomvc"
    {:shadow {:dir todomvc-dir
@@ -107,16 +109,17 @@
     [{:name "view (leaf): app.baga.views"
       :file (fs/path generated-dir "src/app/baga/views.cljs")
       :from "[:h2 \"Baga\"]" :to #(str "[:h2 \"Baga " % "\"]")
-      :probe {:def "app.baga.views/root" :original "Baga"}}
+      :probe {:call "app.baga.views/root" :args [] :original "Baga"}}
      {:name "widely required: workload.common"
       :file (fs/path generated-dir "src/workload/common.cljs")
       :from "\"GENERATED_WASTE_C_COMMON1_END\""
       :to #(str "\"GENERATED_WASTE_C_COMMON1_END " % "\"")
-      :probe {:def "workload.common/geinklarvou" :original "GENERATED_WASTE_C_COMMON1_END"}}
+      :probe {:call "workload.common/geinklarvou" :args [1] :original "GENERATED_WASTE_C_COMMON1_END"}}
      {:name "macro: workload.sobis/hainfoulvei"
       :file (fs/path generated-dir "macros/workload/sobis.cljc")
       :from "(+ 11 (do ~@body))" :to #(str "(+ " % " (do ~@body))") :numeric true
-      :probe {:def "workload.breisrei/dokgem" :original "11"}}]}})
+      ;; dokgem(x) is (workload.common/norm (+ 11 body)), norm being mod 1000003.
+      :probe {:call "workload.breisrei/dokgem" :args [3] :offset 11 :modulus 1000003}}]}})
 
 ;; ---------------------------------------------------------------------------
 ;; prepare
@@ -273,6 +276,9 @@
 (defn run-tool [app tool binary {:keys [edits timeout-s log]}]
   (let [{:keys [ready scenarios]} (apps app)
         out (get-in apps [app tool :out])
+        ;; Read every source before the watch starts, so that whatever
+        ;; happens below, the finally clause can put them back.
+        configs (mapv #(scenario-config app tool % edits) scenarios)
         load0 (load-average)
         w (start-watch app tool binary)]
     (try
@@ -285,7 +291,7 @@
                      {:tool (name tool) :url url :events (str (str/replace url #"/$" "") "/events")
                       :npmTools (str npm-tools) :outDir (str out) :rootPid (:pid w)
                       :ready ready :timeoutMs (* 1000 timeout-s) :pauseMs 1000
-                      :scenarios (map #(scenario-config app tool % edits) scenarios)}))
+                      :scenarios configs}))
             r (process/sh {:err :inherit :out :string} "node" (str (fs/path repo "benchmarks/watch-vs-shadow.mjs")) (str cfg))
             _ (fs/delete cfg)
             _ (when-not (zero? (:exit r)) (throw (ex-info "the browser driver failed" {})))
@@ -311,10 +317,10 @@
         (stop-watch w)
         (when log
           (spit log (str/join (for [[t l] @(:lines w)] (format "%.1f %s %s\n" t (name tool) l))) :append true))
-        (doseq [sc scenarios
-                :let [file (str (if (map? (:file sc)) (get-in sc [:file tool]) (:file sc)))]]
-          (when (str/includes? (slurp file) "972")
-            (binding [*out* *err*] (println "warning:" file "may still hold an edit"))))))))
+        (doseq [{:keys [file text]} configs
+                :when (not= text (slurp file))]
+          (spit file text)
+          (binding [*out* *err*] (println "restored" file)))))))
 
 (defn median [xs] (let [s (vec (sort xs)) n (count s)]
                     (if (odd? n) (s (quot n 2)) (/ (+ (s (dec (quot n 2))) (s (quot n 2))) 2.0))))

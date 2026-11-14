@@ -5,7 +5,8 @@
 //   {tool: "shadow"|"light", url, events, npmTools, outDir, rootPid,
 //    ready: JS expression true once the app has rendered,
 //    scenarios: [{name, file, text, edits: [text...], tokens: [token...],
-//                 probe: {dom: true | def: "ns/name", original}}]}
+//                 probe: {dom: true | call: "ns/name", args | def: "ns/name",
+//                         original, offset, modulus}}]}
 // text is the file's original content, which is written back after the
 // scenario's edits; original is a string the probe shows before any edit.
 //
@@ -18,9 +19,13 @@
 //           `cljs-build-complete` websocket frame to the page, or light-cljs's
 //           `load` server-sent event on a second /events connection;
 //   running the page evaluating a probe that is true only once the edit's new
-//           code ran: page text (dom) or the source text of the definition
-//           the edit changes (def), as found in the page's namespace objects
-//           (shadow-cljs) or definition registry (light-cljs).
+//           code ran: the page text (dom), the result of calling the
+//           function the edit changes with ARGS (call) as the page's
+//           namespace objects (shadow-cljs) or definition registry
+//           (light-cljs) hold it, or that function's source text (def).
+//           A call's result shows the token, or, with offset, is a number
+//           whose constant OFFSET became the token: before + token - offset,
+//           modulo MODULUS.
 // It also reads the watch's process tree's CPU time before and after each
 // edit. Prints {pageLoadMs, edits: [{scenario, i, load, mtime, output,
 // message, running, cpuUser, cpuSys}]} as JSON; times are milliseconds since
@@ -135,11 +140,21 @@ try {
   const pageLoadMs = now() - start;
   const edits = [];
   for (const sc of config.scenarios) {
-    const value = sc.probe.dom ? "document.body.innerText"
-      : `String(${probeSource[config.tool](sc.probe.def)})`;
+    const p = sc.probe;
+    const value = p.dom ? "document.body.innerText"
+      : p.call ? `${probeSource[config.tool](p.call)}(...${JSON.stringify(p.args ?? [])})`
+      : `String(${probeSource[config.tool](p.def)})`;
     const before = await page.evaluate(value);
-    if (!before.includes(sc.probe.original)) {
-      throw new Error(`${sc.name}: the probe does not show ${JSON.stringify(sc.probe.original)} before the first edit: ${before.slice(0, 300)}`);
+    let shows;
+    if (p.offset !== undefined) {
+      if (typeof before !== "number") throw new Error(`${sc.name}: the probe gives ${before}, not a number`);
+      const m = p.modulus;
+      shows = (token) => `(${value}) === ${(((before - p.offset + Number(token)) % m) + m) % m}`;
+    } else {
+      if (!String(before).includes(p.original)) {
+        throw new Error(`${sc.name}: the probe does not show ${JSON.stringify(p.original)} before the first edit: ${String(before).slice(0, 300)}`);
+      }
+      shows = (token) => `String(${value}).includes(${JSON.stringify(token)})`;
     }
     for (let i = 0; i < sc.edits.length; i++) {
       const token = sc.tokens[i];
@@ -149,7 +164,7 @@ try {
       const mtime = fs.statSync(sc.file).mtimeMs;
       const msg = await waitFor(() => messages.find((m) => m.at >= mtime), `${sc.name} edit ${i}: reload message`, config.timeoutMs);
       const running = await waitFor(async () => {
-        const at = await page.evaluate(`(${value}).includes(${JSON.stringify(token)}) ? performance.timeOrigin + performance.now() : 0`);
+        const at = await page.evaluate(`(${shows(token)}) ? performance.timeOrigin + performance.now() : 0`);
         return at || null;
       }, `${sc.name} edit ${i}: the page to run the new code`, config.timeoutMs);
       const cpu1 = treeCpu(config.rootPid);
@@ -167,7 +182,7 @@ try {
     fs.writeFileSync(sc.file, sc.text);
     const restored = fs.statSync(sc.file).mtimeMs;
     await waitFor(() => messages.find((m) => m.at >= restored), `${sc.name}: reload after restoring`, config.timeoutMs);
-    await waitFor(async () => !(await page.evaluate(value)).includes(last), `${sc.name}: the page to run the original`, config.timeoutMs);
+    await waitFor(async () => !(await page.evaluate(shows(last))), `${sc.name}: the page to run the original`, config.timeoutMs);
     process.stderr.write(`${config.tool} ${sc.name}: restored\n`);
     await new Promise((r) => setTimeout(r, config.pauseMs ?? 1000));
   }
