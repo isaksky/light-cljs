@@ -155,6 +155,17 @@ impl Constant {
         !matches!(self, Self::Nil | Self::Bool(false))
     }
 
+    /// Whether JavaScript counts it as true exactly when Clojure does: not
+    /// for `0`, `-0`, `NaN` and the empty string, which JavaScript counts
+    /// as false.
+    pub fn truth_is_js(&self) -> bool {
+        match self {
+            Self::Number(value) => *value != 0.0 && !value.is_nan(),
+            Self::String(units) => !units.is_empty(),
+            _ => true,
+        }
+    }
+
     /// The literal expression of this scalar or symbol, adding a string to
     /// `program`. A collection is copied by the folder instead.
     pub fn into_kind(self, program: &mut Program) -> ExprKind {
@@ -1175,7 +1186,12 @@ pub(crate) fn sole_definitions(program: &Program, position: &[u32]) -> Vec<Optio
                 continue;
             }
         };
-        for target in targets {
+        for mut target in targets {
+            // The reads of a `^boolean` global carry its hint, in a `js*`
+            // hole too.
+            while let ExprKind::BooleanHint(inner) = program.exprs[target.0].kind {
+                target = inner;
+            }
             if let ExprKind::Global(global) = program.exprs[target.0].kind {
                 assigned[global.0] = true;
             }
@@ -1297,7 +1313,8 @@ fn constant_globals(program: &Program, top: &[ExprId], position: &[u32]) -> Cons
 /// The literal of the scalar or symbol that `id` evaluates to when it runs
 /// after top-level position `at`: a literal, or, through `do` and `^boolean`
 /// hints, a read of a global with a value or a call without arguments of a
-/// global with a return, defined before `at`.
+/// global with a return, defined before `at`. Through a hint, only a value
+/// whose JavaScript truth is its Clojure truth.
 fn known_value(
     program: &Program,
     known: &ConstantGlobals,
@@ -1310,7 +1327,11 @@ fn known_value(
         _ => None,
     };
     match &program.exprs[id.0].kind {
-        ExprKind::BooleanHint(inner) => known_value(program, known, *inner, at),
+        // A hinted value whose JavaScript truth is not its Clojure truth
+        // stays unknown: a function returning it has its calls tested by
+        // JavaScript truth once inlined, as upstream infers its return tag.
+        ExprKind::BooleanHint(inner) => known_value(program, known, *inner, at)
+            .filter(|value| Constant::of_kind(program, value).is_some_and(|c| c.truth_is_js())),
         ExprKind::Global(global) => found(&known.values[global.0]),
         ExprKind::Call { callee, args } if args.is_empty() => {
             found(&known.returns[called_global(program, *callee)?.0])
@@ -1527,7 +1548,12 @@ impl Folder<'_> {
             }
             ExprKind::BooleanHint(inner) => {
                 self.visit(inner);
-                if self.constant(inner).is_some()
+                // A hinted test reads JavaScript truth, so the hint stays on
+                // a constant whose JavaScript truth is not its Clojure truth
+                // (`0`, `NaN`, `""`).
+                if self
+                    .constant(inner)
+                    .is_some_and(|value| value.truth_is_js())
                     && let Some(kind) = self.adopt(id, inner)
                 {
                     return kind;

@@ -432,13 +432,14 @@ fn variadic_calls_build_the_dispatchers_rest_sequence() {
 fn value_position_do_is_a_comma_expression() {
     let source = r#"
         (def sequence (do (.push js/trace "a") :ignored [1 2] nil (.push js/trace "b") 1))
-        (def single (do 2))
+        (def single (do (.-length "ab")))
         (defn arguments-in-do [a] (let [x (do (js-arguments))] (alength x)))
         (defn this-in-do [a] (let [x (do (js* "this !== 0"))] x))
         (pr-str [sequence single (arguments-in-do 1) (this-in-do 1) (vec js/trace)])"#;
     let (text, _) = source_at_every_level(source, "[1 2 0 true [\"a\" \"b\"]]");
     assert!(text.contains("[\"push\"](\"a\"), ("), "{text}");
-    assert!(text.contains("g1 = 2))"), "{text}");
+    // A literal `(do 2)` would fold into its read (light-cljs-984).
+    assert!(text.contains("g1 = (\"ab\")[\"length\"]));"), "{text}");
     assert_eq!(text.matches("(function () {").count(), 2, "{text}");
 }
 

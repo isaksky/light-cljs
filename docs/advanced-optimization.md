@@ -4372,7 +4372,11 @@ upstream states that advanced mode is unsafe for certain patterns.
   a call before the definition it reads, so such a call still throws.
 - A `goog-define`'s value comes from the build at every level, as upstream's
   `:closure-defines`; at `Advanced`, a `^:const` or `goog-define` Var read
-  after its top-level definition is its value (light-cljs-214).
+  after its top-level definition is its value (light-cljs-214). So is a Var
+  nothing in the program reassigns whose top-level definition is a literal,
+  another such Var or a call without arguments of a function that returns
+  one, and so is such a call (light-cljs-984); a definition left unread
+  then goes, which a registered namespace shows as above.
 - Where the program has no `extend-type`, `extend-protocol` or `specify!`
   (before light-cljs-246: no protocol implementation), the host-facing
   methods of the runtime's vectors and maps (iteration, `indexOf`,

@@ -190,7 +190,9 @@ fn the_registration_spells_names_without_escapes() {
     // escape, which made TodoMVC's registration four times its size
     // (light-cljs-979). Names are plain strings; only a non-ASCII character,
     // a quote and a backslash are escaped, and the program still reads them.
-    let source = "(def café 1) (def plain-name 2)
+    // The values are read from the host: a literal def that nothing
+    // reassigns folds into its reads and goes (light-cljs-984).
+    let source = "(def café (.-length \"a\")) (def plain-name (.-length \"ab\"))
                   (pr-str [café plain-name (read-string \"`plain-name\") (read-string \"`café\")])";
     let program = program(source);
     let readable_advanced = emit_readable(&program, OptimizationLevel::Advanced);
@@ -300,7 +302,9 @@ fn a_registered_namespace_lists_only_retained_definitions() {
     // reader's syntax quote. `map` and `unused` are removed: at `Advanced` the
     // registration does not list them, so `map` resolves to `cljs.core/map`
     // (the advanced-mode contract), while lower levels list every definition.
-    let source = r#"(def map 3) (def unused 5) (def inc 4)
+    // `inc`'s value is read from the host: a literal def that nothing
+    // reassigns folds into its reads and goes too (light-cljs-984).
+    let source = r#"(def map 3) (def unused 5) (def inc (.-length "abcd"))
                     (pr-str [inc (read-string "`inc") (read-string "`map")])"#;
     let program = program(source);
     let advanced = emit(&program, OptimizationLevel::Advanced);

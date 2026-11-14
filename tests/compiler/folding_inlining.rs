@@ -532,6 +532,10 @@ fn defs_that_may_change_never_fold() {
             "[true true]",
         ),
         (
+            "(def ^boolean flag false) (defn on? [] flag) (js* \"~{} = true\" flag) (pr-str [flag (on?)])",
+            "[true true]",
+        ),
+        (
             "(def flag false) (defn reset [] (def flag true)) (reset) (pr-str [flag])",
             "[true]",
         ),
@@ -563,9 +567,13 @@ fn folds_that_would_copy_text_or_change_tagged_tests_stay_reads() {
                  (if (early) :t :f) (if (takes 1) :t :f) (if (computes) :t :f)])"#;
     let (text, _) = every_level(source, r#"["a string longer than sixteen" 28 :f :f :f :t]"#);
     assert_eq!(text.matches("a string longer").count(), 1, "{text}");
+    // Explicitly hinted reads of untagged defs whose JavaScript truth is not
+    // their Clojure truth keep the hint too, `^:const` ones included.
     let tagged = program(
         "(defn ^boolean zero-fn [] 0) (def ^boolean zero 0) (def ^boolean empty \"\")
-         (pr-str [(if (zero-fn) :t :f) (if zero :t :f) (if empty :t :f)])",
+         (def n 0) (def s \"\") (def ^:const c 0) (def nan js/NaN) (defn hinted [] ^boolean n)
+         (pr-str [(if (zero-fn) :t :f) (if zero :t :f) (if empty :t :f) (if ^boolean n :t :f)
+                  (if ^boolean s :t :f) (if ^boolean c :t :f) (if (hinted) :t :f) [^boolean n]])",
     );
     let run = |no_folding| {
         let mut options = options(OptimizationLevel::Advanced, &[]);
