@@ -308,3 +308,78 @@ The group's rule applies: where the remedy is a design change, such as
 replacing the private-field brand stores or how core operations find protocol
 implementations, it goes to the user before anyone designs it. No remedy is
 designed here.
+
+## 2026-11-14: protocol lookup on the runtime's own values (light-cljs-988)
+
+**Change.** The protocol lookup in front of the core operations
+(`publicMethod`) now answers in one step for one of the runtime's
+collections or seqs that declares no core protocol itself:
+- It reads the protocol's mask bit and marker first, as before.
+- Brand checks then name the payload store that holds the value. They read
+  no property of it, so a host value's getters and Proxy traps never run.
+- The native test's answer for that store is cached for `ISeqable`, `ISeq`,
+  `INext`, `IMeta` and `ILookup`.
+
+Before, the value was tested against every brand store up to three times
+(the native test, then `satisfies` or `externalMethod`, then
+`publicDeclared`). Nothing else changed:
+- an implementation from `extend-type`, `extend-protocol` or `specify!` is
+  still found;
+- so is a method JavaScript writes on a value or a prototype, with or
+  without the protocol's marker;
+- `extend-type object` and `default` still give the runtime's collections
+  nothing, and still reach host values.
+
+`builtin_types::sequence_protocol_extensions_to_runtime_types_still_win`
+checks this against the outputs from before the change.
+
+**Setup.** The kit and machine of the 2026-11-14 section above, with two
+differences:
+- before is `light-cljs-67b1bbec` (975's binary, whose runtime equals
+  master's before this change) and after is `light-cljs-32cb0373`;
+- before and after ran back to back on each workload, each alternating with
+  shadow-cljs.
+
+10 runs of each. **Unreserved:** peer workers ran throughout. The 1-minute
+load average before a run was 2.2 to 4.7. Raw results are in
+`research/shadow-credibility/runtime-988`.
+
+Only the rows that moved are shown. Steady state is computed as in the
+tables above. Ranges are in brackets.
+
+| Workload | light-cljs before | light-cljs after | change | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k, steady state per iteration | 119.7 ms | 95.7 ms | -20% | 5.02 | 4.15 |
+| workload 200k, wall time at 40 iterations | 5.155 s (4.882-5.355) | 4.163 s (4.137-4.186) | -19% | 4.12 | 3.47 |
+| workload 800k, steady state per iteration | 468.9 ms | 392.7 ms | -16% | 4.35 | 3.79 |
+| workload 800k, wall time at 16 iterations | 8.554 s (8.369-8.854) | 7.314 s (7.197-7.522) | -14% | 3.27 | 2.86 |
+| re-frame-shaped 200k app, steady state per iteration | 1,347 ms | 1,162 ms | -14% | 5.42 | 4.77 |
+| re-frame-shaped 200k app, wall time at 10 iterations | 16.245 s (16.063-16.734) | 14.076 s (13.908-14.324) | -13% | 4.58 | 4.01 |
+| re-frame-shaped 200k app, first output | 4.050 s (4.011-4.180) | 3.535 s (3.503-3.657) | -13% | 3.12 | 2.72 |
+| TodoMVC, add 1,000 todos | 9,768 ms (9,625-10,434) | 8,645 ms (8,589-9,360) | -11% | 10.67 | 9.58 |
+| TodoMVC, toggle all | 138.1 ms (137.3-144.1) | 127.6 ms (123.8-138.5) | -8% | 2.77 | 2.68 |
+| TodoMVC, edit one in a list of 1,000 | 85.2 ms (75.4-93.0) | 75.0 ms (71.4-80.9) | -12% | 1.39 | 1.21 |
+| TodoMVC, whole run wall time | 10.43 s (10.29-11.09) | 9.29 s (9.22-10.04) | -11% | 7.25 | 6.52 |
+| TodoMVC, whole run user CPU | 11.09 s (10.94-11.82) | 9.94 s (9.87-10.88) | -10% | 6.68 | 6.02 |
+
+- **Unchanged:** peak memory, the JavaScript heap, startup, TodoMVC's page
+  load and its clear-completed step all stayed within their ranges.
+- **Output size:** each output grows by 339 bytes before gzip.
+- **Where the gain comes from.** In TodoMVC's add step, most of the lookups
+  are on the runtime's own values:
+  - `nth` of map entries;
+  - lookups and `contains?` on array maps;
+  - `first` and `next` of indexed seqs and of the seqs of sorted maps.
+  All of these now take the one step.
+- **What still takes the full test:** keywords and numbers being printed,
+  and the empty list. These are not in a payload store.
+- **What is left of the protocol checks.** A sampling profile of workload
+  200k at 30 iterations still puts 10% of inclusive time in `publicMethod`
+  (5% self, and 3% in the store test): the mask, marker and slot reads that
+  observe extensions. A further 5% inclusive is in `implementsProtocol`, which the `satisfies` and
+  `implements` hooks call; this change leaves those hooks alone.
+- **Not changed here:** the brand stores themselves (light-cljs-990) and
+  small maps (light-cljs-989). Closures are a large share of what remains:
+  the profile's anonymous functions and the operations' named wrappers
+  (`Object.defineProperty.value`) are a quarter of workload 200k's self
+  time.

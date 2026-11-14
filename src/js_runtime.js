@@ -6992,17 +6992,35 @@
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
     return dispatch ?? cell.natives?.get(nativeType(value))?.get(arity) ?? cell.natives?.get("_")?.get(arity);
   }
+  //@unit payloadStore requires: cells, lazyValues, maps, queues, sets, vectors, views
+  // Which store of the runtime's collections and seqs holds a value, by a
+  // number from 1 to 7, else 0. These are brand checks, which read no
+  // property of the value, so no getter or Proxy trap of a host value runs.
+  // A value is in one payload store (`countedValue`).
+  function payloadStore(value) {
+    return views.has(value) ? 1 : cells.has(value) ? 2 : vectors.has(value) ? 3 : maps.has(value) ? 4
+      : lazyValues.has(value) ? 5 : sets.has(value) ? 6 : queues.has(value) ? 7 : 0;
+  }
+  //@unit storeNativeProtocols
+  // The core protocols of `publicMethodInfo`'s `stores`.
+  const storeNativeProtocols = new Set(["ISeqable", "ISeq", "INext", "IMeta", "ILookup"]);
   //@unit publicMethodInfo requires: coreProtocolNames, coreProtocolsByName, nativeImplementations,
-  //@ protocolMasks, protocolSlot
+  //@ protocolMasks, protocolSlot, storeNativeProtocols
   // The protocol of a key's text, which a resolved key (`methodKey`) keeps as its
   // `info`: only the private, fixed ABI belongs there. Membership, demanded
   // extensions and receiver properties must still be observed on every call.
   function publicMethodInfo(key) {
     const protocol = coreProtocolsByName.get(key.split("/")[0]), name = coreProtocolNames.get(protocol);
-    return {protocol, name, mask: protocolMasks.get(name), marker: name && protocolSlot(name, 0), native: nativeImplementations.get(protocol)};
+    // `stores` (`publicMethod`) only for the protocols whose native test of
+    // the runtime's collections and seqs is which payload store holds the
+    // value (`payloadStore`), so that one answer serves the store:
+    // `seqableValue`, `seqValue`, `nextValue`, `metaValue` and `lookupValue`
+    // read no payload.
+    const stores = storeNativeProtocols.has(name) ? Array(8).fill(undefined) : null;
+    return {protocol, name, mask: protocolMasks.get(name), marker: name && protocolSlot(name, 0), native: nativeImplementations.get(protocol), stores};
   }
-  //@unit publicMethod requires: demandMethod, keyMethod, protocolSentinel, publicDeclared,
-  //@ publicMethodInfo, satisfies
+  //@unit publicMethod requires: demandMethod, keyMethod, payloadStore, protocolSentinel,
+  //@ publicDeclared, publicMethodInfo, satisfies
   // Of a resolved key (`methodKey`), whose `info` it fills in once.
   function publicMethod(value, key, arity, fast = false, directOnly = false) {
     const info = key.info || (key.info = publicMethodInfo(key.key)), protocol = info.protocol, mask = info.mask, native = info.native;
@@ -7010,6 +7028,23 @@
     if (!direct && info.name) {
       demandMethod(info.name, 0, value);
       direct = value != null && value[info.marker] === protocolSentinel;
+      // One of the runtime's collections or seqs (`payloadStore`) that
+      // declares no core protocol of its own (light-cljs-988): the native
+      // test alone decides, once. Where it is false, the value is the
+      // runtime's own and not in the protocol (`satisfies`), so no
+      // implementation exists; where it is true, the value's slot is the
+      // only one, as an implementation that `extend-type` gave a host type,
+      // `object` or `default` cannot override a native one
+      // (`externalMethod`). Either way this gives what the steps below give,
+      // without testing the value against every store up to three times.
+      // `stores` keeps the test's answer by store, where it is the same for
+      // every value the store holds.
+      const store = direct ? 0 : payloadStore(value);
+      if (store) {
+        const stores = info.stores;
+        if (!(stores ? stores[store] ?? (stores[store] = !!native(value)) : native?.(value))) return undefined;
+        return keyMethod(value, key, arity) || undefined;
+      }
     }
     if (!direct) direct = !!native?.(value);
     if (!direct && (directOnly || (fast && (Array.isArray(value) || typeof value === "string")))) return undefined;

@@ -2311,6 +2311,118 @@ fn extensions_reaching_the_kind_tables_empty_them() {
     }
 }
 
+/// The generic operations' protocol lookup on a value of the runtime's own
+/// kinds skips the full protocol-membership test (light-cljs-988), so these
+/// check that every implementation the test found still wins: `extend-type`
+/// and `extend-protocol` of core sequence protocols to runtime types, the
+/// internal type names (light-cljs-982 and 983), `specify!`, a method
+/// JavaScript writes on a runtime type's prototype, which empties no kind
+/// table, and the other core protocols the lookup serves (`IMeta`,
+/// `IReduce`, `ICounted`, `ILookup`). `extend-type object` and `default`
+/// still give the runtime's collections nothing. Expected values are
+/// master's at `none` before the change.
+#[test]
+fn sequence_protocol_extensions_to_runtime_types_still_win() {
+    // Each program prints its results through a JavaScript array, as the
+    // extensions change how the runtime's collections print.
+    for (source, expected) in [
+        (
+            "(extend-type PersistentVector ISeqable (-seq [_] (list :v)))
+             (extend-protocol ISeq
+               cljs.core/RSeq (-first [_] :rseq-first) (-rest [_] (list :rseq-rest))
+               cljs.core/PersistentArrayMapSeq (-first [_] :amap-first) (-rest [_] ()))
+             (extend-protocol INext cljs.core/RSeq (-next [_] (list :rseq-next)))
+             (extend-type PersistentHashSet ISeqable (-seq [_] (list :set)))
+             (let [out (array) p (fn [x] (.push out (pr-str x)))
+                   r (rseq (subvec [1 2 3] 0)) a (seq {:a 1 :b 2})]
+               (p (seq [1 2])) (p (first [1 2])) (p (rest [1 2])) (p (next [1 2])) (p (first (vec (range 40))))
+               (p (first r)) (p (rest r)) (p (next r)) (p (first a)) (p (rest a)) (p (next a))
+               (p (seq #{1})) (p (first #{1})) (p (next #{1})) (p (seq {:k 1})) (p (first (list 4 5)))
+               (p (next (map inc (list 1 2))))
+               (.join out \" \"))",
+            "(:v) :v () nil :v :rseq-first (:rseq-rest) (:rseq-next) :amap-first () (:amap-first) (:set) :set nil (:amap-first) 4 (3)",
+        ),
+        (
+            "(extend-type ArrayNodeSeq ISeq (-first [_] :node-first) (-rest [_] ()))
+             (extend-type IndexedSeq ISeq (-first [_] :indexed-first))
+             (extend-type MapEntry ISeqable (-seq [_] (list :entry)))
+             (extend-type PersistentTreeMapSeq ISeq (-first [_] :tree-first) (-rest [_] (list :tree-rest)))
+             (extend-protocol INext PersistentTreeMapSeq (-next [_] (list :tree-next)))
+             (let [out (array) p (fn [x] (.push out (pr-str x)))
+                   big (seq (into {} (map (fn [x] [x x]) (range 20)))) e (first {:a 1})
+                   t (seq (sorted-map :a 1 :b 2))]
+               (p (first big)) (p (rest big)) (p (first (seq (array 1 2)))) (p (seq e))
+               (p (first e)) (p (rest e)) (p (next e)) (p (first [7]))
+               (p (first t)) (p (rest t)) (p (next t)) (p (first (sorted-map :c 3))) (p (seq (sorted-set 1)))
+               (.join out \" \"))",
+            ":node-first () :indexed-first (:entry) :entry () nil 7 :tree-first (:tree-rest) (:tree-next) [:entry] (:indexed-first)",
+        ),
+        (
+            "(extend-type object ISeqable (-seq [_] (list :object)))
+             (extend-type default ISeq (-first [_] :default-first) (-rest [_] ()))
+             (let [out (array) p (fn [x] (.push out (pr-str x)))
+                   m (specify! {:a 1} ISeqable (-seq [_] (list :specified)))]
+               (p (seq [1])) (p (first [1 2])) (p (rest #{3})) (p (next {:a 1})) (p (first (list 2)))
+               (p (first (map inc [1]))) (p (seq m)) (p (first m)) (p (rest m)) (p (next m)) (p (seq {:b 2}))
+               (p (first (js-obj)))
+               (.join out \" \"))",
+            "(1) 1 () nil 2 2 (:specified) :specified () nil ([:b 2]) :object",
+        ),
+        (
+            "(deftype T [] ISeqable (-seq [_] (list :t)))
+             (set! (.. PersistentQueue -prototype -cljs$core$ISeqable$) cljs.core/PROTOCOL_SENTINEL)
+             (set! (.. PersistentQueue -prototype -cljs$core$ISeqable$_seq$arity$1) (fn [_] (list :queue)))
+             (let [out (array) p (fn [x] (.push out (pr-str x)))
+                   q (into cljs.core/PersistentQueue.EMPTY [1 2])]
+               (p (seq q)) (p (first q)) (p (rest q)) (p (next q)) (p (first (T.))) (p (first [3]))
+               (p (seq (conj q 3)))
+               (.join out \" \"))",
+            "(:queue) :queue () nil :t 3 (:queue)",
+        ),
+        (
+            "(extend-type PersistentVector IMeta (-meta [_] {:extended true}))
+             (extend-type List IReduce (-reduce ([_ f] :reduce-2) ([_ f init] [:reduce-3 init])))
+             (extend-type PersistentTreeMap ICounted (-count [_] 99))
+             (set! (.. PersistentHashMap -prototype -cljs$core$ILookup$) cljs.core/PROTOCOL_SENTINEL)
+             (set! (.. PersistentHashMap -prototype -cljs$core$ILookup$_lookup$arity$2) (fn [_ k] [:hash-lookup k]))
+             (let [out (array) p (fn [x] (.push out (pr-str x)))
+                   hm (zipmap (range 20) (range 20))]
+               (p (meta [1])) (p (meta (with-meta [1] {:m 1}))) (p (meta {:a 1})) (p (reduce + (list 1 2)))
+               (p (reduce + 0 (list 1 2))) (p (reduce + (map inc [1 2]))) (p (count (sorted-map :a 1)))
+               (p (count {:a 1})) (p (get hm 3)) (p (get {:a 1} :a)) (p (first (list 5)))
+               (.join out \" \"))",
+            "{:extended true} {:extended true} nil :reduce-2 [:reduce-3 0] 5 99 1 [:hash-lookup 3] 1 5",
+        ),
+        (
+            // A method slot without the protocol's marker, written after the
+            // lookup has answered for the type's values, and replaced.
+            "(deftype T [])
+             (extend-type T ICounted (-count [_] 1))
+             (let [out (array) p (fn [x] (.push out (pr-str x)))
+                   s #{1} big (into #{} (range 40))]
+               (p (seq s)) (p (first s)) (p (count (T.)))
+               (set! (.. PersistentHashSet -prototype -cljs$core$ISeqable$_seq$arity$1) (fn [_] (list :unmarked)))
+               (p (seq s)) (p (first s)) (p (seq big)) (p (rest s))
+               (set! (.. PersistentHashSet -prototype -cljs$core$ISeqable$_seq$arity$1) (fn [_] (list :replaced)))
+               (p (seq s)) (p (next s)) (p (seq [1]))
+               (.join out \" \"))",
+            "(1) 1 1 (:unmarked) :unmarked (:unmarked) () (:replaced) nil (1)",
+        ),
+        (
+            // A host value whose Proxy throws on any property but a string
+            // one still reaches `extend-type object`: the lookup reads no
+            // other property of it.
+            "(extend-type object ISeqable (-seq [_] (list :ok)))
+             (let [handler (js-obj \"get\" (fn [t k] (if (string? k) (aget t k) (throw (js/Error. \"not a string key\")))))
+                   proxy (js/Proxy. (js-obj) handler)]
+               (pr-str (seq proxy)))",
+            "(:ok)",
+        ),
+    ] {
+        every_level(source, expected);
+    }
+}
+
 /// A lazy seq's branches realize it without taking the seq of what it
 /// realized, which takes an item of a host iterator, so a lazy seq over one
 /// gives at every level what the operations' own paths give (the Sol review
