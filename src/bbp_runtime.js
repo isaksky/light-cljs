@@ -2922,6 +2922,7 @@ const native = (() => {
     write, flushWriter, StringBufferWriter,
     writeAll:(w,...xs)=>{for(const x of xs)write(w,x);return null;},
     prSequentialWriter:(...a)=>a.length===7?printSequential(...a):arity(a.length),
+    prWriterFn:(...a)=>a.length===3?printWriter(...a):arity(a.length),
     prSeqWriter:(...a)=>{if(a.length!==3)return arity(a.length);const [xs,w,o]=a;printWriter(__rt.cljFirst(xs),w,o);for(let s=__rt.cljNext(xs);s!==null;s=__rt.cljNext(s)){write(w,' ');printWriter(__rt.cljFirst(s),w,o);}return null;},
     getIn:(...a)=>{
       if(a.length!==2&&a.length!==3)return arity(a.length);

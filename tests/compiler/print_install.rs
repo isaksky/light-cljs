@@ -99,6 +99,7 @@ const PRINTING: &[&str] = &[
     "pr-str",
     "pr-str*",
     "pr-str-with-opts",
+    "pr-writer",
     "print",
     "print-str",
     "println",

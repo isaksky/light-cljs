@@ -291,6 +291,7 @@ SetPrintErrFn	set-print-err-fn!	fn	-	any	any	effect	invoke	setPrintErrFn
 StringPrint	string-print	fn	-	any	any	effect	invoke	stringPrint
 PrSequentialWriter	pr-sequential-writer	fn	-	any	any	effect	invoke	prSequentialWriter
 PrSeqWriter	pr-seq-writer	fn	-	any	any	effect	invoke	prSeqWriter
+PrWriterFn	pr-writer	fn	-	any	any	effect	invoke	prWriterFn
 SystemTime	system-time	fn	[]	number	any	effect	-	systemTime
 ;;
 ;; Hierarchies and multimethods (global and per-multimethod mutable state)

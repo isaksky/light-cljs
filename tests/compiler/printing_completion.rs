@@ -211,6 +211,41 @@ fn alternative_printers_receive_fallback_and_recurse_with_options() {
 }
 
 #[test]
+fn pr_writer_prints_nested_values_from_print_methods_as_upstream() {
+    // Upstream's private `pr-writer`, which libraries' `-pr-writer` methods
+    // call: it applies `:alt-impl`, metadata, the protocol and the depth and
+    // length limits, unqualified and qualified.
+    both(
+        r##"
+      (deftype Box [v]
+        IPrintWithWriter
+        (-pr-writer [_ writer opts]
+          (-write writer "#box ")
+          (pr-writer v writer opts)))
+      (deftype QualifiedBox [v]
+        IPrintWithWriter
+        (-pr-writer [_ writer opts]
+          (-write writer "#q ")
+          (cljs.core/pr-writer v writer opts)))
+      (defn pr-writer-witness []
+        [(pr-str (Box. [1 "a" (Box. :k) nil]))
+         (binding [*print-meta* true *print-length* 1] (pr-str (Box. (with-meta [1 2] {:m 1}))))
+         (binding [*print-level* 1] (pr-str [(Box. [[1]]) (QualifiedBox. 2)]))
+         (pr-str-with-opts [(Box. [:k "s"])]
+           {:readably false
+            :alt-impl (fn [o w opts] (if (keyword? o) (-write w "K") ((:fallback-impl opts) o w opts)))})
+         (let [out (atom [])
+               w (reify IWriter (-write [_ s] (swap! out conj s)) (-flush [_] nil))]
+           (pr-writer {:a [1]} w nil)
+           (apply str @out))
+         (:private (meta #'cljs.core/pr-writer))])
+      (defmacro pr-writer-macro-witness [] (pr-writer-witness))
+      [(pr-writer-witness) (pr-writer-macro-witness)]"##,
+        r##"[["#box [1 \"a\" #box :k nil]" "#box ^{:m 1} [1 ...]" "[#box # #q 2]" "#box [K s]" "{:a [1]}" true] ["#box [1 \"a\" #box :k nil]" "#box ^{:m 1} [1 ...]" "[#box # #q 2]" "#box [K s]" "{:a [1]}" true]]"##,
+    );
+}
+
+#[test]
 fn output_sinks_capture_nesting_flush_and_restoration() {
     both(
         r##"
