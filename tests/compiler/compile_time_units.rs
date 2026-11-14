@@ -3,10 +3,10 @@
 //!
 //! The manifest marks the units of the compiler, the macro host and the REPL
 //! `compile-time`: the compiler form bridge, declaration demand and
-//! transactions, the namespace registry, the macro reader context, `inspect`
-//! and the `eval` stub. Application code reaches them only through reflection,
-//! and an `Advanced` program registers its namespaces (and switches `*ns*` at
-//! namespace entries) only when it does. The declaration hooks woven into
+//! transactions, the namespace registry, the macro reader context, the code
+//! reader and the `eval` stub. Application code reaches them only through
+//! reflection, and an `Advanced` program registers its namespaces (and switches
+//! `*ns*` at namespace entries) only when it does. The declaration hooks woven into
 //! application paths start as plain versions in application slices.
 use super::optimization::{Sources, execute, readable};
 use light_cljs::analyzer::AnalysisOptions;
@@ -59,29 +59,11 @@ fn compile_time_units(roots: &[UnitId]) -> Vec<&'static str> {
 const REFLECTION: &[&str] = &[
     "*ns*",
     "all-ns",
-    "compiler-edn-read",
-    "compiler-edn-read-string",
     "compiler-macro-var*",
-    "compiler-reader-close",
-    "compiler-reader-current-input",
-    "compiler-reader-deregister-default-tag-parser",
-    "compiler-reader-deregister-tag-parser",
-    "compiler-reader-initial-tag-table",
-    "compiler-reader-input-provider",
-    "compiler-reader-parse-timestamp",
-    "compiler-reader-parse-timestamp-fields",
-    "compiler-reader-read",
-    "compiler-reader-read-line",
-    "compiler-reader-read-string",
-    "compiler-reader-register-default-tag-parser",
-    "compiler-reader-register-tag-parser",
-    "compiler-reader-string-reader",
-    "compiler-reader-with-input",
     "create-ns",
     "eval",
     "find-ns",
     "read",
-    "read-line",
     "read-string",
     "the-ns",
 ];
@@ -277,9 +259,9 @@ fn advanced_programs_register_namespaces_only_when_they_reach_reflection() {
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
         assert!(registers(&emit(&program("(+ 1 2)"), level)), "{level}");
     }
-    // Reflection registers, and the program prints what `None` prints. The
-    // reader is one unit, so EDN reading counts as reflection too; `eval` keeps
-    // its stub; a quoted `#js` literal keeps the compiler form bridge.
+    // Reflection registers, and the program prints what `None` prints. Code
+    // reading qualifies by `*ns*`; `eval` keeps its stub; a quoted `#js`
+    // literal keeps the compiler form bridge.
     for &(source, expected) in REFLECTION_PROGRAMS {
         let program = program(source);
         let advanced = emit(&program, OptimizationLevel::Advanced);
@@ -437,4 +419,59 @@ fn application_slices_keep_plain_declaration_hooks() {
     let expected = "[12 25 true \"number\" \"other\"]\n";
     assert_eq!(printed(&advanced), expected);
     assert_eq!(printed(&emit(&program, OptimizationLevel::None)), expected);
+}
+
+#[test]
+fn edn_reading_is_not_reflection() {
+    // cljs.reader and clojure.edn read data and resolve no namespace, so a
+    // program whose only reader use is theirs keeps no compile-time unit and
+    // registers no namespace at `Advanced` (light-cljs-985); reading code
+    // (`read-string` of cljs.core) still does.
+    let entry = |body: &str| {
+        let sources = Sources::new();
+        sources.write(
+            "app/main.cljs",
+            &format!(
+                "(ns app.main (:require [cljs.reader :as reader] [clojure.edn :as edn]))\n{body}\n"
+            ),
+        );
+        analyze_namespace_entry(
+            "app.main",
+            std::slice::from_ref(sources.0.path()),
+            &mut MacroHost::new(),
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+        )
+        .unwrap()
+    };
+    let data = entry(
+        r##"(pr-str [(reader/read-string "{:a [1 2 #{x}] :b \"s\" :c (q/r :k)}")
+                    (reader/read-string "#uuid \"00000000-0000-4000-8000-000000000000\"")
+                    (reader/read-string {:readers {'p (fn [v] [:p v])}} "#p 3")
+                    (edn/read-string {:readers {'p (fn [v] [:edn v])}} "#p [4]")
+                    (edn/read-string "nil")])"##,
+    );
+    let expected = "[{:a [1 2 #{x}], :b \"s\", :c (q/r :k)} \
+                    #uuid \"00000000-0000-4000-8000-000000000000\" [:p 3] [:edn [4]] nil]\n";
+    let prepared = prepare_application(&data, ApplicationOptions::new(OptimizationLevel::Advanced));
+    let manifest = manifest();
+    for unit in &prepared.retention().units {
+        assert!(!manifest.unit(unit.unit).compile_time, "{}", unit.name);
+    }
+    let readable_advanced = emit_readable(&data, OptimizationLevel::Advanced);
+    assert!(!registers(&readable_advanced), "{readable_advanced}");
+    assert!(!readable_advanced.contains("readerCoreNames"));
+    assert_eq!(printed(&prepared.emit_js()), expected);
+    assert_eq!(printed(&emit(&data, OptimizationLevel::None)), expected);
+
+    // Reading code beside them qualifies by the current namespace, so it
+    // registers and keeps the core names.
+    let code =
+        entry(r#"(pr-str [(reader/read-string ":x") (read-string "`inc") (read-string "`v")])"#);
+    let readable_advanced = emit_readable(&code, OptimizationLevel::Advanced);
+    assert!(registers(&readable_advanced));
+    assert!(readable_advanced.contains("readerCoreNames"));
+    let expected = "[:x (quote cljs.core/inc) (quote app.main/v)]\n";
+    assert_eq!(printed(&emit(&code, OptimizationLevel::Advanced)), expected);
+    assert_eq!(printed(&emit(&code, OptimizationLevel::None)), expected);
 }

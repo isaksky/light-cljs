@@ -356,10 +356,10 @@ ReaderDeregisterDefaultTagParser	compiler-reader-deregister-default-tag-parser	f
 ReaderCurrentInput	compiler-reader-current-input	fn	-	any	any	effect	invoke	reader
 ReaderWithInput	compiler-reader-with-input	fn	-	any	any	effect	invoke	reader
 ReaderClose	compiler-reader-close	fn	-	any	any	effect	invoke	reader
-Read	read	fn	-	any	any	effect	invoke	reader
+Read	read	fn	-	any	any	effect	invoke	codeReader
 ReadLine	read-line	fn	-	any	any	effect	invoke	reader
 Gensym	gensym	fn	[] [string]	symbol	any	effect	-	gensym
-ReadString	read-string	fn	[string] [any string]	any	any	effect	-	reader
+ReadString	read-string	fn	[string] [any string]	any	any	effect	-	codeReader
 Eval	eval	fn	[any]	any	any	effect	invoke	evalCore
 Macroexpand	macroexpand	fn	[any]	any	any	effect	invoke	macroexpand
 Macroexpand1	macroexpand-1	fn	[any]	any	any	effect	invoke	macroexpand1

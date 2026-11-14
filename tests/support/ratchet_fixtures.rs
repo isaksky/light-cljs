@@ -181,6 +181,15 @@
 //! output run 10–15% faster in benchmarks/runtime-vs-shadow.md. Every
 //! none and prepare ceiling, all of which it exceeds, moves to the next
 //! 1,000. Advanced sizes stay under their ceilings.
+//!
+//! The code reader apart from EDN data reading (light-cljs-985, 2026-11-14):
+//! the readable runtime grows about 290 bytes for the `codeReader` unit that
+//! gives `read-string` and `read` the core names, so that a program reading
+//! only EDN data keeps neither them nor the namespace registry at advanced
+//! (re-frame's TodoMVC: benchmarks/re-frame-vs-shadow.md). The five
+//! none/prepare ceiling pairs it exceeds (keyword-case, event-maps,
+//! multi-arity, defmulti, direct-site), by 33–189 bytes, move to the next
+//! 1,000; advanced sizes and ceilings are unchanged.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -251,7 +260,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [502_000, 502_000, 3_500],
+        ceilings: [503_000, 503_000, 3_500],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -394,7 +403,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [502_000, 502_000, 35_000],
+        ceilings: [503_000, 503_000, 35_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -478,7 +487,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn area ([w] (area w w)) ([w h] (* w h)))
                  (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
                  (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
-        ceilings: [504_000, 504_000, 400],
+        ceilings: [505_000, 505_000, 400],
         removed: [0, 0, 2],
         printed: "84\n",
     },
@@ -590,7 +599,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "defmulti",
         source: "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))",
-        ceilings: [502_000, 502_000, 11_000],
+        ceilings: [503_000, 503_000, 11_000],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
     },
@@ -726,7 +735,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [502_000, 502_000, 300],
+        ceilings: [503_000, 503_000, 300],
         removed: [0, 0, 0],
         printed: "null\nhello lazy\n",
     },

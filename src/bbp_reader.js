@@ -82,7 +82,9 @@
     readBuiltin:tag=>unsupported('reader '+(tag==='uuid'?'UUID':tag==='js'?'JS':tag)+' literal')()});
   // Code reads use the namespace and source visibility installed by the
   // macro reader wrapper, including nested bindings and lexical shadows.
-  for(const name of ['readString','read','readLine','ednReadString','ednRead','readerReadString','readerRead',
+  const codeReader=reader.codeProfile(readerCoreNames);
+  core.readString=codeReader.readString; core.read=codeReader.read;
+  for(const name of ['readLine','ednReadString','ednRead','readerReadString','readerRead',
     'readerStringReader','readerInputProvider','readerReadLine','readerParseTimestampFields',
     'readerParseTimestamp','readerInitialTagTable','readerRegisterTagParser','readerDeregisterTagParser',
     'readerRegisterDefaultTagParser','readerDeregisterDefaultTagParser','readerWithInput',

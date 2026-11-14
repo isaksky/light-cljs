@@ -651,17 +651,20 @@ no compiler machinery unless the program reaches reflection:
   the patch helpers), the namespace registry (`namespaces` with its
   `cljs.user` and `cljs.core` effects, `createNs`, `registerReaderNamespace`,
   `findNs`, `theNs`, `allNs`, `readerCoreNames`), the macro reader context
-  (`macroReaderFunction`, `withMacroReaderContext`, `compilerMacroVar`),
-  `inspect`, `setMacroexpandServices`, `compilerExceptionMessage` and the
-  `eval` stub (`evalCore`). The shared runtime still exports them, and the
+  (`macroReaderFunction`, `withMacroReaderContext`, `compilerMacroVar`), the
+  code reader (`codeReader`), `setMacroexpandServices`,
+  `compilerExceptionMessage` and the `eval` stub (`evalCore`). The shared runtime still exports them, and the
   shared path is unchanged.
 - **Reflection.** The `compile_time_units` suite in `tests/compiler/` pins
   the core operations whose units reach a compile-time unit: `*ns*` (the
   `currentNs` cell, `runtime_slice::REGISTRY_CELLS`), `find-ns`, `the-ns`,
-  `all-ns`, `create-ns`, `eval`, `compiler-macro-var*`, and every operation
-  of the reader (`read-string`, `read`, `read-line`, and the `cljs.reader`
-  and `clojure.edn` operations), because the reader is one unit and requires
-  `readerCoreNames` and `inspect`. The emitter's other roots reach none,
+  `all-ns`, `create-ns`, `eval`, `compiler-macro-var*`, and code reading
+  (`read-string` and `read`), whose syntax quote qualifies symbols by `*ns*`,
+  the registered namespaces and `readerCoreNames`: the core table points them
+  at `codeReader`, which builds them from the `reader` unit's code profile
+  with those names (light-cljs-985). The `reader` unit itself, with the EDN
+  and `cljs.reader` profiles, `read-line` and the tag tables, requires no
+  compile-time unit, so reading data is not reflection. The emitter's other roots reach none,
   except the namespace registration, macro functions defined in the program
   (`macroReaderFunction`), quoted `#js` literals (`compilerForms`) and the
   `declarationReceiver` of compile-time emission. `resolve`, `ns-publics`,
@@ -693,10 +696,9 @@ no compiler machinery unless the program reaches reflection:
   at the bridge's builders that mark literals for the macro host, so a reader
   program keeps no bridge. A new hook follows the same pattern: an
   application unit with the plain behavior, replaced by a compile-time unit.
-- **Left for later.** The reader is one unit, so EDN reading counts as
-  reflection and keeps `readerCoreNames` (9.4 KB), `inspect` and the
-  `compilerInput*` window; splitting the EDN reader from the code reader would
-  separate them. The registration needs `symbol` and `Namespace`, so a
+- **Left for later.** A program that reads data still keeps the whole
+  `reader` unit, with the code profile's syntax quote and the
+  `compilerInput*` window. The registration needs `symbol` and `Namespace`, so a
   reflective program keeps the generic core (about 330 units) until step 6
   and rapid type analysis shrink it.
 - **Measured.** `(js/console.log (+ 1 2))` drops from 137,360 to 713 bytes at

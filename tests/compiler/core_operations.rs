@@ -145,7 +145,8 @@ fn moving_an_operation_into_its_own_unit_moves_its_units() {
     assert_eq!(embedded["inc"], ["inc"]);
     assert_eq!(embedded["add"], ["add"]);
     assert_eq!(embedded["keyword"], ["keywordCore"]);
-    assert_eq!(embedded["readString"], ["reader"]);
+    assert_eq!(embedded["readString"], ["codeReader"]);
+    assert_eq!(embedded["readerReadString"], ["reader"]);
     assert_eq!(embedded["PersistentVector"], ["PersistentVectorValue"]);
     assert_eq!(embedded["printLength"], ["coreCells"]);
     assert_eq!(CoreFnId::Second.operation().units, ["second"]);

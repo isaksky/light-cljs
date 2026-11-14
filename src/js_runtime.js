@@ -4940,11 +4940,11 @@
       }});
   }
 
-  //@unit inspect compile-time requires: atoms, cells, first, isReduced, keywords, mapTraversal,
-  //@ next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars,
-  //@ vectorItems, vectors, views, volatiles
-  // Private test adapter. Production emission keeps this factory local; only
-  // the observation harness registers inspect. Exposed storage remains frozen.
+  //@unit inspect requires: atoms, cells, first, isReduced, keywords, mapTraversal, next, nth,
+  //@ recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars, vectorItems,
+  //@ vectors, views, volatiles
+  // A value's shape for the reader (EDN data included) and the observation
+  // harness, which alone registers inspect. Exposed storage remains frozen.
   function inspect(value) {
     if (isReduced(value) || uuids.has(value) || vars.has(value) || atoms.has(value) || volatiles.has(value)) return Object.freeze({kind: "opaque"});
     const named = keywords.get(value) || symbols.get(value);
@@ -9940,9 +9940,8 @@
   readerJsLiterals.array = compilerForms.jsArray; readerJsLiterals.object = compilerForms.jsObject;
   //@unit reader requires: cells, conj, contains, coreCells, first, freshKeyword, gensym, hashMap,
   //@ hashSet, inspect, into, isRecord, keywords, listFromArray, mapFromArray, maps, merge, meta,
-  //@ next, nsName, PersistentQueueValue, prStr, readerCoreNames, readerJsLiterals, rePattern, seq,
-  //@ setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, vectors,
-  //@ views, withMeta
+  //@ next, nsName, PersistentQueueValue, prStr, readerJsLiterals, rePattern, seq, setFromArray,
+  //@ sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, vectors, views, withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
   const reader = (rt => {
   const inspect = rt.inspect;
@@ -10321,7 +10320,7 @@
         const special = data.namespace === null && '& . case* catch def deftype* do finally fn* if let* letfn* loop* monitor-enter monitor-exit new quote recur reify* set! throw try var'.split(' ').includes(data.name);
         if (data.namespace === null && !special) {
           if (data.name.endsWith('#')) { if (!gensyms.has(data.name)) gensyms.set(data.name, gensym(data.name.slice(0,-1) + '__')); resolved = gensyms.get(data.name); }
-          else resolved = rt.symbol(readerCoreNames.has(data.name) ? 'cljs.core' : currentName, data.name);
+          else resolved = rt.symbol(opts.coreNames.has(data.name) ? 'cljs.core' : currentName, data.name);
         }
         if (data.namespace !== null && context?.aliases.has(data.namespace)) resolved = rt.symbol(context.aliases.get(data.namespace), data.name);
         if (data.namespace === null && !special && !data.name.endsWith('#')) {
@@ -10389,7 +10388,7 @@
     if (splices.has(value)) fail(s,'Splicing reader conditional outside collection');
     return value;
   }
-  function readWith(profile, args) {
+  function readWith(profile, args, coreNames = null) {
     let stream, option;
     if (args.length === 0) stream = coreCells.readerCurrentInputValue;
     else if (args.length === 1) {
@@ -10403,7 +10402,7 @@
     } else if (profile === 'code' && (args.length === 3 || args.length === 4)) {
       stream = args[0]; option = hashMap(rt.keyword(null,'eof'), args[1] !== false && args[1] != null ? absent : args[2]);
     } else arity(args.length);
-    const opts = options(option, profile), state = stateOf(stream);
+    const opts = options(option, profile), state = stateOf(stream); opts.coreNames = coreNames;
     if (profile === 'reader') {
       if (args.length < 2) opts.eof = null;
       else if (args.length === 4) opts.eof = args[1] !== false && args[1] != null ? absent : args[2];
@@ -10417,11 +10416,11 @@
     catch (error) { state.failed = true; throw error; }
     finally { state.busy = false; --activeDepth; }
   }
-  function readStringWith(profile, args) {
+  function readStringWith(profile, args, coreNames = null) {
     if (args.length !== 1 && args.length !== 2) arity(args.length);
     const text = args[args.length - 1];
     if (profile !== 'code' && (text == null || text === false)) return null;
-    const opts = options(args.length === 2 ? args[0] : undefined, profile, true);
+    const opts = options(args.length === 2 ? args[0] : undefined, profile, true); opts.coreNames = coreNames;
     const stream = stringReader(text, profile === 'edn' ? '<edn-read-string>' : '<read-string>');
     // readWith receives explicit options so preserve the no-option EDN nil EOF.
     const state = streams.get(stream); ++activeDepth;
@@ -10504,7 +10503,8 @@
   for (const [tag, handler] of builtinTags) tags.set(tag,handler);
   return {ednReadString: (...args) => readStringWith('edn', args), ednRead: (...args) => readWith('edn', args),
     readerReadString: (...args) => readStringWith('reader', args), readerRead: (...args) => readWith('reader', args),
-    readString: (...args) => readStringWith('code', args), read: (...args) => readWith('code', args),
+    codeProfile: coreNames => ({readString: (...args) => readStringWith('code', args, coreNames),
+      read: (...args) => readWith('code', args, coreNames)}),
     readLine: function () { if (arguments.length) arity(arguments.length); return readLine(); },
     compilerInputWindow, compilerInputConsume, compilerInputRecover, compilerInputDiscard, compilerInputCompact,
     readerStringReader: stringReader, readerInputProvider: inputProvider, readerReadLine: readLine,
@@ -10516,6 +10516,9 @@
     readerWithInput: withInput, readerCurrentInput: () => coreCells.readerCurrentInputValue, readerClose: close};
   })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
 
+  //@unit codeReader compile-time requires: reader, readerCoreNames
+  // Code reading qualifies symbols by `*ns*`: reflection, unlike EDN data.
+  const codeReader = reader.codeProfile(readerCoreNames);
   //@unit loadFile requires: invalidArity
   const loadFile = function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); };
   //@unit core requires: abs, aclone, add, addMethodProtocol, addTap, addWatch, addWatchProtocol,
@@ -10530,7 +10533,7 @@
   //@ cat, char, chars, checkedAget, checkedAgetStrict, checkedAset, checkedAsetStrict, chunk,
   //@ chunkAppend, ChunkBuffer, chunkBuffer, chunkCons, ChunkedCons, chunkedFirstProtocol,
   //@ chunkedNextProtocol, chunkedRestProtocol, ChunkedSeqValue, chunkFirst, chunkNext, chunkRest,
-  //@ cljToJs, clone, comp, comparator, comparatorProtocol, compareAndSet, compareKeys,
+  //@ cljToJs, clone, codeReader, comp, comparator, comparatorProtocol, compareAndSet, compareKeys,
   //@ compareProtocol, compilerMacroVar, complement, completing, concat, configureHostHooks, conj,
   //@ conjBang, conjBangProtocol, conjProtocol, Cons, consCore, constantly, contains,
   //@ containsProtocol, coreCells, count, countProtocol, createNs, cycle, CycleValue, dec, dedupe,
@@ -10712,7 +10715,7 @@
     RangedIteratorFactory, NamespaceFactory, TaggedLiteralFactory,
     ednReadString: reader.ednReadString, ednRead: reader.ednRead,
     readerReadString: reader.readerReadString, readerRead: reader.readerRead,
-    readString: reader.readString, read: reader.read, readLine: reader.readLine,
+    readString: codeReader.readString, read: codeReader.read, readLine: reader.readLine,
     compilerInputWindow: reader.compilerInputWindow,
     compilerInputConsume: reader.compilerInputConsume,
     compilerInputRecover: reader.compilerInputRecover,
