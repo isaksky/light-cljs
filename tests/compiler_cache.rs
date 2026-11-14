@@ -1045,6 +1045,90 @@ fn policy_changes_with_an_existing_artifact() {
     }
 }
 
+/// A namespace that ran a source macro depends on every earlier namespace
+/// (the coarse fallback), but its manifest lists only its exact edges and
+/// the `coarse` flag, so its size does not grow with its position in the
+/// program (light-cljs-1000). A lookup adds the coarse edges back: a
+/// blocker reaches it through one, and an edit to an earlier namespace it
+/// does not require still misses its view.
+#[test]
+fn coarse_edges_are_the_manifest_flag_not_a_list() {
+    use light_cljs::artifact_codec::{DecodeLimits, read_manifest};
+    use light_cljs::dependency_manifest::EdgeKinds;
+    let project = Project::new(&[
+        ("early.cljs", "(ns early) (def x 1)"),
+        (
+            "macros.cljs",
+            "(ns macros) (defmacro twice [form] `(* 2 ~form))",
+        ),
+        (
+            "consumer.cljs",
+            "(ns consumer (:require [macros :refer [twice]])) (def y (twice 21))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [early] [consumer])) (js/console.log early/x consumer/y)",
+        ),
+    ]);
+    let oracle = project.uncached("main");
+    assert_eq!(oracle.run(), "1 42\n");
+    assert_eq!(project.cached("main", &[]).js, oracle.js);
+    let manifests: Vec<_> = project
+        .objects()
+        .iter()
+        .map(|path| read_manifest(&fs::read(path).unwrap(), &DecodeLimits::default()).unwrap())
+        .collect();
+    let consumer = manifests
+        .iter()
+        .find(|manifest| manifest.namespace == "consumer")
+        .expect("consumer is published");
+    assert!(consumer.fields.coarse);
+    let listed: Vec<&str> = consumer
+        .fields
+        .dependencies
+        .iter()
+        .map(|dependency| dependency.namespace.as_str())
+        .collect();
+    assert_eq!(listed, ["macros"]);
+    for manifest in &manifests {
+        for dependency in &manifest.fields.dependencies {
+            assert!(
+                !EdgeKinds(dependency.kinds).intersects(EdgeKinds::COARSE),
+                "{} lists a coarse edge to {}",
+                manifest.namespace,
+                dependency.namespace
+            );
+        }
+    }
+    let warm = project.cached("main", &[]);
+    assert_eq!(warm.stat("cache.hits"), 4, "{}", warm.stats);
+    assert_eq!(warm.js, oracle.js);
+    // `consumer` does not require `early`: the blocker reaches it through
+    // its coarse edge, rebuilt from the flag of the artifact that matched.
+    let blocked = project.cached("main", &["--cache-blocker", "early"]);
+    assert_eq!(blocked.js, oracle.js);
+    assert_eq!(
+        blocked.rows(),
+        [
+            "early bypass blocked early",
+            "consumer bypass blocked early > consumer",
+            "main bypass blocked early > main",
+        ]
+    );
+    project.write("early.cljs", "(ns early) (def x 2)");
+    let edited = project.cached("main", &[]);
+    assert_eq!(edited.run(), "2 42\n");
+    assert_eq!(
+        edited.rows(),
+        [
+            "early miss source: source changed",
+            "consumer miss view: earlier namespaces changed",
+            "main miss dependencies: dependency early changed",
+        ]
+    );
+    assert_eq!(edited.js, project.uncached("main").js);
+}
+
 #[test]
 fn corrupted_artifact_is_a_miss_then_republished() {
     let project = Project::new(FIXTURE);

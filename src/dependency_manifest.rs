@@ -76,6 +76,18 @@ impl EdgeKinds {
     pub fn intersects(self, other: Self) -> bool {
         self.0 & other.0 != 0
     }
+
+    /// The kinds an artifact's manifest stores for an edge of these kinds:
+    /// all but [`Self::COARSE`], or `None` for an edge with no other kind.
+    /// The manifest's `coarse` flag stands for the coarse fallback's edges,
+    /// one to every earlier namespace, which a lookup adds back
+    /// ([`crate::manifest_prefix::ManifestPrefix::push_stored`]). Listing
+    /// them by name would make each source-macro user's manifest grow with
+    /// its position in the program (light-cljs-1000).
+    pub fn stored(self) -> Option<Self> {
+        let kinds = Self(self.0 & !Self::COARSE.0);
+        (kinds != Self::default()).then_some(kinds)
+    }
 }
 
 impl std::ops::BitOr for EdgeKinds {

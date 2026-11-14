@@ -134,13 +134,16 @@ pub struct ManifestFields {
     /// With its components, so that a lookup names the first that differs.
     pub front_end_key: crate::cache_key::FrontEndKey,
     pub emission_key: [u8; 32],
+    /// Every edge with its kinds but the coarse fallback's, which `coarse`
+    /// stands for ([`crate::dependency_manifest::EdgeKinds::stored`]).
     pub dependencies: Vec<Dependency>,
     /// The namespace's `light.build` inputs
     /// ([`crate::dependency_manifest::NamespaceRecord::external_inputs`]),
     /// which a lookup checks without decoding a section.
     pub inputs: Vec<crate::dependency_manifest::ExternalInput>,
     /// The namespace depends on every earlier one
-    /// ([`crate::dependency_manifest::EdgeKinds::COARSE`]).
+    /// ([`crate::dependency_manifest::EdgeKinds::COARSE`]), whose edges
+    /// `dependencies` leaves out.
     pub coarse: bool,
     /// The names analysis looked for among the loaded namespaces and did
     /// not find ([`crate::dependency_manifest::NamespaceRecord::absent`]),
@@ -165,6 +168,7 @@ impl ManifestFields {
             emission_key,
             dependencies: manifest
                 .dependencies(id)
+                .filter_map(|(target, kinds)| Some((target, kinds.stored()?)))
                 .map(|(target, kinds)| Dependency {
                     namespace: manifest.record(target).name.clone(),
                     kinds: kinds.0,

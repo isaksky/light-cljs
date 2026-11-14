@@ -227,9 +227,11 @@ impl ManifestPrefix {
     /// describes it: the loader's resolution with the stored edges, inputs,
     /// absent names and coarse flag. A stored edge to a namespace that is
     /// not an earlier one of this compilation is dropped, so the key the
-    /// lookup computes then differs from the stored one in its dependencies
-    /// or, for a coarse edge, its view, after any earlier component that
-    /// differs too.
+    /// lookup computes then differs from the stored one in its dependencies,
+    /// after any earlier component that differs too. A coarse namespace gets
+    /// its coarse edges to every earlier namespace of this compilation, which
+    /// the manifest does not list ([`EdgeKinds::stored`]): when the earlier
+    /// namespaces differ from the publishing compilation's, its view differs.
     pub(crate) fn push_stored(
         &mut self,
         loader: &LoaderRecord,
@@ -246,6 +248,10 @@ impl ManifestPrefix {
             if let Some(&target) = self.ids.get(&dependency.namespace) {
                 rows.push((NamespaceId(target), kinds));
             }
+        }
+        if fields.coarse {
+            let earlier = self.namespaces.len() as u32;
+            rows.extend((0..earlier).map(|at| (NamespaceId(at), EdgeKinds::COARSE)));
         }
         record.coarse = fields.coarse;
         record.absent = fields.absent.clone();

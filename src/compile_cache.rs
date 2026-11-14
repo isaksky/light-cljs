@@ -448,11 +448,13 @@ impl CompileCache {
             // records no emission key (docs/compiler-cache.md, "Conservative
             // keys and invalidation", light-cljs-324).
             emission_key: [0; 32],
+            // The coarse fallback's edges are the `coarse` flag's.
             dependencies: self
                 .prefix
                 .row(id)
                 .iter()
-                .map(|&(target, kinds)| artifact_codec::Dependency {
+                .filter_map(|&(target, kinds)| Some((target, kinds.stored()?)))
+                .map(|(target, kinds)| artifact_codec::Dependency {
                     namespace: self.prefix.record(target).name.clone(),
                     kinds: kinds.0,
                 })
