@@ -4,6 +4,8 @@
 light-cljs with shadow-cljs. It requires only Babashka. The same seed and size
 options produce byte-identical files, independent of the output directory.
 Generated projects need no porting, npm packages, or external application code.
+The [re-frame shape](#the-re-frame-shape) is the exception: it is a runnable
+re-frame app that uses reagent, re-frame and React.
 
 From the repository root:
 
@@ -92,6 +94,95 @@ and writes `compare-result.edn` into the project
 ```sh
 bb benchmarks/generated-project/compare.bb /tmp/cljs-200k --light "$LIGHT" --runs 3 --warm-jvm 4
 ```
+
+## The re-frame shape
+
+`--shape re-frame` makes a project shaped like a real re-frame app, so that both
+compilers expand reagent's and re-frame's own macros and run their runtime and
+React. Same seed and size options; the output is byte-identical for the same
+options and library sources (`manifest.edn` records their hashes).
+
+```sh
+# Once: the vendored library sources (needs Java, the Clojure CLI, Node and npm,
+# research/re-frame and the porter in research/shadow-port-tool):
+bb benchmarks/generated-project/re-frame-libs.bb      # -> research/shadow-credibility/re-frame-libs
+
+bb benchmarks/generated-project/generate.bb /tmp/rf-5k --seed 42 --lines 5k --shape re-frame
+cd /tmp/rf-5k && npm install
+bb oracle.bb 42 3                                     # 317532 191053
+"$LIGHT" release bench && node run-light.mjs 42 3
+clojure -M:shadow release bench && node out/shadow.js 42 3
+bb check-waste.bb --strict out/light/workload.main.js out/shadow.js
+```
+
+**What it contains.** About 40% of the lines are the plain shape's worker
+namespaces, kept as the app's utility code: protocols, records, multimethods,
+macros, varied arities and destructuring, and every waste marker. The rest are
+features. Each feature has four namespaces:
+
+- `db`: the slice's default value and its spec, a predicate per key;
+- `events`: `reg-event-db` and `reg-event-fx` handlers behind `path`, `trim-v`,
+  `inject-cofx`, an `after` spec check, an `enrich` that keeps a derived total, and a
+  custom `->interceptor` that counts events; effects through `:fx` and a `reg-fx`;
+  one handler calls a worker's `run`;
+- `subs`: layered `reg-sub`s, with `:<-` signals, a signal function, and a
+  subscription to an earlier feature's;
+- `views`: hiccup with keyed lists, form-2 components, `r/with-let`, a form-3
+  `create-class` with `:component-did-mount`, and an unused view with a waste
+  marker.
+
+Seeded choices vary the number of fields, events and items and the spelling of
+handlers, classes and conditionals. `app.core` registers the boot event and the
+root view; `workload.main/main` mounts the app with `react-dom/client`,
+dispatches `3 x ITERATIONS x features` events chosen by a seeded generator from
+INPUT and ITERATIONS, renders with `flushSync` after each round, and prints a
+checksum of `app-db` and one of the rendered markup. Under Node without a DOM,
+`main` makes one with jsdom; `run-light.mjs` makes it before loading the
+light-cljs output and supplies React through `globalThis.lightCljsPackages`.
+
+**The oracle.** `oracle.bb` (`re-frame-oracle.bb` in this directory) replays the
+same event sequence on a model of `app-db` and renders the markup as React's
+`innerHTML` shows it, from `model.edn` alone; worker calls go to the plain
+oracle, copied as `workload-oracle.bb`.
+
+**Libraries.** As in re-frame's examples, reagent 1.2.0 and React 18.2.0;
+re-frame is the `research/re-frame` checkout (`lib/libs.edn` names the commit).
+shadow-cljs compiles re-frame's own sources (`lib/shadow`) with reagent from
+Maven. light-cljs compiles the porter's port of both (`lib/light`), made from a
+small probe app that uses the same library API as the generated apps; its compat
+shims are the TodoMVC port's. `re-frame-libs.bb` then makes four edits, listed
+with their causes in `libs.edn`:
+
+| File | Edit | Cause |
+| --- | --- | --- |
+| `vendor/reagent/core.cljs` | `ra/with-let` to `reagent.ratom/with-let` | The spliced `with-let` macro names the alias `ra` of `reagent/core.clj`, which `core.cljs` lacks |
+| `vendor/reagent/ratom.cljs` | `d/error` to `reagent.debug/error` | Same, for the alias `d` of `reagent/ratom.clj` |
+| `compat/goog.cljs` | `typeOf` | The shim called `js/typeof` as a function, a `ReferenceError`; reagent calls `goog/typeOf` while rendering |
+| `compat/goog/async/nextTick.cljs` | new | `re-frame.interop` reads `goog.async.nextTick` as a JavaScript global; light-cljs has no Closure Library |
+
+The compiler has nothing reagent- or re-frame-specific. Building these apps
+found one general defect, fixed with this shape: at advanced, an `and`/`or`
+whose second operand recurs to an enclosing `loop` (reagent's `arr-eq`)
+panicked the emitter.
+
+**Smoke row, November 13, 2026** (unreserved machine: another worker and an
+outside job were running, load average 9.5 to 34.6 before the runs; a smoke check,
+not a baseline). Seed 42, `--lines 200k`: 202,053 lines, 8,211,436 bytes, 700
+features (2,800 feature namespaces) and 180 worker namespaces. Master's
+`compare.bb --runs 3` drove it unchanged, with light-cljs built from `4d2669bc`
+(the commit with the emitter fix; master's `627b9ed5` panics on this app) and
+shadow-cljs 3.5.3. Both outputs printed the oracle's `714878 117718` for
+(42, 3) and passed `check-waste.bb --strict`. Medians with ranges; `compare.bb`
+records wall and user CPU time and peak memory, not system CPU time.
+
+| | Nothing cached | Cached | Output (gzip) |
+| --- | --- | --- | --- |
+| light-cljs advanced | 8.59 s (8.51–9.75), 8.7 s user, 1.39 GB | 1.86 s (1.80–2.60), 0.68 GB | 6,223,230 (1,108,990) |
+| shadow-cljs release | 76.88 s (74.52–79.76), 160.3 s user, 3.91 GB | 61.94 s (56.44–65.28), 3.25 GB | 6,963,411 (1,172,447) |
+
+Neither output includes React, which both get from `node_modules` at run time.
+At 5k lines (seed 42) light none/prepare/advanced and shadow dev/release all
+matched the oracle for (0, 1), (1, 1), (42, 3), (1000002, 2) and (7, 5).
 
 ## How a project is made
 
@@ -246,6 +337,14 @@ bb benchmarks/generated-project/test.bb
 # expectations, and fail on shadow warnings:
 bb benchmarks/generated-project/test.bb --light target/release/light-cljs --shadow
 ```
+
+The re-frame shape has its own tests in a separate region of `test.bb`:
+determinism, the 5k line target, every re-frame and reagent construct in every
+feature, unique markers, readable sources and a frozen oracle checksum; with the
+library sources present, a standalone project and its oracle; and with
+`--light`/`--shadow`, two seeds at light none/advanced and shadow dev/release
+against the oracle for three input/iteration pairs (this runs `npm install`).
+Without the library sources those tests print `SKIP` and pass.
 
 The end-to-end checks use fresh temporary projects and remove them on exit.
 Compiler regressions fail the test; the generator does not silently change its

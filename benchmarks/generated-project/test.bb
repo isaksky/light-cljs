@@ -239,5 +239,116 @@
                 (check-waste-at manifest (fs/path dir (if (= mode "compile") "out/shadow-dev" "out/shadow.js"))
                                 (= mode "release"))))))))))
 
+;;; ---------------------------------------------------------------------------
+;;; The re-frame shape (generate.bb --shape re-frame, re-frame-oracle.bb).
+;;; Tests that write a project need the library sources re-frame-libs.bb makes
+;;; (research/ is gitignored); without them they print a note and skip.
+
+(load-file (str (fs/path kit "re-frame-oracle.bb")))
+(alias 'rf-oracle 'generated-project.re-frame-oracle)
+
+(def rf-options (assoc gen/defaults :seed 42 :shape "re-frame"))
+(def rf-fixture (delay (gen/re-frame-project rf-options)))
+(def rf-libs (let [dir (gen/rf-libs-dir)] (when (fs/exists? (fs/path dir "libs.edn")) dir)))
+(defn rf-skip [what] (println "SKIP" what "- no re-frame library sources; run re-frame-libs.bb"))
+
+(deftest re-frame-deterministic-and-sensitive-to-seed
+  (is (= (map :source (:files @rf-fixture)) (map :source (:files (gen/re-frame-project rf-options)))))
+  (is (= (:model @rf-fixture) (:model (gen/re-frame-project rf-options))))
+  (let [other (gen/re-frame-project (assoc rf-options :seed -7))]
+    (is (not= (:model @rf-fixture) (:model other)))
+    (is (not= (map :source (:files @rf-fixture)) (map :source (:files other)))))
+  (let [model (:model @rf-fixture)]
+    ;; Frozen; cross-checked with light none/prepare/advanced and shadow dev/release.
+    (is (= "317532 191053" (rf-oracle/expected model 42 3)))
+    (is (> (count (set (map #(rf-oracle/expected model % 1) [0 1 42 1000002]))) 1))
+    (is (thrown? Exception (rf-oracle/expected model 1000003 1)))
+    (is (thrown? Exception (rf-oracle/expected (:model @fixture) 1 1)))))
+
+(deftest re-frame-size-shape-and-readable-sources
+  (let [{:keys [files model markers]} @rf-fixture
+        sources (map :source (remove #(= :shim (:role %)) files))
+        features (:features model)
+        text (str/join "\n" (map :source files))]
+    (is (<= 5000 (:code-lines (gen/source-metrics sources)) 5600))
+    (is (>= (count features) 8))
+    (is (= (* 4 (count features)) (count (filter #(= :feature (:role %)) files))))
+    (is (= 1 (count (filter #(= :entry (:role %)) files))))
+    ;; Every feature uses each kind of re-frame and reagent construct.
+    (doseq [needle ["rf/reg-event-db" "rf/reg-event-fx" "rf/inject-cofx" "rf/path" "rf/trim-v" "rf/enrich"
+                    "rf/after" "rf/->interceptor" ":<- [::" "(fn [_ _] [(rf/subscribe" "r/with-let"
+                    "r/create-class" "^{:key"]]
+      (is (= (count features) (count (filter #(str/includes? (:source %) needle)
+                                             (filter #(re-find #"/(events|subs|views)\.cljs$" (:path %)) files))))
+          needle))
+    (is (some :dep features))
+    (is (= #{"add" "toggle" "compute" "remove" "filter" "rename" "clear"}
+           (set (remove #(str/starts-with? % "bump-") (mapcat :events features)))))
+    (is (apply distinct? (map :marker markers)))
+    (doseq [{:keys [marker]} markers]
+      (is (= 1 (count (re-seq (re-pattern marker) text))) marker))
+    (doseq [{:keys [path source]} files]
+      (testing path (is (pos? (count (read-all source))))))))
+
+(deftest re-frame-options
+  (is (= "re-frame" (:shape (gen/parse-options ["out" "--shape" "re-frame"]))))
+  (is (not (contains? (gen/parse-options ["out" "--shape" "plain"]) :shape)))
+  (doseq [args [["out" "--shape" "vue"] ["out" "--shape"] ["out" "--libs"]]]
+    (is (thrown? Exception (gen/parse-options args)) (pr-str args)))
+  (let [dir (fs/create-temp-dir {:prefix "light-re-frame-test-"})]
+    (try
+      (is (thrown-with-msg? Exception #"re-frame-libs.bb"
+                            (gen/generate! (assoc rf-options :output (str (fs/path dir "p")) :libs (str (fs/path dir "none"))))))
+      (is (not (fs/exists? (fs/path dir "p"))))
+      (finally (fs/delete-tree dir)))))
+
+(deftest re-frame-standalone-project
+  (if-not rf-libs
+    (rf-skip "re-frame-standalone-project")
+    (with-project
+      rf-options
+      (fn [dir manifest]
+        (is (= "317532 191053\n" (:out (command dir "bb" "oracle.bb" "42" "3"))))
+        (with-project rf-options (fn [other _] (is (= (file-contents dir) (file-contents other)))))
+        (is (every? (fn [[path sha]] (= sha (gen/sha256 (slurp (fs/file dir path))))) (:library-sha256 manifest)))
+        (let [light (edn/read-string (slurp (fs/file dir "light-cljs.edn")))
+              shadow (edn/read-string (slurp (fs/file dir "deps.edn")))]
+          (is (= (into ["src" "macros"] gen/rf-light-roots) (:source-paths light)))
+          (is (= ["src" "macros" "shadow-support" "lib/shadow/re-frame"] (:paths shadow)))
+          (is (= "1.2.0" (get-in shadow [:deps 'reagent/reagent :mvn/version]))))))))
+
+(deftest re-frame-compiler-comparisons
+  (when (or (:light options) (:shadow options))
+    (if-not rf-libs
+      (rf-skip "re-frame-compiler-comparisons")
+      (doseq [opts [rf-options (assoc rf-options :seed -7 :lines 2000)]]
+        (with-project
+          opts
+          (fn [dir manifest]
+            (command dir "npm" "install" "--no-audit" "--no-fund")
+            (let [model (edn/read-string (slurp (fs/file dir "model.edn")))
+                  check (fn [runner]
+                          (doseq [[input iterations] [[0 1] [42 3] [1000002 2]]]
+                            (is (= (str (rf-oracle/expected model input iterations) "\n")
+                                   (:out (command dir "node" runner (str input) (str iterations))))
+                                (str runner " input=" input " iterations=" iterations))))]
+              (when-let [binary (:light options)]
+                (doseq [level ["none" "advanced"]]
+                  (println "light re-frame" level (:seed opts)) (flush)
+                  (command dir binary "release" "bench" "--optimize" level)
+                  (check "run-light.mjs")
+                  (check-waste-at manifest (fs/path dir "out/light/workload.main.js") (= level "advanced"))))
+              (when (:shadow options)
+                (doseq [mode ["compile" "release"]]
+                  (println "shadow re-frame" mode (:seed opts)) (flush)
+                  (let [{:keys [out err]} (command dir "clojure" "-M:shadow" mode "bench")]
+                    (is (not (re-find #"WARNING #" (str out err))) (str "shadow " mode " warnings")))
+                  (check "out/shadow.js")
+                  (when (= mode "release")
+                    (check-waste-at manifest (fs/path dir "out/shadow.js") true)))))))))))
+
+;;; End of the re-frame shape's tests.
+;;; ---------------------------------------------------------------------------
+
 (let [{:keys [fail error]} (run-tests 'generated-project.test)]
   (System/exit (if (zero? (+ fail error)) 0 1)))

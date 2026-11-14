@@ -1372,7 +1372,10 @@ object number string run main tag" #"\s+"))))
 
 (def rf-share-of-workers 0.4)
 (def rf-optional-kinds ["remove" "filter" "rename" "clear"])
-(def rf-fixed-keys #{"items" "filter" "next-id" "total" "events" "score" "core" "label" "done" "id"})
+(def rf-fixed-keys
+  ;; Slice keys, and words that would collide with fixed subscription or view names.
+  #{"items" "filter" "next-id" "total" "events" "score" "core" "label" "done" "id"
+    "slice" "visible" "summary" "cross" "root" "item" "stats"})
 
 (defn rf-feature-model [rng used idx workers]
   (let [nm (fresh! rng used :ns)
