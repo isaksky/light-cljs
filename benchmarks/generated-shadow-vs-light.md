@@ -12,8 +12,10 @@ follows them, and [the head-to-head at
 
 The [October 27 regression check and repair](#default-v8-regression-check-october-27-2026)
 below records the later default-compiler regression and the restored timings.
-The [October 29 comparison at `0ad2514f`](#re-measured-at-0ad2514f-cached-and-uncached-october-29-2026),
-at the end, is the latest, with cached builds and leaf edits for both compilers.
+The [October 29 comparison at `0ad2514f`](#re-measured-at-0ad2514f-cached-and-uncached-october-29-2026)
+is the last on a reserved machine, with cached builds and leaf edits for both compilers.
+The [five-round baseline at `627b9ed5`](#five-round-baseline-at-627b9ed5-unreserved-machine-november-13-2026),
+at the end, is the latest: medians and ranges with CPU time, on an unreserved machine.
 
 Reproduce, one project at a time and with no other heavy work running:
 
@@ -1174,3 +1176,131 @@ the same load, clean builds took 8.40, 8.03, 8.16 s against 8.05, 8.14,
 8.58 s, and rebuilds with nothing changed 1.20-1.31 s against 1.17 s, all with
 569 of 569 hits and the same output. The 8.1-8.5 s against the 7.0 s of the
 reserved October 29 run is the load.
+
+## Five-round baseline at `627b9ed5`, unreserved machine (November 13, 2026)
+
+**Summary.** The baseline the shadow-cljs comparison pellets cite (group
+shadow-comparison-credibility): five alternating rounds per build, with user
+and system CPU time. The machine was **not reserved**: two other workers were
+building and timing re-frame and generated projects, shadow-cljs builds
+included, and the 1-minute load average before a timed build ranged from 3.6
+to 26.8 at 200k and from 2.8 to 17.3 at 800k, on 24 CPUs. The pellet asked for
+a reserved machine; the user's decision of November 13 ("please dont stop
+because of the machine not being free") supersedes that, so the load gate was
+switched off (`--max-load 1000`), no round was repeated, and the load before
+every build is in the tables. Medians: light-cljs takes 0.15x shadow-cljs's
+wall time for a clean build at 200k and 0.17x at 800k, 0.030x and 0.037x for a
+rebuild with nothing changed, and 0.13x and 0.17x for a rebuild after a
+one-file edit, at 0.14x to 0.48x its peak memory and 0.009x to 0.089x its CPU
+time (user + system). Output is 0.86x (200k) and 0.85x (800k) shadow's size
+after gzip.
+
+Setup. light-cljs master `627b9ed5` as the immutable release binary
+`research/shadow-credibility/bin/light-cljs-627b9ed5` (V8 build), shadow-cljs
+3.5.3 with the generated `-Xmx8g`. The projects (`generate.bb --seed 42
+--lines 200k|800k`), raw EDN results and logs stay in the gitignored
+`research/shadow-credibility/` (`projects/`, `baseline-627b9ed5/`). Each round
+reverses the previous round's compiler order. A clean build is light
+`--no-cache` and shadow with `.shadow-cljs` removed; the rebuild with nothing
+changed follows one untimed build into an empty cache; the one-file edit
+appends a different unused `defn` to a leaf namespace each round
+(`workload.babomhol` at 200k, `workload.babra` at 800k). Times and peak memory
+come from `/usr/bin/time -l`. 200k ran from 22:50 to 23:04 MST, 800k from
+23:04 to 00:06.
+
+```sh
+R=research/shadow-credibility
+bb benchmarks/generated-project/compare.bb $R/projects/workload-200k-seed42 --light $R/bin/light-cljs-627b9ed5 \
+  --leaf src/workload/babomhol.cljs --warm-jvm 4 --max-load 1000 --out $R/baseline-627b9ed5/workload-200k
+bb benchmarks/generated-project/compare.bb $R/projects/workload-800k-seed42 --light $R/bin/light-cljs-627b9ed5 \
+  --leaf src/workload/babra.cljs --max-load 1000 --out $R/baseline-627b9ed5/workload-800k
+```
+
+Both runs record light-cljs `627b9ed5` (binary SHA-256 `11ea6bcc630b2cb5...`),
+shadow-cljs 3.5.3, OpenJDK 25.0.2, Node v26.12.1, Clojure CLI 1.12.4.1618 and
+Babashka 1.13.229 on an Apple M3 Ultra (Virtual), 24 CPUs, 32 GiB, macOS
+15.7.3. The tables are `compare.bb`'s Markdown output without its gate
+sentence (the gate was off).
+
+### 200k
+
+| Build | Compiler | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- |
+| clean build | light-cljs | 6.35 s (6.17-6.62) | 6.54 s (6.29-6.82) | 0.38 s (0.35-0.39) | 1.039 GB (1.031-1.049) | 3.61-8.80 |
+| clean build | shadow-cljs | 41.54 s (41.32-44.22) | 126.58 s (125.66-128.77) | 129.17 s (112.30-140.77) | 4.164 GB (3.017-4.271) | 3.88-9.49 |
+| rebuild, nothing changed | light-cljs | 1.26 s (1.10-1.43) | 1.06 s (1.01-1.13) | 0.12 s (0.08-0.15) | 0.542 GB (0.527-0.546) | 8.58-20.44 |
+| rebuild, nothing changed | shadow-cljs | 41.67 s (37.33-65.11) | 103.25 s (98.20-107.79) | 26.44 s (15.29-52.51) | 3.821 GB (3.488-4.930) | 8.58-26.82 |
+| rebuild after a one-file edit | light-cljs | 5.19 s (4.94-9.20) | 5.25 s (4.78-6.10) | 0.44 s (0.38-1.21) | 0.996 GB (0.988-1.034) | 11.39-15.02 |
+| rebuild after a one-file edit | shadow-cljs | 38.85 s (34.83-43.77) | 105.27 s (102.63-107.30) | 21.04 s (14.08-29.93) | 3.171 GB (2.797-3.620) | 9.11-16.85 |
+
+| Build | light/shadow wall time | light/shadow CPU (user + system) | light/shadow peak memory |
+| --- | --- | --- | --- |
+| clean build | 0.15 | 0.027 | 0.25 |
+| rebuild, nothing changed | 0.030 | 0.009 | 0.14 |
+| rebuild after a one-file edit | 0.13 | 0.045 | 0.31 |
+
+| Output | Compiler | Bytes | gzip -9 bytes | Checked |
+| --- | --- | --- | --- | --- |
+| clean build | light-cljs | 3,449,022 | 859,697 | oracle 484264, waste ok |
+| clean build | shadow-cljs | 4,067,637 | 1,002,909 | oracle 484264, waste ok |
+| rebuild after a one-file edit | light-cljs | 3,449,022 | 859,697 | oracle 484264, waste ok |
+| rebuild after a one-file edit | shadow-cljs | 4,067,637 | 1,002,909 | oracle 484264, waste ok |
+
+shadow-cljs in one JVM (4 release builds, as a running server): 44.20 s (113.5 s CPU, load 15.44), 28.06 s (52.8 s CPU, load 20.69), 32.58 s (45.0 s CPU, load 17.85), 29.22 s (43.6 s CPU, load 19.14); the JVM's peak memory 5.253 GB.
+
+### 800k
+
+| Build | Compiler | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- |
+| clean build | light-cljs | 40.55 s (33.85-42.68) | 39.69 s (34.51-40.74) | 3.09 s (1.80-3.73) | 3.783 GB (3.755-3.792) | 3.43-15.79 |
+| clean build | shadow-cljs | 243.48 s (199.44-344.61) | 465.20 s (447.87-484.36) | 582.78 s (284.15-605.37) | 7.813 GB (7.597-8.657) | 2.83-17.32 |
+| rebuild, nothing changed | light-cljs | 6.45 s (5.22-7.49) | 4.98 s (4.70-5.23) | 0.56 s (0.37-0.82) | 1.985 GB (1.966-1.991) | 7.71-9.15 |
+| rebuild, nothing changed | shadow-cljs | 172.28 s (163.35-191.85) | 333.59 s (323.41-354.13) | 36.06 s (32.64-40.23) | 7.948 GB (7.586-8.351) | 7.09-13.43 |
+| rebuild after a one-file edit | light-cljs | 28.14 s (26.77-30.50) | 30.02 s (28.41-32.77) | 1.77 s (1.57-2.41) | 3.526 GB (3.454-3.561) | 4.43-17.29 |
+| rebuild after a one-file edit | shadow-cljs | 165.38 s (154.69-198.21) | 328.13 s (319.31-344.85) | 28.20 s (24.54-71.45) | 7.501 GB (7.421-8.358) | 4.33-13.01 |
+
+| Build | light/shadow wall time | light/shadow CPU (user + system) | light/shadow peak memory |
+| --- | --- | --- | --- |
+| clean build | 0.17 | 0.041 | 0.48 |
+| rebuild, nothing changed | 0.037 | 0.015 | 0.25 |
+| rebuild after a one-file edit | 0.17 | 0.089 | 0.47 |
+
+| Output | Compiler | Bytes | gzip -9 bytes | Checked |
+| --- | --- | --- | --- | --- |
+| clean build | light-cljs | 13,367,898 | 3,299,312 | oracle 189716, waste ok |
+| clean build | shadow-cljs | 15,710,764 | 3,894,315 | oracle 189716, waste ok |
+| rebuild after a one-file edit | light-cljs | 13,367,898 | 3,299,312 | oracle 189716, waste ok |
+| rebuild after a one-file edit | shadow-cljs | 15,710,764 | 3,894,315 | oracle 189716, waste ok |
+
+Findings, recorded as found:
+
+1. **Load moves shadow-cljs far more than light-cljs.** shadow's 800k clean
+   build ranged from 199.4 to 344.6 s (median 243.5 s, against 176.8 s on the
+   reserved machine on October 29) and its rebuild with nothing changed took
+   172.3 s (147.5 s). light's 800k clean build ranged from 33.9 to 42.7 s;
+   the two rounds that started at the lowest load (3.4 and 4.8) took 33.9 and
+   35.3 s, below October 29's 36.7 s. At 200k, against October 29: light's
+   clean build 6.35 s (7.03 s), rebuild with nothing changed 1.26 s (1.02 s),
+   after a one-file edit 5.19 s (5.14 s); shadow's 41.54 s (40.70 s), 41.67 s
+   (32.43 s, one round at 65.1 s with the load at 26.8) and 38.85 s (32.63 s).
+2. **shadow-cljs spends a large share of its clean builds in system CPU**:
+   129 s system against 127 s user at 200k, and 583 s against 465 s at 800k
+   (medians), but 21 to 36 s on its cached rebuilds. light's clean builds use
+   0.4 s and 3.1 s. System CPU was not recorded before (October 29 has user
+   CPU only), so whether this is the load or shadow's normal behaviour is
+   open; the CPU ratios above include it.
+3. **Growth from 200k to 800k under this load** (clean build medians): light
+   6.4x (5.5x between its lowest-load rounds) and shadow 5.9x. These runs were
+   not made to measure growth, and a loaded machine says little about it.
+4. **Output.** Every output printed the project oracle's checksum (`484264`
+   at 200k, `189716` at 800k; input 42, 3 iterations) and passed
+   `check-waste.bb --strict`. light's output is slightly smaller than on
+   October 29 (3,449,022 against 3,456,905 bytes at 200k, 13,367,898 against
+   13,396,492 at 800k); shadow's is the same size.
+5. **A running shadow-cljs server** (`--warm-jvm 4`, 200k) took 28 to 33 s
+   per release build after the first, at 5.25 GB peak memory; light's clean
+   build (6.35 s) is 0.22x of that and its rebuild after a one-file edit
+   (5.19 s) 0.18x.
+
+Rerun on a reserved machine before quoting these figures as typical; until
+then they are the dated baseline, labelled unreserved.
