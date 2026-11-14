@@ -6,6 +6,7 @@
 ;;   bb benchmarks/watch-vs-shadow.bb run APP [--tools shadow,light] [--edits N]
 ;;                                           [--raw FILE] [--log FILE]
 ;;                                           [--timeout-s S] [--light BIN]
+;;                                           [--pause-jitter-ms MS]
 ;;   bb benchmarks/watch-vs-shadow.bb report RAW [RAW ...]
 ;;
 ;; APP is todomvc (re-frame's example, research/re-frame/examples/todomvc for
@@ -29,7 +30,9 @@
 ;; build, then runs benchmarks/watch-vs-shadow.mjs, which opens the page in
 ;; headless Chromium through the tool's own dev server and reload client and
 ;; saves every scenario's edits: one warm-up and N timed edits (default 5),
-;; the same text for both tools. Meanwhile the watch's process tree's
+;; the same text for both tools, with a pause of a second after each (plus a
+;; random share of --pause-jitter-ms, so that saves do not all land at the
+;; same point of a watch's poll period). Meanwhile the watch's process tree's
 ;; resident memory is sampled every 250 ms. Prints, per scenario and tool,
 ;; the median and range of the three intervals from the edit's file
 ;; modification time (output written, reload message received, new code
@@ -291,7 +294,7 @@
      :edits (map #(str/replace text (:from sc) ((:to sc) %)) tokens)
      :tokens tokens :probe (:probe sc)}))
 
-(defn run-tool [app tool binary {:keys [edits timeout-s log]}]
+(defn run-tool [app tool binary {:keys [edits timeout-s log pause-jitter-ms]}]
   (let [{:keys [ready scenarios]} (apps app)
         out (get-in apps [app tool :out])
         ;; Read every source before the watch starts, so that whatever
@@ -312,6 +315,7 @@
                      {:tool (name tool) :url url :events (str (str/replace url #"/$" "") "/events")
                       :npmTools (str npm-tools) :outDir (str out) :rootPid (:pid w)
                       :ready ready :timeoutMs (* 1000 timeout-s) :pauseMs 1000
+                      :pauseJitterMs (or pause-jitter-ms 0)
                       :scenarios configs}))
             r (process/sh {:err :inherit :out :string} "node" (str (fs/path repo "benchmarks/watch-vs-shadow.mjs")) (str cfg))
             _ (fs/delete cfg)
@@ -407,7 +411,8 @@
                 tools (map keyword (str/split (option args "--tools" "shadow,light") #","))
                 opts {:edits (parse-long (option args "--edits" "5"))
                       :timeout-s (parse-long (option args "--timeout-s" "900"))
-                      :log (option args "--log" nil)}
+                      :log (option args "--log" nil)
+                      :pause-jitter-ms (parse-long (option args "--pause-jitter-ms" "0"))}
                 runs (vec (for [t tools]
                             (do (binding [*out* *err*] (println "==" app (name t)))
                                 (run-tool app t binary opts))))]
@@ -416,5 +421,5 @@
             (print-results app binary runs))
     "report" (let [raws (map (comp read-string slurp) (cons app (take-while #(not (str/starts-with? % "--")) args)))]
                (print-results (:app (first raws)) (:binary (first raws)) (vec (mapcat :runs raws))))
-    (do (println "usage: bb benchmarks/watch-vs-shadow.bb prepare APP | run APP [--tools shadow,light] [--edits N] [--raw FILE] [--log FILE] [--timeout-s S] [--light BIN] | report RAW...")
+    (do (println "usage: bb benchmarks/watch-vs-shadow.bb prepare APP | run APP [--tools shadow,light] [--edits N] [--raw FILE] [--log FILE] [--timeout-s S] [--light BIN] [--pause-jitter-ms MS] | report RAW...")
         (System/exit 1))))

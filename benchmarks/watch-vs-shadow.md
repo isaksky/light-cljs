@@ -209,3 +209,55 @@ The kit measures CPU time and peak memory for the watch's process tree, not for 
 - **TodoMVC page load** did not get worse: 0.17 s in both sessions, against 0.22 s for the baseline and 0.29 to 0.31 s for shadow-cljs.
 - **Edits, no regression** (median and range of 10 edits per cell, against the baseline's 10). Milliseconds to new code running: view 183 (157-235) against 190 (118-227); `workload.common` 188 (151-220) against 191 (101-230); macro 363 (334-477) against 406 (325-477). Steps: 70, 61 and 292 ms against 68, 62 and 293 ms. CPU user + system per edit: 0.10, 0.10 and 0.39 s against 0.10, 0.10 and 0.39 s. On TodoMVC (5 baseline edits): 63 and 170 ms against 57 and 163 ms to new code running, and 0.00 and 0.14 s of CPU per edit against 0.01 and 0.15 s. Startup, CPU time and peak memory are in the table and unchanged within noise.
 - No console errors or uncaught exceptions on either side.
+
+## 2026-11-14, later: watch steps after light-cljs-1001
+
+light-cljs-1001 made the rest of a step's whole-program work (the light-cljs-991 note's last item) follow what the step changed. A poll tells directories apart by device and inode instead of resolving every path, and lists a directory again only when its stamp changed. A step whose namespace keeps its requires, observations and macros keeps the dependency manifest instead of rebuilding all of it. The session keeps each definition's hook flags and looks only at the definitions a form changed. A rewritten unit's registration reads the session's per-namespace index. A deferred unit's merge visits only the reader contexts that changed since its snapshot. The watch output of this app (all five snapshots of a view, `workload.common`, macro and second view edit) and its release output are byte-identical to master's.
+
+**Setup.** Same kit, app and edits as above. light-cljs is `research/shadow-credibility/bin/light-cljs-fa9856b4`, the fix's commit on master `1579f4fc`. The same-day baseline is master's own binary, `light-cljs-1579f4fc`. **Unreserved:** peer workers were building and testing. The one-minute load average before each edit is in the tables.
+
+**The kit's pause, and a new option.** After each edit the kit waits until the page runs the new code, then pauses one second. With a fixed pause every save lands at about the same point of the watch's poll period, so "noticing" measured nearly a full period (about 100 ms) on almost every edit, or nearly none, depending on how long the step before took. `--pause-jitter-ms N` (new in `benchmarks/watch-vs-shadow.bb`) adds a random 0 to N ms to each pause, so that saves land at random points of either tool's period. Both methods were run:
+
+- **Fixed pause, as in the notes above:** four invocations for the fix, in the orders light, shadow then shadow, light, twice (5 timed edits per session, 20 per cell); two baseline sessions (10 per cell).
+- **Random pause, `--pause-jitter-ms 1000 --edits 10`:** two invocations for the fix in the two orders (20 timed edits per cell) and one baseline session (10 per cell).
+
+Milliseconds from the save, median (range). Only the rows this fix moves are shown; shadow-cljs's rows come from the same invocations.
+
+| Scenario | Pause | Tool | Output written | Reload message | New code running | Tool's own step time | CPU user + system per edit, s | Load average |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| view (leaf): app.baga.views | fixed | light-cljs, master `1579f4fc` | 139 (109-168) | 185 (156-210) | 186 (165-217) | 67 (63-69) | 0.10 (0.09-0.12) | 9.2 (8.4-10.2) |
+| view (leaf): app.baga.views | fixed | light-cljs, `fa9856b4` | 113 (21-136) | 117 (25-140) | 118 (26-142) | **13 (12-16)** | 0.03 (0.02-0.04) | 6.2 (4.4-8.2) |
+| view (leaf): app.baga.views | fixed | shadow-cljs | 2900 (2424-3197) | 2955 (2477-3257) | 2968 (2488-3270) | 770 (740-1040) | 1.25 (0.99-1.82) | 12.5 (10.8-14.7) |
+| view (leaf): app.baga.views | random | light-cljs, master `1579f4fc` | 109 (46-175) | 156 (92-222) | 158 (94-224) | 70 (68-76) | 0.11 (0.10-0.13) | 5.4 (5.1-5.6) |
+| view (leaf): app.baga.views | random | light-cljs, `fa9856b4` | 76 (40-125) | 81 (46-130) | **83 (47-139)** | **13 (12-16)** | 0.03 (0.01-0.04) | 5.9 (4.8-7.2) |
+| view (leaf): app.baga.views | random | shadow-cljs | 2314 (1954-2797) | 2376 (2011-2852) | 2388 (2024-2863) | 770 (760-790) | 1.24 (1.02-1.66) | 9.4 (7.0-12.3) |
+| widely required: workload.common | fixed | light-cljs, master `1579f4fc` | 152 (134-176) | 196 (180-219) | 199 (180-222) | 59 (57-65) | 0.11 (0.10-0.12) | 8.2 (7.5-9.1) |
+| widely required: workload.common | fixed | light-cljs, `fa9856b4` | 112 (21-130) | 116 (30-134) | 117 (32-135) | **6 (5-6)** | 0.02 (0.01-0.03) | 5.9 (4.2-7.3) |
+| widely required: workload.common | fixed | shadow-cljs | 5081 (3603-5933) | 5142 (3662-6006) | 6211 (4750-7114) | 3475 (3170-4130) | 51.95 (48.22-59.94) | 11.8 (10.4-13.8) |
+| widely required: workload.common | random | light-cljs, master `1579f4fc` | 121 (76-168) | 167 (123-212) | 168 (125-215) | 61 (59-62) | 0.10 (0.08-0.12) | 4.9 (4.6-4.9) |
+| widely required: workload.common | random | light-cljs, `fa9856b4` | 72 (23-111) | 76 (27-116) | **77 (27-117)** | **6 (5-10)** | 0.02 (0.00-0.03) | 5.6 (4.3-9.5) |
+| widely required: workload.common | random | shadow-cljs | 5279 (3776-6769) | 5339 (3843-6833) | 6463 (4922-7991) | 3830 (3500-5100) | 55.28 (49.75-65.56) | 9.3 (6.1-16.3) |
+| macro: workload.sobis/hainfoulvei | fixed | light-cljs, master `1579f4fc` | 276 (261-404) | 320 (307-449) | 327 (313-455) | 278 (269-296) | 0.38 (0.35-0.40) | 7.5 (6.6-8.7) |
+| macro: workload.sobis/hainfoulvei | fixed | light-cljs, `fa9856b4` | 228 (186-305) | 235 (197-310) | 241 (203-317) | **165 (157-181)** | 0.18 (0.18-0.20) | 5.4 (4.1-6.9) |
+| macro: workload.sobis/hainfoulvei | fixed | shadow-cljs | 856 (360-902) | 913 (414-965) | 957 (459-1009) | 280 (250-390) | 1.38 (1.12-2.24) | 11.8 (10.1-15.2) |
+| macro: workload.sobis/hainfoulvei | random | light-cljs, master `1579f4fc` | 357 (281-412) | 403 (327-458) | 411 (334-466) | 302 (292-319) | 0.39 (0.38-0.43) | 5.3 (4.4-5.4) |
+| macro: workload.sobis/hainfoulvei | random | light-cljs, `fa9856b4` | 242 (183-289) | 247 (189-294) | **255 (196-302)** | **174 (159-186)** | 0.20 (0.18-0.21) | 6.8 (3.7-10.3) |
+| macro: workload.sobis/hainfoulvei | random | shadow-cljs | 2179 (519-2638) | 2236 (579-2696) | 2281 (625-2743) | 300 (270-370) | 1.40 (1.22-2.05) | 10.0 (7.6-13.6) |
+
+Where the time to new code running goes, medians in milliseconds, light-cljs only (shadow-cljs's split is as in the notes above):
+
+| Scenario | Pause | Binary | Noticing and other | Step | Output to message | Message to running |
+|---|---|---|---:|---:|---:|---:|
+| view (leaf) | random | master `1579f4fc` | 39 | 70 | 47 | 2 |
+| view (leaf) | random | `fa9856b4` | 62 | 13 | 4 | 2 |
+| widely required | random | master `1579f4fc` | 59 | 61 | 45 | 1 |
+| widely required | random | `fa9856b4` | 67 | 6 | 4 | 1 |
+| macro | random | master `1579f4fc` | 55 | 302 | 47 | 7 |
+| macro | random | `fa9856b4` | 71 | 174 | 5 | 7 |
+
+- **Steps:** 67-70 to 13 ms for the view and 59-61 to 6 ms for `workload.common`, and the 45 ms between the files written and the push is down to 4 or 5. CPU time per edit fell from 0.10 to 0.02 or 0.03 s. The macro edit's step for 9 namespaces fell from 278-302 to 165-174 ms; what is left is analyzing and expanding those namespaces.
+- **Save to new code running, random pause:** 83 ms for the view and 77 ms for `workload.common`, against master's 158 and 168 ms. docs/dev-workflow.md's target, under 100 ms from save to updated page, now holds on the 200k app at the median; the slowest edits (139 and 117 ms) still miss it. With the fixed pause the medians are 118 and 117 ms, since nearly every save there waited a full poll period. What is left is mostly noticing the save: half the 100 ms poll on average, plus the poll's own scan. A `sample` of a running watch puts that scan at about 11 ms (it was about 39 ms on master), nearly all of it the `stat` of each of the 3,100 files and 750 directories.
+- **shadow-cljs and the pause:** with the random pause, shadow-cljs's macro edit took 2,281 ms to new code running, against 957 ms with the fixed pause. Its noticing went from 566 to 1,879 ms, so the fixed pause had happened to favour its watcher on that scenario. Recorded as found; its other scenarios moved less (view 2,968 to 2,388 ms, `workload.common` 6,211 to 6,463 ms).
+- **Startup and page load** are unchanged: 18.6 to 20.0 s to the first build and 4.9 to 5.3 s page load, against the baseline's 19.5 to 20.1 s and 4.9 to 5.1 s.
+- **Still whole-program per step, all small:** the poll's `stat` of every file (polling is the design, docs/dev-workflow.md item 18; an operating-system file watcher would be a new subsystem); writing `manifest.json` and `index.js` and the server's copy of the build (about 1 ms each); and the first macro edit of a session, which registers every namespace with the macro engine once (about 90 ms, that edit only).
+- No console errors or uncaught exceptions on either side. The raw runs are in `research/shadow-credibility/watch-1001-fa9856b4/`.

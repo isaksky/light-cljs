@@ -175,7 +175,10 @@ try {
                    message: msg.at - mtime, running: running - mtime,
                    cpuUser: cpu1.user - cpu0.user, cpuSys: cpu1.sys - cpu0.sys });
       process.stderr.write(`${config.tool} ${sc.name} ${i}: output ${output === null ? "-" : (output - mtime).toFixed(0)} message ${(msg.at - mtime).toFixed(0)} running ${(running - mtime).toFixed(0)} ms (load ${load.toFixed(2)})\n`);
-      await new Promise((r) => setTimeout(r, config.pauseMs ?? 1000));
+      // A random share of the pause, with --pause-jitter-ms, puts the next
+      // save at a random point of the watch's poll period: with a fixed
+      // pause every save lands at about the same point of it.
+      await new Promise((r) => setTimeout(r, (config.pauseMs ?? 1000) + Math.random() * (config.pauseJitterMs ?? 0)));
     }
     // Put the file back and wait until the page runs the original again,
     // so that this rebuild never overlaps the next scenario's edits.
