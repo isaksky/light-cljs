@@ -2877,7 +2877,8 @@ impl CompilationSession {
         let mut names = Vec::new();
         let mut seen = self.namespaces_seen.borrow_mut();
         for entry in entries {
-            note_rank(&mut seen, &entry.namespace, placement_rank(entry.unit));
+            let rank = placement_rank(entry.unit);
+            note_rank(&mut seen, &entry.namespace, rank);
             // With engines in the pool, a unit the pool takes added its
             // namespaces to a worker's registry, not this one.
             if !self.analyzes_on_coordinator(entry.unit) {
@@ -2889,7 +2890,8 @@ impl CompilationSession {
             {
                 if at > ensured {
                     for name in program.range(ensured..at) {
-                        note_rank(&mut seen, name, COORDINATOR_RANK);
+                        // In the registration's placement, as it adds them.
+                        note_rank(&mut seen, name, rank);
                         names.push(name.clone());
                     }
                 }
