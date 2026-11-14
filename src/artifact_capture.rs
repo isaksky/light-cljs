@@ -703,9 +703,19 @@ fn charged_expansion(event: crate::macro_host::UnitEvent) -> Option<ChargedExpan
     }
 }
 
-/// The distinct `keys` (changed keys come with repeats), by `index`.
-fn sorted<K: Copy>(keys: Vec<&K>, index: impl Fn(&K) -> usize) -> Vec<K> {
-    let mut keys = keys.into_iter().copied().collect::<Vec<_>>();
+/// The distinct `keys` (changed keys come with repeats) to `keep`, by
+/// `index`. Filtered first: after a layered table merged into a new base,
+/// its changed keys are all of them.
+fn sorted<K: Copy>(
+    keys: Vec<&K>,
+    index: impl Fn(&K) -> usize,
+    keep: impl Fn(&K) -> bool,
+) -> Vec<K> {
+    let mut keys = keys
+        .into_iter()
+        .filter(|key| keep(key))
+        .copied()
+        .collect::<Vec<_>>();
     keys.sort_unstable_by_key(&index);
     keys.dedup_by_key(|key| index(key));
     keys
@@ -1301,9 +1311,15 @@ impl Converter<'_> {
         // key order, not walked whole, so a namespace's capture costs what
         // it changed, not the size of the program before it
         // (light-cljs-997). A key only the start has is a removal, which
-        // these checks never covered: they read the program's entries.
+        // these checks never covered: they read the program's entries. The
+        // keys kept are those whose entry the loop below captures or
+        // refuses; it skips every other.
         let mut protocols = Vec::new();
-        for global in sorted(program.protocols.changed_keys(&start.protocols), |g| g.0) {
+        for global in sorted(
+            program.protocols.changed_keys(&start.protocols),
+            |g| g.0,
+            |g| program.protocols.get(g) != start.protocols.get(g),
+        ) {
             let Some(methods) = program.protocols.get(&global) else {
                 continue;
             };
@@ -1327,6 +1343,7 @@ impl Converter<'_> {
         for global in sorted(
             (program.record_constructors).changed_keys(&start.record_constructors),
             |g| g.0,
+            |g| program.record_constructors.contains(g) && !start.record_constructors.contains(g),
         ) {
             if !program.record_constructors.contains(&global)
                 || start.record_constructors.contains(&global)
@@ -1340,6 +1357,10 @@ impl Converter<'_> {
         for local in sorted(
             program.field_bindings.changed_keys(&start.field_bindings),
             |l| l.0,
+            |l| {
+                let now = program.field_bindings.get(l);
+                now.is_some() && (l.0 >= start.locals || start.field_bindings.get(l) != now)
+            },
         ) {
             let Some(&(target, mutable)) = program.field_bindings.get(&local) else {
                 continue;
@@ -1357,6 +1378,10 @@ impl Converter<'_> {
         for target in sorted(
             program.type_methods.changed_keys(&start.type_methods),
             |t| t.0,
+            |t| {
+                program.type_methods.contains(t)
+                    && (t.0 >= start.recur_targets || !start.type_methods.contains(t))
+            },
         ) {
             if !program.type_methods.contains(&target) {
                 continue;
@@ -1373,6 +1398,10 @@ impl Converter<'_> {
         for expr in sorted(
             program.macro_functions.changed_keys(&start.macro_functions),
             |e| e.0,
+            |e| {
+                program.macro_functions.contains(e)
+                    && (e.0 >= start.exprs || !start.macro_functions.contains(e))
+            },
         ) {
             if !program.macro_functions.contains(&expr) {
                 continue;
