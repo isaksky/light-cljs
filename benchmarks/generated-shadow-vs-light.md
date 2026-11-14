@@ -2416,3 +2416,111 @@ repetitions (`protocol/`, `protocol-2/`):
   (21.35-25.22) against 24.68 s (22.31-25.82), system CPU 3.10 s
   (2.50-3.58) against 3.18 s (2.94-3.87), peak memory 2.542 GB
   (2.494-2.566) against 2.545 GB (2.536-2.564).
+
+## Three more position-dependent terms in the analysis loop, unreserved machine (November 14, 2026, light-cljs-994, second attempt)
+
+**Summary.** After `53c9139a` the plain shape's top-level pass still cost
+more per KB the later a namespace compiled (119 to 223 µs across the 800k
+compile order). Sampled profiles of the plain 800k build, the early part
+of its analysis against the late part, with the share of each function in
+the top-level pass's own time, found three terms that grow with what was
+compiled before. `f1c9a787` removes them with byte-identical output:
+
+1. **Appending a deferred unit walked every entry of each keyed table the
+   unit had changed** (field bindings, protocols, record constructors,
+   type methods, macro functions, namespace entries) to find the few it
+   added: a third of the late analysis samples, in the append stage
+   rather than the top-level pass. It now looks up the fragment's own IDs
+   when there are fewer of them than entries. The append stage of the
+   plain 800k build drops from 4.7 s to 0.3 s.
+2. **Registering a definition's name copied the macro host's layered
+   tables.** Each definition's deferred unit holds a frame of the tables,
+   so the next definition's registration copied the top layer (up to
+   64 + √n entries) and every merge the whole base: 14% of the top-level
+   pass's own samples early, 23% late. `Layered` now keeps a middle
+   layer, with bounds of about the cube root of the size and its square,
+   so a write after a frame copies about twice the cube root; the share
+   is now flat (8% early, 7% late).
+3. **The elision check walked every node of the map of every declared
+   macro** each time a macro declaration made that map anew (217 times at
+   800k, up to 42,000 nodes each): 3% of the own samples early, 8% late.
+   The sizes of the entries of the last large collection walked are now
+   kept by identity, so the new map costs a lookup per macro.
+
+What is left grows evenly: no function's share of the late profile rises
+by more than 3 points, and the plain 800k cost per KB is now 105 to 141 µs
+across the compile order, against 102 to 132 µs at 200k. **The own time of
+the top-level pass grows 4.43x (plain) and 4.37x (re-frame) for 4.0x the
+lines**, against 5.16x and 4.73x for the base, within the 4.5x the pellet
+asked for; the three plain rounds on the least loaded machine gave 4.65x.
+Analysis time now grows 4.27x and 4.26x, wall time 4.34x and 4.23x.
+
+Setup: base `7ee0d22d` (the binary light-cljs-995 re-checked, same source
+as master `ea60c6b8`) and the fix `f1c9a787` (rebased onto `363cbc83` as
+`cbd337ea`, the same change), immutable release binaries
+in `research/shadow-credibility/bin/` (V8 build; SHA-256
+`dffa43a0b5dc11bc...` and `8775f032e768847c...`), alternated within each
+round, in private copies (`*-994b`, sources only) of the projects of
+light-cljs-994's first section: plain 200k and 800k, re-frame 200k and
+800k, seed 42. Five rounds for the plain projects, three for the
+re-frame ones. Raw output in
+`research/shadow-credibility/growth-994b/stats/` (gitignored). Same
+command as above. **The machine was not reserved**: the 1-minute load
+before a build ranged from 2.1 to 11.0. Every build of both binaries
+produced the digest its project had in light-cljs-994's first section
+(`d127a769...`, `16a147a8...`, `5041b2f8...`, `65a0db5b...`).
+
+| Project | Binary | Own time of the top-level pass | trace.other-ms | time.analysis-ms | time.wall-ms | User CPU | System CPU | Peak memory | Load before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| plain 200k | `7ee0d22d` | 1,182 (1,082-1,354) | 98.0 (84.8-112.3) | 2,118 (1,934-2,389) | 6,386 (5,786-7,241) | 6.49 s (5.97-7.13) | 0.40 s (0.31-0.74) | 1.03 GB (1.02-1.04) | 2.2-8.9 |
+| plain 200k | `f1c9a787` | 1,142 (1,026-1,415) | 95.5 (79.8-115.5) | 1,856 (1,643-2,306) | 6,197 (5,639-8,201) | 6.34 s (5.74-7.16) | 0.41 s (0.31-1.65) | 1.04 GB (1.02-1.07) | 2.1-9.2 |
+| plain 800k | `7ee0d22d` | 6,095 (5,691-6,463) | 440.6 (398.1-479.9) | 12,691 (11,954-13,258) | 31,593 (30,353-33,158) | 32.22 s (30.89-33.15) | 1.84 s (1.64-2.00) | 3.66 GB (3.60-3.78) | 2.4-11.0 |
+| plain 800k | `f1c9a787` | 5,065 (4,668-7,836) | 399.8 (360.3-584.5) | 7,924 (7,277-11,990) | 26,876 (24,727-36,871) | 27.08 s (25.02-30.50) | 1.61 s (1.41-12.79) | 3.61 GB (3.59-3.65) | 2.7-8.5 |
+| re-frame 200k | `7ee0d22d` | 1,304 (1,264-1,310) | 106.9 (104.3-108.3) | 1,794 (1,730-1,795) | 7,630 (7,316-8,178) | 7.32 s (7.23-7.44) | 0.62 s (0.57-0.77) | 1.31 GB (1.30-1.34) | 2.5-4.7 |
+| re-frame 200k | `f1c9a787` | 1,204 (1,185-1,218) | 100.8 (97.4-105.0) | 1,634 (1,595-1,641) | 7,191 (7,160-7,395) | 7.15 s (7.10-7.19) | 0.55 s (0.54-0.56) | 1.31 GB (1.30-1.36) | 2.6-4.3 |
+| re-frame 800k | `7ee0d22d` | 6,173 (5,838-6,322) | 452.3 (442.5-471.9) | 8,559 (8,173-8,803) | 35,024 (31,949-35,360) | 32.44 s (31.46-33.10) | 2.75 s (2.39-3.01) | 4.75 GB (4.23-4.84) | 3.0-4.3 |
+| re-frame 800k | `f1c9a787` | 5,264 (5,251-5,703) | 424.9 (411.3-478.0) | 6,953 (6,932-7,570) | 30,421 (30,329-34,500) | 29.88 s (28.39-31.97) | 2.32 s (2.25-2.89) | 4.80 GB (4.71-4.84) | 2.8-5.3 |
+
+Times in milliseconds unless marked. One plain 800k build of `f1c9a787`
+ran beside a burst of load (12.8 s of system CPU); it sets the top of its
+ranges.
+
+| Counter, 200k -> 800k (medians) | plain `7ee0d22d` | plain `f1c9a787` | re-frame `7ee0d22d` | re-frame `f1c9a787` |
+| --- | --- | --- | --- | --- |
+| own time of the top-level pass | 5.16x | **4.43x** | 4.73x | **4.37x** |
+| trace.other-ms | 4.50x | 4.19x | 4.23x | 4.22x |
+| time.analysis-ms | 5.99x | 4.27x | 4.77x | 4.26x |
+| time.wall-ms | 4.95x | 4.34x | 4.59x | 4.23x |
+
+Own time of the top-level pass per KB of source, by tenth of the
+namespaces in compile order (µs per KB, median over the builds):
+
+| Project | Binary | 1st | 2nd | 3rd | 4th | 5th | 6th | 7th | 8th | 9th | 10th |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| plain 200k | `7ee0d22d` | 102 | 109 | 102 | 121 | 119 | 117 | 130 | 138 | 138 | 142 |
+| plain 200k | `f1c9a787` | 102 | 109 | 99 | 120 | 113 | 125 | 122 | 130 | 124 | 132 |
+| plain 800k | `7ee0d22d` | 108 | 125 | 139 | 145 | 160 | 163 | 171 | 179 | 190 | 194 |
+| plain 800k | `f1c9a787` | 105 | 120 | 127 | 134 | 135 | 132 | 128 | 135 | 140 | 141 |
+| re-frame 200k | `7ee0d22d` | 117 | 190 | 190 | 194 | 199 | 200 | 198 | 203 | 199 | 189 |
+| re-frame 200k | `f1c9a787` | 109 | 178 | 179 | 178 | 179 | 184 | 189 | 201 | 187 | 171 |
+| re-frame 800k | `7ee0d22d` | 137 | 227 | 229 | 239 | 231 | 241 | 229 | 243 | 246 | 302 |
+| re-frame 800k | `f1c9a787` | 120 | 198 | 194 | 192 | 200 | 197 | 203 | 211 | 198 | 284 |
+
+Findings, recorded as found:
+
+1. **The plain shape's cost per KB is nearly flat across the compile
+   order**: 120 to 141 µs from the second tenth to the last at 800k,
+   against 125 to 194 for the base. It still sits about 10% above the
+   200k build's at the same tenths, a rise every function of the pass
+   shares in the profile rather than one term.
+2. **The plain build is 4.7 s shorter at 800k** (median wall time 26.9
+   against 31.6 s) and its analysis 4.8 s shorter (7.9 against 12.7 s),
+   mostly from the append stage; analysis now grows 4.27x where it grew
+   5.99x.
+3. **The re-frame shape gains less** (0.9 s of the top-level pass, 4.6 s of
+   wall time at 800k): its terms were the ones `53c9139a` removed. Its
+   last tenth stays dearer per KB at both sizes (284 and 171 µs, against
+   about 200), in the base as well.
+4. **The margin is small and load-dependent.** The plain ratio is 4.65x
+   over the three least loaded rounds and 4.43x over all five; a reserved
+   machine would be needed to say which is nearer.
