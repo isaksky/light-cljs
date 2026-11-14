@@ -2212,10 +2212,12 @@ mod tests {
 
     #[test]
     fn dispatched_punctuation_preserves_longest_matches_and_section_boundaries() {
-        let reference = |source: &str| PUNCTUATORS.iter().copied().find(|p| {
-            source.starts_with(p)
-                && !(*p == "?." && source.as_bytes().get(2).is_some_and(u8::is_ascii_digit))
-        });
+        let reference = |source: &str| {
+            PUNCTUATORS.iter().copied().find(|p| {
+                source.starts_with(p)
+                    && !(*p == "?." && source.as_bytes().get(2).is_some_and(u8::is_ascii_digit))
+            })
+        };
         for first in 0..128u8 {
             for second in 0..128u8 {
                 let bytes = [first, second];
@@ -2224,7 +2226,10 @@ mod tests {
             }
         }
         for operator in PUNCTUATORS {
-            for suffix in ["", "0", "9", "x", ".0", ".9", ".x", "=", "=>", "?", "?.", "??=", "/", "//", "/*", "😀"] {
+            for suffix in [
+                "", "0", "9", "x", ".0", ".9", ".x", "=", "=>", "?", "?.", "??=", "/", "//", "/*",
+                "😀",
+            ] {
                 let text = format!("{operator}{suffix}");
                 for end in (0..=text.len()).filter(|&end| text.is_char_boundary(end)) {
                     let section = &text[..end];
@@ -2234,8 +2239,13 @@ mod tests {
         }
         let text = "?.3";
         let whole = lex_section(text, 0..text.len(), false).unwrap();
-        assert_eq!(whole.iter().map(|t| (t.kind, t.text(text))).collect::<Vec<_>>(),
-                   [(Kind::Punct, "?"), (Kind::Number, ".3")]);
+        assert_eq!(
+            whole
+                .iter()
+                .map(|t| (t.kind, t.text(text)))
+                .collect::<Vec<_>>(),
+            [(Kind::Punct, "?"), (Kind::Number, ".3")]
+        );
         let section = lex_section(text, 0..2, false).unwrap();
         assert_eq!(section.len(), 1);
         assert_eq!(section[0].text(text), "?.");

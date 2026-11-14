@@ -371,7 +371,9 @@ mod deferred_storage_tests {
             }}"#,
                 code[0], code[1]
             );
-            let value = engine.evaluate_unit(&source).unwrap_or_else(|e| panic!("deferred={deferred}: {e}"));
+            let value = engine
+                .evaluate_unit(&source)
+                .unwrap_or_else(|e| panic!("deferred={deferred}: {e}"));
             engine.release(value).unwrap();
             engine
                 .clone()

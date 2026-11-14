@@ -115,10 +115,11 @@ impl NamespaceJob {
             "namespace workers must not start a nested unit pool"
         );
         drained.warnings = HeldWarnings::Held(warnings);
-        let changed_globals = self.top.program.globals.changed_entries(
-            &self.globals_before,
-            self.globals_before.len(),
-        );
+        let changed_globals = self
+            .top
+            .program
+            .globals
+            .changed_entries(&self.globals_before, self.globals_before.len());
         Ok(NamespacePublication {
             program: self.top.program,
             shared: self.shared,
@@ -250,12 +251,20 @@ mod tests {
         for namespace in ["branch0", "branch1"] {
             for name in ["f"] {
                 let id = GlobalId(analysis.program.globals.len());
-                analysis.globals.insert((namespace.to_owned(), name.to_owned()), id);
+                analysis
+                    .globals
+                    .insert((namespace.to_owned(), name.to_owned()), id);
                 analysis.program.globals.push(GlobalBinding {
-                    type_descriptor: false, declared: false, constant: false,
-                    define: false, boolean_tag: false, metadata: None,
-                    namespace: namespace.to_owned(), name: name.to_owned(),
-                    span: 0..0, source_index: 0,
+                    type_descriptor: false,
+                    declared: false,
+                    constant: false,
+                    define: false,
+                    boolean_tag: false,
+                    metadata: None,
+                    namespace: namespace.to_owned(),
+                    name: name.to_owned(),
+                    span: 0..0,
+                    source_index: 0,
                 });
             }
         }
@@ -362,10 +371,16 @@ mod tests {
             }
         }
         for namespace in ["branch0", "branch1"] {
-            let defined = analysis.program.globals.iter()
+            let defined = analysis
+                .program
+                .globals
+                .iter()
                 .find(|global| global.namespace == namespace && global.name == "f")
                 .unwrap();
-            assert!(defined.declared, "publication lost the definition of {namespace}/f");
+            assert!(
+                defined.declared,
+                "publication lost the definition of {namespace}/f"
+            );
         }
         let calls = (0..8)
             .map(|id| format!("(branch{id}/f 10) (branch{id}/plus 100)"))

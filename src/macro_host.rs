@@ -2156,10 +2156,7 @@ impl MacroHost {
         self.engine.session_handle()
     }
     pub(crate) fn has_source_value(&self, namespace: &str, name: &str) -> bool {
-        self.tables
-            .source_bindings
-            .get_parts(namespace, name)
-            == Some(&SourceBindingKind::Value)
+        self.tables.source_bindings.get_parts(namespace, name) == Some(&SourceBindingKind::Value)
     }
     pub(crate) fn begin_compilation(&mut self) {
         if !self.tables.bootstrap_seed {

@@ -71,6 +71,9 @@ pub const SCHEMA_VERSION: u32 = 12;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
+/// The bytes an artifact starts with that give its manifest's length
+/// ([`manifest_end`]).
+pub const HEADER_LENGTH: usize = MANIFEST_START;
 const SECTION_ENTRY: usize = 1 + 4 + 4 + 32;
 
 /// A section of an encoded artifact, in file order.
@@ -1889,24 +1892,46 @@ fn literal_tag(kind: CompilerLiteralKind) -> u8 {
 /// Read the manifest of encoded bytes, checking the header, the manifest's
 /// integrity and the section table's layout, without decoding a section.
 pub fn read_manifest(bytes: &[u8], limits: &DecodeLimits) -> Result<Manifest, DecodeError> {
+    read_manifest_prefix(bytes, bytes.len() as u64, limits)
+}
+
+/// Where the manifest of the artifact that starts with `header` ends: the
+/// prefix of the file [`read_manifest_prefix`] needs. None when `header` is
+/// shorter than [`HEADER_LENGTH`].
+pub fn manifest_end(header: &[u8]) -> Option<u64> {
+    (header.len() >= MANIFEST_START).then(|| MANIFEST_START as u64 + u64::from(le32(&header[16..])))
+}
+
+/// [`read_manifest`] of an artifact of `length` bytes of which only
+/// `prefix`, up to [`manifest_end`], was read: the same checks, the
+/// sections' layout against `length`, without reading or hashing the
+/// sections. A lookup reads this much of a candidate to compare its key.
+pub fn read_manifest_prefix(
+    prefix: &[u8],
+    length: u64,
+    limits: &DecodeLimits,
+) -> Result<Manifest, DecodeError> {
     read_manifest_charged(
-        bytes,
+        prefix,
+        length,
         limits,
         &Budget(std::cell::Cell::new(limits.max_decoded_bytes)),
     )
 }
 
-/// [`read_manifest`], charging every variable-sized field it allocates to
-/// `budget`, which the sections' decoding then shares.
+/// [`read_manifest_prefix`], charging every variable-sized field it
+/// allocates to `budget`, which the sections' decoding then shares.
 fn read_manifest_charged(
     bytes: &[u8],
+    length: u64,
     limits: &DecodeLimits,
     budget: &Budget,
 ) -> Result<Manifest, DecodeError> {
-    if bytes.len() as u64 > limits.max_bytes {
+    assert!(bytes.len() as u64 <= length, "a prefix of the artifact");
+    if length > limits.max_bytes {
         return Err(DecodeError::Limit {
             what: "bytes",
-            value: bytes.len() as u64,
+            value: length,
             limit: limits.max_bytes,
         });
     }
@@ -1958,10 +1983,10 @@ fn read_manifest_charged(
             sha256: entry[9..41].try_into().unwrap(),
         });
     }
-    if expected > bytes.len() as u64 {
+    if expected > length {
         return Err(DecodeError::Truncated("sections"));
     }
-    if expected < bytes.len() as u64 {
+    if expected < length {
         return Err(DecodeError::Trailing("sections"));
     }
     let namespace = input.utf8_charged(budget)?;
@@ -2060,7 +2085,7 @@ fn read_manifest_charged(
             always: policy & 4 != 0,
         },
         sections,
-        length: bytes.len() as u64,
+        length,
     })
 }
 
@@ -2076,7 +2101,7 @@ pub fn decode(
         return Err(DecodeError::Cancelled);
     }
     let budget = Budget(std::cell::Cell::new(limits.max_decoded_bytes));
-    let manifest = read_manifest_charged(bytes, limits, &budget)?;
+    let manifest = read_manifest_charged(bytes, bytes.len() as u64, limits, &budget)?;
     if manifest.core_table != core_table() {
         return Err(DecodeError::CoreTable);
     }

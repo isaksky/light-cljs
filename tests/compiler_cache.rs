@@ -1178,6 +1178,92 @@ fn corrupted_artifact_is_a_miss_then_republished() {
     assert_eq!(repaired.js, oracle.js);
 }
 
+/// A stale candidate, tried first because it is newer, costs only its
+/// manifest: the key is compared before the rest of the artifact is read
+/// and hashed.
+#[test]
+fn a_stale_candidate_is_read_only_to_its_manifest() {
+    use light_cljs::artifact_codec::manifest_end;
+    let project = Project::new(FIXTURE);
+    let oracle = project.uncached("main");
+    project.cached("main", &[]);
+    let first = project.objects();
+    let warm = project.cached("main", &[]);
+    assert_eq!(warm.stat("cache.hits"), 5, "{}", warm.stats);
+    let whole: u64 = first
+        .iter()
+        .map(|path| fs::metadata(path).unwrap().len())
+        .sum();
+    assert_eq!(warm.stat("cache.bytes-read"), whole);
+    project.write("plain.cljs", "(ns plain) (def answer (+ 40 3))");
+    project.cached("main", &[]);
+    let stale: Vec<PathBuf> = project
+        .objects()
+        .into_iter()
+        .filter(|path| !first.contains(path))
+        .collect();
+    assert!(!stale.is_empty());
+    // Back to the first sources: each namespace the edit republished tries
+    // the edit's artifact first, misses on its key, then hits the first.
+    project.write("plain.cljs", FIXTURE[3].1);
+    let back = project.cached("main", &[]);
+    assert_eq!(back.js, oracle.js);
+    assert_eq!(back.stat("cache.hits"), 5, "{}", back.stats);
+    let manifests: u64 = stale
+        .iter()
+        .map(|path| manifest_end(&fs::read(path).unwrap()).unwrap())
+        .sum();
+    let stale_whole: u64 = stale
+        .iter()
+        .map(|path| fs::metadata(path).unwrap().len())
+        .sum();
+    assert!(manifests < stale_whole);
+    assert_eq!(
+        back.stat("cache.bytes-read"),
+        whole + manifests,
+        "{}",
+        back.stats
+    );
+}
+
+/// An artifact damaged so that its manifest and section hashes still check
+/// (re-sealed), under the key a build looks up, fails its content hash and is
+/// never installed.
+#[test]
+fn a_matching_candidate_that_fails_its_content_hash_is_a_miss() {
+    use light_cljs::artifact_codec::{DecodeLimits, read_manifest, seal};
+    let project = Project::new(FIXTURE);
+    let oracle = project.uncached("main");
+    project.cached("main", &[]);
+    let objects = project.objects();
+    let mut bytes = fs::read(&objects[0]).unwrap();
+    let namespace = read_manifest(&bytes, &DecodeLimits::default())
+        .unwrap()
+        .namespace;
+    *bytes.last_mut().unwrap() ^= 0xff;
+    seal(&mut bytes).unwrap();
+    assert!(read_manifest(&bytes, &DecodeLimits::default()).is_ok());
+    fs::write(&objects[0], &bytes).unwrap();
+    let damaged = project.cached("main", &[]);
+    assert_eq!(damaged.js, oracle.js);
+    assert_eq!(damaged.run(), "h1 9 84 h2\n");
+    assert_eq!(
+        damaged.stat("cache.miss.unreadable"),
+        1,
+        "{}",
+        damaged.stats
+    );
+    let row = format!("{namespace} miss unreadable: the artifact fails its content hash");
+    assert!(
+        damaged.rows().iter().any(|line| line.contains(&row)),
+        "{row} in {:?}",
+        damaged.rows()
+    );
+    let repaired = project.cached("main", &[]);
+    assert_eq!(repaired.stat("cache.hits"), 5, "{}", repaired.stats);
+    assert_eq!(repaired.js, oracle.js);
+}
+
 #[test]
 fn two_concurrent_compiles_share_one_cache_directory() {
     let project = Project::new(FIXTURE);

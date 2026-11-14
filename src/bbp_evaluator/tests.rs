@@ -4,10 +4,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn boot_template_keeps_parallel_evaluators_isolated_after_source_mutation() {
-    let runtime = BbpRuntime::new(&EvaluatorOptions { memory_limit: 512 * 1024 * 1024, ..Default::default() }).unwrap();
+    let runtime = BbpRuntime::new(&EvaluatorOptions {
+        memory_limit: 512 * 1024 * 1024,
+        ..Default::default()
+    })
+    .unwrap();
     let original = runtime.evaluator().unwrap();
-    assert!(matches!(runtime.0.boot_template.get(), Some(Ok(_))), "port bootstrap must be template-compatible");
-    let value = original.evaluate_unit("rt => { globalThis.templatePoison = 1; rt.port.inc.templatePoison = 2; return null; }").unwrap();
+    assert!(
+        matches!(runtime.0.boot_template.get(), Some(Ok(_))),
+        "port bootstrap must be template-compatible"
+    );
+    let value = original
+        .evaluate_unit(
+            "rt => { globalThis.templatePoison = 1; rt.port.inc.templatePoison = 2; return null; }",
+        )
+        .unwrap();
     original.release(value).unwrap();
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..8).map(|_| scope.spawn(|| {
@@ -16,14 +27,33 @@ fn boot_template_keeps_parallel_evaluators_isolated_after_source_mutation() {
             assert!(matches!(evaluator.export_data(value, ConversionLimits::default()).unwrap().kind(), D::Double(42.0)));
             evaluator.release(value).unwrap();
         })).collect();
-        for worker in workers { worker.join().unwrap(); }
+        for worker in workers {
+            worker.join().unwrap();
+        }
     });
-    assert_eq!(runtime.0.counters.contexts_from_template.load(Ordering::Relaxed), 8);
+    assert_eq!(
+        runtime
+            .0
+            .counters
+            .contexts_from_template
+            .load(Ordering::Relaxed),
+        8
+    );
     let bounded = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let _first = bounded.evaluator().unwrap();
-    assert!(matches!(bounded.0.boot_template.get(), Some(Err("bootstrap template exceeds its cache budget"))));
+    assert!(matches!(
+        bounded.0.boot_template.get(),
+        Some(Err("bootstrap template exceeds its cache budget"))
+    ));
     let _second = bounded.evaluator().unwrap();
-    assert_eq!(bounded.0.counters.contexts_from_template.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        bounded
+            .0
+            .counters
+            .contexts_from_template
+            .load(Ordering::Relaxed),
+        0
+    );
 }
 
 #[test]
@@ -35,17 +65,22 @@ fn remembered_occurrences_preserve_order_partial_failures_and_poll_charges() {
     let literal = Datum::new(D::CompilerLiteral {
         kind: L::Regex,
         payload: shared.clone(),
-    }).with_metadata(shared.clone());
+    })
+    .with_metadata(shared.clone());
     let root = Datum::new(D::Collection {
         kind: C::Vector,
         children: vec![shared.clone(), literal.clone(), shared.clone()].into(),
-    }).with_metadata(shared.clone());
-    let mut nodes = vec![FormNode {
-        kind: HostKind::Scalar,
-        metadata: None,
-        compiler_payload: None,
-        origin: Origin::Source,
-    }; 7];
+    })
+    .with_metadata(shared.clone());
+    let mut nodes = vec![
+        FormNode {
+            kind: HostKind::Scalar,
+            metadata: None,
+            compiler_payload: None,
+            origin: Origin::Source,
+        };
+        7
+    ];
     nodes[3].compiler_payload = Some(FormId(1));
     nodes[3].metadata = Some(FormId(2));
     nodes[5].kind = HostKind::Collection {
@@ -55,13 +90,19 @@ fn remembered_occurrences_preserve_order_partial_failures_and_poll_charges() {
     nodes[5].metadata = Some(FormId(6));
     let form = Form::from_parts(
         nodes,
-        vec![shared.clone(), shared.clone(), shared.clone(), literal.clone(),
-             shared.clone(), root.clone(), shared.clone()],
+        vec![
+            shared.clone(),
+            shared.clone(),
+            shared.clone(),
+            literal.clone(),
+            shared.clone(),
+            root.clone(),
+            shared.clone(),
+        ],
         (0..7).map(|n| source.span(n..n + 1).unwrap()).collect(),
         FormId(5),
-    ).with_compiler_spans(HashMap::from([
-        (FormId(6), source.span(7..8).unwrap()),
-    ]));
+    )
+    .with_compiler_spans(HashMap::from([(FormId(6), source.span(7..8).unwrap())]));
 
     // Metadata follows the literal payload, and root metadata follows all
     // ordinary children. A failed visit must preserve exactly the completed
@@ -79,7 +120,8 @@ fn remembered_occurrences_preserve_order_partial_failures_and_poll_charges() {
             let control = ExecutionControl::new(&EvaluatorOptions {
                 poll_budget: 100,
                 ..Default::default()
-            }).unwrap();
+            })
+            .unwrap();
             let mut bridge = Bridge::default();
             if cached {
                 bridge.remember(&form, 3, &mut 7).unwrap();
@@ -94,9 +136,18 @@ fn remembered_occurrences_preserve_order_partial_failures_and_poll_charges() {
             assert_eq!(remaining, left);
             assert_eq!(control.remaining_polls(), 100 - polls);
             let expected = last.or(cached.then_some(6));
-            assert_eq!(bridge.forms.get(&shared.identity()).map(|f| f.id().0), expected);
-            assert_eq!(bridge.forms.contains_key(&literal.identity()), has_literal || cached);
-            assert_eq!(bridge.forms.contains_key(&root.identity()), success || cached);
+            assert_eq!(
+                bridge.forms.get(&shared.identity()).map(|f| f.id().0),
+                expected
+            );
+            assert_eq!(
+                bridge.forms.contains_key(&literal.identity()),
+                has_literal || cached
+            );
+            assert_eq!(
+                bridge.forms.contains_key(&root.identity()),
+                success || cached
+            );
             assert_eq!(bridge.unretained.len(), bridge.forms.len());
             if expected == Some(6) {
                 let remembered = &bridge.forms[&shared.identity()];
@@ -109,8 +160,12 @@ fn remembered_occurrences_preserve_order_partial_failures_and_poll_charges() {
     let control = ExecutionControl::new(&EvaluatorOptions {
         poll_budget: 3,
         ..Default::default()
-    }).unwrap();
-    let mut bridge = Bridge { control: Some(control.clone()), ..Default::default() };
+    })
+    .unwrap();
+    let mut bridge = Bridge {
+        control: Some(control.clone()),
+        ..Default::default()
+    };
     let mut remaining = 7;
     assert!(bridge.remember(&form, 3, &mut remaining).is_err());
     assert_eq!(control.remaining_polls(), 0);
@@ -122,8 +177,11 @@ fn remembered_occurrences_preserve_order_partial_failures_and_poll_charges() {
 #[test]
 fn boot_core_inventory_preserves_distinct_lazy_getters_and_existing_functions() {
     let evaluator = BbpEvaluator::new(Default::default()).unwrap();
-    let keys = crate::CoreFnId::ALL.iter().map(|id| format!("{:?}", id.runtime_key()))
-        .collect::<Vec<_>>().join(",");
+    let keys = crate::CoreFnId::ALL
+        .iter()
+        .map(|id| format!("{:?}", id.runtime_key()))
+        .collect::<Vec<_>>()
+        .join(",");
     let result = evaluator.evaluate_unit(&format!(r#"rt => {{
       const keys=[{keys}], unsupported=[];
       for(const name of keys){{
@@ -144,7 +202,13 @@ fn boot_core_inventory_preserves_distinct_lazy_getters_and_existing_functions() 
       if(original(1,2)!==3 || rt.port.add(1,2)!==99)throw Error('existing core function was replaced');
       return true;
     }}"#)).unwrap();
-    assert!(matches!(evaluator.export_data(result, Default::default()).unwrap().kind(), D::Boolean(true)));
+    assert!(matches!(
+        evaluator
+            .export_data(result, Default::default())
+            .unwrap()
+            .kind(),
+        D::Boolean(true)
+    ));
     evaluator.release(result).unwrap();
 }
 
@@ -160,12 +224,20 @@ fn frontier_commands_preserve_dynamic_lookup_errors_values_and_cancellation() {
         evaluator.compiler_frontier(next).unwrap();
         evaluator.runtime.collect().unwrap();
     }
-    assert!(evaluator.compiler_frontier(Some(7)).unwrap_err().to_string().contains("frontier-test"));
+    assert!(
+        evaluator
+            .compiler_frontier(Some(7))
+            .unwrap_err()
+            .to_string()
+            .contains("frontier-test")
+    );
     assert_eq!(shared.helper_counts().units_evaluated, evaluated);
     let setup = evaluator.evaluate_unit("rt => {globalThis.__lightEnterCompilerFrontier=next=>frontierEvents.push(next+100); return null;}").unwrap();
     evaluator.release(setup).unwrap();
     evaluator.compiler_frontier(Some(3)).unwrap();
-    let events = evaluator.evaluate_unit("rt => JSON.stringify(frontierEvents)").unwrap();
+    let events = evaluator
+        .evaluate_unit("rt => JSON.stringify(frontierEvents)")
+        .unwrap();
     let data = evaluator.export_data(events, Default::default()).unwrap();
     assert!(matches!(data.kind(), D::String(text)
         if String::from_utf16_lossy(text) == "[0,2,\"leave\",\"leave\",7,103]"));
@@ -177,7 +249,13 @@ fn frontier_commands_preserve_dynamic_lookup_errors_values_and_cancellation() {
     assert!(evaluator.cx().unwrap().values.borrow().is_empty());
     assert!(evaluator.cx().unwrap().task_values.borrow().is_empty());
     evaluator.control.cancel();
-    assert!(evaluator.compiler_frontier(None).unwrap_err().to_string().contains("cancelled"));
+    assert!(
+        evaluator
+            .compiler_frontier(None)
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+    );
 }
 
 #[test]
@@ -188,7 +266,9 @@ fn frontier_commands_read_the_runtime_argument_before_the_service() {
     evaluator.compiler_frontier(Some(0)).unwrap();
     evaluator.compiler_frontier(None).unwrap();
     // evaluate() reads no extra runtime argument, unlike evaluate_unit().
-    let result = evaluator.evaluate("JSON.stringify(frontierEvents)").unwrap();
+    let result = evaluator
+        .evaluate("JSON.stringify(frontierEvents)")
+        .unwrap();
     let data = evaluator.export_data(result, Default::default()).unwrap();
     assert!(matches!(data.kind(), D::String(text)
         if String::from_utf16_lossy(text) == "[\"runtime\",0,\"runtime\",\"leave\"]"));
@@ -207,12 +287,18 @@ fn gensym_scope_commands_preserve_retirement_and_live_values_without_eval() {
         (17, "17__", "17", "g17__1"),
     ] {
         let evaluated = shared.helper_counts().units_evaluated;
-        evaluator.gensym_scope(serial, prefix, retired, false).unwrap();
+        evaluator
+            .gensym_scope(serial, prefix, retired, false)
+            .unwrap();
         assert_eq!(shared.helper_counts().units_evaluated, evaluated);
         evaluator.runtime.collect().unwrap();
-        let name = evaluator.evaluate_unit("rt => rt.core.str(rt.core.gensym('g'))").unwrap();
+        let name = evaluator
+            .evaluate_unit("rt => rt.core.str(rt.core.gensym('g'))")
+            .unwrap();
         let name_data = evaluator.export_data(name, Default::default()).unwrap();
-        assert!(matches!(name_data.kind(), D::String(text) if String::from_utf16_lossy(text) == expected));
+        assert!(
+            matches!(name_data.kind(), D::String(text) if String::from_utf16_lossy(text) == expected)
+        );
         evaluator.release(name).unwrap();
         let kept_data = evaluator.export_data(kept, Default::default()).unwrap();
         assert!(matches!(kept_data.kind(), D::Collection { children, .. }
@@ -236,9 +322,17 @@ fn gensym_scope_commands_observe_runtime_replacement_and_recover_after_errors() 
     evaluator.release(result).unwrap();
     let install = evaluator.evaluate_unit("rt => { rt.compilerForms.gensymScope = () => { throw Error('scope-test'); }; return null; }").unwrap();
     evaluator.release(install).unwrap();
-    assert!(evaluator.gensym_scope(0, "", "", false).unwrap_err().to_string().contains("scope-test"));
+    assert!(
+        evaluator
+            .gensym_scope(0, "", "", false)
+            .unwrap_err()
+            .to_string()
+            .contains("scope-test")
+    );
     let result = evaluator.evaluate_unit("rt => 42").unwrap();
-    assert!(matches!(evaluator.export_data(result, Default::default()).unwrap().kind(), D::Double(n) if *n == 42.0));
+    assert!(
+        matches!(evaluator.export_data(result, Default::default()).unwrap().kind(), D::Double(n) if *n == 42.0)
+    );
     evaluator.release(result).unwrap();
     assert!(evaluator.cx().unwrap().values.borrow().is_empty());
     assert!(evaluator.cx().unwrap().task_values.borrow().is_empty());
@@ -4613,7 +4707,15 @@ fn concurrent_catalog_builders_publish_one_live_frontier() {
     use crate::compilation_session::Registration;
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let registrations = (0..512)
-        .map(|id| Registration::Root(format!("r{id}"), Some(id), None, false, "race.cljs:1".into()))
+        .map(|id| {
+            Registration::Root(
+                format!("r{id}"),
+                Some(id),
+                None,
+                false,
+                "race.cljs:1".into(),
+            )
+        })
         .collect::<Vec<_>>();
     let ready = std::sync::Barrier::new(4);
     let roots = std::thread::scope(|scope| {
@@ -4637,7 +4739,10 @@ fn concurrent_catalog_builders_publish_one_live_frontier() {
                 snapshot
             })
         }).collect::<Vec<_>>();
-        handles.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>()
+        handles
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>()
     });
     shared.0.runtime.collect().unwrap();
     shared.0.runtime.scope(|scope| {
@@ -4656,12 +4761,22 @@ fn concurrent_catalog_builders_publish_one_live_frontier() {
 fn namespace_catalog_seeds_share_live_prefixes_after_the_owner_is_dropped() {
     use crate::compilation_session::Registration;
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
-    let root = |name: String, unit| Registration::Root(name, Some(unit), None, false, "seed.cljs:1".into());
-    let registrations = (0..512).map(|id| root(format!("common{id}"), id)).collect::<Vec<_>>();
+    let root = |name: String, unit| {
+        Registration::Root(name, Some(unit), None, false, "seed.cljs:1".into())
+    };
+    let registrations = (0..512)
+        .map(|id| root(format!("common{id}"), id))
+        .collect::<Vec<_>>();
     let parent = shared.evaluator().unwrap();
     parent.install_catalog(0, &registrations).unwrap();
     let seed = parent.catalog_seed().unwrap();
-    let snapshot = parent.cx().unwrap().catalog_snapshot.borrow().clone().unwrap();
+    let snapshot = parent
+        .cx()
+        .unwrap()
+        .catalog_snapshot
+        .borrow()
+        .clone()
+        .unwrap();
     drop(parent);
     shared.0.runtime.collect().unwrap();
     std::thread::scope(|scope| {
@@ -4682,12 +4797,17 @@ fn namespace_catalog_seeds_share_live_prefixes_after_the_owner_is_dropped() {
                 assert!(matches!(result.kind(), D::Double(n) if *n == (1511 + slot) as f64));
             })
         }).collect::<Vec<_>>();
-        for handle in handles { handle.join().unwrap(); }
+        for handle in handles {
+            handle.join().unwrap();
+        }
     });
     let weak = snapshot.downgrade();
     drop((snapshot, seed));
     shared.0.runtime.collect().unwrap();
-    assert!(!weak.is_live(), "catalog seeds must not retain historical prefixes after use");
+    assert!(
+        !weak.is_live(),
+        "catalog seeds must not retain historical prefixes after use"
+    );
 }
 
 #[test]

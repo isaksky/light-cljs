@@ -3,7 +3,8 @@
 use crate::{
     CollectionKind as C,
     compiler_data::{
-        CompilerLiteralKind as L, Datum, DatumKind as D, ExpansionOrigin, Form, FormView, Name, SourceSpan,
+        CompilerLiteralKind as L, Datum, DatumKind as D, ExpansionOrigin, Form, FormView, Name,
+        SourceSpan,
     },
     compiler_evaluator::{
         CompilerEvaluator, NativeRunner, NativeSubmit, NativeSubmitter, StringService, UnitService,
@@ -2024,8 +2025,13 @@ impl BbpEvaluator {
             let kind = scope.primitive(Primitive::Number(kind as f64));
             // The private token prevents this replaceable task parameter (or
             // a closure capturing it) from entering published shared state.
-            let private = scope.try_new_object().ok_or_else(|| error("native task configuration allocation failed"))?;
-            scope.new_vector(&[kind, private]).map(|v| scope.persist(v)).map_err(error)
+            let private = scope
+                .try_new_object()
+                .ok_or_else(|| error("native task configuration allocation failed"))?;
+            scope
+                .new_vector(&[kind, private])
+                .map(|v| scope.persist(v))
+                .map_err(error)
         })?;
         let use_template = self.shared.0.real_core.is_none()
             && std::env::var_os("LIGHT_CLJS_REPLAY_BOOT").is_none();
@@ -2033,24 +2039,43 @@ impl BbpEvaluator {
         // compiler services. Copies read the immutable template concurrently.
         let mut template_init = if use_template && self.shared.0.boot_template.get().is_none() {
             Some(self.shared.0.boot_template_init.lock().unwrap())
-        } else { None };
-        if self.shared.0.boot_template.get().is_some() { template_init.take(); }
+        } else {
+            None
+        };
+        if self.shared.0.boot_template.get().is_some() {
+            template_init.take();
+        }
         let task = if use_template && let Some(Ok(template)) = self.shared.0.boot_template.get() {
             #[cfg(test)]
-            self.shared.0.counters.contexts_from_template.fetch_add(1, Ordering::Relaxed);
-            runtime.spawn_template(template, &[&channels], DependencyKey::new(
-                runtime.world(), DependencyId::new(1), ResultKind::new(kind))).map_err(error)?
-        } else { runtime
-            .spawn(
-                &self.shared.0.executable,
-                &[
-                    &channels,
-                    &self.shared.0.reader_tags,
-                    &self.shared.0.raw_members,
-                    &self.shared.0.real_core_handle,
-                ],
-            )
-            .map_err(error)? };
+            self.shared
+                .0
+                .counters
+                .contexts_from_template
+                .fetch_add(1, Ordering::Relaxed);
+            runtime
+                .spawn_template(
+                    template,
+                    &[&channels],
+                    DependencyKey::new(
+                        runtime.world(),
+                        DependencyId::new(1),
+                        ResultKind::new(kind),
+                    ),
+                )
+                .map_err(error)?
+        } else {
+            runtime
+                .spawn(
+                    &self.shared.0.executable,
+                    &[
+                        &channels,
+                        &self.shared.0.reader_tags,
+                        &self.shared.0.raw_members,
+                        &self.shared.0.real_core_handle,
+                    ],
+                )
+                .map_err(error)?
+        };
         *self.context.borrow_mut() = Some(Rc::new(TaskContext {
             task,
             command_kind: ResultKind::new(kind),
@@ -2099,7 +2124,9 @@ impl BbpEvaluator {
             let retained = runtime.heap_stats().managed_bytes.saturating_sub(before);
             let captured = if retained > self.shared.0.memory_limit / 64 {
                 Err("bootstrap template exceeds its cache budget")
-            } else { captured };
+            } else {
+                captured
+            };
             let _ = self.shared.0.boot_template.set(captured);
         }
         booted
@@ -2284,8 +2311,8 @@ impl BbpEvaluator {
         };
         // The bridge guard has dropped, but the caller's scope still excludes
         // collection. Never release that scope or run a task before this flush.
-        let env_started = (operation == 2 && crate::compile_trace::any_recording())
-            .then(std::time::Instant::now);
+        let env_started =
+            (operation == 2 && crate::compile_trace::any_recording()).then(std::time::Instant::now);
         let registration = crate::wait_timeline::begin(
             crate::wait_timeline::Kind::BridgeReclamation,
             operation,
@@ -3505,9 +3532,9 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                         .ok_or("gensym identities exhausted")?;
                     Ok(Primitive::Number(bridge.gensym_counter as f64))
                 }
-                b'a' => Ok(Primitive::Bool(
-                    imports::reserve_generated_name(self.4, request),
-                )),
+                b'a' => Ok(Primitive::Bool(imports::reserve_generated_name(
+                    self.4, request,
+                ))),
                 _ => Err("unknown native gensym request".into()),
             };
         }
@@ -3662,9 +3689,9 @@ impl MacroEvaluator for BbpEvaluator {
         Some(self)
     }
     fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
-        let input = self.runtime.root(next.map_or(Primitive::Null, |next| {
-            Primitive::Number(next as f64)
-        }));
+        let input = self
+            .runtime
+            .root(next.map_or(Primitive::Null, |next| Primitive::Number(next as f64)));
         let value = self.id()?;
         self.request(6, value, input)?;
         self.release(value)
@@ -3700,9 +3727,11 @@ impl MacroEvaluator for BbpEvaluator {
         debug_assert!(prefix.bytes().all(|b| b.is_ascii_digit() || b == b'_'));
         debug_assert!(retired.bytes().all(|b| b.is_ascii_digit() || b == b','));
         let input = self.host_scope(|s| {
-            let prefix = s.try_primitive(Primitive::string(prefix))
+            let prefix = s
+                .try_primitive(Primitive::string(prefix))
                 .ok_or_else(|| error("heap byte limit exceeded"))?;
-            let retired = s.try_primitive(Primitive::string(retired))
+            let retired = s
+                .try_primitive(Primitive::string(retired))
                 .ok_or_else(|| error("heap byte limit exceeded"))?;
             let args = [
                 s.primitive(Primitive::Number(serial as f64)),

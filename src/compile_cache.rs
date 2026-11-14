@@ -246,15 +246,22 @@ impl CompileCache {
         };
         let mut found = None;
         for candidate in &candidates {
-            let bytes = match self.store.read(candidate, &self.limits) {
-                Ok(bytes) => bytes,
+            // Only the manifest is read to compare the key; the rest is read
+            // and the whole checked against its content hash only for the
+            // candidate that matches, so a stale candidate costs its manifest.
+            let reading = match self.store.begin_read(candidate, &self.limits) {
+                Ok(reading) => reading,
                 Err(error) => {
                     self.miss("unreadable", error.to_string());
                     continue;
                 }
             };
-            self.counts.bytes_read += bytes.len() as u64;
-            let manifest = match artifact_codec::read_manifest(&bytes, &self.limits) {
+            self.counts.bytes_read += reading.prefix().len() as u64;
+            let manifest = match artifact_codec::read_manifest_prefix(
+                reading.prefix(),
+                reading.length(),
+                &self.limits,
+            ) {
                 Ok(manifest) if manifest.namespace == name => manifest,
                 Ok(manifest) => {
                     self.miss(
@@ -306,6 +313,19 @@ impl CompileCache {
                 self.pending = None;
                 break;
             }
+            let prefix = reading.prefix().len() as u64;
+            let bytes = match reading.finish() {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    if error == crate::artifact_store::ReadError::Integrity {
+                        self.counts.bytes_read += candidate.bytes - prefix;
+                    }
+                    self.prefix.pop();
+                    self.miss("unreadable", error.to_string());
+                    continue;
+                }
+            };
+            self.counts.bytes_read += bytes.len() as u64 - prefix;
             found = Some((key, candidate.artifact, bytes));
             break;
         }

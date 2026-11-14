@@ -178,7 +178,10 @@ pub struct SourceSpan {
 }
 impl SourceSpan {
     fn view(&self) -> SourceSpanView<'_> {
-        SourceSpanView { source: &self.source, bytes: &self.bytes }
+        SourceSpanView {
+            source: &self.source,
+            bytes: &self.bytes,
+        }
     }
     pub fn source(&self) -> &Source {
         &self.source
@@ -206,7 +209,10 @@ impl<'a> SourceSpanView<'a> {
         self.bytes.clone()
     }
     fn to_span(self) -> SourceSpan {
-        SourceSpan { source: self.source.clone(), bytes: self.bytes() }
+        SourceSpan {
+            source: self.source.clone(),
+            bytes: self.bytes(),
+        }
     }
 }
 
@@ -336,7 +342,10 @@ pub struct ExpansionOrigin {
 /// arenas keep independently owned spans. Neither representation retains input
 /// form arenas, and public spans acquire their own source ownership on demand.
 enum FormSpans {
-    SingleSource { source: Source, ranges: Box<[Range<usize>]> },
+    SingleSource {
+        source: Source,
+        ranges: Box<[Range<usize>]>,
+    },
     Individual(Box<[SourceSpan]>),
 }
 
@@ -349,7 +358,10 @@ impl FormSpans {
     }
     fn view(&self, id: usize) -> SourceSpanView<'_> {
         match self {
-            Self::SingleSource { source, ranges } => SourceSpanView { source, bytes: &ranges[id] },
+            Self::SingleSource { source, ranges } => SourceSpanView {
+                source,
+                bytes: &ranges[id],
+            },
             Self::Individual(spans) => spans[id].view(),
         }
     }
@@ -359,7 +371,10 @@ impl FormSpans {
 enum FormSpanBuilder {
     #[default]
     Empty,
-    SingleSource { source: Source, ranges: Vec<Range<usize>> },
+    SingleSource {
+        source: Source,
+        ranges: Vec<Range<usize>>,
+    },
     Individual(Vec<SourceSpan>),
 }
 
@@ -368,17 +383,24 @@ impl FormSpanBuilder {
         match self {
             Self::Empty => {
                 *self = Self::SingleSource {
-                    source: span.source().clone(), ranges: vec![span.bytes()],
+                    source: span.source().clone(),
+                    ranges: vec![span.bytes()],
                 };
             }
-            Self::SingleSource { source, ranges }
-                if Arc::ptr_eq(&source.0, &span.source().0) => ranges.push(span.bytes()),
+            Self::SingleSource { source, ranges } if Arc::ptr_eq(&source.0, &span.source().0) => {
+                ranges.push(span.bytes())
+            }
             Self::SingleSource { .. } => {
                 let Self::SingleSource { source, ranges } = std::mem::take(self) else {
                     unreachable!()
                 };
-                let mut spans: Vec<_> = ranges.into_iter()
-                    .map(|bytes| SourceSpan { source: source.clone(), bytes }).collect();
+                let mut spans: Vec<_> = ranges
+                    .into_iter()
+                    .map(|bytes| SourceSpan {
+                        source: source.clone(),
+                        bytes,
+                    })
+                    .collect();
                 spans.push(span.to_span());
                 *self = Self::Individual(spans);
             }
@@ -388,7 +410,10 @@ impl FormSpanBuilder {
     fn finish(self) -> FormSpans {
         match self {
             Self::Empty => FormSpans::Individual(Box::default()),
-            Self::SingleSource { source, ranges } => FormSpans::SingleSource { source, ranges: ranges.into() },
+            Self::SingleSource { source, ranges } => FormSpans::SingleSource {
+                source,
+                ranges: ranges.into(),
+            },
             Self::Individual(spans) => FormSpans::Individual(spans.into()),
         }
     }
@@ -423,7 +448,11 @@ pub(crate) struct FormView<'a> {
 
 impl<'a> FormView<'a> {
     pub(crate) fn at(self, id: FormId) -> Option<Self> {
-        self.owner.forms.nodes.get(id.0).map(|_| Self { id, ..self })
+        self.owner
+            .forms
+            .nodes
+            .get(id.0)
+            .map(|_| Self { id, ..self })
     }
     pub(crate) fn node(self) -> &'a FormNode {
         &self.owner.forms.nodes[self.id.0]
@@ -436,11 +465,15 @@ impl<'a> FormView<'a> {
     }
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn compiler_span(self) -> SourceSpanView<'a> {
-        self.compiler_span_override().map(SourceSpan::view).unwrap_or_else(|| self.span())
+        self.compiler_span_override()
+            .map(SourceSpan::view)
+            .unwrap_or_else(|| self.span())
     }
     #[cfg(feature = "bbp-macros")]
     fn compiler_span_override(self) -> Option<&'a SourceSpan> {
-        self.owner.compiler_spans.as_ref()
+        self.owner
+            .compiler_spans
+            .as_ref()
             .and_then(|spans| spans.get(&self.id))
     }
     pub(crate) fn children(self) -> impl ExactSizeIterator<Item = Self> + DoubleEndedIterator + 'a {
@@ -459,7 +492,10 @@ impl<'a> FormView<'a> {
 
 impl Form {
     pub(crate) fn view(&self) -> FormView<'_> {
-        FormView { owner: self, id: self.id }
+        FormView {
+            owner: self,
+            id: self.id,
+        }
     }
     /// Leaf provenance must not pin the surrounding syntax arena: interned
     /// keywords and last-seen scalar values can outlive their input collection.
@@ -554,8 +590,15 @@ impl Form {
         }
         let (mut nodes, mut values, mut spans) = (vec![], vec![], vec![]);
         let id = add(data, &span, &origin, &mut nodes, &mut values, &mut spans);
-        Self::from_parts_with_spans(nodes, values,
-            FormSpans::SingleSource { source: span.source, ranges: spans.into() }, id)
+        Self::from_parts_with_spans(
+            nodes,
+            values,
+            FormSpans::SingleSource {
+                source: span.source,
+                ranges: spans.into(),
+            },
+            id,
+        )
     }
     pub fn expansions(&self) -> &[ExpansionOrigin] {
         &self.forms.expansions
@@ -990,7 +1033,12 @@ impl Form {
                 definition: None,
                 helpers: vec![],
             },
-            |identity| originals.get(&identity).map(|&id| FormView { owner: original, id }),
+            |identity| {
+                originals.get(&identity).map(|&id| FormView {
+                    owner: original,
+                    id,
+                })
+            },
         )
     }
     pub(crate) fn from_bridge_expansion<S: std::hash::BuildHasher>(
@@ -1020,7 +1068,11 @@ impl Form {
             spans: &mut FormSpanBuilder,
         ) -> FormId {
             let reused = original_for(data.identity());
-            let span = if let Some(form) = reused { form.span() } else { original.view().span() };
+            let span = if let Some(form) = reused {
+                form.span()
+            } else {
+                original.view().span()
+            };
             let origin = reused
                 .map(|f| f.node().origin.clone())
                 .unwrap_or_else(|| Origin::MacroExpansion(Arc::new(name.clone())));
@@ -1029,7 +1081,17 @@ impl Form {
                     kind: *kind,
                     children: children
                         .iter()
-                        .map(|d| add(d.clone(), original, original_for, name, nodes, values, spans))
+                        .map(|d| {
+                            add(
+                                d.clone(),
+                                original,
+                                original_for,
+                                name,
+                                nodes,
+                                values,
+                                spans,
+                            )
+                        })
                         .collect(),
                 },
                 _ => FormKind::Scalar,
@@ -1242,16 +1304,26 @@ mod tests {
                 }),
                 Datum::new(DatumKind::Keyword(Name::new(None, "last"))),
                 Datum::new(DatumKind::Nil),
-            ].into(),
+            ]
+            .into(),
         });
         let name = Name::new(Some("macros"), "expand");
-        let mut form = Form::from_data(data, source.span(0..1).unwrap(), Origin::MacroExpansion(Arc::new(name.clone())));
+        let mut form = Form::from_data(
+            data,
+            source.span(0..1).unwrap(),
+            Origin::MacroExpansion(Arc::new(name.clone())),
+        );
         let forms = Arc::get_mut(&mut form.forms).unwrap();
-        forms.spans = FormSpans::Individual((0..forms.nodes.len())
-            .map(|i| source.span(i..i + 1).unwrap()).collect());
+        forms.spans = FormSpans::Individual(
+            (0..forms.nodes.len())
+                .map(|i| source.span(i..i + 1).unwrap())
+                .collect(),
+        );
         forms.expansions.push(ExpansionOrigin {
-            macro_name: name, call: source.span(2..4).unwrap(),
-            definition: Some(source.span(5..7).unwrap()), helpers: vec![Name::new(None, "helper")],
+            macro_name: name,
+            call: source.span(2..4).unwrap(),
+            definition: Some(source.span(5..7).unwrap()),
+            helpers: vec![Name::new(None, "helper")],
         });
         #[cfg(feature = "bbp-macros")]
         let form = form.with_compiler_spans(std::collections::HashMap::from([
@@ -1267,12 +1339,20 @@ mod tests {
             assert_eq!(view.compiler_span().bytes(), owned.compiler_span().bytes());
             let saved = view.to_form();
             assert_eq!(saved.node(), owned.node());
-            assert_eq!(saved.expansions()[0].macro_name, owned.expansions()[0].macro_name);
-            assert_eq!(saved.metadata().map(|m| m.data().identity()), owned.metadata().map(|m| m.data().identity()));
+            assert_eq!(
+                saved.expansions()[0].macro_name,
+                owned.expansions()[0].macro_name
+            );
+            assert_eq!(
+                saved.metadata().map(|m| m.data().identity()),
+                owned.metadata().map(|m| m.data().identity())
+            );
             retained.push(saved);
             let children = owned.children();
             assert_eq!(view.children().len(), children.len());
-            for (child, expected) in view.children().zip(children) { walk(child, &expected, retained); }
+            for (child, expected) in view.children().zip(children) {
+                walk(child, &expected, retained);
+            }
         }
         let mut retained = Vec::new();
         // Include metadata and compiler payload occurrences as well as tree children.
@@ -1292,17 +1372,34 @@ mod tests {
         let source = Source::new("expansion.cljs", "0123456789abcdefghijklmnopqrstuv");
         let builder = DataBuilder;
         let shared = builder.symbol(Name::from_utf16(None, &[0xd800, 120]));
-        let literal = builder.compiler_literal(CompilerLiteralKind::Regex, &shared)
+        let literal = builder
+            .compiler_literal(CompilerLiteralKind::Regex, &shared)
             .with_metadata(shared.clone());
-        let root = builder.vector(&[shared.clone(), literal.clone(), shared.clone()])
-            .unwrap().with_metadata(shared.clone());
+        let root = builder
+            .vector(&[shared.clone(), literal.clone(), shared.clone()])
+            .unwrap()
+            .with_metadata(shared.clone());
         let outer_data = builder.vector(&[root.clone(), shared.clone()]).unwrap();
-        let origins = [Origin::Source, Origin::Quote, Origin::Deref, Origin::SyntaxQuote,
-            Origin::Unquote, Origin::Metadata, Origin::AnonymousFunction,
-            Origin::AnonymousArgument, Origin::Source];
-        let mut nodes: Vec<_> = origins.into_iter().map(|origin| FormNode {
-            kind: FormKind::Scalar, metadata: None, compiler_payload: None, origin,
-        }).collect();
+        let origins = [
+            Origin::Source,
+            Origin::Quote,
+            Origin::Deref,
+            Origin::SyntaxQuote,
+            Origin::Unquote,
+            Origin::Metadata,
+            Origin::AnonymousFunction,
+            Origin::AnonymousArgument,
+            Origin::Source,
+        ];
+        let mut nodes: Vec<_> = origins
+            .into_iter()
+            .map(|origin| FormNode {
+                kind: FormKind::Scalar,
+                metadata: None,
+                compiler_payload: None,
+                origin,
+            })
+            .collect();
         nodes[3].metadata = Some(FormId(1));
         nodes[3].compiler_payload = Some(FormId(2));
         nodes[6].kind = FormKind::Collection {
@@ -1311,20 +1408,35 @@ mod tests {
         };
         nodes[6].metadata = Some(FormId(5));
         nodes[8].kind = FormKind::Collection {
-            kind: CollectionKind::Vector, children: vec![FormId(6), FormId(7)].into(),
+            kind: CollectionKind::Vector,
+            children: vec![FormId(6), FormId(7)].into(),
         };
         let mut outer = Form::from_parts(
             nodes,
-            vec![shared.clone(), shared.clone(), shared.clone(), literal.clone(),
-                 shared.clone(), shared.clone(), root.clone(), shared.clone(), outer_data],
+            vec![
+                shared.clone(),
+                shared.clone(),
+                shared.clone(),
+                literal.clone(),
+                shared.clone(),
+                shared.clone(),
+                root.clone(),
+                shared.clone(),
+                outer_data,
+            ],
             (0..9).map(|id| source.span(id..id + 1).unwrap()).collect(),
             FormId(8),
         );
         let name = Name::new(Some("test"), "expand");
-        Arc::get_mut(&mut outer.forms).unwrap().expansions.push(ExpansionOrigin {
-            macro_name: Name::new(None, "earlier"), call: source.span(9..10).unwrap(),
-            definition: Some(source.span(10..11).unwrap()), helpers: vec![Name::new(None, "helper")],
-        });
+        Arc::get_mut(&mut outer.forms)
+            .unwrap()
+            .expansions
+            .push(ExpansionOrigin {
+                macro_name: Name::new(None, "earlier"),
+                call: source.span(9..10).unwrap(),
+                definition: Some(source.span(10..11).unwrap()),
+                helpers: vec![Name::new(None, "helper")],
+            });
         #[cfg(feature = "bbp-macros")]
         let outer = outer.with_compiler_spans(std::collections::HashMap::from([
             (FormId(2), source.span(20..21).unwrap()),
@@ -1338,7 +1450,9 @@ mod tests {
         for (input, last_shared) in [(3, 2), (6, 5)] {
             let original = outer.at(FormId(input)).unwrap();
             let fresh = builder.string([0xdfff, 121]);
-            let data = builder.list(&[fresh, original.data(), shared.clone(), literal.clone()]).unwrap();
+            let data = builder
+                .list(&[fresh, original.data(), shared.clone(), literal.clone()])
+                .unwrap();
             let result = Form::from_expansion(data, &original, name.clone());
             for (index, datum) in result.forms.data.iter().enumerate() {
                 let previous = if datum.identity() == shared.identity() {
@@ -1354,22 +1468,37 @@ mod tests {
                 let form = result.at(FormId(index)).unwrap();
                 assert_eq!(form.span().source().id(), source.id());
                 assert_eq!(form.span().bytes(), expected_span..expected_span + 1);
-                assert_eq!(form.node().origin, previous.map(|id| outer.forms.nodes[id].origin.clone())
-                    .unwrap_or_else(|| Origin::MacroExpansion(Arc::new(name.clone()))));
+                assert_eq!(
+                    form.node().origin,
+                    previous
+                        .map(|id| outer.forms.nodes[id].origin.clone())
+                        .unwrap_or_else(|| Origin::MacroExpansion(Arc::new(name.clone())))
+                );
                 #[cfg(feature = "bbp-macros")]
-                assert_eq!(form.compiler_span_override().map(|s| s.bytes()), match previous {
-                    Some(2) => Some(20..21), Some(5) => Some(22..23), _ => None,
-                });
+                assert_eq!(
+                    form.compiler_span_override().map(|s| s.bytes()),
+                    match previous {
+                        Some(2) => Some(20..21),
+                        Some(5) => Some(22..23),
+                        _ => None,
+                    }
+                );
             }
             assert_eq!(result.expansions().len(), 2);
-            assert_eq!(result.expansions()[0].helpers, vec![Name::new(None, "helper")]);
+            assert_eq!(
+                result.expansions()[0].helpers,
+                vec![Name::new(None, "helper")]
+            );
             assert_eq!(result.expansions()[1].macro_name, name);
             assert_eq!(result.expansions()[1].call.bytes(), input..input + 1);
             results.push(result);
         }
         drop((outer, source));
         for result in results {
-            assert_eq!(result.expansions()[0].definition.as_ref().unwrap().text(), "a");
+            assert_eq!(
+                result.expansions()[0].definition.as_ref().unwrap().text(),
+                "a"
+            );
             assert!(!result.children()[1].span().text().is_empty());
             assert_eq!(result.children()[2].data().identity(), shared.identity());
         }
@@ -1387,12 +1516,14 @@ mod tests {
         let mut data = values.clone();
         data.extend(values.iter().rev().cloned());
         let root = builder.vector(&data).unwrap();
-        let mut nodes: Vec<_> = (0..count * 2).map(|_| FormNode {
-            kind: FormKind::Scalar,
-            metadata: None,
-            compiler_payload: None,
-            origin: Origin::Quote,
-        }).collect();
+        let mut nodes: Vec<_> = (0..count * 2)
+            .map(|_| FormNode {
+                kind: FormKind::Scalar,
+                metadata: None,
+                compiler_payload: None,
+                origin: Origin::Quote,
+            })
+            .collect();
         nodes.push(FormNode {
             kind: FormKind::Collection {
                 kind: CollectionKind::Vector,
@@ -1406,15 +1537,16 @@ mod tests {
         let original = Form::from_parts(
             nodes,
             data,
-            (0..count * 2 + 1).map(|i| source.span(i..i + 1).unwrap()).collect(),
+            (0..count * 2 + 1)
+                .map(|i| source.span(i..i + 1).unwrap())
+                .collect(),
             FormId(count * 2),
         );
         let name = Name::new(None, "identity-test");
         let mut generated = values.clone();
         generated.push(builder.integer(7));
-        let expanded = Form::from_expansion(
-            builder.list(&generated).unwrap(), &original, name.clone(),
-        );
+        let expanded =
+            Form::from_expansion(builder.list(&generated).unwrap(), &original, name.clone());
         drop((original, source, generated));
         let children = expanded.children();
         for (i, child) in children[..count].iter().enumerate() {
@@ -1425,8 +1557,15 @@ mod tests {
             assert_eq!(child.data().identity(), values[i].identity());
         }
         assert_eq!(children[count].span().bytes(), count * 2..count * 2 + 1);
-        assert_eq!(children[count].node().origin, Origin::MacroExpansion(Arc::new(name)));
-        assert!(values.iter().all(|value| value.identity() != children[count].data().identity()));
+        assert_eq!(
+            children[count].node().origin,
+            Origin::MacroExpansion(Arc::new(name))
+        );
+        assert!(
+            values
+                .iter()
+                .all(|value| value.identity() != children[count].data().identity())
+        );
     }
 
     #[test]
@@ -1436,12 +1575,18 @@ mod tests {
             let weak = Arc::downgrade(&source.0);
             let builder = DataBuilder;
             let payload = builder.string([120, 0xd800]);
-            let literal = builder.compiler_literal(CompilerLiteralKind::Regex, &payload)
+            let literal = builder
+                .compiler_literal(CompilerLiteralKind::Regex, &payload)
                 .with_metadata(builder.keyword(Name::new(None, "tag")));
-            let data = builder.vector(&[literal.clone(), builder.integer(1)]).unwrap();
-            let original = Form::from_data(data.clone(), source.span(2..5).unwrap(), Origin::Source);
+            let data = builder
+                .vector(&[literal.clone(), builder.integer(1)])
+                .unwrap();
+            let original =
+                Form::from_data(data.clone(), source.span(2..5).unwrap(), Origin::Source);
             let expanded = Form::from_expansion(
-                builder.list(&[data, literal]).unwrap(), &original, Name::new(None, "expand"),
+                builder.list(&[data, literal]).unwrap(),
+                &original,
+                Name::new(None, "expand"),
             );
             for id in 0..expanded.nodes().len() {
                 let occurrence = expanded.at(FormId(id)).unwrap();
@@ -1453,7 +1598,10 @@ mod tests {
         };
         assert!(weak.upgrade().is_some());
         assert_eq!(owned.text(), "234");
-        assert_eq!(owned.source().line_column(owned.bytes().start), Some((1, 3)));
+        assert_eq!(
+            owned.source().line_column(owned.bytes().start),
+            Some((1, 3))
+        );
         drop(owned);
         assert!(weak.upgrade().is_none());
     }
@@ -1465,7 +1613,11 @@ mod tests {
             let a = Source::new("same.cljs", "0123456789");
             let b = Source::new("same.cljs", "0123456789");
             let c = Source::new("other.cljs", "abcdefghij");
-            let (weak_a, weak_b, weak_c) = (Arc::downgrade(&a.0), Arc::downgrade(&b.0), Arc::downgrade(&c.0));
+            let (weak_a, weak_b, weak_c) = (
+                Arc::downgrade(&a.0),
+                Arc::downgrade(&b.0),
+                Arc::downgrade(&c.0),
+            );
             let builder = DataBuilder;
             let da = builder.integer(7);
             let db = builder.symbol(Name::new(None, "argument"));
@@ -1475,21 +1627,35 @@ mod tests {
             #[cfg(feature = "bbp-macros")]
             let fb = {
                 let id = fb.id();
-                fb.with_compiler_spans(std::collections::HashMap::from([
-                    (id, b.span(6..8).unwrap()),
-                ]))
+                fb.with_compiler_spans(std::collections::HashMap::from([(
+                    id,
+                    b.span(6..8).unwrap(),
+                )]))
             };
             let fc = Form::from_data(dc.clone(), c.span(2..4).unwrap(), Origin::Deref);
             let originals = std::collections::HashMap::from([
-                (da.identity(), fa.clone()), (db.identity(), fb), (dc.identity(), fc),
+                (da.identity(), fa.clone()),
+                (db.identity(), fb),
+                (dc.identity(), fc),
             ]);
-            let literal = builder.compiler_literal(CompilerLiteralKind::Regex, &dc)
+            let literal = builder
+                .compiler_literal(CompilerLiteralKind::Regex, &dc)
                 .with_metadata(db.clone());
-            let data = builder.vector(&[da.clone(), db.clone(), dc.clone(), db.clone(), literal])
-                .unwrap().with_metadata(dc.clone());
-            let result = Form::from_bridge_expansion(data, &fa, ExpansionOrigin {
-                macro_name: Name::new(None, "mixed"), call: fa.span(), definition: None, helpers: vec![],
-            }, &originals);
+            let data = builder
+                .vector(&[da.clone(), db.clone(), dc.clone(), db.clone(), literal])
+                .unwrap()
+                .with_metadata(dc.clone());
+            let result = Form::from_bridge_expansion(
+                data,
+                &fa,
+                ExpansionOrigin {
+                    macro_name: Name::new(None, "mixed"),
+                    call: fa.span(),
+                    definition: None,
+                    helpers: vec![],
+                },
+                &originals,
+            );
             for id in 0..result.nodes().len() {
                 let occurrence = result.at(FormId(id)).unwrap();
                 let identity = occurrence.data().identity();
@@ -1500,7 +1666,11 @@ mod tests {
                 } else if identity == da.identity() {
                     (&a, 1..2, Origin::Source)
                 } else {
-                    (&a, 1..2, Origin::MacroExpansion(Arc::new(Name::new(None, "mixed"))))
+                    (
+                        &a,
+                        1..2,
+                        Origin::MacroExpansion(Arc::new(Name::new(None, "mixed"))),
+                    )
                 };
                 assert_eq!(occurrence.span().source().id(), source.id());
                 assert_eq!(occurrence.view().span().source().id(), source.id());
@@ -1508,8 +1678,10 @@ mod tests {
                 assert_eq!(occurrence.view().span().bytes(), bytes);
                 assert_eq!(occurrence.node().origin, origin);
                 #[cfg(feature = "bbp-macros")]
-                assert_eq!(occurrence.compiler_span_override().map(|s| s.bytes()),
-                    (identity == db.identity()).then_some(6..8));
+                assert_eq!(
+                    occurrence.compiler_span_override().map(|s| s.bytes()),
+                    (identity == db.identity()).then_some(6..8)
+                );
             }
             (result.children()[1].compact_leaf(), weak_a, weak_b, weak_c)
         };

@@ -136,7 +136,11 @@ pub(crate) struct UnitCharges {
 }
 impl UnitCharges {
     #[cfg(feature = "bbp-macros")]
-    pub(crate) fn namespace(recorded: crate::macro_host::RecordedUnit, host: &MacroHost, name: &str) -> Self {
+    pub(crate) fn namespace(
+        recorded: crate::macro_host::RecordedUnit,
+        host: &MacroHost,
+        name: &str,
+    ) -> Self {
         Self {
             events: recorded.events,
             macro_depth: host.engine.work.macro_depth.get(),
@@ -445,7 +449,11 @@ impl<T: Clone> Clone for JournalMap<T> {
                 prefix: prefix.clone(),
                 // A frozen coordinator may retain scratch capacity. Empty
                 // snapshots need neither that allocation nor any entries.
-                changes: if changes.is_empty() { HashMap::new() } else { changes.clone() },
+                changes: if changes.is_empty() {
+                    HashMap::new()
+                } else {
+                    changes.clone()
+                },
             },
         }
     }
@@ -467,13 +475,19 @@ impl<T> JournalMap<T> {
     }
     fn insert(&mut self, key: String, value: T) {
         match self {
-            Self::Owned(map) => { map.insert(key, value); }
-            Self::Shared { changes, .. } => { changes.insert(key, Some(value)); }
+            Self::Owned(map) => {
+                map.insert(key, value);
+            }
+            Self::Shared { changes, .. } => {
+                changes.insert(key, Some(value));
+            }
         }
     }
     fn remove(&mut self, key: &str) {
         match self {
-            Self::Owned(map) => { map.remove(key); }
+            Self::Owned(map) => {
+                map.remove(key);
+            }
             Self::Shared { prefix, changes } => {
                 if prefix.contains_key(key) {
                     changes.insert(key.to_owned(), None);
@@ -502,8 +516,12 @@ impl<T: Clone> JournalMap<T> {
                     let map = Arc::make_mut(prefix);
                     for (key, value) in changes.drain() {
                         match value {
-                            Some(value) => { map.insert(key, value); }
-                            None => { map.remove(&key); }
+                            Some(value) => {
+                                map.insert(key, value);
+                            }
+                            None => {
+                                map.remove(&key);
+                            }
                         }
                     }
                 }
@@ -516,7 +534,8 @@ impl<T: Clone> JournalMap<T> {
     {
         match self {
             Self::Owned(map) => map.entry(key.to_owned()).or_default(),
-            Self::Shared { prefix, changes } => changes.entry(key.to_owned())
+            Self::Shared { prefix, changes } => changes
+                .entry(key.to_owned())
                 .or_insert_with(|| Some(prefix.get(key).cloned().unwrap_or_default()))
                 .get_or_insert_with(T::default),
         }
@@ -572,7 +591,9 @@ impl RegistrationJournal {
         match &registration {
             Registration::Root(name, unit, _, once, _) => {
                 #[cfg(feature = "bbp-macros")]
-                if unit.is_some() && let Some(counts) = &mut self.root_generations {
+                if unit.is_some()
+                    && let Some(counts) = &mut self.root_generations
+                {
                     *counts.value_mut_or_default(name) += 1;
                 }
                 if !(unit.is_none() && self.active.contains_key(name)
@@ -2499,7 +2520,8 @@ impl CompilationSession {
         }
         installed.installed = end;
         drop(installed);
-        let pending: Vec<_> = self.with_journal(|journal| journal.registrations.range(start..end).cloned().collect());
+        let pending: Vec<_> =
+            self.with_journal(|journal| journal.registrations.range(start..end).cloned().collect());
         install_registrations(bootstrap.evaluator.as_ref(), start, &pending, before_last)
     }
     fn with_journal<T>(&self, read: impl FnOnce(&RegistrationJournal) -> T) -> T {
@@ -2515,7 +2537,13 @@ impl CompilationSession {
             // The shared catalog retains the arrival log for unit allocation
             // diagnostics. This writer's engine only installs its own view.
             catalog.journal.push(registration.clone());
-            return self.namespace_journal.borrow_mut().as_mut().unwrap().journal.push(registration);
+            return self
+                .namespace_journal
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .journal
+                .push(registration);
         }
         catalog.journal.push(registration)
     }
@@ -2707,25 +2735,46 @@ impl CompilationSession {
         Rc::new(session)
     }
     #[cfg(feature = "bbp-macros")]
-    pub(crate) fn namespace_writer_seeded(shared: Arc<SharedCatalog>, prefix: &RegistrationJournal, seed: crate::bbp_evaluator::CatalogSeed) -> Rc<Self> {
-        assert_eq!(seed.len(), prefix.registrations.len(), "native and compiler namespace prefixes must agree");
+    pub(crate) fn namespace_writer_seeded(
+        shared: Arc<SharedCatalog>,
+        prefix: &RegistrationJournal,
+        seed: crate::bbp_evaluator::CatalogSeed,
+    ) -> Rc<Self> {
+        assert_eq!(
+            seed.len(),
+            prefix.registrations.len(),
+            "native and compiler namespace prefixes must agree"
+        );
         let mut session = Self::namespace_writer(shared, prefix);
         Rc::get_mut(&mut session).unwrap().namespace_seed = Some(seed);
         session
     }
     #[cfg(feature = "bbp-macros")]
-    pub(crate) fn namespace_catalog_seed(self: &Rc<Self>, host: &MacroHost) -> Result<crate::bbp_evaluator::CatalogSeed, String> {
+    pub(crate) fn namespace_catalog_seed(
+        self: &Rc<Self>,
+        host: &MacroHost,
+    ) -> Result<crate::bbp_evaluator::CatalogSeed, String> {
         self.start_dispatch_engine(host)?;
-        self.bootstrap().unwrap().evaluator.native_shell().ok_or("namespace publication needs a native engine")?
-            .catalog_seed().map_err(|e| e.to_string())
+        self.bootstrap()
+            .unwrap()
+            .evaluator
+            .native_shell()
+            .ok_or("namespace publication needs a native engine")?
+            .catalog_seed()
+            .map_err(|e| e.to_string())
     }
     #[cfg(all(test, feature = "bbp-macros"))]
-    pub(crate) fn namespace_probe(shared: Arc<SharedCatalog>, prefix: &RegistrationJournal) -> Rc<Self> {
+    pub(crate) fn namespace_probe(
+        shared: Arc<SharedCatalog>,
+        prefix: &RegistrationJournal,
+    ) -> Rc<Self> {
         Self::namespace_writer(shared, prefix)
     }
     #[cfg(feature = "bbp-macros")]
     fn set_namespace_journal(&self, prefix: RegistrationJournal) {
-        let generations = prefix.root_generations.clone()
+        let generations = prefix
+            .root_generations
+            .clone()
             .unwrap_or_else(|| prefix.count_generations());
         *self.namespace_journal.borrow_mut() = Some(NamespaceJournal {
             prefix: prefix.registrations.len(),
@@ -2739,8 +2788,12 @@ impl CompilationSession {
         if !self.owns_namespace_journal.get() {
             self.set_namespace_journal(self.namespace_prefix());
             if let Some(bootstrap) = self.bootstrap() {
-                bootstrap.evaluator.native_shell().ok_or("namespace publication needs a native engine")?
-                    .fork_catalog().map_err(|e| e.to_string())?;
+                bootstrap
+                    .evaluator
+                    .native_shell()
+                    .ok_or("namespace publication needs a native engine")?
+                    .fork_catalog()
+                    .map_err(|e| e.to_string())?;
             }
         }
         Ok(())
@@ -2748,7 +2801,12 @@ impl CompilationSession {
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn namespace_prefix(&self) -> RegistrationJournal {
         if self.owns_namespace_journal.get() {
-            self.namespace_journal.borrow_mut().as_mut().unwrap().journal.snapshot()
+            self.namespace_journal
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .journal
+                .snapshot()
         } else {
             self.shared.lock().journal.snapshot()
         }
@@ -2757,10 +2815,18 @@ impl CompilationSession {
     pub(crate) fn namespace_fragment(&self) -> Vec<Registration> {
         let owned = self.namespace_journal.borrow();
         let journal = owned.as_ref().unwrap();
-        journal.journal.registrations.tail_from(journal.prefix).cloned().collect()
+        journal
+            .journal
+            .registrations
+            .tail_from(journal.prefix)
+            .cloned()
+            .collect()
     }
     #[cfg(feature = "bbp-macros")]
-    pub(crate) fn publish_namespace_registrations(&self, registrations: Vec<Registration>) -> Result<(), String> {
+    pub(crate) fn publish_namespace_registrations(
+        &self,
+        registrations: Vec<Registration>,
+    ) -> Result<(), String> {
         let end = {
             let mut owned = self.namespace_journal.borrow_mut();
             let journal = owned.as_mut().expect("coordinator has a namespace journal");
@@ -2817,7 +2883,9 @@ impl CompilationSession {
         self.engine.borrow_mut().bootstrap = Some(bootstrap.clone());
         #[cfg(feature = "bbp-macros")]
         if self.owns_namespace_journal.get() {
-            let native = evaluator.native_shell().ok_or("namespace writer needs a native engine")?;
+            let native = evaluator
+                .native_shell()
+                .ok_or("namespace writer needs a native engine")?;
             match &self.namespace_seed {
                 Some(seed) => {
                     native.adopt_catalog_seed(seed).map_err(|e| e.to_string())?;
@@ -2825,7 +2893,8 @@ impl CompilationSession {
                     Ok(())
                 }
                 None => native.fork_catalog(),
-            }.map_err(|e| e.to_string())?;
+            }
+            .map_err(|e| e.to_string())?;
         }
         let end = self.with_journal(|journal| journal.registrations.len());
         self.install_registrations(end, |_| Ok(()))
@@ -3480,7 +3549,10 @@ impl CompilationSession {
         {
             let catalog = self.shared.lock();
             for &id in &units {
-                if !matches!(catalog.units[id].state, AnalysisState::Analyzed(..) | AnalysisState::Failed(..)) {
+                if !matches!(
+                    catalog.units[id].state,
+                    AnalysisState::Analyzed(..) | AnalysisState::Failed(..)
+                ) {
                     return Err(format!("namespace unit {id} has not finished analysis"));
                 }
             }
@@ -3490,19 +3562,36 @@ impl CompilationSession {
             if bindings.len() <= id {
                 bindings.resize_with(id + 1, || None);
             }
-            assert!(bindings[id].is_none(), "unit already has a coordinator binding");
+            assert!(
+                bindings[id].is_none(),
+                "unit already has a coordinator binding"
+            );
             bindings[id] = Some(Box::new(host.engine.frame()));
         }
         Ok(())
     }
 
     #[cfg(feature = "bbp-macros")]
-    pub(crate) fn charge_namespace(&self, charges: UnitCharges, host: &MacroHost) -> Result<(), crate::AnalysisError> {
+    pub(crate) fn charge_namespace(
+        &self,
+        charges: UnitCharges,
+        host: &MacroHost,
+    ) -> Result<(), crate::AnalysisError> {
         let binding = &host.engine;
-        let control = binding.bootstrap.as_ref().or(self.bootstrap().as_ref()).map(|b| b.evaluator.control());
-        let start = || self.start_main_engine(binding).map(|b| b.map(|b| b.evaluator.control()));
-        charges.charge(binding, None, control, &start, self).map_err(|(_, diagnostic)| diagnostic)?;
-        self.shared.raise_charged(binding.expansions.get(), binding.generated_nodes.get());
+        let control = binding
+            .bootstrap
+            .as_ref()
+            .or(self.bootstrap().as_ref())
+            .map(|b| b.evaluator.control());
+        let start = || {
+            self.start_main_engine(binding)
+                .map(|b| b.map(|b| b.evaluator.control()))
+        };
+        charges
+            .charge(binding, None, control, &start, self)
+            .map_err(|(_, diagnostic)| diagnostic)?;
+        self.shared
+            .raise_charged(binding.expansions.get(), binding.generated_nodes.get());
         Ok(())
     }
     /// Use the coordinator's otherwise idle slot on the Pants build. At a
@@ -6156,25 +6245,51 @@ mod worker_tests {
         for (macro_free, with_engine) in [(true, false), (true, true), (false, true)] {
             let mut host = MacroHost::new();
             host.use_native_macros();
-            let (session, units, environment) = registered_with_host(
-                "(defn f [x] (if x (+ x 1) 0))", host,
-            );
+            let (session, units, environment) =
+                registered_with_host("(defn f [x] (if x (+ x 1) 0))", host);
             let id = units["cljs.user/f"];
             if macro_free {
                 session.set_macro_free(id);
             }
-            let evaluator = Rc::new(crate::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap());
-            let binding = MacroHost::bind(environment, with_engine.then(|| evaluator.clone() as Rc<dyn crate::compiler_evaluator::CompilerEvaluator>)).unwrap();
+            let evaluator =
+                Rc::new(crate::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap());
+            let binding = MacroHost::bind(
+                environment,
+                with_engine.then(|| {
+                    evaluator.clone() as Rc<dyn crate::compiler_evaluator::CompilerEvaluator>
+                }),
+            )
+            .unwrap();
             let setup = evaluator.evaluate_unit("rt => {globalThis.scopeEvents=[]; globalThis.__lightEnterCompilerFrontier=next=>scopeEvents.push('enter'); globalThis.__lightLeaveCompilerFrontier=()=>scopeEvents.push('leave'); rt.compilerForms.gensymScope=()=>scopeEvents.push('gensym'); return null;}").unwrap();
             evaluator.release(setup).unwrap();
             let (program, warnings) = analyze_unit(
-                &session.shared, session.thread, id, None,
-                Demand { queued: false, on_worker: true, held: false, server: None, help: None },
-                None, || (binding.engine.frame(), None),
-            ).unwrap();
+                &session.shared,
+                session.thread,
+                id,
+                None,
+                Demand {
+                    queued: false,
+                    on_worker: true,
+                    held: false,
+                    server: None,
+                    help: None,
+                },
+                None,
+                || (binding.engine.frame(), None),
+            )
+            .unwrap();
             assert!(warnings.is_empty());
-            let code = crate::emitter::DeferredUnit::prepare_native(&program, &[]).code().to_owned();
-            let events = format!("{:?}", session.shared.lock().units[id].charges.as_ref().unwrap().events);
+            let code = crate::emitter::DeferredUnit::prepare_native(&program, &[])
+                .code()
+                .to_owned();
+            let events = format!(
+                "{:?}",
+                session.shared.lock().units[id]
+                    .charges
+                    .as_ref()
+                    .unwrap()
+                    .events
+            );
             if let Some((expected_code, expected_events)) = &expected {
                 assert_eq!(&code, expected_code);
                 assert_eq!(&events, expected_events);
@@ -6182,9 +6297,13 @@ mod worker_tests {
                 assert!(events.contains("Poll("), "{events}");
                 expected = Some((code, events));
             }
-            let result = evaluator.evaluate_unit("rt => JSON.stringify(scopeEvents)").unwrap();
+            let result = evaluator
+                .evaluate_unit("rt => JSON.stringify(scopeEvents)")
+                .unwrap();
             let data = evaluator.export_data(result, Default::default()).unwrap();
-            let DatumKind::String(text) = data.kind() else { panic!("expected scope event string") };
+            let DatumKind::String(text) = data.kind() else {
+                panic!("expected scope event string")
+            };
             let events = String::from_utf16_lossy(text);
             if macro_free {
                 assert_eq!(events, "[]");
@@ -6204,14 +6323,26 @@ mod worker_tests {
         let (session, units, environment) = registered_with_host("(defn f [x] (+ x 1))", host);
         let id = units["cljs.user/f"];
         session.set_macro_free(id);
-        let evaluator = Rc::new(crate::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap());
+        let evaluator =
+            Rc::new(crate::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap());
         let binding = MacroHost::bind(environment, Some(evaluator.clone())).unwrap();
         evaluator.control().cancel();
         let error = analyze_unit(
-            &session.shared, session.thread, id, Some(evaluator.as_ref()),
-            Demand { queued: false, on_worker: false, held: true, server: None, help: None },
-            None, || (binding.engine.frame(), None),
-        ).unwrap_err();
+            &session.shared,
+            session.thread,
+            id,
+            Some(evaluator.as_ref()),
+            Demand {
+                queued: false,
+                on_worker: false,
+                held: true,
+                server: None,
+                help: None,
+            },
+            None,
+            || (binding.engine.frame(), None),
+        )
+        .unwrap_err();
         assert!(error.contains("cancelled"), "{error}");
         assert!(session.unit_failed(id));
     }
@@ -6224,7 +6355,10 @@ mod worker_tests {
         map.insert("removed".into(), "visible".to_owned());
         map.freeze();
         let old = map.clone();
-        assert!(std::ptr::eq(map.get("kept").unwrap(), old.get("kept").unwrap()));
+        assert!(std::ptr::eq(
+            map.get("kept").unwrap(),
+            old.get("kept").unwrap()
+        ));
         map.insert("kept".into(), "changed".into());
         map.remove("removed");
         map.insert("new".into(), "private".into());
@@ -6270,10 +6404,16 @@ mod worker_tests {
         let root = |name: &str, unit, once| {
             Registration::Root(name.into(), unit, None, once, "source:1".into())
         };
-        let bundle = |once| Registration::Bundle(Arc::new(BundleRecord {
-            products: vec!["app/mf".into()], unit: 10, extensions: vec![],
-            location: "source:2".into(), once, group: false,
-        }));
+        let bundle = |once| {
+            Registration::Bundle(Arc::new(BundleRecord {
+                products: vec!["app/mf".into()],
+                unit: 10,
+                extensions: vec![],
+                location: "source:2".into(),
+                once,
+                group: false,
+            }))
+        };
         let mut coordinator = RegistrationJournal::default();
         coordinator.push(bundle(true));
         coordinator.push(root("app/x", Some(0), false));
@@ -6282,28 +6422,49 @@ mod worker_tests {
         let right = left.clone();
         left.push(root("app/mf", None, false));
         left.push(root("app/mf", Some(1), true));
-        assert_eq!(left.multifn_targets.get("app/mf").map(String::as_str), Some("app/mf"));
+        assert_eq!(
+            left.multifn_targets.get("app/mf").map(String::as_str),
+            Some("app/mf")
+        );
         left.push(root("app/mf", Some(2), false));
         assert!(!left.multifn_targets.contains_key("app/mf"));
         let left = left.snapshot();
-        assert_eq!(left.root_generations.as_ref().unwrap().get("app/mf"), Some(&2));
-        assert_eq!(right.multifn_targets.get("app/mf").map(String::as_str), Some("app/mf"));
+        assert_eq!(
+            left.root_generations.as_ref().unwrap().get("app/mf"),
+            Some(&2)
+        );
+        assert_eq!(
+            right.multifn_targets.get("app/mf").map(String::as_str),
+            Some("app/mf")
+        );
         assert_eq!(right.root_generations.as_ref().unwrap().get("app/mf"), None);
         coordinator.push(bundle(false));
         coordinator.push(root("app/x", None, false));
         coordinator.push(root("app/x", Some(3), true));
         let later = coordinator.snapshot();
         assert!(!later.multifn_targets.contains_key("app/mf"));
-        assert_eq!(later.root_generations.as_ref().unwrap().get("app/x"), Some(&2));
-        assert_eq!(right.root_generations.as_ref().unwrap().get("app/x"), Some(&1));
+        assert_eq!(
+            later.root_generations.as_ref().unwrap().get("app/x"),
+            Some(&2)
+        );
+        assert_eq!(
+            right.root_generations.as_ref().unwrap().get("app/x"),
+            Some(&1)
+        );
         for journal in [&left, &right, &later] {
             let replay = journal.count_generations();
             for name in ["app/x", "app/mf", "missing"] {
-                assert_eq!(journal.root_generations.as_ref().unwrap().get(name), replay.get(name));
+                assert_eq!(
+                    journal.root_generations.as_ref().unwrap().get(name),
+                    replay.get(name)
+                );
             }
         }
         drop(coordinator);
-        assert_eq!(right.multifn_targets.get("app/mf").map(String::as_str), Some("app/mf"));
+        assert_eq!(
+            right.multifn_targets.get("app/mf").map(String::as_str),
+            Some("app/mf")
+        );
         assert_eq!(left.active.get("app/mf"), Some(&true));
     }
 
@@ -6312,31 +6473,83 @@ mod worker_tests {
     fn namespace_journal_generation_snapshots_do_not_rescan_history_per_writer() {
         let mut coordinator = RegistrationJournal::default();
         for unit in 0..256 {
-            coordinator.push(Registration::Root(format!("app/v{}", unit % 7), Some(unit), None, false, "source:1".into()));
+            coordinator.push(Registration::Root(
+                format!("app/v{}", unit % 7),
+                Some(unit),
+                None,
+                false,
+                "source:1".into(),
+            ));
         }
         let (prefix, reads) = crate::arena::count_reads(|| coordinator.snapshot());
         assert_eq!(reads, 256);
         let shared = Arc::new(SharedCatalog::default());
         let (writers, reads) = crate::arena::count_reads(|| {
-            (0..8).map(|_| CompilationSession::namespace_writer(shared.clone(), &prefix)).collect::<Vec<_>>()
+            (0..8)
+                .map(|_| CompilationSession::namespace_writer(shared.clone(), &prefix))
+                .collect::<Vec<_>>()
         });
         assert_eq!(reads, 0);
         // A request can advance a writer's local counter before its root is
         // recorded. A fresh prefix still reflects registrations only.
-        *writers[0].namespace_journal.borrow_mut().as_mut().unwrap()
-            .generations.value_mut_or_default("app/v0") += 1;
+        *writers[0]
+            .namespace_journal
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .generations
+            .value_mut_or_default("app/v0") += 1;
         let (unrecorded, reads) = crate::arena::count_reads(|| writers[0].namespace_prefix());
         assert_eq!(reads, 0);
-        assert_eq!(unrecorded.root_generations.as_ref().unwrap().get("app/v0"), Some(&37));
-        assert_eq!(writers[0].namespace_journal.borrow().as_ref().unwrap().generations.get("app/v0"), Some(&38));
-        coordinator.push(Registration::Root("app/v0".into(), Some(256), None, false, "source:2".into()));
-        coordinator.push(Registration::Root("app/v0".into(), None, None, false, "source:3".into()));
+        assert_eq!(
+            unrecorded.root_generations.as_ref().unwrap().get("app/v0"),
+            Some(&37)
+        );
+        assert_eq!(
+            writers[0]
+                .namespace_journal
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .generations
+                .get("app/v0"),
+            Some(&38)
+        );
+        coordinator.push(Registration::Root(
+            "app/v0".into(),
+            Some(256),
+            None,
+            false,
+            "source:2".into(),
+        ));
+        coordinator.push(Registration::Root(
+            "app/v0".into(),
+            None,
+            None,
+            false,
+            "source:3".into(),
+        ));
         let (later, reads) = crate::arena::count_reads(|| coordinator.snapshot());
         assert_eq!(reads, 0);
-        assert_eq!(later.root_generations.as_ref().unwrap().get("app/v0"), Some(&38));
-        assert_eq!(prefix.root_generations.as_ref().unwrap().get("app/v0"), Some(&37));
+        assert_eq!(
+            later.root_generations.as_ref().unwrap().get("app/v0"),
+            Some(&38)
+        );
+        assert_eq!(
+            prefix.root_generations.as_ref().unwrap().get("app/v0"),
+            Some(&37)
+        );
         for writer in &writers[1..] {
-            assert_eq!(writer.namespace_journal.borrow().as_ref().unwrap().generations.get("app/v0"), Some(&37));
+            assert_eq!(
+                writer
+                    .namespace_journal
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .generations
+                    .get("app/v0"),
+                Some(&37)
+            );
         }
     }
 
@@ -6353,8 +6566,14 @@ mod worker_tests {
         let mut left = coordinator.snapshot();
         let mut right = left.clone();
         for i in 0..130 {
-            assert!(std::ptr::eq(&coordinator.registrations[i], &left.registrations[i]));
-            assert!(std::ptr::eq(&left.registrations[i], &right.registrations[i]));
+            assert!(std::ptr::eq(
+                &coordinator.registrations[i],
+                &left.registrations[i]
+            ));
+            assert!(std::ptr::eq(
+                &left.registrations[i],
+                &right.registrations[i]
+            ));
         }
         left.push(root("left/new", Some(130), false));
         right.push(root("right/new", Some(131), false));
@@ -6370,17 +6589,27 @@ mod worker_tests {
         assert_eq!(later.registrations.len(), 131);
         assert_eq!(right.registrations.len(), 131);
         let names = |journal: &RegistrationJournal, start| {
-            journal.registrations.tail_from(start).map(|r| match r {
-                Registration::Root(name, ..) => name.clone(),
-                _ => unreachable!(),
-            }).collect::<Vec<_>>()
+            journal
+                .registrations
+                .tail_from(start)
+                .map(|r| match r {
+                    Registration::Root(name, ..) => name.clone(),
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>()
         };
-        assert_eq!(names(&left, 129), ["prefix/v129", "left/new", "prefix/v0", "prefix/v1"]);
+        assert_eq!(
+            names(&left, 129),
+            ["prefix/v129", "left/new", "prefix/v0", "prefix/v1"]
+        );
         assert_eq!(names(&right, 130), ["right/new"]);
         assert_eq!(names(&later, 130), ["coordinator/new"]);
         drop(coordinator);
         drop(left);
-        assert!(std::ptr::eq(&later.registrations[64], &right.registrations[64]));
+        assert!(std::ptr::eq(
+            &later.registrations[64],
+            &right.registrations[64]
+        ));
         assert_eq!(names(&right, 129), ["prefix/v129", "right/new"]);
     }
 

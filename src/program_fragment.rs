@@ -141,7 +141,10 @@ impl SharedPrefix {
             );
         }
         if let Some(last) = self.globals.checked_sub(1) {
-            let published = self.publication.as_ref().map_or(last, |p| p.globals.map(last));
+            let published = self
+                .publication
+                .as_ref()
+                .map_or(last, |p| p.globals.map(last));
             let (a, b) = (&target.globals[published], &fragment.globals[last]);
             assert!(
                 a.namespace == b.namespace && a.name == b.name,
@@ -240,7 +243,11 @@ struct Ids {
 
 impl Ids {
     fn new(shared: usize, start: usize) -> Self {
-        Self { shared, start, prefix: None }
+        Self {
+            shared,
+            start,
+            prefix: None,
+        }
     }
     fn with_prefix(mut self, prefix: Option<&PublishedIds>) -> Self {
         self.prefix = prefix.cloned();
@@ -264,10 +271,17 @@ struct PublishedIds {
 }
 impl PublishedIds {
     fn map(&self, id: usize) -> usize {
-        if id < self.shared { id } else { self.suffix[id - self.shared] }
+        if id < self.shared {
+            id
+        } else {
+            self.suffix[id - self.shared]
+        }
     }
     fn capture(shared: usize, end: usize, map: impl Fn(usize) -> usize) -> Self {
-        Self { shared, suffix: (shared..end).map(map).collect() }
+        Self {
+            shared,
+            suffix: (shared..end).map(map).collect(),
+        }
     }
 }
 
@@ -312,7 +326,15 @@ pub(crate) fn append(
     own_namespace: Option<&str>,
     names: Option<&mut crate::name_index::NameIndex>,
 ) -> ExprId {
-    append_impl(target, fragment, shared, update_shared_globals, own_namespace, names, None)
+    append_impl(
+        target,
+        fragment,
+        shared,
+        update_shared_globals,
+        own_namespace,
+        names,
+        None,
+    )
 }
 
 // No caller yet: the published-append path that 0041cda4 added for
@@ -327,7 +349,15 @@ pub(crate) fn append_published(
     changed_globals: &[usize],
 ) -> (ExprId, std::sync::Arc<Publication>) {
     let mut publication = None;
-    let root = append_impl(target, fragment, shared, false, Some(own_namespace), Some(names), Some(&mut publication));
+    let root = append_impl(
+        target,
+        fragment,
+        shared,
+        false,
+        Some(own_namespace),
+        Some(names),
+        Some(&mut publication),
+    );
     let publication = std::sync::Arc::new(publication.unwrap());
     // Top-level analysis may define a global reserved before its namespace
     // loaded. Publish exactly the prefix entries this writer changed, so an
@@ -373,10 +403,14 @@ fn append_impl(
     };
     let mut remap = Remap {
         map_expr: move |id: ExprId| ExprId(exprs.map(id.0)),
-        local: Ids::new(shared.locals, target.locals.len()).with_prefix(previous.map(|p| &p.locals)),
-        recur: Ids::new(shared.recur_targets, target.recur_targets.len()).with_prefix(previous.map(|p| &p.recur)),
-        string: Ids::new(shared.strings, target.strings.len()).with_prefix(previous.map(|p| &p.strings)),
-        named: Ids::new(shared.named_literals, target.named_literals.len()).with_prefix(previous.map(|p| &p.named)),
+        local: Ids::new(shared.locals, target.locals.len())
+            .with_prefix(previous.map(|p| &p.locals)),
+        recur: Ids::new(shared.recur_targets, target.recur_targets.len())
+            .with_prefix(previous.map(|p| &p.recur)),
+        string: Ids::new(shared.strings, target.strings.len())
+            .with_prefix(previous.map(|p| &p.strings)),
+        named: Ids::new(shared.named_literals, target.named_literals.len())
+            .with_prefix(previous.map(|p| &p.named)),
         first_global,
         shared_globals: previous.map(|p| p.globals.clone()),
         globals: Vec::with_capacity(fragment.globals.len() - first_global),
@@ -645,15 +679,44 @@ fn append_impl(
             }),
     );
     if let Some(publication) = publication {
-        let capture = |shared, end, map: &dyn Fn(usize) -> usize| PublishedIds::capture(shared, end, map);
+        let capture =
+            |shared, end, map: &dyn Fn(usize) -> usize| PublishedIds::capture(shared, end, map);
         *publication = Some(Publication {
-            exprs: capture(previous.map_or(shared.exprs, |p| p.exprs.shared), fragment.exprs.len(), &|id| (remap.map_expr)(ExprId(id)).0),
-            locals: capture(previous.map_or(shared.locals, |p| p.locals.shared), fragment.locals.len(), &|id| remap.local.map(id)),
-            recur: capture(previous.map_or(shared.recur_targets, |p| p.recur.shared), fragment.recur_targets.len(), &|id| remap.recur.map(id)),
-            strings: capture(previous.map_or(shared.strings, |p| p.strings.shared), fragment.strings.len(), &|id| remap.string.map(id)),
-            named: capture(previous.map_or(shared.named_literals, |p| p.named.shared), fragment.named_literals.len(), &|id| remap.named.map(id)),
-            globals: capture(previous.map_or(shared.globals, |p| p.globals.shared), fragment.globals.len(), &|id| remap.mapped_global(GlobalId(id)).0),
-            js: capture(previous.map_or(shared.js_globals, |p| p.js.shared), fragment.js_globals.len(), &|id| remap.js[id].0),
+            exprs: capture(
+                previous.map_or(shared.exprs, |p| p.exprs.shared),
+                fragment.exprs.len(),
+                &|id| (remap.map_expr)(ExprId(id)).0,
+            ),
+            locals: capture(
+                previous.map_or(shared.locals, |p| p.locals.shared),
+                fragment.locals.len(),
+                &|id| remap.local.map(id),
+            ),
+            recur: capture(
+                previous.map_or(shared.recur_targets, |p| p.recur.shared),
+                fragment.recur_targets.len(),
+                &|id| remap.recur.map(id),
+            ),
+            strings: capture(
+                previous.map_or(shared.strings, |p| p.strings.shared),
+                fragment.strings.len(),
+                &|id| remap.string.map(id),
+            ),
+            named: capture(
+                previous.map_or(shared.named_literals, |p| p.named.shared),
+                fragment.named_literals.len(),
+                &|id| remap.named.map(id),
+            ),
+            globals: capture(
+                previous.map_or(shared.globals, |p| p.globals.shared),
+                fragment.globals.len(),
+                &|id| remap.mapped_global(GlobalId(id)).0,
+            ),
+            js: capture(
+                previous.map_or(shared.js_globals, |p| p.js.shared),
+                fragment.js_globals.len(),
+                &|id| remap.js[id].0,
+            ),
         });
     }
     (remap.map_expr)(fragment.root)
@@ -930,7 +993,12 @@ pub(crate) fn extend_interactive_snapshot(
         snapshot.type_methods = program.type_methods.clone();
     }
     snapshot.freeze();
-    (snapshot, released, !changed_exprs.is_empty(), changed_globals)
+    (
+        snapshot,
+        released,
+        !changed_exprs.is_empty(),
+        changed_globals,
+    )
 }
 
 /// A snapshot of `program`'s resolution tables and of the expressions reachable
@@ -1391,12 +1459,17 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
             && (fragment
                 .globals
                 .shares_prefix(&target.globals, shared.globals)
-                || fragment.globals.range(0..shared.globals).enumerate().all(|(id, a)| {
-                    let b = &target.globals[self.mapped_global(GlobalId(id)).0];
-                    a.namespace == b.namespace && a.name == b.name
-                }));
+                || fragment
+                    .globals
+                    .range(0..shared.globals)
+                    .enumerate()
+                    .all(|(id, a)| {
+                        let b = &target.globals[self.mapped_global(GlobalId(id)).0];
+                        a.namespace == b.namespace && a.name == b.name
+                    }));
         let js_globals = target.js_globals.len() >= shared.js_globals
-            && (0..shared.js_globals).all(|id| target.js_globals[self.js[id].0] == fragment.js_globals[id]);
+            && (0..shared.js_globals)
+                .all(|id| target.js_globals[self.js[id].0] == fragment.js_globals[id]);
         exprs && strings && named && locals && recur_targets && globals && js_globals
     }
     fn expr(&self, id: &mut ExprId) {

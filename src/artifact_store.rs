@@ -160,6 +160,69 @@ pub enum Publish {
     Unwritable,
 }
 
+/// An artifact [`Store::begin_read`] read up to its manifest's end.
+pub struct Reading {
+    file: fs::File,
+    bytes: Vec<u8>,
+    length: u64,
+    artifact: Digest,
+}
+
+impl Reading {
+    /// The bytes read so far: the header and manifest.
+    pub fn prefix(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The artifact's size, as its index records and its file has.
+    pub fn length(&self) -> u64 {
+        self.length
+    }
+
+    /// The whole artifact, checked against its size and content hash.
+    pub fn finish(mut self) -> Result<Vec<u8>, ReadError> {
+        self.bytes
+            .reserve_exact((self.length as usize).saturating_sub(self.bytes.len()));
+        io::Read::read_to_end(&mut self.file, &mut self.bytes).map_err(read_error)?;
+        if self.bytes.len() as u64 != self.length {
+            return Err(ReadError::Size {
+                expected: self.length,
+                found: self.bytes.len() as u64,
+            });
+        }
+        if digest(&self.bytes) != self.artifact {
+            return Err(ReadError::Integrity);
+        }
+        Ok(self.bytes)
+    }
+}
+
+fn read_error(error: io::Error) -> ReadError {
+    match error.kind() {
+        io::ErrorKind::NotFound => ReadError::Missing,
+        _ => ReadError::Io(error.to_string()),
+    }
+}
+
+/// Read `file` on until `bytes` holds `end` bytes of the `length` its
+/// index records; a file that ends sooner is the wrong size.
+fn read_up_to(
+    file: &mut fs::File,
+    bytes: &mut Vec<u8>,
+    end: u64,
+    length: u64,
+) -> Result<(), ReadError> {
+    let wanted = end.saturating_sub(bytes.len() as u64);
+    io::Read::read_to_end(&mut io::Read::take(&mut *file, wanted), bytes).map_err(read_error)?;
+    if (bytes.len() as u64) < end {
+        return Err(ReadError::Size {
+            expected: length,
+            found: bytes.len() as u64,
+        });
+    }
+    Ok(())
+}
+
 /// Why [`Store::read`] returned no bytes. Each is a miss.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadError {
@@ -437,33 +500,38 @@ impl Store {
     /// The encoded bytes of `entry`'s artifact, checked against its size and
     /// content hash. The caller owns them and releases them by dropping them.
     pub fn read(&self, entry: &Entry, limits: &DecodeLimits) -> Result<Vec<u8>, ReadError> {
+        self.begin_read(entry, limits)?.finish()
+    }
+
+    /// `entry`'s artifact with only its manifest's prefix read
+    /// ([`artifact_codec::manifest_end`]), checked against its size: what a
+    /// lookup compares a candidate's key with before reading the rest and
+    /// checking its content hash ([`Reading::finish`]).
+    pub fn begin_read(&self, entry: &Entry, limits: &DecodeLimits) -> Result<Reading, ReadError> {
         if entry.bytes > limits.max_bytes {
             return Err(ReadError::TooLarge(entry.bytes));
         }
-        let io = |error: io::Error| match error.kind() {
-            io::ErrorKind::NotFound => ReadError::Missing,
-            _ => ReadError::Io(error.to_string()),
-        };
-        let mut file = fs::File::open(self.object_path(&entry.artifact)).map_err(io)?;
-        let found = file.metadata().map_err(io)?.len();
+        let mut file = fs::File::open(self.object_path(&entry.artifact)).map_err(read_error)?;
+        let found = file.metadata().map_err(read_error)?.len();
         if found != entry.bytes {
             return Err(ReadError::Size {
                 expected: entry.bytes,
                 found,
             });
         }
-        let mut bytes = Vec::with_capacity(found as usize);
-        io::Read::read_to_end(&mut file, &mut bytes).map_err(io)?;
-        if bytes.len() as u64 != found {
-            return Err(ReadError::Size {
-                expected: entry.bytes,
-                found: bytes.len() as u64,
-            });
-        }
-        if digest(&bytes) != entry.artifact {
-            return Err(ReadError::Integrity);
-        }
-        Ok(bytes)
+        let mut bytes = Vec::new();
+        let header = (artifact_codec::HEADER_LENGTH as u64).min(found);
+        read_up_to(&mut file, &mut bytes, header, found)?;
+        // A header that claims more than the file holds is the manifest
+        // reader's to report, from the bytes there are.
+        let end = artifact_codec::manifest_end(&bytes).map_or(header, |end| end.min(found));
+        read_up_to(&mut file, &mut bytes, end, found)?;
+        Ok(Reading {
+            file,
+            bytes,
+            length: found,
+            artifact: entry.artifact,
+        })
     }
 
     /// The candidates of `namespaces` as their indexes are now, which is all

@@ -337,7 +337,8 @@ impl<V: Clone> QualifiedNames<V> {
 impl<V: Clone, Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for QualifiedNames<V> {
     type Output = V;
     fn index(&self, key: &Q) -> &V {
-        self.get(key.as_ref()).expect("no entry found for qualified name")
+        self.get(key.as_ref())
+            .expect("no entry found for qualified name")
     }
 }
 
@@ -348,9 +349,11 @@ mod tests {
     #[test]
     fn qualified_names_borrow_parts_without_changing_spelling_or_identity() {
         let mut names = QualifiedNames::default();
-        for (i, key) in ["plain", "/plain", "a/b", "a/b/c", "a//", "a/", "/", "", "λ/名"]
-            .into_iter()
-            .enumerate()
+        for (i, key) in [
+            "plain", "/plain", "a/b", "a/b/c", "a//", "a/", "/", "", "λ/名",
+        ]
+        .into_iter()
+        .enumerate()
         {
             names.insert(key.into(), i);
             assert_eq!(names.get(key), Some(&i));
@@ -369,7 +372,12 @@ mod tests {
         assert_eq!(names[&"/plain".to_owned()], 1);
         let mut keys = names.keys().map(String::as_str).collect::<Vec<_>>();
         keys.sort();
-        assert_eq!(keys, ["", "/", "/plain", "a/", "a//", "a/b", "a/b/c", "plain", "λ/名"]);
+        assert_eq!(
+            keys,
+            [
+                "", "/", "/plain", "a/", "a//", "a/b", "a/b/c", "plain", "λ/名"
+            ]
+        );
     }
 
     #[test]
@@ -381,13 +389,19 @@ mod tests {
             let namespace = format!("ns{}", i % 9);
             let member = format!("v{}", i % 31);
             let key = format!("{namespace}/{member}");
-            assert_eq!(names.insert(key.clone(), i), expected.insert(key.clone(), i));
+            assert_eq!(
+                names.insert(key.clone(), i),
+                expected.insert(key.clone(), i)
+            );
             assert_eq!(names.get_parts(&namespace, &member), expected.get(&key));
             if i % 17 == 0 {
                 snapshots.push((names.clone(), expected.clone()));
             }
             if i % 13 == 0 {
-                assert_eq!(names.0.remove(&QualifiedName(key.clone())), expected.remove(&key));
+                assert_eq!(
+                    names.0.remove(&QualifiedName(key.clone())),
+                    expected.remove(&key)
+                );
                 assert_eq!(names.get_parts(&namespace, &member), expected.get(&key));
             }
         }

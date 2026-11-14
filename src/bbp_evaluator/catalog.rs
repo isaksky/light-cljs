@@ -28,7 +28,9 @@ pub(crate) struct CatalogSeed {
     snapshot: Option<Rooted>,
 }
 impl CatalogSeed {
-    pub(crate) fn len(&self) -> usize { self.cursor }
+    pub(crate) fn len(&self) -> usize {
+        self.cursor
+    }
 }
 
 #[derive(Default)]
@@ -66,7 +68,14 @@ fn index<'s>(
 impl BbpEvaluator {
     #[cfg(test)]
     pub(super) fn catalog_versions(&self) -> usize {
-        self.cx().unwrap().catalog_branch.borrow().lock().unwrap().versions.len()
+        self.cx()
+            .unwrap()
+            .catalog_branch
+            .borrow()
+            .lock()
+            .unwrap()
+            .versions
+            .len()
     }
     pub(crate) fn catalog_seed(&self) -> Result<CatalogSeed, EvalError> {
         let cx = self.cx()?;

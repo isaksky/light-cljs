@@ -873,6 +873,68 @@ fn a_snapshot_returns_only_the_candidates_whose_names_it_reserved() {
     assert_eq!(all.candidates("snap.main").unwrap().len(), 2);
 }
 
+/// A lookup reads a candidate's manifest to compare its key, and the rest
+/// and its content hash only for the candidate that matches.
+#[test]
+fn a_read_begins_with_the_manifest_and_checks_the_content_hash_last() {
+    let dir = TempDir::new("store-prefix");
+    let cache = dir.join("cache");
+    let root = source_root(&dir, "pre", 1, false);
+    run(
+        "publish",
+        &[
+            ("STORE", path(&cache)),
+            ("ROOTS", path(&root)),
+            ("ENTRY", "pre.main".into()),
+        ],
+    );
+    let store = Store::open(&cache);
+    let entry = store.candidates("pre.n0").remove(0);
+    let file = store.root().join("objects").join(hex(&entry.artifact));
+    let limits = DecodeLimits::default();
+    let bytes = fs::read(&file).unwrap();
+    let end = artifact_codec::manifest_end(&bytes).unwrap() as usize;
+    assert!(end < bytes.len(), "the sections follow the manifest");
+    let reading = store.begin_read(&entry, &limits).unwrap();
+    assert_eq!(reading.prefix(), &bytes[..end]);
+    assert_eq!(reading.length(), entry.bytes);
+    assert_eq!(
+        artifact_codec::read_manifest_prefix(reading.prefix(), reading.length(), &limits),
+        artifact_codec::read_manifest(&bytes, &limits)
+    );
+    assert_eq!(reading.finish(), Ok(bytes.clone()));
+    // A damaged section leaves the manifest readable; finishing the read
+    // finds it.
+    let mut damaged = bytes.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    fs::write(&file, &damaged).unwrap();
+    let reading = store.begin_read(&entry, &limits).unwrap();
+    assert!(
+        artifact_codec::read_manifest_prefix(reading.prefix(), reading.length(), &limits).is_ok()
+    );
+    assert_eq!(reading.finish(), Err(ReadError::Integrity));
+    // A header that claims more manifest than the file holds reads what
+    // there is, and the manifest reader names it.
+    let mut claims = bytes.clone();
+    claims[16..20].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+    fs::write(&file, &claims).unwrap();
+    let reading = store.begin_read(&entry, &limits).unwrap();
+    assert_eq!(reading.prefix(), &claims[..]);
+    assert_eq!(
+        artifact_codec::read_manifest_prefix(reading.prefix(), reading.length(), &limits),
+        Err(artifact_codec::DecodeError::Truncated("manifest"))
+    );
+    // A file shorter than a header is read whole and too short.
+    fs::write(&file, &bytes[..10]).unwrap();
+    assert_eq!(
+        store.begin_read(&entry, &limits).err(),
+        Some(ReadError::Size {
+            expected: entry.bytes,
+            found: 10
+        })
+    );
+}
+
 #[test]
 fn reads_reject_damaged_truncated_over_budget_and_missing_artifacts() {
     let dir = TempDir::new("store-damaged");

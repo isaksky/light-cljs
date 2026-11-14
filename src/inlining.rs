@@ -679,7 +679,9 @@ fn measure(program: &Program, facts: &ProgramFacts, body: ExprId, limit: usize) 
             | ExprKind::InstanceOf { .. }
             | ExprKind::WithMeta { .. } => {
                 result.pure = false;
-                visit_children(&program.exprs[id.0].kind, |child| pending.push((child, false)));
+                visit_children(&program.exprs[id.0].kind, |child| {
+                    pending.push((child, false))
+                });
             }
             _ => return None,
         }

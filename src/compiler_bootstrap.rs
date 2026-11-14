@@ -1454,7 +1454,9 @@ impl CompiledMacro {
         }
         let parts;
         let (tables, unit) = match &self.function {
-            MacroFunction::Ready(_, Some(code)) | MacroFunction::Published(code) => (&code.tables, &code.unit),
+            MacroFunction::Ready(_, Some(code)) | MacroFunction::Published(code) => {
+                (&code.tables, &code.unit)
+            }
             MacroFunction::Installed(installed) => {
                 parts = installed.lock().expect("installed macro").parts();
                 (&parts.0, &parts.1)
@@ -1684,7 +1686,11 @@ impl MacroHost {
             }
             // A fully qualified macro of a namespace the program loaded: a macro
             // expansion names its own namespace's dependencies, as upstream.
-            let found = self.tables.javascript_macros.get_parts(qualifier, member).is_some();
+            let found = self
+                .tables
+                .javascript_macros
+                .get_parts(qualifier, member)
+                .is_some();
             if found {
                 self.observe(|log| {
                     log.named(
@@ -1747,7 +1753,10 @@ impl MacroHost {
         // A macro installed from an artifact may be the compilation's first:
         // its session starts as declaring one would have started it.
         if self.engine.bootstrap.is_none()
-            && matches!(declaration.function, MacroFunction::Installed(_) | MacroFunction::Published(_))
+            && matches!(
+                declaration.function,
+                MacroFunction::Installed(_) | MacroFunction::Published(_)
+            )
         {
             self.engine.bootstrap = self
                 .session_handle()
