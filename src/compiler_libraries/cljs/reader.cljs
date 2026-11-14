@@ -4,6 +4,19 @@
 (def ^:dynamic *default-data-reader-fn* (atom nil))
 (defn parse-and-validate-timestamp [s] (compiler-reader-parse-timestamp-fields s))
 (defn parse-timestamp [s] (compiler-reader-parse-timestamp s))
+;; Upstream's private tag readers, which cljs.tagged-literals calls as Vars.
+(defn ^:private read-date [s]
+  (if (string? s)
+    (parse-timestamp s)
+    (throw (js/Error. "Instance literal expects a string for its timestamp."))))
+(defn ^:private read-queue [elems]
+  (if (vector? elems)
+    (into cljs.core/PersistentQueue.EMPTY elems)
+    (throw (js/Error. "Queue literal expects a vector for its elements."))))
+(defn ^:private read-uuid [s]
+  (if (string? s)
+    (uuid s)
+    (throw (js/Error. "UUID literal expects a string as its representation."))))
 (defn ^:private string-options [opts]
   (assoc (merge {:default @*default-data-reader-fn*} opts)
          :readers (merge @*tag-table* (:readers opts))))

@@ -15,6 +15,11 @@
              (edn/read-string "6") (edn/read-string {:eof :done} "")] [5 :done 6 :done])
          (= (with-in-str "7 8" [(read) (read {}) (read {:eof :done})]) [7 8 :done])
          (= (#(vector % %&) 1 2 3) [1 '(2 3)])
-         (= ((fn [x & xs] [x xs]) 1 2 3) [1 '(2 3)]))))
+         (= ((fn [x & xs] [x xs]) 1 2 3) [1 '(2 3)])
+         ;; upstream's private helpers, which cljs.tagged-literals reaches as Vars
+         (= (.getTime (#'r/read-date "2000-01-01T00:00:00Z")) 946684800000)
+         (= (#'r/read-queue [1 2]) #queue [1 2])
+         (= (#'r/read-uuid "550e8400-e29b-41d4-a716-446655440000")
+            #uuid "550e8400-e29b-41d4-a716-446655440000"))))
 (defmacro macro-contract [] (contracts))
 (and (contracts) (macro-contract))
