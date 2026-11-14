@@ -294,6 +294,66 @@
     (is (str/includes? report "| clean build | light-cljs | 1,000 | 300 | oracle 42, waste ok |"))
     (is (str/includes? report "3.00 s (5.0 s CPU, load 1.50)"))))
 
+(deftest runtime-runs-of-the-outputs
+  (testing "options"
+    (is (= [1 10 40] (:runtime (compare/parse-options ["p" "--light" "b" "--runtime" "1,10,40"]))))
+    (is (:runtime-only (compare/parse-options ["p" "--light" "b" "--runtime" "1" "--runtime-only"])))
+    (doseq [args [["p" "--light" "b" "--runtime" "1,0"] ["p" "--light" "b" "--runtime" "x"]
+                  ["p" "--light" "b" "--runtime-only"]]]
+      (is (thrown? Exception (compare/parse-options args)) (pr-str args))))
+  (testing "first output is timed apart from the process's exit"
+    (let [[sample out] (compare/timed-streaming "." ["bb" "-e" "(println \"42\") (flush) (Thread/sleep 400)"])]
+      (is (= "42\n" out))
+      (is (< (:first-output-s sample) (- (:wall-s sample) 0.3)))
+      (is (pos? (:peak-memory-gb sample))))
+    (is (nil? (:first-output-s (first (compare/timed-streaming "." ["bb" "-e" "nil"])))))
+    (is (thrown? Exception (compare/timed-streaming "." ["bb" "-e" "(System/exit 3)"]))))
+  (testing "each run is checked against the oracle and alternated"
+    (let [tools (compare/runtime-tools {:light-dir "l" :shadow-dir "s"} 7 "123 456")
+          {:keys [light shadow]} (into {} (map (juxt :tool identity) tools))
+          sample {:wall-s 9.0 :first-output-s 8.0 :user-s 1.0 :system-s 0.1 :peak-memory-gb 0.1}]
+      (is (= ["node" "run-light.mjs" "42" "7"] (:cmd light)))
+      (is (= ["node" "out/shadow.js" "42" "7"] (:cmd shadow)))
+      (is (nil? ((:check light) "123 456\n")))
+      (is (thrown? Exception ((:check shadow) "123 457\n")))
+      (is (= [:light] (map :tool (compare/runtime-tools {:light-dir "l"} 1 "1"))) "light-only")
+      (let [runs (atom [])
+            result (with-redefs [compare/timed-streaming (fn [dir _] (swap! runs conj dir) [sample "123 456\n"])
+                                 compare/load-average (constantly [0.5 0.5 0.5])]
+                     (compare/rounds (gate-off 2) (constantly nil) tools))]
+        (is (= ["l" "s" "s" "l"] @runs))
+        (is (= {:median 8.0 :min 8.0 :max 8.0} (get-in result [:light :first-output-s]))))
+      (is (thrown? Exception
+                   (with-redefs [compare/timed-streaming (fn [_ _] [sample "0"])
+                                 compare/load-average (constantly [0.5 0.5 0.5])]
+                     (compare/rounds (gate-off 1) (constantly nil) tools))))))
+  (testing "runtime runs never wait for the load gate and keep every round"
+    (let [started (System/currentTimeMillis)
+          result (with-redefs [compare/run! (fn [& _] "5\n")
+                               compare/timed-streaming
+                               (fn [_ _] [{:wall-s 1.0 :first-output-s 0.9 :user-s 1.0 :system-s 0.1 :peak-memory-gb 0.1} "5\n"])
+                               compare/load-average (constantly [9.0 9.0 9.0])]
+                   (compare/runtime-scenario {:runs 3 :max-load 2.0 :load-wait 900 :max-repeats 3}
+                                             {:light-dir "l" :shadow-dir "s"} [1 4]))]
+      (is (< (- (System/currentTimeMillis) started) 4000) "no waiting")
+      (is (= [1 4] (keys result)))
+      (is (every? #(= 3 (get-in result [% :light :runs])) [1 4]))
+      (is (every? empty? (for [n [1 4] tool [:light :shadow]] (get-in result [n tool :discarded]))))
+      (is (not-any? :over-max-load (for [n [1 4] tool [:light :shadow] s (get-in result [n tool :samples])] s)))
+      (is (str/includes? (str/join "\n" (compare/runtime-markdown {:runs 3} result))
+                         "reached 9.00, so these results are unreserved"))))
+  (testing "steady state and report"
+    (let [s (fn [wall] (compare/summary [{:wall-s wall :first-output-s (* 0.9 wall) :user-s wall :system-s 0.1
+                                          :peak-memory-gb 0.1 :load [1.0]}] []))
+          runtime (sorted-map 1 {:light (s 1.0) :shadow (s 0.5)} 11 {:light (s 3.0) :shadow (s 1.5)})
+          report (str/join "\n" (compare/runtime-markdown {:runs 1} runtime))]
+      (is (= {:light 0.2 :shadow 0.1} (compare/per-iteration runtime)))
+      (is (nil? (compare/per-iteration (sorted-map 1 {:light (s 1.0)}))))
+      (is (not (str/includes? report "unreserved")))
+      (is (str/includes? report "| 11 | light-cljs | 2.700 s (2.700-2.700) | 3.000 s (3.000-3.000) |"))
+      (is (str/includes? report "| 11 | 2.00 | 2.00 | 1.94 | 1.00 |"))
+      (is (str/includes? report "light-cljs 200.0 ms per iteration, shadow-cljs 100.0 ms per iteration (light/shadow 2.00)")))))
+
 (deftest time-and-load-parsing
   (is (= [1.64 3.01 2.95] (compare/parse-load "{ 1.64 3.01 2.95 }\n")))
   (is (= [0.12 0.2 0.3] (compare/parse-load "0.12 0.20 0.30 1/234 5678\n")))

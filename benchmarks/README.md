@@ -86,6 +86,12 @@ bb benchmarks/generated-project/compare.bb $R/projects/workload-200k-seed42 --li
 alone; `bb compare.bb` with no arguments lists every option. Results:
 [generated-shadow-vs-light.md](generated-shadow-vs-light.md).
 
+How fast the output runs: `--runtime 1,10,40` also runs a generated project's
+two outputs in Node at each iteration count (input 42), alternated, every run's
+checksum checked against the oracle, and `--runtime-only` skips the builds.
+`bb benchmarks/re-frame.bb runtime todomvc` times re-frame TodoMVC's two builds
+in headless Chromium. Results: [runtime-vs-shadow.md](runtime-vs-shadow.md).
+
 [Compiler collection measurements](compiler.md) separate parse/analyze/emit/total
 compilation, output bytes, fresh CLI/Node costs, and validated resident immutable
 operations. The standard-library `run_compiler.py` driver retains nine-sample

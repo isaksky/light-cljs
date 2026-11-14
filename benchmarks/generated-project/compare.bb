@@ -14,12 +14,17 @@
 ;; a rebuild with nothing changed (one untimed build fills each cache), and with
 ;; --leaf FILE a rebuild after a one-file edit: on the caches the previous
 ;; scenario left, each round appends a different defn to FILE (restored
-;; afterwards). Writes OUT.edn and OUT.md (OUT defaults to
+;; afterwards). With --runtime COUNTS a generated project's two outputs also run
+;; in Node (`node run-light.mjs 42 N` and `node out/shadow.js 42 N`) at each
+;; iteration count N, alternated like the builds, every run's checksum checked
+;; against the oracle; --runtime-only skips the builds and runs the outputs the
+;; project already has. Writes OUT.edn and OUT.md (OUT defaults to
 ;; PROJECT-DIR/compare-result).
 (ns generated-project.compare
   (:require [babashka.fs :as fs]
             [babashka.process :as process]
             [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.pprint :as pprint]
             [clojure.string :as str]))
 
@@ -42,6 +47,9 @@
     "                      alias in deps.edn, otherwise \"npx shadow-cljs\")"
     "  --light-commit SHA  the commit the binary was built from (from a light-cljs-SHA name)"
     "  --light-only        build with light-cljs alone"
+    "  --runtime COUNTS    also run a generated project's outputs in Node, input 42, at each"
+    "                      comma-separated iteration count (e.g. 1,4,16)"
+    "  --runtime-only      skip the builds; run the outputs the project already has"
     "  --shadow-heaps LIST sweep shadow's maximum heap: clean builds only, one shadow build per"
     "                      JVM size in LIST (-Xmx syntax, e.g. 1g,1536m,8g) instead of one; a"
     "                      failed build (OutOfMemoryError) is recorded, not fatal; needs clojure"
@@ -73,6 +81,8 @@
    "--leaf" [:leaf identity]
    "--shadow-leaf" [:shadow-leaf identity]
    "--out" [:out absolute]
+   "--runtime" [:runtime (fn [text]
+                           (mapv (number-option parse-long pos? "a positive iteration count") (str/split text #",")))]
    "--shadow-heaps" [:shadow-heaps (number-option #(let [v (str/split % #"," -1)] (when (every? (partial re-matches #"[0-9]+[kKmMgG]") v) v))
                                                   seq "comma-separated JVM sizes such as 1g,1536m")]
    "--light-memory-limits" [:light-memory-limits (number-option #(let [v (map parse-long (str/split % #"," -1))] (when (every? some? v) (vec v)))
@@ -81,8 +91,13 @@
 (defn parse-options [args]
   (loop [[arg & more] args options defaults]
     (cond
-      (nil? arg) (if (and (:dir options) (:light options)) options (throw (ex-info usage {})))
+      (nil? arg) (cond
+                   (not (and (:dir options) (:light options))) (throw (ex-info usage {}))
+                   (and (:runtime-only options) (not (:runtime options)))
+                   (throw (ex-info (str "--runtime-only needs --runtime\n" usage) {}))
+                   :else options)
       (= "--light-only" arg) (recur more (assoc options :light-only true))
+      (= "--runtime-only" arg) (recur more (assoc options :runtime-only true))
       (value-options arg) (let [[k parse] (value-options arg)]
                             (when (nil? (first more)) (throw (ex-info (str arg " needs a value\n" usage) {})))
                             (recur (rest more) (assoc options k (parse (first more)))))
@@ -151,6 +166,39 @@
 
 (defn timed [dir cmd] (first (timed-with-output dir cmd)))
 
+(defn timed-streaming
+  "Runs cmd under /usr/bin/time as timed-with-output does, reading its stdout
+  as it arrives: [sample stdout], the sample's :wall-s taken around the process
+  with System/nanoTime (the time utility rounds it to 10 ms, too coarse for a
+  run of a fraction of a second) and :first-output-s the time from the start
+  to the first byte of stdout (nil when it printed nothing)."
+  [dir cmd]
+  (let [start (System/nanoTime)
+        proc (apply process/process {:dir (str dir) :out :stream :err :string}
+                    "/usr/bin/time" (if mac? "-l" "-v") cmd)
+        in (:out proc)
+        first-byte (.read ^java.io.InputStream in)
+        first-at (System/nanoTime)
+        buffer (java.io.ByteArrayOutputStream.)]
+    (when (>= first-byte 0) (.write buffer first-byte) (io/copy in buffer))
+    (let [{:keys [exit err]} @proc
+          end (System/nanoTime)]
+      (when-not (zero? exit)
+        (throw (ex-info "Run failed" {:command cmd :err (subs err (max 0 (- (count err) 3000)))})))
+      [(assoc (parse-time mac? err)
+              :wall-s (/ (- end start) 1e9)
+              :first-output-s (when (>= first-byte 0) (/ (- first-at start) 1e9)))
+       (.toString buffer "UTF-8")])))
+
+(defn timed-checked
+  "timed-streaming for a program whose stdout (check out) inspects, throwing
+  when it is wrong."
+  [dir cmd check]
+  (let [[sample out] (timed-streaming dir cmd)]
+    (check out)
+    sample))
+
+
 (defn timed-or-failed
   "timed, but a build that exits non-zero gives its sample marked :failed, with
   :oom when its output names an OutOfMemoryError, instead of throwing."
@@ -196,7 +244,9 @@
     (into {:runs (count samples) :failures (count (filter :failed samples))
            :load-1m (spread (map (comp first :load) samples))
            :samples samples :discarded (vec discarded)}
-          (for [m (concat measures (filter (fn [m] (some m samples)) gc-measures)) :when (seq ok)]
+          (for [m (concat measures (filter (fn [m] (some m samples)) gc-measures)
+                          (when (and (seq ok) (every? :first-output-s ok)) [:first-output-s]))
+                :when (seq ok)]
             [m (spread (map m ok))]))))
 
 ;; Rounds
@@ -208,7 +258,8 @@
   neither always goes first. (prepare! n) runs before each attempt at a round
   with a number never used before (the one-file edit writes its edit there); a
   tool's :before runs before its build (the clean build cleans there); a tool
-  with :may-fail records a failed build instead of throwing, and its
+  with :may-fail records a failed build instead of throwing, one with :check
+  runs as timed-checked, and its
   (:after sample start-millis) returns entries merged into the sample. Every
   build waits for the load gate. A round in which a build started above
   :max-load is discarded and repeated, at most :max-repeats times; its last
@@ -220,11 +271,13 @@
             :let [order (if (even? round) tools (vec (rseq tools)))]]
       (loop [repeat 0]
         (prepare! (swap! attempts inc))
-        (let [samples (vec (for [[position {:keys [tool dir cmd before may-fail after]}] (map-indexed vector order)]
+        (let [samples (vec (for [[position {:keys [tool dir cmd before may-fail after check]}] (map-indexed vector order)]
                              (do (when before (before))
                                  (let [load (await-load options)
                                        started (System/currentTimeMillis)
-                                       sample (if may-fail (timed-or-failed dir cmd) (timed dir cmd))
+                                       sample (cond may-fail (timed-or-failed dir cmd)
+                                                      check (timed-checked dir cmd check)
+                                                      :else (timed dir cmd))
                                        sample (cond-> (assoc sample :load load :round round :position position)
                                                 after (merge (after sample started)))]
                                    (log (name tool) (str/join " " (take-last 3 cmd)) "round" round (pr-str sample))
@@ -378,6 +431,47 @@
                                  (fn [_] (verify-generated shadow-dir expected "out/shadow.js" "out/shadow.js"))
                                  #(written-js (fs/path shadow-dir (or (:output-to build) (:output-dir build))) %))})}))))
 
+;; Running the outputs
+
+(def runtime-input 42)
+
+(defn runtime-tools
+  "The Node runs of each compiler's output of a generated project at
+  `iterations`, each checked against `expected`, the oracle's checksum."
+  [{:keys [light-dir shadow-dir]} iterations expected]
+  (let [check (fn [tool]
+                (fn [out]
+                  (when-not (= expected (str/trim out))
+                    (throw (ex-info "Checksum differs from the oracle"
+                                    {:tool tool :iterations iterations :expected expected :got (str/trim out)})))))
+        args [(str runtime-input) (str iterations)]]
+    (cond-> [{:tool :light :dir light-dir :cmd (into ["node" "run-light.mjs"] args) :check (check :light)}]
+      shadow-dir (conj {:tool :shadow :dir shadow-dir :cmd (into ["node" "out/shadow.js"] args) :check (check :shadow)}))))
+
+(defn runtime-scenario
+  "For each iteration count, (:runs options) rounds of both outputs run in
+  Node: {count {tool summary}}, with the oracle's checksum under :expected.
+  These runs never wait for the load gate and nothing is discarded: each run's
+  load average is recorded, and the report labels a loaded run unreserved."
+  [options project counts]
+  (into (sorted-map)
+        (for [n counts
+              :let [expected (str/trim (run! (:light-dir project) "bb" "oracle.bb" (str runtime-input) (str n)))]]
+          [n (assoc (rounds (assoc options :max-load Double/MAX_VALUE :load-wait 0 :max-repeats 0)
+                            (constantly nil) (runtime-tools project n expected))
+                     :expected expected)])))
+
+(defn per-iteration
+  "Steady-state seconds per iteration of each tool: the difference of the
+  median wall times at the largest and smallest iteration counts over the
+  difference of the counts; nil with fewer than two counts."
+  [runtime]
+  (let [counts (keys runtime) lo (first counts) hi (last counts)]
+    (when (< lo hi)
+      (into {} (for [tool [:light :shadow] :when (get-in runtime [hi tool])]
+                 [tool (/ (- (get-in runtime [hi tool :wall-s :median]) (get-in runtime [lo tool :wall-s :median]))
+                          (- hi lo))])))))
+
 ;; Memory-limit sweep
 
 (defn jvm-size-bytes
@@ -522,7 +616,9 @@
   (let [f #(format (str "%." digits "f") (double %))]
     (str (f median) " " unit " (" (f min) "-" (f max) ")")))
 
-(defn- ratio [a b] (let [r (/ (double a) b)] (format (if (< r 0.1) "%.3f" "%.2f") r)))
+(defn- ratio [a b] (if (zero? b) "-" (let [r (/ (double a) b)] (format (if (< r 0.1) "%.3f" "%.2f") r))))
+
+(defn- load-text [s] (format "%.2f-%.2f" (double (:min (:load-1m s))) (double (:max (:load-1m s)))))
 
 (defn- environment-line [{:keys [light-cljs machine] :as environment}]
   (str "light-cljs " (if (:commit light-cljs) (str "`" (:commit light-cljs) "`") "(commit not named)")
@@ -595,6 +691,48 @@
         (output-row (name-of tool) o))
       [""]))))
 
+(defn runtime-markdown
+  "The Node runs of the outputs: a table per iteration count and tool, the
+  light/shadow ratios and the steady-state time per iteration."
+  [options runtime]
+  (let [tools (filter #(get-in runtime [(first (keys runtime)) %]) [:light :shadow])
+        loads (for [[_ by-tool] runtime tool tools sample (get-in by-tool [tool :samples])] (first (:load sample)))
+        steady (per-iteration runtime)
+        first-output (fn [s] (if-let [f (:first-output-s s)] (spread-text f 3 "s") "-"))]
+    (concat
+     [""
+      (str "Each output run in Node, `node run-light.mjs " runtime-input " N` and `node out/shadow.js " runtime-input
+           " N` for N iterations: " (:runs options) " rounds per count"
+           (when (= 2 (count tools)) ", the compilers alternated")
+           ", every run's checksum equal to the oracle's. First output is the time from starting the process to"
+           " the first byte it prints, the checksum; wall time runs to its exit. No run waited for the machine:"
+           " the 1-minute load average before each is recorded"
+           (when (some #(> % 2.0) loads) (format " and reached %.2f, so these results are unreserved" (double (apply max loads))))
+           ". Medians, with ranges in brackets.")
+      ""
+      "| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |"
+      "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+     (for [[n by-tool] runtime tool tools :let [s (by-tool tool)]]
+       (str "| " n " | " (tool-labels tool) " | " (first-output s) " | " (spread-text (:wall-s s) 3 "s") " | "
+            (spread-text (:user-s s) 2 "s") " | " (spread-text (:system-s s) 2 "s") " | "
+            (spread-text (:peak-memory-gb s) 3 "GB") " | " (load-text s) " |"))
+     (when (= 2 (count tools))
+       (concat
+        ["" "| Iterations | light/shadow first output | light/shadow wall time | light/shadow CPU (user + system) | light/shadow peak memory |"
+         "| --- | --- | --- | --- | --- |"]
+        (for [[n {l :light s :shadow}] runtime]
+          (str "| " n " | " (if (and (:first-output-s l) (:first-output-s s))
+                                (ratio (:median (:first-output-s l)) (:median (:first-output-s s))) "-") " | "
+               (ratio (:median (:wall-s l)) (:median (:wall-s s))) " | "
+               (ratio (:median (:cpu-s l)) (:median (:cpu-s s))) " | "
+               (ratio (:median (:peak-memory-gb l)) (:median (:peak-memory-gb s))) " |"))))
+     (when steady
+       ["" (str "Steady state, from the median wall times at " (first (keys runtime)) " and " (last (keys runtime))
+                " iterations: "
+                (str/join ", " (for [tool tools] (format "%s %.1f ms per iteration" (tool-labels tool) (* 1000 (steady tool)))))
+                (when (= 2 (count tools)) (str " (light/shadow " (ratio (:light steady) (:shadow steady)) ")"))
+                ".")]))))
+
 (defn markdown [{:keys [environment options project scenarios outputs warm-jvm]}]
   (let [tools (filter #(get-in scenarios [:uncached %]) [:light :shadow])
         repeated (reduce + (for [[_ by-tool] scenarios [_ s] by-tool] (count (:discarded s))))
@@ -658,8 +796,8 @@
 (defn main [args]
   (let [options (parse-options args)
         sweep? (or (:shadow-heaps options) (:light-memory-limits options))
-        _ (when (and sweep? (or (:leaf options) (pos? (:warm-jvm options))))
-            (throw (ex-info "The memory-limit sweep times clean builds only; drop --leaf and --warm-jvm" {})))
+        _ (when (and sweep? (or (:leaf options) (pos? (:warm-jvm options)) (:runtime options)))
+            (throw (ex-info "The memory-limit sweep times clean builds only; drop --leaf, --warm-jvm and --runtime" {})))
         {:keys [tools generated?] :as project} (project options)
         environment (environment options (when-let [cmd (:shadow-cmd project)] ; untimed: fetches dependencies
                                            (shadow-version (:shadow-dir project) cmd)))
@@ -670,7 +808,11 @@
         project-entry (fn [tools] (cond-> (dissoc project :tools)
                                     true (assoc :commands (into {} (for [t tools] [(:tool t) {:clean (:clean-cmd t) :cached (:cached-cmd t)}])))
                                     (not generated?) (dissoc :expected)))
-        result (if sweep?
+        _ (when (and (:runtime options) (not generated?))
+            (throw (ex-info "--runtime needs a generated project (oracle.bb and model.edn)" {:dir (:dir options)})))
+        runtime-only? (:runtime-only options)
+        result (cond
+                 sweep?
                  (let [{:keys [tools uncached outputs]} (sweep options project)]
                    {:environment environment
                     :options (dissoc options :light)
@@ -678,6 +820,10 @@
                                     :sweep-tools (mapv #(select-keys % [:tool :label :limit :heap-bytes]) tools))
                     :scenarios {:uncached uncached}
                     :outputs {:uncached outputs}})
+                 runtime-only? {:environment environment
+                                :options (dissoc options :light)
+                                :project (project-entry tools)}
+                 :else
                  (let [started (System/currentTimeMillis)
                        uncached (rounds options (constantly nil) (build-tools :clean-cmd true))
                        uncached-outputs ((output-check started))
@@ -697,8 +843,14 @@
                     :scenarios (cond-> {:uncached uncached :cached cached} leaf (assoc :leaf (:summaries leaf)))
                     :outputs (cond-> {:uncached uncached-outputs} leaf (assoc :leaf (:outputs leaf)))
                     :warm-jvm warm}))
+        result (cond-> result
+                 (:runtime options) (assoc :runtime (runtime-scenario options project (:runtime options))))
         prefix (or (:out options) (str (fs/path (:dir options) "compare-result")))
-        report (if sweep? (sweep-markdown result) (markdown result))]
+        runtime-text (when-let [runtime (:runtime result)]
+                       (str/join "\n" (concat (runtime-markdown options runtime) [""])))
+        report (cond sweep? (sweep-markdown result)
+                     runtime-only? (str (environment-line environment) "\n" runtime-text)
+                     :else (str (markdown result) runtime-text))]
     (spit (str prefix ".edn") (with-out-str (pprint/pprint result)))
     (spit (str prefix ".md") report)
     (println report)

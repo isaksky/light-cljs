@@ -10,6 +10,7 @@
 ;;   bb benchmarks/re-frame.bb breakdown APP
 ;;   bb benchmarks/re-frame.bb bundle APP [--compiler shadow|light]
 ;;   bb benchmarks/re-frame.bb browser APP [--compiler C] [--runs N] [--no-build]
+;;   bb benchmarks/re-frame.bb runtime todomvc [--runs N] [--todos N] [--no-build]
 ;;
 ;; Paths (all under research/, which is gitignored; a worktree uses copies, see
 ;; the shadow-comparison-credibility project notes):
@@ -47,6 +48,12 @@
 ;; simple's clock and colour input, and flow's buttons, whose page text after
 ;; each step must equal shadow-cljs's. Prints a pass/fail table and every
 ;; failure, console error and uncaught exception.
+;;
+;; runtime: bundle, then time each build in headless Chromium with
+;; benchmarks/re-frame-runtime.mjs, N runs (default 10) per compiler, alternated:
+;; page load to interactive, adding --todos todos (default 1,000), toggle all,
+;; editing one, clear completed, and the JavaScript heap; medians and ranges,
+;; every run kept in the example's out/runtime.edn.
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
          '[cheshire.core :as json]
@@ -797,6 +804,82 @@
     (print-browser app (into (array-map) (for [c cs] [c (browser-checks app c runs)])))))
 
 ;; ---------------------------------------------------------------------------
+;; runtime: how fast each compiler's TodoMVC build runs in headless Chromium
+
+(def runtime-steps
+  [[:load "page load to interactive"] [:add "add N todos"] [:toggleAll "toggle all"]
+   [:edit "edit one in a list of N"] [:clearCompleted "clear completed"]])
+
+(defn parse-time-l
+  "{:wall :user :sys :peak-bytes} from the stderr of /usr/bin/time -l."
+  [err]
+  (let [[_ wall user sys] (re-find #"([\d.]+) real\s+([\d.]+) user\s+([\d.]+) sys" err)
+        [_ peak] (re-find #"(\d+)\s+maximum resident set size" err)]
+    {:wall (parse-double wall) :user (parse-double user) :sys (parse-double sys) :peak-bytes (parse-long peak)}))
+
+(defn runtime-run
+  "One benchmarks/re-frame-runtime.mjs run against COMPILER's served build,
+  under /usr/bin/time -l: its JSON, with :process the whole run's wall time,
+  the user and system CPU of Node and the browser processes it reaped, and the
+  largest single process's peak memory."
+  [app compiler todos]
+  (let [r (process/sh {:err :string :out :string}
+                      "/usr/bin/time" "-l" "node" (str (fs/path repo "benchmarks/re-frame-runtime.mjs"))
+                      "--dir" (str (browser-dir app compiler))
+                      "--npm-tools" (str (fs/path research "npm-tools")) "--todos" (str todos))]
+    (when-not (zero? (:exit r)) (throw (ex-info (str "runtime run failed\n" (:err r)) {})))
+    (assoc (json/parse-string (:out r) true) :process (parse-time-l (:err r)))))
+
+(defn print-runtime [app todos runs results]
+  (let [label #(str/replace % "N" (format "%,d" todos))
+        cell (fn [c f] (summary (results c) f))
+        ratio (fn [f] (format "%.2f" (/ (double (median (map f (results :light))))
+                                        (median (map f (results :shadow))))))
+        step-ms (fn [step k] #(get-in % [:steps step k]))
+        mb (fn [k] #(/ (k %) 1e6))]
+    (println (str "\n### " app " in headless Chromium, " runs " runs each\n"))
+    (println "| Step | shadow-cljs ms | light-cljs ms | light/shadow | shadow-cljs script ms | light-cljs script ms |")
+    (println "|---|---:|---:|---:|---:|---:|")
+    (doseq [[step text] runtime-steps]
+      (println (format "| %s | %s | %s | %s | %s | %s |" (label text)
+                       (cell :shadow (step-ms step :ms)) (cell :light (step-ms step :ms)) (ratio (step-ms step :ms))
+                       (cell :shadow (step-ms step :scriptMs)) (cell :light (step-ms step :scriptMs)))))
+    (doseq [[k text] [[:heapAfterLoad "JavaScript heap after load, MB"]
+                      [:heapAfterAdd (label "JavaScript heap with N todos, MB")]]]
+      (println (format "| %s | %s | %s | %s | | |" text (cell :shadow (mb k)) (cell :light (mb k)) (ratio (mb k)))))
+    (doseq [[k text scale] [[:wall "whole run (fresh browser, load, every step, close), wall s" 1]
+                            [:user "whole run, user CPU s (Node and the browser processes)" 1]
+                            [:sys "whole run, system CPU s" 1]
+                            [:peak-bytes "whole run, peak memory of the largest process, MB" 1e6]]
+            :let [f #(/ (get-in % [:process k]) scale)]]
+      (println (format "| %s | %s | %s | %s | | |" text (cell :shadow f) (cell :light f) (ratio f))))
+    (println (format "| 1-minute load average before the run | %s | %s | | | |" (cell :shadow :load) (cell :light :load)))
+    (doseq [[c rs] results msg (distinct (mapcat :errors rs))]
+      (println (str "\n- " (name c) ": " msg)))))
+
+(defn runtime
+  "Bundle APP (todomvc) with both compilers (unless --no-build), then run
+  re-frame-runtime.mjs RUNS times per compiler, alternated, the first one
+  first on even runs, with the 1-minute load average before each run. Writes
+  every run to the example's out/runtime.edn and prints medians and ranges."
+  [app binary args]
+  (when-not (= "todomvc" app) (throw (ex-info "runtime measures todomvc only" {:app app})))
+  (let [runs (parse-long (option args "--runs" "10"))
+        todos (parse-long (option args "--todos" "1000"))
+        results (atom (array-map :shadow [] :light []))]
+    (when-not (some #{"--no-build"} args)
+      (doseq [c compilers] (bundle-browser app c binary)))
+    (doseq [i (range runs) c (if (even? i) compilers (reverse compilers))]
+      (let [load (load-average)
+            r (assoc (runtime-run app c todos) :load load :run i)]
+        (binding [*out* *err*]
+          (println (format "run %d %-7s load %.2f %s" i (name c) load
+                           (str/join " " (for [[step _] runtime-steps] (format "%s %.0f ms" (name step) (double (get-in r [:steps step :ms]))))))))
+        (swap! results update c conj r)))
+    (spit (fs/file (example app) "out/runtime.edn") (pr-str @results))
+    (print-runtime app todos runs @results)))
+
+;; ---------------------------------------------------------------------------
 
 (let [[command & args] *command-line-args*
       apps (take-while #(not (str/starts-with? % "--")) args)]
@@ -812,5 +895,6 @@
                      c (if-let [c (option args "--compiler" nil)] [(keyword c)] compilers)]
                (println (str (fs/relativize repo (:served (bundle-browser app c (light-binary args)))))))
     "browser" (doseq [app apps] (browser app (light-binary args) args))
-    (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... | time APP... [--runs N] | inventory APP... | breakdown APP... | bundle APP... [--compiler C] | browser APP... [--compiler C] [--runs N] [--no-build]  [--light BIN] [--porter DIR]")
+    "runtime" (doseq [app apps] (runtime app (light-binary args) args))
+    (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... | time APP... [--runs N] | inventory APP... | breakdown APP... | bundle APP... [--compiler C] | browser APP... [--compiler C] [--runs N] [--no-build] | runtime todomvc [--runs N] [--todos N] [--no-build]  [--light BIN] [--porter DIR]")
         (System/exit 1))))
