@@ -2524,3 +2524,70 @@ Findings, recorded as found:
 4. **The margin is small and load-dependent.** The plain ratio is 4.65x
    over the three least loaded rounds and 4.43x over all five; a reserved
    machine would be needed to say which is nearer.
+
+## The append stage's growth on master, unreserved machine (November 14, 2026, light-cljs-996)
+
+**Summary.** The growth section found `trace.append-ms` (appending each
+analyzed unit's fragment to the program, `Stage::Append` in
+`src/analyzer.rs`) growing 9.6x (plain) and 6.8x (re-frame) from 200k to
+800k lines. Re-measured on master `809302a4`, which carries light-cljs-994's
+second attempt (an append looks up only the IDs the fragment added in each
+keyed table, the protocol table included, instead of walking the table),
+**it now grows 4.40x (plain) and 4.38x (re-frame) for 4.0x the lines**,
+within the about 4.5x light-cljs-996 asked for, so no code changed. The
+growth section's binary `fc31d229`, alternated with it, gives 10.6x and
+5.9x on the same day. light-cljs-994's own builds of `f1c9a787` (the same
+append code) gave 4.27x and 4.09x.
+
+Setup: master `809302a4` and `fc31d229`, immutable release binaries in
+`research/shadow-credibility/bin/` (V8 build; SHA-256
+`336d95fc0e272ebf...` and `45b2f5a1b76b4a4a...`), alternated within each
+round, five rounds, in private copies (`*-996`, sources only) of the
+`*-994b` projects: plain and re-frame shape, 200k and 800k, seed 42. Raw
+output in `research/shadow-credibility/growth-996/stats/` (gitignored).
+**The machine was not reserved**: two other workers built and tested
+throughout, and the 1-minute load before a build ranged from 4.3 to 18.5.
+Each binary produced one output digest per project over its five builds
+(`find out/light -type f | sort | xargs shasum -a 256 | shasum -a 256`;
+`809302a4`: `8c207c7f...`, `2dda5547...`, `37d6b626...`, `191ec38a...`).
+They differ from light-cljs-994's digests because the runtime changed in
+between (`13c42886`), not the append.
+
+```sh
+R=research/shadow-credibility
+# five rounds; in each, every project in turn, the two binaries alternating:
+(cd $R/projects/PROJECT && rm -rf out/light && uptime && /usr/bin/time -l \
+  $R/bin/light-cljs-BINARY release bench --no-cache --stats --stats-file OUT.tsv)
+```
+
+Medians (range) of five builds; times in milliseconds unless marked:
+
+| Project | Binary | trace.append-ms | time.analysis-ms | time.wall-ms | User CPU | System CPU | Peak memory | Load before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| plain 200k | `809302a4` | 55.7 (48.9-61.9) | 1,865 (1,682-2,106) | 6,420 (5,626-7,974) | 6.41 s (5.81-6.98) | 0.43 s (0.30-1.21) | 1.03 GB (1.02-1.05) | 4.5-13.5 |
+| plain 200k | `fc31d229` | 94.4 (88.8-111.9) | 2,192 (2,018-2,430) | 6,638 (6,113-7,436) | 6.87 s (6.33-7.38) | 0.37 s (0.35-0.65) | 1.06 GB (1.04-1.08) | 4.5-13.1 |
+| plain 800k | `809302a4` | 245.3 (219.1-289.4) | 8,155 (7,471-9,812) | 28,077 (26,197-33,624) | 28.14 s (26.62-31.91) | 1.81 s (1.53-4.25) | 3.64 GB (3.63-3.65) | 4.3-13.1 |
+| plain 800k | `fc31d229` | 1,001.6 (957.7-1,060.5) | 15,659 (14,859-16,624) | 37,236 (35,337-40,287) | 37.49 s (35.69-39.85) | 2.39 s (2.01-3.00) | 3.81 GB (3.76-3.83) | 4.4-13.8 |
+| re-frame 200k | `809302a4` | 43.5 (42.0-47.7) | 1,647 (1,622-1,848) | 7,760 (6,972-8,488) | 7.36 s (7.06-7.84) | 0.57 s (0.46-0.89) | 1.32 GB (1.30-1.34) | 5.9-12.9 |
+| re-frame 200k | `fc31d229` | 57.8 (51.2-72.1) | 2,664 (2,391-3,779) | 9,595 (8,435-12,875) | 9.40 s (8.60-10.40) | 0.71 s (0.52-3.84) | 1.43 GB (1.41-1.45) | 5.4-12.6 |
+| re-frame 800k | `809302a4` | 190.7 (167.8-205.1) | 7,706 (6,882-8,303) | 33,255 (30,659-36,965) | 31.17 s (28.70-33.43) | 2.83 s (2.24-4.04) | 4.71 GB (3.59-4.72) | 5.2-18.5 |
+| re-frame 800k | `fc31d229` | 342.0 (306.4-462.6) | 23,498 (20,896-33,803) | 51,881 (45,484-66,998) | 50.72 s (46.36-59.00) | 2.69 s (2.37-6.41) | 4.89 GB (4.87-4.95) | 4.5-12.4 |
+
+| Counter, 200k -> 800k (medians) | plain `809302a4` | plain `fc31d229` | re-frame `809302a4` | re-frame `fc31d229` |
+| --- | --- | --- | --- | --- |
+| trace.append-ms | **4.40x** | 10.61x | **4.38x** | 5.92x |
+| time.analysis-ms | 4.37x | 7.14x | 4.68x | 8.82x |
+| time.wall-ms | 4.37x | 5.61x | 4.29x | 5.41x |
+
+Findings, recorded as found:
+
+1. **Appending is now close to linear in both shapes** and a quarter of a
+   second or less at 800k (0.25 s plain, 0.19 s re-frame), from 1.0 s and
+   0.34 s for `fc31d229`. What the stage still does per append is
+   proportional to what the unit added, apart from small per-namespace
+   lists (program namespaces, host globals, lazy-load targets) that these
+   projects keep short.
+2. **The remaining 10% over 4.0x is shared by the whole build** (wall time
+   and analysis grow about as much in the plain shape), so no further term
+   was looked for in the append stage. The re-frame shape's analysis grows
+   4.68x, more than its append or wall time; that is outside this stage.
