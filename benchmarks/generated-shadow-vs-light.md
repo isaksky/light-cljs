@@ -1706,7 +1706,10 @@ light-cljs's rebuild after a one-file edit grows irregularly with size (plain:
 its clean build** (plain 400k 18.94 s against 16.11 s; re-frame 400k 30.00 s
 against 19.49 s, 800k 82.74 s against 51.08 s). shadow's is 0.68x to 0.87x of
 its clean build at every size. A `--stats` rebuild per size on the caches the
-runs left (one edit, outside the timed runs) shows two causes:
+runs left (one edit each, not timed for the tables; the 50k to 400k ones
+ran, one light-cljs build at a time, while the plain 800k project was being
+timed, so that project's clean builds carry one more busy core) shows two
+causes:
 
 - **How much an edit recompiles depends on where the edited namespace falls
   in compile order, not on the program's size.** Every later namespace that
