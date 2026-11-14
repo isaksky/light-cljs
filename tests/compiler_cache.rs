@@ -1262,6 +1262,24 @@ fn a_matching_candidate_that_fails_its_content_hash_is_a_miss() {
     let repaired = project.cached("main", &[]);
     assert_eq!(repaired.stat("cache.hits"), 5, "{}", repaired.stats);
     assert_eq!(repaired.js, oracle.js);
+    // Damage inside the manifest fails its own hash before any key is
+    // compared; the miss still names the content hash, as a whole read did.
+    let objects = project.objects();
+    let mut bytes = fs::read(&objects[1]).unwrap();
+    let namespace = read_manifest(&bytes, &DecodeLimits::default())
+        .unwrap()
+        .namespace;
+    let end = light_cljs::artifact_codec::manifest_end(&bytes).unwrap() as usize;
+    bytes[end - 1] ^= 0xff;
+    fs::write(&objects[1], &bytes).unwrap();
+    let damaged = project.cached("main", &[]);
+    assert_eq!(damaged.js, oracle.js);
+    let row = format!("{namespace} miss unreadable: the artifact fails its content hash");
+    assert!(
+        damaged.rows().iter().any(|line| line.contains(&row)),
+        "{row} in {:?}",
+        damaged.rows()
+    );
 }
 
 #[test]

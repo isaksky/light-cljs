@@ -208,6 +208,24 @@ impl CompileCache {
         }
     }
 
+    /// The rest of a candidate
+    /// [`crate::artifact_store::Store::begin_read`] began, counted in the
+    /// bytes read when it was read to the end.
+    fn finish_read(
+        &mut self,
+        reading: crate::artifact_store::Reading,
+    ) -> Result<Vec<u8>, crate::artifact_store::ReadError> {
+        let rest = reading.length() - reading.prefix().len() as u64;
+        let finished = reading.finish();
+        if matches!(
+            finished,
+            Ok(_) | Err(crate::artifact_store::ReadError::Integrity)
+        ) {
+            self.counts.bytes_read += rest;
+        }
+        finished
+    }
+
     /// The artifact to install for the next namespace, the last source of
     /// `loader`, whose text is `text`, if a candidate matches.
     /// Decoding polls `cancelled`, and a cancelled decode is the error.
@@ -270,8 +288,14 @@ impl CompileCache {
                     );
                     continue;
                 }
+                // A manifest that does not read is rare (a damaged file, an
+                // older schema): read it whole to name damage as the content
+                // hash's failure, as a read of the whole file would.
                 Err(error) => {
-                    self.miss("undecodable", error.to_string());
+                    match self.finish_read(reading) {
+                        Ok(_) => self.miss("undecodable", error.to_string()),
+                        Err(read) => self.miss("unreadable", read.to_string()),
+                    }
                     continue;
                 }
             };
@@ -313,19 +337,14 @@ impl CompileCache {
                 self.pending = None;
                 break;
             }
-            let prefix = reading.prefix().len() as u64;
-            let bytes = match reading.finish() {
+            let bytes = match self.finish_read(reading) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    if error == crate::artifact_store::ReadError::Integrity {
-                        self.counts.bytes_read += candidate.bytes - prefix;
-                    }
                     self.prefix.pop();
                     self.miss("unreadable", error.to_string());
                     continue;
                 }
             };
-            self.counts.bytes_read += bytes.len() as u64 - prefix;
             found = Some((key, candidate.artifact, bytes));
             break;
         }
