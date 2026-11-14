@@ -2030,7 +2030,8 @@ measured.
 **Summary.** The growth section above found `trace.other-ms`, the analysis
 time no trace frame covers, growing 10x (plain) and 20x (re-frame shape)
 from 200k to 800k. Two terms caused most of it and are removed in
-`933114f3` (landed as `8d0f6a5e`, the same change rebased onto `e379d6c5`),
+`933114f3` (committed as "Stop rescanning every namespace after each pass
+and copying protocols per unit", rebased onto `e379d6c5` as `8d0f6a5e`),
 with byte-identical output:
 
 1. **After every namespace's top-level pass, `NamespaceTop::analyze` looked
@@ -2050,6 +2051,14 @@ freeing each namespace's reader view (389 ms at 800k against 18 ms at 200k,
 probe), which the top-level pass builds with every macro of the compilation
 (`MacroHost::register_macro_view`): a top-level pass term, left to
 light-cljs-994. Without it both shapes grow about 4.9x (probe).
+
+**With light-cljs-994's fix on top the target is met, narrowly.** Its
+section below measures 4.34x (plain) and 4.20x (re-frame); re-checked on
+the rebased branch head (last subsection of this section) it is 4.72x and
+4.48x for that binary alone, 4.45x and 4.31x for `53c9139a` alongside it,
+and 4.59x and 4.48x over both binaries' builds pooled, which run the same
+code on this path. The untraced time at 200k is about 0.1 s, so a few
+milliseconds move the ratio by a tenth.
 
 Setup: base master `21e1a111` and the fix `933114f3`, immutable release
 binaries in `research/shadow-credibility/bin/` (V8 build; SHA-256
@@ -2138,6 +2147,55 @@ Findings, recorded as found:
    these rows (plain 4.1x, re-frame 6.0x) mix loads and are not a growth
    measurement. The alternated `--stats` rows above are the comparison.
 
+### Re-checked after light-cljs-994, unreserved machine (November 14, 2026)
+
+Both fixes on the branch head `7ee0d22d` (rebased onto `446f68ed`), built
+as `research/shadow-credibility/bin/light-cljs-7ee0d22d` (V8 build;
+SHA-256 `dffa43a0b5dc11bc...`), alternated with light-cljs-994's
+`53c9139a`. The two differ only in `08f2e365` and `a0383188`, which compute
+declaration views for the cache's keys and records, so with `--no-cache`
+they run the same code here. Same projects and command as light-cljs-994's section; three
+rounds, five for the plain projects. Raw output in
+`research/shadow-credibility/growth-995-verify/stats/` (gitignored). The
+1-minute load before a build ranged from 3.2 to 19.2. Every build
+produced the output digest light-cljs-994 recorded for its project for
+both its binaries (`d127a769...`, `16a147a8...`, `5041b2f8...`,
+`65a0db5b...`), so the output is unchanged from before either fix.
+
+| Project | Binary | trace.other-ms | time.analysis-ms | time.wall-ms | User CPU | System CPU | Peak memory | Load before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| plain 200k | `53c9139a` | 100.8 (97.5-107.8) | 2,202 (2,118-2,293) | 6,710 (6,463-7,040) | 6.90 s (6.65-7.07) | 0.40 s (0.37-0.55) | 1.05 GB (1.04-1.08) | 4.0-19.2 |
+| plain 200k | `7ee0d22d` | 99.0 (92.7-107.7) | 2,164 (2,051-2,312) | 6,568 (6,446-7,019) | 6.74 s (6.45-7.17) | 0.39 s (0.37-0.55) | 1.04 GB (1.02-1.04) | 3.9-18.5 |
+| plain 800k | `53c9139a` | 448.8 (443.1-465.4) | 12,877 (12,459-13,181) | 32,418 (31,395-32,759) | 32.80 s (31.56-33.39) | 1.61 s (1.59-1.67) | 3.63 GB (3.62-3.65) | 3.9-14.5 |
+| plain 800k | `7ee0d22d` | 467.7 (443.0-491.6) | 13,209 (12,973-13,546) | 33,065 (32,533-33,906) | 33.54 s (33.16-34.42) | 1.75 s (1.60-2.08) | 3.66 GB (3.62-3.79) | 3.2-10.4 |
+| re-frame 200k | `53c9139a` | 106.7 (99.1-112.4) | 1,759 (1,691-1,788) | 7,657 (7,157-7,754) | 7.43 s (7.22-7.55) | 0.55 s (0.49-0.66) | 1.35 GB (1.34-1.37) | 4.1-17.4 |
+| re-frame 200k | `7ee0d22d` | 101.7 (100.0-101.8) | 1,713 (1,712-1,732) | 7,263 (7,219-7,382) | 7.30 s (7.28-7.35) | 0.48 s (0.48-0.53) | 1.33 GB (1.33-1.35) | 4.1-16.4 |
+| re-frame 800k | `53c9139a` | 460.4 (456.2-471.7) | 8,679 (8,570-8,800) | 34,755 (34,314-36,013) | 32.90 s (32.44-33.61) | 2.33 s (2.31-2.63) | 4.78 GB (4.75-4.79) | 4.0-7.6 |
+| re-frame 800k | `7ee0d22d` | 456.0 (448.3-473.8) | 8,706 (8,484-8,767) | 35,139 (34,288-35,718) | 33.33 s (32.19-33.36) | 2.41 s (2.30-2.60) | 4.74 GB (4.36-4.81) | 3.9-6.3 |
+
+Times in milliseconds unless marked.
+
+| Counter, 200k -> 800k (medians) | plain `53c9139a` | plain `7ee0d22d` | plain, both pooled | re-frame `53c9139a` | re-frame `7ee0d22d` | re-frame, both pooled |
+| --- | --- | --- | --- | --- | --- | --- |
+| trace.other-ms | 4.45x | 4.72x | **4.59x** | 4.31x | 4.48x | **4.48x** |
+| time.analysis-ms | 5.85x | 6.10x | | 4.93x | 5.08x | |
+| time.wall-ms | 4.83x | 5.03x | | 4.54x | 4.84x | |
+
+Findings, recorded as found:
+
+1. **The untraced loop time grows about 4.5x in both shapes**, from 20.2x
+   (re-frame) and 10.0x (plain) in the growth section: 4.48x and 4.59x
+   pooled, at 0.46 s of a 33 to 35 s build at 800k. Each binary's own
+   median lands between 4.31x and 4.72x; the plain 800k builds of
+   `7ee0d22d` are 2 to 4% slower throughout (analysis, user CPU and
+   untraced time alike) though they run the same code, which is the noise
+   of this unreserved machine.
+2. **What is left grows almost evenly with the program**: freeing the
+   per-namespace analyzer state and each merged unit's fragment, about
+   5x each by the probe earlier in this section. The steep plain-shape
+   remainder is in the top-level pass's own time (5.16x, light-cljs-994),
+   which is inside a trace frame and not this measure.
+
 ## The top-level pass's own time at 200k and 800k, unreserved machine (November 14, 2026, light-cljs-994)
 
 **Summary.** The growth section above found the top-level pass's time
@@ -2167,7 +2225,8 @@ shape**, though the re-frame one is close. The untraced loop time
 4.34x (plain), against 5.50x and 5.59x for the base.
 
 Setup: base `24681349` (master `e379d6c5` plus light-cljs-995's
-`8d0f6a5e`) and the fix `53c9139a` (landed as `4fe814ca`, rebased onto
+`8d0f6a5e`) and the fix `53c9139a` (committed as "Make a namespace's
+top-level pass cost independent of the namespaces before it", rebased onto
 `446f68ed`), immutable release binaries in
 `research/shadow-credibility/bin/` (V8 build; SHA-256 `062c9f26a4758093...`
 and `4181d3ee588b73b1...`), the same machine and tools as the growth
