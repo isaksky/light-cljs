@@ -465,13 +465,17 @@ fn edn_reading_is_not_reflection() {
     assert_eq!(printed(&emit(&data, OptimizationLevel::None)), expected);
 
     // Reading code beside them qualifies by the current namespace, so it
-    // registers and keeps the core names.
-    let code =
-        entry(r#"(pr-str [(reader/read-string ":x") (read-string "`inc") (read-string "`v")])"#);
+    // registers and keeps the core names, from a string or a stream.
+    let code = entry(
+        r#"(pr-str [(reader/read-string ":x") (read-string "`inc") (read-string "`v")
+                    (read (reader/string-push-back-reader "`[map w]"))])"#,
+    );
     let readable_advanced = emit_readable(&code, OptimizationLevel::Advanced);
     assert!(registers(&readable_advanced));
     assert!(readable_advanced.contains("readerCoreNames"));
-    let expected = "[:x (quote cljs.core/inc) (quote app.main/v)]\n";
+    let expected = "[:x (quote cljs.core/inc) (quote app.main/v) \
+                    (cljs.core/vec (cljs.core/sequence (cljs.core/seq (cljs.core/concat \
+                    (cljs.core/list (quote cljs.core/map)) (cljs.core/list (quote app.main/w))))))]\n";
     assert_eq!(printed(&emit(&code, OptimizationLevel::Advanced)), expected);
     assert_eq!(printed(&emit(&code, OptimizationLevel::None)), expected);
 }
