@@ -12,14 +12,14 @@ Everything here is rerun with `benchmarks/re-frame.bb`:
 
 ```sh
 bb benchmarks/re-frame.bb setup                 # pin shadow-cljs 3.5.3, npm install, esbuild
-bb benchmarks/re-frame.bb port todomvc simple   # research/<app>-port from the porter
-bb benchmarks/re-frame.bb size todomvc simple --light BIN
-bb benchmarks/re-frame.bb origins todomvc simple --light BIN
-bb benchmarks/re-frame.bb time todomvc simple --runs 5 --light BIN
-bb benchmarks/re-frame.bb inventory todomvc simple
+bb benchmarks/re-frame.bb port todomvc simple flow --porter research/shadow-credibility/shadow-port-tool-971
+bb benchmarks/re-frame.bb size todomvc simple flow --light BIN
+bb benchmarks/re-frame.bb origins todomvc simple flow --light BIN
+bb benchmarks/re-frame.bb time todomvc simple flow --runs 5 --light BIN
+bb benchmarks/re-frame.bb inventory todomvc simple flow --light BIN
 ```
 
-## 2026-11-13: TodoMVC and simple
+## 2026-11-13: TodoMVC, simple and flow
 
 ### Setup
 
@@ -31,7 +31,7 @@ bb benchmarks/re-frame.bb inventory todomvc simple
 **Ports.**
 - **TodoMVC** still ports on master, and re-running the porter reproduces the existing `research/todomvc-port` source for source. Its dev build works on master `627b9ed5`, but its release build panics there; the first fix below is needed for it.
 - **simple** ports and builds the same way. Its port is in `research/shadow-credibility/simple-port`.
-- **flow** does not build yet. Its port pulls in zprint, sci, rewrite-clj and edamame (139 files) and stops at a JVM-only sci macro; see "Port edits by cause". That work is light-cljs-978. Its partial port is in `research/shadow-credibility/flow-port`.
+- **flow** ports and builds once the porter's catalogue handles two JVM-only sci macros (below). Its demo pretty-prints with zprint, which brings sci, rewrite-clj and edamame: 139 vendored files against simple's 30. Its port is in `research/shadow-credibility/flow-port`.
 
 **Compiler fixes made for these ports**, each a general semantics fix with a regression test:
 
@@ -45,7 +45,8 @@ bb benchmarks/re-frame.bb inventory todomvc simple
 **Porter fixes** (research tool outside git; the patched copy is `research/shadow-credibility/shadow-port-tool-971`, used with `port --porter`):
 - vector ns clauses;
 - reader conditionals inside a libspec (`[x #?@(:cljs [:include-macros true])]`);
-- unwrapping every `(deftime (defmacro ...))`. light-cljs defines macros in the namespace itself and never loads a separate `ns$macros`, so macrovich-style macro definitions are always needed.
+- unwrapping every `(deftime (defmacro ...))`. light-cljs defines macros in the namespace itself and never loads a separate `ns$macros`, so macrovich-style macro definitions are always needed;
+- a catalogue entry for sci 0.3.4's two JVM-only macros, `require-cljs-analyzer-api` and `copy-ns` (see "Port edits by cause"). It is port data, not a compiler feature.
 
 ## Release size
 
@@ -86,11 +87,27 @@ Packages imported: react, react-dom/client; npm files in both shadow builds: 7
 
 Packages imported: react, react-dom/client; npm files in both shadow builds: 7
 
+**flow** (zprint, sci, rewrite-clj and edamame included; spec is a stub in the port, see below)
+
+| Output | Raw bytes | gzip -9 | brotli -q 11 |
+|---|---:|---:|---:|
+| shadow-cljs: whole release file | 1,557,351 | 358,599 | 284,287 |
+| shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
+| shadow-cljs: app code (difference) | 1,413,991 | 311,508 | 243,678 |
+| light-cljs + esbuild: whole bundle | 1,278,131 | 330,726 | 272,246 |
+| esbuild: React alone | 142,385 | 45,617 | 39,919 |
+| light-cljs: app code (difference) | 1,135,746 | 285,109 | 232,327 |
+| light-cljs output as written, without React | 1,453,360 | 288,184 | 228,264 |
+| light-cljs + esbuild --target=es2015: whole bundle | 1,291,261 | 334,209 | 274,802 |
+
+Packages imported: react, react-dom/client; npm files in both shadow builds: 7
+
 **Findings:**
 - **TodoMVC, whole file after gzip:** the two are level, 137.7 KB against 137.1 KB.
 - **TodoMVC app code:** light-cljs is 2% larger after gzip and 8% larger after brotli.
 - **simple, the smaller app:** light-cljs's app code is 28% larger after gzip and 33% after brotli; the whole file is 13% larger after gzip. That is a loss, recorded as found; light-cljs-979 breaks it down.
-- **Before compression** light-cljs's app code is smaller in both apps.
+- **flow, the largest app:** light-cljs's app code is 8.5% smaller after gzip and 4.7% after brotli; the whole file is 7.8% smaller after gzip. **That lead comes from the spec stub, not the compiler.** zprint validates its options with spec, and shadow's output carries 128,702 characters of it (zprint/spec.cljc and cljs.spec; "Where the bytes come from"), against 1,111 for the port's stub. At shadow's gzip ratio for app code (0.22) that is about 28 KB, more than light-cljs's 26 KB gzip lead, so like for like flow is about level. light-cljs-980 asks for the stub's measured effect; flow is the app where it matters most.
+- **Before compression** light-cljs's app code is smaller in all three apps.
 - **React** comes out smaller through esbuild than through Closure's simple optimizations: 0.7% raw, 3.1% after gzip and 1.7% after brotli.
 
 **Not minified by light-cljs alone.** esbuild's `--minify` shrinks light-cljs's advanced output from 378,326 to about 299,400 bytes for TodoMVC. After gzip the difference is under 1%, so it is mostly whitespace and names that compress well.
@@ -98,7 +115,7 @@ Packages imported: react, react-dom/client; npm files in both shadow builds: 7
 **JavaScript language level.**
 - **shadow-cljs:** 3.5.3's default `:output-feature-set` for `:browser` is `:es-unsupported`, so nothing is lowered. Its output is ES2015-level anyway: esbuild with `--target=es2015` leaves it unchanged.
 - **light-cljs:** it writes modern JavaScript and does not lower it. TodoMVC has 280 `?.` and 147 `??` operators, both ES2020, plus constructs newer than ES2020.
-- **Effect of matching:** the last table row lowers light-cljs's bundle to ES2015 with esbuild `--target=es2015`, which matches shadow's level. That costs 2.1% after gzip in both apps (TodoMVC 137,694 to 140,525 bytes), and a user who needs older browsers pays it. At matched language level, TodoMVC's whole file is 2.5% larger than shadow's after gzip.
+- **Effect of matching:** the last table row lowers light-cljs's bundle to ES2015 with esbuild `--target=es2015`, which matches shadow's level. That costs 2.1% after gzip in TodoMVC and simple (TodoMVC 137,694 to 140,525 bytes) and 1.1% in flow, and a user who needs older browsers pays it. At matched language level, TodoMVC's whole file is 2.5% larger than shadow's after gzip.
 
 shadow-cljs's output differs by a few bytes from one clean build to the next (500,588 and 500,589 bytes raw; brotli 114,541 and 114,582). light-cljs's output was byte-identical across runs.
 
@@ -128,10 +145,32 @@ shadow-cljs's output differs by a few bytes from one clean build to the next (50
 
 For simple: shadow's cljs.core is 154,084 characters and light-cljs's runtime 124,546. reagent/impl is 17,091 against 25,558, re_frame/subs.cljc 4,973 against 10,556, Closure Library 9,235 against 3,707 of shims.
 
+For flow, the larger groups:
+
+| Origin | shadow-cljs | light-cljs |
+|---|---:|---:|
+| sci/impl | 552,543 | 474,563 |
+| cljs.core (shadow) / light-cljs runtime (`js_runtime.js`) | 296,692 | 195,383 |
+| no source in the map | 3,447 | 336,933 |
+| React (npm) | 141,872 | 0 (bundled later by esbuild) |
+| zprint/zprint.cljc | 101,797 | 94,716 |
+| zprint/spec.cljc (spec definitions; the port's are stubbed) | 100,311 | 962 |
+| rewrite_clj/node | 60,720 | 37,664 |
+| edamame/impl | 33,118 | 22,664 |
+| zprint/config.cljc | 30,805 | 28,179 |
+| cljs.spec (shadow) / compat stub (light-cljs) | 28,391 | 149 |
+| cljs.tools.reader | 23,632 | 27,664 |
+| clojure.string, set, walk, cljs.reader (shadow) / light-cljs's bundled namespaces | 12,587 | 22,873 |
+| Closure Library and shadow's runtime (shadow) / compat `goog` shims (light-cljs) | 23,975 | 6,235 |
+| reagent/impl | 17,666 | 26,578 |
+| total | 1,554,035 | 1,451,506 |
+
+In flow most of the code is sci and zprint, which are plain ClojureScript with few host-facing names, and light-cljs's output of them is smaller before compression (sci/impl 14% smaller). light-cljs's source map leaves 336,933 characters without a source (23% of its output), so each light-cljs row above undercounts by an unknown share and only the totals compare exactly.
+
 **What the attribution shows:**
-- **Library code is larger in light-cljs.** reagent's and re-frame's code is 1.3 to 2 times larger before compression. The cause is kept property names and fewer inlined calls.
+- **reagent and re-frame code is larger in light-cljs.** It is 1.3 to 2 times larger before compression. The cause is kept property names and fewer inlined calls. flow's sci, rewrite-clj and edamame code goes the other way: smaller in light-cljs.
 - **The runtime and the shims are smaller,** and that difference is what keeps TodoMVC level overall.
-- **Part of TodoMVC is not the same program,** as the next section explains: spec is a stub in the port.
+- **Part of TodoMVC and flow is not the same program,** as the next section explains: spec is a stub in the port, and in flow it is 8% of shadow's output.
 
 ## Build time
 
@@ -157,9 +196,19 @@ For simple: shadow's cljs.core is 154,084 characters and light-cljs's runtime 12
 | light-cljs release | 0.17 (0.17-0.19) | 0.18 (0.18-0.19) | 0.02 (0.02-0.02) | 88.26 (86.59-89.13) | 19.06 (14.81-20.69) |
 | esbuild bundle of light-cljs's output | 0.03 (0.03-0.03) | 0.03 (0.03-0.03) | 0.00 (0.00-0.00) | 39.16 (38.83-39.32) | 19.06 (14.81-20.69) |
 
+**flow**, 5 runs each (measured later the same evening; another worker's timing runs were active, load averages 7.7 to 11.1)
+
+| Build | Wall s | User CPU s | System CPU s | Peak memory MB | Load average before |
+|---|---:|---:|---:|---:|---:|
+| shadow-cljs release (npx, JVM start included) | 17.42 (16.64-19.09) | 76.26 (74.79-77.70) | 17.33 (14.43-24.50) | 1833.12 (1807.01-2319.68) | 7.85 (7.71-9.17) |
+| light-cljs release | 1.21 (1.17-1.28) | 1.26 (1.22-1.34) | 0.09 (0.08-0.12) | 336.10 (320.95-339.72) | 9.79 (7.85-11.13) |
+| esbuild bundle of light-cljs's output | 0.11 (0.11-0.14) | 0.11 (0.11-0.11) | 0.01 (0.00-0.02) | 97.03 (96.93-99.86) | 9.17 (7.85-11.13) |
+
 **JVM start-up dominates at this size.** In an earlier single run shadow-cljs reported "Build completed ... 6.72 s" of a 13.1 s wall time. The rest is starting `npx`, the Clojure CLI and the JVM and loading shadow-cljs and Closure. These apps are far too small to say anything about compile speed or memory at scale; the generated projects answer that (light-cljs-970, 977).
 
-light-cljs's own release takes about a quarter of a second. Bundling with esbuild adds a few tens of milliseconds, listed as its own row.
+light-cljs's own release takes about a quarter of a second for TodoMVC and simple and 1.2 s for flow, whose 139 files include all of sci. Bundling with esbuild adds a few tens of milliseconds (0.1 s for flow), listed as its own row.
+
+**flow is where JVM start-up stops dominating.** In a single check run shadow-cljs reported "Build completed. (224 files, 151 compiled, 0 warnings, 14.03s)" of an 18.4 s wall time, so most of its time there is the build itself, and light-cljs is about 14 times faster on wall time and 70 times on user plus system CPU time (medians). It is still one small app; the generated projects are the scale evidence.
 
 ## Port edits by cause
 
@@ -168,6 +217,7 @@ light-cljs's own release takes about a quarter of a second. Bundling with esbuil
 **compat/ is the porter's whole compat layer.** The porter copies all 34 files into every port, though most are never reached:
 - TodoMVC's output reaches 7: `cljs/spec/alpha`, `goog`, `goog/events`, `goog/functions`, `goog/history/EventType`, `goog/object` and `light/compat`.
 - simple's reaches 5: the same without spec and `goog/history/EventType`.
+- flow's reaches 8: `cljs/spec/alpha`, `goog`, `goog/array`, `goog/events`, `goog/functions`, `goog/object`, `goog/string` and `light/compat`.
 
 Unreached shims are not in any output and change nothing. The sizes below are output characters by source map, from the TodoMVC build unless marked.
 
@@ -175,23 +225,28 @@ Unreached shims are not in any output and change nothing. The sizes below are ou
 |---|---|---|---:|---:|
 | Release panic on `(or a (if c (recur) false))` | compiler gap, fixed in this branch | TodoMVC, simple | none | none |
 | ns clause as a vector, metadata on an ns clause, `#'cljs.reader/read-date` | compiler gaps, fixed in this branch | flow | none | none |
-| `light/compat.cljs`: `cljs.core/pr-writer`, which reagent calls; the porter rewrites references to it (catalogue `:core-gaps`) | compiler gap, open: light-cljs-981 | TodoMVC, simple | 108 (simple: 10) | part of cljs.core |
+| `light/compat.cljs`: `cljs.core/pr-writer`, which reagent calls; the porter rewrites references to it (catalogue `:core-gaps`) | compiler gap, open: light-cljs-981 | all | 108 (simple: 10, flow: 149) | part of cljs.core |
 | `compat/cljs/spec/alpha.cljs`: `s/def` expands to nil and `s/valid?` returns true, so TodoMVC's `check-spec-interceptor` never fails | JVM-only macro: upstream spec's macros resolve through the JVM analyzer | TodoMVC | 116 | 28,383 (cljs.spec), which really validates the db: light-cljs-980 |
+| The same spec stub in flow: zprint defines its options with 254 `s/def`s and checks them with `s/valid?` and `s/explain-data`, which the stub makes always pass | JVM-only macro, as above | flow | 1,111 (stub 149, zprint/spec.cljc 962) | 128,702 (zprint/spec.cljc 100,311, cljs.spec 28,391), 8% of shadow's output: light-cljs-980 |
+| sci 0.3.4 `require-cljs-analyzer-api`: on the JVM it requires `cljs.analyzer.api` and defines a Var, so its expansion has no source form. The catalogue writes `nil` at its one call site, which is what upstream expands it to under self-hosted ClojureScript | JVM-only macro | flow | none | none (a JVM-side definition) |
+| sci 0.3.4 `copy-ns`: its self-hosted branch reads `cljs.analyzer.api/ns-publics`, which light-cljs does not provide and refuses to resolve in the macro's body, where upstream only warns. The catalogue makes that branch throw a clear error; nothing in flow calls `copy-ns` | JVM-only macro | flow | none (macro code) | none |
+| 13 sci macros (`sci.impl.faster/nth-2`, `sci.impl.types/->Node`, `sci.impl.utils/kw-identical?`, `sci.impl.fns/gen-fn` and 9 more), 97 call sites expanded on the JVM and spliced | other: they read `&env` through sci's macrovich-style `?`, and the porter expands such macros on the JVM instead of running them in light-cljs. Not shown to be a light-cljs gap | flow | same code as shadow's expansion | the same expansion |
+| tools.reader 1.6.0 `impl/inspect.cljs`: the catalogue removes `inspect*` methods on `cljs.core/PersistentArrayMapSeq` and `cljs.core/NodeSeq` | compiler gap: `PersistentArrayMapSeq` does not resolve, open: light-cljs-982. `NodeSeq` now resolves on master, so that half of the patch is no longer needed | flow | two one-line methods fewer | two methods that only name a value in an error message |
 | `secretary.core/defroute`, 2 call sites expanded on the JVM and spliced into `todomvc/core.cljs` | JVM-only macro (an `IllegalArgumentException.` branch) | TodoMVC | same code as shadow's expansion | the same expansion |
 | `goog.cljs` (`goog.History`, `getUid`), `goog/events.cljs` (listen, BrowserEvent), `goog/functions.cljs`, `goog/history/EventType.cljs`, `goog/object.cljs`. The porter's report lists `goog.History` and `goog.async.nextTick` as `:missing-goog`, added to the compat layer by hand | Closure Library use: a non-goal, never compiler work | TodoMVC (simple: no History) | 5,578 (simple: 3,707) | 25,194 of Closure Library (simple: 9,235) |
+| flow: the same shims plus `goog/array.cljs` and `goog/string.cljs` (`StringBuffer`, `format`, which rewrite-clj uses). Its report lists `goog.async.nextTick`, `goog.string.StringBuffer` and `goog.string.format` as `:missing-goog`; the compat layer already has all three | Closure Library use: a non-goal | flow | 6,490 | 11,894 of Closure Library |
 | `:target :browser` becomes `:esm`, bundled by esbuild | shadow-cljs build feature | all | the esbuild wrapper | a self-contained script |
 | `:modules {:client {:init-fn todomvc.core/main}}`: light-cljs has no `:init-fn`. `main` is the module's default export, and the page must call it | shadow-cljs build feature | all | none | the call to `main` |
 | `:release {:build-options {:ns-aliases {day8.re-frame.tracing day8.re-frame.tracing-stubs}}}` dropped; TodoMVC requires neither namespace, so nothing changes | shadow-cljs build feature | TodoMVC | none | none |
 | `:dev {:compiler-options {:closure-defines ...}}` dropped (light-cljs refuses dev-mode defines); `:dev-http` and `:nrepl` translated | shadow-cljs build feature, dev only | all | none in a release build | none in a release build |
-| `:deps true`: the porter vendors the library sources the build reached into `vendor/` (reagent, secretary, clojure.data, macrovich) | other: light-cljs resolves no dependencies | all | none | none |
+| `:devtools {:preloads [hashp.core]}` dropped: light-cljs has no preloads | shadow-cljs build feature, dev only | flow | none in a release build | none in a release build |
+| `:deps true`: the porter vendors the library sources the build reached into `vendor/` (reagent, secretary, clojure.data, macrovich; flow also zprint, sci, rewrite-clj, edamame, tools.reader) | other: light-cljs resolves no dependencies | all | none | none |
 
-**flow, for the record.** Its port stops at `vendor/sci/core.cljc:349`, `(require-cljs-analyzer-api)`, a JVM-only macro that requires `cljs.analyzer.api`. The porter cannot print its expansion, which is a Var. Its report also lists 3 `:missing-goog` names (`goog.async.nextTick`, `goog.string.StringBuffer`, `goog.string.format`). Finishing it is light-cljs-978.
-
-**Compiler-gap entries still open on master** after this branch: `cljs.core/pr-writer` (light-cljs-981). The three ns-form and reader gaps and the release panic are fixed here. Closure Library entries are recorded as non-goals, not work.
+**Compiler-gap entries still open on master** after this branch: `cljs.core/pr-writer` (light-cljs-981) and `cljs.core/PersistentArrayMapSeq` (light-cljs-982). The three ns-form and reader gaps and the release panic are fixed. The sci entries are JVM-only macros, port data rather than compiler work. Closure Library entries are recorded as non-goals, not work.
 
 ### Full inventory
 
-`bb benchmarks/re-frame.bb inventory todomvc simple` lists every `compat/` file with its cause and the characters it puts in the source-mapped light-cljs release; 0 means the file is not reached. It then lists every macro, configuration key and report entry from `port-report.edn`. Macros classed `keep` run unchanged in light-cljs.
+`bb benchmarks/re-frame.bb inventory todomvc simple flow` lists every `compat/` file with its cause and the characters it puts in the source-mapped light-cljs release; 0 means the file is not reached. It then lists every macro, configuration key and report entry from `port-report.edn`. Macros classed `keep` run unchanged in light-cljs.
 
 #### todomvc: every compat/ file
 
@@ -341,3 +396,113 @@ Report: {:files 38, :spliced 2, :patches 0, :missing-goog (goog.History goog.asy
 - [:builds :client :modules] needs-feature: one module with one entry; the other entries become light.lazy/loadable chunks only where the code loads them; several entries and named chunk groups are code-splitting Phase 4
 
 Report: {:files 30, :spliced 0, :patches 0, :missing-goog (goog.async.nextTick), :unprintable {}, :unsafe {}, :splice-mismatch [], :edits-dropped []}
+
+#### flow: every compat/ file
+
+| File | Cause | Source bytes | light-cljs output characters |
+|---|---|---:|---:|
+| cljs/pprint.cljs | other: development library replaced by a stub | 837 | 0 |
+| cljs/spec/alpha.cljs | JVM-only macro: spec stub, specs check nothing | 605 | 149 |
+| cljs/test.cljs | JVM-only macro: cljs.test stub | 308 | 0 |
+| clojure/math.cljs | other: a library light-cljs does not ship, written over js/Math | 1,019 | 0 |
+| clojure/pprint.cljs | other: development library replaced by a stub | 840 | 0 |
+| clojure/spec/alpha.cljs | JVM-only macro: spec stub, specs check nothing | 608 | 0 |
+| clojure/test/check.cljs | JVM-only macro: test.check stub | 168 | 0 |
+| clojure/test/check/generators.cljs | JVM-only macro: test.check stub | 2,618 | 0 |
+| clojure/test/check/properties.cljs | JVM-only macro: test.check stub | 151 | 0 |
+| expound/alpha.cljs | JVM-only macro: stub of a spec library | 131 | 0 |
+| goog.cljs | Closure Library use (non-goal) | 2,209 | 255 |
+| goog/array.cljs | Closure Library use (non-goal) | 665 | 88 |
+| goog/async.cljs | Closure Library use (non-goal) | 114 | 0 |
+| goog/crypt.cljs | Closure Library use (non-goal) | 237 | 0 |
+| goog/date/Date.cljs | Closure Library use (non-goal) | 86 | 0 |
+| goog/date/UtcDateTime.cljs | Closure Library use (non-goal) | 181 | 0 |
+| goog/dom.cljs | Closure Library use (non-goal) | 410 | 0 |
+| goog/events.cljs | Closure Library use (non-goal) | 2,568 | 1,850 |
+| goog/events/EventType.cljs | Closure Library use (non-goal) | 559 | 0 |
+| goog/functions.cljs | Closure Library use (non-goal) | 1,075 | 600 |
+| goog/history/EventType.cljs | Closure Library use (non-goal) | 113 | 0 |
+| goog/i18n/uChar.cljs | Closure Library use (non-goal) | 1,131 | 0 |
+| goog/math.cljs | Closure Library use (non-goal) | 341 | 0 |
+| goog/net.cljs | Closure Library use (non-goal) | 1,602 | 0 |
+| goog/net/WebSocket/EventType.cljs | Closure Library use (non-goal) | 122 | 0 |
+| goog/object.cljs | Closure Library use (non-goal) | 775 | 1,877 |
+| goog/string.cljs | Closure Library use (non-goal) | 2,082 | 1,820 |
+| light/compat.cljs | compiler gap: cljs.core names light-cljs lacks (catalogue :core-gaps) | 389 | 149 |
+| malli/generator.cljs | other: development library replaced by a stub | 545 | 0 |
+| malli/sci.cljs | other: development library replaced by a stub | 202 | 0 |
+| me/flowthing/pp.cljs | other: development library replaced by a stub | 229 | 0 |
+| shadow/esm.cljs | shadow-cljs build feature | 596 | 0 |
+| shadow/lazy.cljs | shadow-cljs build feature | 280 | 0 |
+| shadow/resource.cljs | shadow-cljs build feature | 231 | 0 |
+
+#### flow: every macro the port classified
+
+| Macro | Class | Call sites | Reason |
+|---|---|---:|---|
+| reagent.debug/assert-callable | keep | 6 |  |
+| zprint.macros/dbg-pr | keep | 87 |  |
+| zprint.macros/dbg-print | keep | 2 |  |
+| zprint.smacros/only-keys | keep | 40 |  |
+| cljs.spec.alpha/def | port | 254 | catalogue or compat port |
+| sci.impl.fns/gen-fn | expand | 84 | its expansion calls a macro that is expanded |
+| sci.impl.analyzer/gen-return-needs-ctx-call | expand | 1 | its expansion calls a macro that is expanded |
+| re-frame.trace/finish-trace | keep | 17 |  |
+| zprint.macros/dbg-s-pr | keep | 7 |  |
+| sci.impl.analyzer/gen-return-and | expand | 1 | its expansion calls a macro that is expanded |
+| cljs.spec.alpha/coll-of | port | 25 | catalogue or compat port |
+| sci.impl.namespaces/copy-core-var | keep | 356 |  |
+| sci.impl.analyzer/gen-return-binding-call | expand | 1 | sci.impl.macros/? reads &env [(contains? &env (quote &env))] |
+| cljs.spec.alpha/every | port | 71 | catalogue or compat port |
+| cljs.spec.alpha/or | port | 15 | catalogue or compat port |
+| sci.impl.evaluator/resolve-symbol | keep | 1 |  |
+| reagent.debug/assert-component | keep | 7 |  |
+| cljs.spec.alpha/every-kv | port | 46 | catalogue or compat port |
+| cljs.spec.alpha/nilable | port | 49 | catalogue or compat port |
+| reagent.debug/assert-js-object | keep | 3 |  |
+| cljs.spec.alpha/tuple | port | 50 | catalogue or compat port |
+| sci.impl.faster/nth-2 | expand | 420 | sci.impl.macros/? reads &env [(contains? &env (quote &env))] |
+| zprint.macros/dbg-s | keep | 79 |  |
+| sci.impl.vars/with-writeable-var | keep | 2 |  |
+| net.cgrand.macrovich/deftime | keep | 1 |  |
+| reagent.core/reaction | keep | 1 |  |
+| zprint.macros/dbg | keep | 57 |  |
+| sci.impl.faster/deref-1 | expand | 1 | sci.impl.macros/? reads &env [(contains? &env (quote &env))] |
+| sci.impl.evaluator/def-fn-call | keep | 1 |  |
+| cljs.spec.alpha/keys | port | 40 | catalogue or compat port |
+| cljs.spec.alpha/merge | port | 40 | catalogue or compat port |
+| zprint.macros/dbg-form | keep | 8 |  |
+| sci.impl.analyzer/gen-return-recur | expand | 1 | its expansion calls a macro that is expanded |
+| sci.impl.analyzer/gen-return-or | expand | 1 | its expansion calls a macro that is expanded |
+| cljs.spec.alpha/map-of | port | 46 | catalogue or compat port |
+| cljs.tools.reader.reader-types/log-source | keep | 4 |  |
+| sci.core/require-cljs-analyzer-api | port | 1 | catalogue or compat port |
+| reagent.debug/warn | keep | 6 |  |
+| rewrite-clj.custom-zipper.switchable/defn-switchable | keep | 22 |  |
+| sci.impl.analyzer/gen-return-call | expand | 1 | sci.impl.macros/? reads &env [(contains? &env (quote &env))] |
+| reagent.debug/dev? | keep | 6 |  |
+| sci.impl.types/->Node | expand | 180 | sci.impl.macros/? reads &env [(contains? &env (quote &env))] |
+| sci.impl.namespaces/copy-var | keep | 406 |  |
+| sci.impl.utils/kw-identical? | expand | 55 | sci.impl.macros/? reads &env [(contains? &env (quote &env))] |
+| re-frame.trace/with-trace | keep | 17 |  |
+| reagent.debug/warn-unless | keep | 1 |  |
+| re-frame.trace/merge-trace! | keep | 35 |  |
+| sci.impl.faster/get-2 | expand | 2 | sci.impl.macros/? reads &env [(contains? &env (quote &env))] |
+| sci.impl.vars/with-bindings | keep | 5 |  |
+| sci.impl.macros/deftime | keep | 17 |  |
+| reagent.debug/assert-new-state | keep | 2 |  |
+| sci.impl.analyzer/gen-return-do | expand | 1 | its expansion calls a macro that is expanded |
+| reagent.debug/assert-some | keep | 3 |  |
+
+#### flow: every configuration key
+
+- [:deps] translated: light-cljs resolves no dependencies: the porter vendored the reached library sources into vendor/
+- [:nrepl] translated: an nREPL listener on its own port; :host and middleware dropped (sessions are ClojureScript)
+- [:dev-http] needs-feature: a static root served at /; the dev server serves output dirs and source paths
+- [:builds :client :target] needs-feature: :browser output: light-cljs writes ES modules only; translated to :esm
+- [:builds :client :output-dir] translated: rebased onto the original project, where its pages load the output
+- [:builds :client :devtools :preloads] dropped: no preloads; require them from a dev entry
+- [:builds :client :modules :client :init-fn] needs-feature: no :init-fn; a generated entry namespace can call it
+- [:builds :client :modules] needs-feature: one module with one entry; the other entries become light.lazy/loadable chunks only where the code loads them; several entries and named chunk groups are code-splitting Phase 4
+
+Report: {:files 139, :spliced 97, :patches 4, :missing-goog (goog.async.nextTick goog.string.StringBuffer goog.string.format), :unprintable {}, :unsafe {}, :splice-mismatch [], :edits-dropped []}

@@ -139,9 +139,12 @@
          "--define:process.env.NODE_ENV=\"production\"" (str "--outfile=" out) "--log-level=warning" extra))
 
 (defn package-imports
-  "The packages light-cljs's output imports."
+  "The packages light-cljs's output imports: bare specifiers after `from` or
+  `import`, so a string or keyword that happens to follow those words (flow's
+  output has the keyword :import) is not taken for one."
   [file]
-  (->> (re-seq #"(?:from|import)\s*\"([^\"./][^\"]*)\"" (slurp (fs/file file))) (map second) distinct sort vec))
+  (->> (re-seq #"\b(?:from|import)\s*\"(@?[a-z0-9][\w.-]*(?:/[\w.-]+)*)\"" (slurp (fs/file file)))
+       (map second) distinct sort vec))
 
 (defn react-only-light [app packages]
   (let [dir (example app)
