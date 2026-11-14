@@ -460,68 +460,139 @@ fn namespaces_loading_first_find_the_later_ones_as_at_none() {
     );
 }
 
-/// In a page, `index.js` loads each file as a script element, and an error
-/// thrown while one runs rejects `__lightDevLoaded` and leaves the later files
-/// unloaded. A small document stub in Node stands in for the page: it runs
-/// each script, reports a throw as the page's `error` event, then fires
-/// `load`.
-#[test]
-fn index_rejects_in_a_page_when_a_unit_throws() {
-    let dir = TempDir::new("dev-page");
-    let root = source_root(
-        &dir,
-        &[
-            (
-                "app/dep.cljs",
-                "(ns app.dep)\n(js/console.log \"dep runs\")\n(throw (js/Error. \"dep failed\"))\n",
-            ),
-            (
-                "app/main.cljs",
-                "(ns app.main (:require [app.dep]))\n(js/console.log \"main runs\")\n",
-            ),
-        ],
-    );
-    let out = dir.join("dev");
-    dev_build(&root, &out);
-    let page = r#"
-const { readFileSync } = require("node:fs");
+/// A page in Node for `index.js` (its path is the first argument): a
+/// document stub whose script elements behave as a browser's with
+/// `async = false`. Each appended script is requested at once ("request F"),
+/// its fetch finishes after a delay that is longer the earlier it was
+/// appended, so later files arrive first, and the scripts run in the order
+/// they were appended as soon as each and those before it have arrived
+/// ("script F"). A script whose file is missing fires `error` and is
+/// skipped; one that throws reports the throw as the page's `error` event;
+/// each then fires `load`. The page prints how `__lightDevLoaded` settles,
+/// then defines one more unit, as a reload would, and prints whether it ran.
+const PAGE: &str = r#"
+const { existsSync, readFileSync } = require("node:fs");
 const { runInThisContext } = require("node:vm");
 const { fileURLToPath, pathToFileURL } = require("node:url");
 const listeners = new Set();
 globalThis.addEventListener = (type, listener) => { if (type === "error") listeners.add(listener); };
 globalThis.removeEventListener = (type, listener) => listeners.delete(listener);
 const index = process.argv[1];
+const name = file => file.slice(file.lastIndexOf("/") + 1);
+const scripts = [];
+let appended = 0;
+const run = () => {
+  while (scripts.length > 0 && scripts[0].arrived) {
+    const script = scripts.shift();
+    const file = fileURLToPath(script.src);
+    if (!existsSync(file)) { script.onerror(); continue; }
+    console.log("script " + name(file));
+    try { runInThisContext(readFileSync(file, "utf8"), { filename: file }); }
+    catch (error) { for (const listener of [...listeners]) listener({ error, message: String(error) }); }
+    script.onload();
+  }
+};
 globalThis.document = {
   currentScript: { src: pathToFileURL(index).href },
   baseURI: pathToFileURL(index).href,
   createElement: () => ({}),
   head: {
     append(script) {
-      setTimeout(() => {
-        const file = fileURLToPath(script.src);
-        console.log("script " + file.slice(file.lastIndexOf("/") + 1));
-        try { runInThisContext(readFileSync(file, "utf8"), { filename: file }); }
-        catch (error) { for (const listener of [...listeners]) listener({ error, message: String(error) }); }
-        script.onload();
-      }, 0);
+      if (script.async !== false) throw new Error("a script that may run out of order");
+      console.log("request " + name(script.src));
+      scripts.push(script);
+      setTimeout(() => { script.arrived = true; run(); }, 50 - 10 * appended++);
     },
   },
 };
 require(index);
 globalThis.__lightDevLoaded.then(
-  value => console.log("resolved " + value),
-  error => console.log("rejected " + error.message));
+  value => console.log("resolved " + value()),
+  error => console.log("rejected " + error.message.replace(/ file:.*\//, " "))
+).then(() => {
+  globalThis.__lightDev.define("app.reloaded", [], () => console.log("reloaded runs"));
+});
 "#;
+
+/// The lines [`PAGE`] prints for the dev build, built under `dir`, of three
+/// namespaces: `app.main` requires `app.dep`, which requires `app.base`;
+/// each logs as it runs, `app.dep` then runs `dep`, and `app.main`'s value
+/// is `start`, which returns `started`. `edit` changes the build's
+/// directory first.
+fn page_lines(dir: &Path, dep: &str, edit: impl FnOnce(&Path)) -> String {
+    let dep = format!("(ns app.dep (:require [app.base]))\n(js/console.log \"dep runs\")\n{dep}");
+    let root = source_root(
+        dir,
+        &[
+            (
+                "app/base.cljs",
+                "(ns app.base)\n(js/console.log \"base runs\")\n",
+            ),
+            ("app/dep.cljs", &dep),
+            (
+                "app/main.cljs",
+                "(ns app.main (:require [app.dep]))\n(js/console.log \"main runs\")\n(defn start [] \"started\")\n",
+            ),
+        ],
+    );
+    let out = dir.join("dev");
+    dev_build(&root, &out);
+    edit(&out);
     let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-e")
-        .arg(page)
+        .arg(PAGE)
         .arg(out.join("index.js"))
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// In a page, `index.js` requests every file at once as a script element
+/// with `async = false`, before any has arrived, and the files run in
+/// dependency order although the later ones arrive first; the promise
+/// resolves to the entry's value, and a unit defined afterwards runs.
+#[test]
+fn index_requests_every_file_at_once_and_runs_them_in_order() {
+    let dir = TempDir::new("dev-page");
+    let lines = page_lines(&dir, "", |_| {});
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "script runtime.js\nscript client.js\nscript app.dep.js\ndep runs\nrejected dep failed\n"
+        lines,
+        "request runtime.js\nrequest client.js\nrequest app.base.js\nrequest app.dep.js\nrequest app.main.js\n\
+         script runtime.js\nscript client.js\nscript app.base.js\nbase runs\nscript app.dep.js\ndep runs\n\
+         script app.main.js\nmain runs\nresolved started\nreloaded runs\n"
+                );
+}
+
+/// In a page, an error thrown while a unit runs rejects `__lightDevLoaded`
+/// with that error, and no later unit runs, though its file was requested
+/// and its script runs; once the promise has settled, a unit defined (as a
+/// reload would) runs again.
+#[test]
+fn index_rejects_in_a_page_when_a_unit_throws() {
+    let dir = TempDir::new("dev-page");
+    let lines = page_lines(&dir, "(throw (js/Error. \"dep failed\"))\n", |_| {});
+    assert_eq!(
+        lines,
+        "request runtime.js\nrequest client.js\nrequest app.base.js\nrequest app.dep.js\nrequest app.main.js\n\
+         script runtime.js\nscript client.js\nscript app.base.js\nbase runs\nscript app.dep.js\ndep runs\n\
+         script app.main.js\nrejected dep failed\nreloaded runs\n"
+    );
+}
+
+/// In a page, a file that cannot load rejects `__lightDevLoaded`, and no
+/// unit after it runs.
+#[test]
+fn index_rejects_in_a_page_when_a_file_cannot_load() {
+    let dir = TempDir::new("dev-page");
+    let lines = page_lines(&dir, "", |out| {
+        fs::remove_file(out.join("app.base.js")).unwrap();
+    });
+    assert_eq!(
+        lines,
+        "request runtime.js\nrequest client.js\nrequest app.base.js\nrequest app.dep.js\nrequest app.main.js\n\
+         script runtime.js\nscript client.js\nscript app.dep.js\nscript app.main.js\n\
+         rejected cannot load app.base.js\nreloaded runs\n"
     );
 }
 

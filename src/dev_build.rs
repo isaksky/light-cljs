@@ -514,37 +514,55 @@ impl DevManifest {
 
 /// The text of `index.js` for the JSON array `list` of its files and the
 /// JSON string `entry`.
+///
+/// In a page every file is requested at once and the files run in order:
+/// script elements with `async = false`, which a browser fetches in parallel
+/// and runs in insertion order. Waiting for each file's load event before
+/// requesting the next cost the 3,077 files of a generated 200k-line app
+/// about 3 s of round trips (benchmarks/watch-vs-shadow.md). The first error
+/// thrown while the files run, or a file that cannot load, is the failure:
+/// from then until every file has settled, `globalThis.__lightDevHalted`
+/// makes the client's `define` skip each later unit, so, as when the files
+/// loaded one at a time, no unit after the failure runs. The promise rejects
+/// once every file has settled and the flag is gone, so a reload the client
+/// applies afterwards defines its units.
 fn index_text(list: &str, entry: &str) -> String {
     format!(
         r#"// Loads a light-cljs dev build: the runtime, the dev client and one unit per
 // namespace, in dependency order. globalThis.__lightDevLoaded is a promise of
 // the entry namespace's value, the program's value. In a page each file is a
-// script element after this one, and an error thrown while it runs rejects
-// the promise before the next file loads; in Node (CommonJS) each is
+// script element after this one, all requested at once and run in order
+// (`async = false`). The first error thrown while they run, or a file that
+// cannot load, rejects the promise once every file has settled, and no unit
+// after it runs: the client's `define` skips units while
+// globalThis.__lightDevHalted is set. In Node (CommonJS) each file is
 // required, which `node --enable-source-maps` maps to the sources.
 globalThis.__lightDevLoaded = (async () => {{
   const files = {list};
   if (typeof document === "object" && document !== null) {{
     const base = document.currentScript?.src ?? document.baseURI;
-    for (const file of files) {{
-      await new Promise((resolve, reject) => {{
+    let failure = null;
+    const fail = error => {{
+      if (failure !== null) return;
+      failure = error;
+      globalThis.__lightDevHalted = true;
+    }};
+    const failed = event => fail(event.error ?? new Error(event.message));
+    globalThis.addEventListener("error", failed);
+    try {{
+      await Promise.all(files.map(file => new Promise(resolve => {{
         const script = document.createElement("script");
-        // Files load one at a time, so an uncaught error until this one's
-        // load event is its own.
-        let failure = null;
-        const failed = event => {{ failure ??= event.error ?? new Error(event.message); }};
-        const settle = () => {{
-          globalThis.removeEventListener("error", failed);
-          if (failure === null) resolve(); else reject(failure);
-        }};
-        globalThis.addEventListener("error", failed);
         script.src = new URL(file, base).href;
         script.async = false;
-        script.onload = settle;
-        script.onerror = () => {{ failure ??= new Error("cannot load " + script.src); settle(); }};
+        script.onload = resolve;
+        script.onerror = () => {{ fail(new Error("cannot load " + script.src)); resolve(); }};
         document.head.append(script);
-      }});
+      }})));
+    }} finally {{
+      globalThis.removeEventListener("error", failed);
+      delete globalThis.__lightDevHalted;
     }}
+    if (failure !== null) throw failure;
   }} else {{
     for (const file of files) require("./" + file);
   }}

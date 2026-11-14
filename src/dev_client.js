@@ -420,6 +420,10 @@ globalThis.__lightDev = (() => {
     repl,
     overlay,
     define(namespace, requires, unit) {
+      // index.js requests a page's files at once; once one failed, the
+      // later units it still runs are skipped until they have all settled,
+      // as if they had not loaded.
+      if (globalThis.__lightDevHalted === true) return undefined;
       // A unit counts as loaded once it has run to its end, so a replay
       // runs again one that threw.
       const record = { requires, unit, loaded: false };

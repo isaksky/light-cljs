@@ -221,8 +221,11 @@ runtime, which every unit reads. `define` records the unit by namespace and
 runs it against `globalThis.__lightRuntime` immediately, keeping its value.
 The same text serves the first load (as a script file) and every reload
 (evaluated by the client with a `sourceURL`), so there is one unit writer.
-`index.js` is a few lines that insert script elements in manifest order and
-resolve a promise of the entry namespace's value when the last has run; in
+`index.js` is a few lines that insert script elements in manifest order, all
+at once with `async = false` so the browser fetches them in parallel and runs
+them in that order, and resolve a promise of the entry namespace's value when
+the last has run (after a file throws or fails to load, `define` skips the
+later units and the promise rejects once all have settled); in
 Node it requires the files in that order, and the test driver runs them
 itself. The manifest also lists the `^:dev/before-load` and
 `^:dev/after-load` functions (and their `-async` variants) in definition
