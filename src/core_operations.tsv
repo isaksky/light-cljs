@@ -114,6 +114,30 @@ RangeClass	Range	fn	-	any	any	effect	invoke	RangeValue
 IntegerRangeClass	IntegerRange	fn	-	any	any	effect	invoke	IntegerRangeValue
 NodeSeqClass	NodeSeq	fn	-	any	any	effect	invoke	NodeSeqType
 PersistentArrayMapSeqClass	PersistentArrayMapSeq	fn	-	any	any	effect	invoke	PersistentArrayMapSeqType
+ArrayNodeSeqClass	ArrayNodeSeq	fn	-	any	any	effect	invoke	ArrayNodeSeqType
+RSeqClass	RSeq	fn	-	any	any	effect	invoke	RSeqType
+BlackNodeClass	BlackNode	fn	-	any	any	effect	invoke	MapEntryType
+RedNodeClass	RedNode	fn	-	any	any	effect	invoke	MapEntryType
+TransientVectorClass	TransientVector	fn	-	any	any	effect	invoke	TransientVectorType
+TransientArrayMapClass	TransientArrayMap	fn	-	any	any	effect	invoke	TransientArrayMapType
+TransientHashMapClass	TransientHashMap	fn	-	any	any	effect	invoke	TransientHashMapType
+TransientHashSetClass	TransientHashSet	fn	-	any	any	effect	invoke	TransientHashSetType
+ArrayListClass	ArrayList	fn	-	any	any	effect	invoke	ArrayList
+ArrayNodeClass	ArrayNode	fn	-	any	any	effect	invoke	ArrayNode
+ArrayNodeIteratorClass	ArrayNodeIterator	fn	-	any	any	effect	invoke	ArrayNodeIterator
+BitmapIndexedNodeClass	BitmapIndexedNode	fn	-	any	any	effect	invoke	BitmapIndexedNode
+BoxClass	Box	fn	-	any	any	effect	invoke	Box
+HashCollisionNodeClass	HashCollisionNode	fn	-	any	any	effect	invoke	HashCollisionNode
+HashMapIterClass	HashMapIter	fn	-	any	any	effect	invoke	HashMapIter
+HashMapLiteClass	HashMapLite	fn	-	any	any	effect	invoke	HashMapLite
+HashSetIterClass	HashSetIter	fn	-	any	any	effect	invoke	HashSetIter
+NeverEquivClass	NeverEquiv	fn	-	any	any	effect	invoke	NeverEquiv
+ObjMapClass	ObjMap	fn	-	any	any	effect	invoke	ObjMap
+ObjMapIteratorClass	ObjMapIterator	fn	-	any	any	effect	invoke	ObjMapIterator
+SetLiteClass	SetLite	fn	-	any	any	effect	invoke	SetLite
+VectorLiteClass	VectorLite	fn	-	any	any	effect	invoke	VectorLite
+VectorLiteIteratorClass	VectorLiteIterator	fn	-	any	any	effect	invoke	VectorLiteIterator
+VectorNodeClass	VectorNode	fn	-	any	any	effect	invoke	VectorNode
 ExceptionInfo	ExceptionInfo	fn	-	any	any	effect	invoke	ExceptionInfo
 ;;
 ;; Protocols

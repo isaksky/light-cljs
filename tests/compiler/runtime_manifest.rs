@@ -1044,8 +1044,8 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // their trie search, and of `seq`, `count`, `nth` and `get` for map entries
     // (light-cljs-373), and the 12 branches of `first` and `rest` for vectors,
     // maps, sets, queues and map entries and of `next` for vectors and map
-    // entries (light-cljs-375).
-    assert_eq!(checked, 324);
+    // entries (light-cljs-375), and the seq type of hash maps (light-cljs-983).
+    assert_eq!(checked, 325);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1299,6 +1299,12 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     // constructor (`publicHashSet`) took its map's kind (light-cljs-231).
     (
         "hashTraversal",
+        Kind::Units(&["PersistentHashMapValue", "publicHashSet", "putMember"]),
+    ),
+    // The seq type of a hash-map kind map, which `seqMap` reads beside
+    // `hashTraversal` (light-cljs-983).
+    (
+        "hashMapSeqType",
         Kind::Units(&["PersistentHashMapValue", "publicHashSet", "putMember"]),
     ),
     (

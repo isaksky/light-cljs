@@ -1694,36 +1694,54 @@ fn shared_profile_hash_map_updates_copy_only_changed_paths() {
         const check = (ok, label) => { if (!ok) throw new Error(label); };
         let phase = 0;
         for (const n of [32, 512, 4096]) {
-          let map = __rt.formMap(), set = __rt.formSet();
           const child = __rt.formVector(7), metadata = __rt.formMap('m', true);
-          for (let i = 0; i < n; i++) {
-            map = __rt.formAssoc(map, i, child); set = __rt.formConj(set, i);
-          }
-          map = __rt.formWithMeta(map, metadata); set = __rt.formWithMeta(set, metadata);
-          for (let operation = 0; operation < 7; operation++) {
-            globalThis.__lightSharedCells = core.sharedTaskCells();
-            __rt.need(713, phase++);
-            let result;
-            switch (operation) {
-              case 0: result = core.assoc(map, 0, 9); break;
-              case 1: result = core.assoc(map, -1, 9); break;
-              case 2: result = core.dissoc(map, 0); break;
-              case 3: result = core.conj(map, __rt.formVector(-1, 9)); break;
-              case 4: result = core.update(map, 0, () => 9); break;
-              case 5: result = core.conj(set, -1); break;
-              case 6: result = core.disj(set, 0); break;
+          // Two equal maps and sets, each updated once by each operation.
+          const twins = [0, 1].map(() => {
+            let map = __rt.formMap(), set = __rt.formSet();
+            for (let i = 0; i < n; i++) {
+              map = __rt.formAssoc(map, i, child); set = __rt.formConj(set, i);
             }
-            __rt.need(713, phase++);
-            check(__rt.formKind(result) === (operation < 5 ? 'map' : 'set'), 'native result');
-            check(core.meta(result) === metadata, 'metadata');
-            if (operation < 5) check(core.get(result, 1) === child && core.get(map, 0) === child, 'unchanged child/original');
-            const expected = operation === 0 || operation === 4 ? n : operation === 2 || operation === 6 ? n - 1 : n + 1;
-            check(core.count(result) === expected, 'updated count');
+            return [__rt.formWithMeta(map, metadata), __rt.formWithMeta(set, metadata)];
+          });
+          for (let operation = 0; operation < 7; operation++) {
+            for (const [map, set] of twins) {
+              globalThis.__lightSharedCells = core.sharedTaskCells();
+              __rt.need(713, phase++);
+              let result;
+              switch (operation) {
+                case 0: result = core.assoc(map, 0, 9); break;
+                case 1: result = core.assoc(map, -1, 9); break;
+                case 2: result = core.dissoc(map, 0); break;
+                case 3: result = core.conj(map, __rt.formVector(-1, 9)); break;
+                case 4: result = core.update(map, 0, () => 9); break;
+                case 5: result = core.conj(set, -1); break;
+                case 6: result = core.disj(set, 0); break;
+              }
+              __rt.need(713, phase++);
+              check(__rt.formKind(result) === (operation < 5 ? 'map' : 'set'), 'native result');
+              check(core.meta(result) === metadata, 'metadata');
+              if (operation < 5) check(core.get(result, 1) === child && core.get(map, 0) === child, 'unchanged child/original');
+              const expected = operation === 0 || operation === 4 ? n : operation === 2 || operation === 6 ? n - 1 : n + 1;
+              check(core.count(result) === expected, 'updated count');
+            }
           }
         }
         return 'ok';
     "#,
     );
+    eprintln!("each update of either twin, admitted bytes: {allocations:?}");
+    // An operation's smaller sample of its two runs, each on its own equal
+    // collection, so a copy or cache of the collection is in both. A
+    // runtime-wide buffer that the engine charges geometrically (about 70 KB
+    // here) grows in one run only, and which operation that falls in moves
+    // with the runtime's own size (light-cljs-983 moved it from `conj` into
+    // `update` and `disj` at 4,096 entries).
+    let allocations: Vec<usize> = allocations
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| pair[0].min(pair[1]))
+        .collect();
     eprintln!(
         "single updates at 32/512/4096 entries, admitted bytes: {:?}",
         allocations.chunks(7).collect::<Vec<_>>()

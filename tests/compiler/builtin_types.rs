@@ -94,7 +94,7 @@ fn map_seq_types_resolve_and_dispatch_as_upstream() {
                     (defmethod kind cljs.core/NodeSeq [_] :node-seq)
                     (defmethod kind :default [_] :other)"#;
     let body = r#"(let [small (seq {:a 1 :b 2})
-                          large (seq (into {} (map (fn [x] [x x]) (range 20))))]
+                          large (seq (into {} (map (fn [x] [x x]) (range 10))))]
                       [(kind small) (kind (rest small)) (kind large) (kind (seq [1 2]))
                        (kind (seq #{1})) (instance? PersistentArrayMapSeq small)
                        (instance? IndexedSeq small) (= PersistentArrayMapSeq (type small))
@@ -103,6 +103,113 @@ fn map_seq_types_resolve_and_dispatch_as_upstream() {
     let expected = "[:array-map-seq :array-map-seq :node-seq :other :other true false true true :extended false 2 true [[:a 1] [:b 2]] [[:a 1] [:b 2]]]";
     every_level(&format!("{definitions} (pr-str {body})"), expected);
     // Macro code sees the same types.
+    every_level(
+        &format!(
+            "{definitions} (defmacro result [] (list (quote quote) {body})) (pr-str (result))"
+        ),
+        expected,
+    );
+}
+
+#[test]
+fn internal_core_types_that_values_have_resolve_and_dispatch_as_upstream() {
+    // Upstream names the seq of a hash map whose root is an array node
+    // ArrayNodeSeq, a reverse seq RSeq, a sorted map's entries BlackNode and
+    // RedNode, and its transients TransientVector, TransientArrayMap,
+    // TransientHashMap and TransientHashSet; libraries extend protocols to
+    // them (light-cljs-983). A sorted map's entry is a MapEntry in light-cljs,
+    // so the node names resolve to that type.
+    let definitions = r#"(defprotocol Tag (tag [x]))
+                    (extend-protocol Tag
+                      cljs.core/ArrayNodeSeq (tag [_] :array-node-seq)
+                      cljs.core/NodeSeq (tag [_] :node-seq)
+                      cljs.core/RSeq (tag [_] :rseq)
+                      cljs.core/BlackNode (tag [_] :tree-entry)
+                      cljs.core/RedNode (tag [_] :tree-entry)
+                      cljs.core/TransientVector (tag [_] :transient-vector)
+                      cljs.core/TransientArrayMap (tag [_] :transient-array-map)
+                      cljs.core/TransientHashMap (tag [_] :transient-hash-map)
+                      cljs.core/TransientHashSet (tag [_] :transient-hash-set))
+                    (defmulti kind type)
+                    (defmethod kind cljs.core/ArrayNodeSeq [_] :array-node-seq)
+                    (defmethod kind cljs.core/RSeq [_] :rseq)
+                    (defmethod kind :default [_] :other)"#;
+    // Keys 0 to 19 fill 20 of a root's 32 slots, so upstream's root is an
+    // array node; keys 0 to 9 leave it a bitmap node.
+    let body = r#"(let [large (seq (into {} (map (fn [x] [x x]) (range 20))))
+                          medium (seq (into {} (map (fn [x] [x x]) (range 10))))
+                          reversed (rseq [1 2 3])]
+                      [(tag large) (tag (rest large)) (tag medium) (kind large) (kind medium)
+                       (instance? ArrayNodeSeq large) (= ArrayNodeSeq (type large))
+                       (instance? NodeSeq large) (count large) (= (range 20) (sort (map key large)))
+                       (tag reversed) (kind reversed) (tag (rseq (subvec [1 2 3] 1)))
+                       (tag (rseq (seq (array 1 2)))) (instance? IndexedSeq reversed) (vec reversed)
+                       (vec (js/Array.from reversed)) (count reversed) (tag (rest reversed))
+                       (tag (first (sorted-map :a 1))) (key (first (sorted-map :a 1)))
+                       (tag (transient [])) (tag (transient {}))
+                       (tag (transient (zipmap (range 10) (range 10)))) (tag (transient #{}))
+                       (satisfies? Tag (transient #{})) (satisfies? Tag (seq [1 2]))])"#;
+    let expected = "[:array-node-seq :array-node-seq :node-seq :array-node-seq :other true true false 20 true \
+                    :rseq :rseq :rseq :rseq false [3 2 1] [3 2 1] 3 :rseq :tree-entry :a \
+                    :transient-vector :transient-array-map :transient-hash-map :transient-hash-set \
+                    true false]";
+    every_level(&format!("{definitions} (pr-str {body})"), expected);
+    // Macro code sees the same types.
+    every_level(
+        &format!(
+            "{definitions} (defmacro result [] (list (quote quote) {body})) (pr-str (result))"
+        ),
+        expected,
+    );
+}
+
+#[test]
+fn internal_core_types_that_no_value_has_accept_inert_extensions() {
+    // Upstream code extends protocols to cljs.core types that no light-cljs
+    // value has: lite mode's collections (light-cljs has no lite mode; this
+    // is cljs.spec.alpha's `specize*` on SetLite), and the trie nodes,
+    // iterators and helpers of upstream's own collections, which light-cljs
+    // builds differently. Each name resolves to a type of its own, so the
+    // extension compiles and never dispatches (light-cljs-983).
+    let names = "ArrayList ArrayNode ArrayNodeIterator BitmapIndexedNode Box HashCollisionNode \
+                 HashMapIter HashMapLite HashSetIter NeverEquiv ObjMap ObjMapIterator SetLite \
+                 VectorLite VectorLiteIterator VectorNode";
+    let qualified: Vec<String> = names
+        .split_whitespace()
+        .map(|name| format!("cljs.core/{name}"))
+        .collect();
+    let types = qualified.join(" ");
+    let extensions: String = qualified
+        .iter()
+        .map(|name| format!("{name} (lite [_] :lite) "))
+        .collect();
+    let definitions = format!(
+        r#"(defprotocol Specize (specize* [x] [x form]))
+           (extend-protocol Specize
+             cljs.core/SetLite
+             (specize* ([s] :lite) ([s form] :lite))
+             default
+             (specize* ([s] :default) ([s form] :default)))
+           (defprotocol Lite (lite [x]))
+           (extend-protocol Lite {extensions})
+           (defmulti kind type)
+           (defmethod kind cljs.core/SetLite [_] :lite)
+           (defmethod kind cljs.core/VectorLite [_] :lite)
+           (defmethod kind :default [_] :other)"#
+    );
+    let body = format!(
+        r#"(let [types [{types}]
+                 values [#{{1}} (hash-set 1 2) (set (range 20)) [] {{}} (zipmap (range 20) (range 20))
+                         (sorted-map :a 1) (iter {{:a 1}}) (iter #{{1}}) (transient #{{}})]]
+             [(specize* #{{1}}) (specize* #{{1}} :form) (map kind values)
+              (some (fn [v] (satisfies? Lite v)) values)
+              (some (fn [t] (some (fn [v] (instance? t v)) values)) types)
+              (count types) (count (distinct types)) (every? fn? types)
+              (= cljs.core/SetLite cljs.core/PersistentHashSet)])"#
+    );
+    let expected = "[:default :default (:other :other :other :other :other :other :other :other :other :other) \
+                    nil nil 16 16 true false]";
+    every_level(&format!("{definitions} (pr-str {body})"), expected);
     every_level(
         &format!(
             "{definitions} (defmacro result [] (list (quote quote) {body})) (pr-str (result))"

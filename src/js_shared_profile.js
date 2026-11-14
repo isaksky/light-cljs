@@ -565,7 +565,7 @@
     return value;
   }
   //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: first, rest, seq
-  //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal, NodeSeqType,
+  //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal,
   //@ PersistentArrayMapSeqType, publicCollectionSlots, view
   // The V8 profile's: a map entry is an engine entry (`mapEntry`), so the
   // seq of an engine map crosses into macro code.
@@ -573,7 +573,8 @@
     const treeSlots = publicCollectionSlots.get(value);
     if (treeSlots && "tree" in treeSlots) return kindHooks.seqTree(treeSlots);
     const entries = mapTraversal(value), kind = mapKinds.get(value);
-    return entries.length ? view(kind === "hash-map" ? NodeSeqType : kind === "sorted-map" ? kindHooks.sortedMapSeq
+    return entries.length ? view(kind === "hash-map" ? kindHooks.hashMapSeqType(value)
+      : kind === "sorted-map" ? kindHooks.sortedMapSeq
       : kind === "array-map" ? PersistentArrayMapSeqType : IndexedSeqValue,
       Object.freeze(entries.map(entry => mapEntry(entry.key, entry.value))), 0, false, kind) : null;
   };

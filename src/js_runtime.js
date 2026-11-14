@@ -507,6 +507,44 @@
   //@unit PersistentArrayMapSeqType effect requires: builtinType, sequencePrototype
   // The seq of an array map, as NodeSeqType is a hash map's.
   const PersistentArrayMapSeqType = builtinType(function () {}, sequencePrototype);
+  //@unit ArrayNodeSeqType effect requires: builtinType, sequencePrototype
+  const ArrayNodeSeqType = builtinType(function () {}, sequencePrototype);
+  //@unit RSeqType effect requires: builtinType, sequencePrototype
+  const RSeqType = builtinType(function () {}, sequencePrototype);
+  //@unit ArrayList
+  // Upstream types no light-cljs value has (lite mode's, and its collections'
+  // internals): a protocol extended to one never dispatches.
+  function ArrayList() {}
+  //@unit ArrayNode
+  function ArrayNode() {}
+  //@unit ArrayNodeIterator
+  function ArrayNodeIterator() {}
+  //@unit BitmapIndexedNode
+  function BitmapIndexedNode() {}
+  //@unit Box
+  function Box() {}
+  //@unit HashCollisionNode
+  function HashCollisionNode() {}
+  //@unit HashMapIter
+  function HashMapIter() {}
+  //@unit HashMapLite
+  function HashMapLite() {}
+  //@unit HashSetIter
+  function HashSetIter() {}
+  //@unit NeverEquiv
+  function NeverEquiv() {}
+  //@unit ObjMap
+  function ObjMap() {}
+  //@unit ObjMapIterator
+  function ObjMapIterator() {}
+  //@unit SetLite
+  function SetLite() {}
+  //@unit VectorLite
+  function VectorLite() {}
+  //@unit VectorLiteIterator
+  function VectorLiteIterator() {}
+  //@unit VectorNode
+  function VectorNode() {}
   //@unit treeMapSeqConstructor.type effect: treeMapSeqConstructor requires: builtinType,
   //@ sequencePrototype, treeMapSeqConstructor
   builtinType(treeMapSeqConstructor, sequencePrototype);
@@ -977,13 +1015,14 @@
   kindHooks.seqVector = (value, store) => !store.cnt ? null : store.cnt <= 32 ? view(IndexedSeqValue, vectorChunk(value, 0), 0, true)
     : ChunkedSeqValue(value, vectorChunk(value, 0), 0, 0, null, null);
   //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: first, rest, seq
-  //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal, NodeSeqType,
+  //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal,
   //@ PersistentArrayMapSeqType, publicCollectionSlots, view
   kindHooks.seqMap = value => {
     const treeSlots = publicCollectionSlots.get(value);
     if (treeSlots && "tree" in treeSlots) return kindHooks.seqTree(treeSlots);
     const entries = mapTraversal(value), kind = mapKinds.get(value);
-    return entries.length ? view(kind === "hash-map" ? NodeSeqType : kind === "sorted-map" ? kindHooks.sortedMapSeq
+    return entries.length ? view(kind === "hash-map" ? kindHooks.hashMapSeqType(value)
+      : kind === "sorted-map" ? kindHooks.sortedMapSeq
       : kind === "array-map" ? PersistentArrayMapSeqType : IndexedSeqValue,
       Object.freeze(entries.map(entry => mapEntry(entry.key, entry.value))), 0, false, kind) : null;
   };
@@ -2587,6 +2626,14 @@
       hashTraversals.set(entries, Object.freeze(ordered));
     }
     return hashTraversals.get(entries);
+  };
+  //@unit PersistentHashMapValue.seqType effect: PersistentHashMapValue, publicHashSet, putMember
+  //@ when: first, rest, seq requires: ArrayNodeSeqType, kindHooks, maps, NodeSeqType
+  // As upstream's: an ArrayNodeSeq where the trie's root is an array node (17+
+  // slots). Positional entries (an engine map's) are not hashed again: NodeSeq.
+  kindHooks.hashMapSeqType = value => {
+    const entries = maps.get(value);
+    return !Array.isArray(entries) && entries.root?.kind === "array" ? ArrayNodeSeqType : NodeSeqType;
   };
   //@unit hashEntryIndex requires: ensureHashRoot, hash, hashNodeFind
   function hashEntryIndex(entries, key, keyHash) {
@@ -5151,7 +5198,7 @@
     throw new Error("No protocol method IStack.-pop defined for this value");
   }
   //@unit rseq requires: IndexedSeqValue, maps, methodKeys, protocolHooks, publicCollectionSlots,
-  //@ sortedComparators, toArray, treeMapSeqConstructor, vectorItems, vectors, view, views
+  //@ RSeqType, sortedComparators, toArray, treeMapSeqConstructor, vectorItems, vectors, view, views
   function rseq(value) {
     const method = protocolHooks.builtin?.(value, methodKeys[47], 1);
     if (method) return method.call(value, value);
@@ -5161,7 +5208,8 @@
     // whose seq a protocol implementation replaces, walks its seq, as before.
     const items = Object.freeze((vectors.has(value) && !publicCollectionSlots.has(value)
       && !protocolHooks.publicMethod?.(value, methodKeys[52], 1, true) ? vectorItems(value) : toArray(value)).reverse());
-    return items.length ? maps.has(value) ? view(treeMapSeqConstructor, items, 0, false, "sorted-map") : view(IndexedSeqValue, items, 0, false, "reverse") : null;
+    return items.length ? maps.has(value) ? view(treeMapSeqConstructor, items, 0, false, "sorted-map")
+      : view(sortedComparators.has(value) ? IndexedSeqValue : RSeqType, items, 0, false, "reverse") : null;
   }
   //@unit mapProjection requires: cells, emptyList, entryKey, entryVal, first, methodKeys, next,
   //@ protocolHooks, seq, sequencePrototype
@@ -9424,6 +9472,10 @@
   //@unit PersistentArrayMapSeqType.members effect: PersistentArrayMapSeqType requires: PersistentArrayMapSeqType,
   //@ seqMethods
   PersistentArrayMapSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit ArrayNodeSeqType.members effect: ArrayNodeSeqType requires: ArrayNodeSeqType, seqMethods
+  ArrayNodeSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
+  //@unit RSeqType.members effect: RSeqType requires: RSeqType, seqMethods
+  RSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit ChunkedCons.members effect: ChunkedCons requires: ChunkedCons, seqMethods
   ChunkedCons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit ChunkedCons.fields effect: ChunkedCons when: resetMeta, upstreamMembers requires: cells,
@@ -10432,6 +10484,9 @@
   //@unit loadFile requires: invalidArity
   const loadFile = function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); };
   //@unit core requires: abs, aclone, add, addMethodProtocol, addTap, addWatch, addWatchProtocol,
+  //@ ArrayList, ArrayNode, ArrayNodeIterator, ArrayNodeSeqType, BitmapIndexedNode, Box,
+  //@ HashCollisionNode, HashMapIter, HashMapLite, HashSetIter, NeverEquiv, ObjMap, ObjMapIterator,
+  //@ SetLite, VectorLite, VectorLiteIterator, VectorNode,
   //@ aget, alength, allNs, alterMeta, ancestors, apply, applyTo, array, arrayChunk, arrayMap,
   //@ arraySeq, ASeq, aset, assoc, assocBang, assocBangProtocol, assocIn, assocNBangProtocol,
   //@ assocNProtocol, assocProtocol, asTransientProtocol, Atom, atom, atomFactory, bases, bitAnd,
@@ -10498,7 +10553,7 @@
   //@ reduceProtocol, reductions, reFind, registerReaderNamespace, rem, reMatches, remove,
   //@ removeAllMethods, removeMethodProtocol, removeTap, removeWatch, removeWatchProtocol,
   //@ rePattern, repeat, repeatedly, RepeatValue, replace, replicate, requiredGet, reSeq, reset,
-  //@ resetMeta, resetProtocol, resetVals, rest, restProtocol, reverse, rotateLeft, rseq,
+  //@ resetMeta, resetProtocol, resetVals, rest, restProtocol, reverse, rotateLeft, rseq, RSeqType,
   //@ rseqProtocol, rsubseq, run, satisfies, second, selectKeys, seq, SeqIter, seqIter,
   //@ SeqIterFactory, seqProtocol, seqToMap, sequence, sequenceIterator, set, setPrintErrFn,
   //@ setPrintFn, setValidator, short, shorts, some, someFn, someVals, sort, sortBy, sortedMap,
@@ -10532,7 +10587,11 @@
     PersistentQueue: PersistentQueueValue, Repeat: RepeatValue,
     Cycle: CycleValue, Iterate: IterateValue, Range: RangeValue,
     IntegerRange: IntegerRangeValue, NodeSeq: NodeSeqType,
-    PersistentArrayMapSeq: PersistentArrayMapSeqType,
+    PersistentArrayMapSeq: PersistentArrayMapSeqType, ArrayNodeSeq: ArrayNodeSeqType,
+    RSeq: RSeqType, BlackNode: MapEntryType, RedNode: MapEntryType,
+    ArrayList, ArrayNode, ArrayNodeIterator, BitmapIndexedNode, Box, HashCollisionNode,
+    HashMapIter, HashMapLite, HashSetIter, NeverEquiv, ObjMap, ObjMapIterator, SetLite,
+    VectorLite, VectorLiteIterator, VectorNode,
     PersistentTreeMapSeq: treeMapSeqConstructor, Keyword: KeywordValue,
     Symbol: SymbolValue, Reduced, UUID: UUIDType,
     Delay, Eduction,
