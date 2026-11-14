@@ -2018,6 +2018,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- resetMulti",
             "demandProtocol <- satisfies",
             "demandProtocol <- setDeclarationDemand",
+            "demandProtocol <- storeProtocol",
             "first <- first.branches",
             "first <- first.protocol",
             "gensymCounter <- gensym",

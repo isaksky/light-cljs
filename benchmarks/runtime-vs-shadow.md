@@ -552,3 +552,75 @@ Only TodoMVC's rows moved beyond their ranges. Ranges are in brackets.
 - **Output size:** every program keeping a store keeps the brand class, about
   220 to 390 bytes at advanced (`map-only` 8,378 to 8,689 bytes); the size
   ratchet notes it in tests/support/ratchet_fixtures.rs.
+
+## 2026-11-14: the protocol hooks on the runtime's own values (light-cljs-998)
+
+**Change.** Once a program keeps `extend-type` or `specify!`, the generic
+predicates and operations (`vector?`, `seq?`, `map?`, `map-entry?`, `cons`,
+`count`, `nth` and others) ask the `satisfies` and `implements` hooks. These
+ran the full protocol test on every call. Now a value whose kind tag names
+one of the runtime's collection or seq stores takes one step, as
+light-cljs-988 did for `publicMethod`:
+- the protocol's mask bit, then its marker, are read as before, with the
+  same declaration demands;
+- otherwise the native test decides, cached per store for `ISeqable`,
+  `ISeq`, `INext`, `IMeta` and `ILookup`. The full test gives the same
+  answer: the value is the runtime's own, so `extend-type` of a host type,
+  `object` or `default` cannot reach it.
+
+Only the kind tag is read, not the stores that are not exact. Probing the
+maps' store asks whether a value is a record, which at advanced can walk a
+host value's prototype chain and so run a Proxy's `getPrototypeOf` trap.
+Hash maps and sets, records, keywords, numbers and host values still take the
+full test. `builtin_types::protocol_hooks_answer_runtime_values_as_the_full_lookup`
+pins 21 predicates plus `count`, `nth` and `cons` over 47 values to master
+`e379d6c5`'s answers. Each of its three programs extends runtime types, host
+types, `object` and `default`, uses `specify!`, or writes marked and unmarked
+slots and a mask bit from JavaScript. The test also checks how many times a
+Proxy is asked anything, at every level.
+
+**Setup.** The kit and machine of the 2026-11-14 section above, with these
+differences:
+- before is `light-cljs-e379d6c5` (master) and after is `light-cljs-cdf39aae`,
+  this change before its commits were squashed. The Sol review then made
+  the kind table's entries all its own (an index a host gives
+  `Array.prototype` had reached it); the per-call code measured here is
+  otherwise the landed one;
+- each output was built with its binary just before its runs;
+- before and after ran back to back on each workload, each alternating with
+  shadow-cljs.
+
+10 runs of each. **Unreserved:** peer workers were active. The 1-minute load
+average before a run was 4.0 to 5.5 for workload 200k; for the re-frame-shaped
+app it was 3.7 to 10.7 before and 5.6 to 12.6 after; for TodoMVC 5.1 to 11.7
+before and 4.0 to 5.9 after. Raw results are in
+`research/shadow-credibility/runtime-998/cdf39aae`.
+
+Only the rows that moved are shown. Ranges are in brackets.
+
+| Workload | light-cljs before | light-cljs after | change | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k, steady state per iteration | 98.8 ms | 95.2 ms | -4% | 3.94 | 3.75 |
+| workload 200k, wall time at 10 iterations | 1.430 s (1.415-1.441) | 1.373 s (1.357-1.398) | -4% | 2.34 | 2.30 |
+| workload 200k, wall time at 40 iterations | 4.312 s (4.070-4.374) | 4.167 s (4.100-4.240) | -3% | 3.31 | 3.17 |
+| TodoMVC, add 1,000 todos | 6,583 ms (6,497-6,719) | 6,473 ms (6,421-6,515) | -2% | 7.07 | 6.95 |
+| TodoMVC, whole run wall time | 7.25 s (7.15-7.41) | 7.12 s (7.06-7.16) | -2% | 4.80 | 4.84 |
+
+- **Small gains.** Only workload 200k at 10 iterations moved clear of its
+  range. The other rows' ranges overlap. TodoMVC's whole-run ratio got worse
+  because shadow-cljs's runs were faster too, under a lower load.
+- **The re-frame-shaped 200k app did not move beyond its ranges.** Its wall
+  time at 10 iterations went from 13.101 s (12.577-13.413) to 12.428 s
+  (11.420-15.191), and steady state from 1,087 to 998 ms per iteration.
+  The after runs had the higher load. shadow-cljs's steady state also fell,
+  from 314.5 to 270.6 ms, so light/shadow went from 3.46 to 3.69.
+- **Unchanged within their ranges:** first output, peak memory, the
+  JavaScript heap, and TodoMVC's other steps.
+- **Where the time went.** In a sampling profile of workload 200k at 30
+  iterations (`--pseudo-names`), `implementsProtocol` falls from 4.6% to 0.6%
+  of inclusive time and `satisfies` from 1.7% to 0.1%. The hooks themselves,
+  with the new one-step answer, take 2.7% inclusive. The step reads the mask
+  bit and marker that observe extensions.
+- **Output size:** advanced output does not change for programs without
+  `extend-type` or `specify!`. The readable runtime grows about 1,550 bytes,
+  as noted in tests/support/ratchet_fixtures.rs.

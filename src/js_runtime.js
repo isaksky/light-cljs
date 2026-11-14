@@ -7038,26 +7038,38 @@
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
     return dispatch ?? cell.natives?.get(nativeType(value))?.get(arity) ?? cell.natives?.get("_")?.get(arity);
   }
-  //@unit payloadStore requires: cells, lazyValues, maps, payloads, queues, sets, vectors, views
+  //@unit payloadStores requires: cells, lazyValues, maps, queues, sets, vectors, views
+  // `payloadStore`'s stores, numbered from 1, and the store each kind
+  // (`payloads`) names, else 0: each entry its own, so that no index a host
+  // gives `Array.prototype` is read (the Sol review of light-cljs-998).
+  const payloadStores = (stores => {
+    const byKind = Array(32).fill(0);
+    stores.forEach((store, i) => {
+      if (Object.hasOwn(store, "kindBits")) for (let kind = 1; kind < 31; kind++) if (store.kindBits >> kind & 1) byKind[kind] = i + 1;
+    });
+    return {stores, byKind};
+  })([views, cells, vectors, maps, lazyValues, sets, queues]);
+  //@unit payloadStore requires: payloads, payloadStores
   // Which store of the runtime's collections and seqs holds a value, by a
   // number from 1 to 7, else 0. These are brand checks, which read no
   // property of the value, so no getter or Proxy trap of a host value runs.
   // A value is in one payload store (`countedValue`). The value's kind
   // (`payloads`) names an exact store at once; the stores that are not
   // exact are then probed in this order (light-cljs-990).
-  const payloadStore = (stores => {
-    const byKind = [], probed = [];
-    stores.forEach((store, i) => {
-      if (Object.hasOwn(store, "kindBits")) for (let kind = 1; kind < 31; kind++) if (store.kindBits >> kind & 1) byKind[kind] = i + 1;
-      if (!(Object.hasOwn(store, "exact") && store.exact === true)) probed.push(store, i + 1);
-    });
+  const payloadStore = (({stores, byKind}) => {
+    const probed = [];
+    stores.forEach((store, i) => { if (!(Object.hasOwn(store, "exact") && store.exact === true)) probed.push(store, i + 1); });
     return value => {
       const number = byKind[payloads.kind(value)];
-      if (number !== undefined) return number;
+      if (number) return number;
       for (let i = 0; i < probed.length; i += 2) if (probed[i].has(value)) return probed[i + 1];
       return 0;
     };
-  })([views, cells, vectors, maps, lazyValues, sets, queues]);
+  })(payloadStores);
+  //@unit kindStore requires: payloads, payloadStores
+  // `payloadStore` from the kind alone, else 0: probing the maps' store asks
+  // if a host value is a record, which may run a Proxy's `getPrototypeOf`.
+  const kindStore = (byKind => value => byKind[payloads.kind(value)])(payloadStores.byKind);
   //@unit storeNativeProtocols
   // The core protocols of `publicMethodInfo`'s `stores`.
   const storeNativeProtocols = new Set(["ISeqable", "ISeq", "INext", "IMeta", "ILookup"]);
@@ -7107,6 +7119,20 @@
     if (!direct && (directOnly || (fast && (Array.isArray(value) || typeof value === "string")))) return undefined;
     if (!direct && !satisfies(protocol, value)) return undefined;
     return publicDeclared(value, key, arity, keyMethod(value, key, arity));
+  }
+  //@unit storeProtocol requires: demandMethod, demandProtocol, protocolSentinel
+  // What `satisfies` (`satisfying`) or `implementsProtocol` gives a value of
+  // `store` (`kindStore`), with the same reads and demands: mask bit, then
+  // marker, else the native test, as the value is the runtime's own
+  // (`ownedProtocolValue`), which `extend-type` of host types, `object` or
+  // `default` cannot reach (light-cljs-998).
+  function storeProtocol(info, value, store, satisfying) {
+    const name = info.name, mask = info.mask, stores = info.stores;
+    if (satisfying) demandProtocol(name, value);
+    if (mask && (value[mask[0]] & mask[1])) return true;
+    demandMethod(name, 0, value);
+    if (value[info.marker] === protocolSentinel) return true;
+    return stores ? stores[store] ?? (stores[store] = !!info.native(value)) : !!info.native?.(value);
   }
   //@unit publicDeclared requires: IMeta, protocolHooks, publicMethodInfo
   // The rest of `publicMethod` once the value is in the key's protocol, given
@@ -9811,16 +9837,23 @@
   //@ boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isEmpty,
   //@ isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable,
   //@ isReversible, isSeq, isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs,
-  //@ makeMap.equiv, makeSet.equiv, mapConj, mapProjection, nth, reduce, sequenceIterator requires: protocolHooks,
-  //@ publicMethodInfo, satisfies
+  //@ makeMap.equiv, makeSet.equiv, mapConj, mapProjection, nth, reduce, sequenceIterator requires: kindStore,
+  //@ protocolHooks, publicMethodInfo, satisfies, storeProtocol
   // ... and with them also what those give the runtime's and host values.
   // Each reads the protocol of a resolved key (`methodKey`) from its `info`.
-  protocolHooks.satisfies = (key, value) => satisfies((key.info || (key.info = publicMethodInfo(key.key))).protocol, value);
+  // A value of a payload store's kind (`kindStore`) takes one step.
+  protocolHooks.satisfies = (key, value) => {
+    const info = key.info || (key.info = publicMethodInfo(key.key)), store = info.name ? kindStore(value) : 0;
+    return store ? storeProtocol(info, value, store, true) : satisfies(info.protocol, value);
+  };
   //@unit protocolHooks.implements effect: extendType, extendInstance when: chunkNext, concatMany,
   //@ concatTwo, cons, count, drop, filter, hash, indexedSequence, into, isChunkedSeq, isMapEntry,
-  //@ isUuid, mapSeq, name, namespace, nth, printsMeta requires: implementsProtocol, protocolHooks,
-  //@ publicMethodInfo
-  protocolHooks.implements = (key, value) => implementsProtocol((key.info || (key.info = publicMethodInfo(key.key))).protocol, value);
+  //@ isUuid, mapSeq, name, namespace, nth, printsMeta requires: implementsProtocol, kindStore,
+  //@ protocolHooks, publicMethodInfo, storeProtocol
+  protocolHooks.implements = (key, value) => {
+    const info = key.info || (key.info = publicMethodInfo(key.key)), store = info.name ? kindStore(value) : 0;
+    return store ? storeProtocol(info, value, store, false) : implementsProtocol(info.protocol, value);
+  };
   //@unit protocolHooks.countProtocol effect: installMethods when: accumulatingCount requires: countProtocol,
   //@ protocolHooks
   // One install per core dispatcher the generic operations call.

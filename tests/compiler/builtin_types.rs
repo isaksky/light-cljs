@@ -2431,6 +2431,274 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
     }
 }
 
+/// light-cljs-998: once a program keeps `extend-type` or `specify!`, the
+/// generic predicates and operations ask the `satisfies` and `implements`
+/// hooks, which answer a value of the runtime's payload stores in one step.
+/// Each program extends runtime types, host types, `object` or `default`, or
+/// writes marked and unmarked slots and a mask bit from JavaScript, then
+/// prints, for runtime, host and forged values and values `specify!` gave
+/// protocols, the predicates of the `satisfies` hook (`vector?` to `empty?`),
+/// those of the `implements` hook (`map-entry?`, `chunked-seq?`, `uuid?`),
+/// and `count`, `nth` and `cons`, which also ask the hooks; then what a Proxy
+/// was asked, and how many times. The expected values are what master
+/// `e379d6c5`'s runtime prints.
+#[test]
+fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
+    let values = r#"
+        (let [log (array)
+              handler (js-obj "get" (fn [t k] (.push log (str "get:" (.toString k))) (aget t k))
+                              "has" (fn [t k] (.push log (str "has:" (.toString k))) (js-in k t))
+                              "getPrototypeOf" (fn [t] (.push log "proto") (js/Object.getPrototypeOf t)))
+              proxy (js/Proxy. (js-obj) handler)
+              forge (fn [v] (js/Object.create (js/Object.getPrototypeOf v)))
+              e (first {:a 1})
+              values [[1 2] e (list 1) () (lazy-seq [1]) (cons 1 nil) (range 3) (range 2.5) {:a 1}
+                      (zipmap (range 20) (range 20)) (sorted-map :a 1) #{1} (into #{} (range 20)) (sorted-set 1)
+                      (conj cljs.core/PersistentQueue.EMPTY 1) (transient []) (subvec [1 2 3] 1) (->R 1)
+                      (seq [1 2]) (seq {:a 1}) (seq (sorted-map :a 1)) (rseq [1 2]) (seq (zipmap (range 20) (range 20)))
+                      (iterate inc 0) (repeat 1) (cycle [1]) (reduced 1) (atom 1) :k 'sym "s" 1 nil (array 1)
+                      (js-obj) inc (uuid "00000000-0000-0000-0000-000000000000") (T.) proxy
+                      (forge [1]) (forge (list 1)) (forge {:a 1}) (forge (range 3)) (forge (seq [1 2]))
+                      cljs.core/PersistentQueue.EMPTY (specify! {:s 1} ISequential IList) (specify! [1] ICounted (-count [_] 5))]
+              labels (quote [vector entry list empty-list lazy-seq cons range float-range array-map hash-map sorted-map set hash-set sorted-set queue transient-vector subvec record vector-seq map-seq sorted-map-seq rseq hash-map-seq iterate repeat cycle reduced atom keyword symbol string number null array object fn uuid type proxy forged-vector forged-list forged-map forged-range forged-seq empty-queue specified-map specified-vector])
+              preds [vector? seq? map? set? seqable? coll? sequential? counted? associative? list? sorted?
+                     reversible? record? ifn? fn? indexed? reduceable? empty? map-entry? chunked-seq? uuid?]
+              attempt (fn [f] (try (f) (catch :default _ :error)))
+              row (fn [l v]
+                    (str l " " (apply str (map #(case (attempt (fn [] (% v))) :error "e" true 1 0) preds))
+                         ;; `count` of an infinite seq would not return.
+                         (when-not (#{(quote iterate) (quote repeat) (quote cycle)} l)
+                           (str " " (pr-str (attempt #(count v))) " " (pr-str (attempt #(nth v 0 :none)))
+                                " " (pr-str (attempt #(count (cons 0 v))))))))]
+          (str (.join (into-array (map row labels values)) "\n") "\n"
+               (.join (into-array (sort (distinct (array-seq log)))) " ") "\n" (.-length log)))
+    "#;
+    for (extensions, expected, reads) in [
+        (
+            // Runtime types extended with protocols they lack, ones they
+            // have natively, and a marker protocol; and `specify!`.
+            "(extend-type PersistentVector ISeq (-first [_] :vf) (-rest [_] ()))
+             (extend-protocol ICounted LazySeq (-count [_] 7) Range (-count [_] 8))
+             (extend-type PersistentHashSet IList)
+             (extend-type Range IMapEntry (-key [_] 1) (-val [_] 2))
+             (extend-type PersistentTreeMap IVector (-assoc-n [_ _ _] nil))
+             (extend-type Cons IChunkedSeq (-chunked-first [_] nil) (-chunked-rest [_] ()))
+             (extend-type Keyword ISequential)
+             (specify! cljs.core/PersistentQueue.EMPTY IMap (-dissoc [q _] q))",
+            concat!(
+                "vector 110011111001010110000 2 1 3\n",
+                "entry 100011111001010110100 2 :a 3\n",
+                "list 010011110100000010000 1 1 2\n",
+                "empty-list 010011110100000011000 0 :none 1\n",
+                "lazy-seq 010011110000000010000 7 :vf 2\n",
+                "cons 010011110100000010000 1 1 2\n",
+                "range 010011110000000110010 3 0 4\n",
+                "float-range 010011110000000010110 8 0 9\n",
+                "array-map 001011011000010010000 1 :error 2\n",
+                "hash-map 001011011000010010000 20 :error 21\n",
+                "sorted-map 101011011011010010000 1 :error 2\n",
+                "set 000111010100010000000 1 :error 2\n",
+                "hash-set 000111010100010000000 20 :error 21\n",
+                "sorted-set 000111010011010000000 1 :error 2\n",
+                "queue 010011110000000000000 1 1 2\n",
+                "transient-vector 000000010000010101000 0 :none :error\n",
+                "subvec 100011111001010110000 2 2 3\n",
+                "record 001011011000100000000 1 :error 2\n",
+                "vector-seq 010011110001000110000 2 1 3\n",
+                "map-seq 010011110000000010000 1 [:a 1] 2\n",
+                "sorted-map-seq 010011110000000010000 1 [:a 1] 2\n",
+                "rseq 010011100000000010000 2 2 3\n",
+                "hash-map-seq 010011100000000010000 20 [0 0] 21\n",
+                "iterate 010011100000000010000\n",
+                "repeat 010011100000000010000\n",
+                "cycle 010011100000000010000\n",
+                "reduced 00000000000000000e000 :error :error :error\n",
+                "atom 00000000000000000e000 :error :error :error\n",
+                "keyword 00000010000001000e000 :error :error :error\n",
+                "symbol 00000000000001000e000 :error :error :error\n",
+                "string 000010000000000000000 1 \"s\" 2\n",
+                "number 00000000000000000e000 :error :error :error\n",
+                "null 000010010000000001000 0 :none 1\n",
+                "array 000010000000000000000 1 1 2\n",
+                "object 00000000000000000e000 :error :error :error\n",
+                "fn 00000000000001100e000 :error :error :error\n",
+                "uuid 00000000000000000e001 :error :error :error\n",
+                "type 00000000000000000e000 :error :error :error\n",
+                "proxy 00000000000000000e000 :error :error :error\n",
+                "forged-vector 01001000000000000e000 :error :error :error\n",
+                "forged-list 00001000000000000e000 :error :error :error\n",
+                "forged-map 00001000000000000e000 :error :error :error\n",
+                "forged-range 00001000000000000e000 :error :error :error\n",
+                "forged-seq 00001000000000000e000 :error :error :error\n",
+                "empty-queue 010011110000000001000 0 :none 1\n",
+                "specified-map 001011111100010010000 1 [:s 1] 2\n",
+                "specified-vector 110011111001010110000 5 1 2\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$ get:cljs$core$IAssociative$ get:cljs$core$IChunkedSeq$ get:cljs$core$ICollection$ get:cljs$core$ICounted$ get:cljs$core$ICounted$_count$arity$1 get:cljs$core$IFn$ get:cljs$core$IIndexed$ get:cljs$core$IList$ get:cljs$core$IMap$ get:cljs$core$IMapEntry$ get:cljs$core$IRecord$ get:cljs$core$IReduce$ get:cljs$core$IReversible$ get:cljs$core$ISeq$ get:cljs$core$ISeqable$ get:cljs$core$ISequential$ get:cljs$core$ISet$ get:cljs$core$ISorted$ get:cljs$core$IUUID$ get:cljs$core$IVector$ get:cljs$lang$protocol_mask$partition0$ get:cljs$lang$protocol_mask$partition1$ get:toString proto\n",
+            ),
+            [100, 100, 144],
+        ),
+        (
+            // Host types, `object` and `default`, which a runtime value's
+            // native implementation outranks and which its being the
+            // runtime's own keeps out.
+            "(extend-type object ICounted (-count [_] 42) ISeq (-first [_] :of) (-rest [_] ()))
+             (extend-type default ISequential IList IVector (-assoc-n [_ _ _] nil))
+             (extend-type number IMapEntry (-key [_] :k) (-val [_] :v))
+             (extend-type string ICounted (-count [_] -1))
+             (extend-type array IMap (-dissoc [a _] a))
+             (extend-type function IChunkedSeq (-chunked-first [_] nil) (-chunked-rest [_] ()))",
+            concat!(
+                "vector 100011111001010110000 2 1 3\n",
+                "entry 100011111001010110100 2 :a 3\n",
+                "list 010011110100000010000 1 1 2\n",
+                "empty-list 010011110100000011000 0 :none 1\n",
+                "lazy-seq 010011100000000010000 1 1 2\n",
+                "cons 010011110100000010000 1 1 2\n",
+                "range 010011110000000110010 3 0 4\n",
+                "float-range 010011100000000010010 3 0 4\n",
+                "array-map 001011011000010010000 1 :error 2\n",
+                "hash-map 001011011000010010000 20 :error 21\n",
+                "sorted-map 001011011011010010000 1 :error 2\n",
+                "set 000111010000010000000 1 :error 2\n",
+                "hash-set 000111010000010000000 20 :error 21\n",
+                "sorted-set 000111010011010000000 1 :error 2\n",
+                "queue 010011110000000000000 1 1 2\n",
+                "transient-vector 000000010000010101000 0 :none :error\n",
+                "subvec 100011111001010110000 2 2 3\n",
+                "record 001011011000100000000 1 :error 2\n",
+                "vector-seq 010011110001000110000 2 1 3\n",
+                "map-seq 010011110000000010000 1 [:a 1] 2\n",
+                "sorted-map-seq 010011110000000010000 1 [:a 1] 2\n",
+                "rseq 010011100000000010000 2 2 3\n",
+                "hash-map-seq 010011100000000010000 20 [0 0] 21\n",
+                "iterate 010011100000000010000\n",
+                "repeat 010011100000000010000\n",
+                "cycle 010011100000000010000\n",
+                "reduced 00000000000000000e000 42 :error :error\n",
+                "atom 00000000000000000e000 42 :error :error\n",
+                "keyword 00000000000001000e000 42 :error :error\n",
+                "symbol 00000000000001000e000 42 :error :error\n",
+                "string 100010110100000000000 1 \"s\" 2\n",
+                "number 10000010010000000e000 :error :error :error\n",
+                "null 100010110100000001000 0 :none 1\n",
+                "array 101010100100000000000 1 1 2\n",
+                "object 110000110100000000000 42 :error :error\n",
+                "fn 10000010010001100e000 :error :error :error\n",
+                "uuid 110000110100000000001 42 :error :error\n",
+                "type 110000110100000000000 42 :error :error\n",
+                "proxy 110000110100000000000 42 :error :error\n",
+                "forged-vector 110010110100000000000 42 :error :error\n",
+                "forged-list 110010110100000000000 42 :error :error\n",
+                "forged-map 110010110100000000000 42 :error :error\n",
+                "forged-range 110010110100000000000 42 :error :error\n",
+                "forged-seq 110010110100000000000 42 :error :error\n",
+                "empty-queue 010011110000000001000 0 :none 1\n",
+                "specified-map 001011111100010010000 1 [:s 1] 2\n",
+                "specified-vector 100011111001010110000 5 1 2\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$ get:cljs$core$IAssociative$ get:cljs$core$IChunkedSeq$ get:cljs$core$ICollection$ get:cljs$core$ICounted$ get:cljs$core$ICounted$_count$arity$1 get:cljs$core$IFn$ get:cljs$core$IIndexed$ get:cljs$core$IList$ get:cljs$core$IMap$ get:cljs$core$IMapEntry$ get:cljs$core$IRecord$ get:cljs$core$IReduce$ get:cljs$core$IReversible$ get:cljs$core$ISeq$ get:cljs$core$ISeqable$ get:cljs$core$ISequential$ get:cljs$core$ISet$ get:cljs$core$ISorted$ get:cljs$core$IUUID$ get:cljs$core$IVector$ get:cljs$lang$protocol_mask$partition0$ get:cljs$lang$protocol_mask$partition1$ get:toString proto\n",
+            ),
+            [91, 91, 132],
+        ),
+        (
+            // Slots JavaScript writes on runtime prototypes: a marker with its
+            // method, a method without its marker, and a protocol mask bit
+            // (ISeq's, partition 0 bit 6).
+            "(extend-type T IReduce (-reduce ([_ f] :r) ([_ f init] init)))
+             (set! (.. PersistentQueue -prototype -cljs$core$ISeqable$) cljs.core/PROTOCOL_SENTINEL)
+             (set! (.. PersistentQueue -prototype -cljs$core$ISeqable$_seq$arity$1) (fn [_] (list :queue)))
+             (set! (.. PersistentHashSet -prototype -cljs$core$ICounted$_count$arity$1) (fn [_] :unmarked))
+             (set! (.. PersistentArrayMap -prototype -cljs$core$IMapEntry$) cljs.core/PROTOCOL_SENTINEL)
+             (set! (.. PersistentTreeMap -prototype -cljs$lang$protocol_mask$partition0$) 64)
+             (set! (.. List -prototype -cljs$core$IVector$) cljs.core/PROTOCOL_SENTINEL)",
+            concat!(
+                "vector 100011111001010110000 2 1 3\n",
+                "entry 100011111001010110100 2 :a 3\n",
+                "list 110011110100000010000 1 1 2\n",
+                "empty-list 010011110100000011000 0 :none 1\n",
+                "lazy-seq 010011100000000010000 1 1 2\n",
+                "cons 110011110100000010000 1 1 2\n",
+                "range 010011110000000110010 3 0 4\n",
+                "float-range 010011100000000010010 3 0 4\n",
+                "array-map 001011011000010010100 1 :error 2\n",
+                "hash-map 001011011000010010000 20 :error 21\n",
+                "sorted-map 011011011011010010000 1 :error 2\n",
+                "set 000111010000010000000 :unmarked :error 2\n",
+                "hash-set 000111010000010000000 :unmarked :error 21\n",
+                "sorted-set 000111010011010000000 1 :error 2\n",
+                "queue 010011110000000000000 1 :queue 2\n",
+                "transient-vector 000000010000010101000 0 :none :error\n",
+                "subvec 100011111001010110000 2 2 3\n",
+                "record 001011011000100000000 1 :error 2\n",
+                "vector-seq 010011110001000110000 2 1 3\n",
+                "map-seq 010011110000000010000 1 [:a 1] 2\n",
+                "sorted-map-seq 010011110000000010000 1 [:a 1] 2\n",
+                "rseq 010011100000000010000 2 2 3\n",
+                "hash-map-seq 010011100000000010000 20 [0 0] 21\n",
+                "iterate 010011100000000010000\n",
+                "repeat 010011100000000010000\n",
+                "cycle 010011100000000010000\n",
+                "reduced 00000000000000000e000 :error :error :error\n",
+                "atom 00000000000000000e000 :error :error :error\n",
+                "keyword 00000000000001000e000 :error :error :error\n",
+                "symbol 00000000000001000e000 :error :error :error\n",
+                "string 000010000000000000000 1 \"s\" 2\n",
+                "number 00000000000000000e000 :error :error :error\n",
+                "null 000010010000000001000 0 :none 1\n",
+                "array 000010000000000000000 1 1 2\n",
+                "object 00000000000000000e000 :error :error :error\n",
+                "fn 00000000000001100e000 :error :error :error\n",
+                "uuid 00000000000000000e001 :error :error :error\n",
+                "type 00000000000000001e000 :error :error :error\n",
+                "proxy 00000000000000000e000 :error :error :error\n",
+                "forged-vector 00001000000000000e000 :error :error :error\n",
+                "forged-list 10001000000000000e000 :error :error :error\n",
+                "forged-map 00001000000000000e100 :error :error :error\n",
+                "forged-range 00001000000000000e000 :error :error :error\n",
+                "forged-seq 00001000000000000e000 :error :error :error\n",
+                "empty-queue 010011110000000001000 0 :queue 2\n",
+                "specified-map 001011111100010010100 1 [:s 1] 2\n",
+                "specified-vector 100011111001010110000 5 1 2\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$ get:cljs$core$IAssociative$ get:cljs$core$IChunkedSeq$ get:cljs$core$ICollection$ get:cljs$core$ICounted$ get:cljs$core$ICounted$_count$arity$1 get:cljs$core$IFn$ get:cljs$core$IIndexed$ get:cljs$core$IList$ get:cljs$core$IMap$ get:cljs$core$IMapEntry$ get:cljs$core$IRecord$ get:cljs$core$IReduce$ get:cljs$core$IReversible$ get:cljs$core$ISeq$ get:cljs$core$ISeqable$ get:cljs$core$ISequential$ get:cljs$core$ISet$ get:cljs$core$ISorted$ get:cljs$core$IUUID$ get:cljs$core$IVector$ get:cljs$lang$protocol_mask$partition0$ get:cljs$lang$protocol_mask$partition1$ get:toString proto\n",
+            ),
+            [100, 100, 100],
+        ),
+    ] {
+        let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
+        let program = program(&source);
+        for (level, reads) in OptimizationLevel::ALL.into_iter().zip(reads) {
+            let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+            assert_eq!(
+                execute(&format!("console.log({js});")),
+                format!("{expected}{reads}\n"),
+                "at {level}: {extensions}"
+            );
+        }
+    }
+}
+
+/// The kind lookup of the protocol hooks and `publicMethod` reads only its
+/// own entries: indices a host gives `Array.prototype` after the runtime
+/// loads change no answer for host values, transients or the runtime's
+/// collections (the Sol review of light-cljs-998). Each row is computed
+/// without and then with the pollution.
+#[test]
+fn protocol_lookups_ignore_inherited_kind_indices() {
+    every_level(
+        "(extend-type default IVector (-assoc-n [v _ _] v) IMapEntry (-key [_] :k) (-val [_] :v))
+         (extend-type object ISeqable (-seq [_] (list :object)))
+         (let [row (fn []
+                     (pr-str [(vector? 7) (vector? (js-obj)) (vector? \"s\") (map-entry? 7) (seq (js-obj))
+                              (vector? [1]) (vector? (transient [])) (map? {:a 1}) (seq? (list 1))
+                              (seq [1 2]) (first (list 3)) (count (transient [1]))]))
+               clean (row)
+               proto (.-prototype js/Array)]
+           (dotimes [i 16] (aset proto i 1))
+           (let [polluted (try (row) (finally (dotimes [i 16] (js-delete proto i))))]
+             (str clean \" \" (= clean polluted))))",
+        "[true true true false (:object) true false true true (1 2) 3 1] true",
+    );
+}
+
 /// A lazy seq's branches realize it without taking the seq of what it
 /// realized, which takes an item of a host iterator, so a lazy seq over one
 /// gives at every level what the operations' own paths give (the Sol review
