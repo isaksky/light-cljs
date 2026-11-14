@@ -325,6 +325,99 @@ impl<K: Eq + Hash + Clone, V: Clone> Extend<(K, V)> for Layered<K, V> {
     }
 }
 
+/// A set over a [`Layered`] map, with the methods of a `HashSet` the program
+/// tables use: a frame shares it as the map is shared, and
+/// [`Self::changed_keys`] finds what changed since an earlier frame without
+/// walking the whole set (light-cljs-997).
+#[derive(Debug)]
+pub struct LayeredSet<K>(Layered<K, ()>);
+
+impl<K> Default for LayeredSet<K> {
+    fn default() -> Self {
+        Self(Layered::default())
+    }
+}
+
+impl<K: Clone> Clone for LayeredSet<K> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<K: Eq + Hash + Clone> PartialEq for LayeredSet<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<K: Eq + Hash + Clone> LayeredSet<K> {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq,
+    {
+        self.0.contains_key(key)
+    }
+
+    /// Whether `key` was not in the set.
+    pub fn insert(&mut self, key: K) -> bool {
+        if self.0.contains_key(&key) {
+            return false;
+        }
+        self.0.insert(key, ());
+        true
+    }
+
+    /// Whether `key` was in the set.
+    pub fn remove<Q>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: ?Sized + Hash + Eq + ToOwned<Owned = K>,
+    {
+        self.0.remove(key).is_some()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &K> {
+        self.0.keys()
+    }
+
+    /// The keys that may be in one of this set and `before` but not the
+    /// other, with repeats ([`Layered::changed_keys`]).
+    pub fn changed_keys<'a>(&'a self, before: &'a Self) -> Vec<&'a K> {
+        self.0.changed_keys(&before.0)
+    }
+}
+
+impl<'a, K: Eq + Hash + Clone> IntoIterator for &'a LayeredSet<K> {
+    type Item = &'a K;
+    type IntoIter = Box<dyn Iterator<Item = &'a K> + 'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
+}
+
+impl<K: Eq + Hash + Clone> FromIterator<K> for LayeredSet<K> {
+    fn from_iter<I: IntoIterator<Item = K>>(iter: I) -> Self {
+        Self(iter.into_iter().map(|key| (key, ())).collect())
+    }
+}
+
+impl<K: Eq + Hash + Clone> Extend<K> for LayeredSet<K> {
+    fn extend<I: IntoIterator<Item = K>>(&mut self, keys: I) {
+        for key in keys {
+            self.insert(key);
+        }
+    }
+}
+
 /// Qualified names retain their original spelling for iteration and artifacts,
 /// but can be looked up with borrowed namespace/member parts. The borrowed key
 /// and the stored key hash the same pair, including whether a slash is present.
@@ -436,7 +529,7 @@ impl<V: Clone, Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for QualifiedNames<V>
 
 #[cfg(test)]
 mod tests {
-    use super::{Layered, QualifiedName, QualifiedNames};
+    use super::{Layered, LayeredSet, QualifiedName, QualifiedNames};
 
     #[test]
     fn qualified_names_borrow_parts_without_changing_spelling_or_identity() {
@@ -569,6 +662,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A layered set answers as a `HashSet` would, and its changed keys
+    /// cover every difference from an earlier frame across merges.
+    #[test]
+    fn layered_set_matches_a_hash_set() {
+        let mut set: LayeredSet<usize> = (0..100).collect();
+        let mut expected: std::collections::HashSet<usize> = (0..100).collect();
+        let frame = set.clone();
+        for step in 0..400 {
+            let key = step * 7 % 250;
+            if step % 4 == 3 {
+                assert_eq!(set.remove(&key), expected.remove(&key), "step {step}");
+            } else {
+                assert_eq!(set.insert(key), expected.insert(key), "step {step}");
+            }
+            assert_eq!(set.len(), expected.len());
+        }
+        assert_eq!(
+            set.iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>(),
+            expected
+        );
+        assert!((0..300).all(|key| set.contains(&key) == expected.contains(&key)));
+        let changed: std::collections::HashSet<usize> =
+            set.changed_keys(&frame).into_iter().copied().collect();
+        for key in 0..300 {
+            if set.contains(&key) != frame.contains(&key) {
+                assert!(changed.contains(&key), "{key}");
+            }
+        }
+        assert_eq!(frame.len(), 100);
+        assert!(frame.changed_keys(&frame.clone()).is_empty());
     }
 
     #[test]

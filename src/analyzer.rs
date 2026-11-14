@@ -2677,12 +2677,12 @@ pub struct Program {
     pub locals: crate::arena::Arena<LocalBinding>,
     pub recur_targets: crate::arena::Arena<RecurTarget>,
     pub protocols: crate::shared::Shared<crate::layered::Layered<GlobalId, Vec<ProtocolMethod>>>,
-    pub record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
+    pub record_constructors: crate::shared::Shared<crate::layered::LayeredSet<GlobalId>>,
     pub field_bindings:
         crate::shared::Shared<crate::layered::Layered<LocalId, (RecurTargetId, bool)>>,
-    pub type_methods: crate::shared::Shared<std::collections::HashSet<RecurTargetId>>,
+    pub type_methods: crate::shared::Shared<crate::layered::LayeredSet<RecurTargetId>>,
     /// Runtime macro functions have two implicit parameters but public user arities.
-    pub macro_functions: crate::shared::Shared<std::collections::HashSet<ExprId>>,
+    pub macro_functions: crate::shared::Shared<crate::layered::LayeredSet<ExprId>>,
     pub globals: crate::arena::Arena<GlobalBinding>,
     pub js_globals: crate::arena::Arena<JsGlobal>,
     /// Owned UTF-16 preserves even lone surrogate escapes.

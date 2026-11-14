@@ -44,11 +44,11 @@ pub(crate) struct CaptureStart {
     /// Frozen clones: they share every entry until the analysis writes one.
     globals_before: crate::arena::Arena<GlobalBinding>,
     protocols: crate::shared::Shared<crate::layered::Layered<GlobalId, Vec<ir::ProtocolMethod>>>,
-    record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
+    record_constructors: crate::shared::Shared<crate::layered::LayeredSet<GlobalId>>,
     field_bindings:
         crate::shared::Shared<crate::layered::Layered<ir::LocalId, (ir::RecurTargetId, bool)>>,
-    type_methods: crate::shared::Shared<std::collections::HashSet<ir::RecurTargetId>>,
-    macro_functions: crate::shared::Shared<std::collections::HashSet<ir::ExprId>>,
+    type_methods: crate::shared::Shared<crate::layered::LayeredSet<ir::RecurTargetId>>,
+    macro_functions: crate::shared::Shared<crate::layered::LayeredSet<ir::ExprId>>,
     reader_contexts: crate::shared::Shared<
         crate::layered::Layered<String, crate::shared::Shared<ir::RuntimeReaderNamespace>>,
     >,
@@ -703,6 +703,14 @@ fn charged_expansion(event: crate::macro_host::UnitEvent) -> Option<ChargedExpan
     }
 }
 
+/// The distinct `keys` (changed keys come with repeats), by `index`.
+fn sorted<K: Copy>(keys: Vec<&K>, index: impl Fn(&K) -> usize) -> Vec<K> {
+    let mut keys = keys.into_iter().copied().collect::<Vec<_>>();
+    keys.sort_unstable_by_key(&index);
+    keys.dedup_by_key(|key| index(key));
+    keys
+}
+
 /// Earlier globals first, then the namespace's own, each in creation order.
 fn order(global: &GlobalRef) -> (bool, u32) {
     match global {
@@ -1289,23 +1297,13 @@ impl Converter<'_> {
             });
         }
         // Tables keyed by earlier entries may only keep them as they were.
-        // Each is read through what changed since the start, not walked
-        // whole, so a namespace's capture costs what it added, not the
-        // size of the program before it (light-cljs-997): a layered table
-        // through its changed keys, a set only when it is no longer the
-        // one the start shares.
-        let mut changed_protocols = program
-            .protocols
-            .changed_keys(&start.protocols)
-            .into_iter()
-            .map(|global| global.0)
-            .collect::<Vec<_>>();
-        changed_protocols.sort_unstable();
-        changed_protocols.dedup();
+        // Each is read through its keys that changed since the start, in
+        // key order, not walked whole, so a namespace's capture costs what
+        // it changed, not the size of the program before it
+        // (light-cljs-997). A key only the start has is a removal, which
+        // these checks never covered: they read the program's entries.
         let mut protocols = Vec::new();
-        for global in changed_protocols.into_iter().map(GlobalId) {
-            // A key only the start has is a removal, which the walk of
-            // the program's entries never saw.
+        for global in sorted(program.protocols.changed_keys(&start.protocols), |g| g.0) {
             let Some(methods) = program.protocols.get(&global) else {
                 continue;
             };
@@ -1326,26 +1324,23 @@ impl Converter<'_> {
         }
         protocols.sort_by_key(|(global, _)| order(global));
         let mut record_constructors = Vec::new();
-        if !crate::shared::Shared::ptr_eq(&program.record_constructors, &start.record_constructors)
-        {
-            for global in program.record_constructors.iter() {
-                if start.record_constructors.contains(global) {
-                    continue;
-                }
-                record_constructors.push(self.global(*global)?);
+        for global in sorted(
+            (program.record_constructors).changed_keys(&start.record_constructors),
+            |g| g.0,
+        ) {
+            if !program.record_constructors.contains(&global)
+                || start.record_constructors.contains(&global)
+            {
+                continue;
             }
+            record_constructors.push(self.global(global)?);
         }
         record_constructors.sort_by_key(order);
-        let mut changed_fields = program
-            .field_bindings
-            .changed_keys(&start.field_bindings)
-            .into_iter()
-            .map(|local| local.0)
-            .collect::<Vec<_>>();
-        changed_fields.sort_unstable();
-        changed_fields.dedup();
         let mut field_bindings = Vec::new();
-        for local in changed_fields.into_iter().map(ir::LocalId) {
+        for local in sorted(
+            program.field_bindings.changed_keys(&start.field_bindings),
+            |l| l.0,
+        ) {
             let Some(&(target, mutable)) = program.field_bindings.get(&local) else {
                 continue;
             };
@@ -1359,31 +1354,37 @@ impl Converter<'_> {
         }
         field_bindings.sort_by_key(|(local, _, _)| local.0);
         let mut type_methods = Vec::new();
-        if !crate::shared::Shared::ptr_eq(&program.type_methods, &start.type_methods) {
-            for target in program.type_methods.iter() {
-                if target.0 < start.recur_targets {
-                    if !start.type_methods.contains(target) {
-                        return Err("the namespace changed an earlier type's methods".into());
-                    }
-                    continue;
-                }
-                type_methods.push(self.recur(*target)?);
+        for target in sorted(
+            program.type_methods.changed_keys(&start.type_methods),
+            |t| t.0,
+        ) {
+            if !program.type_methods.contains(&target) {
+                continue;
             }
+            if target.0 < start.recur_targets {
+                if !start.type_methods.contains(&target) {
+                    return Err("the namespace changed an earlier type's methods".into());
+                }
+                continue;
+            }
+            type_methods.push(self.recur(target)?);
         }
-        type_methods.sort_by_key(|target| target.0);
         let mut macro_functions = Vec::new();
-        if !crate::shared::Shared::ptr_eq(&program.macro_functions, &start.macro_functions) {
-            for expr in program.macro_functions.iter() {
-                if expr.0 < start.exprs {
-                    if !start.macro_functions.contains(expr) {
-                        return Err("the namespace made an earlier function a macro".into());
-                    }
-                    continue;
-                }
-                macro_functions.push(self.expr(*expr)?);
+        for expr in sorted(
+            program.macro_functions.changed_keys(&start.macro_functions),
+            |e| e.0,
+        ) {
+            if !program.macro_functions.contains(&expr) {
+                continue;
             }
+            if expr.0 < start.exprs {
+                if !start.macro_functions.contains(&expr) {
+                    return Err("the namespace made an earlier function a macro".into());
+                }
+                continue;
+            }
+            macro_functions.push(self.expr(expr)?);
         }
-        macro_functions.sort_by_key(|expr| expr.0);
         // Only an earlier namespace's context must keep its entry; whether
         // a namespace is an earlier one is looked up only for a context
         // other than the namespace's own whose entry changed.
@@ -1855,6 +1856,7 @@ mod tests {
                     ir::LocalId(earlier + index),
                     (ir::RecurTargetId(earlier), index % 2 == 0),
                 );
+                program.macro_functions.insert(ir::ExprId(index));
             }
             program.recur_targets.push(ir::RecurTarget {
                 params: Vec::new(),
@@ -1890,6 +1892,12 @@ mod tests {
             );
             assert_eq!(tables.record_constructors, [GlobalRef::Own(7)]);
             assert_eq!(tables.type_methods, [RecurRef(0)]);
+            assert_eq!(
+                tables.macro_functions,
+                (0..added)
+                    .map(|index| ExprRef(index as u32))
+                    .collect::<Vec<_>>()
+            );
             assert_eq!(tables.reader_context.aliases, context("e").aliases);
 
             let mut changed = program.clone();

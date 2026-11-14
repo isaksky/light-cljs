@@ -40,10 +40,10 @@ struct SharedTables {
     >,
     namespace_entries: crate::shared::Shared<crate::layered::Layered<ExprId, String>>,
     protocols: crate::shared::Shared<crate::layered::Layered<GlobalId, Vec<ProtocolMethod>>>,
-    record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
+    record_constructors: crate::shared::Shared<crate::layered::LayeredSet<GlobalId>>,
     field_bindings: crate::shared::Shared<crate::layered::Layered<LocalId, (RecurTargetId, bool)>>,
-    type_methods: crate::shared::Shared<std::collections::HashSet<RecurTargetId>>,
-    macro_functions: crate::shared::Shared<std::collections::HashSet<ExprId>>,
+    type_methods: crate::shared::Shared<crate::layered::LayeredSet<RecurTargetId>>,
+    macro_functions: crate::shared::Shared<crate::layered::LayeredSet<ExprId>>,
 }
 
 impl SharedTables {
