@@ -1803,8 +1803,9 @@ edit rebuild takes 68.8 and 66.0 s instead of 75.3 and 84.4 s (below).
 
 Setup. light-cljs master `8eefcf09` as the immutable release binary
 `research/shadow-credibility/bin/light-cljs-8eefcf09` (V8 build, SHA-256
-`3fc36ffd45831688...`); the fix `0a56a693` as `bin/light-cljs-0a56a693`
-(`b87dc83abfd4a7bc...`). The probe binary is `8eefcf09` plus two
+`3fc36ffd45831688...`); the fix as `bin/light-cljs-0a56a693`
+(`b87dc83abfd4a7bc...`), built from `0a56a693`, the fix on `8eefcf09`, which
+landed rebased as `3a683a07`; the tables call it `0a56a693`. The probe binary is `8eefcf09` plus two
 environment switches used only for this measurement and not committed:
 `PROBE_1000_NO_COARSE_VIEW` (the view leaves out the earlier-namespace chain)
 and `PROBE_1000_IMPLICIT_COARSE` (the fix's manifest; the lookup side of the
