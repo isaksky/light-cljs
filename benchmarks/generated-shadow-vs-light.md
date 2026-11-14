@@ -2356,14 +2356,14 @@ twice, the second time in the opposite order. Every output passed the oracle
 and the waste check, and both binaries wrote the same bytes (11,029,283 and
 6,740,651).
 
-| Project | Binary | Clean build | Rebuild after a one-file edit | User CPU | Peak memory | Load before the edits | Bytes read, rounds 1-3 | Validation, rounds 1-3 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| re-frame 400k | parent | 18.39 s (18.39-18.56) | 8.94 s (8.86-11.06) | 8.21 s | 2.294 GB | 5.40-6.46 | 176.0, 177.7, 179.4 MB | 2.20, 1.01, 1.02 s |
-| re-frame 400k | change | 18.29 s (18.20-19.31) | 10.13 s (9.44-10.19) | 8.26 s | 2.329 GB | 4.00-4.10 | 174.8, 175.1, 175.5 MB | 1.94, 1.90, 1.16 s |
-| re-frame 400k | change, again | 19.50 s (19.34-19.80) | 8.97 s (8.90-9.02) | 8.20 s | 2.337 GB | 4.68-4.95 | 174.8, 175.1, 175.5 MB | 1.06, 1.03, 1.05 s |
-| re-frame 400k | parent, again | 18.34 s (17.85-18.53) | 8.94 s (8.75-11.52) | 8.18 s | 2.330 GB | 3.65-5.52 | 176.0, 177.7, 179.4 MB | 1.40, 1.04, 1.04 s |
-| plain 400k | parent | 15.15 s (14.79-15.75) | 6.45 s (6.18-6.48) | 6.21 s | 1.741 GB | 3.22-5.51 | 189.1, 189.4, 189.6 MB | 0.81, 0.79, 0.78 s |
-| plain 400k | change | 15.45 s (15.25-15.78) | 6.08 s (6.01-6.47) | 5.90 s | 1.724 GB | 4.57-4.74 | 188.9, 188.9, 188.9 MB | 0.93, 0.76, 0.76 s |
+| Project | Binary | Clean build | Rebuild after a one-file edit | User CPU | System CPU | Peak memory | Load before the edits | Bytes read, rounds 1-3 | Validation, rounds 1-3 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| re-frame 400k | parent | 18.39 s (18.39-18.56) | 8.94 s (8.86-11.06) | 8.21 s (8.15-8.26) | 0.85 s (0.82-1.12) | 2.294 GB (2.218-2.332) | 5.40-6.46 | 176.0, 177.7, 179.4 MB | 2.20, 1.01, 1.02 s |
+| re-frame 400k | change | 18.29 s (18.20-19.31) | 10.13 s (9.44-10.19) | 8.26 s (8.18-8.57) | 0.99 s (0.96-1.06) | 2.329 GB (2.282-2.352) | 4.00-4.10 | 174.8, 175.1, 175.5 MB | 1.94, 1.90, 1.16 s |
+| re-frame 400k | change, again | 19.50 s (19.34-19.80) | 8.97 s (8.90-9.02) | 8.20 s (8.12-8.29) | 0.87 s (0.85-0.89) | 2.337 GB (2.281-2.345) | 4.68-4.95 | 174.8, 175.1, 175.5 MB | 1.06, 1.03, 1.05 s |
+| re-frame 400k | parent, again | 18.34 s (17.85-18.53) | 8.94 s (8.75-11.52) | 8.18 s (7.96-9.26) | 0.89 s (0.87-1.39) | 2.330 GB (2.303-2.362) | 3.65-5.52 | 176.0, 177.7, 179.4 MB | 1.40, 1.04, 1.04 s |
+| plain 400k | parent | 15.15 s (14.79-15.75) | 6.45 s (6.18-6.48) | 6.21 s (6.00-6.28) | 0.43 s (0.36-0.45) | 1.741 GB (1.737-1.744) | 3.22-5.51 | 189.1, 189.4, 189.6 MB | 0.81, 0.79, 0.78 s |
+| plain 400k | change | 15.45 s (15.25-15.78) | 6.08 s (6.01-6.47) | 5.90 s (5.83-6.27) | 0.36 s (0.36-0.39) | 1.724 GB (1.627-1.730) | 4.57-4.74 | 188.9, 188.9, 188.9 MB | 0.93, 0.76, 0.76 s |
 
 The parent's bytes read grow by 1.7 MB a round (re-frame) and 0.25 MB
 (plain): the four and three missed namespaces' stale candidates, read whole.
@@ -2383,20 +2383,20 @@ did before light-cljs-347), and both binaries built it, alternated, then one
 output hash (`9fc4ee30f7586ba4...`; the unused protocol is not emitted). Two
 repetitions (`protocol/`, `protocol-2/`):
 
-| Repetition | Round | Binary | Wall time | User CPU | Peak memory | Load before | Bytes read | Validation |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 1 | parent | 28.32 s | 25.59 s | 2.564 GB | 10.28 | 176.0 MB | 2.75 s |
-| 1 | 1 | change | 27.87 s | 25.22 s | 2.534 GB | 10.58 | 86.5 MB | 2.45 s |
-| 1 | 2 | change | 28.67 s | 24.64 s | 2.566 GB | 11.29 | 90.5 MB | 3.25 s |
-| 1 | 2 | parent | 30.12 s | 25.82 s | 2.540 GB | 11.43 | 269.5 MB | 4.08 s |
-| 1 | 3 | parent | 28.86 s | 25.11 s | 2.552 GB | 11.96 | 363.0 MB | 3.33 s |
-| 1 | 3 | change | 28.09 s | 23.63 s | 2.546 GB | 10.64 | 94.5 MB | 3.29 s |
-| 2 | 1 | parent | 26.81 s | 24.24 s | 2.546 GB | 8.30 | 176.0 MB | 2.51 s |
-| 2 | 1 | change | 26.10 s | 24.08 s | 2.542 GB | 10.49 | 86.5 MB | 1.96 s |
-| 2 | 2 | change | 24.44 s | 21.51 s | 2.494 GB | 6.45 | 90.5 MB | 2.45 s |
-| 2 | 2 | parent | 27.87 s | 23.46 s | 2.544 GB | 5.08 | 269.5 MB | 4.25 s |
-| 2 | 3 | parent | 24.51 s | 22.31 s | 2.536 GB | 5.12 | 363.0 MB | 1.96 s |
-| 2 | 3 | change | 23.53 s | 21.35 s | 2.541 GB | 4.94 | 94.5 MB | 1.13 s |
+| Repetition | Round | Binary | Wall time | User CPU | System CPU | Peak memory | Load before | Bytes read | Validation |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 | parent | 28.32 s | 25.59 s | 3.34 s | 2.564 GB | 10.28 | 176.0 MB | 2.75 s |
+| 1 | 1 | change | 27.87 s | 25.22 s | 3.23 s | 2.534 GB | 10.58 | 86.5 MB | 2.45 s |
+| 1 | 2 | change | 28.67 s | 24.64 s | 3.58 s | 2.566 GB | 11.29 | 90.5 MB | 3.25 s |
+| 1 | 2 | parent | 30.12 s | 25.82 s | 3.84 s | 2.540 GB | 11.43 | 269.5 MB | 4.08 s |
+| 1 | 3 | parent | 28.86 s | 25.11 s | 3.87 s | 2.552 GB | 11.96 | 363.0 MB | 3.33 s |
+| 1 | 3 | change | 28.09 s | 23.63 s | 3.54 s | 2.546 GB | 10.64 | 94.5 MB | 3.29 s |
+| 2 | 1 | parent | 26.81 s | 24.24 s | 2.94 s | 2.546 GB | 8.30 | 176.0 MB | 2.51 s |
+| 2 | 1 | change | 26.10 s | 24.08 s | 2.68 s | 2.542 GB | 10.49 | 86.5 MB | 1.96 s |
+| 2 | 2 | change | 24.44 s | 21.51 s | 2.50 s | 2.494 GB | 6.45 | 90.5 MB | 2.45 s |
+| 2 | 2 | parent | 27.87 s | 23.46 s | 3.02 s | 2.544 GB | 5.08 | 269.5 MB | 4.25 s |
+| 2 | 3 | parent | 24.51 s | 22.31 s | 2.97 s | 2.536 GB | 5.12 | 363.0 MB | 1.96 s |
+| 2 | 3 | change | 23.53 s | 21.35 s | 2.96 s | 2.541 GB | 4.94 | 94.5 MB | 1.13 s |
 
 - **Bytes read are flat.** The parent reads 93 MB more each round, one more
   stale candidate per missed namespace read whole; the change reads 4 MB
@@ -2411,4 +2411,8 @@ repetitions (`protocol/`, `protocol-2/`):
   costs its key (no read beyond its manifest), and there is one more per
   missed namespace after each edit, up to `--cache-retention`.
 - **Wall time.** The change's edit rebuild is 0.4 to 3.4 s faster in each
-  pair (median 26.99 s against 28.10 s), inside the load's swing.
+  pair, inside the load's swing. Over the six builds each: wall time
+  26.99 s (23.53-28.67) against 28.10 s (24.51-30.12), user CPU 23.86 s
+  (21.35-25.22) against 24.68 s (22.31-25.82), system CPU 3.10 s
+  (2.50-3.58) against 3.18 s (2.94-3.87), peak memory 2.542 GB
+  (2.494-2.566) against 2.545 GB (2.536-2.564).

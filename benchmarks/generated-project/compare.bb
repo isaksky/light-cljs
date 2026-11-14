@@ -161,22 +161,28 @@
           :peak-memory-gb (/ (number #"Maximum resident set size \(kbytes\): ([0-9]+)") 1e6)}))))
 
 (defn parse-stats
-  "The numeric `NAME VALUE` lines of a light-cljs --stats report, by name."
+  "The counters of a light-cljs --stats report in err, by name: its `NAME VALUE`
+  lines after the `light-cljs-stats` header and before its first [table] (whose
+  rows are namespaces), as growth.bb reads them."
   [err]
-  (into (sorted-map) (for [[_ k v] (re-seq #"(?m)^([a-z][a-z0-9_.-]*) ([0-9]+(?:\.[0-9]+)?)$" err)]
-                      [k (if (str/includes? v ".") (parse-double v) (parse-long v))])))
+  (let [body (first (str/split (or (second (re-find #"(?s)light-cljs-stats [0-9]+\n(.*)" err)) "") #"(?m)^\[" 2))]
+    (into (sorted-map) (for [[_ k v] (re-seq #"(?m)^([a-z][a-z0-9_.-]*) ([0-9]+(?:\.[0-9]+)?)$" body)]
+                         [k (if (str/includes? v ".") (parse-double v) (parse-long v))]))))
+
+(defn- with-stats
+  "sample with :stats (parse-stats err) when cmd asks light-cljs for --stats."
+  [sample cmd err]
+  (cond-> sample (some #{"--stats"} cmd) (assoc :stats (parse-stats err))))
 
 (defn timed-with-output
   "Runs cmd under /usr/bin/time (-l on macOS, GNU -v elsewhere) and returns
-  [sample stdout], the sample as parse-time gives it, with :stats (parse-stats)
-  when cmd asks light-cljs for --stats."
+  [sample stdout], the sample as parse-time gives it, with-stats."
   [dir cmd]
   (let [result (apply process/sh {:dir (str dir)} "/usr/bin/time" (if mac? "-l" "-v") cmd)
         err (:err result)]
     (when-not (zero? (:exit result))
       (throw (ex-info "Build failed" {:command cmd :err (subs err (max 0 (- (count err) 3000)))})))
-    [(cond-> (parse-time mac? err) (some #{"--stats"} cmd) (assoc :stats (parse-stats err)))
-     (:out result)]))
+    [(with-stats (parse-time mac? err) cmd err) (:out result)]))
 
 (defn timed [dir cmd] (first (timed-with-output dir cmd)))
 
@@ -221,7 +227,7 @@
         err (:err result)
         ;; the build's own messages: what precedes time's report
         own (str (:out result) (first (str/split err #"(?m)^\s*[0-9.]+ real |^\tCommand being timed:" 2)))]
-    (cond-> (parse-time mac? err)
+    (cond-> (with-stats (parse-time mac? err) cmd err)
       (not (zero? (:exit result)))
       (assoc :failed true :exit (:exit result) :oom (str/includes? own "OutOfMemoryError")
              :error (subs own (max 0 (- (count own) 1500)))))))

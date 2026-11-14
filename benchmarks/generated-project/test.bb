@@ -453,10 +453,17 @@
            (compare/parse-time false (gnu "0:06.09"))))
     (is (= 3725.5 (:wall-s (compare/parse-time false (gnu "1:02:05.50"))))))
   (is (true? (:stats (compare/parse-options ["p" "--light" "b" "--stats"]))))
-  (is (= {"cache.bytes-read" 266000000 "cache.validate-ms" 3100.4}
-         (compare/parse-stats (str "cache.validate-ms 3100.4\ncache.bytes-read 266000000\n"
-                                   "[cache-misses-and-bypasses]\nworkload.a miss source: 2 changed\n"
-                                   "       40.98 real       122.37 user       126.74 sys\n")))))
+  (let [report (str "config: /p/light-cljs.edn\nlight-cljs-stats 1\ncache.validate-ms 3100.4\n"
+                    "cache.bytes-read 266000000\n[cache-misses-and-bypasses]\nworkload.a miss source: 2 changed\n"
+                    "[macro-calls-by-namespace]\ncache.bytes-read 7\nworkload.b 269\n"
+                    "       40.98 real       122.37 user       126.74 sys\n")]
+    (is (= {"cache.bytes-read" 266000000 "cache.validate-ms" 3100.4} (compare/parse-stats report)))
+    (is (= {} (compare/parse-stats "cache.hits 5\n")) "no header, no counters")
+    ;; both ways of timing a build keep a --stats report's counters
+    (let [cmd ["sh" "-c" (str "printf '" (str/replace report "\n" "\\n") "' >&2") "--stats"]]
+      (is (= 266000000 (get-in (first (compare/timed-with-output "." cmd)) [:stats "cache.bytes-read"])))
+      (is (= 266000000 (get-in (compare/timed-or-failed "." cmd) [:stats "cache.bytes-read"]))))
+    (is (nil? (:stats (compare/timed-or-failed "." ["sh" "-c" "true"]))))))
 
 (deftest memory-limit-sweep
   (testing "options"
