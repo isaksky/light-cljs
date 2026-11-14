@@ -99,8 +99,8 @@ fn map_seq_types_resolve_and_dispatch_as_upstream() {
                        (kind (seq #{1})) (instance? PersistentArrayMapSeq small)
                        (instance? IndexedSeq small) (= PersistentArrayMapSeq (type small))
                        (satisfies? Tag small) (tag small) (satisfies? Tag large)
-                       (count small) (counted? small) (vec small)])"#;
-    let expected = "[:array-map-seq :array-map-seq :node-seq :other :other true false true true :extended false 2 true [[:a 1] [:b 2]]]";
+                       (count small) (counted? small) (vec small) (vec (js/Array.from small))])"#;
+    let expected = "[:array-map-seq :array-map-seq :node-seq :other :other true false true true :extended false 2 true [[:a 1] [:b 2]] [[:a 1] [:b 2]]]";
     every_level(&format!("{definitions} (pr-str {body})"), expected);
     // Macro code sees the same types.
     every_level(
