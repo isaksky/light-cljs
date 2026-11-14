@@ -5,10 +5,12 @@
 ;; The engine is made at its first call and kept in a one-element array, so
 ;; that a program which never walks drops this namespace at advanced: an
 ;; unused array definition is removable, a top-level js* expression is not.
+;; Only the traversal state is cached: each call passes the core functions
+;; as they are then, so one made inside with-redefs is not kept after it.
 (def ^:private walk-engine-cell (array nil))
 (defn- walk-engine [inner outer form mode]
-  (js* "(~{walk-engine-cell}[0] || (~{walk-engine-cell}[0] = ((c) => {
-  let depth = 0, calls = 0;
+  (js* "(~{walk-engine-cell}[0] || (~{walk-engine-cell}[0] = (() => {
+  let c = null, depth = 0, calls = 0;
   function frame(value) {
     const shape = c.isList(value) ? 'list' : c.isEntry(value) ? 'entry' : c.isSeq(value) ? 'seq' : c.isRecord(value) ? 'record' : c.isColl(value) ? 'coll' : null;
     if (shape === null) return null;
@@ -70,13 +72,15 @@
       }
     } finally { depth = initialDepth; }
   }
-  return function(inner, outer, form, mode) {
+  return function(core, inner, outer, form, mode) {
     if (calls >= 8) throw new Error('walk depth limit exceeded');
     ++calls;
+    const outerCore = c;
+    c = core;
     try { return walk(inner, outer, form, mode); }
-    finally { --calls; }
+    finally { --calls; c = outerCore; }
   };
-})({seq: ~{seq},first: ~{first},next: ~{next},list: ~{list},apply: ~{apply},conj: ~{conj},empty: ~{empty},meta: ~{meta},withMeta: ~{with-meta},isList: ~{list?},isSeq: ~{seq?},isEntry: ~{map-entry?},isRecord: ~{record?},isColl: ~{coll?},MapEntry: ~{cljs.core/MapEntry},doall: ~{doall},map: ~{map},identity: ~{identity}})))(~{inner}, ~{outer}, ~{form}, ~{mode})"))
+})()))({seq: ~{seq},first: ~{first},next: ~{next},list: ~{list},apply: ~{apply},conj: ~{conj},empty: ~{empty},meta: ~{meta},withMeta: ~{with-meta},isList: ~{list?},isSeq: ~{seq?},isEntry: ~{map-entry?},isRecord: ~{record?},isColl: ~{coll?},MapEntry: ~{cljs.core/MapEntry},doall: ~{doall},map: ~{map},identity: ~{identity}}, ~{inner}, ~{outer}, ~{form}, ~{mode})"))
 
 ;; Each public function has a second method that only throws: with two
 ;; methods it has a dispatcher, which rejects every other count with

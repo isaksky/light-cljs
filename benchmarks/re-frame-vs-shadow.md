@@ -317,6 +317,7 @@ Gzip difference, light-cljs minus shadow-cljs, in bytes, before and after:
 - **The whole file moves more than the row** (simple: 2,420 against 2,069 bytes): the old libraries also reached runtime units (runtime row +6,228 to +6,128), and the up-front declaration list is shorter (the app's own namespaces row +936 to +829).
 - **As built,** before step 3, simple's row is +806 (it was +2,020): reagent's `str-coll` calls `prewalk` in code only `(dev?)` reaches, which stays until the defines fold. shadow-cljs drops it at every step, since Closure folds `goog.DEBUG`.
 - **TodoMVC's after-step-4 gap** is now in light-cljs's favour, -499 bytes after gzip, while brotli still favours shadow-cljs by 3,184.
+- **After the measurement** the walk engine was changed to read the core functions at each call instead of keeping those of its first call (a `with-redefs` around the first walk was kept). That changes only the engine, which none of the last-step bundles contain.
 - shadow-cljs's own size moved by up to 17 bytes between the two runs (137,097 and 137,102 as built), its usual variation between clean builds.
 
 ## Build time

@@ -483,6 +483,12 @@ fn advanced_keeps_only_called_library_arities_and_their_errors() {
     ] {
         assert!(!js.contains(absent), "{absent}\n{js}");
     }
+    // The engine, made at the first walk, keeps no core function that was
+    // redefined during that walk.
+    let first_walk_redefs = "(pr-str [(with-redefs [cljs.core/next (constantly nil)] \
+         (w/prewalk identity [1 2])) (w/prewalk identity [3 4])])";
+    assert_eq!(advanced(first_walk_redefs).0, r#""[[1] [3 4]]""#);
+    both(first_walk_redefs, r#""[[1] [3 4]]""#);
     let (value, _) = advanced(
         r#"(let [caught (fn [f] (try (f) "none" (catch js/Error e (.-message e))))
                  saved [s/select w/prewalk]]
