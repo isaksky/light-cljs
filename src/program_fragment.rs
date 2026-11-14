@@ -2270,6 +2270,50 @@ mod tests {
         }
     }
 
+    /// The keys [`added_keys`] finds, by looking up IDs or by walking the
+    /// table, are those a filter of every key finds: for empty, sparse and
+    /// full tables, keys at both ends of the fragment's IDs, and ranges
+    /// shorter than, as long as and longer than the table.
+    #[test]
+    fn added_keys_are_the_keys_a_complete_filter_finds() {
+        let tables: [&[usize]; 6] = [
+            &[],
+            &[0, 1, 2],
+            &[3, 9],
+            &[5, 6, 7, 8, 9],
+            &[0, 2, 4, 6, 8, 10, 12],
+            &[1, 3, 4, 7, 9, 11, 12, 13, 14, 15],
+        ];
+        for keys in tables {
+            let table = keys
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            for start in 0..=16 {
+                for end in start..=16 {
+                    if keys.iter().any(|key| *key >= end) {
+                        continue;
+                    }
+                    let mut found = added_keys(
+                        start..end,
+                        table.len(),
+                        table.iter(),
+                        |key| key,
+                        |id| id,
+                        |key| table.contains(key),
+                    );
+                    found.sort_unstable();
+                    let expected = keys
+                        .iter()
+                        .copied()
+                        .filter(|key| *key >= start)
+                        .collect::<Vec<_>>();
+                    assert_eq!(found, expected, "{keys:?} {start}..{end}");
+                }
+            }
+        }
+    }
+
     /// What [`append`] skips (the keyed tables a fragment still shares, the
     /// reader contexts it cannot have changed, the scan for its globals
     /// that the name index answers) changes nothing: the program is the one
