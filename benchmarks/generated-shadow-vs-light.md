@@ -2328,8 +2328,8 @@ appended to the same leaf (2,127 misses, as before light-cljs-347), shows
 what light-cljs-1003 found: **bytes read 176, 270 and 363 MB before, 86.5,
 90.5 and 94.5 MB after**, rounds one to three; validation fell in each of
 the six paired builds, by 0.04 to 1.80 s, but stays noisy (1.1 to 3.3 s
-after, 2.0 to 4.2 s before). What is left of it is the hits' reads and hashes
-and the key each candidate computes, not stale bytes.
+after, 2.0 to 4.25 s before). What is left of it is the hits' reads and
+hashes and the key each candidate tried computes, stale ones included.
 
 Setup. Parent: the immutable `bin/light-cljs-a0383188` (SHA-256
 `6320b68207a37437...`, the landed code of light-cljs-347). Change: a release
@@ -2401,10 +2401,12 @@ repetitions (`protocol/`, `protocol-2/`):
   more, its manifest. In round one the change already reads half: every
   missed namespace has the fill's candidate, now stale.
 - **Validation is lower, not flat.** The change's validation is below the
-  parent's in all six pairs (median 2.2 s against 3.0 s), but it moves by
+  parent's in all six pairs (median 2.45 s against 3.04 s), but it moves by
   up to 2 s between rounds with the load, as the parent's does. The rest of
-  validation is reading and hashing the 3,965 hits' artifacts (about 82 MB,
-  hashed again section by section when decoded) and computing a key for
-  every candidate tried, stale ones included; neither depends on past edits.
+  validation is reading and hashing the 3,965 hits' artifacts (hashed
+  again section by section when decoded), which past edits do not change,
+  and computing a key for every candidate tried: a stale candidate still
+  costs its key (no read beyond its manifest), and there is one more per
+  missed namespace after each edit, up to `--cache-retention`.
 - **Wall time.** The change's edit rebuild is 0.4 to 3.4 s faster in each
-  pair (median 26.99 s against 28.09 s), inside the load's swing.
+  pair (median 26.99 s against 28.10 s), inside the load's swing.
