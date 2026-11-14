@@ -628,6 +628,25 @@ fn a_source_macro_consumer_depends_on_earlier_namespaces_without_declarations() 
         assert!(!manifest.record(id(&manifest, name)).coarse, "{name}");
     }
     assert!(!coarse_edge(&manifest, "d", "x"));
+    // An artifact's manifest stores the coarse flag, not the coarse edges:
+    // `c`'s coarse-only edge to `x` is left out and its other edges keep
+    // every kind but the coarse one (light-cljs-1000).
+    let fields = light_cljs::artifact_codec::ManifestFields::of(
+        &manifest,
+        c,
+        Default::default(),
+        Default::default(),
+        [0; 32],
+    );
+    assert!(fields.coarse);
+    let stored: Vec<(&str, EdgeKinds)> = fields
+        .dependencies
+        .iter()
+        .map(|dependency| (dependency.namespace.as_str(), EdgeKinds(dependency.kinds)))
+        .collect();
+    let exact = |to: &str| edge(&manifest, "c", to).expect("an exact edge");
+    assert!(coarse_edge(&manifest, "c", "m") && coarse_edge(&manifest, "c", "p"));
+    assert_eq!(stored, [("p", exact("p")), ("m", exact("m"))]);
 }
 
 #[test]
