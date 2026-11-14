@@ -225,7 +225,7 @@ Unreached shims are not in any output and change nothing. The sizes below are ou
 |---|---|---|---:|---:|
 | Release panic on `(or a (if c (recur) false))` | compiler gap, fixed on master (`4d2669bc`) | TodoMVC, simple | none | none |
 | ns clause as a vector, metadata on an ns clause, `#'cljs.reader/read-date` | compiler gaps, fixed in this branch | flow | none | none |
-| `light/compat.cljs`: `cljs.core/pr-writer`, which reagent calls; the porter rewrites references to it (catalogue `:core-gaps`) | compiler gap, open: light-cljs-981 | all | 108 (simple: 10, flow: 149) | part of cljs.core |
+| `light/compat.cljs`: `cljs.core/pr-writer`, which reagent calls; the measured port rewrites references to it (catalogue `:core-gaps`) | compiler gap, fixed on master (light-cljs-981): `cljs.core/pr-writer` is defined, so the shim is no longer needed. The porter `research/shadow-credibility/shadow-port-tool-981` has `:core-gaps {}`, and TodoMVC ported with it builds in dev and release | all | 108 (simple: 10, flow: 149) in the measured build; none with the 981 porter | part of cljs.core |
 | `compat/cljs/spec/alpha.cljs`: `s/def` expands to nil and `s/valid?` returns true, so TodoMVC's `check-spec-interceptor` never fails | JVM-only macro: upstream spec's macros resolve through the JVM analyzer | TodoMVC | 116 | 28,383 (cljs.spec), which really validates the db: light-cljs-980 |
 | The same spec stub in flow: zprint defines its options with 254 `s/def`s and checks them with `s/valid?` and `s/explain-data`, which the stub makes always pass | JVM-only macro, as above | flow | 1,111 (stub 149, zprint/spec.cljc 962) | 128,702 (zprint/spec.cljc 100,311, cljs.spec 28,391), 8% of shadow's output: light-cljs-980 |
 | sci 0.3.4 `require-cljs-analyzer-api`: on the JVM it requires `cljs.analyzer.api` and defines a Var, so its expansion has no source form. The catalogue writes `nil` at its one call site, which is what upstream expands it to under self-hosted ClojureScript | JVM-only macro | flow | none | none (a JVM-side definition) |
@@ -242,7 +242,7 @@ Unreached shims are not in any output and change nothing. The sizes below are ou
 | `:devtools {:preloads [hashp.core]}` dropped: light-cljs has no preloads | shadow-cljs build feature, dev only | flow | none in a release build | none in a release build |
 | `:deps true`: the porter vendors the library sources the build reached into `vendor/` (reagent, secretary, clojure.data, macrovich; flow also zprint, sci, rewrite-clj, edamame, tools.reader) | other: light-cljs resolves no dependencies | all | none | none |
 
-**Compiler-gap entries still open on master** after this branch: `cljs.core/pr-writer` (light-cljs-981); `cljs.core/PersistentArrayMapSeq` was fixed afterwards (light-cljs-982). The three ns-form and reader gaps and the release panic are fixed. The sci entries are JVM-only macros, port data rather than compiler work. Closure Library entries are recorded as non-goals, not work.
+**Compiler-gap entries still open on master** after this branch: none; `cljs.core/pr-writer` (light-cljs-981) and `cljs.core/PersistentArrayMapSeq` (light-cljs-982) were fixed afterwards. The three ns-form and reader gaps and the release panic are fixed. The sci entries are JVM-only macros, port data rather than compiler work. Closure Library entries are recorded as non-goals, not work.
 
 ### Full inventory
 
