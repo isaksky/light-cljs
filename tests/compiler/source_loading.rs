@@ -584,3 +584,20 @@ fn namespace_clauses_may_be_vectors_as_reader_splicing_leaves_them() {
     let made = loaded(&roots, "app.main");
     assert_eq!(order(&made), ["/app/dep.cljs", "/app/main.cljc"]);
 }
+
+#[test]
+fn metadata_on_a_namespace_clause_is_ignored() {
+    // The reader attaches `^{...}` to the clause after it; upstream's ns
+    // parser reads the clause and ignores its metadata.
+    let roots = Roots::new(1);
+    roots
+        .write(
+            0,
+            "app/main.cljs",
+            "(ns app.main\n  \"Doc.\"\n  ^{:added \"0.4.0\"}\n  (:refer-clojure :exclude [inc])\n  \
+             ^:private (:require [app.dep :as dep]))\n(defn inc [x] (+ x dep/step))\n(inc 1)\n",
+        )
+        .write(0, "app/dep.cljs", "(ns app.dep)\n(def step 2)\n");
+    let made = loaded(&roots, "app.main");
+    assert_eq!(order(&made), ["/app/dep.cljs", "/app/main.cljs"]);
+}

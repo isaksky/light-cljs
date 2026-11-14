@@ -646,6 +646,11 @@ impl NamespaceSource {
         let mut seen = std::collections::HashSet::new();
         let mut clauses = Vec::new();
         for &clause in forms.iter().skip(offset) {
+            // Metadata the reader attached to a clause is ignored, as upstream.
+            let mut clause = clause;
+            while let NodeKind::Metadata { target, .. } = self.syntax.nodes[clause.0].kind {
+                clause = target;
+            }
             let parts = self
                 .collection(clause, CollectionKind::List)
                 .or_else(|| self.collection(clause, CollectionKind::Vector))
