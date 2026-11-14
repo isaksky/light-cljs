@@ -196,12 +196,35 @@ fn registers(js: &str) -> bool {
     js.contains("registerReaderNamespace(\"") || js.contains(".currentNs = rt")
 }
 
-/// `text` as the emitter spells a namespace or binding name in the namespace
-/// registration: a string of `\u` escapes.
+/// `text` as the emitter spells an ASCII namespace or binding name in the
+/// namespace registration: a plain string literal.
 fn escaped(text: &str) -> String {
-    text.encode_utf16()
-        .map(|unit| format!("\\u{unit:04x}"))
-        .collect()
+    format!("\"{text}\"")
+}
+
+#[test]
+fn the_registration_spells_names_without_escapes() {
+    // The registration once wrote every character of every name as a `\u`
+    // escape, which made TodoMVC's registration four times its size
+    // (light-cljs-979). Names are plain strings; only a non-ASCII character,
+    // a quote and a backslash are escaped, and the program still reads them.
+    let source = "(def café 1) (def plain-name 2)
+                  (pr-str [café plain-name (read-string \"`plain-name\") (read-string \"`café\")])";
+    let program = program(source);
+    let readable_advanced = emit_readable(&program, OptimizationLevel::Advanced);
+    let bindings = readable_advanced
+        .lines()
+        .find(|line| line.trim_start().starts_with("bindings: [") && line.contains("plain-name"))
+        .unwrap_or_else(|| panic!("{readable_advanced}"));
+    assert!(bindings.contains("\"plain-name\""), "{bindings}");
+    assert!(bindings.contains("\"caf\\u00e9\""), "{bindings}");
+    assert!(!bindings.contains("\\u0070"), "{bindings}");
+    let terse = emit(&program, OptimizationLevel::Advanced);
+    assert!(terse.contains("\"plain-name\""), "{terse}");
+    assert_eq!(
+        printed(&terse),
+        "[1 2 (quote cljs.user/plain-name) (quote cljs.user/café)]\n"
+    );
 }
 
 /// Reflection programs and what they print in `cljs.user`; also built by

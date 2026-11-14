@@ -2394,14 +2394,6 @@ impl<'a> Emitter<'a> {
         let program = self.program;
         let mut registration = String::new();
         let register_namespaces = self.register_namespaces;
-        let demand_roots = self.demand_roots;
-        let js_string = |text: &str| {
-            if demand_roots {
-                quoted(text)
-            } else {
-                js_string(text)
-            }
-        };
         // Group once in global ID order. Looking through every global for
         // every namespace repeats the complete catalog scan in each unit.
         let mut bindings: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -2496,7 +2488,7 @@ impl<'a> Emitter<'a> {
             writeln!(
                 registration,
                 "  {current} = {the_ns}({symbol}(null, {}));",
-                js_string(namespace)
+                quoted(namespace)
             )
             .unwrap();
         }
@@ -2516,13 +2508,6 @@ impl<'a> Emitter<'a> {
         context: Option<Option<&crate::analyzer::RuntimeReaderNamespace>>,
     ) {
         let demand_roots = self.demand_roots;
-        let js_string = |text: &str| {
-            if demand_roots {
-                quoted(text)
-            } else {
-                js_string(text)
-            }
-        };
         let registration_start = registration.len();
         let previous = std::mem::take(&mut self.output);
         self.string_units(&namespace.encode_utf16().collect::<Vec<_>>());
@@ -2536,7 +2521,7 @@ impl<'a> Emitter<'a> {
             writeln!(
                 registration,
                 "  {register}({literal}, {{bindings: [{}]}}, true);",
-                bindings.map(js_string).collect::<Vec<_>>().join(",")
+                bindings.map(quoted).collect::<Vec<_>>().join(",")
             )
             .unwrap();
             if demand_roots {
@@ -2551,8 +2536,8 @@ impl<'a> Emitter<'a> {
                 writeln!(
                     registration,
                     "    [{}, {}],",
-                    js_string(alias),
-                    js_string(target)
+                    quoted(alias),
+                    quoted(target)
                 )
                 .unwrap();
             }
@@ -2561,9 +2546,9 @@ impl<'a> Emitter<'a> {
                 writeln!(
                     registration,
                     "    [{}, {}, {}],",
-                    js_string(local),
-                    js_string(ns),
-                    js_string(original)
+                    quoted(local),
+                    quoted(ns),
+                    quoted(original)
                 )
                 .unwrap();
             }
@@ -2573,7 +2558,7 @@ impl<'a> Emitter<'a> {
                 context
                     .excludes
                     .iter()
-                    .map(|s| js_string(s))
+                    .map(|s| quoted(s))
                     .collect::<Vec<_>>()
                     .join(",")
             )
@@ -2585,12 +2570,12 @@ impl<'a> Emitter<'a> {
             registration,
             "  bindings: [{}]}});",
             bindings
-                .map(js_string)
+                .map(quoted)
                 .chain(
                     context
                         .into_iter()
                         .flat_map(|c| &c.macros)
-                        .map(|name| js_string(name))
+                        .map(|name| quoted(name))
                 )
                 .collect::<Vec<_>>()
                 .join(",")
@@ -5248,7 +5233,7 @@ impl<'a> Emitter<'a> {
             self.rt(RuntimeName::core("theNs"));
             self.output.push('(');
             self.rt(RuntimeName::export("symbol"));
-            writeln!(self.output, "(null, {}));", js_string(namespace)).unwrap();
+            writeln!(self.output, "(null, {}));", quoted(namespace)).unwrap();
         }
     }
 
@@ -9771,6 +9756,9 @@ pub(crate) fn emit_namespace_registration(
 }
 
 /// A readable JavaScript string literal; non-ASCII and controls are escaped.
+/// The namespace registration spells its names this way: the passes that
+/// rename compiler names skip string literals, so a name needs no escapes,
+/// which made TodoMVC's registration four times its size (light-cljs-979).
 fn quoted(text: &str) -> String {
     let mut out = String::from("\"");
     for unit in text.encode_utf16() {
@@ -9780,15 +9768,6 @@ fn quoted(text: &str) -> String {
             0x20..=0x7e => out.push(char::from_u32(unit.into()).unwrap()),
             _ => write!(out, "\\u{unit:04x}").unwrap(),
         }
-    }
-    out.push('"');
-    out
-}
-
-fn js_string(text: &str) -> String {
-    let mut out = String::from("\"");
-    for unit in text.encode_utf16() {
-        write!(out, "\\u{unit:04x}").unwrap();
     }
     out.push('"');
     out
