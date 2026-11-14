@@ -621,7 +621,7 @@ bb benchmarks/re-frame.bb browser todomvc simple flow --runs 3 --light BIN
 
 ### Results, 3 runs each
 
-Every check passes on both builds, and there were no console errors or uncaught exceptions. No flakes appeared in three runs (a 1 min 21 s run of all three apps, unreserved machine).
+Every check passes on both builds, and there were no console errors or uncaught exceptions. No flakes appeared in three runs (a 1 min 21 s run of all three apps, unreserved machine). A rerun with `light-cljs-cd731ddb`, the same change rebased onto master `bc4de387`, gave the same tables.
 
 **TodoMVC**
 
