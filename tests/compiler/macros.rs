@@ -3866,6 +3866,36 @@ mod top_level_definition_groups {
         }
     }
 
+    // Upstream's analyzer does not check a symbol marked
+    // :cljs.analyzer/no-resolve and emits its JavaScript path. Macros guard
+    // a reference to an optional namespace that way behind `exists?`, as
+    // cljs.spec.gen.alpha's dynaload does for test.check (light-cljs-980).
+    #[test]
+    fn no_resolve_symbols_of_unloaded_namespaces_read_javascript_paths() {
+        let mut host = MacroHost::new();
+        checked(
+            r#"
+              (defmacro optional [s]
+                `(fn [] (if (exists? ~s) ~(vary-meta s assoc :cljs.analyzer/no-resolve true) :absent)))
+              (defmacro raw [s] (vary-meta s assoc :cljs.analyzer/no-resolve true))
+              (def absent (optional made.up/unknown))
+              (set! (.-lightNoResolve js/globalThis) #js {:probe 5})
+              (and (= :absent (absent))
+                   (= 5 (raw lightNoResolve/probe))
+                   (= 5 ^:cljs.analyzer/no-resolve lightNoResolve/probe)
+                   (= cljs.core/mapv (raw cljs.core/mapv)))
+            "#,
+            &mut host,
+        );
+        let error = compile_with_macros("(defn f [] made.up/unknown) true", &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unknown namespace or alias made.up"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn exists_preserves_initializer_errors_cycles_visibility_and_reuse() {
         let mut host = MacroHost::new();

@@ -6832,6 +6832,12 @@ impl Analyzer<'_> {
                     }
                 }
             {
+                // As upstream's analyzer, a symbol marked
+                // :cljs.analyzer/no-resolve is not checked: it reads its
+                // JavaScript path, which macros guard with `exists?`.
+                if self.metadata_is(id, "cljs.analyzer/no-resolve", "true") {
+                    return self.resolve(id, &format!("js/{namespace}.{symbol}"));
+                }
                 if self.options.warning_mode {
                     let namespace = namespace.to_owned();
                     self.warn(id, "undeclared-ns", format!("No such namespace: {namespace}, could not locate {}.cljs, {}.cljc, or JavaScript source providing \"{namespace}\"", namespace.replace('.', "/").replace('-', "_"), namespace.replace('.', "/").replace('-', "_")));
