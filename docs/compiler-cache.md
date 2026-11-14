@@ -1747,15 +1747,21 @@ persistence remain out of scope.
      namespace compiles goes to the later namespaces it reaches, not back
      to earlier consumers of the helper. `LAZY` edges are left out.
    - **Lookup.** A `--cache-blocker` is not looked up. Otherwise each
-     candidate, newest first, is read (size and content hash), its manifest
-     decoded, and the key it would have now computed from the current
+     candidate, newest first, is checked against its size and only its
+     header and manifest are read and decoded (the manifest's own hash
+     and the sections' layout against the file's size), and the key it
+     would have now computed from the current
      loader, the current keys of earlier namespaces and its stored edges,
      inputs and absent names; it must equal the key it was published
      under, and its resources must read as recorded
      (`cache_key::inputs_unchanged`). Since a match means the stored edges
      are the namespace's own, the policy is then checked on them: a
-     dependency a propagated bypass reaches makes it a bypass. The matching
-     candidate is decoded, installed and dropped. The manifest now stores
+     dependency a propagated bypass reaches makes it a bypass. Only the
+     matching candidate is read whole and checked against its content hash
+     (light-cljs-1003: a stale candidate costs its manifest, not a read and
+     hash of the whole artifact); one that fails it is a miss and never
+     installed. The matching candidate is then decoded, installed and
+     dropped. The manifest now stores
      the absent names the view covers (`ManifestFields::absent`,
      `SCHEMA_VERSION` 6).
    - **Miss.** Otherwise the namespace is analyzed and captured, keyed,
