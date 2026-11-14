@@ -195,13 +195,14 @@
 //! entries are instances of one class (`ArrayMapEntry`) instead of frozen
 //! objects with a hash getter closure each; a keyword key's search reads its
 //! own `IEquiv` slot per entry as before but looks up `extend-type`'s tables
-//! once; and a map entry is made with its prototype. Release output runs
-//! 7-23% faster in benchmarks/runtime-vs-shadow.md. A program building array
-//! maps keeps the class and the longer search: `map-only` 8,066 to 8,378,
-//! `set-only` 4,887 to 5,197 and `features-direct` to 77,066, whose ceilings
-//! move to 8,400, 5,200 and 78,000. The readable runtime grows about 1,500
-//! bytes; every none and prepare ceiling it exceeds, which with
-//! light-cljs-985 is all of them, moves to the next 1,000 above its size.
+//! once; and a map entry is made with its prototype. Release output takes
+//! 8-29% less time per iteration (benchmarks/runtime-vs-shadow.md). A
+//! program building array maps keeps the class and the longer search:
+//! `map-only` 8,066 to 8,378, `set-only` 4,887 to 5,197 and
+//! `features-direct` to 77,066, whose ceilings move to 8,400, 5,200 and
+//! 78,000. The readable runtime grows about 1,500 bytes; every none and
+//! prepare ceiling it exceeds, which with light-cljs-985 is all of them,
+//! moves to the next 1,000 above its size.
 
 pub struct Fixture {
     pub name: &'static str,
