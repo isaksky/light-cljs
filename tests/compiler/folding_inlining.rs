@@ -11,8 +11,8 @@
 use super::optimization::{execute, readable};
 use super::size_ratchet::ratchet_fixtures::FIXTURES;
 use light_cljs::{
-    ApplicationOptions, ApplicationStats, Define, DefineError, DefineValue, OptimizationLevel,
-    Program, analyze, parse, prepare_application,
+    ApplicationOptions, ApplicationStats, Define, DefineError, DefineValue, NamespaceInput,
+    OptimizationLevel, Program, analyze, analyze_namespaces, parse, prepare_application,
 };
 
 fn program(source: &str) -> Program {
@@ -41,11 +41,20 @@ fn defined_at_every_level(
     defines: &[Define],
     expected: &str,
 ) -> (String, ApplicationStats) {
-    let program = program(source);
+    program_at_every_level(&program(source), source, defines, expected)
+}
+
+/// [`defined_at_every_level`] for an analyzed `program` of `source`.
+fn program_at_every_level(
+    program: &Program,
+    source: &str,
+    defines: &[Define],
+    expected: &str,
+) -> (String, ApplicationStats) {
     for level in OptimizationLevel::ALL {
         for strict in [false, true] {
             assert_eq!(
-                execute(&script(&program, options(level, defines), strict)),
+                execute(&script(program, options(level, defines), strict)),
                 format!("{expected}\n"),
                 "at {level}, strict {strict}: {source}"
             );
@@ -53,7 +62,7 @@ fn defined_at_every_level(
     }
     let mut advanced = options(OptimizationLevel::Advanced, defines);
     advanced.pseudo_names = true;
-    let prepared = prepare_application(&program, advanced);
+    let prepared = prepare_application(program, advanced);
     assert!(prepared.rejected_defines().is_empty(), "{source}");
     (
         program_text(&prepared.emit_js()).to_owned(),
@@ -245,8 +254,10 @@ fn const_reads_are_their_value_after_the_definition_runs() {
         (pr-str [before (early) (later) (+ LATE 1)])"#;
     let (text, _) = every_level(source, r#"[nil 5 [5 "label" :kind nil 7] 6]"#);
     assert!(text.contains("\"label\""), "{text}");
-    // `plain` is no constant and `early` reads `LATE` before it is defined.
+    // `early` reads `LATE` before it is defined. `plain` is no `^:const`,
+    // but nothing reassigns it, so it folds too (light-cljs-984).
     assert!(text.contains("[5, \"label\", k"), "{text}");
+    assert!(text.contains(", null, 7]"), "{text}");
     // A constant defined outside the top level is read as a global.
     let (text, _) = every_level(
         "(when (some? js/globalThis) (def ^:const INNER 1)) (pr-str [INNER])",
@@ -365,6 +376,206 @@ fn defines_and_goog_define_reject_what_does_not_fit() {
         let error = analyze(source, &parse(source).unwrap()).unwrap_err();
         assert!(error.to_string().contains(message), "{source}: {error}");
     }
+}
+
+/// A def that nothing reassigns and whose value is known, `^:const`,
+/// `goog-define` or a plain literal, is that value at `Advanced` when read
+/// directly, through another such def or through a function of no
+/// parameters that returns it, also along chains of them; the branch it
+/// rules out is gone (light-cljs-984).
+#[test]
+fn known_defs_fold_through_other_defs_and_functions_without_parameters() {
+    let source = r#"
+        (def ^:const enabled? false)
+        (goog-define defined? false)
+        (def plain? false)
+        (defn ^boolean on? [] enabled?)
+        (defn ^boolean defined-on? [] ^boolean defined?)
+        (defn plain-on? [] plain?)
+        (def ^boolean alias? enabled?)
+        (def ^boolean defined-alias? "@define {boolean}" ^boolean defined?)
+        (def alias-of-alias? alias?)
+        (def called? (on?))
+        (defn through-call? [] (plain-on?))
+        (def level 3)
+        (def label "short")
+        (def kind :release)
+        (pr-str [(if (on?) :dead-call :off) (if (defined-on?) :dead-define-call :off)
+                 (if (plain-on?) :dead-plain-call :off) (if alias? :dead-alias :off)
+                 (if defined-alias? :dead-define-alias :off) (if plain? :dead-plain :off)
+                 (if alias-of-alias? :dead-chain :off) (if called? :dead-called :off)
+                 (if (through-call?) :dead-through :off)
+                 (when (= kind :debug) :dead-kind) (* level 2) (str label "!")])"#;
+    let (text, _) = every_level(
+        source,
+        r#"[:off :off :off :off :off :off :off :off :off nil 6 "short!"]"#,
+    );
+    for dead in [
+        "dead-call",
+        "dead-define-call",
+        "dead-plain-call",
+        "dead-alias",
+        "dead-define-alias",
+        "dead-plain",
+        "dead-chain",
+        "dead-called",
+        "dead-through",
+        "dead-kind",
+    ] {
+        assert!(!text.contains(dead), "{dead}: {text}");
+    }
+    // The values folded into the vector, so no definition is left.
+    assert!(text.contains("\"short!\""), "{text}");
+    assert!(!text.contains("function"), "{text}");
+}
+
+/// The pellet's probe: flags defined in one namespace and read in another
+/// through a function of no parameters and through another def fold, and
+/// so does a build-time define that replaces a `goog-define` default.
+#[test]
+fn flags_read_through_functions_and_defs_of_another_namespace_fold() {
+    let flags = r#"(ns app.flags)
+        (def ^:const enabled? false)
+        (goog-define DEBUG false)
+        (defn ^boolean on? [] enabled?)
+        (def ^boolean alias? enabled?)
+        (defn ^boolean debug? [] DEBUG)
+        (def ^boolean debug-alias? DEBUG)"#;
+    let main = r#"(ns app.main (:require [app.flags :as flags]))
+        (pr-str [(if (flags/on?) :dead-on :off) (if flags/alias? :dead-alias :off)
+                 (if (flags/debug?) :debug-on :debug-off)
+                 (if flags/debug-alias? :debug-alias-on :debug-alias-off)])"#;
+    let syntax = [parse(flags).unwrap(), parse(main).unwrap()];
+    let aliases = [("flags".to_owned(), "app.flags".to_owned())];
+    let requires = ["app.flags".to_owned()];
+    let program = analyze_namespaces(&[
+        NamespaceInput {
+            name: "app.flags",
+            source: flags,
+            syntax: &syntax[0],
+            aliases: &[],
+            requires: &[],
+        },
+        NamespaceInput {
+            name: "app.main",
+            source: main,
+            syntax: &syntax[1],
+            aliases: &aliases,
+            requires: &requires,
+        },
+    ])
+    .unwrap_or_else(|(_, error)| panic!("{error}"));
+    let source = main;
+    let (text, _) = program_at_every_level(
+        &program,
+        source,
+        &[],
+        "[:off :off :debug-off :debug-alias-off]",
+    );
+    for dead in ["dead-on", "dead-alias", "debug-on", "debug-alias-on"] {
+        assert!(!text.contains(dead), "{dead}: {text}");
+    }
+    let (text, _) = program_at_every_level(
+        &program,
+        source,
+        &[define("app.flags/DEBUG", DefineValue::Boolean(true))],
+        "[:off :off :debug-on :debug-alias-on]",
+    );
+    for dead in ["dead-on", "dead-alias", "debug-off", "debug-alias-off"] {
+        assert!(!text.contains(dead), "{dead}: {text}");
+    }
+}
+
+/// A def that may change is never folded, nor are reads of it through other
+/// defs or functions: one assigned by `set!` or raw JavaScript, defined
+/// twice, redefined by `with-redefs`, bound by `binding`, or a function so
+/// changed. Each program prints what `None` prints, so a fold would show.
+#[test]
+fn defs_that_may_change_never_fold() {
+    for (source, expected) in [
+        (
+            "(def flag false) (defn on? [] flag) (def alias flag) (set! flag true)
+             (pr-str [(if flag :yes :no) (if (on?) :yes :no) (if alias :yes :no)])",
+            "[:yes :yes :no]",
+        ),
+        (
+            "(def flag false) (defn on? [] flag) (def first-read (on?)) (def flag true)
+             (pr-str [first-read flag (on?)])",
+            "[false true true]",
+        ),
+        (
+            "(def flag false) (defn on? [] flag)
+             (pr-str [(with-redefs [flag true] [flag (on?)]) [flag (on?)]])",
+            "[[true true] [false false]]",
+        ),
+        (
+            "(def ^:dynamic *flag* false) (defn on? [] *flag*)
+             (pr-str [(binding [*flag* true] [*flag* (on?)]) [*flag* (on?)]])",
+            "[[true true] [false false]]",
+        ),
+        (
+            "(def flag false) (defn on? [] flag)
+             (pr-str [(with-redefs [on? (fn [] :redefined)] (on?)) (on?)])",
+            "[:redefined false]",
+        ),
+        (
+            "(defn on? [] false) (def before (on?)) (defn on? [] true) (pr-str [before (on?)])",
+            "[false true]",
+        ),
+        (
+            "(def flag false) (defn on? [] flag) (defn flip! [] (set! flag true))
+             (flip!) (pr-str [flag (on?)])",
+            "[true true]",
+        ),
+        (
+            "(def flag false) (defn on? [] flag) (js* \"~{} = true\" flag) (pr-str [flag (on?)])",
+            "[true true]",
+        ),
+        (
+            "(def flag false) (defn reset [] (def flag true)) (reset) (pr-str [flag])",
+            "[true]",
+        ),
+    ] {
+        let (text, _) = every_level(source, expected);
+        assert!(text.contains("true"), "{source}: {text}");
+    }
+}
+
+/// What a fold could change stays: a long string that is not `^:const` is
+/// read from its one definition, a function with parameters or a body that
+/// is not known stays a call, and a read in a function defined before the
+/// def stays a read. A `^boolean` def or function whose value is not a
+/// boolean is not folded either: tests trust the tag and read JavaScript
+/// truth, so `Advanced` prints what it printed without folding. (Below
+/// `Advanced` a call of such a function is tested by Clojure truth; that
+/// difference between levels predates folding and is not checked here.)
+#[test]
+fn folds_that_would_copy_text_or_change_tagged_tests_stay_reads() {
+    let source = r#"
+        (def long-text "a string longer than sixteen")
+        (def ^boolean zero 0)
+        (declare late)
+        (defn early [] late)
+        (def late false)
+        (defn takes [x] false)
+        (defn computes [] (> (count long-text) 3))
+        (pr-str [long-text (count long-text) (if zero :t :f)
+                 (if (early) :t :f) (if (takes 1) :t :f) (if (computes) :t :f)])"#;
+    let (text, _) = every_level(source, r#"["a string longer than sixteen" 28 :f :f :f :t]"#);
+    assert_eq!(text.matches("a string longer").count(), 1, "{text}");
+    let tagged = program(
+        "(defn ^boolean zero-fn [] 0) (def ^boolean zero 0) (def ^boolean empty \"\")
+         (pr-str [(if (zero-fn) :t :f) (if zero :t :f) (if empty :t :f)])",
+    );
+    let run = |no_folding| {
+        let mut options = options(OptimizationLevel::Advanced, &[]);
+        options.no_folding = no_folding;
+        execute(&format!(
+            "console.log({})",
+            prepare_application(&tagged, options).emit_js()
+        ))
+    };
+    assert_eq!(run(false), run(true));
 }
 
 /// The ratchet fixture `debug-logging`: with `DEBUG` false the logging path

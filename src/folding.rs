@@ -13,7 +13,14 @@
 //!   [`Constant`] and never assigned, is that constant when the read is in a
 //!   later top-level form, which runs after the definition. Upstream
 //!   substitutes the value of a `^:const` Var at every reference analyzed after
-//!   it in the same way.
+//!   it in the same way. A global without `^:const` that is so defined and
+//!   never assigned (no `set!`, `binding`, `with-redefs` or second definition
+//!   anywhere in the program) is folded the same way when its value is a
+//!   scalar or symbol literal, a read of such a global, or a call without
+//!   arguments of a function whose one method takes no parameters and returns
+//!   one, and so is such a call in a later top-level form (light-cljs-984,
+//!   [`constant_globals`]): `(defn ^boolean on? [] enabled?)` and
+//!   `(def alias? enabled?)` fold where `enabled?` does.
 //! - A `let` binding of a constant is substituted into its reads and dropped,
 //!   and so is a binding nothing reads whose initializer has no effect. This is
 //!   what folds `and` and `or`, whose expansions bind their operands.
@@ -69,7 +76,9 @@
 //! `nth` out of range without a default stays), never decides an equality
 //! the runtime's hashing could decide otherwise, and drops only constants
 //! and local reads.
-use crate::analyzer::{CoreFnId, ExprId, ExprKind, LocalId, NamedLiteralId, Program, StringId};
+use crate::analyzer::{
+    CoreFnId, ExprId, ExprKind, GlobalId, LocalId, NamedLiteralId, Program, StringId,
+};
 use crate::core_operations::{Purity, Type};
 use crate::emitter::{ConstantClass, constant_nodes};
 use crate::inference::ProgramFacts;
@@ -871,8 +880,13 @@ pub fn fold(program: &mut Program, built: &mut Vec<bool>) -> usize {
 
     // Constant globals: defined by one `def` with a value that the root
     // reaches, a direct top-level form, and assigned or defined by nothing
-    // else. A `declare` defines no value and does not count.
-    let (globals, collections) = constant_globals(program, &top, &position);
+    // else, and what each one makes known (light-cljs-984). A `declare`
+    // defines no value and does not count.
+    let ConstantGlobals {
+        values: globals,
+        collections,
+        returns,
+    } = constant_globals(program, &top, &position);
 
     // Locals that are never substituted, and those whose value may change
     // after their binding (a type field, a `js*` hole, a `set!` target).
@@ -962,6 +976,7 @@ pub fn fold(program: &mut Program, built: &mut Vec<bool>) -> usize {
         position,
         globals,
         collections,
+        returns,
         pinned,
         assignable,
         reads,
@@ -1176,46 +1191,144 @@ pub(crate) fn sole_definitions(program: &Program, position: &[u32]) -> Vec<Optio
         .collect()
 }
 
-/// For each global, the top-level position of its definition and its value
-/// when it is a `^:const` (or `goog-define`) global that [`fold`]
-/// substitutes: its sole definition is a direct top-level `def` of a
-/// [`Constant`]. Second, for each `^:const` global so defined by a collection
-/// literal, the position and the literal, which [`fold`] folds lookups
-/// against but never substitutes.
-#[allow(clippy::type_complexity)]
-fn constant_globals(
-    program: &Program,
-    top: &[ExprId],
-    position: &[u32],
-) -> (Vec<Option<(u32, ExprKind)>>, Vec<Option<(u32, ExprId)>>) {
+/// The longest string, in UTF-16 code units, that a definition which is not
+/// `^:const` gives every read of it: a longer one stays one definition read
+/// by name, so that substitution never copies long text into many places.
+/// A `^:const` string has no limit (upstream substitutes it at every
+/// reference).
+const COPIED_STRING_LIMIT: usize = 16;
+
+/// The globals [`fold`] knows the value of (light-cljs-214, light-cljs-984).
+struct ConstantGlobals {
+    /// By global: the top-level position of its sole definition and the
+    /// literal of the scalar or symbol every later read is.
+    values: Vec<Option<(u32, ExprKind)>>,
+    /// By global: the top-level position of its sole definition and the
+    /// collection literal it defines, for `^:const` globals, which [`fold`]
+    /// folds lookups against but never substitutes.
+    collections: Vec<Option<(u32, ExprId)>>,
+    /// By global: the top-level position of its sole definition, a function
+    /// of one method without parameters whose body is known, and the literal
+    /// every later call of it without arguments is.
+    returns: Vec<Option<(u32, ExprKind)>>,
+}
+
+/// The globals whose sole definition ([`sole_definitions`]: nothing else
+/// defines or assigns them, by `set!`, `binding`, `with-redefs`, a `js*`
+/// hole, a type or a protocol) is a direct top-level `def` (not `defonce`),
+/// with what that definition makes known (light-cljs-984). Definitions are
+/// taken in top-level order, so each reads only what earlier ones made
+/// known:
+///
+/// - a value: a `^:const` (or `goog-define`) global defined by a
+///   [`Constant`], or any global defined by a scalar or symbol literal (a
+///   string of at most [`COPIED_STRING_LIMIT`] code units unless
+///   `^:const`), by a read of a global with a value defined before it, or by
+///   a call without arguments of a global with a return defined before it,
+///   through `do` and `^boolean` hints;
+/// - a return: a global defined by a `fn` of one method without parameters
+///   (not `^:async`) whose body is such a literal, read or call; the body
+///   runs when the function is called, after its definition;
+/// - a collection: a `^:const` global defined by a collection literal.
+///
+/// A global tagged `^boolean` whose value or return would be other than
+/// `true`, `false` or `nil` gets none: tests trust the tag and read
+/// JavaScript truth, which substituting the value would change. A
+/// `^:const` literal keeps its value whatever the tag, as before.
+fn constant_globals(program: &Program, top: &[ExprId], position: &[u32]) -> ConstantGlobals {
     let definitions = sole_definitions(program, position);
-    let mut globals = vec![None; program.globals.len()];
-    let mut collections = vec![None; program.globals.len()];
-    for (index, binding) in program.globals.iter().enumerate() {
-        let Some(def) = definitions[index] else {
+    let count = program.globals.len();
+    let mut known = ConstantGlobals {
+        values: vec![None; count],
+        collections: vec![None; count],
+        returns: vec![None; count],
+    };
+    let mut order: Vec<(u32, usize, ExprId)> = Vec::new();
+    for (index, definition) in definitions.into_iter().enumerate() {
+        let Some(def) = definition else {
             continue;
         };
         let at = position[def.0];
-        if !binding.constant || top.get(at as usize) != Some(&def) {
+        if top.get(at as usize) != Some(&def) {
             continue;
         }
-        let ExprKind::Def {
+        if let ExprKind::Def {
             init: Some(init),
             once: false,
             test: None,
             ..
         } = program.exprs[def.0].kind
-        else {
-            continue;
-        };
-        let literal = crate::application::unwrap_do(program, init);
-        if Constant::of(program, literal).is_some() {
-            globals[index] = Some((at, program.exprs[literal.0].kind.clone()));
-        } else if shape(program, literal).is_some() {
-            collections[index] = Some((at, literal));
+        {
+            order.push((at, index, init));
         }
     }
-    (globals, collections)
+    order.sort_unstable_by_key(|&(at, index, _)| (at, index));
+    for (at, index, init) in order {
+        let binding = &program.globals[index];
+        let init = crate::application::unwrap_do(program, init);
+        let fits = |value: &ExprKind| {
+            (!binding.boolean_tag || matches!(value, ExprKind::Bool(_) | ExprKind::Nil))
+                && (binding.constant
+                    || !matches!(value, ExprKind::String(string)
+                        if program.strings[string.0].len() > COPIED_STRING_LIMIT))
+        };
+        if binding.constant && Constant::of(program, init).is_some() {
+            known.values[index] = Some((at, program.exprs[init.0].kind.clone()));
+        } else if let Some(value) = known_value(program, &known, init, at) {
+            if fits(&value) {
+                known.values[index] = Some((at, value));
+            }
+        } else if binding.constant && shape(program, init).is_some() {
+            known.collections[index] = Some((at, init));
+        } else if let ExprKind::Fn { methods, .. } = &program.exprs[init.0].kind
+            && let [method] = &methods[..]
+            && method.params.is_empty()
+            && method.rest.is_none()
+            && !method.asynchronous
+            && let Some(value) = known_value(program, &known, method.body, at)
+            && fits(&value)
+        {
+            known.returns[index] = Some((at, value));
+        }
+    }
+    known
+}
+
+/// The literal of the scalar or symbol that `id` evaluates to when it runs
+/// after top-level position `at`: a literal, or, through `do` and `^boolean`
+/// hints, a read of a global with a value or a call without arguments of a
+/// global with a return, defined before `at`.
+fn known_value(
+    program: &Program,
+    known: &ConstantGlobals,
+    id: ExprId,
+    at: u32,
+) -> Option<ExprKind> {
+    let id = crate::application::unwrap_do(program, id);
+    let found = |entry: &Option<(u32, ExprKind)>| match entry {
+        Some((defined, value)) if *defined < at => Some(value.clone()),
+        _ => None,
+    };
+    match &program.exprs[id.0].kind {
+        ExprKind::BooleanHint(inner) => known_value(program, known, *inner, at),
+        ExprKind::Global(global) => found(&known.values[global.0]),
+        ExprKind::Call { callee, args } if args.is_empty() => {
+            found(&known.returns[called_global(program, *callee)?.0])
+        }
+        kind => Constant::of_kind(program, kind).map(|_| kind.clone()),
+    }
+}
+
+/// The global a callee reads, through the `^boolean` hint a tagged
+/// function's calls carry.
+fn called_global(program: &Program, mut callee: ExprId) -> Option<GlobalId> {
+    loop {
+        match program.exprs[callee.0].kind {
+            ExprKind::BooleanHint(inner) => callee = inner,
+            ExprKind::Global(global) => return Some(global),
+            _ => return None,
+        }
+    }
 }
 
 /// The direct top-level forms of the program.
@@ -1237,12 +1350,16 @@ struct Folder<'p> {
     replaced: Vec<&'static str>,
     /// By expression: the first top-level form that reaches it.
     position: Vec<u32>,
-    /// By global: the top-level position of its sole definition and its
-    /// constant value, for `^:const` globals.
+    /// By global: the top-level position of its sole definition and the
+    /// literal every later read is ([`ConstantGlobals::values`]).
     globals: Vec<Option<(u32, ExprKind)>>,
     /// By global: the top-level position of its sole definition and the
     /// collection literal it defines, for `^:const` globals.
     collections: Vec<Option<(u32, ExprId)>>,
+    /// By global: the top-level position of its sole definition and the
+    /// literal every later call without arguments is
+    /// ([`ConstantGlobals::returns`]).
+    returns: Vec<Option<(u32, ExprKind)>>,
     /// By local: captured by a closure or type, a type field, or a `js*` hole.
     pinned: Vec<bool>,
     /// By local: a type field, a `js*` hole or a `set!` target, whose value
@@ -1475,6 +1592,18 @@ impl Folder<'_> {
                         self.folded += 1;
                         return ExprKind::Call { callee, args };
                     }
+                } else if args.is_empty()
+                    && !self.fenced[id.0]
+                    && !self.kept[id.0]
+                    && let Some(global) = called_global(self.program, callee)
+                    && let Some((at, value)) = &self.returns[global.0]
+                    && self.position[id.0] != NOWHERE
+                    && self.position[id.0] > *at
+                {
+                    // A function that returns a constant, called after its
+                    // definition, is that constant.
+                    self.folded += 1;
+                    return value.clone();
                 } else if !self.fenced[id.0]
                     && let Some(kind) = self.invoke(id, callee, &args)
                 {

@@ -3385,6 +3385,18 @@ and call shapes, which therefore see the simplified program. `None` and
     functions they define, keep the read, which may see the global unset.
     Upstream likewise substitutes a `^:const` Var's value at the references
     it analyzes after the definition;
+  - the same holds without `^:const` (light-cljs-984) for a global that
+    nothing assigns or redefines (no `set!`, `binding`, `with-redefs`, `js*`
+    hole or second definition anywhere in the program) whose one top-level
+    `def` gives it a scalar or symbol literal (a string of at most 16 code
+    units, so that long text is not copied to every read), a read of such a
+    global defined earlier, or a call without arguments of such a function;
+    and a call without arguments of a global whose one top-level `def` is a
+    `fn` of one method without parameters returning such a value is that
+    value. So `(defn ^boolean on? [] enabled?)` and `(def alias? enabled?)`
+    fold wherever `enabled?` does. A `^boolean` global whose value would not
+    be `true`, `false` or `nil` is left alone, since its tests read
+    JavaScript truth;
   - a `let` binding of a literal is substituted and dropped, and so is an
     unread binding whose initializer has no effect (literals, local and
     global reads, `fn`, and vector, list, map and set literals of those whose
