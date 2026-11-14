@@ -2533,13 +2533,7 @@ impl<'a> Emitter<'a> {
         writeln!(registration, "  {register}({literal}, {{aliases: [").unwrap();
         if let Some(context) = context {
             for (alias, target) in &context.aliases {
-                writeln!(
-                    registration,
-                    "    [{}, {}],",
-                    quoted(alias),
-                    quoted(target)
-                )
-                .unwrap();
+                writeln!(registration, "    [{}, {}],", quoted(alias), quoted(target)).unwrap();
             }
             registration.push_str("  ], refers: [\n");
             for (local, ns, original) in &context.refers {
