@@ -1289,11 +1289,29 @@ impl Converter<'_> {
             });
         }
         // Tables keyed by earlier entries may only keep them as they were.
+        // Each is read through what changed since the start, not walked
+        // whole, so a namespace's capture costs what it added, not the
+        // size of the program before it (light-cljs-997): a layered table
+        // through its changed keys, a set only when it is no longer the
+        // one the start shares.
+        let mut changed_protocols = program
+            .protocols
+            .changed_keys(&start.protocols)
+            .into_iter()
+            .map(|global| global.0)
+            .collect::<Vec<_>>();
+        changed_protocols.sort_unstable();
+        changed_protocols.dedup();
         let mut protocols = Vec::new();
-        for (global, methods) in program.protocols.iter() {
+        for global in changed_protocols.into_iter().map(GlobalId) {
+            // A key only the start has is a removal, which the walk of
+            // the program's entries never saw.
+            let Some(methods) = program.protocols.get(&global) else {
+                continue;
+            };
             // A protocol on a global an earlier namespace reserved is new
             // here; an earlier protocol must keep its methods.
-            match start.protocols.get(global) {
+            match start.protocols.get(&global) {
                 Some(before) if before == methods => continue,
                 Some(_) => {
                     return Err("the namespace changed an earlier protocol's methods".into());
@@ -1304,53 +1322,78 @@ impl Converter<'_> {
                 .iter()
                 .map(|method| self.protocol_method(method))
                 .collect::<Result<Vec<_>, _>>()?;
-            protocols.push((self.global(*global)?, methods));
+            protocols.push((self.global(global)?, methods));
         }
         protocols.sort_by_key(|(global, _)| order(global));
         let mut record_constructors = Vec::new();
-        for global in program.record_constructors.iter() {
-            if start.record_constructors.contains(global) {
-                continue;
+        if !crate::shared::Shared::ptr_eq(&program.record_constructors, &start.record_constructors)
+        {
+            for global in program.record_constructors.iter() {
+                if start.record_constructors.contains(global) {
+                    continue;
+                }
+                record_constructors.push(self.global(*global)?);
             }
-            record_constructors.push(self.global(*global)?);
         }
         record_constructors.sort_by_key(order);
+        let mut changed_fields = program
+            .field_bindings
+            .changed_keys(&start.field_bindings)
+            .into_iter()
+            .map(|local| local.0)
+            .collect::<Vec<_>>();
+        changed_fields.sort_unstable();
+        changed_fields.dedup();
         let mut field_bindings = Vec::new();
-        for (local, (target, mutable)) in program.field_bindings.iter() {
+        for local in changed_fields.into_iter().map(ir::LocalId) {
+            let Some(&(target, mutable)) = program.field_bindings.get(&local) else {
+                continue;
+            };
             if local.0 < start.locals {
-                if start.field_bindings.get(local) != Some(&(*target, *mutable)) {
+                if start.field_bindings.get(&local) != Some(&(target, mutable)) {
                     return Err("the namespace changed an earlier type's fields".into());
                 }
                 continue;
             }
-            field_bindings.push((self.local(*local)?, self.recur(*target)?, *mutable));
+            field_bindings.push((self.local(local)?, self.recur(target)?, mutable));
         }
         field_bindings.sort_by_key(|(local, _, _)| local.0);
         let mut type_methods = Vec::new();
-        for target in program.type_methods.iter() {
-            if target.0 < start.recur_targets {
-                if !start.type_methods.contains(target) {
-                    return Err("the namespace changed an earlier type's methods".into());
+        if !crate::shared::Shared::ptr_eq(&program.type_methods, &start.type_methods) {
+            for target in program.type_methods.iter() {
+                if target.0 < start.recur_targets {
+                    if !start.type_methods.contains(target) {
+                        return Err("the namespace changed an earlier type's methods".into());
+                    }
+                    continue;
                 }
-                continue;
+                type_methods.push(self.recur(*target)?);
             }
-            type_methods.push(self.recur(*target)?);
         }
         type_methods.sort_by_key(|target| target.0);
         let mut macro_functions = Vec::new();
-        for expr in program.macro_functions.iter() {
-            if expr.0 < start.exprs {
-                if !start.macro_functions.contains(expr) {
-                    return Err("the namespace made an earlier function a macro".into());
+        if !crate::shared::Shared::ptr_eq(&program.macro_functions, &start.macro_functions) {
+            for expr in program.macro_functions.iter() {
+                if expr.0 < start.exprs {
+                    if !start.macro_functions.contains(expr) {
+                        return Err("the namespace made an earlier function a macro".into());
+                    }
+                    continue;
                 }
-                continue;
+                macro_functions.push(self.expr(*expr)?);
             }
-            macro_functions.push(self.expr(*expr)?);
         }
         macro_functions.sort_by_key(|expr| expr.0);
-        for other in program.namespaces.range(0..start.namespaces) {
+        // Only an earlier namespace's context must keep its entry; whether
+        // a namespace is an earlier one is looked up only for a context
+        // other than the namespace's own whose entry changed.
+        for other in program.reader_contexts.changed_keys(&start.reader_contexts) {
             if other != namespace
                 && start.reader_contexts.get(other) != program.reader_contexts.get(other)
+                && program
+                    .namespaces
+                    .range(0..start.namespaces)
+                    .any(|earlier| earlier == other)
             {
                 return Err(format!(
                     "the namespace changed the reader context of {other}"
@@ -1718,5 +1761,173 @@ mod tests {
         assert!(refused.is_err());
         let (macros, expansions) = session.take_captured();
         assert!(macros.is_empty() && expansions.is_empty());
+    }
+
+    /// A program with `earlier` locals and recur targets, each of the
+    /// first `earlier` locals a field of target 0, an earlier protocol and
+    /// type, and the namespaces `earlier.ns` (with a reader context) and
+    /// `new.ns`.
+    fn program_with_earlier_tables(earlier: usize) -> Program {
+        let mut program = crate::analyzer::empty_program();
+        program.namespaces.push("earlier.ns".to_owned());
+        program.namespaces.push("new.ns".to_owned());
+        for index in 0..earlier {
+            program.locals.push(ir::LocalBinding {
+                name: format!("field{index}"),
+                span: 0..0,
+                source_index: 0,
+            });
+            program.recur_targets.push(ir::RecurTarget {
+                params: Vec::new(),
+                protocol_impl: false,
+                receiver_from_this: false,
+                used: false,
+                argument_slots: Vec::new(),
+            });
+            program
+                .field_bindings
+                .insert(ir::LocalId(index), (ir::RecurTargetId(0), false));
+        }
+        program.protocols.insert(GlobalId(usize::MAX), Vec::new());
+        program.type_methods.insert(ir::RecurTargetId(0));
+        program.reader_contexts.insert(
+            "earlier.ns".to_owned(),
+            crate::shared::Shared::new(ir::RuntimeReaderNamespace {
+                aliases: Vec::new(),
+                refers: Vec::new(),
+                excludes: Vec::new(),
+                macros: Vec::new(),
+            }),
+        );
+        program
+    }
+
+    fn tables_of(program: &Program, start: &CaptureStart) -> Result<Declarations, String> {
+        let host = MacroHost::new();
+        let names = crate::name_index::NameIndex::default();
+        let mut c = Converter {
+            program,
+            start,
+            names: &names,
+            macro_host: &host,
+            source_index: 1,
+            units: 0..0,
+            registrations_end: 0,
+            references: References::default(),
+            external_globals: HashMap::new(),
+            namespaces: HashMap::new(),
+            strings: Vec::new(),
+            external_strings: HashMap::new(),
+            named_literals: Vec::new(),
+            external_named: HashMap::new(),
+            js_globals: HashMap::new(),
+            js_table: Vec::new(),
+        };
+        c.tables("new.ns")
+    }
+
+    /// Capture reads the side tables through what changed since the start
+    /// (light-cljs-997): what the namespace added is captured in order,
+    /// whether or not a layered table merged its layers meanwhile, and a
+    /// change to an earlier entry is still refused.
+    #[test]
+    fn capture_reads_what_changed_in_the_side_tables() {
+        let context = |alias: &str| {
+            crate::shared::Shared::new(ir::RuntimeReaderNamespace {
+                aliases: vec![(alias.to_owned(), "earlier.ns".to_owned())],
+                refers: Vec::new(),
+                excludes: Vec::new(),
+                macros: Vec::new(),
+            })
+        };
+        // Few new fields keep the start's base; many merge the layers.
+        for added in [3, 400] {
+            let earlier = 300;
+            let mut program = program_with_earlier_tables(earlier);
+            let start = begin(&mut program, 1, &[], None);
+            for index in (0..added).rev() {
+                program.locals.push(ir::LocalBinding {
+                    name: format!("new{index}"),
+                    span: 0..0,
+                    source_index: 1,
+                });
+                program.field_bindings.insert(
+                    ir::LocalId(earlier + index),
+                    (ir::RecurTargetId(earlier), index % 2 == 0),
+                );
+            }
+            program.recur_targets.push(ir::RecurTarget {
+                params: Vec::new(),
+                protocol_impl: false,
+                receiver_from_this: false,
+                used: false,
+                argument_slots: Vec::new(),
+            });
+            program.protocols.insert(GlobalId(5), Vec::new());
+            program.protocols.insert(GlobalId(2), Vec::new());
+            program.record_constructors.insert(GlobalId(7));
+            program.type_methods.insert(ir::RecurTargetId(earlier));
+            program
+                .reader_contexts
+                .insert("new.ns".to_owned(), context("e"));
+            // Not a namespace of the program: no earlier namespace's.
+            program
+                .reader_contexts
+                .insert("elsewhere.ns".to_owned(), context("e"));
+            let tables = tables_of(&program, &start).expect("captured");
+            assert_eq!(
+                tables.field_bindings,
+                (0..added)
+                    .map(|index| (LocalRef(index as u32), RecurRef(0), index % 2 == 0))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                tables.protocols,
+                [
+                    (GlobalRef::Own(2), Vec::new()),
+                    (GlobalRef::Own(5), Vec::new())
+                ]
+            );
+            assert_eq!(tables.record_constructors, [GlobalRef::Own(7)]);
+            assert_eq!(tables.type_methods, [RecurRef(0)]);
+            assert_eq!(tables.reader_context.aliases, context("e").aliases);
+
+            let mut changed = program.clone();
+            changed
+                .field_bindings
+                .insert(ir::LocalId(earlier - 1), (ir::RecurTargetId(1), false));
+            assert_eq!(
+                tables_of(&changed, &start).unwrap_err(),
+                "the namespace changed an earlier type's fields"
+            );
+            let mut changed = program.clone();
+            changed.type_methods.insert(ir::RecurTargetId(1));
+            assert_eq!(
+                tables_of(&changed, &start).unwrap_err(),
+                "the namespace changed an earlier type's methods"
+            );
+            let mut changed = program.clone();
+            changed.protocols.insert(
+                GlobalId(usize::MAX),
+                vec![ir::ProtocolMethod {
+                    global: GlobalId(0),
+                    key: "m".to_owned(),
+                    arities: vec![1],
+                    variadic: None,
+                }],
+            );
+            assert_eq!(
+                tables_of(&changed, &start).unwrap_err(),
+                "the namespace changed an earlier protocol's methods"
+            );
+            let mut changed = program.clone();
+            changed
+                .reader_contexts
+                .insert("earlier.ns".to_owned(), context("x"));
+            assert_eq!(
+                tables_of(&changed, &start).unwrap_err(),
+                "the namespace changed the reader context of earlier.ns"
+            );
+        }
     }
 }
