@@ -37,7 +37,7 @@ bb benchmarks/re-frame.bb inventory todomvc simple flow --light BIN
 
 | Commit | Gap | Found in |
 |---|---|---|
-| Keep and/or a statement when its other operand recurs | At `:advanced`, `(loop [...] (or a (if c (recur ...) false)))` panicked the emitter ("recur in value position"). The `||` short circuit took an operand holding the loop's `recur`. **TodoMVC's release build panicked on master**; only dev builds had been tried. | reagent.ratom `arr-eq` |
+| Keep and/or a statement when its other operand recurs | At `:advanced`, `(loop [...] (or a (if c (recur ...) false)))` panicked the emitter ("recur in value position"). The `||` short circuit took an operand holding the loop's `recur`. **TodoMVC's release build panicked on master `627b9ed5`**; only dev builds had been tried. light-cljs-977 landed the same fix on master as `4d2669bc`, so this branch keeps master's and adds only a second regression test. | reagent.ratom `arr-eq` |
 | Accept vector clauses in ns forms | `(ns a #?@(:cljs [[:require-macros ...]]))` splices a vector clause; upstream destructures either shape | zprint |
 | Ignore metadata on ns clauses | `(ns a "doc" ^{:added "0.4.0"} (:refer-clojure ...))` | rewrite-clj |
 | Add cljs.reader's private read-date, read-queue and read-uuid | upstream cljs.tagged-literals calls `#'reader/read-date` | cljs.tagged-literals, through sci |
@@ -223,7 +223,7 @@ Unreached shims are not in any output and change nothing. The sizes below are ou
 
 | Edit | Cause | Apps | light-cljs output | What shadow-cljs ships instead |
 |---|---|---|---:|---:|
-| Release panic on `(or a (if c (recur) false))` | compiler gap, fixed in this branch | TodoMVC, simple | none | none |
+| Release panic on `(or a (if c (recur) false))` | compiler gap, fixed on master (`4d2669bc`) | TodoMVC, simple | none | none |
 | ns clause as a vector, metadata on an ns clause, `#'cljs.reader/read-date` | compiler gaps, fixed in this branch | flow | none | none |
 | `light/compat.cljs`: `cljs.core/pr-writer`, which reagent calls; the porter rewrites references to it (catalogue `:core-gaps`) | compiler gap, open: light-cljs-981 | all | 108 (simple: 10, flow: 149) | part of cljs.core |
 | `compat/cljs/spec/alpha.cljs`: `s/def` expands to nil and `s/valid?` returns true, so TodoMVC's `check-spec-interceptor` never fails | JVM-only macro: upstream spec's macros resolve through the JVM analyzer | TodoMVC | 116 | 28,383 (cljs.spec), which really validates the db: light-cljs-980 |
