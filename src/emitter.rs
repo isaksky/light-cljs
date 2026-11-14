@@ -3967,6 +3967,11 @@ impl<'a> Emitter<'a> {
         };
         let (temporary, init, other, and) =
             crate::inference::short_circuit(self.program, bindings, *body)?;
+        // A `recur` in the other operand targets an enclosing loop or function
+        // and must stay in statement position.
+        if recurs_outward(self.program, other) {
+            return None;
+        }
         if inference.uses(temporary) != 2 || !inference.value(init).truth_is_js() {
             return None;
         }
@@ -9589,6 +9594,20 @@ const SCOPE_CLOSURE: u8 = 4;
 /// function called where it is written evaluates in value position, such as
 /// a `loop` ([`Emitter::lifts`]).
 const SCOPE_STATEMENT: u8 = 8;
+
+/// Whether `id` contains a `recur` to a target outside it: one not inside a
+/// nested function or loop of its own.
+fn recurs_outward(program: &Program, id: ExprId) -> bool {
+    let mut pending = vec![id];
+    while let Some(id) = pending.pop() {
+        match program.exprs[id.0].kind {
+            ExprKind::Recur { .. } => return true,
+            ExprKind::Fn { .. } | ExprKind::Loop { .. } => (),
+            _ => visit_children(&program.exprs[id.0].kind, |child| pending.push(child)),
+        }
+    }
+    false
+}
 
 fn reads_function_scope(program: &Program, id: ExprId) -> bool {
     let mut pending = vec![id];

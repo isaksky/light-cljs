@@ -293,6 +293,18 @@ fn and_or_become_short_circuits_when_the_first_operand_tests_as_it_is() {
          (pr-str [(f 5) (g 6)])",
         "[[nil] 6]",
     );
+    // An operand whose tail recurs to an enclosing loop stays a statement
+    // (reagent.ratom's arr-eq panicked the emitter at advanced).
+    every_level(
+        "(defn same [x y]
+           (let [n (alength x)]
+             (and (== n (alength y))
+                  (loop [i 0]
+                    (or (== i n)
+                        (if (identical? (aget x i) (aget y i)) (recur (inc i)) false))))))
+         (pr-str [(same #js [1 2] #js [1 2]) (same #js [1 2] #js [1 3]) (same #js [] #js [1])])",
+        "[true false false]",
+    );
 }
 
 #[test]
