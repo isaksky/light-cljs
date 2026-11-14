@@ -295,8 +295,9 @@ gzip ([breakdown][f979]).
 
 **JavaScript language level.** shadow-cljs 3.5.3's output is ES2015-level.
 light-cljs writes modern JavaScript (ES2020 `?.` and `??`, and newer) and does
-not lower it; lowering its bundle to ES2015 with esbuild costs 1.0 to 2.1%
-after gzip ([size][fsize]). A user who needs older browsers pays that.
+not lower it; lowering its bundle to ES2015 with esbuild costs 1.0 to 2.3%
+after gzip in the latest size tables (flow 1.0%, TodoMVC 2.1%, simple 2.3%;
+[size][fsize]). A user who needs older browsers pays that.
 
 **brotli, and size.** The re-frame examples report raw, gzip and brotli sizes,
 React counted apart ([size][fsize]). Latest, whole file with React, light-cljs
@@ -349,9 +350,12 @@ missing.
 - **One kit.** `benchmarks/generated-project/compare.bb` now runs every
   head-to-head: alternating compiler order each round, medians and ranges of
   wall time, user and system CPU time and peak memory, the load average
-  before every build, the binary's commit and hash, and tool versions. Every
-  generated output is checked against the oracle and for leftover unused
-  code ([baseline][g968]).
+  before every build, the binary's commit and hash, and tool versions. After
+  its rounds it checks each compiler's last clean build and last one-file-edit
+  build against the oracle and for leftover unused code; earlier rounds, the
+  rebuilds with nothing changed and the warm-JVM builds are not checked one by
+  one ([baseline][g968]). The heap sweep checked every successful build
+  ([heap sweep][g969]).
 - **Medians**, of 2 to 10 runs, with ranges; the one single run is the
   re-frame-shaped 800k project in the growth run, said there.
 - **CPU time** is reported everywhere, user and system separately. It showed
@@ -430,7 +434,7 @@ the reason, it does not ignore it.
 | `:exports` | named exports | refused: the startup chunk's default export is the entry namespace's value; no `:init-fn` either | `config_file.rs` `NO_EQUIVALENT` |
 | Build hooks | `:build-hooks` (Clojure functions) | refused: no user code runs outside macros | `config_file.rs` `NO_EQUIVALENT` |
 | Externs | needed for interop under `:advanced`, inferred | none needed and none accepted: host-facing property names are never renamed | `config_file.rs` `externs`/`infer-externs` refused; docs/advanced-optimization.md principle 2 |
-| Property renaming | Closure renames all properties | host-facing names never; the compiler's own arity and protocol property names are kept in output today | [breakdown][f979] |
+| Property renaming | Closure renames eligible unquoted properties, keeping externed and quoted names | host-facing names never; the compiler's own arity and protocol property names are kept in output today | [breakdown][f979] |
 | `:closure-defines` / `goog-define` | dev and release | release only; an error in dev, permanently | `config_file.rs` `release_only` |
 | Test targets (`:browser-test`, `:node-test`, `:karma`) | yes, with `cljs.test` | none, and `cljs.test` is not bundled; re-frame's suite ran by vendoring upstream `cljs.test` with 12 edits and a generated runner | `config_file.rs` `:target` (`:esm` only); `src/compiler_libraries` |
 | Node targets (`:node-script`, `:node-library`, `:npm-module`, `:esm`) | yes | `:target :esm` only; the ES module output runs in Node (the generated projects run there), and the dev build and REPL run in Node; no CommonJS or library output with named exports | `config_file.rs` `Setting::Target`; `tests/dev_repl.rs` |
@@ -517,10 +521,13 @@ with our answers:
    every save at the same point of the poll period, and is reported beside it.
 4. **"The hot-reload work is not the same"**: light-cljs reloads one
    namespace where shadow-cljs recompiles and reloads its 206 dependents.
-   That is the design difference, and it is what a developer waits for. Its
-   correctness is what the probes check: the page calls the changed function as
-   the page holds it, and the macro probe turns true only when the 8 users'
-   expansions were recompiled and run with the new constant. Dependents are
+   That is the design difference, and it is what a developer waits for. The
+   probes check the result where they look: the page calls the changed
+   function as the page holds it, and for the macro edit both tools' logs show
+   the macro namespace and its 8 users recompiled, while the probe runs one of
+   those users (`workload.breisrei/dokgem`) and turns true only once its
+   expansion carries the new constant. The other 7 users' reloaded code is not
+   executed by the probe. Dependents are
    not reloaded by default because their calls look the definition up when
    they run (docs/dev-workflow.md); a dependent whose top-level effects must
    run again needs `:reload-strategy :full`, as in shadow-cljs. That strategy

@@ -5,10 +5,6 @@
 with an independent model interpreter and mandatory, classified unused code for
 elimination checks.
 
-[The shadow-cljs comparison, point by point](shadow-comparison.md) answers the
-November 2026 critique of the comparison: where light-cljs is ahead, where it
-loses, what is unmeasured, a feature-parity table and an independent check.
-
 [re-frame's example apps](re-frame-vs-shadow.md) compare light-cljs's ports of
 TodoMVC and simple with shadow-cljs's builds of the unmodified originals:
 release size raw, gzip and brotli with React counted apart, build time, and
