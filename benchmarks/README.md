@@ -89,7 +89,9 @@ bb benchmarks/generated-project/compare.bb $R/projects/workload-200k-seed42 --li
 ```
 
 `--light-only` times light-cljs
-alone; `bb compare.bb` with no arguments lists every option. Results:
+alone; `--skip-unchanged` leaves out the timed rebuild with nothing changed
+(its untimed cache-filling build still precedes the one-file edit); `bb
+compare.bb` with no arguments lists every option. Results:
 [generated-shadow-vs-light.md](generated-shadow-vs-light.md).
 
 How fast the output runs: `--runtime 1,10,40` also runs a generated project's
@@ -97,6 +99,18 @@ two outputs in Node at each iteration count (input 42), alternated, every run's
 checksum checked against the oracle, and `--runtime-only` skips the builds.
 `bb benchmarks/re-frame.bb runtime todomvc` times re-frame TodoMVC's two builds
 in headless Chromium. Results: [runtime-vs-shadow.md](runtime-vs-shadow.md).
+
+`generated-project/growth.bb` reads `compare.bb` results of the same generated
+project at several sizes, in either shape, and optionally the output of
+`light-cljs release ID --no-cache --stats` builds of them, and fits how each
+compiler's wall time, CPU time and peak memory, and each `--stats` counter,
+grow with nonblank lines: the exponent of a log-log fit (1 is linear) and the
+ratio and exponent between consecutive sizes. It writes `OUT.edn`, plot-ready
+points and fits, and `OUT.md`:
+
+```sh
+bb benchmarks/generated-project/growth.bb --out $R/growth/growth $R/growth/*-seed42*.edn $R/growth/stats/*.txt
+```
 
 [Compiler collection measurements](compiler.md) separate parse/analyze/emit/total
 compilation, output bytes, fresh CLI/Node costs, and validated resident immutable

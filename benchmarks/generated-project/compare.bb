@@ -50,6 +50,8 @@
     "  --runtime COUNTS    also run a generated project's outputs in Node, input 42, at each"
     "                      comma-separated iteration count (e.g. 1,4,16)"
     "  --runtime-only      skip the builds; run the outputs the project already has"
+    "  --skip-unchanged    time no rebuild with nothing changed (its untimed cache-filling build"
+    "                      still runs before --leaf rounds)"
     "  --shadow-heaps LIST sweep shadow's maximum heap: clean builds only, one shadow build per"
     "                      JVM size in LIST (-Xmx syntax, e.g. 1g,1536m,8g) instead of one; a"
     "                      failed build (OutOfMemoryError) is recorded, not fatal; needs clojure"
@@ -98,6 +100,7 @@
                    :else options)
       (= "--light-only" arg) (recur more (assoc options :light-only true))
       (= "--runtime-only" arg) (recur more (assoc options :runtime-only true))
+      (= "--skip-unchanged" arg) (recur more (assoc options :skip-unchanged true))
       (value-options arg) (let [[k parse] (value-options arg)]
                             (when (nil? (first more)) (throw (ex-info (str arg " needs a value\n" usage) {})))
                             (recur (rest more) (assoc options k (parse (first more)))))
@@ -828,7 +831,8 @@
                        uncached (rounds options (constantly nil) (build-tools :clean-cmd true))
                        uncached-outputs ((output-check started))
                        _ (doseq [{:keys [clean! dir cached-cmd]} tools] (clean!) (timed dir cached-cmd))
-                       cached (rounds options (constantly nil) (build-tools :cached-cmd false))
+                       cached (when-not (:skip-unchanged options)
+                                (rounds options (constantly nil) (build-tools :cached-cmd false)))
                        leaf (when-let [leaf (:leaf options)]
                               (leaf-scenario options
                                              (cond-> [(fs/file (:light-dir project) leaf)]
@@ -840,7 +844,7 @@
                    {:environment environment
                     :options (dissoc options :light)
                     :project (project-entry tools)
-                    :scenarios (cond-> {:uncached uncached :cached cached} leaf (assoc :leaf (:summaries leaf)))
+                    :scenarios (cond-> {:uncached uncached} cached (assoc :cached cached) leaf (assoc :leaf (:summaries leaf)))
                     :outputs (cond-> {:uncached uncached-outputs} leaf (assoc :leaf (:outputs leaf)))
                     :warm-jvm warm}))
         result (cond-> result

@@ -14,10 +14,12 @@
 (load-file (str (fs/path kit "oracle.bb")))
 (load-file (str (fs/path kit "check-waste.bb")))
 (load-file (str (fs/path kit "compare.bb")))
+(load-file (str (fs/path kit "growth.bb")))
 (alias 'gen 'generated-project.generate)
 (alias 'oracle 'generated-project.oracle)
 (alias 'waste 'generated-project.check-waste)
 (alias 'compare 'generated-project.compare)
+(alias 'growth 'generated-project.growth)
 
 (def options
   (loop [[arg & more] *command-line-args* result {}]
@@ -171,10 +173,10 @@
            (select-keys options [:runs :max-load :load-wait :max-repeats :warm-jvm])))
     (is (fs/absolute? (:dir options)))
     (is (fs/absolute? (:light options))))
-  (is (= {:runs 3 :max-load 1.5 :shadow-cmd ["npx" "shadow-cljs"] :light-build "client" :light-only true}
+  (is (= {:runs 3 :max-load 1.5 :shadow-cmd ["npx" "shadow-cljs"] :light-build "client" :light-only true :skip-unchanged true}
          (select-keys (compare/parse-options ["p" "--light" "b" "--runs" "3" "--max-load" "1.5" "--light-only"
-                                              "--shadow-cmd" " npx  shadow-cljs" "--light-build" "client"])
-                      [:runs :max-load :shadow-cmd :light-build :light-only])))
+                                              "--shadow-cmd" " npx  shadow-cljs" "--light-build" "client" "--skip-unchanged"])
+                      [:runs :max-load :shadow-cmd :light-build :light-only :skip-unchanged])))
   (doseq [args [["p"] ["--light" "b"] ["p" "--light" "b" "--runs" "0"] ["p" "--light" "b" "--max-load" "x"]
                 ["p" "--light" "b" "--runs"] ["p" "q" "--light" "b"] ["p" "--light" "b" "--wat"]]]
     (is (thrown? Exception (compare/parse-options args)) (pr-str args))))
@@ -353,6 +355,21 @@
       (is (str/includes? report "| 11 | light-cljs | 2.700 s (2.700-2.700) | 3.000 s (3.000-3.000) |"))
       (is (str/includes? report "| 11 | 2.00 | 2.00 | 1.94 | 1.00 |"))
       (is (str/includes? report "light-cljs 200.0 ms per iteration, shadow-cljs 100.0 ms per iteration (light/shadow 2.00)")))))
+
+(deftest growth-fits-and-stats
+  (let [points (for [[lines t] [[100 1.0] [200 4.0] [400 16.0]]] {:lines lines :t t})
+        {:keys [exponent steps]} (growth/growth points :t)]
+    (is (< (abs (- exponent 2.0)) 1e-9))
+    (is (= [4.0 4.0] (map :ratio steps)))
+    (is (every? #(< (abs (- (:exponent %) 2.0)) 1e-9) steps))
+    (is (nil? (growth/growth [{:lines 1 :t 1.0}] :t)) "one size has no growth")
+    (is (nil? (growth/growth [{:lines 1 :t 1.0} {:lines 2 :t 0.0}] :t)) "a zero cannot be fitted"))
+  (let [{:keys [config-dir counters]}
+        (growth/parse-stats (str "light-cljs - config: /p/proj/light-cljs.edn\n[:bench] Compiling ...\n"
+                                 "light-cljs-stats 1\ntime.wall-ms 1590.8\nnamespaces 144\n[macro-calls-by-namespace]\n"
+                                 "workload.hainhu 334\n"))]
+    (is (= "/p/proj" config-dir))
+    (is (= {"time.wall-ms" 1590.8 "namespaces" 144.0} counters))))
 
 (deftest time-and-load-parsing
   (is (= [1.64 3.01 2.95] (compare/parse-load "{ 1.64 3.01 2.95 }\n")))

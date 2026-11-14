@@ -17,7 +17,9 @@ is the last on a reserved machine, with cached builds and leaf edits for both co
 The [five-round baseline at `627b9ed5`](#five-round-baseline-at-627b9ed5-unreserved-machine-november-13-2026),
 is the latest full comparison: medians and ranges with CPU time, on an unreserved machine.
 The [heap sweep of November 14](#shadow-cljss-maximum-heap-swept-unreserved-machine-november-14-2026),
-at the end, compares peak memory against shadow-cljs's smallest adequate heap instead of `-Xmx8g`.
+compares peak memory against shadow-cljs's smallest adequate heap instead of `-Xmx8g`.
+[Growth from 50k to 800k lines](#growth-from-50k-to-800k-lines-both-shapes-one-binary-one-day-unreserved-machine-november-14-2026),
+at the end, fits how both compilers' time and memory grow over five sizes in both generated shapes, on one binary and one day.
 
 Reproduce, one project at a time and with no other heavy work running:
 
@@ -1479,3 +1481,270 @@ Findings, recorded as found:
 6. **shadow's re-frame output is not byte-identical across builds**: 6,963,390
    to 6,963,436 bytes in the last build at each heap, all passing the oracle.
    The generated workload projects' shadow output was identical at every heap.
+
+## Growth from 50k to 800k lines, both shapes, one binary, one day, unreserved machine (November 14, 2026)
+
+**Summary.** The objection: growth from 200k to 800k "looked superlinear"
+(5.6x for light-cljs against shadow-cljs's 4.0x), from runs on different
+dates. So both compilers built both generated shapes at five sizes on one day
+with one binary. **light-cljs's clean build does grow faster than the
+program, and a little faster than shadow-cljs's**: from 200k to 800k (4.0x
+the lines) its median wall time grows 5.4x for the plain shape (exponent 1.21)
+and 5.8x for the re-frame shape (1.27), against shadow's 4.7x (1.12) and 5.7x
+(1.25). Its clean build stays 5 to 12 times faster than shadow's at every size
+(light/shadow wall time 0.084 to 0.19). Its peak memory grows more slowly than the program (3.6x and 3.5x,
+exponents 0.93 and 0.89); shadow's is held down by its 8 GiB heap. The
+superlinear part of light-cljs is in analysis: `--stats` names four terms,
+filed as pellets, each growing 6x to 22x where the program grows 4x. **The
+rebuild after a one-file edit is worse**: it grows 5.8x (plain) and 6.1x
+(re-frame) and, from 400k up, is slower than a clean build (re-frame 800k:
+82.7 s against 51.1 s), because the edit recompiles every later namespace
+that ran a source macro and capturing each recompiled namespace into the
+cache costs more the larger the program.
+
+| Shape | Build | light-cljs 200k -> 800k | exponent | shadow-cljs 200k -> 800k | exponent | light/shadow at 800k |
+| --- | --- | --- | --- | --- | --- | --- |
+| plain | clean build, wall time | 6.04 -> 32.50 s, 5.38x | 1.21 | 40.07 -> 188.38 s, 4.70x | 1.12 | 0.17 |
+| plain | clean build, peak memory | 1.049 -> 3.790 GB, 3.61x | 0.93 | 4.146 -> 7.788 GB, 1.88x | 0.46 | 0.49 |
+| plain | one-file edit, wall time | 4.71 -> 27.54 s, 5.85x | 1.28 | 34.73 -> 160.47 s, 4.62x | 1.10 | 0.17 |
+| re-frame | clean build, wall time | 8.82 -> 51.08 s, 5.79x | 1.27 | 73.17 -> 416.46 s, 5.69x | 1.25 | 0.12 |
+| re-frame | clean build, peak memory | 1.405 -> 4.855 GB, 3.46x | 0.89 | 4.042 -> 8.097 GB, 2.00x | 0.50 | 0.60 |
+| re-frame | one-file edit, wall time | 13.64 -> 82.74 s, 6.07x | 1.30 | 57.60 -> 346.46 s, 6.01x | 1.29 | 0.24 |
+
+(Exponent: log(ratio of times) / log(ratio of lines), 1 for linear growth;
+the lines grow 4.00x in both shapes.)
+
+Setup. light-cljs master `fc31d229` as the immutable release binary
+`research/shadow-credibility/bin/light-cljs-fc31d229` (V8 build, SHA-256
+`45b2f5a1b76b4a4a...`), shadow-cljs 3.5.3 with the generated `-Xmx8g`, OpenJDK
+25.0.2, Node v26.12.1, Clojure CLI 1.12.4.1618, Babashka 1.13.229, Apple M3
+Ultra (Virtual), 24 CPUs, 32 GiB, macOS 15.7.3. Projects: `generate.bb --seed
+42 --lines 50k|100k|200k|400k|800k`, and the same with `--shape re-frame`, in
+`research/shadow-credibility/projects/`. The 200k and 800k plain projects and
+the 200k re-frame one were generated again as `*-seed42-970` (identical
+sources to the shared ones; manifests differ only in the generator's hash)
+so that two other workers reading the shared projects' outputs were not
+disturbed. Raw EDN, Markdown, logs and `--stats` output are in
+`research/shadow-credibility/growth-fc31d229/` (gitignored); the fitted
+points are [results/generated-growth-2026-11-14.edn](results/generated-growth-2026-11-14.edn),
+one map per size, shape, compiler and build, with every measure's median and
+range, and one per fitted series. Timings ran from 02:36 to 04:25 MST.
+
+```sh
+R=research/shadow-credibility
+# each project, smallest first, the plain then the re-frame shape at each size:
+bb benchmarks/generated-project/compare.bb $R/projects/PROJECT --light $R/bin/light-cljs-fc31d229 \
+  --leaf src/workload/LEAF.cljs --runs 3 --max-load 1000 --max-repeats 0 --skip-unchanged \
+  --out $R/growth-fc31d229/PROJECT          # --runs 1 for re-frame-800k-seed42
+# one --stats build per size, and two more at 200k and 800k (--stats-file):
+(cd $R/projects/PROJECT && $R/bin/light-cljs-fc31d229 release bench --no-cache --stats) > $R/growth-fc31d229/stats/PROJECT.txt 2>&1
+bb benchmarks/generated-project/growth.bb --out $R/growth-fc31d229/growth \
+  $R/growth-fc31d229/*-seed42*.edn $R/growth-fc31d229/stats/*.txt
+```
+
+Method. Each size is `compare.bb`'s clean build (light `--no-cache`, shadow
+with `.shadow-cljs` removed) and rebuild after a one-file edit, three rounds
+each, the compilers alternating; the rebuild with nothing changed was left
+out (`--skip-unchanged`, added for this run) to save time, its untimed
+cache-filling build still preceding the edit. The edited file is a leaf: the
+first worker namespace, alphabetically, that only a group namespace requires
+(`baklestei` at 50k and 100k, `babomhol` at 200k and 400k, `babra` at 800k;
+re-frame shape `draijakvo`, `batulhok`, `besmeik`, `bouskoknu`, `badam`).
+Every output printed the project oracle's checksum and passed
+`check-waste.bb --strict`.
+
+**What was cut.** The re-frame-shaped 800k project ran **one round**, not
+three (its shadow builds take 6 to 7 minutes each); every other project ran
+three. Nothing else was cut.
+
+**The machine was not reserved.** Two other workers (light-cljs-972, the
+watch loop, and light-cljs-975, runtime speed of outputs) were working
+throughout. Following the user's decision of November 13 ("please dont stop
+because of the machine not being free"), the gate was off (`--max-load 1000`,
+no repeats). The 1-minute load average before a build ranged from 2.8 to 14.7
+on 24 CPUs and is in the tables; the highest loads fell on the plain 400k
+project (7.8 to 14.7 before light's clean builds), whose light step looks
+steepest (2.67x from 200k to 400k, then 2.02x to 800k). The `--stats` builds
+ran outside the timed runs (before them, and after them at 200k and 800k), at
+load 4 to 14.
+
+### Every size
+
+`growth.bb`'s tables. Exponent: the slope of a least-squares fit of log(time)
+against log(lines) over all five sizes; step ratios: each size's median over
+the previous size's, with that step's exponent in brackets. shadow's fixed
+cost (JVM start and Closure setup, about 10 to 15 s) makes its exponent over
+the whole range small; the 400k to 800k step is the fairer comparison.
+
+#### re-frame shape
+
+| Nonblank lines | Build | Compiler | Rounds | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 50,650 | clean build | light-cljs | 3 | 1.89 s (1.88-1.90) | 1.99 s (1.99-2.01) | 0.14 s (0.13-0.14) | 0.486 GB (0.484-0.487) | 7.88-10.03 |
+| 50,650 | clean build | shadow-cljs | 3 | 22.59 s (22.03-24.68) | 76.85 s (75.40-77.86) | 115.00 s (107.71-120.28) | 2.877 GB (1.964-3.166) | 7.88-10.03 |
+| 50,650 | rebuild after a one-file edit | light-cljs | 3 | 1.87 s (1.87-2.04) | 1.83 s (1.82-1.94) | 0.22 s (0.21-0.27) | 0.456 GB (0.454-0.461) | 9.94-12.66 |
+| 50,650 | rebuild after a one-file edit | shadow-cljs | 3 | 16.21 s (16.12-16.24) | 70.37 s (69.88-72.70) | 8.92 s (8.38-9.05) | 1.732 GB (1.671-1.793) | 9.94-12.66 |
+| 101,130 | clean build | light-cljs | 3 | 3.85 s (3.78-4.15) | 3.90 s (3.83-4.23) | 0.29 s (0.24-0.33) | 0.820 GB (0.812-0.824) | 5.88-9.97 |
+| 101,130 | clean build | shadow-cljs | 3 | 34.63 s (34.16-34.67) | 96.45 s (93.89-98.48) | 218.93 s (215.83-219.29) | 2.511 GB (2.369-2.713) | 5.57-9.89 |
+| 101,130 | rebuild after a one-file edit | light-cljs | 3 | 4.28 s (3.93-4.34) | 4.13 s (3.79-4.16) | 0.47 s (0.42-0.52) | 0.772 GB (0.771-0.780) | 7.59-9.88 |
+| 101,130 | rebuild after a one-file edit | shadow-cljs | 3 | 24.67 s (24.43-25.44) | 87.63 s (87.48-88.90) | 11.03 s (9.44-13.18) | 2.277 GB (2.096-2.312) | 7.22-9.88 |
+| 202,053 | clean build | light-cljs | 3 | 8.82 s (8.34-9.63) | 8.77 s (8.45-9.71) | 0.56 s (0.52-0.70) | 1.405 GB (1.398-1.435) | 7.36-9.08 |
+| 202,053 | clean build | shadow-cljs | 3 | 73.17 s (70.43-73.23) | 158.66 s (152.55-164.67) | 418.38 s (417.95-427.13) | 4.042 GB (3.018-4.051) | 6.62-8.68 |
+| 202,053 | rebuild after a one-file edit | light-cljs | 3 | 13.64 s (10.69-15.55) | 10.84 s (10.36-10.93) | 2.22 s (1.13-2.70) | 1.400 GB (1.358-1.412) | 11.15-11.72 |
+| 202,053 | rebuild after a one-file edit | shadow-cljs | 3 | 57.60 s (54.91-63.22) | 141.94 s (140.20-167.91) | 15.76 s (14.52-25.90) | 3.153 GB (2.834-3.542) | 8.75-11.99 |
+| 404,134 | clean build | light-cljs | 3 | 19.49 s (19.09-19.52) | 19.42 s (19.41-19.90) | 1.00 s (0.97-1.11) | 2.513 GB (2.486-2.522) | 5.48-7.16 |
+| 404,134 | clean build | shadow-cljs | 3 | 141.02 s (137.43-141.20) | 274.16 s (273.66-280.61) | 848.72 s (843.60-864.24) | 5.381 GB (4.877-5.405) | 5.08-7.46 |
+| 404,134 | rebuild after a one-file edit | light-cljs | 3 | 30.00 s (27.85-30.53) | 27.51 s (26.15-28.85) | 2.54 s (2.44-3.03) | 2.552 GB (2.549-2.564) | 4.04-7.87 |
+| 404,134 | rebuild after a one-file edit | shadow-cljs | 3 | 95.90 s (94.80-100.24) | 218.29 s (215.82-221.27) | 12.66 s (12.14-14.26) | 5.114 GB (5.082-5.293) | 4.05-6.16 |
+| 808,055 | clean build | light-cljs | 1 | 51.08 s (51.08-51.08) | 51.14 s (51.14-51.14) | 2.47 s (2.47-2.47) | 4.855 GB (4.855-4.855) | 4.77-4.77 |
+| 808,055 | clean build | shadow-cljs | 1 | 416.46 s (416.46-416.46) | 726.72 s (726.72-726.72) | 1698.64 s (1698.64-1698.64) | 8.097 GB (8.097-8.097) | 4.16-4.16 |
+| 808,055 | rebuild after a one-file edit | light-cljs | 1 | 82.74 s (82.74-82.74) | 76.42 s (76.42-76.42) | 6.54 s (6.54-6.54) | 5.053 GB (5.053-5.053) | 4.36-4.36 |
+| 808,055 | rebuild after a one-file edit | shadow-cljs | 1 | 346.46 s (346.46-346.46) | 556.01 s (556.01-556.01) | 106.01 s (106.01-106.01) | 8.621 GB (8.621-8.621) | 2.80-2.80 |
+
+| Build | Compiler | Measure | Exponent (log-log fit) | Step ratios (exponent) |
+| --- | --- | --- | --- | --- |
+| clean build | light-cljs | wall time | 1.19 | 2.04x (1.03), 2.29x (1.20), 2.21x (1.14), 2.62x (1.39) |
+| clean build | light-cljs | CPU (user + system) | 1.16 | 1.94x (0.96), 2.25x (1.17), 2.20x (1.14), 2.61x (1.39) |
+| clean build | light-cljs | peak memory | 0.83 | 1.69x (0.76), 1.71x (0.78), 1.79x (0.84), 1.93x (0.95) |
+| clean build | shadow-cljs | wall time | 1.04 | 1.53x (0.62), 2.11x (1.08), 1.93x (0.95), 2.95x (1.56) |
+| clean build | shadow-cljs | CPU (user + system) | 0.92 | 1.63x (0.71), 1.84x (0.88), 1.96x (0.97), 2.15x (1.10) |
+| clean build | shadow-cljs | peak memory | 0.41 | 0.87x (-0.20), 1.61x (0.69), 1.33x (0.41), 1.50x (0.59) |
+| rebuild after a one-file edit | light-cljs | wall time | 1.38 | 2.29x (1.20), 3.19x (1.67), 2.20x (1.14), 2.76x (1.46) |
+| rebuild after a one-file edit | light-cljs | CPU (user + system) | 1.34 | 2.27x (1.19), 2.84x (1.51), 2.29x (1.19), 2.76x (1.47) |
+| rebuild after a one-file edit | light-cljs | peak memory | 0.87 | 1.69x (0.76), 1.81x (0.86), 1.82x (0.87), 1.98x (0.99) |
+| rebuild after a one-file edit | shadow-cljs | wall time | 1.08 | 1.52x (0.61), 2.33x (1.23), 1.66x (0.74), 3.61x (1.85) |
+| rebuild after a one-file edit | shadow-cljs | CPU (user + system) | 0.74 | 1.25x (0.32), 1.68x (0.75), 1.39x (0.47), 2.87x (1.52) |
+| rebuild after a one-file edit | shadow-cljs | peak memory | 0.58 | 1.31x (0.40), 1.38x (0.47), 1.62x (0.70), 1.69x (0.75) |
+
+#### Plain shape
+
+| Nonblank lines | Build | Compiler | Rounds | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 50,074 | clean build | light-cljs | 3 | 1.62 s (1.59-1.63) | 1.69 s (1.64-1.70) | 0.10 s (0.10-0.11) | 0.380 GB (0.378-0.390) | 5.79-7.73 |
+| 50,074 | clean build | shadow-cljs | 3 | 16.87 s (16.86-17.07) | 71.92 s (71.82-72.88) | 27.73 s (27.40-29.81) | 2.774 GB (2.661-2.873) | 5.79-8.06 |
+| 50,074 | rebuild after a one-file edit | light-cljs | 3 | 0.83 s (0.82-0.83) | 0.81 s (0.81-0.82) | 0.05 s (0.05-0.05) | 0.310 GB (0.307-0.317) | 7.69-8.30 |
+| 50,074 | rebuild after a one-file edit | shadow-cljs | 3 | 13.85 s (13.77-14.22) | 67.17 s (65.51-67.81) | 8.31 s (8.18-8.78) | 1.852 GB (1.783-2.013) | 7.69-7.93 |
+| 99,626 | clean build | light-cljs | 3 | 2.94 s (2.82-3.09) | 3.04 s (2.92-3.16) | 0.19 s (0.16-0.21) | 0.622 GB (0.620-0.633) | 9.19-9.90 |
+| 99,626 | clean build | shadow-cljs | 3 | 24.16 s (24.11-24.51) | 89.12 s (89.10-90.44) | 59.31 s (56.08-59.87) | 2.732 GB (2.518-2.899) | 8.69-9.96 |
+| 99,626 | rebuild after a one-file edit | light-cljs | 3 | 3.03 s (2.89-3.17) | 3.14 s (2.93-3.17) | 0.22 s (0.21-0.24) | 0.587 GB (0.578-0.595) | 6.08-8.92 |
+| 99,626 | rebuild after a one-file edit | shadow-cljs | 3 | 19.65 s (19.42-19.79) | 78.86 s (78.68-79.91) | 8.96 s (8.32-10.68) | 2.665 GB (2.290-2.896) | 5.67-8.37 |
+| 199,129 | clean build | light-cljs | 3 | 6.04 s (5.99-6.42) | 6.23 s (6.20-6.58) | 0.32 s (0.31-0.36) | 1.049 GB (1.019-1.059) | 7.30-7.85 |
+| 199,129 | clean build | shadow-cljs | 3 | 40.07 s (39.79-40.48) | 124.55 s (123.02-124.78) | 117.96 s (114.42-118.41) | 4.146 GB (3.522-4.177) | 6.69-7.00 |
+| 199,129 | rebuild after a one-file edit | light-cljs | 3 | 4.71 s (4.49-4.73) | 4.71 s (4.61-4.84) | 0.31 s (0.30-0.33) | 0.981 GB (0.958-1.000) | 6.03-10.55 |
+| 199,129 | rebuild after a one-file edit | shadow-cljs | 3 | 34.73 s (32.76-40.26) | 101.38 s (100.20-107.38) | 12.63 s (12.50-14.49) | 3.881 GB (3.334-4.128) | 6.03-9.16 |
+| 397,920 | clean build | light-cljs | 3 | 16.11 s (14.22-16.95) | 16.31 s (14.46-17.19) | 0.89 s (0.88-0.98) | 1.939 GB (1.925-1.943) | 7.82-14.72 |
+| 397,920 | clean build | shadow-cljs | 3 | 86.26 s (83.05-88.70) | 216.95 s (210.56-223.28) | 236.79 s (217.85-245.34) | 5.067 GB (4.494-5.638) | 6.75-12.98 |
+| 397,920 | rebuild after a one-file edit | light-cljs | 3 | 18.94 s (18.80-19.26) | 20.53 s (20.31-20.82) | 1.29 s (1.21-1.35) | 1.932 GB (1.911-1.963) | 4.76-13.10 |
+| 397,920 | rebuild after a one-file edit | shadow-cljs | 3 | 66.04 s (64.78-69.36) | 162.60 s (154.63-166.84) | 18.89 s (16.88-19.08) | 4.900 GB (4.727-5.433) | 4.27-10.66 |
+| 795,693 | clean build | light-cljs | 3 | 32.50 s (32.34-35.75) | 33.06 s (32.93-36.02) | 1.57 s (1.56-1.83) | 3.790 GB (3.789-3.896) | 3.94-5.45 |
+| 795,693 | clean build | shadow-cljs | 3 | 188.38 s (183.69-205.64) | 438.72 s (424.74-454.00) | 504.54 s (490.29-525.42) | 7.788 GB (7.630-7.874) | 2.89-7.36 |
+| 795,693 | rebuild after a one-file edit | light-cljs | 3 | 27.54 s (27.17-27.75) | 29.78 s (29.60-30.48) | 1.57 s (1.54-1.60) | 3.502 GB (3.494-3.529) | 4.20-4.82 |
+| 795,693 | rebuild after a one-file edit | shadow-cljs | 3 | 160.47 s (160.06-167.17) | 319.05 s (311.76-326.25) | 28.13 s (21.49-28.63) | 7.966 GB (7.850-8.705) | 4.02-4.32 |
+
+| Build | Compiler | Measure | Exponent (log-log fit) | Step ratios (exponent) |
+| --- | --- | --- | --- | --- |
+| clean build | light-cljs | wall time | 1.11 | 1.81x (0.87), 2.05x (1.04), 2.67x (1.42), 2.02x (1.01) |
+| clean build | light-cljs | CPU (user + system) | 1.10 | 1.80x (0.86), 2.02x (1.02), 2.63x (1.40), 2.01x (1.01) |
+| clean build | light-cljs | peak memory | 0.83 | 1.64x (0.72), 1.69x (0.75), 1.85x (0.89), 1.95x (0.97) |
+| clean build | shadow-cljs | wall time | 0.88 | 1.43x (0.52), 1.66x (0.73), 2.15x (1.11), 2.18x (1.13) |
+| clean build | shadow-cljs | CPU (user + system) | 0.81 | 1.48x (0.57), 1.63x (0.70), 1.88x (0.91), 2.08x (1.06) |
+| clean build | shadow-cljs | peak memory | 0.39 | 0.98x (-0.02), 1.52x (0.60), 1.22x (0.29), 1.54x (0.62) |
+| rebuild after a one-file edit | light-cljs | wall time | 1.28 | 3.65x (1.88), 1.55x (0.64), 4.02x (2.01), 1.45x (0.54) |
+| rebuild after a one-file edit | light-cljs | CPU (user + system) | 1.31 | 3.91x (1.98), 1.49x (0.58), 4.36x (2.13), 1.43x (0.52) |
+| rebuild after a one-file edit | light-cljs | peak memory | 0.87 | 1.89x (0.93), 1.67x (0.74), 1.97x (0.98), 1.81x (0.86) |
+| rebuild after a one-file edit | shadow-cljs | wall time | 0.88 | 1.42x (0.51), 1.77x (0.82), 1.90x (0.93), 2.43x (1.28) |
+| rebuild after a one-file edit | shadow-cljs | CPU (user + system) | 0.55 | 1.18x (0.24), 1.28x (0.36), 1.59x (0.67), 1.91x (0.94) |
+| rebuild after a one-file edit | shadow-cljs | peak memory | 0.51 | 1.44x (0.53), 1.46x (0.54), 1.26x (0.34), 1.63x (0.70) |
+
+### Which light-cljs phases grow faster than the program
+
+`--stats` builds (one per size, three at 200k and 800k, medians), 200k to
+800k, against the lines' 4.0x:
+
+| Counter | plain 200k -> 800k | growth | re-frame 200k -> 800k | growth |
+| --- | --- | --- | --- | --- |
+| time.wall-ms | 6,588 -> 34,508 | 5.2x | 8,389 -> 53,404 | 6.4x |
+| time.analysis-ms | 2,211 -> 14,427 | **6.5x** | 2,319 -> 24,751 | **10.7x** |
+| top-level pass outside the engine (trace.top-level-ms less its engine-ms) | 1,393 -> 9,513 | **6.8x** | 1,664 -> 16,765 | **10.1x** |
+| trace.top-level.engine-ms | 519 -> 2,201 | 4.2x | 233 -> 944 | 4.1x |
+| trace.other-ms | 157 -> 1,565 | **10.0x** | 314 -> 6,358 | **20.2x** |
+| trace.append-ms | 102 -> 976 | **9.6x** | 52 -> 350 | **6.8x** |
+| time.deferred-units-ms | 2,664 -> 12,129 | 4.6x | 2,900 -> 13,664 | 4.7x |
+| time.prepare-application-ms | 1,018 -> 5,014 | 4.9x | 1,761 -> 7,996 | 4.5x |
+| time.emission-ms | 675 -> 2,913 | 4.3x | 1,223 -> 5,423 | 4.4x |
+| peak memory (memory.peak-rss-bytes) | 1.05 -> 3.78 GB | 3.6x | 1.40 -> 4.88 GB | 3.5x |
+| macro calls, namespaces, deferred units | | 4.0x | | 3.9x |
+
+Deferred units, preparation and emission grow within 8 to 23% of the
+program; the engine's share of every stage grows with it. The excess is in
+analysis outside the engine. At re-frame 800k the build is 19.8 s longer than
+4x its 200k time, and the top-level pass (10.1 s over 4x) and the
+unattributed loop time (5.1 s) account for 15 s of it.
+
+- **The top-level pass's cost per byte grows with the namespace's position.**
+  From the `--stats-file` namespace rows, its time outside the engine per KB
+  of source rises from about 510 µs in the second tenth of the re-frame 800k
+  namespaces to 990 to 1,260 µs in the last tenth (plain 800k: 145 to
+  344 µs; at 200k: 236 to 334 and 111 to 190), so each namespace pays for
+  the namespaces before it. A 30-second `sample` of the re-frame 800k build
+  found one cause: after each pass `NamespaceTop::analyze` scans every
+  program namespace to check membership before adding its own (about 3 s at
+  800k). Filed as **light-cljs-994**.
+- **Analysis-loop time outside every trace frame** (`trace.other-ms`) is
+  close to quadratic: step exponents 2.2 and 2.1 for the re-frame shape from
+  200k to 400k to 800k. With `--no-cache` it holds no cache work.
+  **light-cljs-995**.
+- **Appending fragments** grows 9.6x in the plain shape (fit exponent 1.55),
+  under 1 s at 800k. **light-cljs-996**.
+- **Peak memory grows more slowly than the program** in both shapes
+  (exponents 0.81 and 0.82 over all sizes), so it is not a growth problem.
+
+### The rebuild after a one-file edit
+
+light-cljs's rebuild after a one-file edit grows irregularly with size (plain:
+3.65x, 1.55x, 4.02x, 1.45x per doubling) and from 400k up is **slower than
+its clean build** (plain 400k 18.94 s against 16.11 s; re-frame 400k 30.00 s
+against 19.49 s, 800k 82.74 s against 51.08 s). shadow's is 0.68x to 0.87x of
+its clean build at every size. A `--stats` rebuild per size on the caches the
+runs left (one edit, outside the timed runs) shows two causes:
+
+- **How much an edit recompiles depends on where the edited namespace falls
+  in compile order, not on the program's size.** Every later namespace that
+  ran a source macro misses with "earlier namespaces changed": a source
+  macro sees the whole compilation's declaration view, so it is the cache's
+  coarse fallback (docs/compiler-cache.md), and every generated worker
+  expands its group's source macros. The same one-`defn` edit recompiled 9 of
+  144 namespaces at 50k, 130 of 288 at 100k, 106 of 569 at 200k, 587 of 1,134
+  at 400k and 375 of 2,264 at 800k (plain); in the re-frame shape 22% to 38%
+  of them (4,613 of 12,143 at 800k). This is a design property, not a phase
+  that grows; changing it would be a design change and is left to the user.
+- **Capturing each recompiled namespace into the cache costs more the larger
+  the program**: `cache.capture-ms` per captured namespace is 0.36, 0.66,
+  1.22, 2.66 and 5.22 ms from 50k to 800k in the re-frame shape (1.35 to
+  4.36 ms from 200k to 800k, plain). At re-frame 800k capture took 24.1 s,
+  validation 15.6 s and writing 7.9 s of a 97 s rebuild. Filed as
+  **light-cljs-997**.
+
+Findings, recorded as found:
+
+1. **The 200k to 800k growth is superlinear for both compilers on both
+   shapes**, and light-cljs's is the steeper: clean build 5.4x and 5.8x
+   against shadow's 4.7x and 5.7x for 4.0x the lines. The earlier 5.6x
+   against 4.0x came from runs on different dates and loads; on one day the
+   gap is smaller, but it is real in the plain shape and it is light-cljs's.
+2. **light-cljs remains far faster at every size**: 0.084x to 0.19x of
+   shadow's clean-build wall time, 0.060x to 0.31x of its rebuild after a
+   one-file edit (the worst, 0.31x, at re-frame 400k, where light's edit
+   rebuild is slower than its clean build).
+3. **The plain shape's 400k step (2.67x from 200k) is steeper than its
+   neighbours (2.05x, 2.02x)**, and ran at the day's highest load; the
+   `--stats` builds, run at a steadier load, show the same step (2.73x), so
+   it is not only load. The fitted exponents use all five sizes.
+4. **shadow's peak memory is set by its heap.** It grows 0.87x to 1.61x per
+   doubling and reaches 7.8 to 8.6 GB at 800k, the `-Xmx8g` ceiling; the
+   November 14 heap sweep above gives what it needs. Its fitted exponents
+   (0.39, 0.41) say nothing about its requirements.
+5. **shadow's re-frame 800k clean build used 1,699 s of system CPU** against
+   727 s of user CPU in 416 s of wall time (one round), the largest system
+   share recorded in these comparisons (see the November 13 baseline's
+   finding 2).
