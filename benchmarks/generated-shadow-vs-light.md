@@ -1729,7 +1729,8 @@ causes:
   1.22, 2.66 and 5.22 ms from 50k to 800k in the re-frame shape (1.35 to
   4.36 ms from 200k to 800k, plain). At re-frame 800k capture took 24.1 s,
   validation 15.6 s and writing 7.9 s of a 97 s rebuild. Filed as
-  **light-cljs-997**.
+  **light-cljs-997**, fixed there (see "Capturing a recompiled namespace
+  into the cache" below).
 
 Findings, recorded as found:
 
@@ -2591,3 +2592,100 @@ Findings, recorded as found:
    and analysis grow about as much in the plain shape), so no further term
    was looked for in the append stage. The re-frame shape's analysis grows
    4.68x, more than its append or wall time; that is outside this stage.
+
+## Capturing a recompiled namespace into the cache, 200k and 800k, unreserved machine (November 14, 2026, light-cljs-997)
+
+**Summary.** Re-measured first on `363cbc83` (light-cljs-347, -995 and
+-1003 landed): the growth found above was still there. Since the
+declaration views of light-cljs-347 the leaf edit recompiles only 4
+namespaces, but capturing each still cost **2.5 ms at re-frame 200k and
+12.0 to 13.0 ms at 800k**, and a cache-filling build (every namespace
+captured) **1.39 to 1.42 ms against 5.89 to 6.88 ms per namespace**. Capture
+walked every protocol, record constructor, type field, type method and
+macro function of the program, and looked up the reader context of every
+earlier namespace, twice per namespace (its top level and its bodies), to
+find what the namespace changed. It now reads each of those tables through
+its keys that changed since the namespace began (the three hash sets became
+layered sets, `LayeredSet` in `src/layered.rs`). **Per namespace,
+capture is now about flat: 0.08 to 0.10 ms at re-frame 200k and 0.09 to
+0.13 ms at 800k; 0.32 to 0.35 ms and 0.42 to 0.44 ms in the plain shape.**
+Every artifact's sections are byte-identical to the parent's (each
+section's SHA-256 compared, all 3,073, 12,143, 569 and 2,264 namespaces of
+the four projects, in every round), and every output passed the oracle and
+the waste check with the same bytes.
+
+Setup. Parent: master `8cb48546`, kept as the immutable
+`bin/light-cljs-8cb48546` (SHA-256 `3ff0e0088995ce39...`). Change:
+`c5dad571`, the change rebased on that commit, kept as
+`bin/light-cljs-c5dad571` (SHA-256 `2511628f98b723e8...`). The re-measure
+used `bin/light-cljs-363cbc83` (`758350890bcee286...`). Projects: private
+copies of `projects/re-frame-200k-seed42-970`, `re-frame-800k-seed42-1000`,
+`workload-200k-seed42-970` and `workload-800k-seed42-970`; leaves
+`src/workload/besmeik.cljs` (200k) and `src/workload/badam.cljs` (800k).
+Raw output, scripts (`run.sh`, `run2.sh`, `run3.sh`) and compare.bb reports
+are in `research/shadow-credibility/capture-997/` (gitignored). **The machine
+was not reserved:** two other workers built and tested throughout; the load
+before each build is in the tables.
+
+### Cache-filling builds, binaries alternated
+
+`light-cljs release bench --cache-dir DIR --stats` on an empty cache
+directory under `/usr/bin/time -l`, parent then change for each project,
+two rounds. Capture per namespace is `cache.capture-ms` over
+`cache.capture.namespaces`. Medians of two, ranges in brackets.
+
+| Project | Binary | Capture per namespace | Wall time | User CPU | System CPU | Peak memory | Load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| re-frame 200k | parent | 1.585 ms (1.545-1.624) | 15.77 s (14.21-17.32) | 13.79 s (13.20-14.37) | 2.07 s (1.53-2.61) | 1.397 GB (1.385-1.409) | 2.10, 9.09 |
+| re-frame 200k | change | 0.091 ms (0.078-0.103) | 10.68 s (9.63-11.72) | 9.03 s (8.67-9.39) | 2.57 s (1.48-3.65) | 1.397 GB (1.375-1.418) | 1.92, 8.96 |
+| re-frame 800k | parent | 6.477 ms (6.372-6.581) | 126.95 s (123.94-129.95) | 121.09 s (118.89-123.29) | 8.78 s (7.08-10.48) | 4.935 GB (4.930-4.940) | 6.44, 9.96 |
+| re-frame 800k | change | 0.108 ms (0.090-0.125) | 50.22 s (44.27-56.17) | 42.48 s (39.93-45.02) | 10.60 s (6.25-14.94) | 5.064 GB (4.991-5.137) | 3.60, 3.86 |
+| plain 200k | parent | 1.609 ms (1.594-1.624) | 9.04 s (8.87-9.20) | 8.99 s (8.83-9.14) | 0.62 s (0.60-0.64) | 1.048 GB (1.046-1.049) | 2.80, 4.78 |
+| plain 200k | change | 0.333 ms (0.316-0.349) | 8.32 s (8.03-8.60) | 8.35 s (8.10-8.59) | 0.64 s (0.59-0.68) | 1.064 GB (1.051-1.076) | 2.92, 4.20 |
+| plain 800k | parent | 6.316 ms (6.247-6.385) | 60.42 s (59.29-61.55) | 66.40 s (65.68-67.12) | 3.07 s (2.95-3.19) | 3.857 GB (3.832-3.882) | 2.93, 3.71 |
+| plain 800k | change | 0.429 ms (0.422-0.435) | 45.71 s (45.04-46.38) | 50.63 s (49.98-51.27) | 2.89 s (2.79-2.98) | 3.959 GB (3.951-3.967) | 2.19, 2.80 |
+
+### The leaf edit, compare.bb
+
+`compare.bb DIR --light BIN --light-only --stats --leaf LEAF --runs 3
+--skip-unchanged --max-load 1000 --max-repeats 0`: three clean builds, one
+untimed cache-filling build, then three rounds each appending a different
+unused `defn`. Parent, then change. Each edit recompiled and captured the
+same 4 namespaces (229,267 bytes of artifacts at 200k, 740,122 at 800k).
+
+| Project | Binary | Rebuild after a one-file edit | User CPU | System CPU | Peak memory | Load before the edits | Capture, rounds 1-3 | Validation, rounds 1-3 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| re-frame 200k | parent | 4.30 s (4.11-4.37) | 3.93 s (3.74-3.95) | 0.42 s (0.42-0.43) | 1.178 GB (1.119-1.188) | 2.57-2.62 | 10.1, 10.2, 11.3 ms | 0.49, 0.52, 0.51 s |
+| re-frame 200k | change | 3.95 s (3.84-4.00) | 3.62 s (3.55-3.67) | 0.37 s (0.34-0.37) | 1.110 GB (1.109-1.163) | 2.24-2.37 | 2.2, 2.3, 2.3 ms | 0.50, 0.49, 0.46 s |
+| re-frame 800k | parent | 22.30 s (21.28-26.81) | 18.12 s (17.64-18.40) | 3.42 s (2.86-3.47) | 4.461 GB (4.439-4.545) | 10.62-11.05 | 52.0, 53.4, 51.6 ms | 6.41, 2.34, 2.59 s |
+| re-frame 800k | change | 22.54 s (22.06-28.38) | 17.46 s (17.07-17.58) | 2.57 s (2.49-3.70) | 4.446 GB (3.687-4.475) | 3.21-3.74 | 13.2, 13.7, 11.9 ms | 4.70, 4.44, 7.98 s |
+
+Findings, recorded as found:
+
+1. **Capture no longer grows with the program.** In the cache-filling
+   builds it is 1.19x (re-frame) and 1.29x (plain) from 200k to 800k per
+   namespace, for 4.0x the code and the same artifact bytes per namespace
+   (35.6 to 35.8 KB re-frame, 124 to 126 KB plain), against 4.1x and
+   3.9x for the parent. At re-frame 800k it fell from 77 to 80 s to 1.1 to
+   1.5 s of the build, which is most of the drop in wall time (127 s to
+   50 s).
+2. **In the leaf edit the four captured namespaces cost about 4x less, but
+   not the same at both sizes, because one of them grows with the
+   program.** A per-namespace trace (a throwaway build of the change's
+   first commit, `d699f2a1`, with two timing lines) gave the leaf 143 and
+   176 µs (23 KB of artifact at both sizes), its group namespace 68 and
+   67 µs and
+   `workload.main` 107 and 120 µs, but the entry `app.core`, whose source
+   requires every group (161 KB at 200k, 638 KB at 800k), 2.4 and 16.1 ms.
+   Its cost is converting its own IR: 2.8 ms for 195 KB of artifact against
+   12.8 ms for 706 KB, 1.28x more per byte at 800k. That remaining factor
+   was not traced further.
+3. **The edit rebuild's wall time did not move at 800k.** Capture was
+   0.05 s of it; validation varies by 2 to 8 s between rounds with the load
+   and covers any difference.
+4. **Peak memory is 0.10 GB higher at 800k in both shapes** in this
+   sequence (5.064 against 4.935 GB re-frame, 3.959 against 3.857 GB
+   plain). An earlier alternated sequence of the same change before the
+   rebase (`run2.sh`) had the change at 4.945 and 5.151 GB against the
+   parent's 5.070 and 4.933 GB at re-frame 800k, so it may be noise; it is
+   recorded, not explained.
