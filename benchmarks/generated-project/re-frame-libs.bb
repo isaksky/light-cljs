@@ -70,15 +70,7 @@
       (throw (ex-info (str "Command failed: " (str/join " " cmd)) {:err (subs (:err r) (max 0 (- (count (:err r)) 3000)))})))
     r))
 
-(defn git-head [dir]
-  (let [head (str/trim (slurp (str (fs/path dir ".git" "HEAD"))))]
-    (if-let [[_ ref] (re-matches #"ref: (.*)" head)]
-      (let [loose (fs/path dir ".git" ref)]
-        (if (fs/exists? loose)
-          (str/trim (slurp (str loose)))
-          (some (fn [line] (when (str/ends-with? line (str " " ref)) (first (str/split line #" "))))
-                (str/split-lines (slurp (str (fs/path dir ".git" "packed-refs")))))))
-      head)))
+(defn git-head [dir] (str/trim (:out (sh! dir "git" "rev-parse" "HEAD"))))
 
 (defn shown [path] (let [p (fs/absolutize path)] (if (str/starts-with? (str p) (str repo)) (str (fs/relativize repo p)) (str p))))
 
@@ -92,6 +84,7 @@
         out (fs/absolutize (or (:out opts) (fs/path repo "research" "shadow-credibility" "re-frame-libs")))
         re-frame (fs/absolutize (or (:re-frame opts) (fs/path repo "research" "re-frame")))
         porter (fs/absolutize (or (:porter opts) (fs/path repo "research" "shadow-port-tool")))
+        commit (git-head re-frame)
         work (fs/create-temp-dir {:prefix "re-frame-libs-"})
         dir (fs/path work "probe")]
     (when (fs/exists? out) (throw (ex-info (str out " exists; remove it first") {})))
@@ -132,7 +125,7 @@
         (spit (str (fs/path out "libs.edn"))
               (with-out-str
                 (pprint/pprint
-                 {:re-frame {:source (shown re-frame) :commit (git-head re-frame)}
+                 {:re-frame {:source (shown re-frame) :commit commit}
                   :maven {'reagent/reagent "1.2.0" 'net.cgrand/macrovich "0.2.1" 'org.clojure/tools.logging "1.2.4"}
                   :npm {"react" "18.2.0" "react-dom" "18.2.0"}
                   :porter {:source (shown porter)

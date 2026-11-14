@@ -173,7 +173,9 @@ features (2,800 feature namespaces) and 180 worker namespaces. Master's
 (the commit with the emitter fix; master's `627b9ed5` panics on this app) and
 shadow-cljs 3.5.3. Both outputs printed the oracle's `714878 117718` for
 (42, 3) and passed `check-waste.bb --strict`. Medians with ranges; `compare.bb`
-records wall and user CPU time and peak memory, not system CPU time.
+records wall and user CPU time and peak memory, not system CPU time, and runs
+all light-cljs samples before shadow-cljs's rather than alternating; light-cljs-968
+rewrites `compare.bb` for both, so a careful row needs that version.
 
 | | Nothing cached | Cached | Output (gzip) |
 | --- | --- | --- | --- |
