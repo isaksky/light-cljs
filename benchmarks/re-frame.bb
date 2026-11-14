@@ -7,6 +7,8 @@
 ;;   bb benchmarks/re-frame.bb size APP [APP ...]
 ;;   bb benchmarks/re-frame.bb time APP [--runs N]
 ;;   bb benchmarks/re-frame.bb inventory APP
+;;   bb benchmarks/re-frame.bb bundle APP [--compiler shadow|light]
+;;   bb benchmarks/re-frame.bb browser APP [--compiler C] [--runs N] [--no-build]
 ;;
 ;; Paths (all under research/, which is gitignored; a worktree uses copies, see
 ;; the shadow-comparison-credibility project notes):
@@ -14,7 +16,7 @@
 ;;                                   shadow-cljs builds (setup pins 3.5.3)
 ;;   research/APP-port               its light-cljs port, written by `port`
 ;;   research/shadow-port-tool       the porter (light-cljs.port), --porter
-;;   research/npm-tools              esbuild, installed by setup
+;;   research/npm-tools              esbuild and playwright-core, installed by setup
 ;; --light BIN (or LIGHT_CLJS_BINARY) names an immutable light-cljs binary.
 ;;
 ;; Builds write only below the example's out/ (shadow-release, light-release,
@@ -33,6 +35,17 @@
 ;; --no-cache), the two compilers alternated, first one first on even runs;
 ;; wall, user and system CPU time and peak memory from /usr/bin/time -l, and
 ;; the one-minute load average before each run.
+;;
+;; bundle: each compiler's clean release build, served the way a user ships
+;; it: out/browser-COMPILER is the example's own resources/public with
+;; js/client.js replaced (see bundle-browser). Other kits reuse these
+;; directories and benchmarks/re-frame-browser.mjs's serve/launch/openApp.
+;;
+;; browser: bundle, then run re-frame-browser.mjs's checks N times (default 3)
+;; per compiler in headless Chromium: the TodoMVC specification's behaviours,
+;; simple's clock and colour input, and flow's buttons, whose page text after
+;; each step must equal shadow-cljs's. Prints a pass/fail table and every
+;; failure, console error and uncaught exception.
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
          '[cheshire.core :as json]

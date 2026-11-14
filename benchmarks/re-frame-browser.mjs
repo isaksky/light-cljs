@@ -230,8 +230,9 @@ const simpleChecks = {
   async "colour input recolours the clock"(page) {
     const input = page.locator(".color-input input");
     assert(await input.inputValue() === "orange", `initial colour, got ${await input.inputValue()}`);
-    await input.fill("red");
     const color = () => page.locator(".example-clock").evaluate((e) => getComputedStyle(e).color);
+    await eventually(async () => await color() === "rgb(255, 165, 0)", "clock starts orange");
+    await input.fill("red");
     await eventually(async () => await color() === "rgb(255, 0, 0)", "clock turns red");
   },
 };

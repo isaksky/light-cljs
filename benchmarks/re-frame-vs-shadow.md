@@ -582,3 +582,93 @@ bb benchmarks/re-frame-tests.bb --light BIN --runs 3
 - **Porter output.**
   - The four metadata restorations above.
   - The porter keeps re-frame.core-instrumented's `defmacro`s after splicing their call sites. Their bodies name helpers that exist only under `:clj`, so light-cljs's strict default rejects them as unresolved. The release build therefore uses `--warnings`, the ClojureScript-compatible analysis a dev build always uses, and the macros are never called.
+
+## 2026-11-14: Running in a browser
+
+light-cljs-973 runs the three apps in headless Chromium, built by each compiler, with behaviour checks. This is the first time light-cljs's output of these apps has been run.
+
+```sh
+bb benchmarks/re-frame.bb setup        # also installs playwright-core 1.64.1
+bb benchmarks/re-frame.bb port todomvc simple flow --porter research/shadow-credibility/shadow-port-tool-973
+bb benchmarks/re-frame.bb browser todomvc simple flow --runs 3 --light BIN
+```
+
+### Setup
+
+- **light-cljs:** an immutable copy of the release binary at `97e8b250` (master `052ad00e` plus the Var fix below), `research/shadow-credibility/bin/light-cljs-97e8b250`. V8 build.
+- **shadow-cljs:** 3.5.3, `release client` of the unmodified examples, as in the sections above.
+- **Browser:** Chromium revision 1248 headless shell, driven by playwright-core 1.64.1 from Node 26.12.1. esbuild 0.25.10.
+- **Ports:** rewritten by the porter at `research/shadow-credibility/shadow-port-tool-973`, which is 971's porter plus the two shim fixes below.
+
+**What is served.** `bb benchmarks/re-frame.bb bundle APP` makes, per compiler, `out/browser-COMPILER` in the example: a copy of the example's own `resources/public` page with `js/client.js` replaced.
+- **shadow-cljs:** its release output as written.
+- **light-cljs:** its release output (one ES module importing `react` and `react-dom/client`) bundled by esbuild with React into one minified script, as `index.html` loads a classic script.
+- **Entry point.** shadow-cljs calls the build's `:init-fn`, and light-cljs has none. The entry module light-cljs exports is the value of the entry namespace's final form, which in all three apps is the `:init-fn` function. A two-line module imports that export and calls it. The script checks that the `:init-fn` is the final form before relying on it. This is bundling, not a port edit.
+
+**What is checked.** `benchmarks/re-frame-browser.mjs` (Playwright) serves the directory over local HTTP. Each check runs in a fresh browser context, so localStorage starts empty. Console errors and uncaught exceptions from every check are recorded. Checks poll the page after each action, because re-frame handles events in a later task and reagent renders on the next animation frame.
+- **TodoMVC:** the TodoMVC specification's behaviours, against re-frame's markup:
+  - **renders:** heading, placeholder, focus on load, no list without todos;
+  - **add:** trims the title, clears the input, ignores a blank title, updates the counter;
+  - **complete:** toggles one todo and back, with the `completed` class and the counter;
+  - **toggle all:** completes all and none, and follows the todos;
+  - **edit:** double-click, then Enter, blur and Escape; an empty title deletes the todo;
+  - **delete;**
+  - **filter routes:** links, `#/active` in the URL, the selected link, the back button and a typed route;
+  - **clear completed:** the button's visibility and effect;
+  - **persistence:** a reload keeps the todos and their completed state.
+- **simple:** the clock renders a time and ticks; it starts orange; typing `red` in the colour input turns it red.
+- **flow:** the five buttons are clicked through eleven steps (adds, delete, clear flow, register flow, clear). After each step, once the page has settled, the whole page text is recorded. That text includes the zprint rendering of app-db, which goes through sci, rewrite-clj and edamame. Every run must match shadow-cljs's first run step for step, and three absolute checks hold: the initial "No items.", "Item 1" after the first add, and the too-many warning after four adds.
+
+### Results, 3 runs each
+
+Every check passes on both builds, and there were no console errors or uncaught exceptions. No flakes appeared in three runs (a 1 min 21 s run of all three apps, unreserved machine).
+
+**TodoMVC**
+
+| Check | shadow-cljs | light-cljs |
+|---|---|---|
+| renders the app | pass 3/3 | pass 3/3 |
+| add todos | pass 3/3 | pass 3/3 |
+| complete a todo | pass 3/3 | pass 3/3 |
+| toggle all | pass 3/3 | pass 3/3 |
+| edit a todo | pass 3/3 | pass 3/3 |
+| delete a todo | pass 3/3 | pass 3/3 |
+| filter routes | pass 3/3 | pass 3/3 |
+| clear completed | pass 3/3 | pass 3/3 |
+| persistence | pass 3/3 | pass 3/3 |
+| no console errors or uncaught exceptions | pass 3/3 | pass 3/3 |
+
+**simple**
+
+| Check | shadow-cljs | light-cljs |
+|---|---|---|
+| renders the clock | pass 3/3 | pass 3/3 |
+| clock ticks | pass 3/3 | pass 3/3 |
+| colour input recolours the clock | pass 3/3 | pass 3/3 |
+| no console errors or uncaught exceptions | pass 3/3 | pass 3/3 |
+
+**flow**
+
+| Check | shadow-cljs | light-cljs |
+|---|---|---|
+| renders and runs the flows | pass 3/3 | pass 3/3 |
+| no console errors or uncaught exceptions | pass 3/3 | pass 3/3 |
+| page text after each step equals shadow-cljs's first run | pass 3/3 | pass 3/3 |
+
+### Failures found on the way, by cause
+
+With master `052ad00e` and 971's ports, **none of the three apps started**. Fixing three causes made them all pass:
+
+| Failure | Cause | Apps | Fix |
+|---|---|---|---|
+| `ReferenceError: goog is not defined` at load | **Port shim gap (Closure Library, a non-goal).** re-frame.interop reads `goog.async.nextTick` as a global path. 971's port reports listed it under missing goog, and nothing provided it. | all three | The porter's catalogue gains `compat/goog/async/nextTick.cljs`, which installs `globalThis.goog.async.nextTick` (a MessageChannel task, as Closure's is) when the namespace loads. |
+| `ReferenceError: typeof is not defined` on the first render | **Port shim bug.** The catalogue's `goog.typeOf` was `(js/typeof x)`. Upstream emits that as the call `typeof(x)`, which works by accident; light-cljs emits a read of a global named `typeof`. reagent's util calls `goog/typeOf`. | all three | The shim now uses `(js* "typeof ~{}" x)` and returns Closure's `"null"` and `"array"`. |
+| `Cannot define property ...NodeCoerceable$coerce..., object is not extensible` at load | **Compiler defect (runtime).** `Var.prototype` was the runtime's frozen base object, so `extend-type Var` threw. rewrite-clj extends its NodeCoerceable protocol to Var. | flow | Fixed in light-cljs: Var gets an extensible prototype over the frozen base, as keywords, symbols and collections already do. Regression: `extensions::var_extension_reaches_vars_made_before_and_after`. |
+
+**No failure came from bundling.**
+
+**Check-script fixes, which failed on both builds alike.**
+- Playwright's `check()` fails on a React-controlled checkbox: the box keeps its old state until re-frame's event re-renders it. The checks click and then wait for the state.
+- The initial colour in simple is `orange`.
+
+**Port edits added by this pellet** (on top of "Port edits by cause" above): `compat/goog/async/nextTick.cljs` (Closure Library use, a non-goal) in all three ports, and the corrected `goog.typeOf` in `compat/goog.cljs`. The ports themselves are regenerated by the `port` command above; copies are in `research/shadow-credibility/{todomvc,simple,flow}-port-973`.
