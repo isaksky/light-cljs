@@ -451,7 +451,12 @@
                                "\tMaximum resident set size (kbytes): 1051394\n"))]
     (is (= {:wall-s 6.09 :user-s 6.29 :system-s 0.36 :peak-memory-gb 1.051394}
            (compare/parse-time false (gnu "0:06.09"))))
-    (is (= 3725.5 (:wall-s (compare/parse-time false (gnu "1:02:05.50")))))))
+    (is (= 3725.5 (:wall-s (compare/parse-time false (gnu "1:02:05.50"))))))
+  (is (true? (:stats (compare/parse-options ["p" "--light" "b" "--stats"]))))
+  (is (= {"cache.bytes-read" 266000000 "cache.validate-ms" 3100}
+         (compare/parse-stats (str "cache.validate-ms 3100\ncache.bytes-read 266000000\n"
+                                   "[cache-misses-and-bypasses]\nworkload.a miss source: 2 changed\n"
+                                   "       40.98 real       122.37 user       126.74 sys\n")))))
 
 (deftest memory-limit-sweep
   (testing "options"

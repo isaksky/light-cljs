@@ -50,6 +50,8 @@
     "  --runtime COUNTS    also run a generated project's outputs in Node, input 42, at each"
     "                      comma-separated iteration count (e.g. 1,4,16)"
     "  --runtime-only      skip the builds; run the outputs the project already has"
+    "  --stats             pass --stats to every light-cljs build and record its counters"
+    "                      (cache validation, bytes read, misses) per build"
     "  --skip-unchanged    time no rebuild with nothing changed (its untimed cache-filling build"
     "                      still runs before --leaf rounds)"
     "  --shadow-heaps LIST sweep shadow's maximum heap: clean builds only, one shadow build per"
@@ -101,6 +103,7 @@
       (= "--light-only" arg) (recur more (assoc options :light-only true))
       (= "--runtime-only" arg) (recur more (assoc options :runtime-only true))
       (= "--skip-unchanged" arg) (recur more (assoc options :skip-unchanged true))
+      (= "--stats" arg) (recur more (assoc options :stats true))
       (value-options arg) (let [[k parse] (value-options arg)]
                             (when (nil? (first more)) (throw (ex-info (str arg " needs a value\n" usage) {})))
                             (recur (rest more) (assoc options k (parse (first more)))))
@@ -157,15 +160,22 @@
           :system-s (number #"System time \(seconds\): ([0-9.]+)")
           :peak-memory-gb (/ (number #"Maximum resident set size \(kbytes\): ([0-9]+)") 1e6)}))))
 
+(defn parse-stats
+  "The numeric `NAME VALUE` lines of a light-cljs --stats report, by name."
+  [err]
+  (into (sorted-map) (for [[_ k v] (re-seq #"(?m)^([a-z][a-z0-9_.-]*) ([0-9]+)$" err)] [k (parse-long v)])))
+
 (defn timed-with-output
   "Runs cmd under /usr/bin/time (-l on macOS, GNU -v elsewhere) and returns
-  [sample stdout], the sample as parse-time gives it."
+  [sample stdout], the sample as parse-time gives it, with :stats (parse-stats)
+  when cmd asks light-cljs for --stats."
   [dir cmd]
   (let [result (apply process/sh {:dir (str dir)} "/usr/bin/time" (if mac? "-l" "-v") cmd)
         err (:err result)]
     (when-not (zero? (:exit result))
       (throw (ex-info "Build failed" {:command cmd :err (subs err (max 0 (- (count err) 3000)))})))
-    [(parse-time mac? err) (:out result)]))
+    [(cond-> (parse-time mac? err) (some #{"--stats"} cmd) (assoc :stats (parse-stats err)))
+     (:out result)]))
 
 (defn timed [dir cmd] (first (timed-with-output dir cmd)))
 
@@ -408,7 +418,7 @@
         generated? (and (fs/exists? (fs/file dir "oracle.bb")) (fs/exists? (fs/file dir "model.edn")))
         expected (when generated? (str/trim (run! dir "bb" "oracle.bb" "42" "3")))
         light-out (:output-dir (release-build (fs/file dir "light-cljs.edn") light-build))
-        light-cmd [light "release" (name light-build)]
+        light-cmd (cond-> [light "release" (name light-build)] (:stats options) (conj "--stats"))
         tools [{:tool :light :dir dir
                 :clean-cmd (conj light-cmd "--no-cache")
                 :cached-cmd (conj light-cmd "--cache-dir" ".compare-cache")
@@ -774,6 +784,22 @@
       (for [[scenario label] scenario-labels tool tools
             :let [o (get-in outputs [scenario tool])] :when o]
         (output-row (str label " | " (tool-labels tool)) o))
+      (let [rows (for [[scenario label] scenario-labels
+                       sample (get-in scenarios [scenario :light :samples]) :when (:stats sample)]
+                   [label sample])
+            stat (fn [sample k] (get-in sample [:stats k] 0))]
+        (when (seq rows)
+          (concat
+           ["" "light-cljs --stats, each build in order:" ""
+            "| Build | Round | Wall time | Hits | Misses | Validation | Decoding | Writing | Bytes read | Bytes written |"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+           (for [[label sample] rows]
+             (str "| " label " | " (inc (:round sample)) " | " (format "%.2f s" (:wall-s sample)) " | "
+                  (stat sample "cache.hits") " | " (stat sample "cache.misses") " | "
+                  (stat sample "cache.validate-ms") " ms | " (stat sample "cache.decode-ms") " ms | "
+                  (stat sample "cache.write-ms") " ms | "
+                  (format "%.1f MB" (/ (stat sample "cache.bytes-read") 1e6)) " | "
+                  (format "%.1f MB" (/ (stat sample "cache.bytes-written") 1e6)) " |")))))
       (when-let [{:keys [builds process]} warm-jvm]
         ["" (str "shadow-cljs in one JVM (" (count builds) " release builds, as a running server): "
                  (str/join ", " (map #(format "%.2f s (%.1f s CPU, load %.2f)" (:wall-s %) (:cpu-s %) (:load-1m %)) builds))
