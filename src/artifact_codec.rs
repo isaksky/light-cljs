@@ -67,7 +67,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -908,7 +908,14 @@ impl Writer<'_> {
              }| {
                 out.str(namespace);
                 out.bool(*registered);
-                out.bool(*unit);
+                // 0 for the namespace's own analysis, then the unit's
+                // dispatch (light-cljs-1005).
+                out.u8(match unit {
+                    None => 0,
+                    Some(UnitDispatch::Definition) => 1,
+                    Some(UnitDispatch::Bundle) => 2,
+                    Some(UnitDispatch::Coordinator) => 3,
+                });
             },
         );
     }
@@ -2617,7 +2624,13 @@ impl<'a> Reader<'a> {
             Ok(RegistryEntry {
                 namespace: r.string()?,
                 registered: r.bool()?,
-                unit: r.bool()?,
+                unit: match r.byte()? {
+                    0 => None,
+                    1 => Some(UnitDispatch::Definition),
+                    2 => Some(UnitDispatch::Bundle),
+                    3 => Some(UnitDispatch::Coordinator),
+                    tag => return Err(r.tag("registry unit", tag)),
+                },
             })
         })
     }
@@ -3884,12 +3897,22 @@ mod tests {
                 RegistryEntry {
                     namespace: "app.util".into(),
                     registered: true,
-                    unit: false,
+                    unit: None,
                 },
                 RegistryEntry {
                     namespace: "app.core".into(),
                     registered: false,
-                    unit: true,
+                    unit: Some(UnitDispatch::Definition),
+                },
+                RegistryEntry {
+                    namespace: "app.views".into(),
+                    registered: true,
+                    unit: Some(UnitDispatch::Bundle),
+                },
+                RegistryEntry {
+                    namespace: "app.test".into(),
+                    registered: false,
+                    unit: Some(UnitDispatch::Coordinator),
                 },
             ],
             bodies: Some(Box::new(Bodies {

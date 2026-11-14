@@ -782,19 +782,32 @@ artifact with its real keys. Penpot's numbers are in
   when an earlier namespace no longer adds one itself. A unit's additions
   are logged where the coordinator charges it, whichever engine analyzed it,
   so the artifact is the same at every `--jobs`; a pool worker's registry
-  is its own, so with worker engines the coordinator's gains none of them
-  and installing adds none. A unit those builds keep on the coordinator
-  (a `:test` definition's) still adds to the coordinator's registry, and
-  installing then omits it: light-cljs-1005. The coordinator's own
-  additions are logged even when a worker's unit logged the same
-  namespace. The key needs no new input: what a hit adds
+  is its own, so with worker engines the coordinator's gains none of them.
+  *Settled by light-cljs-1005:* each unit entry records the rule that
+  places the unit, which its registration decides at every `--jobs`
+  (`RegistryEntry::unit`, `UnitDispatch`, schema version 14): a
+  definition's, which a pool with engines takes; a declaration bundle's,
+  which it takes with more than one engine worker; and a `:test`
+  definition's and its `:test` form's, which stay on the coordinator.
+  Installing adds an entry where the build's coordinator analyzes such a
+  unit (`CompilationSession::pools`, `pools_bundle`), so with worker
+  engines it still adds a `:test` definition's, and a bundle's with one
+  engine worker. The coordinator's own additions are logged even when a
+  worker's unit logged the same namespace, while a unit's are not, so
+  with worker engines a namespace a worker's unit added and a
+  coordinator-kept unit then added is not recorded for the latter, and a
+  top-level addition of one is recorded only there, which `--jobs 1` does
+  not log (light-cljs-1006). The key needs no new input: what a hit adds
   follows from its own analysis, and the declaration chain already keys the
   earlier namespaces that change the order. `tests/cache_matrix.rs`
   (`declaration_view_preserves_namespace_inventory_on_mixed_hits`,
   `installed_registrations_keep_the_registry_order`,
-  `unit_registry_additions_install_where_the_unit_ran`) checks the clean
-  build, the warm build with every namespace a hit and a one-file edit
-  against the uncached build at `--jobs 1` and 4. A namespace a macro
+  `unit_registry_additions_install_where_the_unit_ran`,
+  `registry_additions_publish_the_same_artifacts_at_every_jobs`) checks the
+  clean build, the warm build with every namespace a hit and a one-file
+  edit against the uncached build at `--jobs 1` and 4, with and without
+  worker engines, and the artifacts' bytes at one job and with worker
+  engines. A namespace a macro
   makes with `create-ns` is added like the others. The Pants build keeps
   its own registry (light-cljs-589) and installs nothing into it.
 

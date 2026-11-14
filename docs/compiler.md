@@ -178,7 +178,10 @@ namespace installed from its artifact adds what its analysis added, in
 order, so a later macro lists what the uncached build lists whichever
 earlier namespaces were hits (light-cljs-1004). With `--jobs` and worker
 engines, a unit a worker analyzes adds to that worker's registry, not to
-the one the top-level macro calls read.
+the one the top-level macro calls read; a definition with `:test` metadata
+is analyzed on the coordinator, and so are declaration bundles (`defmethod`,
+`deftype`, `extend-type` and the like) when the pool has one worker with an
+engine, and what they add is in the coordinator's registry.
 
 Creating an existing named namespace reuses its identity. `create-ns` accepts
 an optional host object for `.findInternedVar`; no browser global namespace

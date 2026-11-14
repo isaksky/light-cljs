@@ -118,6 +118,25 @@ impl Project {
         self.dir.join("cache")
     }
 
+    /// The cache's published artifacts, by name, with their bytes.
+    fn objects(&self) -> Vec<(String, Vec<u8>)> {
+        let mut objects: Vec<_> = fs::read_dir(self.cache().join("v1/objects"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .map(|path| {
+                (
+                    path.file_name().unwrap().to_string_lossy().into_owned(),
+                    path,
+                )
+            })
+            .filter(|(name, _)| !name.starts_with(".tmp"))
+            .map(|(name, path)| (name, fs::read(path).unwrap()))
+            .collect();
+        objects.sort();
+        objects
+    }
+
     fn command(&self, entry: &str, extra: &[&str], cached: bool) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
         command.args(["--compile", "--entry", entry]);
@@ -1363,50 +1382,133 @@ fn installed_registrations_keep_the_registry_order() {
 /// to the registry by that unit's analysis: on the coordinator with one job
 /// or an engine-less pool, where installing its artifact adds it too, and
 /// in a pool worker's own registry with worker engines, where installing
-/// adds it to none (light-cljs-1004).
+/// adds it to none (light-cljs-1004). A definition with `:test` metadata is
+/// analyzed on the coordinator whatever the pool, so what its unit adds is
+/// in the coordinator's registry with worker engines too, and installing
+/// adds it there (light-cljs-1005).
 #[test]
 fn unit_registry_additions_install_where_the_unit_ran() {
     let isolates = ["--jobs", "4", "--macro-memory-limit", "268435456"];
-    for options in [&["--jobs", "1"][..], &["--jobs", "4"], &isolates] {
+    // One worker isolate: the coordinator keeps the declaration bundles.
+    let one_isolate = ["--jobs", "2", "--macro-memory-limit", "134217728"];
+    let user = "(ns user (:require [mac :refer [listed]])) (js/console.log (listed))";
+    let configurations = [
+        &["--jobs", "1"][..],
+        &["--jobs", "4"],
+        &isolates,
+        &one_isolate,
+    ];
+    for options in configurations {
         let project = Project::new(&[
             (
                 "mac.cljs",
-                "(ns mac) (defmacro listed [] (pr-str (map str (all-ns))))",
+                "(ns mac) (defmacro listed [] (pr-str (map str (all-ns)))) (defmacro mk [] (create-ns 'extra) `(fn [] 1)) (defmacro one [] 1)",
             ),
             (
                 "early.cljs",
                 "(ns early (:require [mac :refer [listed]])) (defn f [] (listed))",
             ),
             (
-                "user.cljs",
-                "(ns user (:require [mac :refer [listed]])) (js/console.log (listed))",
+                "tested.cljs",
+                "(ns tested (:require [mac :refer [mk]])) (def ^{:test (fn [] nil)} t (mk))",
             ),
             (
+                "methods.cljs",
+                "(ns methods (:require [mac :refer [one]])) (defmulti m identity) (defmethod m :a [_] (one))",
+            ),
+            ("user.cljs", user),
+            (
                 "main.cljs",
-                "(ns main (:require [early] [user])) (js/console.log (early/f))",
+                "(ns main (:require [early] [tested] [methods] [user])) (js/console.log (early/f) (methods/m :a))",
             ),
         ]);
         let (cold, listed) = project.checked("main", options);
         let warm = project.cached("main", options);
-        warm.assert_all_hits(4);
+        warm.assert_all_hits(6);
         assert_eq!(warm.js, cold.js, "{options:?}");
-        project.write(
-            "user.cljs",
-            "(ns user (:require [mac :refer [listed]])) (js/console.log (listed)) ; edited",
-        );
+        project.write("user.cljs", &format!("{user} ; edited"));
         let (mixed, printed) = project.checked("main", options);
-        assert!(
-            mixed.rows().contains(&"user miss source: source changed"),
-            "{options:?}: {:?}",
-            mixed.rows()
+        assert_eq!(
+            mixed.rows(),
+            [
+                "user miss source: source changed",
+                "main miss dependencies: dependency user changed"
+            ],
+            "{options:?}"
         );
         assert_eq!(printed, listed, "{options:?}");
+        // The `:test` definition's unit adds `tested` and `extra` to the
+        // coordinator's registry with every pool.
+        assert!(
+            printed.contains("\"tested\" \"extra\""),
+            "{options:?}: {printed}"
+        );
         if options.len() == 2 {
             assert!(
-                printed.starts_with("(\"cljs.user\" \"cljs.core\" \"mac\" \"early\" \"user\")"),
+                printed.starts_with("(\"cljs.user\" \"cljs.core\" \"mac\" \"early\" \"tested\""),
                 "{printed}"
             );
         }
+        // The bundle of `m`'s method adds `methods` where it is analyzed.
+        assert_eq!(
+            printed.contains("\"methods\""),
+            options != isolates,
+            "{options:?}: {printed}"
+        );
+    }
+}
+
+/// What a deferred unit adds to the registry is recorded with the rule
+/// that places the unit, which its registration decides, so that a project
+/// whose output does not depend on `--jobs` publishes the same artifacts
+/// with one job and with worker engines: a definition's unit (`early`,
+/// whose additions the lister leaves out), a `:test` definition's and the
+/// namespace's own analysis. Each build then installs them and a one-file
+/// edit matches the uncached build (light-cljs-1005).
+#[test]
+fn registry_additions_publish_the_same_artifacts_at_every_jobs() {
+    let user = "(ns user (:require [mac :refer [listed]])) (js/console.log (listed))";
+    let project = Project::new(&[
+        (
+            "mac.cljs",
+            "(ns mac) (defmacro listed [] (pr-str (remove #{\"early\" \"other\"} (map str (all-ns))))) (defmacro mk [n] (create-ns n) `(fn [] 1))",
+        ),
+        (
+            "early.cljs",
+            "(ns early (:require [mac :refer [mk]])) (defn f [] ((mk other)))",
+        ),
+        (
+            "tested.cljs",
+            "(ns tested (:require [mac :refer [mk]])) (def ^{:test (fn [] nil)} t (mk extra)) (mk top)",
+        ),
+        ("user.cljs", user),
+        (
+            "main.cljs",
+            "(ns main (:require [early] [tested] [user])) (js/console.log (early/f))",
+        ),
+    ]);
+    let mut published: Option<Vec<(String, Vec<u8>)>> = None;
+    for jobs in ["1", "4"] {
+        let options = ["--jobs", jobs, "--macro-memory-limit", "268435456"];
+        project.write("user.cljs", user);
+        let _ = fs::remove_dir_all(project.cache());
+        let (cold, listed) = project.checked("main", &options);
+        assert!(
+            listed.contains("\"tested\" \"top\" \"extra\" \"user\")"),
+            "{jobs} jobs: {listed}"
+        );
+        let objects = project.objects();
+        assert_eq!(objects.len(), 5, "{jobs} jobs");
+        match &published {
+            None => published = Some(objects),
+            Some(serial) => assert!(&objects == serial, "the artifacts differ at {jobs} jobs"),
+        }
+        let warm = project.cached("main", &options);
+        warm.assert_all_hits(5);
+        assert_eq!(warm.js, cold.js, "{jobs} jobs");
+        project.write("user.cljs", &format!("{user} ; edited"));
+        let (_, printed) = project.checked("main", &options);
+        assert_eq!(printed, listed, "{jobs} jobs");
     }
 }
 

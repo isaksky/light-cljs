@@ -92,6 +92,9 @@ struct Unit {
     /// Whether the drain gives it to the build's unit pool
     /// ([`CompilationSession::set_pooled`]).
     pooled: bool,
+    /// The rule that places its analysis with a pool, which its
+    /// namespace's artifact records with what it adds to the registry.
+    dispatch: crate::namespace_artifact::UnitDispatch,
     /// Whether its namespace's dispatch keeps it for the drain point, which
     /// charges it: until then a demand takes its analysis and leaves its
     /// charges (light-cljs-394, [`CompilationSession::hold_units`]).
@@ -2500,6 +2503,8 @@ impl CompilationSession {
                                     retained: None,
                                     macro_free: false,
                                     pooled: false,
+                                    // Prepared: never analyzed again.
+                                    dispatch: crate::namespace_artifact::UnitDispatch::Definition,
                                     held: false,
                                     dispatched: false,
                                     charges: None,
@@ -2784,11 +2789,13 @@ impl CompilationSession {
     /// Log `entries`, what a deferred unit's analysis added to its engine's
     /// registry, where the coordinator charges the unit, those not logged
     /// yet, whichever engine analyzed it, so that its namespace's artifact
-    /// is the same at every `--jobs` (light-cljs-1004). A pool worker's
-    /// registry is its own: the coordinator's does not gain them.
+    /// is the same at every `--jobs` (light-cljs-1004), marked with the
+    /// unit's `dispatch`, which installing reads (light-cljs-1005). A pool
+    /// worker's registry is its own: the coordinator's does not gain them.
     fn absorb_namespaces(
         &self,
         entries: Vec<crate::namespace_artifact::RegistryEntry>,
+        dispatch: crate::namespace_artifact::UnitDispatch,
     ) -> Result<(), String> {
         if entries.is_empty() || !self.namespaces_logged.get() {
             return Ok(());
@@ -2799,19 +2806,28 @@ impl CompilationSession {
                 .into_iter()
                 .filter(|entry| seen.insert(entry.namespace.clone()))
                 .map(|entry| crate::namespace_artifact::RegistryEntry {
-                    unit: true,
+                    unit: Some(dispatch),
                     ..entry
                 }),
         );
         Ok(())
     }
-    /// Whether the build's pool has workers with engines, which analyze the
-    /// units that expand source macros in their own registries.
-    fn pool_has_engines(&self) -> bool {
-        self.pool
-            .borrow()
-            .as_ref()
-            .is_some_and(|pool| pool.engine_workers > 0)
+    /// Whether this build analyzes on the coordinator, in its registry, a
+    /// unit of `dispatch` that adds to the registry, and so is not
+    /// macro-free, as its namespace's dispatch decides ([`Self::pools`],
+    /// [`Self::pools_bundle`]); `None`, the namespace's own analysis,
+    /// always. A pool worker with an engine analyzes the others in a
+    /// registry of its own (light-cljs-1005).
+    fn analyzes_on_coordinator(
+        &self,
+        dispatch: Option<crate::namespace_artifact::UnitDispatch>,
+    ) -> bool {
+        use crate::namespace_artifact::UnitDispatch;
+        match dispatch {
+            None | Some(UnitDispatch::Coordinator) => true,
+            Some(UnitDispatch::Definition) => !self.pools(false, false),
+            Some(UnitDispatch::Bundle) => !self.pools_bundle(false),
+        }
     }
     /// Add `entries`, the namespaces an installed artifact's analysis added
     /// to the compile-time registry, in its order, as that analysis did:
@@ -2829,15 +2845,14 @@ impl CompilationSession {
         if entries.is_empty() {
             return Ok(());
         }
-        // With engines in the pool, a unit added its namespaces to a worker's
-        // registry, not this one.
-        let units = !self.pool_has_engines();
         // The program's namespaces before this position are in the
         // registry, or among `names`.
         let mut ensured = self.namespaces_ensured.get();
         let mut names = Vec::new();
         for entry in entries {
-            if entry.unit && !units {
+            // With engines in the pool, a unit the pool takes added its
+            // namespaces to a worker's registry, not this one.
+            if !self.analyzes_on_coordinator(entry.unit) {
                 continue;
             }
             if entry.registered
@@ -2928,7 +2943,7 @@ impl CompilationSession {
                     Ok(crate::namespace_artifact::RegistryEntry {
                         namespace: text[1..].to_owned(),
                         registered,
-                        unit: false,
+                        unit: None,
                     })
                 })
                 .collect(),
@@ -3355,6 +3370,15 @@ impl CompilationSession {
             )?;
         }
         let test = snapshot.definition_test_unit;
+        // Where a pool would analyze it: a `:test` form, and a definition
+        // with one, on the coordinator (`NamespaceAnalysis::finish_def`).
+        let dispatch = match (&name, test) {
+            (RegistrationName::Declaration, _) => crate::namespace_artifact::UnitDispatch::Bundle,
+            (RegistrationName::Test(_), _) | (_, Some(_)) => {
+                crate::namespace_artifact::UnitDispatch::Coordinator
+            }
+            (RegistrationName::Var(_), None) => crate::namespace_artifact::UnitDispatch::Definition,
+        };
         #[cfg(test)]
         if let Some(form) = &form {
             worker_tests::retain(self.next_unit(), form, &snapshot, &host);
@@ -3416,6 +3440,7 @@ impl CompilationSession {
                         retained: None,
                         macro_free: false,
                         pooled: false,
+                        dispatch,
                         held: false,
                         dispatched: false,
                         charges: None,
@@ -4168,7 +4193,8 @@ impl CompilationSession {
                 self.shared.fail(id, error.clone(), None);
                 return Err(error);
             }
-            if let Err(error) = self.absorb_namespaces(namespaces) {
+            let dispatch = self.shared.lock().units[id].dispatch;
+            if let Err(error) = self.absorb_namespaces(namespaces, dispatch) {
                 self.shared.fail(id, error.clone(), None);
                 return Err(error);
             }

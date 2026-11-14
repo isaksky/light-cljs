@@ -197,10 +197,29 @@ pub struct RegistryEntry {
     /// Installation adds the program's namespaces before it that the
     /// registry lacks first, as the registration would have.
     pub registered: bool,
-    /// Whether a deferred unit's analysis added it, which a build whose
-    /// pool workers have engines does in a worker's registry instead, so
-    /// that installing it there adds it to none.
-    pub unit: bool,
+    /// The deferred unit whose analysis added it, by the rule that places
+    /// that analysis in a build with a unit pool, or `None` for the
+    /// namespace's own analysis. A build whose pool workers have engines
+    /// analyzes some units in a worker's registry instead of the
+    /// coordinator's, and installing adds theirs to none (light-cljs-1004,
+    /// light-cljs-1005).
+    pub unit: Option<UnitDispatch>,
+}
+
+/// The rule that places a deferred unit's analysis, which the unit's
+/// registration decides at every `--jobs`
+/// ([`crate::compilation_session::CompilationSession::pools`]). A unit that
+/// adds to the compile-time registry is never macro-free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitDispatch {
+    /// A definition's initializer: a pool with engines analyzes it.
+    Definition,
+    /// A declaration bundle: a pool with more than one engine worker
+    /// analyzes it ([`crate::compilation_session::CompilationSession::pools_bundle`]).
+    Bundle,
+    /// One the coordinator analyzes whatever the pool: a definition with
+    /// `:test` metadata, analyzed with it, or its `:test` form.
+    Coordinator,
 }
 
 /// One unit's charges at its namespace's drain point ([`Bodies::charges`]).
