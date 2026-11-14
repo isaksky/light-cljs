@@ -383,3 +383,84 @@ tables above. Ranges are in brackets.
   the profile's anonymous functions and the operations' named wrappers
   (`Object.defineProperty.value`) are a quarter of workload 200k's self
   time.
+
+## 2026-11-14: small maps and map entries (light-cljs-989)
+
+**Change.** Three of the small-map costs named in "Where light-cljs's output
+spends its time" go:
+- An array map's entry is an instance of one class, `ArrayMapEntry`, whose
+  `hash` getter keeps the key's hash in a field. Before, each entry was a
+  frozen object with a getter closure of its own. Map literal shapes build
+  the same class, so all array-map entries have one shape.
+- `entryIndex` loops over the entries instead of calling `findIndex` with a
+  closure. For a keyword key without an `IEquiv` of its own, it makes the
+  key's protocol lookup once per search, not once per entry, then compares
+  spellings as `equalPair` does. Any other key still goes through
+  `equalPair` for each entry, in order.
+- A map entry is made with `Object.create` of its type's prototype instead
+  of `Object.setPrototypeOf` on a fresh vector.
+
+Nothing observable changes. `builtin_types::small_maps_keep_their_key_tests_entries_and_hashes`,
+written and passing before the change, checks:
+- key comparison, including equal keywords that are not identical;
+- the order of a key's `-equiv` and `-hash` calls;
+- that `assoc` keeps the existing key, and the order of keys;
+- `map-entry?`, metadata and identity of the entries seqs give.
+
+**Setup.** The kit and machine of the 2026-11-14 section above, with these
+differences:
+- before is `light-cljs-32cb0373` (988's binary, whose runtime equals
+  master's `1aee1a66`) and after is `light-cljs-5467ea43`;
+- each output was built with its binary just before its runs;
+- before and after ran back to back on each workload, each alternating with
+  shadow-cljs.
+
+10 runs of each. **Unreserved:** peer workers ran builds and test suites
+throughout. The 1-minute load average before a run was 2.7 to 24.6, and it
+differed between before and after (workload 200k: 11 to 16 before, 5 to 10
+after). The light/shadow ratios, whose two sides ran alternately, are the
+fairer comparison. Raw results are in `research/shadow-credibility/runtime-989`.
+
+Only the rows that moved are shown. Ranges are in brackets.
+
+| Workload | light-cljs before | light-cljs after | change | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k, steady state per iteration | 103.8 ms | 91.6 ms | -12% | 4.02 | 3.75 |
+| workload 200k, wall time at 40 iterations | 4.546 s (4.211-4.640) | 4.020 s (3.811-4.319) | -12% | 3.37 | 3.16 |
+| workload 200k, peak memory at 40 iterations | 0.428 GB (0.407-0.436) | 0.321 GB (0.314-0.339) | -25% | 1.53 | 1.21 |
+| workload 800k, steady state per iteration | 428.8 ms | 355.3 ms | -17% | 3.70 | 3.32 |
+| workload 800k, wall time at 16 iterations | 7.883 s (7.553-8.289) | 6.818 s (6.652-9.485) | -14% | 2.87 | 2.56 |
+| workload 800k, peak memory at 16 iterations | 0.794 GB (0.753-0.809) | 0.664 GB (0.655-0.746) | -16% | 1.42 | 1.19 |
+| re-frame-shaped 200k app, steady state per iteration | 1,335 ms | 1,027 ms | -23% | 4.94 | 3.91 |
+| re-frame-shaped 200k app, wall time at 10 iterations | 15.753 s (15.029-16.063) | 12.641 s (12.228-16.329) | -20% | 4.15 | 3.30 |
+| re-frame-shaped 200k app, first output | 3.719 s (3.539-3.954) | 3.383 s (3.257-3.689) | -9% | 2.76 | 2.32 |
+| re-frame-shaped 200k app, peak memory at 10 iterations | 1.273 GB (1.243-1.320) | 0.804 GB (0.759-0.889) | -37% | 1.75 | 1.11 |
+| TodoMVC, add 1,000 todos | 9,581 ms (9,232-9,956) | 8,939 ms (8,574-9,092) | -7% | 9.78 | 9.18 |
+| TodoMVC, toggle all | 159.6 ms (140.3-201.8) | 135.9 ms (130.8-161.5) | -15% | 3.01 | 2.58 |
+| TodoMVC, clear completed | 40.6 ms (33.2-51.4) | 34.7 ms (32.0-40.0) | -15% | 1.55 | 1.39 |
+| TodoMVC, whole run wall time | 10.52 s (9.97-11.87) | 9.86 s (9.36-10.50) | -6% | 6.24 | 6.11 |
+| TodoMVC, whole run user CPU | 11.14 s (10.75-11.37) | 10.49 s (10.09-10.61) | -6% | 5.97 | 5.70 |
+
+- **Unchanged within their ranges:** startup at one iteration of the
+  workloads, TodoMVC's page load and edit step, its JavaScript heap
+  (14.06 to 13.71 MB with 1,000 todos) and its peak memory.
+- **Peak memory** falls most where many small maps live at once: each entry
+  no longer holds a closure and its context.
+- **Output size:** a program building array maps keeps the entry class and
+  the longer search, about 170 bytes at advanced (`map-only` 8,066 to 8,257
+  bytes); the size ratchet notes it in tests/support/ratchet_fixtures.rs.
+
+**What is left of the small-map costs.** A sampling profile of TodoMVC's add
+step (`--pseudo-names`, as above) puts `entryIndex` at 1.8% inclusive, from
+5.8%. `mapEntry` is still 12% self:
+- The WeakSet registration that brands each map entry (`mapEntries`) is most
+  of it: in a micro-benchmark, building an entry costs about 36 ns without
+  it and 220 to 350 ns with it. It is a value-kind brand, left to
+  light-cljs-990.
+- The add step builds so many entries because the map's `seq` builds all of
+  them at once. TodoMVC checks its app database with cljs.spec after every
+  event, and spec's map conform seqs the sorted map of todos and every todo
+  in it. Upstream's array-map and hash-map seqs build an entry only when it
+  is read, and a sorted map's tree nodes are its entries. Building entries
+  lazily would change what a map's seq holds, so it is recorded here and
+  not done.
