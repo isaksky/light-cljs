@@ -15,7 +15,9 @@ below records the later default-compiler regression and the restored timings.
 The [October 29 comparison at `0ad2514f`](#re-measured-at-0ad2514f-cached-and-uncached-october-29-2026)
 is the last on a reserved machine, with cached builds and leaf edits for both compilers.
 The [five-round baseline at `627b9ed5`](#five-round-baseline-at-627b9ed5-unreserved-machine-november-13-2026),
-at the end, is the latest: medians and ranges with CPU time, on an unreserved machine.
+is the latest full comparison: medians and ranges with CPU time, on an unreserved machine.
+The [heap sweep of November 14](#shadow-cljss-maximum-heap-swept-unreserved-machine-november-14-2026),
+at the end, compares peak memory against shadow-cljs's smallest adequate heap instead of `-Xmx8g`.
 
 Reproduce, one project at a time and with no other heavy work running:
 
@@ -1311,3 +1313,165 @@ Findings, recorded as found:
 
 Rerun on a reserved machine before quoting these figures as typical; until
 then they are the dated baseline, labelled unreserved.
+
+## shadow-cljs's maximum heap swept, unreserved machine (November 14, 2026)
+
+**Summary.** The objection: shadow-cljs's peak memory in these comparisons
+reflects the `-Xmx8g` the generated projects give its JVM, not what it needs.
+So shadow's maximum heap was swept from 1 to 8 GiB over clean release builds,
+three alternating rounds each, and light-cljs's peak memory set against
+shadow's at its **smallest adequate heap**: the smallest heap at which no
+build failed and the median wall time is within 10% of shadow's best. That
+heap is 1.5 GiB for the generated 200k project and the re-frame-shaped 200k
+app, and 3 GiB at 800k, where 1, 1.5 and 2 GiB all run out of memory. Against
+it, light-cljs's peak memory is:
+
+| Project | light-cljs peak memory | shadow-cljs's smallest adequate heap | its peak memory | light/shadow | light/shadow at `-Xmx8g` |
+| --- | --- | --- | --- | --- | --- |
+| generated 200k | 1.029 GB | 1.5 GiB (43.34 s, 1.02x its best) | 2.281 GB | **0.45** | 0.30 |
+| re-frame-shaped 200k | 1.405 GB | 1.5 GiB (74.31 s, 1.01x) | 2.268 GB | **0.62** | 0.36 |
+| generated 800k | 3.646 GB | 3 GiB (223.07 s, 1.05x) | 4.298 GB | **0.85** | 0.46 |
+
+**light-cljs's memory advantage shrinks a lot once shadow is given only the
+heap it needs.** Against `-Xmx8g` light used 0.30x to 0.46x shadow's peak
+memory; against the smallest adequate heap it uses 0.45x to 0.85x. At 800k the
+advantage nearly disappears: 3.65 GB against 4.30 GB. Any claim built on the
+`-Xmx8g` ratios overstates it. Wall time is not affected: at its smallest
+adequate heap shadow still takes about 6 to 8 times as long (light 0.16x, 0.12x and
+0.17x of shadow's median there).
+
+Setup. light-cljs master `6ea2540d` as the immutable release binary
+`research/shadow-credibility/bin/light-cljs-6ea2540d` (V8 build, SHA-256
+`8f1ada98afb9233c...`), shadow-cljs 3.5.3, OpenJDK 25.0.2 (G1 collector), Node
+v26.12.1, Clojure CLI 1.12.4.1618, Babashka 1.13.229, Apple M3 Ultra
+(Virtual), 24 CPUs, 32 GiB, macOS 15.7.3. Projects: `generate.bb --seed 42`
+at `--lines 200k` and `800k`, and `--shape re-frame --lines 200k` (the re-frame-shaped app), in
+`research/shadow-credibility/projects/`; raw EDN, Markdown and logs in
+`research/shadow-credibility/heap-sweep-6ea2540d/` (both gitignored). 200k ran
+00:48 to 01:03 MST, re-frame 01:03 to 01:30, 800k 01:30 to 02:13.
+
+```sh
+R=research/shadow-credibility
+for p in workload-200k-seed42 re-frame-200k-seed42 workload-800k-seed42; do
+  bb benchmarks/generated-project/compare.bb $R/projects/$p --light $R/bin/light-cljs-6ea2540d \
+    --runs 3 --max-load 1000 --max-repeats 0 --shadow-heaps 1g,1536m,2g,3g,4g,8g \
+    --light-memory-limits 67108864 --out $R/heap-sweep-6ea2540d/$p
+done
+```
+
+Method (`compare.bb --shadow-heaps`, added for this run). Each round runs
+light-cljs at its configured limit, light-cljs at `--macro-memory-limit
+67108864`, then shadow at each heap, and the next round reverses that order.
+Every build is a clean build (light `--no-cache`, shadow with `.shadow-cljs`
+and its output removed). The heap reaches shadow's JVM as `clojure
+-J-Xmx<size> -M:shadow release bench`: the Clojure CLI puts `-J` options after
+the alias's `-Xmx8g`, and the last `-Xmx` wins (checked:
+`Runtime.maxMemory` reported 1.5 GiB under `-J-Xmx1536m`), so the shared
+projects were not edited. shadow also gets `-XX:+ExitOnOutOfMemoryError`, so a
+heap that is too small ends the build instead of leaving it thrashing, and
+`-Xlog:gc` to a file, from which "GC pauses" sums the stop-the-world pauses.
+Every successful build's output was checked against the project oracle and
+`check-waste.bb --strict`. Times and peak memory come from `/usr/bin/time -l`.
+
+**The JVM default heap is the 8 GiB row.** On this 32 GiB machine the JVM's
+default maximum heap is a quarter of physical memory, `MaxHeapSize =
+8589934592` (`java -XX:+PrintFlagsFinal -version`, marked ergonomic), the same
+as the projects' `-Xmx8g`, so it was not run twice.
+
+**The machine was not reserved.** Two other workers were building and testing
+(a TodoMVC check of the re-frame ports and a size breakdown of re-frame
+output). Following the user's decision of November 13 ("please dont stop
+because of the machine not being free"), the load gate was off (`--max-load
+1000`, no repeats). The 1-minute load average before a build ranged from 5.8
+to 24.8 at 200k, 6.6 to 26.0 for re-frame and 5.1 to 33.5 at 800k, on 24 CPUs;
+the load before every build is in the tables and the EDN. Nothing was cut:
+every project ran all six heaps and both light-cljs limits for three rounds.
+
+### Generated 200k
+
+| Compiler | Limit | Wall time | User CPU | System CPU | Peak memory | GC pauses | Failed | Wall time / shadow's best | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| light-cljs | light-cljs.edn's :macro-memory-limit 2147483648 (2 GiB) | 7.06 s (6.43-7.25) | 7.21 s (6.59-7.31) | 0.51 s (0.40-0.63) | 1.029 GB (1.017-1.032) | - | 0 of 3 | 0.17 | 6.39-17.64 |
+| light-cljs | --macro-memory-limit 67108864 (64 MiB) | 7.19 s (6.12-8.25) | 7.40 s (6.47-8.21) | 0.64 s (0.37-1.43) | 1.041 GB (1.024-1.051) | - | 0 of 3 | 0.17 | 6.23-21.00 |
+| shadow-cljs | -Xmx1g (1 GiB) | 48.18 s (45.49-51.09) | 170.80 s (166.45-177.07) | 85.95 s (66.20-90.01) | 1.735 GB (1.720-1.737) | 3.34 s (2.64-3.58), 2 full | 0 of 3 | 1.14 | 5.81-24.75 |
+| shadow-cljs | -Xmx1536m (1.5 GiB) | 43.34 s (42.64-49.67) | 148.39 s (147.41-158.22) | 115.05 s (95.79-126.17) | 2.281 GB (2.272-2.299) | 1.70 s (1.66-2.36), 0 full | 0 of 3 | 1.02 | 11.64-19.12 |
+| shadow-cljs | -Xmx2g (2 GiB) | 45.14 s (44.89-49.25) | 149.50 s (145.84-153.29) | 106.13 s (90.19-108.97) | 2.701 GB (2.540-2.730) | 1.78 s (1.59-2.25), 0 full | 0 of 3 | 1.07 | 11.87-15.82 |
+| shadow-cljs | -Xmx3g (3 GiB) | 42.45 s (41.25-49.70) | 140.96 s (137.13-144.15) | 111.48 s (110.39-111.87) | 2.739 GB (2.694-2.927) | 1.32 s (1.26-1.94), 0 full | 0 of 3 | 1.00 | 13.24-16.01 |
+| shadow-cljs | -Xmx4g (4 GiB) | 42.31 s (41.71-43.42) | 138.53 s (136.44-142.50) | 114.98 s (102.71-118.05) | 2.848 GB (2.518-2.924) | 1.30 s (1.21-1.39), 0 full | 0 of 3 | 1.00 | 11.98-16.64 |
+| shadow-cljs | -Xmx8g (8 GiB) | 45.77 s (42.76-53.52) | 131.26 s (128.20-132.28) | 100.90 s (95.22-106.52) | 3.425 GB (3.371-3.717) | 1.15 s (0.94-1.47), 0 full | 0 of 3 | 1.08 | 9.33-14.15 |
+
+### re-frame-shaped 200k
+
+| Compiler | Limit | Wall time | User CPU | System CPU | Peak memory | GC pauses | Failed | Wall time / shadow's best | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| light-cljs | light-cljs.edn's :macro-memory-limit 4000000000 (3.73 GiB) | 8.91 s (8.59-9.34) | 8.98 s (8.68-9.01) | 0.61 s (0.57-0.87) | 1.405 GB (1.387-1.449) | - | 0 of 3 | 0.12 | 8.49-10.95 |
+| light-cljs | --macro-memory-limit 67108864 (64 MiB) | 8.84 s (8.56-8.95) | 8.98 s (8.74-9.15) | 0.62 s (0.56-0.76) | 1.367 GB (1.359-1.378) | - | 0 of 3 | 0.12 | 7.34-11.32 |
+| shadow-cljs | -Xmx1g (1 GiB) | 91.43 s (74.83-91.80) | 244.39 s (223.86-250.03) | 445.35 s (427.70-470.32) | 1.753 GB (1.729-1.764) | 3.48 s (2.76-3.67), 3 full | 0 of 3 | 1.24 | 6.60-13.17 |
+| shadow-cljs | -Xmx1536m (1.5 GiB) | 74.31 s (68.63-79.40) | 185.19 s (178.50-194.38) | 431.48 s (279.08-434.36) | 2.268 GB (2.244-2.271) | 2.02 s (1.98-2.94), 0 full | 0 of 3 | 1.01 | 8.96-14.30 |
+| shadow-cljs | -Xmx2g (2 GiB) | 73.65 s (73.10-77.90) | 180.48 s (176.21-183.71) | 416.77 s (398.89-433.80) | 2.444 GB (2.422-2.598) | 1.95 s (1.94-2.19), 0 full | 0 of 3 | 1.00 | 8.67-20.54 |
+| shadow-cljs | -Xmx3g (3 GiB) | 78.95 s (73.38-99.35) | 180.66 s (179.55-182.74) | 443.88 s (327.92-453.63) | 2.680 GB (2.527-2.879) | 2.28 s (1.97-2.30), 0 full | 0 of 3 | 1.07 | 13.29-17.87 |
+| shadow-cljs | -Xmx4g (4 GiB) | 73.81 s (72.55-103.25) | 174.21 s (171.67-179.30) | 315.25 s (302.83-418.07) | 3.077 GB (2.677-3.278) | 1.89 s (1.72-2.75), 0 full | 0 of 3 | 1.00 | 10.69-25.96 |
+| shadow-cljs | -Xmx8g (8 GiB) | 77.80 s (75.29-79.51) | 155.40 s (154.53-167.94) | 314.65 s (296.34-440.41) | 3.932 GB (2.992-3.955) | 1.45 s (1.44-1.50), 0 full | 0 of 3 | 1.06 | 9.70-22.73 |
+
+### Generated 800k
+
+| Compiler | Limit | Wall time | User CPU | System CPU | Peak memory | GC pauses | Failed | Wall time / shadow's best | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| light-cljs | light-cljs.edn's :macro-memory-limit 2147483648 (2 GiB) | 37.83 s (37.36-38.59) | 37.59 s (36.67-38.37) | 2.56 s (2.50-2.82) | 3.646 GB (3.586-3.837) | - | 0 of 3 | 0.18 | 13.23-22.80 |
+| light-cljs | --macro-memory-limit 67108864 (64 MiB) | - | - | - | - | - | 3 of 3 | - | 8.69-27.97 |
+| shadow-cljs | -Xmx1g (1 GiB) | - | - | - | - | - | 3 of 3 (3 OutOfMemoryError) | - | 7.58-33.49 |
+| shadow-cljs | -Xmx1536m (1.5 GiB) | - | - | - | - | - | 3 of 3 (3 OutOfMemoryError) | - | 15.03-17.50 |
+| shadow-cljs | -Xmx2g (2 GiB) | - | - | - | - | - | 3 of 3 (3 OutOfMemoryError) | - | 10.19-24.45 |
+| shadow-cljs | -Xmx3g (3 GiB) | 223.07 s (199.65-232.10) | 590.73 s (560.21-614.77) | 448.20 s (354.75-519.66) | 4.298 GB (4.036-4.306) | 8.10 s (7.20-11.01), 7 full | 0 of 3 | 1.05 | 5.25-27.08 |
+| shadow-cljs | -Xmx4g (4 GiB) | 215.34 s (194.63-255.17) | 525.14 s (503.93-537.88) | 380.58 s (314.09-453.75) | 5.310 GB (5.258-5.325) | 5.75 s (5.07-8.40), 1 full | 0 of 3 | 1.01 | 5.12-13.54 |
+| shadow-cljs | -Xmx8g (8 GiB) | 213.44 s (179.89-239.06) | 446.54 s (428.27-459.83) | 326.27 s (313.40-461.10) | 7.905 GB (7.665-8.011) | 5.52 s (4.03-7.48), 0 full | 0 of 3 | 1.00 | 5.85-18.35 |
+
+The `-Xmx1g`, `-Xmx1536m` and `-Xmx2g` builds at 800k ended with
+`OutOfMemoryError` after 46 to 79 s, at 1.85 to 3.06 GB peak memory, having
+run 26 to 119 full collections; light-cljs at 64 MiB failed after 11 to 12 s
+with "JavaScript session memory limit exhausted" while expanding a macro.
+Every output that was checked printed the oracle's checksum (`484264`,
+`714878 117718`, `189716`) and passed the waste check. Output sizes (200k / re-frame / 800k): light
+3,449,139 / 6,223,347 / 13,368,015 bytes, shadow 4,067,637 / about 6,963,400
+/ 15,710,764 bytes.
+
+Findings, recorded as found:
+
+1. **Too small a heap fails or slows; it never saves shadow time.** shadow
+   fails outright below 3 GiB at 800k. At 200k, 1 GiB completes but is the
+   slowest heap: 1.14x its best for the generated project and 1.24x for the
+   re-frame one, with two to three full collections a build, about 2 to 3 times the
+   pause time and 23 to 57% more user CPU than at 4 or 8 GiB. From 1.5 GiB up
+   (3 GiB at 800k) wall time is flat within the load noise; the ranges of
+   neighbouring heaps overlap.
+2. **A bigger heap mostly buys lower CPU, not time.** shadow's user CPU falls
+   steadily with heap (200k: 171 s at 1 GiB, 131 s at 8 GiB; 800k: 591 s at
+   3 GiB, 447 s at 8 GiB) as collections get rarer, while peak memory grows
+   with it. Its system CPU (86 to 448 s medians, large as in the November 13
+   baseline) does not follow the heap.
+3. **shadow's peak memory is its heap plus 0.55 to 1.1 GB.** At heaps it
+   fills (1 to 2 GiB at 200k, 3 GiB at 800k) its peak memory exceeds the
+   heap's size by that much: the JVM's code cache, class metadata, thread
+   stacks and collector structures. From 3 GiB up at 200k it no longer fills
+   the heap (2.7 to 3.4 GB peak), and how much it holds there depends on when
+   the collector runs: 3.4 GB at 8 GiB today against 4.2 GB in the November 13
+   baseline, which gave the earlier 0.25x ratio.
+4. **light-cljs's peak memory does not depend on its limit.** Its
+   `:macro-memory-limit` caps only the accounted JavaScript heap of macro
+   expansion, not the process, so it is not the counterpart of `-Xmx`.
+   Lowering it from the projects' 2 GiB (re-frame: 4 GB) to the 64 MiB
+   default changed peak memory by under 3% at 200k (1.029 against 1.041 GB,
+   1.405 against 1.367 GB), so the generous limit does not inflate light's
+   numbers. At 800k the default 64 MiB is too small: the build fails, which is
+   why the generator sets 2 GiB. Stated the same way as shadow's: light-cljs
+   needs a macro limit above 64 MiB at 800k and then peaks at 3.65 GB; shadow
+   needs a 3 GiB heap and then peaks at 4.30 GB.
+5. **The 10% rule is close to the noise here.** With the load between 5 and
+   34, a heap's three-build range is often wider than 10% (shadow's 8 GiB 800k
+   builds: 179.9 to 239.1 s), so the adequate heap could move by one step on
+   a reserved machine: down to 1 GiB at 200k if its 14% and 24% slowdowns were
+   load (light/shadow 0.59 and 0.80), or up to 4 GiB at 800k (0.69). The 800k answer cannot
+   move below 3 GiB, since every smaller heap ran out of memory.
+6. **shadow's re-frame output is not byte-identical across builds**: 6,963,390
+   to 6,963,436 bytes in the last build at each heap, all passing the oracle.
+   The generated workload projects' shadow output was identical at every heap.
