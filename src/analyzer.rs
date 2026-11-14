@@ -4391,6 +4391,10 @@ impl NamespaceAnalysis {
         &self.program.namespaces
     }
 
+    pub(crate) fn program(&self) -> &Program {
+        &self.program
+    }
+
     pub(crate) fn new(macro_host: &mut MacroHost) -> Self {
         macro_host.begin_compilation();
         Self::in_compilation()

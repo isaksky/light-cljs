@@ -35,14 +35,15 @@
 //!   the SHA-256 and length of the text, or absence), declared namespaces,
 //!   provider fingerprints, the configuration's fingerprint and the broad
 //!   views it depends on.
-//! - **view**: the incoming view the dependency manifest observed: for a
-//!   coarse namespace or one with the `:declarations` broad view, the chain
-//!   of every earlier namespace's name and key in source order
-//!   ([`NamespaceKeys`]); for one with the `:namespaces` view, the build's
-//!   inventory, every namespace's name and source identity (file, `.cljs` or
-//!   `.cljc`, provider or bundled), later ones too, which an edit to a
-//!   namespace's text leaves alone;
-//!   and for each name it looked for and did not find loaded, whether an
+//! - **view**: the incoming view the dependency manifest observed: for one
+//!   with the `:declarations` broad view, the chain of every earlier
+//!   namespace's name and key in source order ([`NamespaceKeys`]); for any
+//!   other coarse namespace, the chain of every earlier namespace's
+//!   declaration view ([`NamespaceKeys::append`], light-cljs-347); for one
+//!   with the `:namespaces` view, the build's inventory, every namespace's
+//!   name and source identity (file, `.cljs` or `.cljc`, provider or
+//!   bundled), later ones too, which an edit to a namespace's text leaves
+//!   alone; and for each name it looked for and did not find loaded, whether an
 //!   earlier namespace has that name now. The `:config` view is the config
 //!   component.
 //!
@@ -52,8 +53,9 @@
 use crate::analyzer::AnalysisOptions;
 use crate::application::{ApplicationOptions, OptimizationLevel};
 use crate::dependency_manifest::{
-    BroadView, DependencyManifest, EdgeKinds, ExternalInput, LookupId, NamespaceId, RequireForm,
-    RequireTarget, ResolvedResource, ResourceDependency, SourceKind, SourceOrigin,
+    BroadView, DependencyManifest, EdgeKinds, ExternalInput, LookupId, NamespaceId,
+    NamespaceRecord, RequireForm, RequireTarget, ResolvedResource, ResourceDependency, SourceKind,
+    SourceOrigin,
 };
 use crate::macro_host::MacroHost;
 use crate::manifest_prefix::NamespaceRecords;
@@ -354,6 +356,8 @@ pub struct NamespaceKeys {
     keys: Vec<FrontEndKey>,
     /// `chain[i]` covers namespaces `0..i`.
     chain: Vec<Digest>,
+    /// `declared[i]` covers the declaration views of namespaces `0..i`.
+    declared: Vec<Digest>,
     /// The `:namespaces` broad view, every namespace's name and source
     /// identity, once a namespace with that view needs it.
     inventory: std::cell::OnceCell<Digest>,
@@ -407,6 +411,15 @@ impl NamespaceKeys {
             .unwrap_or_else(|| Fingerprint::new("light-cljs earlier namespaces").finish())
     }
 
+    /// The declaration view of the namespaces before `id`, in source order,
+    /// which a coarse namespace's view covers ([`Self::append`]).
+    fn declared(&self, id: NamespaceId) -> Digest {
+        self.declared
+            .get(id.0 as usize)
+            .copied()
+            .unwrap_or_else(|| Fingerprint::new("light-cljs earlier declarations").finish())
+    }
+
     /// Compute the key of namespace `id`, the next in source order, whose
     /// source is `text`, from the keys of the namespaces before it.
     pub fn push(
@@ -418,22 +431,61 @@ impl NamespaceKeys {
         entry: &str,
     ) -> &FrontEndKey {
         let key = self.next(environment, manifest, id, text, entry);
-        self.append(&manifest.record(id).name, key)
+        self.append(manifest.record(id), key)
     }
 
-    /// Append `key`, the key of the next namespace, `name`
-    /// ([`Self::next`]).
-    pub fn append(&mut self, name: &str, key: FrontEndKey) -> &FrontEndKey {
+    /// Append `key`, the key of the next namespace, whose record is
+    /// `record` ([`Self::next`]).
+    ///
+    /// It extends two chains. The earlier-namespace chain takes its name
+    /// and key, for the `:declarations` broad view. The declaration chain,
+    /// a coarse namespace's view, takes only what a source macro of a later
+    /// namespace can see of it that its compilation edges do not key
+    /// (docs/compiler-cache.md, "Conservative keys and invalidation"): its
+    /// place in the namespace inventory (name and source identity), its
+    /// [`crate::dependency_manifest::DeclarationView`] interface, whether it ran a source macro (which
+    /// decides what it adds to the compile-time namespace registry), and,
+    /// when it registered declaration bundles or declared macros, its
+    /// declaration key ([`declaration_key`]). A namespace whose
+    /// declarations are unknown adds its whole key, as the
+    /// earlier-namespace chain does. So an edit after the last form that
+    /// registers anything, or to a namespace that registers nothing, leaves
+    /// the declaration chain alone, unless it changes the reader context,
+    /// adds a Var shadowing a core name or a refer, or starts or stops
+    /// running source macros.
+    pub fn append(&mut self, record: &NamespaceRecord, key: FrontEndKey) -> &FrontEndKey {
         let id = NamespaceId(self.keys.len() as u32);
         if self.chain.is_empty() {
             self.chain.push(self.earlier(id));
+            self.declared.push(self.declared(id));
         }
         let mut chain = Fingerprint::new("light-cljs earlier namespaces");
         chain
             .digest(&self.earlier(id))
-            .text(name)
+            .text(&record.name)
             .digest(&key.digest);
         self.chain.push(chain.finish());
+        let mut declared = Fingerprint::new("light-cljs earlier declarations");
+        declared
+            .digest(&self.declared(id))
+            .text(&record.name)
+            .text(&record.source.file)
+            .flag(record.source.kind == SourceKind::Cljc)
+            .flag(record.source.origin == SourceOrigin::Bundled)
+            .flag(record.coarse);
+        match &record.declarations {
+            None => declared.absent().digest(&key.digest),
+            Some(view) => {
+                declared.present().digest(&view.interface);
+                match &view.prefix {
+                    None => declared.absent(),
+                    Some(prefix) => declared
+                        .present()
+                        .digest(&declaration_key(record, &key, prefix)),
+                }
+            }
+        };
+        self.declared.push(declared.finish());
         self.keys.push(key);
         &self.keys[id.0 as usize]
     }
@@ -442,6 +494,7 @@ impl NamespaceKeys {
     pub fn pop(&mut self) {
         if self.keys.pop().is_some() {
             self.chain.pop();
+            self.declared.pop();
         }
     }
 
@@ -540,14 +593,18 @@ impl NamespaceKeys {
         components[Component::Inputs as usize] = inputs.finish();
 
         // The broad views carry no fingerprint of their own. `:declarations`
-        // is the coarse fallback's view, every earlier namespace's key;
-        // `:namespaces` is the build's inventory, every name and source
-        // identity, later namespaces' too, which a content edit leaves alone;
-        // `:config` is the config component.
+        // is every earlier namespace's key; the coarse fallback's view is
+        // the declaration chain, what a source macro can see of the earlier
+        // namespaces beyond the edges (light-cljs-347); `:namespaces` is the
+        // build's inventory, every name and source identity, later
+        // namespaces' too, which a content edit leaves alone; `:config` is
+        // the config component.
         let mut view = Fingerprint::new("light-cljs view");
         view.flag(record.coarse).flag(declarations).flag(namespaces);
-        if record.coarse || declarations {
+        if declarations {
             view.digest(&self.earlier(id));
+        } else if record.coarse {
+            view.digest(&self.declared(id));
         }
         if namespaces {
             let inventory = *self.inventory.get_or_init(|| manifest.inventory());
@@ -581,6 +638,37 @@ pub(crate) fn inventory(namespaces: &[crate::dependency_manifest::NamespaceRecor
             .flag(record.source.origin == SourceOrigin::Bundled);
     }
     inventory.finish()
+}
+
+/// The declaration key of the namespace `record` keyed `key`, which
+/// registered declaration bundles or declared macros, given `prefix`, the
+/// SHA-256 of its source up to the end of the last top-level form that did
+/// ([`crate::dependency_manifest::DeclarationView::prefix`]): its key with the source text replaced by
+/// that prefix. Every component but the source decides how the prefix
+/// compiles: the dependencies' keys cover the code its bundles and macros
+/// can call in other namespaces, the inputs and view what its own macro
+/// calls read. A form after the prefix can neither register a bundle nor
+/// change one, since a bundle's code sees only the Vars defined before it
+/// and the prefix ends at a whole form; [`crate::dependency_manifest::DeclarationView::prefix`] is the
+/// whole text where a later form would redefine one of them.
+pub(crate) fn declaration_key(
+    record: &NamespaceRecord,
+    key: &FrontEndKey,
+    prefix: &Digest,
+) -> Digest {
+    let mut fingerprint = Fingerprint::new("light-cljs declaration key");
+    fingerprint
+        .text(&record.name)
+        .text(&record.source.file)
+        .flag(record.source.kind == SourceKind::Cljc)
+        .flag(record.source.origin == SourceOrigin::Bundled)
+        .digest(prefix);
+    for component in Component::ALL {
+        if component != Component::Source {
+            fingerprint.digest(&key.components[component as usize]);
+        }
+    }
+    fingerprint.finish()
 }
 
 fn lookup(

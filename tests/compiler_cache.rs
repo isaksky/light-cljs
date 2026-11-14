@@ -1115,6 +1115,8 @@ fn coarse_edges_are_the_manifest_flag_not_a_list() {
             "main bypass blocked early > main",
         ]
     );
+    // An edit that declares nothing a source macro could see leaves the
+    // view alone (light-cljs-347).
     project.write("early.cljs", "(ns early) (def x 2)");
     let edited = project.cached("main", &[]);
     assert_eq!(edited.run(), "2 42\n");
@@ -1122,11 +1124,23 @@ fn coarse_edges_are_the_manifest_flag_not_a_list() {
         edited.rows(),
         [
             "early miss source: source changed",
-            "consumer miss view: earlier namespaces changed",
             "main miss dependencies: dependency early changed",
         ]
     );
     assert_eq!(edited.js, project.uncached("main").js);
+    // A protocol it starts to register is part of the view.
+    project.write("early.cljs", "(ns early) (defprotocol P (m [_])) (def x 2)");
+    let declared = project.cached("main", &[]);
+    assert_eq!(declared.run(), "2 42\n");
+    assert_eq!(
+        declared.rows(),
+        [
+            "early miss source: source changed",
+            "consumer miss view: earlier namespaces changed",
+            "main miss dependencies: dependency early changed",
+        ]
+    );
+    assert_eq!(declared.js, project.uncached("main").js);
 }
 
 #[test]
@@ -1381,10 +1395,10 @@ fn persistent_inputs_invalidate_their_readers() {
         "{:?}",
         edited.rows()
     );
-    // `extra` and `flavor` ran source macros after `text`: the coarse
-    // fallback makes them depend on every earlier namespace.
-    assert_eq!(edited.stat("cache.hits"), 3, "{}", edited.stats);
-    assert_eq!(edited.stat("cache.miss.view"), 2);
+    // `extra` and `flavor` ran source macros after `text`, which declares
+    // nothing a source macro could see, so they hit (light-cljs-347).
+    assert_eq!(edited.stat("cache.hits"), 5, "{}", edited.stats);
+    assert_eq!(edited.stat("cache.miss.view"), 0);
     project.write("extra.txt", "here");
     let appeared = project.cached("main", &config);
     assert_eq!(appeared.run(), "two here :dev 42\n");

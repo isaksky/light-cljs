@@ -58,6 +58,14 @@ impl CaptureStart {
     pub(crate) fn units(&self) -> usize {
         self.units
     }
+    /// How many registrations the session held.
+    pub(crate) fn registrations(&self) -> usize {
+        self.registrations
+    }
+    /// How many globals the program held.
+    pub(crate) fn globals(&self) -> usize {
+        self.globals
+    }
 }
 
 /// Note the program's tables before the next namespace's analysis.

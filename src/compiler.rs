@@ -3220,6 +3220,27 @@ fn analyze_entry(
                             &file.source,
                             macros,
                             analysis.program_namespaces(),
+                            Some(crate::compile_cache::declaration_view(
+                                analysis.program(),
+                                start,
+                                macros.session_handle().as_deref(),
+                                macros,
+                                &crate::compile_cache::DeclarationSource {
+                                    namespace: &file.name,
+                                    source_index: index,
+                                    source_name: resolution
+                                        .source_name
+                                        .as_deref()
+                                        .unwrap_or(&file.name),
+                                    text: &file.source,
+                                    forms: file
+                                        .syntax
+                                        .roots
+                                        .iter()
+                                        .map(|root| file.syntax.nodes[root.0].span.clone())
+                                        .collect(),
+                                },
+                            )),
                         )),
                         _ => None,
                     };

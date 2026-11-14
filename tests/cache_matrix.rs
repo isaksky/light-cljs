@@ -289,12 +289,12 @@ fn resource_project(consumer: &str) -> Project {
 }
 
 /// The rows of a change that reaches `consumer`'s own input: it and its
-/// runtime consumer `main` miss. `after` runs a source macro later, so the
-/// coarse fallback makes it miss too, for its view and not as a reader of
-/// `consumer`'s input, which its manifest does not list.
-const CONSUMER_MISSES: [&str; 3] = [
+/// runtime consumer `main` miss. `after` runs a source macro later, but
+/// `consumer` declares nothing a source macro could see, so it hits: not a
+/// reader of `consumer`'s input, its manifest does not list it
+/// (light-cljs-347).
+const CONSUMER_MISSES: [&str; 2] = [
     "consumer miss inputs: external input changed",
-    "after miss view: earlier namespaces changed",
     "main miss dependencies: dependency consumer changed",
 ];
 
@@ -317,7 +317,7 @@ fn resource_change() {
     let (changed, printed) = project.checked("main", &[]);
     assert_eq!(printed, "before two 42\n");
     assert_eq!(changed.rows(), CONSUMER_MISSES);
-    assert_eq!(changed.stat("cache.hits"), 4);
+    assert_eq!(changed.stat("cache.hits"), 5);
 
     // `b/resource?`, absent and then present.
     let project = resource_project(
@@ -330,7 +330,7 @@ fn resource_change() {
     let (appeared, printed) = project.checked("main", &[]);
     assert_eq!(printed, "before here 42\n");
     assert_eq!(appeared.rows(), CONSUMER_MISSES);
-    assert_eq!(appeared.stat("cache.hits"), 4);
+    assert_eq!(appeared.stat("cache.hits"), 5);
 
     // A resource in the later root, then a file of that path in the earlier
     // root: a path in two roots is an error, which the cached build reports
@@ -353,7 +353,7 @@ fn resource_change() {
     let (shadowed, printed) = project.checked("main", &[]);
     assert_eq!(printed, "before earlier 42\n");
     assert_eq!(shadowed.rows(), CONSUMER_MISSES);
-    assert_eq!(shadowed.stat("cache.hits"), 4);
+    assert_eq!(shadowed.stat("cache.hits"), 5);
 }
 
 // -- Config change ------------------------------------------------------------
@@ -935,7 +935,8 @@ fn mixed_generated_names_and_source_order_generations() {
     assert_eq!(populating.js, oracle.js);
     project.cached("main", &[]).assert_all_hits(5);
     // `b` misses between the hits `a` and `c`; then `a` misses before the
-    // hit `c`, and `b`, which runs source macros after it, misses too.
+    // hits `b` and `c`: `b` runs source macros after it, but `a` declares
+    // nothing a source macro could see (light-cljs-347).
     let edits: [(&str, &str, &[&str]); 2] = [
         (
             "b.cljs",
@@ -950,7 +951,6 @@ fn mixed_generated_names_and_source_order_generations() {
             GENERATIONS[1].1,
             &[
                 "a miss source: source changed",
-                "b miss view: earlier namespaces changed",
                 "main miss dependencies: dependency a changed",
             ],
         ),
@@ -1056,6 +1056,132 @@ fn tagged_core_write_places_reject_cached_providers() {
     assert_eq!(edited.stat("cache.published"), 0, "{}", edited.stats);
     assert_eq!(edited.js, oracle.js);
     assert_eq!(edited.run(), "true false\n");
+}
+
+// -- Declaration view of source-macro users ----------------------------------
+
+/// `user` runs source macros that see what earlier namespaces it does not
+/// require declare: a protocol call and `satisfies?` on a number, a
+/// multimethod call, the `&env` metadata of `other/foo` and how many macros
+/// `&env` lists. `e` and `other` come before it and only `main` requires
+/// them.
+fn declaration_project(e: &str, other: &str) -> Project {
+    Project::new(&[
+        (
+            "p.cljs",
+            "(ns p) (defprotocol P (m [x])) (defmulti mm identity) (defmethod mm :default [_] :none)",
+        ),
+        (
+            "mac.cljs",
+            "(ns mac (:require [p])) (defmacro seen [] (pr-str [(when (satisfies? p/P 1) (p/m 1)) (p/mm :k) (get (:light-cljs/macros &env) 'other/foo) (count (:light-cljs/macros &env))]))",
+        ),
+        ("e.cljs", e),
+        ("other.cljs", other),
+        (
+            "user.cljs",
+            "(ns user (:require [mac :refer [seen]])) (def value (seen))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [e] [other] [user])) (js/console.log user/value)",
+        ),
+    ])
+}
+
+/// A source-macro user's view covers what earlier namespaces declare, not
+/// their whole keys (light-cljs-347): an edit after the last form that
+/// registers a declaration bundle, or to a namespace that registers none,
+/// keeps it a hit, while a first extension, a multimethod method, a body a
+/// bundle calls, a redefinition after the bundles, changed macro metadata,
+/// a new macro and a new namespace each make it miss for its view. Every
+/// build matches the uncached one, at one job and at four.
+#[test]
+fn declaration_view_of_source_macro_users() {
+    const VIEW: &str = "user miss view: earlier namespaces changed";
+    const MAIN: &str = "main miss dependencies: dependency e changed";
+    const OTHER: &str = "main miss dependencies: dependency other changed";
+    const E: &str = "e miss source: source changed";
+    const OTHER_SOURCE: &str = "other miss source: source changed";
+    for jobs in ["1", "4"] {
+        let options = ["--jobs", jobs];
+        let project = declaration_project(
+            "(ns e (:require [p])) (defn helper [x] (* x 10))",
+            "(ns other) (defmacro foo \"one\" [] 1)",
+        );
+        let step = |path: &str, text: &str, rows: &[&str], printed: &str| {
+            project.write(path, text);
+            let (build, output) = project.checked("main", &options);
+            assert_eq!(build.rows(), rows, "{jobs} jobs: {text}");
+            assert!(output.contains(printed), "{jobs} jobs: {output}");
+        };
+        let (_, printed) = project.checked("main", &options);
+        assert!(printed.starts_with("[nil :none {:doc \"one\""), "{printed}");
+        project.cached("main", &options).assert_all_hits(6);
+        // A namespace that registers nothing: a body edit, a new `defn`.
+        step(
+            "e.cljs",
+            "(ns e (:require [p])) (defn helper [x] (* x 20)) (defn more [] 1)",
+            &[E, MAIN],
+            "[nil :none",
+        );
+        // Its first extension, which the protocol call and `satisfies?` see.
+        let extended = "(ns e (:require [p])) (defn helper [x] (* x 20)) (extend-protocol p/P number (m [x] (helper x)))";
+        step("e.cljs", extended, &[E, VIEW, MAIN], "[20 :none");
+        // A `defn` and a comment after the last bundle: a hit.
+        step(
+            "e.cljs",
+            &format!("{extended} (defn after [] 2) ; edited"),
+            &[E, MAIN],
+            "[20 :none",
+        );
+        // The body the extension calls, before it.
+        let extended = extended.replace("(* x 20)", "(* x 30)");
+        step("e.cljs", &extended, &[E, VIEW, MAIN], "[30 :none");
+        // A declared Var the extension calls, defined after it.
+        let declared = "(ns e (:require [p])) (declare helper) (extend-protocol p/P number (m [x] (helper x))) (defn helper [x] (* x 40))";
+        step("e.cljs", declared, &[E, VIEW, MAIN], "[40 :none");
+        step(
+            "e.cljs",
+            &declared.replace("(* x 40)", "(* x 50)"),
+            &[E, VIEW, MAIN],
+            "[50 :none",
+        );
+        // A multimethod method.
+        step(
+            "e.cljs",
+            &format!(
+                "{} (defmethod p/mm :k [_] :e)",
+                declared.replace("(* x 40)", "(* x 50)")
+            ),
+            &[E, VIEW, MAIN],
+            "[50 :e",
+        );
+        // Changed macro metadata, then a new macro.
+        step(
+            "other.cljs",
+            "(ns other) (defmacro foo \"two\" [] 1)",
+            &[OTHER_SOURCE, VIEW, OTHER],
+            "{:doc \"two\"",
+        );
+        step(
+            "other.cljs",
+            "(ns other) (defmacro foo \"two\" [] 1) (defmacro bar [] 2)",
+            &[OTHER_SOURCE, VIEW, OTHER],
+            "{:doc \"two\"",
+        );
+        // A namespace added before `user`.
+        project.write("added.cljs", "(ns added) (def x 1)");
+        step(
+            "main.cljs",
+            "(ns main (:require [e] [other] [added] [user])) (js/console.log user/value)",
+            &[
+                "added miss no-artifact: no artifact was published",
+                VIEW,
+                "main miss source: source changed",
+            ],
+            "[50 :e",
+        );
+    }
 }
 
 // -- Lowered limits -----------------------------------------------------------

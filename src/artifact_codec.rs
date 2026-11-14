@@ -21,8 +21,9 @@
 //! front-end key with its component digests, the emission key, the
 //! compiler's core-operation table, the namespace's requires and referenced
 //! namespaces, its dependency edges, the dependencies its front-end key
-//! covers with their keys, its `light.build` inputs and its policy flags.
-//! Manifest text is inline UTF-8.
+//! covers with their keys, its `light.build` inputs, its policy flags and
+//! what a later source macro can see of it (its declaration view, a tag
+//! byte and one or two SHA-256s). Manifest text is inline UTF-8.
 //!
 //! The sections are [`Section::ALL`]: the artifact's one interned UTF-16
 //! string table, then declarations (with the references and patches), the
@@ -66,7 +67,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -145,6 +146,10 @@ pub struct ManifestFields {
     /// ([`crate::dependency_manifest::EdgeKinds::COARSE`]), whose edges
     /// `dependencies` leaves out.
     pub coarse: bool,
+    /// What a later source macro can see of the namespace
+    /// ([`crate::dependency_manifest::NamespaceRecord::declarations`]),
+    /// which the coarse view of every later namespace covers.
+    pub declarations: Option<crate::dependency_manifest::DeclarationView>,
     /// The names analysis looked for among the loaded namespaces and did
     /// not find ([`crate::dependency_manifest::NamespaceRecord::absent`]),
     /// which the key's view covers: a lookup recomputes it from them.
@@ -176,6 +181,7 @@ impl ManifestFields {
                 .collect(),
             inputs: manifest.external_inputs(id).cloned().collect(),
             coarse: manifest.record(id).coarse,
+            declarations: manifest.record(id).declarations.clone(),
             absent: manifest.record(id).absent.clone(),
             no_cache: metadata.no_cache,
             always: metadata.always,
@@ -506,6 +512,18 @@ pub fn encode(artifact: &NamespaceArtifact, fields: &ManifestFields) -> Result<V
     manifest.push(
         u8::from(fields.coarse) | u8::from(fields.no_cache) << 1 | u8::from(fields.always) << 2,
     );
+    // What a later source macro can see of the namespace (light-cljs-347):
+    // 0 unknown, 1 an interface, 2 an interface and a declaration prefix.
+    match &fields.declarations {
+        None => manifest.push(0),
+        Some(view) => {
+            manifest.push(if view.prefix.is_some() { 2 } else { 1 });
+            manifest.extend_from_slice(&view.interface);
+            if let Some(prefix) = &view.prefix {
+                manifest.extend_from_slice(prefix);
+            }
+        }
+    }
 
     let body: usize = sections.iter().map(Vec::len).sum();
     let mut bytes = Vec::with_capacity(MANIFEST_START + manifest.len() + body);
@@ -2003,6 +2021,19 @@ fn read_manifest_charged(
             tag: policy.into(),
         });
     }
+    let declarations = match input.byte()? {
+        0 => None,
+        tag @ (1 | 2) => Some(crate::dependency_manifest::DeclarationView {
+            interface: input.hash()?,
+            prefix: if tag == 2 { Some(input.hash()?) } else { None },
+        }),
+        tag => {
+            return Err(DecodeError::Tag {
+                what: "declaration view",
+                tag: tag.into(),
+            });
+        }
+    };
     input.end()?;
     Ok(Manifest {
         namespace,
@@ -2023,6 +2054,7 @@ fn read_manifest_charged(
             dependencies,
             inputs,
             coarse: policy & 1 != 0,
+            declarations,
             absent,
             no_cache: policy & 2 != 0,
             always: policy & 4 != 0,
@@ -3928,6 +3960,10 @@ mod tests {
                 ExternalInput::View(BroadView::Config),
             ],
             coarse: true,
+            declarations: Some(crate::dependency_manifest::DeclarationView {
+                interface: [0x17; 32],
+                prefix: Some([0x29; 32]),
+            }),
             absent: vec!["app.missing".into(), "Math".into()],
             no_cache: false,
             always: true,

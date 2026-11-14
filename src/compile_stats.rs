@@ -492,6 +492,12 @@ pub struct CacheCounts {
     pub bytes_written: u64,
     /// Missed namespaces that were not published, with the reason.
     pub unpublished: Vec<(String, String)>,
+    /// Over every namespace keyed that ran a source macro, how many earlier
+    /// namespaces its view covers: all of them, the coarse fallback's edges
+    /// (`earlier`), and those whose declaration key or, unknown, whole key
+    /// its declaration view covers (`declaring`, light-cljs-347).
+    pub view_earlier: u64,
+    pub view_declaring: u64,
     /// Artifact bytes read, matching or not.
     pub bytes_read: u64,
     /// Reading indexes and artifacts, checking manifests and keys.
@@ -536,6 +542,8 @@ impl CacheCounts {
         }
         line("cache.published", &self.published);
         line("cache.unpublished", &self.unpublished.len());
+        line("cache.view.earlier-namespaces", &self.view_earlier);
+        line("cache.view.declaration-keys", &self.view_declaring);
         line("cache.bytes-read", &self.bytes_read);
         line("cache.bytes-written", &self.bytes_written);
         line("cache.validate-ms", &ms(self.validate_time));

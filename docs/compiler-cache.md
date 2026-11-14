@@ -524,7 +524,10 @@ following:
   A namespace that ran a source macro is therefore `coarse`. It gets
   `COARSE` edges to every earlier namespace, and only that namespace does.
   Namespaces that only expand core macros and resolve names keep their exact
-  edges. This is the one case that needed the fallback.
+  edges. This is the one case that needed the fallback. Since
+  light-cljs-347 its key covers each earlier namespace's declaration view
+  rather than its whole key ("View" below); the edges stay in the graph,
+  for blockers and watch invalidation.
 - **Analysis-time tables.** Analysis reaches protocol and record tables only
   through resolved globals, so the edges above already cover them. Compiler
   data readers run in their own heap, with no namespace declarations.
@@ -630,6 +633,35 @@ changed" or "earlier namespaces changed". The components:
   does not. The keys still come in source order: the inventory takes no
   key, only the manifest's records, so it needs the compilation's complete
   manifest.
+  *As built (light-cljs-347):* a coarse namespace without the
+  `:declarations` view gets the declaration chain instead of every earlier
+  key: per earlier namespace in source order, what a source macro can see
+  of it that no edge keys (remedy A of "A narrower view for source-macro
+  users" below). That is its name and source identity (the inventory),
+  whether it ran a source macro (which decides what it adds to the
+  compile-time namespace registry), its interface (`DeclarationView`: its
+  reader context, and the names of its Vars that shadow a `cljs.core` name
+  or one of its refers, the only ones that change a code read with `*ns*`
+  bound to it), and, when it registered a declaration bundle or declared a
+  macro, its declaration key: its key with the source text replaced by the
+  text up to the end of the last top-level form that registered one. The
+  other components (dependencies' keys, inputs, view, resolution) decide
+  how that prefix compiles, so the key fixes what each of its bundles does
+  when a later macro dispatches into it, including the earlier Vars of
+  the namespace a method calls. A bundle's code sees only the Vars defined
+  before it (a forward reference is an error), so the prefix is the whole
+  text in the two cases where a later form still matters: it defines a Var
+  that existed before the end (a redefinition, or the definition of a
+  `declare`d Var), or a registration's location is outside the
+  namespace's own file. A namespace that declares a macro also gets the
+  whole text: `&env` shows every macro's metadata and generation, and
+  where its macros are is not looked up. A manifest built after analysis
+  (`dependency_manifest::build`, `revise`) knows no views, so each of its
+  namespaces adds its whole key, as before. Analysis computes the view
+  when the namespace is keyed (`compile_cache::declaration_view`, after
+  its units settled, so a `reify` in a function body is among its
+  registrations) and the manifest stores it, so a lookup computes the
+  chain from installed namespaces without decoding them.
 
 `cache_key::emission_key` is separate: the front-end key, the compiler, and
 every `ApplicationOptions` field (`--optimize`, defines, exports,
@@ -718,8 +750,20 @@ artifact with its real keys. Penpot's numbers are in
   (bundles, macro metadata and the namespace inventory), as the
   `:declarations` and `:namespaces` broad views of `light.build` will
   fingerprint them. It could also record the bundles a macro actually
-  demanded. That is light-cljs-347, deferred until light-cljs-328 measures
-  hit rates.
+  demanded. *Settled by light-cljs-347:* the key takes the declaration
+  view ("View" above); recording what each macro read (remedy C) is not
+  built.
+- **The compile-time namespace registry follows evaluation, not source
+  order** (found by light-cljs-347). `all-ns` and `find-ns` at compile time
+  list the namespaces the engine registered, which come with the reader
+  tables of each unit or macro it evaluated (as of that unit's
+  definition): a macro defined before an earlier namespace does not list
+  it unless something defined after it ran. So which namespaces a source
+  macro lists depends on which units ran before it, and a hit runs none of
+  its namespace's macro calls. The declaration chain keys every earlier
+  namespace's name and whether it ran a source macro, which bounds the
+  registry from above, but a mixed build may still list fewer namespaces
+  than an uncached one; no test shows whether it does.
 
 #### A narrower view for source-macro users (proposal, light-cljs-1000)
 
@@ -806,6 +850,21 @@ them back (`EdgeKinds::stored`, `ManifestPrefix::push_stored`). At re-frame
 400k that halves the bytes a rebuild after a one-file edit writes (182 to
 93 MB); at 800k it cuts them from 560 to 205 MB and the rebuild from 75 to
 84 s to 66 to 69 s.
+
+*As built (light-cljs-347), remedy A, approved by the user on 2026-11-14:*
+the coarse view is the declaration chain ("View" under "Conservative keys
+and invalidation"). Two refinements over the proposal, both found by
+reading what a macro can reach rather than the audit list: a bundle's
+registration alone is not enough, since a dispatch runs its methods, which
+call the namespace's earlier Vars and its dependencies, so a namespace
+that registered one adds a declaration key (its key with the text cut
+after its last bundle) rather than the registration data; and a code read
+with `*ns*` bound to a namespace sees its reader context and which Vars
+shadow core names or refers, so those are in every namespace's interface.
+The same leaf edit as above now recompiles 3 and 4 namespaces at 400k, in
+6.5 s and 9.3 s, and Penpot's leaf edit 2 instead of 153
+([benchmarks/generated-shadow-vs-light.md](../benchmarks/generated-shadow-vs-light.md),
+[benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md)).
 
 ## Binary artifacts
 

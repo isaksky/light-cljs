@@ -203,6 +203,7 @@ impl ManifestPrefix {
             requires,
             absent: Vec::new(),
             coarse: false,
+            declarations: None,
             external_inputs: Vec::new(),
         };
         (record, rows)
@@ -254,6 +255,7 @@ impl ManifestPrefix {
             rows.extend((0..earlier).map(|at| (NamespaceId(at), EdgeKinds::COARSE)));
         }
         record.coarse = fields.coarse;
+        record.declarations = fields.declarations.clone();
         record.absent = fields.absent.clone();
         record.external_inputs = fields
             .inputs
@@ -284,6 +286,16 @@ impl ManifestPrefix {
             lazy,
             &self.helper_inputs,
         )
+    }
+
+    /// Record what a later source macro can see of namespace `id`, once it
+    /// is analyzed ([`NamespaceRecord::declarations`]).
+    pub fn set_declarations(
+        &mut self,
+        id: NamespaceId,
+        declarations: Option<crate::dependency_manifest::DeclarationView>,
+    ) {
+        self.namespaces[id.0 as usize].declarations = declarations;
     }
 
     /// Record whether namespace `id` declares macros, once it is installed.

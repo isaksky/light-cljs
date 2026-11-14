@@ -97,6 +97,9 @@ pub struct CompileCache {
     limits: DecodeLimits,
     counts: CacheCounts,
     retention: Retention,
+    /// How many namespaces so far a later coarse view covers by their
+    /// declaration key or whole key ([`CacheCounts::view_declaring`]).
+    declaring: u64,
 }
 
 impl CompileCache {
@@ -128,6 +131,7 @@ impl CompileCache {
             limits: DecodeLimits::default(),
             counts,
             retention: options.retention,
+            declaring: 0,
         }
     }
 
@@ -353,7 +357,8 @@ impl CompileCache {
         if let Some(log) = macros.engine.dependency_log.borrow().as_ref() {
             self.prefix.skip_observations(log);
         }
-        self.keys.append(&name, *key);
+        self.keys.append(self.prefix.record(id), *key);
+        self.count_view(id);
         self.propagated.push(None);
         self.in_use.push(artifact);
         self.artifacts.push(Some(artifact));
@@ -378,6 +383,7 @@ impl CompileCache {
         text: &str,
         macros: &MacroHost,
         program_namespaces: &crate::arena::Arena<String>,
+        declarations: Option<crate::dependency_manifest::DeclarationView>,
     ) -> Option<Publication> {
         let index = self.prefix.len();
         let name = loader.sources[index].name.clone();
@@ -391,10 +397,12 @@ impl CompileCache {
                 declares_macros(macros, &name),
             )
         };
+        self.prefix.set_declarations(id, declarations);
         let key = self
             .keys
             .push(&self.environment, &self.prefix, id, text, &self.entry)
             .clone();
+        self.count_view(id);
         let metadata = macros
             .namespace_symbol(&name)
             .map(NamespaceMetadata::of_symbol)
@@ -461,6 +469,7 @@ impl CompileCache {
                 .collect(),
             inputs: self.prefix.external_inputs(id).cloned().collect(),
             coarse: record.coarse,
+            declarations: record.declarations.clone(),
             absent: record.absent.clone(),
             no_cache: false,
             always: false,
@@ -494,6 +503,22 @@ impl CompileCache {
                 .counts
                 .unpublished
                 .push((name, "the cache cannot be written".into())),
+        }
+    }
+
+    /// Count what the view of namespace `id`, just keyed, covers.
+    fn count_view(&mut self, id: NamespaceId) {
+        let record = self.prefix.record(id);
+        if record.coarse {
+            self.counts.view_earlier += u64::from(id.0);
+            self.counts.view_declaring += self.declaring;
+        }
+        if record
+            .declarations
+            .as_ref()
+            .is_none_or(|view| view.prefix.is_some())
+        {
+            self.declaring += 1;
         }
     }
 
@@ -553,6 +578,176 @@ impl CompileCache {
             .collect::<Vec<_>>()
             .join(" > ")
     }
+}
+
+/// What one analyzed namespace gives [`declaration_view`].
+pub(crate) struct DeclarationSource<'a> {
+    pub namespace: &'a str,
+    pub source_index: usize,
+    /// The name its spans and registration locations give its source.
+    pub source_name: &'a str,
+    pub text: &'a str,
+    /// Its top-level forms' byte ranges, in source order.
+    pub forms: Vec<std::ops::Range<usize>>,
+}
+
+/// What a source macro of a later namespace can see of the namespace
+/// `source` just analyzed in `program`, whose analysis began at `start`
+/// ([`crate::dependency_manifest::DeclarationView`], light-cljs-347): its
+/// reader context and the Var names that change a code read with `*ns*`
+/// bound to it, and, when it registered a declaration bundle or declared a
+/// macro, the SHA-256 of its text up to the end of the last top-level form
+/// that did. The prefix is the whole text when it declares a macro (its
+/// macros' places are not looked for), when a registration's location is not
+/// in its own source, or when a form after that end defines a Var that
+/// existed before it: a redefinition, or the definition of a `declare`d
+/// Var, which code before the end may call.
+pub(crate) fn declaration_view(
+    program: &crate::analyzer::Program,
+    start: &crate::artifact_capture::CaptureStart,
+    session: Option<&crate::compilation_session::CompilationSession>,
+    macros: &MacroHost,
+    source: &DeclarationSource<'_>,
+) -> crate::dependency_manifest::DeclarationView {
+    use crate::compilation_session::RegistrationRecord;
+    use crate::sha256::Fingerprint;
+    let namespace = source.namespace;
+    let mut interface = Fingerprint::new("light-cljs declaration interface");
+    match program.reader_contexts.get(namespace) {
+        None => interface.absent(),
+        Some(context) => {
+            interface.present().count(context.aliases.len());
+            for (alias, target) in &context.aliases {
+                interface.text(alias).text(target);
+            }
+            interface.count(context.refers.len());
+            for (local, target, original) in &context.refers {
+                interface.text(local).text(target).text(original);
+            }
+            interface.count(context.excludes.len());
+            for name in &context.excludes {
+                interface.text(name);
+            }
+            interface.count(context.macros.len());
+            for name in &context.macros {
+                interface.text(name);
+            }
+            // A code read qualifies a symbol by whether the namespace binds
+            // it only when it is a core name or a refer.
+            let mut shadowing: Vec<&str> = program
+                .globals
+                .iter()
+                .skip(start.globals())
+                .filter(|global| global.namespace == namespace)
+                .map(|global| global.name.as_str())
+                .filter(|name| {
+                    reader_core_name(name) || context.refers.iter().any(|(local, ..)| local == name)
+                })
+                .collect();
+            shadowing.sort_unstable();
+            shadowing.dedup();
+            interface.count(shadowing.len());
+            for name in shadowing {
+                interface.text(name);
+            }
+            &mut interface
+        }
+    };
+    let interface = interface.finish();
+    let registrations = match session {
+        Some(session) => {
+            let (_, end, _) = session.capture_marks();
+            session.captured_registrations(start.registrations()..end)
+        }
+        None => Vec::new(),
+    };
+    let declares = macros.declares_source_macros(namespace);
+    let bundles = registrations
+        .iter()
+        .any(|registration| matches!(registration, RegistrationRecord::Bundle(_)));
+    if !declares && !bundles {
+        return crate::dependency_manifest::DeclarationView {
+            interface,
+            prefix: None,
+        };
+    }
+    let whole = source.text.len();
+    let lines = crate::compiler_data::Source::new(source.source_name, source.text);
+    let position = |offset: usize| lines.line_column(offset);
+    // The top-level form holding a registration's location, by index.
+    let form_of = |location: &str| -> Option<usize> {
+        let mut parts = location.rsplitn(3, ':');
+        let column: usize = parts.next()?.parse().ok()?;
+        let line: usize = parts.next()?.parse().ok()?;
+        (parts.next()? == source.source_name).then_some(())?;
+        let at = (line, column);
+        let index = source
+            .forms
+            .partition_point(|form| position(form.start).is_some_and(|start| start <= at));
+        let index = index.checked_sub(1)?;
+        (position(source.forms[index].end.saturating_sub(1))? >= at).then_some(index)
+    };
+    let end = (|| -> Option<usize> {
+        if declares {
+            return None;
+        }
+        let mut last = None;
+        for registration in &registrations {
+            if let RegistrationRecord::Bundle(bundle) = registration {
+                let index = form_of(&bundle.location)?;
+                last = last.max(Some(index));
+            }
+        }
+        let end = source.forms[last?].end;
+        // A Var defined after the end must be new there.
+        for registration in &registrations {
+            let RegistrationRecord::Root { name, location, .. } = registration else {
+                continue;
+            };
+            if form_of(location)? <= last? {
+                continue;
+            }
+            // A `:test` unit is named after its Var.
+            let local = name.strip_prefix(namespace)?.strip_prefix('/')?;
+            let local = local.split_once(' ').map_or(local, |(var, _)| var);
+            let global = program
+                .globals
+                .iter()
+                .skip(start.globals())
+                .find(|global| global.namespace == namespace && global.name == local)?;
+            if global.source_index != source.source_index || global.span.start < end {
+                return None;
+            }
+        }
+        Some(end)
+    })()
+    .unwrap_or(whole);
+    let mut prefix = Fingerprint::new("light-cljs declaration prefix");
+    prefix.number(end as u64).text(&source.text[..end]);
+    crate::dependency_manifest::DeclarationView {
+        interface,
+        prefix: Some(prefix.finish()),
+    }
+}
+
+/// Whether the compile-time code reader treats `name` as a `cljs.core`
+/// name (`readerCoreNames` in `src/js_runtime.js`, from the same tables).
+fn reader_core_name(name: &str) -> bool {
+    static NAMES: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            crate::compiler_reader::core_public_bindings()
+                .map(|(name, _)| name)
+                .chain(
+                    include_str!("core_var_metadata.tsv")
+                        .lines()
+                        .filter(|line| !line.starts_with(";;"))
+                        .filter_map(|line| line.split_once('\t').map(|(name, _)| name)),
+                )
+                .collect()
+        })
+        .contains(name)
 }
 
 /// Whether `namespace` declares macros in `macros`' inventory, which makes a

@@ -900,3 +900,48 @@ build takes 575 ms at 100k and 2,488 ms at 400k (4.3x), against 1,707 ms and
 [generated-shadow-vs-light.md](generated-shadow-vs-light.md#cached-rebuild-with-no-change-light-cljs-418).
 A stored output is the build's files, 7.2 MB at 400k; the store keeps the
 three most recently used.
+
+## Declaration views for source-macro users (light-cljs-347, November 14, 2026)
+
+A namespace that ran a source macro used to key every earlier namespace's
+key (the coarse fallback); it now keys each earlier namespace's declaration
+view (docs/compiler-cache.md, "Conservative keys and invalidation", View).
+Penpot `app.main --optimize none` with
+[penpot_cache.bb](penpot_cache.bb) `2 off populate warm leaf`, on an APFS
+clone of the port, two rounds per binary, one binary after the other: the
+parent's code as the immutable `bin/light-cljs-5ffa22cc` (master `e379d6c5`
+differs from it only in watch code), then the change. **The machine was not
+reserved**: other workers built and ran tests, 1-minute load 5.4 to 11.4.
+
+The coarse edges stay in the dependency graph (blockers and watch
+invalidation follow them); what changed is what the keys cover. The new
+`--stats` lines count it over every source-macro user keyed:
+`cache.view.earlier-namespaces` is what the fallback covered, one earlier
+key per coarse edge, and `cache.view.declaration-keys` is how many of
+those earlier namespaces the view now covers by a declaration key (a
+namespace that registered a declaration bundle or declared a macro); the
+rest add only their name, source identity, reader interface and whether
+they ran a source macro.
+
+| Count (Penpot, 922 namespaces) | Before | After |
+| --- | ---: | ---: |
+| Coarse edges whose target's whole key a view covers | 354,851 | 0 |
+| Earlier declaration keys a view covers | | 79,223 (22%) |
+
+| Scenario | Binary | Wall (s), rounds | User + system CPU (s) | Peak memory (GB) | Hits / misses | `cache.miss.*` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Cache off | parent | 19.43, 11.32 | 23.3, 13.6 | 0.938, 0.897 | | |
+| Cache off | change | 11.70, 11.69 | 14.1, 14.1 | 0.892, 0.874 | | |
+| Warm, nothing edited | parent | 1.48, 1.30 | 1.5, 1.3 | 0.562, 0.578 | 922 / 0 | |
+| Warm, nothing edited | change | 1.38, 2.08 | 1.4, 1.9 | 0.576, 0.577 | 922 / 0 | |
+| Leaf edit (`app.main.ui.workspace.palette`, a comment) | parent | 5.18, 5.41 | 5.9, 6.1 | 0.877, 0.865 | 769 / 153 | source 1, dependencies 82, view 70 |
+| Leaf edit | change | 2.57, 3.56 | 2.3, 3.0 | 0.743, 0.756 | 920 / 2 | source 1, dependencies 1 |
+
+The parent's first cache-off round (19.43 s, 7.9 s system CPU) ran under a
+load spike and is an outlier. Against the cache-off builds of the same
+binary, the warm run after one leaf edit takes 22% and 30% (change) instead
+of 46% and 48% (parent, against its second cache-off round): the gate is
+"at most 60%". Every build of both binaries printed the same output
+(SHA-256 `d9f1a3e9...`, 31,091,665 bytes). On the generated 400k projects
+the same edit-rebuild gain is in
+[generated-shadow-vs-light.md](generated-shadow-vs-light.md#declaration-views-for-source-macro-users-unreserved-machine-november-14-2026-light-cljs-347).

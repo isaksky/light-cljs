@@ -62,7 +62,9 @@ impl EdgeKinds {
     /// declaration bundle registered so far: protocols, types, extensions
     /// and multimethods, including a namespace's first one. It includes
     /// every loaded macro's metadata in `&env`, and the namespace inventory
-    /// of `all-ns`, `find-ns` and `the-ns`.
+    /// of `all-ns`, `find-ns` and `the-ns`. The key does not cover these
+    /// edges' targets' keys but their declaration views
+    /// ([`DeclarationView`], light-cljs-347).
     pub const COARSE: Self = Self(1 << 4);
     /// A `light.lazy/loadable` target. Not a compilation dependency: the
     /// target is checked when the program closes, and it may come later.
@@ -253,6 +255,30 @@ pub struct ResolvedResource {
     pub bytes: u64,
 }
 
+/// What a source macro of a later namespace can see of a namespace beyond
+/// what that namespace's compilation edges key (docs/compiler-cache.md,
+/// "Conservative keys and invalidation", light-cljs-347).
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub struct DeclarationView {
+    /// The SHA-256 of what the namespace inventory (`all-ns`, `find-ns`,
+    /// `the-ns`) and a code read with `*ns*` bound to the namespace show of
+    /// it, whatever it declares: its reader context (aliases, refers,
+    /// excludes and reader macros) and the names of its Vars that shadow a
+    /// `cljs.core` name or one of its refers, which change how such a read
+    /// qualifies a symbol. No other Var name changes a read.
+    pub interface: [u8; 32],
+    /// When the namespace registered a declaration bundle (a protocol,
+    /// type, record, extension, multimethod method or `reify`) or declared
+    /// a macro: the SHA-256 of its source text up to the end of the last
+    /// top-level form that did, which with the rest of its key fixes every
+    /// such bundle's behavior and every such macro's metadata. It is the
+    /// whole text when a later form could still change them: it defines a
+    /// Var that existed before that end (a redefinition, or the definition
+    /// of a `declare`d Var), or a registration's location is not in the
+    /// namespace's own file. `None` when it registered neither.
+    pub prefix: Option<[u8; 32]>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NamespaceRecord {
     pub name: String,
@@ -266,6 +292,11 @@ pub struct NamespaceRecord {
     /// Whether the namespace depends on every earlier one
     /// ([`EdgeKinds::COARSE`]) because it ran a source macro.
     pub coarse: bool,
+    /// What a later namespace's source macro can see of this one: a coarse
+    /// namespace's view covers each earlier namespace's [`DeclarationView`]
+    /// instead of its key, and its whole key when this is `None`, unknown,
+    /// as for a manifest built after analysis or revised by a session.
+    pub declarations: Option<DeclarationView>,
     /// The [`DependencyManifest::inputs`] this namespace depends on,
     /// ascending: those read or declared while it was analyzed, and those
     /// recorded by a helper unit or data reader of it or of any namespace in
@@ -870,6 +901,7 @@ pub(crate) fn build(
             requires,
             absent: Vec::new(),
             coarse: false,
+            declarations: None,
             external_inputs: Vec::new(),
         });
     }

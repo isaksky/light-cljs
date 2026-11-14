@@ -1952,3 +1952,68 @@ Findings, recorded as found:
    bytes written at re-frame 400k and 63% fewer at 800k, where the edit
    rebuild gains 6.6 to 18.4 s, with keys, hits and output unchanged. It is
    still slower than the clean build there (about 67 s against 53 s).
+
+## Declaration views for source-macro users, unreserved machine (November 14, 2026, light-cljs-347)
+
+**Summary.** The user approved remedy A of light-cljs-1000 (docs/compiler-cache.md,
+"A narrower view for source-macro users"): a namespace that ran a source
+macro now keys what a source macro can see of each earlier namespace (its
+name and source identity, reader interface, whether it ran a source macro,
+and, when it registered a declaration bundle or declared a macro, its key
+with the source cut after the last form that did) instead of every earlier
+namespace's key. The same leaf edit as light-cljs-1000 (an unused `defn`
+appended) now recompiles **3 of 1,134 namespaces (plain) and 4 of 6,092
+(re-frame)** instead of 587 and 2,127, and the rebuild takes **6.48 s
+instead of 18.82 s (plain) and 9.32 s instead of 25.07 s (re-frame)**,
+against clean builds of 14.5 to 20.2 s. That meets light-cljs-1000's probe
+bound (6.66 s and 11.72 s). Both leaves register protocols, records,
+extensions and a multimethod method before the appended `defn`, so the cut
+keeps them in the declaration key and the edit after them out.
+
+Setup. `compare.bb DIR --light BIN --light-only --leaf LEAF --runs 3
+--skip-unchanged --max-load 1000 --max-repeats 0`, on copies of
+`research/shadow-credibility/projects/{workload,re-frame}-400k-seed42-1000`
+(leaves `src/workload/babomhol.cljs` and `src/workload/bouskoknu.cljs`), one
+binary after the other per project, so not alternated between binaries.
+Parent: the immutable `bin/light-cljs-5ffa22cc` (master `e379d6c5` differs
+from it only in watch code). Change: a release build of this branch's
+first commit (`2e5b59cf`), the same keys as the landed commit, which adds
+only the `--stats` view counters and documentation; the landed binary is
+`bin/light-cljs-<commit>` (named in the commit that adds it, below). Every
+output passed the oracle and the waste check, and both binaries wrote the
+same bytes. The recompiled counts come from one more `--stats` edit build
+per binary on the caches compare.bb left. **The machine was not
+reserved:** two other workers (light-cljs-995 and light-cljs-1002) built
+and tested; the load before each build is in the table. 800k was not
+measured.
+
+| Project | Build | Binary | Wall time | User CPU | System CPU | Peak memory | Load before | Recompiled |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| plain 400k | clean build | parent | 15.80 s (15.43-15.89) | 15.82 s (15.62-16.11) | 0.90 s (0.90-0.92) | 1.923 GB (1.922-1.939) | 4.90-5.64 | 1,134 |
+| plain 400k | clean build | change | 14.47 s (14.28-14.56) | 14.69 s (14.58-14.78) | 0.79 s (0.79-0.83) | 1.934 GB (1.923-1.938) | 3.95-4.13 | 1,134 |
+| plain 400k | one-file edit | parent | 18.82 s (18.16-18.84) | 19.49 s (18.62-20.01) | 1.35 s (1.28-1.39) | 1.960 GB (1.949-1.985) | 4.02-4.57 | 587 |
+| plain 400k | one-file edit | change | 6.48 s (6.39-6.57) | 6.28 s (6.21-6.37) | 0.40 s (0.38-0.40) | 1.630 GB (1.604-1.648) | 3.90-3.99 | 3 |
+| re-frame 400k | clean build | parent | 18.51 s (18.31-18.98) | 18.27 s (18.18-18.52) | 1.08 s (0.98-1.11) | 2.458 GB (2.436-2.487) | 3.62-4.15 | 6,092 |
+| re-frame 400k | clean build | change | 20.17 s (19.25-20.34) | 19.37 s (18.35-19.45) | 1.26 s (1.19-1.28) | 2.454 GB (2.446-2.479) | 4.23-4.67 | 6,092 |
+| re-frame 400k | one-file edit | parent | 25.07 s (23.31-25.39) | 22.87 s (22.36-23.12) | 2.49 s (2.24-3.12) | 2.523 GB (2.491-2.592) | 3.26-3.68 | 2,127 |
+| re-frame 400k | one-file edit | change | 9.32 s (9.01-9.83) | 8.16 s (7.99-8.43) | 0.99 s (0.97-1.03) | 2.323 GB (2.186-2.337) | 4.17-4.38 | 4 |
+
+- **What the edit invalidates now.** Plain: the leaf (`source`) and its
+  reverse require closure (2 `dependencies`); re-frame: the leaf and 3.
+  The parent: 504 and 1,550 for `view`, 82 and 576 for `dependencies`.
+- **The clean build** does not compute views (no cache), so the two
+  binaries' clean builds differ only by load: plain 1.3 s faster and
+  re-frame 1.7 s slower for the change, at different loads.
+- **What is left.** The rebuild is now preparation, emission, validation,
+  decoding and installing, as light-cljs-1000's probe found; validation
+  still reads every retained candidate of a missed namespace
+  (light-cljs-1003, which this change does not subsume: it cuts the misses
+  to the reverse closure, so the reads it saves are those of 3 and 4
+  namespaces, but each still hashes every stale candidate first).
+- **Soundness.** An edit that adds or changes a protocol, type, record,
+  extension, multimethod method, `reify`, a body or Var a bundle can call,
+  or a macro still recompiles every later source-macro user;
+  `tests/cache_matrix.rs` `declaration_view_of_source_macro_users` checks
+  each against the uncached build at one and four jobs. Penpot's leaf edit
+  goes from 153 to 2 recompiled namespaces
+  ([compiler-cache.md](compiler-cache.md#declaration-views-for-source-macro-users-light-cljs-347-november-14-2026)).
