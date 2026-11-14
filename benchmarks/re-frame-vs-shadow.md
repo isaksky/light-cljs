@@ -506,3 +506,79 @@ Report: {:files 30, :spliced 0, :patches 0, :missing-goog (goog.async.nextTick),
 - [:builds :client :modules] needs-feature: one module with one entry; the other entries become light.lazy/loadable chunks only where the code loads them; several entries and named chunk groups are code-splitting Phase 4
 
 Report: {:files 139, :spliced 97, :patches 4, :missing-goog (goog.async.nextTick goog.string.StringBuffer goog.string.format), :unprintable {}, :unsafe {}, :splice-mismatch [], :edits-dropped []}
+
+## re-frame's own test suite
+
+re-frame's ClojureScript tests (`research/re-frame/test`) compiled by each compiler and run in the same headless Chromium (light-cljs-974). These are tests nobody here wrote, for the library at the centre of this comparison.
+
+Rerun (it ports the suite into `research/shadow-credibility/re-frame-test-port` when that directory is missing; delete it to port again):
+
+```sh
+bb benchmarks/re-frame-tests.bb --light BIN --runs 3
+```
+
+### 2026-11-14: 118 of 118 tests pass on both compilers
+
+**Setup.**
+- **Suite:** re-frame at `1a1bf1df`. The 15 namespaces re-frame's own `:browser-test` build selects with `:ns-regexp "re-frame\\..*-test$"`. `re-frame.event-test` has no live tests, so 14 namespaces hold the 118 tests and 446 assertions.
+- **shadow-cljs:** 3.5.3, re-frame's `:browser-test` build with its `:ns-regexp`, built with `compile`. Two changes from upstream: the binaryage/devtools preload is dropped, and the runner namespace below replaces shadow's default one. Upstream pins 3.2.0.
+- **light-cljs:** an immutable copy of the release binary at `f9a21e24` (master `052ad00e` plus the deref fix below), `research/shadow-credibility/bin/light-cljs-f9a21e24`. V8 build. Two builds of the port:
+  - the dev build, `light-cljs compile`;
+  - the release build at `:advanced`, `light-cljs release --warnings` (see the port edits for why `--warnings`).
+- **Runner:** one generated `cljs.test` runner namespace, compiled by both compilers. It records each test var's passes, failures and errors.
+- **Runtime:** headless Chromium from playwright-core 1.63.0 (headless shell 1243). Each page is served from disk.
+  - esbuild 0.25.12 bundles React 18.2.0 for the light-cljs dev page, and bundles the release build's ES modules.
+  - Other versions: reagent 1.2.0, Node 26.12.1, OpenJDK 25.0.2.
+- **Pass rule:** a test passes for a build only if it passes in all three runs. A test whose runs disagree is flaky. The machine was unreserved, but nothing here is timed.
+
+**Reference pass list:** shadow-cljs passed all 118 tests in all three runs. Nothing is excluded.
+
+| Namespace | Tests | shadow-cljs | light-cljs dev build | light-cljs release |
+|---|---:|---:|---:|---:|
+| re-frame.dispatch-source-meta-test | 5 | 5 | 5 | 5 |
+| re-frame.flow.alpha-test | 5 | 5 | 5 | 5 |
+| re-frame.fx-test | 2 | 2 | 2 | 2 |
+| re-frame.handler-source-meta-test | 13 | 13 | 13 | 13 |
+| re-frame.interceptor-test | 15 | 15 | 15 | 15 |
+| re-frame.query-v-for-reaction-test | 8 | 8 | 8 | 8 |
+| re-frame.registrar-test | 5 | 5 | 5 | 5 |
+| re-frame.restore-test | 4 | 4 | 4 | 4 |
+| re-frame.subs-test | 19 | 19 | 19 | 19 |
+| re-frame.subs.alpha-test | 18 | 18 | 18 | 18 |
+| re-frame.subscribe-source-meta-test | 6 | 6 | 6 | 6 |
+| re-frame.tooling-test | 3 | 3 | 3 | 3 |
+| re-frame.trace-test | 14 | 14 | 14 | 14 |
+| re-frame.utils-test | 1 | 1 | 1 | 1 |
+| **total** | **118** | **118** | **118** | **118** |
+| assertions in each of the 3 runs | | 446, 446, 446 | 446, 446, 446 | 446, 446, 446 |
+
+**Remaining failures: 0.** No test failed or flaked on either light-cljs build in the three recorded runs.
+
+**What the run does not cover.** re-frame.core-instrumented's macros read `&env` and `*file*`, so the porter splices shadow-cljs's expansions of them in place of the calls. That is 24 call sites (`dispatch`, `subscribe`, `reg-event-*` and others) plus 40 `defalias` forms. The three source-meta namespaces therefore test light-cljs running shadow-cljs's expansion of those macros, not light-cljs expanding them. Every other macro was expanded by light-cljs, including `cljs.test`'s, re-frame.trace's and reagent's.
+
+**Failures found on the way.** The first complete run, before the deref fix and the metadata edits, used the binary at `a02f3fe9` and passed 113 of 118 on both light-cljs builds.
+
+| Tests | Cause | Resolution |
+|---|---|---|
+| subs-test/test-dynamic-subscriptions | **Compiler.** It expects `(thrown-with-msg? js/Error #"No protocol method IDeref" @x)`. light-cljs's deref of a value without `IDeref` threw "value does not support deref". | Fixed in `f9a21e24`, "Name the protocol method when deref meets a value without IDeref". Regression test in `tests/compiler/protocols.rs`. |
+| dispatch-source-meta-test (2), subscribe-source-meta-test (2) | **Port.** The porter prints the spliced expansions without the reader metadata on the call's literal vector (`^:my-flag [...]`). The tests check that this metadata survives the macro. | Port edit restoring the metadata (below). With it, light-cljs's `vary-meta` keeps the user's metadata as shadow-cljs's does. |
+
+**Port edits by cause** (all in the port's `edits.edn`, applied by `benchmarks/re-frame-tests.bb`):
+
+- **cljs.test.** The porter's catalogue has only a stub, because apps do not run tests. The port's `compat/cljs/test.cljs` is ClojureScript's own `cljs.test` from the jar shadow-cljs uses (1.12.145): the runtime file, with the macros of `cljs/test.cljc` defined in the namespace, plus 12 edits:
+  - **light-cljs syntax:** `:require-macros` is retired, and a `.cljs` file cannot hold the two reader conditionals.
+  - **Compiler information light-cljs macros cannot read:**
+    - The current namespace comes from `&env`'s `:ns :name`.
+    - There is no `*load-tests*` switch, and no output directory option (used only in stack-trace file names).
+    - `is` cannot resolve a computed symbol to see whether it names a function. So only a fixed list of `cljs.core` predicates (`=`, `nil?`, `contains?` and 30 others) gets the detailed `(not (= ...))` report; any other form is asserted as a value. Pass and fail are unchanged.
+    - A namespace's test vars, fixtures and `test-ns-hook` are read at run time with `ns-interns`, in the same `:line` order, instead of from the analyzer during expansion.
+    - `run-test` applies no fixtures, and `run-all-tests` is an error. The suite uses neither.
+- **Closure Library gaps (non-goals, shimmed):**
+  - `goog.async.nextTick`, which re-frame's router reads as a global. Same shim as `re-frame-libs.bb`.
+  - The porter's `goog` shim defaults `goog.DEBUG` to false. Closure defaults it to true and shadow-cljs's `compile` keeps that, and re-frame's debug checks and traces depend on it. A light-cljs dev build takes no `--define`, so the shim's default is changed to true for both builds.
+- **light-cljs semantics that differ from ClojureScript on purpose.** These are recorded, not changed: changing either is a language decision for the user.
+  - `:refer` of a private Var is an error in light-cljs, as in Clojure. ClojureScript warns only where the Var is used. `interceptor-test` refers the private `re-frame.interceptor/context`, so the port reaches it through the alias instead (two edits).
+  - light-cljs treats a `goog-define` Var as a constant and rejects `set!` of it at every level, as the Closure Compiler rejects reassigning a `@define` in optimized builds. The tests `set!` `re-frame.trace/trace-enabled?`, so the port defines it with `def`, keeping its default.
+- **Porter output.**
+  - The four metadata restorations above.
+  - The porter keeps re-frame.core-instrumented's `defmacro`s after splicing their call sites. Their bodies name helpers that exist only under `:clj`, so light-cljs's strict default rejects them as unresolved. The release build therefore uses `--warnings`, the ClojureScript-compatible analysis a dev build always uses, and the macros are never called.
