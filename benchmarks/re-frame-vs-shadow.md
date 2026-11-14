@@ -347,7 +347,7 @@ Whole bundle (light-cljs + esbuild, with React), in bytes:
 - **Data reading** (`cljs.reader` and `clojure.edn`, and `read-line`) uses the `reader` unit alone, which no longer requires a compile-time unit: `readerCoreNames` moved to `codeReader`, and `inspect`, which reads a value's shape and resolves no namespace, is an ordinary unit.
 - **Effect:** a program that only reads data no longer registers its namespaces or keeps `theNs` and what it reaches. Reading behaves as before. tests/compiler/compile_time_units.rs checks both kinds of program (`edn_reading_is_not_reflection`).
 
-**Setup.** `light-cljs-71da573e` before (master) and `light-cljs-1e637c3c` after, both V8 builds. The TodoMVC port was made again from porter `shadow-port-tool-983`. Commands: `bb benchmarks/re-frame.bb breakdown todomvc --light BIN` and `bb benchmarks/re-frame.bb size todomvc --light BIN`. light-cljs's sizes are deterministic, so there is one run each. shadow-cljs's whole file moved by 7 bytes between the two runs.
+**Setup.** `light-cljs-71da573e` before (master) and `light-cljs-1e637c3c` after (its compiler is this pellet's commit), both V8 builds. The TodoMVC port was made again from porter `shadow-port-tool-983`. Commands: `bb benchmarks/re-frame.bb breakdown todomvc --light BIN` and `bb benchmarks/re-frame.bb size todomvc --light BIN`. light-cljs's sizes are deterministic, so there is one run each. shadow-cljs's whole file moved by 7 bytes between the two runs.
 
 TodoMVC whole file (React included), gzip -9 in bytes, light-cljs minus shadow-cljs:
 
