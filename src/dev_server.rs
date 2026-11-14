@@ -76,7 +76,9 @@ pub struct LoadUnit {
     /// The unit's file in the build directory, which the client names as the
     /// evaluated text's `sourceURL`, so its `sourceMappingURL` resolves.
     pub file: String,
-    pub js: String,
+    /// Shared: a watch keeps every unit's text, which each step's build
+    /// holds again for runtimes that connect later.
+    pub js: std::sync::Arc<str>,
     /// The namespaces of the build it requires, along which a replay under
     /// [`Build::dependents`] reloads downstream namespaces.
     pub requires: Vec<String>,

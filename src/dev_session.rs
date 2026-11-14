@@ -534,12 +534,10 @@ impl DevSession {
     /// definitions' metadata marks them `^:dev/before-load` and
     /// `^:dev/after-load` (or their `-async` variants), each list in
     /// definition order, with the namespaces ordered as `namespaces`, the
-    /// load order ([`crate::dev_build::program_hooks`]).
+    /// load order ([`crate::dev_build::program_hooks`]). Only the definitions that
+    /// forms changed since the last call are looked at again.
     pub fn hooks(&self, namespaces: &[String]) -> [Vec<crate::dev_build::DevHook>; 2] {
-        let compiler = self.compiler.borrow();
-        compiler.program().map_or_else(Default::default, |program| {
-            crate::dev_build::program_hooks(program, namespaces)
-        })
+        self.compiler.borrow_mut().dev_hooks(namespaces)
     }
     /// Whether the last `ns` form of `namespace` marks it `^:dev/NAME`
     /// (`once` or `always`) with a value other than nil or false.
@@ -560,7 +558,20 @@ impl DevSession {
     pub(crate) fn registration(&self, namespaces: &[&str]) -> String {
         let compiler = self.compiler.borrow();
         compiler.program().map_or_else(String::new, |program| {
-            crate::emitter::emit_namespace_registration(program, Some(namespaces))
+            // From the session's indexes, which name each namespace's
+            // globals: a step visits only the registered namespaces.
+            let indexes = (compiler.namespace_globals(), compiler.namespace_positions());
+            let registration = crate::emitter::emit_namespace_registration(
+                program,
+                Some(namespaces),
+                Some(indexes),
+            );
+            debug_assert_eq!(
+                registration,
+                crate::emitter::emit_namespace_registration(program, Some(namespaces), None),
+                "the indexed registration is not the program's"
+            );
+            registration
         })
     }
     /// The actions of one top-level form, as a REPL evaluates it: an `Invoke`

@@ -9794,10 +9794,14 @@ impl<'a> NamespaceUnits<'a> {
 /// The registration of the namespaces `registered` of `program` (every
 /// namespace with `None`) with the runtime, as an interactive unit makes it
 /// after its [`interactive_prelude`]: statements that register each one's
-/// reader context and definitions with the runtime `rt`.
+/// reader context and definitions with the runtime `rt`. With `indexes`, a
+/// session's globals of each namespace and the namespaces' positions in
+/// `program`, only the registered namespaces' globals are visited, not every
+/// global of the program.
 pub(crate) fn emit_namespace_registration(
     program: &Program,
     registered: Option<&[&str]>,
+    indexes: Option<(&NamespaceGlobals, &HashMap<String, usize>)>,
 ) -> String {
     let mut emitter = Emitter::new(
         program,
@@ -9812,7 +9816,7 @@ pub(crate) fn emit_namespace_registration(
         },
         true,
     );
-    emitter.registration(registered, &[], false, |_| true, None)
+    emitter.registration(registered, &[], false, |_| true, indexes)
 }
 
 /// A readable JavaScript string literal; non-ASCII and controls are escaped.

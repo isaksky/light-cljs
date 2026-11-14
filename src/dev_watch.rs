@@ -397,44 +397,169 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
 /// A file's modification time and size, which saving it changes.
 type Stamp = (Option<SystemTime>, u64);
 
-/// The `.cljs` and `.cljc` files under `roots`, with their stamps. Hidden
-/// files and directories (an editor's lock and swap files) are left out. A
-/// symbolic link is followed, as the source provider follows it, but each
-/// directory is read once.
-fn scan(roots: &[PathBuf]) -> BTreeMap<PathBuf, Stamp> {
-    let mut files = BTreeMap::new();
-    let mut directories = roots.to_vec();
-    let mut read = HashSet::new();
-    while let Some(directory) = directories.pop() {
-        if !light_cljs::canonical_path::canonicalize(&directory)
-            .is_ok_and(|canonical| read.insert(canonical))
-        {
-            continue;
-        }
-        let Ok(entries) = fs::read_dir(&directory) else {
-            continue;
+/// What identifies a directory however a path reaches it, as its canonical
+/// path does: on Unix its device and inode, which the `stat` the scan makes
+/// of every entry gives without resolving the path again each poll.
+#[cfg(unix)]
+type DirectoryKey = (u64, u64);
+#[cfg(not(unix))]
+type DirectoryKey = PathBuf;
+
+/// The [`DirectoryKey`] of the directory at `path`, whose metadata (links
+/// followed) is `metadata`; none when it cannot be resolved.
+#[cfg(unix)]
+fn directory_key(_path: &Path, metadata: &fs::Metadata) -> Option<DirectoryKey> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.dev(), metadata.ino()))
+}
+#[cfg(not(unix))]
+fn directory_key(path: &Path, _metadata: &fs::Metadata) -> Option<DirectoryKey> {
+    light_cljs::canonical_path::canonicalize(path).ok()
+}
+
+/// How long before a directory is read its last change must be for the
+/// poll to keep the names it read: a directory whose stamp is the same
+/// later has the same entries, as long as the change that would have
+/// moved its modification time cannot fall in the same tick of a coarse
+/// clock (two seconds on FAT) as the change before the read.
+const QUIET_DIRECTORY: Duration = Duration::from_secs(2);
+
+/// The `.cljs` and `.cljc` files under the source roots, with their stamps,
+/// as each poll finds them. Hidden files and directories (an editor's lock
+/// and swap files) are left out. A symbolic link is followed, as the source
+/// provider follows it, but each directory is read once.
+struct Scan {
+    roots: Vec<PathBuf>,
+    files: HashMap<PathBuf, Stamp>,
+    /// The names each directory held when the poll last read it, with the
+    /// directory's stamp then, kept only where it had been quiet for
+    /// [`QUIET_DIRECTORY`]: while its stamp stays, a poll stamps its
+    /// entries again without reading it.
+    listings: HashMap<PathBuf, (Stamp, Rc<[OsString]>)>,
+    /// [`QUIET_DIRECTORY`], which a test shortens.
+    quiet: Duration,
+}
+
+impl Scan {
+    /// The files under `roots` now.
+    fn new(roots: Vec<PathBuf>) -> Self {
+        Self::with_quiet(roots, QUIET_DIRECTORY)
+    }
+
+    /// [`Self::new`] keeping the names of a directory quiet for `quiet`.
+    fn with_quiet(roots: Vec<PathBuf>, quiet: Duration) -> Self {
+        let mut scan = Scan {
+            roots,
+            files: HashMap::new(),
+            listings: HashMap::new(),
+            quiet,
         };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if name.to_string_lossy().starts_with(['.', '#']) {
+        scan.files = scan.walk();
+        scan
+    }
+
+    /// Scan again: the files that changed or appeared since the last scan,
+    /// and those that went, each in path order. Only the files and
+    /// directories are stamped; a directory is read again only when its
+    /// stamp changed.
+    fn poll(&mut self) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let now = self.walk();
+        let mut changed = now
+            .iter()
+            .filter(|&(path, stamp)| self.files.get(path) != Some(stamp))
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        let mut deleted = self
+            .files
+            .keys()
+            .filter(|path| !now.contains_key(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+        changed.sort();
+        deleted.sort();
+        self.files = now;
+        (changed, deleted)
+    }
+
+    fn walk(&mut self) -> HashMap<PathBuf, Stamp> {
+        let mut files = HashMap::with_capacity(self.files.len());
+        let mut listings = HashMap::with_capacity(self.listings.len());
+        let mut directories = self
+            .roots
+            .iter()
+            .filter_map(|root| {
+                let metadata = fs::metadata(root).ok()?;
+                let key = directory_key(root, &metadata)?;
+                Some((root.clone(), key, stamp_of(&metadata)))
+            })
+            .collect::<Vec<_>>();
+        let mut read = HashSet::new();
+        while let Some((directory, key, stamp)) = directories.pop() {
+            if !read.insert(key) {
                 continue;
             }
-            let path = entry.path();
-            let Ok(metadata) = fs::metadata(&path) else {
-                continue;
+            let (names, keep) = match self.listings.remove(&directory) {
+                Some((known, names)) if known == stamp => (names, true),
+                _ => {
+                    let reading = SystemTime::now();
+                    let Ok(entries) = fs::read_dir(&directory) else {
+                        continue;
+                    };
+                    let names = entries
+                        .flatten()
+                        .map(|entry| entry.file_name())
+                        .collect::<Rc<[OsString]>>();
+                    let quiet = stamp.0.is_some_and(|modified| {
+                        reading
+                            .duration_since(modified)
+                            .is_ok_and(|age| age > self.quiet)
+                    });
+                    (names, quiet)
+                }
             };
-            if metadata.is_dir() {
-                directories.push(path);
-            } else if metadata.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension == "cljs" || extension == "cljc")
-            {
-                files.insert(path, (metadata.modified().ok(), metadata.len()));
+            visit_entries(&directory, &names, &mut directories, &mut files);
+            if keep {
+                listings.insert(directory, (stamp, names));
+            }
+        }
+        self.listings = listings;
+        return files;
+
+        /// Stamp the entries `names` of `directory`: a directory joins
+        /// `directories`, a source file `files`.
+        fn visit_entries(
+            directory: &Path,
+            names: &[OsString],
+            directories: &mut Vec<(PathBuf, DirectoryKey, Stamp)>,
+            files: &mut HashMap<PathBuf, Stamp>,
+        ) {
+            for name in names {
+                if name.to_string_lossy().starts_with(['.', '#']) {
+                    continue;
+                }
+                let path = directory.join(name);
+                let Ok(metadata) = fs::metadata(&path) else {
+                    continue;
+                };
+                if metadata.is_dir() {
+                    if let Some(key) = directory_key(&path, &metadata) {
+                        directories.push((path, key, stamp_of(&metadata)));
+                    }
+                } else if metadata.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|extension| extension == "cljs" || extension == "cljc")
+                {
+                    files.insert(path, stamp_of(&metadata));
+                }
             }
         }
     }
-    files
+}
+
+/// The [`Stamp`] of a file or directory whose metadata is `metadata`.
+fn stamp_of(metadata: &fs::Metadata) -> Stamp {
+    (metadata.modified().ok(), metadata.len())
 }
 
 /// The session's source provider: the source roots, recording the file
@@ -490,7 +615,7 @@ struct Watch {
     /// stderr and its messages to the overlay; empty for `--watch`.
     tag: String,
     /// With a server, the text of each namespace's unit as written.
-    units: HashMap<String, String>,
+    units: HashMap<String, std::sync::Arc<str>>,
     /// The namespaces whose units failed steps wrote but did not push,
     /// which the next step that succeeds pushes.
     unpushed: Vec<String>,
@@ -513,6 +638,11 @@ struct Watch {
     settings: CacheSettings,
     /// What the step under way compiled again, not yet in `graph`.
     revisions: HashMap<String, Revision>,
+    /// The revision `graph` last took of each namespace, and the load order
+    /// and macro namespaces it was revised with: a step whose revisions,
+    /// order and macro namespaces are those again leaves `graph` as it is.
+    applied: HashMap<String, Revision>,
+    applied_with: Option<(Vec<String>, HashSet<String>)>,
     /// Every file a `light.build` resource of `graph` was looked for at,
     /// with its stamp, `None` where there is no file.
     resources: BTreeMap<PathBuf, Option<Stamp>>,
@@ -767,6 +897,8 @@ fn start(
             blockers: options.blockers.clone(),
         },
         revisions: HashMap::new(),
+        applied: HashMap::new(),
+        applied_with: None,
         resources: BTreeMap::new(),
         resource_consumers: HashMap::new(),
         stale_resources: Vec::new(),
@@ -782,7 +914,7 @@ fn start(
             let path = options.out_dir.join(&namespace.file);
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-            watch.units.insert(namespace.name.clone(), text);
+            watch.units.insert(namespace.name.clone(), text.into());
         }
     }
     Ok((watch, startup))
@@ -877,7 +1009,7 @@ pub(crate) fn run_builds(
     // The stamps come first, so a file saved while a build is made is a
     // change.
     let mut roots = canonical_roots(first).map_err(general)?;
-    let mut stamps = scan(&roots);
+    let mut scan = Scan::new(roots.clone());
     // Restarts, too, make one analysis at a time, in the order named.
     let starts = Arc::new(Starts::default());
     let (report, reports) = channel();
@@ -1073,7 +1205,7 @@ pub(crate) fn run_builds(
                             .filter(|next| *next != roots)
                         {
                             roots = next;
-                            stamps = scan(&roots);
+                            scan = Scan::new(roots.clone());
                         }
                         for &(index, _) in &restarts {
                             starts.enqueue(index);
@@ -1091,22 +1223,11 @@ pub(crate) fn run_builds(
                 }
             }
         }
-        let now = scan(&roots);
-        if now == stamps {
+        let (changed, deleted) = scan.poll();
+        if changed.is_empty() && deleted.is_empty() {
             continue;
         }
         let noticed = Instant::now();
-        let changed = now
-            .iter()
-            .filter(|&(path, stamp)| stamps.get(path) != Some(stamp))
-            .map(|(path, _)| path.clone())
-            .collect::<Vec<_>>();
-        let deleted = stamps
-            .keys()
-            .filter(|path| !now.contains_key(*path))
-            .cloned()
-            .collect::<Vec<_>>();
-        stamps = now;
         for index in 0..workers.len() {
             let changes = Work::Changes {
                 changed: changed.clone(),
@@ -1608,7 +1729,13 @@ impl Watch {
                     .filter_map(|namespace| self.load_unit(namespace))
                     .collect();
                 if !load.is_empty() {
-                    self.published = self.namespaces().map(str::to_owned).collect();
+                    // The build's namespaces only grow, so those it has
+                    // sent already stay.
+                    for namespace in &self.manifest.namespaces {
+                        if !self.published.contains(&namespace.name) {
+                            self.published.insert(namespace.name.clone());
+                        }
+                    }
                 }
             } else {
                 self.unpushed.extend(recompiled.iter().cloned());
@@ -1830,7 +1957,8 @@ impl Watch {
                 self.write(file).map_err(Failure::Output)?;
             }
             if self.server.is_some() {
-                self.units.insert(name.to_owned(), files[0].text.clone());
+                self.units
+                    .insert(name.to_owned(), files[0].text.as_str().into());
             }
             let index = self.manifest.position(name).unwrap();
             let entry = &mut self.manifest.namespaces[index];
@@ -1920,10 +2048,39 @@ impl Watch {
         let revisions = std::mem::take(&mut self.revisions);
         let macros = self.session.macro_namespaces();
         let order = self.namespaces().collect::<Vec<_>>();
+        // A revision the graph took already, with the same order and macro
+        // namespaces, revises it into itself: the records of the revised
+        // namespaces are made again from the same revisions, and the others
+        // are kept, so the step need not rebuild every record and edge.
+        let unchanged =
+            self.applied_with
+                .as_ref()
+                .is_some_and(|(applied_order, applied_macros)| {
+                    applied_order
+                        .iter()
+                        .map(String::as_str)
+                        .eq(order.iter().copied())
+                        && *applied_macros == macros
+                })
+                && revisions
+                    .iter()
+                    .all(|(name, revision)| self.applied.get(name) == Some(revision));
+        if unchanged {
+            debug_assert!(
+                self.graph
+                    .revise(&order, &revisions, |name| macros.contains(name))
+                    == self.graph,
+                "a revision taken already changed the dependency manifest"
+            );
+            return;
+        }
         let graph = self
             .graph
             .revise(&order, &revisions, |name| macros.contains(name));
+        let order = order.into_iter().map(str::to_owned).collect();
         self.graph = graph;
+        self.applied_with = Some((order, macros));
+        self.applied.extend(revisions);
     }
 
     /// The always-compile set of the policy evaluator, by name: the
@@ -2146,13 +2303,17 @@ impl Watch {
 
     /// The unit of `namespace` as a `load` message carries it.
     fn load_unit(&self, namespace: &str) -> Option<LoadUnit> {
+        self.unit_at(namespace, self.manifest.position(namespace))
+    }
+
+    /// [`Self::load_unit`] of `namespace`, whose first entry in the manifest
+    /// is at `at`.
+    fn unit_at(&self, namespace: &str, at: Option<usize>) -> Option<LoadUnit> {
         Some(LoadUnit {
             namespace: namespace.to_owned(),
             file: unit_file(namespace),
             js: self.units.get(namespace)?.clone(),
-            requires: self
-                .manifest
-                .position(namespace)
+            requires: at
                 .map(|at| self.manifest.namespaces[at].requires.clone())
                 .unwrap_or_default(),
         })
@@ -2160,12 +2321,21 @@ impl Watch {
 
     /// The build as the server keeps it for runtimes that connect later.
     fn build(&self) -> Build {
+        // Each name's first position, as `DevManifest::position` finds it,
+        // without a search of the manifest per unit.
+        let mut positions = HashMap::with_capacity(self.manifest.namespaces.len());
+        for (at, namespace) in self.manifest.namespaces.iter().enumerate() {
+            positions.entry(namespace.name.as_str()).or_insert(at);
+        }
         Build {
             units: self
                 .manifest
                 .namespaces
                 .iter()
-                .filter_map(|namespace| self.load_unit(&namespace.name))
+                .filter_map(|namespace| {
+                    let at = positions.get(namespace.name.as_str()).copied();
+                    self.unit_at(&namespace.name, at)
+                })
                 .collect(),
             before_load: self.manifest.before_load.clone(),
             after_load: self.manifest.after_load.clone(),
@@ -2223,5 +2393,58 @@ mod tests {
         // A file that is gone is read, as an error, with its stamp: none.
         assert!(stamped_text(&path, None).unwrap().is_err());
         fs::remove_dir(&directory).unwrap();
+    }
+
+    /// A poll reads again only the directories whose stamps changed, and
+    /// still finds every file added, changed, moved over or removed, as a
+    /// fresh scan does (light-cljs-1001).
+    #[test]
+    fn a_poll_finds_what_a_fresh_scan_finds_from_the_directories_it_kept() {
+        let root = std::env::temp_dir().join(format!("light-scan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for directory in ["app", ".hidden", "lib"] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        let write = |file: &str, text: &str| fs::write(root.join(file), text).unwrap();
+        write("app/a.cljs", "(ns app.a)");
+        write("app/b.txt", "not a source");
+        write(".hidden/x.cljs", "(ns x)");
+        write("lib/c.cljc", "(ns c)");
+        // Every change comes well after the listing before it, as the quiet
+        // time the watch keeps a listing after asks of a coarse clock.
+        let settle = || std::thread::sleep(Duration::from_millis(50));
+        settle();
+        let mut scan = Scan::with_quiet(vec![root.clone()], Duration::ZERO);
+        let mut files = scan.files.keys().cloned().collect::<Vec<_>>();
+        files.sort();
+        assert_eq!(files, [root.join("app/a.cljs"), root.join("lib/c.cljc")]);
+        let mut poll = |expected: (&[&str], &[&str])| {
+            settle();
+            let (changed, deleted) = scan.poll();
+            let paths =
+                |files: &[&str]| files.iter().map(|file| root.join(file)).collect::<Vec<_>>();
+            assert_eq!((changed, deleted), (paths(expected.0), paths(expected.1)));
+            assert!(
+                scan.listings.contains_key(&root.join("app")),
+                "the listing is kept"
+            );
+            settle();
+        };
+        poll((&[], &[]));
+        write("app/d.cljs", "(ns app.d)");
+        poll((&["app/d.cljs"], &[]));
+        write("app/a.cljs", "(ns app.a) (def x 1)");
+        poll((&["app/a.cljs"], &[]));
+        fs::create_dir(root.join("app/sub")).unwrap();
+        write("app/sub/e.cljs", "(ns app.sub.e)");
+        write("lib/f.cljs", "(ns f)");
+        poll((&["app/sub/e.cljs", "lib/f.cljs"], &[]));
+        fs::remove_file(root.join("app/d.cljs")).unwrap();
+        poll((&[], &["app/d.cljs"]));
+        write("app/.saving", "(ns app.a) (def x 2)");
+        fs::rename(root.join("app/.saving"), root.join("app/a.cljs")).unwrap();
+        poll((&["app/a.cljs"], &[]));
+        assert_eq!(scan.files, Scan::new(vec![root.clone()]).files);
+        fs::remove_dir_all(&root).unwrap();
     }
 }

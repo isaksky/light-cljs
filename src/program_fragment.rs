@@ -32,6 +32,12 @@ pub(crate) struct SharedPrefix {
 /// had for the few the fragment added.
 #[derive(Clone, Default)]
 struct SharedTables {
+    reader_contexts: crate::shared::Shared<
+        crate::layered::Layered<
+            String,
+            crate::shared::Shared<crate::analyzer::RuntimeReaderNamespace>,
+        >,
+    >,
     namespace_entries: crate::shared::Shared<crate::layered::Layered<ExprId, String>>,
     protocols: crate::shared::Shared<HashMap<GlobalId, Vec<ProtocolMethod>>>,
     record_constructors: crate::shared::Shared<std::collections::HashSet<GlobalId>>,
@@ -43,6 +49,7 @@ struct SharedTables {
 impl SharedTables {
     fn of(program: &Program) -> Self {
         Self {
+            reader_contexts: program.reader_contexts.clone(),
             namespace_entries: program.namespace_entries.clone(),
             protocols: program.protocols.clone(),
             record_constructors: program.record_constructors.clone(),
@@ -407,9 +414,26 @@ fn append_impl(
                     .insert(own.to_owned(), context.clone());
             }
         }
+        // A context the fragment and the target both still have as the
+        // snapshot had it needs nothing: only the keys either changed since
+        // are visited, which while they share the snapshot's base are those
+        // of their own small layers, not every namespace of the program.
         _ => {
-            for (namespace, context) in fragment.reader_contexts.iter() {
-                let current = target.reader_contexts.get(namespace);
+            let snapshot = &shared.tables.reader_contexts;
+            let mut changed = fragment
+                .reader_contexts
+                .changed_keys(snapshot)
+                .into_iter()
+                .chain(target.reader_contexts.changed_keys(snapshot))
+                .cloned()
+                .collect::<Vec<_>>();
+            changed.sort_unstable();
+            changed.dedup();
+            for namespace in changed {
+                let Some(context) = fragment.reader_contexts.get(&namespace) else {
+                    continue;
+                };
+                let current = target.reader_contexts.get(&namespace);
                 let owned = own_namespace.is_none_or(|own| own == namespace) || current.is_none();
                 if owned && current != Some(context) {
                     target
@@ -694,11 +718,12 @@ pub(crate) fn interactive_resolution_snapshot(program: &Program) -> Program {
 /// expressions that metadata the form replaced reached; the second value
 /// counts them, with the previous root, so that the caller can compact
 /// once they make up a large share; the third is whether the analysis
-/// changed any of `previous`'s expressions in place.
+/// changed any of `previous`'s expressions in place; the fourth, the IDs of
+/// `previous`'s globals whose metadata it replaced, ascending.
 pub(crate) fn extend_interactive_snapshot(
     previous: &Program,
     program: &Program,
-) -> (Program, usize, bool) {
+) -> (Program, usize, bool, Vec<usize>) {
     use std::collections::HashSet;
     let old_exprs = previous.exprs.len();
     let old_globals = previous.globals.len();
@@ -848,7 +873,8 @@ pub(crate) fn extend_interactive_snapshot(
     }
     let mut globals = program.globals.clone();
     for i in changed_globals
-        .into_iter()
+        .iter()
+        .copied()
         .chain(old_globals..program.globals.len())
     {
         remap.optional(&mut globals.get_mut(i).expect("global").metadata);
@@ -904,7 +930,7 @@ pub(crate) fn extend_interactive_snapshot(
         snapshot.type_methods = program.type_methods.clone();
     }
     snapshot.freeze();
-    (snapshot, released, !changed_exprs.is_empty())
+    (snapshot, released, !changed_exprs.is_empty(), changed_globals)
 }
 
 /// A snapshot of `program`'s resolution tables and of the expressions reachable
@@ -2188,6 +2214,64 @@ mod tests {
                     "{body}"
                 );
             }
+        }
+    }
+
+    /// Of the reader contexts, [`append`] visits only those the fragment or
+    /// the target changed since the snapshot, and takes the same ones as a
+    /// walk of every context of the fragment: with no own namespace, each
+    /// that differs from the target's; with one, that one and those the
+    /// target lacks (light-cljs-1001).
+    #[test]
+    fn appends_take_the_reader_contexts_a_walk_of_every_one_takes() {
+        let context = |alias: &str| {
+            crate::shared::Shared::new(crate::analyzer::RuntimeReaderNamespace {
+                aliases: vec![(alias.to_owned(), "cljs.core".to_owned())],
+                refers: Vec::new(),
+                excludes: Vec::new(),
+                macros: Vec::new(),
+            })
+        };
+        for own in [None, Some("app.both"), Some("app.fragment")] {
+            let mut target = analyze("(def x 1)");
+            for namespace in ["app.both", "app.fragment", "app.target", "app.same"] {
+                target
+                    .reader_contexts
+                    .insert(namespace.to_owned(), context("old"));
+            }
+            let (mut fragment, shared) = resolution_snapshot(&mut target);
+            for namespace in ["app.both", "app.fragment", "app.new"] {
+                fragment
+                    .reader_contexts
+                    .insert(namespace.to_owned(), context(namespace));
+            }
+            for namespace in ["app.both", "app.target"] {
+                target.reader_contexts.insert(
+                    namespace.to_owned(),
+                    context(&format!("{namespace}.target")),
+                );
+            }
+            let mut expected = target.clone();
+            for (namespace, context) in fragment.reader_contexts.iter() {
+                let current = expected.reader_contexts.get(namespace);
+                let owned = own.is_none_or(|own| own == namespace) || current.is_none();
+                if owned && current != Some(context) {
+                    expected
+                        .reader_contexts
+                        .insert(namespace.clone(), context.clone());
+                }
+            }
+            append(&mut target, &fragment, &shared, false, own, None);
+            let contexts = |program: &Program| {
+                let mut contexts = program
+                    .reader_contexts
+                    .iter()
+                    .map(|(namespace, context)| (namespace.clone(), context.aliases.clone()))
+                    .collect::<Vec<_>>();
+                contexts.sort();
+                contexts
+            };
+            assert_eq!(contexts(&target), contexts(&expected), "{own:?}");
         }
     }
 

@@ -294,7 +294,10 @@ another process never makes the compiler wait.
 
 `--watch` holds the `DevSession` after the initial dev build and polls the
 source roots' files (the manifest's file-per-namespace map plus a directory
-scan for new files) for modification time changes. Debounced by one poll
+scan for new files) for modification time changes. Each poll stamps every
+file, but lists a directory again only when its own stamp changed since a
+listing taken more than two seconds after its last change, so new and
+removed files are still found at the next poll. Debounced by one poll
 interval, a change to `src/app/view.cljs`:
 
 1. Reads the file, reads its forms, and compiles them in order against the

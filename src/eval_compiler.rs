@@ -46,6 +46,13 @@ pub(crate) struct InteractiveCompiler {
     /// How many retained expressions no metadata may reach any more, which
     /// a full compaction drops once they are half of them.
     released: usize,
+    /// The retained program's dev hook definitions, by global ID
+    /// ([`crate::dev_build::hook_definition`]), as of the last
+    /// [`Self::dev_hooks`]; and the globals whose metadata forms have set or
+    /// replaced since, or `None` when every global must be looked at again:
+    /// a program adopted or compacted, or expressions changed in place.
+    hook_definitions: std::collections::BTreeMap<usize, crate::dev_build::HookDefinition>,
+    hook_changes: Option<Vec<usize>>,
     /// The names of the current namespace that the forms of a file read ahead
     /// of their turn define before the form being read
     /// ([`crate::dev_session`]): a syntax quote qualifies them as its own, as
@@ -92,6 +99,8 @@ impl InteractiveCompiler {
             arities: Default::default(),
             record_layouts: Default::default(),
             released: 0,
+            hook_definitions: Default::default(),
+            hook_changes: None,
             defined_ahead: Default::default(),
         }
     }
@@ -197,6 +206,54 @@ impl InteractiveCompiler {
     pub(crate) fn program(&self) -> Option<&Program> {
         self.program.as_ref()
     }
+    /// The dev hooks of the retained program, with its namespaces ordered as
+    /// `namespaces` ([`crate::dev_build::program_hooks`]): only the globals
+    /// whose metadata changed since the last call are looked at again.
+    pub(crate) fn dev_hooks(
+        &mut self,
+        namespaces: &[String],
+    ) -> [Vec<crate::dev_build::DevHook>; 2] {
+        let Some(program) = &self.program else {
+            return Default::default();
+        };
+        let definitions = &mut self.hook_definitions;
+        match self.hook_changes.replace(Vec::new()) {
+            Some(changes) => {
+                definitions.split_off(&program.globals.len());
+                for id in changes {
+                    match program
+                        .globals
+                        .get(id)
+                        .and_then(|global| crate::dev_build::hook_definition(program, global))
+                    {
+                        Some(definition) => definitions.insert(id, definition),
+                        None => definitions.remove(&id),
+                    };
+                }
+            }
+            None => {
+                definitions.clear();
+                definitions.extend(program.globals.iter().enumerate().filter_map(
+                    |(id, global)| {
+                        crate::dev_build::hook_definition(program, global).map(|hook| (id, hook))
+                    },
+                ));
+            }
+        }
+        let hooks = crate::dev_build::ordered_hooks(
+            program,
+            definitions
+                .iter()
+                .map(|(&id, &definition)| (id, definition)),
+            namespaces,
+        );
+        debug_assert_eq!(
+            hooks,
+            crate::dev_build::program_hooks(program, namespaces),
+            "the hooks kept between forms are not the program's"
+        );
+        hooks
+    }
     /// Retain `program`, a whole-program build this compiler's host made,
     /// as the program later forms compile against.
     pub(crate) fn adopt_program(&mut self, program: &Program) {
@@ -212,6 +269,7 @@ impl InteractiveCompiler {
         }
         self.program = Some(retained);
         self.released = 0;
+        self.hook_changes = None;
         self.names = Default::default();
         self.namespace_globals.clear();
         self.program_namespaces.clear();
@@ -559,15 +617,21 @@ impl InteractiveCompiler {
     fn extend_retained(&mut self, program: Program) -> Result<Program, AnalysisError> {
         self.check_policy(&program, self.program.as_ref().map_or(0, |p| p.exprs.len()))?;
         // The arities of the retained expressions from `rescan` on are new.
-        let (retained, mut rescan) = match &self.program {
+        let (retained, mut rescan, changed_globals) = match &self.program {
             Some(previous) => {
-                let (retained, released, changed) =
+                let (retained, released, changed, changed_globals) =
                     crate::program_fragment::extend_interactive_snapshot(previous, &program);
                 self.released += released;
-                (retained, (!changed).then_some(previous.exprs.len()))
+                let added = previous.globals.len()..retained.globals.len();
+                (
+                    retained,
+                    (!changed).then_some(previous.exprs.len()),
+                    Some(changed_globals.into_iter().chain(added)),
+                )
             }
             None => (
                 crate::program_fragment::interactive_resolution_snapshot(&program),
+                None,
                 None,
             ),
         };
@@ -583,6 +647,20 @@ impl InteractiveCompiler {
         if rescan.is_none() {
             self.arities.clear();
             self.record_layouts = Default::default();
+        }
+        // A hook is a global's metadata: only the globals the form set or
+        // replaced the metadata of can have become one or stopped being one,
+        // unless expressions changed in place or were renumbered.
+        match (rescan, changed_globals, &mut self.hook_changes) {
+            (Some(_), Some(globals), Some(changes)) => {
+                changes.extend(globals);
+                // A session that never asks for its hooks looks at every
+                // global again rather than keep more changes than globals.
+                if changes.len() > retained.globals.len() {
+                    self.hook_changes = None;
+                }
+            }
+            _ => self.hook_changes = None,
         }
         crate::analyzer::extend_declared_arities(&retained, rescan.unwrap_or(0), &mut self.arities);
         self.record_layouts.extend(&retained.exprs);

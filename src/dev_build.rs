@@ -204,6 +204,7 @@ impl DevManifest {
         fn visit(
             index: usize,
             namespaces: &[DevNamespace],
+            positions: &HashMap<&str, usize>,
             seen: &mut [bool],
             order: &mut Vec<usize>,
         ) {
@@ -211,16 +212,22 @@ impl DevManifest {
                 return;
             }
             for required in &namespaces[index].requires {
-                if let Some(at) = namespaces.iter().position(|entry| entry.name == *required) {
-                    visit(at, namespaces, seen, order);
+                if let Some(&at) = positions.get(required.as_str()) {
+                    visit(at, namespaces, positions, seen, order);
                 }
             }
             order.push(index);
         }
+        // Each name's first position, as a search from the front finds it:
+        // a step sorts the whole build, so a lookup must not scan it.
+        let mut positions = HashMap::with_capacity(self.namespaces.len());
+        for (at, entry) in self.namespaces.iter().enumerate() {
+            positions.entry(entry.name.as_str()).or_insert(at);
+        }
         let mut seen = vec![false; self.namespaces.len()];
         let mut order = Vec::with_capacity(self.namespaces.len());
         for index in 0..self.namespaces.len() {
-            visit(index, &self.namespaces, &mut seen, &mut order);
+            visit(index, &self.namespaces, &positions, &mut seen, &mut order);
         }
         let mut namespaces = std::mem::take(&mut self.namespaces)
             .into_iter()
@@ -282,6 +289,42 @@ pub(crate) fn program_hooks<'a>(
     program: &Program,
     namespaces: impl IntoIterator<Item = &'a String>,
 ) -> [Vec<DevHook>; 2] {
+    let marked = program
+        .globals
+        .iter()
+        .enumerate()
+        .filter_map(|(id, global)| hook_definition(program, global).map(|hook| (id, hook)));
+    ordered_hooks(program, marked, namespaces)
+}
+
+/// A hook definition's metadata and the phases it marks (before-load,
+/// after-load), each `Some(asynchronous)`; `None` for a global that is no
+/// hook.
+pub(crate) type HookDefinition = (ExprId, [Option<bool>; 2]);
+
+/// The [`HookDefinition`] of `global`, a global of `program`, if it is a
+/// hook.
+pub(crate) fn hook_definition(
+    program: &Program,
+    global: &crate::analyzer::GlobalBinding,
+) -> Option<HookDefinition> {
+    let metadata = global.metadata?;
+    let phases = hook_phases(program, metadata);
+    phases
+        .iter()
+        .any(Option::is_some)
+        .then_some((metadata, phases))
+}
+
+/// [`program_hooks`] from the hook definitions `marked` of `program`, by
+/// global ID, ascending, as [`hook_definition`] finds them, which a session
+/// keeps between its forms instead of visiting every global again
+/// ([`crate::eval_compiler::InteractiveCompiler::dev_hooks`]).
+pub(crate) fn ordered_hooks<'a>(
+    program: &Program,
+    marked: impl Iterator<Item = (usize, HookDefinition)>,
+    namespaces: impl IntoIterator<Item = &'a String>,
+) -> [Vec<DevHook>; 2] {
     // Each namespace's first position, found once rather than per global:
     // a step runs this over the whole retained program.
     let mut positions = HashMap::new();
@@ -293,16 +336,10 @@ pub(crate) fn program_hooks<'a>(
     let position = |namespace: &str| positions.get(namespace).copied().unwrap_or(count);
     // Only definitions that a hook flag marks are ordered; the stable sort
     // keeps their relative order as when every definition was.
-    let mut definitions = program
-        .globals
-        .iter()
-        .filter_map(|global| {
-            let metadata = global.metadata?;
-            let phases = hook_phases(program, metadata);
-            phases
-                .iter()
-                .any(Option::is_some)
-                .then(|| (position(&global.namespace), metadata, global, phases))
+    let mut definitions = marked
+        .map(|(id, (metadata, phases))| {
+            let global = &program.globals[id];
+            (position(&global.namespace), metadata, global, phases)
         })
         .collect::<Vec<_>>();
     definitions.sort_by_key(|&(namespace, metadata, _, _)| (namespace, metadata.0));

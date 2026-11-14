@@ -1307,6 +1307,69 @@ fn a_step_finds_the_hooks_again() {
 
 // --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
+/// Steps look again only at the definitions they changed for hooks, and
+/// keep the dependency manifest when a namespace's requires, observations
+/// and macros are those its last step gave it (light-cljs-1001). The
+/// manifest after saves that change no hook is the first build's, and one
+/// that adds or drops a hook flag lists the hooks as a fresh build would;
+/// the debug binary also checks each step's hooks, registration and
+/// dependency manifest against a pass over the whole program.
+#[test]
+fn repeated_steps_find_the_hooks_of_the_changed_definitions() {
+    let mut watch = Watch::start("dev-server-repeated-steps");
+    let original = watch.source("app/main.cljs");
+    let first = fs::read_to_string(watch.dir.join("before/manifest.json")).unwrap();
+    let manifest = |watch: &Watch| fs::read_to_string(watch.dir.join("dev/manifest.json")).unwrap();
+    let edited = |extra: &str| original.replace("\n\nstart\n", &format!("\n\n{extra}\n\nstart\n"));
+    for round in 1..=3 {
+        let (_, step) = watch.save("app/main.cljs", &edited(&format!("(def edits {round})")));
+        assert!(
+            step.starts_with("light-cljs: recompiled app.main in "),
+            "{step}"
+        );
+        assert_eq!(manifest(&watch), first, "save {round}");
+    }
+    let hooks = |before: &str, after: &str| {
+        format!("  \"before-load\": [{before}],\n  \"after-load\": [\n{after}\n  ]\n}}\n")
+    };
+    let again = "(defn ^:dev/after-load-async again [done] (done))";
+    watch.save("app/main.cljs", &edited(again));
+    let reload = r#"    {"name": "app.main/reload", "async": false}"#;
+    let stop = "\n    {\"name\": \"app.main/stop\", \"async\": false}\n  ";
+    let listed = manifest(&watch);
+    assert!(
+        listed.ends_with(&hooks(
+            stop,
+            &format!("{reload},\n    {{\"name\": \"app.main/again\", \"async\": true}}")
+        )),
+        "{listed}"
+    );
+    watch.save(
+        "app/main.cljs",
+        &edited(again).replace("(defn ^:dev/before-load stop", "(defn stop"),
+    );
+    let listed = manifest(&watch);
+    assert!(
+        listed.ends_with(&hooks(
+            "",
+            &format!("{reload},\n    {{\"name\": \"app.main/again\", \"async\": true}}")
+        )),
+        "{listed}"
+    );
+    // Restoring the flag lists `stop` again, and `again` follows its flag.
+    watch.save("app/main.cljs", &edited(&again.replace("-async", "")));
+    let listed = manifest(&watch);
+    assert!(
+        listed.ends_with(&hooks(
+            stop,
+            &format!("{reload},\n    {{\"name\": \"app.main/again\", \"async\": false}}")
+        )),
+        "{listed}"
+    );
+}
+
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// The reload fixtures (tests/support/reload_fixtures.rs) through `--watch
 /// --serve`: a runtime running the first build of a row's sources loads the
 /// step its edit makes, which names the namespaces the row reloads, and
@@ -1556,7 +1619,7 @@ fn logging_step(namespace: &str, text: &str) -> Step {
             file: format!("{namespace}.js"),
             js: format!(
                 "globalThis.__lightDev.define({namespace:?}, [], (rt) => {{\n  console.log({text:?} + \" in \" + globalThis.whoami);\n  return null;\n}});\n"
-            ),
+            ).into(),
             requires: Vec::new(),
         }],
         ..Step::default()
@@ -1927,7 +1990,7 @@ fn two_mounts_replay_their_own_build_and_diagnostics() {
     let unit = |namespace: &str| LoadUnit {
         namespace: namespace.into(),
         file: format!("{namespace}.js"),
-        js: format!("globalThis.__lightDev.define({namespace:?}, [], (rt) => null);\n"),
+        js: format!("globalThis.__lightDev.define({namespace:?}, [], (rt) => null);\n").into(),
         requires: Vec::new(),
     };
     let build = |namespaces: &[&str]| Build {
