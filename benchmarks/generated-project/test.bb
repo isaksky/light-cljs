@@ -356,6 +356,75 @@
       (is (str/includes? report "| 11 | 2.00 | 2.00 | 1.94 | 1.00 |"))
       (is (str/includes? report "light-cljs 200.0 ms per iteration, shadow-cljs 100.0 ms per iteration (light/shadow 2.00)")))))
 
+(deftest compare-skip-unchanged-sequence
+  (let [dir (fs/create-temp-dir {:prefix "light-skip-unchanged-"})
+        events (atom [])
+        sample {:wall-s 1.0 :user-s 1.0 :system-s 0.1 :peak-memory-gb 0.1 :load [0.5 0.5 0.5]}
+        tools [{:tool :light :dir "l" :clean-cmd ["light" "clean"] :cached-cmd ["light" "cached"]
+                :clean! #(swap! events conj [:clean :light]) :output (constantly {:bytes 1 :gzip 1})}]
+        run (fn [& extra]
+              (reset! events [])
+              (with-redefs [compare/project (constantly {:light-dir (str dir) :tools tools :generated? false})
+                            compare/environment (constantly {:light-cljs {:binary "b" :commit "c" :sha256 (apply str (repeat 64 "0"))}})
+                            compare/rounds (fn [_ _ ts] (swap! events conj [:rounds (:cmd (first ts))])
+                                             {:light (compare/summary [sample] [])})
+                            compare/timed (fn [_ cmd] (swap! events conj [:fill cmd]) sample)
+                            compare/leaf-scenario (fn [_ _ ts _] (swap! events conj [:leaf (:cmd (first ts))])
+                                                    {:summaries {:light (compare/summary [sample] [])} :outputs {}})]
+                (with-out-str (compare/main (into [(str dir) "--light" "b" "--leaf" "x.cljs" "--out" (str (fs/path dir "r"))] extra))))
+              [@events (read-string (slurp (str (fs/path dir "r.edn"))))])]
+    (try
+      (let [[events result] (run "--skip-unchanged")]
+        (is (= [[:rounds ["light" "clean"]] [:clean :light] [:fill ["light" "cached"]] [:leaf ["light" "cached"]]] events)
+            "the cache-filling build still precedes the edit rounds; no unchanged rounds")
+        (is (= #{:uncached :leaf} (set (keys (:scenarios result))))))
+      (let [[events result] (run)]
+        (is (= [[:rounds ["light" "clean"]] [:clean :light] [:fill ["light" "cached"]] [:rounds ["light" "cached"]]
+                [:leaf ["light" "cached"]]] events))
+        (is (= #{:uncached :cached :leaf} (set (keys (:scenarios result))))))
+      (finally (fs/delete-tree dir)))))
+
+(deftest growth-report-pipeline
+  (let [dir (fs/create-temp-dir {:prefix "light-growth-"})
+        project (fn [name lines shape]
+                  (let [p (fs/path dir name)]
+                    (fs/create-dirs p)
+                    (spit (str (fs/path p "manifest.edn"))
+                          (pr-str {:code-lines lines :generator-options (cond-> {:seed 42} shape (assoc :shape shape))}))
+                    (str p)))
+        s (fn [wall mem] (compare/summary [{:wall-s wall :user-s wall :system-s 0.0 :peak-memory-gb mem :load [1.0]}] []))
+        result (fn [p light-wall shadow-wall]
+                 {:project {:light-dir p} :environment {:date "2026-11-14" :light-cljs {:commit "abc"}}
+                  :scenarios {:uncached {:light (s light-wall 1.0) :shadow (s shadow-wall 2.0)}
+                              :leaf {:light (s (/ light-wall 2) 1.0)}}})
+        stats (fn [p wall] (str "light-cljs - config: " p "/light-cljs.edn\nlight-cljs-stats 1\ntime.wall-ms " wall
+                                "\nnamespaces 10\n[macro-calls-by-namespace]\nx.y 3\n"))]
+    (try
+      (let [w1 (project "w1" 100 nil) w2 (project "w2" 200 nil) w4 (project "w4" 400 nil)
+            r1 (project "r1" 100 'symbol-shape) r2 (project "r2" 200 'symbol-shape)
+            points (vec (mapcat growth/result-points [(result w1 1.0 10.0) (result w2 4.0 20.0) (result w4 16.0 40.0)
+                                                      (result r1 1.0 10.0) (result r2 2.0 10.0)]))
+            fits (growth/fits points)
+            fit (fn [shape tool scenario m] (first (filter #(= [shape tool scenario m] ((juxt :shape :compiler :scenario :measure) %)) fits)))
+            stat-points (for [[p wall] [[w1 10] [w2 30] [w2 40] [w2 200] [w4 160]]]
+                          (growth/stats-point (doto (str (fs/path dir (str (fs/file-name p) "-" wall ".txt"))) (spit (stats p wall)))))
+            sizes (growth/stats-by-size stat-points)
+            report (growth/markdown {:points points :fits fits :stat-sizes sizes :stat-fits (growth/stat-fits sizes)})]
+        (is (= #{:workload :symbol-shape} (set (map :shape points))) "the manifest names the shape")
+        (is (< (abs (- 2.0 (:exponent (fit :workload :light :uncached :wall-s)))) 1e-9) "quadratic light series")
+        (is (< (abs (- 1.0 (:exponent (fit :workload :shadow :uncached :wall-s)))) 1e-9) "linear shadow series")
+        (is (< (abs (- 1.0 (:exponent (fit :symbol-shape :light :uncached :wall-s)))) 1e-9) "shapes are separate series")
+        (is (= [4.0 4.0] (map :ratio (:steps (fit :workload :light :leaf :wall-s)))) "the leaf scenario is its own series")
+        (is (nil? (fit :workload :shadow :leaf :wall-s)) "no shadow leaf samples, no series")
+        (is (= [[100 1 10.0] [200 3 40.0] [400 1 160.0]]
+               (map (juxt :lines :builds #(get-in % [:counters "time.wall-ms"])) sizes))
+            "repeated builds of one size give their median; the table after the counters is ignored")
+        (is (= [4.0 4.0] (map :ratio (:steps (first (filter #(= "time.wall-ms" (:counter %)) (growth/stat-fits sizes)))))))
+        (is (str/includes? report "| 400 | clean build | light-cljs | 1 | 16.00 s (16.00-16.00) |"))
+        (is (str/includes? report "| clean build | light-cljs | wall time | 2.00 | 4.00x (2.00), 4.00x (2.00) |"))
+        (is (str/includes? report "workload 0k x1, 0k x3, 0k x1")))
+      (finally (fs/delete-tree dir)))))
+
 (deftest growth-fits-and-stats
   (let [points (for [[lines t] [[100 1.0] [200 4.0] [400 16.0]]] {:lines lines :t t})
         {:keys [exponent steps]} (growth/growth points :t)]

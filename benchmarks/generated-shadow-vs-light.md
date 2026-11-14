@@ -1497,8 +1497,9 @@ exponents 0.93 and 0.89); shadow's is held down by its 8 GiB heap. The
 superlinear part of light-cljs is in analysis: `--stats` names four terms,
 filed as pellets, each growing 6x to 22x where the program grows 4x. **The
 rebuild after a one-file edit is worse**: it grows 5.8x (plain) and 6.1x
-(re-frame) and, from 400k up, is slower than a clean build (re-frame 800k:
-82.7 s against 51.1 s), because the edit recompiles every later namespace
+(re-frame) and is slower than a clean build at 400k in both shapes and at
+re-frame 800k (82.7 s against 51.1 s; plain 800k is faster, 27.5 s against
+32.5 s), because the edit recompiles every later namespace
 that ran a source macro and capturing each recompiled namespace into the
 cache costs more the larger the program.
 
@@ -1702,9 +1703,11 @@ unattributed loop time (5.1 s) account for 15 s of it.
 ### The rebuild after a one-file edit
 
 light-cljs's rebuild after a one-file edit grows irregularly with size (plain:
-3.65x, 1.55x, 4.02x, 1.45x per doubling) and from 400k up is **slower than
-its clean build** (plain 400k 18.94 s against 16.11 s; re-frame 400k 30.00 s
-against 19.49 s, 800k 82.74 s against 51.08 s). shadow's is 0.68x to 0.87x of
+3.65x, 1.55x, 4.02x, 1.45x per doubling) and is **slower than its clean
+build** at plain 400k (18.94 s against 16.11 s) and re-frame 400k and 800k
+(30.00 s against 19.49 s, 82.74 s against 51.08 s); at plain 800k it is
+faster (27.54 s against 32.50 s), since that edit recompiled only 17% of the
+namespaces. shadow's is 0.68x to 0.87x of
 its clean build at every size. A `--stats` rebuild per size on the caches the
 runs left (one edit each, not timed for the tables; the 50k to 400k ones
 ran, one light-cljs build at a time, while the plain 800k project was being
