@@ -567,3 +567,20 @@ fn a_static_source_error_stops_the_build_before_any_application_macro_runs() {
     let made = loaded(&roots, "app.main");
     assert!(error_message(&made).contains("effect-ran"), "{made:?}");
 }
+
+#[test]
+fn namespace_clauses_may_be_vectors_as_reader_splicing_leaves_them() {
+    // `#?@(:cljs [[:require ...]])` splices a vector clause into `ns`, which
+    // upstream's ns parser destructures like a list.
+    let roots = Roots::new(1);
+    roots
+        .write(
+            0,
+            "app/main.cljc",
+            "(ns app.main\n  #?@(:cljs [[:require [app.dep :as dep]]])\n  \
+             [:refer-clojure :exclude [inc]])\n(defn inc [x] (+ x dep/step))\n(inc 1)\n",
+        )
+        .write(0, "app/dep.cljs", "(ns app.dep)\n(def step 2)\n");
+    let made = loaded(&roots, "app.main");
+    assert_eq!(order(&made), ["/app/dep.cljs", "/app/main.cljc"]);
+}

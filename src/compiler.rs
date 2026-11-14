@@ -622,7 +622,9 @@ impl NamespaceSource {
         self.read_clauses(root, clauses)
     }
     /// The clauses of the `ns` form `forms` after its name, docstring and
-    /// attribute map, each kind at most once.
+    /// attribute map, each kind at most once. A clause is a list or, as
+    /// upstream's ns parser destructures either, a vector: the shape
+    /// `#?@(:cljs [[:require ...]])` splices in.
     #[allow(clippy::type_complexity)]
     fn header_clauses(
         &self,
@@ -646,6 +648,7 @@ impl NamespaceSource {
         for &clause in forms.iter().skip(offset) {
             let parts = self
                 .collection(clause, CollectionKind::List)
+                .or_else(|| self.collection(clause, CollectionKind::Vector))
                 .ok_or_else(|| self.error(clause, "unsupported namespace clause"))?
                 .to_vec();
             let kind = parts
