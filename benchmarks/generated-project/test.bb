@@ -233,21 +233,28 @@
     (try
       (fs/create-dirs (fs/path shadow-dir "node_modules/shadow-cljs"))
       (spit (fs/file dir "light-cljs.edn")
-            "{:source-paths [\"src\"] :builds {:client {:target :esm :output-dir \"out/js\" :x #light-cljs/env [\"X\"]}}}")
+            (str "{:source-paths [\"src\"] :builds {:client {:target :esm :output-dir \"out/dev\" :x #light-cljs/env [\"X\"]"
+                 " :release {:output-dir \"out/js\"}}}}"))
       (spit (fs/file shadow-dir "shadow-cljs.edn")
-            "{:builds {:app {:target :browser :output-dir \"public/js\"} :test {:target :node-test :output-to \"t.js\"}}}")
-      (spit (fs/file shadow-dir "node_modules/shadow-cljs/package.json") "{\"name\": \"shadow-cljs\", \"version\": \"3.2.0\"}")
+            (str "{:cache-root \"target/shadow-cache\" :builds {:app {:target :browser :output-dir \"public/js\"}"
+                 " :test {:target :node-test :output-to \"t.js\"}}}"))
       (is (= :client (compare/build-id (fs/file dir "light-cljs.edn") nil)))
       (is (= :app (compare/build-id (fs/file shadow-dir "shadow-cljs.edn") ":app")))
       (is (thrown? Exception (compare/build-id (fs/file shadow-dir "shadow-cljs.edn") nil)))
       (is (thrown? Exception (compare/build-id (fs/file shadow-dir "shadow-cljs.edn") "nope")))
-      (is (= "3.2.0" (compare/shadow-version shadow-dir)))
       (is (= ["npx" "shadow-cljs"] (compare/default-shadow-cmd shadow-dir)))
       (spit (fs/file shadow-dir "deps.edn")
             "{:aliases {:shadow {:extra-deps {thheller/shadow-cljs {:mvn/version \"3.5.3\"}}}}}")
-      (is (= "3.5.3" (compare/shadow-version shadow-dir)))
+      (is (= ["npx" "shadow-cljs"] (compare/default-shadow-cmd shadow-dir)) "an alias without shadow's main")
+      (spit (fs/file shadow-dir "deps.edn")
+            "{:aliases {:shadow {:main-opts [\"-m\" \"shadow.cljs.devtools.cli\"]}}}")
       (is (= ["clojure" "-M:shadow"] (compare/default-shadow-cmd shadow-dir)))
-      (let [{:keys [tools generated? light-build shadow-build]}
+      (with-redefs [compare/run! (fn [d & cmd]
+                                   (is (= (str shadow-dir) (str d)))
+                                   (is (= ["npx" "shadow-cljs" "clj-eval"] (take 3 cmd)))
+                                   "SHADOW-VERSION 3.5.3\nnil\n")]
+        (is (= "3.5.3" (compare/shadow-version shadow-dir ["npx" "shadow-cljs"]))))
+      (let [{:keys [tools generated? light-build shadow-build shadow-cache-root]}
             (compare/project {:dir (str dir) :light "/bin/light" :shadow-dir (str shadow-dir) :shadow-build "app"})
             {:keys [light shadow]} (into {} (map (juxt :tool identity) tools))]
         (is (not generated?))
@@ -255,6 +262,10 @@
         (is (= ["/bin/light" "release" "client" "--no-cache"] (:clean-cmd light)))
         (is (= ["clojure" "-M:shadow" "release" "app"] (:cached-cmd shadow)))
         (is (= (str shadow-dir) (:dir shadow)))
+        (is (= "target/shadow-cache" shadow-cache-root))
+        (fs/create-dirs (fs/path shadow-dir "target/shadow-cache/builds"))
+        ((:clean! shadow))
+        (is (not (fs/exists? (fs/path shadow-dir "target/shadow-cache"))))
         (fs/create-dirs (fs/path dir "out/js/nested"))
         (spit (fs/file dir "out/js/old.js") "stale")
         (let [since (+ 1000 (System/currentTimeMillis))]
@@ -275,13 +286,26 @@
                  :scenarios {:uncached {:light summary :shadow (update-in summary [:wall-s :median] * 4)}}
                  :outputs {:uncached {:light {:bytes 1000 :gzip 300 :checksum "42" :waste-ok true}
                                       :shadow {:bytes 1200 :gzip 400 :files 1}}}
-                 :warm-jvm {:builds [{:wall-s 3.0 :cpu-s 5.0}] :process {:peak-memory-gb 2.0}}})]
+                 :warm-jvm {:builds [{:wall-s 3.0 :cpu-s 5.0 :load-1m 1.5}] :process {:peak-memory-gb 2.0}}})]
     (is (str/includes? report "light-cljs `abc1234`"))
     (is (str/includes? report "Release builds of light-cljs.edn build `:bench` and shadow-cljs.edn build `:bench`."))
     (is (str/includes? report "| clean build | light-cljs | 1.00 s (1.00-1.00) | 1.00 s (1.00-1.00) | 0.50 s (0.50-0.50) | 0.500 GB (0.500-0.500) | 1.00-1.00 |"))
     (is (str/includes? report "| clean build | 0.25 | 1.00 | 1.00 |"))
     (is (str/includes? report "| clean build | light-cljs | 1,000 | 300 | oracle 42, waste ok |"))
-    (is (str/includes? report "3.00 s (5.0 s CPU)"))))
+    (is (str/includes? report "3.00 s (5.0 s CPU, load 1.50)"))))
+
+(deftest time-and-load-parsing
+  (is (= [1.64 3.01 2.95] (compare/parse-load "{ 1.64 3.01 2.95 }\n")))
+  (is (= [0.12 0.2 0.3] (compare/parse-load "0.12 0.20 0.30 1/234 5678\n")))
+  (is (= {:wall-s 40.98 :user-s 122.37 :system-s 126.74 :peak-memory-gb 3.298246656}
+         (compare/parse-time true (str "       40.98 real       122.37 user       126.74 sys\n"
+                                       "          3298246656  maximum resident set size\n"))))
+  (let [gnu (fn [elapsed] (str "\tUser time (seconds): 6.29\n\tSystem time (seconds): 0.36\n"
+                               "\tElapsed (wall clock) time (h:mm:ss or m:ss): " elapsed "\n"
+                               "\tMaximum resident set size (kbytes): 1051394\n"))]
+    (is (= {:wall-s 6.09 :user-s 6.29 :system-s 0.36 :peak-memory-gb 1.051394}
+           (compare/parse-time false (gnu "0:06.09"))))
+    (is (= 3725.5 (:wall-s (compare/parse-time false (gnu "1:02:05.50")))))))
 
 (def leaf-original
   "Bytes a text round trip would not reproduce: invalid UTF-8, CRLF, no final newline."

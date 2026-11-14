@@ -92,11 +92,15 @@
 
 ;; Measuring one build
 
+(defn parse-load
+  "The three load averages of `sysctl -n vm.loadavg` or /proc/loadavg text."
+  [text]
+  (mapv parse-double (take 3 (re-seq #"[0-9]+(?:\.[0-9]+)?" text))))
+
 (defn load-average
   "The 1-, 5- and 15-minute load averages."
   []
-  (let [text (if mac? (:out (process/sh "sysctl" "-n" "vm.loadavg")) (slurp "/proc/loadavg"))]
-    (mapv parse-double (take 3 (re-seq #"[0-9]+(?:\.[0-9]+)?" text)))))
+  (parse-load (if mac? (:out (process/sh "sysctl" "-n" "vm.loadavg")) (slurp "/proc/loadavg"))))
 
 (defn await-load
   "Waits, polling every 5 s, until the 1-minute load average is at most
@@ -112,25 +116,29 @@
               (Thread/sleep 5000)
               (recur true)))))))
 
-(defn timed-with-output
-  "Runs cmd under /usr/bin/time (-l on macOS, GNU -v elsewhere) and returns
-  [sample stdout], sample holding wall time, user and system CPU seconds and
-  peak memory in GB."
-  [dir cmd]
-  (let [result (apply process/sh {:dir (str dir)} "/usr/bin/time" (if mac? "-l" "-v") cmd)
-        err (:err result)
-        number (fn [re] (some-> (re-find re err) second parse-double))]
-    (when-not (zero? (:exit result))
-      (throw (ex-info "Build failed" {:command cmd :err (subs err (max 0 (- (count err) 3000)))})))
-    [(if mac?
+(defn parse-time
+  "Wall time, user and system CPU seconds and peak memory in GB from the stderr
+  of macOS `/usr/bin/time -l` (mac? true) or GNU `time -v`."
+  [mac? err]
+  (let [number (fn [re] (some-> (re-find re err) second parse-double))]
+    (if mac?
        {:wall-s (number #"([0-9.]+) real") :user-s (number #"([0-9.]+) user") :system-s (number #"([0-9.]+) sys")
         :peak-memory-gb (/ (number #"([0-9]+)  maximum resident set size") 1e9)}
        (let [[_ h m s] (re-find #"Elapsed \(wall clock\) time.*: (?:([0-9]+):)?([0-9]+):([0-9.]+)" err)]
          {:wall-s (+ (* 3600 (or (some-> h parse-long) 0)) (* 60 (parse-long m)) (parse-double s))
           :user-s (number #"User time \(seconds\): ([0-9.]+)")
           :system-s (number #"System time \(seconds\): ([0-9.]+)")
-          :peak-memory-gb (/ (number #"Maximum resident set size \(kbytes\): ([0-9]+)") 1e6)}))
-     (:out result)]))
+          :peak-memory-gb (/ (number #"Maximum resident set size \(kbytes\): ([0-9]+)") 1e6)}))))
+
+(defn timed-with-output
+  "Runs cmd under /usr/bin/time (-l on macOS, GNU -v elsewhere) and returns
+  [sample stdout], the sample as parse-time gives it."
+  [dir cmd]
+  (let [result (apply process/sh {:dir (str dir)} "/usr/bin/time" (if mac? "-l" "-v") cmd)
+        err (:err result)]
+    (when-not (zero? (:exit result))
+      (throw (ex-info "Build failed" {:command cmd :err (subs err (max 0 (- (count err) 3000)))})))
+    [(parse-time mac? err) (:out result)]))
 
 (defn timed [dir cmd] (first (timed-with-output dir cmd)))
 
@@ -245,20 +253,33 @@
   (some #(when (map? %) (some-> (get % 'thheller/shadow-cljs) :mvn/version))
         (tree-seq coll? seq data)))
 
-(defn shadow-version [shadow-dir]
-  (let [file #(let [f (fs/file shadow-dir %)] (when (fs/exists? f) f))]
-    (or (some-> (file "deps.edn") read-edn find-version)
-        (some->> (file "node_modules/shadow-cljs/package.json") slurp
-                 (re-find #"\"version\"\s*:\s*\"([^\"]+)\"") second)
-        (some->> (file "shadow-cljs.edn") read-edn :dependencies
-                 (some (fn [[lib version]] (when (= 'thheller/shadow-cljs lib) version))))
-        "unknown")))
+(def version-form
+  "Prints the version of the shadow-cljs JAR the JVM loaded."
+  (str "(println \"SHADOW-VERSION\" (some->> (clojure.java.io/resource \"META-INF/maven/thheller/shadow-cljs/pom.properties\")"
+       " slurp (re-find #\"version=(\\S+)\") second))"))
 
-(defn default-shadow-cmd [shadow-dir]
-  (let [deps (fs/file shadow-dir "deps.edn")]
-    (if (and (fs/exists? deps) (get-in (read-edn deps) [:aliases :shadow]))
+(defn shadow-version
+  "The shadow-cljs version the selected command runs, asked of its JVM, which
+  also fetches its dependencies outside the timings."
+  [shadow-dir shadow-cmd]
+  (let [out (apply run! shadow-dir (concat shadow-cmd ["clj-eval" version-form]))]
+    (or (second (re-find #"SHADOW-VERSION (\S+)" out)) "unknown")))
+
+(defn default-shadow-cmd
+  "clojure -M:shadow when deps.edn's :shadow alias runs shadow-cljs's command
+  line, otherwise npx shadow-cljs."
+  [shadow-dir]
+  (let [deps (fs/file shadow-dir "deps.edn")
+        main-opts (when (fs/exists? deps) (get-in (read-edn deps) [:aliases :shadow :main-opts]))]
+    (if (some #{"shadow.cljs.devtools.cli"} main-opts)
       ["clojure" "-M:shadow"]
       ["npx" "shadow-cljs"])))
+
+(defn release-build
+  "A build's map with its :release map merged over it, as a release build sees it."
+  [file id]
+  (let [build (get-in (read-edn file) [:builds id])]
+    (merge (dissoc build :dev :release) (:release build))))
 
 (defn gzip-bytes [file]
   (count (:out (process/sh {:in (fs/file file) :out :bytes} "gzip" "-9" "-c"))))
@@ -287,7 +308,7 @@
         light-build (build-id (fs/file dir "light-cljs.edn") (:light-build options))
         generated? (and (fs/exists? (fs/file dir "oracle.bb")) (fs/exists? (fs/file dir "model.edn")))
         expected (when generated? (str/trim (run! dir "bb" "oracle.bb" "42" "3")))
-        light-out (get-in (read-edn (fs/file dir "light-cljs.edn")) [:builds light-build :output-dir])
+        light-out (:output-dir (release-build (fs/file dir "light-cljs.edn") light-build))
         light-cmd [light "release" (name light-build)]
         tools [{:tool :light :dir dir
                 :clean-cmd (conj light-cmd "--no-cache")
@@ -300,14 +321,15 @@
     (if light-only
       {:light-dir dir :generated? generated? :expected expected :light-build light-build :tools tools}
       (let [shadow-build (build-id (fs/file shadow-dir "shadow-cljs.edn") (:shadow-build options))
-            build (get-in (read-edn (fs/file shadow-dir "shadow-cljs.edn")) [:builds shadow-build])
+            build (release-build (fs/file shadow-dir "shadow-cljs.edn") shadow-build)
+            cache-root (or (:cache-root (read-edn (fs/file shadow-dir "shadow-cljs.edn"))) ".shadow-cljs")
             shadow-cmd (vec (or (:shadow-cmd options) (default-shadow-cmd shadow-dir)))
             cmd (into shadow-cmd ["release" (name shadow-build)])]
-        {:light-dir dir :shadow-dir shadow-dir :generated? generated? :expected expected
+        {:light-dir dir :shadow-dir shadow-dir :generated? generated? :expected expected :shadow-cache-root cache-root
          :light-build light-build :shadow-build shadow-build :shadow-cmd shadow-cmd
          :tools (conj tools
                       {:tool :shadow :dir shadow-dir :clean-cmd cmd :cached-cmd cmd
-                       :clean! #(do (fs/delete-tree (fs/path shadow-dir ".shadow-cljs"))
+                       :clean! #(do (fs/delete-tree (fs/path shadow-dir cache-root))
                                     (when generated? (fs/delete-if-exists (fs/path shadow-dir "out/shadow.js"))))
                        :output (if generated?
                                  (fn [_] (verify-generated shadow-dir expected "out/shadow.js" "out/shadow.js"))
@@ -326,12 +348,12 @@
         (loop [] (let [n (.read in buffer)] (when (pos? n) (.update digest buffer 0 n) (recur))))))
     (apply str (map #(format "%02x" %) (.digest digest)))))
 
-(defn environment [{:keys [light light-commit]} {:keys [shadow-dir]}]
+(defn environment [{:keys [light light-commit]} shadow-version]
   (let [sysctl #(command-text "sysctl" "-n" %)]
     {:date (str (java.time.LocalDate/now))
      :light-cljs {:binary light :sha256 (sha256-file light)
                   :commit (or light-commit (second (re-find #"light-cljs-([0-9a-f]{7,40})$" (str (fs/file-name light)))))}
-     :shadow-cljs (when shadow-dir (shadow-version shadow-dir))
+     :shadow-cljs shadow-version
      :jdk (let [line (first (str/split-lines (or (command-text "java" "-version") "")))]
             (if-let [[_ vendor version] (re-find #"^(\S+) version \"([^\"]+)\"" line)] (str vendor " " version) line))
      :node (command-text "node" "--version")
@@ -351,20 +373,29 @@
 
 (defn warm-jvm
   "N shadow release builds in one JVM, as a running shadow-cljs server does,
-  starting from the cache the earlier scenarios left: each build's wall time
-  and the JVM's CPU time (user and system) during it, and the whole process's
-  measurements."
-  [options {:keys [shadow-dir shadow-cmd shadow-build]} n]
+  starting from the cache the earlier scenarios left: each build's wall time,
+  the JVM's CPU time (user and system) during it and the 1-minute load average
+  before it, and the whole process's measurements. The JVM applies the load
+  gate before every build too, but a build that started above it is marked
+  :over-max-load, not repeated: the builds are one resident sequence, and
+  another build would be a later one in it."
+  [{:keys [max-load load-wait] :as options} {:keys [shadow-dir shadow-cmd shadow-build]} n]
   (let [form (str "(require '[shadow.cljs.devtools.api :as api])"
                   "(let [os (java.lang.management.ManagementFactory/getOperatingSystemMXBean)]"
                   " (dotimes [_ " n "]"
-                  "  (let [t (System/nanoTime) c (.getProcessCpuTime os)]"
+                  "  (let [deadline (+ (System/currentTimeMillis) " (* 1000 load-wait) ")"
+                  "        load (loop [] (let [l (.getSystemLoadAverage os)]"
+                  "               (if (or (<= l " max-load ") (>= (System/currentTimeMillis) deadline)) l"
+                  "                   (do (Thread/sleep 5000) (recur)))))"
+                  "        t (System/nanoTime) c (.getProcessCpuTime os)]"
                   "   (api/release " shadow-build ")"
-                  "   (println \"RUN\" (/ (- (System/nanoTime) t) 1e9) (/ (- (.getProcessCpuTime os) c) 1e9)))))")
+                  "   (println \"RUN\" (/ (- (System/nanoTime) t) 1e9) (/ (- (.getProcessCpuTime os) c) 1e9) load))))")
         load (await-load options)
         [sample out] (timed-with-output shadow-dir (concat shadow-cmd ["clj-eval" form]))
-        builds (mapv (fn [[_ wall cpu]] {:wall-s (parse-double wall) :cpu-s (parse-double cpu)})
-                     (re-seq #"RUN ([0-9.E-]+) ([0-9.E-]+)" out))]
+        builds (mapv (fn [[_ wall cpu load]]
+                       (cond-> {:wall-s (parse-double wall) :cpu-s (parse-double cpu) :load-1m (parse-double load)}
+                         (> (parse-double load) max-load) (assoc :over-max-load true)))
+                     (re-seq #"RUN ([0-9.E-]+) ([0-9.E-]+) ([0-9.E-]+)" out))]
     (log "shadow in one JVM" (pr-str builds))
     {:builds builds :process (assoc sample :load load)}))
 
@@ -431,20 +462,19 @@
                (str (:files o) " .js file(s) written")) " |"))
       (when-let [{:keys [builds process]} warm-jvm]
         ["" (str "shadow-cljs in one JVM (" (count builds) " release builds, as a running server): "
-                 (str/join ", " (map #(format "%.2f s (%.1f s CPU)" (:wall-s %) (:cpu-s %)) builds))
+                 (str/join ", " (map #(format "%.2f s (%.1f s CPU, load %.2f)" (:wall-s %) (:cpu-s %) (:load-1m %)) builds))
                  (format "; the JVM's peak memory %.3f GB" (:peak-memory-gb process)) ".")])
       [""]))))
 
 (defn main [args]
   (let [options (parse-options args)
         {:keys [tools generated?] :as project} (project options)
-        environment (environment options project)
+        environment (environment options (when-let [cmd (:shadow-cmd project)] ; untimed: fetches dependencies
+                                           (shadow-version (:shadow-dir project) cmd)))
         output-check (fn [since] #(into {} (for [{:keys [tool output]} tools] [tool (output since)])))
         build-tools (fn [cmd-key before?] (mapv #(cond-> {:tool (:tool %) :dir (:dir %) :cmd (cmd-key %)}
                                                    before? (assoc :before (:clean! %)))
                                                 tools))
-        _ (when-let [shadow-cmd (:shadow-cmd project)] ; resolve Maven outside the timings
-            (apply run! (:shadow-dir project) (conj shadow-cmd "--help")))
         started (System/currentTimeMillis)
         uncached (rounds options (constantly nil) (build-tools :clean-cmd true))
         uncached-outputs ((output-check started))
