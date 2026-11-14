@@ -200,7 +200,8 @@
 //! the class and the longer search: `map-only` 8,066 to 8,257 and `set-only`
 //! 4,887 to 5,076, whose ceilings move to 8,300 and 5,100. The readable
 //! runtime grows about 1,000 bytes; every none and prepare ceiling, all of
-//! which it exceeds, moves to the next 1,000.
+//! which it exceeds, moves to the next 1,000; the five that light-cljs-985
+//! raised move by a second 1,000, as the two changes together exceed them.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -271,7 +272,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [503_000, 503_000, 3_500],
+        ceilings: [504_000, 504_000, 3_500],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -414,7 +415,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [503_000, 503_000, 35_000],
+        ceilings: [504_000, 504_000, 35_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -498,7 +499,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn area ([w] (area w w)) ([w h] (* w h)))
                  (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
                  (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
-        ceilings: [505_000, 505_000, 400],
+        ceilings: [506_000, 506_000, 400],
         removed: [0, 0, 2],
         printed: "84\n",
     },
@@ -610,7 +611,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "defmulti",
         source: "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))",
-        ceilings: [503_000, 503_000, 11_000],
+        ceilings: [504_000, 504_000, 11_000],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
     },
@@ -746,7 +747,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [503_000, 503_000, 300],
+        ceilings: [504_000, 504_000, 300],
         removed: [0, 0, 0],
         printed: "null\nhello lazy\n",
     },
