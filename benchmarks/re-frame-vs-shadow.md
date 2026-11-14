@@ -29,7 +29,7 @@ bb benchmarks/re-frame.bb inventory todomvc simple
 - **Machine:** macOS, 24 cores, 32 GB, unreserved. Another worker's builds ran throughout, with load averages of 10 to 20 (recorded per run below).
 
 **Ports.**
-- **TodoMVC** still ports and builds on master. Re-running the porter reproduces the existing `research/todomvc-port` source for source.
+- **TodoMVC** still ports on master, and re-running the porter reproduces the existing `research/todomvc-port` source for source. Its dev build works on master `627b9ed5`, but its release build panics there; the first fix below is needed for it.
 - **simple** ports and builds the same way. Its port is in `research/shadow-credibility/simple-port`.
 - **flow** does not build yet. Its port pulls in zprint, sci, rewrite-clj and edamame (139 files) and stops at a JVM-only sci macro; see "Port edits by cause". That work is light-cljs-978. Its partial port is in `research/shadow-credibility/flow-port`.
 
@@ -188,3 +188,156 @@ Unreached shims are not in any output and change nothing. The sizes below are ou
 **flow, for the record.** Its port stops at `vendor/sci/core.cljc:349`, `(require-cljs-analyzer-api)`, a JVM-only macro that requires `cljs.analyzer.api`. The porter cannot print its expansion, which is a Var. Its report also lists 3 `:missing-goog` names (`goog.async.nextTick`, `goog.string.StringBuffer`, `goog.string.format`). Finishing it is light-cljs-978.
 
 **Compiler-gap entries still open on master** after this branch: `cljs.core/pr-writer` (light-cljs-981). The three ns-form and reader gaps and the release panic are fixed here. Closure Library entries are recorded as non-goals, not work.
+
+### Full inventory
+
+`bb benchmarks/re-frame.bb inventory todomvc simple` lists every `compat/` file with its cause and the characters it puts in the source-mapped light-cljs release; 0 means the file is not reached. It then lists every macro, configuration key and report entry from `port-report.edn`. Macros classed `keep` run unchanged in light-cljs.
+
+#### todomvc: every compat/ file
+
+| File | Cause | Source bytes | light-cljs output characters |
+|---|---|---:|---:|
+| cljs/pprint.cljs | other: development library replaced by a stub | 837 | 0 |
+| cljs/spec/alpha.cljs | JVM-only macro: spec stub, specs check nothing | 605 | 116 |
+| cljs/test.cljs | JVM-only macro: cljs.test stub | 308 | 0 |
+| clojure/math.cljs | other: a library light-cljs does not ship, written over js/Math | 1,019 | 0 |
+| clojure/pprint.cljs | other: development library replaced by a stub | 840 | 0 |
+| clojure/spec/alpha.cljs | JVM-only macro: spec stub, specs check nothing | 608 | 0 |
+| clojure/test/check.cljs | JVM-only macro: test.check stub | 168 | 0 |
+| clojure/test/check/generators.cljs | JVM-only macro: test.check stub | 2,618 | 0 |
+| clojure/test/check/properties.cljs | JVM-only macro: test.check stub | 151 | 0 |
+| expound/alpha.cljs | JVM-only macro: stub of a spec library | 131 | 0 |
+| goog.cljs | Closure Library use (non-goal) | 2,209 | 1,391 |
+| goog/array.cljs | Closure Library use (non-goal) | 665 | 0 |
+| goog/async.cljs | Closure Library use (non-goal) | 114 | 0 |
+| goog/crypt.cljs | Closure Library use (non-goal) | 237 | 0 |
+| goog/date/Date.cljs | Closure Library use (non-goal) | 86 | 0 |
+| goog/date/UtcDateTime.cljs | Closure Library use (non-goal) | 181 | 0 |
+| goog/dom.cljs | Closure Library use (non-goal) | 410 | 0 |
+| goog/events.cljs | Closure Library use (non-goal) | 2,568 | 1,858 |
+| goog/events/EventType.cljs | Closure Library use (non-goal) | 559 | 0 |
+| goog/functions.cljs | Closure Library use (non-goal) | 1,075 | 595 |
+| goog/history/EventType.cljs | Closure Library use (non-goal) | 113 | 174 |
+| goog/i18n/uChar.cljs | Closure Library use (non-goal) | 1,131 | 0 |
+| goog/math.cljs | Closure Library use (non-goal) | 341 | 0 |
+| goog/net.cljs | Closure Library use (non-goal) | 1,602 | 0 |
+| goog/net/WebSocket/EventType.cljs | Closure Library use (non-goal) | 122 | 0 |
+| goog/object.cljs | Closure Library use (non-goal) | 775 | 1,560 |
+| goog/string.cljs | Closure Library use (non-goal) | 2,082 | 0 |
+| light/compat.cljs | compiler gap: cljs.core names light-cljs lacks (catalogue :core-gaps) | 389 | 108 |
+| malli/generator.cljs | other: development library replaced by a stub | 545 | 0 |
+| malli/sci.cljs | other: development library replaced by a stub | 202 | 0 |
+| me/flowthing/pp.cljs | other: development library replaced by a stub | 229 | 0 |
+| shadow/esm.cljs | shadow-cljs build feature | 596 | 0 |
+| shadow/lazy.cljs | shadow-cljs build feature | 280 | 0 |
+| shadow/resource.cljs | shadow-cljs build feature | 231 | 0 |
+
+#### todomvc: every macro the port classified
+
+| Macro | Class | Call sites | Reason |
+|---|---|---:|---|
+| reagent.debug/assert-callable | keep | 6 |  |
+| cljs.spec.alpha/def | port | 7 | catalogue or compat port |
+| re-frame.trace/finish-trace | keep | 17 |  |
+| cljs.spec.alpha/and | port | 1 | catalogue or compat port |
+| cljs.spec.alpha/every | port | 1 | catalogue or compat port |
+| secretary.core/defroute | expand | 2 | secretary.core/defroute uses interop IllegalArgumentException. |
+| reagent.debug/assert-component | keep | 7 |  |
+| cljs.spec.alpha/every-kv | port | 1 | catalogue or compat port |
+| reagent.debug/assert-js-object | keep | 3 |  |
+| cljs.spec.alpha/tuple | port | 1 | catalogue or compat port |
+| net.cgrand.macrovich/deftime | keep | 1 |  |
+| reagent.core/reaction | keep | 1 |  |
+| cljs.spec.alpha/keys | port | 2 | catalogue or compat port |
+| cljs.spec.alpha/map-of | port | 1 | catalogue or compat port |
+| reagent.debug/warn | keep | 6 |  |
+| reagent.debug/dev? | keep | 6 |  |
+| re-frame.trace/with-trace | keep | 17 |  |
+| reagent.debug/warn-unless | keep | 1 |  |
+| re-frame.trace/merge-trace! | keep | 35 |  |
+| reagent.debug/assert-new-state | keep | 2 |  |
+| reagent.debug/assert-some | keep | 3 |  |
+
+#### todomvc: every configuration key
+
+- [:nrepl] translated: an nREPL listener on its own port; :host and middleware dropped (sessions are ClojureScript)
+- [:deps] translated: light-cljs resolves no dependencies: the porter vendored the reached library sources into vendor/
+- [:dev-http] needs-feature: a static root served at /; the dev server serves output dirs and source paths
+- [:builds :client :target] needs-feature: :browser output: light-cljs writes ES modules only; translated to :esm
+- [:builds :client :output-dir] translated: rebased onto the original project, where its pages load the output
+- [:builds :client :modules :client :init-fn] needs-feature: no :init-fn; a generated entry namespace can call it
+- [:builds :client :modules] needs-feature: one module with one entry; the other entries become light.lazy/loadable chunks only where the code loads them; several entries and named chunk groups are code-splitting Phase 4
+- [:builds :client :compiler-options :closure-defines] kept: --define, release only
+- [:builds :client :dev :closure-defines] dropped: light-cljs refuses :closure-defines in dev mode (a permanent deviation); turn the flags into :config or code
+- [:builds :client :build-options :ns-aliases] needs-feature: no namespace aliasing in the compiler
+
+Report: {:files 38, :spliced 2, :patches 0, :missing-goog (goog.History goog.async.nextTick), :unprintable {}, :unsafe {}, :splice-mismatch [], :edits-dropped []}
+
+#### simple: every compat/ file
+
+| File | Cause | Source bytes | light-cljs output characters |
+|---|---|---:|---:|
+| cljs/pprint.cljs | other: development library replaced by a stub | 837 | 0 |
+| cljs/spec/alpha.cljs | JVM-only macro: spec stub, specs check nothing | 605 | 0 |
+| cljs/test.cljs | JVM-only macro: cljs.test stub | 308 | 0 |
+| clojure/math.cljs | other: a library light-cljs does not ship, written over js/Math | 1,019 | 0 |
+| clojure/pprint.cljs | other: development library replaced by a stub | 840 | 0 |
+| clojure/spec/alpha.cljs | JVM-only macro: spec stub, specs check nothing | 608 | 0 |
+| clojure/test/check.cljs | JVM-only macro: test.check stub | 168 | 0 |
+| clojure/test/check/generators.cljs | JVM-only macro: test.check stub | 2,618 | 0 |
+| clojure/test/check/properties.cljs | JVM-only macro: test.check stub | 151 | 0 |
+| expound/alpha.cljs | JVM-only macro: stub of a spec library | 131 | 0 |
+| goog.cljs | Closure Library use (non-goal) | 2,209 | 198 |
+| goog/array.cljs | Closure Library use (non-goal) | 665 | 0 |
+| goog/async.cljs | Closure Library use (non-goal) | 114 | 0 |
+| goog/crypt.cljs | Closure Library use (non-goal) | 237 | 0 |
+| goog/date/Date.cljs | Closure Library use (non-goal) | 86 | 0 |
+| goog/date/UtcDateTime.cljs | Closure Library use (non-goal) | 181 | 0 |
+| goog/dom.cljs | Closure Library use (non-goal) | 410 | 0 |
+| goog/events.cljs | Closure Library use (non-goal) | 2,568 | 1,756 |
+| goog/events/EventType.cljs | Closure Library use (non-goal) | 559 | 0 |
+| goog/functions.cljs | Closure Library use (non-goal) | 1,075 | 486 |
+| goog/history/EventType.cljs | Closure Library use (non-goal) | 113 | 0 |
+| goog/i18n/uChar.cljs | Closure Library use (non-goal) | 1,131 | 0 |
+| goog/math.cljs | Closure Library use (non-goal) | 341 | 0 |
+| goog/net.cljs | Closure Library use (non-goal) | 1,602 | 0 |
+| goog/net/WebSocket/EventType.cljs | Closure Library use (non-goal) | 122 | 0 |
+| goog/object.cljs | Closure Library use (non-goal) | 775 | 1,465 |
+| goog/string.cljs | Closure Library use (non-goal) | 2,082 | 0 |
+| light/compat.cljs | compiler gap: cljs.core names light-cljs lacks (catalogue :core-gaps) | 389 | 10 |
+| malli/generator.cljs | other: development library replaced by a stub | 545 | 0 |
+| malli/sci.cljs | other: development library replaced by a stub | 202 | 0 |
+| me/flowthing/pp.cljs | other: development library replaced by a stub | 229 | 0 |
+| shadow/esm.cljs | shadow-cljs build feature | 596 | 0 |
+| shadow/lazy.cljs | shadow-cljs build feature | 280 | 0 |
+| shadow/resource.cljs | shadow-cljs build feature | 231 | 0 |
+
+#### simple: every macro the port classified
+
+| Macro | Class | Call sites | Reason |
+|---|---|---:|---|
+| reagent.debug/assert-callable | keep | 6 |  |
+| re-frame.trace/finish-trace | keep | 14 |  |
+| reagent.debug/assert-component | keep | 7 |  |
+| reagent.debug/assert-js-object | keep | 3 |  |
+| net.cgrand.macrovich/deftime | keep | 1 |  |
+| reagent.core/reaction | keep | 1 |  |
+| reagent.debug/warn | keep | 6 |  |
+| reagent.debug/dev? | keep | 6 |  |
+| re-frame.trace/with-trace | keep | 14 |  |
+| reagent.debug/warn-unless | keep | 1 |  |
+| re-frame.trace/merge-trace! | keep | 28 |  |
+| reagent.debug/assert-new-state | keep | 2 |  |
+| reagent.debug/assert-some | keep | 3 |  |
+
+#### simple: every configuration key
+
+- [:deps] translated: light-cljs resolves no dependencies: the porter vendored the reached library sources into vendor/
+- [:nrepl] translated: an nREPL listener on its own port; :host and middleware dropped (sessions are ClojureScript)
+- [:dev-http] needs-feature: a static root served at /; the dev server serves output dirs and source paths
+- [:builds :client :target] needs-feature: :browser output: light-cljs writes ES modules only; translated to :esm
+- [:builds :client :output-dir] translated: rebased onto the original project, where its pages load the output
+- [:builds :client :modules :client :init-fn] needs-feature: no :init-fn; a generated entry namespace can call it
+- [:builds :client :modules] needs-feature: one module with one entry; the other entries become light.lazy/loadable chunks only where the code loads them; several entries and named chunk groups are code-splitting Phase 4
+
+Report: {:files 30, :spliced 0, :patches 0, :missing-goog (goog.async.nextTick), :unprintable {}, :unsafe {}, :splice-mismatch [], :edits-dropped []}

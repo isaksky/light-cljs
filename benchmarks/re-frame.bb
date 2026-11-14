@@ -371,28 +371,50 @@
 ;; ---------------------------------------------------------------------------
 ;; inventory
 
+(def compat-causes
+  "The cause of each compat shim, by path prefix under compat/ (first match)."
+  [["light/compat" "compiler gap: cljs.core names light-cljs lacks (catalogue :core-gaps)"]
+   ["goog" "Closure Library use (non-goal)"]
+   ["shadow/" "shadow-cljs build feature"]
+   ["cljs/spec/" "JVM-only macro: spec stub, specs check nothing"]
+   ["clojure/spec/" "JVM-only macro: spec stub, specs check nothing"]
+   ["expound/" "JVM-only macro: stub of a spec library"]
+   ["cljs/test" "JVM-only macro: cljs.test stub"]
+   ["clojure/test/check" "JVM-only macro: test.check stub"]
+   ["clojure/math" "other: a library light-cljs does not ship, written over js/Math"]
+   ["" "other: development library replaced by a stub"]])
+
+(defn compat-cause [rel] (some (fn [[prefix cause]] (when (str/starts-with? rel prefix) cause)) compat-causes))
+
 (defn inventory
-  "Every file of the port's compat/ with its size, and the port report's
-  rewrites: macro classes, config dispositions, missing goog names."
-  [app]
+  "Every file of the port's compat/ with its cause and the characters it puts
+  in a source-mapped light-cljs release (0: not reached), then every rewrite
+  the port report records: macro classes, configuration dispositions, spliced
+  expansions and missing goog names."
+  [app binary]
   (let [dir (port-dir app)
-        report (edn/read-string (slurp (fs/file dir "port-report.edn")))]
-    (println (str "\n### " app ": compat/ files\n"))
-    (println "| File | Bytes |")
-    (println "|---|---:|")
-    (doseq [f (sort (map str (fs/glob (fs/path dir "compat") "**.{cljs,cljc,js}")))]
-      (println (format "| %s | %,d |" (str (fs/relativize (fs/path dir "compat") f)) (fs/size f))))
-    (println (str "\n### " app ": macros not kept as source\n"))
+        report (edn/read-string (slurp (fs/file dir "port-report.edn")))
+        emitted (:light (origins app binary))
+        emitted-of (fn [rel] (reduce + 0 (for [[k v] emitted
+                                               :when (and (string? k) (str/ends-with? k (str "compat/" rel)))]
+                                           v)))]
+    (println (str "\n### " app ": every compat/ file\n"))
+    (println "| File | Cause | Source bytes | light-cljs output characters |")
+    (println "|---|---|---:|---:|")
+    (doseq [f (sort (map str (fs/glob (fs/path dir "compat") "**.{cljs,cljc,js}")))
+            :let [rel (str (fs/relativize (fs/path dir "compat") f))]]
+      (println (format "| %s | %s | %,d | %,d |" rel (compat-cause rel) (fs/size f) (emitted-of rel))))
+    (println (str "\n### " app ": every macro the port classified\n"))
     (println "| Macro | Class | Call sites | Reason |")
     (println "|---|---|---:|---|")
-    (doseq [[m {:keys [class sites reasons]}] (:macros report) :when (not= :keep class)]
+    (doseq [[m {:keys [class sites reasons]}] (:macros report)]
       (println (format "| %s | %s | %d | %s |" m (name class) sites (str/join "; " reasons))))
-    (println (str "\n### " app ": configuration keys not kept\n"))
-    (doseq [{:keys [key disposition why]} (:config report) :when (not= :kept disposition)]
+    (println (str "\n### " app ": every configuration key\n"))
+    (doseq [{:keys [key disposition why]} (:config report)]
       (println (format "- %s %s: %s" key (name disposition) why)))
     (println (str "\nReport: " (pr-str (select-keys (:report report)
                                                     [:files :spliced :patches :missing-goog :unprintable
-                                                     :unsafe :splice-mismatch]))))))
+                                                     :unsafe :splice-mismatch :edits-dropped]))))))
 
 ;; ---------------------------------------------------------------------------
 
@@ -403,7 +425,7 @@
     "port" (doseq [app apps] (port app args))
     "size" (doseq [app apps] (print-size (size app (light-binary args))))
     "time" (doseq [app apps] (timing app (light-binary args) (parse-long (option args "--runs" "5"))))
-    "inventory" (doseq [app apps] (inventory app))
+    "inventory" (doseq [app apps] (inventory app (light-binary args)))
     "origins" (doseq [app apps] (print-origins app (origins app (light-binary args))))
     (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... | time APP... [--runs N] | inventory APP...  [--light BIN] [--porter DIR]")
         (System/exit 1))))

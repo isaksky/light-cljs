@@ -20,6 +20,11 @@
          (= (.getTime (#'r/read-date "2000-01-01T00:00:00Z")) 946684800000)
          (= (#'r/read-queue [1 2]) #queue [1 2])
          (= (#'r/read-uuid "550e8400-e29b-41d4-a716-446655440000")
-            #uuid "550e8400-e29b-41d4-a716-446655440000"))))
+            #uuid "550e8400-e29b-41d4-a716-446655440000")
+         (= (map (fn [f x] (try (f x) :accepted (catch :default e (ex-message e))))
+                 [#'r/read-date #'r/read-queue #'r/read-uuid] [1 '(1 2) 1])
+            ["Instance literal expects a string for its timestamp."
+             "Queue literal expects a vector for its elements."
+             "UUID literal expects a string as its representation."]))))
 (defmacro macro-contract [] (contracts))
 (and (contracts) (macro-contract))
