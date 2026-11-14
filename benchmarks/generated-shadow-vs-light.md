@@ -2584,9 +2584,9 @@ Findings, recorded as found:
 1. **Appending is now close to linear in both shapes** and a quarter of a
    second or less at 800k (0.25 s plain, 0.19 s re-frame), from 1.0 s and
    0.34 s for `fc31d229`. What the stage still does per append is
-   proportional to what the unit added, apart from small per-namespace
-   lists (program namespaces, host globals, lazy-load targets) that these
-   projects keep short.
+   proportional to what the unit added, apart from scans of the program's
+   namespace, host-global and lazy-load target lists, which the measured
+   growth shows are not significant in these projects.
 2. **The remaining 10% over 4.0x is shared by the whole build** (wall time
    and analysis grow about as much in the plain shape), so no further term
    was looked for in the append stage. The re-frame shape's analysis grows
