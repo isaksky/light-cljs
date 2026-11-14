@@ -2311,3 +2311,100 @@ Findings, recorded as found:
    (`time.deferred-units-ms` about 12 s).
 4. **The untraced loop time now grows within light-cljs-995's 4.5x** in
    both shapes (4.20x and 4.34x), since the reader views it freed are gone.
+
+## A stale candidate costs its manifest, unreserved machine (November 14, 2026, light-cljs-1003)
+
+**Summary.** A lookup now reads a candidate's header and manifest, compares
+the key, and reads the rest and checks the content hash only for the
+candidate that matches (docs/compiler-cache.md, "Lookup"). Before, a
+namespace that missed read and hashed every candidate its index retains in
+full, and each earlier edit added one more. With the declaration views of
+light-cljs-347, the leaf edit light-cljs-1000 measured misses only 4
+namespaces at re-frame 400k and 3 at plain 400k, so there the change moves
+**bytes read per edit rebuild from 176.0, 177.7 and 179.4 MB to 174.8,
+175.1 and 175.5 MB** (plain: 189.1, 189.4, 189.6 to 188.9 flat), and no wall
+time beyond the spread. An edit that does miss widely, a new protocol
+appended to the same leaf (2,127 misses, as before light-cljs-347), shows
+what light-cljs-1003 found: **bytes read 176, 270 and 363 MB before, 86.5,
+90.5 and 94.5 MB after**, rounds one to three; validation fell in each of
+the six paired builds, by 0.04 to 1.80 s, but stays noisy (1.1 to 3.3 s
+after, 2.0 to 4.2 s before). What is left of it is the hits' reads and hashes
+and the key each candidate computes, not stale bytes.
+
+Setup. Parent: the immutable `bin/light-cljs-a0383188` (SHA-256
+`6320b68207a37437...`, the landed code of light-cljs-347). Change: a release
+build of `42a7e7f6` (the change on master `446f68ed`), kept as the immutable
+`bin/light-cljs-42a7e7f6` (SHA-256 `d8b06873be2f3638...`). Projects: copies
+of `research/shadow-credibility/projects/{re-frame,workload}-400k-seed42-1000`,
+leaves `src/workload/bouskoknu.cljs` and `src/workload/babomhol.cljs`. Each
+build ran with the binary's default job count. Raw reports, EDN and
+`--stats` output are in `research/shadow-credibility/cache-1003/`
+(gitignored). **The machine was not reserved:** two other workers
+(light-cljs-994 and light-cljs-998) built and tested throughout; the load
+before each build is in the tables.
+
+### The leaf edit, compare.bb
+
+`compare.bb DIR --light BIN --light-only --leaf LEAF --runs 3
+--skip-unchanged --max-load 1000 --max-repeats 0 --stats` (the new `--stats`
+records each light-cljs build's counters): three clean builds, one untimed
+cache-filling build, then three rounds on the same cache, each appending a
+different unused `defn`. One binary after the other; the re-frame pair ran
+twice, the second time in the opposite order. Every output passed the oracle
+and the waste check, and both binaries wrote the same bytes (11,029,283 and
+6,740,651).
+
+| Project | Binary | Clean build | Rebuild after a one-file edit | User CPU | Peak memory | Load before the edits | Bytes read, rounds 1-3 | Validation, rounds 1-3 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| re-frame 400k | parent | 18.39 s (18.39-18.56) | 8.94 s (8.86-11.06) | 8.21 s | 2.294 GB | 5.40-6.46 | 176.0, 177.7, 179.4 MB | 2.20, 1.01, 1.02 s |
+| re-frame 400k | change | 18.29 s (18.20-19.31) | 10.13 s (9.44-10.19) | 8.26 s | 2.329 GB | 4.00-4.10 | 174.8, 175.1, 175.5 MB | 1.94, 1.90, 1.16 s |
+| re-frame 400k | change, again | 19.50 s (19.34-19.80) | 8.97 s (8.90-9.02) | 8.20 s | 2.337 GB | 4.68-4.95 | 174.8, 175.1, 175.5 MB | 1.06, 1.03, 1.05 s |
+| re-frame 400k | parent, again | 18.34 s (17.85-18.53) | 8.94 s (8.75-11.52) | 8.18 s | 2.330 GB | 3.65-5.52 | 176.0, 177.7, 179.4 MB | 1.40, 1.04, 1.04 s |
+| plain 400k | parent | 15.15 s (14.79-15.75) | 6.45 s (6.18-6.48) | 6.21 s | 1.741 GB | 3.22-5.51 | 189.1, 189.4, 189.6 MB | 0.81, 0.79, 0.78 s |
+| plain 400k | change | 15.45 s (15.25-15.78) | 6.08 s (6.01-6.47) | 5.90 s | 1.724 GB | 4.57-4.74 | 188.9, 188.9, 188.9 MB | 0.93, 0.76, 0.76 s |
+
+The parent's bytes read grow by 1.7 MB a round (re-frame) and 0.25 MB
+(plain): the four and three missed namespaces' stale candidates, read whole.
+The change's re-frame reads still grow by 0.35 MB a round, the stale
+candidates' manifests (about 90 KB each for these namespaces). The edit
+rebuilds' medians differ by less than their ranges; the first change run's
+1.2 s is in its validation (1.9 s against 1.0 to 1.1 s in the repeat).
+
+### A declaration edit that misses 2,127 namespaces
+
+The same re-frame copy, each binary on its own cache directory filled by one
+untimed build; each round appended a different `defprotocol` to the leaf
+(the edit registers a declaration, so every later source-macro user misses,
+1,550 for the view and 576 for a dependency, as light-cljs-1000's leaf edit
+did before light-cljs-347), and both binaries built it, alternated, then one
+`--no-cache` build. Every build of a round, cached or not, printed the same
+output hash (`9fc4ee30f7586ba4...`; the unused protocol is not emitted). Two
+repetitions (`protocol/`, `protocol-2/`):
+
+| Repetition | Round | Binary | Wall time | User CPU | Peak memory | Load before | Bytes read | Validation |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 | parent | 28.32 s | 25.59 s | 2.564 GB | 10.28 | 176.0 MB | 2.75 s |
+| 1 | 1 | change | 27.87 s | 25.22 s | 2.534 GB | 10.58 | 86.5 MB | 2.45 s |
+| 1 | 2 | change | 28.67 s | 24.64 s | 2.566 GB | 11.29 | 90.5 MB | 3.25 s |
+| 1 | 2 | parent | 30.12 s | 25.82 s | 2.540 GB | 11.43 | 269.5 MB | 4.08 s |
+| 1 | 3 | parent | 28.86 s | 25.11 s | 2.552 GB | 11.96 | 363.0 MB | 3.33 s |
+| 1 | 3 | change | 28.09 s | 23.63 s | 2.546 GB | 10.64 | 94.5 MB | 3.29 s |
+| 2 | 1 | parent | 26.81 s | 24.24 s | 2.546 GB | 8.30 | 176.0 MB | 2.51 s |
+| 2 | 1 | change | 26.10 s | 24.08 s | 2.542 GB | 10.49 | 86.5 MB | 1.96 s |
+| 2 | 2 | change | 24.44 s | 21.51 s | 2.494 GB | 6.45 | 90.5 MB | 2.45 s |
+| 2 | 2 | parent | 27.87 s | 23.46 s | 2.544 GB | 5.08 | 269.5 MB | 4.25 s |
+| 2 | 3 | parent | 24.51 s | 22.31 s | 2.536 GB | 5.12 | 363.0 MB | 1.96 s |
+| 2 | 3 | change | 23.53 s | 21.35 s | 2.541 GB | 4.94 | 94.5 MB | 1.13 s |
+
+- **Bytes read are flat.** The parent reads 93 MB more each round, one more
+  stale candidate per missed namespace read whole; the change reads 4 MB
+  more, its manifest. In round one the change already reads half: every
+  missed namespace has the fill's candidate, now stale.
+- **Validation is lower, not flat.** The change's validation is below the
+  parent's in all six pairs (median 2.2 s against 3.0 s), but it moves by
+  up to 2 s between rounds with the load, as the parent's does. The rest of
+  validation is reading and hashing the 3,965 hits' artifacts (about 82 MB,
+  hashed again section by section when decoded) and computing a key for
+  every candidate tried, stale ones included; neither depends on past edits.
+- **Wall time.** The change's edit rebuild is 0.4 to 3.4 s faster in each
+  pair (median 26.99 s against 28.09 s), inside the load's swing.
