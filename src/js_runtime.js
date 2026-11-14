@@ -1304,7 +1304,7 @@
     if (delays.has(value)) return deferredValue(delays.get(value));
     if (vars.has(value)) return vars.get(value).get.call(null);
     if (atoms.has(value) || volatiles.has(value)) return value.state;
-    if (!isReduced(value)) throw new Error("value does not support deref");
+    if (!isReduced(value)) throw new Error("No protocol method IDeref.-deref defined for this value");
     return reducedValues.get(value);
   }
   //@unit Loadable

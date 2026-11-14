@@ -182,6 +182,20 @@ fn primitive_programs_still_omit_the_runtime() {
     assert!(js.len() < 200);
 }
 
+/// Dereferencing a value without `IDeref` names the protocol method, as
+/// upstream's `missing-protocol` does, so code matching the message (re-frame's
+/// own tests expect `#"No protocol method IDeref"`) sees it.
+#[test]
+fn deref_of_a_value_without_ideref_names_the_protocol_method() {
+    let missing = "\"No protocol method IDeref.-deref defined for this value\"";
+    assert_eq!(
+        run(
+            "(into-array (map (fn [x] (try @x (catch :default e (.-message e)))) [nil 1 [1] (js-obj)]))"
+        ),
+        format!("[{missing},{missing},{missing},{missing}]\n")
+    );
+}
+
 /// Complete sources in both compiler phases and both host lifecycles, each run in
 /// QuickJS and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
