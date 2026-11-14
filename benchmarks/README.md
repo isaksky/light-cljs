@@ -63,7 +63,26 @@ per build and repeats rounds, which is the gate working, not a hang. When the
 machine cannot be had to itself, do not wait for it: pass `--max-load 1000`
 so the gate never blocks, and label the results unreserved with the load range
 the report records before every build (the 5-round baseline of November 13,
-2026 ran this way). `--light-only` times light-cljs
+2026 ran this way).
+
+`--shadow-heaps 1g,1536m,2g,...` sweeps shadow-cljs's maximum heap instead:
+clean builds only, one shadow build per size in each round (alternated with
+light-cljs like the compilers above), its JVM given `-J-Xmx` after the
+`:shadow` alias's own `-Xmx8g` (the later flag wins, so the project stays
+unedited), `-XX:+ExitOnOutOfMemoryError` and a garbage-collection log. A failed
+build is recorded (with whether it ran out of memory), not fatal; every build
+that succeeds has its output checked. `--light-memory-limits N,...` adds light
+builds at each `--macro-memory-limit`. The report gives each configuration's
+medians and stop-the-world GC pauses, shadow's smallest heap with no failed
+build within 10% of its best median wall time, and light-cljs's peak memory
+against shadow's there:
+
+```sh
+bb benchmarks/generated-project/compare.bb $R/projects/workload-200k-seed42 --light $R/bin/light-cljs-SHA \
+  --runs 3 --max-load 1000 --shadow-heaps 1g,1536m,2g,3g,4g,8g --light-memory-limits 67108864
+```
+
+`--light-only` times light-cljs
 alone; `bb compare.bb` with no arguments lists every option. Results:
 [generated-shadow-vs-light.md](generated-shadow-vs-light.md).
 

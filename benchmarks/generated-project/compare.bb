@@ -42,6 +42,11 @@
     "                      alias in deps.edn, otherwise \"npx shadow-cljs\")"
     "  --light-commit SHA  the commit the binary was built from (from a light-cljs-SHA name)"
     "  --light-only        build with light-cljs alone"
+    "  --shadow-heaps LIST sweep shadow's maximum heap: clean builds only, one shadow build per"
+    "                      JVM size in LIST (-Xmx syntax, e.g. 1g,1536m,8g) instead of one; a"
+    "                      failed build (OutOfMemoryError) is recorded, not fatal; needs clojure"
+    "  --light-memory-limits LIST  with the sweep, also light builds at each --macro-memory-limit"
+    "                      in LIST (bytes), besides the one light-cljs.edn configures"
     "  --out PREFIX        write PREFIX.edn and PREFIX.md (PROJECT-DIR/compare-result)"]))
 
 (def defaults {:runs 5 :max-load 2.0 :load-wait 900 :max-repeats 3 :warm-jvm 0})
@@ -67,7 +72,11 @@
    "--warm-jvm" [:warm-jvm (number-option parse-long (complement neg?) "a non-negative integer")]
    "--leaf" [:leaf identity]
    "--shadow-leaf" [:shadow-leaf identity]
-   "--out" [:out absolute]})
+   "--out" [:out absolute]
+   "--shadow-heaps" [:shadow-heaps (number-option #(let [v (str/split % #"," -1)] (when (every? (partial re-matches #"[0-9]+[kKmMgG]") v) v))
+                                                  seq "comma-separated JVM sizes such as 1g,1536m")]
+   "--light-memory-limits" [:light-memory-limits (number-option #(let [v (map parse-long (str/split % #"," -1))] (when (every? some? v) (vec v)))
+                                                                (partial every? pos?) "comma-separated byte counts")]})
 
 (defn parse-options [args]
   (loop [[arg & more] args options defaults]
@@ -142,6 +151,29 @@
 
 (defn timed [dir cmd] (first (timed-with-output dir cmd)))
 
+(defn timed-or-failed
+  "timed, but a build that exits non-zero gives its sample marked :failed, with
+  :oom when its output names an OutOfMemoryError, instead of throwing."
+  [dir cmd]
+  (let [result (apply process/sh {:dir (str dir)} "/usr/bin/time" (if mac? "-l" "-v") cmd)
+        err (:err result)
+        ;; the build's own messages: what precedes time's report
+        own (str (:out result) (first (str/split err #"(?m)^\s*[0-9.]+ real |^\tCommand being timed:" 2)))]
+    (cond-> (parse-time mac? err)
+      (not (zero? (:exit result)))
+      (assoc :failed true :exit (:exit result) :oom (str/includes? own "OutOfMemoryError")
+             :error (subs own (max 0 (- (count own) 1500)))))))
+
+(defn parse-gc-log
+  "Total stop-the-world pause seconds, pause count and full collections from a
+  JVM -Xlog:gc log (lines such as `GC(3) Pause Young (Normal) ... 12.345ms`)."
+  [text]
+  (let [pauses (keep #(when (str/includes? % " Pause ")
+                        (some-> (re-find #"([0-9.]+)ms\s*$" %) second parse-double))
+                     (str/split-lines text))]
+    {:gc-pause-s (/ (reduce + 0.0 pauses) 1000) :gc-pauses (count pauses)
+     :full-gcs (count (re-seq #" Pause Full " text))}))
+
 ;; Statistics
 
 (defn median [xs]
@@ -152,14 +184,20 @@
 
 (def measures [:wall-s :user-s :system-s :cpu-s :peak-memory-gb])
 
+(def gc-measures [:gc-pause-s :gc-pauses :full-gcs])
+
 (defn summary
-  "Median and range of every measure (:cpu-s is user plus system CPU) and of
-  the 1-minute load average before each build."
+  "Median and range of every measure (:cpu-s is user plus system CPU, and the
+  GC measures when the samples have them) over the builds that did not fail,
+  the number that failed, and the 1-minute load average before each build."
   [samples discarded]
-  (let [samples (mapv #(assoc % :cpu-s (+ (:user-s %) (:system-s %))) samples)]
-    (into {:runs (count samples) :load-1m (spread (map (comp first :load) samples))
+  (let [samples (mapv #(assoc % :cpu-s (+ (or (:user-s %) 0) (or (:system-s %) 0))) samples)
+        ok (remove :failed samples)]
+    (into {:runs (count samples) :failures (count (filter :failed samples))
+           :load-1m (spread (map (comp first :load) samples))
            :samples samples :discarded (vec discarded)}
-          (for [m measures] [m (spread (map m samples))]))))
+          (for [m (concat measures (filter (fn [m] (some m samples)) gc-measures)) :when (seq ok)]
+            [m (spread (map m ok))]))))
 
 ;; Rounds
 
@@ -169,7 +207,9 @@
   every later round reverses the previous one's, so the compilers alternate and
   neither always goes first. (prepare! n) runs before each attempt at a round
   with a number never used before (the one-file edit writes its edit there); a
-  tool's :before runs before its build (the clean build cleans there). Every
+  tool's :before runs before its build (the clean build cleans there); a tool
+  with :may-fail records a failed build instead of throwing, and its
+  (:after sample start-millis) returns entries merged into the sample. Every
   build waits for the load gate. A round in which a build started above
   :max-load is discarded and repeated, at most :max-repeats times; its last
   attempt is then kept, marked :over-max-load."
@@ -180,10 +220,13 @@
             :let [order (if (even? round) tools (vec (rseq tools)))]]
       (loop [repeat 0]
         (prepare! (swap! attempts inc))
-        (let [samples (vec (for [[position {:keys [tool dir cmd before]}] (map-indexed vector order)]
+        (let [samples (vec (for [[position {:keys [tool dir cmd before may-fail after]}] (map-indexed vector order)]
                              (do (when before (before))
                                  (let [load (await-load options)
-                                       sample (assoc (timed dir cmd) :load load :round round :position position)]
+                                       started (System/currentTimeMillis)
+                                       sample (if may-fail (timed-or-failed dir cmd) (timed dir cmd))
+                                       sample (cond-> (assoc sample :load load :round round :position position)
+                                                after (merge (after sample started)))]
                                    (log (name tool) (str/join " " (take-last 3 cmd)) "round" round (pr-str sample))
                                    [tool sample]))))
               over? (some (fn [[_ sample]] (> (first (:load sample)) max-load)) samples)]
@@ -335,6 +378,74 @@
                                  (fn [_] (verify-generated shadow-dir expected "out/shadow.js" "out/shadow.js"))
                                  #(written-js (fs/path shadow-dir (or (:output-to build) (:output-dir build))) %))})}))))
 
+;; Memory-limit sweep
+
+(defn jvm-size-bytes
+  "Bytes of a -Xmx size such as 1536m or 8g."
+  [size]
+  (let [[_ n unit] (re-matches #"([0-9]+)([kKmMgG])" size)]
+    (* (parse-long n) ({"k" 1024 "m" (* 1024 1024) "g" (* 1024 1024 1024)} (str/lower-case unit)))))
+
+(defn- gib-text [bytes]
+  (let [g (/ (double bytes) (* 1024 1024 1024))]
+    (if (>= g 1) (str (str/replace (format "%.2f" g) #"\.?0+$" "") " GiB") (str (quot bytes (* 1024 1024)) " MiB"))))
+
+(defn sweep-tools
+  "The tools of a memory-limit sweep, clean builds only, each with :label,
+  :limit (its limit as text) and :may-fail: the light build as light-cljs.edn
+  configures it, one per --light-memory-limits value (its --macro-memory-limit)
+  and, replacing the one shadow build, one per --shadow-heaps size, whose JVM
+  gets -Xmx (after the :shadow alias's own, so it wins), exits on an
+  OutOfMemoryError and logs its collections to a file in gc-dir. Every build
+  that succeeds has its output checked as the clean build's is; a shadow
+  build's sample also gets its garbage-collection pauses."
+  [{:keys [dir shadow-heaps light-memory-limits]} {:keys [tools light-build shadow-cmd]} gc-dir]
+  (let [{:keys [light shadow]} (into {} (map (juxt :tool identity) tools))
+        configured (get-in (release-build (fs/file dir "light-cljs.edn") light-build) [:compiler-options :macro-memory-limit])
+        checked (fn [{:keys [output]}] (fn [sample started] (when-not (:failed sample) {:output (output started)})))
+        light-tool (fn [tool limit cmd] (assoc light :tool tool :label "light-cljs" :limit limit :clean-cmd cmd
+                                              :may-fail true :after (checked light)))]
+    (when (and shadow-heaps (not= "clojure" (first shadow-cmd)))
+      (throw (ex-info "--shadow-heaps passes -J-Xmx to the Clojure CLI; the shadow command is not clojure" {:shadow-cmd shadow-cmd})))
+    (vec
+     (concat
+      [(light-tool :light (if configured
+                            (str "light-cljs.edn's :macro-memory-limit " configured " (" (gib-text configured) ")")
+                            "its default :macro-memory-limit")
+                   (:clean-cmd light))]
+      (for [n light-memory-limits]
+        (light-tool (keyword (str "light-mml" n)) (str "--macro-memory-limit " n " (" (gib-text n) ")")
+                    (into (:clean-cmd light) ["--macro-memory-limit" (str n)])))
+      (for [size shadow-heaps :when shadow
+            :let [log (str (fs/path gc-dir (str "gc-" size ".log")))
+                  [clojure & more] (:clean-cmd shadow)]]
+        (assoc shadow :tool (keyword (str "shadow-xmx" size)) :label "shadow-cljs"
+               :limit (str "-Xmx" size " (" (gib-text (jvm-size-bytes size)) ")") :heap-bytes (jvm-size-bytes size)
+               :clean-cmd (into [clojure (str "-J-Xmx" size) "-J-XX:+ExitOnOutOfMemoryError" (str "-J-Xlog:gc:file=" log)] more)
+               :before #(do ((:clean! shadow)) (fs/delete-if-exists log))
+               :may-fail true
+               :after (let [check (checked shadow)]
+                        (fn [sample started]
+                          (merge (when (fs/exists? log) (parse-gc-log (slurp log))) (check sample started))))))))))
+
+(defn sweep-verdict
+  "shadow's best median wall time over the heaps where no build failed, the
+  smallest such heap within 10% of it (the smallest adequate heap), and its
+  peak memory beside every light build's: {:best tool :adequate tool
+  :ratios [{:light tool :adequate r :largest r}]}, ratios light/shadow peak
+  memory medians, :largest at the largest heap with no failed build."
+  [tools by-tool]
+  (let [ok? #(let [s (by-tool (:tool %))] (and s (zero? (:failures s)) (:wall-s s)))
+        wall #(get-in by-tool [(:tool %) :wall-s :median])
+        peak #(get-in by-tool [(:tool %) :peak-memory-gb :median])
+        heaps (sort-by :heap-bytes (filter #(and (:heap-bytes %) (ok? %)) tools))
+        best (when (seq heaps) (apply min-key wall heaps))
+        adequate (first (filter #(<= (wall %) (* 1.1 (wall best))) heaps))
+        largest (last heaps)]
+    {:best (:tool best) :adequate (:tool adequate) :largest (:tool largest)
+     :ratios (vec (for [t tools :when (and (= "light-cljs" (:label t)) (ok? t) adequate)]
+                    {:light (:tool t) :adequate (/ (peak t) (peak adequate)) :largest (/ (peak t) (peak largest))}))}))
+
 ;; Versions
 
 (defn- command-text [& cmd]
@@ -411,24 +522,87 @@
 
 (defn- ratio [a b] (let [r (/ (double a) b)] (format (if (< r 0.1) "%.3f" "%.2f") r)))
 
+(defn- environment-line [{:keys [light-cljs machine] :as environment}]
+  (str "light-cljs " (if (:commit light-cljs) (str "`" (:commit light-cljs) "`") "(commit not named)")
+       " (`" (fs/file-name (:binary light-cljs)) "`, SHA-256 `" (subs (:sha256 light-cljs) 0 16) "...`)"
+       (when (:shadow-cljs environment) (str ", shadow-cljs " (:shadow-cljs environment)))
+       ", " (:jdk environment) ", Node " (:node environment) ", " (:clojure-cli environment)
+       ", Babashka " (:babashka environment) "; " (:cpu machine) (when (:model machine) (str " (" (:model machine) ")"))
+       ", " (:cpus machine) " CPUs, " (:memory-gib machine) " GiB, " (:os environment) ", " (:date environment) "."))
+
+(defn- builds-text [project]
+  (str "Release builds of " (str/join " and " (for [[k file] [[:light-build "light-cljs.edn"] [:shadow-build "shadow-cljs.edn"]]
+                                                  :let [id (project k)] :when id]
+                                              (str file " build `" id "`")))))
+
+(defn- output-row [label o]
+  (str "| " label " | " (format "%,d" (:bytes o)) " | " (format "%,d" (:gzip o)) " | "
+       (if (:checksum o)
+         (str "oracle " (:checksum o) ", waste " (if (:waste-ok o) "ok" "FAILED"))
+         (str (:files o) " .js file(s) written")) " |"))
+
+(defn sweep-markdown
+  "The report of a memory-limit sweep: one row per build configuration, the
+  smallest adequate shadow heap and the light/shadow peak memory ratios."
+  [{:keys [environment options project scenarios outputs]}]
+  (let [tools (:sweep-tools project)
+        by-tool (:uncached scenarios)
+        {:keys [best adequate largest ratios]} (sweep-verdict tools by-tool)
+        by-id (into {} (map (juxt :tool identity) tools))
+        name-of #(let [t (by-id %)] (str (:label t) " at " (:limit t)))
+        best-wall (get-in by-tool [best :wall-s :median])
+        gb #(get-in by-tool [% :peak-memory-gb :median])]
+    (str/join
+     "\n"
+     (concat
+      [(environment-line environment)
+       ""
+       (str (builds-text project) ", clean builds only. Rounds: " (:runs options)
+            ", the configurations alternated (each round reverses the previous round's order)"
+            ". Each build waited for a 1-minute load average of at most " (:max-load options)
+            ". Medians over the builds that succeeded, with ranges in brackets; GC pauses are the"
+            " shadow JVM's stop-the-world collection pauses in seconds, with full collections.")
+       ""
+       "| Compiler | Limit | Wall time | User CPU | System CPU | Peak memory | GC pauses | Failed | Wall time / shadow's best | 1-minute load before |"
+       "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+      (for [{:keys [tool label limit]} tools :let [s (by-tool tool)] :when s]
+        (str "| " label " | " limit " | "
+             (if (:wall-s s)
+               (str (spread-text (:wall-s s) 2 "s") " | " (spread-text (:user-s s) 2 "s") " | "
+                    (spread-text (:system-s s) 2 "s") " | " (spread-text (:peak-memory-gb s) 3 "GB") " | "
+                    (if (:gc-pause-s s)
+                      (str (spread-text (:gc-pause-s s) 2 "s") ", " (long (:median (:full-gcs s))) " full")
+                      "-"))
+               "- | - | - | - | -")
+             " | " (:failures s) " of " (:runs s)
+             (let [ooms (count (filter :oom (:samples s)))] (when (pos? ooms) (str " (" ooms " OutOfMemoryError)")))
+             " | " (if (and best-wall (:wall-s s)) (ratio (:median (:wall-s s)) best-wall) "-")
+             " | " (format "%.2f-%.2f" (double (:min (:load-1m s))) (double (:max (:load-1m s)))) " |"))
+      [""
+       (if adequate
+         (str "shadow-cljs's best median wall time is " (format "%.2f s" best-wall) " (" (name-of best) "); its smallest heap"
+              " with no failed build and a median within 10% of that is " (:limit (by-id adequate))
+              (format ", %.2f s at %.3f GB peak memory." (get-in by-tool [adequate :wall-s :median]) (gb adequate)))
+         "No shadow-cljs heap completed every build.")]
+      (for [{:keys [light] :as r} ratios]
+        (str "light-cljs at " (:limit (by-id light)) (format ": %.3f GB peak memory, " (gb light))
+             (format "%.2fx" (:adequate r)) " shadow-cljs's at its smallest adequate heap and "
+             (format "%.2fx" (:largest r)) " at " (:limit (by-id largest)) "."))
+      ["" "| Output | Bytes | gzip -9 bytes | Checked |" "| --- | --- | --- | --- |"]
+      (for [{:keys [tool]} tools :let [o (get-in outputs [:uncached tool])] :when o]
+        (output-row (name-of tool) o))
+      [""]))))
+
 (defn markdown [{:keys [environment options project scenarios outputs warm-jvm]}]
-  (let [{:keys [light-cljs machine]} environment
-        tools (filter #(get-in scenarios [:uncached %]) [:light :shadow])
+  (let [tools (filter #(get-in scenarios [:uncached %]) [:light :shadow])
         repeated (reduce + (for [[_ by-tool] scenarios [_ s] by-tool] (count (:discarded s))))
         marked (count (for [[_ by-tool] scenarios [_ s] by-tool sample (:samples s) :when (:over-max-load sample)] sample))]
     (str/join
      "\n"
      (concat
-      [(str "light-cljs " (if (:commit light-cljs) (str "`" (:commit light-cljs) "`") "(commit not named)")
-            " (`" (fs/file-name (:binary light-cljs)) "`, SHA-256 `" (subs (:sha256 light-cljs) 0 16) "...`)"
-            (when (:shadow-cljs environment) (str ", shadow-cljs " (:shadow-cljs environment)))
-            ", " (:jdk environment) ", Node " (:node environment) ", " (:clojure-cli environment)
-            ", Babashka " (:babashka environment) "; " (:cpu machine) (when (:model machine) (str " (" (:model machine) ")"))
-            ", " (:cpus machine) " CPUs, " (:memory-gib machine) " GiB, " (:os environment) ", " (:date environment) ".")
+      [(environment-line environment)
        ""
-       (str "Release builds of " (str/join " and " (for [[k file] [[:light-build "light-cljs.edn"] [:shadow-build "shadow-cljs.edn"]]
-                                                       :let [id (project k)] :when id]
-                                                   (str file " build `" id "`")))
+       (str (builds-text project)
             ". Rounds per scenario: " (:runs options)
             (when (= 2 (count tools)) ", the compilers alternated (each round reverses the previous round's order)")
             ". Each build waited for a 1-minute load average of at most " (:max-load options)
@@ -456,18 +630,34 @@
       ["" "| Output | Compiler | Bytes | gzip -9 bytes | Checked |" "| --- | --- | --- | --- | --- |"]
       (for [[scenario label] scenario-labels tool tools
             :let [o (get-in outputs [scenario tool])] :when o]
-        (str "| " label " | " (tool-labels tool) " | " (format "%,d" (:bytes o)) " | " (format "%,d" (:gzip o)) " | "
-             (if (:checksum o)
-               (str "oracle " (:checksum o) ", waste " (if (:waste-ok o) "ok" "FAILED"))
-               (str (:files o) " .js file(s) written")) " |"))
+        (output-row (str label " | " (tool-labels tool)) o))
       (when-let [{:keys [builds process]} warm-jvm]
         ["" (str "shadow-cljs in one JVM (" (count builds) " release builds, as a running server): "
                  (str/join ", " (map #(format "%.2f s (%.1f s CPU, load %.2f)" (:wall-s %) (:cpu-s %) (:load-1m %)) builds))
                  (format "; the JVM's peak memory %.3f GB" (:peak-memory-gb process)) ".")])
       [""]))))
 
+(defn sweep
+  "The memory-limit sweep's clean-build rounds over sweep-tools: {:tools ...
+  :uncached summaries :outputs the last successful build's checked output per
+  tool}."
+  [options project]
+  (let [gc-dir (fs/create-temp-dir {:prefix "compare-gc-"})]
+    (try
+      (let [tools (sweep-tools options project gc-dir)
+            uncached (rounds options (constantly nil)
+                             (mapv #(-> (select-keys % [:tool :dir :may-fail :after])
+                                        (assoc :cmd (:clean-cmd %) :before (or (:before %) (:clean! %))))
+                                   tools))]
+        {:tools tools :uncached uncached
+         :outputs (into {} (for [[tool s] uncached :let [o (some :output (rseq (:samples s)))] :when o] [tool o]))})
+      (finally (fs/delete-tree gc-dir)))))
+
 (defn main [args]
   (let [options (parse-options args)
+        sweep? (or (:shadow-heaps options) (:light-memory-limits options))
+        _ (when (and sweep? (or (:leaf options) (pos? (:warm-jvm options))))
+            (throw (ex-info "The memory-limit sweep times clean builds only; drop --leaf and --warm-jvm" {})))
         {:keys [tools generated?] :as project} (project options)
         environment (environment options (when-let [cmd (:shadow-cmd project)] ; untimed: fetches dependencies
                                            (shadow-version (:shadow-dir project) cmd)))
@@ -475,29 +665,38 @@
         build-tools (fn [cmd-key before?] (mapv #(cond-> {:tool (:tool %) :dir (:dir %) :cmd (cmd-key %)}
                                                    before? (assoc :before (:clean! %)))
                                                 tools))
-        started (System/currentTimeMillis)
-        uncached (rounds options (constantly nil) (build-tools :clean-cmd true))
-        uncached-outputs ((output-check started))
-        _ (doseq [{:keys [clean! dir cached-cmd]} tools] (clean!) (timed dir cached-cmd))
-        cached (rounds options (constantly nil) (build-tools :cached-cmd false))
-        leaf (when-let [leaf (:leaf options)]
-               (leaf-scenario options
-                              (cond-> [(fs/file (:light-dir project) leaf)]
-                                (:shadow-dir project) (conj (fs/file (:shadow-dir project) (or (:shadow-leaf options) leaf))))
-                              (build-tools :cached-cmd false)
-                              (output-check (System/currentTimeMillis))))
-        warm (when (and (:shadow-dir project) (pos? (:warm-jvm options)))
-               (warm-jvm options project (:warm-jvm options)))
-        result {:environment environment
-                :options (dissoc options :light)
-                :project (cond-> (dissoc project :tools)
-                           true (assoc :commands (into {} (for [t tools] [(:tool t) {:clean (:clean-cmd t) :cached (:cached-cmd t)}])))
-                           (not generated?) (dissoc :expected))
-                :scenarios (cond-> {:uncached uncached :cached cached} leaf (assoc :leaf (:summaries leaf)))
-                :outputs (cond-> {:uncached uncached-outputs} leaf (assoc :leaf (:outputs leaf)))
-                :warm-jvm warm}
+        project-entry (fn [tools] (cond-> (dissoc project :tools)
+                                    true (assoc :commands (into {} (for [t tools] [(:tool t) {:clean (:clean-cmd t) :cached (:cached-cmd t)}])))
+                                    (not generated?) (dissoc :expected)))
+        result (if sweep?
+                 (let [{:keys [tools uncached outputs]} (sweep options project)]
+                   {:environment environment
+                    :options (dissoc options :light)
+                    :project (assoc (project-entry tools)
+                                    :sweep-tools (mapv #(select-keys % [:tool :label :limit :heap-bytes]) tools))
+                    :scenarios {:uncached uncached}
+                    :outputs {:uncached outputs}})
+                 (let [started (System/currentTimeMillis)
+                       uncached (rounds options (constantly nil) (build-tools :clean-cmd true))
+                       uncached-outputs ((output-check started))
+                       _ (doseq [{:keys [clean! dir cached-cmd]} tools] (clean!) (timed dir cached-cmd))
+                       cached (rounds options (constantly nil) (build-tools :cached-cmd false))
+                       leaf (when-let [leaf (:leaf options)]
+                              (leaf-scenario options
+                                             (cond-> [(fs/file (:light-dir project) leaf)]
+                                               (:shadow-dir project) (conj (fs/file (:shadow-dir project) (or (:shadow-leaf options) leaf))))
+                                             (build-tools :cached-cmd false)
+                                             (output-check (System/currentTimeMillis))))
+                       warm (when (and (:shadow-dir project) (pos? (:warm-jvm options)))
+                              (warm-jvm options project (:warm-jvm options)))]
+                   {:environment environment
+                    :options (dissoc options :light)
+                    :project (project-entry tools)
+                    :scenarios (cond-> {:uncached uncached :cached cached} leaf (assoc :leaf (:summaries leaf)))
+                    :outputs (cond-> {:uncached uncached-outputs} leaf (assoc :leaf (:outputs leaf)))
+                    :warm-jvm warm}))
         prefix (or (:out options) (str (fs/path (:dir options) "compare-result")))
-        report (markdown result)]
+        report (if sweep? (sweep-markdown result) (markdown result))]
     (spit (str prefix ".edn") (with-out-str (pprint/pprint result)))
     (spit (str prefix ".md") report)
     (println report)

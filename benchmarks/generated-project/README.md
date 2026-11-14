@@ -97,6 +97,10 @@ into the project ([how to run it](../README.md#the-shadow-cljs-head-to-head),
 bb benchmarks/generated-project/compare.bb /tmp/cljs-200k --light "$LIGHT" --leaf src/workload/babomhol.cljs --warm-jvm 4
 ```
 
+With `--shadow-heaps 1g,2g,...` it instead sweeps shadow-cljs's maximum heap over
+clean builds and reports its smallest adequate heap
+([how](../README.md#the-shadow-cljs-head-to-head)).
+
 ## The re-frame shape
 
 `--shape re-frame` makes a project shaped like a real re-frame app, so that both

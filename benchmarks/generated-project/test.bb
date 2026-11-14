@@ -307,6 +307,90 @@
            (compare/parse-time false (gnu "0:06.09"))))
     (is (= 3725.5 (:wall-s (compare/parse-time false (gnu "1:02:05.50")))))))
 
+(deftest memory-limit-sweep
+  (testing "options"
+    (is (= {:shadow-heaps ["1g" "1536m" "8g"] :light-memory-limits [67108864 2147483648]}
+           (select-keys (compare/parse-options ["p" "--light" "b" "--shadow-heaps" "1g,1536m,8g"
+                                                "--light-memory-limits" "67108864,2147483648"])
+                        [:shadow-heaps :light-memory-limits])))
+    (doseq [args [["p" "--light" "b" "--shadow-heaps" "1.5g"] ["p" "--light" "b" "--shadow-heaps" "1g,"]
+                  ["p" "--light" "b" "--light-memory-limits" "64m"] ["p" "--light" "b" "--light-memory-limits" "0"]]]
+      (is (thrown? Exception (compare/parse-options args)) (pr-str args)))
+    (is (= [1073741824 1610612736 8589934592 524288] (map compare/jvm-size-bytes ["1g" "1536m" "8G" "512k"]))))
+  (testing "GC log and failed builds"
+    (is (= {:gc-pause-s 0.1 :gc-pauses 3 :full-gcs 1}
+           (compare/parse-gc-log (str "[0.010s][info][gc] Using G1\n"
+                                      "[1.2s][info][gc] GC(0) Pause Young (Normal) (G1 Evacuation Pause) 24M->3M(256M) 2.500ms\n"
+                                      "[2.0s][info][gc] GC(1) Concurrent Mark Cycle 45.600ms\n"
+                                      "[2.1s][info][gc] GC(1) Pause Remark 120M->110M(256M) 7.500ms\n"
+                                      "[3.0s][info][gc] GC(2) Pause Full (G1 Compaction Pause) 250M->200M(256M) 90.000ms\n"))))
+    (let [failed (compare/timed-or-failed "." ["sh" "-c" "echo 'java.lang.OutOfMemoryError: Java heap space' >&2; exit 3"])
+          ok (compare/timed-or-failed "." ["true"])]
+      (is (= [true 3 true] ((juxt :failed :exit :oom) failed)))
+      (is (number? (:wall-s failed)))
+      (is (not (:failed ok)))))
+  (testing "failed builds count but stay out of the medians"
+    (let [s (compare/summary [{:wall-s 9.0 :user-s 1.0 :system-s 1.0 :peak-memory-gb 1.0 :load [1.0] :failed true :oom true}
+                              {:wall-s 2.0 :user-s 1.0 :system-s 1.0 :peak-memory-gb 2.0 :load [2.0] :gc-pause-s 0.5 :gc-pauses 4 :full-gcs 0}]
+                             [])]
+      (is (= [2 1] ((juxt :runs :failures) s)))
+      (is (= 2.0 (get-in s [:wall-s :median])))
+      (is (= 0.5 (get-in s [:gc-pause-s :median])))
+      (is (= {:median 1.5 :min 1.0 :max 2.0} (:load-1m s))))
+    (is (nil? (:wall-s (compare/summary [{:wall-s 1.0 :user-s 1.0 :system-s 1.0 :peak-memory-gb 1.0 :load [1.0] :failed true}] [])))))
+  (testing "rounds record failures and merge :after"
+    (let [result (with-redefs [compare/timed-or-failed (fn [_ [cmd]] (cond-> {:wall-s 1.0 :user-s 1.0 :system-s 0.1 :peak-memory-gb 0.1}
+                                                                       (= "small" cmd) (assoc :failed true)))
+                               compare/load-average (constantly [0.5 0.5 0.5])]
+                   (compare/rounds (gate-off 2) (constantly nil)
+                                   [{:tool :small :cmd ["small"] :may-fail true :after (fn [s _] {:checked (not (:failed s))})}
+                                    {:tool :big :cmd ["big"] :may-fail true :after (fn [s _] {:checked (not (:failed s))})}]))]
+      (is (= [2 0] (map #(get-in result [% :failures]) [:small :big])))
+      (is (= [true true] (map :checked (get-in result [:big :samples]))))))
+  (let [dir (fs/create-temp-dir {:prefix "light-sweep-project-"})]
+    (try
+      (spit (fs/file dir "light-cljs.edn") "{:builds {:bench {:target :esm :output-dir \"out/light\" :compiler-options {:macro-memory-limit 2147483648}}}}")
+      (spit (fs/file dir "shadow-cljs.edn") "{:builds {:bench {:target :node-script :output-to \"out/shadow.js\"}}}")
+      (spit (fs/file dir "deps.edn") "{:aliases {:shadow {:jvm-opts [\"-Xmx8g\"] :main-opts [\"-m\" \"shadow.cljs.devtools.cli\"]}}}")
+      (let [options {:dir (str dir) :light "/bin/light" :shadow-heaps ["1g" "8g"] :light-memory-limits [67108864]}
+            project (compare/project options)
+            tools (compare/sweep-tools options project "/gc")
+            by-id (into {} (map (juxt :tool identity) tools))]
+        (testing "one build per limit, the heap flag after the alias's"
+          (is (= [:light :light-mml67108864 :shadow-xmx1g :shadow-xmx8g] (map :tool tools)))
+          (is (= ["/bin/light" "release" "bench" "--no-cache" "--macro-memory-limit" "67108864"] (:clean-cmd (by-id :light-mml67108864))))
+          (is (= ["clojure" "-J-Xmx1g" "-J-XX:+ExitOnOutOfMemoryError" "-J-Xlog:gc:file=/gc/gc-1g.log" "-M:shadow" "release" "bench"]
+                 (:clean-cmd (by-id :shadow-xmx1g))))
+          (is (= "light-cljs.edn's :macro-memory-limit 2147483648 (2 GiB)" (:limit (by-id :light))))
+          (is (= "--macro-memory-limit 67108864 (64 MiB)" (:limit (by-id :light-mml67108864))))
+          (is (every? :may-fail tools))
+          (is (thrown? Exception (compare/sweep-tools options (assoc project :shadow-cmd ["npx" "shadow-cljs"]) "/gc"))))
+        (testing "the smallest adequate heap and the ratios"
+          (let [s (fn [wall peak & [failures]] {:runs 3 :failures (or failures 0) :load-1m {:min 1.0 :max 2.0} :samples []
+                                                :wall-s {:median wall :min wall :max wall} :user-s {:median 1 :min 1 :max 1}
+                                                :system-s {:median 1 :min 1 :max 1} :peak-memory-gb {:median peak :min peak :max peak}})
+                tools (into tools [{:tool :shadow-xmx2g :label "shadow-cljs" :limit "-Xmx2g (2 GiB)" :heap-bytes (compare/jvm-size-bytes "2g")}])
+                by-tool {:light (s 6.0 1.0) :light-mml67108864 (s 6.0 0.9) :shadow-xmx1g (assoc (s 60.0 1.1 1) :wall-s nil)
+                         :shadow-xmx2g (s 43.0 2.0) :shadow-xmx8g (s 40.0 4.0)}
+                verdict (compare/sweep-verdict tools by-tool)
+                report (compare/sweep-markdown
+                        {:environment {:light-cljs {:binary "/b/light-cljs-abc1234" :commit "abc1234" :sha256 (apply str (repeat 64 "0"))}
+                                       :jdk "openjdk 25" :node "v26" :clojure-cli "CLI" :babashka "1" :os "macOS" :date "2026-11-14"
+                                       :machine {:cpu "M3" :cpus 24 :memory-gib 32}}
+                         :options {:runs 3 :max-load 1000.0}
+                         :project {:light-build :bench :shadow-build :bench :sweep-tools tools}
+                         :scenarios {:uncached by-tool}
+                         :outputs {:uncached {:light {:bytes 10 :gzip 5 :checksum "1" :waste-ok true}}}})]
+            (is (= {:best :shadow-xmx8g :adequate :shadow-xmx2g :largest :shadow-xmx8g}
+                   (select-keys verdict [:best :adequate :largest])))
+            (is (= [0.5 0.45] (map :adequate (:ratios verdict))))
+            (is (= [0.25 0.225] (map :largest (:ratios verdict))))
+            (is (str/includes? report "smallest heap with no failed build and a median within 10% of that is -Xmx2g (2 GiB), 43.00 s at 2.000 GB peak memory."))
+            (is (str/includes? report "| shadow-cljs | -Xmx1g (1 GiB) | - | - | - | - | - | 1 of 3 | - | 1.00-2.00 |"))
+            (is (str/includes? report "light-cljs at --macro-memory-limit 67108864 (64 MiB): 0.900 GB peak memory, 0.45x"))
+            (is (str/includes? report "| light-cljs at light-cljs.edn's :macro-memory-limit 2147483648 (2 GiB) | 10 | 5 | oracle 1, waste ok |")))))
+      (finally (fs/delete-tree dir)))))
+
 (def leaf-original
   "Bytes a text round trip would not reproduce: invalid UTF-8, CRLF, no final newline."
   (byte-array (concat (.getBytes "(ns leaf)\r\n(def x \"" "UTF-8") [-1 -2 -128] (.getBytes "\")" "UTF-8"))))
