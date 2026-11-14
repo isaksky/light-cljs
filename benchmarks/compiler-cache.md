@@ -912,6 +912,10 @@ clone of the port, two rounds per binary, one binary after the other: the
 parent's code as the immutable `bin/light-cljs-5ffa22cc` (master `e379d6c5`
 differs from it only in watch code), then the change. **The machine was not
 reserved**: other workers built and ran tests, 1-minute load 5.4 to 11.4.
+The change was measured before the review fix that also reads the Vars
+function bodies define into the view; that fix kept the generated
+projects' edit rebuilds and recompiled counts, and Penpot was not
+measured again.
 
 The coarse edges stay in the dependency graph (blockers and watch
 invalidation follow them); what changed is what the keys cover. The new

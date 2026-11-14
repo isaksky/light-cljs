@@ -1963,9 +1963,9 @@ and, when it registered a declaration bundle or declared a macro, its key
 with the source cut after the last form that did) instead of every earlier
 namespace's key. The same leaf edit as light-cljs-1000 (an unused `defn`
 appended) now recompiles **3 of 1,134 namespaces (plain) and 4 of 6,092
-(re-frame)** instead of 587 and 2,127, and the rebuild takes **6.48 s
-instead of 18.82 s (plain) and 9.32 s instead of 25.07 s (re-frame)**,
-against clean builds of 14.5 to 20.2 s. That meets light-cljs-1000's probe
+(re-frame)** instead of 587 and 2,127, and the rebuild takes **6.40 s
+instead of 18.82 s (plain) and 8.52 s instead of 25.07 s (re-frame)**,
+against clean builds of 15.1 to 19.2 s. That meets light-cljs-1000's probe
 bound (6.66 s and 11.72 s). Both leaves register protocols, records,
 extensions and a multimethod method before the appended `defn`, so the cut
 keeps them in the declaration key and the edit after them out.
@@ -1976,10 +1976,11 @@ Setup. `compare.bb DIR --light BIN --light-only --leaf LEAF --runs 3
 (leaves `src/workload/babomhol.cljs` and `src/workload/bouskoknu.cljs`), one
 binary after the other per project, so not alternated between binaries.
 Parent: the immutable `bin/light-cljs-5ffa22cc` (master `e379d6c5` differs
-from it only in watch code). Change: a release build of this branch's
-first commit (`2e5b59cf`), the same keys as the landed commit, which adds
-only the `--stats` view counters and documentation; the landed binary is
-`bin/light-cljs-<commit>` (named in the commit that adds it, below). Every
+from it only in watch code). Change: a release build of the branch after the review fix (the
+landed code; its immutable copy is named below). Before that fix, which
+also reads the Vars function bodies define into the view, a build of the
+first commit (`2e5b59cf`) gave 6.48 s (6.39-6.57) and 9.32 s (9.01-9.83)
+for the edit rebuild, with the same recompiled counts. Every
 output passed the oracle and the waste check, and both binaries wrote the
 same bytes. The recompiled counts come from one more `--stats` edit build
 per binary on the caches compare.bb left. **The machine was not
@@ -1990,20 +1991,25 @@ measured.
 | Project | Build | Binary | Wall time | User CPU | System CPU | Peak memory | Load before | Recompiled |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | plain 400k | clean build | parent | 15.80 s (15.43-15.89) | 15.82 s (15.62-16.11) | 0.90 s (0.90-0.92) | 1.923 GB (1.922-1.939) | 4.90-5.64 | 1,134 |
-| plain 400k | clean build | change | 14.47 s (14.28-14.56) | 14.69 s (14.58-14.78) | 0.79 s (0.79-0.83) | 1.934 GB (1.923-1.938) | 3.95-4.13 | 1,134 |
+| plain 400k | clean build | change | 15.06 s (14.48-16.22) | 15.33 s (14.66-16.13) | 1.04 s (0.91-1.24) | 1.947 GB (1.943-1.954) | 6.97-8.02 | 1,134 |
 | plain 400k | one-file edit | parent | 18.82 s (18.16-18.84) | 19.49 s (18.62-20.01) | 1.35 s (1.28-1.39) | 1.960 GB (1.949-1.985) | 4.02-4.57 | 587 |
-| plain 400k | one-file edit | change | 6.48 s (6.39-6.57) | 6.28 s (6.21-6.37) | 0.40 s (0.38-0.40) | 1.630 GB (1.604-1.648) | 3.90-3.99 | 3 |
+| plain 400k | one-file edit | change | 6.40 s (6.35-6.42) | 6.17 s (6.13-6.21) | 0.40 s (0.39-0.42) | 1.696 GB (1.676-1.715) | 5.32-6.55 | 3 |
 | re-frame 400k | clean build | parent | 18.51 s (18.31-18.98) | 18.27 s (18.18-18.52) | 1.08 s (0.98-1.11) | 2.458 GB (2.436-2.487) | 3.62-4.15 | 6,092 |
-| re-frame 400k | clean build | change | 20.17 s (19.25-20.34) | 19.37 s (18.35-19.45) | 1.26 s (1.19-1.28) | 2.454 GB (2.446-2.479) | 4.23-4.67 | 6,092 |
+| re-frame 400k | clean build | change | 19.18 s (19.03-19.39) | 18.45 s (18.40-18.81) | 1.30 s (1.16-1.42) | 2.451 GB (2.447-2.481) | 4.65-6.34 | 6,092 |
 | re-frame 400k | one-file edit | parent | 25.07 s (23.31-25.39) | 22.87 s (22.36-23.12) | 2.49 s (2.24-3.12) | 2.523 GB (2.491-2.592) | 3.26-3.68 | 2,127 |
-| re-frame 400k | one-file edit | change | 9.32 s (9.01-9.83) | 8.16 s (7.99-8.43) | 0.99 s (0.97-1.03) | 2.323 GB (2.186-2.337) | 4.17-4.38 | 4 |
+| re-frame 400k | one-file edit | change | 8.52 s (8.50-8.70) | 7.83 s (7.82-8.02) | 0.78 s (0.77-0.81) | 2.319 GB (2.314-2.365) | 3.77-3.96 | 4 |
 
 - **What the edit invalidates now.** Plain: the leaf (`source`) and its
   reverse require closure (2 `dependencies`); re-frame: the leaf and 3.
   The parent: 504 and 1,550 for `view`, 82 and 576 for `dependencies`.
 - **The clean build** does not compute views (no cache), so the two
-  binaries' clean builds differ only by load: plain 1.3 s faster and
-  re-frame 1.7 s slower for the change, at different loads.
+  binaries' clean builds differ only by load (0.7 s and 0.7 s apart, in
+  opposite directions).
+- **What the views cover** (`--stats` of the edit build): plain, 511,441
+  earlier keys the fallback covered, of which 483,700 are now declaration
+  keys (most plain workers register a declaration bundle); re-frame,
+  4,703,269 and 702,003 (15%). The leaf edit leaves every declaration key
+  alone because the appended `defn` comes after the leaf's last bundle.
 - **What is left.** The rebuild is now preparation, emission, validation,
   decoding and installing, as light-cljs-1000's probe found; validation
   still reads every retained candidate of a missed namespace

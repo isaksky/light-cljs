@@ -864,7 +864,7 @@ after its last bundle) rather than the registration data; and a code read
 with `*ns*` bound to a namespace sees its reader context and which Vars
 shadow core names or refers, so those are in every namespace's interface.
 The same leaf edit as above now recompiles 3 and 4 namespaces at 400k, in
-6.5 s and 9.3 s, and Penpot's leaf edit 2 instead of 153
+6.4 s and 8.5 s, and Penpot's leaf edit 2 instead of 153
 ([benchmarks/generated-shadow-vs-light.md](../benchmarks/generated-shadow-vs-light.md),
 [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md)).
 
