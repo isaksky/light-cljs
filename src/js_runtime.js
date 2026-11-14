@@ -5656,7 +5656,9 @@
   // one by one.
   // No store holds a value that cannot hold a private field.
   function storesPredicate(...inventory) {
-    const kinds = inventory.reduce((bits, store) => bits | store.kindBits, 0), stores = inventory.filter(store => !store.exact);
+    // Own metadata only: a host may have given `Object.prototype` some.
+    const kinds = inventory.reduce((bits, store) => Object.hasOwn(store, "kindBits") ? bits | store.kindBits : bits, 0),
+      stores = inventory.filter(store => !(Object.hasOwn(store, "exact") && store.exact === true));
     return value => {
       if (!canHoldField(value)) return false;
       if (kinds >> payloads.kind(value) & 1) return true;
@@ -7046,8 +7048,8 @@
   const payloadStore = (stores => {
     const byKind = [], probed = [];
     stores.forEach((store, i) => {
-      for (let kind = 1; kind < 31; kind++) if (store.kindBits >> kind & 1) byKind[kind] = i + 1;
-      if (store.exact !== true) probed.push(store, i + 1);
+      if (Object.hasOwn(store, "kindBits")) for (let kind = 1; kind < 31; kind++) if (store.kindBits >> kind & 1) byKind[kind] = i + 1;
+      if (!(Object.hasOwn(store, "exact") && store.exact === true)) probed.push(store, i + 1);
     });
     return value => {
       const number = byKind[payloads.kind(value)];

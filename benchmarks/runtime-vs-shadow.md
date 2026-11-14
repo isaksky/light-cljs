@@ -472,3 +472,83 @@ at 1.8% inclusive, from 5.8%. `mapEntry` is still 12% self:
   is read, and a sorted map's tree nodes are its entries. Building entries
   lazily would change what a map's seq holds, a design question filed as
   light-cljs-1002 for the user.
+
+## 2026-11-14: one kind brand for the runtime's stores (light-cljs-990)
+
+**Change.** The user approved testing value kinds with a cheaper tag. The
+runtime's private-field stores now share one brand class (`payloads`):
+- A value holds its payload, its kind (the number of the store holding it)
+  and, for a map or set, its map kind, in three private fields that one
+  construction adds.
+- A kind test reads the kind once, where it probed each store in turn: up to
+  eight stores for "is this seqable", seventeen for printing's "is this a
+  runtime value", seven for the protocol lookup in front of the core
+  operations. Only the `WeakMap` stores (keywords, symbols, vars, atoms and
+  the like) and the tests that hash tries and records widen are still probed
+  one by one.
+- A map entry is a vector of its own kind. The `WeakSet` registration that
+  light-cljs-989 measured at 220 to 350 ns per entry is gone.
+
+**Unforgeability is kept everywhere.** The tag is itself a private field, so
+no host object can have, inherit or copy it; a value forged with
+`Object.create` of a runtime prototype, or by copying a value's own
+properties, is still no language value. Nothing that a host value could
+forge decides a kind. `builtin_types::value_kind_predicates_answer_as_the_brand_stores_did`
+pins 34 predicates over 54 runtime, host and forged values to master's
+answers (docs/compiler.md, "Cons cells, views ...").
+
+**Setup.** The kit and machine of the 2026-11-14 section above, with these
+differences:
+- before is `light-cljs-f0f5e81b` (master, whose runtime equals master's
+  `21e1a111`) and after is `light-cljs-181dc839`;
+- after the runs, the Sol review found that an inherited `kindBits` on
+  `Object.prototype` could reach the fast path; the landed commit reads only
+  a store's own metadata, once when the runtime loads, so the per-call code
+  measured here is unchanged;
+- each output was built with its binary just before its runs;
+- before and after ran back to back on each workload, each alternating with
+  shadow-cljs.
+
+10 runs of each. **Unreserved:** peer workers ran builds and test suites
+throughout. The 1-minute load average before a run was 3.7 to 16.3, and it
+differed between before and after (workload 200k at 40 iterations: 4.1 to
+11.6 before, 10.5 to 15.4 after). The light/shadow ratios, whose two sides
+ran alternately, are the fairer comparison. Raw results are in
+`research/shadow-credibility/runtime-990/181dc839`.
+
+Only TodoMVC's rows moved beyond their ranges. Ranges are in brackets.
+
+| Workload | light-cljs before | light-cljs after | change | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| TodoMVC, add 1,000 todos | 8,813 ms (8,651-9,109) | 6,774 ms (6,639-6,897) | -23% | 8.97 | 7.04 |
+| TodoMVC, JavaScript heap with 1,000 todos | 13.45 MB (13.45-13.45) | 9.29 MB (9.29-9.30) | -31% | 1.79 | 1.24 |
+| TodoMVC, whole run wall time | 9.61 s (9.34-10.05) | 7.53 s (7.31-8.04) | -22% | 5.63 | 4.95 |
+| TodoMVC, whole run user CPU | 10.24 s (10.05-10.59) | 8.21 s (8.01-8.52) | -20% | 5.52 | 4.56 |
+| TodoMVC, whole run peak memory | 360 MB (351-362) | 341 MB (340-343) | -5% | 1.39 | 1.32 |
+
+- **The generated programs did not gain**, and two look slightly worse. Their
+  medians moved within the ranges, under a higher load for the after runs:
+  - workload 200k: 93.3 to 97.0 ms per iteration in steady state
+    (light/shadow 3.72 to 3.96); wall time at 40 iterations 4.072 s
+    (3.897-5.945) to 4.229 s (3.957-5.045);
+  - workload 800k: 381.0 to 409.9 ms per iteration (3.42 to 3.50); wall time
+    at 16 iterations 7.327 s (6.657-8.796) to 7.653 s (7.411-8.648);
+  - re-frame-shaped 200k app: 1,075 to 1,028 ms per iteration (3.61 to
+    3.69); wall time at 10 iterations 12.995 s (12.434-13.683) to 12.788 s
+    (12.441-15.259).
+  A sampling profile of workload 200k at 30 iterations shows why there is
+  little to gain there: after light-cljs-988 its kind tests were spread
+  thin, and each store's own `has` and `get` now also compare the kind,
+  one more private-field read than before.
+- **Unchanged within their ranges:** peak memory and first output of the
+  generated programs; TodoMVC's page load, toggle all, edit and clear
+  completed.
+- **Where TodoMVC's gain comes from.** In a sampling profile of its add step
+  (`--pseudo-names`), `mapEntry` falls from 11.2% to 0.3% of the samples,
+  the anonymous `storesPredicate` closure from 6.6% to 1.1% inclusive, and
+  `printableValue`, the printer's runtime-value test, from 4.7% to 1.2%
+  inclusive (the profiled after build was `181dc839`'s runtime before its
+  comments were trimmed). The heap falls because the entries no longer sit in a `WeakSet`.
+- **Output size:** every program keeping a store keeps the brand class, about
+  220 to 390 bytes at advanced (`map-only` 8,378 to 8,689 bytes); the size
+  ratchet notes it in tests/support/ratchet_fixtures.rs.

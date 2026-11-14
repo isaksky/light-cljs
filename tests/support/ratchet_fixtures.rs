@@ -211,7 +211,7 @@
 //! in turn, and building a map entry no longer writes a WeakSet;
 //! benchmarks/runtime-vs-shadow.md has the measured effect. Every program
 //! keeping a store keeps the brand class: advanced output grows by about
-//! 220-320 bytes, and the fourteen advanced ceilings it exceeds move to the
+//! 220-390 bytes, and the fourteen advanced ceilings it exceeds move to the
 //! next 100 (1,000 from 10,000 up), as does the features example's startup
 //! chunk (6,363 bytes, to 6,400). The readable runtime grows about 2,400
 //! bytes; every none and prepare ceiling, all of which it exceeds, moves to
@@ -264,7 +264,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "seq-pipeline",
         source: "(js/console.log (->> (map inc (range 10)) (filter even?) (partition 2) \
                  (drop 1) (mapcat identity) into-array))",
-        ceilings: [506_000, 506_000, 30_000],
+        ceilings: [507_000, 507_000, 30_000],
         removed: [0, 0, 0],
         printed: "[ 6, 8 ]\nundefined\n",
     },
@@ -311,7 +311,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (def lookup (let [k :a] (get {:a 1} k)))
                  (def literal [1 2 3])
                  (:x (->Point 1 2))"#,
-        ceilings: [507_000, 507_000, 5_200],
+        ceilings: [508_000, 507_000, 5_200],
         removed: [0, 1, 6],
         printed: "1\n",
     },
@@ -535,7 +535,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (if (< i 10)
                      (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
                      acc))",
-        ceilings: [508_000, 508_000, 16_000],
+        ceilings: [509_000, 509_000, 16_000],
         removed: [0, 0, 3],
         printed: "419\n",
     },

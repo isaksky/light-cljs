@@ -520,9 +520,9 @@ fn a_program_type_opens_the_protocol_hooks() {
         assert!(!units.contains(&unit), "{unit}: {units:?}");
     }
     // 7,558 bytes before light-cljs-291 and 8,043 after (`kindedStore`);
-    // 8,355 to 8,579 after light-cljs-990 (2026-11-14): the stores' kind
+    // 8,355 to 8,644 after light-cljs-990 (2026-11-14): the stores' kind
     // brand (`payloads`).
-    assert!(advanced(source).emit_js().len() < 8_600);
+    assert!(advanced(source).emit_js().len() < 8_700);
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -3002,10 +3002,19 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
     let program = program(source);
     for level in OptimizationLevel::ALL {
         let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
-        let script = format!(
-            "const r = {js}; console.log(r[0].split(', ').join('\\n')); \
-             console.log([...new Set(r[1].split(' ').filter(t => !t.startsWith('get:cljs$')))].sort().join(' '));"
-        );
-        assert_eq!(execute(&script), expected, "at {level}");
+        // The same answers where a host gave `Object.prototype` the stores'
+        // kind metadata before the runtime loaded: only a store's own counts
+        // (the Sol review of light-cljs-990).
+        for pollution in [
+            "",
+            "for (const [k, v] of [['kindBits', -1], ['exact', true]]) \
+             Object.defineProperty(Object.prototype, k, {value: v, writable: true, configurable: true});",
+        ] {
+            let script = format!(
+                "{pollution} const r = {js}; console.log(r[0].split(', ').join('\\n')); \
+                 console.log([...new Set(r[1].split(' ').filter(t => !t.startsWith('get:cljs$')))].sort().join(' '));"
+            );
+            assert_eq!(execute(&script), expected, "at {level}: {pollution}");
+        }
     }
 }
