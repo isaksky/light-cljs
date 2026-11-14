@@ -74,6 +74,22 @@ fn builtin_class_extensions_and_nonmutating_specify() {
     );
 }
 
+/// `Var`'s prototype was the runtime's frozen base, so extending it threw
+/// "object is not extensible" (rewrite-clj's NodeCoerceable, light-cljs-973).
+#[test]
+fn var_extension_reaches_vars_made_before_and_after() {
+    assert_eq!(
+        run(r#"
+      (defprotocol P (f [x]))
+      (def a 1) (def b 2)
+      (let [old (var a)]
+        (extend-type Var P (f [v] (str "var " (.-sym v))))
+        (array (f old) (f (var b)) (instance? Var old) (satisfies? P (var b)) @(var b)))
+    "#),
+        "[\"var cljs.user/a\",\"var cljs.user/b\",true,true,2]\n"
+    );
+}
+
 #[test]
 fn native_extension_preserves_core_fast_paths_and_raw_protocol_dispatch() {
     assert_eq!(

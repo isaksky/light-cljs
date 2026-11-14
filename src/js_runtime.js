@@ -6428,13 +6428,13 @@
       }
     } finally { tapQueue.length = 0; tapDraining = false; tapDelivered = 0; }
   }
-  //@unit makeVar requires: apply, makeIFn, metadataValues, varPrototype, vars
+  //@unit makeVar requires: apply, makeIFn, metadataValues, Var, vars
   function makeVar(get, symbol, metadata = null) {
     const methods = {};
     for (let n = 0; n <= 20; n++) methods[n] = function (_self, ...args) { return get.call(null).call(null, ...args); };
     methods[21] = function (_self, ...args) { return apply(get.call(null), ...args); };
     const value = makeIFn(methods);
-    Object.setPrototypeOf(value, varPrototype);
+    Object.setPrototypeOf(value, Var.prototype);
     vars.set(value, Object.freeze({get, symbol}));
     metadataValues.set(value, metadata);
     return value;
@@ -6469,8 +6469,10 @@
     call(_self, ...args) { return ifnPrototype.call.call(this, _self, ...args); },
     toString() { return "#'" + vars.get(this).symbol; }
   });
-  //@unit Var.prototype effect: Var requires: Var, varPrototype
-  Var.prototype = varPrototype;
+  //@unit Var.prototype effect: Var requires: builtinType, Var, varPrototype
+  // Extensible, like every builtin type's: `extend-type Var` installs methods
+  // here, above the frozen base every Var inherits through it.
+  builtinType(Var, varPrototype);
   //@unit namespaces compile-time
   // Namespace identities are session-owned, with source registration from emitted units.
   const namespaces = new Map();
