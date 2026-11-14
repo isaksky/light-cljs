@@ -31,7 +31,7 @@ bb benchmarks/watch-vs-shadow.bb report A.edn B.edn
 
 1. **Output written:** the newest modification time in the tool's output directory, read once the page runs the new code.
 2. **Reload message:** the push reaching a listener on the same machine: shadow-cljs's `cljs-build-complete` websocket frame to the page, light-cljs's `load` server-sent event on a second `/events` connection.
-3. **New code running:** a probe in the page turns true. For TodoMVC's view it is the rendered page text, after each tool's reload client ran the app's after-load hook. Elsewhere it is the source text of the definition the edit changes, as the page holds it: the namespace object for shadow-cljs (`app.baga.views.root`), the definition registry for light-cljs (`__lightApplicationRoots["app.baga.views/root"]`). For the macro it is a definition in a namespace that uses the macro, so the probe is true only once the expansion was recompiled and reloaded.
+3. **New code running:** a probe in the page turns true. For TodoMVC's view it is the rendered page text, after each tool's reload client ran the app's after-load hook. On the generated app the probe calls the function the edit changes, as the page holds it (the namespace object for shadow-cljs, `app.baga.views.root`; the definition registry for light-cljs, `__lightApplicationRoots["app.baga.views/root"]`), and checks the result: the token in `root`'s hiccup and in `geinklarvou`'s string, and for the macro the exact number `dokgem`, a function of a namespace that uses the macro, returns with the new constant, so it turns true only once the expansion was recompiled, reloaded and runs. For TodoMVC's `re-frame.loggers` it is the source text of `set-loggers!` (its message shows only when its assertion fails), so there it shows the new definition installed rather than called.
 
 The probe is read every 2 ms. "Step time" is each tool's own figure from its log: shadow-cljs's `Build completed. (... s)` and light-cljs's `recompiled ... in N ms`. CPU time is the watch's whole process tree, user plus system, from before the save to the probe. Peak memory is the process tree's resident memory, sampled every 250 ms: during startup (until the first build) and while editing (from the page's first render to the end).
 
@@ -40,10 +40,10 @@ The probe is read every 2 ms. "Step time" is each tool's own figure from its log
 | App | Scenario | File | Edit | Probe |
 |---|---|---|---|---|
 | TodoMVC | view (leaf) | `src/todomvc/views.cljs` | `[:h1 "todos"]` gets a token | page text |
-| TodoMVC | widely required | `re_frame/loggers.cljc` (upstream re-frame source for shadow-cljs, the port's identical vendored copy for light-cljs), required by 14 re-frame namespaces | the `set-loggers!` assertion message gets a token | `re-frame.loggers/set-loggers!` |
-| generated | view (leaf) | `src/app/baga/views.cljs` | `[:h2 "Baga"]` gets a token | `app.baga.views/root` |
-| generated | widely required | `src/workload/common.cljs`, required by 217 namespaces | a string in `geinklarvou` gets a token | `workload.common/geinklarvou` |
-| generated | macro | `macros/workload/sobis.cljc`, used by 8 namespaces | the constant 11 in macro `hainfoulvei` becomes a new number | `workload.breisrei/dokgem`, which `hainfoulvei` defines |
+| TodoMVC | widely required | `re_frame/loggers.cljc` (upstream re-frame source for shadow-cljs, the port's identical vendored copy for light-cljs), required by 14 re-frame namespaces | the `set-loggers!` assertion message gets a token | source of `re-frame.loggers/set-loggers!` |
+| generated | view (leaf) | `src/app/baga/views.cljs` | `[:h2 "Baga"]` gets a token | `(app.baga.views/root)` |
+| generated | widely required | `src/workload/common.cljs`, required by 217 namespaces | a string in `geinklarvou` gets a token | `(workload.common/geinklarvou 1)` |
+| generated | macro | `macros/workload/sobis.cljc`, used by 8 namespaces | the constant 11 in macro `hainfoulvei` becomes a new number | `(workload.breisrei/dokgem 3)`, which `hainfoulvei` defines |
 
 TodoMVC has no project macro namespace, so the macro scenario runs on the generated app only. TodoMVC's own namespaces are each required by at most one other, so its "widely required" scenario edits re-frame's `re-frame.loggers`, which is a source directory on both classpaths and which both watches pick up.
 

@@ -142,7 +142,8 @@ try {
   for (const sc of config.scenarios) {
     const p = sc.probe;
     const value = p.dom ? "document.body.innerText"
-      : p.call ? `${probeSource[config.tool](p.call)}(...${JSON.stringify(p.args ?? [])})`
+      : p.call && p.offset !== undefined ? `${probeSource[config.tool](p.call)}(...${JSON.stringify(p.args ?? [])})`
+      : p.call ? `String(${probeSource[config.tool](p.call)}(...${JSON.stringify(p.args ?? [])}))`
       : `String(${probeSource[config.tool](p.def)})`;
     const before = await page.evaluate(value);
     let shows;
