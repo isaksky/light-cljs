@@ -1044,8 +1044,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // their trie search, and of `seq`, `count`, `nth` and `get` for map entries
     // (light-cljs-373), and the 12 branches of `first` and `rest` for vectors,
     // maps, sets, queues and map entries and of `next` for vectors and map
-    // entries (light-cljs-375), and the seq type of hash maps (light-cljs-983).
-    assert_eq!(checked, 325);
+    // entries (light-cljs-375), the seq type of hash maps (light-cljs-983),
+    // and the slot read of a keyword key's array-map search (light-cljs-989).
+    assert_eq!(checked, 326);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s

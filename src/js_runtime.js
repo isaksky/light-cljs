@@ -2716,14 +2716,18 @@
     // Canonical array maps compare keys without a hash guard. Keyword equality uses
     // fqn, while hashing uses namespace/name; unusual equal keywords can have
     // different hashes and therefore remain distinct in hash maps.
-    // A keyword without an `IEquiv` of its own compares by spelling, as in
-    // `equalPair`, with its lookup made once (light-cljs-989).
-    const spelling = keywords.get(key)?.spelling;
-    const same = spelling !== undefined && !protocolHooks.builtin?.(key, methodKeys[18], 2)
-      ? other => other === key || keywords.get(other)?.spelling === spelling
-      : key == null ? other => other == null : typeof key === "string" || typeof key === "number"
-        ? other => other === key : other => equalPair(key, other);
-    for (let i = 0; i < entries.length; i++) if (same(entries[i].key)) return i;
+    // The entries there are at the start, as `findIndex` (light-cljs-989).
+    // A keyword compares with each key as in `equalPair`: identity, its own
+    // `IEquiv` slot, read each time, then `extend-type`'s, which reads
+    // nothing of it and is looked up again only after an `-equiv` runs.
+    const n = entries.length, spelling = keywords.get(key)?.spelling, builtin = protocolHooks.builtin, own = protocolHooks.keyMethod, k = methodKeys[18];
+    let external, equiv;
+    for (let i = 0; i < n; i++) {
+      const other = entries[i].key;
+      if (key == null ? other == null : other === key || typeof key !== "string" && typeof key !== "number" && (spelling === undefined ? equalPair(key, other)
+        : (equiv = builtin && (own ? own(key, k, 2) ?? (external === undefined ? external = protocolHooks.externalMethod?.(key, k, 2) ?? null : external) : builtin(key, k, 2)))
+          ? (external = undefined, equiv.call(key, key, other)) : keywords.get(other)?.spelling === spelling)) return i;
+    }
     return -1;
   }
 
@@ -9718,8 +9722,13 @@
   //@ removeWatchProtocol, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin,
   //@ protocolHooks
   protocolHooks.builtin = builtin;
-  //@unit protocolHooks.external effect: extendType when: builtin, publicDeclared requires: externalMethod,
+  //@unit protocolHooks.keyMethod effect: installMethods when: entryIndex requires: keyMethod,
   //@ protocolHooks
+  // `builtin`'s first half, which `entryIndex` reads a keyword key's slot
+  // with (light-cljs-989).
+  protocolHooks.keyMethod = keyMethod;
+  //@unit protocolHooks.external effect: extendType when: builtin, entryIndex, publicDeclared
+  //@ requires: externalMethod, protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
   //@unit protocolHooks.extend effect: extendType, extendInstance when: contains, containsProtocol,

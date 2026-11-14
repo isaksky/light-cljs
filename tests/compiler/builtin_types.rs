@@ -1560,10 +1560,10 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // `kindedStore` for the maps' and transients' stores; 7,867 after
     // light-cljs-358: `get` behind its kinds' branches and the maps' branch;
     // 8,124 after light-cljs-373: the map entries' kind and `get` branch;
-    // 8,137 to 8,328 after light-cljs-989 (2026-11-14): the array maps'
-    // entry class and a keyword key's search with one `IEquiv` lookup.
+    // 8,137 to 8,449 after light-cljs-989 (2026-11-14): the array maps'
+    // entry class and a keyword key's longer search.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 8_400, "{} bytes", output.len());
+    assert!(output.len() < 8_500, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -2804,6 +2804,28 @@ fn small_maps_keep_their_key_tests_entries_and_hashes() {
          {:m 1} {:m 2} \
          (0 1 2 3 4 5 6 7 8) (0 1 2 3 4 5 6 7) true \
          true true]",
+    );
+}
+
+#[test]
+fn small_map_searches_read_a_keyword_key_and_bound_the_entries_as_before() {
+    // light-cljs-989: a keyword key's search makes its `extend-type` lookup
+    // once, but compares each entry as `equalPair` did: identity first, then
+    // a read of the key's own `IEquiv` slot, which a getter can watch or make
+    // throw. The search covers the entries there were when it started, as
+    // `findIndex` did, though a key's `-equiv` adds one to a transient.
+    every_level(
+        "(let [k (keyword \"t989\" \"k\") slot \"cljs$core$IEquiv$_equiv$arity$2\" reads (atom 0) calls (atom [])
+               watch (fn [f] (js/Object.defineProperty k slot #js {:configurable true :get f}))
+               _ (watch (fn [] (swap! reads inc) (when (> @reads 1) (fn [_ o] (swap! calls conj o) false))))
+               a [(get (array-map k 1) k) @reads (get {} k :nf) @reads (get (array-map :x 1 :y 2 :z 3) k :nf) @reads @calls]
+               _ (watch (fn [] (throw (js/Error. \"read\"))))
+               b [(get (array-map k 1) k) (try (get (array-map :x 1 k 2) k) (catch :default e (.-message e)))]
+               t (transient (array-map :a 1))
+               q (reify IEquiv (-equiv [_ o] (assoc! t :b 2) (= o :b)))]
+           (js-delete k slot)
+           (pr-str [a b (get t q :nf) (get (array-map :x 1 k 2) k)]))",
+        "[[1 0 :nf 0 :nf 3 [:y :z]] [1 \"read\"] :nf 2]",
     );
 }
 
