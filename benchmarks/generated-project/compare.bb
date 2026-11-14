@@ -163,7 +163,8 @@
 (defn parse-stats
   "The numeric `NAME VALUE` lines of a light-cljs --stats report, by name."
   [err]
-  (into (sorted-map) (for [[_ k v] (re-seq #"(?m)^([a-z][a-z0-9_.-]*) ([0-9]+)$" err)] [k (parse-long v)])))
+  (into (sorted-map) (for [[_ k v] (re-seq #"(?m)^([a-z][a-z0-9_.-]*) ([0-9]+(?:\.[0-9]+)?)$" err)]
+                      [k (if (str/includes? v ".") (parse-double v) (parse-long v))])))
 
 (defn timed-with-output
   "Runs cmd under /usr/bin/time (-l on macOS, GNU -v elsewhere) and returns

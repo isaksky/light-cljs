@@ -453,8 +453,8 @@
            (compare/parse-time false (gnu "0:06.09"))))
     (is (= 3725.5 (:wall-s (compare/parse-time false (gnu "1:02:05.50"))))))
   (is (true? (:stats (compare/parse-options ["p" "--light" "b" "--stats"]))))
-  (is (= {"cache.bytes-read" 266000000 "cache.validate-ms" 3100}
-         (compare/parse-stats (str "cache.validate-ms 3100\ncache.bytes-read 266000000\n"
+  (is (= {"cache.bytes-read" 266000000 "cache.validate-ms" 3100.4}
+         (compare/parse-stats (str "cache.validate-ms 3100.4\ncache.bytes-read 266000000\n"
                                    "[cache-misses-and-bypasses]\nworkload.a miss source: 2 changed\n"
                                    "       40.98 real       122.37 user       126.74 sys\n")))))
 
