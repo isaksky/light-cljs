@@ -7,6 +7,7 @@
 ;;   bb benchmarks/re-frame.bb size APP [APP ...]
 ;;   bb benchmarks/re-frame.bb time APP [--runs N]
 ;;   bb benchmarks/re-frame.bb inventory APP
+;;   bb benchmarks/re-frame.bb breakdown APP
 ;;   bb benchmarks/re-frame.bb bundle APP [--compiler shadow|light]
 ;;   bb benchmarks/re-frame.bb browser APP [--compiler C] [--runs N] [--no-build]
 ;;
@@ -267,9 +268,10 @@
       out)))
 
 (defn- attribute-section
-  "Add to ACC the characters of LINES (a section of the output) attributed by
-  the source map M: a segment owns the text up to the next one."
-  [acc m lines]
+  "Add to ACC, with (ADD acc source line from to), each span of LINES (a
+  section of the output) attributed by the source map M: a segment owns the
+  text up to the next one; text before a line's first segment is :unmapped."
+  [acc m lines add]
   (let [sources (get m "sources")]
     (loop [groups (str/split (get m "mappings" "") #";" -1) lines lines src 0 acc acc]
       (if-let [line (first lines)]
@@ -281,46 +283,74 @@
                                    [[] 0 src] segs)
               ends (concat (map first (rest cols)) [(count line)])
               acc (reduce (fn [acc [[col s] end]]
-                            (let [k (if s (nth sources s) :unmapped)]
-                              (assoc acc k (+ (get acc k 0) (max 0 (- end col))))))
-                          (update acc :unmapped (fnil + 0) (if (seq cols) (ffirst cols) (count line)))
+                            (add acc (if s (nth sources s) :unmapped) line
+                                 (min col (count line)) (min (max col end) (count line))))
+                          (add acc :unmapped line 0 (min (if (seq cols) (ffirst cols) (count line)) (count line)))
                           (map vector cols ends))]
           (recur (rest groups) (rest lines) src acc))
         acc))))
 
-(defn bytes-by-source
-  "Characters of JS-FILE attributed to each source of its map, sectioned or
-  not; text no segment names is :unmapped."
-  [js-file map-file]
+(defn- attribute
+  "JS-FILE's text attributed by its source map, sectioned or not, folded into
+  INIT with ADD (see attribute-section)."
+  [js-file map-file init add]
   (let [m (json/parse-string (slurp (fs/file map-file)))
         lines (vec (str/split (slurp (fs/file js-file)) #"\n" -1))]
     (if-let [sections (get m "sections")]
       (let [starts (map #(get-in % ["offset" "line"]) sections)
             ends (concat (rest starts) [(count lines)])]
-        (reduce (fn [acc [sec a b]] (attribute-section acc (get sec "map") (subvec lines a b)))
-                {:unmapped (reduce + (map count (subvec lines 0 (first starts))))}
+        (reduce (fn [acc [sec a b]] (attribute-section acc (get sec "map") (subvec lines a b) add))
+                (reduce (fn [acc line] (add acc :unmapped line 0 (count line))) init (subvec lines 0 (first starts)))
                 (map vector sections starts ends)))
-      (attribute-section {} m lines))))
+      (attribute-section init m lines add))))
+
+(defn bytes-by-source
+  "Characters of JS-FILE attributed to each source of its map; text no
+  segment names is :unmapped."
+  [js-file map-file]
+  (attribute js-file map-file {} (fn [acc k _ from to] (update acc k (fnil + 0) (- to from)))))
+
+(defn text-by-source
+  "The text of JS-FILE attributed to each source of its map, in output order."
+  [js-file map-file]
+  (update-vals (attribute js-file map-file {}
+                          (fn [acc k ^String line from to]
+                            (let [^StringBuilder sb (or (acc k) (StringBuilder.))]
+                              (.append sb line (int from) (int to))
+                              (assoc acc k sb))))
+               str))
+
+(defn shadow-mapped
+  "shadow-cljs's clean release build of APP with a source map: out/shadow-mapped/client.js."
+  [app]
+  (let [dir (example app)]
+    (fs/delete-tree (fs/path dir ".shadow-cljs/builds"))
+    (sh! {:dir (str dir)} "npx" "shadow-cljs" "release" "client" "--config-merge"
+         (pr-str {:output-dir "out/shadow-mapped" :compiler-options {:source-map true}}))
+    (fs/path dir "out/shadow-mapped/client.js")))
+
+(defn light-mapped
+  "light-cljs's advanced build of the port in PORT with a source map, as one
+  ES module LIGHT-JS (map next to it); FLAGS are added to the compile."
+  [app binary port light-js & flags]
+  (fs/create-dirs (fs/parent light-js))
+  (let [entry (-> (edn/read-string (slurp (fs/file (port-dir app) "port-report.edn"))) :builds :client first)
+        r (apply process/sh {:dir (str port) :err :string :out :string}
+                 binary "--compile" "--optimize" "advanced" "--entry" (str entry)
+                 "--source-root" "src" "--source-root" "vendor" "--source-root" "compat" "--esm" "--no-cache"
+                 "--source-map" (str light-js ".map")
+                 (concat flags macro-limits))]
+    (when-not (zero? (:exit r)) (throw (ex-info (:err r) {})))
+    (spit (fs/file light-js) (:out r))
+    light-js))
 
 (defn origins
   "Release builds with source maps, attributed by source: shadow-cljs's output
   of the example and light-cljs's output of the port."
   [app binary]
-  (let [dir (example app)
-        light-js (fs/path dir "out/light-mapped/app.js")]
-    (fs/delete-tree (fs/path dir ".shadow-cljs/builds"))
-    (sh! {:dir (str dir)} "npx" "shadow-cljs" "release" "client" "--config-merge"
-         (pr-str {:output-dir "out/shadow-mapped" :compiler-options {:source-map true}}))
-    (fs/create-dirs (fs/parent light-js))
-    (let [entry (-> (edn/read-string (slurp (fs/file (port-dir app) "port-report.edn"))) :builds :client first)
-          r (apply process/sh {:dir (str (port-dir app)) :err :string :out :string}
-                   binary "--compile" "--optimize" "advanced" "--entry" (str entry)
-                   "--source-root" "src" "--source-root" "vendor" "--source-root" "compat" "--esm" "--no-cache"
-                   "--source-map" (str light-js ".map")
-                   macro-limits)]
-      (when-not (zero? (:exit r)) (throw (ex-info (:err r) {})))
-      (spit (fs/file light-js) (:out r)))
-    {:shadow (bytes-by-source (fs/path dir "out/shadow-mapped/client.js") (fs/path dir "out/shadow-mapped/client.js.map"))
+  (let [shadow-js (shadow-mapped app)
+        light-js (light-mapped app binary (port-dir app) (fs/path (example app) "out/light-mapped/app.js"))]
+    {:shadow (bytes-by-source shadow-js (str shadow-js ".map"))
      :light (bytes-by-source light-js (str light-js ".map"))}))
 
 (defn origin-group
@@ -348,6 +378,227 @@
     (println (str "\nlight-cljs compat/ files: "
                   (str/join ", " (for [[k v] (sort-by key (filter (comp string? key) light)) :when (str/includes? k "compat/")]
                                    (format "%s %,d" (str/replace k #"^.*compat/" "") v)))))))
+
+;; ---------------------------------------------------------------------------
+;; breakdown: what the compressed difference consists of (light-cljs-979)
+;;
+;; Both files as a user ships them: shadow-cljs's release file, and
+;; light-cljs's output bundled with React by esbuild --minify. Each has a
+;; source map (esbuild composes light-cljs's), so each origin's text can be
+;; compressed alone. An origin's share of the whole file's gzip size is its
+;; size alone scaled so that the shares add up to the whole: compressed
+;; together, text shares a dictionary, so the sizes alone add up to more.
+;;
+;; Steps, each adding to the one before, rebuild light-cljs's side with what
+;; shadow-cljs's release build has and light-cljs's lacks, so the gap that
+;; is left is the compilers'. The rewrites are measurements on copies under
+;; out/breakdown; the port is unchanged.
+
+(def define-rewrites
+  "re-frame reads its two defines through a function, (trace/is-trace-enabled?),
+  and through another def, interop/debug-enabled? (goog.DEBUG). Closure inlines
+  both and drops the code behind them; light-cljs folds only a define read
+  directly. These rewrites read them directly."
+  [["src/re_frame" #"\(trace/is-trace-enabled\?\)" "trace/trace-enabled?"]
+   ["src/re_frame" #"\(is-trace-enabled\?\)" "trace-enabled?"]
+   ["src/re_frame/interop.cljs" #"\(def \^boolean debug-enabled\? \"@define \{boolean\}\" \^boolean goog/DEBUG\)"
+    "(goog-define debug-enabled? false)"]])
+
+(def reader-rewrites
+  "TodoMVC without cljs.reader, for both compilers: its one read-string (of
+  local storage) becomes JSON.parse, and the require goes."
+  [["src/todomvc/db.cljs" #"\(cljs\.reader/read-string\)" "(js/JSON.parse)"]
+   ["src/todomvc/db.cljs" #"\(:require \[cljs\.reader\]\s*" "(:require "]])
+
+(def breakdown-steps
+  [{:step "as built"}
+   {:step "+ asserts elided, as shadow-cljs's release mode does" :flags ["--elide-asserts"]}
+   {:step "+ re-frame's defines read directly" :rewrites define-rewrites}
+   {:step "+ no cljs.reader, both compilers" :rewrites reader-rewrites :shadow true :apps #{"todomvc"}}])
+
+(defn- rewrite!
+  "Apply REWRITES ([path regex replacement], path relative to DIR, a file or
+  a directory of sources) in place; each must match at least once."
+  [dir rewrites]
+  (doseq [[path re replacement] rewrites
+          :let [root (fs/path dir path)
+                files (if (fs/directory? root) (fs/glob root "**.{cljs,cljc}") [root])
+                n (reduce + (for [f files
+                                  :let [text (slurp (fs/file f))
+                                        n (count (re-seq re text))]]
+                              (do (when (pos? n) (spit (fs/file f) (str/replace text re replacement)))
+                                  n)))]]
+    (when (zero? n) (throw (ex-info (str "rewrite matched nothing: " path " " re) {})))))
+
+(defn- without-map-comment
+  "FILE without its sourceMappingURL comment, written next to it as -plain.js."
+  [file]
+  (let [out (fs/path (fs/parent file) (str/replace (str (fs/file-name file)) #"\.js$" "-plain.js"))]
+    (spit (fs/file out) (str/replace (slurp (fs/file file)) #"\n?//# sourceMappingURL=\S+\s*$" "\n"))
+    out))
+
+(defn gzip-size [^String s] (count (:out (process/sh {:in s :out :bytes} "gzip" "-9" "-c"))))
+
+(defn cause-group
+  "The breakdown's row for an origin group (origin-group)."
+  [group]
+  (cond (= group "npm (React)") "React"
+        (#{"Closure Library (goog)" "compat: goog shims"} group) "Closure Library / the port's goog shims"
+        (or (#{"cljs.core" "light-cljs/js_runtime.js" "compat: other shims"} group) (str/starts-with? group "shadow/"))
+        "runtime: cljs.core and shadow's own / light-cljs's runtime"
+        (#{"cljs/tools" "cljs/reader.cljs" "%3Cfirst-party%3E/cljs"} group) "cljs.reader (and tools.reader)"
+        (or (= group "%3Cfirst-party%3E/clojure") (re-find #"^clojure/" group)) "clojure.string, set, walk and data"
+        (= group "cljs/spec") "cljs.spec"
+        (str/starts-with? group "reagent/") "reagent"
+        (str/starts-with? group "re_frame/") "re-frame"
+        (#{"todomvc" "simple" "flow"} (first (str/split group #"/"))) "the app's own namespaces"
+        (= group "(no source)") "(no source)"
+        :else "other libraries (secretary, macrovich)"))
+
+(defn gzip-shares
+  "The text of each cause group of JS-FILE (a source map next to it): raw
+  characters and its share of the file's gzip size."
+  [js-file]
+  (let [cause (memoize (fn [source] (cause-group (origin-group source))))
+        ;; Collected span by span, so each cause's text keeps output order.
+        texts (update-vals (attribute js-file (str js-file ".map") {}
+                                      (fn [acc k ^String line from to]
+                                        (let [c (cause k)
+                                              ^StringBuilder sb (or (acc c) (StringBuilder.))]
+                                          (.append sb line (int from) (int to))
+                                          (assoc acc c sb))))
+                           str)
+        whole (:gzip (compressed (without-map-comment js-file)))
+        alone (update-vals texts gzip-size)
+        scale (/ whole (double (reduce + (vals alone))))]
+    {:whole whole
+     :rows (into {} (for [[k text] texts] [k {:raw (count text) :gzip (Math/round (* scale (alone k)))}]))}))
+
+(defn breakdown-light
+  "light-cljs's side of a breakdown step: the port copied and rewritten when
+  REWRITES, built with FLAGS and bundled with React by esbuild with a source map."
+  [app binary dir rewrites flags]
+  (let [port (if (seq rewrites)
+               (let [p (fs/path dir "port")]
+                 (fs/delete-tree p)
+                 (fs/copy-tree (port-dir app) p)
+                 (rewrite! p rewrites)
+                 p)
+               (port-dir app))
+        js (apply light-mapped app binary port (fs/path dir "app.js") flags)
+        out (fs/path dir "bundle.js")]
+    (bundle app js out "--sourcemap")
+    {:app-js js :bundle out}))
+
+(defn breakdown-shadow
+  "shadow-cljs's release of APP with the example's sources rewritten in place
+  for the build and restored after it."
+  [app rewrites out-dir]
+  (let [dir (example app)
+        originals (into {} (for [[path] rewrites :let [f (fs/file dir path)]] [f (slurp f)]))]
+    (try
+      (rewrite! dir rewrites)
+      (fs/delete-tree (fs/path dir ".shadow-cljs/builds"))
+      (sh! {:dir (str dir)} "npx" "shadow-cljs" "release" "client" "--config-merge"
+           (pr-str {:output-dir (str (fs/relativize dir out-dir)) :compiler-options {:source-map true}}))
+      (fs/path out-dir "client.js")
+      (finally (doseq [[f text] originals] (spit f text))))))
+
+(defn what-ifs
+  "gzip of BUNDLE with one construct removed or shortened: an upper bound on
+  what dropping or renaming it saves. The text is no longer a program."
+  [bundle]
+  (let [s (slurp (fs/file bundle))
+        whole (gzip-size s)
+        registry #"[\w$]+\(\"[^\"]+\",\{(?:aliases|bindings):.*?\]\}(?:,!0)?\)[,;]?"
+        ;; cljs$... ABI names, and protocol method slots of any namespace
+        ;; (re_frame$router$IEventQueue$_add_event$arity$2).
+        abi-re #"cljs\$[A-Za-z0-9_$]*|[A-Za-z_][A-Za-z0-9_]*(?:\$[A-Za-z0-9_]+)+\$arity\$[A-Za-z0-9_]+"
+        abi (->> (re-seq abi-re s) frequencies (sort-by (comp - val)) (map key))
+        short-abi (zipmap abi (map #(str "Q" (Integer/toString % 36)) (range)))
+        declarations (first (sort-by (comp - count) (re-seq #"(?:[\w$]+,){50,}[\w$]+;" s)))]
+    [["namespace registry calls removed" (count (apply str (re-seq registry s)))
+      (- (gzip-size (str/replace s registry "")) whole)]
+     ["compiler ABI and protocol method property names shortened to 2-3 characters"
+      (- (count s) (count (str/replace s abi-re #(short-abi %))))
+      (- (gzip-size (str/replace s abi-re #(short-abi %))) whole)]
+     ["the up-front declaration list of every global removed" (count (or declarations ""))
+      (- (gzip-size (if declarations (str/replace-first s declarations "") s)) whole)]]))
+
+(defn minify-effects
+  "light-cljs's output alone (packages external) through esbuild with each
+  --minify option: raw and gzip."
+  [app app-js]
+  (let [dir (fs/path (example app) "out/breakdown/minify")
+        in (without-map-comment app-js)]
+    (fs/create-dirs dir)
+    (into [["as written" (compressed in)]]
+          (for [opt [nil "--minify-whitespace" "--minify-syntax" "--minify-identifiers" "--minify"]
+                :let [out (fs/path dir (str (or opt "none") ".js"))]]
+            (do (apply sh! {} esbuild (str in) "--bundle" "--format=esm" "--external:react"
+                       "--external:react-dom/client" (str "--outfile=" out) "--log-level=error"
+                       (remove nil? [opt]))
+                [(str "esbuild " (or opt "--bundle only")) (compressed out)])))))
+
+(defn breakdown [app binary]
+  (let [base (fs/path (example app) "out/breakdown")
+        shadow-js (shadow-mapped app)
+        steps (->> breakdown-steps
+                   (filter #(or (nil? (:apps %)) ((:apps %) app)))
+                   (reductions (fn [acc s] (-> (merge acc (select-keys s [:step :shadow]))
+                                               (update :flags into (:flags s))
+                                               (update :rewrites into (:rewrites s))))
+                               {:flags [] :rewrites []})
+                   rest)
+        results (vec (map-indexed
+                      (fn [i {:keys [flags rewrites shadow] :as s}]
+                        (let [dir (fs/path base (str "step-" i))
+                              light (breakdown-light app binary dir rewrites flags)
+                              shadow-file (if shadow
+                                            (breakdown-shadow app (filter #(fs/exists? (fs/path (example app) (first %))) rewrites)
+                                                              (fs/path dir "shadow"))
+                                            shadow-js)]
+                          (assoc s :light light :shadow-js shadow-file
+                                 :light-size (compressed (without-map-comment (:bundle light)))
+                                 :shadow-size (compressed (without-map-comment shadow-file)))))
+                      steps))]
+    {:app app :steps results
+     :shares (into {} (for [i [0 2 3] :when (< i (count results))]
+                        [i {:shadow (gzip-shares (get-in results [i :shadow-js]))
+                            :light (gzip-shares (get-in results [i :light :bundle]))}]))
+     :what-ifs (what-ifs (without-map-comment (get-in results [2 :light :bundle])))
+     :minify (minify-effects app (get-in results [0 :light :app-js]))}))
+
+(defn print-breakdown [{:keys [app steps shares what-ifs minify]}]
+  (println (str "\n### " app ": whole file by step (bytes)\n"))
+  (println "| Step | shadow-cljs gzip | light-cljs gzip | difference | shadow-cljs brotli | light-cljs brotli | difference |")
+  (println "|---|---:|---:|---:|---:|---:|---:|")
+  (doseq [{:keys [step shadow-size light-size]} steps]
+    (println (format "| %s | %,d | %,d | %+,d | %,d | %,d | %+,d |" step (:gzip shadow-size) (:gzip light-size)
+                     (- (:gzip light-size) (:gzip shadow-size)) (:brotli shadow-size) (:brotli light-size)
+                     (- (:brotli light-size) (:brotli shadow-size)))))
+  (doseq [[i {shadow-shares :shadow shares :light}] (sort shares)
+          :let [s (:rows shadow-shares) l (:rows shares)]]
+    (println (str "\n### " app ": gzip share by origin, " (:step (steps i)) "\n"))
+    (println "| Origin | shadow-cljs raw | light-cljs raw | shadow-cljs gzip | light-cljs gzip | difference |")
+    (println "|---|---:|---:|---:|---:|---:|")
+    (doseq [k (sort-by #(- (Math/abs (long (- (get-in l [% :gzip] 0) (get-in s [% :gzip] 0)))))
+                       (distinct (concat (keys s) (keys l))))]
+      (println (format "| %s | %,d | %,d | %,d | %,d | %+,d |" k (get-in s [k :raw] 0) (get-in l [k :raw] 0)
+                       (get-in s [k :gzip] 0) (get-in l [k :gzip] 0)
+                       (- (get-in l [k :gzip] 0) (get-in s [k :gzip] 0)))))
+    (println (format "| whole file | | | %,d | %,d | %+,d |" (:whole shadow-shares) (:whole shares)
+                     (- (:whole shares) (:whole shadow-shares)))))
+  (println (str "\n### " app ": constructs in light-cljs's bundle, " (:step (steps 2)) "\n"))
+  (println "| Construct | Raw characters | gzip change without it |")
+  (println "|---|---:|---:|")
+  (doseq [[label raw gzip] what-ifs]
+    (println (format "| %s | %,d | %+,d |" label raw gzip)))
+  (println (str "\n### " app ": light-cljs's output (as built) through esbuild, packages external\n"))
+  (println "| Output | Raw bytes | gzip -9 | brotli -q 11 |")
+  (println "|---|---:|---:|---:|")
+  (doseq [[label {:keys [raw gzip brotli]}] minify]
+    (println (format "| %s | %,d | %,d | %,d |" label raw gzip brotli))))
 
 ;; ---------------------------------------------------------------------------
 ;; time
@@ -556,9 +807,10 @@
     "time" (doseq [app apps] (timing app (light-binary args) (parse-long (option args "--runs" "5"))))
     "inventory" (doseq [app apps] (inventory app (light-binary args)))
     "origins" (doseq [app apps] (print-origins app (origins app (light-binary args))))
+    "breakdown" (doseq [app apps] (print-breakdown (breakdown app (light-binary args))))
     "bundle" (doseq [app apps
                      c (if-let [c (option args "--compiler" nil)] [(keyword c)] compilers)]
                (println (str (fs/relativize repo (:served (bundle-browser app c (light-binary args)))))))
     "browser" (doseq [app apps] (browser app (light-binary args) args))
-    (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... | time APP... [--runs N] | inventory APP... | bundle APP... [--compiler C] | browser APP... [--compiler C] [--runs N] [--no-build]  [--light BIN] [--porter DIR]")
+    (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... | time APP... [--runs N] | inventory APP... | breakdown APP... | bundle APP... [--compiler C] | browser APP... [--compiler C] [--runs N] [--no-build]  [--light BIN] [--porter DIR]")
         (System/exit 1))))

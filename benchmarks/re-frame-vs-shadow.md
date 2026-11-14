@@ -17,6 +17,7 @@ bb benchmarks/re-frame.bb size todomvc simple flow --light BIN
 bb benchmarks/re-frame.bb origins todomvc simple flow --light BIN
 bb benchmarks/re-frame.bb time todomvc simple flow --runs 5 --light BIN
 bb benchmarks/re-frame.bb inventory todomvc simple flow --light BIN
+bb benchmarks/re-frame.bb breakdown simple todomvc --light BIN
 ```
 
 ## 2026-11-13: TodoMVC, simple and flow
@@ -105,7 +106,7 @@ Packages imported: react, react-dom/client; npm files in both shadow builds: 7
 **Findings:**
 - **TodoMVC, whole file after gzip:** light-cljs is 11.5% larger, 152.9 KB against 137.1 KB, and 15% larger after brotli. With the spec stub the two were level (137.7 KB); the real spec, which shadow-cljs ships too, costs light-cljs about 15 KB after gzip (light-cljs-980, below).
 - **TodoMVC app code:** light-cljs is 19% larger after gzip and 24% larger after brotli (2% and 8% with the stub). That is a loss, recorded as found.
-- **simple, the smaller app:** light-cljs's app code is 28% larger after gzip and 33% after brotli; the whole file is 13% larger after gzip. That is a loss, recorded as found; light-cljs-979 breaks it down.
+- **simple, the smaller app:** light-cljs's app code is 28% larger after gzip and 33% after brotli; the whole file is 13% larger after gzip. That is a loss, recorded as found; light-cljs-979 breaks it down (see "2026-11-14: what the gzip gap consists of").
 - **flow, the largest app:** light-cljs's app code is 1.1% smaller after gzip and 2.9% larger after brotli; the whole file is 1.4% smaller after gzip and 2.2% larger after brotli. Both builds now validate zprint's options with the real spec. With the port's spec stub light-cljs's app code was 8.5% smaller after gzip; light-cljs-980 measured the stub's effect at 22.7 KB of the whole file after gzip, so that lead was almost all the stub (the earlier estimate here was 28 KB).
 - **Before compression** light-cljs's app code is smaller in all three apps.
 - **React** comes out smaller through esbuild than through Closure's simple optimizations: 0.7% raw, 3.1% after gzip and 1.7% after brotli.
@@ -173,6 +174,124 @@ Rerun 2026-11-14 by light-cljs-980 (`light-cljs-31f51dcc`, real spec), as the To
 - **reagent and re-frame code is larger in light-cljs.** It is 1.3 to 2 times larger before compression. The cause is kept property names and fewer inlined calls. flow's sci, rewrite-clj and edamame code goes the other way: smaller in light-cljs.
 - **The runtime and the shims are smaller.** With the spec stub that difference kept TodoMVC level overall; with the real spec it no longer does, because light-cljs's spec output is 1.6 times shadow's.
 - **Spec is now the same program on both sides** (light-cljs-980): the ports run upstream cljs.spec.alpha, and its macros are expanded on the JVM exactly as shadow-cljs expands them (next section). Before, spec was a stub in the port, 8% of shadow's output in flow.
+
+### 2026-11-14: what the gzip gap consists of (light-cljs-979)
+
+**Setup.**
+- **light-cljs:** `research/shadow-credibility/bin/light-cljs-d7357e63`, master `528381be` plus the registration fix below. V8 build.
+- **shadow-cljs:** 3.5.3, esbuild 0.25.10, as above.
+- **Ports:** simple from porter `shadow-port-tool-982`; TodoMVC from `shadow-port-tool-980`, with the real cljs.spec.alpha.
+- **Command:** `bb benchmarks/re-frame.bb breakdown simple todomvc --light BIN`, one build per step. light-cljs's output is deterministic. shadow-cljs's brotli size moves by about 50 bytes between clean builds.
+
+**Method.**
+- **Files compared:** both files as a user ships them, React included. On one side, shadow-cljs's release file; on the other, light-cljs's output bundled with React by `esbuild --minify`. The "app code" rows above subtract a React-only build. This section uses whole files instead: inside the two bundles React's gzip share differs by less than 400 bytes, while the two React-only builds differ by 1,474. So the whole-file gap is the app-code gap minus 1,474.
+- **Steps:** each step rebuilds light-cljs's side with one more thing that shadow-cljs's release build has and light-cljs's lacks, and records the whole file's gzip size. The steps' source rewrites are measurements on copies under `out/breakdown`; the ports are unchanged.
+- **Origins:** after the last step, each compiler's source map (esbuild composes light-cljs's) attributes every character to an origin. An origin's gzip share is its text compressed alone, scaled so that the shares add up to the whole file.
+
+**The gap by cause**, in bytes after gzip -9, light-cljs minus shadow-cljs:
+
+| Cause | simple | TodoMVC |
+|---|---:|---:|
+| Assertions: shadow-cljs's release mode elides them (`:elide-asserts true`, `shadow/build.clj`), light-cljs's `release` keeps them (step 2) | +1,427 | +1,456 |
+| Defines read through a function or a def are not folded: re-frame's `(trace/is-trace-enabled?)` and `interop/debug-enabled?` (`goog.DEBUG`), so the tracing and debug-only code stays (step 3) | +3,250 | +3,612 |
+| cljs.reader: light-cljs's reader and the reflection it brings, against shadow-cljs's tools.reader (step 4: light-cljs saves 16,798, shadow-cljs 6,998) | n/a | +9,800 |
+| Runtime: light-cljs's runtime slice against cljs.core and shadow-cljs's own runtime | +6,254 | +2,562 |
+| Closure Library against the port's `goog/` shims, which implement only what the port uses (not the same code) | -2,009 | -7,436 |
+| cljs.spec (the real one on both sides) | n/a | +2,096 |
+| clojure.string, set, walk and data | +2,002 | +1,650 |
+| re-frame, after the defines are folded | +1,217 | -149 |
+| reagent, after asserts are elided | +758 | +798 |
+| The app's own namespaces: mostly light-cljs's up-front declaration list of every global (847 and 1,369 alone) | +933 | +1,567 |
+| React, other libraries, no source | -167 | -227 |
+| **Whole file, as built** (shares are rounded: rows add up to within 2 bytes) | **+13,666** | **+15,730** |
+
+The first three rows are step differences. The others are the origin shares after the last step: step 3 for simple and step 4 for TodoMVC.
+
+**Whole file by step** (bytes):
+
+| App | Step | shadow-cljs gzip | light-cljs gzip | difference | shadow-cljs brotli | light-cljs brotli | difference |
+|---|---|---:|---:|---:|---:|---:|---:|
+| simple | 1. as built | 101,065 | 114,731 | +13,666 | 85,627 | 99,626 | +13,999 |
+| simple | 2. + asserts elided | 101,065 | 113,304 | +12,239 | 85,627 | 98,495 | +12,868 |
+| simple | 3. + re-frame's defines read directly | 101,065 | 110,054 | +8,989 | 85,627 | 95,771 | +10,144 |
+| TodoMVC | 1. as built | 137,102 | 152,832 | +15,730 | 114,584 | 132,044 | +17,460 |
+| TodoMVC | 2. + asserts elided | 137,102 | 151,376 | +14,274 | 114,584 | 130,988 | +16,404 |
+| TodoMVC | 3. + re-frame's defines read directly | 137,102 | 147,764 | +10,662 | 114,584 | 127,755 | +13,171 |
+| TodoMVC | 4. + no cljs.reader, both compilers | 130,104 | 130,966 | +862 | 108,890 | 113,183 | +4,293 |
+
+**gzip share by origin** after the last step (raw characters, then gzip bytes):
+
+| Origin | simple shadow-cljs | simple light-cljs | gzip difference | TodoMVC shadow-cljs | TodoMVC light-cljs | gzip difference |
+|---|---:|---:|---:|---:|---:|---:|
+| runtime: cljs.core and shadow's own / light-cljs's runtime | 155,618 / 31,001 | 118,102 / 37,255 | +6,254 | 197,144 / 39,076 | 132,727 / 41,638 | +2,562 |
+| Closure Library / the port's goog shims | 9,235 / 3,468 | 3,626 / 1,459 | -2,009 | 25,025 / 9,253 | 4,649 / 1,817 | -7,436 |
+| cljs.spec | | | | 28,447 / 8,818 | 41,691 / 10,914 | +2,096 |
+| clojure.string, set, walk and data | 5,128 / 1,851 | 13,790 / 3,853 | +2,002 | 6,361 / 2,236 | 13,901 / 3,886 | +1,650 |
+| re-frame | 30,480 / 9,710 | 34,701 / 10,927 | +1,217 | 34,087 / 10,727 | 35,564 / 10,578 | -149 |
+| reagent | 26,385 / 8,365 | 32,794 / 9,123 | +758 | 26,835 / 8,441 | 33,533 / 9,239 | +798 |
+| the app's own namespaces | 1,642 / 639 | 2,771 / 1,572 | +933 | 11,366 / 3,556 | 11,310 / 5,123 | +1,567 |
+| React | 141,871 / 45,537 | 142,558 / 45,294 | -243 | 141,871 / 45,518 | 142,929 / 45,316 | -202 |
+
+As built, before steps 2 and 3, the same method gives re-frame +4,108 and reagent +1,793 in simple, and +3,617 and +1,877 in TodoMVC. These are the "1.3 to 2 times larger" libraries above, measured after compression.
+
+Per namespace in simple, gzip share difference as built, then after steps 2 and 3 (each source file compressed alone, from a scratch run of the same method on the same bundles; reagent/impl is its directory):
+
+| Namespace | as built | after steps 2 and 3 |
+|---|---:|---:|
+| re_frame/trace | +1,308 | +898 |
+| re_frame/subs | +1,167 | +1 |
+| reagent/impl | +1,018 | +215 |
+| re_frame/router | +751 | +452 |
+| re_frame/events | +577 | +3 |
+| re_frame/fx | +446 | +164 |
+| reagent/ratom | +429 | +289 |
+| reagent/debug | +270 | +268 |
+
+**What the constructs cost.** These are what-ifs on light-cljs's bundle of each app after step 3: each construct is removed or shortened in the text, and the gzip change measured. Each is an upper bound on what dropping or renaming the construct saves.
+
+| Construct | simple: characters | simple: gzip | TodoMVC: characters | TodoMVC: gzip |
+|---|---:|---:|---:|---:|
+| Namespace registry (49 `registerReaderNamespace` calls; only TodoMVC has one) | 0 | 0 | 19,967 | -4,468 |
+| The up-front declaration list of every global (`let a,b,c,...;`) | 1,140 | -847 | 1,788 | -1,369 |
+| Compiler ABI and protocol method property names (`cljs$core$IFn$_invoke$arity$N`, `cljs$lang$maxFixedArity`, `re_frame$router$IEventQueue$_add_event$arity$2`, ...) shortened | 3,891 | -327 | 4,389 | -423 |
+
+- **Property names** kept by design: 0.3 to 0.4 KB after gzip, protocol method slots such as `re_frame$router$IEventQueue$_add_event$arity$2` included, a small part of the gap (light-cljs-232 tracks the mangling).
+- **Inlining:** the defines are the one inlining gap measured. Once they fold, re-frame compresses level with shadow-cljs's in TodoMVC and within 1.2 KB in simple, and reagent within 0.8 KB.
+- **Protocol dispatch:** no separate cost was found in re-frame or reagent.
+- **Constants:** no cost found either. light-cljs's keyword constants are shorter than shadow-cljs's: `f(null,"timer")` against `new E(null,"timer","timer",-1266967739)`.
+- **The runtime.**
+  - **Size:** light-cljs's runtime slice has fewer characters than cljs.core (118,102 against 155,618 in simple) but compresses to 0.31 gzip bytes per character against cljs.core's 0.20. cljs.core is generated code with repetitive protocol-dispatch templates; light-cljs's runtime is dense hand-written JavaScript in 991 small units (simple), none over 2 KB.
+  - **Effect:** that cost barely grows with the app. In simple it is the largest remaining cause: the smaller the app, the larger the gap.
+- **cljs.reader:** the reader is one runtime unit that requires the compile-time `inspect`, so a program that reads EDN counts as reflective (tests/compiler/compile_time_units.rs says so). It then registers every namespace with all its retained names and keeps `theNs` and the units it reaches. That is 16.8 KB after gzip, against shadow-cljs's 7.0 KB for cljs.reader on tools.reader.
+
+**The unmapped output** (work item 1).
+- **What it was:** the namespace registry. In TodoMVC, 79,224 of 80,313 characters without a source (stub port, `light-cljs-fad5a905`) were the registration that cljs.reader brings. It spelled every name as `\u` escapes, six characters per character.
+- **The fix:** the escaping guarded nothing, since the renaming passes skip string literals. The registration now writes plain strings (`d7357e63`, with a regression test). TodoMVC's unmapped output is 24,767 characters, 22,492 of them the registration. Its output as written fell from 92,852 to 90,651 bytes after gzip (stub port).
+- **Shipped bundle:** unchanged, because esbuild already unescaped the names. esbuild's renaming changes with its input, so the same program's bundle moved by about 200 bytes after gzip.
+- **simple:** it has no registration. Its 2,366 unmapped characters are the module prelude: imports, the runtime's binding list and the declaration list.
+
+**What esbuild's minify removes** (work item 3). Here light-cljs's output is bundled alone, with the packages external, as built:
+
+| Output | simple raw | simple gzip | TodoMVC raw | TodoMVC gzip |
+|---|---:|---:|---:|---:|
+| light-cljs output as written | 239,536 | 67,845 | 373,357 | 104,175 |
+| esbuild, bundling only | 420,119 | 84,986 | 627,171 | 128,177 |
+| esbuild --minify-whitespace | 270,805 | 73,515 | 411,988 | 112,226 |
+| esbuild --minify-syntax | 363,137 | 80,569 | 546,121 | 122,430 |
+| esbuild --minify-identifiers | 384,392 | 81,526 | 585,145 | 124,305 |
+| esbuild --minify | 222,528 | 68,388 | 351,781 | 106,278 |
+
+- **Raw effect:** esbuild prints light-cljs's already terse output again. `--minify` takes 7% (simple) and 6% (TodoMVC) off the raw size: redundant blocks and parentheses, `true`/`false`, and names, which esbuild renames again.
+- **Compressed effect:** it makes the output larger after gzip, by 543 and 2,103 bytes. Before the registration fix, TodoMVC's 21% raw saving was mostly the unescaped registration.
+- **Effect on the comparison:** the shipped bundle needs esbuild for React, so this cost is inside the gaps above. Bundling without identifier renaming is worse: TodoMVC's whole bundle grows from 152,832 to 156,200 bytes.
+
+**Candidate remedies**, none designed here. Per the group rules, the user decides any design change.
+- **Folding defines read through a function or a def:** light-cljs-984, maybe later. It extends the advanced optimizer and is worth 3.2 to 3.6 KB here.
+- **EDN and cljs.reader reading without namespace registration:** light-cljs-985, maybe later. It splits the reader unit or changes the reflection rule, and is worth up to 9.8 KB in TodoMVC.
+- **Arities in the bundled clojure.set:** light-cljs-986. The bundled clojure.set defines its public functions as values, so every arity is kept; clojure.walk is kept where Closure drops it. This is a small library fix, worth up to 2 KB.
+- **Assertions in release builds:** the porter could write `:release {:compiler-options {:elide-asserts true}}`, or light-cljs's `release` could default to it as shadow-cljs's does. That is a default flip, for the user. Worth 1.4 KB.
+- **The up-front declaration list:** declaring each global where it is defined is worth 0.8 to 1.4 KB. Not filed.
+- **The runtime's compression:** finer slicing for small apps, or a runtime that compresses better, is a design question. It is worth up to 6.3 KB in simple.
 
 ## Build time
 
