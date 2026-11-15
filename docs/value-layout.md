@@ -143,8 +143,9 @@ What the numbers say:
   case (`count`, `first`, `next`, `get` in a real program see every
   collection and seq kind), plus 3 ns on every protocol test of a host value.
   The cost is the keyed access, not the `Symbol`: the per-load string L costs
-  the same. Megamorphic keyed loads take V8's generic keyed path where named
-  loads take the stub cache directly.
+  the same. V8's megamorphic keyed load does more work before
+  it reaches the property cache than a named load does (not profiled
+  further; the numbers are what decide).
 - Startup does not separate them: building the prototypes and compiling the
   call sites costs the same in every variant.
 - A computed key's text is smaller (a local name per slot, which minifies),
