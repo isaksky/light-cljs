@@ -475,6 +475,48 @@ fn bit_operation_chains_keep_the_runtime_evaluation_order() {
 }
 
 #[test]
+fn array_calls_are_array_literals() {
+    // light-cljs-1021: the runtime's `array` is `(...args) => args`, a fresh
+    // array of the evaluated arguments in order, which is what upstream's
+    // macro writes as a literal. A lowered call (left) agrees with the
+    // runtime's (`apply`, right), makes a fresh array each time it runs, and
+    // evaluates its arguments in order, in value and statement position.
+    let js = every_level(
+        r#"(def log (atom []))
+           (defn f [x] (swap! log conj x) x)
+           (defn pair [a b] (array a b))
+           (defn effect [x] (array (f x)) nil)
+           (defn same? [x y]
+             (and (array? x) (array? y) (= (.-length x) (.-length y)) (= (vec x) (vec y))
+                  (identical? (js/Object.getPrototypeOf x) (js/Object.getPrototypeOf y))))
+           (let [one (pair 1 2) two (pair 1 2) made (mapv (fn [_] (array)) (range 2))
+                 ordered (array (f 1) (do (f 2) (f 3)) (array (f 4)) (effect 5))]
+             (aset one 0 9)
+             (pr-str [(identical? one two) (vec one) (vec two)
+                      (identical? (first made) (second made)) (.-length (first made))
+                      (vec (array 7 8 9))
+                      (same? (array) (apply array []))
+                      (same? (array nil js/undefined) (apply array [nil js/undefined]))
+                      (same? (array 1 :a "s" [2]) (apply array [1 :a "s" [2]]))
+                      (same? (array 1 2) #js [1 2])
+                      (update (vec ordered) 2 vec) @log
+                      (mapv vec (map array [1 2])) (vec (apply array 1 [2 3]))]))"#,
+        "[false [9 2] [1 2] false 0 [7 8 9] true true true true \
+         [1 3 [4] nil] [1 2 3 4 5] [[1] [2]] [1 2 3]]",
+    );
+    assert!(js.contains("[7, 8, 9]"), "{js}");
+    assert!(!js.contains("rt$array("), "{js}");
+    // Higher-order uses keep the runtime's function.
+    assert!(js.contains("rt$array"), "{js}");
+    // A program that replaces `array` keeps the call.
+    let js = every_level(
+        "(set! cljs.core/array (fn [& xs] (count xs))) (pr-str (array 1 2 3))",
+        "3",
+    );
+    assert!(!js.contains("[1, 2, 3]"), "{js}");
+}
+
+#[test]
 fn arithmetic_edge_cases_keep_the_runtime_results_and_evaluation_order() {
     let js = every_level(
         r#"(def log (atom []))

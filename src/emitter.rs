@@ -4754,6 +4754,15 @@ impl<'a> Emitter<'a> {
                 self.value(*bit);
                 self.output.push_str(after);
             }
+            // `array` is `(...args) => args`: a fresh array of the evaluated
+            // arguments in order, which a literal also is (light-cljs-1021).
+            // The literal's elements keep their kind (small integers, say),
+            // where a rest parameter's are generic.
+            (C::Array, _) => {
+                self.output.push('[');
+                self.arguments(args);
+                self.output.push(']');
+            }
             (C::Identical, [_, _]) => self.infix(" === ", args),
             (C::IsNil, [value]) => self.wrapped("", *value, " == null"),
             (C::IsSome, [value]) => self.wrapped("", *value, " != null"),
