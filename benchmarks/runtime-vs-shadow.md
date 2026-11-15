@@ -855,3 +855,61 @@ average before a build was 7.9 to 10.5. Raw results are in
   same file with either binary. The gate and workload 200k's steady state run
   the same program before and after, so they were not timed again.
 - **Compile time and peak memory moved within their ranges.**
+
+## 2026-11-15: keyed protocol names and slot-first vector dispatch (light-cljs-1009, partial)
+
+What landed (docs/value-layout.md, "Decisions for the user" and the notes after
+them): every protocol slot, marker and mask name ends in the build's key
+placeholder `$LKEY`, and persistent vectors answer `nth`, `count`, `peek`,
+`conj`, `assoc` and `get` through keyed slots on their prototype, which each
+operation's outermost wrapper calls first. Vectors still keep their store in
+the private-field brand; map entries, subvectors and vector transients are
+not converted yet, so `vec-literal-4`, `vec-conj-64` and `transient-vec-100`
+are still bound by today's construction.
+
+Binaries: before `light-cljs-f533efb1` (master), after `light-cljs-da012f30`
+(the slot-first commit; later commits change only tests and documents),
+both in research/shadow-credibility/bin. Unreserved: peer workers and test
+suites were running.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops vec-conj,vec-literal,vec-nth,vec-invoke,vec-peek,vec-assoc,transient-vec,count-small,get-small --runs 3`,
+the same selection both times; load average 6.6-8.6 before, 4.7-6.2 after):
+
+| op | light before | light after | change | shadow-cljs | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| vec-nth-1024 | 27.8 | 6.30 (6.28-6.43) | -77% | 5.07 | 5.52 | 1.24 |
+| vec-peek | 15.2 | 5.41 (5.39-5.51) | -64% | 3.32 | 4.49 | 1.63 |
+| vec-invoke-1024 | 6.74 | 6.64 (6.42-6.69) | -1% | 4.82 | 1.43 | 1.38 |
+| vec-assoc-1024 | 160.2 | 126.2 (125.3-129.7) | -21% | 73.2 | 2.16 | 1.72 |
+| vec-conj-64 | 6,443 | 5,368 (5,268-5,422) | -17% | 1,570 | 4.38 | 3.42 |
+| vec-literal-4 | 42.8 | 41.2 (41.2-42.4) | -4% | 7.59 | 5.57 | 5.43 |
+| transient-vec-100 | 8,508 | 8,248 (8,182-8,353) | -3% | 598.5 | 13.83 | 13.78 |
+| count-small | 45.2 | 48.3 (47.8-48.9) | +7% | 2.03 | 21.42 | 23.78 |
+| get-small | 168.4 | 167.8 (163.2-170.7) | +0% | 14.5 | 11.32 | 11.60 |
+
+- Within 1.5x now: `vec-nth-1024` and `vec-invoke-1024`. Not yet: `vec-peek`
+  1.63, `vec-assoc-1024` 1.72, and the three that allocate (`vec-conj-64`,
+  `vec-literal-4`, `transient-vec-100`), which need the class layout itself.
+- Loss: `count-small` +7% (3 ns): `count` of an unconverted map now first
+  reads the keyed kind in the slot-first wrapper. It goes when maps convert
+  (light-cljs-1012) and the old layers go (light-cljs-1015).
+
+**Workload 200k** (`compare.bb workload-200k-seed42 --runs 5 --runtime-only
+--runtime 1,10,40`, a copy of the project, load average 10.1-15.3), wall
+time, median (range):
+
+| iterations | light before | light after | shadow-cljs (both runs) | light/shadow after |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.486 s (0.477-0.496) | 0.491 s (0.474-0.509) | 0.342-0.345 s | 1.44 |
+| 10 | 1.456 s (1.439-1.491) | 1.478 s (1.424-1.515) | 0.644-0.647 s | 2.30 |
+| 40 | 4.312 s (4.257-4.387) | 4.333 s (4.241-4.431) | 1.402-1.418 s | 3.09 |
+
+Steady state does not move (+0.5%, inside the ranges): the workload's time
+is in maps, seqs and keywords, which are not converted yet.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): the slot
+units and the vector helpers they keep add 75-3,500 bytes where vectors and
+the six operations are kept (`vector-only` 5,394 to 5,475, `mapv-count`
+37,295 to 39,009, `features` 77,785 to 81,307); programs without vectors do
+not change. The keyed names add five bytes a name. re-frame simple and
+TodoMVC gzip sizes were not measured in this step.
