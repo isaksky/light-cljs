@@ -1316,7 +1316,7 @@ console.log('protocol identities, receiver, metadata and fallback assertions pas
   assert.equal(core.satisfies(core.ILookup, marker), true);
   assert.equal(core.isSeqable(marker), true);
   for (const op of [() => core.get(marker, 'x'), () => core.reduce(core.add, 0, marker), () => core.seq(marker)]) assert.throws(op, /No protocol method/);
-  const slotsOnly = {'cljs$core$ILookup$_lookup$arity$2': () => 7};
+  const slotsOnly = {'cljs$core$ILookup$_lookup$arity$2$LKEY': () => 7};
   assert.equal(core.satisfies(core.ILookup, slotsOnly), false);
   assert.equal(core.get(slotsOnly, 'x'), null);
   assert.equal(core.lookupProtocol(slotsOnly, 'x'), 7);
@@ -1849,24 +1849,24 @@ console.log('public find preserves one search and direct receiver dispatch');
     return () => reads;
   };
   const cases = [
-    [c.vector(1), 'cljs$core$ICollection$_conj$arity$2', null, v => c.conj(v, 2)],
-    [c.hashSet(1), 'cljs$core$ICollection$_conj$arity$2', null, s => c.conj(s, 2)],
-    [c.hashMap('a', 1), 'cljs$core$ICollection$_conj$arity$2', null, m => c.conj(m, c.vector('b', 2))],
-    [c.into(c.PersistentQueue.EMPTY, c.vector(1)), 'cljs$core$ICollection$_conj$arity$2', null, q => c.conj(q, 2)],
-    [c.vector(1), 'cljs$core$IAssociative$_assoc$arity$3', null, v => c.assoc(v, 0, 2)],
-    [c.hashMap('a', 1), 'cljs$core$IAssociative$_assoc$arity$3', null, m => c.assoc(m, 'a', 2)],
-    [c.vector(1), 'cljs$core$ILookup$_lookup$arity$2', 'cljs$core$ILookup$', v => c.get(v, 0)],
-    [c.hashMap('a', 1), 'cljs$core$ILookup$_lookup$arity$3', 'cljs$core$ILookup$', m => c.get(m, 'a', 'nf')],
-    [c.hashSet(1), 'cljs$core$ILookup$_lookup$arity$2', 'cljs$core$ILookup$', s => c.get(s, 1)],
-    [c.set(c.range(20)), 'cljs$core$ILookup$_lookup$arity$3', 'cljs$core$ILookup$', s => c.get(s, 1, 'nf')],
-    [c.first(c.hashMap('a', 1)), 'cljs$core$ILookup$_lookup$arity$2', 'cljs$core$ILookup$', e => c.get(e, 0)],
-    [c.first(c.hashMap('a', 1)), 'cljs$core$IIndexed$_nth$arity$2', 'cljs$core$IIndexed$', e => c.nth(e, 0)],
-    [c.cons(0, c.list(1)), 'cljs$core$ISeq$_rest$arity$1', 'cljs$core$ISeq$', s => c.next(s)],
-    [c.mapSeq(c.inc, c.vector(1, 2)), 'cljs$core$ISeqable$_seq$arity$1', 'cljs$core$ISeqable$', s => c.first(s)],
+    [c.vector(1), 'cljs$core$ICollection$_conj$arity$2$LKEY', null, v => c.conj(v, 2)],
+    [c.hashSet(1), 'cljs$core$ICollection$_conj$arity$2$LKEY', null, s => c.conj(s, 2)],
+    [c.hashMap('a', 1), 'cljs$core$ICollection$_conj$arity$2$LKEY', null, m => c.conj(m, c.vector('b', 2))],
+    [c.into(c.PersistentQueue.EMPTY, c.vector(1)), 'cljs$core$ICollection$_conj$arity$2$LKEY', null, q => c.conj(q, 2)],
+    [c.vector(1), 'cljs$core$IAssociative$_assoc$arity$3$LKEY', null, v => c.assoc(v, 0, 2)],
+    [c.hashMap('a', 1), 'cljs$core$IAssociative$_assoc$arity$3$LKEY', null, m => c.assoc(m, 'a', 2)],
+    [c.vector(1), 'cljs$core$ILookup$_lookup$arity$2$LKEY', 'cljs$core$ILookup$$LKEY', v => c.get(v, 0)],
+    [c.hashMap('a', 1), 'cljs$core$ILookup$_lookup$arity$3$LKEY', 'cljs$core$ILookup$$LKEY', m => c.get(m, 'a', 'nf')],
+    [c.hashSet(1), 'cljs$core$ILookup$_lookup$arity$2$LKEY', 'cljs$core$ILookup$$LKEY', s => c.get(s, 1)],
+    [c.set(c.range(20)), 'cljs$core$ILookup$_lookup$arity$3$LKEY', 'cljs$core$ILookup$$LKEY', s => c.get(s, 1, 'nf')],
+    [c.first(c.hashMap('a', 1)), 'cljs$core$ILookup$_lookup$arity$2$LKEY', 'cljs$core$ILookup$$LKEY', e => c.get(e, 0)],
+    [c.first(c.hashMap('a', 1)), 'cljs$core$IIndexed$_nth$arity$2$LKEY', 'cljs$core$IIndexed$$LKEY', e => c.nth(e, 0)],
+    [c.cons(0, c.list(1)), 'cljs$core$ISeq$_rest$arity$1$LKEY', 'cljs$core$ISeq$$LKEY', s => c.next(s)],
+    [c.mapSeq(c.inc, c.vector(1, 2)), 'cljs$core$ISeqable$_seq$arity$1$LKEY', 'cljs$core$ISeqable$$LKEY', s => c.first(s)],
     // The collections' `first`, `rest` and `next` (light-cljs-375).
     ...[() => c.vector(1, 2), () => c.vec(c.range(40)), () => c.subvec(c.vector(1, 2, 3), 1), () => c.first(c.hashMap('a', 1)),
       () => c.hashMap('a', 1), () => c.hashSet(1), () => c.sortedSet(2, 1), () => c.into(c.PersistentQueue.EMPTY, c.vector(1))]
-      .flatMap(make => [c.first, c.rest, c.next].map(op => [make(), 'cljs$core$ISeqable$_seq$arity$1', 'cljs$core$ISeqable$', op])),
+      .flatMap(make => [c.first, c.rest, c.next].map(op => [make(), 'cljs$core$ISeqable$_seq$arity$1$LKEY', 'cljs$core$ISeqable$$LKEY', op])),
   ];
   for (const [value, slot, marker, op] of cases) {
     const calls = [];
@@ -1882,17 +1882,17 @@ console.log('public find preserves one search and direct receiver dispatch');
 for (const make of [() => c.hashSet(1), () => c.set(c.range(20)), () => c.vector(1), () => c.hashMap('a', 1)]) {
   const value = make();
   let saved, calls = 0;
-  value.cljs$core$ILookup$ = c.PROTOCOL_SENTINEL;
-  value.cljs$core$ILookup$_lookup$arity$3 = (_, k, nf) => (saved = nf);
+  value.cljs$core$ILookup$$LKEY = c.PROTOCOL_SENTINEL;
+  value.cljs$core$ILookup$_lookup$arity$3$LKEY = (_, k, nf) => (saved = nf);
   c.contains(value, 9);
-  value.cljs$core$ILookup$_lookup$arity$2 = () => ++calls === 1 ? saved : 42;
+  value.cljs$core$ILookup$_lookup$arity$2$LKEY = () => ++calls === 1 ? saved : 42;
   assert.equal(c.get(value, 1), saved);
   assert.equal(calls, 1);
   // ... and so is a `-seq` whose seq starts with it, by `first`
   // (light-cljs-375).
   let seqs = 0;
-  value.cljs$core$ISeqable$ = c.PROTOCOL_SENTINEL;
-  value.cljs$core$ISeqable$_seq$arity$1 = () => (seqs++, c.list(saved));
+  value.cljs$core$ISeqable$$LKEY = c.PROTOCOL_SENTINEL;
+  value.cljs$core$ISeqable$_seq$arity$1$LKEY = () => (seqs++, c.list(saved));
   assert.equal(c.first(value), saved);
   assert.equal(seqs, 1);
 }
@@ -1902,20 +1902,20 @@ for (const make of [() => c.hashSet(1), () => c.set(c.range(20)), () => c.vector
 {
   const donor = c.hashSet(1);
   let saved;
-  donor.cljs$core$ILookup$ = c.PROTOCOL_SENTINEL;
-  donor.cljs$core$ILookup$_lookup$arity$3 = (_, k, nf) => (saved = nf);
+  donor.cljs$core$ILookup$$LKEY = c.PROTOCOL_SENTINEL;
+  donor.cljs$core$ILookup$_lookup$arity$3$LKEY = (_, k, nf) => (saved = nf);
   c.contains(donor, 9);
   for (const make of [() => c.vector(1, 2), () => c.vec(c.range(40)), () => c.first(c.hashMap('a', 1)), () => c.hashMap('a', 1),
     () => c.hashSet(1), () => c.into(c.PersistentQueue.EMPTY, c.vector(1))]) {
     const value = make();
     let seqs = 0;
-    value.cljs$core$ISeqable$ = c.PROTOCOL_SENTINEL;
-    value.cljs$core$ISeqable$_seq$arity$1 = () => (seqs++, new c.Cons(null, 1, saved, null));
+    value.cljs$core$ISeqable$$LKEY = c.PROTOCOL_SENTINEL;
+    value.cljs$core$ISeqable$_seq$arity$1$LKEY = () => (seqs++, new c.Cons(null, 1, saved, null));
     assert.equal(c.rest(value), saved);
     assert.equal(seqs, 1);
     let tails = 0;
     const tail = runtime.makeReify([['ISeqable', 0, null], ['ISeqable/-seq', 1, () => (tails++, saved)]]);
-    value.cljs$core$ISeqable$_seq$arity$1 = () => (seqs++, new c.Cons(null, 1, tail, null));
+    value.cljs$core$ISeqable$_seq$arity$1$LKEY = () => (seqs++, new c.Cons(null, 1, tail, null));
     assert.equal(c.next(value), saved);
     assert.deepEqual([seqs, tails], [2, 1]);
   }
@@ -1927,16 +1927,16 @@ for (const make of [() => c.hashSet(1), () => c.set(c.range(20)), () => c.vector
 {
   const donor = c.hashSet(1);
   let saved;
-  donor.cljs$core$ILookup$ = c.PROTOCOL_SENTINEL;
-  donor.cljs$core$ILookup$_lookup$arity$3 = (_, k, nf) => (saved = nf);
+  donor.cljs$core$ILookup$$LKEY = c.PROTOCOL_SENTINEL;
+  donor.cljs$core$ILookup$_lookup$arity$3$LKEY = (_, k, nf) => (saved = nf);
   c.contains(donor, 9);
   for (const [value, slot, op] of [
-    [c.vector(1), 'cljs$core$ICollection$_conj$arity$2', v => c.conj(v, 2)],
-    [c.hashSet(1), 'cljs$core$ICollection$_conj$arity$2', s => c.conj(s, 2)],
-    [c.hashMap('a', 1), 'cljs$core$ICollection$_conj$arity$2', m => c.conj(m, c.vector('b', 2))],
-    [c.into(c.PersistentQueue.EMPTY, c.vector(1)), 'cljs$core$ICollection$_conj$arity$2', q => c.conj(q, 2)],
-    [c.vector(1), 'cljs$core$IAssociative$_assoc$arity$3', v => c.assoc(v, 0, 2)],
-    [c.hashMap('a', 1), 'cljs$core$IAssociative$_assoc$arity$3', m => c.assoc(m, 'a', 2)],
+    [c.vector(1), 'cljs$core$ICollection$_conj$arity$2$LKEY', v => c.conj(v, 2)],
+    [c.hashSet(1), 'cljs$core$ICollection$_conj$arity$2$LKEY', s => c.conj(s, 2)],
+    [c.hashMap('a', 1), 'cljs$core$ICollection$_conj$arity$2$LKEY', m => c.conj(m, c.vector('b', 2))],
+    [c.into(c.PersistentQueue.EMPTY, c.vector(1)), 'cljs$core$ICollection$_conj$arity$2$LKEY', q => c.conj(q, 2)],
+    [c.vector(1), 'cljs$core$IAssociative$_assoc$arity$3$LKEY', v => c.assoc(v, 0, 2)],
+    [c.hashMap('a', 1), 'cljs$core$IAssociative$_assoc$arity$3$LKEY', m => c.assoc(m, 'a', 2)],
   ]) {
     let calls = 0;
     value[slot] = () => ++calls === 1 ? saved : 42;

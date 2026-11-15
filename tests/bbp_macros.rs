@@ -7559,10 +7559,10 @@ fn native_protocol_predicates_read_host_properties_like_quickjs() {
         (let [log (js/Array.)
               watch (fn [o k v] (js/Object.defineProperty o k (js-obj "get" (fn [] (.push log k) v))) o)
               o (reduce (fn [o [k v]] (watch o k v)) (js-obj)
-                        [["cljs$lang$protocol_mask$partition0$" 0] ["cljs$lang$protocol_mask$partition1$" 0]
-                         ["cljs$core$IWithMeta$" nil] ["cljs$core$ICounted$" nil] ["cljs$core$IAtom$" nil]
-                         ["cljs$user$P$" nil]])
-              masked (watch (js-obj) "cljs$lang$protocol_mask$partition0$" 262144)
+                        [["cljs$lang$protocol_mask$partition0$$LKEY" 0] ["cljs$lang$protocol_mask$partition1$$LKEY" 0]
+                         ["cljs$core$IWithMeta$$LKEY" nil] ["cljs$core$ICounted$$LKEY" nil] ["cljs$core$IAtom$$LKEY" nil]
+                         ["cljs$user$P$$LKEY" nil]])
+              masked (watch (js-obj) "cljs$lang$protocol_mask$partition0$$LKEY" 262144)
               s satisfies? i implements?
               mark (fn [label] (.push log label))
               arg (fn [v] (.push log "arg") v)
@@ -7573,7 +7573,7 @@ fn native_protocol_predicates_read_host_properties_like_quickjs() {
           (pr-str [r (vec log)])))
       (js/console.log (probe))"#,
         concat!(
-            r#"[[false 5 false 8 false 12 false 17 true 20 false 21 true 23 false 25 true 27 false 29 true true false false true] ["arg" "cljs$lang$protocol_mask$partition0$" "cljs$core$IWithMeta$" "cljs$lang$protocol_mask$partition0$" "|" "cljs$lang$protocol_mask$partition0$" "cljs$core$IWithMeta$" "|" "cljs$lang$protocol_mask$partition0$" "cljs$core$ICounted$" "cljs$lang$protocol_mask$partition0$" "|" "cljs$lang$protocol_mask$partition1$" "cljs$core$IAtom$" "cljs$core$IAtom$" "cljs$lang$protocol_mask$partition1$" "|" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "|" "|" "cljs$user$P$" "|" "cljs$user$P$" "|" "cljs$user$P$" "|" "cljs$user$P$" "|" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$"]]"#,
+            r#"[[false 5 false 8 false 12 false 17 true 20 false 21 true 23 false 25 true 27 false 29 true true false false true] ["arg" "cljs$lang$protocol_mask$partition0$$LKEY" "cljs$core$IWithMeta$$LKEY" "cljs$lang$protocol_mask$partition0$$LKEY" "|" "cljs$lang$protocol_mask$partition0$$LKEY" "cljs$core$IWithMeta$$LKEY" "|" "cljs$lang$protocol_mask$partition0$$LKEY" "cljs$core$ICounted$$LKEY" "cljs$lang$protocol_mask$partition0$$LKEY" "|" "cljs$lang$protocol_mask$partition1$$LKEY" "cljs$core$IAtom$$LKEY" "cljs$core$IAtom$$LKEY" "cljs$lang$protocol_mask$partition1$$LKEY" "|" "cljs$lang$protocol_mask$partition0$$LKEY" "cljs$lang$protocol_mask$partition0$$LKEY" "|" "|" "cljs$user$P$$LKEY" "|" "cljs$user$P$$LKEY" "|" "cljs$user$P$$LKEY" "|" "cljs$user$P$$LKEY" "|" "cljs$lang$protocol_mask$partition0$$LKEY" "cljs$lang$protocol_mask$partition0$$LKEY" "cljs$lang$protocol_mask$partition0$$LKEY" "cljs$lang$protocol_mask$partition0$$LKEY" "cljs$lang$protocol_mask$partition0$$LKEY" "cljs$lang$protocol_mask$partition0$$LKEY"]]"#,
             "\n"
         ),
     );
@@ -7589,7 +7589,7 @@ fn native_protocol_satisfies_demands_before_mask_short_circuit() {
       (def target (do (swap! hits inc) T))
       (extend-type target IDerefWithTimeout (-deref-with-timeout [_ ms v] v))
       (defmacro probe []
-        (let [o (js-obj "cljs$lang$protocol_mask$partition0$" 65536)
+        (let [o (js-obj "cljs$lang$protocol_mask$partition0$$LKEY" 65536)
               before @hits
               r (satisfies? IDerefWithTimeout o)]
           [before r @hits (implements? IDerefWithTimeout o)]))
@@ -12495,7 +12495,7 @@ fn native_struct_host_coercions_match_legacy() {
 /// bookkeeping, not fields, and are filtered on both backends.
 #[test]
 fn native_struct_reflection_matches_legacy() {
-    const KEYS: &str = "(fn [names] (vec (remove (fn [k] (.startsWith k \"cljs$lang$\")) names)))";
+    const KEYS: &str = "(fn [names] (vec (remove (fn [k] (.startsWith k \"cljs$lang$$LKEY\")) names)))";
     assert_native_matches_legacy(
         &format!(
             r#"(deftype T [a-b a_b])
@@ -13039,7 +13039,7 @@ fn native_record_slots_override_colliding_members() {
     assert_native_matches_legacy(
         r#"(defrecord R [__meta])
            (defmacro m []
-             (let [keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$")) names)))
+             (let [keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$$LKEY")) names)))
                    r (->R 1) w (with-meta (->R 1) {:m 1}) x (map->R {:__meta 2 :y 3})]
                [(.-__meta r) (.-__extmap r) (.-__hash r) (keys-of (js/Object.keys r))
                 (.-__meta w) (.-__meta x) (.-__extmap x)
@@ -13089,7 +13089,7 @@ fn native_form_object_operations_match_quickjs() {
           (deftype T [x y])
           (defrecord R [x])
           (defmulti mf identity)
-          (defn keys-of [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$")) names)))
+          (defn keys-of [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$$LKEY")) names)))
           (defn attempt [thunk]
             (try (let [r (thunk)] (if (js* "~{} === undefined" r) :undefined r))
                  (catch :default e (str "error: " (.-message e)))))
@@ -13477,7 +13477,7 @@ fn native_struct_host_interop_matches_quickjs_at_every_pool_size() {
           (defmacro probe []
             (let [t (T. (cold 1)) r (->R (cold 2)) l (L. (cold 1)) c (C. (fn [_ y] [:field y]))
                   n (fn [& xs] (count xs))
-                  keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$")) names)))
+                  keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$$LKEY")) names)))
                   attempt (fn [thunk] (try (thunk) (catch :default e (.-message e))))]
               (list 'quote [(js/String t) (js* "`${~{}}`" t) (js/String r)
                             (keys-of (js/Object.keys r)) (js* "'x' in ~{}" r) (.-x (js/Object.assign (js-obj) r))

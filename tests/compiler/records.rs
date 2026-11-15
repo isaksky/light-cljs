@@ -162,7 +162,7 @@ fn type_instances_hold_fields_as_own_data_properties() {
 fn advanced_types_hold_their_masks_on_the_prototype() {
     let source = "(defrecord R [a]) (deftype T [x] ICounted (-count [_] 1))
                   (let [r (->R 1) t (T. 2)
-                        own (fn [o] (.hasOwnProperty o \"cljs$lang$protocol_mask$partition0$\"))]
+                        own (fn [o] (.hasOwnProperty o \"cljs$lang$protocol_mask$partition0$$LKEY\"))]
                     (array (js/Object.keys r) (js/Object.keys t) (.-cljs$lang$protocol_mask$partition0$ t)
                            (own t) (own (js/Object.getPrototypeOf t)) (count t) (count r)))";
     let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
@@ -172,7 +172,7 @@ fn advanced_types_hold_their_masks_on_the_prototype() {
                 .emit_js();
         super::optimization::execute(&format!("console.log(JSON.stringify({js}));"))
     };
-    let masks = "\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"";
+    let masks = "\"cljs$lang$protocol_mask$partition0$$LKEY\",\"cljs$lang$protocol_mask$partition1$$LKEY\"";
     for level in [
         light_cljs::OptimizationLevel::None,
         light_cljs::OptimizationLevel::Prepare,

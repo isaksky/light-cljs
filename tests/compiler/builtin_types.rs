@@ -253,7 +253,7 @@ fn list_construction_keeps_intrinsic_count_while_public_count_remains_live() {
     // Declare the extension so Advanced retains its public dispatch hooks.
     let body = r#"(do (extend-type List ICounted (-count [xs] (.-count xs)))
                      (let [prototype (.-prototype List)
-                       slot "cljs$core$ICounted$_count$arity$1"
+                       slot "cljs$core$ICounted$_count$arity$1$LKEY"
                        previous (js/Object.getOwnPropertyDescriptor prototype slot)
                        calls (atom 0)
                        value (atom nil)
@@ -288,9 +288,9 @@ fn selected_protocol_missing_method_does_not_fall_back_after_a_getter_mutation()
                                            (-lookup [_ _] :two)
                                            (-lookup [_ _ _] :three))]
                                (js/Object.defineProperty
-                                 value "cljs$core$ILookup$_lookup$arity$3"
+                                 value "cljs$core$ILookup$_lookup$arity$3$LKEY"
                                  #js {:get (fn []
-                                             (js-delete value "cljs$core$ILookup$")
+                                             (js-delete value "cljs$core$ILookup$$LKEY")
                                              (if found (fn [_ _ _] :found) nil))})
                                (try (get value :key :fallback)
                                     (catch :default error (.-message error)))))]
@@ -314,8 +314,8 @@ fn masked_lookup_getters_preserve_selected_dispatch() {
         format!(
             r#"(let [run (fn [found]
                      (let [value {make}]
-                       (doseq [[slot marker] [["cljs$core$ILookup$_lookup$arity$3" "cljs$core$ILookup$"]
-                                              ["cljs$core$IAssociative$_contains_key_QMARK_$arity$2" "cljs$core$IAssociative$"]]]
+                       (doseq [[slot marker] [["cljs$core$ILookup$_lookup$arity$3$LKEY" "cljs$core$ILookup$$LKEY"]
+                                              ["cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY" "cljs$core$IAssociative$$LKEY"]]]
                          (js/Object.defineProperty value slot
                            #js {{:get (fn []
                                        (set! (.-cljs$lang$protocol_mask$partition0$ value) 0)
@@ -629,9 +629,9 @@ fn program_types_keep_no_machinery_for_builtin_values() {
 fn program_types_keep_the_dispatch_of_interop() {
     every_level(
         "(let [f (fn [] 1)]
-           (aset f \"cljs$core$IMeta$_meta$arity$1\" (fn [_] {:m 1}))
+           (aset f \"cljs$core$IMeta$_meta$arity$1$LKEY\" (fn [_] {:m 1}))
            (pr-str [(get (reify ILookup (-lookup [_ k] 1)) \"x\")
-                    (get (js-obj \"cljs$core$ILookup$_lookup$arity$2\" (fn [_ k] 7)) \"x\")
+                    (get (js-obj \"cljs$core$ILookup$_lookup$arity$2$LKEY\" (fn [_ k] 7)) \"x\")
                     (meta f)]))",
         "[1 nil {:m 1}]",
     );
@@ -727,8 +727,8 @@ fn protocol_test_rows(extensions: &str, extra: &str) -> String {
                             [:reify (reify)] [:vector [1 2]] [:list '(1 2)] [:map {{:a 1}}] [:set #{{1}}]
                             [:range (range 3)] [:lazy (map inc [1])] [:string \"ab\"] [:nil nil] [:number 5]
                             [:array #js [1 2]] [:object #js {{:a 1}}] [:fn (fn [] 1)]
-                            [:masked (js-obj \"cljs$lang$protocol_mask$partition0$\" 2)]
-                            [:marker (js-obj \"cljs$core$ICounted$\" true)] {extra}]]
+                            [:masked (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 2)]
+                            [:marker (js-obj \"cljs$core$ICounted$$LKEY\" true)] {extra}]]
              (pr-str [label
                       (apply str (map #(if (% v) 1 0)
                                       [counted? seq? seqable? sequential? coll? map? vector? set? record?
@@ -833,12 +833,14 @@ fn protocol_tests_of_program_types_need_no_protocol_tables() {
     // 6,622 and 6,372 after (`privateStore` and `kindedStore`). The record
     // keeps its brand reader, so since light-cljs-346 it is a class with a
     // brand of its own plus the `ClassBrand` units: 6,549 to 7,018 bytes.
+    // The build's key on every slot, marker and mask name (light-cljs-1009,
+    // docs/value-layout.md) adds five bytes a name: the record's 7,500.
     for source in [
         "(deftype T [] ICounted (-count [_] 7)) (counted? (T.))",
         "(defrecord R [x]) (map? (->R 1))",
     ] {
         assert_keeps_none(source, &EXTENSION_MACHINERY);
-        assert!(advanced(source).emit_js().len() < 7_500, "{source}");
+        assert!(advanced(source).emit_js().len() < 7_700, "{source}");
     }
 }
 
@@ -879,8 +881,8 @@ fn core_protocol_tables_written_directly_reach_the_protocol_tests() {
     every_level(read, "[7 false false false]");
     every_level(
         "(deftype T [] ICounted (-count [_] 7))
-         (let [o (js-obj \"cljs$lang$protocol_mask$partition0$\" 2)]
-           (js/Object.defineProperty o \"cljs$core$ICounted$\"
+         (let [o (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 2)]
+           (js/Object.defineProperty o \"cljs$core$ICounted$$LKEY\"
              (js-obj \"get\" (fn [] (throw (js/Error. \"marker read\")))))
            (pr-str [(count (T.)) (counted? o)]))",
         "[7 true]",
@@ -1006,31 +1008,31 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     for (source, expected) in [
         (
             "(deftype T [] ICounted (-count [_] 7))
-             (let [o (js-obj \"cljs$lang$protocol_mask$partition0$\" 8388608
-                             \"cljs$core$ISeqable$_seq$arity$1\" (fn [_] nil))]
+             (let [o (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 8388608
+                             \"cljs$core$ISeqable$_seq$arity$1$LKEY\" (fn [_] nil))]
                (array (count (T.)) (count o)))",
             "[ 7, 0 ]",
         ),
         (
-            "(count (js-obj \"cljs$lang$protocol_mask$partition0$\" 8388608
-                            \"cljs$core$ISeqable$_seq$arity$1\" (fn [_] (list 1 2))))",
+            "(count (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 8388608
+                            \"cljs$core$ISeqable$_seq$arity$1$LKEY\" (fn [_] (list 1 2))))",
             "2",
         ),
         (
             "(deftype T [] ICounted (-count [_] 7)) (def n (count (T.)))
-             (try (count (js-obj \"cljs$lang$protocol_mask$partition0$\" 8388608))
+             (try (count (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 8388608))
                (catch :default e (.-message e)))",
             "No protocol method ISeqable/-seq defined for this value",
         ),
         (
-            "(try (count (js-obj \"cljs$lang$protocol_mask$partition0$\" 2))
+            "(try (count (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 2))
                (catch :default e (.-message e)))",
             "No protocol method ICounted/-count defined for this value",
         ),
     ] {
         every_level(source, expected);
     }
-    let masked = self::units("(count (js-obj \"cljs$lang$protocol_mask$partition0$\" 2))");
+    let masked = self::units("(count (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 2))");
     for unit in ["installMethods", "ISeqable", "ISequential", "count.seqs"] {
         assert!(masked.contains(&unit), "{unit}: {masked:?}");
     }
@@ -1039,7 +1041,7 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // hook at `Advanced`.
     let computed = "(deftype T [] ICounted (-count [_] 7)) (def n (count (T.)))
          (let [o (js-obj)]
-           (aset o (.concat \"cljs$lang$protocol_mask$\" \"partition0$\") 8388608)
+           (aset o (.concat \"cljs$lang$protocol_mask$\" \"partition0$$LKEY\") 8388608)
            (try (count o) (catch js/TypeError _ :unsupported) (catch :default e (.-message e))))";
     let printed = execute(&format!("console.log({});", advanced(computed).emit_js()));
     assert_eq!(printed, "KeywordValue {}\n");
@@ -1270,8 +1272,8 @@ fn vector_reductions_keep_protocol_implementations() {
 fn vector_fast_paths_honor_direct_protocol_slots() {
     every_level(
         "(let [v [1]]
-           (aset v \"cljs$lang$protocol_mask$partition0$\" 8)
-           (aset v \"cljs$core$ICollection$_conj$arity$2\" (fn [_ x] [:custom x]))
+           (aset v \"cljs$lang$protocol_mask$partition0$$LKEY\" 8)
+           (aset v \"cljs$core$ICollection$_conj$arity$2$LKEY\" (fn [_ x] [:custom x]))
            (pr-str [(conj v 2) (conj [5] 6) (into [] (range 3))]))",
         "[[:custom 2] [5 6] [0 1 2]]",
     );
@@ -2044,12 +2046,12 @@ fn named_generated_record_slots_remain_callable() {
         // as `this` only: the method reads "missing" as its receiver argument
         // and looks up "nf" without a default.
         (
-            "(array (.equiv [1] [1]) (.call (aget r \"cljs$core$ILookup$_lookup$arity$3\") r \"missing\" \"nf\"))",
+            "(array (.equiv [1] [1]) (.call (aget r \"cljs$core$ILookup$_lookup$arity$3$LKEY\") r \"missing\" \"nf\"))",
             "[ true, undefined ]",
             "recordMethods.lookup",
         ),
         (
-            "(.call (aget r \"cljs$core$ILookup$_lookup$arity$3\") r r \"missing\" \"nf\")",
+            "(.call (aget r \"cljs$core$ILookup$_lookup$arity$3$LKEY\") r r \"missing\" \"nf\")",
             "nf",
             "recordMethods.lookup",
         ),
@@ -2059,7 +2061,7 @@ fn named_generated_record_slots_remain_callable() {
             "recordMethods.lookup",
         ),
         (
-            "(js* \"~{}.cljs$core$ICounted$_count$arity$1(~{})\" r r)",
+            "(js* \"~{}.cljs$core$ICounted$_count$arity$1$LKEY(~{})\" r r)",
             "1",
             "recordMethods.count",
         ),
@@ -2137,7 +2139,7 @@ fn named_generated_record_slots_remain_callable() {
     // One `js*` text naming two slots keeps both methods.
     let source = format!(
         "{record} {}",
-        "(js* \"[~{}.cljs$core$IMeta$_meta$arity$1(~{}), ~{}.cljs$core$ICounted$_count$arity$1(~{})]\" r r r r)"
+        "(js* \"[~{}.cljs$core$IMeta$_meta$arity$1$LKEY(~{}), ~{}.cljs$core$ICounted$_count$arity$1$LKEY(~{})]\" r r r r)"
     );
     every_level(&source, "[ null, 1 ]");
     let kept = units(&source);
@@ -2535,7 +2537,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 110011111001010110000 5 1 2\n",
-                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$ get:cljs$core$IAssociative$ get:cljs$core$IChunkedSeq$ get:cljs$core$ICollection$ get:cljs$core$ICounted$ get:cljs$core$ICounted$_count$arity$1 get:cljs$core$IFn$ get:cljs$core$IIndexed$ get:cljs$core$IList$ get:cljs$core$IMap$ get:cljs$core$IMapEntry$ get:cljs$core$IRecord$ get:cljs$core$IReduce$ get:cljs$core$IReversible$ get:cljs$core$ISeq$ get:cljs$core$ISeqable$ get:cljs$core$ISequential$ get:cljs$core$ISet$ get:cljs$core$ISorted$ get:cljs$core$IUUID$ get:cljs$core$IVector$ get:cljs$lang$protocol_mask$partition0$ get:cljs$lang$protocol_mask$partition1$ get:toString proto\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
             [100, 100, 144],
         ),
@@ -2597,7 +2599,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
-                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$ get:cljs$core$IAssociative$ get:cljs$core$IChunkedSeq$ get:cljs$core$ICollection$ get:cljs$core$ICounted$ get:cljs$core$ICounted$_count$arity$1 get:cljs$core$IFn$ get:cljs$core$IIndexed$ get:cljs$core$IList$ get:cljs$core$IMap$ get:cljs$core$IMapEntry$ get:cljs$core$IRecord$ get:cljs$core$IReduce$ get:cljs$core$IReversible$ get:cljs$core$ISeq$ get:cljs$core$ISeqable$ get:cljs$core$ISequential$ get:cljs$core$ISet$ get:cljs$core$ISorted$ get:cljs$core$IUUID$ get:cljs$core$IVector$ get:cljs$lang$protocol_mask$partition0$ get:cljs$lang$protocol_mask$partition1$ get:toString proto\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
             [91, 91, 132],
         ),
@@ -2660,7 +2662,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "empty-queue 010011110000000001000 0 :queue 2\n",
                 "specified-map 001011111100010010100 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
-                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$ get:cljs$core$IAssociative$ get:cljs$core$IChunkedSeq$ get:cljs$core$ICollection$ get:cljs$core$ICounted$ get:cljs$core$ICounted$_count$arity$1 get:cljs$core$IFn$ get:cljs$core$IIndexed$ get:cljs$core$IList$ get:cljs$core$IMap$ get:cljs$core$IMapEntry$ get:cljs$core$IRecord$ get:cljs$core$IReduce$ get:cljs$core$IReversible$ get:cljs$core$ISeq$ get:cljs$core$ISeqable$ get:cljs$core$ISequential$ get:cljs$core$ISet$ get:cljs$core$ISorted$ get:cljs$core$IUUID$ get:cljs$core$IVector$ get:cljs$lang$protocol_mask$partition0$ get:cljs$lang$protocol_mask$partition1$ get:toString proto\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
             [100, 100, 100],
         ),
@@ -3091,7 +3093,7 @@ fn small_map_searches_read_a_keyword_key_and_bound_the_entries_as_before() {
     // throw. The search covers the entries there were when it started, as
     // `findIndex` did, though a key's `-equiv` adds one to a transient.
     every_level(
-        "(let [k (keyword \"t989\" \"k\") slot \"cljs$core$IEquiv$_equiv$arity$2\" reads (atom 0) calls (atom [])
+        "(let [k (keyword \"t989\" \"k\") slot \"cljs$core$IEquiv$_equiv$arity$2$LKEY\" reads (atom 0) calls (atom [])
                watch (fn [f] (js/Object.defineProperty k slot #js {:configurable true :get f}))
                _ (watch (fn [] (swap! reads inc) (when (> @reads 1) (fn [_ o] (swap! calls conj o) false))))
                a [(get (array-map k 1) k) @reads (get {} k :nf) @reads (get (array-map :x 1 :y 2 :z 3) k :nf) @reads @calls]

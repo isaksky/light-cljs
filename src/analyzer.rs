@@ -11282,10 +11282,10 @@ impl Analyzer<'_> {
         if let ExprKind::JsGlobal(global) = root
             && fields
                 .split('.')
-                .all(|field| js_identifier(&munge_js_member(field)))
+                .all(|field| js_identifier(&keyed_js_member(field)))
         {
             let mut path = self.program.js_globals[global.0].path.clone();
-            path.extend(fields.split('.').map(munge_js_member));
+            path.extend(fields.split('.').map(keyed_js_member));
             return Ok(self.js_global(path));
         }
         let mut kind = root;
@@ -11303,7 +11303,7 @@ impl Analyzer<'_> {
             );
             kind = ExprKind::Property {
                 receiver,
-                property: munge_js_member(field),
+                property: keyed_js_member(field),
             };
         }
         Ok(kind)
@@ -13608,8 +13608,46 @@ pub(crate) fn munge_js_path(name: &str) -> Vec<String> {
     name.replace("..", "_DOT__DOT_")
         .replace('/', ".")
         .split('.')
-        .map(munge_js_member)
+        .map(keyed_js_member)
         .collect()
+}
+
+/// A host member as source names it, munged ([`munge_js_member`]), and keyed
+/// where it has the shape of a protocol slot (`ns$P$m$arity$N`), marker
+/// (`ns$P$`) or mask (`cljs$lang$protocol_mask$partitionN$`): the runtime and
+/// emission write those names with the build's key ([`crate::rta::RUNTIME_KEY`],
+/// docs/value-layout.md, section 1), so source that names them as members
+/// keeps reaching them. The functions' invoke convention
+/// (`cljs$core$IFn$_invoke$arity$N`) is not keyed.
+pub(crate) fn keyed_js_member(name: &str) -> String {
+    let member = munge_js_member(name);
+    if protocol_member(&member) {
+        member + crate::rta::RUNTIME_KEY
+    } else {
+        member
+    }
+}
+
+/// Whether the munged `member` has the shape of a protocol slot, marker or
+/// mask name ([`keyed_js_member`]).
+fn protocol_member(member: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let segments = |s: &str, at_least: usize| {
+        let mut count = 0;
+        s.split('$').all(|part| {
+            count += 1;
+            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        }) && count >= at_least
+    };
+    if let Some(rest) = member.strip_prefix("cljs$lang$protocol_mask$partition") {
+        return rest.strip_suffix('$').is_some_and(digits);
+    }
+    if let Some((stem, arity)) = member.rsplit_once("$arity$") {
+        return digits(arity) && stem != "cljs$core$IFn$_invoke" && segments(stem, 3);
+    }
+    member
+        .strip_suffix('$')
+        .is_some_and(|stem| segments(stem, 2))
 }
 
 /// CLJS host-member munging does not suffix JavaScript reserved words.

@@ -27,13 +27,13 @@ fn direct_saved_metadata_and_receiver_identity_have_literal_expectations() {
 fn protocol_dispatch_uses_public_slots_and_native_tables() {
     assert_eq!(
         run(
-            "(defprotocol Slashy (/ [_])) (let [v (reify Slashy (/ [_] 7))] (array (/ v) (fn? (aget v \"cljs$user$Slashy$_SLASH_$arity$1\"))))"
+            "(defprotocol Slashy (/ [_])) (let [v (reify Slashy (/ [_] 7))] (array (/ v) (fn? (aget v \"cljs$user$Slashy$_SLASH_$arity$1$LKEY\"))))"
         ),
         "[7,true]\n"
     );
     assert_eq!(
         run(
-            "(defprotocol P (f [this])) (let [v #js {}] (aset v \"cljs$user$P$f$arity$1\" (fn [self] (this-as receiver (identical? self receiver)))) (aset v \"cljs$user$P$\" PROTOCOL_SENTINEL) (array (f v) (implements? P v) (satisfies? P v)))"
+            "(defprotocol P (f [this])) (let [v #js {}] (aset v \"cljs$user$P$f$arity$1$LKEY\" (fn [self] (this-as receiver (identical? self receiver)))) (aset v \"cljs$user$P$$LKEY\" PROTOCOL_SENTINEL) (array (f v) (implements? P v) (satisfies? P v)))"
         ),
         "[true,true,true]\n"
     );
@@ -119,13 +119,13 @@ fn protocol_dispatchers_call_host_slots_and_keep_their_length() {
              (defn call [slot value call]
                (reset! reads 0)
                (let [result (str (call (host slot value)))] (if value result (array result @reads))))
-             (array (call \"cljs$user$P$f$arity$1\" (fn [_] 42) #((fs 0) %))
-                    (call \"cljs$user$P$f$arity$1\" nil #((fs 0) %))
-                    (call \"cljs$user$P$g$arity$1\" (fn [_] 1) #((fs 1) %))
-                    (call \"cljs$user$P$g$arity$2\" (fn [_ y] (* 2 y)) #((fs 1) % 3))
-                    (call \"cljs$user$P$g$arity$2\" nil #((fs 1) % 3))
-                    (call \"cljs$user$P$h$arity$3\" (fn [_ y z] (+ y z)) #((fs 2) % 3 4))
-                    (call \"cljs$user$P$h$arity$3\" nil #((fs 2) % 3 4))
+             (array (call \"cljs$user$P$f$arity$1$LKEY\" (fn [_] 42) #((fs 0) %))
+                    (call \"cljs$user$P$f$arity$1$LKEY\" nil #((fs 0) %))
+                    (call \"cljs$user$P$g$arity$1$LKEY\" (fn [_] 1) #((fs 1) %))
+                    (call \"cljs$user$P$g$arity$2$LKEY\" (fn [_ y] (* 2 y)) #((fs 1) % 3))
+                    (call \"cljs$user$P$g$arity$2$LKEY\" nil #((fs 1) % 3))
+                    (call \"cljs$user$P$h$arity$3$LKEY\" (fn [_ y z] (+ y z)) #((fs 2) % 3 4))
+                    (call \"cljs$user$P$h$arity$3$LKEY\" nil #((fs 2) % 3 4))
                     (.-length f) (.-length g) (.-length h))"
         ),
         "[\"42\",[\":default\",1],\"1\",\"6\",[\"3\",1],\"7\",[\"4\",1],1,1,1]\n"

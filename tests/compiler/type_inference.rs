@@ -1395,7 +1395,7 @@ fn protocol_calls_on_parameters_of_one_program_type_are_devirtualized() {
        (pr-str [(twice (->Rect 2 3)) (any-twice (->Rect 1 1))
                 (any-twice (reify Area (area [_] 5)))])"#;
     let js = every_level(source, "[12 2 10]");
-    assert!(js.contains(")[\"cljs$user$Area$area$arity$1\"](l"), "{js}");
+    assert!(js.contains(")[\"cljs$user$Area$area$arity$1$LKEY\"](l"), "{js}");
     let stats = prepared(source, OptimizationLevel::Advanced)
         .stats()
         .clone();
@@ -1507,8 +1507,8 @@ fn protocol_method_parameters_join_visible_calls() {
         format!("{protocol} (mapv m [(T.)])"),
         format!("{protocol} (def g m)"),
         format!("{protocol} (.cljs$user$P$m$arity$2 (T.) (T.) \"a\")"),
-        format!("{protocol} (aget (T.) \"cljs$user$P$m$arity$2\")"),
-        format!("{protocol} (js* \"~{{}}.cljs$user$P$m$arity$2(~{{}}, 'a')\" (T.) (T.))"),
+        format!("{protocol} (aget (T.) \"cljs$user$P$m$arity$2$LKEY\")"),
+        format!("{protocol} (js* \"~{{}}.cljs$user$P$m$arity$2$LKEY(~{{}}, 'a')\" (T.) (T.))"),
         format!("{protocol} (with-redefs [m (fn [_ x] x)] (m (T.) 1))"),
         "(defprotocol P (m [this x])) (deftype T [])
          (def e (extend-type T P (m [_ x] x))) (m (T.) 1)"
@@ -1590,7 +1590,7 @@ fn typed_lowerings_apply_inside_protocol_methods_and_keep_the_results() {
             r#"(deftype W [] P (m [_ flag] (if flag :yes :no)))
                (def w (W.))
                (pr-str [(m w false) (.cljs$user$P$m$arity$2 w w "")
-                        ((aget w "cljs$user$P$m$arity$2") w 0)])"#,
+                        ((aget w "cljs$user$P$m$arity$2$LKEY") w 0)])"#,
             "[:no :yes :yes]",
         ),
         (
@@ -1654,7 +1654,7 @@ fn protocol_method_parameters_keep_hidden_callers() {
         (
             r#"(defprotocol P (m😀 [this flag]))
                (deftype T [] P (m😀 [_ flag] (if flag :yes :no)))
-               (let [t (T.)] (pr-str [(m😀 t false) ((aget t "cljs$user$P$m😀$arity$2") t "")]))"#,
+               (let [t (T.)] (pr-str [(m😀 t false) ((aget t "cljs$user$P$m😀$arity$2$LKEY") t "")]))"#,
             "flag",
             "[:no :yes]",
         ),
@@ -1662,7 +1662,7 @@ fn protocol_method_parameters_keep_hidden_callers() {
             "(defprotocol P (m\u{301} [this flag]))
              (deftype T [] P (m\u{301} [_ flag] (if flag :yes :no)))
              (let [t (T.)]
-               (pr-str [(m\u{301} t false) ((aget t \"cljs$user$P$m\u{301}$arity$2\") t \"\")]))",
+               (pr-str [(m\u{301} t false) ((aget t \"cljs$user$P$m\u{301}$arity$2$LKEY\") t \"\")]))",
             "flag",
             "[:no :yes]",
         ),
@@ -1916,7 +1916,7 @@ fn generated_closed_functions_print_the_same_at_every_level() {
         " === ",
         "rt$keywordFqn(l",
         ")[\"x\"]",
-        ")[\"cljs$user$Pm$pm$arity$1\"](l",
+        ")[\"cljs$user$Pm$pm$arity$1$LKEY\"](l",
     ] {
         assert!(texts.contains(lowered), "{lowered}");
     }

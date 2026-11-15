@@ -928,7 +928,7 @@ fn protocol_methods(
     // of one may run the other's implementation: neither is closed.
     let mut prefixes: HashMap<String, Vec<GlobalId>> = HashMap::new();
     for method in declared.iter().flatten() {
-        let mut slot = crate::rta::protocol_slot(&method.key, 1);
+        let mut slot = crate::rta::protocol_slot_stem(&method.key, 1);
         slot.pop();
         prefixes.entry(slot).or_default().push(method.global);
     }

@@ -1155,7 +1155,7 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
             let mapped = compiled(&args);
             assert_eq!(
                 mapped.contains("let operand0, operand1, operand2;")
-                    || mapped.contains(".cljs$user$Area$area$arity$3("),
+                    || mapped.contains(".cljs$user$Area$area$arity$3$LKEY("),
                 level == OptimizationLevel::Advanced,
                 "{args:?}: {mapped}"
             );

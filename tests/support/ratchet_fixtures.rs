@@ -234,6 +234,13 @@
 //! `keyword-case` and `event-maps`, which move to the next 1,000. At
 //! advanced `constant-keys` grows 30 bytes (49,991 to 50,021), past its
 //! ceiling, which moves to 51,000.
+//!
+//! The build's key on every protocol slot, marker and mask name
+//! (light-cljs-1009, 2026-11-15, docs/value-layout.md section 1): each name
+//! grows by five bytes (`$LKEY`), and the readable runtime by about 300.
+//! The three none and prepare ceilings it exceeds (keyword-case,
+//! event-maps, closed-params, by 46-206 bytes) move to the next 1,000.
+//! Advanced sizes grow by a few bytes and stay under their ceilings.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -553,7 +560,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (if (< i 10)
                      (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
                      acc))",
-        ceilings: [510_000, 510_000, 16_000],
+        ceilings: [511_000, 511_000, 16_000],
         removed: [0, 0, 3],
         printed: "419\n",
     },

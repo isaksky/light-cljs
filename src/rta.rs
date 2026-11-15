@@ -265,14 +265,14 @@ pub(crate) fn analyze(
                 let protocol = *protocol_ids.entry(marker.clone()).or_insert(next);
                 protocol_of[global.0] = Some(protocol);
                 slots
-                    .entry(protocol_slot(&marker, 0))
+                    .entry(protocol_slot_stem(&marker, 0))
                     .or_default()
                     .push((None, protocol));
                 for method in methods {
                     let next = method_ids.len();
                     let id = *method_ids.entry(method.key.as_str()).or_insert(next);
                     method_of[method.global.0] = Some(id);
-                    let mut prefix = protocol_slot(&method.key, 1);
+                    let mut prefix = protocol_slot_stem(&method.key, 1);
                     prefix.pop();
                     slots.entry(prefix).or_default().push((Some(id), protocol));
                 }
@@ -1117,7 +1117,7 @@ fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, 
         .flat_map(|(method, (key, arities, _))| {
             arities
                 .iter()
-                .map(move |&arity| (protocol_slot(key, arity), method))
+                .map(move |&arity| (protocol_slot_stem(key, arity), method))
         })
         .collect();
     let mut first = vec![None; methods.len()];
@@ -1148,7 +1148,7 @@ fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, 
 fn named_protocol_declarations(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
     const MASK: &str = "cljs$lang$protocol_mask$partition";
     let roots = crate::runtime_slice::PROTOCOL_ROOTS;
-    let markers: Vec<String> = roots.iter().map(|root| protocol_slot(root, 0)).collect();
+    let markers: Vec<String> = roots.iter().map(|root| protocol_slot_stem(root, 0)).collect();
     let mut first = vec![None; roots.len() + 1];
     for (index, expr) in program.exprs.iter().enumerate() {
         if !live[index] {
@@ -1501,10 +1501,22 @@ fn retain<T>(methods: &mut Vec<T>, kept: &[bool]) -> usize {
     before - methods.len()
 }
 
+/// The suffix of every protocol slot, marker and mask name, `$` and the
+/// build's key (docs/value-layout.md, section 1). Emission and the runtime
+/// text write this placeholder; the compile-time runtime keeps it as its key.
+pub(crate) const RUNTIME_KEY: &str = "$LKEY";
+
 /// The property holding a protocol method's implementation of `arity`
 /// (receiver included) on an instance: `protocolSlot` in `src/js_runtime.js`,
-/// whose munging is [`crate::analyzer::munge_js_member`].
+/// whose munging is [`crate::analyzer::munge_js_member`]. It ends in
+/// [`RUNTIME_KEY`].
 pub(crate) fn protocol_slot(key: &str, arity: usize) -> String {
+    protocol_slot_stem(key, arity) + RUNTIME_KEY
+}
+
+/// [`protocol_slot`] without the key: what a text that names the slot holds
+/// whether it spells the key or not, as the analyses scan for it.
+pub(crate) fn protocol_slot_stem(key: &str, arity: usize) -> String {
     let munge = crate::analyzer::munge_js_member;
     let slash = key.find('/');
     let qualified = match slash {
@@ -1553,15 +1565,25 @@ mod tests {
         // checks the runtime itself.
         assert_eq!(
             protocol_slot("cljs.user/Shape/area", 1),
-            "cljs$user$Shape$area$arity$1"
+            "cljs$user$Shape$area$arity$1$LKEY"
         );
-        assert_eq!(protocol_slot("my.ns/P/-m?", 3), "my$ns$P$_m_QMARK_$arity$3");
-        assert_eq!(protocol_slot("my.ns/P//", 2), "my$ns$P$_SLASH_$arity$2");
+        assert_eq!(
+            protocol_slot("my.ns/P/-m?", 3),
+            "my$ns$P$_m_QMARK_$arity$3$LKEY"
+        );
+        assert_eq!(
+            protocol_slot("my.ns/P//", 2),
+            "my$ns$P$_SLASH_$arity$2$LKEY"
+        );
         assert_eq!(
             protocol_slot("ISeq/-first", 1),
+            "cljs$core$ISeq$_first$arity$1$LKEY"
+        );
+        assert_eq!(protocol_slot("my.ns/P", 0), "my$ns$P$$LKEY");
+        assert_eq!(protocol_slot("ISeq", 0), "cljs$core$ISeq$$LKEY");
+        assert_eq!(
+            super::protocol_slot_stem("ISeq/-first", 1),
             "cljs$core$ISeq$_first$arity$1"
         );
-        assert_eq!(protocol_slot("my.ns/P", 0), "my$ns$P$");
-        assert_eq!(protocol_slot("ISeq", 0), "cljs$core$ISeq$");
     }
 }

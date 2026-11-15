@@ -148,9 +148,11 @@ const decl = (() => {
   const partition0 = {has: name => { const i = maskPosition(name); return i >= 0 && i < 32; }};
   const mask = name => {
     const i = maskPosition(name);
-    return i < 0 ? undefined : [i < 32 ? 'cljs$lang$protocol_mask$partition0$' : 'cljs$lang$protocol_mask$partition1$', 1 << (i % 32)];
+    // Keyed as the real runtime's names are (docs/value-layout.md), with the
+    // compile-time runtime's fixed key.
+    return i < 0 ? undefined : [i < 32 ? 'cljs$lang$protocol_mask$partition0$$LKEY' : 'cljs$lang$protocol_mask$partition1$$LKEY', 1 << (i % 32)];
   };
-  const inPartition1 = name => mask(name)?.[0] === 'cljs$lang$protocol_mask$partition1$';
+  const inPartition1 = name => mask(name)?.[0] === 'cljs$lang$protocol_mask$partition1$$LKEY';
   let order = 0, frontier = Infinity, version = 0;
   const table = (key, name, arity) => {
     let t = tables.get(key);
@@ -3655,7 +3657,7 @@ const native = (() => {
     // The legacy marker property of a protocol (`protocolSlot(key, 0)`).
     const marker = key => {
       const slash = key.indexOf('/');
-      return [munge(slash < 0 ? 'cljs.core' : key.slice(0, slash)).replaceAll('.', '$'), '$', munge(slash < 0 ? key : key.slice(slash + 1)), '$'].join('');
+      return [munge(slash < 0 ? 'cljs.core' : key.slice(0, slash)).replaceAll('.', '$'), '$', munge(slash < 0 ? key : key.slice(slash + 1)), '$$LKEY'].join('');
     };
     // `implements?` of a core protocol: its mask bit or marker, then the
     // value's native implementation (`coreProtocolImplementation`).

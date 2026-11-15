@@ -20,7 +20,7 @@ fn field_reads_and_writes_remain_live_in_escaped_closures() {
 fn field_receiver_is_the_actual_method_call_receiver() {
     assert_eq!(
         run(
-            "(defprotocol P (f [this])) (deftype T [x] P (f [this] (array x this))) (let [a (T. 1) b (T. 2) f (aget a \"cljs$user$P$f$arity$1\") r (.call f b a)] (array (aget r 0) (identical? b (aget r 1))))"
+            "(defprotocol P (f [this])) (deftype T [x] P (f [this] (array x this))) (let [a (T. 1) b (T. 2) f (aget a \"cljs$user$P$f$arity$1$LKEY\") r (.call f b a)] (array (aget r 0) (identical? b (aget r 1))))"
         ),
         "[2,true]\n"
     );
@@ -79,9 +79,9 @@ fn constructors_keep_raw_masks_redefined_fields_and_proto_fields() {
                       (.-y (factory 1 2)) (.-y (apply factory [3 4])) (.-y t) (:a r)
                       (.get p) (.get o) (instance? P o) (.hasOwnProperty o \"__proto__\") (.get k)))"
         ),
-        "[2,16,[\"x\",\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"],\
-         [\"cljs$lang$protocol_mask$partition0$\",\"cljs$lang$protocol_mask$partition1$\"],[\"y\"],\
-         [\"x\",\"__meta\",\"__extmap\",\"__hash\",\"cljs$lang$protocol_mask$partition0$\"],4,\
+        "[2,16,[\"x\",\"cljs$lang$protocol_mask$partition0$$LKEY\",\"cljs$lang$protocol_mask$partition1$$LKEY\"],\
+         [\"cljs$lang$protocol_mask$partition0$$LKEY\",\"cljs$lang$protocol_mask$partition1$$LKEY\"],[\"y\"],\
+         [\"x\",\"__meta\",\"__extmap\",\"__hash\",\"cljs$lang$protocol_mask$partition0$$LKEY\"],4,\
          2,4,2,1,8,{\"a\":1},true,true,9]\n"
     );
 }

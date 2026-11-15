@@ -533,11 +533,11 @@ fn a_loadable_is_a_type_implementing_ideref_to_each_observer_at_every_level() {
         ("(.-cljs$lang$type lazy/Loadable)", "true"),
         // ... in a string, in `js*` text and in a `js/` path.
         (
-            "(.call (aget l \"cljs$core$IDeref$_deref$arity$1\") l l)",
+            "(.call (aget l \"cljs$core$IDeref$_deref$arity$1$LKEY\") l l)",
             "value",
         ),
         (
-            "(js* \"~{}.cljs$core$IDeref$_deref$arity$1(~{})\" l l)",
+            "(js* \"~{}.cljs$core$IDeref$_deref$arity$1$LKEY(~{})\" l l)",
             "value",
         ),
         (

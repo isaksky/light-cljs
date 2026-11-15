@@ -208,9 +208,11 @@
   //@unit protocolMasks requires: protocolMaskNames
   // Membership checks are on every generic collection operation. Resolve the
   // fixed ABI once as [property, bit], including the last occurrence of
-  // duplicate protocol names.
+  // duplicate protocol names. Every mask, marker and slot name ends in the
+  // build's key, `$LKEY` here, which embedding replaces (docs/value-layout.md,
+  // section 1): no host object holds one by accident.
   const protocolMasks = new Map(protocolMaskNames.map((name, index) => [name,
-    ["cljs$lang$protocol_mask$partition" + (index >> 5) + "$", 1 << (index % 32)]]));
+    ["cljs$lang$protocol_mask$partition" + (index >> 5) + "$$LKEY", 1 << (index % 32)]]));
   //@unit memberMunging
   const memberMunging = {"-":"_",":":"_COLON_","+":"_PLUS_",">":"_GT_","<":"_LT_","=":"_EQ_","~":"_TILDE_","!":"_BANG_","@":"_CIRCA_","#":"_SHARP_","'":"_SINGLEQUOTE_","\"":"_DOUBLEQUOTE_","%":"_PERCENT_","^":"_CARET_","&":"_AMPERSAND_","*":"_STAR_","|":"_BAR_","{":"_LBRACE_","}":"_RBRACE_","[":"_LBRACK_","]":"_RBRACK_","/":"$","\\":"_BSLASH_","?":"_QMARK_"};
   //@unit mungeMember requires: memberMunging
@@ -230,7 +232,7 @@
     const name = arity === 0 ? remainder : remainder.slice(0, separator);
     const method = remainder.slice(separator + 1);
     const prefix = mungeMember(namespace).replaceAll(".", "$") + "$" + mungeMember(name) + "$";
-    const slot = arity === 0 ? prefix : prefix + (method === "/" ? "_SLASH_" : mungeMember(method)) + "$arity$" + arity;
+    const slot = (arity === 0 ? prefix : prefix + (method === "/" ? "_SLASH_" : mungeMember(method)) + "$arity$" + arity) + "$LKEY";
     slots.set(arity, slot); return slot;
   }
   //@unit methodKeys
@@ -7611,8 +7613,8 @@
       init?.apply(this, arguments);
       if (masks) masks(this);
       else {
-        this.cljs$lang$protocol_mask$partition0$ = implicitMasks[0];
-        this.cljs$lang$protocol_mask$partition1$ = implicitMasks[1];
+        this.cljs$lang$protocol_mask$partition0$$LKEY = implicitMasks[0];
+        this.cljs$lang$protocol_mask$partition1$$LKEY = implicitMasks[1];
       }
       new TypeBrand(this, record === true ? Type : null);
     };
@@ -7627,7 +7629,7 @@
   function defineType(Type, names, methods, record, currentConstructor) {
     const [name, ...fields] = names.split?.(" ") ?? names;
     decorateType(Type, fields, methods, record, name, currentConstructor)
-      .forEach((mask, i) => Type.prototype["cljs$lang$protocol_mask$partition" + i + "$"] = mask);
+      .forEach((mask, i) => Type.prototype["cljs$lang$protocol_mask$partition" + i + "$$LKEY"] = mask);
     Type.cljs$lang$type = true;
     if (!record) Type.cljs$lang$ctorStr = name;
     return Type;
@@ -7671,7 +7673,7 @@
     if (masks == null) return null;
     // A mask map is a literal, built by a builder: a hash map's trie keeps the
     // builder's entries at their indexes (`hashTrie`).
-    const entries = Array.from(maps.get(masks) ?? [], entry => ["cljs$lang$protocol_mask$partition" + entry.key + "$", entry.value]);
+    const entries = Array.from(maps.get(masks) ?? [], entry => ["cljs$lang$protocol_mask$partition" + entry.key + "$$LKEY", entry.value]);
     return value => { for (const [key, mask] of entries) value[key] = mask; };
   }
   //@unit recordFromMap requires: dissoc, get, into, isRecord, mapFromArray, recordKeys, seq

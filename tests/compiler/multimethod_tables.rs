@@ -298,11 +298,11 @@ fn programs_that_could_see_the_tables_keep_them_in_atoms() {
         // Slots of `IMultiFn` and protocol masks named in the program, with
         // which host code gives a multimethod implementations.
         (
-            "(defmulti m identity) (defmethod m :a [_] 1) (aset m \"cljs$lang$protocol_mask$partition0$\" 0) (aset m \"cljs$core$IMultiFn$_get_method$arity$2\" (fn [_ _] (fn [_] 2))) (js/console.log (m :a))",
+            "(defmulti m identity) (defmethod m :a [_] 1) (aset m \"cljs$lang$protocol_mask$partition0$$LKEY\" 0) (aset m \"cljs$core$IMultiFn$_get_method$arity$2$LKEY\" (fn [_ _] (fn [_] 2))) (js/console.log (m :a))",
             "2",
         ),
         (
-            "(defmulti m identity) (aset m \"cljs$lang$protocol_mask$partition0$\" 0) (aset m \"cljs$core$IMultiFn$_add_method$arity$3\" (fn [this d f] (js/console.log \"slot\" (pr-str d)) this)) (defmethod m :a [_] 1) (js/console.log (pr-str (get-method m :a)))",
+            "(defmulti m identity) (aset m \"cljs$lang$protocol_mask$partition0$$LKEY\" 0) (aset m \"cljs$core$IMultiFn$_add_method$arity$3$LKEY\" (fn [this d f] (js/console.log \"slot\" (pr-str d)) this)) (defmethod m :a [_] 1) (js/console.log (pr-str (get-method m :a)))",
             "slot :a\nnil",
         ),
         // Methods added more than eight times, or other than at top level.
@@ -424,8 +424,8 @@ fn changing_default_dispatch_value_preserves_cached_answers() {
 #[test]
 fn named_equivalence_slots_preserve_cache_effects() {
     for slot in [
-        "cljs$core$IEquiv$_equiv$arity$2",
-        "cljs$core$IHash$_hash$arity$1",
+        "cljs$core$IEquiv$_equiv$arity$2$LKEY",
+        "cljs$core$IHash$_hash$arity$1$LKEY",
     ] {
         let source = format!(
             "(def calls (atom 0)) (def k #js {{}}) (aset k \"{slot}\" (fn [& _] (swap! calls inc) 0)) (defmulti m identity) (defmethod m :default [_] 0) (m k) (m k) (js/console.log (pos? @calls) (m k))"

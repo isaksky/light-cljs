@@ -20,7 +20,7 @@ fn anonymous_types_and_metadata_copies_preserve_receiver_fields() {
 fn raw_protocol_slots_use_the_call_receiver_and_live_capture_fields() {
     assert_eq!(
         run(
-            "(defprotocol P (f [this])) (let [make (fn [x] (reify P (f [this] (array x this)))) a (make 1) b (make 2) method (aget a \"cljs$user$P$f$arity$1\") result (.call method b a)] (array (aget result 0) (identical? b (aget result 1))))"
+            "(defprotocol P (f [this])) (let [make (fn [x] (reify P (f [this] (array x this)))) a (make 1) b (make 2) method (aget a \"cljs$user$P$f$arity$1$LKEY\") result (.call method b a)] (array (aget result 0) (identical? b (aget result 1))))"
         ),
         "[2,true]\n"
     );

@@ -122,7 +122,7 @@ fn types_without_instances_and_uncalled_methods_leave_the_output() {
     // implementation from its receiver.
     assert!(!text.contains("rt$protocol"), "{text}");
     assert!(
-        text.contains("[\"cljs$user$Shape$area$arity$1\"]"),
+        text.contains("[\"cljs$user$Shape$area$arity$1$LKEY\"]"),
         "{text}"
     );
     let stats = stats(&source);
@@ -185,10 +185,10 @@ fn slots_the_program_names_keep_their_methods() {
     // Read with `aget`, called as a method, named in raw text: the method can
     // run although nothing calls its dispatcher.
     for (read, expected) in [
-        ("(.call (aget t \"cljs$user$P$m$arity$1\") t t)", "7"),
+        ("(.call (aget t \"cljs$user$P$m$arity$1$LKEY\") t t)", "7"),
         ("(.cljs$user$P$m$arity$1 t t)", "7"),
-        ("(js* \"~{}.cljs$user$P$m$arity$1(~{})\" t t)", "7"),
-        ("(some? (aget t \"cljs$user$P$\"))", "true"),
+        ("(js* \"~{}.cljs$user$P$m$arity$1$LKEY(~{})\" t t)", "7"),
+        ("(some? (aget t \"cljs$user$P$$LKEY\"))", "true"),
     ] {
         every_level(
             &format!("(defprotocol P (m [x])) (deftype T [v] P (m [_] v)) (let [t (T. 7)] {read})"),
@@ -196,7 +196,7 @@ fn slots_the_program_names_keep_their_methods() {
         );
     }
     every_level(
-        "(defprotocol P (m [x])) (let [r (reify P (m [_] 7))] (.call (aget r \"cljs$user$P$m$arity$1\") r r))",
+        "(defprotocol P (m [x])) (let [r (reify P (m [_] 7))] (.call (aget r \"cljs$user$P$m$arity$1$LKEY\") r r))",
         "7",
     );
 }
@@ -210,7 +210,7 @@ fn slots_named_through_javascript_global_paths_keep_their_methods() {
         ("(js/probe.cljs$user$P$m$arity$2 js/probe 1)", "1"),
         ("(some? js/probe.cljs$user$P$)", "true"),
         // A string holding JavaScript names the slot wherever it appears.
-        ("(js/eval \"probe.cljs$user$P$m$arity$2(probe, 1)\")", "1"),
+        ("(js/eval \"probe.cljs$user$P$m$arity$2$LKEY(probe, 1)\")", "1"),
     ] {
         every_level(&format!("{protocol} {read}"), expected);
     }
@@ -218,7 +218,7 @@ fn slots_named_through_javascript_global_paths_keep_their_methods() {
     // a string.
     every_level(
         "(defprotocol P (m😀 [this x])) (deftype T [] P (m😀 [_ x] x)) (set! js/probe (T.))
-         (js/eval \"probe['cljs$user$P$m😀$arity$2'](probe, 1)\")",
+         (js/eval \"probe['cljs$user$P$m😀$arity$2$LKEY'](probe, 1)\")",
         "1",
     );
 }
@@ -230,7 +230,7 @@ fn runtime_names_in_javascript_global_paths_and_strings_keep_their_units() {
     let record = "(defrecord R [a b]) (set! js/probe (->R 1 2))";
     for read in [
         "(js/probe.cljs$core$ICounted$_count$arity$1 js/probe)",
-        "(js/eval \"probe.cljs$core$ICounted$_count$arity$1(probe)\")",
+        "(js/eval \"probe.cljs$core$ICounted$_count$arity$1$LKEY(probe)\")",
     ] {
         let source = format!("{record} {read}");
         every_level(&source, "2");
@@ -250,7 +250,7 @@ fn runtime_names_in_javascript_global_paths_and_strings_keep_their_units() {
     for source in [
         "(set! js/probe (js-obj)) (set! js/probe.cljs$lang$protocol_mask$partition0$ 2)
          (try (count js/probe) (catch :default e (.-message e)))",
-        "(try (count (js/eval \"({cljs$lang$protocol_mask$partition0$: 2})\"))
+        "(try (count (js/eval \"({cljs$lang$protocol_mask$partition0$$LKEY: 2})\"))
            (catch :default e (.-message e)))",
     ] {
         every_level(
@@ -265,7 +265,7 @@ fn runtime_names_in_javascript_global_paths_and_strings_keep_their_units() {
     // A slot of `ISeqable` inside a string keeps the unit of that protocol.
     let kept = units("(count (js/eval \"[1]\"))");
     assert!(!kept.contains(&"ISeqable"), "{kept:?}");
-    let kept = units("(count (js/eval \"probe.cljs$core$ISeqable$_seq$arity$1(probe)\"))");
+    let kept = units("(count (js/eval \"probe.cljs$core$ISeqable$_seq$arity$1$LKEY(probe)\"))");
     assert!(kept.contains(&"ISeqable"), "{kept:?}");
 }
 
@@ -347,7 +347,7 @@ fn devirtualized_calls_keep_the_dispatcher_semantics() {
     assert!(
         text.contains("let operand0, operand1, operand2;")
             && text
-                .contains(", operand0[\"cljs$user$P$m$arity$3\"](operand0, operand1, operand2))"),
+                .contains(", operand0[\"cljs$user$P$m$arity$3$LKEY\"](operand0, operand1, operand2))"),
         "{text}"
     );
     // A receiver in a local is read twice instead.
@@ -355,7 +355,7 @@ fn devirtualized_calls_keep_the_dispatcher_semantics() {
         "(defprotocol P (m [x])) (deftype T [v] P (m [_] v)) (let [t (T. 7)] (m t))",
         "7",
     );
-    assert!(text.contains(")[\"cljs$user$P$m$arity$1\"](l"), "{text}");
+    assert!(text.contains(")[\"cljs$user$P$m$arity$1$LKEY\"](l"), "{text}");
     // Narrowed by `instance?`; each arity has its own slot.
     let text = every_level(
         "(defprotocol P (m [x] [x y]))
@@ -365,7 +365,7 @@ fn devirtualized_calls_keep_the_dispatcher_semantics() {
         "[ 12, 'other' ]",
     );
     assert!(
-        text.contains("$arity$2\"]") && text.contains("$arity$1\"]"),
+        text.contains("$arity$2$LKEY\"]") && text.contains("$arity$1$LKEY\"]"),
         "{text}"
     );
     // A later `extend-type` replaces the slot, and `specify!` shadows it on
@@ -391,8 +391,8 @@ fn devirtualized_calls_keep_the_dispatcher_semantics() {
         "3",
     );
     assert!(
-        text.contains("[\"my_app$core_ns$Proto_X$foo__GT_bar_BANG_$arity$2\"]")
-            && text.contains("[\"my_app$core_ns$Proto_X$_SLASH_$arity$1\"]"),
+        text.contains("[\"my_app$core_ns$Proto_X$foo__GT_bar_BANG_$arity$2$LKEY\"]")
+            && text.contains("[\"my_app$core_ns$Proto_X$_SLASH_$arity$1$LKEY\"]"),
         "{text}"
     );
     // Not devirtualized: protocols extended through metadata, whose metadata
@@ -430,7 +430,7 @@ fn devirtualized_calls_hold_their_operands_in_function_locals() {
     assert!(
         text.contains("let operand0;\n")
             && text.contains("(operand0 = g")
-            && text.contains(")[\"cljs$user$Area$area$arity$1\"](operand0)"),
+            && text.contains(")[\"cljs$user$Area$area$arity$1$LKEY\"](operand0)"),
         "{text}"
     );
     assert!(
@@ -457,8 +457,8 @@ fn devirtualized_calls_hold_their_operands_in_function_locals() {
         "(operand0 = new g3((operand0 = new g3(",
         "operand1 = (operand1 = new g3(",
         "operand3 = (operand3 = new g3(",
-        "operand1[\"cljs$user$P$m$arity$3\"](operand1, operand2, operand3)), operand2 = ",
-        ", operand0[\"cljs$user$P$m$arity$3\"](operand0, operand1, operand2))",
+        "operand1[\"cljs$user$P$m$arity$3$LKEY\"](operand1, operand2, operand3)), operand2 = ",
+        ", operand0[\"cljs$user$P$m$arity$3$LKEY\"](operand0, operand1, operand2))",
     ] {
         assert!(text.contains(shape), "{shape}: {text}");
     }

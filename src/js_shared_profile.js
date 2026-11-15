@@ -1569,7 +1569,7 @@
   // fixed ABI once as [property, bit], including the last occurrence of
   // duplicate protocol names.
   const protocolMasks = sharedMap(protocolMaskNames.map((name, index) => [name,
-    ["cljs$lang$protocol_mask$partition" + (index >> 5) + "$", 1 << (index % 32)]]));
+    ["cljs$lang$protocol_mask$partition" + (index >> 5) + "$$LKEY", 1 << (index % 32)]]));
   //@unit coreProtocolNames requires: ASeq, Fn, IAssociative, IAtom, IChunk, IChunkedNext,
   //@ IChunkedSeq, ICloneable, ICollection, IComparable, ICounted, IDeref, IDerefWithTimeout, IDrop,
   //@ IEditableCollection, IEmptyableCollection, IEncodeClojure, IEncodeJS, IEquiv, IFind, IFn,
