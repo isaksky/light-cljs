@@ -1088,6 +1088,11 @@ and `Prepare` output does not change.
     operand before a coercion's `valueOf` runs; `bit-not`, the shifts,
     `bit-clear`, `bit-flip`, `bit-set` and `bit-test` at their fixed arity.
     Other arities and higher-order uses keep the runtime's function;
+  - writes `(array a b ...)` as the literal `[a, b, ...]`, as upstream's macro
+    does (light-cljs-1021). The runtime's `array` is `(...args) => args`, a
+    fresh array of the evaluated arguments in order, which the literal also
+    is. The literal's elements keep their kind, such as small integers, where
+    a rest parameter's are generic. Higher-order uses keep the function;
   - writes `(not x)` as `!x` when `x`'s type allows it;
   - writes `(= a b)` and `not=` as `===` and `!==` when a non-nil primitive
     decides it. For a keyword literal it uses 208's lowering, `x === k<n> ||
