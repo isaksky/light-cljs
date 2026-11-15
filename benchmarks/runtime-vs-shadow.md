@@ -2581,6 +2581,9 @@ Nanoseconds per operation, medians over the runs, ranges in brackets.
 
 - **At parity:** `bit-and`, `aget-bit-and` and `record-dot-field`. With the
   array literal, `aget-bit-and`'s loop and array are both shadow-cljs's.
+  Selected alone (`--ops aget-bit-and`, the same binaries, load average 19.7
+  to 19.9), it goes from 1.86 to 0.60 ns (0.60-0.61) against shadow-cljs's
+  0.61 (0.60-0.62): 3.10 to 0.98.
 - **`protocol-on-record` stays at 1.33**, as in the previous section. Its gap
   is the record's protocol dispatch, not the loop. light-cljs-1022 carries its
   1.1x target to after light-cljs-1013 makes records classes.
