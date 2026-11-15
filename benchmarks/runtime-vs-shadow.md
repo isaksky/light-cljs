@@ -783,3 +783,49 @@ The source keeps the investigation's 62 operations, with two differences:
   - Most small-map, record and call benches index their inputs with
     `(bit-and i 3)`, so they carry it too.
   - light-cljs-1020 emits the bit operations as operators.
+
+## 2026-11-15: the Pants build's runtime (light-cljs-1024)
+
+**Change.** The Pants build's suite was red on master `f533efb1`, and this
+change restores it. Two edits reach the release output:
+- the store metadata (`storesPredicate`, `payloadStores`, `payloadStore`) is
+  read with `Object.getOwnPropertyDescriptor` instead of `Object.hasOwn`.
+  This runs once, when the runtime loads;
+- an array map's key search (`entryIndex`) tests identity first only for
+  keywords, strings and numbers. Other keys go to `equalPair`, which tests
+  identity first itself.
+
+The third edit, the shared-heap profile's `storeNativeProtocols`, is not in
+release output.
+
+**Setup.** The kit and machine of the sections above. Before is
+`light-cljs-f533efb1` (master), after is `light-cljs-aa070edb`. The gate ran
+the small-map operations, whose maps the key search walks (`--ops
+kw-small,get-small,contains-small,assoc-small,dissoc-small,update-small`), 5
+runs. Workload 200k ran 10 runs per count, its output built with each binary
+just before its runs, and the two runs back to back. **Unreserved:** peer
+workers were active. The 1-minute load average before a run was:
+- gate: 8.9 to 83.3 before, 8.6 to 24.8 after;
+- workload 200k: 5.3 to 7.1 before, 4.3 to 5.5 after.
+
+Raw results are in `research/output-speed/pants-runtime-1024`.
+
+| Measure | light-cljs before | light-cljs after | change | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `kw-small` | 128.2 ns | 129.3 ns (128.0-134.7) | +1% | 12.98 | 13.10 |
+| `get-small` | 169.7 ns | 171.1 ns (169.5-176.1) | +1% | 11.35 | 11.45 |
+| `contains-small` | 176.5 ns | 175.5 ns (173.8-181.4) | -1% | 14.55 | 14.47 |
+| `assoc-small-existing` | 664.9 ns | 665.5 ns (662.1-683.7) | +0% | 21.07 | 21.11 |
+| `assoc-small-new` | 799.1 ns | 784.9 ns (781.6-786.7) | -2% | 20.23 | 19.89 |
+| `dissoc-small` | 1,058 ns | 1,051 ns (1,039-1,066) | -1% | 13.19 | 13.04 |
+| `update-small` | 750.9 ns | 746.7 ns (744.0-754.5) | -1% | 17.10 | 17.06 |
+| workload 200k, steady state per iteration | 94.3 ms | 92.9 ms | -1% | 3.77 | 3.77 |
+| workload 200k, wall time at 40 iterations | 4.161 s (4.056-4.220) | 4.085 s (4.075-4.183) | -2% | 3.17 | 3.16 |
+
+- **No change beyond the ranges.** The gate's operations moved 2% or less.
+  Workload 200k moved within its ranges, and shadow-cljs's runs moved by
+  about as much (25.1 to 24.7 ms per iteration).
+- **Output size:** workload 200k's advanced output grows 64 bytes, from
+  3,438,709 to 3,438,773. The size ratchet's changes are noted in
+  tests/support/ratchet_fixtures.rs: the readable runtime grows up to 126
+  bytes, and `constant-keys` at advanced grows 30 bytes.

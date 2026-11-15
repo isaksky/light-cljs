@@ -2743,8 +2743,8 @@
     let external, equiv;
     for (let i = 0; i < n; i++) {
       const other = entries[i].key;
-      if (key == null ? other == null : other === key || typeof key !== "string" && typeof key !== "number" && (spelling === undefined ? equalPair(key, other)
-        : (equiv = builtin && (own ? own(key, k, 2) ?? (external === undefined ? external = protocolHooks.externalMethod?.(key, k, 2) ?? null : external) : builtin(key, k, 2)))
+      if (key == null ? other == null : typeof key === "string" || typeof key === "number" ? other === key : spelling === undefined ? equalPair(key, other)
+        : other === key || ((equiv = builtin && (own ? own(key, k, 2) ?? (external === undefined ? external = protocolHooks.externalMethod?.(key, k, 2) ?? null : external) : builtin(key, k, 2)))
           ? (external = undefined, equiv.call(key, key, other)) : keywords.get(other)?.spelling === spelling)) return i;
     }
     return -1;
@@ -5656,9 +5656,10 @@
   // one by one.
   // No store holds a value that cannot hold a private field.
   function storesPredicate(...inventory) {
-    // Own metadata only: a host may have given `Object.prototype` some.
-    const kinds = inventory.reduce((bits, store) => Object.hasOwn(store, "kindBits") ? bits | store.kindBits : bits, 0),
-      stores = inventory.filter(store => !(Object.hasOwn(store, "exact") && store.exact === true));
+    // Own metadata only: a host may have given `Object.prototype` some. By
+    // descriptor, as the Pants engine has no `Object.hasOwn`.
+    const kinds = inventory.reduce((bits, store) => bits | Object.getOwnPropertyDescriptor(store, "kindBits")?.value, 0),
+      stores = inventory.filter(store => Object.getOwnPropertyDescriptor(store, "exact")?.value !== true);
     return value => {
       if (!canHoldField(value)) return false;
       if (kinds >> payloads.kind(value) & 1) return true;
@@ -7045,7 +7046,8 @@
   const payloadStores = (stores => {
     const byKind = Array(32).fill(0);
     stores.forEach((store, i) => {
-      if (Object.hasOwn(store, "kindBits")) for (let kind = 1; kind < 31; kind++) if (store.kindBits >> kind & 1) byKind[kind] = i + 1;
+      const bits = Object.getOwnPropertyDescriptor(store, "kindBits")?.value;
+      for (let kind = 1; kind < 31; kind++) if (bits >> kind & 1) byKind[kind] = i + 1;
     });
     return {stores, byKind};
   })([views, cells, vectors, maps, lazyValues, sets, queues]);
@@ -7058,7 +7060,7 @@
   // exact are then probed in this order (light-cljs-990).
   const payloadStore = (({stores, byKind}) => {
     const probed = [];
-    stores.forEach((store, i) => { if (!(Object.hasOwn(store, "exact") && store.exact === true)) probed.push(store, i + 1); });
+    stores.forEach((store, i) => { if (Object.getOwnPropertyDescriptor(store, "exact")?.value !== true) probed.push(store, i + 1); });
     return value => {
       const number = byKind[payloads.kind(value)];
       if (number) return number;

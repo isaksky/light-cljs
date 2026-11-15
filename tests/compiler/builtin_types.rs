@@ -910,8 +910,10 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // stores' `privateStore`, since light-cljs-259, about 320 more than theirs,
     // and `kindedStore` for the maps and sets, since light-cljs-291, about 490
     // more (1,876 to 2,361 bytes), and the kind brand they share, since
-    // light-cljs-990 (2026-11-14), about 220 more (2,288 to 2,510 bytes).
-    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 2_600);
+    // light-cljs-990 (2026-11-14), about 220 more (2,288 to 2,510 bytes), and
+    // the stores' metadata read by descriptor, since light-cljs-1024 (the
+    // Pants engine has no `Object.hasOwn`), 2,575 to 2,600.
+    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 2_700);
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),

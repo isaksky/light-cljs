@@ -207,6 +207,11 @@
     __rt.seal(words);
     return {has: name => words.includes(name)};
   }
+  //@unit storeNativeProtocols requires: sharedWords
+  // None: the boot seals each resolved key's `info`, so `publicMethod` and
+  // `storeProtocol` could not fill its per-store memo (`stores`,
+  // light-cljs-988) afterwards; here the native test answers every call.
+  const storeNativeProtocols = sharedWords([]);
   //@unit sharedMethodKeys
   // The resolved keys `coreMethod` makes for the core protocol dispatchers,
   // which only their dispatchers hold: `sharedProfileBoot` fills their memos

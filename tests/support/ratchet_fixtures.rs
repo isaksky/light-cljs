@@ -225,6 +225,15 @@
 //! every none and prepare ceiling, all of which it exceeds, moves to the next
 //! 1,000 above its size. Advanced sizes are unchanged: no fixture keeps the
 //! hooks.
+//!
+//! The Pants build's runtime (light-cljs-1024, 2026-11-15): the stores' own
+//! metadata are read by descriptor, as the Pants engine has no
+//! `Object.hasOwn`, and an array map's search leaves the identity of keys
+//! other than keywords, strings and numbers to `equalPair`. The readable
+//! runtime grows up to 126 bytes, past the none and prepare ceilings of
+//! `keyword-case` and `event-maps`, which move to the next 1,000. At
+//! advanced `constant-keys` grows 30 bytes (49,991 to 50,021), past its
+//! ceiling, which moves to 51,000.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -295,7 +304,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [508_000, 508_000, 3_800],
+        ceilings: [509_000, 509_000, 3_800],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -426,7 +435,7 @@ pub const FIXTURES: &[Fixture] = &[
                                 (range 36)))
                  (+ (get table {:id 3 :kind :row}) (get table [:pos 5 6]) (get table #{7 :tag})
                     (get table {:id 11 :kind :row} 0))",
-        ceilings: [509_000, 509_000, 50_000],
+        ceilings: [509_000, 509_000, 51_000],
         removed: [0, 0, 0],
         printed: "62\n",
     },
@@ -438,7 +447,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [508_000, 508_000, 36_000],
+        ceilings: [509_000, 509_000, 36_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
