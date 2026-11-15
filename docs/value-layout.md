@@ -36,6 +36,46 @@ answers these.
    twice in isolation builds it twice with different `:runtime-key`s
    (section 1).
 
+2. **Protocol names written as strings.** Source that names a slot, marker
+   or mask as a member (`(.-cljs$core$ISeqable$ x)`, `(set! (.. T -prototype
+   -cljs$user$P$f$arity$1) f)`) keeps working: the analyzer keys it. A name
+   given as a string does not: `(aget v "cljs$user$P$f$arity$1")`, `(aset o
+   "cljs$user$P$" PROTOCOL_SENTINEL)`, `(js/Object.defineProperty o slot ...)`
+   with a computed `slot`, and JavaScript outside the program that
+   implements a protocol by its upstream names. For core protocols this
+   follows from your choice (those are exactly the names upstream
+   ClojureScript's and other runtimes' values carry). For program protocols
+   (`defprotocol` in the program or its libraries) it could be kept by
+   keying only core protocol names, at the same speed; the cost is that a
+   library protocol extended onto a host constructor (`extend-type js/Date
+   lib/P`) is then shared by name between two builds that both contain the
+   library, so one build's method can run on the other's calls and hand it
+   values it does not recognise. Today's tests of the string interop are
+   `protocols::protocol_dispatch_uses_public_slots_and_native_tables` (its
+   `aget` and `aset` cases) and
+   `protocols::protocol_dispatchers_call_host_slots_and_keep_their_length`.
+   **Question: should every protocol name be keyed, so that string-named
+   protocol interop (`aget`/`aset`/`defineProperty` of a slot name, and
+   JavaScript implementing a protocol by name) stops working for program
+   protocols too, or should program protocols keep their unkeyed upstream
+   names?** Recommended: key every name (your wording, "all the prototype
+   extensions", and the safer one for two runtimes); the two tests' string
+   cases are then rescoped.
+
+3. **Enumerating a runtime value.** The fields are own string-named
+   properties (`cnt$<key>`), so `Object.keys`, `Object.entries`,
+   `for...in` and object spread of a runtime collection list them, as
+   upstream ClojureScript's list theirs; today they list nothing.
+   `JSON.stringify` keeps today's `{}` through a `toJSON` on each runtime
+   class's prototype or base, which costs nothing per operation. Hiding the
+   fields otherwise means `Symbol`-keyed fields, measured at +8.5% on a
+   mixed seq walk (section 1). **Question: do you accept that
+   `Object.keys`, `Object.entries`, `for...in` and spread of a runtime
+   value list its keyed internal fields, with `JSON.stringify` unchanged?**
+   Recommended: yes. Whatever the answer, the first converting pellet adds a
+   `runtime_value_enumeration_contract` check to
+   tests/support/js_runtime.test.js that pins it.
+
 ## The rules in brief
 
 - Every runtime value is an instance of a class of its kind (section 2). Its
@@ -52,7 +92,8 @@ answers these.
   its engine forms for the kinds it swaps today (section 4).
 - Deliberate reflection (reading the prototype's keys, `Object.create` of a
   runtime prototype, copying fields onto one) can forge a value. Nothing an
-  accident can produce does (section 5).
+  accident can produce does (section 5). String-named protocol interop and
+  enumeration of a value's fields wait for the user (questions 2 and 3).
 - Each conversion deletes its kind's payload stores in the same pellet; the
   types not yet converted keep today's path (section 6).
 
@@ -91,8 +132,10 @@ Source that names a keyed member, `(.-cljs$lang$protocol_mask$partition0$ x)`,
 `(.cljs$core$ILookup$_lookup$arity$2 m k)` or a marker, is keyed by the
 compiler at every level (the analyzer recognises the three shapes, with the
 protocol's namespace, as it munges members today), so interop that names
-slots keeps working. A name built at run time (`(aget x "cljs$core$...")`,
-`goog.object/get`) is not keyed and sees nothing.
+slots keeps working. A name given as a string, literal or built at run time
+(`(aget x "cljs$core$...")`, `goog.object/get`, `Object.defineProperty`),
+is not keyed and sees nothing ("Decisions for the user" 2, which also asks
+whether program protocols keep unkeyed names).
 
 ### Measured
 
@@ -155,22 +198,28 @@ What the numbers say:
 
 ### Choice: a per-build string, dotted
 
-The key is a per-build string: 5 characters of `[0-9a-z]`, appended as
+The key is a per-build string: 8 characters of `[0-9a-z]`, appended as
 `$<key>`. It is the user's choice and the fast one; a per-load key would
 leave the generic operations 48% above shadow-cljs's at their megamorphic
 sites, which the group's goal forbids. Switching to a `Symbol` is not
 recommended. Fields use keyed string names too: `Symbol`-keyed fields (SF)
 cost 8.5% on the mixed seq walk.
 
-**Derivation.** `key = base36(hash(runtime text of the output's slice,
-optimization level, build identity, :runtime-key))[0..5]`, where the build
-identity is the build id (light-cljs.edn, if any) and the entry namespaces, and
-`:runtime-key` is an optional build option (any string; default none). It is
-deterministic, so the same inputs give byte-identical output on every
-machine, and it differs between builds whose runtime slices differ, so two
-builds that would lay out or select different slots never share a key: a
-release build and a dev build of one app, two versions of one app with
-different slices, two apps. The runtime text uses a placeholder suffix
+**Derivation.** For release output, `key = base36(hash(the output's text
+with the key placeholder in it, optimization level, :runtime-key))[0..8]`:
+the output's text includes its runtime slice and its whole program, so two
+outputs that differ in anything (a constant, a version, a different app, the
+same app at another level) get different keys, and the same output always
+the same key. `:runtime-key` is an optional build option (any string;
+default none). The key is deterministic, so the same inputs give
+byte-identical output on every machine. Eight base-36 characters make an
+accidental match between two different builds a one in 2.8 x 10^12 event,
+and the runtime still detects it: as it loads it registers `key -> hash of
+its output` in one page-wide registry (`globalThis[Symbol.for(
+"light-cljs.runtime-keys")]`, a `Map`, the runtime's only global write), and
+a load that finds its key registered with a different hash throws at once,
+naming `:runtime-key`, before any value exists. The same output loaded
+twice finds its own hash ("Decisions for the user" 1). The runtime text uses a placeholder suffix
 (`$LKEY`, which `src/runtime_manifest.rs` checks appears only as a keyed
 name's suffix), which embedding replaces; the raw `src/js_runtime.js` that
 tests evaluate runs with the literal placeholder as its key. Compiled
@@ -188,7 +237,9 @@ recompiled namespace, every hot reload and every form the REPL compiles
 against the running page uses the key the page loaded with; the dev session
 keeps it with the build. A change to the runtime text (a light-cljs upgrade)
 changes the key, and a page with the old runtime then needs a full reload,
-which it needs anyway.
+which it needs anyway. A dev build registers its build identity (build id
+and entry namespaces) as its hash, so two different dev builds that match
+keys are caught at load too.
 
 ### Two runtimes on one page
 
@@ -344,10 +395,14 @@ function count(x) {
   A host constructor's prototype extended with `extend-type js/Date` or
   `js/Object` holds keyed slots and markers, so its instances take the
   slot-first path, as today's slots are found first.
-- **Runtime values never reach the host tables**: a value with a keyed kind
-  is the runtime's own, and its own implementation outranks `object` and
-  `default` (today's rule, `builtinCoreImplementation`). The fallback tests
-  the kind before the tables.
+- **Runtime values never reach the core protocols' host tables**: a value
+  with a keyed kind is the runtime's own, and its own implementation of a
+  core protocol outranks `object` and `default` (today's rule,
+  `builtinCoreImplementation`); a core operation's fallback tests the kind
+  before those tables. Program protocols are different, as today: a runtime
+  value whose class does not implement one reaches its `object` table (its
+  `nativeType` is `"object"`), then `default`, so `(extend-type object P
+  ...)` covers vectors and maps too.
 - **Protocol functions** of program protocols (`(-foo x)`) keep today's
   order: metadata methods for `:extend-via-metadata` protocols, then the
   keyed slot, then the host tables, then `default`.
@@ -355,10 +410,19 @@ function count(x) {
 ### `satisfies?` and `implements?`
 
 - `implements?`: the keyed mask bit or the keyed marker, own or inherited.
-- `satisfies?`: the same; else, for a value without a keyed kind, the host
-  table of its type (`nil`, `number`, ..., `object`), then `default`; else
-  false. Today's special cases keep their answers (`IMeta` of a function,
-  `reify`'s natively implemented protocols).
+- `satisfies?` of a **program protocol**: the same; else the host table of
+  the value's type (`nil`, `number`, ..., `object`, which a runtime value's
+  type is), then `default`, for every value, as today's `satisfies` does.
+- `satisfies?` of a **core protocol**: the mask bit or marker; else, only
+  for a value without a keyed kind, the host table of its type, then
+  `default`, then the core protocol's `extend-type` implementations; else
+  false.
+- Today's special cases keep their answers (`IMeta` of a function, `reify`'s
+  natively implemented protocols). light-cljs-1009 adds
+  `protocols::user_protocol_tables_cover_runtime_values`: `extend-type` of
+  `object` and of `default` with a program protocol, and its method calls,
+  `satisfies?` and `implements?` on vectors, maps, seqs and host values, at
+  every level, with today's answers.
 - The runtime classes declare every protocol they implement: mask bits for
   the protocols that have one, keyed markers on the prototype for the others
   (`IFind`, `IUUID`, `Inst`, `IEncodeJS` and the rest), as upstream's
@@ -558,12 +622,25 @@ What stays of their neighbours: the frozen-shared-base checks
 keep inheriting from today's frozen bases that hold `call`, `equiv`,
 `toString`, `indexOf` and `lastIndexOf` (section 3).
 
-Not counted as forgery but changed by the layout, and therefore listed:
-`Object.keys`, `for...in`, `JSON.stringify` and spreading of a runtime
-value now list its keyed fields, as upstream ClojureScript's list its fields
-(today they list nothing). `Symbol`-keyed fields would hide them but cost
-8.5% on a mixed seq walk (section 1). No test pins the old answer; any found
-during the conversions is rescoped with this reason.
+Not forgery, and therefore not rescoped here but put to the user:
+enumeration of a runtime value ("Decisions for the user" 3) and string-named
+protocol interop ("Decisions for the user" 2). If the user keys every
+protocol name, the `aget` and `aset` cases of
+`protocols::protocol_dispatch_uses_public_slots_and_native_tables` and the
+host-slot cases of
+`protocols::protocol_dispatchers_call_host_slots_and_keep_their_length` are
+rescoped to the keyed names written as members; otherwise they stay. No other
+test is rescoped for either question without the user's answer.
+
+One more row is rescoped as a deliberate write to the runtime's prototypes:
+
+23. `protocol_hooks...`, the third extension set ("Slots JavaScript writes
+    on runtime prototypes"): `(set! (.. PersistentTreeMap -prototype
+    -cljs$lang$protocol_mask$partition0$) 64)` replaces the class's whole mask
+    number, built-in bits included, so the `sorted-map` row's `map?` and the
+    other mask tests change, as writing a program type's prototype mask does
+    since light-cljs-264. The marker and slot writes of that set keep their
+    answers.
 
 ### Documentation rules that change
 
@@ -681,7 +758,9 @@ build tests passing, while converted and unconverted kinds coexist.
    compile-time `/*@brand*/` stamp and the bridge's `stamped` test, the
    slot-first path in the operations those types answer, and the vector
    seqs' constructors reading the class's fields until 1010 converts the
-   seqs. It waits for the answer under "Decisions for the user".
+   seqs. It waits for the answers under "Decisions for the user", and
+   also lands the key registry, the `toJSON` of question 3 and
+   `protocols::user_protocol_tables_cover_runtime_values` (section 3).
 2. light-cljs-1010, the seq kinds and rest arguments (section 2's rows);
    `RSeq` may become O(1). The map and set seqs convert as far as their
    collections allow.
