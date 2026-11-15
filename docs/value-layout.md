@@ -568,7 +568,7 @@ during the conversions is rescoped with this reason.
 
 docs/evaluator.md keeps its rules: the macro host is still "not an untrusted
 code sandbox" (line 154), and rejecting a macro result still does "not call
-arbitrary getters or `toString`" (278-285).
+arbitrary getters or `toString`" (282-283).
 
 docs/compiler.md, each changed by the pellet that converts the kinds it
 names (the last by light-cljs-1015):
@@ -610,7 +610,7 @@ names (the last by light-cljs-1015):
   (`Object.create` of a runtime prototype, reading the prototype's keys);
   as in upstream ClojureScript, that is outside the guarantee
   (docs/value-layout.md, section 5)."
-- 1222-1240 (kind numbers "under a private symbol", the kind tables and
+- 1218-1240 (kind numbers "under a private symbol", the kind tables and
   their wrappers) is replaced by section 3's dispatch in two sentences:
   "`seq`, `first`, `rest`, `next` and `count` call the value's keyed slot;
   `extend-type` and `specify!` overwrite slots."
