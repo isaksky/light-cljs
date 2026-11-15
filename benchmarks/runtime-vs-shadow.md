@@ -2529,7 +2529,7 @@ Nanoseconds per operation, medians over the runs, ranges in brackets.
   runtime's `array`, `(...args) => args`, where upstream's macro writes the
   literal `[s, 1, 2, 3]`. In Node, the same loop over a rest-argument array
   takes 0.75 ns and over the literal 0.60 ns (`rest-array-vs-literal.mjs` with
-  the raw results). That is the remaining gap.
+  the raw results). That is the remaining gap, closed in the next section.
 - **`protocol-on-record` stays at 1.33.** The call was 0.2 ns of its 1.0 ns
   gap, not most of it. The rest is in the record's protocol dispatch, which
   light-cljs-1013 changes when it makes records classes.
@@ -2541,3 +2541,60 @@ Nanoseconds per operation, medians over the runs, ranges in brackets.
   their units. The gate's own output shrinks from 123,907 to 123,772 bytes
   (gzip 36,293 to 36,251). No size ratchet fixture calls one, so the ratchet
   is unchanged (noted in tests/support/ratchet_fixtures.rs).
+
+## 2026-11-15: array calls as literals (light-cljs-1020, light-cljs-1021)
+
+**Change.** At `:advanced`, a call of `array` is now the JavaScript array
+literal of its arguments, as upstream's macro writes it: `(array s 1 2 3)` is
+`[s, 1, 2, 3]`. The runtime's `array` is `(...args) => args`, a fresh array
+of the evaluated arguments in order, and the literal is the same. The
+literal's elements keep their kind, such as small integers, where a rest
+parameter's are generic. Higher-order uses such as `(apply array ...)` and
+`(map array ...)`, and a program that replaces `array`, keep the runtime's
+function. `none` and `prepare` keep the call, as they do for `+` and the bit
+operations.
+
+`type_inference::array_calls_are_array_literals` compares lowered calls with
+`(apply array ...)` and `#js [...]` at every level. It checks a fresh array per
+evaluation, argument order in value and statement position, `nil` and
+`undefined` elements, and the prototype.
+
+**Setup.** The gate (`benchmarks/core-ops`) with the four operations
+light-cljs-1020 names, the same `--ops` before and after:
+- before is `light-cljs-f533efb1` (master);
+- after is `light-cljs-92ce8f11`, which has the bit operations of the
+  previous section and the array literals;
+- 5 runs per compiler, alternated, shadow-cljs 3.5.3 in each.
+
+**Unreserved:** a peer worker was active. The 1-minute load average before a
+run was 20.4 to 20.5 before and 20.9 after. Raw results are in
+`research/output-speed/array-literals-1020`.
+
+| op | light-cljs before | light-cljs after | change | shadow-cljs after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bit-and | 1.56 (1.55-1.57) | 0.61 (0.60-0.80) | -61% | 0.60 (0.60-0.61) | 2.60 | 1.02 |
+| aget-bit-and | 1.88 (1.86-2.07) | 0.60 (0.60-0.86) | -68% | 0.61 (0.60-0.61) | 3.13 | 0.98 |
+| record-dot-field | 1.98 (1.97-2.08) | 0.90 (0.89-1.41) | -55% | 0.88 (0.88-0.89) | 2.13 | 1.02 |
+| protocol-on-record | 3.55 (3.46-4.55) | 3.23 (3.19-3.28) | -9% | 2.42 (2.41-2.48) | 1.45 | 1.33 |
+
+Nanoseconds per operation, medians over the runs, ranges in brackets.
+
+- **At parity:** `bit-and`, `aget-bit-and` and `record-dot-field`. With the
+  array literal, `aget-bit-and`'s loop and array are both shadow-cljs's.
+- **`protocol-on-record` stays at 1.33**, as in the previous section. Its gap
+  is the record's protocol dispatch, not the loop. light-cljs-1022 carries its
+  1.1x target to after light-cljs-1013 makes records classes.
+- **Workload 200k:** its advanced output is byte-identical with the two
+  binaries, so its steady state is unchanged and was not timed again.
+- **The re-frame-shaped 200k app:** three `array` calls change, in reagent's
+  `ratom` (a reaction's captured derefs, its on-dispose callbacks) and in the
+  `goog.array` compatibility namespace. Its output is 26 bytes smaller (gzip
+  -9: 27 bytes). Not timed.
+- **Output size** of light-cljs's output as written, without React, for both
+  changes together (gzip -9):
+  - the gate: 123,907 to 123,735 bytes (gzip 36,288 to 36,233);
+  - re-frame simple: 210,644 to 210,621 bytes (gzip 61,827 to 61,817);
+  - TodoMVC: 258,986 to 258,961 bytes (gzip 75,716 to 75,719).
+
+  No size ratchet fixture calls `array` or a bit operation, so the ratchet is
+  unchanged (noted in tests/support/ratchet_fixtures.rs).

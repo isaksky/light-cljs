@@ -578,6 +578,10 @@
 //! its runtime definition uses, and a program that only calls them keeps none
 //! of their units. No fixture calls one, so every size and ceiling is
 //! unchanged.
+//!
+//! Array calls as literals (light-cljs-1021, 2026-11-15): at advanced a call
+//! of `array` is the JavaScript array literal of its arguments. No fixture
+//! calls `array`, so every size and ceiling is unchanged.
 
 pub struct Fixture {
     pub name: &'static str,
