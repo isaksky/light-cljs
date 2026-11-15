@@ -385,7 +385,10 @@ fn bit_operations_are_operators_for_every_operand() {
         (let [[a x] (run f) [b y] (run g)]
           (and (= a b) (if (= a :ok) (js/Object.is x y) (= x y)))))
       (defn unary [a] [(same? #(bit-not a) #(apply bit-not [a]))])
-      (defn binary [a b]
+      (defn binary [x y]
+        ;; Locals that nothing assigns, unlike parameters, may follow a
+        ;; coercion in a wider chain.
+        (let [a x b y]
         [(same? #(bit-and a b) #(apply bit-and [a b])) (same? #(bit-or a b) #(apply bit-or [a b]))
          (same? #(bit-xor a b) #(apply bit-xor [a b]))
          (same? #(bit-and-not a b) #(apply bit-and-not [a b]))
@@ -398,7 +401,7 @@ fn bit_operations_are_operators_for_every_operand() {
          (same? #(unsigned-bit-shift-right a b) #(apply unsigned-bit-shift-right [a b]))
          (same? #(bit-shift-right-zero-fill a b) #(apply bit-shift-right-zero-fill [a b]))
          (same? #(bit-clear a b) #(apply bit-clear [a b])) (same? #(bit-flip a b) #(apply bit-flip [a b]))
-         (same? #(bit-set a b) #(apply bit-set [a b])) (same? #(bit-test a b) #(apply bit-test [a b]))])
+         (same? #(bit-set a b) #(apply bit-set [a b])) (same? #(bit-test a b) #(apply bit-test [a b]))]))
       (pr-str [(vec (keep-indexed (fn [i a] (when-not (every? true? (unary a)) [i (unary a)]))
                                   values))
                (vec (for [a values b values :when (not (every? true? (binary a b)))]
@@ -446,9 +449,10 @@ fn bit_operations_are_operators_for_every_operand() {
 
 #[test]
 fn bit_operation_chains_keep_the_runtime_evaluation_order() {
-    // The runtime evaluates every operand before it coerces any. A chain
-    // whose later operands run code keeps the call, and one of plain
-    // operands is the operators.
+    // The runtime reads every operand before it coerces any. A chain whose
+    // later operands run code, or read a parameter or a local that a `js*`
+    // hole may assign (here from an earlier operand's `valueOf`), keeps the
+    // call; one whose later operands are literals is the operators.
     let js = every_level(
         r#"(def log (atom []))
            (defn f [x] (swap! log conj x) x)
@@ -456,8 +460,12 @@ fn bit_operation_chains_keep_the_runtime_evaluation_order() {
            (defn chains [a b]
              [(bit-and a b 6) (bit-or (f a) (f b) (f 8)) (bit-xor (noisy 1) (noisy 2) (f 4))
               (bit-and-not a (f b))])
-           (pr-str [(chains 15 3) @log])"#,
-        "[[2 15 7 12] [15 3 8 4 [:value 1] [:value 2] 3]]",
+           (defn assigned-parameter [c]
+             (let [a (js* "({valueOf(){~{} = 8; return 1;}})" c)] (bit-or a 2 c)))
+           (defn assigned-local [n]
+             (let [c (inc n) a (js* "({valueOf(){~{} = 8; return 1;}})" c)] (bit-xor a 2 c)))
+           (pr-str [(chains 15 3) @log (assigned-parameter 4) (assigned-local 3)])"#,
+        "[[2 15 7 12] [15 3 8 4 [:value 1] [:value 2] 3] 7 7]",
     );
     assert!(js.contains(" & 6)"), "{js}");
     assert!(js.contains(" & ~"), "{js}");

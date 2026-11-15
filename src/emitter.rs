@@ -4685,9 +4685,11 @@ impl<'a> Emitter<'a> {
         // The variadic bit operations (light-cljs-1020): two arguments are the
         // operator, and the runtime folds wider calls from the left
         // (`numericFold`), as these left-associative operators group. The
-        // runtime evaluates every argument before it coerces any, so a wider
-        // call is the operators only when its later operands run no code that
-        // a coercion of the earlier ones could observe.
+        // runtime reads every argument before it coerces any, and a coercion
+        // runs code (`valueOf`), so a wider call is the operators only when
+        // its later operands read the same value after that code
+        // ([`Emitter::pure_operand`]: no parameter or local a `js*` hole may
+        // assign).
         let bitwise = match core {
             C::BitAnd => Some(" & "),
             C::BitOr => Some(" | "),
@@ -4727,7 +4729,7 @@ impl<'a> Emitter<'a> {
             }
             (_, [_, _]) if bitwise.is_some() => self.infix(bitwise.unwrap(), args),
             (_, [_, _, rest @ ..])
-                if bitwise.is_some() && rest.iter().all(|arg| self.repeatable(*arg)) =>
+                if bitwise.is_some() && rest.iter().all(|arg| self.pure_operand(*arg)) =>
             {
                 self.infix(bitwise.unwrap(), args)
             }
