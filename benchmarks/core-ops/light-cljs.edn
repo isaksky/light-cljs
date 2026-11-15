@@ -1,0 +1,15 @@
+;; light-cljs builds of the core-operations benchmark (README.md). run.bb runs
+;; `light-cljs release bench`, and `release profile` for --pseudo-names.
+{:source-paths ["src"]
+ :builds
+ {:bench
+  {:target :esm
+   :output-dir "out/light"
+   :modules {:main {:entries [core-ops.main]}}
+   :build-options {:cache-level :off}}
+  :profile
+  {:target :esm
+   :output-dir "out/light-profile"
+   :modules {:main {:entries [core-ops.main]}}
+   :compiler-options {:pseudo-names true}
+   :build-options {:cache-level :off}}}}

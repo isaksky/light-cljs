@@ -624,3 +624,162 @@ Only the rows that moved are shown. Ranges are in brackets.
 - **Output size:** advanced output does not change for programs without
   `extend-type` or `specify!`. The readable runtime grows about 1,550 bytes,
   as noted in tests/support/ratchet_fixtures.rs.
+
+## 2026-11-14: the per-operation gate (light-cljs-1007)
+
+**What.** `benchmarks/core-ops/` checks in the output-speed investigation's
+micro-benchmark (`research/output-speed/investigation-6ceeb23b`, which is
+gitignored) as the gate of the output-speed-parity group. One source times
+64 core operations. Both compilers build it for release, and both outputs run
+in Node. `benchmarks/core-ops/README.md` has the commands. A later pellet names
+the operations it touches and gets their before and after:
+
+```sh
+OUT=benchmarks/core-ops/out
+bb benchmarks/core-ops/run.bb --light "$BEFORE" --ops kw-small,vec-nth --out $OUT/before
+bb benchmarks/core-ops/run.bb --light "$AFTER" --ops kw-small,vec-nth --out $OUT/after \
+  --baseline $OUT/before.edn
+bb benchmarks/core-ops/run.bb --light "$AFTER" --pseudo-names kw-small   # where the time goes
+```
+
+The source keeps the investigation's 62 operations, with two differences:
+- **`map-literal-3`** now passes its literal through a JavaScript array before
+  counting it. light-cljs had folded the investigation's version to a constant:
+  its loop added 3 and never built the map, so the old ratio of 0.06 measured
+  nothing. Built for real, a three-key map literal costs light-cljs 10.5 times
+  what it costs shadow-cljs.
+- **`bit-and` and `aget-bit-and`**, the investigation's later check of the loop
+  itself (`results/bitand.txt`), run last, so they do not change the type
+  feedback the other 62 see.
+
+**Setup.**
+- **light-cljs:** `6ceeb23b` (master), an immutable copy of the release binary
+  at `research/shadow-credibility/bin/light-cljs-6ceeb23b`. This is the V8
+  build. The investigation ran `light-cljs-c5dad571`, whose runtime and emitter
+  equal master's.
+- **shadow-cljs:** 3.5.3 with `:target :node-script`.
+- **Runtime and machine:** Node v26.12.1, and the machine of the 2026-11-14
+  section above.
+- **Repetitions:** 5 Node processes per compiler, alternated. Each process
+  prints the median of 5 timed rounds per operation, after one warm-up at a
+  tenth of its iterations. The table gives medians over the processes, with
+  ranges in brackets.
+- **Checksums:** every operation's checksum was the same in all ten processes.
+- **Unreserved:** a peer worker was active. The 1-minute load average before a
+  run was 4.58 to 5.28. The investigation's was 1.8 to 2.4.
+- **Raw results:** `research/output-speed/core-ops-1007/master-6ceeb23b.edn`
+  and `.md`.
+
+| op | light-cljs ns/op | shadow-cljs ns/op | light/shadow | investigation's light/shadow | change of ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 121.0 (117.5-121.6) | 9.83 (9.78-9.89) | 12.31 | 11.84 | +4% |
+| get-small | 162.5 (159.2-163.3) | 14.9 (14.8-14.9) | 10.92 | 10.91 | +0% |
+| get-small-miss | 203.8 (203.2-206.0) | 19.2 (19.2-19.2) | 10.62 | 10.61 | +0% |
+| contains-small | 162.1 (159.8-163.7) | 12.0 (12.0-12.1) | 13.47 | 13.12 | +3% |
+| count-small | 30.9 (30.2-31.5) | 2.12 (2.10-2.13) | 14.58 | 14.82 | -2% |
+| assoc-small-existing | 643.9 (636.3-655.5) | 30.6 (30.5-30.8) | 21.06 | 20.24 | +4% |
+| assoc-small-new | 759.8 (741.3-774.1) | 39.3 (39.2-39.5) | 19.35 | 18.72 | +3% |
+| dissoc-small | 1,008 (988.4-1,031) | 57.5 (57.1-58.0) | 17.54 | 16.96 | +3% |
+| update-small | 721.7 (705.6-736.0) | 43.9 (43.3-44.1) | 16.45 | 15.17 | +8% |
+| map-literal-3 | 105.3 (103.7-109.6) | 10.1 (9.67-10.2) | 10.47 | 0.06, folded | - |
+| get-hash100 | 77.4 (76.7-79.2) | 12.2 (11.9-12.6) | 6.34 | 5.82 | +9% |
+| kw-hash100 | 94.5 (93.5-96.3) | 13.5 (13.3-13.8) | 7.01 | 6.49 | +8% |
+| assoc-hash100 | 392.7 (391.2-409.4) | 77.9 (77.9-78.9) | 5.04 | 4.83 | +4% |
+| dissoc-hash100 | 357.4 (355.1-362.8) | 76.1 (75.3-76.5) | 4.70 | 4.44 | +6% |
+| update-hash100 | 483.0 (476.5-494.3) | 95.8 (94.3-96.7) | 5.04 | 4.86 | +4% |
+| get-in-3 | 766.9 (764.0-775.7) | 57.7 (56.9-58.1) | 13.28 | 12.68 | +5% |
+| assoc-in-3 | 2,435 (2,415-2,470) | 133.9 (128.6-135.3) | 18.19 | 16.78 | +8% |
+| update-in-3 | 2,560 (2,528-2,599) | 139.2 (138.4-140.0) | 18.39 | 16.61 | +11% |
+| vec-conj-64 | 6,308 (6,163-6,344) | 1,298 (1,291-1,302) | 4.86 | 4.15 | +17% |
+| vec-literal-4 | 40.1 (39.5-40.2) | 6.86 (6.64-7.05) | 5.84 | 5.76 | +1% |
+| vec-nth-1024 | 28.3 (27.6-29.4) | 5.22 (5.13-5.63) | 5.42 | 5.07 | +7% |
+| vec-invoke-1024 | 6.71 (6.58-7.09) | 4.82 (4.77-4.90) | 1.39 | 1.65 | -16% |
+| vec-peek | 15.6 (15.4-15.6) | 3.43 (3.40-3.47) | 4.54 | 4.20 | +8% |
+| vec-assoc-1024 | 158.4 (156.3-159.9) | 73.1 (72.7-73.3) | 2.17 | 2.02 | +7% |
+| destructure-vec-3 | 88.6 (84.7-88.9) | 9.78 (9.73-9.82) | 9.06 | 8.59 | +5% |
+| destructure-map-3 | 461.9 (459.8-469.3) | 49.3 (49.2-50.7) | 9.37 | 8.76 | +7% |
+| reduce-vec-1000 | 5,291 (5,274-5,410) | 2,508 (2,487-2,515) | 2.11 | 2.09 | +1% |
+| reduce-map-inc-1000 | 603,669 (600,988-606,010) | 39,981 (39,667-41,594) | 15.10 | 13.61 | +11% |
+| filter-count-1000 | 320,109 (316,395-320,405) | 28,526 (28,003-28,838) | 11.22 | 10.72 | +5% |
+| into-xform-1000 | 101,019 (99,037-101,486) | 18,406 (18,217-18,428) | 5.49 | 5.36 | +2% |
+| mapv-1000 | 82,765 (81,806-83,433) | 14,297 (14,207-14,533) | 5.79 | 5.61 | +3% |
+| lazy-walk-1000 | 598,912 (591,333-602,470) | 39,415 (38,752-39,677) | 15.19 | 14.67 | +4% |
+| seq-walk-vec-1000 | 545,517 (519,519-564,829) | 9,999 (9,939-10,125) | 54.56 | 49.45 | +10% |
+| reduce-range-1000 | 4,879 (4,721-5,034) | 5,442 (5,384-5,516) | 0.90 | 0.88 | +2% |
+| reduce-kv-small | 152.1 (145.7-152.6) | 37.8 (37.5-37.9) | 4.02 | 3.89 | +3% |
+| reduce-entries-small | 1,557 (1,477-1,572) | 77.8 (76.9-78.5) | 20.01 | 19.10 | +5% |
+| str-nested-map | 8,160 (7,778-8,236) | 2,248 (2,233-2,260) | 3.63 | 3.44 | +6% |
+| str-concat | 145.9 (145.0-148.6) | 14.5 (14.5-14.5) | 10.05 | 9.27 | +8% |
+| eq-map-7 | 1,762 (1,707-1,774) | 152.0 (149.8-153.3) | 11.59 | 11.15 | +4% |
+| eq-vec-10 | 3,950 (3,925-3,968) | 81.4 (81.2-82.2) | 48.50 | 46.21 | +5% |
+| hash-fresh-vec-4 | 1,302 (1,298-1,315) | 70.9 (70.2-71.4) | 18.38 | 17.92 | +3% |
+| hash-fresh-map-7 | 1,503 (1,490-1,527) | 548.9 (539.7-553.6) | 2.74 | 2.73 | +0% |
+| protocol-on-record | 3.42 (3.35-3.43) | 2.37 (2.34-2.39) | 1.44 | 1.45 | +0% |
+| record-kw-field | 9.95 (9.93-10.1) | 4.19 (4.16-4.21) | 2.37 | 2.44 | -3% |
+| record-dot-field | 1.96 (1.90-1.98) | 0.87 (0.86-0.89) | 2.25 | 2.25 | +0% |
+| record-assoc | 72.5 (71.9-73.6) | 13.8 (13.5-14.1) | 5.27 | 5.41 | -3% |
+| multimethod | 525.0 (523.6-537.2) | 47.2 (45.3-47.6) | 11.12 | 10.73 | +4% |
+| multi-arity-call | 2.02 (2.00-2.03) | 2.01 (1.99-2.03) | 1.00 | 1.09 | -8% |
+| variadic-call | 326.6 (325.2-328.1) | 14.2 (14.0-14.3) | 22.95 | 23.12 | -1% |
+| apply-vec | 1,178 (1,168-1,190) | 93.1 (91.0-94.7) | 12.65 | 12.75 | -1% |
+| unknown-fn-call | 5.36 (5.31-5.59) | 6.50 (6.48-6.57) | 0.82 | 0.85 | -3% |
+| closure-alloc-call | 9.16 (9.10-9.21) | 8.47 (8.37-8.68) | 1.08 | 1.28 | -16% |
+| swap-inc | 12.6 (11.7-13.0) | 5.63 (5.61-5.79) | 2.23 | 2.32 | -4% |
+| swap-assoc | 1,156 (1,147-1,169) | 37.6 (37.5-38.0) | 30.74 | 30.30 | +1% |
+| merge-small | 7,868 (7,799-7,911) | 894.5 (891.4-900.0) | 8.80 | 8.48 | +4% |
+| select-keys-3 | 2,896 (2,879-2,936) | 249.8 (245.8-255.2) | 11.59 | 11.42 | +2% |
+| group-by-100 | 84,834 (84,623-86,359) | 5,097 (5,072-5,117) | 16.65 | 15.26 | +9% |
+| sort-by-100 | 60,948 (59,741-63,781) | 4,724 (4,648-4,791) | 12.90 | 11.27 | +14% |
+| transient-vec-100 | 8,494 (8,363-8,577) | 1,154 (1,143-1,176) | 7.36 | 7.10 | +4% |
+| transient-map-100 | 21,873 (21,652-21,942) | 4,210 (4,129-4,292) | 5.20 | 5.21 | +0% |
+| sorted-map-assoc-100 | 3,591 (3,570-3,613) | 209.1 (207.0-212.8) | 17.18 | 17.45 | -2% |
+| str-sorted-map-20 | 57,034 (56,375-58,293) | 20,488 (20,259-20,777) | 2.78 | 2.75 | +1% |
+| bit-and | 1.53 (1.51-1.54) | 0.59 (0.59-0.60) | 2.59 | 2.51 | +3% |
+| aget-bit-and | 1.82 (1.81-1.84) | 0.59 (0.59-0.60) | 3.08 | 3.18 | -3% |
+
+**Against the investigation:** the ratios agree within noise.
+- The investigation's ratios are from `results/micro-c5dad571-table.md`, and
+  for the two loops from the medians of `results/bitand.txt`.
+- 54 of the 61 operations in its table, `map-literal-3` aside, are within 10%
+  of its ratio, and all 61 are within 17%. The median change is +4%. The two
+  loops are within 3%.
+- light-cljs's times are a median 7% higher and shadow-cljs's 4% higher, under
+  about twice the load.
+- **Beyond 10%:**
+  - `vec-conj-64` +17%, mostly because shadow-cljs got faster (1,414 to
+    1,298 ns);
+  - `sort-by-100` +14%;
+  - `reduce-map-inc-1000`, `update-in-3` and `seq-walk-vec-1000` +10 to +11%;
+  - `vec-invoke-1024` and `closure-alloc-call` -16%. These moved on
+    shadow-cljs's side, by about a nanosecond (3.5 to 4.8 ns, and 7.1 to
+    8.5 ns).
+- No operation moved between the groups below.
+
+**What the gate shows** is what the investigation found:
+- **At parity or close:**
+  - plain calls: `multi-arity-call` 1.00, `unknown-fn-call` 0.82,
+    `closure-alloc-call` 1.08;
+  - `reduce-range-1000` 0.90, `vec-invoke-1024` 1.39, `protocol-on-record` 1.44.
+- **2 to 5 times:**
+  - record fields: `record-kw-field` 2.37, `record-dot-field` 2.25;
+  - vectors: `vec-assoc-1024` 2.17, `reduce-vec-1000` 2.11, `vec-peek` 4.54,
+    `vec-conj-64` 4.86;
+  - `swap-inc` 2.23, `reduce-kv-small` 4.02;
+  - printing: `str-nested-map` 3.63, `str-sorted-map-20` 2.78;
+  - `hash-fresh-map-7` 2.74;
+  - updates of the 100-key hash map: 4.7 to 5.0.
+- **5 to 55 times:** every other operation.
+  - These are the rest of the map, vector, seq and transient operations, plus
+    `str-concat` 10.1, `multimethod` 11.1, `apply-vec` 12.7 and
+    `variadic-call` 23.0.
+  - The largest are `seq-walk-vec-1000` 54.6, `eq-vec-10` 48.5, `swap-assoc`
+    30.7, `variadic-call` and `assoc-small-existing` 21.1.
+- **The loop itself is 2.6 to 3.1 times slower.** At `:advanced`, light-cljs
+  emits `(bit-and i 3)` as a call of the runtime's `bitAnd`, where upstream's
+  macro emits `&`. The call costs about 1 ns.
+  - It is the whole gap of `record-dot-field` (1.96 against 0.87 ns), whose
+    loop is otherwise the same array read and field read.
+  - It is most of `protocol-on-record`'s gap (3.42 against 2.37 ns).
+  - Most small-map, record and call benches index their inputs with
+    `(bit-and i 3)`, so they carry it too.
+  - light-cljs-1020 emits the bit operations as operators.

@@ -1,0 +1,18 @@
+;; shadow-cljs builds of the core-operations benchmark (README.md), run by
+;; run.bb as `clojure -M:shadow release bench`, and `release profile`, readable,
+;; for --pseudo-names. deps.edn pins shadow-cljs 3.5.3.
+{:deps {:aliases [:shadow]}
+ :builds
+ {:bench
+  {:target :node-script
+   :output-to "out/shadow.js"
+   :output-dir "out/shadow-dev"
+   :main core-ops.main/main
+   :compiler-options {:source-map false :warnings {:invalid-arithmetic false}}}
+  :profile
+  {:target :node-script
+   :output-to "out/shadow-profile.js"
+   :output-dir "out/shadow-profile-dev"
+   :main core-ops.main/main
+   :compiler-options {:source-map false :warnings {:invalid-arithmetic false}
+                      :pseudo-names true :pretty-print true}}}}
