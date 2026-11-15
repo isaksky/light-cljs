@@ -103,6 +103,10 @@
         matches (fn [name] (if (some #{name} known) [name] (filter #(str/starts-with? % (str name "-")) known)))
         unknown (remove (comp seq matches) asked)
         selected (if asked (set (mapcat matches asked)) (set known))]
+    (when (and (:ops options) (:pseudo-names options))
+      (throw (ex-info "--pseudo-names names its operation itself; drop --ops" {})))
+    (when (and asked (empty? asked))
+      (throw (ex-info "--ops names no operation" {})))
     (when (seq unknown)
       (throw (ex-info (str "Unknown operations " (str/join ", " unknown) "; known: " (str/join ", " known)) {})))
     (when (and (:pseudo-names options) (not= 1 (count selected)))

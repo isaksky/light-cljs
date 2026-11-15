@@ -32,6 +32,9 @@ bb benchmarks/core-ops/run.bb --light "$AFTER" --ops kw-small,get-small --out $O
 # Where one operation spends its time: readable builds, one run per compiler
 # under node --cpu-prof, and the functions with the most self time.
 bb benchmarks/core-ops/run.bb --light "$LIGHT" --pseudo-names kw-small
+
+# The runner's own tests (operation selection, checksum rule); nothing is built.
+bb benchmarks/core-ops/test.bb
 ```
 
 | Option | Meaning |
