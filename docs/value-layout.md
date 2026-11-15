@@ -30,8 +30,8 @@ Answered by the user on 2026-11-15; the questions below are kept as asked.
    of a runtime value may list its keyed fields; `JSON.stringify` is
    unchanged. The `runtime_value_enumeration_contract` test pins it.
 
-What light-cljs-1009 has landed so far, and how it differs from the sections
-below while the migration is under way:
+What light-cljs-1009 landed, and how it differs from the sections below
+while the migration is under way:
 
 - **Keyed names (section 1).** Every protocol slot, marker and mask name ends
   in `$LKEY`, in the runtime (`protocolSlot`, `protocolMasks`, the masks of
@@ -50,15 +50,35 @@ below while the migration is under way:
   each operation's outermost layer: a value with a keyed kind calls its keyed
   slot first. Program types keep today's path until their recognition moves
   to the keyed kind (light-cljs-1013), which keeps the getter-order tests of
-  `specify!`-ed host objects as they are. The vectors still keep their store
-  in the private-field brand (`payloads.vectors`), so a slot reads it with
-  `vectors.get`; a value with the prototype and no store (one made by
-  reflection) has its slot answer `noBranch` and takes the operation, so its
-  answers do not change. The runtime's own slot methods are marked
-  (`builtinSlot`), and the older layers' lookups (`keyMethod`,
-  `directMethod`) skip a marked slot, so they answer as before and never call
-  a slot that serves them; `extend-type` and `specify!` write unmarked
-  methods, which every layer finds.
+  `specify!`-ed host objects as they are. A value with the prototype and no
+  store of its own (one made by reflection) has its slot answer `noBranch`
+  and takes the operation, so its answers do not change. The runtime's own
+  slot methods are marked (`builtinSlot`), and the older layers' lookups
+  (`keyMethod`, `directMethod`) skip a marked slot, so they answer as before
+  and never call a slot that serves them; `extend-type` and `specify!` write
+  unmarked methods, which every layer finds. A compiler session that demands
+  declarations turns the wrappers off (`slotFirst.on`).
+- **The classes (section 2), with one field.** Vectors, subvectors, map
+  entries and transient vectors are instances of internal constructors
+  (`VectorCell`, `SubvecCell`, `EntryCell`, `TransientVectorCell`) that share
+  the public types' prototypes, kinds 1 to 4 of the `kinds` unit. Each holds
+  today's store object, unfrozen, in one own keyed field (`store$LKEY`,
+  `state$LKEY`), which `vectorStore` and `transientState` read behind the
+  keyed kind, so the store algorithms (`vectorConj`, `VectorView`, the
+  transients' state) are unchanged; `payloads.vectors` and `mapEntries` are
+  deleted, and the map and set transients keep the `transients` store until
+  light-cljs-1012. Moving the store's `cnt`, `shift`, `root` and `tail`, and
+  the metadata and hash entries, into fields of the class itself is left to a
+  later pellet. The emitter's direct reads of a known vector call
+  `vectorStore`; the Pants profile swaps `vectorStore` for one that also
+  reads engine vector forms. The class bases have a `toJSON` that leaves the
+  keyed field out (question 3; `runtime_value_enumeration_contract` in
+  tests/support/js_runtime.test.js).
+- **The compile-time brand (section 4).** Each cell constructor ends with
+  `/*@brand*/`, which build.rs turns into `stamp(this);` in the compile-time
+  runtime only; the compiler form bridge tests `stamped` before it reads a
+  value's kind, so rejecting a macro result still reads no property of a
+  host value. The Pants profile's `stamped` also accepts engine vector forms.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,

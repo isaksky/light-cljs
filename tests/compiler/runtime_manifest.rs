@@ -323,14 +323,16 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
     assert!(!ANNOTATED_RUNTIME.contains(cells));
     // The hook lines are those of the compile-time runtime that the
     // embedded runtime lacks, read through the task's cells in the shared
-    // profile; a line restores to the V8 text by the inverse rewrite.
+    // profile; a line restores to the V8 text by the inverse rewrite. A
+    // class constructor's compile-time stamp is no hook line: it restores to
+    // the brand marker it replaces.
     let runtime_lines = RUNTIME.lines().collect::<std::collections::HashSet<_>>();
     let hook_lines = RUNTIME_SOURCE
         .lines()
-        .filter(|line| !runtime_lines.contains(line))
+        .filter(|line| !runtime_lines.contains(line) && !line.contains("stamp(this);"))
         .collect::<std::collections::HashSet<_>>();
     let restore = |line: &str| {
-        let mut line = line.to_owned();
+        let mut line = line.replace("stamp(this);", "/*@brand*/");
         for name in per_task {
             line = line.replace(&format!("{cells}{name}"), name);
         }
@@ -541,11 +543,16 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
             "{name}"
         );
     }
+    // ... and with each runtime class constructor's brand marker as the
+    // compile-time stamp (docs/value-layout.md, section 4).
+    assert!(RUNTIME.contains("/*@brand*/") && !RUNTIME.contains("stamp(this);"));
+    assert!(!RUNTIME_SOURCE.contains("/*@brand*/"));
     assert_eq!(
         RUNTIME_SOURCE
             .split_inclusive('\n')
             .filter(|line| !hook(line))
-            .collect::<String>(),
+            .collect::<String>()
+            .replace("stamp(this);", "/*@brand*/"),
         RUNTIME
     );
     assert!(!RUNTIME.contains("//@"));
@@ -645,8 +652,11 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// multimethods implement `IMultiFn`, which only `Advanced` output calls
 /// (light-cljs-239). `ClassBrand`, its `TypeBrand.type` extension and
 /// `defineClass` brand the types only `Advanced` emission writes as classes
-/// (light-cljs-346).
+/// (light-cljs-346). `stamp` brands the runtime's class values at compile
+/// time only: build.rs (`compiler_runtime`) turns each class constructor's
+/// `/*@brand*/` into a call of it (docs/value-layout.md, section 4).
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
+    "stamp",
     "entryPrototype",
     "MapEntryType.lean",
     "mapEntry.equiv",
@@ -2100,13 +2110,6 @@ fn units_assigning_a_binding_share_its_unit() {
             "setDeclaration <- extendType",
             "setDeclaration <- protocol",
             "setDeclaration <- protocolMethod",
-            "slotFirst <- assoc.slots",
-            "slotFirst <- conj.slots",
-            "slotFirst <- count.slots",
-            "slotFirst <- get.slots",
-            "slotFirst <- nth.slots",
-            "slotFirst <- peek.slots",
-            "slotFirst <- setDeclarationDemand",
             "structuralEqualPair <- structuralEqualPair.symbols",
             "tapDraining <- drainTaps",
             "tapDraining <- tapGreater",

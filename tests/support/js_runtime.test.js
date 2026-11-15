@@ -1670,8 +1670,12 @@ console.log('seq payloads are private fields that host objects cannot copy');
     assert.equal(undefinedSlots.__hash, undefined);
     assert.equal(f.meta(undefinedSlots), undefined);
     assert.equal(f.Repeat(null, 2, 1, null, null).__hash, null);
-    for (const value of Object.values(built)) {
-      for (const candidate of [Object.create(Object.getPrototypeOf(value)), Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))]) {
+    for (const [name, value] of Object.entries(built)) {
+      // A transient vector is a class value whose state is its own keyed
+      // field (light-cljs-1009): a copy of its fields onto its prototype is
+      // deliberate reflection, and one (docs/value-layout.md, section 5).
+      const copies = name === 'transientVector' ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+      for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
         for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
         assert.equal(fresh.inspect(candidate), null);
         assert.throws(() => f.count(candidate), /count not supported/);
@@ -1732,8 +1736,11 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
   assert.equal(f.equal(built.assoc, f.hashMap(key, 1, 2, 3)), true);
   assert.equal(f.isMap(built.arrayMap), true);
   assert.equal(f.isSet(built.conj), true);
-  for (const value of Object.values(built)) {
-    for (const candidate of [Object.create(Object.getPrototypeOf(value)), Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))]) {
+  for (const [name, value] of Object.entries(built)) {
+    // As above: a copy of a transient vector's own fields onto its prototype
+    // is one (light-cljs-1009).
+    const copies = name === 'transientVector' ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+    for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
       for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isChunkedSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
       assert.equal(fresh.inspect(candidate), null);
       assert.throws(() => f.count(candidate), /count not supported/);
@@ -2037,3 +2044,37 @@ for (const make of [() => c.hashSet(1), () => c.set(c.range(20)), () => c.vector
   assert.deepEqual(answers(), [7, 'm', 'error', 'b']);
 }
 console.log('kind tables stay private to the runtime');
+
+// runtime_value_enumeration_contract (docs/value-layout.md, question 3, which
+// the user answered yes): a runtime class value's data are own fields whose
+// names end in the build's key (`$LKEY` in this raw runtime), so
+// `Object.keys`, `Object.entries`, `for...in` and spread list them, as
+// upstream ClojureScript's values list theirs; `JSON.stringify` is
+// unchanged through the class bases' `toJSON`, and properties a program
+// gives a value still serialize.
+{
+  const r = runtime, core = r.core;
+  const values = {
+    vector: r.vector(1, 2), entry: core.first(core.hashMap(1, 2)), subvec: core.subvec(r.vector(1, 2, 3), 1),
+    transientVector: core.transient(r.vector(1))
+  };
+  for (const [name, value] of Object.entries(values)) {
+    const field = name === 'transientVector' ? 'state$LKEY' : 'store$LKEY';
+    assert.deepEqual(Object.keys(value), [field], name);
+    assert.deepEqual(Object.entries(value).map(([key]) => key), [field], name);
+    assert.deepEqual(Object.keys({...value}), [field], name);
+    const listed = [];
+    for (const key in value) if (Object.hasOwn(value, key)) listed.push(key);
+    assert.deepEqual(listed, [field], name);
+    assert.equal(JSON.stringify(value), '{}', name);
+    assert.equal(JSON.stringify([value]), '[{}]', name);
+    // The fields carry the key: none is an upstream name a host could read
+    // by accident.
+    for (const key of Object.keys(value)) assert.ok(key.endsWith('$LKEY'), key);
+  }
+  const marked = r.vector(1);
+  marked.note = 'kept';
+  assert.equal(JSON.stringify(marked), '{"note":"kept"}');
+  assert.equal(core.count(marked), 1);
+}
+console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is unchanged');

@@ -172,7 +172,7 @@ fn calls_that_may_throw_or_are_undecided_stay() {
         r#"["threw: Index out of bounds" "threw: Index argument to nth must be a number" "threw: nth not supported on this type" "threw: nth not supported on this type" "threw: Index out of bounds" "threw: Key must be integer" "threw: Key must be integer" "threw: Index out of bounds" "threw: Index out of bounds" "threw: Invalid arity: 3" :zero :d 2 :d :v 1 :b "b" "b" "b" true]"#,
     );
     for call in [
-        "rt$vectorNth(rt$vectors.get(k0), 5, rt$missing)",
+        "rt$vectorNth(rt$vectorStore(k0), 5, rt$missing)",
         "rt$nth(k0, \"a\")",
         "rt$nth(k2, 0)",
         "rt$nth(k3, 0)",
@@ -256,7 +256,7 @@ fn folded_items_keep_identity_and_metadata() {
     );
     // The built vector's item is read from it, twice.
     assert_eq!(
-        text.matches("rt$vectorNth(rt$vectors.get(l").count(),
+        text.matches("rt$vectorNth(rt$vectorStore(l").count(),
         2,
         "{text}"
     );

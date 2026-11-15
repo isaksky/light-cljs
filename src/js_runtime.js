@@ -21,7 +21,8 @@
   // them (light-cljs-990). A value is in one store, so `set` requires a new
   // object. `kindBits` are a store's kinds; `exact` that its `has` is the
   // kind test alone (hash tries and records widen the maps' and sets').
-  // Kinds 1 to 7 are `payloadStore`'s, 8 map entries, 9 to 12 the rest.
+  // Kinds 1 to 7 are `payloadStore`'s (3, the vectors', is no longer a
+  // payload: `vectorStore`), 9 to 12 the rest.
   const payloads = class extends (function (value) { return value; }) {
     #s; #k; #m;
     static kind(value) { return canHoldField(value) && #k in value ? value.#k : 0; }
@@ -43,17 +44,6 @@
         };
       };
     }
-    // Vectors, kinds 3 and 8 (map entries), with code of their own: sharing
-    // the stores' feedback slowed `conj` and `nth` on a vector by a third.
-    static vectors = class {
-      static kindBits = 264;
-      static exact = true;
-      static has(value) { return canHoldField(value) && #k in value && (value.#k === 3 || value.#k === 8); }
-      static get(value) { if (payloads.vectors.has(value)) return value.#s; }
-      static set(value, store) { const brand = new payloads(value); brand.#k = 3; brand.#s = store; }
-      static entry(value) { return canHoldField(value) && #k in value && value.#k === 8; }
-      static toEntry(value) { value.#k = 8; }
-    };
   };
   //@unit keywords
   // Brands and payloads stay private: copying fields or inheriting a value's
@@ -61,13 +51,77 @@
   const keywords = new WeakMap();
   //@unit internedKeywords
   const internedKeywords = new Map();
-  //@unit vectors requires: payloads
-  // A vector's brand and store (see `vectorTailOffset`) is instead a private
-  // field (`payloads`), with a WeakMap's `has`, `get` and `set`: no host
-  // object can have or copy one either, and adding it to a new value is a
-  // property store, not a WeakMap entry, which a vector built by every
-  // `conj` cannot afford. `set` requires a new object.
-  const vectors = payloads.vectors;
+  //@unit kinds
+  // The kind number of each runtime class converted to the class layout
+  // (docs/value-layout.md, section 2), which its prototype holds under the
+  // keyed name `cljs$lang$kind$$LKEY`: a value of this runtime, of this
+  // class. Kinds 1 to 3 hold a vector's store (`vectorStore`), 4 a
+  // transient vector's state (`transientState`).
+  const kinds = Object.freeze({vector: 1, subvec: 2, entry: 3, transientVector: 4});
+  //@unit vectorStore
+  // The store (see `vectorTailOffset`) of a vector, a subvector or a map
+  // entry, the classes of kinds 1 to 3 (`kinds`), which hold it as their own
+  // keyed field (`VectorCell`, `SubvecCell`, `EntryCell`), else undefined.
+  // A value is told by its prototype's keyed kind, which no host object has
+  // by accident (docs/value-layout.md, section 5); one made by reflection
+  // from a vector's prototype holds no store, and is no vector.
+  function vectorStore(value) {
+    if (value == null) return undefined;
+    const kind = value.cljs$lang$kind$$LKEY;
+    return kind === 1 || kind === 2 || kind === 3 ? value.store$LKEY : undefined;
+  }
+  //@unit holdsVector requires: vectorStore
+  // Whether a value is a vector, a subvector or a map entry, as the
+  // vectors' brand store answered.
+  const holdsVector = value => vectorStore(value) !== undefined;
+  //@unit isEntryCell
+  // Whether a value is a map entry of the runtime's class (`EntryCell`).
+  const isEntryCell = value => value != null && value.cljs$lang$kind$$LKEY === 3 && value.store$LKEY !== undefined;
+  //@unit vectorCells requires: holdsVector
+  // `holdsVector` as an entry of the store inventories (`storesPredicate`,
+  // `payloadStores`), which probe it as a store that is not exact.
+  const vectorCells = Object.freeze({has: holdsVector});
+  //@unit vectorCellCopy
+  // A new value of a vector cell's prototype holding its store, built by a
+  // constructor (so the compile-time runtime stamps it), for `withMeta` and
+  // `clone`; `VectorCellCopy` keeps no vector type.
+  function vectorCellCopy(value) {
+    const Type = function () {};
+    Type.prototype = Object.getPrototypeOf(value);
+    return Reflect.construct(VectorCellCopy, [value.store$LKEY], Type);
+  }
+  function VectorCellCopy(store) { this.store$LKEY = store; /*@brand*/ }
+  //@unit VectorCell
+  // A persistent vector: its store is its own keyed field, and its
+  // prototype `PersistentVectorValue`'s (`PersistentVectorValue.type`).
+  // Nothing in it is frozen. The compile-time runtime stamps it (`stamp`).
+  function VectorCell(store) { this.store$LKEY = store; /*@brand*/ }
+  //@unit SubvecCell
+  // A subvector (`subvec`): a vector whose store is a view (`VectorView`) or
+  // a trie of getters, with `SubvecValue`'s prototype.
+  function SubvecCell(store) { this.store$LKEY = store; /*@brand*/ }
+  //@unit EntryCell
+  // A map entry: a vector store of its key and value, which its tail holds,
+  // with `MapEntryType`'s prototype.
+  function EntryCell(store) { this.store$LKEY = store; /*@brand*/ }
+  //@unit stampBrand compile-time requires: canHoldField, weakMapStores
+  // The compile-time brand of the runtime's class values (docs/value-layout.md,
+  // section 4): the compiler form bridge, `inspect` and the compile-time
+  // printer test it (`stamped`) before they read a value's keyed kind, so
+  // that rejecting a macro result reads no property of a host value, and
+  // runs no getter or Proxy trap. build.rs (`compiler_runtime`) turns each
+  // class constructor's `/*@brand*/` into a `stamp`; output never has it. A
+  // private field in V8, a `WeakSet` where the host states WeakMap stores.
+  const stampBrand = weakMapStores ? (members => ({add(value) { members.add(value); }, has: value => members.has(value)}))(new WeakSet())
+    : class extends (function (value) { return value; }) {
+      #b;
+      static add(value) { new stampBrand(value); }
+      static has(value) { return canHoldField(value) && #b in value; }
+    };
+  //@unit stamp compile-time requires: stampBrand
+  function stamp(value) { stampBrand.add(value); }
+  //@unit stamped compile-time requires: stampBrand
+  function stamped(value) { return stampBrand.has(value); }
   //@unit symbols
   const symbols = new WeakMap();
   //@unit privateStore requires: payloads, weakMapStores
@@ -101,11 +155,6 @@
   const mapKinds = maps.kinds;
   //@unit sortedComparators
   const sortedComparators = new WeakMap();
-  //@unit mapEntries requires: vectors
-  // Map entries are vectors of kind 8 (`payloads`): `add` makes a vector
-  // just built an entry. It was a WeakSet, whose entry cost six times what
-  // building the entry did (light-cljs-989, light-cljs-990).
-  const mapEntries = {has: vectors.entry, add(value) { vectors.toEntry(value); return mapEntries; }};
   //@unit sets requires: kindedStore
   const sets = kindedStore(6);
   //@unit setKinds requires: sets
@@ -115,7 +164,26 @@
   // of an existing map's kind; `setTypes` likewise for sorted sets.
   const mapTypes = {}, setTypes = {};
   //@unit transients requires: privateStore
+  // The state of the map and set transients; a transient vector holds its
+  // own (`TransientVectorCell`).
   const transients = privateStore(9);
+  //@unit TransientVectorCell
+  // A transient vector: its state (`makeTransient`) is its own keyed field,
+  // and its prototype `TransientVectorType`'s (`TransientVectorCell.type`).
+  function TransientVectorCell(state) { this.state$LKEY = state; /*@brand*/ }
+  //@unit isTransientCell
+  // Whether a value is a transient vector of the runtime's class, by its
+  // prototype's keyed kind (`kinds`), as `vectorStore` tells a vector.
+  const isTransientCell = value => value != null && value.cljs$lang$kind$$LKEY === 4 && value.state$LKEY !== undefined;
+  //@unit transientState requires: isTransientCell, transients
+  // The state of a transient (`makeTransient`), else undefined.
+  const transientState = value => isTransientCell(value) ? value.state$LKEY : transients.get(value);
+  //@unit isTransient requires: isTransientCell, transients
+  // Whether a value is a transient, as the transients' store answered.
+  const isTransient = value => isTransientCell(value) || transients.has(value);
+  //@unit transientCells requires: isTransientCell
+  // `isTransientCell` as an entry of the store inventories (`protocolStores`).
+  const transientCells = Object.freeze({has: isTransientCell});
   //@unit cells requires: privateStore
   const cells = privateStore(2);
   //@unit views requires: privateStore
@@ -709,15 +777,15 @@
     const value = makeVector(null, {cnt, shift, root: vectorRoots.get(root) ?? [], tail, callerTail: true});
     return constructorSlots(value, {cnt, shift, root, tail}, metadata, cachedHash);
   }
-  //@unit SubvecValue requires: constructorSlots, makeVector, methodKeys, nth, protocolHooks,
-  //@ subvecSources, vectors, vectorTrie, VectorView
+  //@unit SubvecValue requires: constructorSlots, methodKeys, nth, protocolHooks, SubvecCell,
+  //@ subvecSources, vectorStore, vectorTrie, VectorView
   function SubvecValue(metadata, source, start, end, cachedHash) {
-    const store = vectors.get(source), cnt = Math.max(0, end - start);
+    const store = vectorStore(source), cnt = Math.max(0, end - start);
     let value;
     // A view of a vector's store holding every index it names, as `subvec`;
     // else items that ask `nth` of the source when read.
     if (store && Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start + cnt <= store.cnt
-      && !protocolHooks.publicMethod?.(source, methodKeys[25], 2, true, true)) value = makeVector(null, new VectorView(store, start, cnt));
+      && !protocolHooks.publicMethod?.(source, methodKeys[25], 2, true, true)) value = new SubvecCell(new VectorView(store, start, cnt));
     else {
       // Every leaf keeps the getters, and the store is marked as reading a
       // caller's array (`callerTail`), so that no copy of an item is kept.
@@ -726,9 +794,8 @@
         for (let i = from; i < to; i++) Object.defineProperty(node, i - from, {enumerable: true, get: () => nth(source, start + i)});
         return node;
       };
-      value = makeVector(null, {...vectorTrie(getters(0, cnt), getters), callerTail: true});
+      value = new SubvecCell({...vectorTrie(getters(0, cnt), getters), callerTail: true});
     }
-    Object.setPrototypeOf(value, SubvecValue.prototype);
     subvecSources.set(value, source);
     return constructorSlots(value, {start, end}, metadata, cachedHash);
   }
@@ -908,7 +975,7 @@
   }
 
   //@unit seq requires: cells, IndexedSeqValue, iteratorSeq, iteratorSeqs, kindHooks, lazyValues,
-  //@ maps, publicCollectionSlots, queues, sets, vectors, view, views
+  //@ maps, publicCollectionSlots, queues, sets, vectorStore, view, views
   function seq(value) {
     if (value == null || (cells.get(value)?.kind === "list" && cells.get(value).count === 0 && !publicCollectionSlots.has(value))) return null;
     const lazy = lazyValues.get(value);
@@ -918,7 +985,7 @@
     if (Array.isArray(value)) return value.length ? view(IndexedSeqValue, value, 0, true) : null;
     if (cells.has(value)) return value;
     if (views.has(value)) { const v = views.get(value); return v.offset < v.storage.length ? value : null; }
-    const items = vectors.get(value);
+    const items = vectorStore(value);
     if (items) return kindHooks.seqVector(value, items);
     if (typeof value === "string") return value.length ? view(IndexedSeqValue, value, 0, true) : null;
     if (maps.has(value)) return kindHooks.seqMap(value);
@@ -1058,10 +1125,10 @@
   kindHooks.seqSet = (value, members) => members.length
     ? view(IndexedSeqValue, Object.freeze(setTraversal(value).map(entry => entry.key)), 0, false, "set") : null;
   //@unit seq.vectors effect: PersistentVectorValue, SubvecValue when: seq requires: kindHooks,
-  //@ kindTables, noBranch, vectors
+  //@ kindTables, noBranch, vectorStore
   // The seqs of the collections, kinds 4 to 7 (light-cljs-358), as the
   // operation gives them from their stores.
-  kindTables[4][0] = value => { const store = vectors.get(value); return store ? kindHooks.seqVector(value, store) : noBranch; };
+  kindTables[4][0] = value => { const store = vectorStore(value); return store ? kindHooks.seqVector(value, store) : noBranch; };
   //@unit seq.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor when: seq
   //@ requires: kindHooks, kindTables, maps, noBranch
   kindTables[5][0] = value => maps.has(value) ? kindHooks.seqMap(value) : noBranch;
@@ -1072,9 +1139,9 @@
   //@ noBranch, queues
   kindTables[7][0] = value => { const queue = queues.get(value); return queue ? kindHooks.seqQueue(value, queue) : noBranch; };
   //@unit seq.entries effect: MapEntryType when: seq requires: kindHooks, kindTables, noBranch,
-  //@ vectors
+  //@ vectorStore
   // Map entries, kind 8 (light-cljs-373), whose store is a vector's.
-  kindTables[8][0] = value => { const store = vectors.get(value); return store ? kindHooks.seqVector(value, store) : noBranch; };
+  kindTables[8][0] = value => { const store = vectorStore(value); return store ? kindHooks.seqVector(value, store) : noBranch; };
 
   //@unit iteratorSeq requires: iteratorSeqs
   // A host iterator's seq (upstream's ES6IteratorSeq: ISeqable and ISeq, not
@@ -1263,7 +1330,7 @@
     };
   }
   //@unit vectorFirst requires: firstSeq, kindHooks, methodKeys, noBranch, protocolHooks,
-  //@ publicCollectionSlots, vectorNth, vectors
+  //@ publicCollectionSlots, vectorNth, vectorStore
   // `first` of a vector or a map entry, kinds 4 and 8, as `seqBranch`: the
   // seq the operation takes starts with the item at 0, which the branch
   // reads without the seq, unless an `ISeqable` implementation gives the
@@ -1271,7 +1338,7 @@
   // caller's array (`callerTail`, also of the store a subvector views),
   // which can be shorter than its count or hold getters.
   function vectorFirst(value) {
-    const store = vectors.get(value);
+    const store = vectorStore(value);
     if (store === undefined) return noBranch;
     const own = protocolHooks.publicMethod?.(value, methodKeys[52], 1, true);
     return own ? firstSeq(own.call(value, value))
@@ -1279,14 +1346,14 @@
       : store.cnt ? vectorNth(store, 0) : null;
   }
   //@unit vectorRest requires: ChunkedSeqValue, IndexedSeqValue, kindHooks, methodKeys, noBranch,
-  //@ protocolHooks, publicCollectionSlots, rest, restSeq, seq, vectorChunk, vectors, view
+  //@ protocolHooks, publicCollectionSlots, rest, restSeq, seq, vectorChunk, vectorStore, view
   // `rest` of a vector or a map entry, and with `empty` null its `next`, as
   // `vectorFirst`: the rest of its seq, built from index 1 (`kindHooks.seqVector`
   // chunks a vector of more than 32 items), which is its own seq. Where
   // protocol implementations exist or the value's seq is its kind's, `next`
   // is the seq of `rest`, as the operation takes it.
   function vectorRest(value, empty) {
-    const store = vectors.get(value);
+    const store = vectorStore(value);
     if (store === undefined) return noBranch;
     const method = protocolHooks.publicMethod, shared = publicCollectionSlots.has(value) || (store.sub ?? store).callerTail;
     const own = empty === null ? undefined : method?.(value, methodKeys[52], 1, true);
@@ -1660,9 +1727,9 @@
 
   //@unit isIdent requires: keywords, symbols
   const isIdent = x => keywords.has(x) || symbols.has(x);
-  //@unit isCollectionValue requires: cells, directMethod, lazyValues, maps, queues, sets, vectors,
-  //@ views
-  const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || vectors.has(x) || cells.has(x) || views.has(x) || queues.has(x) || lazyValues.has(x) || maps.has(x) || sets.has(x);
+  //@unit isCollectionValue requires: cells, directMethod, holdsVector, lazyValues, maps, queues,
+  //@ sets, views
+  const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || holdsVector(x) || cells.has(x) || views.has(x) || queues.has(x) || lazyValues.has(x) || maps.has(x) || sets.has(x);
   //@unit boolean
   // Core predicates, one unit each.
   const boolean = x => x != null && x !== false;
@@ -1729,8 +1796,8 @@
   const isSeqable = x => x == null || (protocolHooks.satisfies?.(methodKeys[51], x) ?? seqableValue(x)) || Array.isArray(x) || typeof x === "string" || x[Symbol.iterator] != null;
   //@unit isSequential requires: methodKeys, protocolHooks, sequential
   const isSequential = x => protocolHooks.satisfies?.(methodKeys[53], x) ?? sequential(x);
-  //@unit isVector requires: methodKeys, protocolHooks, vectors
-  const isVector = x => protocolHooks.satisfies?.(methodKeys[61], x) ?? vectors.has(x);
+  //@unit isVector requires: holdsVector, methodKeys, protocolHooks
+  const isVector = x => protocolHooks.satisfies?.(methodKeys[61], x) ?? holdsVector(x);
   //@unit isMap requires: maps, methodKeys, protocolHooks
   const isMap = x => x != null && (protocolHooks.satisfies?.(methodKeys[33], x) ?? maps.has(x));
   //@unit isSet requires: methodKeys, protocolHooks, sets
@@ -1760,7 +1827,7 @@
 
   //@unit reduce requires: cells, chunks, first, invalidArity, isReduced, iterableValue, iterator,
   //@ iteratorProtocol, kindHooks, lazyValues, methodKeys, next, protocolHooks,
-  //@ publicCollectionSlots, reducedValue, reduceValue, seq, vectorReduce, vectors, views
+  //@ publicCollectionSlots, reducedValue, reduceValue, seq, vectorReduce, vectorStore, views
   function reduce(rf, init, collection) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
@@ -1785,7 +1852,7 @@
     // protocol implementation replaces, one the public constructor built
     // without `init` (with one, as upstream, its seq walks the whole tail it
     // received), and a public ChunkedSeq over one, walk its store.
-    const store = vectors.get(chunkedSlots?.vec ?? source);
+    const store = vectorStore(chunkedSlots?.vec ?? source);
     if (store && (chunkedSlots?.vec || chunkedSlots?.cnt != null && arity === 2
       || (store.cnt > 32 || store.sub) && !protocolHooks.publicMethod?.(source, methodKeys[52], 1, true)))
       return vectorReduce(store, rf, init, chunkedSlots?.vec ? chunkedSlots.i + chunkedSlots.off : 0, arity);
@@ -1996,15 +2063,15 @@
     return invalidArity(arguments.length);
   }
 
-  //@unit reduceKv requires: isReduced, keyProtocol, mapEntries, mapTraversal, methodKeys,
-  //@ protocolHooks, reduce, reducedValue, valProtocol, vectorItems, vectors
+  //@unit reduceKv requires: holdsVector, isEntryCell, isReduced, keyProtocol, mapTraversal,
+  //@ methodKeys, protocolHooks, reduce, reducedValue, valProtocol, vectorItems
   function reduceKv(rf, init, collection) {
     const method = protocolHooks.publicMethod?.(collection, methodKeys[28], 3);
     if (method) return method.call(collection, collection, rf, init);
     if (collection == null) return init;
     // MapEntry has vector storage, but no IKVReduce implementation. Its
     // elements must go through the public IMapEntry sequence fallback.
-    const entries = mapTraversal(collection)?.map(entry => [entry.key, entry.value]) ?? (mapEntries.has(collection) || !vectors.has(collection) ? undefined : vectorItems(collection).map((value, key) => [key, value]));
+    const entries = mapTraversal(collection)?.map(entry => [entry.key, entry.value]) ?? (isEntryCell(collection) || !holdsVector(collection) ? undefined : vectorItems(collection).map((value, key) => [key, value]));
     if (!entries) return reduce((result, entry) => rf.call(null, result, keyProtocol(entry), valProtocol(entry)), init, collection);
     for (const [key, value] of entries) {
       init = rf.call(null, init, key, value);
@@ -2014,8 +2081,8 @@
   }
   //@unit subvecSources
   const subvecSources = new WeakMap();
-  //@unit subvec requires: count, isVector, makeVector, methodKeys, nth, protocolHooks,
-  //@ subvecSources, SubvecValue, vectorFromArray, vectors, VectorView
+  //@unit subvec requires: count, isVector, methodKeys, nth, protocolHooks, SubvecCell,
+  //@ subvecSources, vectorFromArray, vectorStore, VectorView
   function subvec(value, start, end = count(value)) {
     if (start == null || end == null) throw new Error("Assert failed: subvec indices cannot be nil");
     start = start | 0; end = end | 0;
@@ -2023,10 +2090,9 @@
     if (!isVector(value)) throw new Error("subvec requires a vector");
     // A view of a vector's store, as upstream's Subvec, unless a protocol
     // implementation answers its `nth`: then a copy of what that answers.
-    const store = !protocolHooks.publicMethod?.(value, methodKeys[25], 2, true, true) && vectors.get(value);
-    const result = store ? makeVector(null, new VectorView(store, start, end - start))
-      : vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)));
-    Object.setPrototypeOf(result, SubvecValue.prototype);
+    const store = !protocolHooks.publicMethod?.(value, methodKeys[25], 2, true, true) && vectorStore(value);
+    const result = new SubvecCell(store ? new VectorView(store, start, end - start)
+      : vectorStore(vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)))));
     subvecSources.set(result, subvecSources.get(value) ?? value);
     return result;
   }
@@ -2047,7 +2113,7 @@
     }
     remove() { return new Error("Unsupported operation"); }
   }
-  //@unit RangedIterator requires: vectorLeaf, vectors
+  //@unit RangedIterator requires: vectorLeaf, vectorStore
   class RangedIterator {
     constructor(i, base, arr, v, start, end) {
       Object.assign(this, {i, base, arr, v, start, end});
@@ -2055,28 +2121,28 @@
     hasNext() { return this.i < this.end; }
     next() {
       if (this.i - this.base === 32) {
-        this.arr = vectorLeaf(vectors.get(this.v), this.i).slice();
+        this.arr = vectorLeaf(vectorStore(this.v), this.i).slice();
         this.base += 32;
       }
       const value = this.arr[this.i & 31]; this.i++; return value;
     }
   }
-  //@unit rangedIterator requires: count, RangedIterator, vectorLeaf, vectors
+  //@unit rangedIterator requires: count, RangedIterator, vectorLeaf, vectorStore
   function rangedIterator(value, start, end) {
     const base = start - start % 32;
     // Its public `arr` is a copy of a leaf, which the caller may change.
-    return new RangedIterator(start, base, start < count(value) ? vectorLeaf(vectors.get(value), base).slice() : null, value, start, end);
+    return new RangedIterator(start, base, start < count(value) ? vectorLeaf(vectorStore(value), base).slice() : null, value, start, end);
   }
   //@unit seqIter requires: iteratorInit, SeqIter
   function seqIter(value) { return new SeqIter(iteratorInit, value); }
-  //@unit iterator requires: iteratorInit, kindHooks, methodKeys, protocolHooks,
-  //@ publicCollectionSlots, SeqIter, subvecSources, vectors
+  //@unit iterator requires: holdsVector, iteratorInit, kindHooks, methodKeys, protocolHooks,
+  //@ publicCollectionSlots, SeqIter, subvecSources
   function iterator(value) {
     const method = protocolHooks.builtin?.(value, methodKeys[26], 1);
     if (method) return method.call(value, value);
     const slots = publicCollectionSlots.get(value);
     if (slots?.arr) return kindHooks.iteratorArrayMap(slots);
-    return vectors.has(subvecSources.get(value) ?? value) ? kindHooks.iteratorVector(value) : new SeqIter(iteratorInit, value);
+    return holdsVector(subvecSources.get(value) ?? value) ? kindHooks.iteratorVector(value) : new SeqIter(iteratorInit, value);
   }
   //@unit PersistentArrayMapValue.iterator effect: PersistentArrayMapValue when: iterator requires: kindHooks,
   //@ mapEntry
@@ -2102,13 +2168,13 @@
     return n === count(other);
   }
 
-  //@unit conj requires: cells, cons, emptyList, kindHooks, lazyValues, makeVector, maps,
-  //@ metadataValues, methodKeys, missing, preserveMeta, protocolHooks, publicCollectionSlots,
-  //@ queues, sets, subvecSources, vectors, views
+  //@unit conj requires: cells, cons, emptyList, holdsVector, kindHooks, lazyValues, makeVector,
+  //@ maps, metadataValues, methodKeys, missing, preserveMeta, protocolHooks, publicCollectionSlots,
+  //@ queues, sets, subvecSources, vectorStore, views
   function conj(coll, item) {
     // One item onto a vector, where no protocol implementation or public
     // constructor can intervene: the hot path of building one.
-    const store = arguments.length === 2 && !protocolHooks.builtin ? vectors.get(coll) : undefined;
+    const store = arguments.length === 2 && !protocolHooks.builtin ? vectorStore(coll) : undefined;
     if (store && !subvecSources.has(coll)) {
       const built = kindHooks.conjVector(store, item);
       if (metadataValues.has(coll)) metadataValues.set(built, metadataValues.get(coll));
@@ -2128,7 +2194,7 @@
       const previous = result;
       const custom = result == null ? null : protocolHooks.builtin?.(result, methodKeys[7], 2);
       if (custom) { result = custom.call(result, result, args[i]); continue; }
-      const items = vectors.get(result);
+      const items = vectorStore(result);
       if (queues.has(result)) result = kindHooks.conjQueue(result, args[i]);
       else if (items) result = publicCollectionSlots.has(result) && subvecSources.has(result) ? kindHooks.conjSubvec(result, args[i]) : kindHooks.conjVector(items, args[i]);
       else if (maps.has(result)) result = kindHooks.conjMap(result, args[i]);
@@ -2141,7 +2207,7 @@
       else if (cells.has(result) || views.has(result) || lazyValues.has(result))
         result = cons(args[i], result, cells.get(result)?.kind === "list" ? "list" : "cons");
       else throw new Error("conj not supported on this type");
-      if (vectors.has(previous) || maps.has(previous) || sets.has(previous) || queues.has(previous) || cells.get(previous)?.kind === "list") result = preserveMeta(previous, result);
+      if (holdsVector(previous) || maps.has(previous) || sets.has(previous) || queues.has(previous) || cells.get(previous)?.kind === "list") result = preserveMeta(previous, result);
     }
     return result;
   }
@@ -2203,12 +2269,12 @@
     return built;
   }
   //@unit conj.vectors effect: PersistentVectorValue, SubvecValue when: conj requires: conjMeta,
-  //@ kindHooks, kindTables, methodKeys, noBranch, protocolHooks, subvecSources, vectors
+  //@ kindHooks, kindTables, methodKeys, noBranch, protocolHooks, subvecSources, vectorStore
   // A subvector takes the operation (`SubvecValue.conj`). Each branch calls
   // what the protocol lookup finds, as the operation would, so that it looks
   // it up once.
   kindTables[4][7] = (coll, item) => {
-    const store = vectors.get(coll);
+    const store = vectorStore(coll);
     if (!store || subvecSources.has(coll)) return noBranch;
     const custom = protocolHooks.builtin?.(coll, methodKeys[7], 2);
     return custom ? custom.call(coll, coll, item) : conjMeta(coll, kindHooks.conjVector(store, item));
@@ -2238,15 +2304,16 @@
     return custom ? custom.call(coll, coll, item) : preserveMeta(coll, kindHooks.conjQueue(coll, item));
   };
 
-  //@unit assoc requires: copyEntries, kindHooks, maps, methodKeys, missing, protocolHooks,
-  //@ publicCollectionSlots, putCollectionEntry, subvecSources, updatedMap, vectors
+  //@unit assoc requires: copyEntries, holdsVector, kindHooks, maps, methodKeys, missing,
+  //@ protocolHooks, publicCollectionSlots, putCollectionEntry, subvecSources, updatedMap,
+  //@ vectorStore
   function assoc(value, key, item, ...pairs) {
     const method = value == null ? null : protocolHooks.builtin?.(value, methodKeys[1], 3);
     if (method) {
       let result = method.call(value, value, key, item);
       return pairs.length ? assoc(result, ...pairs) : result;
     }
-    if (vectors.has(value) && subvecSources.has(value) && publicCollectionSlots.has(value)) return kindHooks.assocSubvec(value, key, item, pairs);
+    if (holdsVector(value) && subvecSources.has(value) && publicCollectionSlots.has(value)) return kindHooks.assocSubvec(value, key, item, pairs);
     const mapSlots = publicCollectionSlots.get(value);
     if (maps.has(value) && mapSlots?.arr && mapSlots.cnt >= 8) {
       const promoted = kindHooks.assocArrayMapSlots(value, mapSlots, key, item, pairs);
@@ -2260,7 +2327,7 @@
         result = assoc(result, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
       return result;
     }
-    const original = vectors.get(value);
+    const original = vectorStore(value);
     if (!original) throw new Error("assoc not supported on this type");
     return kindHooks.assocVector(value, original, key, item, pairs);
   }
@@ -2275,11 +2342,11 @@
     return result !== noBranch ? result : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(assoc);
   //@unit assoc.vectors effect: PersistentVectorValue, SubvecValue when: assoc requires: kindHooks,
-  //@ kindTables, methodKeys, noBranch, protocolHooks, publicCollectionSlots, vectors
+  //@ kindTables, methodKeys, noBranch, protocolHooks, publicCollectionSlots, vectorStore
   // A public constructor's value, a subvector or an array map with slots,
   // takes the operation; a branch calls what the protocol lookup finds.
   kindTables[4][8] = (value, key, item) => {
-    const store = vectors.get(value);
+    const store = vectorStore(value);
     if (!store || publicCollectionSlots.has(value)) return noBranch;
     const method = protocolHooks.builtin?.(value, methodKeys[1], 3);
     return method ? method.call(value, value, key, item) : kindHooks.assocVector(value, store, key, item, []);
@@ -2435,9 +2502,9 @@
     const index = kindHooks.entryIndex(value, members, key);
     return index < 0 ? notFound : members[index].key;
   })(lookup);
-  //@unit lookup.transients effect: makeTransient when: lookup requires: kindHooks, lookup,
-  //@ transients
-  lookup = (operation => (value, key, notFound) => transients.has(value) ? kindHooks.lookupTransient(value, key, notFound) : operation(value, key, notFound))(lookup);
+  //@unit lookup.transients effect: makeTransient when: lookup requires: isTransient, kindHooks,
+  //@ lookup
+  lookup = (operation => (value, key, notFound) => isTransient(value) ? kindHooks.lookupTransient(value, key, notFound) : operation(value, key, notFound))(lookup);
   //@unit lookup.tree effect: treeMapConstructor when: lookup requires: kindHooks, lookup, maps,
   //@ publicCollectionSlots
   lookup = (operation => (value, key, notFound) => {
@@ -2922,11 +2989,11 @@
     return updatedMap(value, entries, removeRecord);
   }
 
-  //@unit mapConj requires: assoc, first, methodKeys, next, nth, protocolHooks, seq, vectors
+  //@unit mapConj requires: assoc, first, holdsVector, methodKeys, next, nth, protocolHooks, seq
   function mapConj(value, member) {
     if (member == null) return value;
     // A vector's `-nth` is `nth`'s own (see `protocolHooks`).
-    const vectorLike = item => protocolHooks.satisfies?.(methodKeys[61], item) ?? vectors.has(item), nthOf = protocolHooks.nthProtocol ?? nth;
+    const vectorLike = item => protocolHooks.satisfies?.(methodKeys[61], item) ?? holdsVector(item), nthOf = protocolHooks.nthProtocol ?? nth;
     if (vectorLike(member)) return assoc(value, nthOf(member, 0), nthOf(member, 1));
     let result = value;
     for (let current = seq(member); current !== null; current = next(current)) {
@@ -3100,6 +3167,9 @@
   // storage. Persistence freezes that storage; no persistent alias can mutate it.
   const transientPrototype = Object.freeze({
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
+    // JSON of a class value: its own properties but its keyed field, as
+    // before it had one (docs/value-layout.md, question 3).
+    toJSON() { const {state$LKEY: _, ...json} = this; return json; },
     toString() { return printHooks.collection(this); },
     call(_self, key, notFound) {
       if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
@@ -3108,6 +3178,11 @@
   });
   //@unit TransientVectorType effect requires: builtinType, transientPrototype
   const TransientVectorType = builtinType(function () {}, transientPrototype);
+  //@unit TransientVectorType.kind effect: TransientVectorType requires: kinds, TransientVectorType
+  TransientVectorType.prototype.cljs$lang$kind$$LKEY = kinds.transientVector;
+  //@unit TransientVectorCell.type effect: TransientVectorCell requires: TransientVectorCell,
+  //@ TransientVectorType
+  TransientVectorCell.prototype = TransientVectorType.prototype;
   //@unit TransientArrayMapType effect requires: builtinType, transientPrototype
   const TransientArrayMapType = builtinType(function () {}, transientPrototype);
   //@unit TransientHashMapType effect requires: builtinType, transientPrototype
@@ -3115,25 +3190,26 @@
   //@unit TransientHashSetType effect requires: builtinType, transientPrototype
   const TransientHashSetType = builtinType(function () {}, transientPrototype);
   //@unit makeTransient requires: TransientArrayMapType, TransientHashMapType, TransientHashSetType,
-  //@ transients, TransientVectorType
+  //@ transients, TransientVectorCell
   function makeTransient(kind, entries, mapKind) {
-    const Type = kind === "vector" ? TransientVectorType : kind === "set" ? TransientHashSetType : mapKind === "array-map" ? TransientArrayMapType : TransientHashMapType;
+    if (kind === "vector") return new TransientVectorCell({kind, entries, mapKind, editable: true, edit: {}});
+    const Type = kind === "set" ? TransientHashSetType : mapKind === "array-map" ? TransientArrayMapType : TransientHashMapType;
     const result = Object.create(Type.prototype);
     transients.set(result, {kind, entries, mapKind, editable: true, edit: {}});
     return result;
   }
-  //@unit editableTransient requires: transients
+  //@unit editableTransient requires: transientState
   function editableTransient(value, operation) {
-    const state = transients.get(value);
+    const state = transientState(value);
     if (!state?.editable) throw new Error(operation === "persistent!" ? "persistent! called twice" : operation + " after persistent!");
     return state;
   }
   //@unit transient requires: asTransientProtocol
   function transient(value) { return asTransientProtocol(value); }
-  //@unit asTransient requires: copyEntries, kindHooks, makeTransient, mapKinds, maps, setKinds,
-  //@ sets, vectors
+  //@unit asTransient requires: copyEntries, holdsVector, kindHooks, makeTransient, mapKinds, maps,
+  //@ setKinds, sets, vectorStore
   function asTransient(value) {
-    if (vectors.has(value)) return makeTransient("vector", kindHooks.transientVector(vectors.get(value)));
+    if (holdsVector(value)) return makeTransient("vector", kindHooks.transientVector(vectorStore(value)));
     if (maps.has(value)) return makeTransient("map", copyEntries(maps.get(value)), mapKinds.get(value));
     return makeTransient("set", copyEntries(sets.get(value)), setKinds.get(value));
   }
@@ -3168,18 +3244,18 @@
   //@unit makeSet.persist effect: makeSet, treeSetConstructor when: persistTransient requires: kindHooks,
   //@ makeSet, PersistentHashSetValue
   kindHooks.persistSet = (entries, kind) => makeSet(PersistentHashSetValue, entries, kind);
-  //@unit transientNth requires: editableTransient, missing, transients, vectorNth
+  //@unit transientNth requires: editableTransient, missing, transientState, vectorNth
   function transientNth(value, index, fallback) {
-    const state = transients.get(value);
+    const state = transientState(value);
     // Pinned CLJS's three-argument -nth returns an out-of-range fallback
     // even after persistence; in-range access still checks ownership.
     if (fallback !== missing && !(index >= 0 && index < state.entries.cnt)) return fallback;
     editableTransient(value, "nth");
     return vectorNth(state.entries, index, fallback);
   }
-  //@unit transientLookup requires: editableTransient, kindHooks, transientNth, transients
+  //@unit transientLookup requires: editableTransient, kindHooks, transientNth, transientState
   function transientLookup(value, key, notFound) {
-    const state = transients.get(value);
+    const state = transientState(value);
     // TransientHashMap (and its set wrapper) retains readable lookup after
     // persistence in both pinned versions. Array maps and vectors reject it.
     if (state.mapKind !== "hash-map") editableTransient(value, "lookup");
@@ -3196,9 +3272,9 @@
   //@ treeSetConstructor when: transientLookup requires: entryIndex, hashEntryIndex, kindHooks
   kindHooks.transientEntryIndex = (state, key) => state.mapKind === "array-map" ? entryIndex(state.entries, key) : hashEntryIndex(state.entries, key);
   //@unit assocTransient requires: editableTransient, entryIndex, kindHooks, makeTransient,
-  //@ putEntry, transients
+  //@ putEntry, transientState
   function assocTransient(value, key, item, indexed = false) {
-    const state = transients.get(value);
+    const state = transientState(value);
     if (state.kind === "vector") {
       if (!indexed && typeof key !== "number") throw new Error("TransientVector's key for assoc! must be a number.");
       editableTransient(value, "assoc!");
@@ -3206,7 +3282,7 @@
     } else {
       editableTransient(value, "assoc!");
       if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key) < 0) {
-        const promoted = makeTransient("map", {root: null, nil: null, length: 0}, "hash-map"), target = transients.get(promoted);
+        const promoted = makeTransient("map", {root: null, nil: null, length: 0}, "hash-map"), target = transientState(promoted);
         for (const entry of state.entries) putEntry(target.entries, entry.key, entry.value, "hash-map", target.edit);
         return assocTransient(promoted, key, item);
       }
@@ -3220,10 +3296,10 @@
     if (state.kind === "vector") { kindHooks.conjTransientVector(state.entries, member); return value; }
     return state.kind === "set" ? kindHooks.conjTransientSet(value, state, member) : kindHooks.conjTransientMap(value, member);
   }
-  //@unit conjBangOwn requires: conjBangProtocol, conjTransient, protocolHooks, transients
+  //@unit conjBangOwn requires: conjBangProtocol, conjTransient, isTransient, protocolHooks
   // `conj!` onto the transient a core function's reduction holds, past the
   // protocol dispatch where no protocol implementation can answer for it.
-  const conjBangOwn = (value, member) => !protocolHooks.builtin && transients.has(value) ? conjTransient(value, member) : conjBangProtocol(value, member);
+  const conjBangOwn = (value, member) => !protocolHooks.builtin && isTransient(value) ? conjTransient(value, member) : conjBangProtocol(value, member);
   //@unit makeVector.conjTransient effect: makeVector, mapEntry when: conjTransient requires: conjVectorBang,
   //@ kindHooks
   kindHooks.conjTransientVector = conjVectorBang;
@@ -3321,7 +3397,7 @@
   //@unit hostHooks
   // Generic host-facing methods, for receivers that cannot answer natively.
   const hostHooks = {};
-  //@unit vectorStorage requires: vectorItems, vectorNth, vectors
+  //@unit vectorStorage requires: vectorItems, vectorNth, vectorStore
   // The items of a vector in an array, or null where it has none: the tail of
   // one with at most 32 items, which `seq` walks (`makeVector.seq`). Where
   // the store reads a caller's array (`callerTail`), whose items can change
@@ -3329,7 +3405,7 @@
   // when it is read, so the iterator, the printer and equality read no more
   // than they use.
   function vectorStorage(value) {
-    const store = vectors.get(value);
+    const store = vectorStore(value);
     if (!store.cnt) return null;
     if (!(store.sub ?? store).callerTail) return store.cnt <= 32 ? store.tail : vectorItems(value);
     if (store.cnt <= 32 && !store.sub) return store.tail;
@@ -3337,37 +3413,44 @@
     for (let i = 0; i < store.cnt; i++) Object.defineProperty(items, i, {enumerable: true, get: () => vectorNth(store, i, null)});
     return items;
   }
-  //@unit vectorCount requires: publicCollectionSlots, subvecSources, vectors
+  //@unit vectorCount requires: publicCollectionSlots, subvecSources, vectorStore
   function vectorCount(value) {
     const slots = publicCollectionSlots.get(value);
     if (slots && "cnt" in slots) return slots.cnt;
-    return slots && subvecSources.has(value) ? slots.end - slots.start : vectors.get(value).cnt;
+    return slots && subvecSources.has(value) ? slots.end - slots.start : vectorStore(value).cnt;
   }
-  //@unit vectorIndexOf requires: hostHooks, indexIn, mapEntries, missing, outOfBounds,
-  //@ protocolHooks, vectorCount, vectorNth, vectors
+  //@unit vectorIndexOf requires: holdsVector, hostHooks, indexIn, isEntryCell, missing,
+  //@ outOfBounds, protocolHooks, vectorCount, vectorNth, vectorStore
   function vectorIndexOf(coll, value, start, reverse) {
-    if (protocolHooks.extend || !vectors.has(coll)) return hostHooks.index(coll, value, start, reverse);
-    const store = vectors.get(coll), entry = mapEntries.has(coll);
+    if (protocolHooks.extend || !holdsVector(coll)) return hostHooks.index(coll, value, start, reverse);
+    const store = vectorStore(coll), entry = isEntryCell(coll);
     return indexIn(vectorCount(coll), i => entry && i !== 0 && i !== 1 ? outOfBounds() : vectorNth(store, i, missing), value, start, reverse);
   }
-  //@unit vectorPrototype requires: hostHooks, invalidArity, itemIterator, mapEntries, missing,
-  //@ objectEquiv, outOfBounds, printHooks, protocolHooks, vectorCount, vectorIndexOf, vectorNth,
-  //@ vectors, vectorStorage
+  //@unit vectorPrototype requires: holdsVector, hostHooks, invalidArity, isEntryCell, itemIterator,
+  //@ missing, objectEquiv, outOfBounds, printHooks, protocolHooks, vectorCount, vectorIndexOf,
+  //@ vectorNth, vectorStorage, vectorStore
   const vectorPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
-    [Symbol.iterator]() { return protocolHooks.extend || !vectors.has(this) ? hostHooks.iterator(this) : itemIterator(vectorStorage(this), item => item); },
+    // JSON of a class value: its own properties but its keyed field, as
+    // before it had one (docs/value-layout.md, question 3).
+    toJSON() { const {store$LKEY: _, ...json} = this; return json; },
+    [Symbol.iterator]() { return protocolHooks.extend || !holdsVector(this) ? hostHooks.iterator(this) : itemIterator(vectorStorage(this), item => item); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return printHooks.collection(this); },
     indexOf(value, start = 0) { return vectorIndexOf(this, value, start, false); },
     lastIndexOf(value, start) {
-      if (start === undefined) start = protocolHooks.extend || !vectors.has(this) ? hostHooks.count(this) : vectorCount(this);
+      if (start === undefined) start = protocolHooks.extend || !holdsVector(this) ? hostHooks.count(this) : vectorCount(this);
       return vectorIndexOf(this, value, start, true);
     },
     // The pinned fixed method accepts one index and ignores extra arguments.
     call(_self, index) {
-      const store = vectors.get(this);
+      // The kind and store read here, where the receivers are this base's
+      // few classes, rather than in `vectorStore`, which every kind test
+      // calls with every kind of value.
+      const kind = this.cljs$lang$kind$$LKEY;
+      const store = kind === 1 || kind === 2 || kind === 3 ? this.store$LKEY : vectorStore(this);
       if (!store) throw new Error("Expected vector");
-      if (mapEntries.has(this)) {
+      if (kind === 3) {
         if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
         if (index === 0 || index === 1) return store.tail[index];
         return arguments.length === 3 ? arguments[2] : outOfBounds();
@@ -3378,26 +3461,36 @@
   });
 
   //@unit PersistentVectorValue.type effect: PersistentVectorValue requires: builtinType, kindOps,
-  //@ PersistentVectorValue, vectorPrototype
+  //@ kinds, PersistentVectorValue, vectorPrototype
   builtinType(PersistentVectorValue, vectorPrototype).prototype[kindOps] = 4;
-  //@unit SubvecValue.type effect: SubvecValue requires: builtinType, kindOps, SubvecValue,
+  PersistentVectorValue.prototype.cljs$lang$kind$$LKEY = kinds.vector;
+  //@unit VectorCell.type effect: VectorCell requires: PersistentVectorValue, VectorCell
+  // A vector cell has the vectors' prototype, which the unit above builds.
+  VectorCell.prototype = PersistentVectorValue.prototype;
+  //@unit SubvecValue.type effect: SubvecValue requires: builtinType, kindOps, kinds, SubvecValue,
   //@ vectorPrototype
   builtinType(SubvecValue, vectorPrototype).prototype[kindOps] = 4;
+  SubvecValue.prototype.cljs$lang$kind$$LKEY = kinds.subvec;
+  //@unit SubvecCell.type effect: SubvecCell requires: SubvecCell, SubvecValue
+  SubvecCell.prototype = SubvecValue.prototype;
   //@unit entryPrototype requires: hostHooks, indexIn, invalidArity, itemIterator, objectEquiv,
-  //@ outOfBounds, printHooks, protocolHooks, vectors
+  //@ outOfBounds, printHooks, protocolHooks, vectorStore
   // The host-facing members of map entries where no vector can be built
   // (`MapEntryType.lean`): those of `vectorPrototype` for a vector of a key
   // and a value, as map entries are, the only values with items there. An
   // entry's store is a vector's of two items, which its tail holds.
   const entryPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
+    // JSON of a class value: its own properties but its keyed field, as
+    // before it had one (docs/value-layout.md, question 3).
+    toJSON() { const {store$LKEY: _, ...json} = this; return json; },
     [Symbol.iterator]() { const items = entryItems(this); return items ? itemIterator(items, item => item) : hostHooks.iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return printHooks.collection(this); },
     indexOf(value, start = 0) { return entryIndexOf(this, value, start, false); },
     lastIndexOf(value, start) { return entryIndexOf(this, value, start, true); },
     call(_self, index) {
-      const store = vectors.get(this);
+      const store = vectorStore(this);
       if (!store) throw new Error("Expected vector");
       if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
       return index === 0 || index === 1 ? store.tail[index] : arguments.length === 3 ? arguments[2] : outOfBounds();
@@ -3405,7 +3498,7 @@
   });
   // An entry's items, unless protocol implementations could answer for it
   // or it is not one.
-  function entryItems(entry) { return !protocolHooks.extend && vectors.get(entry)?.tail; }
+  function entryItems(entry) { return !protocolHooks.extend && vectorStore(entry)?.tail; }
   // `lastIndexOf` without a start searches from the end.
   function entryIndexOf(entry, value, start, reverse) {
     const items = entryItems(entry);
@@ -3424,10 +3517,13 @@
   //@unit MapEntryType.vector effect: MapEntryType when: makeVector requires: builtinType, mapEntry,
   //@ MapEntryType, vectorPrototype
   MapEntryType = builtinType(function (key, value) { return mapEntry(key, value); }, vectorPrototype);
-  //@unit MapEntryType.type effect: MapEntryType requires: kindOps, MapEntryType
+  //@unit MapEntryType.type effect: MapEntryType requires: kindOps, kinds, MapEntryType
   // Map entries are kind 8 (light-cljs-373), with branches of their own, so
   // that a program building entries and no vector keeps no vector branch.
   MapEntryType.prototype[kindOps] = 8;
+  MapEntryType.prototype.cljs$lang$kind$$LKEY = kinds.entry;
+  //@unit EntryCell.type effect: EntryCell requires: EntryCell, MapEntryType
+  EntryCell.prototype = MapEntryType.prototype;
   //@unit makeKeyword requires: keywords, KeywordValue
   function makeKeyword(namespace, name, spelling) {
     const value = Object.create(KeywordValue.prototype);
@@ -3456,12 +3552,10 @@
   // What keyword case compares, or null.
   const keywordFqn = value => keywords.get(value)?.spelling ?? null;
 
-  //@unit makeVector requires: PersistentVectorValue, vectors, vectorTrie
+  //@unit makeVector requires: VectorCell, vectorTrie
   // A vector of the new array `items`, or with the store an operation built.
   function makeVector(items, store = vectorTrie(items)) {
-    const value = Object.create(PersistentVectorValue.prototype);
-    vectors.set(value, store);
-    return value;
+    return new VectorCell(store);
   }
 
   //@unit vectorTailOffset
@@ -3500,13 +3594,13 @@
     for (let level = store.shift; level > 0; level -= 5) node = node[(i >>> level) & 31];
     return node;
   }
-  //@unit vectorChunk requires: vectorLeaf, vectors
+  //@unit vectorChunk requires: vectorLeaf, vectorStore
   // The leaf or tail holding index `i` of a vector, for a seq to share,
   // which freezes then (a leaf a transient built, the tail and a view's new
   // array), unless it is a tail the public constructor received (and
   // `assoc` kept): that one stays its caller's, as upstream.
   function vectorChunk(value, i) {
-    const store = vectors.get(value), leaf = vectorLeaf(store, i);
+    const store = vectorStore(value), leaf = vectorLeaf(store, i);
     return !store.sub && store.callerTail && leaf === store.tail ? leaf : Object.freeze(leaf);
   }
   //@unit vectorSlice requires: vectorLeaf
@@ -3516,9 +3610,9 @@
     for (let i = from; i < to; i = (i | 31) + 1) items.push(...vectorLeaf(store, i).slice(i & 31, (i & 31) + to - i));
     return items;
   }
-  //@unit vectorItems requires: vectors, vectorSlice
+  //@unit vectorItems requires: vectorSlice, vectorStore
   // A new array of a vector's items.
-  const vectorItems = value => vectorSlice(vectors.get(value), 0, vectors.get(value).cnt);
+  const vectorItems = value => vectorSlice(vectorStore(value), 0, vectorStore(value).cnt);
   //@unit VectorView requires: vectorAssoc, vectorSlice, vectorTrie
   // The store of a `subvec`: a view of `cnt` items of another store, from its
   // index `start`, which shares that store. `nth`, `reduce`, `pop` and `assoc`
@@ -3723,8 +3817,9 @@
     throw new Error("Doesn't support namespace on this type");
   }
 
-  //@unit count requires: cells, chunkBuffers, chunks, kindHooks, maps, methodKeys, protocolHooks,
-  //@ publicCollectionSlots, queues, seqableValue, sets, subvecSources, transients, vectors, views
+  //@unit count requires: cells, chunkBuffers, chunks, isTransient, kindHooks, maps, methodKeys,
+  //@ protocolHooks, publicCollectionSlots, queues, seqableValue, sets, subvecSources, vectorStore,
+  //@ views
   function count(value) {
     const slots = publicCollectionSlots.get(value), cell = cells.get(value);
     if (cell?.kind === "tree-seq" && slots.cnt < 0) return kindHooks.countTreeSeq(value);
@@ -3733,13 +3828,13 @@
     if (slots?.vec) return count(slots.vec) - slots.i - slots.off;
     if (slots && subvecSources.has(value)) return slots.end - slots.start;
     if (slots && sets.has(value)) return count(slots["hash-map"]);
-    if (transients.has(value)) return kindHooks.countTransient(value);
+    if (isTransient(value)) return kindHooks.countTransient(value);
     if (chunkBuffers.has(value)) return chunkBuffers.get(value).end;
     if (chunks.has(value)) { const c = chunks.get(value); return c.end - c.offset; }
     if (queues.has(value)) return queues.get(value).length;
     if (Array.isArray(value)) return value.length;
     if (value == null) return 0;
-    const store = vectors.get(value);
+    const store = vectorStore(value);
     if (store) return store.cnt;
     if (typeof value === "string") return value.length;
     const entries = maps.get(value);
@@ -3803,12 +3898,12 @@
   //@ methodKeys, noBranch, protocolHooks
   kindTables[1][4] = value => lazyValues.has(value) && (protocolHooks.implements?.(methodKeys[51], value) ?? true) ? kindHooks.countSeq(value) : noBranch;
   //@unit count.vectors effect: PersistentVectorValue, SubvecValue when: count requires: kindTables,
-  //@ noBranch, publicCollectionSlots, vectors
+  //@ noBranch, publicCollectionSlots, vectorStore
   // The counts the stores of the collections, kinds 4 to 7, hold
   // (light-cljs-358). A public constructor's value, whose slots can give
   // another count (`cnt`), a subvector's bounds or a sorted set's map, takes
   // the operation.
-  kindTables[4][4] = value => { const store = vectors.get(value); return store && !publicCollectionSlots.has(value) ? store.cnt : noBranch; };
+  kindTables[4][4] = value => { const store = vectorStore(value); return store && !publicCollectionSlots.has(value) ? store.cnt : noBranch; };
   //@unit count.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
   //@ when: count requires: kindTables, maps, noBranch, publicCollectionSlots
   kindTables[5][4] = value => { const entries = maps.get(value); return entries && !publicCollectionSlots.has(value) ? entries.length : noBranch; };
@@ -3819,8 +3914,8 @@
   //@ publicCollectionSlots, queues
   kindTables[7][4] = value => { const queue = queues.get(value); return queue && !publicCollectionSlots.has(value) ? queue.length : noBranch; };
   //@unit count.entries effect: MapEntryType when: count requires: kindTables, noBranch,
-  //@ publicCollectionSlots, vectors
-  kindTables[8][4] = value => { const store = vectors.get(value); return store && !publicCollectionSlots.has(value) ? store.cnt : noBranch; };
+  //@ publicCollectionSlots, vectorStore
+  kindTables[8][4] = value => { const store = vectorStore(value); return store && !publicCollectionSlots.has(value) ? store.cnt : noBranch; };
   //@unit IndexedSeqValue.viewKind effect: IndexedSeqValue when: first.branches requires: IndexedSeqValue,
   //@ kindOps
   // Views, the seqs of arrays, strings and vectors, are kind 3 where a kind
@@ -3848,9 +3943,9 @@
     return notFound;
   }
 
-  //@unit nth requires: cells, chunks, first, indexedValue, invalidArity, kindHooks, mapEntries,
-  //@ methodKeys, missing, next, outOfBounds, protocolHooks, seq, sequential, seqValue, transients,
-  //@ vectorNth, vectors, views
+  //@unit nth requires: cells, chunks, first, indexedValue, invalidArity, isEntryCell, isTransient,
+  //@ kindHooks, methodKeys, missing, next, outOfBounds, protocolHooks, seq, sequential, seqValue,
+  //@ vectorNth, vectorStore, views
   function nth(value, index, notFound) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
@@ -3859,9 +3954,9 @@
     const fallback = arity === 2 ? missing : notFound;
     // A vector first, the most common: only a map entry, of two items, has
     // no index but 0 and 1.
-    const store = vectors.get(value);
-    if (store) return store.cnt === 2 && index !== 0 && index !== 1 && mapEntries.has(value) ? fallback === missing ? outOfBounds() : fallback : vectorNth(store, index, fallback);
-    if (transients.has(value)) return kindHooks.nthTransient(value, index, fallback);
+    const store = vectorStore(value);
+    if (store) return store.cnt === 2 && index !== 0 && index !== 1 && isEntryCell(value) ? fallback === missing ? outOfBounds() : fallback : vectorNth(store, index, fallback);
+    if (isTransient(value)) return kindHooks.nthTransient(value, index, fallback);
     if (chunks.has(value)) return kindHooks.nthChunk(value, index, fallback);
     if (cells.get(value)?.integer) { const c = cells.get(value); return index >= 0 && index < c.count ? c.head + Math.floor(index) * c.step : fallback === missing ? outOfBounds() : fallback; }
     if (Array.isArray(value)) return index > -1 && index < value.length ? value[Math.trunc(index)] : fallback === missing ? outOfBounds() : fallback;
@@ -3915,22 +4010,22 @@
       ? kindTables[kind & 15][5](value, index, arity === 2 ? missing : notFound) : noBranch;
     return result !== noBranch ? result : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
-  //@unit nth.vectors effect: PersistentVectorValue, SubvecValue when: nth requires: kindTables,
-  //@ mapEntries, noBranch, vectorNth, vectors
+  //@unit nth.vectors effect: PersistentVectorValue, SubvecValue when: nth requires: isEntryCell,
+  //@ kindTables, noBranch, vectorNth, vectorStore
   // A map entry, of two items, has no index but 0 and 1 (see `nth`).
   kindTables[4][5] = (value, index, notFound) => {
-    const store = vectors.get(value);
-    return store && !(store.cnt === 2 && mapEntries.has(value)) ? vectorNth(store, index, notFound) : noBranch;
+    const store = vectorStore(value);
+    return store && !(store.cnt === 2 && isEntryCell(value)) ? vectorNth(store, index, notFound) : noBranch;
   };
-  //@unit nth.entries effect: MapEntryType when: nth requires: kindTables, mapEntries, missing,
-  //@ noBranch, outOfBounds, vectors
+  //@unit nth.entries effect: MapEntryType when: nth requires: isEntryCell, kindTables, missing,
+  //@ noBranch, outOfBounds, vectorStore
   // A map entry's items (light-cljs-373), which its store's tail holds, read
   // first, as `nth` tests for an entry only at another index; a vector with
   // the entries' prototype takes the operation at those.
   kindTables[8][5] = (value, index, notFound) => {
-    const store = vectors.get(value);
+    const store = vectorStore(value);
     if (store && store.cnt === 2 && !store.sub && (index === 0 || index === 1)) return store.tail[index];
-    return store && store.cnt === 2 && mapEntries.has(value) ? notFound === missing ? outOfBounds() : notFound : noBranch;
+    return store && store.cnt === 2 && isEntryCell(value) ? notFound === missing ? outOfBounds() : notFound : noBranch;
   };
   //@unit nth.protocol effect: installMethods when: nth requires: methodKeys, nth, protocolHooks
   nth = (operation => Object.defineProperty(function (value, index, notFound) {
@@ -3939,7 +4034,7 @@
     return method ? method.call(value, ...arguments) : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
 
-  //@unit lookup requires: kindHooks, mapEntries, maps, vectors
+  //@unit lookup requires: isEntryCell, kindHooks, maps, vectorStore
   // The map, vector and string branches; the other kinds' wrap it.
   function lookup(value, key, notFound) {
     const entries = maps.get(value);
@@ -3948,8 +4043,8 @@
       const index = kindHooks.entryIndex(value, entries, key);
       return index < 0 ? notFound : entries[index].value;
     }
-    const store = vectors.get(value);
-    if (store) return mapEntries.has(value) ? key === 0 || key === 1 ? store.tail[key] : notFound : typeof key === "number" && key >= 0 && key < store.cnt ? kindHooks.nthVector(store, key, notFound) : notFound;
+    const store = vectorStore(value);
+    if (store) return isEntryCell(value) ? key === 0 || key === 1 ? store.tail[key] : notFound : typeof key === "number" && key >= 0 && key < store.cnt ? kindHooks.nthVector(store, key, notFound) : notFound;
     if (typeof value === "string" && key != null && key > -1 && key < value.length) {
       return value.charAt(key | 0);
     }
@@ -4009,13 +4104,13 @@
       ? kindTables[kind & 15][6](value, key, arity === 2 ? null : notFound, arity) : noBranch;
     return result !== noBranch ? result : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(get);
-  //@unit get.vectors effect: PersistentVectorValue, SubvecValue when: get requires: kindTables,
-  //@ mapEntries, methodKeys, noBranch, protocolHooks, vectorNth, vectors
+  //@unit get.vectors effect: PersistentVectorValue, SubvecValue when: get requires: isEntryCell,
+  //@ kindTables, methodKeys, noBranch, protocolHooks, vectorNth, vectorStore
   // `lookup` of a vector, after the protocol lookup that `get` makes first,
   // whose method it calls as `get` would.
   kindTables[4][6] = (value, key, notFound, arity) => {
-    const store = vectors.get(value);
-    if (!store || mapEntries.has(value)) return noBranch;
+    const store = vectorStore(value);
+    if (!store || isEntryCell(value)) return noBranch;
     const method = protocolHooks.publicMethod?.(value, methodKeys[30], arity, true);
     if (method) return arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound);
     return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, notFound) : notFound;
@@ -4049,13 +4144,13 @@
     const index = collectionEntryIndex(value, members, key);
     return index < 0 ? notFound : members[index].key;
   };
-  //@unit get.entries effect: MapEntryType when: get requires: kindTables, mapEntries, noBranch,
-  //@ protocolHooks, vectors
+  //@unit get.entries effect: MapEntryType when: get requires: isEntryCell, kindTables, noBranch,
+  //@ protocolHooks, vectorStore
   // Likewise of a map entry (light-cljs-373), as `lookup` reads it; where
   // protocol implementations exist, the operation, which looks them up.
   kindTables[8][6] = (value, key, notFound) => {
-    const store = vectors.get(value);
-    return store && !protocolHooks.publicMethod && mapEntries.has(value) ? key === 0 || key === 1 ? store.tail[key] : notFound : noBranch;
+    const store = vectorStore(value);
+    return store && !protocolHooks.publicMethod && isEntryCell(value) ? key === 0 || key === 1 ? store.tail[key] : notFound : noBranch;
   };
   //@unit get.own effect: installMethods when: get requires: demandKey, get, keySlot, methodKeys,
   //@ protocolHooks
@@ -4077,18 +4172,11 @@
     return arity === 2 ? operation(value, key) : arity === 3 ? operation(value, key, notFound) : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(get);
 
-  //@unit kinds
-  // The kind number of each runtime class converted to the class layout
-  // (docs/value-layout.md, section 2), which its prototype holds under the
-  // keyed name `cljs$lang$kind$$LKEY`: a value of this runtime, of this class.
-  // The slot-first operations below read it to know a value is the
-  // runtime's own before they call its keyed slot.
-  const kinds = {vector: 1};
   //@unit slotFirst
   // Turns the slot-first wrappers off where a compiler session demands
   // declarations (`setDeclarationDemand`): there the operations' older
   // layers demand each protocol before they read a slot.
-  let slotFirst = true;
+  const slotFirst = {on: true};
   //@unit builtinSlots
   // The runtime's own slot methods (`PersistentVectorValue.nth` and the
   // rest), which `builtinSlot` marks: the protocol lookups of the
@@ -4097,53 +4185,52 @@
   // never call a slot that serves them.
   const builtinSlots = new WeakSet();
   function builtinSlot(method) { builtinSlots.add(method); return method; }
-  //@unit PersistentVectorValue.kind effect: PersistentVectorValue requires: kinds,
-  //@ PersistentVectorValue
-  PersistentVectorValue.prototype.cljs$lang$kind$$LKEY = kinds.vector;
   // A persistent vector's protocol methods are slots of its prototype
   // (docs/value-layout.md, section 3), each a unit kept with the operation
   // that reads it. A slot is complete for every value with the prototype: it
   // never takes the operation it serves, whose protocol lookup finds the slot
   // too. `extend-type` overwrites a slot and `specify!` shadows it, so the
   // next call runs the program's method. A value with the prototype but no
-  // vector store (one made by reflection) answers `noBranch`, and the slot-first
-  // wrapper then takes the operation, which answers it as before.
-  //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: nth requires: builtinSlot, noBranch, missing,
-  //@ PersistentVectorValue, vectorNth, vectors
+  // store of its own (one made by reflection) answers `noBranch`, and the
+  // slot-first wrapper then takes the operation, which answers it as before.
+  //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: nth requires: builtinSlot,
+  //@ missing, noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
-    const store = vectors.get(self);
+    const store = self.store$LKEY;
     if (store === undefined) return noBranch;
     return vectorNth(store, index, missing);
   });
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
-    const store = vectors.get(self);
+    const store = self.store$LKEY;
     if (store === undefined) return noBranch;
     return vectorNth(store, index, notFound);
   });
-  //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count requires: builtinSlot, noBranch, PersistentVectorValue,
-  //@ vectorCount, vectors
+  //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count requires: builtinSlot,
+  //@ noBranch, PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
-    if (!vectors.has(self)) return noBranch;
-    return vectorCount(self);
+    const store = self.store$LKEY;
+    if (store === undefined) return noBranch;
+    return store.cnt;
   });
-  //@unit PersistentVectorValue.peek effect: PersistentVectorValue when: peek requires: builtinSlot, noBranch, PersistentVectorValue,
-  //@ vectorNth, vectors
+  //@unit PersistentVectorValue.peek effect: PersistentVectorValue when: peek requires: builtinSlot,
+  //@ noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
-    const store = vectors.get(self);
+    const store = self.store$LKEY;
     if (store === undefined) return noBranch;
     return store.cnt ? vectorNth(store, store.cnt - 1, null) : null;
   });
-  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj requires: builtinSlot, noBranch, conjMeta,
-  //@ makeVector, PersistentVectorValue, vectorConj, vectors
+  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj requires: builtinSlot,
+  //@ conjMeta, makeVector, noBranch, PersistentVectorValue, vectorConj
   PersistentVectorValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
-    const store = vectors.get(self);
+    const store = self.store$LKEY;
     if (store === undefined) return noBranch;
     return conjMeta(self, makeVector(null, vectorConj(store, item)));
   });
-  //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc requires: builtinSlot, noBranch, makeVector,
-  //@ outOfBounds, PersistentVectorValue, preserveMeta, vectorAssoc, vectorConj, vectors
+  //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc requires: builtinSlot,
+  //@ makeVector, noBranch, outOfBounds, PersistentVectorValue, preserveMeta, vectorAssoc,
+  //@ vectorConj
   PersistentVectorValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
-    let store = vectors.get(self);
+    let store = self.store$LKEY;
     if (store === undefined) return noBranch;
     if (typeof key !== "number") throw new Error("Vector key must be a number");
     if (key >= 0 && key < store.cnt) store = vectorAssoc(store, key, item);
@@ -4151,15 +4238,15 @@
     else outOfBounds();
     return preserveMeta(self, makeVector(null, store));
   });
-  //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: get requires: builtinSlot, noBranch, PersistentVectorValue,
-  //@ vectorNth, vectors
+  //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: get requires: builtinSlot,
+  //@ noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
-    const store = vectors.get(self);
+    const store = self.store$LKEY;
     if (store === undefined) return noBranch;
     return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, null) : null;
   });
   PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
-    const store = vectors.get(self);
+    const store = self.store$LKEY;
     if (store === undefined) return noBranch;
     return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, notFound) : notFound;
   });
@@ -4171,61 +4258,61 @@
   // before. Each wrapper is the operation's outermost, so it follows the
   // operation's other wrappers here. Program types keep their path until
   // their recognition moves to the keyed kind (light-cljs-1013).
-  //@unit nth.slots effect: kinds when: nth requires: nth, noBranch, slotFirst
+  //@unit nth.slots effect: PersistentVectorValue when: nth requires: noBranch, nth, slotFirst
   nth = (operation => Object.defineProperty(function (value, index, notFound) {
-    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined && typeof index === "number") {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && typeof index === "number") {
       const arity = arguments.length;
       if (arity === 2) { const method = value.cljs$core$IIndexed$_nth$arity$2$LKEY; if (method !== undefined) { const result = method.call(value, value, index); if (result !== noBranch) return result; } }
       else if (arity === 3) { const method = value.cljs$core$IIndexed$_nth$arity$3$LKEY; if (method !== undefined) { const result = method.call(value, value, index, notFound); if (result !== noBranch) return result; } }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
-  //@unit count.slots effect: kinds when: count requires: count, noBranch, slotFirst
+  //@unit count.slots effect: PersistentVectorValue when: count requires: count, noBranch, slotFirst
   count = (operation => Object.defineProperty(function (value) {
-    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
       if (method !== undefined) { const result = method.call(value, value); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(count);
-  //@unit peek.slots effect: kinds when: peek requires: peek, noBranch, slotFirst
+  //@unit peek.slots effect: PersistentVectorValue when: peek requires: noBranch, peek, slotFirst
   peek = (operation => Object.defineProperty(function (value) {
-    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
       const method = value.cljs$core$IStack$_peek$arity$1$LKEY;
       if (method !== undefined) { const result = method.call(value, value); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(peek);
-  //@unit conj.slots effect: kinds when: conj requires: conj, noBranch, slotFirst
+  //@unit conj.slots effect: PersistentVectorValue when: conj requires: conj, noBranch, slotFirst
   conj = (operation => Object.defineProperty(function (coll, item) {
-    if (slotFirst && coll != null && coll.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
+    if (slotFirst.on && coll != null && coll.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
       const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
       if (method !== undefined) { const result = method.call(coll, coll, item); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(conj);
-  //@unit assoc.slots effect: kinds when: assoc requires: assoc, noBranch, slotFirst
+  //@unit assoc.slots effect: PersistentVectorValue when: assoc requires: assoc, noBranch, slotFirst
   assoc = (operation => Object.defineProperty(function (value, key, item) {
-    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
       const method = value.cljs$core$IAssociative$_assoc$arity$3$LKEY;
       if (method !== undefined) { const result = method.call(value, value, key, item); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(assoc);
-  //@unit get.slots effect: kinds when: get requires: get, noBranch, slotFirst
+  //@unit get.slots effect: PersistentVectorValue when: get requires: get, noBranch, slotFirst
   get = (operation => Object.defineProperty(function (value, key, notFound) {
-    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
       const arity = arguments.length;
       if (arity === 2) { const method = value.cljs$core$ILookup$_lookup$arity$2$LKEY; if (method !== undefined) { const result = method.call(value, value, key); if (result !== noBranch) return result; } }
       else if (arity === 3) { const method = value.cljs$core$ILookup$_lookup$arity$3$LKEY; if (method !== undefined) { const result = method.call(value, value, key, notFound); if (result !== noBranch) return result; } }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(get);
-  //@unit contains requires: get, methodKeys, missing, protocolHooks, vectors
+  //@unit contains requires: get, methodKeys, missing, protocolHooks, vectorStore
   function contains(value, key) {
     const method = protocolHooks.publicMethod?.(value, methodKeys[2], 2);
     if (method) return method.call(value, value, key);
-    const store = vectors.get(value);
+    const store = vectorStore(value);
     if (store) return Number.isInteger(key) && key >= 0 && key < store.cnt;
     return get(value, key, missing) !== missing;
   }
@@ -4633,18 +4720,18 @@
   // A set its public constructor built counts the map it received.
   kindHooks.countPublicSet = slots => count("tree-map" in slots ? slots["tree-map"] : slots["hash-map"]);
   //@unit mapEntry.equiv effect: mapEntry when: structuralEqualPair unless: makeVector requires: equalPair,
-  //@ kindHooks, vectors
+  //@ kindHooks, vectorStore
   // `makeVector.equiv`, which follows, where map entries, of two items, are
   // the only values with items.
   kindHooks.equivVectors = (left, right) => {
-    const a = vectors.get(left).tail, b = vectors.get(right)?.tail;
+    const a = vectorStore(left).tail, b = vectorStore(right)?.tail;
     return !!b && equalPair(a[0], b[0]) && equalPair(a[1], b[1]);
   };
   //@unit makeVector.equiv effect: makeVector when: structuralEqualPair requires: equalPair,
-  //@ kindHooks, vectorCount, vectors, vectorStorage
+  //@ holdsVector, kindHooks, vectorCount, vectorStorage
   // Where no other sequential value and no protocol implementation exists.
   kindHooks.equivVectors = (left, right) => {
-    if (!vectors.has(right) || vectorCount(left) !== vectorCount(right)) return false;
+    if (!holdsVector(right) || vectorCount(left) !== vectorCount(right)) return false;
     const a = vectorStorage(left), b = vectorStorage(right);
     let index = 0, more = a !== null, other = b !== null;
     while (more) {
@@ -4681,16 +4768,16 @@
     return true;
   }
 
-  //@unit sequential requires: cells, lazyValues, queues, vectors, views
+  //@unit sequential requires: cells, holdsVector, lazyValues, queues, views
   function sequential(value) {
-    return vectors.has(value) || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
+    return holdsVector(value) || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
   }
-  //@unit comparedSequential requires: kindHooks, vectors
+  //@unit comparedSequential requires: holdsVector, kindHooks
   // The sequential values that equality and hashing compare by their items:
   // all but cycle and iterate seqs, which keep identity. Values other than
   // vectors only where the program builds them (`cons.compared`).
   function comparedSequential(value) {
-    return vectors.has(value) || !!kindHooks.comparedSeq?.(value);
+    return holdsVector(value) || !!kindHooks.comparedSeq?.(value);
   }
   //@unit cons.compared effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
   //@ listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
@@ -4823,10 +4910,10 @@
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue,
   //@ queueFromArray, LazySeq when: hash requires: cells, constructorHashes, hashOrderedColl,
-  //@ kindHooks, lazyValues, publicCollectionSlots, queues, vectors
+  //@ holdsVector, kindHooks, lazyValues, publicCollectionSlots, queues
   // Sequential values (see `makeVector.equiv`).
   kindHooks.hashSequential = value => {
-    if (vectors.has(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value)) {
+    if (holdsVector(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value)) {
       const result = hashOrderedColl(value);
       constructorHashes.set(value, result);
       return result;
@@ -4847,11 +4934,11 @@
   function hashed(value, cached) { constructorHashes.set(value, cached); return value; }
 
   //@unit compilerFormBridge compile-time requires: atoms, cells, deferredValue, emptyList,
-  //@ EmptyListValue, generatedNames, ifnValues, jsObject, keyword, keywords, lazyValues,
-  //@ listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name, publicCollectionSlots,
-  //@ queueFromArray, queues, recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal,
-  //@ symbol, symbols, toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectorItems,
-  //@ vectorNth, vectors, view, views, volatiles
+  //@ EmptyListValue, generatedNames, holdsVector, ifnValues, jsObject, keyword, keywords,
+  //@ lazyValues, listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name,
+  //@ publicCollectionSlots, queueFromArray, queues, recordTypes, reifyValues, rePattern,
+  //@ setFromArray, sets, setTraversal, stamped, symbol, symbols, toArray, typeFields, uuid, uuids,
+  //@ vars, vectorFromArray, vectorItems, vectorNth, vectorStore, view, views, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -5007,9 +5094,9 @@
           else if (symbols.has(v) || keywords.has(v)) {
             const n = symbols.get(v) || keywords.get(v); tag = symbols.has(v) ? "symbol" : "keyword";
             a = n.namespace == null ? null : n.namespace; b = n.name;
-          } else if (vectors.has(v)) {
+          } else if (stamped(v) && holdsVector(v)) {
             // Each item is read just before it is visited, within the limits.
-            tag = "vector"; a = []; const store = vectors.get(v);
+            tag = "vector"; a = []; const store = vectorStore(v);
             for (let i = 0; i < store.cnt; i++) a.push(visit(vectorNth(store, i, null), path + "[" + i + "]", depth + 1));
           }
           else if (maps.has(v)) { tag = "map"; a = []; let i = 0;
@@ -5059,7 +5146,7 @@
               // seq's node from its offset, as its `first` and `rest` read it,
               // then the vector's items after that node, each read within the
               // limit.
-              const chunked = publicCollectionSlots.get(current)?.vec, store = vectors.get(chunked ?? current);
+              const chunked = publicCollectionSlots.get(current)?.vec, store = stamped(chunked ?? current) ? vectorStore(chunked ?? current) : undefined;
               if (store) {
                 const slots = chunked && publicCollectionSlots.get(current);
                 let first = true;
@@ -5123,9 +5210,9 @@
       }});
   }
 
-  //@unit inspect requires: atoms, cells, first, isReduced, keywords, mapTraversal, next, nth,
-  //@ recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars, vectorItems,
-  //@ vectors, views, volatiles
+  //@unit inspect requires: atoms, cells, first, holdsVector, isReduced, keywords, mapTraversal,
+  //@ next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars,
+  //@ vectorItems, views, volatiles
   // A value's shape for the reader (EDN data included) and the observation
   // harness, which alone registers inspect. Exposed storage remains frozen.
   function inspect(value) {
@@ -5133,7 +5220,7 @@
     const named = keywords.get(value) || symbols.get(value);
     if (named) return Object.freeze({kind: keywords.has(value) ? "keyword" : "symbol",
       namespace: named.namespace, name: named.name, spelling: named.spelling});
-    if (vectors.has(value)) return Object.freeze({kind: "vector", items: Object.freeze(vectorItems(value))});
+    if (holdsVector(value)) return Object.freeze({kind: "vector", items: Object.freeze(vectorItems(value))});
     const entries = recordTypes.has(value)
       ? recordEntries(value, recordTypes.get(value)).map(pair => ({key: nth(pair, 0), value: nth(pair, 1)}))
       : mapTraversal(value);
@@ -5325,16 +5412,16 @@
     metadataValues.set(value, metadata);
     deferredVarMetadata.delete(value);
   };
-  //@unit empty requires: cells, collectionWithMeta, emptyList, lazyValues, makeMap, makeSet,
-  //@ mapEntries, mapKinds, maps, mapTypes, meta, methodKeys, preserveMeta, protocolHooks,
-  //@ publicCollectionSlots, queueFromArray, queues, recordTypes, setKinds, sets, setType,
-  //@ sortedComparators, vector, vectors, views
+  //@unit empty requires: cells, collectionWithMeta, emptyList, holdsVector, isEntryCell,
+  //@ lazyValues, makeMap, makeSet, mapKinds, maps, mapTypes, meta, methodKeys, preserveMeta,
+  //@ protocolHooks, publicCollectionSlots, queueFromArray, queues, recordTypes, setKinds, sets,
+  //@ setType, sortedComparators, vector, views
   function empty(value) {
     const method = value == null ? null : protocolHooks.publicMethod?.(value, methodKeys[15], 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
-    if (recordTypes.has(value) || mapEntries.has(value)) return null;
-    if (vectors.has(value)) return preserveMeta(value, vector());
+    if (recordTypes.has(value) || isEntryCell(value)) return null;
+    if (holdsVector(value)) return preserveMeta(value, vector());
     if (maps.has(value)) return preserveMeta(value, makeMap(mapTypes[mapKinds.get(value)], Array.isArray(maps.get(value)) ? [] : {root: null, nil: null, length: 0}, mapKinds.get(value), sortedComparators.get(value)));
     if (sets.has(value)) return preserveMeta(value, makeSet(setType(setKinds.get(value)), Array.isArray(sets.get(value)) ? [] : {root: null, nil: null, length: 0}, setKinds.get(value), sortedComparators.get(value)));
     if (queues.has(value)) return preserveMeta(value, queueFromArray([]));
@@ -5343,26 +5430,26 @@
       return cells.get(value)?.kind === "list" || views.get(value)?.kind === "queue" || lazyValues.has(value) ? collectionWithMeta(emptyList, meta(value)) : emptyList;
     return null;
   }
-  //@unit peek requires: cells, first, methodKeys, protocolHooks, publicCollectionSlots, queues,
-  //@ vectorNth, vectors
+  //@unit peek requires: cells, first, holdsVector, methodKeys, protocolHooks,
+  //@ publicCollectionSlots, queues, vectorNth, vectorStore
   function peek(value) {
     const method = value == null ? null : protocolHooks.builtin?.(value, methodKeys[57], 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
-    if (vectors.has(value)) { const store = vectors.get(value); return store.cnt ? vectorNth(store, store.cnt - 1, null) : null; }
+    if (holdsVector(value)) { const store = vectorStore(value); return store.cnt ? vectorNth(store, store.cnt - 1, null) : null; }
     if (queues.has(value) && publicCollectionSlots.has(value)) return first(publicCollectionSlots.get(value).front);
     if (queues.has(value) || cells.get(value)?.kind === "list") return first(value);
     throw new Error("No protocol method IStack.-peek defined for this value");
   }
-  //@unit pop requires: cells, count, makeVector, meta, methodKeys, next, PersistentQueueValue,
-  //@ preserveMeta, protocolHooks, publicCollectionSlots, queueFromArray, queues, rest, seq,
-  //@ subvecSources, SubvecValue, vector, vectorPop, vectors
+  //@unit pop requires: cells, count, holdsVector, makeVector, meta, methodKeys, next,
+  //@ PersistentQueueValue, preserveMeta, protocolHooks, publicCollectionSlots, queueFromArray,
+  //@ queues, rest, seq, subvecSources, SubvecValue, vector, vectorPop, vectorStore
   function pop(value) {
     const method = value == null ? null : protocolHooks.builtin?.(value, methodKeys[58], 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
-    if (vectors.has(value)) {
-      const store = vectors.get(value);
+    if (holdsVector(value)) {
+      const store = vectorStore(value);
       if (!store.cnt) throw new Error("Can't pop empty vector");
       const slots = publicCollectionSlots.get(value);
       if (slots && subvecSources.has(value)) return SubvecValue(meta(value), subvecSources.get(value), slots.start, slots.end - 1, null);
@@ -5380,16 +5467,17 @@
     }
     throw new Error("No protocol method IStack.-pop defined for this value");
   }
-  //@unit rseq requires: IndexedSeqValue, maps, methodKeys, protocolHooks, publicCollectionSlots,
-  //@ RSeqType, sortedComparators, toArray, treeMapSeqConstructor, vectorItems, vectors, view, views
+  //@unit rseq requires: holdsVector, IndexedSeqValue, maps, methodKeys, protocolHooks,
+  //@ publicCollectionSlots, RSeqType, sortedComparators, toArray, treeMapSeqConstructor,
+  //@ vectorItems, view, views
   function rseq(value) {
     const method = protocolHooks.builtin?.(value, methodKeys[47], 1);
     if (method) return method.call(value, value);
-    if (!vectors.has(value) && views.get(value)?.kind !== "indexed" && !sortedComparators.has(value))
+    if (!holdsVector(value) && views.get(value)?.kind !== "indexed" && !sortedComparators.has(value))
       throw new Error("No protocol method IReversible.-rseq defined for this value");
     // A vector's items copy leaf by leaf; one a public constructor built, or
     // whose seq a protocol implementation replaces, walks its seq, as before.
-    const items = Object.freeze((vectors.has(value) && !publicCollectionSlots.has(value)
+    const items = Object.freeze((holdsVector(value) && !publicCollectionSlots.has(value)
       && !protocolHooks.publicMethod?.(value, methodKeys[52], 1, true) ? vectorItems(value) : toArray(value)).reverse());
     return items.length ? maps.has(value) ? view(treeMapSeqConstructor, items, 0, false, "sorted-map")
       : view(sortedComparators.has(value) ? IndexedSeqValue : RSeqType, items, 0, false, "reverse") : null;
@@ -5438,8 +5526,8 @@
     const start = seq(collection);
     return start === null ? emptyList : cycleNode(start, null, start);
   }
-  //@unit compareKeys requires: displayStr, keywords, methodKeys, protocolHooks, symbols, uuids,
-  //@ vectorItems, vectors
+  //@unit compareKeys requires: displayStr, holdsVector, keywords, methodKeys, protocolHooks,
+  //@ symbols, uuids, vectorItems
   function compareKeys(a, b) {
     if (a === b) return 0;
     if (a == null) return -1;
@@ -5455,7 +5543,7 @@
       if (!left || !right || keywords.has(a) !== keywords.has(b)) throw new Error("Cannot compare different types");
       return compareKeys(left.namespace, right.namespace) || compareKeys(left.name, right.name);
     }
-    if (vectors.has(a) && vectors.has(b)) {
+    if (holdsVector(a) && holdsVector(b)) {
       const xs = vectorItems(a), ys = vectorItems(b);
       if (xs.length !== ys.length) return xs.length < ys.length ? -1 : 1;
       for (let i = 0; i < xs.length; i++) { const order = compareKeys(xs[i], ys[i]); if (order) return order; }
@@ -5702,7 +5790,7 @@
   function setDeclarationDemand(demand) {
     // A session that demands declarations reads no slot before its demand
     // (`slotFirst`).
-    slotFirst = false;
+    slotFirst.on = false;
     const methodProtocols = new Map();
     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
     demandMethod = (key, arity, value) => {
@@ -5779,15 +5867,15 @@
     if (mask && value?.[mask[0]]) return false;
     return coreName ? !!(protocol[nativeType(value)] || protocol._ || nativeMethods.get(coreName)?.get(nativeType(value)) || nativeMethods.get(coreName)?.get("_")) : false;
   }
-  //@unit countedValue requires: cells, chunkBuffers, chunks, lazyValues, maps, queues, sets,
-  //@ transients, vectors, views
+  //@unit countedValue requires: cells, chunkBuffers, chunks, holdsVector, isTransient, lazyValues,
+  //@ maps, queues, sets, views
   // A core protocol's native test, without the protocol objects (one per
   // protocol, here ICounted; see `builtinCoreImplementation`).
   function countedValue(value) {
     // A value is in one payload store: a cell or a lazy seq is in no other.
     const cell = cells.get(value);
     if (cell !== undefined) return cell.kind === "tree-seq" || cell.integer === true || cell.kind === "list";
-    return !lazyValues.has(value) && (transients.has(value) || chunkBuffers.has(value) || chunks.has(value) || vectors.has(value) || maps.has(value) || sets.has(value) || queues.has(value) || (views.has(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(views.get(value).kind)));
+    return !lazyValues.has(value) && (isTransient(value) || chunkBuffers.has(value) || chunks.has(value) || holdsVector(value) || maps.has(value) || sets.has(value) || queues.has(value) || (views.has(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(views.get(value).kind)));
   }
   //@unit seqValue requires: cells, chunks, iteratorSeqs, lazyValues, queues, views
   function seqValue(value) {
@@ -5818,81 +5906,81 @@
     };
   }
   //@unit seqableValue requires: cells, iteratorSeqs, lazyValues, maps, queues, sets,
-  //@ storesPredicate, vectors, views
-  const seqableValue = storesPredicate(vectors, maps, sets, cells, views, queues, lazyValues, iteratorSeqs);
-  //@unit indexedValue requires: cells, chunks, transients, vectors, views
+  //@ storesPredicate, vectorCells, views
+  const seqableValue = storesPredicate(vectorCells, maps, sets, cells, views, queues, lazyValues, iteratorSeqs);
+  //@unit indexedValue requires: cells, chunks, holdsVector, transientState, views
   function indexedValue(value) {
-    const transient = transients.get(value);
+    const transient = transientState(value);
     if (transient) return transient.kind === "vector";
-    return chunks.has(value) || cells.get(value)?.integer === true || vectors.has(value) || views.get(value)?.indexed === true;
+    return chunks.has(value) || cells.get(value)?.integer === true || holdsVector(value) || views.get(value)?.indexed === true;
   }
-  //@unit cloneablePayload requires: cells, mapEntries, maps, queues, recordTypes, sets, vectors,
-  //@ views
-  function cloneablePayload(value) { return (vectors.has(value) && !mapEntries.has(value)) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cells.get(value)?.kind) || ["indexed", "reverse"].includes(views.get(value)?.kind); }
-  //@unit lookupValue requires: maps, sets, transients, vectors
-  const lookupValue = value => transients.has(value) || vectors.has(value) || maps.has(value) || sets.has(value);
-  //@unit associativeValue requires: maps, vectors
-  const associativeValue = value => vectors.has(value) || maps.has(value);
-  //@unit collectionValue requires: cells, lazyValues, maps, queues, sets, storesPredicate, vectors,
-  //@ views
-  const collectionValue = storesPredicate(vectors, maps, sets, cells, views, queues, lazyValues);
+  //@unit cloneablePayload requires: cells, holdsVector, isEntryCell, maps, queues, recordTypes,
+  //@ sets, views
+  function cloneablePayload(value) { return (holdsVector(value) && !isEntryCell(value)) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cells.get(value)?.kind) || ["indexed", "reverse"].includes(views.get(value)?.kind); }
+  //@unit lookupValue requires: holdsVector, isTransient, maps, sets
+  const lookupValue = value => isTransient(value) || holdsVector(value) || maps.has(value) || sets.has(value);
+  //@unit associativeValue requires: holdsVector, maps
+  const associativeValue = value => holdsVector(value) || maps.has(value);
+  //@unit collectionValue requires: cells, lazyValues, maps, queues, sets, storesPredicate,
+  //@ vectorCells, views
+  const collectionValue = storesPredicate(vectorCells, maps, sets, cells, views, queues, lazyValues);
   //@unit emptyableValue requires: collectionValue, recordTypes
   const emptyableValue = value => !recordTypes.has(value) && collectionValue(value);
-  //@unit editableValue requires: mapEntries, maps, recordTypes, sets, sortedComparators,
-  //@ subvecSources, vectors
-  const editableValue = value => vectors.has(value) && !mapEntries.has(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && !sortedComparators.has(value) || sets.has(value) && !sortedComparators.has(value);
-  //@unit reduceValue requires: cells, chunks, lazyValues, maps, recordTypes, vectors, views
-  const reduceValue = value => cells.get(value)?.kind !== "chunked-cons" && (chunks.has(value) && !chunks.get(value).integer || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || lazyValues.has(value) || (views.has(value) && views.get(value).kind !== "queue"));
-  //@unit kvReduceValue requires: mapEntries, maps, vectors
-  const kvReduceValue = value => vectors.has(value) && !mapEntries.has(value) || maps.has(value);
+  //@unit editableValue requires: holdsVector, isEntryCell, maps, recordTypes, sets,
+  //@ sortedComparators, subvecSources
+  const editableValue = value => holdsVector(value) && !isEntryCell(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && !sortedComparators.has(value) || sets.has(value) && !sortedComparators.has(value);
+  //@unit reduceValue requires: cells, chunks, holdsVector, lazyValues, maps, recordTypes, views
+  const reduceValue = value => cells.get(value)?.kind !== "chunked-cons" && (chunks.has(value) && !chunks.get(value).integer || holdsVector(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || lazyValues.has(value) || (views.has(value) && views.get(value).kind !== "queue"));
+  //@unit kvReduceValue requires: holdsVector, isEntryCell, maps
+  const kvReduceValue = value => holdsVector(value) && !isEntryCell(value) || maps.has(value);
   //@unit iterableValue requires: cells, collectionValue
   const iterableValue = value => !["cycle", "iterate", "repeat", "chunked-cons"].includes(cells.get(value)?.kind) && collectionValue(value);
-  //@unit stackValue requires: cells, queues, vectors
-  const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat", "chunked-cons"].includes(cells.get(value)?.kind) && (vectors.has(value) || cells.has(value) || queues.has(value));
+  //@unit stackValue requires: cells, holdsVector, queues
+  const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat", "chunked-cons"].includes(cells.get(value)?.kind) && (holdsVector(value) || cells.has(value) || queues.has(value));
   //@unit chunkedSeqValue requires: cells, views
   const chunkedSeqValue = value => { const kind = cells.get(value)?.kind; return kind === "range" || kind === "chunked-cons" || views.get(value)?.kind === "chunked"; };
   //@unit chunkValue requires: chunks
   const chunkValue = value => chunks.has(value);
   //@unit namedValue requires: keywords, multiFns, symbols
   const namedValue = value => keywords.has(value) || symbols.has(value) || multiFns.has(value);
-  //@unit ifnValue requires: ifnMethods, isIdent, maps, multiFns, recordTypes, sets, transients,
-  //@ vars, vectors
-  const ifnValue = value => multiFns.has(value) || transients.has(value) || !!ifnMethods(value) || isIdent(value) || vectors.has(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || vars.has(value);
+  //@unit ifnValue requires: holdsVector, ifnMethods, isIdent, isTransient, maps, multiFns,
+  //@ recordTypes, sets, vars
+  const ifnValue = value => multiFns.has(value) || isTransient(value) || !!ifnMethods(value) || isIdent(value) || holdsVector(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || vars.has(value);
   //@unit fnValue requires: metaFunctions, vars
   const fnValue = value => metaFunctions.has(value) || vars.has(value);
   //@unit multiFnValue requires: multiFns
   const multiFnValue = value => multiFns.has(value);
-  //@unit transientValue requires: transients
-  const transientValue = value => transients.has(value);
-  //@unit transientAssociativeValue requires: transients
-  const transientAssociativeValue = value => transients.has(value) && transients.get(value).kind !== "set";
-  //@unit transientVectorValue requires: transients
-  const transientVectorValue = value => transients.get(value)?.kind === "vector";
-  //@unit transientMapValue requires: transients
-  const transientMapValue = value => transients.get(value)?.kind === "map";
-  //@unit transientSetValue requires: transients
-  const transientSetValue = value => transients.get(value)?.kind === "set";
-  //@unit mapEntryValue requires: mapEntries
-  const mapEntryValue = value => mapEntries.has(value);
+  //@unit transientValue requires: isTransient
+  const transientValue = value => isTransient(value);
+  //@unit transientAssociativeValue requires: isTransient, transientState
+  const transientAssociativeValue = value => isTransient(value) && transientState(value).kind !== "set";
+  //@unit transientVectorValue requires: transientState
+  const transientVectorValue = value => transientState(value)?.kind === "vector";
+  //@unit transientMapValue requires: transientState
+  const transientMapValue = value => transientState(value)?.kind === "map";
+  //@unit transientSetValue requires: transientState
+  const transientSetValue = value => transientState(value)?.kind === "set";
+  //@unit mapEntryValue requires: isEntryCell
+  const mapEntryValue = value => isEntryCell(value);
   //@unit sortedValue requires: sortedComparators
   const sortedValue = value => sortedComparators.has(value);
-  //@unit findValue requires: maps, recordTypes, vectors
-  const findValue = value => vectors.has(value) || (maps.has(value) && !recordTypes.has(value));
-  //@unit reversibleValue requires: sortedComparators, vectors, views
-  const reversibleValue = value => vectors.has(value) || views.get(value)?.kind === "indexed" || sortedComparators.has(value);
-  //@unit dropValue requires: cells, lazyValues, mapKinds, vectors, views
+  //@unit findValue requires: holdsVector, maps, recordTypes
+  const findValue = value => holdsVector(value) || (maps.has(value) && !recordTypes.has(value));
+  //@unit reversibleValue requires: holdsVector, sortedComparators, views
+  const reversibleValue = value => holdsVector(value) || views.get(value)?.kind === "indexed" || sortedComparators.has(value);
+  //@unit dropValue requires: cells, holdsVector, lazyValues, mapKinds, views
   const dropValue = value => {
     // As `countedValue`, a cell or a lazy seq is in no other store.
     const cell = cells.get(value);
     if (cell !== undefined) return cell.integer === true || cell.kind === "repeat";
-    return !lazyValues.has(value) && (mapKinds.get(value) === "array-map" || vectors.has(value) || ["indexed", "chunked", "array-map"].includes(views.get(value)?.kind));
+    return !lazyValues.has(value) && (mapKinds.get(value) === "array-map" || holdsVector(value) || ["indexed", "chunked", "array-map"].includes(views.get(value)?.kind));
   };
   //@unit metaValue requires: atoms, cells, lazyValues, maps, metaFunctions, queues, reifyValues,
-  //@ sets, storesPredicate, symbols, vars, vectors, views
-  const metaValue = storesPredicate(symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions, reifyValues);
+  //@ sets, storesPredicate, symbols, vars, vectorCells, views
+  const metaValue = storesPredicate(symbols, vectorCells, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions, reifyValues);
   //@unit withMetaValue requires: cells, lazyValues, maps, metaFunctions, queues, reifyValues, sets,
-  //@ storesPredicate, symbols, vars, vectors, views
-  const withMetaValue = storesPredicate(symbols, vectors, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions, reifyValues);
+  //@ storesPredicate, symbols, vars, vectorCells, views
+  const withMetaValue = storesPredicate(symbols, vectorCells, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions, reifyValues);
   //@unit instValue
   const instValue = value => value instanceof Date;
   //@unit uuidImplementation requires: uuids
@@ -5904,20 +5992,20 @@
   }
   //@unit listValue requires: cells
   const listValue = value => ["list", "cons"].includes(cells.get(value)?.kind);
-  //@unit printableValue requires: ownedProtocolValue, transients
-  const printableValue = value => !transients.has(value) && ownedProtocolValue(value);
+  //@unit printableValue requires: isTransient, ownedProtocolValue
+  const printableValue = value => !isTransient(value) && ownedProtocolValue(value);
   //@unit hashableValue requires: cells, printableValue
   const hashableValue = value => !["cycle", "iterate"].includes(cells.get(value)?.kind) && printableValue(value);
-  //@unit vectorValue requires: vectors
-  const vectorValue = value => vectors.has(value);
+  //@unit vectorValue requires: holdsVector
+  const vectorValue = value => holdsVector(value);
   //@unit mapValue requires: maps
   const mapValue = value => maps.has(value);
   //@unit setValue requires: sets
   const setValue = value => sets.has(value);
-  //@unit comparableValue requires: keywords, symbols, uuids, vectors
-  const comparableValue = value => vectors.has(value) || uuids.has(value) || symbols.has(value) || keywords.has(value) || value instanceof Date;
-  //@unit atomValue requires: atoms, directMethod, transients
-  const atomValue = value => atoms.has(value) || !transients.has(value) && !!directMethod(value, "IAtom", 0);
+  //@unit comparableValue requires: holdsVector, keywords, symbols, uuids
+  const comparableValue = value => holdsVector(value) || uuids.has(value) || symbols.has(value) || keywords.has(value) || value instanceof Date;
+  //@unit atomValue requires: atoms, directMethod, isTransient
+  const atomValue = value => atoms.has(value) || !isTransient(value) && !!directMethod(value, "IAtom", 0);
   //@unit pendingValue requires: cells, delays, lazyValues
   const pendingValue = value => ["repeat", "cycle", "iterate"].includes(cells.get(value)?.kind) || delays.has(value) || lazyValues.has(value);
   //@unit derefValue requires: atoms, delays, reducedValues, vars, volatiles
@@ -6071,11 +6159,11 @@
   // function's prototypes can change and make it isa more or fewer keys, also
   // as an item of a vector. Any other value isa only the keys equal to it.
   const leanCached = value => typeof value === "function" || !!isaItems(value)?.some(leanCached);
-  //@unit isaItems requires: kindHooks, vectors
+  //@unit isaItems requires: holdsVector, kindHooks, vectorStore
   // The items of a vector that `isa?` compares, or null. Where no vector can
   // be built map entries, which hold their two in the tail of their store,
   // are the only values with items (`makeVector.isa`).
-  const isaItems = value => !vectors.has(value) ? null : kindHooks.isaItems ? kindHooks.isaItems(value) : vectors.get(value).tail;
+  const isaItems = value => !holdsVector(value) ? null : kindHooks.isaItems ? kindHooks.isaItems(value) : vectorStore(value).tail;
   //@unit makeVector.isa effect: makeVector when: isaItems requires: kindHooks, vectorItems
   kindHooks.isaItems = vectorItems;
   //@unit hierarchyRel requires: bases, count, deref, get, getGlobalHierarchy, hierarchyPart,
@@ -6446,21 +6534,21 @@
     metadataValues.set(result, metadata);
     return result;
   }
-  //@unit collectionWithMeta requires: canonicalVectorRoots, cells, constructorHashes, ifnValues,
-  //@ kindHooks, lazyValues, mapEntries, mapKinds, maps, meta, metadataValues, metaFunctions,
-  //@ methodKeys, protocolHooks, protocolImplementations, publicCollectionSlots, queues,
-  //@ recordTypes, reifyValues, setKinds, sets, sortedComparators, subvecSources, symbols,
-  //@ treeRoots, treeSetMaps, vars, vectors, views
+  //@unit collectionWithMeta requires: canonicalVectorRoots, cells, constructorHashes, holdsVector,
+  //@ ifnValues, isEntryCell, kindHooks, lazyValues, mapKinds, maps, meta, metadataValues,
+  //@ metaFunctions, methodKeys, protocolHooks, protocolImplementations, publicCollectionSlots,
+  //@ queues, recordTypes, reifyValues, setKinds, sets, sortedComparators, subvecSources, symbols,
+  //@ treeRoots, treeSetMaps, vars, vectorCellCopy, vectorCells, views
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
     if (value == null) return null;
     const method = protocolHooks.builtin?.(value, methodKeys[66], 2);
     if (method) return method.call(value, value, metadata);
-    if (!recordTypes.has(value) && !mapEntries.has(value) &&
-        [vectors, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value)) && meta(value) === metadata) return value;
+    if (!recordTypes.has(value) && !isEntryCell(value) &&
+        [vectorCells, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value)) && meta(value) === metadata) return value;
     let result;
-    if (mapEntries.has(value)) return collectionWithMeta(kindHooks.entryVector(value), metadata);
+    if (isEntryCell(value)) return collectionWithMeta(kindHooks.entryVector(value), metadata);
     const kind = cells.get(value)?.kind;
     if (metaFunctions.has(value)) return kindHooks.withMetaFn(value, metadata);
     else if (lazyValues.has(value)) result = kindHooks.withMetaLazy(value, metadata);
@@ -6472,9 +6560,11 @@
     else if (kind === "cycle") result = kindHooks.withMetaCycle(value);
     else if (recordTypes.has(value)) result = kindHooks.withMetaRecord(value);
     else {
-      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbols, vectors, maps, mapKinds, sets, setKinds, sortedComparators, cells, views, queues, lazyValues, vars, subvecSources];
-      if (!stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
-      result = Object.create(Object.getPrototypeOf(value));
+      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbols, maps, mapKinds, sets, setKinds, sortedComparators, cells, views, queues, lazyValues, vars, subvecSources];
+      const vector = holdsVector(value);
+      if (!vector && !stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
+      // A vector's copy is built by its class, with its store.
+      result = vector ? vectorCellCopy(value) : Object.create(Object.getPrototypeOf(value));
       // A copy of a reify value has no brand of its type: `reifyValues` holds it.
       for (const store of [...stores, protocolImplementations]) if (store.has(value)) store.set(result, store.get(value));
       if (reifyValues.has(value)) reifyValues.add(result);
@@ -6488,9 +6578,9 @@
   //@ kindHooks
   kindHooks.withMetaFn = fnWithMeta;
   //@unit mapEntry.meta effect: mapEntry, clone when: collectionWithMeta requires: kindHooks,
-  //@ makeVector, vectors
+  //@ makeVector, vectorStore
   // A map entry's metadata copy is a vector.
-  kindHooks.entryVector = value => makeVector(null, vectors.get(value));
+  kindHooks.entryVector = value => makeVector(null, vectorStore(value));
   //@unit LazySeq.meta effect: LazySeq when: collectionWithMeta requires: kindHooks, LazySeq,
   //@ lazyValues, seq
   kindHooks.withMetaLazy = (value, metadata) => new LazySeq(metadata, () => seq(value), null, lazyValues.get(value).hash);
@@ -7143,8 +7233,9 @@
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
   }
   //@unit protocolStores requires: atoms, cells, delays, keywords, lazyValues, maps, metaFunctions,
-  //@ multiFns, queues, reducedValues, sets, symbols, transients, vars, vectors, views, volatiles
-  const protocolStores = [multiFns, transients, keywords, symbols, vectors, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
+  //@ multiFns, queues, reducedValues, sets, symbols, transientCells, transients, vars, vectorCells,
+  //@ views, volatiles
+  const protocolStores = [multiFns, transients, transientCells, keywords, symbols, vectorCells, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
   //@unit ownedProtocolValue requires: protocolStores, storesPredicate
   const ownedProtocolValue = storesPredicate(...protocolStores);
   //@unit demandKey requires: demandMethod
@@ -7191,7 +7282,7 @@
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
     return dispatch ?? cell.natives?.get(nativeType(value))?.get(arity) ?? cell.natives?.get("_")?.get(arity);
   }
-  //@unit payloadStores requires: cells, lazyValues, maps, queues, sets, vectors, views
+  //@unit payloadStores requires: cells, lazyValues, maps, queues, sets, vectorCells, views
   // `payloadStore`'s stores, numbered from 1, and the store each kind
   // (`payloads`) names, else 0: each entry its own, so that no index a host
   // gives `Array.prototype` is read (the Sol review of light-cljs-998).
@@ -7202,7 +7293,7 @@
       for (let kind = 1; kind < 31; kind++) if (bits >> kind & 1) byKind[kind] = i + 1;
     });
     return {stores, byKind};
-  })([views, cells, vectors, maps, lazyValues, sets, queues]);
+  })([views, cells, vectorCells, maps, lazyValues, sets, queues]);
   //@unit payloadStore requires: payloads, payloadStores
   // Which store of the runtime's collections and seqs holds a value, by a
   // number from 1 to 7, else 0. These are brand checks, which read no
@@ -7220,10 +7311,11 @@
       return 0;
     };
   })(payloadStores);
-  //@unit kindStore requires: payloads, payloadStores
+  //@unit kindStore requires: holdsVector, payloads, payloadStores
   // `payloadStore` from the kind alone, else 0: probing the maps' store asks
   // if a host value is a record, which may run a Proxy's `getPrototypeOf`.
-  const kindStore = (byKind => value => byKind[payloads.kind(value)])(payloadStores.byKind);
+  // A vector cell, which has no payload kind, is store 3 (`vectorCells`).
+  const kindStore = (byKind => value => byKind[payloads.kind(value)] || (holdsVector(value) ? 3 : 0))(payloadStores.byKind);
   //@unit storeNativeProtocols
   // The core protocols of `publicMethodInfo`'s `stores`.
   const storeNativeProtocols = new Set(["ISeqable", "ISeq", "INext", "IMeta", "ILookup"]);
@@ -7540,19 +7632,14 @@
   // of two items (`mapEntry.lean`), so that it keeps no vector type. The
   // shared runtime defines it twice, the second time with `makeVector`.
   let mapEntry;
-  //@unit mapEntry.lean effect: mapEntry unless: makeVector requires: mapEntries, mapEntry,
-  //@ MapEntryType, vectors
+  //@unit mapEntry.lean effect: mapEntry unless: makeVector requires: EntryCell, mapEntry
   mapEntry = (key, value) => {
-    const pair = Object.create(MapEntryType.prototype);
-    vectors.set(pair, {cnt: 2, shift: 5, root: [], tail: [key, value]}); mapEntries.add(pair); return pair;
+    return new EntryCell({cnt: 2, shift: 5, root: [], tail: [key, value]});
   };
-  //@unit mapEntry.vector effect: mapEntry when: makeVector requires: mapEntries, mapEntry,
-  //@ MapEntryType, vectors
-  // The same as `mapEntry.lean`, with no `Object.setPrototypeOf` of a
-  // vector, an engine's slow path (light-cljs-989).
+  //@unit mapEntry.vector effect: mapEntry when: makeVector requires: EntryCell, mapEntry
+  // The same as `mapEntry.lean`.
   mapEntry = (key, value) => {
-    const pair = Object.create(MapEntryType.prototype);
-    vectors.set(pair, {cnt: 2, shift: 5, root: [], tail: [key, value]}); mapEntries.add(pair); return pair;
+    return new EntryCell({cnt: 2, shift: 5, root: [], tail: [key, value]});
   };
   //@unit recordKeys requires: keyword
   // A record type's field keywords, interned once per type (the members its
@@ -8069,8 +8156,8 @@
   }
   //@unit chunkCons requires: ChunkedCons, count
   function chunkCons(chunk, tail) { return count(chunk) === 0 ? tail : ChunkedCons(chunk, tail, null, null); }
-  //@unit dropOwned requires: cells, kindHooks, maps, publicCollectionSlots, rangeNode, repeat, seq,
-  //@ vectors, view, views
+  //@unit dropOwned requires: cells, holdsVector, kindHooks, maps, publicCollectionSlots, rangeNode,
+  //@ repeat, seq, view, views
   function dropOwned(value, n) {
     if (value == null) return null;
     if (maps.has(value)) return dropOwned(seq(value), n);
@@ -8079,7 +8166,7 @@
     if (cell?.kind === "range") return n > 0 ? n < cell.count ? rangeNode(cell.head + cell.step * n, cell.end, cell.step, true) : null : value;
     const slice = views.get(value), slots = publicCollectionSlots.get(value);
     if (slots?.vec) return kindHooks.dropChunkedSeq(slots, n);
-    if (vectors.has(value)) return kindHooks.dropVector(value, n);
+    if (holdsVector(value)) return kindHooks.dropVector(value, n);
     const offset = slice.offset + n;
     return offset < slice.storage.length ? view(slice.Type, slice.storage, offset, slice.indexed, slice.kind) : null;
   }
@@ -8093,10 +8180,10 @@
     return i < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectorChunk(slots.vec, i), i - newOffset, newOffset, null, null) : null;
   };
   //@unit makeVector.drop effect: makeVector, mapEntry when: dropOwned requires: ChunkedSeqValue,
-  //@ IndexedSeqValue, kindHooks, vectorChunk, vectors, view
+  //@ IndexedSeqValue, kindHooks, vectorChunk, vectorStore, view
   // As `makeVector.seq`, from index `n`.
   kindHooks.dropVector = (value, n) => {
-    const store = vectors.get(value);
+    const store = vectorStore(value);
     return n >= store.cnt ? null : store.cnt <= 32 ? view(IndexedSeqValue, vectorChunk(value, 0), n, true)
       : ChunkedSeqValue(value, vectorChunk(value, n), n & -32, n & 31, null, null);
   };
@@ -8927,10 +9014,10 @@
       + (truth(this.data) ? ", :data " + print(this.data, true) : "")
       + (truth(this.cause) ? ", :cause " + print(this.cause, true) : "") + "}";
   };
-  //@unit makeTransient.print effect: makeTransient when: printWriterImpl requires: kindHooks,
-  //@ printKind, transients, write
-  kindHooks.print = printKind(kindHooks.print, value => transients.has(value), (value, writer) => {
-    const state = transients.get(value);
+  //@unit makeTransient.print effect: makeTransient when: printWriterImpl requires: isTransient,
+  //@ kindHooks, printKind, transientState, write
+  kindHooks.print = printKind(kindHooks.print, value => isTransient(value), (value, writer) => {
+    const state = transientState(value);
     return write(writer, "#object[cljs.core." + (state.kind === "vector" ? "TransientVector" : state.kind === "set" ? "TransientHashSet" : state.mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap") + "]");
   });
   //@unit Atom.print effect: Atom, Volatile when: printWriterImpl requires: atoms, kindHooks,
@@ -8950,11 +9037,11 @@
   //@unit uuidValue.print effect: uuidValue when: printWriterImpl requires: kindHooks, printKind,
   //@ uuids, write
   kindHooks.print = printKind(kindHooks.print, value => uuids.has(value), (value, writer) => write(writer, '#uuid "' + uuids.get(value) + '"'));
-  //@unit makeVector.print effect: makeVector, mapEntry when: printWriterImpl requires: kindHooks,
-  //@ printKind, printSequential, printWriter, protocolHooks, vectors, vectorStorage
+  //@unit makeVector.print effect: makeVector, mapEntry when: printWriterImpl requires: holdsVector,
+  //@ kindHooks, printKind, printSequential, printWriter, protocolHooks, vectorStorage
   // A vector prints the items `seq` walks, through `seq` where protocol
   // implementations could see it.
-  kindHooks.print = printKind(kindHooks.print, value => vectors.has(value), (value, writer, options) => {
+  kindHooks.print = printKind(kindHooks.print, value => holdsVector(value), (value, writer, options) => {
     if (protocolHooks.publicMethod) return printSequential(writer, printWriter, "[", " ", "]", options, value);
     const storage = vectorStorage(value) ?? [];
     return printSequential(writer, printWriter, "[", " ", "]", options, Array.isArray(storage) ? storage : Array.from(storage));
@@ -9355,8 +9442,9 @@
   //@unit prWriter effect requires: coreMethod, printableValue, printWriterImpl
   const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => printWriterImpl(value, writer, options, true), printableValue);
   //@unit clone effect requires: canonicalVectorRoots, cells, cloneablePayload, constructorHashes,
-  //@ coreMethod, IntegerRangeValue, mapEntries, mapKinds, meta, metadataValues, protocolStores,
-  //@ rangeChunks, RangeValue, setKinds, sortedComparators, subvecSources, treeRoots, treeSetMaps
+  //@ coreMethod, holdsVector, IntegerRangeValue, mapKinds, meta, metadataValues, protocolStores,
+  //@ rangeChunks, RangeValue, setKinds, sortedComparators, subvecSources, transientCells,
+  //@ treeRoots, treeSetMaps, vectorCellCopy, vectorCells
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (cells.get(value)?.kind === "range") {
       const c = cells.get(value), state = rangeChunks.get(c);
@@ -9364,14 +9452,13 @@
         : RangeValue(meta(value), c.head, c.end, c.step, state?.chunk, state?.tail, constructorHashes.get(value));
     }
     if (!cloneablePayload(value)) throw new Error("No protocol method ICloneable.-clone defined for this value");
-    const result = Object.create(Object.getPrototypeOf(value));
-    for (const store of [...protocolStores, treeRoots, treeSetMaps, canonicalVectorRoots, constructorHashes, metadataValues, mapKinds, setKinds, sortedComparators, subvecSources]) if (store.has(value)) store.set(result, store.get(value));
-    if (mapEntries.has(value)) mapEntries.add(result);
+    const result = holdsVector(value) ? vectorCellCopy(value) : Object.create(Object.getPrototypeOf(value));
+    for (const store of [...protocolStores, treeRoots, treeSetMaps, canonicalVectorRoots, constructorHashes, metadataValues, mapKinds, setKinds, sortedComparators, subvecSources]) if (store !== vectorCells && store !== transientCells && store.has(value)) store.set(result, store.get(value));
     return result;
   }, cloneablePayload);
-  //@unit indexedNth requires: missing, nth, transientNth, transients
+  //@unit indexedNth requires: isTransient, missing, nth, transientNth
   // The `-nth` of the runtime's indexed values.
-  function indexedNth(value, index, notFound) { return transients.has(value) ? transientNth(value, index, arguments.length === 2 ? missing : notFound) : nth(...arguments); }
+  function indexedNth(value, index, notFound) { return isTransient(value) ? transientNth(value, index, arguments.length === 2 ? missing : notFound) : nth(...arguments); }
   //@unit seqProtocol effect requires: coreMethod, seq, seqableValue
   const seqProtocol = coreMethod("ISeqable/-seq", [1], seq, seqableValue);
   //@unit firstProtocol effect requires: coreMethod, first, seqValue
@@ -9560,12 +9647,12 @@
   //@unit PersistentVectorValue.fields effect: PersistentVectorValue when: resetMeta,
   //@ upstreamMembers requires: canonicalVectorRoots, hostHooks, meta, missing,
   //@ PersistentVectorValue, protocolHooks, publicFields, slotField, vectorCount, vectorRoots,
-  //@ vectors, vectorTailOffset
+  //@ vectorStore, vectorTailOffset
   publicFields(PersistentVectorValue, ["meta", "cnt", "shift", "root", "tail", "__hash"], (value, field) => {
     const slot = slotField(value, field, protocolHooks.extend ? hostHooks.count : vectorCount);
     if (slot !== missing) return slot;
     // A copy of the tail and a token of the root keep the store private.
-    const store = vectors.get(value);
+    const store = vectorStore(value);
     if (field === "tail") return store.tail.slice(0, store.cnt - vectorTailOffset(store.cnt));
     if (field === "shift") return store.shift;
     if (field === "root") {
@@ -9923,16 +10010,16 @@
   const keyProtocol = coreMethod("IMapEntry/-key", [1], entryKey, mapEntryValue);
   //@unit valProtocol effect requires: coreMethod, entryVal, mapEntryValue
   const valProtocol = coreMethod("IMapEntry/-val", [1], entryVal, mapEntryValue);
-  //@unit entryKey requires: mapEntries, nth
+  //@unit entryKey requires: isEntryCell, nth
   // `-key` and `-val` of the runtime's map entries, which are all that
   // implement IMapEntry where no protocol implementation exists.
   function entryKey(entry) {
-    if (!mapEntries.has(entry)) throw new Error("No protocol method IMapEntry/-key defined for this value");
+    if (!isEntryCell(entry)) throw new Error("No protocol method IMapEntry/-key defined for this value");
     return nth(entry, 0);
   }
-  //@unit entryVal requires: mapEntries, nth
+  //@unit entryVal requires: isEntryCell, nth
   function entryVal(entry) {
-    if (!mapEntries.has(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
+    if (!isEntryCell(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
     return nth(entry, 1);
   }
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
@@ -10193,9 +10280,10 @@
   const compilerForms = compilerFormBridge();
   readerJsLiterals.array = compilerForms.jsArray; readerJsLiterals.object = compilerForms.jsObject;
   //@unit reader requires: cells, conj, contains, coreCells, first, freshKeyword, gensym, hashMap,
-  //@ hashSet, inspect, into, isRecord, keywords, listFromArray, mapFromArray, maps, merge, meta,
-  //@ next, nsName, PersistentQueueValue, prStr, readerJsLiterals, rePattern, seq, setFromArray,
-  //@ sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, vectors, views, withMeta
+  //@ hashSet, holdsVector, inspect, into, isRecord, keywords, listFromArray, mapFromArray, maps,
+  //@ merge, meta, next, nsName, PersistentQueueValue, prStr, readerJsLiterals, rePattern, seq,
+  //@ setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, views,
+  //@ withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
   const reader = (rt => {
   const inspect = rt.inspect;
@@ -10768,7 +10856,7 @@
     readerRegisterTagParser: register, readerDeregisterTagParser: deregister,
     readerRegisterDefaultTagParser: registerDefault, readerDeregisterDefaultTagParser: deregisterDefault,
     readerWithInput: withInput, readerCurrentInput: () => coreCells.readerCurrentInputValue, readerClose: close};
-  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
+  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : holdsVector(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
 
   //@unit codeReader compile-time requires: reader, readerCoreNames
   // Code reading qualifies symbols by `*ns*`: reflection, unlike EDN data.

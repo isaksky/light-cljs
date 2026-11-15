@@ -504,8 +504,19 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         };
         runtime.insert_str(runtime.find(anchor).unwrap() + within, &hook);
     }
-    runtime
+    // Each runtime class constructor's brand marker becomes the compile-time
+    // stamp (docs/value-layout.md, section 4), which output never has.
+    assert!(
+        runtime.contains(BRAND_MARKER),
+        "no runtime class carries {BRAND_MARKER}"
+    );
+    runtime.replace(BRAND_MARKER, BRAND_STAMP)
 }
+
+/// The marker that ends each runtime class constructor, and what the
+/// compile-time runtime has in its place ([`compiler_hooks`]).
+const BRAND_MARKER: &str = "/*@brand*/";
+const BRAND_STAMP: &str = "stamp(this);";
 
 /// The bindings of the runtime that functions assign after boot, which the
 /// shared-heap profile keeps per task on the task's cells
@@ -1127,7 +1138,7 @@ fn shared_scalar_reads(base: &str) -> String {
                 "char" => vec![("typeof x", format!("typeof {}", scalar("x"))), ("String.fromCharCode(x)", format!("String.fromCharCode({})", scalar("x"))), ("x.length", format!("{}.length", scalar("x")))],
                 "name" => vec![("typeof value", format!("typeof {}", scalar("value")))],
                 "isNaNCore" => vec![("isNaN(x)", format!("isNaN({})", scalar("x")))],
-                "lookup" | "contains" => vec![("const store = vectors.get(value);", "/*scalar-inputs*/key = sharedScalar(key); /*end-scalar-inputs*/const store = vectors.get(value);".into())],
+                "lookup" | "contains" => vec![("const store = vectorStore(value);", "/*scalar-inputs*/key = sharedScalar(key); /*end-scalar-inputs*/const store = vectorStore(value);".into())],
                 "get" => vec![("if (Array.isArray(value)) {", "if (Array.isArray(value)) {/*scalar-inputs*/key = sharedScalar(key); /*end-scalar-inputs*/".into())],
                 "identical" => vec![("a === b", format!("{} === {}", scalar("a"), scalar("b")))],
                 "fnil" => vec![("x == null", format!("{} == null", scalar("x")))],

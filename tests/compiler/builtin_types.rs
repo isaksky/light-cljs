@@ -2447,7 +2447,10 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// those of the `implements` hook (`map-entry?`, `chunked-seq?`, `uuid?`),
 /// and `count`, `nth` and `cons`, which also ask the hooks; then what a Proxy
 /// was asked, and how many times. The expected values are what master
-/// `e379d6c5`'s runtime prints.
+/// `e379d6c5`'s runtime prints, except the number of times: since
+/// light-cljs-1009 a vector or transient vector test of a host value reads
+/// its keyed kind (`vectorStore`, `isTransientCell`), where the private
+/// brands read nothing, so the Proxy is asked the same names more often.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -2541,7 +2544,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [102, 102, 146],
+            [213, 213, 257],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2603,7 +2606,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [93, 93, 134],
+            [202, 202, 243],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2666,7 +2669,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [102, 102, 102],
+            [213, 213, 213],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
@@ -3176,7 +3179,11 @@ row_tests!(corpus;
 
 /// light-cljs-990: the runtime tests a value of its private-field stores by
 /// one kind field (`payloads`) instead of probing each store in turn, and a
-/// map entry carries that kind instead of a WeakSet entry. Every predicate
+/// map entry carries that kind instead of a WeakSet entry. light-cljs-1009
+/// rescoped the copies of a vector's and a map entry's own fields onto
+/// their prototype (docs/value-layout.md, section 5, item 1): those classes
+/// hold their store in an own keyed field, so such a copy, deliberate
+/// reflection, is now a value of its kind. Every predicate
 /// answers as before for the runtime's values, host values, and values forged
 /// by `Object.create` of a runtime type's prototype or by copying a value's
 /// own properties (a record's methods are its prototype's, so a value
@@ -3202,10 +3209,10 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
                       (->R 1) (assoc (->R 1) :b 2) (seq [1 2]) (seq {:a 1}) (seq (sorted-map :a 1)) (rseq [1 2])
                       (seq (zipmap (range 20) (range 20))) (iterate inc 0) (repeat 1) (cycle [1]) (reduced 1)
                       (atom 1) (volatile! 1) :k 'sym "s" 1 nil (array 1) (js-obj) inc proxy
-                      (forge [1]) (copy [1]) (forge e) (copy e) (forge {:a 1}) (copy {:a 1})
+                      (forge [1]) (forge e) (forge {:a 1}) (copy {:a 1})
                       (forge (list 1)) (copy (list 1)) (forge #{1}) (forge (lazy-seq [1])) (forge (range 3))
                       (forge (seq [1 2])) (forge (transient [])) (forge (->R 1))]
-              labels (quote [vector entry list empty-list lazy-seq cons range float-range array-map hash-map sorted-map set hash-set sorted-set queue transient-vector transient-map subvec record record+ vector-seq map-seq sorted-map-seq rseq hash-map-seq iterate repeat cycle reduced atom volatile keyword symbol string number null array object fn proxy forged-vector copied-vector forged-entry copied-entry forged-map copied-map forged-list copied-list forged-set forged-lazy-seq forged-range forged-seq forged-transient forged-record])
+              labels (quote [vector entry list empty-list lazy-seq cons range float-range array-map hash-map sorted-map set hash-set sorted-set queue transient-vector transient-map subvec record record+ vector-seq map-seq sorted-map-seq rseq hash-map-seq iterate repeat cycle reduced atom volatile keyword symbol string number null array object fn proxy forged-vector forged-entry forged-map copied-map forged-list copied-list forged-set forged-lazy-seq forged-range forged-seq forged-transient forged-record])
               preds [vector? seq? map? map-entry? set? seqable? coll? sequential? counted? associative? list?
                      sorted? reversible? record? ifn? indexed? reduced? chunked-seq? reduceable?
                      #(satisfies? ISeqable %) #(satisfies? ICollection %) #(satisfies? IMeta %)
@@ -3258,9 +3265,7 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
         "fn 0000000000000010000001000000010000\n",
         "proxy 0000000000000000000000000000010000\n",
         "forged-vector 0000010000000000000000000000010000\n",
-        "copied-vector 0000010000000000000000000000010000\n",
         "forged-entry 0000010000000000000000000000010000\n",
-        "copied-entry 0000010000000000000000000000010000\n",
         "forged-map 0000010000000000000000000000010000\n",
         "copied-map 0000010000000000000000000000010000\n",
         "forged-list 0000010000000000000000000000010000\n",

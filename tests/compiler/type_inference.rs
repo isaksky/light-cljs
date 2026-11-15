@@ -462,7 +462,7 @@ fn count_reads_the_length_of_strings_arrays_and_flat_vectors() {
                     (count (first {:a 1})) (count (subvec [1 2 3] 1)) (count nil)])"#,
         "[2 3 3 0 2 0 3 [0 3 -1 -1 -1] 2 2 2 0]",
     );
-    for lowered in [").length", "rt$vectors.get("] {
+    for lowered in [").length", "rt$vectorStore("] {
         assert!(js.contains(lowered), "{lowered}: {js}");
     }
     // Map entries, subvectors and nil keep the runtime's `count`.
@@ -489,7 +489,7 @@ fn nth_on_flat_vectors_uses_the_direct_index_path() {
                       (nth (subvec v 1) 0) (nth #js [1 2] -0.5)]))"#,
         r#"[10 30 20 :nf :nf :nf 10 "Index out of bounds" "Index out of bounds" "Index argument to nth must be a number" "Index argument to nth must be a number" 30 2 1 "Index out of bounds" 20 1]"#,
     );
-    assert!(js.contains("rt$vectorNth(rt$vectors.get(l"), "{js}");
+    assert!(js.contains("rt$vectorNth(rt$vectorStore(l"), "{js}");
     assert!(js.contains(", rt$missing)"), "{js}");
     // A string index, map entries, subvectors and arrays keep `nth`.
     assert!(js.contains("rt$nth("), "{js}");
@@ -792,7 +792,7 @@ fn typed_lowerings_apply_to_the_parameters_of_closed_functions() {
     for lowered in [
         "(l",
         ").length",
-        "rt$vectorNth(rt$vectors.get(l",
+        "rt$vectorNth(rt$vectorStore(l",
         ", rt$missing)",
         " === ",
         " !== ",

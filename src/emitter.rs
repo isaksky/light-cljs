@@ -4854,8 +4854,8 @@ impl<'a> Emitter<'a> {
             return true;
         }
         if inferred.known == Known::Vector && Type::VECTOR.contains(inferred.ty) {
-            self.rt(RuntimeName::export("vectors"));
-            self.output.push_str(".get(");
+            self.rt(RuntimeName::export("vectorStore"));
+            self.output.push('(');
             self.value(value);
             self.output.push_str(").cnt");
             return true;
@@ -5050,8 +5050,8 @@ impl<'a> Emitter<'a> {
         }
         self.rt(RuntimeName::export("vectorNth"));
         self.output.push('(');
-        self.rt(RuntimeName::export("vectors"));
-        self.output.push_str(".get(");
+        self.rt(RuntimeName::export("vectorStore"));
+        self.output.push('(');
         self.value(vector);
         self.output.push_str("), ");
         self.value(index);

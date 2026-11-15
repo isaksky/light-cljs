@@ -1086,8 +1086,8 @@ into collections.
 A vector is upstream's persistent 32-way trie with a tail of up to 32 items:
 `count` is O(1); `nth`, `get`, `assoc` at an index and `pop` are O(log32 n),
 with the tail read and copied directly; `conj` is amortized O(1). Constructing
-a vector of n items is O(n). Its brand and store are a private class field
-rather than a WeakMap entry, which no host object can have or copy either, and
+a vector of n items is O(n). Its store (count, shift, root and tail) is its own
+field, whose name ends in the build's key (docs/value-layout.md), and
 its trie nodes stay private: `.-root` of a vector is an opaque token, and
 `.-tail` a copy. `subvec` is O(1), as upstream's Subvec: its store is a view of
 the vector's (a subvec of a subvec views the first vector), which `nth`, `get`,

@@ -681,18 +681,16 @@
   // (light-cljs-666). `MapEntryType.prototype` is not its prototype, as an
   // engine keyword has no `Keyword` prototype.
   mapEntry = (key, value) => __rt.cljFirst(__rt.formArrayMap(__rt.formVector(key, value)));
-  //@unit sharedTreeEntry requires: mapEntries, MapEntryType, vectors
+  //@unit sharedTreeEntry requires: EntryCell
   // publicTree attaches fields to its nodes, so its allocation boundary must
-  // return a runtime-owned entry. Keep the canonical builder and cache intact;
-  // ordinary map entries still use the immutable engine form above.
+  // return a runtime-owned entry, of the V8 profile's class. Keep the
+  // canonical builder and cache intact; ordinary map entries still use the
+  // immutable engine form above.
   function sharedTreeEntry(key, value) {
-    const pair = Object.create(MapEntryType.prototype);
-    vectors.set(pair, {cnt: 2, shift: 5, root: [], tail: [key, value]});
-    mapEntries.add(pair);
-    return pair;
+    return new EntryCell({cnt: 2, shift: 5, root: [], tail: [key, value]});
   }
-  //@unit mapEntryValue requires: mapEntries
-  const mapEntryValue = value => __rt.cljIsMapEntry(value) || mapEntries.has(value);
+  //@unit mapEntryValue requires: isEntryCell
+  const mapEntryValue = value => __rt.cljIsMapEntry(value) || isEntryCell(value);
   //@unit entryKey requires: mapEntryValue, nth
   // `-key` and `-val` of a map entry (an engine entry, or the runtime's),
   // which are all that implement IMapEntry where no protocol
@@ -706,9 +704,21 @@
     if (!mapEntryValue(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
     return nth(entry, 1);
   }
-  //@unit vectors requires: sharedVectorStore, sharedView
-  // A vector is an engine vector form (an engine map entry is one).
-  const vectors = sharedView("vectors", kind => kind === "vector", sharedVectorStore);
+  //@unit vectorStore requires: sharedFormKind, sharedFormOf, sharedVectorStore
+  // A vector is an engine vector form (an engine map entry is one), whose
+  // store is read from the form; a vector the runtime builds as a class
+  // value (a subvector's `SubvecCell`, a sorted map's `sharedTreeEntry`)
+  // holds its store in its own keyed field, as the V8 profile's do.
+  function vectorStore(value) {
+    if (sharedFormKind(value) === "vector") return sharedVectorStore(sharedFormOf(value));
+    if (value == null) return undefined;
+    const kind = value.cljs$lang$kind$$LKEY;
+    return kind === 1 || kind === 2 || kind === 3 ? value.store$LKEY : undefined;
+  }
+  //@unit stamped compile-time requires: sharedFormKind, stampBrand
+  // An engine vector form is the runtime's own value too: the compiler form
+  // bridge reads it (`vectorStore`) without reading a property of it.
+  function stamped(value) { return sharedFormKind(value) === "vector" || stampBrand.has(value); }
   //@unit symbols requires: sharedView
   // A symbol is an engine symbol form; its payload is read from the form.
   // The two symbols the engine's forms do not carry (`sharedSymbol`) take
@@ -839,8 +849,6 @@
   });
   //@unit sortedComparators requires: sharedStore
   const sortedComparators = sharedStore();
-  //@unit mapEntries requires: sharedSet
-  const mapEntries = sharedSet();
   //@unit cells requires: arrayChunk, sharedFormHashes, sharedVectorItems, sharedView
   const cells = sharedView("cells",
     kind => kind === "cons" || kind === "chunked-cons" || kind === "list",
@@ -1261,7 +1269,7 @@
   //@unit subvecSources requires: sharedStore
   const subvecSources = sharedStore();
   //@unit subvec requires: count, isVector, makeVector, methodKeys, nth, protocolHooks,
-  //@ vectorFromArray, vectors, VectorView
+  //@ vectorFromArray, vectorStore, VectorView
   // An engine vector of the items: the engine has no view kind, so the
   // result is a vector of its own, not upstream's `Subvec` with its source.
   function subvec(value, start, end = count(value)) {
@@ -1269,7 +1277,7 @@
     start = start | 0; end = end | 0;
     if (start < 0 || end < start || end > count(value)) throw new Error("Index out of bounds");
     if (!isVector(value)) throw new Error("subvec requires a vector");
-    const store = !protocolHooks.publicMethod?.(value, methodKeys[25], 2, true, true) && vectors.get(value);
+    const store = !protocolHooks.publicMethod?.(value, methodKeys[25], 2, true, true) && vectorStore(value);
     return store ? makeVector(null, new VectorView(store, start, end - start))
       : vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)));
   }

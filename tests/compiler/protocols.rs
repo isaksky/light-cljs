@@ -132,6 +132,65 @@ fn protocol_dispatchers_call_host_slots_and_keep_their_length() {
     );
 }
 
+/// A program protocol's `object` and `default` tables cover the runtime's
+/// values as they did before the class layout (docs/value-layout.md,
+/// section 3): a vector, map entry, subvector or transient vector, now a
+/// class value, reaches `object` (its type to `satisfies?`), then `default`,
+/// as maps, seqs and keywords do, while strings, numbers, booleans, nil,
+/// arrays and functions reach only `default`; `satisfies?` sees the tables
+/// and `implements?` does not, unless the class itself implements the
+/// protocol. The expected text is what master `f533efb1` prints at every
+/// level.
+#[test]
+fn user_protocol_tables_cover_runtime_values() {
+    let values = "[[1 2] (first {:a 1}) (subvec [1 2 3] 1) (transient [1]) {:a 1} (sorted-map 1 2) #{1} (list 1) () (seq [1 2]) (lazy-seq [1]) (range 3) :k 'sym \"s\" 1 true nil (array 1) (js-obj) inc]";
+    let row = |answer: &str| format!("[{answer} true false]");
+    let rows = |runtime: &str, host: &str, vector: Option<&str>| {
+        let mut rows = Vec::new();
+        for i in 0..14 {
+            rows.push(match (i, vector) {
+                (0, Some(vector)) => vector.to_owned(),
+                _ => row(runtime),
+            });
+        }
+        for i in 14..21 {
+            rows.push(match i {
+                19 => row(runtime),
+                _ if host == ":error" => "[:error false false]".to_owned(),
+                _ => row(host),
+            });
+        }
+        format!("\"[{}]\"\n", rows.join(" "))
+    };
+    for (extension, expected) in [
+        (
+            "(extend-type object P (f [_] :object))",
+            rows(":object", ":error", None),
+        ),
+        (
+            "(extend-type default P (f [_] :default))",
+            rows(":default", ":default", None),
+        ),
+        (
+            "(extend-type object P (f [_] :object)) (extend-type default P (f [_] :default))",
+            rows(":object", ":default", None),
+        ),
+        (
+            "(extend-protocol P object (f [_] :object) PersistentVector (f [_] :vector) default (f [_] :default))",
+            rows(":object", ":default", Some("[:vector true true]")),
+        ),
+    ] {
+        assert_eq!(
+            run(&format!(
+                "(defprotocol P (f [this])) {extension}
+                 (pr-str (mapv (fn [v] [(try (f v) (catch :default _ :error)) (satisfies? P v) (implements? P v)]) {values}))"
+            )),
+            expected,
+            "{extension}"
+        );
+    }
+}
+
 #[test]
 fn declared_fixed_protocol_arities_include_large_signatures() {
     for n in [1, 2, 20, 21, 24] {
