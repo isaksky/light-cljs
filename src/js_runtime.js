@@ -4084,6 +4084,11 @@
   // The slot-first operations below read it to know a value is the
   // runtime's own before they call its keyed slot.
   const kinds = {vector: 1};
+  //@unit slotFirst
+  // Turns the slot-first wrappers off where a compiler session demands
+  // declarations (`setDeclarationDemand`): there the operations' older
+  // layers demand each protocol before they read a slot.
+  let slotFirst = true;
   //@unit builtinSlots
   // The runtime's own slot methods (`PersistentVectorValue.nth` and the
   // rest), which `builtinSlot` marks: the protocol lookups of the
@@ -4166,50 +4171,50 @@
   // before. Each wrapper is the operation's outermost, so it follows the
   // operation's other wrappers here. Program types keep their path until
   // their recognition moves to the keyed kind (light-cljs-1013).
-  //@unit nth.slots effect: kinds when: nth requires: nth, noBranch
+  //@unit nth.slots effect: kinds when: nth requires: nth, noBranch, slotFirst
   nth = (operation => Object.defineProperty(function (value, index, notFound) {
-    if (value != null && value.cljs$lang$kind$$LKEY !== undefined && typeof index === "number") {
+    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined && typeof index === "number") {
       const arity = arguments.length;
       if (arity === 2) { const method = value.cljs$core$IIndexed$_nth$arity$2$LKEY; if (method !== undefined) { const result = method.call(value, value, index); if (result !== noBranch) return result; } }
       else if (arity === 3) { const method = value.cljs$core$IIndexed$_nth$arity$3$LKEY; if (method !== undefined) { const result = method.call(value, value, index, notFound); if (result !== noBranch) return result; } }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
-  //@unit count.slots effect: kinds when: count requires: count, noBranch
+  //@unit count.slots effect: kinds when: count requires: count, noBranch, slotFirst
   count = (operation => Object.defineProperty(function (value) {
-    if (value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
+    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
       if (method !== undefined) { const result = method.call(value, value); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(count);
-  //@unit peek.slots effect: kinds when: peek requires: peek, noBranch
+  //@unit peek.slots effect: kinds when: peek requires: peek, noBranch, slotFirst
   peek = (operation => Object.defineProperty(function (value) {
-    if (value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
       const method = value.cljs$core$IStack$_peek$arity$1$LKEY;
       if (method !== undefined) { const result = method.call(value, value); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(peek);
-  //@unit conj.slots effect: kinds when: conj requires: conj, noBranch
+  //@unit conj.slots effect: kinds when: conj requires: conj, noBranch, slotFirst
   conj = (operation => Object.defineProperty(function (coll, item) {
-    if (coll != null && coll.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
+    if (slotFirst && coll != null && coll.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
       const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
       if (method !== undefined) { const result = method.call(coll, coll, item); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(conj);
-  //@unit assoc.slots effect: kinds when: assoc requires: assoc, noBranch
+  //@unit assoc.slots effect: kinds when: assoc requires: assoc, noBranch, slotFirst
   assoc = (operation => Object.defineProperty(function (value, key, item) {
-    if (value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
+    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
       const method = value.cljs$core$IAssociative$_assoc$arity$3$LKEY;
       if (method !== undefined) { const result = method.call(value, value, key, item); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(assoc);
-  //@unit get.slots effect: kinds when: get requires: get, noBranch
+  //@unit get.slots effect: kinds when: get requires: get, noBranch, slotFirst
   get = (operation => Object.defineProperty(function (value, key, notFound) {
-    if (value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+    if (slotFirst && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
       const arity = arguments.length;
       if (arity === 2) { const method = value.cljs$core$ILookup$_lookup$arity$2$LKEY; if (method !== undefined) { const result = method.call(value, value, key); if (result !== noBranch) return result; } }
       else if (arity === 3) { const method = value.cljs$core$ILookup$_lookup$arity$3$LKEY; if (method !== undefined) { const result = method.call(value, value, key, notFound); if (result !== noBranch) return result; } }
@@ -5693,8 +5698,11 @@
   // No-ops until setDeclarationDemand installs a compiler session's demand.
   let demandProtocol = () => {}, demandMethod = () => {}, demandMulti = () => {};
   //@unit setDeclarationDemand compile-time requires: demandMethod, demandMulti, demandProtocol,
-  //@ print, typeNames
+  //@ print, slotFirst, typeNames
   function setDeclarationDemand(demand) {
+    // A session that demands declarations reads no slot before its demand
+    // (`slotFirst`).
+    slotFirst = false;
     const methodProtocols = new Map();
     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
     demandMethod = (key, arity, value) => {

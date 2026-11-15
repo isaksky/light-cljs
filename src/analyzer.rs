@@ -13636,7 +13636,10 @@ fn protocol_member(member: &str) -> bool {
         let mut count = 0;
         s.split('$').all(|part| {
             count += 1;
-            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c == '_' || c.is_alphanumeric() || !c.is_ascii())
         }) && count >= at_least
     };
     if let Some(rest) = member.strip_prefix("cljs$lang$protocol_mask$partition") {

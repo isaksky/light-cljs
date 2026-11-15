@@ -172,7 +172,8 @@ fn advanced_types_hold_their_masks_on_the_prototype() {
                 .emit_js();
         super::optimization::execute(&format!("console.log(JSON.stringify({js}));"))
     };
-    let masks = "\"cljs$lang$protocol_mask$partition0$$LKEY\",\"cljs$lang$protocol_mask$partition1$$LKEY\"";
+    let masks =
+        "\"cljs$lang$protocol_mask$partition0$$LKEY\",\"cljs$lang$protocol_mask$partition1$$LKEY\"";
     for level in [
         light_cljs::OptimizationLevel::None,
         light_cljs::OptimizationLevel::Prepare,

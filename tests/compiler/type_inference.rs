@@ -1395,7 +1395,10 @@ fn protocol_calls_on_parameters_of_one_program_type_are_devirtualized() {
        (pr-str [(twice (->Rect 2 3)) (any-twice (->Rect 1 1))
                 (any-twice (reify Area (area [_] 5)))])"#;
     let js = every_level(source, "[12 2 10]");
-    assert!(js.contains(")[\"cljs$user$Area$area$arity$1$LKEY\"](l"), "{js}");
+    assert!(
+        js.contains(")[\"cljs$user$Area$area$arity$1$LKEY\"](l"),
+        "{js}"
+    );
     let stats = prepared(source, OptimizationLevel::Advanced)
         .stats()
         .clone();

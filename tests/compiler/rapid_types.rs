@@ -210,7 +210,10 @@ fn slots_named_through_javascript_global_paths_keep_their_methods() {
         ("(js/probe.cljs$user$P$m$arity$2 js/probe 1)", "1"),
         ("(some? js/probe.cljs$user$P$)", "true"),
         // A string holding JavaScript names the slot wherever it appears.
-        ("(js/eval \"probe.cljs$user$P$m$arity$2$LKEY(probe, 1)\")", "1"),
+        (
+            "(js/eval \"probe.cljs$user$P$m$arity$2$LKEY(probe, 1)\")",
+            "1",
+        ),
     ] {
         every_level(&format!("{protocol} {read}"), expected);
     }
@@ -219,6 +222,13 @@ fn slots_named_through_javascript_global_paths_keep_their_methods() {
     every_level(
         "(defprotocol P (m😀 [this x])) (deftype T [] P (m😀 [_ x] x)) (set! js/probe (T.))
          (js/eval \"probe['cljs$user$P$m😀$arity$2$LKEY'](probe, 1)\")",
+        "1",
+    );
+    // ... and named as a member, which the analyzer keys whatever characters
+    // the munged name holds (light-cljs-1009).
+    every_level(
+        "(defprotocol P (mé [this x])) (deftype T [] P (mé [_ x] x))
+         (let [t (T.)] (.cljs$user$P$mé$arity$2 t t 1))",
         "1",
     );
 }
@@ -346,8 +356,9 @@ fn devirtualized_calls_keep_the_dispatcher_semantics() {
     );
     assert!(
         text.contains("let operand0, operand1, operand2;")
-            && text
-                .contains(", operand0[\"cljs$user$P$m$arity$3$LKEY\"](operand0, operand1, operand2))"),
+            && text.contains(
+                ", operand0[\"cljs$user$P$m$arity$3$LKEY\"](operand0, operand1, operand2))"
+            ),
         "{text}"
     );
     // A receiver in a local is read twice instead.
@@ -355,7 +366,10 @@ fn devirtualized_calls_keep_the_dispatcher_semantics() {
         "(defprotocol P (m [x])) (deftype T [v] P (m [_] v)) (let [t (T. 7)] (m t))",
         "7",
     );
-    assert!(text.contains(")[\"cljs$user$P$m$arity$1$LKEY\"](l"), "{text}");
+    assert!(
+        text.contains(")[\"cljs$user$P$m$arity$1$LKEY\"](l"),
+        "{text}"
+    );
     // Narrowed by `instance?`; each arity has its own slot.
     let text = every_level(
         "(defprotocol P (m [x] [x y]))

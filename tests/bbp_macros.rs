@@ -12495,7 +12495,7 @@ fn native_struct_host_coercions_match_legacy() {
 /// bookkeeping, not fields, and are filtered on both backends.
 #[test]
 fn native_struct_reflection_matches_legacy() {
-    const KEYS: &str = "(fn [names] (vec (remove (fn [k] (.startsWith k \"cljs$lang$$LKEY\")) names)))";
+    const KEYS: &str = "(fn [names] (vec (remove (fn [k] (.startsWith k \"cljs$lang$\")) names)))";
     assert_native_matches_legacy(
         &format!(
             r#"(deftype T [a-b a_b])
@@ -13039,7 +13039,7 @@ fn native_record_slots_override_colliding_members() {
     assert_native_matches_legacy(
         r#"(defrecord R [__meta])
            (defmacro m []
-             (let [keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$$LKEY")) names)))
+             (let [keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$")) names)))
                    r (->R 1) w (with-meta (->R 1) {:m 1}) x (map->R {:__meta 2 :y 3})]
                [(.-__meta r) (.-__extmap r) (.-__hash r) (keys-of (js/Object.keys r))
                 (.-__meta w) (.-__meta x) (.-__extmap x)
@@ -13089,7 +13089,7 @@ fn native_form_object_operations_match_quickjs() {
           (deftype T [x y])
           (defrecord R [x])
           (defmulti mf identity)
-          (defn keys-of [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$$LKEY")) names)))
+          (defn keys-of [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$")) names)))
           (defn attempt [thunk]
             (try (let [r (thunk)] (if (js* "~{} === undefined" r) :undefined r))
                  (catch :default e (str "error: " (.-message e)))))
@@ -13477,7 +13477,7 @@ fn native_struct_host_interop_matches_quickjs_at_every_pool_size() {
           (defmacro probe []
             (let [t (T. (cold 1)) r (->R (cold 2)) l (L. (cold 1)) c (C. (fn [_ y] [:field y]))
                   n (fn [& xs] (count xs))
-                  keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$$LKEY")) names)))
+                  keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$")) names)))
                   attempt (fn [thunk] (try (thunk) (catch :default e (.-message e))))]
               (list 'quote [(js/String t) (js* "`${~{}}`" t) (js/String r)
                             (keys-of (js/Object.keys r)) (js* "'x' in ~{}" r) (.-x (js/Object.assign (js-obj) r))

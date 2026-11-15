@@ -1148,7 +1148,10 @@ fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, 
 fn named_protocol_declarations(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
     const MASK: &str = "cljs$lang$protocol_mask$partition";
     let roots = crate::runtime_slice::PROTOCOL_ROOTS;
-    let markers: Vec<String> = roots.iter().map(|root| protocol_slot_stem(root, 0)).collect();
+    let markers: Vec<String> = roots
+        .iter()
+        .map(|root| protocol_slot_stem(root, 0))
+        .collect();
     let mut first = vec![None; roots.len() + 1];
     for (index, expr) in program.exprs.iter().enumerate() {
         if !live[index] {
