@@ -2477,3 +2477,64 @@ two-method protocol costs 330 bytes where it cost 316, `eight-records`
 52,598 to 52,605, workload 200k 3,550,336 to 3,553,276 (904,978 to 905,108
 gzipped). No ceiling moves. TodoMVC and re-frame simple were not ported in
 this run.
+
+## 2026-11-15: bit operations as operators (light-cljs-1020)
+
+**Change.** At `:advanced`, light-cljs emitted `(bit-and i 3)` as a call of
+the runtime's `bitAnd`, a rest-argument function over `numericFold`. Upstream's
+macro emits `(i & 3)`. Each bit operation's call is now the JavaScript
+operator its runtime definition uses, as `+` and `<` already were:
+- `bit-and`, `bit-or`, `bit-xor` and `bit-and-not` on two operands, or on more
+  when the operands after the second are literals or locals. The runtime
+  evaluates every operand before it coerces any, so a later operand that runs
+  code keeps the call.
+- `bit-not`, `bit-shift-left`, `bit-shift-right`, `unsigned-bit-shift-right`,
+  `bit-shift-right-zero-fill`, `bit-clear`, `bit-flip`, `bit-set` and
+  `bit-test` at their fixed arity.
+- Other arities, higher-order uses such as `(reduce bit-and ...)`, and a
+  program that replaces the operation keep the runtime's function.
+- `none` and `prepare` keep the call, as they do for `+`. They read the live
+  core binding, which a later `set!`, `with-redefs` or REPL form may replace.
+
+`type_inference::bit_operations_are_operators_for_every_operand` compares each
+lowered call with the runtime's (`apply`) at every level over 26 values. These
+include `NaN`, `-0`, strings, collections, an object with `valueOf`, and a
+BigInt that throws when mixed with numbers.
+
+**Setup.** The gate (`benchmarks/core-ops`) with the operations the pellet
+names, the same `--ops` before and after:
+- before is `light-cljs-f533efb1` (master) and after is `light-cljs-aed9845e`,
+  this change before its commits were squashed, with the landed emitter;
+- 5 runs per compiler, alternated, shadow-cljs 3.5.3 in each.
+
+**Unreserved:** a peer worker was active. The 1-minute load average before a
+run was 6.7 to 7.1 before and 8.1 after. Raw results are in
+`research/output-speed/bit-operations-1020`.
+
+| op | light-cljs before | light-cljs after | change | shadow-cljs after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bit-and | 1.47 (1.38-1.54) | 0.58 (0.53-0.60) | -61% | 0.55 (0.53-0.59) | 2.72 | 1.05 |
+| aget-bit-and | 1.79 (1.74-1.81) | 0.73 (0.70-0.75) | -59% | 0.59 (0.57-0.69) | 3.09 | 1.24 |
+| record-dot-field | 1.89 (1.87-1.94) | 0.86 (0.83-0.88) | -54% | 0.85 (0.84-0.88) | 2.22 | 1.01 |
+| protocol-on-record | 3.31 (3.29-3.53) | 3.11 (2.99-3.19) | -6% | 2.34 (2.30-2.41) | 1.45 | 1.33 |
+
+Nanoseconds per operation, medians over the runs, ranges in brackets.
+
+- **At parity:** `bit-and` and `record-dot-field`. The call was their whole gap.
+- **`aget-bit-and` stays at 1.24.** Its loop is now the same as shadow-cljs's,
+  `acc + ms[i & 3]`. What differs is the array: `(array s 1 2 3)` is the
+  runtime's `array`, `(...args) => args`, where upstream's macro writes the
+  literal `[s, 1, 2, 3]`. In Node, the same loop over a rest-argument array
+  takes 0.75 ns and over the literal 0.60 ns (`rest-array-vs-literal.mjs` with
+  the raw results). That is the remaining gap.
+- **`protocol-on-record` stays at 1.33.** The call was 0.2 ns of its 1.0 ns
+  gap, not most of it. The rest is in the record's protocol dispatch, which
+  light-cljs-1013 changes when it makes records classes.
+- **Workload 200k and the re-frame-shaped 200k app:** neither program calls a
+  bit operation that reaches the output. Both compile to byte-identical
+  advanced output with the two binaries, so their steady state is unchanged
+  and was not timed again.
+- **Output size:** a program that only calls the bit operations keeps none of
+  their units. The gate's own output shrinks from 123,907 to 123,772 bytes
+  (gzip 36,293 to 36,251). No size ratchet fixture calls one, so the ratchet
+  is unchanged (noted in tests/support/ratchet_fixtures.rs).

@@ -4682,6 +4682,19 @@ impl<'a> Emitter<'a> {
             C::GreaterEqual => Some(" >= "),
             _ => None,
         };
+        // The variadic bit operations (light-cljs-1020): two arguments are the
+        // operator, and the runtime folds wider calls from the left
+        // (`numericFold`), as these left-associative operators group. The
+        // runtime evaluates every argument before it coerces any, so a wider
+        // call is the operators only when its later operands run no code that
+        // a coercion of the earlier ones could observe.
+        let bitwise = match core {
+            C::BitAnd => Some(" & "),
+            C::BitOr => Some(" | "),
+            C::BitXor => Some(" ^ "),
+            C::BitAndNot => Some(" & ~"),
+            _ => None,
+        };
         match (core, args) {
             (C::Add, []) => self.output.push('0'),
             (C::Multiply, []) => self.output.push('1'),
@@ -4711,6 +4724,33 @@ impl<'a> Emitter<'a> {
                     self.value(pair[1]);
                 }
                 self.output.push(')');
+            }
+            (_, [_, _]) if bitwise.is_some() => self.infix(bitwise.unwrap(), args),
+            (_, [_, _, rest @ ..])
+                if bitwise.is_some() && rest.iter().all(|arg| self.repeatable(*arg)) =>
+            {
+                self.infix(bitwise.unwrap(), args)
+            }
+            // The fixed-arity bit operations, as their runtime definitions
+            // write them.
+            (C::BitNot, [value]) => self.wrapped("~", *value, ""),
+            (C::BitShiftLeft, [_, _]) => self.infix(" << ", args),
+            (C::BitShiftRight, [_, _]) => self.infix(" >> ", args),
+            (C::UnsignedBitShiftRight | C::BitShiftRightZeroFill, [_, _]) => {
+                self.infix(" >>> ", args)
+            }
+            (C::BitClear | C::BitFlip | C::BitSet | C::BitTest, [value, bit]) => {
+                let (before, operator, after) = match core {
+                    C::BitClear => ("(", " & ~(1 << ", "))"),
+                    C::BitFlip => ("(", " ^ (1 << ", "))"),
+                    C::BitSet => ("(", " | (1 << ", "))"),
+                    _ => ("((", " & (1 << ", ")) !== 0)"),
+                };
+                self.output.push_str(before);
+                self.value(*value);
+                self.output.push_str(operator);
+                self.value(*bit);
+                self.output.push_str(after);
             }
             (C::Identical, [_, _]) => self.infix(" === ", args),
             (C::IsNil, [value]) => self.wrapped("", *value, " == null"),

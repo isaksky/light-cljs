@@ -1080,6 +1080,13 @@ and `Prepare` output does not change.
     `some?`, `zero?`, `pos?` and `neg?` as JavaScript operators, whatever the
     operand types, because their runtime definitions are those operators. A
     comparison chain needs operands that can be read twice;
+  - writes the bit operations as the operators their runtime definitions and
+    upstream's macros use, whatever the operand types (light-cljs-1020):
+    `bit-and`, `bit-or`, `bit-xor` and `bit-and-not` on two operands, or on
+    more when the operands after the second run no code, since the runtime
+    evaluates every operand before it coerces any; `bit-not`, the shifts,
+    `bit-clear`, `bit-flip`, `bit-set` and `bit-test` at their fixed arity.
+    Other arities and higher-order uses keep the runtime's function;
   - writes `(not x)` as `!x` when `x`'s type allows it;
   - writes `(= a b)` and `not=` as `===` and `!==` when a non-nil primitive
     decides it. For a keyword literal it uses 208's lowering, `x === k<n> ||

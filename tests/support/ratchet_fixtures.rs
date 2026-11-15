@@ -571,6 +571,13 @@
 //! 316 to 330 bytes (`each_two_method_protocol_costs_at_most_its_budget`);
 //! no ceiling moves. Workload 200k grows 2,940 bytes (420 slot tests), 130
 //! gzipped (against `c88f22ae`).
+//!
+//! Bit operations as operators (light-cljs-1020, 2026-11-15): at advanced a
+//! call of `bit-and`, `bit-or`, `bit-xor`, `bit-and-not`, `bit-not`, a shift,
+//! `bit-clear`, `bit-flip`, `bit-set` or `bit-test` is the JavaScript operator
+//! its runtime definition uses, and a program that only calls them keeps none
+//! of their units. No fixture calls one, so every size and ceiling is
+//! unchanged.
 
 pub struct Fixture {
     pub name: &'static str,

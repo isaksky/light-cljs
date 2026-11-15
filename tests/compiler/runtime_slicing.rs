@@ -444,18 +444,24 @@ fn same_at_every_level(source: &str) -> String {
 /// left out where the program only calls it.
 #[test]
 fn plain_calls_leave_out_the_variadic_arity_that_escaping_values_keep() {
+    // A bit operation chain whose later operand runs code stays a call of
+    // the runtime (light-cljs-1020), which evaluates every operand first.
     for (called, applied, install) in [
         (
-            "(bit-xor 1 2 4)",
-            "(apply bit-xor [1 2 4])",
+            "(bit-xor 1 2 (js/Math.abs 4))",
+            "(apply bit-xor [1 2 (js/Math.abs 4)])",
             "bitXor.variadic",
         ),
         (
-            "(bit-and 1 2 4)",
-            "(apply bit-and [1 2 4])",
+            "(bit-and 1 2 (js/Math.abs 4))",
+            "(apply bit-and [1 2 (js/Math.abs 4)])",
             "bitAnd.variadic",
         ),
-        ("(bit-or 1 2 4)", "(apply bit-or [1 2 4])", "bitOr.variadic"),
+        (
+            "(bit-or 1 2 (js/Math.abs 4))",
+            "(apply bit-or [1 2 (js/Math.abs 4)])",
+            "bitOr.variadic",
+        ),
     ] {
         let call = prepared(called, OptimizationLevel::Advanced);
         let report = call.retention();
@@ -476,11 +482,23 @@ fn plain_calls_leave_out_the_variadic_arity_that_escaping_values_keep() {
             "{called}"
         );
     }
-    // Calls of `+` and `<` are JavaScript operators at `Advanced`
-    // (light-cljs-210) and read no runtime; their values keep the install.
+    // Calls of `+` and `<` (light-cljs-210) and of the bit operations
+    // (light-cljs-1020) are JavaScript operators at `Advanced` and read no
+    // runtime; their values keep the install.
     for (called, applied, install) in [
         ("(+ 1 2 3)", "(apply + [1 2 3])", "add.variadic"),
         ("(< 1 2 3)", "(apply < [1 2 3])", "less.variadic"),
+        (
+            "(bit-xor 1 2 4)",
+            "(apply bit-xor [1 2 4])",
+            "bitXor.variadic",
+        ),
+        (
+            "(bit-and 1 2 4)",
+            "(apply bit-and [1 2 4])",
+            "bitAnd.variadic",
+        ),
+        ("(bit-or 1 2 4)", "(apply bit-or [1 2 4])", "bitOr.variadic"),
     ] {
         let call = prepared(called, OptimizationLevel::Advanced);
         assert_eq!(

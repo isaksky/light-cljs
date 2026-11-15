@@ -371,6 +371,102 @@ fn arithmetic_comparisons_and_predicates_are_operators_for_every_operand() {
 }
 
 #[test]
+fn bit_operations_are_operators_for_every_operand() {
+    // light-cljs-1020: each bit operation is the JavaScript operator its
+    // runtime definition uses, as upstream's macros emit, so a lowered call
+    // (left) agrees with the runtime's (`apply`, right) on every operand,
+    // BigInts that throw when mixed and objects with `valueOf` included.
+    let source = r#"
+      (def values [nil true false 0 -0.0 1 1.5 -2 3 31 32 33 -1 4294967295 2147483648 js/NaN
+                   js/Infinity "" "7" "a" :k [1] {} #js [5] #js {"valueOf" (fn [] 6)}
+                   (js/BigInt 3)])
+      (defn run [f] (try [:ok (f)] (catch :default e [:throws (.-message e)])))
+      (defn same? [f g]
+        (let [[a x] (run f) [b y] (run g)]
+          (and (= a b) (if (= a :ok) (js/Object.is x y) (= x y)))))
+      (defn unary [a] [(same? #(bit-not a) #(apply bit-not [a]))])
+      (defn binary [a b]
+        [(same? #(bit-and a b) #(apply bit-and [a b])) (same? #(bit-or a b) #(apply bit-or [a b]))
+         (same? #(bit-xor a b) #(apply bit-xor [a b]))
+         (same? #(bit-and-not a b) #(apply bit-and-not [a b]))
+         (same? #(bit-and a b a) #(apply bit-and [a b a]))
+         (same? #(bit-or b a 9) #(apply bit-or [b a 9]))
+         (same? #(bit-xor a b a b) #(apply bit-xor [a b a b]))
+         (same? #(bit-and-not a b 1) #(apply bit-and-not [a b 1]))
+         (same? #(bit-shift-left a b) #(apply bit-shift-left [a b]))
+         (same? #(bit-shift-right a b) #(apply bit-shift-right [a b]))
+         (same? #(unsigned-bit-shift-right a b) #(apply unsigned-bit-shift-right [a b]))
+         (same? #(bit-shift-right-zero-fill a b) #(apply bit-shift-right-zero-fill [a b]))
+         (same? #(bit-clear a b) #(apply bit-clear [a b])) (same? #(bit-flip a b) #(apply bit-flip [a b]))
+         (same? #(bit-set a b) #(apply bit-set [a b])) (same? #(bit-test a b) #(apply bit-test [a b]))])
+      (pr-str [(vec (keep-indexed (fn [i a] (when-not (every? true? (unary a)) [i (unary a)]))
+                                  values))
+               (vec (for [a values b values :when (not (every? true? (binary a b)))]
+                      [a b (binary a b)]))
+               (reduce bit-and [7 6 5]) (reduce bit-or 0 [1 2 4]) (map bit-not [0 -1])])"#;
+    let js = every_level(source, "[[] [] 4 7 (-1 0)]");
+    for operator in [
+        " & ",
+        " | ",
+        " ^ ",
+        " & ~",
+        "(~",
+        " << ",
+        " >> ",
+        " >>> ",
+        " & ~(1 << ",
+        " ^ (1 << ",
+        " | (1 << ",
+        ")) !== 0)",
+    ] {
+        assert!(js.contains(operator), "{operator}: {js}");
+    }
+    // Higher-order uses keep the runtime's functions.
+    for value in ["rt$bitAnd", "rt$bitOr", "rt$bitNot"] {
+        assert!(js.contains(value), "{value}: {js}");
+    }
+    for call in [
+        "rt$bitAnd(",
+        "rt$bitOr(",
+        "rt$bitXor(",
+        "rt$bitAndNot(",
+        "rt$bitNot(",
+        "rt$bitShiftLeft(",
+        "rt$bitShiftRight(",
+        "rt$unsignedBitShiftRight(",
+        "rt$bitShiftRightZeroFill(",
+        "rt$bitClear(",
+        "rt$bitFlip(",
+        "rt$bitSet(",
+        "rt$bitTest(",
+    ] {
+        assert!(!js.contains(call), "{call}: {js}");
+    }
+}
+
+#[test]
+fn bit_operation_chains_keep_the_runtime_evaluation_order() {
+    // The runtime evaluates every operand before it coerces any. A chain
+    // whose later operands run code keeps the call, and one of plain
+    // operands is the operators.
+    let js = every_level(
+        r#"(def log (atom []))
+           (defn f [x] (swap! log conj x) x)
+           (defn noisy [n] #js {"valueOf" (fn [] (swap! log conj [:value n]) n)})
+           (defn chains [a b]
+             [(bit-and a b 6) (bit-or (f a) (f b) (f 8)) (bit-xor (noisy 1) (noisy 2) (f 4))
+              (bit-and-not a (f b))])
+           (pr-str [(chains 15 3) @log])"#,
+        "[[2 15 7 12] [15 3 8 4 [:value 1] [:value 2] 3]]",
+    );
+    assert!(js.contains(" & 6)"), "{js}");
+    assert!(js.contains(" & ~"), "{js}");
+    for call in ["rt$bitOr(", "rt$bitXor("] {
+        assert!(js.contains(call), "{call}: {js}");
+    }
+}
+
+#[test]
 fn arithmetic_edge_cases_keep_the_runtime_results_and_evaluation_order() {
     let js = every_level(
         r#"(def log (atom []))
