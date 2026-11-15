@@ -18,8 +18,47 @@ the prototype in research/output-speed/value-layout-1008/ (section 1).
 
 ## Decisions for the user
 
-No implementation pellet (light-cljs-1009 to 1019) starts before the user
-answers these.
+Answered by the user on 2026-11-15; the questions below are kept as asked.
+
+1. **Answered: yes.** The per-build key is accepted; two copies of the same
+   build on one page share it and recognise each other's values.
+2. **Answered: key every protocol name**, program protocols included.
+   String-named slot interop (`aget`/`aset`/`defineProperty` of a slot name,
+   JavaScript implementing a protocol by name) stops working; the test cases
+   pinning it are rescoped to the keyed names (light-cljs-1009).
+3. **Answered: yes.** `Object.keys`, `Object.entries`, `for...in` and spread
+   of a runtime value may list its keyed fields; `JSON.stringify` is
+   unchanged. The `runtime_value_enumeration_contract` test pins it.
+
+What light-cljs-1009 has landed so far, and how it differs from the sections
+below while the migration is under way:
+
+- **Keyed names (section 1).** Every protocol slot, marker and mask name ends
+  in `$LKEY`, in the runtime (`protocolSlot`, `protocolMasks`, the masks of
+  `makeType`, `defineType` and `typeMasks`), the shared-heap profile, the
+  Pants runtime's reads, and emission (`rta::protocol_slot`; the analyses
+  scan for `rta::protocol_slot_stem`, which a keyed name contains). The
+  analyzer keys a member, dotted field or `js/` path component with the shape
+  of a slot, marker or mask (`analyzer::keyed_js_member`); the invoke
+  convention `cljs$core$IFn$_invoke$arity$N` stays unkeyed. The key is the
+  placeholder itself everywhere for now: the derivation, the registry and the
+  output writer's substitution are still to come.
+- **Slot-first dispatch (section 3), for persistent vectors.** Their
+  prototype holds the keyed kind (`kinds`) and keyed slots for `-nth`,
+  `-count`, `-peek`, `-conj`, `-assoc` and `-lookup`. The wrappers `nth.slots`,
+  `count.slots`, `peek.slots`, `conj.slots`, `assoc.slots` and `get.slots` are
+  each operation's outermost layer: a value with a keyed kind calls its keyed
+  slot first. Program types keep today's path until their recognition moves
+  to the keyed kind (light-cljs-1013), which keeps the getter-order tests of
+  `specify!`-ed host objects as they are. The vectors still keep their store
+  in the private-field brand (`payloads.vectors`), so a slot reads it with
+  `vectors.get`; a value with the prototype and no store (one made by
+  reflection) has its slot answer `noBranch` and takes the operation, so its
+  answers do not change. The runtime's own slot methods are marked
+  (`builtinSlot`), and the older layers' lookups (`keyMethod`,
+  `directMethod`) skip a marked slot, so they answer as before and never call
+  a slot that serves them; `extend-type` and `specify!` write unmarked
+  methods, which every layer finds.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
