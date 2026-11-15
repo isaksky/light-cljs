@@ -4076,6 +4076,146 @@
     }
     return arity === 2 ? operation(value, key) : arity === 3 ? operation(value, key, notFound) : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(get);
+
+  //@unit kinds
+  // The kind number of each runtime class converted to the class layout
+  // (docs/value-layout.md, section 2), which its prototype holds under the
+  // keyed name `cljs$lang$kind$$LKEY`: a value of this runtime, of this class.
+  // The slot-first operations below read it to know a value is the
+  // runtime's own before they call its keyed slot.
+  const kinds = {vector: 1};
+  //@unit builtinSlots
+  // The runtime's own slot methods (`PersistentVectorValue.nth` and the
+  // rest), which `builtinSlot` marks: the protocol lookups of the
+  // operations' older layers (`keyMethod`, `directMethod`) do not take them
+  // for a program's implementation, so those layers answer as before and
+  // never call a slot that serves them.
+  const builtinSlots = new WeakSet();
+  function builtinSlot(method) { builtinSlots.add(method); return method; }
+  //@unit PersistentVectorValue.kind effect: PersistentVectorValue requires: kinds,
+  //@ PersistentVectorValue
+  PersistentVectorValue.prototype.cljs$lang$kind$$LKEY = kinds.vector;
+  // A persistent vector's protocol methods are slots of its prototype
+  // (docs/value-layout.md, section 3), each a unit kept with the operation
+  // that reads it. A slot is complete for every value with the prototype: it
+  // never takes the operation it serves, whose protocol lookup finds the slot
+  // too. `extend-type` overwrites a slot and `specify!` shadows it, so the
+  // next call runs the program's method. A value with the prototype but no
+  // vector store (one made by reflection) answers `noBranch`, and the slot-first
+  // wrapper then takes the operation, which answers it as before.
+  //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: nth requires: builtinSlot, noBranch, missing,
+  //@ PersistentVectorValue, vectorNth, vectors
+  PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
+    const store = vectors.get(self);
+    if (store === undefined) return noBranch;
+    return vectorNth(store, index, missing);
+  });
+  PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
+    const store = vectors.get(self);
+    if (store === undefined) return noBranch;
+    return vectorNth(store, index, notFound);
+  });
+  //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count requires: builtinSlot, noBranch, PersistentVectorValue,
+  //@ vectorCount, vectors
+  PersistentVectorValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    if (!vectors.has(self)) return noBranch;
+    return vectorCount(self);
+  });
+  //@unit PersistentVectorValue.peek effect: PersistentVectorValue when: peek requires: builtinSlot, noBranch, PersistentVectorValue,
+  //@ vectorNth, vectors
+  PersistentVectorValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
+    const store = vectors.get(self);
+    if (store === undefined) return noBranch;
+    return store.cnt ? vectorNth(store, store.cnt - 1, null) : null;
+  });
+  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj requires: builtinSlot, noBranch, conjMeta,
+  //@ makeVector, PersistentVectorValue, vectorConj, vectors
+  PersistentVectorValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
+    const store = vectors.get(self);
+    if (store === undefined) return noBranch;
+    return conjMeta(self, makeVector(null, vectorConj(store, item)));
+  });
+  //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc requires: builtinSlot, noBranch, makeVector,
+  //@ outOfBounds, PersistentVectorValue, preserveMeta, vectorAssoc, vectorConj, vectors
+  PersistentVectorValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
+    let store = vectors.get(self);
+    if (store === undefined) return noBranch;
+    if (typeof key !== "number") throw new Error("Vector key must be a number");
+    if (key >= 0 && key < store.cnt) store = vectorAssoc(store, key, item);
+    else if (key === store.cnt) store = vectorConj(store, item);
+    else outOfBounds();
+    return preserveMeta(self, makeVector(null, store));
+  });
+  //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: get requires: builtinSlot, noBranch, PersistentVectorValue,
+  //@ vectorNth, vectors
+  PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
+    const store = vectors.get(self);
+    if (store === undefined) return noBranch;
+    return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, null) : null;
+  });
+  PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
+    const store = vectors.get(self);
+    if (store === undefined) return noBranch;
+    return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, notFound) : notFound;
+  });
+
+  // Slot-first dispatch (docs/value-layout.md, section 3): an operation
+  // given a value of a converted runtime class, which its keyed kind tells,
+  // calls the value's keyed slot before any layer of its own; any other
+  // value, and a converted value whose slot is gone, takes the operation as
+  // before. Each wrapper is the operation's outermost, so it follows the
+  // operation's other wrappers here. Program types keep their path until
+  // their recognition moves to the keyed kind (light-cljs-1013).
+  //@unit nth.slots effect: kinds when: nth requires: nth, noBranch
+  nth = (operation => Object.defineProperty(function (value, index, notFound) {
+    if (value != null && value.cljs$lang$kind$$LKEY !== undefined && typeof index === "number") {
+      const arity = arguments.length;
+      if (arity === 2) { const method = value.cljs$core$IIndexed$_nth$arity$2$LKEY; if (method !== undefined) { const result = method.call(value, value, index); if (result !== noBranch) return result; } }
+      else if (arity === 3) { const method = value.cljs$core$IIndexed$_nth$arity$3$LKEY; if (method !== undefined) { const result = method.call(value, value, index, notFound); if (result !== noBranch) return result; } }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(nth);
+  //@unit count.slots effect: kinds when: count requires: count, noBranch
+  count = (operation => Object.defineProperty(function (value) {
+    if (value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
+      const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
+      if (method !== undefined) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(count);
+  //@unit peek.slots effect: kinds when: peek requires: peek, noBranch
+  peek = (operation => Object.defineProperty(function (value) {
+    if (value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IStack$_peek$arity$1$LKEY;
+      if (method !== undefined) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(peek);
+  //@unit conj.slots effect: kinds when: conj requires: conj, noBranch
+  conj = (operation => Object.defineProperty(function (coll, item) {
+    if (coll != null && coll.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
+      const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
+      if (method !== undefined) { const result = method.call(coll, coll, item); if (result !== noBranch) return result; }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(conj);
+  //@unit assoc.slots effect: kinds when: assoc requires: assoc, noBranch
+  assoc = (operation => Object.defineProperty(function (value, key, item) {
+    if (value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
+      const method = value.cljs$core$IAssociative$_assoc$arity$3$LKEY;
+      if (method !== undefined) { const result = method.call(value, value, key, item); if (result !== noBranch) return result; }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(assoc);
+  //@unit get.slots effect: kinds when: get requires: get, noBranch
+  get = (operation => Object.defineProperty(function (value, key, notFound) {
+    if (value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+      const arity = arguments.length;
+      if (arity === 2) { const method = value.cljs$core$ILookup$_lookup$arity$2$LKEY; if (method !== undefined) { const result = method.call(value, value, key); if (result !== noBranch) return result; } }
+      else if (arity === 3) { const method = value.cljs$core$ILookup$_lookup$arity$3$LKEY; if (method !== undefined) { const result = method.call(value, value, key, notFound); if (result !== noBranch) return result; } }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(get);
   //@unit contains requires: get, methodKeys, missing, protocolHooks, vectors
   function contains(value, key) {
     const method = protocolHooks.publicMethod?.(value, methodKeys[2], 2);
@@ -6986,11 +7126,12 @@
   }
   //@unit nativeType
   function nativeType(value) { return value == null ? "null" : Array.isArray(value) ? "array" : typeof value; }
-  //@unit directMethod requires: demandMethod, protocolSentinel, protocolSlot
+  //@unit directMethod requires: builtinSlots, demandMethod, protocolSentinel, protocolSlot
   function directMethod(value, key, arity) {
     demandMethod(key, arity, value);
     if (value == null) return undefined;
     const method = value[protocolSlot(key, arity)];
+    if (method !== undefined && builtinSlots.has(method)) return undefined;
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
   }
   //@unit protocolStores requires: atoms, cells, delays, keywords, lazyValues, maps, metaFunctions,
@@ -7002,12 +7143,13 @@
   // The declaration demand of a method's resolved key (`methodKey`), for an
   // operation that reads the method's slot itself (`get`).
   function demandKey(key, arity, value) { demandMethod(key.key, arity, value); }
-  //@unit keyMethod requires: demandMethod, keySlot
+  //@unit keyMethod requires: builtinSlots, demandMethod, keySlot
   // `directMethod` of a method's resolved key (`methodKey`): its slot for
   // `arity`, read from the key.
   function keyMethod(value, key, arity) {
     demandMethod(key.key, arity, value);
-    return value == null ? undefined : value[keySlot(key, arity)];
+    const method = value == null ? undefined : value[keySlot(key, arity)];
+    return method !== undefined && builtinSlots.has(method) ? undefined : method;
   }
   //@unit keyMarker requires: demandMethod, protocolSentinel
   // `directMethod` of a resolved key's protocol (arity 0): whether the value

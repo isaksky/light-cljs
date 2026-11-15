@@ -729,6 +729,16 @@ const HOOK_TABLES: [&str; 7] = [
 ];
 
 /// The `<table>.<key>` hooks a unit body fills in.
+/// The keyed protocol slots a unit body assigns on a prototype
+/// (`T.prototype.cljs$core$ICounted$_count$arity$1$LKEY = ...`), as `.name`.
+fn installed_slots(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter_map(|line| line.trim().split_once(" = ").map(|(target, _)| target))
+        .filter_map(|target| target.split_once(".prototype").map(|(_, slot)| slot))
+        .filter(|slot| slot.contains("$arity$") && slot.ends_with("$LKEY"))
+        .collect()
+}
+
 fn installed_hooks(text: &str) -> Vec<&str> {
     text.lines()
         .filter_map(|line| line.trim().split_once(" = ").map(|(hook, _)| hook))
@@ -907,6 +917,20 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                 readers.push(manifest.unit_of("reader").unwrap());
             }
             readers
+        } else if !installed_slots(body(id)).is_empty() {
+            // A runtime class's keyed slot (docs/value-layout.md, section 3)
+            // is needed where the slot-first wrapper reading it is: wherever
+            // the operation it wraps is.
+            let slots = installed_slots(body(id));
+            (0..manifest.units.len())
+                .map(UnitId)
+                .filter(|&other| {
+                    other != id
+                        && wrapped_binding(body(other)).is_some()
+                        && slots.iter().any(|slot| body(other).contains(slot))
+                })
+                .flat_map(|user| manifest.conditions(user).to_vec())
+                .collect()
         } else if let Some(wrapped) = wrapped_binding(body(id)) {
             // A unit wrapping an operation (`seq = behindProtocol(seq, ...)`)
             // is needed wherever the operation is.
@@ -1049,8 +1073,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // (light-cljs-373), and the 12 branches of `first` and `rest` for vectors,
     // maps, sets, queues and map entries and of `next` for vectors and map
     // entries (light-cljs-375), the seq type of hash maps (light-cljs-983),
-    // and the slot read of a keyword key's array-map search (light-cljs-989).
-    assert_eq!(checked, 326);
+    // and the slot read of a keyword key's array-map search (light-cljs-989),
+    // and the six keyed slots of persistent vectors with the six slot-first
+    // wrappers reading them (light-cljs-1009).
+    assert_eq!(checked, 338);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1998,10 +2024,13 @@ fn units_assigning_a_binding_share_its_unit() {
             "MapEntryType <- MapEntryType.lean",
             "MapEntryType <- MapEntryType.vector",
             "assoc <- assoc.branches",
+            "assoc <- assoc.slots",
             "conj <- conj.branches",
+            "conj <- conj.slots",
             "contains <- contains.own",
             "count <- count.branches",
             "count <- count.protocol",
+            "count <- count.slots",
             "declarationJournal <- MultiFn.tables",
             "declarationJournal <- declarationTransaction",
             "declarationJournal <- installMethods",
@@ -2028,6 +2057,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "gensymCounter <- gensym",
             "get <- get.branches",
             "get <- get.own",
+            "get <- get.slots",
             "globalHierarchy <- getGlobalHierarchy",
             "identityCounter <- hash",
             "lookup <- lookup.sets",
@@ -2041,9 +2071,11 @@ fn units_assigning_a_binding_share_its_unit() {
             "next <- next.protocol",
             "nth <- nth.branches",
             "nth <- nth.protocol",
+            "nth <- nth.slots",
             "patchDeclaration <- declarationTransaction",
             "patchDeclaration <- extendType",
             "patchDeclaration <- installMethods",
+            "peek <- peek.slots",
             "recordMethodTable <- recordMethods.assoc",
             "recordMethodTable <- recordMethods.clone",
             "recordMethodTable <- recordMethods.conj",
