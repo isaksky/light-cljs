@@ -1083,8 +1083,9 @@ and `Prepare` output does not change.
   - writes the bit operations as the operators their runtime definitions and
     upstream's macros use, whatever the operand types (light-cljs-1020):
     `bit-and`, `bit-or`, `bit-xor` and `bit-and-not` on two operands, or on
-    more when the operands after the second run no code, since the runtime
-    evaluates every operand before it coerces any; `bit-not`, the shifts,
+    more when the operands after the second are pure (a literal, a local
+    nothing assigns or a global defined once), since the runtime reads every
+    operand before a coercion's `valueOf` runs; `bit-not`, the shifts,
     `bit-clear`, `bit-flip`, `bit-set` and `bit-test` at their fixed arity.
     Other arities and higher-order uses keep the runtime's function;
   - writes `(not x)` as `!x` when `x`'s type allows it;

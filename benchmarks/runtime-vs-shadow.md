@@ -2484,10 +2484,12 @@ this run.
 the runtime's `bitAnd`, a rest-argument function over `numericFold`. Upstream's
 macro emits `(i & 3)`. Each bit operation's call is now the JavaScript
 operator its runtime definition uses, as `+` and `<` already were:
-- `bit-and`, `bit-or`, `bit-xor` and `bit-and-not` on two operands, or on more
-  when the operands after the second are literals or locals. The runtime
-  evaluates every operand before it coerces any, so a later operand that runs
-  code keeps the call.
+- `bit-and`, `bit-or`, `bit-xor` and `bit-and-not` on two operands. A wider
+  call is the operators only when the operands after the second are literals,
+  locals that nothing assigns or globals defined once. The runtime reads every
+  operand before it coerces any, and a coercion runs `valueOf`. So a later
+  operand that runs code, or a parameter or local that a `js*` hole may
+  assign, keeps the call.
 - `bit-not`, `bit-shift-left`, `bit-shift-right`, `unsigned-bit-shift-right`,
   `bit-shift-right-zero-fill`, `bit-clear`, `bit-flip`, `bit-set` and
   `bit-test` at their fixed arity.
@@ -2504,7 +2506,8 @@ BigInt that throws when mixed with numbers.
 **Setup.** The gate (`benchmarks/core-ops`) with the operations the pellet
 names, the same `--ops` before and after:
 - before is `light-cljs-f533efb1` (master) and after is `light-cljs-aed9845e`,
-  this change before its commits were squashed, with the landed emitter;
+  this change before the Sol review narrowed wider chains. Every bit
+  operation in the gate takes two operands, so its output is the landed one;
 - 5 runs per compiler, alternated, shadow-cljs 3.5.3 in each.
 
 **Unreserved:** a peer worker was active. The 1-minute load average before a
