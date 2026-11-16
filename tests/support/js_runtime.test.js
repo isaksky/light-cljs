@@ -1601,14 +1601,16 @@ console.log('public constructor fields preserve canonical payload brands');
   assert.equal(c.count(chunk), 32);
   assert.equal(c.meta(lazy), null);
   assert.equal(lazy.meta, null);
-  // A seq over an array is a class value (light-cljs-1010): its own keyed
-  // fields copied onto its prototype make one by deliberate reflection
-  // (docs/value-layout.md, section 5), so only its bare prototype is checked.
-  const classValue = c.seq([1, 2, 3]);
+  // A seq over an array is a class value (light-cljs-1010), and so are a
+  // lazy seq, a chunked cons and a chunk (light-cljs-1029): their own keyed
+  // fields copied onto their prototype make one by deliberate reflection
+  // (docs/value-layout.md, section 5), so only their bare prototype is
+  // checked.
+  const classValue = c.seq([1, 2, 3]), classValues = [lazy, chunked, chunk, classValue];
   for (const value of [lazy, chunked, chunk, classValue, c.cons(0, lazy), c.list(1, 2)]) {
     const forged = Object.create(Object.getPrototypeOf(value));
     const copied = Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value));
-    for (const candidate of value === classValue ? [forged] : [forged, copied]) {
+    for (const candidate of classValues.includes(value) ? [forged] : [forged, copied]) {
       assert.equal(c.isSeq(candidate), false);
       assert.equal(c.isChunkedSeq(candidate), false);
       assert.equal(runtime.inspect(candidate), null);
@@ -1743,9 +1745,10 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
   assert.equal(f.isMap(built.arrayMap), true);
   assert.equal(f.isSet(built.conj), true);
   for (const [name, value] of Object.entries(built)) {
-    // As above: a copy of a transient vector's or a seq's own fields onto its
-    // prototype is one (light-cljs-1009, light-cljs-1010).
-    const copies = name === 'transientVector' || name === 'view' ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+    // As above: a copy of a transient vector's, a seq's, a lazy seq's, a
+    // chunked cons's or a chunk's own fields onto its prototype is one
+    // (light-cljs-1009, light-cljs-1010, light-cljs-1029).
+    const copies = ['transientVector', 'view', 'lazy', 'chunked', 'chunk'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
     for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
       for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isChunkedSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
       assert.equal(fresh.inspect(candidate), null);
@@ -1802,6 +1805,9 @@ console.log('public find preserves one search and direct receiver dispatch');
   const [key] = own(Object.getPrototypeOf(values[0]));
   for (const value of values) {
     const prototype = Object.getPrototypeOf(value);
+    // A chunked cons is a class whose operations are its keyed slots
+    // (light-cljs-1029): its prototype holds no kind table's number.
+    if (value === values[4]) { assert.deepEqual(own(prototype), []); continue; }
     assert.deepEqual(own(prototype), [key]);
     assert.equal(typeof prototype[key], 'number');
   }
@@ -2068,12 +2074,18 @@ console.log('kind tables stay private to the runtime');
     chunkedSeq: core.next(core.seq(core.vec(Array.from({length: 40}, (_, i) => i)))),
     restArguments: r.fnRest([1, 2, 3], 1),
     // Keywords and symbols (light-cljs-1011).
-    keyword: core.keyword('n', 'k'), symbol: core.symbol('n', 's')
+    keyword: core.keyword('n', 'k'), symbol: core.symbol('n', 's'),
+    // Lazy seqs, chunked conses, chunks and chunk buffers (light-cljs-1029).
+    lazySeq: core.mapSeq(core.inc, r.vector(1, 2)),
+    chunkedCons: core.seq(core.mapSeq(core.inc, core.vec(Array.from({length: 40}, (_, i) => i)))),
+    chunk: core.arrayChunk([1, 2], 0, 2), chunkBuffer: core.chunkBuffer(2)
   };
   const view = ['arr$LKEY', 'i$LKEY', 'indexed$LKEY', 'view$LKEY'];
   const fields = {transientVector: ['state$LKEY'], indexedSeq: view, stringSeq: view, restArguments: view,
     chunkedSeq: [...view, 'vec$LKEY', 'base$LKEY'], keyword: ['ns$LKEY', 'name$LKEY', 'fqn$LKEY', 'hash$LKEY'],
-    symbol: ['ns$LKEY', 'name$LKEY', 'str$LKEY', 'hash$LKEY']};
+    symbol: ['ns$LKEY', 'name$LKEY', 'str$LKEY', 'hash$LKEY'], lazySeq: ['fn$LKEY', 's$LKEY', 'hash$LKEY'],
+    chunkedCons: ['chunk$LKEY', 'more$LKEY', 'hash$LKEY'], chunk: ['arr$LKEY', 'off$LKEY', 'end$LKEY', 'first$LKEY', 'step$LKEY'],
+    chunkBuffer: ['buf$LKEY', 'end$LKEY']};
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name] ?? ['store$LKEY'];
     assert.deepEqual(Object.keys(value), field, name);

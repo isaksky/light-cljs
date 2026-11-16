@@ -751,8 +751,13 @@
   }
   //@unit stamped compile-time requires: sharedFormKind, stampBrand
   // An engine vector form is the runtime's own value too: the compiler form
-  // bridge reads it (`vectorStore`) without reading a property of it.
-  function stamped(value) { const kind = sharedFormKind(value); return kind === "vector" || kind === "keyword" || kind === "symbol" || stampBrand.has(value); }
+  // bridge reads it (`vectorStore`) without reading a property of it; so
+  // are its keywords and symbols, and the engine's lazy seqs and conses,
+  // chunked ones among them, which `lazyOf` and `chunkedConsOf` read.
+  function stamped(value) {
+    const kind = sharedFormKind(value);
+    return kind === "vector" || kind === "keyword" || kind === "symbol" || kind === "lazy-seq" || kind === "cons" || kind === "chunked-cons" || stampBrand.has(value);
+  }
   //@unit symbolOf requires: sharedFormKind, sharedFormOf
   // A symbol is an engine symbol form, whose fields are read from the form
   // as `keywordOf` reads a keyword's, or one of the symbols the engine's
@@ -885,19 +890,38 @@
   });
   //@unit sortedComparators requires: sharedStore
   const sortedComparators = sharedStore();
-  //@unit cells requires: arrayChunk, sharedFormHashes, sharedVectorItems, sharedView
-  const cells = sharedView("cells",
-    kind => kind === "cons" || kind === "chunked-cons" || kind === "list",
-    (value, kind) => {
-      if (kind === "list") return {kind, head: __rt.cljFirst(value), tail: __rt.cljRest(value), count: __rt.cljCount(value)};
-      if (__rt.cljChunkedSeq(value)) {
-        const chunk = __rt.cljChunkFirst(value);
-        return {kind: "chunked-cons", head: __rt.cljFirst(value), tail: __rt.cljRest(value),
-          chunk: arrayChunk(sharedVectorItems(chunk, 0, __rt.formCount(chunk))), more: __rt.cljChunkRest(value),
-          chunkedState: {get hash() { return sharedFormHashes.get(value); }, set hash(hash) { sharedFormHashes.set(value, hash); }}};
-      }
-      return {kind: "cons", head: __rt.cljFirst(value), tail: __rt.cljRest(value)};
-    });
+  //@unit cells requires: sharedChunked, sharedView
+  // The engine's lists and conses; a chunked one is a chunked cons
+  // (`chunkedConsOf`), as the V8 profile's chunked conses are no cells.
+  const cells = (view => ({...view,
+    has: value => view.has(value) && !sharedChunked(value),
+    get: value => sharedChunked(value) ? undefined : view.get(value)
+  }))(sharedView("cells",
+    kind => kind === "cons" || kind === "list",
+    (value, kind) => kind === "list" ? {kind, head: __rt.cljFirst(value), tail: __rt.cljRest(value), count: __rt.cljCount(value)}
+      : {kind: "cons", head: __rt.cljFirst(value), tail: __rt.cljRest(value)}));
+  //@unit sharedChunked requires: sharedFormKind, sharedFormOf
+  // Whether a value is one of the engine's chunked conses (a `chunk-cons`,
+  // or a chunked `concat` or `map`).
+  const sharedChunked = value => {
+    const kind = sharedFormKind(value);
+    return (kind === "cons" || kind === "chunked-cons") && __rt.cljChunkedSeq(sharedFormOf(value));
+  };
+  //@unit chunkedConsOf requires: arrayChunk, sharedChunked, sharedFormHashes, sharedFormOf,
+  //@ sharedVectorItems
+  // An engine chunked cons (`sharedChunked`), read through a view of the V8
+  // profile's keyed fields (`ChunkedConsCell`): its chunk as a runtime
+  // chunk, the seq after it, and its hash in the task's cache
+  // (`sharedFormHashes`); else the V8 profile's test.
+  function chunkedConsOf(value) {
+    if (sharedChunked(value)) {
+      const form = sharedFormOf(value), chunk = __rt.cljChunkFirst(form);
+      return {chunk$LKEY: arrayChunk(sharedVectorItems(chunk, 0, __rt.formCount(chunk))), more$LKEY: __rt.cljChunkRest(form),
+        get hash$LKEY() { return sharedFormHashes.get(form); }, set hash$LKEY(hash) { sharedFormHashes.set(form, hash); }};
+    }
+    if (value == null) return undefined;
+    return value.cljs$lang$kind$$LKEY === 17 && value.chunk$LKEY !== undefined ? value : undefined;
+  }
   //@unit stringBufferWriters requires: sharedSet
   const stringBufferWriters = sharedSet();
   //@unit sharedFormHashes
@@ -1115,29 +1139,38 @@
     write(writer, "#object[cljs.core." + (atoms.has(value) ? "Atom" : "Volatile") + " {:val ");
     printWriter(__rt.cljIsAtom(value) ? derefProtocol(value) : value.state, writer, options); return write(writer, "}]");
   });
-  //@unit lazyValues requires: sharedFormHashes, sharedView
-  // A lazy payload over the engine's once-cell: `thunk` is null once the
-  // cell is realized (`cljRealized`, which realizes nothing), else a
-  // function that realizes the cell, so the verbatim `deferredValue` and
-  // `realized?` read the cell's state; `value` is the cell's seq (realized
-  // or parked on by `cljSeq`). The writes `deferredValue` makes after a
-  // call are dropped: the cell holds the value. A delay's `value` is read
-  // without running its body (`cljDelayState`): its seed until realized.
-  // A lazy seq's `hash` is the task's cache of the runtime's hash
-  // (`sharedFormHashes`), which `hashSequential` fills.
-  const lazyValues = sharedView("lazyValues", kind => kind === "lazy-seq",
-      value => ({
-        get thunk() { return __rt.cljRealized(value) ? null : () => __rt.cljSeq(value); }, set thunk(_) {},
-        get value() { return __rt.cljSeq(value); }, set value(_) {},
-        get hash() { return sharedFormHashes.get(value); }, set hash(hash) { sharedFormHashes.set(value, hash); }
-      })),
-    // A delay's `thunk` is `false`, not null, while the cell is realized but
-    // prints as pending (`cljDelayState` reads `[ready value]`): one made
-    // with a `false` thunk, whose `realized?` is true (`!truth(false)`) and
-    // whose printer shows `:pending` (`thunk == null`), as the V8 profile's
-    // state has it. Its `value` is the state's in every case: the seed while
-    // pending or after a failed realization, else the realized value.
-    delays = sharedView("delays", kind => kind === "delay",
+  //@unit lazyOf requires: sharedFormHashes, sharedFormKind, sharedFormOf
+  // A lazy seq over the engine's once-cell, read through a view of the V8
+  // profile's keyed fields (`LazySeqCell`): `fn` is null once the cell is
+  // realized (`cljRealized`, which realizes nothing), else a function that
+  // realizes the cell, so the verbatim `lazyStep` and `realized?` read the
+  // cell's state; `s` is the cell's seq (realized or parked on by
+  // `cljSeq`). The writes `lazyStep` makes after a call are dropped: the
+  // cell holds the value. Its `hash` is the task's cache of the runtime's
+  // hash (`sharedFormHashes`), which `hashSequential` fills. Any other
+  // value takes the V8 profile's test.
+  function lazyOf(value) {
+    if (sharedFormKind(value) === "lazy-seq") {
+      const form = sharedFormOf(value);
+      return {
+        get fn$LKEY() { return __rt.cljRealized(form) ? null : () => __rt.cljSeq(form); }, set fn$LKEY(_) {},
+        get s$LKEY() { return __rt.cljSeq(form); }, set s$LKEY(_) {},
+        get hash$LKEY() { return sharedFormHashes.get(form); }, set hash$LKEY(hash) { sharedFormHashes.set(form, hash); }
+      };
+    }
+    if (value == null) return undefined;
+    return value.cljs$lang$kind$$LKEY === 16 && value.fn$LKEY !== undefined ? value : undefined;
+  }
+  //@unit delays requires: sharedView
+  // A delay over the engine's once-cell. Its `value` is read without
+  // running its body (`cljDelayState`): its seed until realized.
+  // A delay's `thunk` is `false`, not null, while the cell is realized but
+  // prints as pending (`cljDelayState` reads `[ready value]`): one made
+  // with a `false` thunk, whose `realized?` is true (`!truth(false)`) and
+  // whose printer shows `:pending` (`thunk == null`), as the V8 profile's
+  // state has it. Its `value` is the state's in every case: the seed while
+  // pending or after a failed realization, else the realized value.
+  const delays = sharedView("delays", kind => kind === "delay",
       value => ({
         get thunk() {
           if (!__rt.cljRealized(value)) return () => __rt.cljForce(value);
@@ -1571,9 +1604,6 @@
   // The protocol registries stay Maps until light-cljs-649 moves them to
   // engine tables (`extend-type` and `defprotocol` fill them after boot).
   const protocolNames = sharedStore(), protocolValues = new Map(), protocolFunctions = new Map(), protocolVariables = new Map(), protocolGetters = new Map();
-  //@unit chunks requires: privateStore, sharedStore
-  // Chunk values expose indexed/count/reduce protocols, without being seqs.
-  const chunks = privateStore(12), chunkBuffers = sharedStore();
   //@unit ChunkedCons requires: count, nth, sharedSeqForm
   // Keep the chunk and the lazy tail in engine storage. In particular, a
   // mapped chunk must not retain the runtime's private ChunkedCell inside

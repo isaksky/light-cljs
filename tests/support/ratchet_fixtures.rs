@@ -323,6 +323,27 @@
 //! 10,000 and the next 1,000 above; the features startup's slack over the
 //! application without its features moves from 200 to 300 bytes (201 over:
 //! its constants' hashes).
+//!
+//! Lazy seqs, chunked conses, chunks and chunk buffers as class values with
+//! keyed slots (light-cljs-1029, 2026-11-16): each holds upstream's fields as
+//! own keyed fields (`LazySeqCell` and the other cells, `lazyOf` and the
+//! other tests), a lazy seq and a chunked cons have keyed `first`, `rest`,
+//! `next` and `seq` slots, a chunked cons and a vector's chunked seq the chunk
+//! protocols, and a chunk `count`, `nth` and `-drop-first`; the private stores
+//! `lazyValues`, `chunks` and `chunkBuffers` are deleted. The readable
+//! runtime grows about 11,000 bytes, so every none and prepare ceiling moves
+//! to the next 1,000 above its size. Advanced, against master `f91e0e62`:
+//! programs that keep lazy seqs grow 3-5 KB, mostly the 17 slots with their
+//! long keyed names (`seq-pipeline` 37,748 bytes, `mapv-count` 48,444,
+//! `keyword-lookups` 48,027, `constant-keys` 62,372, `event-maps` 44,974,
+//! `callbacks` 57,067, `protocol-params` 62,215, `features` 91,466),
+//! and programs that keep no lazy seq less, through the kind tests the
+//! older layers call (`rest-fn` 15,603, `eight-records` 45,910,
+//! `map-printed` 15,275, `atom-str` 3,738). Each exceeded advanced ceiling, and the features
+//! example's chunks (`app.main.js` 7,580, the shared chunk 74,804), moves to
+//! the next 100 below 10,000 and the next 1,000 above. Speed comes first
+//! (pl group 1661): `lazy-walk` and `reduce-map-inc` reach shadow-cljs's
+//! times.
 
 pub struct Fixture {
     pub name: &'static str,

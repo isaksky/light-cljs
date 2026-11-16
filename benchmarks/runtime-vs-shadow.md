@@ -1175,3 +1175,97 @@ entries call its `call`), binary `light-cljs-69d007bb` against
 352.7, `record-kw-field` 14.1, `multimethod` 522.4). The keyword programs
 at advanced grow by the two arity entries (125 bytes): `keyword-only`
 4,479 bytes, `keyword-case` 4,575, the features startup chunk 7,869.
+
+## 2026-11-16: lazy seqs, chunked conses and chunks as classes (light-cljs-1029)
+
+**What.** A lazy seq, a chunked cons, an array chunk and a chunk buffer are
+each one object of an internal class on its type's prototype (`LazySeqCell`,
+`ChunkedConsCell`, `ArrayChunkCell`, `ChunkBufferCell`, kinds 16 to 19), with
+upstream's fields as their own keyed fields, where each was `Object.create`
+plus a private-field payload (`lazyValues`, `chunks`) or a `WeakMap` entry
+(`chunkBuffers`), and a chunked cons also a cell object of its own. Lazy seqs
+and chunked conses have keyed `first`, `rest`, `next` and `seq` slots, a
+chunked cons and a vector's chunked seq the chunk protocols, a chunk `count`,
+`nth` and `-drop-first`, and the chunk operations that `map`, `filter` and
+`keep` call read those slots first. A step of a lazy pipeline now builds one
+object per value and reaches no older dispatch layer. docs/value-layout.md
+has the notes.
+
+Binaries: before `light-cljs-f91e0e62` (master), after `light-cljs-349cfb5f`
+(a work-in-progress commit of this pellet whose src/ is this pellet's
+commit's; later changes were tests and docs only), in
+research/shadow-credibility/bin. Unreserved: one peer worker was active, and
+the machine's load rose during the after runs. Raw results:
+research/output-speed/lazy-classes-1029.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops seq-walk-vec,lazy-walk,reduce-map-inc,filter-count,mapv,into-xform,variadic-call,apply-vec,reduce-range,group-by,sort-by --runs 3`,
+the same selection both times; 1-minute load average 3.95-7.96 before,
+10.59-12.76 after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| lazy-walk-1000 | 579,980 (578,892-594,349) | 37,937 (37,847-38,156) | -93% | 39,880 | 14.68 | 0.95 |
+| reduce-map-inc-1000 | 589,880 (588,610-596,780) | 42,591 (42,336-42,615) | -93% | 42,663 | 13.54 | 1.00 |
+| filter-count-1000 | 301,145 (298,653-301,895) | 36,062 (36,034-36,362) | -88% | 28,033 | 10.80 | 1.29 |
+| into-xform-1000 | 72,610 (72,139-73,948) | 80,471 (80,046-80,887) | +11% | 13,526 | 5.34 | 5.95 |
+| mapv-1000 | 53,758 (52,574-56,882) | 62,930 (61,947-62,963) | +17% | 13,166 | 4.06 | 4.78 |
+| seq-walk-vec-1000 | 21,583 (21,464-21,636) | 24,686 (24,423-24,832) | +14% | 9,929 | 2.16 | 2.49 |
+| reduce-range-1000 | 5,057 (4,975-5,086) | 4,911 (4,908-4,933) | -3% | 5,496 | 0.89 | 0.89 |
+| variadic-call | 9.08 (9.04-9.45) | 10.3 (10.2-10.3) | +13% | 9.16 | 0.99 | 1.12 |
+| apply-vec | 348.4 (348.0-352.7) | 312.6 (309.6-315.2) | -10% | 53.8 | 6.46 | 5.81 |
+| group-by-100 | 85,971 (85,675-86,190) | 80,134 (79,237-82,186) | -7% | 4,113 | 20.80 | 19.48 |
+| sort-by-100 | 5,307 (5,234-5,329) | 6,068 (6,010-6,155) | +14% | 3,430 | 1.59 | 1.77 |
+
+- `lazy-walk` and `reduce-map-inc` reach shadow-cljs's times, and
+  `filter-count` comes within 1.3x of it: each step is one chunked cons and
+  one chunk, whose slots `first`, `next`, `count` and `nth` call first. What
+  `filter-count` keeps is `count`'s walk, which tests each step for
+  `ICounted` through the older layers.
+- **The five operations above 10% slower are not slower on their own.**
+  Their code does not change; in the selection they run after the lazy
+  operations, which now pass lazy seqs, chunked conses and chunks through
+  the slot-first wrappers and `reduce` they share, so V8's feedback at those
+  sites differs when they run. Timed alone (`--ops
+  into-xform,mapv,seq-walk-vec,variadic-call,sort-by --runs 2`, load
+  4.7-5.5), before then after: `into-xform` 84,098 and 82,275 ns,
+  `mapv` 64,565 and 62,121, `seq-walk-vec` 17,677 and 17,233,
+  `variadic-call` 9.20 and 9.15, `sort-by` 4,860 and 4,725. The before
+  binary timed again with the full selection just before the after runs
+  (load 5.12-9.29; `gate-before-rerun` in the raw results) gives the same
+  numbers as the first before run within 3%.
+- **The whole gate** (all 64 operations, `--runs 3`; load 2.28-4.29 before,
+  4.58-20.57 after): the lazy operations gain 86-92% in that order too
+  (`lazy-walk` 643,802 to 54,438 ns, light/shadow 16.83 to 1.38;
+  `reduce-map-inc` 664,789 to 58,227; `filter-count` 334,424 to 45,533).
+  Ten operations read more than 10% slower (`destructure-vec-3`,
+  `hash-fresh-vec-4`, `eq-map-7`, `seq-walk-vec`, `sort-by`, `str-concat`,
+  `multi-arity-call`, `variadic-call`, `closure-alloc-call`, `swap-inc`),
+  among them plain calls this pellet does not reach, while shadow-cljs's
+  own times rose as much (`variadic-call` 9.2 to 14.3 ns). Timed again back
+  to back with one selection of those ten (`--runs 3`, load 11.3-12.4),
+  before then after, none differs by more than 3% (`recheck-before`,
+  `recheck-after` in the raw results).
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1029 --runs 5
+--runtime-only --runtime 1,10,40`, a copy of the project rebuilt with each
+binary just before its run; load average 11.5-13.2 before, 13.3-14.0 after),
+wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.465 s (0.463-0.474) | 0.460 s (0.453-0.469) | 0.336 s | 0.338 s | 1.38 | 1.36 |
+| 10 | 1.337 s (1.304-1.383) | 1.270 s (1.248-1.273) | 0.647 s | 0.636 s | 2.08 | 2.00 |
+| 40 | 3.868 s (3.799-3.981) | 3.566 s (3.540-3.610) | 1.434 s | 1.370 s | 2.71 | 2.60 |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 87.3 to
+79.6 ms per iteration (-9%), shadow-cljs 28.1 and 26.5; light/shadow 3.10 to
+3.01. Both runs were under a load of 11 to 14, which slowed shadow-cljs's
+steady state from light-cljs-1010's 23.6 ms.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): programs
+that keep lazy seqs grow 3 to 5 KB, mostly the 17 slots with their long keyed
+names: `seq-pipeline` 37,748 bytes, `mapv-count` 48,444, `keyword-lookups`
+48,027, `constant-keys` 62,372, `event-maps` 44,974, `features` 91,466;
+programs that keep no lazy seq less, through the kind tests the older layers
+call (`rest-fn` 15,603, `map-printed` 15,275, `atom-str` 3,738). re-frame
+simple and TodoMVC gzip sizes were not measured in this step.

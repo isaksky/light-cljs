@@ -527,9 +527,12 @@ fn a_program_type_opens_the_protocol_hooks() {
     // key's registration (about 290 bytes) and the key in each keyed name
     // (4 bytes more than the placeholder); 9,413 after
     // light-cljs-1010 (2026-11-15): the view test (`viewOf`, `isView`,
-    // `viewCells`) that `count` and `seqableValue` read.
+    // `viewCells`) that `count` and `seqableValue` read; 10,000 after
+    // light-cljs-1029 (2026-11-16): the tests of chunks, chunk buffers, lazy
+    // seqs and chunked conses (`chunkOf`, `chunkBufferOf`, `lazyCells`,
+    // `chunkedConsCells`) that they read where those were private stores.
     let size = advanced(source).emit_js().len();
-    assert!(size < 9_500, "{size} bytes");
+    assert!(size < 10_100, "{size} bytes");
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -844,12 +847,16 @@ fn protocol_tests_of_program_types_need_no_protocol_tables() {
     // brand of its own plus the `ClassBrand` units: 6,549 to 7,018 bytes.
     // The build's key on every slot, marker and mask name (light-cljs-1009,
     // docs/value-layout.md) adds five bytes a name: the record's 7,500.
+    // The tests of chunks, chunk buffers, lazy seqs and chunked conses that
+    // `counted?` reads (light-cljs-1029), where those were private stores:
+    // the program type's 7,897.
     for source in [
         "(deftype T [] ICounted (-count [_] 7)) (counted? (T.))",
         "(defrecord R [x]) (map? (->R 1))",
     ] {
         assert_keeps_none(source, &EXTENSION_MACHINERY);
-        assert!(advanced(source).emit_js().len() < 7_700, "{source}");
+        let size = advanced(source).emit_js().len();
+        assert!(size < 8_000, "{source}: {size} bytes");
     }
 }
 
@@ -928,9 +935,11 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // key's registration, since light-cljs-1025 (2026-11-15), about 290 more
     // (2,894 bytes), and the view test (`viewOf`, `isView`, `viewCells`),
     // since light-cljs-1010 (2026-11-15), where the views' store was a
-    // `privateStore` (3,141 bytes).
+    // `privateStore` (3,141 bytes), and the tests of chunks, chunk buffers,
+    // lazy seqs and chunked conses, since light-cljs-1029 (2026-11-16),
+    // where theirs were (3,725 bytes).
     let size = advanced("(count (.split \"a,b\" \",\"))").emit_js().len();
-    assert!(size < 3_200, "{size} bytes");
+    assert!(size < 3_800, "{size} bytes");
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -1996,13 +2005,16 @@ fn small_programs_keep_only_what_they_use() {
 
 /// The prototype members of the runtime's types other than their upstream
 /// fields and methods: host-facing methods (and protocol slots, `cljs$...`).
-const HOST_FACING_MEMBERS: [&str; 7] = [
+const HOST_FACING_MEMBERS: [&str; 8] = [
     "apply",
     "call",
     "constructor",
     "equiv",
     "indexOf",
     "lastIndexOf",
+    // A chunk's and a chunk buffer's JSON, which leaves out their keyed
+    // fields (light-cljs-1029; the seqs' is on their shared base).
+    "toJSON",
     "toString",
 ];
 
@@ -2513,7 +2525,10 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// and more again since light-cljs-1010: a view test (`viewOf`) and the
 /// slot-first wrappers of `first`, `rest`, `next` and `seq` read it too,
 /// and since light-cljs-1011 a keyword or symbol test (`keywordOf`,
-/// `symbolOf`), where the `keywords` and `symbols` stores read nothing.
+/// `symbolOf`), where the `keywords` and `symbols` stores read nothing,
+/// and since light-cljs-1029 the tests of lazy seqs, chunked conses, chunks
+/// and chunk buffers (`lazyOf` and the others), where their private stores
+/// read nothing (about 100 reads more per program).
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"

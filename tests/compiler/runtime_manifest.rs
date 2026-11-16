@@ -1001,16 +1001,24 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
         } else if !installed_slots(body(id)).is_empty() {
             // A runtime class's keyed slot (docs/value-layout.md, section 3)
             // is needed where the slot-first wrapper reading it is: wherever
-            // the operation it wraps is.
+            // the operation it wraps is; or where a function that reads it
+            // first is (the chunk operations' `chunkFirst` and the others,
+            // light-cljs-1029).
             let slots = installed_slots(body(id));
             (0..manifest.units.len())
                 .map(UnitId)
                 .filter(|&other| {
                     other != id
-                        && wrapped_binding(body(other)).is_some()
+                        && installed_slots(body(other)).is_empty()
                         && slots.iter().any(|slot| body(other).contains(slot))
                 })
-                .flat_map(|user| manifest.conditions(user).to_vec())
+                .flat_map(|user| {
+                    if wrapped_binding(body(user)).is_some() {
+                        manifest.conditions(user).to_vec()
+                    } else {
+                        vec![user]
+                    }
+                })
                 .collect()
         } else if let Some(wrapped) = wrapped_binding(body(id)) {
             // A unit wrapping an operation (`seq = behindProtocol(seq, ...)`)
@@ -1160,8 +1168,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // indexed and chunked seqs and a vector's `-seq` with the four
     // slot-first wrappers of `first`, `rest`, `next` and `seq`, less the
     // removed hook of a chunked seq's `vec` field (light-cljs-1010), and a
-    // symbol's metadata copy (light-cljs-1011).
-    assert_eq!(checked, 352);
+    // symbol's metadata copy (light-cljs-1011), and the 17 keyed slots of
+    // lazy seqs, chunked conses, chunks and the chunk protocols of chunked
+    // seqs with the chunked conses' two hooks of `firstSeq` and `restSeq`
+    // (light-cljs-1029).
+    assert_eq!(checked, 371);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1307,8 +1318,8 @@ enum Kind {
 /// Every `kindHooks` entry and its kind. A hook that several units install,
 /// each for its own kind, has an entry per unit, `<hook>/<unit>`.
 const KIND_HOOKS: &[(&str, Kind)] = &[
-    ("seqLazy", Kind::Stores(&["lazyValues"])),
-    ("realizeLazy", Kind::Stores(&["lazyValues"])),
+    // Lazy seqs (`LazySeqCell`), which only `LazySeq` builds.
+    ("seqLazy", Kind::Units(&["LazySeq"])),
     ("seqQueue", Kind::Stores(&["queues"])),
     ("seqVector", Kind::Stores(&["vectors"])),
     ("seqMap", Kind::Stores(&["maps"])),
@@ -1387,10 +1398,12 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("assocVector", Kind::Stores(&["vectors"])),
     ("withMetaFn", Kind::Stores(&["metaFunctions"])),
     ("entryVector", Kind::Stores(&["mapEntries"])),
-    ("withMetaLazy", Kind::Stores(&["lazyValues"])),
+    ("withMetaLazy", Kind::Units(&["LazySeq"])),
     // Cells of one kind, each built only by the listed unit.
     ("withMetaRange", Kind::Units(&["rangeNode"])),
     ("withMetaChunkedCons", Kind::Units(&["ChunkedCons"])),
+    ("chunkedConsFirst", Kind::Units(&["ChunkedCons"])),
+    ("chunkedConsRest", Kind::Units(&["ChunkedCons"])),
     ("withMetaRepeat", Kind::Units(&["RepeatValue"])),
     ("withMetaIterate", Kind::Units(&["iterateNode"])),
     ("withMetaCycle", Kind::Units(&["cycleNode"])),

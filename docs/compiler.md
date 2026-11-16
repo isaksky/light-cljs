@@ -1171,11 +1171,13 @@ O(1), and list construction/indexing are O(n).
 vectors, arrays and strings produce views: class values whose storage, offset
 and kind are their own keyed fields (light-cljs-1010, docs/value-layout.md).
 A vector of more than 32 items gives upstream's ChunkedSeq over its trie's
-leaves and tail, which a seq shares frozen. Cons cells, lazy seqs and chunks
-keep their payloads in class-private fields, as vectors do, rather than
-in `WeakMap` entries (light-cljs-259): each step of a lazy pipeline builds new
-values, and their entries, which the collector traces as ephemerons, cost more
-than the step. A lazy seq or chunked cons built with nil metadata stores none;
+leaves and tail, which a seq shares frozen. Lazy seqs, chunked conses, chunks
+and chunk buffers are class values too, with upstream's fields as their own
+keyed fields and keyed slots for their operations (light-cljs-1029): a step of
+a lazy pipeline builds one object. Cons cells keep their payloads in
+class-private fields rather than in `WeakMap` entries (light-cljs-259): each
+step of a lazy pipeline builds new values, and their entries, which the
+collector traces as ephemerons, cost more than the step. A lazy seq or chunked cons built with nil metadata stores none;
 `meta` and its `meta` field read nil either way. The other values that an
 operation builds one per call keep theirs in private fields too
 (light-cljs-291): `reduced` markers, transients, queues, iterator seqs, and the

@@ -158,6 +158,44 @@ What light-cljs-1011 landed: keywords and symbols.
   (a fresh object of their fields, with the engine's hash), and its
   runtime-owned symbols (`sharedSymbol`) are symbol cells.
 
+What light-cljs-1029 landed: the lazy seqs, chunked conses, array chunks
+and chunk buffers.
+
+- **The classes.** `LazySeqCell`, `ChunkedConsCell`, `ArrayChunkCell` and
+  `ChunkBufferCell` are internal constructors on the public types'
+  prototypes, kinds 16 to 19 (the keywords and symbols of light-cljs-1011
+  are 20 and 21), set with `viewType`. Their own keyed fields
+  are upstream's: a lazy seq's `fn` (null once realized; an undefined one
+  is null), `s` and `hash`; a chunked cons's `chunk`, `more` and `hash`; a
+  chunk's `arr`, `off` and `end`, and a range's integer chunk also its
+  `first` item and `step` (null in an array chunk); a chunk buffer's `buf`
+  and `end`. Each kind has a test that also requires its first field
+  (`lazyOf`, `chunkedConsOf`, `chunkOf`, `chunkBufferOf`), so a value made
+  by reflection from the prototype is none of them. `lazyValues`, `chunks`
+  and `chunkBuffers` are deleted, and a chunked cons is no longer a cell
+  (`cells`): every reader takes the test, and the store inventories take
+  `lazyCells` and `chunkedConsCells`. `lazyStep` replaces `deferredValue`
+  for lazy seqs (delays keep it). Metadata stays in `metadataValues`.
+  The chunked cons's prototype holds no kind table number (`kindOps`): its
+  operations are its slots, and the old layers' fallbacks read it through
+  `chunkedConsOf`. The seq classes' shared base and the chunk prototypes
+  have a `toJSON` that leaves the keyed fields out.
+- **Slots.** A lazy seq has keyed `-seq`, `-first`, `-rest` and `-next`
+  slots, which realize it through `seq` (so an `extend-type` of
+  `ISeqable` answers as before) and take the operation of what it
+  realized; a chunked cons `-seq`, `-first`, `-rest`, `-next` (the seq of
+  its rest, through the wrappers) and the chunk protocols; a chunk
+  `-count`, `-nth` and `-drop-first`; a vector's chunked seq the chunk
+  protocols. The chunk operations the lazy pipeline calls (`chunkFirst`,
+  `chunkRest`, `chunkNext` and `chunkDropFirst`) read a value's slot
+  first, as the slot-first wrappers do; the core dispatchers
+  (`coreMethod`) stay as they are.
+- **The Pants build.** The shared-heap profile's `lazyOf` and
+  `chunkedConsOf` answer the engine's lazy seqs and chunked conses with a
+  view of the same keyed fields, its `cells` no longer holds chunked
+  conses, its `delays` is a unit of its own, and its `stamped` accepts the
+  engine's lazy seqs and conses, which the form bridge reads.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

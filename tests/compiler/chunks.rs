@@ -3094,9 +3094,11 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // slots and the slot-first wrappers of `first`, `rest`, `next` and `seq`
     // (87,823; 88,981 with light-cljs-1025's key, four bytes more on each
     // keyed name, and its registration), and light-cljs-1011 the keyword and
-    // symbol classes and each keyword constant's hash (90,263).
+    // symbol classes and each keyword constant's hash (90,263), and
+    // light-cljs-1029 the lazy seqs', chunked conses' and chunks' classes and
+    // keyed slots and the chunk operations' slot-first reads (TOTAL).
     assert!(
-        total + 1_000 <= 73_207 + 2_944 + 600 + 2_500 + 1_000 + 1_000 + 4_000 + 5_000 + 2_000,
+        total + 1_000 <= 73_207 + 2_944 + 600 + 2_500 + 1_000 + 1_000 + 4_000 + 5_000 + 2_000 + 4_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).

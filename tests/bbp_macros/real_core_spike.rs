@@ -75,13 +75,11 @@ const SWAPS: &[(&str, &str)] = &[
   };"#,
     ),
     (
-        "lazyValues",
-        r#"  const lazyValues = {
-    has: value => __rt.formKind(value) === "lazy-seq",
-    get: value => __rt.formKind(value) !== "lazy-seq" ? undefined
-      : {thunk: null, get value() { return __rt.cljSeq(value); }, set value(_) {}},
-    set() { throw new TypeError("shared profile: lazyValues.set"); }
-  }, delays = new WeakMap();"#,
+        "lazyOf",
+        r#"  function lazyOf(value) {
+    return __rt.formKind(value) !== "lazy-seq" ? undefined
+      : {fn$LKEY: null, get s$LKEY() { return __rt.cljSeq(value); }, set s$LKEY(_) {}};
+  }"#,
     ),
     (
         "LazySeq",

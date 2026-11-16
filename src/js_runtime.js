@@ -112,9 +112,12 @@
   // `viewType`: 5 `IndexedSeq`, 6 `ChunkedSeq`, 7 `NodeSeq`, 8
   // `ArrayNodeSeq`, 9 `PersistentArrayMapSeq`, 10 `RSeq`, 11
   // `PersistentTreeMapSeq`; numbers, so that a program that keeps one of
-  // them keeps no table of the others. Kinds 20 and 21 are keywords and
-  // symbols (`keywordOf`, `symbolOf`), numbered apart from the seq kinds
-  // still to convert.
+  // them keeps no table of the others. Kinds 16 to 19 are the lazy seqs
+  // and chunks (light-cljs-1029), each read by its own test: 16 `LazySeq`
+  // (`lazyOf`), 17 `ChunkedCons` (`chunkedConsOf`), 18 `ArrayChunk`
+  // (`chunkOf`), 19 `ChunkBuffer` (`chunkBufferOf`). Kinds 20 and 21 are
+  // keywords and symbols (`keywordOf`, `symbolOf`), numbered apart from the
+  // seq kinds still to convert.
   const kinds = Object.freeze({vector: 1, subvec: 2, entry: 3, transientVector: 4});
   //@unit vectorStore
   // The store (see `vectorTailOffset`) of a vector, a subvector or a map
@@ -202,10 +205,81 @@
   function RSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
   //@unit TreeMapSeqCell
   function TreeMapSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit LazySeqCell
+  // A lazy seq with `LazySeq`'s prototype (`lazyOf`), upstream's fields:
+  // `fn` the thunk until the seq is realized, then null (an undefined one is
+  // null), `s` what the thunk gave and `hash` the cached hash. Nothing in it
+  // is frozen; a step of a lazy pipeline builds this one object. The
+  // compile-time runtime stamps it (`stamp`).
+  function LazySeqCell(fn, s, hash) { this.fn$LKEY = fn === undefined ? null : fn; this.s$LKEY = s; this.hash$LKEY = hash; /*@brand*/ }
+  //@unit lazyOf
+  // A lazy seq, kind 16 (`kinds`): the value itself, whose own keyed fields
+  // are its state (`LazySeqCell`), else undefined. As `viewOf`, one made by
+  // reflection from the prototype holds no state, and is no lazy seq. The
+  // shared-heap profile's also answers the engine's lazy seqs, with a view
+  // of the same fields.
+  function lazyOf(value) {
+    if (value == null) return undefined;
+    return value.cljs$lang$kind$$LKEY === 16 && value.fn$LKEY !== undefined ? value : undefined;
+  }
+  //@unit isLazy requires: lazyOf
+  const isLazy = value => lazyOf(value) !== undefined;
+  //@unit lazyCells requires: isLazy
+  // `isLazy` as an entry of the store inventories, as `viewCells`.
+  const lazyCells = Object.freeze({has: isLazy});
+  //@unit lazyStep
+  // What the thunk of a lazy seq's state (`lazyOf`) gave, calling it on the
+  // first call only. The state changes only after the call returns, so a
+  // failure leaves the thunk in place, and a reentrant call is an ordinary
+  // call, as upstream's `sval`.
+  function lazyStep(lazy) {
+    const fn = lazy.fn$LKEY;
+    if (fn != null) { lazy.s$LKEY = fn.call(null); lazy.fn$LKEY = null; }
+    return lazy.s$LKEY;
+  }
+  //@unit ChunkedConsCell
+  // A chunked cons with `ChunkedCons`'s prototype (`chunkedConsOf`): its
+  // `chunk` (an undefined one is null), the seq `more` after it and its
+  // cached `hash`.
+  function ChunkedConsCell(chunk, more, hash) { this.chunk$LKEY = chunk === undefined ? null : chunk; this.more$LKEY = more; this.hash$LKEY = hash; /*@brand*/ }
+  //@unit chunkedConsOf
+  // A chunked cons, kind 17: the value itself (`ChunkedConsCell`), else
+  // undefined; the shared-heap profile's also answers the engine's.
+  function chunkedConsOf(value) {
+    if (value == null) return undefined;
+    return value.cljs$lang$kind$$LKEY === 17 && value.chunk$LKEY !== undefined ? value : undefined;
+  }
+  //@unit isChunkedCons requires: chunkedConsOf
+  const isChunkedCons = value => chunkedConsOf(value) !== undefined;
+  //@unit chunkedConsCells requires: isChunkedCons
+  // `isChunkedCons` as an entry of the store inventories, as `viewCells`.
+  const chunkedConsCells = Object.freeze({has: isChunkedCons});
+  //@unit ArrayChunkCell
+  // A chunk with `ArrayChunk`'s prototype (`chunkOf`): the items of `arr`
+  // from `off` to `end`; a range's chunk (an integer chunk) has no items but
+  // its `first` item and its `step`, which an array chunk has null.
+  function ArrayChunkCell(arr, off, end, first, step) { this.arr$LKEY = arr; this.off$LKEY = off; this.end$LKEY = end; this.first$LKEY = first; this.step$LKEY = step; /*@brand*/ }
+  //@unit chunkOf
+  // A chunk, kind 18: the value itself (`ArrayChunkCell`), else undefined.
+  function chunkOf(value) {
+    if (value == null) return undefined;
+    return value.cljs$lang$kind$$LKEY === 18 && value.arr$LKEY !== undefined ? value : undefined;
+  }
+  //@unit ChunkBufferCell
+  // A chunk buffer with `ChunkBuffer`'s prototype (`chunkBufferOf`): the
+  // array `buf` it fills (null once `chunk` took it) and its `end`.
+  function ChunkBufferCell(buf, end) { this.buf$LKEY = buf; this.end$LKEY = end; /*@brand*/ }
+  //@unit chunkBufferOf
+  // A chunk buffer, kind 19: the value itself, else undefined.
+  function chunkBufferOf(value) {
+    if (value == null) return undefined;
+    return value.cljs$lang$kind$$LKEY === 19 && value.end$LKEY !== undefined ? value : undefined;
+  }
   //@unit viewType mutator
-  // Makes `Type` a view class (`viewOf`) of kind `kind`, whose values `Cell`
-  // builds, which its prototype holds under the keyed name `cljs$lang$cell$` for
-  // `view` and `viewAt`.
+  // Makes `Type` a class of kind `kind` (`kinds`), whose values `Cell`
+  // builds, which its prototype holds under the keyed name `cljs$lang$cell$`
+  // for `view` and `viewAt`: the views (`viewOf`), and the lazy seqs and
+  // chunks (`lazyOf` and the others), which read only the kind.
   function viewType(Type, Cell, kind) {
     Cell.prototype = Type.prototype;
     Type.prototype.cljs$lang$cell$$LKEY = Cell;
@@ -232,7 +306,7 @@
   function stamped(value) { return stampBrand.has(value); }
   //@unit privateStore requires: payloads, weakMapStores
   // A store like a vector's, in the private fields of `payloads`: the seq
-  // kinds' stores (`cells`, `views`, `lazyValues`, `chunks`), and those of
+  // kinds' store (`cells`), and those of
   // the other values that operations build one per call (`reducedValues`,
   // `transients`, `queues`, `iteratorSeqs`; and `kindedStore`), each of the
   // kind `kind`. Each step of a seq builds a value, and a WeakMap entry per
@@ -322,8 +396,8 @@
   const atoms = new WeakMap(), volatiles = new WeakMap();
   //@unit queues requires: privateStore
   const queues = privateStore(7);
-  //@unit lazyValues requires: privateStore
-  const lazyValues = privateStore(5), delays = new WeakMap();
+  //@unit delays
+  const delays = new WeakMap();
   //@unit eductions
   const eductions = new WeakMap();
   //@unit ifnValues
@@ -361,7 +435,7 @@
   // The generic operations' branches by kind number, each kind's by
   // operation: 0 `seq`, 1 `first`, 2 `rest`, 3 `next`, 4 `count`, 5 `nth`,
   // 6 `get`, 7 `conj`, 8 `assoc`. The kinds are 1 lazy seqs (`LazySeq`),
-  // 2 cells (`ChunkedCons`, `Cons`, `ListValue`, `IntegerRangeValue`,
+  // 2 cells (`Cons`, `ListValue`, `IntegerRangeValue`,
   // `RangeValue`), 3 views (`IndexedSeqValue`, `ChunkedSeqValue`), which have
   // a branch of `first` only and take their number only where `first`'s
   // wrapper is kept, 4 vectors (`PersistentVectorValue`, `SubvecValue`),
@@ -662,7 +736,7 @@
     equiv(other) { return objectEquiv(this, other); },
     // JSON of a seq of a class (`viewOf`): its own properties but its keyed
     // fields, as before it had them (docs/value-layout.md, question 3).
-    toJSON() { const {arr$LKEY: _a, i$LKEY: _i, indexed$LKEY: _x, view$LKEY: _v, vec$LKEY: _c, base$LKEY: _b, ...json} = this; return json; },
+    toJSON() { const {arr$LKEY: _a, i$LKEY: _i, indexed$LKEY: _x, view$LKEY: _v, vec$LKEY: _c, base$LKEY: _b, fn$LKEY: _f, s$LKEY: _s, hash$LKEY: _h, chunk$LKEY: _k, more$LKEY: _m, ...json} = this; return json; },
     toString() { return printHooks.collection(this); },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); }
@@ -687,11 +761,22 @@
   IndexedSeqCell.prototype = IndexedSeqValue.prototype;
   //@unit ChunkedSeqCell.type effect: ChunkedSeqCell requires: ChunkedSeqCell, ChunkedSeqValue
   ChunkedSeqCell.prototype = ChunkedSeqValue.prototype;
-  //@unit ChunkedCons.type effect: ChunkedCons requires: builtinType, ChunkedCons, kindOps,
-  //@ sequencePrototype
-  builtinType(ChunkedCons, sequencePrototype).prototype[kindOps] = 2;
-  //@unit LazySeq.type effect: LazySeq requires: builtinType, kindOps, LazySeq, sequencePrototype
-  builtinType(LazySeq, sequencePrototype).prototype[kindOps] = 1;
+  //@unit ChunkedCons.type effect: ChunkedCons requires: builtinType, ChunkedCons, ChunkedConsCell,
+  //@ sequencePrototype, viewType
+  viewType(builtinType(ChunkedCons, sequencePrototype), ChunkedConsCell, 17);
+  //@unit LazySeq.type effect: LazySeq requires: builtinType, kindOps, LazySeq, LazySeqCell,
+  //@ sequencePrototype, viewType
+  viewType(builtinType(LazySeq, sequencePrototype), LazySeqCell, 16).prototype[kindOps] = 1;
+  //@unit arrayChunk.type effect: arrayChunk requires: arrayChunk, ArrayChunkCell, viewType
+  // A chunk's JSON is its own properties but its keyed fields, as before it
+  // had them (docs/value-layout.md, question 3); so is a chunk buffer's.
+  viewType(arrayChunk, ArrayChunkCell, 18);
+  Object.defineProperty(arrayChunk.prototype, "toJSON", {configurable: true, writable: true,
+    value() { const {arr$LKEY: _a, off$LKEY: _o, end$LKEY: _e, first$LKEY: _s, step$LKEY: _t, ...json} = this; return json; }});
+  //@unit ChunkBuffer.type effect: ChunkBuffer requires: ChunkBuffer, ChunkBufferCell, viewType
+  viewType(ChunkBuffer, ChunkBufferCell, 19);
+  Object.defineProperty(ChunkBuffer.prototype, "toJSON", {configurable: true, writable: true,
+    value() { const {buf$LKEY: _b, end$LKEY: _e, ...json} = this; return json; }});
   //@unit PersistentQueueValue.type effect: PersistentQueueValue requires: builtinType, kindOps,
   //@ PersistentQueueValue, sequencePrototype
   builtinType(PersistentQueueValue, sequencePrototype).prototype[kindOps] = 7;
@@ -1119,16 +1204,16 @@
       : new Cell(slice.arr$LKEY, offset, slice.indexed$LKEY, slice.view$LKEY);
   }
 
-  //@unit seq requires: cells, IndexedSeqCell, iteratorSeq, iteratorSeqs, kindHooks, lazyValues,
-  //@ maps, publicCollectionSlots, queues, sets, vectorStore, viewOf
+  //@unit seq requires: cells, IndexedSeqCell, isChunkedCons, iteratorSeq, iteratorSeqs, kindHooks,
+  //@ lazyOf, maps, publicCollectionSlots, queues, sets, vectorStore, viewOf
   function seq(value) {
     if (value == null || (cells.get(value)?.kind === "list" && cells.get(value).count === 0 && !publicCollectionSlots.has(value))) return null;
-    const lazy = lazyValues.get(value);
+    const lazy = lazyOf(value);
     if (lazy) return kindHooks.seqLazy(lazy);
     const queue = queues.get(value);
     if (queue) return kindHooks.seqQueue(value, queue);
     if (Array.isArray(value)) return value.length ? new IndexedSeqCell(value, 0, true, "indexed") : null;
-    if (cells.has(value)) return value;
+    if (cells.has(value) || isChunkedCons(value)) return value;
     const v = viewOf(value);
     if (v !== undefined) return v.i$LKEY < v.arr$LKEY.length ? value : null;
     const items = vectorStore(value);
@@ -1141,10 +1226,10 @@
     if (value[Symbol.iterator] != null) return iteratorSeq(value[Symbol.iterator]());
     throw new Error(String(value) + " is not ISeqable");
   }
-  //@unit seq.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
-  //@ MapEntryType, PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue,
-  //@ PersistentQueueValue, PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor,
-  //@ treeSetConstructor when: seq requires: kindOps, kindTables, noBranch, seq
+  //@unit seq.branches effect: Cons, IntegerRangeValue, LazySeq, ListValue, MapEntryType,
+  //@ PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue, PersistentQueueValue,
+  //@ PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor, treeSetConstructor when: seq
+  //@ requires: kindOps, kindTables, noBranch, seq
   // An operation of one value behind its branches for the kinds
   // (`kindTables`), under its name: the effects of the kinds' types wrap the
   // operation where one of them can be built, inside the protocol wrapper
@@ -1176,17 +1261,19 @@
   //@unit seq.protocol effect: installMethods when: seq requires: behindProtocol, methodKeys,
   //@ protocolHooks, seq
   seq = behindProtocol(seq, value => protocolHooks.publicMethod?.(value, methodKeys[52], 1, true));
-  //@unit cellSeq requires: cells, noBranch
+  //@unit cellSeq requires: cells, isChunkedCons, noBranch
   // The seq of a cell, itself, where the operations' paths give it: the
-  // branch of the kinds whose payload is a cell.
+  // branch of the kinds whose payload is a cell; a chunked cons is its own
+  // seq too.
   function cellSeq(value) {
     const cell = cells.get(value);
-    return cell === undefined || cell.kind === "list" && cell.count === 0 ? noBranch : value;
+    if (cell === undefined) return isChunkedCons(value) ? value : noBranch;
+    return cell.kind === "list" && cell.count === 0 ? noBranch : value;
   }
-  //@unit seq.cells effect: ChunkedCons, Cons, ListValue, IntegerRangeValue, RangeValue when: seq
-  //@ requires: cellSeq, kindTables
+  //@unit seq.cells effect: Cons, ListValue, IntegerRangeValue, RangeValue when: seq requires: cellSeq,
+  //@ kindTables
   kindTables[2][0] = cellSeq;
-  //@unit lazyBranch requires: kindHooks, kindTables, lazyValues, methodKeys, noBranch,
+  //@unit lazyBranch requires: kindHooks, kindTables, lazyOf, lazyRealized, methodKeys, noBranch,
   //@ protocolHooks
   // The branch of operation `index` (`kindTables`) for a lazy seq: the cells'
   // branch of the value it realizes, most often a cell, which is its own seq.
@@ -1200,42 +1287,43 @@
   // once, as the operation would.
   function lazyBranch(index, operation) {
     return value => {
-      const lazy = lazyValues.get(value), method = protocolHooks.publicMethod;
+      const lazy = lazyOf(value), method = protocolHooks.publicMethod;
       if (lazy === undefined) return noBranch;
-      if (!method) return kindTables[2][index](kindHooks.realizeLazy(lazy));
+      if (!method) return kindTables[2][index](lazyRealized(lazy));
       const own = method(value, methodKeys[52], 1, true);
       if (own) own.call(value, value); else kindHooks.seqLazy(lazy);
-      return operation(lazy.value);
+      return operation(lazy.s$LKEY);
     };
   }
-  //@unit LazySeq.seq effect: LazySeq when: lazyBranch, next, seq requires: cellSeq, deferredValue,
-  //@ kindHooks, kindTables, lazyValues, noBranch, protocolHooks, seq
+  //@unit LazySeq.seq effect: LazySeq when: lazyBranch, next, seq requires: cellSeq, kindHooks,
+  //@ kindTables, lazyOf, lazyRealized, noBranch, protocolHooks, seq
   kindTables[1][0] = value => {
-    const lazy = lazyValues.get(value);
+    const lazy = lazyOf(value);
     return lazy === undefined ? noBranch : kindHooks.seqLazy(lazy);
   };
   // The seq of what a lazy seq realizes: a cell is its own, which `seq`,
   // looking for an `ISeqable` implementation that JavaScript gave it, also
   // finds where protocol implementations exist.
   kindHooks.seqLazy = lazy => {
-    const current = kindHooks.realizeLazy(lazy);
+    const current = lazyRealized(lazy);
     if (!protocolHooks.publicMethod) { const result = cellSeq(current); if (result !== noBranch) return result; }
     return seq(current);
   };
-  // The raw value a lazy seq realizes, without the seq of it, which can take
-  // an item of a host iterator.
-  kindHooks.realizeLazy = lazy => {
-    let current = deferredValue(lazy, true);
+  //@unit lazyRealized requires: lazyOf, lazyStep
+  // The raw value a lazy seq's state (`lazyOf`) realizes, without the seq of
+  // it, which can take an item of a host iterator.
+  function lazyRealized(lazy) {
+    let current = lazyStep(lazy);
     // Flatten nested LazySeq results iteratively, retaining the raw final
     // value. CLJS calls seq on that raw value again on each traversal.
-    while (lazyValues.has(current)) {
-      current = deferredValue(lazyValues.get(current), true);
+    for (let inner = lazyOf(current); inner !== undefined; inner = lazyOf(current)) {
+      current = lazyStep(inner);
       // Compress as we advance, so discarded wrappers and their captured
       // source heads can be collected even through a long empty prefix.
-      lazy.value = current;
+      lazy.s$LKEY = current;
     }
-    return lazy.value = current;
-  };
+    return lazy.s$LKEY = current;
+  }
   //@unit queueFromArray.seq effect: queueFromArray when: first, rest, seq requires: concat,
   //@ IndexedSeqValue, kindHooks, publicCollectionSlots, seq, view
   kindHooks.seqQueue = (value, queue) => {
@@ -1306,24 +1394,28 @@
     }});
     return value;
   }
-  //@unit first requires: cells, chunks, firstSeq, isView, iteratorSeqs, lazyValues,
+  //@unit first requires: cells, chunkOf, firstSeq, isChunkedCons, isView, iteratorSeqs, lazyOf,
   //@ publicCollectionSlots, queues, seq
   function first(value) {
     if (value == null) return null;
     if (queues.has(value) && publicCollectionSlots.has(value)) return first(publicCollectionSlots.get(value).front);
-    if (chunks.get(value)?.integer) return chunks.get(value).start;
-    if (lazyValues.has(value)) { seq(value); return first(lazyValues.get(value).value); }
+    const chunk = chunkOf(value);
+    if (chunk !== undefined && chunk.step$LKEY !== null) return chunk.first$LKEY;
+    const lazy = lazyOf(value);
+    if (lazy !== undefined) { seq(value); return first(lazy.s$LKEY); }
     // Existing ISeq values do not redispatch ISeqable.
-    return firstSeq(cells.has(value) || isView(value) || iteratorSeqs.has(value) ? value : seq(value));
+    return firstSeq(cells.has(value) || isChunkedCons(value) || isView(value) || iteratorSeqs.has(value) ? value : seq(value));
   }
-  //@unit firstSeq requires: cells, iteratorSeqs, methodKeys, protocolHooks, publicCollectionSlots,
-  //@ viewOf
+  //@unit firstSeq requires: cells, chunkedConsOf, iteratorSeqs, kindHooks, methodKeys,
+  //@ protocolHooks, publicCollectionSlots, viewOf
   // `first`'s steps once it has the seq `current` of its value, which the
   // collections' branches take too (`seqBranch`, light-cljs-375).
   function firstSeq(current) {
     if (current === null) return null;
     const cell = cells.get(current);
     if (cell) return cell.kind === "list" && cell.count === 0 && !publicCollectionSlots.has(current) ? null : cell.head;
+    const chunked = chunkedConsOf(current);
+    if (chunked) return kindHooks.chunkedConsFirst(chunked);
     const slice = viewOf(current);
     if (slice) return slice.i$LKEY < slice.arr$LKEY.length ? slice.arr$LKEY[slice.i$LKEY] : null;
     const own = iteratorSeqs.get(current);
@@ -1333,10 +1425,10 @@
     throw new Error("ISeq.-first not supported on this type");
   }
 
-  //@unit first.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
-  //@ MapEntryType, PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue,
-  //@ PersistentQueueValue, PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor,
-  //@ treeSetConstructor when: first requires: first, kindOps, kindTables, noBranch
+  //@unit first.branches effect: Cons, IntegerRangeValue, LazySeq, ListValue, MapEntryType,
+  //@ PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue, PersistentQueueValue,
+  //@ PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor, treeSetConstructor when: first
+  //@ requires: first, kindOps, kindTables, noBranch
   // As `seq.branches`.
   first = (operation => Object.defineProperty(function (value) {
     const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][1](value) : noBranch;
@@ -1345,8 +1437,8 @@
   //@unit first.protocol effect: installMethods when: first requires: behindProtocol, first,
   //@ methodKeys, protocolHooks
   first = behindProtocol(first, value => protocolHooks.publicMethod?.(value, methodKeys[48], 1, false, true));
-  //@unit first.cells effect: ChunkedCons, Cons, ListValue, IntegerRangeValue, RangeValue when: first
-  //@ requires: cells, kindTables, noBranch
+  //@unit first.cells effect: Cons, ListValue, IntegerRangeValue, RangeValue when: first requires: cells,
+  //@ kindTables, noBranch
   // `first` and `rest` of a cell, which is already a seq, take no seq of it
   // and dispatch no protocol method but the one their wrappers look for
   // (`first.protocol`); `next` takes the seq of its rest (`next.cells`).
@@ -1357,19 +1449,22 @@
   //@unit LazySeq.first effect: LazySeq when: first requires: first, kindTables, lazyBranch
   kindTables[1][1] = lazyBranch(1, value => first(value));
 
-  //@unit rest requires: cells, emptyList, isView, iteratorSeqs, lazyValues, restSeq, seq
+  //@unit rest requires: cells, emptyList, isChunkedCons, isView, iteratorSeqs, lazyOf, restSeq, seq
   function rest(value) {
     if (value == null) return emptyList;
-    if (lazyValues.has(value)) { seq(value); return rest(lazyValues.get(value).value); }
-    return restSeq(cells.has(value) || isView(value) || iteratorSeqs.has(value) ? value : seq(value));
+    const lazy = lazyOf(value);
+    if (lazy !== undefined) { seq(value); return rest(lazy.s$LKEY); }
+    return restSeq(cells.has(value) || isChunkedCons(value) || isView(value) || iteratorSeqs.has(value) ? value : seq(value));
   }
-  //@unit restSeq requires: cells, emptyList, iteratorSeqs, kindHooks, methodKeys, protocolHooks,
-  //@ publicCollectionSlots, viewAt, viewOf
+  //@unit restSeq requires: cells, chunkedConsOf, emptyList, iteratorSeqs, kindHooks, methodKeys,
+  //@ protocolHooks, publicCollectionSlots, viewAt, viewOf
   // `rest`'s steps once it has the seq `current` of its value, as `firstSeq`.
   function restSeq(current) {
     if (current === null) return emptyList;
     const cell = cells.get(current);
     if (cell) return cell.kind === "list" ? cell.count === 1 || cell.count === 0 && !publicCollectionSlots.has(current) ? emptyList : cell.tail : cell.tail ?? emptyList;
+    const chunked = chunkedConsOf(current);
+    if (chunked) return kindHooks.chunkedConsRest(chunked);
     const slice = viewOf(current);
     if (!slice) {
       const own = iteratorSeqs.get(current);
@@ -1383,10 +1478,10 @@
     const tail = slice.i$LKEY + 1 < slice.arr$LKEY.length ? viewAt(slice, slice.i$LKEY + 1) : emptyList;
     return slice.view$LKEY === "queue" ? kindHooks.restQueue(tail, current) : tail;
   }
-  //@unit rest.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
-  //@ MapEntryType, PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue,
-  //@ PersistentQueueValue, PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor,
-  //@ treeSetConstructor when: rest requires: kindOps, kindTables, noBranch, rest
+  //@unit rest.branches effect: Cons, IntegerRangeValue, LazySeq, ListValue, MapEntryType,
+  //@ PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue, PersistentQueueValue,
+  //@ PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor, treeSetConstructor when: rest
+  //@ requires: kindOps, kindTables, noBranch, rest
   // As `first.branches`.
   rest = (operation => Object.defineProperty(function (value) {
     const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][2](value) : noBranch;
@@ -1395,8 +1490,8 @@
   //@unit rest.protocol effect: installMethods when: rest requires: behindProtocol, methodKeys,
   //@ protocolHooks, rest
   rest = behindProtocol(rest, value => protocolHooks.publicMethod?.(value, methodKeys[50], 1, false, true));
-  //@unit rest.cells effect: ChunkedCons, Cons, ListValue, IntegerRangeValue, RangeValue when: rest
-  //@ requires: cells, emptyList, kindTables, noBranch
+  //@unit rest.cells effect: Cons, ListValue, IntegerRangeValue, RangeValue when: rest requires: cells,
+  //@ emptyList, kindTables, noBranch
   kindTables[2][2] = value => {
     const cell = cells.get(value);
     if (cell === undefined || cell.kind === "list" && cell.count === 0) return noBranch;
@@ -1413,10 +1508,11 @@
   //@ kindHooks, meta
   kindHooks.restQueue = (tail, current) => collectionWithMeta(tail, meta(current));
 
-  //@unit next requires: cells, lazyValues, publicCollectionSlots, rest, seq, viewAt, viewOf
+  //@unit next requires: cells, lazyOf, publicCollectionSlots, rest, seq, viewAt, viewOf
   function next(value) {
     if (value == null) return null;
-    if (lazyValues.has(value)) { seq(value); return next(lazyValues.get(value).value); }
+    const lazy = lazyOf(value);
+    if (lazy !== undefined) { seq(value); return next(lazy.s$LKEY); }
     const cell = cells.get(value);
     if (cell?.kind === "list") return cell.count === 1 || cell.count === 0 && !publicCollectionSlots.has(value) ? null : cell.tail;
     if (cell?.kind === "repeat") return cell.state?.following ?? (cell.remaining === -1 ? value : cell.remaining > 1 ? cell.tail : null);
@@ -1427,9 +1523,9 @@
     return seq(rest(value));
   }
 
-  //@unit next.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
-  //@ MapEntryType, PersistentVectorValue, RangeValue, SubvecValue when: next requires: kindOps,
-  //@ kindTables, next, noBranch
+  //@unit next.branches effect: Cons, IntegerRangeValue, LazySeq, ListValue, MapEntryType,
+  //@ PersistentVectorValue, RangeValue, SubvecValue when: next requires: kindOps, kindTables, next,
+  //@ noBranch
   // As `first.branches`.
   next = (operation => Object.defineProperty(function (value) {
     const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][3](value) : noBranch;
@@ -1438,9 +1534,8 @@
   //@unit next.protocol effect: installMethods when: next requires: behindProtocol, methodKeys,
   //@ next, protocolHooks
   next = behindProtocol(next, value => protocolHooks.publicMethod?.(value, methodKeys[40], 1, false, true));
-  //@unit next.cells effect: ChunkedCons, Cons, ListValue, IntegerRangeValue, RangeValue when: next
-  //@ requires: cells, emptyList, kindHooks, kindTables, lazyValues, methodKeys, noBranch,
-  //@ protocolHooks, seq
+  //@unit next.cells effect: Cons, ListValue, IntegerRangeValue, RangeValue when: next requires: cells,
+  //@ emptyList, kindHooks, kindTables, lazyOf, methodKeys, noBranch, protocolHooks, seq
   // A list's next is its tail; another cell's the seq of its rest, which the
   // operation takes with `rest` and `seq`: where protocol implementations
   // exist, the seq of what a `-rest` that JavaScript gave the cell gives,
@@ -1453,7 +1548,7 @@
     const own = method ? method(value, methodKeys[50], 1, false, true) : undefined;
     if (own) return seq(own.call(value, value));
     // The rest, most often a lazy seq, whose seq this is.
-    const tail = cell.tail ?? emptyList, lazy = lazyValues.get(tail);
+    const tail = cell.tail ?? emptyList, lazy = lazyOf(tail);
     return lazy === undefined || method ? seq(tail) : kindHooks.seqLazy(lazy);
   };
   //@unit LazySeq.next effect: LazySeq when: next requires: kindTables, lazyBranch, next
@@ -1871,9 +1966,9 @@
 
   //@unit isIdent requires: namedOf
   const isIdent = x => namedOf(x) !== undefined;
-  //@unit isCollectionValue requires: cells, directMethod, holdsVector, isView, lazyValues, maps,
-  //@ queues, sets
-  const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || holdsVector(x) || cells.has(x) || isView(x) || queues.has(x) || lazyValues.has(x) || maps.has(x) || sets.has(x);
+  //@unit isCollectionValue requires: cells, directMethod, holdsVector, isChunkedCons, isLazy,
+  //@ isView, maps, queues, sets
+  const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || holdsVector(x) || cells.has(x) || isChunkedCons(x) || isView(x) || queues.has(x) || isLazy(x) || maps.has(x) || sets.has(x);
   //@unit boolean
   // Core predicates, one unit each.
   const boolean = x => x != null && x !== false;
@@ -1969,8 +2064,8 @@
   //@unit isEmpty requires: countedValue, countProtocol, methodKeys, protocolHooks, seq
   const isEmpty = x => x == null || ((protocolHooks.satisfies?.(methodKeys[11], x) ?? countedValue(x)) ? countProtocol(x) === 0 : seq(x) === null);
 
-  //@unit reduce requires: cells, chunks, first, invalidArity, isReduced, iterableValue, iterator,
-  //@ iteratorProtocol, kindHooks, lazyValues, methodKeys, next, protocolHooks,
+  //@unit reduce requires: cells, chunkOf, first, invalidArity, isChunkedCons, isLazy, isReduced,
+  //@ iterableValue, iterator, iteratorProtocol, kindHooks, methodKeys, next, protocolHooks,
   //@ publicCollectionSlots, reducedValue, reduceValue, seq, vectorReduce, vectorStore, viewOf
   function reduce(rf, init, collection) {
     const arity = arguments.length;
@@ -2027,13 +2122,14 @@
     }
     if (producer?.kind === "iterate") return kindHooks.reduceIterate(rf, init, source, producer, arity);
     if (producer?.kind === "cycle") return kindHooks.reduceCycle(rf, init, producer, arity);
-    if (chunks.has(source) && !chunks.get(source).integer) {
-      const c = chunks.get(source); let i = c.offset;
-      if (arity === 2) init = c.array[i++];
-      for (; i < c.array.length; i++) { init = rf.call(null, init, c.array[i]); if (isReduced(init)) return reducedValue(init); }
+    const chunk = chunkOf(source);
+    if (chunk !== undefined && chunk.step$LKEY === null) {
+      let i = chunk.off$LKEY;
+      if (arity === 2) init = chunk.arr$LKEY[i++];
+      for (; i < chunk.arr$LKEY.length; i++) { init = rf.call(null, init, chunk.arr$LKEY[i]); if (isReduced(init)) return reducedValue(init); }
       return init;
     }
-    const sequenceReduction = cells.has(source) || lazyValues.has(source) || (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string");
+    const sequenceReduction = cells.has(source) || isChunkedCons(source) || isLazy(source) || (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string");
     if (arity === 2 && sequenceReduction) {
       const current = seq(source);
       return current == null ? rf.call(null) : reduce(rf, first(current), next(current));
@@ -2312,8 +2408,8 @@
     return n === count(other);
   }
 
-  //@unit conj requires: cells, cons, emptyList, holdsVector, isView, kindHooks, lazyValues,
-  //@ makeVector, maps, metadataValues, methodKeys, missing, preserveMeta, protocolHooks,
+  //@unit conj requires: cells, cons, emptyList, holdsVector, isChunkedCons, isLazy, isView,
+  //@ kindHooks, makeVector, maps, metadataValues, methodKeys, missing, preserveMeta, protocolHooks,
   //@ publicCollectionSlots, queues, sets, subvecSources, vectorStore
   function conj(coll, item) {
     // One item onto a vector, where no protocol implementation or public
@@ -2348,7 +2444,7 @@
         result = updated;
       }
       else if (result == null) result = cons(args[i], emptyList, "list");
-      else if (cells.has(result) || isView(result) || lazyValues.has(result))
+      else if (cells.has(result) || isChunkedCons(result) || isView(result) || isLazy(result))
         result = cons(args[i], result, cells.get(result)?.kind === "list" ? "list" : "cons");
       else throw new Error("conj not supported on this type");
       if (holdsVector(previous) || maps.has(previous) || sets.has(previous) || queues.has(previous) || cells.get(previous)?.kind === "list") result = preserveMeta(previous, result);
@@ -3991,7 +4087,7 @@
     throw new Error("Doesn't support namespace on this type");
   }
 
-  //@unit count requires: cells, chunkBuffers, chunks, isTransient, kindHooks, maps, methodKeys,
+  //@unit count requires: cells, chunkBufferOf, chunkOf, isTransient, kindHooks, maps, methodKeys,
   //@ protocolHooks, publicCollectionSlots, queues, seqableValue, sets, subvecSources, vectorStore,
   //@ viewOf
   function count(value) {
@@ -4004,8 +4100,10 @@
     if (slots && subvecSources.has(value)) return slots.end - slots.start;
     if (slots && sets.has(value)) return count(slots["hash-map"]);
     if (isTransient(value)) return kindHooks.countTransient(value);
-    if (chunkBuffers.has(value)) return chunkBuffers.get(value).end;
-    if (chunks.has(value)) { const c = chunks.get(value); return c.end - c.offset; }
+    const buffer = chunkBufferOf(value);
+    if (buffer !== undefined) return buffer.end$LKEY;
+    const chunk = chunkOf(value);
+    if (chunk !== undefined) return chunk.end$LKEY - chunk.off$LKEY;
     if (queues.has(value)) return queues.get(value).length;
     if (Array.isArray(value)) return value.length;
     if (value == null) return 0;
@@ -4026,10 +4124,10 @@
     throw new Error("count not supported on this type");
   }
 
-  //@unit count.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
-  //@ MapEntryType, PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue,
-  //@ PersistentQueueValue, PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor,
-  //@ treeSetConstructor when: count requires: count, kindOps, kindTables, noBranch
+  //@unit count.branches effect: Cons, IntegerRangeValue, LazySeq, ListValue, MapEntryType,
+  //@ PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue, PersistentQueueValue,
+  //@ PersistentVectorValue, RangeValue, SubvecValue, treeMapConstructor, treeSetConstructor when: count
+  //@ requires: count, kindOps, kindTables, noBranch
   // As `seq.branches`.
   count = (operation => Object.defineProperty(function (value) {
     const kind = value?.[kindOps], result = typeof kind === "number" ? kindTables[kind & 15][4](value) : noBranch;
@@ -4060,18 +4158,18 @@
   //@ kindHooks, next
   // A sorted map's seq without a count counts its tail's.
   kindHooks.countTreeSeq = value => 1 + count(next(value));
-  //@unit count.cells effect: ChunkedCons, Cons, ListValue, IntegerRangeValue, RangeValue when: count
-  //@ requires: cells, kindHooks, kindTables, methodKeys, noBranch, protocolHooks
+  //@unit count.cells effect: Cons, ListValue, IntegerRangeValue, RangeValue when: count requires: cells,
+  //@ kindHooks, kindTables, methodKeys, noBranch, protocolHooks
   // A list and an integer range hold their count (and a public constructor
   // gave it the same count it gave the range); other cells walk their seqs.
   kindTables[2][4] = value => {
     const cell = cells.get(value), kind = cell?.kind;
     if (kind === "list" || kind === "range" && cell.integer) return cell.count;
-    return (kind === "cons" || kind === "chunked-cons" || kind === "range") && (protocolHooks.implements?.(methodKeys[51], value) ?? true) ? kindHooks.countSeq(value) : noBranch;
+    return (kind === "cons" || kind === "range") && (protocolHooks.implements?.(methodKeys[51], value) ?? true) ? kindHooks.countSeq(value) : noBranch;
   };
-  //@unit LazySeq.count effect: LazySeq when: count requires: kindHooks, kindTables, lazyValues,
+  //@unit LazySeq.count effect: LazySeq when: count requires: isLazy, kindHooks, kindTables,
   //@ methodKeys, noBranch, protocolHooks
-  kindTables[1][4] = value => lazyValues.has(value) && (protocolHooks.implements?.(methodKeys[51], value) ?? true) ? kindHooks.countSeq(value) : noBranch;
+  kindTables[1][4] = value => isLazy(value) && (protocolHooks.implements?.(methodKeys[51], value) ?? true) ? kindHooks.countSeq(value) : noBranch;
   //@unit count.vectors effect: PersistentVectorValue, SubvecValue when: count requires: kindTables,
   //@ noBranch, publicCollectionSlots, vectorStore
   // The counts the stores of the collections, kinds 4 to 7, hold
@@ -4118,7 +4216,7 @@
     return notFound;
   }
 
-  //@unit nth requires: cells, chunks, first, indexedValue, invalidArity, isEntryCell, isTransient,
+  //@unit nth requires: cells, chunkOf, first, indexedValue, invalidArity, isEntryCell, isTransient,
   //@ kindHooks, methodKeys, missing, next, outOfBounds, protocolHooks, seq, sequential, seqValue,
   //@ vectorNth, vectorStore, viewOf
   function nth(value, index, notFound) {
@@ -4132,7 +4230,7 @@
     const store = vectorStore(value);
     if (store) return store.cnt === 2 && index !== 0 && index !== 1 && isEntryCell(value) ? fallback === missing ? outOfBounds() : fallback : vectorNth(store, index, fallback);
     if (isTransient(value)) return kindHooks.nthTransient(value, index, fallback);
-    if (chunks.has(value)) return kindHooks.nthChunk(value, index, fallback);
+    if (chunkOf(value) !== undefined) return kindHooks.nthChunk(value, index, fallback);
     if (cells.get(value)?.integer) { const c = cells.get(value); return index >= 0 && index < c.count ? c.head + Math.floor(index) * c.step : fallback === missing ? outOfBounds() : fallback; }
     if (Array.isArray(value)) return index > -1 && index < value.length ? value[Math.trunc(index)] : fallback === missing ? outOfBounds() : fallback;
     if (typeof value === "string") {
@@ -4436,7 +4534,8 @@
   // operation as before. Each wrapper is the operation's outermost, so it follows the
   // operation's other wrappers here. Program types keep their path until
   // their recognition moves to the keyed kind (light-cljs-1013).
-  //@unit nth.slots effect: PersistentVectorValue when: nth requires: noBranch, nth, slotFirst
+  //@unit nth.slots effect: arrayChunk, PersistentVectorValue when: nth requires: noBranch, nth,
+  //@ slotFirst
   nth = (operation => Object.defineProperty(function (value, index, notFound) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && typeof index === "number") {
       const arity = arguments.length;
@@ -4445,8 +4544,8 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
-  //@unit count.slots effect: IndexedSeqValue, PersistentVectorValue when: count requires: count,
-  //@ noBranch, slotFirst
+  //@unit count.slots effect: arrayChunk, IndexedSeqValue, PersistentVectorValue when: count
+  //@ requires: count, noBranch, slotFirst
   count = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
@@ -4579,8 +4678,116 @@
     if (store === undefined) return noBranch;
     return kindHooks.seqVector(self, store);
   });
-  //@unit first.slots effect: ChunkedSeqValue, IndexedSeqValue when: first requires: first,
-  //@ noBranch, slotFirst
+  // A lazy seq, a chunked cons and a chunk answer their operations from
+  // slots of their prototypes too (light-cljs-1029), so that a step of a
+  // lazy pipeline builds one object of its class and calls no older layer.
+  // A lazy seq's slots realize it through `seq`, which an `extend-type` of
+  // `ISeqable` reaches, then take the operation of what it realized, as the
+  // operations do; a chunked cons's `next` is the seq of its rest, and its
+  // `first` and `rest` read its chunk through `nth`, `count` and
+  // `-drop-first` where protocol implementations exist, through their
+  // wrappers.
+  //@unit LazySeq.seqSlot effect: LazySeq when: seq requires: builtinSlot, lazyRealized, LazySeq,
+  //@ noBranch, seq
+  LazySeq.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.fn$LKEY === undefined) return noBranch;
+    return seq(lazyRealized(self));
+  });
+  //@unit LazySeq.firstSlot effect: LazySeq when: first requires: builtinSlot, first, LazySeq,
+  //@ noBranch, seq
+  LazySeq.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.fn$LKEY === undefined) return noBranch;
+    seq(self);
+    return first(self.s$LKEY);
+  });
+  //@unit LazySeq.restSlot effect: LazySeq when: rest requires: builtinSlot, LazySeq, noBranch,
+  //@ rest, seq
+  LazySeq.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.fn$LKEY === undefined) return noBranch;
+    seq(self);
+    return rest(self.s$LKEY);
+  });
+  //@unit LazySeq.nextSlot effect: LazySeq when: next requires: builtinSlot, LazySeq, next,
+  //@ noBranch, seq
+  LazySeq.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.fn$LKEY === undefined) return noBranch;
+    seq(self);
+    return next(self.s$LKEY);
+  });
+  //@unit ChunkedCons.first effect: ChunkedCons when: first requires: builtinSlot, ChunkedCons,
+  //@ chunkedConsFirst, noBranch
+  ChunkedCons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.chunk$LKEY === undefined) return noBranch;
+    return chunkedConsFirst(self);
+  });
+  //@unit ChunkedCons.rest effect: ChunkedCons when: rest requires: builtinSlot, ChunkedCons,
+  //@ chunkedConsRest, noBranch
+  ChunkedCons.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.chunk$LKEY === undefined) return noBranch;
+    return chunkedConsRest(self);
+  });
+  //@unit ChunkedCons.next effect: ChunkedCons when: next requires: builtinSlot, ChunkedCons,
+  //@ noBranch, rest, seq
+  ChunkedCons.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.chunk$LKEY === undefined) return noBranch;
+    return seq(rest(self));
+  });
+  //@unit ChunkedCons.seq effect: ChunkedCons when: seq requires: builtinSlot, ChunkedCons, noBranch
+  ChunkedCons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    return self.chunk$LKEY === undefined ? noBranch : self;
+  });
+  //@unit ChunkedCons.chunkedFirst effect: ChunkedCons when: chunkFirst requires: builtinSlot,
+  //@ ChunkedCons, noBranch
+  ChunkedCons.prototype.cljs$core$IChunkedSeq$_chunked_first$arity$1$LKEY = builtinSlot(function (self) {
+    const chunk = self.chunk$LKEY;
+    return chunk === undefined ? noBranch : chunk;
+  });
+  //@unit ChunkedCons.chunkedRest effect: ChunkedCons when: chunkRest requires: builtinSlot,
+  //@ ChunkedCons, emptyList, noBranch
+  ChunkedCons.prototype.cljs$core$IChunkedSeq$_chunked_rest$arity$1$LKEY = builtinSlot(function (self) {
+    return self.chunk$LKEY === undefined ? noBranch : self.more$LKEY ?? emptyList;
+  });
+  //@unit ChunkedCons.chunkedNext effect: ChunkedCons when: chunkNext requires: builtinSlot,
+  //@ ChunkedCons, noBranch
+  ChunkedCons.prototype.cljs$core$IChunkedNext$_chunked_next$arity$1$LKEY = builtinSlot(function (self) {
+    return self.chunk$LKEY === undefined ? noBranch : self.more$LKEY ?? null;
+  });
+  //@unit ChunkedSeqValue.chunkedFirst effect: ChunkedSeqValue when: chunkFirst requires: builtinSlot,
+  //@ ChunkedSeqValue, noBranch, ownedChunkFirst
+  // A vector's chunked seq gives its leaf from its offset as its chunk.
+  ChunkedSeqValue.prototype.cljs$core$IChunkedSeq$_chunked_first$arity$1$LKEY = builtinSlot(function (self) {
+    return self.arr$LKEY === undefined ? noBranch : ownedChunkFirst(self);
+  });
+  //@unit ChunkedSeqValue.chunkedRest effect: ChunkedSeqValue when: chunkRest requires: builtinSlot,
+  //@ ChunkedSeqValue, noBranch, ownedChunkRest
+  ChunkedSeqValue.prototype.cljs$core$IChunkedSeq$_chunked_rest$arity$1$LKEY = builtinSlot(function (self) {
+    return self.arr$LKEY === undefined ? noBranch : ownedChunkRest(self);
+  });
+  //@unit ChunkedSeqValue.chunkedNext effect: ChunkedSeqValue when: chunkNext requires: builtinSlot,
+  //@ ChunkedSeqValue, noBranch, ownedChunkRest, seq
+  ChunkedSeqValue.prototype.cljs$core$IChunkedNext$_chunked_next$arity$1$LKEY = builtinSlot(function (self) {
+    return self.arr$LKEY === undefined ? noBranch : seq(ownedChunkRest(self));
+  });
+  //@unit arrayChunk.countSlot effect: arrayChunk when: count requires: arrayChunk, builtinSlot,
+  //@ noBranch
+  arrayChunk.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    return self.arr$LKEY === undefined ? noBranch : self.end$LKEY - self.off$LKEY;
+  });
+  //@unit arrayChunk.nthSlot effect: arrayChunk when: nth requires: arrayChunk, builtinSlot,
+  //@ chunkNth, missing, noBranch
+  arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
+    return self.arr$LKEY === undefined ? noBranch : chunkNth(self, index, missing);
+  });
+  arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
+    return self.arr$LKEY === undefined ? noBranch : chunkNth(self, index, notFound);
+  });
+  //@unit arrayChunk.dropFirstSlot effect: arrayChunk when: chunkDropFirst requires: arrayChunk,
+  //@ builtinSlot, dropFirstChunk, noBranch
+  arrayChunk.prototype.cljs$core$IChunk$_drop_first$arity$1$LKEY = builtinSlot(function (self) {
+    return self.arr$LKEY === undefined ? noBranch : dropFirstChunk(self);
+  });
+  //@unit first.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq when: first
+  //@ requires: first, noBranch, slotFirst
   first = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ISeq$_first$arity$1$LKEY;
@@ -4588,8 +4795,8 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(first);
-  //@unit rest.slots effect: ChunkedSeqValue, IndexedSeqValue when: rest requires: noBranch, rest,
-  //@ slotFirst
+  //@unit rest.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq when: rest
+  //@ requires: noBranch, rest, slotFirst
   rest = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ISeq$_rest$arity$1$LKEY;
@@ -4597,8 +4804,8 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(rest);
-  //@unit next.slots effect: ChunkedSeqValue, IndexedSeqValue when: next requires: next, noBranch,
-  //@ slotFirst
+  //@unit next.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq when: next
+  //@ requires: next, noBranch, slotFirst
   next = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$INext$_next$arity$1$LKEY;
@@ -4606,8 +4813,8 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(next);
-  //@unit seq.slots effect: ChunkedSeqValue, IndexedSeqValue, PersistentVectorValue when: seq
-  //@ requires: noBranch, seq, slotFirst
+  //@unit seq.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq,
+  //@ PersistentVectorValue when: seq requires: noBranch, seq, slotFirst
   seq = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY;
@@ -5077,9 +5284,9 @@
     return true;
   }
 
-  //@unit sequential requires: cells, holdsVector, isView, lazyValues, queues
+  //@unit sequential requires: cells, holdsVector, isChunkedCons, isLazy, isView, queues
   function sequential(value) {
-    return holdsVector(value) || cells.has(value) || isView(value) || queues.has(value) || lazyValues.has(value);
+    return holdsVector(value) || cells.has(value) || isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value);
   }
   //@unit comparedSequential requires: holdsVector, kindHooks
   // The sequential values that equality and hashing compare by their items:
@@ -5091,9 +5298,10 @@
   //@unit cons.compared effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
   //@ listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
   //@ iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue, IndexedSeqValue, queueFromArray,
-  //@ LazySeq when: comparedSequential requires: cells, isView, kindHooks, lazyValues, queues
+  //@ LazySeq when: comparedSequential requires: cells, isChunkedCons, isLazy, isView, kindHooks,
+  //@ queues
   kindHooks.comparedSeq = value => cells.has(value) ? !["cycle", "iterate"].includes(cells.get(value).kind)
-    : isView(value) || queues.has(value) || lazyValues.has(value);
+    : isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value);
 
   //@unit identityHashes
   const identityHashes = new WeakMap();
@@ -5217,8 +5425,9 @@
   //@unit makeVector.hash effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
-  //@ IndexedSeqValue, queueFromArray, LazySeq when: hash requires: cells, constructorHashes,
-  //@ hashOrderedColl, holdsVector, kindHooks, lazyValues, publicCollectionSlots, queues, viewOf
+  //@ IndexedSeqValue, queueFromArray, LazySeq when: hash requires: cells, chunkedConsOf,
+  //@ constructorHashes, hashOrderedColl, holdsVector, kindHooks, lazyOf, publicCollectionSlots,
+  //@ queues, viewOf
   // Sequential values (see `makeVector.equiv`).
   kindHooks.hashSequential = value => {
     if (holdsVector(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value) || viewOf(value)?.view$LKEY === "chunked") {
@@ -5226,10 +5435,10 @@
       constructorHashes.set(value, result);
       return result;
     }
-    const cached = lazyValues.get(value) ?? cells.get(value)?.chunkedState;
-    if (cached?.hash != null) return cached.hash;
+    const cached = lazyOf(value) ?? chunkedConsOf(value);
+    if (cached?.hash$LKEY != null) return cached.hash$LKEY;
     const result = hashOrderedColl(value);
-    if (cached) cached.hash = result;
+    if (cached) cached.hash$LKEY = result;
     return result;
   };
   //@unit entryHashing
@@ -5241,12 +5450,13 @@
   //@unit hashed requires: constructorHashes
   function hashed(value, cached) { constructorHashes.set(value, cached); return value; }
 
-  //@unit compilerFormBridge compile-time requires: atoms, cells, deferredValue, emptyList,
-  //@ EmptyListValue, generatedNames, holdsVector, ifnValues, isView, jsObject, keyword, lazyValues,
-  //@ listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name, namedOf,
-  //@ queueFromArray, queues, recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal,
-  //@ stamped, symbol, symbolOf, toArray, typeFields, uuid, uuids, vars, vectorFromArray,
-  //@ vectorItems, vectorNth, vectorStore, viewAt, viewOf, volatiles
+  //@unit compilerFormBridge compile-time requires: atoms, cells, chunkedConsFirst, chunkedConsOf,
+  //@ chunkedConsRest, emptyList, EmptyListValue, generatedNames, holdsVector, ifnValues,
+  //@ isChunkedCons, isLazy, isView, jsObject, keyword, lazyOf, lazyStep, listFromArray,
+  //@ mapFromArray, maps, mapTraversal, metadataValues, name, namedOf, queueFromArray, queues,
+  //@ recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal, stamped, symbol,
+  //@ symbolOf, toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectorItems, vectorNth,
+  //@ vectorStore, viewAt, viewOf, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -5432,21 +5642,21 @@
               }
             }
             a = [tag === "js-array" ? "vector" : "map", null, null, items];
-          } else if (cells.has(v) || (stamped(v) && isView(v)) || lazyValues.has(v)) {
+          } else if (cells.has(v) || (stamped(v) && (isView(v) || isChunkedCons(v) || isLazy(v)))) {
             tag = "list"; a = [];
             const seen = new WeakSet(); let current = v;
             while (true) {
               if (--remaining < 0) fail("sequence limit", path);
               if (current == null) break;
-              if (!cells.has(current) && !(stamped(current) && isView(current)) && !lazyValues.has(current)) fail("noncanonical sequence tail", path);
+              if (!cells.has(current) && !(stamped(current) && (isView(current) || isChunkedCons(current) || isLazy(current)))) fail("noncanonical sequence tail", path);
               if (seen.has(current)) fail("cyclic sequence", path); seen.add(current);
               // Lazy realization is intentionally executable but shares limits.
               // Work only with private payloads. User protocol objects are not
               // expansion trees; realization cannot call their getters to diagnose.
               try {
-                while (lazyValues.has(current)) {
+                while (stamped(current) && isLazy(current)) {
                   if (--remaining < 0) fail("sequence limit", path);
-                  current = deferredValue(lazyValues.get(current), true);
+                  current = lazyStep(lazyOf(current));
                 }
               } catch (_) { fail("lazy realization failure", path); }
               if (current == null) break;
@@ -5475,6 +5685,12 @@
                 try { head = cell.head; tail = cell.tail; } catch (_) { fail("sequence realization failure", path); }
                 a.push(visit(head, path + "[" + a.length + "]", depth + 1));
                 current = tail;
+              } else if (stamped(current) && isChunkedCons(current)) {
+                const chunked = chunkedConsOf(current);
+                let head, tail;
+                try { head = chunkedConsFirst(chunked); tail = chunkedConsRest(chunked); } catch (_) { fail("sequence realization failure", path); }
+                a.push(visit(head, path + "[" + a.length + "]", depth + 1));
+                current = tail;
               } else if (stamped(current) && isView(current)) {
                 const slice = viewOf(current);
                 if (slice.i$LKEY >= slice.arr$LKEY.length) break;
@@ -5499,7 +5715,7 @@
             if (!tag) fail("arbitrary object (including promise)", path);
           }
           // A lazy seq, chunked cons or repeat has metadata, nil where none is stored.
-          const metadata = object && (metadataValues.has(v) || lazyValues.has(v) || cells.get(v)?.kind === "chunked-cons" || cells.get(v)?.kind === "repeat")
+          const metadata = object && (metadataValues.has(v) || (stamped(v) && (isLazy(v) || isChunkedCons(v))) || cells.get(v)?.kind === "repeat")
             ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, path + ".meta", depth + 1) : null;
           if (object) unseen?.delete(v);
           return [tag, (object && tag !== "keyword" ? borrowed.get(v) : primitives.get(primitiveKey(v))) ?? null, metadata, a, b];
@@ -5518,9 +5734,9 @@
       }});
   }
 
-  //@unit inspect requires: atoms, cells, first, holdsVector, isReduced, isView, keywordOf,
-  //@ mapTraversal, next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbolOf, uuids,
-  //@ vars, vectorItems, volatiles
+  //@unit inspect requires: atoms, cells, first, holdsVector, isChunkedCons, isReduced, isView,
+  //@ keywordOf, mapTraversal, next, nth, recordEntries, recordTypes, seq, sets, setTraversal,
+  //@ symbolOf, uuids, vars, vectorItems, volatiles
   // A value's shape for the reader (EDN data included) and the observation
   // harness, which alone registers inspect. Exposed storage remains frozen.
   // At compile time a vector is told by its stamp before its keyed kind
@@ -5539,7 +5755,7 @@
     const members = sets.get(value);
     if (members) return Object.freeze({kind: "set",
       items: Object.freeze(setTraversal(value).map(entry => entry.key)), count: members.length});
-    if (cells.has(value) || /*@stamped*/isView(value)) {
+    if (cells.has(value) || /*@stamped*/isChunkedCons(value) || /*@stamped*/isView(value)) {
       const items = [];
       for (let current = seq(value); current !== null; current = next(current)) items.push(first(current));
       return Object.freeze({kind: cells.get(value)?.kind === "list" ? "list" : "seq", items: Object.freeze(items)});
@@ -5722,10 +5938,10 @@
     metadataValues.set(value, metadata);
     deferredVarMetadata.delete(value);
   };
-  //@unit empty requires: cells, collectionWithMeta, emptyList, holdsVector, isEntryCell, isView,
-  //@ lazyValues, makeMap, makeSet, mapKinds, maps, mapTypes, meta, methodKeys, preserveMeta,
-  //@ protocolHooks, publicCollectionSlots, queueFromArray, queues, recordTypes, setKinds, sets,
-  //@ setType, sortedComparators, vector, viewOf
+  //@unit empty requires: cells, collectionWithMeta, emptyList, holdsVector, isChunkedCons,
+  //@ isEntryCell, isLazy, isView, makeMap, makeSet, mapKinds, maps, mapTypes, meta, methodKeys,
+  //@ preserveMeta, protocolHooks, publicCollectionSlots, queueFromArray, queues, recordTypes,
+  //@ setKinds, sets, setType, sortedComparators, vector, viewOf
   function empty(value) {
     const method = value == null ? null : protocolHooks.publicMethod?.(value, methodKeys[15], 1);
     if (method) return method.call(value, value);
@@ -5736,8 +5952,8 @@
     if (sets.has(value)) return preserveMeta(value, makeSet(setType(setKinds.get(value)), Array.isArray(sets.get(value)) ? [] : {root: null, nil: null, length: 0}, setKinds.get(value), sortedComparators.get(value)));
     if (queues.has(value)) return preserveMeta(value, queueFromArray([]));
     if (cells.get(value)?.kind === "list" && cells.get(value).count === 0 && !publicCollectionSlots.has(value)) return value;
-    if (cells.has(value) || isView(value) || lazyValues.has(value))
-      return cells.get(value)?.kind === "list" || viewOf(value)?.view$LKEY === "queue" || lazyValues.has(value) ? collectionWithMeta(emptyList, meta(value)) : emptyList;
+    if (cells.has(value) || isChunkedCons(value) || isView(value) || isLazy(value))
+      return cells.get(value)?.kind === "list" || viewOf(value)?.view$LKEY === "queue" || isLazy(value) ? collectionWithMeta(emptyList, meta(value)) : emptyList;
     return null;
   }
   //@unit peek requires: cells, first, holdsVector, methodKeys, protocolHooks,
@@ -6177,23 +6393,24 @@
     if (mask && value?.[mask[0]]) return false;
     return coreName ? !!(protocol[nativeType(value)] || protocol._ || nativeMethods.get(coreName)?.get(nativeType(value)) || nativeMethods.get(coreName)?.get("_")) : false;
   }
-  //@unit countedValue requires: cells, chunkBuffers, chunks, holdsVector, isTransient, isView,
-  //@ lazyValues, maps, queues, sets, viewOf
+  //@unit countedValue requires: cells, chunkBufferOf, chunkOf, holdsVector, isChunkedCons, isLazy,
+  //@ isTransient, isView, maps, queues, sets, viewOf
   // A core protocol's native test, without the protocol objects (one per
   // protocol, here ICounted; see `builtinCoreImplementation`).
   function countedValue(value) {
-    // A value is in one payload store: a cell or a lazy seq is in no other.
+    // A value is in one payload store: a cell or a lazy seq is in no other,
+    // and a chunked cons, which `count` walks one by one, is no other value.
     const cell = cells.get(value);
     if (cell !== undefined) return cell.kind === "tree-seq" || cell.integer === true || cell.kind === "list";
-    return !lazyValues.has(value) && (isTransient(value) || chunkBuffers.has(value) || chunks.has(value) || holdsVector(value) || maps.has(value) || sets.has(value) || queues.has(value) || (isView(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(viewOf(value).view$LKEY)));
+    return !isChunkedCons(value) && !isLazy(value) && (isTransient(value) || chunkBufferOf(value) !== undefined || chunkOf(value) !== undefined || holdsVector(value) || maps.has(value) || sets.has(value) || queues.has(value) || (isView(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(viewOf(value).view$LKEY)));
   }
-  //@unit seqValue requires: cells, chunks, isView, iteratorSeqs, lazyValues, queues
+  //@unit seqValue requires: cells, chunkOf, isChunkedCons, isLazy, isView, iteratorSeqs, queues
   function seqValue(value) {
-    return cells.has(value) || lazyValues.has(value) || isView(value) || chunks.get(value)?.integer === true || queues.has(value) || iteratorSeqs.has(value);
+    return cells.has(value) || isChunkedCons(value) || isLazy(value) || isView(value) || (chunkOf(value)?.step$LKEY ?? null) !== null || queues.has(value) || iteratorSeqs.has(value);
   }
-  //@unit nextValue requires: cells, isView, lazyValues, queues
+  //@unit nextValue requires: cells, isChunkedCons, isLazy, isView, queues
   function nextValue(value) {
-    return cells.has(value) || isView(value) || queues.has(value) || lazyValues.has(value);
+    return cells.has(value) || isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value);
   }
   //@unit storesPredicate requires: canHoldField, payloads
   // Brand inventories are fixed. Build one private inventory per predicate,
@@ -6215,14 +6432,14 @@
       return false;
     };
   }
-  //@unit seqableValue requires: cells, iteratorSeqs, lazyValues, maps, queues, sets,
-  //@ storesPredicate, vectorCells, viewCells
-  const seqableValue = storesPredicate(vectorCells, maps, sets, cells, viewCells, queues, lazyValues, iteratorSeqs);
-  //@unit indexedValue requires: cells, chunks, holdsVector, transientState, viewOf
+  //@unit seqableValue requires: cells, chunkedConsCells, iteratorSeqs, lazyCells, maps, queues,
+  //@ sets, storesPredicate, vectorCells, viewCells
+  const seqableValue = storesPredicate(vectorCells, maps, sets, cells, chunkedConsCells, viewCells, queues, lazyCells, iteratorSeqs);
+  //@unit indexedValue requires: cells, chunkOf, holdsVector, transientState, viewOf
   function indexedValue(value) {
     const transient = transientState(value);
     if (transient) return transient.kind === "vector";
-    return chunks.has(value) || cells.get(value)?.integer === true || holdsVector(value) || viewOf(value)?.indexed$LKEY === true;
+    return chunkOf(value) !== undefined || cells.get(value)?.integer === true || holdsVector(value) || viewOf(value)?.indexed$LKEY === true;
   }
   //@unit cloneablePayload requires: cells, holdsVector, isEntryCell, maps, queues, recordTypes,
   //@ sets, viewOf
@@ -6231,27 +6448,27 @@
   const lookupValue = value => isTransient(value) || holdsVector(value) || maps.has(value) || sets.has(value);
   //@unit associativeValue requires: holdsVector, maps
   const associativeValue = value => holdsVector(value) || maps.has(value);
-  //@unit collectionValue requires: cells, lazyValues, maps, queues, sets, storesPredicate,
-  //@ vectorCells, viewCells
-  const collectionValue = storesPredicate(vectorCells, maps, sets, cells, viewCells, queues, lazyValues);
+  //@unit collectionValue requires: cells, chunkedConsCells, lazyCells, maps, queues, sets,
+  //@ storesPredicate, vectorCells, viewCells
+  const collectionValue = storesPredicate(vectorCells, maps, sets, cells, chunkedConsCells, viewCells, queues, lazyCells);
   //@unit emptyableValue requires: collectionValue, recordTypes
   const emptyableValue = value => !recordTypes.has(value) && collectionValue(value);
   //@unit editableValue requires: holdsVector, isEntryCell, maps, recordTypes, sets,
   //@ sortedComparators, subvecSources
   const editableValue = value => holdsVector(value) && !isEntryCell(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && !sortedComparators.has(value) || sets.has(value) && !sortedComparators.has(value);
-  //@unit reduceValue requires: cells, chunks, holdsVector, isView, lazyValues, maps, recordTypes,
+  //@unit reduceValue requires: cells, chunkOf, holdsVector, isLazy, isView, maps, recordTypes,
   //@ viewOf
-  const reduceValue = value => cells.get(value)?.kind !== "chunked-cons" && (chunks.has(value) && !chunks.get(value).integer || holdsVector(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || lazyValues.has(value) || (isView(value) && viewOf(value).view$LKEY !== "queue"));
+  const reduceValue = value => (chunkOf(value)?.step$LKEY === null || holdsVector(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || isLazy(value) || (isView(value) && viewOf(value).view$LKEY !== "queue"));
   //@unit kvReduceValue requires: holdsVector, isEntryCell, maps
   const kvReduceValue = value => holdsVector(value) && !isEntryCell(value) || maps.has(value);
-  //@unit iterableValue requires: cells, collectionValue
-  const iterableValue = value => !["cycle", "iterate", "repeat", "chunked-cons"].includes(cells.get(value)?.kind) && collectionValue(value);
+  //@unit iterableValue requires: cells, collectionValue, isChunkedCons
+  const iterableValue = value => !["cycle", "iterate", "repeat"].includes(cells.get(value)?.kind) && !isChunkedCons(value) && collectionValue(value);
   //@unit stackValue requires: cells, holdsVector, queues
-  const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat", "chunked-cons"].includes(cells.get(value)?.kind) && (holdsVector(value) || cells.has(value) || queues.has(value));
-  //@unit chunkedSeqValue requires: cells, viewOf
-  const chunkedSeqValue = value => { const kind = cells.get(value)?.kind; return kind === "range" || kind === "chunked-cons" || viewOf(value)?.view$LKEY === "chunked"; };
-  //@unit chunkValue requires: chunks
-  const chunkValue = value => chunks.has(value);
+  const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat"].includes(cells.get(value)?.kind) && (holdsVector(value) || cells.has(value) || queues.has(value));
+  //@unit chunkedSeqValue requires: cells, isChunkedCons, viewOf
+  const chunkedSeqValue = value => cells.get(value)?.kind === "range" || isChunkedCons(value) || viewOf(value)?.view$LKEY === "chunked";
+  //@unit chunkValue requires: chunkOf
+  const chunkValue = value => chunkOf(value) !== undefined;
   //@unit namedValue requires: multiFns, namedOf
   const namedValue = value => namedOf(value) !== undefined || multiFns.has(value);
   //@unit ifnValue requires: holdsVector, ifnMethods, isIdent, isTransient, maps, multiFns,
@@ -6279,27 +6496,27 @@
   const findValue = value => holdsVector(value) || (maps.has(value) && !recordTypes.has(value));
   //@unit reversibleValue requires: holdsVector, sortedComparators, viewOf
   const reversibleValue = value => holdsVector(value) || viewOf(value)?.view$LKEY === "indexed" || sortedComparators.has(value);
-  //@unit dropValue requires: cells, holdsVector, lazyValues, mapKinds, viewOf
+  //@unit dropValue requires: cells, holdsVector, isLazy, mapKinds, viewOf
   const dropValue = value => {
     // As `countedValue`, a cell or a lazy seq is in no other store.
     const cell = cells.get(value);
     if (cell !== undefined) return cell.integer === true || cell.kind === "repeat";
-    return !lazyValues.has(value) && (mapKinds.get(value) === "array-map" || holdsVector(value) || ["indexed", "chunked", "array-map"].includes(viewOf(value)?.view$LKEY));
+    return !isLazy(value) && (mapKinds.get(value) === "array-map" || holdsVector(value) || ["indexed", "chunked", "array-map"].includes(viewOf(value)?.view$LKEY));
   };
-  //@unit metaValue requires: atoms, cells, lazyValues, maps, metaFunctions, queues, reifyValues,
-  //@ sets, storesPredicate, symbolCells, vars, vectorCells, viewCells
-  const metaValue = storesPredicate(symbolCells, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, vars, atoms, metaFunctions, reifyValues);
-  //@unit withMetaValue requires: cells, lazyValues, maps, metaFunctions, queues, reifyValues, sets,
-  //@ storesPredicate, symbolCells, vars, vectorCells, viewCells
-  const withMetaValue = storesPredicate(symbolCells, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, vars, metaFunctions, reifyValues);
+  //@unit metaValue requires: atoms, cells, chunkedConsCells, lazyCells, maps, metaFunctions,
+  //@ queues, reifyValues, sets, storesPredicate, symbolCells, vars, vectorCells, viewCells
+  const metaValue = storesPredicate(symbolCells, vectorCells, maps, sets, cells, chunkedConsCells, viewCells, queues, lazyCells, vars, atoms, metaFunctions, reifyValues);
+  //@unit withMetaValue requires: cells, chunkedConsCells, lazyCells, maps, metaFunctions, queues,
+  //@ reifyValues, sets, storesPredicate, symbolCells, vars, vectorCells, viewCells
+  const withMetaValue = storesPredicate(symbolCells, vectorCells, maps, sets, cells, chunkedConsCells, viewCells, queues, lazyCells, vars, metaFunctions, reifyValues);
   //@unit instValue
   const instValue = value => value instanceof Date;
   //@unit uuidImplementation requires: uuids
   const uuidImplementation = value => uuids.has(value);
-  //@unit aseqValue requires: cells, publicCollectionSlots, viewOf
+  //@unit aseqValue requires: cells, isChunkedCons, publicCollectionSlots, viewOf
   function aseqValue(value) {
     const cell = cells.get(value), kind = viewOf(value)?.view$LKEY;
-    return publicCollectionSlots.has(value) && cell?.kind === "list" || kind === "chunked" || cell?.kind === "cons" || (cell?.kind === "list" && cell.count > 0) || cell?.kind === "chunked-cons" || kind === "indexed" || kind === "hash-map";
+    return publicCollectionSlots.has(value) && cell?.kind === "list" || kind === "chunked" || cell?.kind === "cons" || (cell?.kind === "list" && cell.count > 0) || isChunkedCons(value) || kind === "indexed" || kind === "hash-map";
   }
   //@unit listValue requires: cells
   const listValue = value => ["list", "cons"].includes(cells.get(value)?.kind);
@@ -6317,8 +6534,8 @@
   const comparableValue = value => holdsVector(value) || uuids.has(value) || namedOf(value) !== undefined || value instanceof Date;
   //@unit atomValue requires: atoms, directMethod, isTransient
   const atomValue = value => atoms.has(value) || !isTransient(value) && !!directMethod(value, "IAtom", 0);
-  //@unit pendingValue requires: cells, delays, lazyValues
-  const pendingValue = value => ["repeat", "cycle", "iterate"].includes(cells.get(value)?.kind) || delays.has(value) || lazyValues.has(value);
+  //@unit pendingValue requires: cells, delays, isLazy
+  const pendingValue = value => ["repeat", "cycle", "iterate"].includes(cells.get(value)?.kind) || delays.has(value) || isLazy(value);
   //@unit derefValue requires: atoms, delays, reducedValues, vars, volatiles
   const derefValue = value => delays.has(value) || vars.has(value) || atoms.has(value) || volatiles.has(value) || reducedValues.has(value);
   //@unit volatileValue requires: volatiles
@@ -6845,12 +7062,12 @@
     metadataValues.set(result, metadata);
     return result;
   }
-  //@unit collectionWithMeta requires: canonicalVectorRoots, cells, constructorHashes, holdsVector,
-  //@ ifnValues, isEntryCell, isView, kindHooks, lazyValues, mapKinds, maps, meta, metadataValues,
-  //@ metaFunctions, methodKeys, protocolHooks, protocolImplementations, publicCollectionSlots,
-  //@ queues, recordTypes, reifyValues, setKinds, sets, sortedComparators, subvecSources,
-  //@ symbolCells, treeRoots, treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells,
-  //@ viewOf
+  //@unit collectionWithMeta requires: canonicalVectorRoots, cells, chunkedConsCells,
+  //@ constructorHashes, holdsVector, ifnValues, isChunkedCons, isEntryCell, isLazy, isView,
+  //@ kindHooks, lazyCells, mapKinds, maps, meta, metadataValues, metaFunctions, methodKeys,
+  //@ protocolHooks, protocolImplementations, publicCollectionSlots, queues, recordTypes,
+  //@ reifyValues, setKinds, sets, sortedComparators, subvecSources, symbolCells, treeRoots,
+  //@ treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
@@ -6858,21 +7075,21 @@
     const method = protocolHooks.builtin?.(value, methodKeys[66], 2);
     if (method) return method.call(value, value, metadata);
     if (!recordTypes.has(value) && !isEntryCell(value) &&
-        [vectorCells, maps, sets, cells, viewCells, queues, lazyValues].some(store => store.has(value)) && meta(value) === metadata) return value;
+        [vectorCells, maps, sets, cells, chunkedConsCells, viewCells, queues, lazyCells].some(store => store.has(value)) && meta(value) === metadata) return value;
     let result;
     if (isEntryCell(value)) return collectionWithMeta(kindHooks.entryVector(value), metadata);
     const kind = cells.get(value)?.kind;
     if (metaFunctions.has(value)) return kindHooks.withMetaFn(value, metadata);
-    else if (lazyValues.has(value)) result = kindHooks.withMetaLazy(value, metadata);
+    else if (isLazy(value)) result = kindHooks.withMetaLazy(value, metadata);
     else if (kind === "range") result = kindHooks.withMetaRange(value, metadata);
-    else if (kind === "chunked-cons") result = kindHooks.withMetaChunkedCons(value, metadata);
+    else if (isChunkedCons(value)) result = kindHooks.withMetaChunkedCons(value, metadata);
     else if (kind === "repeat") result = kindHooks.withMetaRepeat(value, metadata);
     else if (kind === "iterate") result = kindHooks.withMetaIterate(value);
     else if (viewOf(value)?.vec$LKEY) result = kindHooks.withMetaChunkedSeq(value, metadata);
     else if (kind === "cycle") result = kindHooks.withMetaCycle(value);
     else if (recordTypes.has(value)) result = kindHooks.withMetaRecord(value);
     else {
-      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbolCells, maps, mapKinds, sets, setKinds, sortedComparators, cells, viewCells, queues, lazyValues, vars, subvecSources];
+      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbolCells, maps, mapKinds, sets, setKinds, sortedComparators, cells, viewCells, queues, vars, subvecSources];
       const vector = holdsVector(value);
       if (!vector && !stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
       // A vector's, a view's or a symbol's copy is built by its class, with
@@ -6906,9 +7123,9 @@
   //@ makeVector, vectorStore
   // A map entry's metadata copy is a vector.
   kindHooks.entryVector = value => makeVector(null, vectorStore(value));
-  //@unit LazySeq.meta effect: LazySeq when: collectionWithMeta requires: kindHooks, LazySeq,
-  //@ lazyValues, seq
-  kindHooks.withMetaLazy = (value, metadata) => new LazySeq(metadata, () => seq(value), null, lazyValues.get(value).hash);
+  //@unit LazySeq.meta effect: LazySeq when: collectionWithMeta requires: kindHooks, lazyOf,
+  //@ LazySeq, seq
+  kindHooks.withMetaLazy = (value, metadata) => new LazySeq(metadata, () => seq(value), null, lazyOf(value).hash$LKEY);
   //@unit rangeNode.meta effect: rangeNode when: collectionWithMeta requires: cells,
   //@ constructorHashes, IntegerRangeValue, kindHooks, rangeChunks, RangeValue
   kindHooks.withMetaRange = (value, metadata) => {
@@ -6916,11 +7133,11 @@
     return c.integer ? IntegerRangeValue(metadata, c.head, c.end, c.step, c.count, constructorHashes.get(value))
       : RangeValue(metadata, c.head, c.end, c.step, state?.chunk, state?.tail, constructorHashes.get(value));
   };
-  //@unit ChunkedCons.meta effect: ChunkedCons when: collectionWithMeta requires: cells,
-  //@ ChunkedCons, kindHooks
+  //@unit ChunkedCons.meta effect: ChunkedCons when: collectionWithMeta requires: ChunkedCons,
+  //@ chunkedConsOf, kindHooks
   kindHooks.withMetaChunkedCons = (value, metadata) => {
-    const c = cells.get(value);
-    return new ChunkedCons(c.chunk, c.more, metadata, c.hash);
+    const c = chunkedConsOf(value);
+    return new ChunkedCons(c.chunk$LKEY, c.more$LKEY, metadata, c.hash$LKEY);
   };
   //@unit RepeatValue.meta effect: RepeatValue when: collectionWithMeta requires: cells, kindHooks,
   //@ RepeatValue
@@ -7285,12 +7502,11 @@
     delays.set(value, {thunk, value: result});
     return value;
   }
-  //@unit LazySeq requires: lazyValues, metadataValues
+  //@unit LazySeq requires: LazySeqCell, metadataValues
   // Nil metadata is not stored: a lazy seq without an entry reads as one
   // with nil (`meta`, the `meta` field, the compiler bridge).
   function LazySeq(metadata, thunk, result, cachedHash) {
-    const value = Object.create(LazySeq.prototype);
-    lazyValues.set(value, {thunk, value: result, hash: cachedHash});
+    const value = new LazySeqCell(thunk, result, cachedHash);
     if (metadata !== null) metadataValues.set(value, metadata);
     return value;
   }
@@ -7561,10 +7777,10 @@
     if (method !== undefined && builtinSlots.has(method)) return undefined;
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
   }
-  //@unit protocolStores requires: atoms, cells, delays, keywordCells, lazyValues, maps,
-  //@ metaFunctions, multiFns, queues, reducedValues, sets, symbolCells, transientCells, transients,
-  //@ vars, vectorCells, viewCells, volatiles
-  const protocolStores = [multiFns, transients, transientCells, keywordCells, symbolCells, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
+  //@unit protocolStores requires: atoms, cells, chunkedConsCells, delays, keywordCells, lazyCells,
+  //@ maps, metaFunctions, multiFns, queues, reducedValues, sets, symbolCells, transientCells,
+  //@ transients, vars, vectorCells, viewCells, volatiles
+  const protocolStores = [multiFns, transients, transientCells, keywordCells, symbolCells, vectorCells, maps, sets, cells, chunkedConsCells, viewCells, queues, lazyCells, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
   //@unit ownedProtocolValue requires: protocolStores, storesPredicate
   const ownedProtocolValue = storesPredicate(...protocolStores);
   //@unit demandKey requires: demandMethod
@@ -7611,7 +7827,8 @@
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
     return dispatch ?? cell.natives?.get(nativeType(value))?.get(arity) ?? cell.natives?.get("_")?.get(arity);
   }
-  //@unit payloadStores requires: cells, lazyValues, maps, queues, sets, vectorCells, viewCells
+  //@unit payloadStores requires: cells, chunkedConsCells, lazyCells, maps, queues, sets,
+  //@ vectorCells, viewCells
   // `payloadStore`'s stores, numbered from 1, and the store each kind
   // (`payloads`) names, else 0: each entry its own, so that no index a host
   // gives `Array.prototype` is read (the Sol review of light-cljs-998).
@@ -7622,10 +7839,10 @@
       for (let kind = 1; kind < 31; kind++) if (bits >> kind & 1) byKind[kind] = i + 1;
     });
     return {stores, byKind};
-  })([viewCells, cells, vectorCells, maps, lazyValues, sets, queues]);
+  })([viewCells, cells, vectorCells, maps, lazyCells, sets, queues, chunkedConsCells]);
   //@unit payloadStore requires: payloads, payloadStores
   // Which store of the runtime's collections and seqs holds a value, by a
-  // number from 1 to 7, else 0. These are brand checks, which read no
+  // number from 1 to 8, else 0. These are brand checks, which read no
   // property of the value, so no getter or Proxy trap of a host value runs.
   // A value is in one payload store (`countedValue`). The value's kind
   // (`payloads`) names an exact store at once; the stores that are not
@@ -7660,7 +7877,7 @@
     // value (`payloadStore`), so that one answer serves the store:
     // `seqableValue`, `seqValue`, `nextValue`, `metaValue` and `lookupValue`
     // read no payload.
-    const stores = storeNativeProtocols.has(name) ? Array(8).fill(undefined) : null;
+    const stores = storeNativeProtocols.has(name) ? Array(9).fill(undefined) : null;
     return {protocol, name, mask: protocolMasks.get(name), marker: name && protocolSlot(name, 0), native: nativeImplementations.get(protocol), stores};
   }
   //@unit publicMethod requires: demandMethod, keyMethod, payloadStore, protocolSentinel,
@@ -8331,35 +8548,27 @@
   }
   //@unit iterate requires: iterateNode
   function iterate(fn, seed) { return iterateNode(fn, null, seed, true); }
-  //@unit chunks requires: privateStore
-  // Chunk values expose indexed/count/reduce protocols, without being seqs.
-  const chunks = privateStore(12), chunkBuffers = new WeakMap();
-  //@unit ChunkBuffer requires: chunkBuffers
-  function ChunkBuffer(array, end) {
-    const value = Object.create(ChunkBuffer.prototype);
-    chunkBuffers.set(value, {array, end});
-    return value;
-  }
+  //@unit ChunkBuffer requires: ChunkBufferCell
+  // A chunk buffer (`ChunkBufferCell`): an array it fills from `end`.
+  function ChunkBuffer(array, end) { return new ChunkBufferCell(array, end); }
   //@unit chunkBuffer requires: ChunkBuffer
   function chunkBuffer(capacity) { return new ChunkBuffer(new Array(capacity), 0); }
-  //@unit chunkAppend requires: chunkBuffers
-  function chunkAppend(buffer, item) { const state = chunkBuffers.get(buffer); state.array[state.end] = item; return ++state.end; }
-  //@unit chunk requires: arrayChunk, chunkBuffers
-  function chunk(buffer) { const state = chunkBuffers.get(buffer), value = arrayChunk(state.array, 0, state.end); state.array = null; return value; }
-  //@unit arrayChunk requires: chunks
-  function arrayChunk(array, offset = 0, end = array.length) {
-    const result = Object.create(arrayChunk.prototype);
-    chunks.set(result, {array, offset, end});
-    return result;
-  }
-  //@unit chunkNth requires: chunks, missing
+  //@unit chunkAppend requires: chunkBufferOf
+  function chunkAppend(buffer, item) { const state = chunkBufferOf(buffer); state.buf$LKEY[state.end$LKEY] = item; return ++state.end$LKEY; }
+  //@unit chunk requires: arrayChunk, chunkBufferOf
+  function chunk(buffer) { const state = chunkBufferOf(buffer), value = arrayChunk(state.buf$LKEY, 0, state.end$LKEY); state.buf$LKEY = null; return value; }
+  //@unit arrayChunk requires: ArrayChunkCell
+  // Chunk values expose indexed/count/reduce protocols, without being seqs:
+  // an `ArrayChunkCell`, whose items are `array`'s from `offset` to `end`.
+  function arrayChunk(array, offset = 0, end = array.length) { return new ArrayChunkCell(array, offset, end, null, null); }
+  //@unit chunkNth requires: chunkOf, missing
   function chunkNth(chunk, i, fallback = missing) {
-    const state = chunks.get(chunk), size = state.end - state.offset;
-    if (state.integer && fallback === missing) return state.start + i * state.step;
-    if (i >= 0 && i < size) return state.integer ? state.start + i * state.step : state.array[state.offset + i];
+    const state = chunkOf(chunk), size = state.end$LKEY - state.off$LKEY, integer = state.step$LKEY !== null;
+    if (integer && fallback === missing) return state.first$LKEY + i * state.step$LKEY;
+    if (i >= 0 && i < size) return integer ? state.first$LKEY + i * state.step$LKEY : state.arr$LKEY[state.off$LKEY + i];
     if (fallback !== missing) return fallback;
     // ArrayChunk's two-argument -nth reads the backing array directly.
-    return state.array?.[state.offset + i];
+    return state.arr$LKEY?.[state.off$LKEY + i];
   }
   //@unit arrayChunk.nth effect: arrayChunk, ownedChunkFirst, dropFirstChunk when: nth requires: chunkNth,
   //@ kindHooks
@@ -8370,24 +8579,54 @@
   //@ kindHooks
   // A transient vector's entries are its store; a map's or set's an array.
   kindHooks.countTransient = value => { const entries = editableTransient(value, "count").entries; return entries.cnt ?? entries.length; };
-  //@unit chunkFirst requires: chunkedFirstProtocol
-  function chunkFirst(value) { return chunkedFirstProtocol(value); }
-  //@unit chunkRest requires: chunkedRestProtocol
-  function chunkRest(value) { return chunkedRestProtocol(value); }
-  //@unit chunkNext requires: chunkedNextProtocol, chunkedSeqValue, chunkRest, methodKeys,
-  //@ protocolHooks, seq
+  // The chunk operations call a value's keyed slot first, as the slot-first
+  // wrappers do (`nth.slots`, light-cljs-1029): a lazy pipeline's step reads
+  // its source's chunk without the protocol dispatcher's lookups. A value
+  // whose slot is gone, or gives `noBranch`, takes the dispatcher.
+  //@unit chunkFirst requires: chunkedFirstProtocol, noBranch, slotFirst
+  function chunkFirst(value) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IChunkedSeq$_chunked_first$arity$1$LKEY;
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
+    return chunkedFirstProtocol(value);
+  }
+  //@unit chunkRest requires: chunkedRestProtocol, noBranch, slotFirst
+  function chunkRest(value) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IChunkedSeq$_chunked_rest$arity$1$LKEY;
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
+    return chunkedRestProtocol(value);
+  }
+  //@unit chunkNext requires: chunkedNextProtocol, chunkedSeqValue, chunkRest, methodKeys, noBranch,
+  //@ protocolHooks, seq, slotFirst
   function chunkNext(value) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IChunkedNext$_chunked_next$arity$1$LKEY;
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
     return (protocolHooks.implements?.(methodKeys[4], value) ?? chunkedSeqValue(value)) ? chunkedNextProtocol(value) : seq(chunkRest(value));
   }
-  //@unit ownedChunkFirst requires: arrayChunk, cells, chunks, forceRangeChunk,
+  //@unit chunkDropFirst requires: dropFirstProtocol, noBranch, slotFirst
+  // `-drop-first` of a chunk, as `chunkFirst`.
+  function chunkDropFirst(chunk) {
+    if (slotFirst.on && chunk != null && chunk.cljs$lang$kind$$LKEY !== undefined) {
+      const method = chunk.cljs$core$IChunk$_drop_first$arity$1$LKEY;
+      if (method) { const result = method.call(chunk, chunk); if (result !== noBranch) return result; }
+    }
+    return dropFirstProtocol(chunk);
+  }
+  //@unit ownedChunkFirst requires: arrayChunk, cells, chunkedConsOf, forceRangeChunk,
   //@ publicCollectionSlots, viewOf
   function ownedChunkFirst(value) {
+    const chunked = chunkedConsOf(value);
+    if (chunked !== undefined) return chunked.chunk$LKEY;
     const cell = cells.get(value);
-    if (cell?.kind === "chunked-cons") return cell.chunk;
     if (cell?.kind === "range") {
       if (cell.integer) {
         const chunk = arrayChunk([], 0, Math.min(32, cell.count));
-        chunks.reset(chunk, {...chunks.get(chunk), integer: true, start: cell.head, step: cell.step});
+        chunk.first$LKEY = cell.head; chunk.step$LKEY = cell.step;
         return chunk;
       }
       return forceRangeChunk(cell).chunk;
@@ -8413,11 +8652,12 @@
     }
     return rangeChunks.get(cell);
   }
-  //@unit ownedChunkRest requires: cells, emptyList, forceRangeChunk, kindHooks, rangeNode, viewAt,
-  //@ viewOf
+  //@unit ownedChunkRest requires: cells, chunkedConsOf, emptyList, forceRangeChunk, kindHooks,
+  //@ rangeNode, viewAt, viewOf
   function ownedChunkRest(value) {
+    const chunked = chunkedConsOf(value);
+    if (chunked !== undefined) return chunked.more$LKEY ?? emptyList;
     const cell = cells.get(value);
-    if (cell?.kind === "chunked-cons") return cell.more ?? emptyList;
     if (cell?.kind === "range") return cell.integer ? (cell.count <= 32 ? emptyList : rangeNode(cell.head + 32 * cell.step, cell.end, cell.step, true)) : forceRangeChunk(cell).tail ?? emptyList;
     const slice = viewOf(value);
     if (slice.vec$LKEY) return kindHooks.chunkedVectorRest(slice);
@@ -8434,52 +8674,53 @@
     const vec = slice.vec$LKEY, end = slice.base$LKEY + slice.arr$LKEY.length;
     return end < count(vec) ? new ChunkedSeqCell(vectorChunk(vec, end), 0, vec, end) : emptyList;
   }
-  //@unit chunkStore requires: chunks, protocolHooks
+  //@unit chunkStore requires: chunkOf, protocolHooks
   // A runtime chunk's store where no protocol implementation exists, which
   // then gives the items and count that `nth` and `count` give; else
   // undefined (light-cljs-237).
-  function chunkStore(chunk) { return protocolHooks.publicMethod ? undefined : chunks.get(chunk); }
+  function chunkStore(chunk) { return protocolHooks.publicMethod ? undefined : chunkOf(chunk); }
   //@unit chunkItem requires: nth
   // Item `i` of a chunk, below its count: from `store`, its `chunkStore`.
-  function chunkItem(chunk, store, i) { return store === undefined ? nth(chunk, i) : store.integer ? store.start + i * store.step : store.array[store.offset + i]; }
-  //@unit dropFirstChunk requires: arrayChunk, chunks, count, protocolHooks
+  function chunkItem(chunk, store, i) { return store === undefined ? nth(chunk, i) : store.step$LKEY !== null ? store.first$LKEY + i * store.step$LKEY : store.arr$LKEY[store.off$LKEY + i]; }
+  //@unit dropFirstChunk requires: arrayChunk, chunkOf, count, protocolHooks
   // A runtime chunk without its first item.
   function dropFirstChunk(value) {
-    const c = chunks.get(value);
-    const size = protocolHooks.publicMethod ? count(value) : c.end - c.offset;
-    if (c.integer ? size <= 1 : size === 0) throw new Error("-drop-first of empty chunk");
-    const result = arrayChunk(c.array, c.offset + 1, c.end);
-    if (c.integer) chunks.reset(result, {...c, start: c.start + c.step, offset: c.offset + 1});
+    const c = chunkOf(value), integer = c.step$LKEY !== null;
+    const size = protocolHooks.publicMethod ? count(value) : c.end$LKEY - c.off$LKEY;
+    if (integer ? size <= 1 : size === 0) throw new Error("-drop-first of empty chunk");
+    const result = arrayChunk(c.arr$LKEY, c.off$LKEY + 1, c.end$LKEY);
+    if (integer) { result.first$LKEY = c.first$LKEY + c.step$LKEY; result.step$LKEY = c.step$LKEY; }
     return result;
   }
-  //@unit ChunkedCell requires: ChunkedCons, chunkStore, count, dropFirstChunk, dropFirstProtocol,
-  //@ emptyList, nth
-  // A ChunkedCons's cell. Its `head` and `tail` are getters of the class, so
-  // that a step allocates no closures. It is its own `chunkedState`, the
-  // holder of its cached hash, the only field written after construction,
-  // so it is not frozen: a step allocates one object (light-cljs-237).
-  // Declared fields are defined, as a literal's: no inherited setter sees one.
-  const ChunkedCell = class {
-    kind = "chunked-cons"; chunk; more; hash;
-    constructor(chunk, more, hash) { this.chunk = chunk; this.more = more; this.hash = hash; }
-    get chunkedState() { return this; }
-    // Where no protocol implementation exists, a runtime chunk's items and
-    // count are its store's, as `nth`, `count` and `-drop-first` give them.
-    get head() {
-      const c = chunkStore(this.chunk);
-      return c === undefined ? nth(this.chunk, 0) : c.integer ? c.start + 0 * c.step : c.array?.[c.offset];
-    }
-    get tail() {
-      const c = chunkStore(this.chunk);
-      if (c === undefined) return count(this.chunk) > 1 ? ChunkedCons(dropFirstProtocol(this.chunk), this.more, null, null) : this.more ?? emptyList;
-      return c.end - c.offset > 1 ? ChunkedCons(dropFirstChunk(this.chunk), this.more, null, null) : this.more ?? emptyList;
-    }
-  };
-  //@unit ChunkedCons requires: cells, ChunkedCell, metadataValues
-  // Nil metadata is not stored, as for LazySeq.
+  //@unit chunkedConsFirst requires: chunkStore, nth
+  // The first item of a chunked cons (`chunkedConsOf`): where no protocol
+  // implementation exists, a runtime chunk's items and count are its
+  // store's, as `nth`, `count` and `-drop-first` give them.
+  function chunkedConsFirst(chunked) {
+    const chunk = chunked.chunk$LKEY, c = chunkStore(chunk);
+    return c === undefined ? nth(chunk, 0) : c.step$LKEY !== null ? c.first$LKEY + 0 * c.step$LKEY : c.arr$LKEY?.[c.off$LKEY];
+  }
+  //@unit chunkedConsRest requires: chunkDropFirst, ChunkedCons, chunkStore, count, dropFirstChunk,
+  //@ emptyList
+  // The rest of a chunked cons, as `chunkedConsFirst` reads its chunk.
+  function chunkedConsRest(chunked) {
+    const chunk = chunked.chunk$LKEY, more = chunked.more$LKEY, c = chunkStore(chunk);
+    if (c === undefined) return count(chunk) > 1 ? ChunkedCons(chunkDropFirst(chunk), more, null, null) : more ?? emptyList;
+    return c.end$LKEY - c.off$LKEY > 1 ? ChunkedCons(dropFirstChunk(chunk), more, null, null) : more ?? emptyList;
+  }
+  //@unit ChunkedCons.firstSeq effect: ChunkedCons when: firstSeq requires: chunkedConsFirst,
+  //@ kindHooks
+  // A chunked cons's first and rest where `first` and `rest` take them from
+  // the seq they have (`firstSeq`, `restSeq`): only a program that builds
+  // chunked conses keeps their chunk operations.
+  kindHooks.chunkedConsFirst = chunkedConsFirst;
+  //@unit ChunkedCons.restSeq effect: ChunkedCons when: restSeq requires: chunkedConsRest, kindHooks
+  kindHooks.chunkedConsRest = chunkedConsRest;
+  //@unit ChunkedCons requires: ChunkedConsCell, metadataValues
+  // A chunked cons (`ChunkedConsCell`). Nil metadata is not stored, as for
+  // LazySeq.
   function ChunkedCons(chunk, more, metadata, cachedHash) {
-    const value = Object.create(ChunkedCons.prototype);
-    cells.set(value, new ChunkedCell(chunk, more, cachedHash));
+    const value = new ChunkedConsCell(chunk, more, cachedHash);
     if (metadata !== null) metadataValues.set(value, metadata);
     return value;
   }
@@ -9377,9 +9618,9 @@
   //@unit cons.print effect: ChunkedCons, compilerFormBridge, Cons, cons, listFromArray, cycleNode,
   //@ emptyList, EmptyListValue, IndexedSeqValue, iterateNode, LazySeq, ListValue, mapProjection,
   //@ queueFromArray, rangeNode, RepeatValue, reSeq, treeMapSeqConstructor, view, ChunkedSeqValue
-  //@ when: printWriterImpl requires: cells, isView, kindHooks, lazyValues, printKind,
+  //@ when: printWriterImpl requires: cells, isChunkedCons, isLazy, isView, kindHooks, printKind,
   //@ printSequential, printWriter, queues
-  kindHooks.print = printKind(kindHooks.print, value => cells.has(value) || isView(value) || queues.has(value) || lazyValues.has(value),
+  kindHooks.print = printKind(kindHooks.print, value => cells.has(value) || isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value),
     (value, writer, options) => printSequential(writer, printWriter, queues.has(value) ? "#queue [" : "(", " ", queues.has(value) ? "]" : ")", options, value));
   //@unit makeMap.print effect: makeMap, recordMethods, treeMapConstructor when: printWriterImpl
   //@ requires: kindHooks, maps, mapTraversal, printKind, printMapEntries
@@ -10142,18 +10383,19 @@
   for (const [field, key] of Object.entries({f: "thunk", value: "value"})) Object.defineProperty(Delay.prototype, field, {
     configurable: true, get() { return delays.get(this)[key]; }, set(value) { delays.get(this)[key] = value; }
   });
-  //@unit LazySeq.fields effect: LazySeq when: resetMeta, upstreamMembers requires: deferredValue,
-  //@ LazySeq, lazyValues, metadataValues
-  for (const [field, key] of Object.entries({fn: "thunk", s: "value", __hash: "hash"})) Object.defineProperty(LazySeq.prototype, field, {
-    configurable: true, get() { return lazyValues.get(this)[key]; }, set(value) { lazyValues.get(this)[key] = value; }
+  //@unit LazySeq.fields effect: LazySeq when: resetMeta, upstreamMembers requires: isLazy, lazyOf,
+  //@ LazySeq, lazyStep, metadataValues
+  // An undefined `fn` is null, as `LazySeqCell` keeps it.
+  for (const [field, key] of Object.entries({fn: "fn$LKEY", s: "s$LKEY", __hash: "hash$LKEY"})) Object.defineProperty(LazySeq.prototype, field, {
+    configurable: true, get() { return lazyOf(this)[key]; }, set(value) { lazyOf(this)[key] = field === "fn" && value === undefined ? null : value; }
   });
   Object.defineProperty(LazySeq.prototype, "meta", {
     // `LazySeq` stores no nil metadata.
-    configurable: true, get() { return metadataValues.has(this) || !lazyValues.has(this) ? metadataValues.get(this) : null; },
+    configurable: true, get() { return metadataValues.has(this) || !isLazy(this) ? metadataValues.get(this) : null; },
     set(value) { metadataValues.set(this, value); }
   });
   Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
-    sval() { return deferredValue(lazyValues.get(this), true); }
+    sval() { return lazyStep(lazyOf(this)); }
   }));
   //@unit LazySeq.members effect: LazySeq requires: LazySeq, objectEquiv, seqMethods
   Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
@@ -10173,29 +10415,29 @@
   RSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit ChunkedCons.members effect: ChunkedCons requires: ChunkedCons, seqMethods
   ChunkedCons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit ChunkedCons.fields effect: ChunkedCons when: resetMeta, upstreamMembers requires: cells,
-  //@ ChunkedCons, meta
-  for (const [field, key] of Object.entries({chunk: "chunk", more: "more", __hash: "hash"})) Object.defineProperty(ChunkedCons.prototype, field, {
-    configurable: true, get() { return cells.get(this)[key]; },
-    set: field === "__hash" ? function (value) { cells.get(this).chunkedState.hash = value; } : undefined
+  //@unit ChunkedCons.fields effect: ChunkedCons when: resetMeta, upstreamMembers requires: ChunkedCons,
+  //@ chunkedConsOf, meta
+  for (const [field, key] of Object.entries({chunk: "chunk$LKEY", more: "more$LKEY", __hash: "hash$LKEY"})) Object.defineProperty(ChunkedCons.prototype, field, {
+    configurable: true, get() { return chunkedConsOf(this)[key]; },
+    set: field === "__hash" ? function (value) { chunkedConsOf(this).hash$LKEY = value; } : undefined
   });
   Object.defineProperty(ChunkedCons.prototype, "meta", {get() { return meta(this); }});
   //@unit ChunkBuffer.fields effect: ChunkBuffer when: resetMeta, upstreamMembers requires: chunk,
-  //@ chunkAppend, ChunkBuffer, chunkBuffers
-  for (const [field, key] of Object.entries({buf: "array", end: "end"})) Object.defineProperty(ChunkBuffer.prototype, field, {
-    configurable: true, get() { return chunkBuffers.get(this)[key]; }, set(value) { chunkBuffers.get(this)[key] = value; }
+  //@ chunkAppend, ChunkBuffer, chunkBufferOf
+  for (const [field, key] of Object.entries({buf: "buf$LKEY", end: "end$LKEY"})) Object.defineProperty(ChunkBuffer.prototype, field, {
+    configurable: true, get() { return chunkBufferOf(this)[key]; }, set(value) { chunkBufferOf(this)[key] = value; }
   });
   Object.defineProperties(ChunkBuffer.prototype, Object.getOwnPropertyDescriptors({
     add(value) { return chunkAppend(this, value); },
     chunk() { return chunk(this); }
   }));
   //@unit arrayChunk.fields effect: arrayChunk when: resetMeta, upstreamMembers requires: arrayChunk,
-  //@ chunks
-  for (const [field, key] of Object.entries({arr: "array", off: "offset", end: "end"})) Object.defineProperty(arrayChunk.prototype, field, {
-    configurable: true, get() { return chunks.get(this)[key]; }, set(value) { chunks.get(this)[key] = value; }
+  //@ chunkOf
+  for (const [field, key] of Object.entries({arr: "arr$LKEY", off: "off$LKEY", end: "end$LKEY"})) Object.defineProperty(arrayChunk.prototype, field, {
+    configurable: true, get() { return chunkOf(this)[key]; }, set(value) { chunkOf(this)[key] = value; }
   });
-  //@unit realized effect requires: cells, coreMethod, delays, lazyValues, pendingValue, truth
-  const realized = coreMethod("IPending/-realized?", [1], value => cells.has(value) ? cells.get(value).realized === true : !truth((delays.get(value) || lazyValues.get(value)).thunk), pendingValue);
+  //@unit realized effect requires: cells, coreMethod, delays, lazyOf, pendingValue, truth
+  const realized = coreMethod("IPending/-realized?", [1], value => cells.has(value) ? cells.get(value).realized === true : delays.has(value) ? !truth(delays.get(value).thunk) : !truth(lazyOf(value).fn$LKEY), pendingValue);
   //@unit typeStatics
   // The statics of the runtime's types (`EMPTY`, `HASHMAP_THRESHOLD`,
   // `fromArray`, `fromArrays`), compiler-owned names upstream, which Closure
@@ -10302,9 +10544,12 @@
   const disjoinBangProtocol = coreMethod("ITransientSet/-disjoin!", [2], (value, key) => removeTransient(value, key, "disj!"), transientSetValue);
   //@unit popBangProtocol effect requires: coreMethod, popTransient, transientVectorValue
   const popBangProtocol = coreMethod("ITransientVector/-pop!", [1], popTransient, transientVectorValue);
-  //@unit chunkedNextProtocol effect requires: cells, chunkedSeqValue, coreMethod, ownedChunkRest,
-  //@ seq
-  const chunkedNextProtocol = coreMethod("IChunkedNext/-chunked-next", [1], value => cells.get(value)?.kind === "chunked-cons" ? cells.get(value).more ?? null : seq(ownedChunkRest(value)), chunkedSeqValue);
+  //@unit chunkedNextProtocol effect requires: chunkedConsOf, chunkedSeqValue, coreMethod,
+  //@ ownedChunkRest, seq
+  const chunkedNextProtocol = coreMethod("IChunkedNext/-chunked-next", [1], value => {
+    const chunked = chunkedConsOf(value);
+    return chunked !== undefined ? chunked.more$LKEY ?? null : seq(ownedChunkRest(value));
+  }, chunkedSeqValue);
   //@unit dropProtocol effect requires: coreMethod, dropOwned, dropValue
   const dropProtocol = coreMethod("IDrop/-drop", [2], dropOwned, dropValue);
   //@unit dropFirstProtocol effect requires: chunkValue, coreMethod, dropFirstChunk
