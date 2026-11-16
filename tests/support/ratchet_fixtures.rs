@@ -462,6 +462,17 @@
 //! `features-direct` 109,991, `mapv-count` 57,655), under every ceiling.
 //! Speed comes first (pl group 1661): lazy-walk and seq-walk-vec, timed as
 //! a pair, recover the 10-23% they lost with light-cljs-1030.
+//!
+//! A symbol's metadata in its own keyed `meta` field (light-cljs-1031,
+//! 2026-11-16): `SymbolCell` takes a fifth field and `ownMeta` answers
+//! kind 21, so `meta` and `setMeta` read and write it. The readable runtime
+//! grows 132 bytes, so each exceeded none and prepare ceiling moves to the
+//! next 1,000 above its size (`event-maps` and `keyword-case`). Advanced,
+//! against master `87e5db4b`: programs that keep `ownMeta` shrink 13 bytes,
+//! its test of kinds 1 to 3 now one comparison (`mapv-count` 58,216,
+//! `constant-keys` 79,225, `map-printed` 21,403, `vector-printed` 14,474),
+//! `protocol-params` grows 12 (71,105), and `features` and
+//! `features-direct` 28 (113,287 and 112,897), under every ceiling.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -532,7 +543,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [617_000, 617_000, 5_200],
+        ceilings: [618_000, 618_000, 5_200],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -675,7 +686,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [617_000, 617_000, 57_000],
+        ceilings: [618_000, 618_000, 57_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },

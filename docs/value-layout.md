@@ -139,9 +139,8 @@ What light-cljs-1011 landed: keywords and symbols.
   constructor may give it an undefined spelling), else undefined, so equality
   reads the kind and `fqn`, never `instanceof`. The `keywords` and `symbols`
   stores are deleted; `keywordCells` and `symbolCells` stand for them in the
-  store inventories. A symbol's metadata stays in `metadataValues`, as the
-  seqs' does; its `meta$LKEY` field is left to the pellet that moves
-  metadata out of that store (light-cljs-1031). Upstream's public fields
+  store inventories. A symbol's metadata is its own `meta$LKEY` field
+  since light-cljs-1031 (below). Upstream's public fields
   (`.-fqn`, `.-_hash`, `.-str`) read the keyed ones. A keyword's `call`
   is `get` without a store read, and its `IFn` arity entries, which
   `apply` calls, call `call`, so an `extend-type` of `IFn` still answers.
@@ -486,6 +485,34 @@ light-cljs-1035, and the map transients their `state` field (below).
   and its `hashMapTries` and `traversalPairs` are stores that publish
   (`sharedStore`). `arrayIndex` reads a key through `keywordOf` where it has
   no `fqn` field, as the profile's engine keywords have none.
+
+What light-cljs-1031 landed: a symbol's metadata in its own field.
+
+- **The field.** `SymbolCell` has a fifth own keyed field, `meta$LKEY`,
+  after upstream's order (`ns`, `name`, `str`, `_hash`, `_meta`): null from
+  `symbol`, the given value from the positional constructor (`SymbolValue`),
+  the symbol's own from `kindHooks.symbolCopy`, which `collectionWithMeta`
+  then sets. `ownMeta` answers a value of kind 21, so `meta`, `setMeta`,
+  `preserveMeta` and the compiler form bridge (`decode` sets a decoded
+  symbol's metadata with `setMeta`, `encode` reads the field) read and
+  write the field; the public `_meta` accessor reads and writes it, and a
+  symbol's `toJSON` leaves it out. `metadataValues` no longer holds a
+  symbol's metadata, so a copy of the build reads the metadata another copy
+  gave (the Sol review of light-cljs-1011, finding 1).
+- **`ownMeta`'s size.** Where a program has protocol implementations, a
+  vector's `conj` inlines `ownMeta` more than once (through `conjMeta`,
+  `preserveMeta` and `meta`) with 9 bytes of V8's cumulative inlining budget
+  (920 bytes) to spare; past them the vector's constructor is no longer
+  inlined and vec-conj is 9% slower. Testing kind 21 and the `str` field
+  made the function 71 bytes (55 with one comparison for kinds 1 to 3),
+  and testing a vector's `cnt` field with `in` alone (47) also lost in more
+  runs, so `ownMeta` tests kind 21 alone (45 bytes, under the 53 it had):
+  a value made by reflection from a symbol's prototype reads an undefined
+  field as its metadata, where it read nil (deliberate reflection, which
+  the group gave up).
+- **The Pants build.** `sharedSymbol`'s runtime-owned symbol cells take the
+  field; engine symbol forms keep the engine's metadata (`formWithMeta`),
+  which `ownMeta` does not answer.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,

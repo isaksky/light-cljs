@@ -839,24 +839,22 @@
   // splits back into the namespace and name at its first `/` (the engine's
   // `FormName::splits_back`; `formSymbol` of another pair is an error).
   const sharedNamedSplits = (namespace, name) => namespace == null ? name === "/" || !name.includes("/") : !namespace.includes("/") && (namespace !== "" || name !== "");
-  //@unit sharedSymbol requires: metadataValues, sharedFormKind, sharedFormOf, sharedNamedSplits,
-  //@ SymbolCell
+  //@unit sharedSymbol requires: sharedFormKind, sharedFormOf, sharedNamedSplits, SymbolCell
   // A fresh engine symbol, with its metadata when that is an engine map
   // (`formWithMeta`). The engine's forms carry neither a pair that does not
   // split back (a `/` inside an unqualified name, as `(symbol nil "a/b")`
   // asks for) nor runtime-built metadata (a map of the verbatim `maps`,
   // until the maps view): such a symbol is a runtime-owned symbol cell of
-  // the V8 profile, with its own fields, which `symbolOf`, equality,
-  // hashing and printing read alike, and its task's own.
+  // the V8 profile, with its own fields, its metadata among them
+  // (light-cljs-1031), which `symbolOf`, `meta`, equality, hashing and
+  // printing read alike, and its task's own.
   function sharedSymbol(namespace, name, metadata = null, cachedHash = null, spelling = null) {
     const canonical = namespace == null ? name : namespace + "/" + name;
     if ((spelling === null || spelling === canonical) && sharedNamedSplits(namespace, name) && (metadata == null || sharedFormKind(metadata) === "map")) {
       const value = __rt.formSymbol(namespace, name);
       if (cachedHash === null || cachedHash === __rt.formHash(value)) return metadata == null ? value : __rt.formWithMeta(value, sharedFormOf(metadata));
     }
-    const value = new SymbolCell(namespace, name, spelling === null ? canonical : spelling, cachedHash);
-    if (metadata != null) metadataValues.set(value, metadata);
-    return value;
+    return new SymbolCell(namespace, name, spelling === null ? canonical : spelling, cachedHash, metadata);
   }
   //@unit symbol requires: sharedSymbol
   function symbol(namespace, name) {

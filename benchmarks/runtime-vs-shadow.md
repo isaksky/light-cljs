@@ -1861,3 +1861,90 @@ array-map branches (`vector-only` 7,519, `keyword-only` 5,102). TodoMVC's
 bundle with React (`re-frame.bb size todomvc`): raw 478,192 to 481,129
 bytes, gzip -9 145,067 to 146,013, brotli -q 11 125,364 to 126,047; re-frame
 simple was not ported in this run.
+
+## 2026-11-16: a symbol's metadata in its own field (light-cljs-1031)
+
+A symbol keeps its metadata in its own keyed `meta` field, not the
+runtime's `metadataValues` store, so that a second copy of one build reads
+the metadata the first gave (the Sol review of light-cljs-1011, finding 1).
+`ownMeta`, the test of the values that hold their metadata and hash in
+their own fields, now answers kind 21 (symbols) as well as kinds 1 to 3
+(vectors, subvectors and map entries). No gate operation uses a symbol's
+metadata; the operations below are the ones whose path runs `ownMeta`
+(`conj` through `conjMeta`, `preserveMeta` and `meta`; `hash`).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops
+vec-conj-64,vec-assoc-1024,hash-fresh-vec-4,hash-fresh-map-7,eq-map-7,group-by-100`,
+5 runs per compiler, alternated; unreserved, load 4.9-7.5), master
+`6f5beb29` against this change's timing binary `a0c72a04`, whose runtime
+differs from the change's only in comments and the `SymbolValue.fields`
+unit (the gate's output differs only in that unit, which defines five
+accessors once as it loads), ns per operation, median of the runs:
+
+| op | master, round 1 | change, round 1 | master, round 2 | change, round 2 (before / after master's run) |
+| --- | ---: | ---: | ---: | ---: |
+| vec-conj-64 | 2,023 | 2,086 | 2,117 | 2,131 / 2,114 |
+| vec-assoc-1024 | 62.6 | 64.7 | 65.7 | 65.7 / 65.7 |
+| eq-map-7 | 465.2 | 468.6 | 481.6 | 483.7 / 478.1 |
+| hash-fresh-vec-4 | 531.4 | 534.1 | 533.2 | 533.7 / 532.7 |
+| hash-fresh-map-7 | 769.4 | 819.0 | 796.4 | 801.6 / 798.4 |
+| group-by-100 | 13,063 | 13,712 | 13,651 | 13,581 / 13,545 |
+
+Round 1 ran master first; its change run saw shadow-cljs's numbers rise
+1-4% too (load 5.1-7.5 against 4.9-6.4). Round 2 ran the change, then
+master, then the change again: every operation is within 1% of master.
+
+Rebased onto light-cljs-1034 (master `87e5db4b` against `175c47ae`, the
+same runtime change; one round, master first, load 3.0-5.8 and 3.0-4.5):
+vec-conj-64 2,094 to 2,058 ns, vec-assoc-1024 64.2 to 62.7, eq-map-7
+393.0 to 384.5, hash-fresh-vec-4 536.2 to 521.1, hash-fresh-map-7 787.4 to
+743.2 and group-by-100 12,832 to 12,252 (2-6% faster, as the load fell).
+Alone, vec-conj-64 takes 2,003-2,328 ns on master and 2,015-2,276 with
+the change (10 runs each, alternated).
+
+**A loss found and avoided.** The first form of `ownMeta`
+(`(kind === 1 || kind === 2 || kind === 3) && (...) || kind === 21 &&
+"str" in value`, 71 bytes of bytecode against 53) made vec-conj-64 6-10%
+slower in the gate (`b2de61eb`: 2,140 to 2,276 and 2,074 to 2,273 ns) and
+9% alone, with the other five operations within 2%. In a program with
+protocol implementations (`protocolHooks.builtin`), `conj` of a vector
+calls `preserveMeta`, which inlines `meta` and `ownMeta`; V8's cumulative
+inlining budget (920 bytes) for `conj`'s wrapper had 9 bytes to spare,
+and past them the vector's constructor (`VectorCell`) is no longer inlined.
+With `--max-inlined-bytecode-size-cumulative=3000` both builds take 1,920
+ns. Any growth there lost: a symbol test at the end of `meta` (vec-conj
+2,330 against 2,150), 55 bytes with one comparison for kinds 1 to 3, and
+47 bytes testing the vector's `cnt` field with `in` alone (fast in 5 of 14
+runs against master's 10 of 14, under load 10). The form kept tests
+`kind < 4 ? value.cnt !== undefined || "cnt" in value : kind === 21` (45
+bytes; fast in 12 of 12 runs against master's 11 of 12): a value made by
+reflection from a symbol's prototype now reads an undefined field as its
+metadata.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there, against
+master `87e5db4b`): the programs that keep `ownMeta` shrink 13 bytes
+(`mapv-count` 58,216), `protocol-params` grows 12 and `features` 28
+(113,287); the readable runtime grows 132 bytes. TodoMVC and re-frame
+simple were not rebuilt for these bytes.
+
+**Workload 200k** (`compare.bb PROJECT --runs 5 --runtime-only --runtime
+1,10,40`). The disk was short, so the project was not copied: PROJECT held
+symbolic links to the original's sources, its own `out/` with the
+original's shadow-cljs output, and a light-cljs output rebuilt with each
+binary just before its run. The two runs were back to back; load was
+5.3-6.4 before and 4.5-5.6 after. Wall time, median (range):
+
+| iterations | master 6f5beb29 | this change 72599e59 | shadow-cljs (master run) | shadow-cljs (this run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.396 s (0.394-0.431) | 0.399 s (0.395-0.407) | 0.314 s | 0.308 s |
+| 10 | 1.018 s (1.010-1.033) | 1.001 s (0.998-1.022) | 0.578 s | 0.573 s |
+| 40 | 2.740 s (2.698-2.757) | 2.724 s (2.590-2.733) | 1.233 s | 1.206 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 60.1 ms
+per iteration before and 59.6 after (within the runs' spread), shadow-cljs
+23.6 and 23.0; light/shadow 2.55 and 2.59.
+
+Raw results (each gate run's EDN and Markdown, for the first attempt
+`b2de61eb`, the `in` form `7fc05b66`, the kept form `a0c72a04` and the
+rebased `175c47ae`, and both workload runs):
+research/output-speed/symbol-meta-1031.

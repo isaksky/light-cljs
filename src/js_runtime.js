@@ -86,8 +86,8 @@
   function KeywordCell(ns, name, fqn, hash) { this.ns$LKEY = ns; this.name$LKEY = name; this.fqn$LKEY = fqn; this.hash$LKEY = hash; /*@brand*/ }
   //@unit symbolOf
   // A symbol, the class of kind 21 (`SymbolCell`), as `keywordOf`: its own
-  // keyed fields are upstream's `ns`, `name`, `str` and `hash`; its metadata
-  // stays in `metadataValues`. The Pants build's profile swaps it as
+  // keyed fields are upstream's `ns`, `name`, `str`, `hash` and `meta` (its
+  // metadata, light-cljs-1031). The Pants build's profile swaps it as
   // `keywordOf`.
   function symbolOf(value) {
     return value != null && value.cljs$lang$kind$$LKEY === 21 && "str$LKEY" in value ? value : undefined;
@@ -98,8 +98,9 @@
   // A keyword's or a symbol's fields (`ns`, `name`, `hash`), else undefined.
   const namedOf = value => keywordOf(value) ?? symbolOf(value);
   //@unit SymbolCell
-  // A symbol (see `symbolOf`) with `SymbolValue`'s prototype.
-  function SymbolCell(ns, name, str, hash) { this.ns$LKEY = ns; this.name$LKEY = name; this.str$LKEY = str; this.hash$LKEY = hash; /*@brand*/ }
+  // A symbol (see `symbolOf`) with `SymbolValue`'s prototype. Its metadata is
+  // its own `meta` field (`ownMeta`), so a copy of the build reads it too.
+  function SymbolCell(ns, name, str, hash, meta) { this.ns$LKEY = ns; this.name$LKEY = name; this.str$LKEY = str; this.hash$LKEY = hash; this.meta$LKEY = meta; /*@brand*/ }
   //@unit internedKeywords
   const internedKeywords = new Map();
   //@unit kinds
@@ -155,11 +156,14 @@
   // `meta`, `withMeta` and `hash` read, rather than in the `metadataValues`
   // and `constructorHashes` stores: a vector, a subvector or a map entry of
   // this runtime's classes (`VectorCell`, `VectorViewCell`, `SubvecCell`,
-  // `EntryCell`), but no engine vector form of the Pants build's profile.
+  // `EntryCell`), or a symbol (`SymbolCell`, any value of kind 21), but no
+  // engine vector or symbol form of the Pants build's profile. Its bytecode
+  // stays under 53 bytes, or a vector's `conj` loses an inlining
+  // (docs/value-layout.md, light-cljs-1031); kinds 1 to 3 are those below 4.
   function ownMeta(value) {
     if (value == null) return false;
     const kind = value.cljs$lang$kind$$LKEY;
-    return (kind === 1 || kind === 2 || kind === 3) && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
+    return kind < 4 ? value.cnt$LKEY !== undefined || "cnt$LKEY" in value : kind === 21;
   }
   //@unit holdsVector requires: vectorStore
   // Whether a value is a vector, a subvector or a map entry, as the
@@ -1249,7 +1253,7 @@
         default: return invalidArity(arguments.length - 1);
       }
     },
-    toJSON() { const {ns$LKEY: _n, name$LKEY: _m, str$LKEY: _s, hash$LKEY: _h, ...json} = this; return json; },
+    toJSON() { const {ns$LKEY: _n, name$LKEY: _m, str$LKEY: _s, hash$LKEY: _h, meta$LKEY: _t, ...json} = this; return json; },
     toString() {
       const value = symbolOf(this);
       if (!value) throw new Error("Expected symbol");
@@ -1263,16 +1267,14 @@
   SymbolValue.prototype.cljs$lang$kind$$LKEY = 21;
   SymbolCell.prototype = SymbolValue.prototype;
 
-  //@unit SymbolValue requires: invalidArity, metadataValues, SymbolCell
+  //@unit SymbolValue requires: invalidArity, SymbolCell
   // Positional constructors retain the supplied slots; unlike cons/symbol they
   // do not normalize a tail or derive the printed spelling from name/namespace.
   // A null hash reads as none: `hash` computes it, the `_hash` field gives
   // null (an undefined one is kept, as the field gives it back).
   function SymbolValue(namespace, name, spelling, cachedHash, metadata) {
     if (arguments.length !== 5) return invalidArity(arguments.length);
-    const value = new SymbolCell(namespace, name, spelling, cachedHash);
-    metadataValues.set(value, metadata);
-    return value;
+    return new SymbolCell(namespace, name, spelling, cachedHash, metadata);
   }
 
   //@unit Cons requires: ConsCell, constructorHashes, invalidArity, metadataValues
@@ -1442,7 +1444,7 @@
 
   //@unit symbol requires: SymbolCell
   function symbol(namespace, name) {
-    return new SymbolCell(namespace, name, namespace == null ? name : namespace + "/" + name, null);
+    return new SymbolCell(namespace, name, namespace == null ? name : namespace + "/" + name, null, null);
   }
 
   //@unit symbolCore requires: invalidArity, keywordOf, symbol, symbolOf, vars
@@ -8334,13 +8336,13 @@
   //@unit SymbolCell.meta effect: symbol, SymbolValue when: collectionWithMeta requires: kindHooks,
   //@ SymbolCell, symbolOf
   // A symbol's metadata copy: a symbol cell of its prototype with its
-  // fields, else undefined.
+  // fields, else undefined; `collectionWithMeta` then sets its `meta`.
   kindHooks.symbolCopy = value => {
     const symbol = symbolOf(value);
     if (symbol === undefined) return undefined;
     const Type = function () {};
     Type.prototype = Object.getPrototypeOf(value);
-    return Reflect.construct(SymbolCell, [symbol.ns$LKEY, symbol.name$LKEY, symbol.str$LKEY, symbol.hash$LKEY], Type);
+    return Reflect.construct(SymbolCell, [symbol.ns$LKEY, symbol.name$LKEY, symbol.str$LKEY, symbol.hash$LKEY, symbol.meta$LKEY], Type);
   };
   //@unit mapEntry.meta effect: mapEntry, clone when: collectionWithMeta requires: kindHooks,
   //@ makeVector, vectorStore
@@ -11338,21 +11340,16 @@
       lastIndexOf: seqMethods.lastIndexOf
     }));
   }
-  //@unit SymbolValue.fields effect: SymbolValue when: resetMeta, upstreamMembers requires: metadataValues,
-  //@ symbolOf, SymbolValue
+  //@unit SymbolValue.fields effect: SymbolValue when: resetMeta, upstreamMembers requires: symbolOf,
+  //@ SymbolValue
   // Upstream's fields read and write the keyed ones (`_hash` the cache,
-  // null until computed); `_meta` the metadata.
-  for (const field of ["ns", "name", "str", "_hash"]) Object.defineProperty(SymbolValue.prototype, field, {
-    get() { const value = symbolOf(this); return value === undefined ? undefined : value[field === "_hash" ? "hash$LKEY" : field + "$LKEY"]; },
+  // null until computed; `_meta` the metadata, null on a value that is no
+  // symbol).
+  for (const [field, key] of Object.entries({ns: "ns$LKEY", name: "name$LKEY", str: "str$LKEY", _hash: "hash$LKEY", _meta: "meta$LKEY"})) Object.defineProperty(SymbolValue.prototype, field, {
+    get() { const value = symbolOf(this); return value === undefined ? field === "_meta" ? null : undefined : value[key]; },
     set(value) {
       if (symbolOf(this) !== this) throw new Error("Expected public core value");
-      this[field === "_hash" ? "hash$LKEY" : field + "$LKEY"] = value;
-    }
-  });
-  Object.defineProperty(SymbolValue.prototype, "_meta", {
-    get() { return metadataValues.has(this) ? metadataValues.get(this) : null; }, set(value) {
-      if (symbolOf(this) === undefined) throw new Error("Expected public core value");
-      metadataValues.set(this, value);
+      this[key] = value;
     }
   });
   //@unit Cons.fields effect: Cons when: resetMeta, upstreamMembers requires: cellOf, Cons,

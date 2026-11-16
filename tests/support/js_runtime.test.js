@@ -2112,7 +2112,7 @@ console.log('kind tables stay private to the runtime');
   const fields = {vector: trie, entry: trie, subvec: ['meta$LKEY', 'cnt$LKEY', 'sub$LKEY', 'begin$LKEY', 'built$LKEY', 'hash$LKEY'],
     transientVector: ['cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'owned$LKEY', 'editable$LKEY'], indexedSeq: view, stringSeq: view, restArguments: view,
     chunkedSeq: [...view, 'vec$LKEY', 'base$LKEY'], keyword: ['ns$LKEY', 'name$LKEY', 'fqn$LKEY', 'hash$LKEY'],
-    symbol: ['ns$LKEY', 'name$LKEY', 'str$LKEY', 'hash$LKEY'], lazySeq: ['fn$LKEY', 's$LKEY', 'hash$LKEY'],
+    symbol: ['ns$LKEY', 'name$LKEY', 'str$LKEY', 'hash$LKEY', 'meta$LKEY'], lazySeq: ['fn$LKEY', 's$LKEY', 'hash$LKEY'],
     chunkedCons: ['chunk$LKEY', 'more$LKEY', 'hash$LKEY'], chunk: ['arr$LKEY', 'off$LKEY', 'end$LKEY', 'first$LKEY', 'step$LKEY'],
     chunkBuffer: ['buf$LKEY', 'end$LKEY'],
     list: ['cell$LKEY', 'first$LKEY', 'rest$LKEY', 'count$LKEY'], emptyList: ['cell$LKEY', 'count$LKEY'],
@@ -2285,6 +2285,27 @@ console.log('vector_family_prototype_contract: masks, markers and slots of the v
   assert.equal(a.isKeyword(host), false);
   assert.equal(a.equal(ka, host), false);
   assert.equal(a.get(a.arrayMap(ka, 1), host, 'none'), 'none');
+  // A symbol holds its metadata in its keyed `meta` field (light-cljs-1031),
+  // so either copy reads what the other gave it, and gives it anew.
+  const sm = b.withMeta(b.symbol(null, 's'), 17);
+  assert.equal(b.meta(sm), 17);
+  assert.equal(a.meta(sm), 17);
+  assert.equal(sm._meta, 17);
+  assert.equal(b.meta(a.withMeta(sm, 18)), 18);
+  assert.equal(a.meta(sm), 17);
+  assert.equal(b.meta(a.withMeta(sa, 19)), 19);
+  assert.equal(a.meta(sb), null);
+  assert.equal(a.meta(b.withMeta(sm, null)), null);
+  assert.equal(a.meta(new b.Symbol(null, 't', 't', null, 20)), 20);
+  // Upstream's public `_meta` field writes the keyed field too.
+  const sw = b.symbol(null, 'w');
+  for (const value of [23, null, undefined]) {
+    sw._meta = value;
+    assert.equal(sw._meta, value);
+    assert.equal(a.meta(sw), value);
+    assert.equal(b.meta(sw), value);
+  }
+  throwsError(() => { Object.create(Object.getPrototypeOf(sw))._meta = 1; });
 }
 console.log('keywords and symbols of two copies of one build compare by kind and fqn');
 
