@@ -3511,6 +3511,56 @@ fn small_map_searches_read_a_keyword_key_and_bound_the_entries_as_before() {
     );
 }
 
+#[test]
+fn keyword_searches_call_a_program_equiv_of_keywords() {
+    // light-cljs-1040: the keyword searches of array maps (`arrayIndex`,
+    // `entryIndex`, `arrayMapDissoc`) take the keyword class's own `-equiv`
+    // slot for no program method (`keywordProgramEquiv`), but an
+    // `extend-type` of `IEquiv` on `Keyword`, or a `specify!` of a key, still
+    // decides which keys are equal, where the spelling would not: `get`,
+    // `contains?`, `assoc`, `dissoc`, `find` and a transient's `assoc!`, at
+    // every level and inside a macro, whose lookup runs at compile time.
+    let extended = r#"(do (extend-type Keyword IEquiv
+                            (-equiv [this other] (and (keyword? other) (identical? (name this) (name other)))))
+                          (let [m (array-map (keyword "a" "x") 1 :y 2) k (keyword "b" "x")
+                                t (transient (array-map (keyword "a" "x") 1 :y 2))]
+                            [(get m k) (get m (keyword "b" "z") :nf) (contains? m k) (assoc m k 3) (dissoc m k)
+                             (persistent! (assoc! t k 4)) (find m k) (= k :a/x)]))"#;
+    let specified = r#"(let [k (specify! (keyword "s" "k") IEquiv (-equiv [_ o] (= o :hit))) m (array-map :a 1 :hit 2)]
+                         [(get m k) (contains? m k) (dissoc m k) (assoc m k 3) (get (array-map :a 1) k :nf)])"#;
+    for (body, expected) in [
+        (
+            extended,
+            "[1 :nf true {:a/x 3, :y 2} {:y 2} {:a/x 4, :y 2} [:a/x 1] true]",
+        ),
+        (specified, "[2 true {:a 1} {:a 1, :hit 3} :nf]"),
+    ] {
+        every_level(&format!("(pr-str {body})"), expected);
+        every_level(
+            &format!("(defmacro result [] (list 'quote {body})) (pr-str (result))"),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn keywords_and_symbols_compare_by_their_own_slot_over_an_object_extension() {
+    // light-cljs-1040: a keyword's and a symbol's own `-equiv` slot outranks
+    // an `extend-type` of `js/Object` with `IEquiv`, as upstream's `Keyword`
+    // and `Symbol` own theirs (and as light-cljs-1014 made it for the other
+    // classes). Before, `=`, `.equiv` and a vector's items called the
+    // program's method, which answered true, so `dissoc` of one key emptied
+    // an array map, a map contained every keyword, and `get` at `Advanced`
+    // found the first key (docs/value-layout.md, light-cljs-1040's notes).
+    every_level(
+        "(do (extend-type js/Object IEquiv (-equiv [_ _] true))
+             (pr-str [(= :a :b) (= :a :a) (= 'a 'b) (.equiv :a :b) (.equiv 'a 'b)
+                      (get {:x 1 :y 2} :y) (get (array-map :x 1 :y 2) :y)
+                      (dissoc (array-map :x 1 :y 2 :z 3) :y) (contains? {:x 1} :y) (= [:a] [:b])]))",
+        "[false true false false false 2 2 {:x 1, :z 3} false false]",
+    );
+}
+
 /// Each row of a fixture corpus (`id<TAB>source<TAB>...`) prints, with
 /// `pr-str` or as an error message, what it prints at `None`.
 fn corpus(fixture: &str, range: std::ops::Range<usize>) {

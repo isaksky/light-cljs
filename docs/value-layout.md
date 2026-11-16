@@ -961,6 +961,44 @@ What light-cljs-1016 landed: the slot-first core operations' call sites at
   `protocolHooks.keyMethod`), about 4.5 ns, which upstream's
   `array-index-of-keyword?` does not (light-cljs-1041).
 
+What light-cljs-1040 landed: keywords and symbols compare by their own
+`-equiv` slots too.
+
+- **Slots.** `KeywordValue`'s prototype has a keyed `-equiv` slot,
+  `keywordEquiv`, and `SymbolValue`'s `symbolEquiv`: identical values are
+  equal, else two keywords by kind and `fqn` and two symbols by kind and
+  `str`, as `structuralEqualPair` compares them; a value made by reflection
+  from the prototype, with no `fqn` (`str`) of its own, equals no other
+  value, as that comparison answers it. They need no `kindTables` guard: they
+  read no program method. `=` of two keywords that are not identical is now
+  `=`'s wrapper and the slot, where it took the old protocol lookup
+  (`builtin`, `keyMethod`, `externalMethod`) and the structural comparison;
+  the lean multimethod tables, which compare the dispatch value with each
+  method's by `=` (`isaPlain`), gain the most.
+- **The keyword searches.** `arrayIndex`, `entryIndex` and `arrayMapDissoc`
+  read a keyword key's program `IEquiv` method once per search through
+  `keywordProgramEquiv`, which takes the class's own slot for none. Where no
+  session demands declarations (`slotFirst`), it reads the key's slot itself
+  and compares it with `keywordEquiv`, so the common search makes no lookup
+  and no test of the runtime's own slots (`builtinSlots`, a WeakSet probe in
+  the V8 profile and a linear search in the Pants build's); a getter on the
+  slot still runs once per search. A session that demands declarations
+  takes the lookup, which demands first, and drops the class's slot from its
+  answer, as the compile-time lookup (build.rs `interpreterDispatch`)
+  returns the runtime's own slots. A host type's method (`externalMethod`)
+  never answers a keyword. The Pants build's keywords are engine forms,
+  which carry no slot: their searches take the lookup as before.
+- **Extensions.** `extend-type` of `IEquiv` on `Keyword` or `Symbol`
+  replaces the slot and `specify!` shadows it, so `=` and the searches call
+  the program's method as before (tests/fixtures/compiler_sequence_object_equiv.tsv).
+  An `extend-type` of `js/Object` with `IEquiv` no longer reaches keywords
+  and symbols, whose own slot now outranks the inherited method, as
+  upstream's `Keyword` and `Symbol` do and as light-cljs-1014 made it for
+  the other classes: `=` and `.equiv` of two keywords or symbols compare
+  them, where they called the program's method; and an array map's lookup
+  of a keyword at `Advanced`, which took that method for the key's and
+  matched the first key (`(get {:x 1 :y 2} :y)` gave 1), finds the key.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -1419,8 +1457,8 @@ and `fqn`, symbols by kind and `str`, never by `instanceof`, so values of two
 copies of one build agree. `hash` calls the keyed `-hash` slot, which caches
 in the value's `hash` field; host objects keep today's weak identity
 bookkeeping. light-cljs-1014 gives each class its own `-equiv` and `-hash`
-(vectors by count and index, maps by count and lookup); mixed comparisons
-keep their answers.
+(vectors by count and index, maps by count and lookup), and light-cljs-1040
+keywords and symbols their `-equiv`; mixed comparisons keep their answers.
 
 ## 4. Profiles
 

@@ -1204,8 +1204,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // `mapKinds`, as records are told by their kinds (light-cljs-1037), and
     // the five hooks of a sorted set's tree map and a var's copy
     // (light-cljs-1038), and the 30 `-equiv` and `-hash` slots of the runtime's
-    // classes with the slot-first wrappers of `=` and `hash` (light-cljs-1014).
-    assert_eq!(checked, 500);
+    // classes with the slot-first wrappers of `=` and `hash` (light-cljs-1014),
+    // and the keywords' and symbols' `-equiv` slots (light-cljs-1040).
+    assert_eq!(checked, 502);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s

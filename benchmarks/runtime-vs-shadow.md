@@ -2862,3 +2862,152 @@ call site.
   for the features example; the readable runtime of `none` and `prepare`
   about 4,500 bytes. TodoMVC and re-frame simple were not ported in this
   run.
+
+## 2026-11-16: keywords and symbols compare by their own slots (light-cljs-1040)
+
+**What.** Keywords and symbols have their own keyed `-equiv` slots, which
+`=`'s slot-first wrapper calls: two keywords compare by kind and `fqn`, two
+symbols by kind and `str`, where `=` of two keywords that were not identical
+took the old protocol lookup and the structural comparison. The keyword
+searches of array maps (`arrayIndex`, `entryIndex`, `arrayMapDissoc`) read
+the key's slot once and take the class's own for no program method, with no
+lookup. docs/value-layout.md has the notes.
+
+Binaries: before `light-cljs-1bd3ac3d` (master), after `light-cljs-213006f5`
+(this pellet's runtime; the final commit differs in comments, docs and the
+size ratchet), in research/shadow-credibility/bin, and `light-cljs-5cd32c66`
+(master before light-cljs-1014) for `multimethod`'s reference.
+Unreserved: one peer worker was active. Raw results:
+research/output-speed/kw-equiv-1040.
+
+**Gate** (`bb benchmarks/core-ops/run.bb`, every operation, 5 runs; 1-minute
+load average 4.89-5.82 before, 4.24-5.88 after), ns per operation, median
+(range), the operations that moved by 5% or more:
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| multimethod | 183.3 (179.2-193.8) | 135.1 (133.0-137.9) | -26% | 51.7 / 52.1 | 3.55 | 2.60 |
+| kw-small | 13.4 (12.8-13.5) | 8.98 (8.82-9.03) | -33% | 10.5 / 10.6 | 1.27 | 0.84 |
+| get-small | 18.0 (17.3-18.1) | 13.0 (12.5-13.3) | -27% | 15.8 / 15.7 | 1.14 | 0.83 |
+| get-small-miss | 23.7 (23.4-23.8) | 21.9 (21.3-22.9) | -7% | 20.4 / 20.6 | 1.16 | 1.06 |
+| dissoc-small | 84.2 (82.3-85.0) | 69.6 (68.7-73.2) | -17% | 61.2 / 62.0 | 1.38 | 1.12 |
+| destructure-map-3 | 101.5 (99.5-104.5) | 72.9 (71.2-76.7) | -28% | 53.3 / 53.4 | 1.90 | 1.37 |
+| eq-map-7 | 234.5 (228.2-237.4) | 135.9 (133.3-138.1) | -42% | 163.3 / 162.5 | 1.44 | 0.84 |
+| eq-vec-10 | 56.2 (55.3-57.6) | 43.7 (43.1-44.4) | -22% | 88.8 / 88.4 | 0.63 | 0.49 |
+| kw-hash100 | 44.0 (43.0-44.6) | 22.4 (21.6-23.4) | -49% | 14.6 / 15.0 | 3.02 | 1.50 |
+| get-in-3 | 72.2 (72.0-74.1) | 68.9 (68.0-71.1) | -5% | 60.7 / 61.9 | 1.19 | 1.11 |
+| swap-assoc | 81.2 (80.5-83.4) | 69.9 (68.2-71.4) | -14% | 40.5 / 40.9 | 2.00 | 1.71 |
+| select-keys-3 | 543.2 (530.5-546.2) | 485.1 (471.8-499.6) | -11% | 267.5 / 273.2 | 2.03 | 1.78 |
+| record-kw-field | 6.98 (6.46-7.03) | 9.09 (8.78-9.56) | +30% | 4.42 / 4.60 | 1.58 | 1.98 |
+| record-assoc | 58.8 (57.5-60.7) | 63.2 (60.4-64.1) | +7% | 14.7 / 14.9 | 4.01 | 4.23 |
+
+`contains-small` -4%; every other operation moved less than 5%.
+
+**The operations of this pellet, alone** (`--ops multimethod,kw-small,get-small-miss,eq-map-7,destructure-map-3,dissoc-small,get-small,contains-small`,
+5 runs, the three binaries one after another; load 8.53-10.33, 11.28-11.65
+and 11.83-12.10), light-cljs ns per operation, median (range):
+
+| op | 5cd32c66 | 1bd3ac3d (before) | 213006f5 (after) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| multimethod | 138.0 (135.9-138.4) | 137.3 (136.3-138.0) | 94.1 (93.4-94.6) | 40.1 |
+| kw-small | 21.6 (21.3-22.2) | 12.8 (12.7-12.8) | 8.43 (8.35-8.47) | 10.1 |
+| get-small | 26.4 (26.1-27.5) | 17.2 (17.0-17.3) | 12.2 (12.1-12.3) | 15.3 |
+| get-small-miss | 32.0 (31.6-33.8) | 22.5 (22.4-22.6) | 20.7 (20.5-20.9) | 19.6 |
+| contains-small | 27.3 (26.8-28.2) | 18.1 (18.0-18.2) | 17.6 (15.6-17.7) | 12.3 |
+| dissoc-small | 112.4 (110.2-146.9) | 86.4 (86.0-87.2) | 76.0 (75.5-78.1) | 85.2 |
+| destructure-map-3 | 71.3 (69.9-77.9) | 51.1 (51.0-51.3) | 49.2 (48.1-52.4) | 35.3 |
+| eq-map-7 | 247.3 (241.2-248.1) | 121.5 (120.9-122.2) | 100.1 (99.6-100.8) | 102.4 |
+
+- **`multimethod` is back under its `5cd32c66` time**: 135.1 ns in the whole
+  gate against 153.1 there (light-cljs-1014's section) and 183.3 before, and
+  94.1 alone against 138.0 and 137.3. The lean multimethod tables compare
+  the dispatch keyword with each method's by `=` (`isaPlain`), three or four
+  times a call, which is now the wrapper and the keyword's slot. Alone, where
+  the earlier operations leave `=`'s call sites less polymorphic, the lean
+  tables were no slower than 5cd32c66's full ones before this change either.
+- **Keyword searches** (`kw-small`, `get-small`, `destructure-map-3`,
+  `dissoc-small`, and `eq-map-7`, whose map comparison searches the other
+  map once per key) no longer call the protocol lookup (`keyMethod` and
+  `externalMethod`) at the first key that is not the searched one: the
+  search reads the key's slot and finds the class's own. `eq-map-7` is now
+  faster than shadow-cljs's; `get-small-miss` (a miss compares every key by
+  `fqn`) gains least. `kw-hash100` halves: its keys are built at run time
+  (`keyword`), so a hash map's lookup of the literal `:k42` compares them
+  with `=`, which now takes the slot.
+- **`record-kw-field` +30% is the gate process's inlining, not the record
+  lookup.** Alone (`--ops record-kw-field,record-dot-field,record-assoc`,
+  3 runs, load 12.95 and 14.11) it is unchanged, 5.65 to 5.63 ns, and so is
+  `record-assoc` (60.1 to 59.3); after the equality operations too (5.70 to
+  5.67). It slows only after the hash map operations (the gate's
+  `map-literal-3` to `update-in-3` first: 6.97 to 8.98 ns in one process,
+  pseudo-names builds 6.59 to 8.66). The benchmark's `(:w r)` calls `get`,
+  whose slot-first wrapper calls the value's `-lookup` slot, and in that
+  process the call has seen three targets: the array map's, the hash map's
+  and the record's. TurboFan's trace (`--trace-turbo-inlining`) shows the
+  hash map's lookup, whose optimized code now inlines `=`'s keyword slot,
+  at 636 bytes of inlined bytecode, so the three-target call is no longer
+  inlined, and the record's two-argument `-lookup` method runs as a call of
+  its own (17% of the operation's profile; before, it was inlined into the
+  loop and only the three-argument method was a call). A program whose one
+  `get` site takes hash maps and records alike pays this; one that keeps
+  them apart does not. Not fixed here.
+
+**On light-cljs-1016's call-site entries.** Rebased onto master `15b858bf`
+(light-cljs-1016), the same change (`light-cljs-9c37a6b1`; the final commit
+differs in tests and notes) against `light-cljs-15b858bf`, `--ops
+kw-small,get-small,get-small-miss,contains-small,dissoc-small,kw-hash100,destructure-map-3,eq-map-7,record-kw-field,multimethod`,
+5 runs each (load 5.36-6.99, then 4.29-5.24), ns per operation, median
+(range):
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 13.6 (12.8-13.8) | 9.13 (8.80-9.21) | -33% | 11.1 / 10.9 | 0.83 |
+| get-small | 18.1 (16.9-18.4) | 14.4 (14.3-14.6) | -20% | 16.3 / 16.9 | 0.85 |
+| get-small-miss | 24.1 (21.9-24.3) | 19.2 (18.8-19.7) | -20% | 21.0 / 21.9 | 0.88 |
+| contains-small | 17.4 (16.3-17.6) | 15.8 (14.8-16.0) | -9% | 12.9 / 13.8 | 1.15 |
+| dissoc-small | 95.5 (87.5-97.2) | 77.6 (75.1-80.5) | -19% | 89.6 / 91.2 | 0.85 |
+| kw-hash100 | 43.2 (38.9-43.9) | 23.0 (21.5-23.5) | -47% | 14.1 / 14.5 | 1.59 |
+| destructure-map-3 | 104.9 (98.8-106.4) | 79.9 (61.8-80.8) | -24% | 51.9 / 53.0 | 1.51 |
+| eq-map-7 | 236.2 (224.5-241.2) | 170.5 (161.3-172.4) | -28% | 168.0 / 168.3 | 1.01 |
+| record-kw-field | 6.38 (6.21-6.66) | 6.88 (6.43-7.00) | +8% | 4.75 / 4.74 | 1.45 |
+| multimethod | 167.9 (158.5-170.9) | 108.8 (98.2-110.5) | -35% | 46.6 / 46.7 | 2.33 |
+
+This is most of light-cljs-1041 (filed by light-cljs-1016: an array map's
+lookup of a keyword reads the key's `IEquiv` through the protocol hooks
+once per lookup): the search now reads the key's slot by name and takes
+the class's own for none, so `kw-small`, `get-small` and `get-small-miss`
+are under shadow-cljs's. `contains-small` stays at 1.15.
+
+**Compile time** (the change's other side: the compile-time protocol lookup
+returns the runtime's own slots, so a keyword slot could have sent every
+macro-time keyword search through `=`). A macro that searches a 7-key array
+map for keywords built at expansion time a million times (`get`, `=`,
+`contains?`, `dissoc`; research/output-speed/kw-equiv-1040/macro), built
+with `--compile --entry --no-cache --stats`, 10 builds per binary
+alternating, load 10.64-11.17: the expansion's engine time 626.7 ms
+(623.5-630.8) before, 510.7 ms (508.4-514.0) after, -19%; the build's wall
+time 657.1 ms to 540.3 ms. Workload 200k, built clean (`release bench`, its
+cache off) 5 times per binary alternating, load 11.22-11.95: wall time
+7.06 s (6.82-7.19) before, 7.07 s (6.79-7.19) after; peak memory 1.038 GB
+(1.030-1.053) and 1.041 GB (1.033-1.064).
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1040 --runs 5
+--runtime-only --runtime 1,10,40`, the project rebuilt with each binary just
+before its run; load 12.22-12.99), wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.446 s (0.441-0.453) | 0.446 s (0.442-0.450) | 0.356 s | 0.355 s |
+| 10 | 1.065 s (1.054-1.068) | 1.048 s (1.044-1.057) | 0.672 s | 0.674 s |
+| 40 | 2.704 s (2.686-2.730) | 2.686 s (2.669-2.705) | 1.436 s | 1.425 s |
+
+Steady state, from 1 and 40 iterations: light-cljs 57.9 to 57.5 ms per
+iteration (-1%), shadow-cljs 27.7 and 27.4; light/shadow 2.09 both times.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there), against
+master `1bd3ac3d`: about 500 bytes for a program of keywords alone, which now
+keeps `=`'s wrapper (`keyword-only` 5,090 to 5,599), 240 to 400 for one with
+maps (`map-printed` 24,423 to 24,665, `set-only` 9,251 to 9,572); the
+features example about 500 (`features-direct` 127,104). Workload 200k's
+module grows 423 bytes (3,556,829 to 3,557,252). re-frame simple and TodoMVC
+were not ported in this run.
