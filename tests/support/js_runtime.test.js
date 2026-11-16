@@ -1605,9 +1605,10 @@ console.log('public constructor fields preserve canonical payload brands');
   // lazy seq, a chunked cons and a chunk (light-cljs-1029): their own keyed
   // fields copied onto their prototype make one by deliberate reflection
   // (docs/value-layout.md, section 5), so only their bare prototype is
-  // checked.
-  const classValue = c.seq([1, 2, 3]), classValues = [lazy, chunked, chunk, classValue];
-  for (const value of [lazy, chunked, chunk, classValue, c.cons(0, lazy), c.list(1, 2)]) {
+  // checked; so are a cons and a list (light-cljs-1030).
+  const classValue = c.seq([1, 2, 3]), consValue = c.cons(0, lazy), listValue = c.list(1, 2);
+  const classValues = [lazy, chunked, chunk, classValue, consValue, listValue];
+  for (const value of classValues) {
     const forged = Object.create(Object.getPrototypeOf(value));
     const copied = Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value));
     for (const candidate of classValues.includes(value) ? [forged] : [forged, copied]) {
@@ -1681,8 +1682,9 @@ console.log('seq payloads are private fields that host objects cannot copy');
       // A transient vector (light-cljs-1009) and a seq over an array
       // (light-cljs-1010) are class values whose data are their own keyed
       // fields: a copy of those onto their prototype is deliberate
-      // reflection, and one (docs/value-layout.md, section 5).
-      const copies = name === 'transientVector' || name === 'view' ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+      // reflection, and one (docs/value-layout.md, section 5); so are a
+      // repeat and its rest (light-cljs-1030).
+      const copies = ['transientVector', 'view', 'repeat', 'repeated'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
       for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
         for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
         assert.equal(fresh.inspect(candidate), null);
@@ -1747,8 +1749,9 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
   for (const [name, value] of Object.entries(built)) {
     // As above: a copy of a transient vector's, a seq's, a lazy seq's, a
     // chunked cons's or a chunk's own fields onto its prototype is one
-    // (light-cljs-1009, light-cljs-1010, light-cljs-1029).
-    const copies = ['transientVector', 'view', 'lazy', 'chunked', 'chunk'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+    // (light-cljs-1009, light-cljs-1010, light-cljs-1029), and so is a
+    // cons's, a list's or a repeat's (light-cljs-1030).
+    const copies = ['transientVector', 'view', 'lazy', 'chunked', 'chunk', 'cons', 'list', 'repeat'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
     for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
       for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isChunkedSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
       assert.equal(fresh.inspect(candidate), null);
@@ -2078,7 +2081,14 @@ console.log('kind tables stay private to the runtime');
     // Lazy seqs, chunked conses, chunks and chunk buffers (light-cljs-1029).
     lazySeq: core.mapSeq(core.inc, r.vector(1, 2)),
     chunkedCons: core.seq(core.mapSeq(core.inc, core.vec(Array.from({length: 40}, (_, i) => i)))),
-    chunk: core.arrayChunk([1, 2], 0, 2), chunkBuffer: core.chunkBuffer(2)
+    chunk: core.arrayChunk([1, 2], 0, 2), chunkBuffer: core.chunkBuffer(2),
+    // Lists, conses, ranges, repeats, iterates, cycles and key seqs
+    // (light-cljs-1030); their computed `first` and `rest` are getters of
+    // the prototype, which neither enumeration nor JSON runs.
+    list: core.list(1, 2), emptyList: core.list(), cons: core.cons(0, core.list(1)),
+    range: core.range(3), floatRange: core.range(0.5, 3), repeat: core.repeat(2, 1),
+    iterate: core.iterate(x => { throw new Error('realized ' + x); }, 0), cycle: core.cycle(r.vector(1, 2)),
+    keySeq: core.keys(core.arrayMap(1, 2))
   };
   const view = ['arr$LKEY', 'i$LKEY', 'indexed$LKEY', 'view$LKEY'];
   const trie = ['meta$LKEY', 'cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'hash$LKEY'];
@@ -2089,7 +2099,14 @@ console.log('kind tables stay private to the runtime');
     chunkedSeq: [...view, 'vec$LKEY', 'base$LKEY'], keyword: ['ns$LKEY', 'name$LKEY', 'fqn$LKEY', 'hash$LKEY'],
     symbol: ['ns$LKEY', 'name$LKEY', 'str$LKEY', 'hash$LKEY'], lazySeq: ['fn$LKEY', 's$LKEY', 'hash$LKEY'],
     chunkedCons: ['chunk$LKEY', 'more$LKEY', 'hash$LKEY'], chunk: ['arr$LKEY', 'off$LKEY', 'end$LKEY', 'first$LKEY', 'step$LKEY'],
-    chunkBuffer: ['buf$LKEY', 'end$LKEY']};
+    chunkBuffer: ['buf$LKEY', 'end$LKEY'],
+    list: ['cell$LKEY', 'first$LKEY', 'rest$LKEY', 'count$LKEY'], emptyList: ['cell$LKEY', 'count$LKEY'],
+    cons: ['cell$LKEY', 'first$LKEY', 'rest$LKEY'],
+    range: ['cell$LKEY', 'first$LKEY', 'end$LKEY', 'step$LKEY', 'integer$LKEY', 'count$LKEY'],
+    floatRange: ['cell$LKEY', 'first$LKEY', 'end$LKEY', 'step$LKEY', 'integer$LKEY'],
+    repeat: ['cell$LKEY', 'remaining$LKEY', 'first$LKEY', 'next$LKEY'],
+    iterate: ['cell$LKEY', 'f$LKEY', 'prev$LKEY', 'seed$LKEY', 'realized$LKEY', 'next$LKEY'],
+    cycle: ['cell$LKEY', 'all$LKEY', 'prev$LKEY', 'current$LKEY', 'next$LKEY'], keySeq: ['cell$LKEY', 'mseq$LKEY']};
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name];
     assert.deepEqual(Object.keys(value), field, name);
@@ -2110,7 +2127,9 @@ console.log('kind tables stay private to the runtime');
   assert.equal(core.count(marked), 1);
   // An own `__proto__` property serializes as an object rest copied it, with
   // no setter of `Object.prototype` run (the Sol review of light-cljs-1026).
-  for (const value of [r.vector(1), core.first(core.hashMap(1, 2)), core.subvec(r.vector(1, 2), 1), core.transient(r.vector(1))]) {
+  // So for seqs (the Sol review of light-cljs-1030).
+  for (const value of [r.vector(1), core.first(core.hashMap(1, 2)), core.subvec(r.vector(1, 2), 1), core.transient(r.vector(1)),
+    core.list(1), core.cons(0, core.list(1)), core.seq([1]), core.mapSeq(core.inc, r.vector(1))]) {
     Object.defineProperty(value, '__proto__', {value: 7, enumerable: true});
     assert.equal(JSON.stringify(value), '{"__proto__":7}');
   }

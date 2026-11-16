@@ -3099,10 +3099,22 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // keyed slots and the chunk operations' slot-first reads (94,448), and
     // light-cljs-1026 the vectors', subvectors', map entries' and transient
     // vectors' data as their own keyed fields, each read by its long keyed
-    // name (97,648).
+    // name (97,648), and light-cljs-1030 the lists', conses', ranges' and
+    // the other cells' classes, their keyed slots and getters (104,293).
     assert!(
         total + 1_000
-            <= 73_207 + 2_944 + 600 + 2_500 + 1_000 + 1_000 + 4_000 + 5_000 + 2_000 + 4_000 + 3_000,
+            <= 73_207
+                + 2_944
+                + 600
+                + 2_500
+                + 1_000
+                + 1_000
+                + 4_000
+                + 5_000
+                + 2_000
+                + 4_000
+                + 3_000
+                + 6_100,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).

@@ -530,9 +530,11 @@ fn a_program_type_opens_the_protocol_hooks() {
     // `viewCells`) that `count` and `seqableValue` read; 10,000 after
     // light-cljs-1029 (2026-11-16): the tests of chunks, chunk buffers, lazy
     // seqs and chunked conses (`chunkOf`, `chunkBufferOf`, `lazyCells`,
-    // `chunkedConsCells`) that they read where those were private stores.
+    // `chunkedConsCells`) that they read where those were private stores;
+    // 10,171 after light-cljs-1030 (2026-11-16): the cells' test (`cellOf`,
+    // `seqCells`) where theirs was a private store.
     let size = advanced(source).emit_js().len();
-    assert!(size < 10_100, "{size} bytes");
+    assert!(size < 10_300, "{size} bytes");
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -852,14 +854,15 @@ fn protocol_tests_of_program_types_need_no_protocol_tables() {
     // docs/value-layout.md) adds five bytes a name: the record's 7,500.
     // The tests of chunks, chunk buffers, lazy seqs and chunked conses that
     // `counted?` reads (light-cljs-1029), where those were private stores:
-    // the program type's 7,897.
+    // the program type's 7,897. The cells' test (`cellOf`), where theirs was
+    // a private store (light-cljs-1030): 8,011.
     for source in [
         "(deftype T [] ICounted (-count [_] 7)) (counted? (T.))",
         "(defrecord R [x]) (map? (->R 1))",
     ] {
         assert_keeps_none(source, &EXTENSION_MACHINERY);
         let size = advanced(source).emit_js().len();
-        assert!(size < 8_000, "{source}: {size} bytes");
+        assert!(size < 8_100, "{source}: {size} bytes");
     }
 }
 
@@ -940,9 +943,11 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // since light-cljs-1010 (2026-11-15), where the views' store was a
     // `privateStore` (3,141 bytes), and the tests of chunks, chunk buffers,
     // lazy seqs and chunked conses, since light-cljs-1029 (2026-11-16),
-    // where theirs were (3,725 bytes).
+    // where theirs were (3,725 bytes), and the cells' test (`cellOf`,
+    // `seqCells`), since light-cljs-1030 (2026-11-16), where theirs was a
+    // `privateStore` (3,892 bytes).
     let size = advanced("(count (.split \"a,b\" \",\"))").emit_js().len();
-    assert!(size < 3_800, "{size} bytes");
+    assert!(size < 4_000, "{size} bytes");
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -2046,9 +2051,12 @@ fn upstream_members_are_every_other_member_of_the_runtime_types() {
     )
     .emit_js();
     let printed = execute(&format!("console.log({js});"));
+    // Names with a `$` are the runtime's own: protocol slots (`cljs$...`)
+    // and the getters of a cell's computed fields (`first$<key>`,
+    // light-cljs-1030).
     let upstream: Vec<&str> = printed
         .split_whitespace()
-        .filter(|name| !name.starts_with("cljs$") && !HOST_FACING_MEMBERS.contains(name))
+        .filter(|name| !name.contains('$') && !HOST_FACING_MEMBERS.contains(name))
         .collect();
     assert_eq!(upstream, UPSTREAM_MEMBERS);
 }
@@ -2629,7 +2637,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [421, 421, 465],
+            [474, 474, 518],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2691,7 +2699,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [402, 402, 443],
+            [452, 452, 493],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2754,7 +2762,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [421, 421, 421],
+            [474, 474, 474],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
@@ -3451,7 +3459,9 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
         "forged-map 0000010000000000000000000000010000\n",
         "copied-map 0000010000000000000000000000010000\n",
         "forged-list 0000010000000000000000000000010000\n",
-        "copied-list 0000010000000000000000000000010000\n",
+        // A list's own fields copied onto its prototype make one by deliberate
+        // reflection (light-cljs-1030, docs/value-layout.md section 5).
+        "copied-list 0100011110100000001111100110011111\n",
         "forged-set 0000010000000000000000000000010000\n",
         "forged-lazy-seq 0000010000000000000000000000010000\n",
         "forged-range 0000010000000000000000000000010000\n",

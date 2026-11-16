@@ -63,16 +63,12 @@ const SWAPS: &[(&str, &str)] = &[
   }"#,
     ),
     (
-        "cells",
-        r#"  const cells = {
-    has: value => { const kind = __rt.formKind(value); return kind === "cons" || kind === "chunked-cons" || kind === "list"; },
-    get(value) {
-      const kind = __rt.formKind(value);
-      if (kind === "list") return {kind, head: __rt.cljFirst(value), tail: __rt.cljRest(value), count: __rt.cljCount(value)};
-      if (kind === "cons" || kind === "chunked-cons") return {kind: "cons", head: __rt.cljFirst(value), tail: __rt.cljRest(value)};
-    },
-    set() { throw new TypeError("shared profile: cells.set"); }
-  };"#,
+        "cellOf",
+        r#"  function cellOf(value) {
+    const kind = __rt.formKind(value);
+    if (kind === "list") return {cell$LKEY: kind, first$LKEY: __rt.cljFirst(value), rest$LKEY: __rt.cljRest(value), count$LKEY: __rt.cljCount(value)};
+    if (kind === "cons" || kind === "chunked-cons") return {cell$LKEY: "cons", first$LKEY: __rt.cljFirst(value), rest$LKEY: __rt.cljRest(value)};
+  }"#,
     ),
     (
         "lazyOf",

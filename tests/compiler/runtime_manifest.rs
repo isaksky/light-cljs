@@ -1171,8 +1171,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // symbol's metadata copy (light-cljs-1011), and the 17 keyed slots of
     // lazy seqs, chunked conses, chunks and the chunk protocols of chunked
     // seqs with the chunked conses' two hooks of `firstSeq` and `restSeq`
-    // (light-cljs-1029).
-    assert_eq!(checked, 371);
+    // (light-cljs-1029), and the 47 keyed slots of lists, conses, ranges,
+    // repeats, iterates, cycles, key and value seqs, `re-seq`'s conses and
+    // sorted maps' seqs (light-cljs-1030).
+    assert_eq!(checked, 418);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1566,14 +1568,29 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
     let body = |unit: usize| &ANNOTATED_RUNTIME[manifest.units[unit].body_range.clone()];
     let writers = |store: &str| -> Vec<&str> {
         // Keywords and symbols are classes, with no store: their builders
-        // construct the class (docs/value-layout.md, light-cljs-1011).
-        let class = match store {
-            "keywords" => Some("KeywordCell"),
-            "symbols" => Some("SymbolCell"),
-            _ => None,
+        // construct the class (docs/value-layout.md, light-cljs-1011); so
+        // are the cells, lists, conses and the other seqs of `cellOf`
+        // (light-cljs-1030).
+        let classes: &[&str] = match store {
+            "keywords" => &["KeywordCell"],
+            "symbols" => &["SymbolCell"],
+            "cells" => &[
+                "ListCell",
+                "EmptyListCell",
+                "ConsCell",
+                "ReSeqCell",
+                "IntegerRangeCell",
+                "RangeCell",
+                "RepeatCell",
+                "IterateCell",
+                "CycleCell",
+                "KeySeqCell",
+                "TreeMapStackCell",
+            ],
+            _ => &[],
         };
         let mut calls = vec![format!("{store}.set("), format!("{store}.add(")];
-        calls.extend(class.map(|class| format!("new {class}(")));
+        calls.extend(classes.iter().map(|class| format!("new {class}(")));
         // A unit declaring a binding, or an effect defining one of its targets
         // (`mapEntry = ...` in `mapEntry.lean`, light-cljs-247), which is
         // then the writer.
@@ -2318,6 +2335,16 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("count.branches"),
             unit("count.seqs"),
             unit("count.cells"),
+            unit("count.slots"),
+            unit("ListValue.firstSlot"),
+            unit("ListValue.restSlot"),
+            unit("ListValue.nextSlot"),
+            unit("ListValue.seqSlot"),
+            unit("ListValue.countSlot"),
+            unit("first.slots"),
+            unit("rest.slots"),
+            unit("next.slots"),
+            unit("seq.slots"),
             unit("cons.equiv"),
             unit("cons.compared"),
             unit("makeVector.hash"),

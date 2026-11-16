@@ -1360,3 +1360,87 @@ in this step.
 Raw results (the core-ops EDN and Markdown of every run above, the first
 gate and the back-to-back recheck included, and both workload runs):
 research/output-speed/vector-fields-1026.
+
+## 2026-11-16: lists, conses, ranges, repeat, iterate and cycle as classes (light-cljs-1030)
+
+**What.** A list, the empty list, a cons, an integer or float range, a
+repeat, an iterate, a cycle, a map's key or value seq, a `re-seq` step and
+a sorted map's seq are each one object of an internal class on its type's
+prototype (`ListCell`, `ConsCell` and the others, kinds 12 to 15 and 22 to
+27), with their data in own keyed fields and getters of the prototype where
+a step computes `first` or `rest`. Each was `Object.create` plus a frozen
+payload in the private-field store `cells`, often with closures; the store
+is deleted. They have keyed `first`, `rest`, `next` and `seq` slots, and
+lists and integer ranges `count`, which the slot-first wrappers call.
+docs/value-layout.md has the notes.
+
+Binaries: before `light-cljs-518edac7` (master, with light-cljs-1026),
+after `light-cljs-20d3a2e8` (this pellet's src/), in
+research/shadow-credibility/bin. Unreserved: one peer worker had just
+finished. Raw results: research/output-speed/list-classes-1030 (`*-before2`,
+`*-after2`; the `*-before`/`*-after` files are the same comparison before
+the rebase onto light-cljs-1026, `ef5c9df2` against `d0521f4e`).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops seq-walk-vec,lazy-walk,reduce-range,variadic-call,apply-vec,filter-count,into-xform --runs 3`,
+the same selection both times; 1-minute load average 2.81-3.15 before,
+3.70-4.09 after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| apply-vec | 348.9 (348.0-354.7) | 250.2 (246.7-252.7) | -28% | 51.3 | 6.85 | 4.88 |
+| variadic-call | 9.74 (9.68-9.76) | 9.90 (9.87-9.97) | +2% | 9.03 | 1.09 | 1.10 |
+| seq-walk-vec-1000 | 23,425 (23,374-23,603) | 28,554 (28,354-28,868) | +22% | 9,786 | 2.40 | 2.92 |
+| lazy-walk-1000 | 41,911 (41,825-42,137) | 46,944 (46,729-47,776) | +12% | 38,744 | 1.09 | 1.21 |
+| reduce-range-1000 | 4,719 (4,638-4,798) | 5,056 (4,924-5,110) | +7% | 5,338 | 0.89 | 0.95 |
+| filter-count-1000 | 35,485 (34,716-36,198) | 36,275 (36,054-36,948) | +2% | 30,912 | 1.17 | 1.17 |
+| into-xform-1000 | 76,806 (75,019-78,298) | 81,017 (80,945-82,018) | +5% | 12,991 | 5.89 | 6.24 |
+
+- `apply-vec` (`(apply + i v)`, a cons of `i` onto the vector's seq per
+  call) gains 28%: the cons is one object, and `apply`'s walk of it calls
+  its `first`, `rest` and `next` slots, where each step probed the private
+  stores and reached the cells' kind table branches.
+- **`seq-walk-vec` and `lazy-walk` read slower: a loss, recorded as found.**
+  Timed as a pair (`--ops seq-walk-vec,lazy-walk --runs 3`, load 9.26-9.88,
+  `recheck2-*`), before then after: `lazy-walk` 36,233 and 39,905 ns
+  (+10%), `seq-walk-vec` 26,497 and 31,147 (+18%). Neither builds a cell
+  in its loop, but `lazy-walk` maps over a range, which now takes the
+  slot-first path with slots shared by the cell classes, and the empty list
+  that ends both walks now has a kind and slots, so the wrappers' property
+  reads see more classes; `seq-walk-vec` runs after `lazy-walk` and inherits
+  that feedback. Before the rebase, `seq-walk-vec` timed with no lazy
+  operation before it was unchanged (18,456 and 18,568 ns, +1%,
+  `recheck-*`). In the whole gate below, neither moves by more than 10%.
+  light-cljs-1016 (direct slot calls at `:advanced`) removes the shared
+  wrappers these walks go through.
+- **The whole gate** (all 64 operations, `--runs 3`; load 2.60-4.10 before,
+  3.08-4.58 after): no operation reads more than 10% slower; `apply-vec`
+  343.3 to 284.6 ns, `vec-conj-64` 2,724 to 2,266 and `transient-map-100`
+  23,054 to 19,082 read 17% faster. Before the rebase, the three ops that
+  read more than 10% slower there (`vec-invoke-1024`, `destructure-vec-3`,
+  `sort-by-100`) were within 3% timed back to back (`recheck-*`).
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1030 --runs 5
+--runtime-only --runtime 1,10,40`, a copy of the project rebuilt with each
+binary just before its run), wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.415 s (0.411-0.431) | 0.437 s (0.397-0.459) | 0.305 s | 0.306 s |
+| 40 | 3.279 s (3.099-3.579) | 3.044 s (3.007-3.083) | 1.137 s | 1.270 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 73.4 to
+66.9 ms per iteration (-9%); shadow-cljs 21.3 and 24.7, the after run under
+more load, so light/shadow 3.45 to 2.71 overstates the gain. Before the
+rebase (`ef5c9df2` against `d0521f4e`, load 3.71-4.33 and 2.69-3.04):
+light-cljs 72.7 to 62.3 ms (-14%), shadow-cljs 22.7 and 21.6, light/shadow
+3.21 to 2.88.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there):
+programs that keep the cells grow 4 to 5 KB, mostly the 43 slots with their
+long keyed names and the cell classes: `seq-pipeline` 42,513 bytes,
+`mapv-count` 53,201, `keyword-lookups` 52,734, `constant-keys` 68,266,
+`event-maps` 50,318, `features` 98,251 (before the rebase; 51,306 and
+102,500 on light-cljs-1026, with the sorted map seq's slots); programs that keep none less,
+through the cells' test the older layers call (`rest-fn` 16,668,
+`atom-str` 4,047). re-frame simple and TodoMVC gzip sizes were not measured
+in this step.

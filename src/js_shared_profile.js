@@ -765,11 +765,12 @@
   //@unit stamped compile-time requires: sharedFormKind, stampBrand
   // An engine vector form is the runtime's own value too: the compiler form
   // bridge reads it (`vectorStore`) without reading a property of it; so
-  // are its keywords and symbols, and the engine's lazy seqs and conses,
-  // chunked ones among them, which `lazyOf` and `chunkedConsOf` read.
+  // are its keywords and symbols, and the engine's lazy seqs, lists and
+  // conses, chunked ones among them, which `lazyOf`, `cellOf` and
+  // `chunkedConsOf` read.
   function stamped(value) {
     const kind = sharedFormKind(value);
-    return kind === "vector" || kind === "keyword" || kind === "symbol" || kind === "lazy-seq" || kind === "cons" || kind === "chunked-cons" || stampBrand.has(value);
+    return kind === "vector" || kind === "keyword" || kind === "symbol" || kind === "lazy-seq" || kind === "cons" || kind === "list" || kind === "chunked-cons" || stampBrand.has(value);
   }
   //@unit symbolOf requires: sharedFormKind, sharedFormOf
   // A symbol is an engine symbol form, whose fields are read from the form
@@ -904,16 +905,22 @@
   });
   //@unit sortedComparators requires: sharedStore
   const sortedComparators = sharedStore();
-  //@unit cells requires: sharedChunked, sharedView
-  // The engine's lists and conses; a chunked one is a chunked cons
-  // (`chunkedConsOf`), as the V8 profile's chunked conses are no cells.
-  const cells = (view => ({...view,
-    has: value => view.has(value) && !sharedChunked(value),
-    get: value => sharedChunked(value) ? undefined : view.get(value)
-  }))(sharedView("cells",
-    kind => kind === "cons" || kind === "list",
-    (value, kind) => kind === "list" ? {kind, head: __rt.cljFirst(value), tail: __rt.cljRest(value), count: __rt.cljCount(value)}
-      : {kind: "cons", head: __rt.cljFirst(value), tail: __rt.cljRest(value)}));
+  //@unit cellOf requires: sharedChunked, sharedFormKind, sharedFormOf
+  // The engine's lists and conses, read through a view of the V8 profile's
+  // keyed fields (`cellOf`): a list's `first`, `rest` and `count`, a cons's
+  // `first` and `rest`; a chunked one is a chunked cons (`chunkedConsOf`),
+  // as the V8 profile's chunked conses are no cells. Else the V8 profile's
+  // test, which a runtime-built cell (`ListCell`) answers.
+  function cellOf(value) {
+    const kind = sharedFormKind(value);
+    if ((kind === "cons" || kind === "list") && !sharedChunked(value)) {
+      const form = sharedFormOf(value);
+      return kind === "list" ? {cell$LKEY: kind, first$LKEY: __rt.cljFirst(form), rest$LKEY: __rt.cljRest(form), count$LKEY: __rt.cljCount(form)}
+        : {cell$LKEY: kind, first$LKEY: __rt.cljFirst(form), rest$LKEY: __rt.cljRest(form)};
+    }
+    if (value == null) return undefined;
+    return value.cljs$lang$kind$$LKEY !== undefined && value.cell$LKEY !== undefined ? value : undefined;
+  }
   //@unit sharedChunked requires: sharedFormKind, sharedFormOf
   // Whether a value is one of the engine's chunked conses (a `chunk-cons`,
   // or a chunked `concat` or `map`).
@@ -1321,7 +1328,22 @@
       return current == null ? null : __rt.cljCons(first(current), sharedSeqForm(rest(current)));
     });
   }
-  //@unit cons requires: cells, count, emptyList, ListValue, methodKeys, protocolHooks, seq,
+  //@unit cellFields requires: cellOf, ConsCell, EmptyListCell, ListCell
+  // The V8 profile's cell copies (`cellCopy`), and an engine list's or
+  // cons's, whose `cellOf` is a view of its fields rather than the value: a
+  // runtime list or cons of those fields.
+  const cellFields = Object.freeze(["cell$LKEY", "first$LKEY", "rest$LKEY", "count$LKEY", "end$LKEY", "step$LKEY", "integer$LKEY", "remaining$LKEY", "next$LKEY",
+    "f$LKEY", "prev$LKEY", "seed$LKEY", "realized$LKEY", "all$LKEY", "current$LKEY", "mseq$LKEY", "stack$LKEY", "ascending$LKEY", "cnt$LKEY"]);
+  function cellCopy(value) {
+    const cell = cellOf(value);
+    if (cell !== value) return cell.cell$LKEY === "cons" ? new ConsCell(cell.first$LKEY, cell.rest$LKEY)
+      : cell.count$LKEY === 0 ? new EmptyListCell() : new ListCell(cell.first$LKEY, cell.rest$LKEY, cell.count$LKEY);
+    const Type = function () {};
+    Type.prototype = Object.getPrototypeOf(value);
+    return Reflect.construct(CellCopy, [value], Type);
+  }
+  function CellCopy(value) { for (const name of Object.keys(value)) if (cellFields.includes(name)) this[name] = value[name]; /*@brand*/ }
+  //@unit cons requires: count, emptyList, ListCell, methodKeys, protocolHooks, seq,
   //@ seqValue, sharedFormKind, sharedSeqForm
   // A tail that is not a seq (an array, a vector, an invalid object) is
   // normalized through `seq` now, as the V8 profile's `cons` has it, so a
@@ -1343,9 +1365,7 @@
     if (kind === "list") {
       if (sharedFormKind(tail) === "list") return __rt.cljConj(tail, head);
       if (count(tail) === 0) return __rt.formList(head);
-      const value = Object.create(ListValue.prototype);
-      cells.set(value, {kind, head, tail, count: count(tail) + 1});
-      return value;
+      return new ListCell(head, tail, count(tail) + 1);
     }
     return __rt.cljCons(head, sharedSeqForm(tail));
   }

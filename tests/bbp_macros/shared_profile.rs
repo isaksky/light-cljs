@@ -2259,9 +2259,34 @@ fn shared_profile_identity_hashes_are_the_engines() {
     );
 }
 
+/// An engine list's or cons's copy for its metadata or `clone` keeps its
+/// items and count (the Sol review of light-cljs-1030): the copy is a
+/// runtime list or cons of the fields the profile's `cellOf` reads.
+#[test]
+fn shared_profile_engine_list_copies_keep_payload() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const l = __rt.formList(1, 2), m = core.arrayMap(1, 2), c = core.withMeta(l, m); \
+             const e = core.withMeta(__rt.formList(), m), k = core.withMeta(__rt.cljCons(0, l), m); \
+             return [core.prStr(c), core.prStr(core.meta(c)), core.count(c), core.first(core.clone(l)), \
+               core.prStr(e), core.count(e), core.prStr(k), core.prStr(core.meta(k))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "(1 2) {1 2} 2 1 () 0 (0 1 2) {1 2}"
+    );
+}
+
 /// A write to a view's private fallback (a runtime-owned seq kind, design
 /// point 8) keeps nothing unless the task asked for the migration trace,
-/// and then one stack per view.
+/// and then one stack per view. Since light-cljs-1030 a repeat is a class
+/// value, as lists and conses are, so it writes to no view: the trace stays
+/// empty.
 #[test]
 fn shared_profile_fallback_diagnostics_are_bounded() {
     let rt = Runtime::new();
@@ -2279,7 +2304,7 @@ fn shared_profile_fallback_diagnostics_are_bounded() {
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "8000 undefined undefined 1 cells"
+        "8000 undefined undefined 0 "
     );
 }
 

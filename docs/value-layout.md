@@ -239,6 +239,60 @@ replacing 1009's one `store$LKEY` (`state$LKEY`) field.
   back as the form; its swapped storage units take views as the V8
   profile's do. The emitter's `count` of a known vector reads `cnt$LKEY`.
 
+What light-cljs-1030 landed: the lists, conses, ranges, repeats,
+iterates and cycles, the key and value seqs and a sorted map's seq, which
+were the last values of the `cells` store.
+
+- **The classes.** Each is one object of an internal constructor on its
+  type's prototype: `ListCell` (kind 12), `EmptyListCell` (13), `ConsCell`
+  (14), `IntegerRangeCell` (15), `RangeCell` (22), `RepeatCell` (23),
+  `IterateCell` (24), `CycleCell` (25), `KeySeqCell` (26, the key and value
+  seqs, on a prototype of no public type, as before) and `ReSeqCell` (27,
+  `re-seq`'s conses, likewise); a sorted map's seq from its public
+  constructor is a `TreeMapStackCell` on the prototype and kind 11 of its
+  views, told from them by its fields. Kinds 12 to 15 were the ones left
+  for the seq kinds; the rest follow the keywords' and symbols' 20 and 21.
+  Their own keyed fields are upstream's where the data are the same (a
+  list's `first`, `rest` and `count`, a range's `first` item, `end` and
+  `step` and an integer range's `count`, an iterate's `f`, `prev`, `seed`
+  and `next`, a cycle's `all`, `prev`, `current` and `next`, a repeat's
+  `next`), plus `cell$LKEY`, today's kind of seq ("list", "cons", "range",
+  "repeat", "iterate", "cycle", "keys", "vals", "tree-seq"), as the views
+  keep `view$LKEY`. Where a step computes `first` or `rest` (a range's
+  next range, a repeat's, iterate's and cycle's next step, a key seq's key,
+  a sorted map's seq's node), it is a getter of the prototype under the
+  same keyed name, so every reader reads `first$LKEY` and `rest$LKEY`
+  alike. `cellOf` (the value itself where its keyed kind and its own `cell`
+  field are there) replaces `cells.get`, and `seqCells` stands for the
+  store in the inventories; the `cells` store is deleted, and with it a
+  cell's frozen payload, its closures and `Object.create` per step. A
+  cell's metadata copy and `clone` copy its own keyed fields
+  (`cellCopy`), not a program's slots on the value. Metadata and hashes
+  stay in `metadataValues` and `constructorHashes`; the cells' kind table
+  number (`kindOps` 2) stays until light-cljs-1015.
+- **Slots.** Lists, the empty list, conses, ranges, repeats, iterates,
+  cycles, key seqs, `re-seq`'s conses and sorted map seqs have keyed `-first`, `-rest`,
+  `-next` and `-seq` slots, and lists, the empty list and integer ranges
+  `-count`, which the slot-first wrappers serve. A list's `next` is its
+  rest and a repeat's its next step, as `next` takes them; every other
+  cell's `next` is the seq of its rest, through the wrappers, so an
+  `extend-type` of `ISeq` answers as before. A sorted map's seq shares its
+  prototype with its views, so its `-first`, `-rest`, `-next` and `-seq`
+  slots answer both (the core dispatchers, `coreMethod`, call a slot for
+  either); it has no `-count` slot yet. `RSeq` still copies its items.
+- **Copies.** The shared-heap profile's `cellFields` unit also copies an
+  engine list or cons, whose `cellOf` is a view of its fields, as a runtime
+  list or cons; a seq's `toJSON` is `unkeyedJSON`.
+- **The compile-time brand.** The cell constructors end with `/*@brand*/`;
+  the compiler form bridge tests `stamped` before `isCell` and before it
+  reads a repeat's kind, and `inspect`'s cell test carries `/*@stamped*/`.
+  A seq's `toJSON` (the shared base's) now leaves out every keyed own
+  field by its key, since a destructuring would run the cells' getters.
+- **The Pants build.** The shared-heap profile's `cellOf` answers the
+  engine's lists and conses (not its chunked ones) with a view of the same
+  keyed fields, its `cons` builds a `ListCell` onto a runtime-owned tail,
+  and its `stamped` accepts the engine's lists.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
