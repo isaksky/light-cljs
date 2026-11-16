@@ -851,6 +851,63 @@ about the classes, the slots or `extend-type` changes.
 benchmarks/runtime-vs-shadow.md has the measurements, and the call-site
 form it measured and left out.
 
+What light-cljs-1014 landed: each class compares and hashes its own values
+(section 3, "Equality and hashing").
+
+- **Slots.** Vectors, subvectors and map entries, array, hash and sorted
+  maps, hash and sorted sets, lists, conses, lazy seqs, indexed and chunked
+  seqs and chunked conses have keyed `-equiv` slots; they and keywords and
+  symbols have keyed `-hash` slots. `=` (`equalPair.slots`) and `hash`
+  (`hash.slots`) have slot-first wrappers (87 and 68 bytes of bytecode):
+  after `=`'s identity test, a value of a runtime class (a keyed kind below
+  64) is compared or hashed by its slot, which is the class's own or the
+  method `extend-type` or `specify!` of `IEquiv` or `IHash` wrote, as the
+  operations' protocol lookups found before; records and the program's
+  types (kinds from 64) keep the operations' paths. `objectEquiv` (the host
+  `equiv`) and the `-equiv` and `-hash` protocol functions are unchanged.
+- **The comparisons.** A vector or a map entry against another, both
+  holding their items in their own trie and tail (no view, no caller's
+  tail), compares counts, then items index by index, the first unequal pair
+  ending it (`classEquiv`), and hashes its items index by index into its
+  `hash` field (`vectorHash`), where `=` and `hash` walked their seqs. An
+  array, hash or sorted map against another compares counts, then looks
+  each of its keys up in the other, an array map's keys with `arrayIndex`
+  (`mapEquiv`), as `equivMap` does. Sets (`equivSet`, count and
+  membership), seqs (`equivSequential`, walked with `first` and `next`) and
+  every mixed comparison (a vector against a list, a map against a record)
+  take the structural comparison (`structuralEqualPair`) directly, and maps,
+  sets, seqs, keywords and symbols the structural hash, cached where `hash`
+  cached it: a keyword's and a symbol's in their field, a map's and a set's
+  in `constructorHashes`. `hash` is split: `hashStructural` is what it does
+  without a program's `IHash` method, as `structuralEqualPair` is to
+  `equalPair`. Cycles and iterates keep identity and have no slot.
+- **Extensions.** The comparisons by fields read no program method, so they
+  hold only while no `extend-type` or `specify!` has reached a runtime kind
+  (`kindTables` emptied, the guard the kind table branches use); after one,
+  every class's slot takes the structural comparison and hash, so a
+  program's `ICounted`, `ISeqable`, `ISeq` or `ILookup` of a runtime type
+  is read as before (`classes_compare_and_hash_as_the_generic_walk_did`).
+  The Pants build's profile throws on such an extension, so it always
+  compares by fields.
+- **Complete slots.** The compile-time protocol lookup (build.rs) calls the
+  runtime's own slots, so each answers every value of its class: a value
+  made by reflection takes the structural comparison and hash, and
+  `hashStructural` does not call a runtime slot it finds as a program's
+  method (`builtinSlots`), which would ask it again. The compile-time `-equiv`
+  protocol function, which reaches a class's slot first, answers a
+  collection holding NaN against itself as upstream's `-equiv` does
+  (false), where `=` keeps its identity test.
+- **Primitives.** `hash` of a number, a string or another primitive reads
+  its prototype's `IHash` mask bit and marker by name, as upstream's
+  `implements?` does, before the protocol lookup's computed names (a keyed
+  read of a primitive each, which was most of `hash`'s time for a number);
+  a session that demands declarations takes the lookup.
+- **Forgery (section 5).** A value made by reflection from a class's
+  prototype now compares structurally through its class's slot in release
+  too: where a program extended `IEquiv` to `default` or `object`, that
+  method no longer answers `=` of it. Its hash is unchanged
+  (`hashStructural` still asks the protocol lookup last).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

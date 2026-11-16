@@ -1737,9 +1737,13 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // after light-cljs-1013 (2026-11-16): the tests of the sets, queues,
     // atoms and the other values that became classes (`setCellOf`, `sets`,
     // `queues`, `atoms` and the rest), which the stores' inventories read
-    // where those were private stores, so the ceiling moves to 16,000.
+    // where those were private stores, so the ceiling moves to 16,000;
+    // 17,018 after light-cljs-1014 (2026-11-16): the array map's keyed
+    // `-equiv` slot (`mapEquiv`, which looks each key up in the other map)
+    // and the slot-first wrapper of `=` (`equalPair.slots`), which the map's
+    // key search keeps, so the ceiling moves to 18,000.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 16_000, "{} bytes", output.len());
+    assert!(output.len() < 18_000, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -3716,4 +3720,53 @@ const MAP_SLOTS_EXPECTED: &str = "[2 1 :none true {:a 1, :b 2, :c 3} {:b 2} 9 tr
 #[test]
 fn map_slots_answer_every_map_of_their_class() {
     every_level(&format!("(pr-str {MAP_SLOTS_SOURCE})"), MAP_SLOTS_EXPECTED);
+}
+
+/// The classes' own `-equiv` and `-hash` (light-cljs-1014) give `=` and
+/// `hash` today's answers: a vector against a list, a seq, a subvector or a
+/// map entry, a map against a record and against maps of the other classes,
+/// sets of either class, a vector of more than one leaf, a NaN item (`=` is
+/// identity first, `.equiv` is not), and the hashes that equal values of
+/// different classes share. The answers are those of the runtime before it
+/// (5cd32c66), at every level.
+const CLASS_EQUALITY_SOURCE: &str = r#"(do (defrecord R [a])
+  (let [v (vec (range 40)) w (vec (range 40)) v2 (conj (vec (range 39)) :x)
+        e (first {:a 1}) sv (subvec [0 1 2 3] 1 3)
+        h (hash-map :a 1 :b 2) s (sorted-map :a 1 :b 2)
+        nan [js/NaN]]
+    (pr-str
+      [(= [1 2] '(1 2)) (= '(1 2) [1 2]) (= [1 2] (seq [1 2])) (= [1 2] (map inc [0 1])) (= [1 2] (range 1 3))
+       (= [:a 1] e) (= e [:a 1]) (= [:a 2] e) (= [1 2] sv) (= sv [1 2]) (= [1 2] [1 2 3]) (= [] '()) (= [] {})
+       (= v w) (= v v2) (= v (seq w)) (= nan nan) (= nan [js/NaN]) (.equiv nan nan)
+       (= {:a 1} (->R 1)) (= (->R 1) {:a 1}) (= {:a 1 :b 2} h) (= h {:a 1 :b 2}) (= s h) (= h s) (= {:a 1 :b 2} s)
+       (= {:a 1} {:a 2}) (= {:a 1} {:b 1}) (= {:a nil} {:b nil}) (= {nil 1} {nil 1}) (= {[1] 2} {'(1) 2})
+       (= #{1 2} (sorted-set 1 2)) (= (sorted-set 1 2) #{1 2}) (= #{1 2} #{1 3}) (= #{[1]} #{'(1)})
+       (= '(1 2) '(1 2)) (= (list 1 2) (cons 1 (list 2))) (= (map inc [0 1]) [1 2]) (= (seq [1 2]) (list 1 2))
+       (= (hash [1 2]) (hash '(1 2)) (hash (seq [1 2])) (hash (map inc [0 1])))
+       (= (hash {:a 1}) (hash (hash-map :a 1)) (hash (sorted-map :a 1)))
+       (= (hash #{1 2}) (hash (sorted-set 1 2))) (= (hash v) (hash (seq w))) (= (hash e) (hash [:a 1]))
+       (hash [1 2 3]) (hash {:a 1}) (hash #{:a}) (hash :a) (hash 'a/b) (hash v) (hash '(1 2)) (hash (seq [1 2]))
+       (hash 1.5) (hash "ab") (hash true)])))"#;
+
+#[test]
+fn classes_compare_and_hash_as_the_generic_walk_did() {
+    every_level(
+        CLASS_EQUALITY_SOURCE,
+        "[true true true true true true true false true true false true false true false true true false false \
+         false false true true true true true false false false true true true true false true true true true \
+         true true true true true true -1710654795 -2144769406 1271612507 -2123407586 -1172211204 -833271242 \
+         1185709346 1185709346 63551 1707819681 1231]",
+    );
+    // A program's `ISeqable` of vectors, `ILookup` of array maps and
+    // `ICounted` of one vector, which empty the kind tables, are what `=`
+    // and `hash` read afterwards, as before: the classes then compare and
+    // hash through the generic walk, not by their fields.
+    every_level(
+        "(let [a [1 2] b [3 4] c (specify! [5 6] ICounted (-count [_] 3)) m {:a 1} n {:a 2}]
+           (extend-type PersistentVector ISeqable (-seq [_] (list 1)))
+           (extend-type PersistentArrayMap ILookup (-lookup ([_ k] 1) ([_ k nf] 1)))
+           (js/JSON.stringify (array (= a b) (= (hash a) (hash b)) (= a c) (= c a) (= m n) (= n m)
+                                     (= [1 2] '(1)) (= '(1) [7 8]))))",
+        "[true,true,false,false,true,false,false,false]",
+    );
 }

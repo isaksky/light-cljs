@@ -1188,8 +1188,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // `typeFields` and `recordTypes` and the record wrappers of `maps` and
     // `mapKinds`, as records are told by their kinds (light-cljs-1037), and
     // the five hooks of a sorted set's tree map and a var's copy
-    // (light-cljs-1038).
-    assert_eq!(checked, 468);
+    // (light-cljs-1038), and the 30 `-equiv` and `-hash` slots of the runtime's
+    // classes with the slot-first wrappers of `=` and `hash` (light-cljs-1014).
+    assert_eq!(checked, 500);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1933,8 +1934,9 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
 /// wait for `makeType` (light-cljs-246): wherever an operation could pass a
 /// record to them, the record answers through its own method first.
 /// Equality reaches `kindHooks.equivMap` only from `equalPair` and
-/// `objectEquiv`, which dispatch `IEquiv` through `protocolHooks.builtin`;
-/// `recordMethods.equiv` and that hook wait for `equalPair`, which
+/// `objectEquiv`, which dispatch `IEquiv` through `protocolHooks.builtin`,
+/// and from the classes' `-equiv` slots (`classEquiv`, `mapEquiv`,
+/// light-cljs-1014), which require `equalPair`; `recordMethods.equiv` and that hook wait for `equalPair`, which
 /// `structuralEqualPair` requires. `kindHooks.entryIndex` is read by `lookup`,
 /// which a record reaches only from `get`, after `protocolHooks.publicMethod`
 /// finds `recordMethods.lookup`: both wait for `get`. The other callers of
@@ -1986,7 +1988,13 @@ fn kind_hooks_skip_records() {
     };
     assert_eq!(
         callers("structuralEqualPair"),
-        ["objectEquiv", "equalPair", "structuralEqualPair"]
+        [
+            "objectEquiv",
+            "equalPair",
+            "structuralEqualPair",
+            "classEquiv",
+            "mapEquiv"
+        ]
     );
     assert_eq!(
         callers("lookup"),
@@ -2224,6 +2232,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- setDeclarationDemand",
             "demandProtocol <- storeProtocol",
             "dissoc <- dissoc.slots",
+            "equalPair <- equalPair.slots",
             "first <- first.branches",
             "first <- first.protocol",
             "first <- first.slots",
@@ -2232,7 +2241,8 @@ fn units_assigning_a_binding_share_its_unit() {
             "get <- get.own",
             "get <- get.slots",
             "globalHierarchy <- getGlobalHierarchy",
-            "identityCounter <- hash",
+            "hash <- hash.slots",
+            "identityCounter <- hashStructural",
             "lookup <- lookup.sets",
             "lookup <- lookup.transients",
             "lookup <- lookup.tree",
@@ -2395,9 +2405,13 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("rest.slots"),
             unit("next.slots"),
             unit("seq.slots"),
+            unit("equalPair.slots"),
             unit("cons.equiv"),
             unit("cons.compared"),
+            unit("hash.slots"),
             unit("makeVector.hash"),
+            unit("ListValue.equivSlot"),
+            unit("ListValue.hashSlot"),
             unit("printsMeta.print"),
             unit("cons.print"),
             unit("printSequential.seq"),

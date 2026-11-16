@@ -2660,3 +2660,110 @@ Steady state is unchanged within the load's noise.
   ports (`shadow-port-tool-983`), without React. The size ratchet moves
   only by light-cljs-1022's receiver test (`eight-records` 52,245 to
   52,252); no fixture calls a bit operation or `array`.
+
+## 2026-11-16: vectors, maps and sets compare and hash by their own slots (light-cljs-1014)
+
+**What.** Each runtime class has its own keyed `-equiv` and `-hash` slots,
+which `=` and `hash` call first through slot-first wrappers (87 and 68
+bytes of bytecode). A vector or a map entry compares counts, then items
+index by index, and hashes its items index by index into its own `hash`
+field, where `=` and `hash` walked their seqs. A map compares counts, then
+looks each key up in the other map. Sets, seqs and every mixed comparison
+(a vector against a list, a map against a record) take the structural
+comparison directly instead of through the protocol lookups, with today's
+answers. `hash` of a number or a string reads its prototype's `IHash` mask
+bit and marker by name, where the protocol lookup read them by computed
+names. The comparisons by fields stop, and the generic walk answers, once a
+program's `extend-type` or `specify!` reaches a runtime type.
+docs/value-layout.md has the notes.
+
+Binaries: before `light-cljs-5cd32c66` (master), after `light-cljs-cd6e833f`
+(this pellet's runtime; the final commit differs only in comments and in
+reading an array map's `arr` after its kind test), in
+research/shadow-credibility/bin. Unreserved: one peer worker was active.
+Raw results: research/output-speed/eq-hash-1014.
+
+**Gate** (`bb benchmarks/core-ops/run.bb`, every operation, 5 runs; 1-minute
+load average 4.83-8.74 before, 6.34-11.21 after), ns per operation, median
+(range):
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| eq-vec-10 | 491.0 (482.5-532.3) | 44.1 (40.2-46.3) | -91% | 85.4 / 86.9 | 5.75 | 0.51 |
+| eq-map-7 | 324.6 (322.8-348.2) | 219.4 (218.8-229.8) | -32% | 157.4 / 157.6 | 2.06 | 1.39 |
+| hash-fresh-vec-4 | 426.7 (424.9-473.6) | 51.0 (49.1-59.8) | -88% | 75.7 / 73.0 | 5.64 | 0.70 |
+| hash-fresh-map-7 | 818.0 (806.6-867.4) | 278.0 (275.6-289.0) | -66% | 576.0 / 574.3 | 1.42 | 0.48 |
+| get-hash100 | 30.2 (29.7-30.6) | 19.2 (18.6-20.3) | -37% | 12.6 / 12.6 | 2.39 | 1.52 |
+| kw-hash100 | 52.2 (50.5-54.6) | 41.5 (39.7-43.3) | -20% | 14.3 / 14.0 | 3.64 | 2.98 |
+| update-hash100 | 136.0 (133.5-138.7) | 115.3 (113.3-121.7) | -15% | 101.4 / 101.5 | 1.34 | 1.14 |
+| transient-map-100 | 13,204 (13,029-14,135) | 11,158 (11,035-11,494) | -15% | 4,412 / 4,300 | 2.99 | 2.59 |
+| group-by-100 | 13,035 (12,786-13,430) | 12,401 (12,104-13,129) | -5% | 5,350 / 5,339 | 2.44 | 2.32 |
+| kw-small | 22.2 (22.1-24.5) | 13.4 (12.9-13.6) | -40% | 10.4 / 10.2 | 2.14 | 1.32 |
+| get-small | 26.9 (26.8-29.8) | 17.9 (17.3-18.8) | -34% | 15.7 / 15.3 | 1.72 | 1.17 |
+| multimethod | 153.1 (152.6-168.2) | 188.2 (183.7-196.6) | +23% | 51.4 / 49.8 | 2.98 | 3.78 |
+| seq-walk-vec-1000 | 29,052 (28,860-32,741) | 31,469 (29,689-32,362) | +8% | 10,471 / 10,514 | 2.77 | 2.99 |
+
+- **The four operations of this pellet**: `=` of two 10-item vectors is now
+  twice as fast as shadow-cljs's (its count and index loop, where the walk
+  built a seq step per item), and `hash` of a fresh 4-item vector or 7-key
+  map is faster than shadow-cljs's. The vector's hash was mostly its items'
+  hashes: `hash` of a number spent most of its time reading the `IHash`
+  marker of a primitive by a computed name (56% of the profile), which it
+  now reads by name. `=` of two 7-key array maps is 1.39x: each key's
+  search of the other map (`arrayIndex`, 45% of the profile) still reads
+  the key's own `IEquiv` slot through the protocol lookup once per search.
+- **Hash maps** (`get-hash100` and the rest) hash keyword keys through the
+  keyword's slot, its cached field, where `hash` reached the field after
+  the protocol lookup and nine kind tests.
+- **`kw-small` and `get-small`** (array maps of keyword keys, no hashing or
+  equality) are faster on no path this change touches; the first operation
+  of the process, so not the order of the operations. Not investigated.
+- **`multimethod` +23% is the multimethod tables the compiler now chooses.**
+  The release build keeps a multimethod's method table and cache in the
+  atoms of full tables where a program "can build a value whose hash it
+  chose", which src/rta.rs (`multi_tables`, `chosen_hash`) tells by an
+  operation whose unit requires `constructorHashes`; `hash`'s unit did, so
+  every program that read `hash` kept the full tables. Its split
+  (`hashStructural` requires it now, not `hash`) ends that false trigger,
+  and the gate program takes the lean tables, arrays walked with `isa?`
+  on each call (`bestMethod`, `isaPlain`), which compare the dispatch
+  keyword with each method's by `=`. Alone, in a small program
+  (research/output-speed/eq-hash-1014/mm.cljs, `mm-nohash.cljs`), the lean
+  tables dispatch faster than the full ones: 64.4 to 64.6 ns after against
+  69.2 to 69.9 before, and 63.5 to 67.4 without `hash` in either. In the
+  gate's process, where the earlier operations leave `=`'s call sites
+  megamorphic, the walk's three or four `=` of two keywords, which have no
+  `-equiv` slot of their own and take the old protocol lookup, cost more
+  than the full tables' cache lookup. The same operation alone with three
+  others, before and after (`--ops multimethod,record-assoc,seq-walk-vec-1000,multi-arity-call --runs 3`,
+  load 12.12 and 12.72): 147.3 to 183.2 ns (+24%), the others unchanged
+  (`seq-walk-vec-1000` 20,769 to 20,696, `record-assoc` 60.4 to 60.0,
+  `multi-arity-call` 2.10 to 2.04). Filed as light-cljs-1040: keywords
+  compare by their own slot, which also makes the lean walk cheap.
+- **`seq-walk-vec-1000` +8%** is within the load: alone it is unchanged
+  (above).
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1014 --runs 5
+--runtime-only --runtime 1,10,40`, the project rebuilt with each binary just
+before its run, the two runs back to back; load at most 12.38), wall time,
+median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.446 s (0.440-0.461) | 0.588 s (0.519-1.021) | 0.352 s | 0.511 s |
+| 10 | 1.081 s (1.073-1.108) | 1.081 s (1.066-1.371) | 0.679 s | 0.704 s |
+| 40 | 2.688 s (2.682-2.729) | 2.696 s (2.684-3.334) | 1.355 s | 1.424 s |
+
+The after run's single iterations met a load spike (both compilers' medians
+rose by a third), so the steady state comes from 10 and 40 iterations:
+light-cljs 53.6 to 53.8 ms per iteration (0%), shadow-cljs 22.5 and 24.0;
+light/shadow 2.38 and 2.24. The workload's equality and hashing are not
+where its time goes.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there), against
+master `5cd32c66`: about 1,000 to 2,000 bytes per program, the slots of the
+classes it builds and the two wrappers (`vector-printed` 15,062 to 16,037,
+`map-printed` 22,905 to 24,328, `map-only` 15,057 to 16,934, `set-only`
+7,797 to 9,214); the features example about 4,000 (`features-direct`
+122,470 to 126,491, its shared chunk 98,209 to 101,762). re-frame simple and
+TodoMVC were not ported in this run.
