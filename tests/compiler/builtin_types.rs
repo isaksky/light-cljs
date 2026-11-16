@@ -2794,6 +2794,20 @@ fn seq_slots_keep_the_answers_of_extended_protocols() {
                     (apply + 1 [2 3]) (vec (rest (seq \"abc\"))) (meta (with-meta (next s) {:m 1}))]))",
         "[0 1 39 33 780 2 nil 3 [1 (2 3) 2] 6 [\"b\" \"c\"] {:m 1}]",
     );
+    // `clone` of a seq class value builds one of its class at its offset
+    // with its metadata, and the public `ChunkedSeq` constructor keeps an
+    // undefined metadata or hash as given once either is supplied (the Sol
+    // review of light-cljs-1010); the answers are master `cf613766`'s.
+    every_level(
+        "(let [s (with-meta (rest (seq [1 2 3])) {:m 1}) c (clone s) r (rseq [1 2 3]) rc (clone (next r))
+               v (vec (range 40))
+               cs (ChunkedSeq. v (array 0 1) 0 0 js/undefined 47)
+               ch (ChunkedSeq. v (array 0 1) 0 0 {:k 1} js/undefined)]
+           (pr-str [(identical? s c) (= s c) (meta c) (count c) (= (type s) (type c))
+                    (vec rc) (= (type r) (type rc)) (identical? (next r) rc)
+                    (undefined? (meta cs)) (.-__hash cs) (undefined? (.-__hash ch)) (meta ch)]))",
+        "[false true {:m 1} 2 true [2 1] true false true 47 true {:k 1}]",
+    );
 }
 
 /// An `ISeqable` marker and method that JavaScript writes on a runtime seq

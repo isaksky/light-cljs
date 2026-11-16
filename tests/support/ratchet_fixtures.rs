@@ -327,7 +327,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "println-hi",
         source: r#"(enable-console-print!) (println "hi")"#,
-        ceilings: [533_000, 533_000, 5_200],
+        ceilings: [534_000, 534_000, 5_200],
         removed: [0, 0, 0],
         printed: "hi\nnull\n",
     },
@@ -356,7 +356,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "add",
         source: "(+ 1 2)",
-        ceilings: [533_000, 533_000, 100],
+        ceilings: [534_000, 534_000, 100],
         removed: [0, 0, 0],
         printed: "3\n",
     },
@@ -455,7 +455,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defrecord Circle [r] Shape (area [_] (* 3 r r)) (perimeter [_] (* 6 r)))
                  (defrecord Tri [a b c] Shape (area [_] (* a b)) (perimeter [_] (+ a b c)))
                  (area (->Square 3))",
-        ceilings: [536_000, 536_000, 5_700],
+        ceilings: [537_000, 537_000, 5_700],
         removed: [0, 0, 0],
         printed: "9\n",
     },
@@ -487,7 +487,7 @@ pub const FIXTURES: &[Fixture] = &[
                  [(->R1 1 2) (->R2 2 3) (->R3 3 4) (->R4 4 5) (->R5 5 6) (->R6 6 7) (->R7 7 8) \
                  (->R8 8 9) (T1. 9 10) (T2. 10 11) (T3. 11 12) (T4. 12 13) (T5. 13 14) \
                  (T6. 14 15) (T7. 15 16) (T8. 16 17)])",
-        ceilings: [544_000, 544_000, 45_000],
+        ceilings: [545_000, 545_000, 45_000],
         removed: [0, 0, 0],
         printed: "819\n",
     },
@@ -584,7 +584,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn add ([x] x) ([x y] (+ x y)))
                  (js* "void 0")
                  (add 1 2)"#,
-        ceilings: [534_000, 534_000, 100],
+        ceilings: [535_000, 535_000, 100],
         removed: [0, 0, 2],
         printed: "3\n",
     },
@@ -788,7 +788,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [552_000, 552_000, 88_000],
+        ceilings: [553_000, 553_000, 88_000],
         removed: [0, 0, 21],
         printed: "menu: Editor | Reports\n#function\n",
     },

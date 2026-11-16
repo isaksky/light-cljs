@@ -890,9 +890,11 @@
   function ChunkedSeqValue(source, node, index, offset, metadata, cachedHash) {
     const value = new ChunkedSeqCell(node, offset, source, index);
     // Without metadata or a hash, which a vector's seq has at every step,
-    // no entry reads differently from a null one.
-    if (metadata != null) metadataValues.set(value, metadata);
-    if (cachedHash != null) constructorHashes.set(value, cachedHash);
+    // no entry reads differently from a null one; with either, both are
+    // kept as given, an undefined one too, as the public slots kept them.
+    if (metadata == null && cachedHash == null) return value;
+    metadataValues.set(value, metadata);
+    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
     return value;
   }
   //@unit PersistentQueueValue requires: constructorSlots, queueFromArray
