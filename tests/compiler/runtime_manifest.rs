@@ -1183,7 +1183,7 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // that `maps` and `lookup` read (light-cljs-1034), and less those two of
     // `maps`, a hash map's lookup hook and the four map transient units of
     // their own fields (light-cljs-1036).
-    assert_eq!(checked, 460);
+    assert_eq!(checked, 466);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1334,9 +1334,8 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("seqQueue", Kind::Stores(&["queues"])),
     ("seqVector", Kind::Stores(&["vectors"])),
     ("seqMap", Kind::Stores(&["maps"])),
-    // Maps with a `tree` slot and sorted maps.
+    // Sorted maps' seqs, of their trees (light-cljs-1035).
     ("seqTree", Kind::Units(&["treeMapConstructor"])),
-    ("sortedMapSeq", Kind::Units(&["treeMapConstructor"])),
     ("seqSet", Kind::Stores(&["sets"])),
     // Hash maps' tries, which `get.maps` (light-cljs-358) and `lookup`
     // (light-cljs-302) search.
@@ -1351,6 +1350,17 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("dissocArrayMap", Kind::Units(&["PersistentArrayMapValue"])),
     ("dissocHashMap", Kind::Units(&["PersistentHashMapValue"])),
     ("hashMapTraversal", Kind::Units(&["PersistentHashMapValue"])),
+    // A sorted map's lookup, `assoc`, `dissoc`, `find`, `reduce-kv` and
+    // traversal, and its tree of entries for `makeMap`, of its fields
+    // (light-cljs-1035).
+    ("treeMapLookup", Kind::Units(&["TreeMapCell"])),
+    ("treeOfEntries", Kind::Units(&["TreeMapCell"])),
+    ("treeMapPairs", Kind::Units(&["TreeMapCell"])),
+    ("treeMapEntries", Kind::Units(&["TreeMapCell"])),
+    ("treeEntryAt", Kind::Units(&["TreeMapCell"])),
+    ("treeKvReduce", Kind::Units(&["TreeMapCell"])),
+    ("assocTreeMap", Kind::Units(&["treeMapConstructor"])),
+    ("dissocTreeMap", Kind::Units(&["treeMapConstructor"])),
     // Hash sets' tries, which `get.sets` (light-cljs-373) and `lookup.sets`
     // (light-cljs-302) search.
     ("trieMember", Kind::Units(&["publicHashSet", "putMember"])),
@@ -1437,7 +1447,6 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     // Vectors other than map entries, whose tail holds the items `isa?`
     // compares.
     ("isaItems", Kind::Units(&["makeVector"])),
-    ("lookupTree", Kind::Units(&["treeMapConstructor"])),
     ("entryIndex", Kind::Maps(&["maps", "sets"])),
     // Sorted maps and sets, which only their constructors build.
     (
@@ -1972,7 +1981,6 @@ fn kind_hooks_skip_records() {
             "lookup",
             "get",
             "get.maps",
-            "treeMapLookup",
             "makeSet.equiv"
         ]
     );

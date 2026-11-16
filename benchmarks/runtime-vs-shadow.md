@@ -2116,3 +2116,84 @@ load (its range is 0.43-0.75 s), so the steady state from the two medians
 (60.0 and 59.8 ms per iteration) hides the change; from each run's fastest
 1-iteration time it is 64.0 to 60.0 ms per iteration (shadow-cljs 25.8 and
 25.9).
+
+## 2026-11-16: sorted maps as red-black trees of map entries (light-cljs-1035)
+
+**What.** A sorted map is upstream's PersistentTreeMap: a comparator, a
+red-black tree and a count in its own fields, where light-cljs-1012 kept its
+entries in one sorted array that every `assoc` copied and spliced. Its nodes
+are map entries (upstream's BlackNode and RedNode), its `assoc`, `dissoc`,
+lookup and `find` walk one path, and its `seq`, `rseq` and `subseq` are
+upstream's seq over a stack of nodes. docs/value-layout.md has the notes.
+
+Binaries: before `light-cljs-31578fd9` (master), after `light-cljs-400143f1`
+(this pellet's runtime but for the review's fixes of a list stack's protocols and
+an entry's field writes, which no measured operation reaches), in
+research/shadow-credibility/bin. Unreserved: one
+peer worker was active. Raw results: research/output-speed/sorted-maps-1035
+(`*-before`, `*-after`).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops sorted-map-assoc-100,str-sorted-map-20,reduce-entries-small,reduce-kv-small,str-nested-map,eq-map-7,hash-fresh-map-7,get-small,assoc-small-new,count-small,destructure-vec-3 --runs 3`;
+1-minute load average 10.61-12.13 before, 6.91-9.98 after), ns per
+operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sorted-map-assoc-100 | 650.8 (647.4-655.4) | 193.8 (191.0-194.7) | -70% | 197.0 | 3.20 | 0.98 |
+| str-sorted-map-20 | 42,130 (42,123-42,237) | 39,701 (39,499-39,743) | -6% | 19,203 | 2.12 | 2.07 |
+| reduce-entries-small | 515.7 (507.3-521.0) | 514.4 (511.4-520.4) | 0% | 89.6 | 5.56 | 5.74 |
+| reduce-kv-small | 45.7 (45.6-46.0) | 43.6 (43.2-44.7) | -5% | 36.4 | 1.19 | 1.20 |
+| str-nested-map | 6,362 (6,293-6,483) | 6,156 (6,069-6,318) | -3% | 2,166 | 2.79 | 2.84 |
+| eq-map-7 | 396.2 (395.2-401.8) | 382.1 (381.9-391.0) | -4% | 96.0 | 3.93 | 3.98 |
+| hash-fresh-map-7 | 520.9 (520.1-522.2) | 484.8 (484.3-498.1) | -7% | 311.8 | 1.59 | 1.56 |
+| get-small | 27.3 (27.2-27.6) | 26.0 (26.0-27.0) | -5% | 14.3 | 1.84 | 1.81 |
+| assoc-small-new | 90.3 (90.1-90.6) | 85.5 (84.1-85.9) | -5% | 40.8 | 2.15 | 2.10 |
+| count-small | 2.97 (2.96-2.97) | 2.82 (2.82-2.88) | -5% | 2.03 | 1.39 | 1.39 |
+| destructure-vec-3 | 11.4 (11.4-11.4) | 10.8 (10.7-10.8) | -5% | 9.22 | 1.19 | 1.17 |
+
+- **No operation is slower.** The load fell between the two runs, and
+  shadow-cljs's own times fell 3-7% with it, so the 3-7% gains of the
+  operations this pellet does not touch are the load; their light/shadow
+  ratios move by 0.05 or less.
+- **`sorted-map-assoc-100` is at parity** with shadow-cljs's (0.98, from
+  3.20): an `assoc` builds the nodes of one path of a 100-key tree, where it
+  copied and spliced a 100-entry array, and calls the comparator about seven
+  times, as upstream's.
+- **`str-sorted-map-20`** moves as shadow-cljs's does (light/shadow 2.12 to
+  2.07): printing walks the tree in order, building the entries it prints
+  where it read the stored array, and the rest of the time is the printer's,
+  as for the other maps (`str-nested-map` 2.84).
+- The map entries' slots and readers (`reduce-entries-small`,
+  `destructure-vec-3`) see a second class of map entry only in a program that
+  builds sorted maps; the gate's do, and they do not move.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1035 --runs 5
+--runtime-only --runtime 1,10,40`, the project rebuilt with each binary just
+before its run; load 4.21-4.99 before, 3.59-3.96 after), wall time, median
+(range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.385 s (0.376-0.392) | 0.419 s (0.393-0.446) | 0.295 s | 0.323 s |
+| 40 | 2.604 s (2.589-2.649) | 2.539 s (2.531-2.544) | 1.177 s | 1.156 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 56.9 to
+54.4 ms per iteration (-4%); shadow-cljs 22.6 and 21.4; light/shadow 2.52 and
+2.54, within what the load moved (the workload builds few sorted maps).
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): the
+red-black tree's algorithms, its node class and its seqs are about 3,000
+bytes in a program that builds sorted maps (`features` 119,868, its editor
+chunk, which holds the sorted collections, 11,930 from under 8,600);
+programs with other maps keep the generic operations' tests of the sorted
+map's class (`map-only` 14,926).
+
+**TodoMVC** (`re-frame.bb runtime todomvc --runs 5`, ported with
+`shadow-port-tool-983`; load 4.66-5.28 before, 4.44-4.85 after; its add step
+prints a sorted map after every event): the add step (1,000 todos) 4,005.8 ms
+(3,974.4-4,013.1) to 3,822.3 ms (3,740.9-3,857.3), -5%, light/shadow 4.31 to
+4.19 (shadow-cljs 929.5 and 913.3 ms); toggle all 67.2 to 64.0 ms; page load
+to interactive 44.1 to 43.0 ms; the heap with 1,000 todos 9.03 to 8.75 MB.
+Its bundle with React (`re-frame.bb size todomvc`): raw 484,186 to 489,777
+bytes, gzip -9 146,709 to 147,874, brotli -q 11 126,600 to 127,602; re-frame
+simple, which builds no sorted map, was not ported in this run.

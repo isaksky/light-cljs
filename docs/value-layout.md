@@ -631,6 +631,78 @@ sets and records, and the values of the WeakMap stores that section 2 gives
   this pellet, so `ownMethod`, `publicMethod` and `contains.own` still tell
   them by having none.
 
+What light-cljs-1035 landed: a sorted map is upstream's red-black tree,
+whose nodes are map entries.
+
+- **The map.** A `TreeMapCell` (kind 30) has the own keyed fields `comp`
+  (its comparator), `tree` (its root node, null when empty) and `cnt`,
+  replacing 1012's sorted array of entries (`entries`). The public
+  constructor builds one of the comparator, tree and count it is given,
+  as they are: `.-tree` gives that tree back, `count` that count, and an
+  `assoc` of a new key one more, as upstream's; it reads no node until an
+  operation does. It keeps no `publicCollectionSlots` entry, so the
+  slots' `noBranch` for public constructors' maps no longer applies to it.
+- **The nodes.** A node is a `TreeNodeCell` on `MapEntryType`'s prototype
+  (upstream's `BlackNode` and `RedNode`, which already resolved to
+  `MapEntry`): `EntryCell`'s six fields, so every reader and slot of a map
+  entry reads it as one, unchanged, then `left`, `right` and `red`. A node
+  is never written: an update builds the nodes of its path, which share
+  the `tail` array (the key and value) of a node whose key and value they
+  keep, and every node shares one frozen empty `root`. The public fields
+  `key` and `val` of every map entry (upstream's `MapEntry` fields) and
+  `left` and `right` of a node are getters of the entry prototype
+  (`MapEntryType.fields`, after `upstreamMembers` or `resetMeta`, as the
+  other types' fields), whose writes give the value an own field, as
+  `publicFields`' do; `key`, `left` and `right` join `UPSTREAM_MEMBERS`.
+- **The algorithms** are upstream's: `assoc` (`treePut`, `tree-map-add` and
+  `tree-map-replace` in one walk: an equal value keeps the map, a replaced
+  value keeps the key there), `dissoc` (`treeRemove`, with upstream's
+  `balance-left-del`, `balance-right-del` and `tree-map-append`), lookup
+  and `find` (`treeEntryAt`, which gives the node itself), `reduce-kv`
+  (`treeKvReduce`), and the comparator called as upstream's, the given key
+  first. `sorted-map` and `sorted-map-by` `assoc` each pair in turn
+  (`buildSortedMap`). A tree a public constructor was given of other
+  objects is read by the names `key`, `val`, `left` and `right` (a map
+  entry by its items), as upstream's; an update first rebuilds it of
+  nodes (`ownTree`), balanced (`treeOfPairs`, the deepest level red), as
+  `makeMap` builds a sorted map of entries (`treeOfEntries`: `empty`, a
+  sorted set's `tree-map`, the Pants profile's `sharedOwnedMap`).
+- **Seqs.** `seq`, `rseq` and `-sorted-seq-from` (`subseq`, `rsubseq`)
+  are upstream's PersistentTreeMapSeq, a `TreeMapStackCell` of a list of
+  nodes (`treeStackPush`, a `ListCell` per step, or `conj` onto a stack a
+  program gave), whose `first` is a node and whose `rest` pushes the next
+  subtree (`treeSeqNext`); `count` reads its `cnt`, or walks where it is
+  below 0. A list stack's fields stand for its `peek`, `next` and `conj`
+  only where no program can give lists protocol implementations
+  (`protocolHooks.extend`, which now also waits for the seq's unit); else
+  every stack takes the operations, as upstream's. The view class of kind 11 (`TreeMapSeqCell`) is deleted: no
+  seq of a sorted map is an array any more, and the seq slots answer the
+  cells alone. A public constructor's stack, ascending flag and count are
+  the cell's fields, which its public fields read.
+- **The older layers.** `maps.get` answers no map of the classes (only a
+  record's entries); `assoc`, `dissoc`, `count`, `get`, `lookup`, `find`,
+  `hash`, `empty`, `rseq`, `reduce-kv`, printing and `mapTraversal` /
+  `mapPairs` read the fields or call the sorted map's kind hooks
+  (`assocTreeMap`, `dissocTreeMap`, `treeMapLookup`, `treeEntryAt`,
+  `treeKvReduce`, `treeMapPairs`, `treeMapEntries`, `treeOfEntries`), each
+  an effect of `TreeMapCell` or `treeMapConstructor` that waits for its
+  operation. A sorted map has a `-dissoc` slot (`dissoc.slots` names its
+  type). Traversals that take every pair (printing, equality, hashing, a
+  map's iterator) walk the tree in order, building the pairs or entries
+  they read, where 1012 read the stored array.
+- **Sorted sets** keep their entry arrays and `setComparators` until
+  light-cljs-1013 (`sortedSeqFrom` keeps their array path); a sorted
+  set's `tree-map` builds a sorted map of its members (`treeOfEntries`).
+- **Profiles.** The Pants profile builds the same classes
+  (`sharedOwnedMap`, `mapCellCopy`), and its `maps.get` answers only
+  engine maps. Nodes are runtime-owned entries, so build.rs no longer
+  swaps `publicTree`'s allocation (`sharedTreeEntry` is deleted).
+- **Tests.** A sorted map's seq from `seq` now has the stack upstream's
+  has (it was an array view, whose `.-stack` was nil), so
+  `(count (PersistentTreeMapSeq. nil (.-stack s) true -1 nil))` of
+  `(sorted-map 1 2 3 4)`'s seq counts both nodes, 2, as upstream's
+  (`builtin_types.rs`, it gave 1).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -954,7 +1026,7 @@ slots and plain field names: only the runtime's own methods reach them, and
 | symbol | `Symbol` (`SymbolValue`) | ns, name, str, hash, meta | `symbols` | 1011 |
 | array map | `PersistentArrayMap` (`PersistentArrayMapValue`) | meta, cnt, arr (upstream's flat key, value array), hash | `maps` (kind 4), `mapKinds` | 1012 |
 | hash map | `PersistentHashMap` (`PersistentHashMapValue`); nodes `BitmapIndexedNode`, `ArrayNode`, `HashCollisionNode` | meta, cnt, root, hasNil, nilVal, hash; the nodes keep today's fields (edit, bitmap, arr, occupied count, capacity) | the trie's private fields | 1012 |
-| sorted map | `PersistentTreeMap` (`treeMapConstructor`); `RedNode`, `BlackNode` as map entries | comp, tree, cnt, meta, hash; key, val, left, right, hash | `maps`, `sortedComparators` | 1012 |
+| sorted map | `PersistentTreeMap` (`treeMapConstructor`); `RedNode`, `BlackNode` as map entries | comp, tree, cnt, meta, hash; key, val, left, right, hash | `maps`, `sortedComparators` | 1012, tree 1035 |
 | map transients | `TransientArrayMap`, `TransientHashMap` (`...Type`) | editable, len, arr; edit, root, count, hasNil, nilVal (as `HashMapCell`'s cnt, root, nil) | `transients` | 1012, fields 1036 |
 | sets | `PersistentHashSet`, `PersistentTreeSet`, `TransientHashSet` | meta, the members as today (an array set's array, a hash set's trie), hash; meta, treeMap, hash; the transient's members | `sets` (kind 6), `setKinds` | 1013 |
 | queue | `PersistentQueue`, `PersistentQueueSeq` (`PersistentQueueValue`) | meta, count, front, rear, hash; meta, front, rear, hash | `queues` | 1013 |

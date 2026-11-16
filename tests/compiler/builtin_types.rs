@@ -1008,9 +1008,11 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
         ),
         ("(count (eduction (map inc) [1 2 3]))", "3"),
         ("(count (subseq (sorted-map 1 2 3 4 5 6) > 1))", "2"),
+        // The seq's stack holds the root, whose right node the count walks
+        // to, as upstream's (light-cljs-1035; an array seq had no stack).
         (
             "(let [s (seq (sorted-map 1 2 3 4))] (count (PersistentTreeMapSeq. nil (.-stack s) true -1 nil)))",
-            "1",
+            "2",
         ),
         (
             "(deftype S [] ISeqable (-seq [_] (list 1 2 3))) (count (S.))",
@@ -2190,7 +2192,7 @@ fn upstream_members_are_every_other_member_of_the_runtime_types() {
        (doseq [v [(cons 1 nil) (list 1 2) () :k 'sym (repeat 2 1) (cycle [1 2]) (iterate inc 0)
                   [1] (subvec [1 2 3] 1) (seq (vec (range 40))) (conj cljs.core/PersistentQueue.EMPTY 1)
                   {} (apply hash-map (range 20)) #{1} (seq [1 2]) (range 0.5 3) (range 3)
-                  (sorted-map 1 2) (sorted-set 1) (seq (sorted-map 1 2)) (eduction (map inc) [1])
+                  (sorted-map 1 2) (sorted-set 1) (seq (sorted-map 1 2)) (first (sorted-map 1 2)) (eduction (map inc) [1])
                   (delay 1) (lazy-seq nil) (seq (map inc (range 3))) (chunk-buffer 2)
                   (array-chunk #js [1]) (reduced 1) (seq (apply hash-map (range 20)))]
                n (js/Object.getOwnPropertyNames (js/Object.getPrototypeOf v))]
@@ -2612,6 +2614,17 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
             ":node-first () :indexed-first (:entry) :entry () nil 7 :tree-first (:tree-rest) (:tree-next) [:entry] (:indexed-first)",
         ),
         (
+            // A sorted map seq's stack takes its list's protocols, as
+            // upstream's `peek` and `next` of it (light-cljs-1035).
+            "(let [out (array) p (fn [x] (.push out (pr-str x)))
+                   m (sorted-map 1 :a 2 :b 3 :c) n (first m)
+                   s (PersistentTreeMapSeq. nil (specify! (list n) IStack (-peek [_] :peeked)) true -1 nil)
+                   s2 (PersistentTreeMapSeq. nil (specify! (list n n) INext (-next [_] nil)) true -1 nil)]
+               (p (first s)) (p (next s2)) (p (vec m)) (p (vec (rseq m)))
+               (.join out \" \"))",
+            ":peeked nil [[1 :a] [2 :b] [3 :c]] [[3 :c] [2 :b] [1 :a]]",
+        ),
+        (
             "(extend-type object ISeqable (-seq [_] (list :object)))
              (extend-type default ISeq (-first [_] :default-first) (-rest [_] ()))
              (let [out (array) p (fn [x] (.push out (pr-str x)))
@@ -2700,7 +2713,9 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// read nothing (about 100 reads more per program). light-cljs-1028 removed
 /// the row forged from a vector's prototype (docs/value-layout.md, section
 /// 5, item 3), which declares the vector's protocols. light-cljs-1034's
-/// `count` reads the keyed kind once more for an array map's field.
+/// `count` reads the keyed kind once more for an array map's field, and
+/// light-cljs-1035's once less: `maps` no longer reads it for a sorted map's
+/// entries, which no map of the classes has.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -2793,7 +2808,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [795, 795, 839],
+            [794, 794, 838],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2854,7 +2869,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [758, 758, 799],
+            [757, 757, 798],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2921,7 +2936,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [795, 795, 795],
+            [794, 794, 794],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");

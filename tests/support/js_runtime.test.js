@@ -2122,7 +2122,10 @@ console.log('kind tables stay private to the runtime');
     queue: core.conj(r.queueFromArray([1]), 2), reduced: core.reduced(1), iteratorSeq: core.seq(new Set([1, 2])),
     // An iterator seq is a plain object to enumeration and printing, as
     // before, and so is an eduction: their fields are not enumerable.
-    delay: new core.Delay(() => 1, null), uuid: core.uuid('00000000-0000-0000-0000-000000000000'), eduction: new core.Eduction(core.identity, r.vector(1))
+    delay: new core.Delay(() => 1, null), uuid: core.uuid('00000000-0000-0000-0000-000000000000'), eduction: new core.Eduction(core.identity, r.vector(1)),
+    // A sorted map's nodes, map entries, and its seq over them
+    // (light-cljs-1035).
+    treeNode: core.first(core.sortedMap(1, 2)), sortedMapSeq: core.seq(core.sortedMap(1, 2))
   };
   const view = ['arr$LKEY', 'i$LKEY', 'indexed$LKEY', 'view$LKEY'];
   const trie = ['meta$LKEY', 'cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'hash$LKEY'];
@@ -2141,10 +2144,11 @@ console.log('kind tables stay private to the runtime');
     repeat: ['cell$LKEY', 'remaining$LKEY', 'first$LKEY', 'next$LKEY'],
     iterate: ['cell$LKEY', 'f$LKEY', 'prev$LKEY', 'seed$LKEY', 'realized$LKEY', 'next$LKEY'],
     cycle: ['cell$LKEY', 'all$LKEY', 'prev$LKEY', 'current$LKEY', 'next$LKEY'], keySeq: ['cell$LKEY', 'mseq$LKEY'],
-    arrayMap: ['cnt$LKEY', 'arr$LKEY'], hashMap: ['cnt$LKEY', 'root$LKEY', 'nil$LKEY', 'lit$LKEY'], sortedMap: ['entries$LKEY', 'comp$LKEY'],
+    arrayMap: ['cnt$LKEY', 'arr$LKEY'], hashMap: ['cnt$LKEY', 'root$LKEY', 'nil$LKEY', 'lit$LKEY'], sortedMap: ['comp$LKEY', 'tree$LKEY', 'cnt$LKEY'],
     transientArrayMap: ['editable$LKEY', 'arr$LKEY'], transientHashMap: ['edit$LKEY', 'cnt$LKEY', 'root$LKEY', 'nil$LKEY'],
     arraySet: ['entries$LKEY', 'skind$LKEY'], hashSet: ['entries$LKEY', 'skind$LKEY'], transientSet: ['state$LKEY'], queue: ['arr$LKEY'],
-    reduced: ['val$LKEY'], iteratorSeq: [], delay: ['state$LKEY'], uuid: ['uuid$LKEY', 'hash$LKEY'], eduction: []};
+    reduced: ['val$LKEY'], iteratorSeq: [], delay: ['state$LKEY'], uuid: ['uuid$LKEY', 'hash$LKEY'], eduction: [],
+    treeNode: [...trie, 'left$LKEY', 'right$LKEY', 'red$LKEY'], sortedMapSeq: ['cell$LKEY', 'stack$LKEY', 'ascending$LKEY', 'cnt$LKEY']};
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name];
     assert.deepEqual(Object.keys(value), field, name);
@@ -2423,3 +2427,92 @@ console.log('runtime_key_registry: keys register page-wide and collisions throw'
   assert.equal(c.get(built, 'k'), 1);
 }
 console.log('map transients and public map constructors read their fields once');
+
+// A sorted map is a red-black tree whose nodes are map entries
+// (light-cljs-1035): random `assoc` and `dissoc` keep upstream's invariants
+// (a black root, no red node under a red one, as many black nodes on every
+// path) and give the entries, seqs, `rseq`, `subseq` and `reduce-kv` a
+// sorted array of the same keys gives.
+{
+  const core = runtime.core;
+  const check = (node, red) => {
+    if (node === null) return 1;
+    assert.equal(core.isMapEntry(node), true);
+    if (red) assert.equal(node.red$LKEY, false, 'no red node under a red one');
+    const left = check(node.left$LKEY, node.red$LKEY), right = check(node.right$LKEY, node.red$LKEY);
+    assert.equal(left, right, 'black height');
+    return left + (node.red$LKEY ? 0 : 1);
+  };
+  let seed = 7;
+  const random = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  let map = core.sortedMap(), model = new Map();
+  for (let step = 0; step < 4000; step++) {
+    const key = random(300);
+    if (random(3) === 0) { map = core.dissoc(map, key); model.delete(key); }
+    else { map = core.assoc(map, key, step); model.set(key, step); }
+    if (step % 97 === 0 || step > 3990) {
+      const tree = map.tree$LKEY;
+      if (tree !== null) assert.equal(tree.red$LKEY, false, 'black root');
+      check(tree, false);
+      const keys = [...model.keys()].sort((a, b) => a - b);
+      assert.equal(core.count(map), keys.length);
+      assert.deepEqual(core.toArray(core.keys(map) ?? core.list()), keys);
+      assert.deepEqual(core.toArray(core.vals(map) ?? core.list()), keys.map(k => model.get(k)));
+      assert.deepEqual(core.toArray(core.mapSeq(core.keyProtocol, core.rseq(map) ?? core.list())), [...keys].reverse());
+      assert.deepEqual(core.toArray(core.mapSeq(core.keyProtocol, core.subseq(map, core.greaterEqual, 150) ?? core.list())), keys.filter(k => k >= 150));
+      assert.deepEqual(core.toArray(core.mapSeq(core.keyProtocol, core.rsubseq(map, core.less, 150) ?? core.list())), keys.filter(k => k < 150).reverse());
+      assert.deepEqual(core.reduceKv((xs, k, v) => (xs.push(k, v), xs), [], map), keys.flatMap(k => [k, model.get(k)]));
+      for (const k of [0, 77, 150, 299, 300]) assert.equal(core.get(map, k, 'none'), model.has(k) ? model.get(k) : 'none');
+    }
+  }
+  // An equal value keeps the map, a key not there too; `find` gives the node.
+  const small = core.sortedMap(2, 'b', 1, 'a', 3, 'c');
+  assert.equal(core.assoc(small, 2, 'b'), small);
+  assert.equal(core.dissoc(small, 9), small);
+  assert.equal(core.find(small, 2), core.first(core.rest(core.seq(small))));
+  assert.equal(core.keyProtocol(core.find(small, 2)), 2);
+  assert.equal(core.count(core.dissoc(core.dissoc(core.dissoc(small, 1), 2), 3)), 0);
+}
+console.log('sorted maps are red-black trees of map entries');
+
+// A public constructor's tree of other objects is read by upstream's names,
+// and rebuilt of nodes, balanced, before an update, which keeps the count it
+// was given (the Sol review of light-cljs-1035); a write of a map entry's
+// public field gives it an own field and changes neither entry nor tree.
+{
+  const core = runtime.core;
+  const leaf = (key, val) => ({key, val, left: null, right: null});
+  const tree = {key: 4, val: 'd', left: {key: 2, val: 'b', left: leaf(1, 'a'), right: leaf(3, 'c')}, right: {key: 6, val: 'f', left: leaf(5, 'e'), right: null}};
+  const m = new core.PersistentTreeMap(core.compare, tree, 9, core.hashMap('m', 1), null);
+  assert.equal(m.tree, tree);
+  assert.equal(core.count(m), 9);
+  assert.equal(core.get(m, 3), 'c');
+  const black = node => {
+    if (node === null) return 1;
+    if (node.red$LKEY) for (const child of [node.left$LKEY, node.right$LKEY]) assert.equal(child === null || !child.red$LKEY, true);
+    const left = black(node.left$LKEY), right = black(node.right$LKEY);
+    assert.equal(left, right);
+    return left + (node.red$LKEY ? 0 : 1);
+  };
+  const added = core.assoc(m, 7, 'g'), removed = core.dissoc(m, 2), replaced = core.assoc(m, 5, 'E');
+  for (const [map, count, keys] of [[added, 10, [1, 2, 3, 4, 5, 6, 7]], [removed, 8, [1, 3, 4, 5, 6]], [replaced, 9, [1, 2, 3, 4, 5, 6]]]) {
+    assert.equal(core.count(map), count);
+    assert.deepEqual(core.toArray(core.keys(map)), keys);
+    assert.equal(map.tree$LKEY.red$LKEY, false);
+    black(map.tree$LKEY);
+    assert.equal(core.equal(core.meta(map), core.hashMap('m', 1)), true);
+  }
+  assert.equal(core.get(replaced, 5), 'E');
+  assert.equal(core.get(m, 5), 'e');
+  assert.equal(m.tree, tree);
+  assert.equal(core.assoc(m, 3, 'c') === m || core.count(core.assoc(m, 3, 'c')) === 9, true);
+  const entry = core.first(core.sortedMap(1, 'a', 2, 'b'));
+  for (const name of ['key', 'val', 'left', 'right']) {
+    entry[name] = 'shadow';
+    assert.equal(entry[name], 'shadow');
+    assert.equal(Object.hasOwn(entry, name), true);
+  }
+  assert.equal(core.keyProtocol(entry), 1);
+  assert.equal(core.valProtocol(entry), 'a');
+}
+console.log('public sorted map trees update as nodes and entry fields take shadow writes');

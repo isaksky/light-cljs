@@ -460,22 +460,23 @@
     for (let i = 0; i < ordered.length; i++) value = __rt.formAssoc(value, ordered[i].key, ordered[i].value);
     return value;
   }
-  //@unit sharedOwnedMap requires: flatPairs
+  //@unit sharedOwnedMap requires: flatPairs, kindHooks
   // A public constructor must return an object on which constructorSlots can
   // retain the caller's slots, metadata and cached hash. Keep its canonical
   // payload intact (including live array getters and hash tries); only the
   // constructor units use this allocation boundary during shared assembly.
   // Sorted maps use the same runtime-owned representation: the V8 profile's
-  // map classes (light-cljs-1012), of the class `Type`'s unit gives it,
-  // with `entries` and a sorted map's `comparator` in their own fields, an
-  // array map with their keys and values, flat (`flatPairs`, light-cljs-1034).
+  // map classes (light-cljs-1012), of the class `Type`'s unit gives it, an
+  // array map with their keys and values, flat (`flatPairs`, light-cljs-1034),
+  // a sorted map with its comparator and the tree of its entries
+  // (`treeOfEntries`, light-cljs-1035).
   function sharedOwnedMap(Type, entries, _kind, comparator) {
     const proto = Type.prototype, kind = proto.cljs$lang$kind$$LKEY;
     return kind === 28 ? new proto.cljs$lang$cell$$LKEY(entries.length, flatPairs(entries))
       : kind === 29 ? new proto.cljs$lang$cell$$LKEY(entries.length, entries.root, entries.nil, entries.lit ?? null)
-      : new proto.cljs$lang$cell$$LKEY(entries, comparator);
+      : new proto.cljs$lang$cell$$LKEY(comparator, kindHooks.treeOfEntries(entries), entries.length);
   }
-  //@unit mapCellCopy requires: comparatorOf, flatPairs, hashTrie, mapKinds, maps, mapTypes
+  //@unit mapCellCopy requires: comparatorOf, flatPairs, hashTrie, kindHooks, mapKinds, maps, mapTypes
   // The V8 profile's, and of an engine map (`maps`): a map of the class its
   // kind gives, holding the entries the profile reads of it (an array map
   // their keys and values, flat).
@@ -484,9 +485,10 @@
     const kind = value.cljs$lang$kind$$LKEY;
     if (kind === 28) return new Cell(value.cnt$LKEY, value.arr$LKEY);
     if (kind === 29) return new Cell(value.cnt$LKEY, value.root$LKEY, value.nil$LKEY, value.lit$LKEY);
+    if (kind === 30) return new Cell(value.comp$LKEY, value.tree$LKEY, value.cnt$LKEY);
     const entries = maps.get(value), copied = Cell.prototype.cljs$lang$kind$$LKEY;
     if (copied === 29) { const trie = hashTrie(entries); return new Cell(trie.length, trie.root, trie.nil, trie.lit ?? null); }
-    return copied === 28 ? new Cell(entries.length, flatPairs(entries)) : new Cell(entries, comparatorOf(value));
+    return copied === 28 ? new Cell(entries.length, flatPairs(entries)) : new Cell(comparatorOf(value), kindHooks.treeOfEntries(entries), entries.length);
   }
   //@unit sharedOccurrenceNaN requires: sharedScalar
   // Scalar occurrences normally keep their stored identity. NaN alone is
@@ -643,16 +645,15 @@
     return value;
   }
   //@unit makeMap.seq effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: first, rest, seq
-  //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal,
-  //@ PersistentArrayMapSeqType, publicCollectionSlots, view
+  //@ requires: IndexedSeqValue, isTreeMap, kindHooks, mapEntry, mapKinds, mapTraversal,
+  //@ PersistentArrayMapSeqType, view
   // The V8 profile's: a map entry is an engine entry (`mapEntry`), so the
   // seq of an engine map crosses into macro code.
   kindHooks.seqMap = value => {
-    const treeSlots = publicCollectionSlots.get(value);
-    if (treeSlots && "tree" in treeSlots) return kindHooks.seqTree(treeSlots);
+    // A sorted map's seq walks its tree (light-cljs-1035).
+    if (isTreeMap(value)) return kindHooks.seqTree(value, true);
     const entries = mapTraversal(value), kind = mapKinds.get(value);
     return entries.length ? view(kind === "hash-map" ? kindHooks.hashMapSeqType(value)
-      : kind === "sorted-map" ? kindHooks.sortedMapSeq
       : kind === "array-map" ? PersistentArrayMapSeqType : IndexedSeqValue,
       Object.freeze(entries.map(entry => mapEntry(entry.key, entry.value))), 0, false, kind) : null;
   };
@@ -681,6 +682,7 @@
     const kind = value?.cljs$lang$kind$$LKEY;
     if (kind === 28 && value.arr$LKEY !== undefined) return arrayMapEntries(value.arr$LKEY);
     if (kind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return kindHooks.hashMapTraversal(value);
+    if (kind === 30 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return kindHooks.treeMapEntries(value);
     return collectionTraversal(maps.get(value), mapKinds.get(value));
   }
   //@unit setTraversal requires: collectionTraversal, setKinds, sets, sharedFormKind
@@ -706,14 +708,14 @@
   // profile keeps the two apart; or a runtime-owned map of the V8
   // profile's classes (`mapOf`, light-cljs-1012): a sorted map, a map a
   // public constructor built or one with a NaN occurrence key, whose
-  // entries are its fields' (`mapTraversal`): `get` reads a sorted map's
-  // own (light-cljs-1036). A record is added by `maps.records`, as in the
-  // V8 profile (light-cljs-666).
+  // entries are its fields' (`mapTraversal`), which `get` gives none of
+  // (light-cljs-1036, and a sorted map's since light-cljs-1035). A record
+  // is added by `maps.records`, as in the V8 profile (light-cljs-666).
   const maps = {
     has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
     get(value) {
       if (sharedFormKind(value) === "map") return sharedMapEntries(sharedFormOf(value));
-      return mapOf(value)?.entries$LKEY;
+      return undefined;
     },
     kinds: {
       has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
@@ -803,14 +805,6 @@
   }
   function VectorViewCopy(v) {
     this.meta$LKEY = v.meta$LKEY; this.cnt$LKEY = v.cnt$LKEY; this.sub$LKEY = v.sub$LKEY; this.begin$LKEY = v.begin$LKEY; this.built$LKEY = v.built$LKEY; this.hash$LKEY = v.hash$LKEY; /*@brand*/
-  }
-  //@unit sharedTreeEntry requires: EntryCell
-  // publicTree attaches fields to its nodes, so its allocation boundary must
-  // return a runtime-owned entry, of the V8 profile's class. Keep the
-  // canonical builder and cache intact; ordinary map entries still use the
-  // immutable engine form above.
-  function sharedTreeEntry(key, value) {
-    return new EntryCell(key, value);
   }
   //@unit mapEntryValue requires: isEntryCell
   const mapEntryValue = value => __rt.cljIsMapEntry(value) || isEntryCell(value);
@@ -1456,8 +1450,8 @@
     return store ? makeVector(null, vectorView(store, start, end - start))
       : vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)));
   }
-  //@unit treeRoots requires: sharedStore
-  const treeRoots = sharedStore(), treeSetMaps = sharedStore();
+  //@unit treeSetMaps requires: sharedStore
+  const treeSetMaps = sharedStore();
   //@unit hashRoots requires: sharedStore
   const hashRoots = sharedStore();
   //@unit traversalPairs requires: sharedStore

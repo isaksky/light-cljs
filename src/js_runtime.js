@@ -121,7 +121,7 @@
   // the other seqs of `cellOf` (light-cljs-1030) are 12 `List`, 13
   // `EmptyList`, 14 `Cons`, 15 `IntegerRange`, 22 `Range`, 23 `Repeat`, 24
   // `Iterate`, 25 `Cycle`, 26 the key and value seqs and 27 `re-seq`'s
-  // conses; a sorted map's seq has its views' kind 11. The maps
+  // conses; a sorted map's seq has kind 11, the views' last. The maps
   // (light-cljs-1012, `mapOf`) are 28 `PersistentArrayMap`, 29
   // `PersistentHashMap` and 30 `PersistentTreeMap`, and the map transients
   // (`isMapTransient`) 31 `TransientArrayMap` and 32 `TransientHashMap`.
@@ -259,8 +259,6 @@
   function ArrayMapSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
   //@unit RSeqCell
   function RSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
-  //@unit TreeMapSeqCell
-  function TreeMapSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
   //@unit LazySeqCell
   // A lazy seq with `LazySeq`'s prototype (`lazyOf`), upstream's fields:
   // `fn` the thunk until the seq is realized, then null (one given as
@@ -410,8 +408,9 @@
   function KeySeqCell(kind, mseq) { this.cell$LKEY = kind; this.mseq$LKEY = mseq; /*@brand*/ }
   //@unit TreeMapStackCell
   // A sorted map's seq with `treeMapSeqConstructor`'s prototype (kind 11,
-  // as its views, which hold `arr` where it holds none): the `stack` of
-  // nodes, `ascending` and the count `cnt` the constructor was given.
+  // the views' last, but with no `arr`), upstream's PersistentTreeMapSeq:
+  // the `stack` of nodes, a list, `ascending` and the count `cnt`, below 0
+  // where unknown (light-cljs-1035).
   function TreeMapStackCell(stack, ascending, cnt) { this.cell$LKEY = "tree-seq"; this.stack$LKEY = stack; this.ascending$LKEY = ascending; this.cnt$LKEY = cnt; /*@brand*/ }
   //@unit ArrayMapCell
   // An array map, upstream's PersistentArrayMap, with
@@ -433,22 +432,37 @@
   // Nothing in it is frozen, its leaf entries included.
   function HashMapCell(cnt, root, nil, lit) { this.cnt$LKEY = cnt; this.root$LKEY = root; this.nil$LKEY = nil; this.lit$LKEY = lit; /*@brand*/ }
   //@unit TreeMapCell
-  // A sorted map, with `treeMapConstructor`'s prototype, kind 30: its
-  // `entries` in its comparator's order and the comparator, `comp`.
-  function TreeMapCell(entries, comp) { this.entries$LKEY = entries; this.comp$LKEY = comp; /*@brand*/ }
+  // A sorted map, upstream's PersistentTreeMap, with `treeMapConstructor`'s
+  // prototype, kind 30 (light-cljs-1035): its own keyed fields are its
+  // comparator `comp`, its red-black `tree`, null when empty, and its count
+  // `cnt`. Its nodes are map entries (`TreeNodeCell`); a public
+  // constructor's map holds the tree and count it was given, as upstream's.
+  function TreeMapCell(comp, tree, cnt) { this.comp$LKEY = comp; this.tree$LKEY = tree; this.cnt$LKEY = cnt; /*@brand*/ }
+  //@unit TreeNodeCell
+  // A node of a sorted map's tree, upstream's BlackNode and RedNode: a map
+  // entry, of `EntryCell`'s own keyed fields on `MapEntryType`'s prototype
+  // (`TreeNodeCell.type`), so that every reader of a map entry reads it as
+  // one, whose `tail` holds its key and value; and its `left` and `right`
+  // subtrees, null where none, and whether it is `red`. Nothing writes a
+  // node: an update builds the nodes of its path, which share the `tail` of
+  // a node whose key and value they keep, and every node shares one empty
+  // `root` (`treeNodeRoot`), a map entry's vector root.
+  function TreeNodeCell(tail, left, right, red) { this.meta$LKEY = null; this.cnt$LKEY = 2; this.shift$LKEY = 5; this.root$LKEY = treeNodeRoot; this.tail$LKEY = tail; this.hash$LKEY = null; this.left$LKEY = left; this.right$LKEY = right; this.red$LKEY = red; /*@brand*/ }
+  const treeNodeRoot = Object.freeze([]);
   //@unit mapOf
   // A map of the class layout (`ArrayMapCell`, `HashMapCell`,
   // `TreeMapCell`): the value itself where its prototype's keyed kind is
-  // 28, 29 or 30 (`kinds`) and its own first field is there (an array
-  // map's `arr`, the others' `entries`), else undefined. A value made by
-  // reflection from a map's prototype has none, and is no map; a record is
-  // no map of this test either.
+  // 28, 29 or 30 (`kinds`) and its own field is there (an array map's
+  // `arr`, the others' `cnt`, which a public constructor may give
+  // undefined), else undefined. A value made by reflection from a map's
+  // prototype has none, and is no map; a record is no map of this test
+  // either.
   function mapOf(value) {
     if (value == null) return undefined;
     const kind = value.cljs$lang$kind$$LKEY;
     return kind === 28 ? value.arr$LKEY !== undefined ? value : undefined
-      : kind === 29 ? (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? value : undefined
-      : kind === 30 && value.entries$LKEY !== undefined ? value : undefined;
+      : kind === 29 || kind === 30 ? (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? value : undefined
+      : undefined;
   }
   //@unit isArrayMap
   // Whether a value is an array map of the class layout (`ArrayMapCell`).
@@ -456,6 +470,9 @@
   //@unit isHashMap
   // Whether a value is a hash map of the class layout (`HashMapCell`).
   const isHashMap = value => value != null && value.cljs$lang$kind$$LKEY === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
+  //@unit isTreeMap
+  // Whether a value is a sorted map of the class layout (`TreeMapCell`).
+  const isTreeMap = value => value != null && value.cljs$lang$kind$$LKEY === 30 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
   //@unit arrayMapEntries requires: ArrayMapEntry
   // An array map's pairs (`arr`) as entries, for the few readers that take
   // entries of every map (`mapTraversal`) and the updates of a public
@@ -476,7 +493,7 @@
     for (let i = 0; i < entries.length; i++) { const entry = entries[i]; arr.push(entry.key, entry.value); }
     return arr;
   }
-  //@unit mapCellCopy requires: comparatorOf, mapKinds, mapTypes
+  //@unit mapCellCopy requires: mapKinds, mapTypes
   // A map of the class of `value`'s kind with its fields (an array map's
   // count and keys and values, another's entries and comparator), for
   // `with-meta` and `clone` of a map, which copy the rest (metadata, hashes,
@@ -486,7 +503,7 @@
     const Cell = mapTypes[mapKinds.get(value)].prototype.cljs$lang$cell$$LKEY, kind = value.cljs$lang$kind$$LKEY;
     return kind === 28 ? new Cell(value.cnt$LKEY, value.arr$LKEY)
       : kind === 29 ? new Cell(value.cnt$LKEY, value.root$LKEY, value.nil$LKEY, value.lit$LKEY)
-      : new Cell(value.entries$LKEY, comparatorOf(value));
+      : new Cell(value.comp$LKEY, value.tree$LKEY, value.cnt$LKEY);
   }
   //@unit setQueueCopy requires: queues, setCellOf
   // A copy of a hash or array set's or a queue's fields, built by its class
@@ -569,14 +586,13 @@
   }
   //@unit maps requires: mapOf
   // The maps (light-cljs-1012): no longer a store, but what tells a map of
-  // the class layout (`mapOf`), as its `has`, and reads a sorted map's own
-  // `entries` field, as its `get`, for the operations that read the store
-  // it was. An array map and a hash map have no entries (light-cljs-1036):
+  // the class layout (`mapOf`), as its `has`. No map of the classes has
+  // entries (light-cljs-1036, and a sorted map's tree since light-cljs-1035):
   // their readers read their fields (`mapPairs`, `mapTraversal`, the map
   // slots), so `get` answers undefined for them. A record, a map until it
   // becomes a class (light-cljs-1013), is added by `maps.records`, with the
   // entries an update gave it (`recordMaps`).
-  const maps = {has: value => mapOf(value) !== undefined, get: value => mapOf(value)?.entries$LKEY};
+  const maps = {has: value => mapOf(value) !== undefined, get: () => undefined};
   //@unit mapKinds requires: mapOf
   // A map's kind, which its class gives: "array-map", "hash-map" or
   // "sorted-map" (and a record's, `mapKinds.records`).
@@ -602,7 +618,7 @@
   function comparatorOf(value) {
     if (value == null) return undefined;
     const kind = value.cljs$lang$kind$$LKEY;
-    return kind === 28 || kind === 29 ? undefined : kind === 30 && value.entries$LKEY !== undefined ? value.comp$LKEY : setComparators.get(value);
+    return kind === 28 || kind === 29 ? undefined : kind === 30 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? value.comp$LKEY : setComparators.get(value);
   }
   //@unit HashSetCell
   // A hash or array set, upstream's PersistentHashSet, with
@@ -1311,22 +1327,21 @@
   //@unit VectorNode
   function VectorNode() {}
   //@unit treeMapSeqConstructor.type effect: treeMapSeqConstructor requires: builtinType,
-  //@ sequencePrototype, TreeMapSeqCell, treeMapSeqConstructor, viewType
-  // Its views (`viewOf`) are the seqs `rseq` and `subseq` give over an array
-  // of entries; the constructor's values are cells (`TreeMapStackCell`).
-  viewType(builtinType(treeMapSeqConstructor, sequencePrototype), TreeMapSeqCell, 11);
-  //@unit TreeMapStackCell.type effect: TreeMapStackCell requires: emptyList, first, next, peek,
-  //@ treeMapPush, treeMapSeqConstructor, TreeMapStackCell, truth
+  //@ sequencePrototype, treeMapSeqConstructor, TreeMapStackCell, viewType
+  // Its values are cells of their stacks (`TreeMapStackCell`), kind 11, the
+  // last of the views' kinds, as before light-cljs-1035 gave a sorted map's
+  // seqs, `rseq` and `subseq` of its tree (`treeMapSeq`) and no seq of
+  // this type a view of an array; a cell holds no `arr`, so is no view.
+  viewType(builtinType(treeMapSeqConstructor, sequencePrototype), TreeMapStackCell, 11);
+  //@unit TreeMapStackCell.type effect: TreeMapStackCell requires: emptyList, isListCell, peek,
+  //@ treeMapSeqConstructor, TreeMapStackCell, treeSeqNext
   // A sorted map's seq is a cell of the constructor's prototype: its `first`
-  // is the node atop its stack, its `rest` the seq of the stack past it.
+  // is the node atop its stack, its `rest` the seq of the stack past it
+  // (`treeSeqNext`), or the empty list.
   TreeMapStackCell.prototype = treeMapSeqConstructor.prototype;
   Object.defineProperties(treeMapSeqConstructor.prototype, {
-    first$LKEY: {configurable: true, get() { return peek(this.stack$LKEY); }},
-    rest$LKEY: {configurable: true, get() {
-      const stack = this.stack$LKEY, ascending = this.ascending$LKEY, node = first(stack);
-      const pending = treeMapPush(truth(ascending) ? node?.right : node?.left, next(stack), ascending);
-      return pending == null ? emptyList : treeMapSeqConstructor(null, pending, ascending, this.cnt$LKEY - 1, null);
-    }}
+    first$LKEY: {configurable: true, get() { const stack = this.stack$LKEY; return isListCell(stack) ? stack.first$LKEY : peek(stack); }},
+    rest$LKEY: {configurable: true, get() { return treeSeqNext(this) ?? emptyList; }}
   });
   //@unit emptyList requires: EmptyListCell
   const emptyList = new EmptyListCell();
@@ -1833,26 +1848,24 @@
   kindHooks.seqVector = (value, store) => !store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), 0, true, "indexed")
     : new ChunkedSeqCell(vectorChunk(value, 0), 0, value, 0);
   //@unit makeMap.seq effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: first,
-  //@ rest, seq requires: IndexedSeqValue, isArrayMap, kindHooks, mapEntry, mapKinds, mapPairs,
-  //@ PersistentArrayMapSeqType, publicCollectionSlots, view
+  //@ rest, seq requires: IndexedSeqValue, isTreeMap, kindHooks, mapEntry, mapKinds, mapPairs,
+  //@ PersistentArrayMapSeqType, view
   kindHooks.seqMap = value => {
-    const treeSlots = isArrayMap(value) ? undefined : publicCollectionSlots.get(value);
-    if (treeSlots && "tree" in treeSlots) return kindHooks.seqTree(treeSlots);
+    // A sorted map's seq walks its tree (light-cljs-1035).
+    if (isTreeMap(value)) return kindHooks.seqTree(value, true);
     const pairs = mapPairs(value), kind = mapKinds.get(value), n = (pairs.length + 1) >> 1;
     if (!n) return null;
     const items = [];
     for (let i = 0; i < n; i++) items.push(mapEntry(pairs[2 * i], pairs[2 * i + 1]));
     return view(kind === "hash-map" ? kindHooks.hashMapSeqType(value)
-      : kind === "sorted-map" ? kindHooks.sortedMapSeq
       : kind === "array-map" ? PersistentArrayMapSeqType : IndexedSeqValue,
       Object.freeze(items), 0, false, kind);
   };
-  //@unit treeMapConstructor.seq effect: treeMapConstructor when: first, rest, seq requires: kindHooks,
-  //@ treeMapPush, treeMapSeqConstructor
+  //@unit treeMapConstructor.seq effect: treeMapConstructor when: first, rest, rseq, seq requires: kindHooks,
+  //@ treeMapSeq
   // Only the sorted-map operations, which keep its constructor, build a map
-  // of that kind or with a tree.
-  kindHooks.seqTree = slots => slots.cnt > 0 ? treeMapSeqConstructor(null, treeMapPush(slots.tree, null, true), true, slots.cnt, null) : null;
-  kindHooks.sortedMapSeq = treeMapSeqConstructor;
+  // of that kind.
+  kindHooks.seqTree = treeMapSeq;
   //@unit makeSet.seq effect: makeSet, treeSetConstructor when: first, rest, seq requires: IndexedSeqValue,
   //@ kindHooks, setTraversal, view
   kindHooks.seqSet = (value, members) => members.length
@@ -2794,15 +2807,22 @@
     return invalidArity(arguments.length);
   }
 
-  //@unit reduceKv requires: holdsVector, isEntryCell, isReduced, keyProtocol, mapPairs, methodKeys,
-  //@ protocolHooks, reduce, reducedValue, valProtocol, vectorItems
+  //@unit reduceKv requires: holdsVector, isEntryCell, isReduced, isTreeMap, keyProtocol, kindHooks,
+  //@ mapPairs, methodKeys, protocolHooks, reduce, reducedValue, valProtocol, vectorItems
   function reduceKv(rf, init, collection) {
     const method = protocolHooks.publicMethod?.(collection, methodKeys[28], 3);
     if (method) return method.call(collection, collection, rf, init);
     if (collection == null) return init;
     // MapEntry has vector storage, but no IKVReduce implementation. Its
     // elements must go through the public IMapEntry sequence fallback.
-    // A map's keys and values, flat (`mapPairs`).
+    // A sorted map walks its tree (light-cljs-1035), another map its keys
+    // and values, flat (`mapPairs`).
+    if (isTreeMap(collection)) {
+      const tree = collection.tree$LKEY;
+      if (tree == null) return init;
+      const result = kindHooks.treeKvReduce(tree, rf, init);
+      return isReduced(result) ? reducedValue(result) : result;
+    }
     const pairs = mapPairs(collection);
     if (pairs !== undefined) {
       for (let i = 0; i < pairs.length; i += 2) {
@@ -3047,9 +3067,9 @@
     return custom ? custom.call(coll, coll, item) : preserveMeta(coll, kindHooks.conjQueue(coll, item));
   };
 
-  //@unit assoc requires: copyEntries, holdsVector, isArrayMap, isHashMap, kindHooks, maps,
-  //@ methodKeys, missing, protocolHooks, publicCollectionSlots, putCollectionEntry, subvecSources,
-  //@ updatedMap, vectorStore
+  //@unit assoc requires: copyEntries, holdsVector, isArrayMap, isHashMap, isTreeMap, kindHooks,
+  //@ maps, methodKeys, missing, protocolHooks, publicCollectionSlots, putCollectionEntry,
+  //@ subvecSources, updatedMap, vectorStore
   function assoc(value, key, item, ...pairs) {
     const method = value == null ? null : protocolHooks.builtin?.(value, methodKeys[1], 3);
     if (method) {
@@ -3067,9 +3087,9 @@
       const promoted = kindHooks.assocArrayMapSlots(value, mapSlots, key, item, pairs);
       if (promoted !== missing) return promoted;
     }
-    // An array map's and a hash map's own paths are their slots' functions,
-    // which read their fields (light-cljs-1036).
-    const own = isArrayMap(value) ? kindHooks.assocArrayMap : isHashMap(value) ? kindHooks.assocHashMap : undefined;
+    // An array map's, a hash map's and a sorted map's own paths are their
+    // slots' functions, which read their fields (light-cljs-1036, 1035).
+    const own = isArrayMap(value) ? kindHooks.assocArrayMap : isHashMap(value) ? kindHooks.assocHashMap : isTreeMap(value) ? kindHooks.assocTreeMap : undefined;
     if (own !== undefined) {
       let result = own(value, key, item);
       for (let i = 0; i < pairs.length; i += 2)
@@ -3109,13 +3129,14 @@
     return method ? method.call(value, value, key, item) : kindHooks.assocVector(value, store, key, item, []);
   };
   //@unit assoc.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
-  //@ when: assoc requires: copyEntries, isArrayMap, isHashMap, kindHooks, kindTables, maps,
-  //@ methodKeys, noBranch, protocolHooks, publicCollectionSlots, putCollectionEntry, updatedMap
-  // An array map's and a hash map's own paths are their slots' functions,
-  // which also build a public constructor's maps; a sorted map's and a
-  // record's, their entries.
+  //@ when: assoc requires: copyEntries, isArrayMap, isHashMap, isTreeMap, kindHooks, kindTables,
+  //@ maps, methodKeys, noBranch, protocolHooks, publicCollectionSlots, putCollectionEntry,
+  //@ updatedMap
+  // An array map's, a hash map's and a sorted map's own paths are their
+  // slots' functions, which also build a public constructor's maps; a
+  // record's, its entries.
   kindTables[5][8] = (value, key, item) => {
-    const own = isArrayMap(value) ? kindHooks.assocArrayMap : isHashMap(value) ? kindHooks.assocHashMap : undefined;
+    const own = isArrayMap(value) ? kindHooks.assocArrayMap : isHashMap(value) ? kindHooks.assocHashMap : isTreeMap(value) ? kindHooks.assocTreeMap : undefined;
     if (own !== undefined) {
       const method = protocolHooks.builtin?.(value, methodKeys[1], 3);
       return method ? method.call(value, value, key, item) : own(value, key, item);
@@ -3167,11 +3188,11 @@
   // Whether a map iterates its own entries (see `hostHooks`); a record, whose
   // entries are its fields, is another type to these methods.
   function ownMap(value) { return !protocolHooks.extend && maps.has(value) && !recordTypes.has(value) && !("tree" in (publicCollectionSlots.get(value) ?? {})); }
-  //@unit mapCount requires: isArrayMap, isHashMap, maps, publicCollectionSlots
+  //@unit mapCount requires: isArrayMap, isHashMap, isTreeMap, maps, publicCollectionSlots
   // `count` of a map without protocol implementations: an array map's and
   // a hash map's `cnt`, a public constructor's too.
   function mapCount(value) {
-    if (isArrayMap(value) || isHashMap(value)) return value.cnt$LKEY;
+    if (isArrayMap(value) || isHashMap(value) || isTreeMap(value)) return value.cnt$LKEY;
     const slots = publicCollectionSlots.get(value);
     if (slots && ("cnt" in slots || "count" in slots)) return "cnt" in slots ? slots.cnt : slots.count;
     return maps.get(value).length;
@@ -3250,6 +3271,26 @@
   viewType(builtinType(treeMapConstructor, mapPrototype), TreeMapCell, 30).prototype[kindOps] = 5;
   //@unit TreeMapCell.type effect: TreeMapCell requires: TreeMapCell, treeMapConstructor
   TreeMapCell.prototype = treeMapConstructor.prototype;
+  //@unit TreeMapCell.lookup effect: TreeMapCell when: lookup requires: kindHooks, treeMapLookup
+  // A sorted map's paths, of its fields (light-cljs-1035), which the older
+  // layers of the operations take, as the other maps' (`ArrayMapCell.lookup`).
+  kindHooks.treeMapLookup = treeMapLookup;
+  //@unit TreeMapCell.entries effect: TreeMapCell when: makeMap requires: kindHooks, treeOfEntries
+  kindHooks.treeOfEntries = treeOfEntries;
+  //@unit TreeMapCell.traversal effect: TreeMapCell when: mapTraversal, mapPairs requires: ArrayMapEntry,
+  //@ kindHooks, treePairs
+  // Its keys and values in order, flat (`mapPairs`) or as fresh entries
+  // (`mapTraversal`), which a caller may change.
+  kindHooks.treeMapPairs = map => treePairs(map.tree$LKEY, []);
+  kindHooks.treeMapEntries = map => {
+    const pairs = treePairs(map.tree$LKEY, []), entries = [];
+    for (let i = 0; i < pairs.length; i += 2) entries.push(new ArrayMapEntry(pairs[i], pairs[i + 1]));
+    return entries;
+  };
+  //@unit TreeMapCell.find effect: TreeMapCell when: find requires: kindHooks, treeEntryAt
+  kindHooks.treeEntryAt = treeEntryAt;
+  //@unit TreeMapCell.kvReduce effect: TreeMapCell when: reduceKv requires: kindHooks, treeKvReduce
+  kindHooks.treeKvReduce = treeKvReduce;
   //@unit PersistentArrayMapValue.kind effect: PersistentArrayMapValue requires: mapTypes,
   //@ PersistentArrayMapValue
   mapTypes["array-map"] = PersistentArrayMapValue;
@@ -3274,12 +3315,12 @@
   //@unit lookup.transients effect: makeTransient when: lookup requires: isTransient, kindHooks,
   //@ lookup
   lookup = (operation => (value, key, notFound) => isTransient(value) ? kindHooks.lookupTransient(value, key, notFound) : operation(value, key, notFound))(lookup);
-  //@unit lookup.tree effect: treeMapConstructor when: lookup requires: kindHooks, lookup, maps,
-  //@ publicCollectionSlots
-  lookup = (operation => (value, key, notFound) => {
-    const slots = publicCollectionSlots.get(value);
-    return maps.has(value) && slots && "tree" in slots ? kindHooks.lookupTree(value, slots.tree, key, notFound) : operation(value, key, notFound);
-  })(lookup);
+  //@unit lookup.tree effect: treeMapConstructor when: lookup requires: isTreeMap, kindHooks, lookup
+  // A sorted map's lookup walks its tree (light-cljs-1035), a branch only a
+  // program building sorted maps keeps; the walk is a hook its class
+  // installs, so that the wrapper, which shares `lookup`'s chunk, needs
+  // none of it.
+  lookup = (operation => (value, key, notFound) => isTreeMap(value) ? kindHooks.treeMapLookup(value, key, notFound) : operation(value, key, notFound))(lookup);
   //@unit get.trie effect: PersistentHashMapValue when: get, lookup requires: kindHooks, trieEntry
   // The item under `key` of a hash map's trie, which `get.maps` (light-cljs-358)
   // and `lookup` read, kept only where a program builds hash maps
@@ -3458,12 +3499,14 @@
     const kind = value?.cljs$lang$kind$$LKEY;
     if (kind === 28 && value.arr$LKEY !== undefined) return arrayMapEntries(value.arr$LKEY);
     if (kind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return kindHooks.hashMapTraversal(value);
+    if (kind === 30 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return kindHooks.treeMapEntries(value);
     return collectionTraversal(maps.get(value), mapKinds.get(value));
   }
   //@unit traversalPairs
   // The flat keys and values of a hash map's traversal (`mapPairs`).
   const traversalPairs = new WeakMap();
-  //@unit mapPairs requires: flatPairs, isArrayMap, mapTraversal, traversalPairs
+  //@unit mapPairs requires: flatPairs, isArrayMap, isTreeMap, kindHooks, mapTraversal,
+  //@ traversalPairs
   // A map's keys and values, flat (`[k0, v0, k1, v1, ...]`), in the order
   // `mapTraversal` gives its entries, which its readers walk two by two:
   // an array map's own `arr`, which no reader writes, else its entries'
@@ -3471,6 +3514,7 @@
   // value that is no map.
   function mapPairs(value) {
     if (isArrayMap(value)) return value.arr$LKEY;
+    if (isTreeMap(value)) return kindHooks.treeMapPairs(value);
     const entries = mapTraversal(value);
     if (entries === undefined) return undefined;
     let pairs = traversalPairs.get(entries);
@@ -3603,18 +3647,20 @@
     return members;
   };
 
-  //@unit makeMap requires: flatPairs
+  //@unit makeMap requires: flatPairs, kindHooks
   // A map of the type the caller builds (so a caller keeps only the map types
   // it can build), an instance of the class its type's unit gives it
   // (`viewType`), which the type decides as `kind` names it: its entries,
   // unfrozen, and a sorted map's comparator. `mapTypes` gives the type of an
   // existing map's kind. An array map holds its entries' keys and values,
-  // flat (`flatPairs`), a hash map the fields of its trie (`hashTrie`).
+  // flat (`flatPairs`), a hash map the fields of its trie (`hashTrie`), a
+  // sorted map the tree of its entries, in their comparator's order
+  // (`treeOfEntries`).
   function makeMap(Type, entries, _kind, comparator) {
     const proto = Type.prototype, kind = proto.cljs$lang$kind$$LKEY;
     return kind === 28 ? new proto.cljs$lang$cell$$LKEY(entries.length, flatPairs(entries))
       : kind === 29 ? new proto.cljs$lang$cell$$LKEY(entries.length, entries.root, entries.nil, entries.lit ?? null)
-      : new proto.cljs$lang$cell$$LKEY(entries, comparator);
+      : new proto.cljs$lang$cell$$LKEY(comparator, kindHooks.treeOfEntries(entries), entries.length);
   }
 
   //@unit arrayIndex requires: equalPair, keywordOf, methodKeys, protocolHooks
@@ -3865,8 +3911,8 @@
     return publicHashSet(null, constantMapFromArray(pairs), null);
   }
 
-  //@unit dissoc requires: dissocEntries, isArrayMap, isHashMap, kindHooks, maps, methodKeys,
-  //@ protocolHooks
+  //@unit dissoc requires: dissocEntries, isArrayMap, isHashMap, isTreeMap, kindHooks, maps,
+  //@ methodKeys, protocolHooks
   function dissoc(value, ...keys) {
     if (value != null && protocolHooks.builtin?.(value, methodKeys[31], 2)) return keys.reduce((result, key) => {
       const method = result == null ? null : protocolHooks.builtin?.(result, methodKeys[31], 2);
@@ -3874,10 +3920,10 @@
     }, value);
     if (arguments.length === 0) return null;
     if (keys.length === 0 || value == null) return value;
-    // An array map's and a hash map's own paths are their slots' functions,
-    // which read their fields (light-cljs-1036), a key at a time, as
-    // upstream's `dissoc`.
-    const own = isArrayMap(value) ? kindHooks.dissocArrayMap : isHashMap(value) ? kindHooks.dissocHashMap : undefined;
+    // An array map's, a hash map's and a sorted map's own paths are their
+    // slots' functions, which read their fields (light-cljs-1036, 1035), a
+    // key at a time, as upstream's `dissoc`.
+    const own = isArrayMap(value) ? kindHooks.dissocArrayMap : isHashMap(value) ? kindHooks.dissocHashMap : isTreeMap(value) ? kindHooks.dissocTreeMap : undefined;
     if (own !== undefined) {
       let result = value;
       for (const key of keys) result = own(result, key);
@@ -4604,6 +4650,9 @@
   MapEntryType.prototype.cljs$core$IFind$$LKEY = protocolSentinel;
   //@unit EntryCell.type effect: EntryCell requires: EntryCell, MapEntryType
   EntryCell.prototype = MapEntryType.prototype;
+  //@unit TreeNodeCell.type effect: TreeNodeCell requires: MapEntryType, TreeNodeCell
+  // A sorted map's node is a map entry (light-cljs-1035).
+  TreeNodeCell.prototype = MapEntryType.prototype;
   //@unit makeKeyword requires: KeywordCell
   // A keyword of these fields; a null or undefined `hash` is computed on
   // first use. The public constructor's hash is kept as given, undefined
@@ -4918,7 +4967,9 @@
   //@ viewOf
   function count(value) {
     const slots = publicCollectionSlots.get(value), cell = cellOf(value);
-    if (cell?.cell$LKEY === "tree-seq" && slots.cnt < 0) return kindHooks.countTreeSeq(value);
+    // A sorted map's seq holds its count, or one below 0 where it counts its
+    // nodes, as upstream's (light-cljs-1035).
+    if (cell?.cell$LKEY === "tree-seq") return cell.cnt$LKEY < 0 ? kindHooks.countTreeSeq(value) : cell.cnt$LKEY;
     if (slots && "tree-map" in slots) return count(slots["tree-map"]);
     if (slots && ("cnt" in slots || "count" in slots)) return "cnt" in slots ? slots.cnt : slots.count;
     const chunked = viewOf(value);
@@ -4936,10 +4987,11 @@
     const store = vectorStore(value);
     if (store) return store.cnt$LKEY;
     if (typeof value === "string") return value.length;
-    // An array map's and a hash map's fields, of one read of the keyed kind.
+    // An array map's, a hash map's and a sorted map's fields, of one read of
+    // the keyed kind.
     const mapKind = value.cljs$lang$kind$$LKEY;
     if (mapKind === 28 && value.arr$LKEY !== undefined) return (value.arr$LKEY.length + 1) >> 1;
-    if (mapKind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return value.cnt$LKEY;
+    if ((mapKind === 29 || mapKind === 30) && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return value.cnt$LKEY;
     const entries = maps.get(value);
     if (entries) return entries.length;
     const members = sets.get(value);
@@ -5008,10 +5060,11 @@
   // the operation.
   kindTables[4][4] = value => { const store = vectorStore(value); return store && !publicCollectionSlots.has(value) ? store.cnt$LKEY : noBranch; };
   //@unit count.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
-  //@ when: count requires: isArrayMap, isHashMap, kindTables, maps, noBranch, publicCollectionSlots
+  //@ when: count requires: isArrayMap, isHashMap, isTreeMap, kindTables, maps, noBranch,
+  //@ publicCollectionSlots
   kindTables[5][4] = value => {
     if (isArrayMap(value)) return publicCollectionSlots.has(value) ? noBranch : value.cnt$LKEY;
-    if (isHashMap(value)) return value.cnt$LKEY;
+    if (isHashMap(value) || isTreeMap(value)) return value.cnt$LKEY;
     const entries = maps.get(value);
     return entries && !publicCollectionSlots.has(value) ? entries.length : noBranch;
   };
@@ -5173,19 +5226,6 @@
     // indexing separately without giving host objects owned collection storage.
     return notFound;
   }
-  //@unit treeMapConstructor.lookup effect: treeMapConstructor when: lookup requires: comparatorOf,
-  //@ kindHooks
-  // Maps with a tree slot (see `treeMapConstructor.seq`), which `lookup.tree`
-  // calls.
-  kindHooks.lookupTree = (value, tree, key, notFound) => {
-    const comparator = comparatorOf(value);
-    for (let node = tree; node != null;) {
-      const order = comparator.call(null, key, node.key);
-      if (order === 0) return node.val;
-      node = order < 0 ? node.left : node.right;
-    }
-    return notFound;
-  };
   //@unit makeTransient.lookup effect: makeTransient when: lookup requires: kindHooks,
   //@ transientLookup
   kindHooks.lookupTransient = transientLookup;
@@ -5237,15 +5277,15 @@
     return typeof key === "number" && key >= 0 && key < store.cnt$LKEY ? vectorNth(store, key, notFound) : notFound;
   };
   //@unit get.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor when: get
-  //@ requires: collectionEntryIndex, isArrayMap, isHashMap, kindHooks, kindTables, lookup, maps,
-  //@ methodKeys, noBranch, protocolHooks, publicCollectionSlots
+  //@ requires: collectionEntryIndex, isArrayMap, isHashMap, isTreeMap, kindHooks, kindTables,
+  //@ lookup, maps, methodKeys, noBranch, protocolHooks, publicCollectionSlots
   // Likewise of a map: a hash map's trie and entries without slots are
   // searched as `lookup` does, and others, as trees, take `lookup`.
   kindTables[5][6] = (value, key, notFound, arity) => {
     if (!maps.has(value)) return noBranch;
     const method = protocolHooks.publicMethod?.(value, methodKeys[30], arity, true);
     if (method) return arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound);
-    if (isArrayMap(value) || isHashMap(value)) return lookup(value, key, notFound);
+    if (isArrayMap(value) || isHashMap(value) || isTreeMap(value)) return lookup(value, key, notFound);
     const entries = maps.get(value);
     if (!Array.isArray(entries)) return kindHooks.trieValue(entries, key, notFound);
     if (publicCollectionSlots.has(value)) return lookup(value, key, notFound);
@@ -5606,8 +5646,8 @@
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(get);
 
-  //@unit dissoc.slots effect: PersistentArrayMapValue, PersistentHashMapValue when: dissoc
-  //@ requires: dissoc, noBranch, slotFirst
+  //@unit dissoc.slots effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
+  //@ when: dissoc requires: dissoc, noBranch, slotFirst
   dissoc = (operation => Object.defineProperty(function (value, key) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
       const method = value.cljs$core$IMap$_dissoc$arity$2$LKEY;
@@ -5659,21 +5699,22 @@
     const cnt = self.cnt$LKEY;
     return cnt === undefined && !("cnt$LKEY" in self) ? noBranch : cnt;
   }
-  //@unit treeMapLookup requires: lookup, noBranch
-  // `get` of a sorted map, as `lookup` finds it.
+  //@unit treeMapLookup requires: noBranch, treeEntryAt, treeVal
+  // `get` of a sorted map: the value of the node that holds the key
+  // (`treeEntryAt`), as upstream's.
   function treeMapLookup(self, key, notFound) {
-    return self.entries$LKEY === undefined ? noBranch : lookup(self, key, notFound);
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    const node = treeEntryAt(self, key);
+    return node === null ? notFound : node.red$LKEY !== undefined ? node.tail$LKEY[1] : treeVal(node);
   }
-  //@unit mapCountSlot requires: mapCount, noBranch, publicCollectionSlots
-  // `count` of a map of the class layout: its entries' (its trie's) length,
-  // or a public constructor's count (`mapCount`). Each map slot is complete
-  // for every map of its class, as the compile-time protocol lookup calls
-  // it (light-cljs-1028); only a value made by reflection answers
-  // `noBranch`.
-  function mapCountSlot(self) {
-    const entries = self.entries$LKEY;
-    if (entries === undefined) return noBranch;
-    return publicCollectionSlots.has(self) ? mapCount(self) : entries.length;
+  //@unit treeMapCount requires: noBranch
+  // `count` of a sorted map: its `cnt`, a public constructor's count too
+  // (light-cljs-1035). Each map slot is complete for every map of its
+  // class, as the compile-time protocol lookup calls it (light-cljs-1028);
+  // only a value made by reflection answers `noBranch`.
+  function treeMapCount(self) {
+    const cnt = self.cnt$LKEY;
+    return cnt === undefined && !("cnt$LKEY" in self) ? noBranch : cnt;
   }
   //@unit arrayMapCount requires: noBranch
   // `count` of an array map: its `cnt`, a public constructor's count too.
@@ -5808,8 +5849,8 @@
   //@ hashMapCount, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return hashMapCount(self); });
   //@unit treeMapConstructor.countSlot effect: treeMapConstructor when: count requires: builtinSlot,
-  //@ mapCountSlot, treeMapConstructor
-  treeMapConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return mapCountSlot(self); });
+  //@ treeMapConstructor, treeMapCount
+  treeMapConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return treeMapCount(self); });
   //@unit PersistentArrayMapValue.assocSlot effect: PersistentArrayMapValue when: assoc requires: arrayMapAssoc,
   //@ builtinSlot, kindHooks, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return arrayMapAssoc(self, key, item); });
@@ -5820,8 +5861,9 @@
   PersistentHashMapValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return hashMapAssoc(self, key, item); });
   kindHooks.assocHashMap = hashMapAssoc;
   //@unit treeMapConstructor.assocSlot effect: treeMapConstructor when: assoc requires: builtinSlot,
-  //@ mapAssocEntries, treeMapConstructor
-  treeMapConstructor.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return mapAssocEntries(self, key, item); });
+  //@ kindHooks, treeMapAssoc, treeMapConstructor
+  treeMapConstructor.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return treeMapAssoc(self, key, item); });
+  kindHooks.assocTreeMap = treeMapAssoc;
   //@unit PersistentArrayMapValue.dissocSlot effect: PersistentArrayMapValue when: dissoc requires: arrayMapDissoc,
   //@ builtinSlot, kindHooks, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return arrayMapDissoc(self, key); });
@@ -5831,6 +5873,10 @@
   //@ hashMapDissoc, kindHooks, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return hashMapDissoc(self, key); });
   kindHooks.dissocHashMap = hashMapDissoc;
+  //@unit treeMapConstructor.dissocSlot effect: treeMapConstructor when: dissoc requires: builtinSlot,
+  //@ kindHooks, treeMapConstructor, treeMapDissoc
+  treeMapConstructor.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return treeMapDissoc(self, key); });
+  kindHooks.dissocTreeMap = treeMapDissoc;
   //@unit PersistentArrayMapValue.containsSlot effect: PersistentArrayMapValue when: contains
   //@ requires: builtinSlot, mapContains, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
@@ -6231,32 +6277,27 @@
   ReSeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
   //@unit treeMapSeqConstructor.firstSlot effect: treeMapSeqConstructor when: first requires: builtinSlot,
   //@ noBranch, treeMapSeqConstructor
+  // A sorted map's seq is a cell of its stack of nodes (light-cljs-1035),
+  // whatever builds it; a value made by reflection, with no `cell` field,
+  // takes the operation.
   treeMapSeqConstructor.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cell$LKEY !== undefined) return self.first$LKEY;
-    const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
-    const i = self.i$LKEY;
-    return i < arr.length ? arr[i] : null;
+    return self.cell$LKEY === undefined ? noBranch : self.first$LKEY;
   });
   //@unit treeMapSeqConstructor.restSlot effect: treeMapSeqConstructor when: rest requires: builtinSlot,
-  //@ emptyList, noBranch, restSeq, treeMapSeqConstructor
+  //@ emptyList, noBranch, treeMapSeqConstructor
   treeMapSeqConstructor.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cell$LKEY !== undefined) return self.rest$LKEY ?? emptyList;
-    return self.arr$LKEY === undefined ? noBranch : restSeq(self);
+    return self.cell$LKEY === undefined ? noBranch : self.rest$LKEY ?? emptyList;
   });
   //@unit treeMapSeqConstructor.nextSlot effect: treeMapSeqConstructor when: next requires: builtinSlot,
   //@ noBranch, rest, seq, treeMapSeqConstructor
-  // The seq of its rest, through the wrappers, for a cell and a view alike.
+  // The seq of its rest, through the wrappers.
   treeMapSeqConstructor.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined && self.arr$LKEY === undefined ? noBranch : seq(rest(self));
+    return self.cell$LKEY === undefined ? noBranch : seq(rest(self));
   });
   //@unit treeMapSeqConstructor.seqSlot effect: treeMapSeqConstructor when: seq requires: builtinSlot,
   //@ noBranch, treeMapSeqConstructor
   treeMapSeqConstructor.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cell$LKEY !== undefined) return self;
-    const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
-    return self.i$LKEY < arr.length ? self : null;
+    return self.cell$LKEY === undefined ? noBranch : self;
   });
   //@unit first.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq, Cons,
   //@ CycleValue, EmptyListValue, IntegerRangeValue, IterateValue, KeySeqCell, ListValue,
@@ -6345,9 +6386,9 @@
     for (let current = seq(value); current !== null; current = next(current)) if (!truth(predicate.call(null, first(current)))) return false;
     return true;
   }
-  //@unit find requires: arrayIndex, collectionEntryIndex, comparatorOf, contains, get, hash,
-  //@ hashNodeFind, isArrayMap, isAssociative, isHashMap, kindHooks, mapEntry, maps, methodKeys,
-  //@ protocolHooks, publicTree, recordTypes
+  //@unit find requires: arrayIndex, collectionEntryIndex, contains, get, hash, hashNodeFind,
+  //@ isArrayMap, isAssociative, isHashMap, isTreeMap, kindHooks, mapEntry, maps, methodKeys,
+  //@ protocolHooks, recordTypes
   function find(value, key) {
     const method = protocolHooks.publicMethod?.(value, methodKeys[19], 2);
     if (method) return method.call(value, value, key);
@@ -6361,17 +6402,11 @@
       const root = value.root$LKEY, entry = key == null ? value.nil$LKEY : root ? hashNodeFind(root, 0, hash(key), key) : null;
       return entry ? mapEntry(entry.key, entry.value) : null;
     }
+    // A sorted map's node that holds the key, itself a map entry, as
+    // upstream's (light-cljs-1035).
+    if (isTreeMap(value)) return kindHooks.treeEntryAt(value, key);
     const entries = !recordTypes.has(value) && maps.get(value);
     if (entries) {
-      const comparator = comparatorOf(value);
-      if (comparator) {
-        for (let node = publicTree(value); node != null;) {
-          const order = comparator.call(null, key, node.key);
-          if (order === 0) return node;
-          node = order < 0 ? node.left : node.right;
-        }
-        return null;
-      }
       // IFind returns the retained entry from one search. Repeating contains?
       // or get would repeat observable IHash/IEquiv calls on the query key.
       if (!Array.isArray(entries)) {
@@ -6912,8 +6947,9 @@
       constructorHashes.set(value, resultHash);
       return resultHash;
     }
-    // A hash map's entries are its trie's leaves (light-cljs-1036).
-    const entries = mapKind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? mapTraversal(value) : maps.get(value) && mapTraversal(value);
+    // A hash map's entries are its trie's leaves (light-cljs-1036), a sorted
+    // map's its tree's nodes (light-cljs-1035).
+    const entries = (mapKind === 29 || mapKind === 30) && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? mapTraversal(value) : maps.get(value) && mapTraversal(value);
     if (entries) {
       let result = 0;
       for (const entry of entries) result = (result + mixCollectionHash((Math.imul(31, 31 + hash(entry.key)) + hash(entry.value)) | 0, 2)) | 0;
@@ -7458,16 +7494,17 @@
     deferredVarMetadata.delete(value);
   };
   //@unit empty requires: cellOf, collectionWithMeta, comparatorOf, emptyList, holdsVector,
-  //@ isArrayMap, isCell, isChunkedCons, isEntryCell, isLazy, isView, makeMap, makeSet, mapKinds,
-  //@ maps, mapTypes, meta, methodKeys, preserveMeta, protocolHooks, publicCollectionSlots,
-  //@ queueFromArray, queues, recordTypes, setComparators, setKinds, sets, setType, vector, viewOf
+  //@ isArrayMap, isCell, isChunkedCons, isEntryCell, isLazy, isTreeMap, isView, makeMap, makeSet,
+  //@ mapKinds, maps, mapTypes, meta, methodKeys, preserveMeta, protocolHooks,
+  //@ publicCollectionSlots, queueFromArray, queues, recordTypes, setComparators, setKinds, sets,
+  //@ setType, vector, viewOf
   function empty(value) {
     const method = value == null ? null : protocolHooks.publicMethod?.(value, methodKeys[15], 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
     if (recordTypes.has(value) || isEntryCell(value)) return null;
     if (holdsVector(value)) return preserveMeta(value, vector());
-    if (maps.has(value)) return preserveMeta(value, makeMap(mapTypes[mapKinds.get(value)], isArrayMap(value) || Array.isArray(maps.get(value)) ? [] : {root: null, nil: null, length: 0}, mapKinds.get(value), comparatorOf(value)));
+    if (maps.has(value)) return preserveMeta(value, makeMap(mapTypes[mapKinds.get(value)], isArrayMap(value) || isTreeMap(value) || Array.isArray(maps.get(value)) ? [] : {root: null, nil: null, length: 0}, mapKinds.get(value), comparatorOf(value)));
     if (sets.has(value)) return preserveMeta(value, makeSet(setType(setKinds.get(value)), Array.isArray(sets.get(value)) ? [] : {root: null, nil: null, length: 0}, setKinds.get(value), setComparators.get(value)));
     if (queues.has(value)) return preserveMeta(value, queueFromArray([]));
     if (cellOf(value)?.cell$LKEY === "list" && cellOf(value).count$LKEY === 0 && !publicCollectionSlots.has(value)) return value;
@@ -7512,20 +7549,20 @@
     }
     throw new Error("No protocol method IStack.-pop defined for this value");
   }
-  //@unit rseq requires: comparatorOf, holdsVector, IndexedSeqValue, maps, methodKeys,
-  //@ protocolHooks, publicCollectionSlots, RSeqType, toArray, treeMapSeqConstructor, vectorItems,
-  //@ view, viewOf
+  //@unit rseq requires: comparatorOf, holdsVector, IndexedSeqValue, isTreeMap, kindHooks,
+  //@ methodKeys, protocolHooks, publicCollectionSlots, RSeqType, toArray, vectorItems, view, viewOf
   function rseq(value) {
     const method = protocolHooks.builtin?.(value, methodKeys[47], 1);
     if (method) return method.call(value, value);
+    // A sorted map's walks its tree from its last node (light-cljs-1035).
+    if (isTreeMap(value)) return kindHooks.seqTree(value, false);
     if (!holdsVector(value) && viewOf(value)?.view$LKEY !== "indexed" && comparatorOf(value) === undefined)
       throw new Error("No protocol method IReversible.-rseq defined for this value");
     // A vector's items copy leaf by leaf; one a public constructor built, or
     // whose seq a protocol implementation replaces, walks its seq, as before.
     const items = Object.freeze((holdsVector(value) && !publicCollectionSlots.has(value)
       && !protocolHooks.publicMethod?.(value, methodKeys[52], 1, true) ? vectorItems(value) : toArray(value)).reverse());
-    return items.length ? maps.has(value) ? view(treeMapSeqConstructor, items, 0, false, "sorted-map")
-      : view(comparatorOf(value) !== undefined ? IndexedSeqValue : RSeqType, items, 0, false, "reverse") : null;
+    return items.length ? view(comparatorOf(value) !== undefined ? IndexedSeqValue : RSeqType, items, 0, false, "reverse") : null;
   }
   //@unit mapProjection requires: KeySeqCell, seq
   function mapProjection(value, index, alreadySeq = false) {
@@ -7627,26 +7664,207 @@
   //@unit sequentialIndex.host effect: sequentialIndex, extendType, extendInstance when: entryPrototype,
   //@ vectorIndexOf requires: hostHooks, sequentialIndex
   hostHooks.index = sequentialIndex;
-  //@unit treeRoots
-  // Comparator equality controls sorted membership; structural hashes remain
-  // attached to the retained key for unordered collection equality/hash.
-  const treeRoots = new WeakMap(), treeSetMaps = new WeakMap();
-  //@unit publicTree requires: mapEntry, maps, publicCollectionSlots, treeRoots
-  function publicTree(value) {
-    const slots = publicCollectionSlots.get(value);
-    if (slots && "tree" in slots) return slots.tree;
-    if (!treeRoots.has(value)) {
-      const entries = maps.get(value);
-      function build(start, end) {
-        if (start >= end) return null;
-        const mid = (start + end) >>> 1, entry = entries[mid];
-        const node = mapEntry(entry.key, entry.value);
-        Object.assign(node, {key: entry.key, val: entry.value, left: build(start, mid), right: build(mid + 1, end)});
-        return node;
-      }
-      treeRoots.set(value, build(0, entries.length));
+  //@unit treeSetMaps
+  // The sorted map a sorted set's `tree-map` field gives, built once.
+  const treeSetMaps = new WeakMap();
+  //@unit treeKey requires: nth
+  // A sorted map's tree is its nodes (`TreeNodeCell`), or what a public
+  // constructor was given, which its readers read as upstream's do, by the
+  // names `key`, `val`, `left` and `right` (a node of another kind of map
+  // entry by its items); an update first rebuilds such a tree of nodes
+  // (`ownTree`). A node of the runtime's has a boolean `red`.
+  const treeKey = node => node.red$LKEY !== undefined ? node.tail$LKEY[0] : "key" in node ? node.key : nth(node, 0);
+  const treeVal = node => node.red$LKEY !== undefined ? node.tail$LKEY[1] : "val" in node ? node.val : nth(node, 1);
+  const treeLeft = node => node.red$LKEY !== undefined ? node.left$LKEY : node.left;
+  const treeRight = node => node.red$LKEY !== undefined ? node.right$LKEY : node.right;
+  //@unit treeOfPairs requires: TreeNodeCell
+  // The tree of `pairs`, keys and values flat in their comparator's order,
+  // each key once: balanced, each node at the deepest level red (where a
+  // tree is not perfect it has nodes there and above alone, so every path
+  // has the same number of black nodes).
+  function treeOfPairs(pairs) {
+    const n = pairs.length >> 1;
+    let levels = 0;
+    while ((2 ** levels) - 1 < n) levels++;
+    const build = (lo, hi, depth) => {
+      if (lo >= hi) return null;
+      const mid = (lo + hi) >>> 1;
+      return new TreeNodeCell([pairs[2 * mid], pairs[2 * mid + 1]], build(lo, mid, depth + 1), build(mid + 1, hi, depth + 1), depth > 0 && depth === levels - 1);
+    };
+    return build(0, n, 0);
+  }
+  //@unit treeOfEntries requires: treeOfPairs
+  // The tree of `entries` (`{key, value}`) in their comparator's order, for
+  // `makeMap`.
+  function treeOfEntries(entries) {
+    const pairs = [];
+    for (let i = 0; i < entries.length; i++) pairs.push(entries[i].key, entries[i].value);
+    return treeOfPairs(pairs);
+  }
+  //@unit treePairs requires: treeKey, treeLeft, treeRight, treeVal
+  // A tree's keys and values, flat, in order (`mapPairs`).
+  function treePairs(tree, pairs) {
+    if (tree == null) return pairs;
+    treePairs(treeLeft(tree), pairs);
+    pairs.push(treeKey(tree), treeVal(tree));
+    return treePairs(treeRight(tree), pairs);
+  }
+  //@unit ownTree requires: treeOfPairs, treePairs
+  // A sorted map's tree of the runtime's nodes, which its updates walk: its
+  // own, or one rebuilt of the tree a public constructor gave it.
+  function ownTree(map) {
+    const tree = map.tree$LKEY;
+    return tree == null ? null : tree.red$LKEY !== undefined ? tree : treeOfPairs(treePairs(tree, []));
+  }
+  //@unit treeBlacken requires: TreeNodeCell
+  // Upstream's node methods and balancing functions of a red-black tree,
+  // over a node's `tail` (its key and value), which a rebuilt node shares.
+  const treeBlacken = node => node.red$LKEY ? new TreeNodeCell(node.tail$LKEY, node.left$LKEY, node.right$LKEY, false) : node;
+  function treeRedden(node) {
+    if (node.red$LKEY) throw new Error("red-black tree invariant violation");
+    return new TreeNodeCell(node.tail$LKEY, node.left$LKEY, node.right$LKEY, true);
+  }
+  // Upstream's `balance-left`: a black node of `tail` over `ins` and `right`,
+  // rotated where `ins` is red with a red child.
+  function treeBalanceLeft(tail, ins, right) {
+    if (ins !== null && ins.red$LKEY) {
+      const left = ins.left$LKEY, inner = ins.right$LKEY;
+      if (left !== null && left.red$LKEY) return new TreeNodeCell(ins.tail$LKEY, treeBlacken(left), new TreeNodeCell(tail, inner, right, false), true);
+      if (inner !== null && inner.red$LKEY) return new TreeNodeCell(inner.tail$LKEY, new TreeNodeCell(ins.tail$LKEY, left, inner.left$LKEY, false), new TreeNodeCell(tail, inner.right$LKEY, right, false), true);
     }
-    return treeRoots.get(value);
+    return new TreeNodeCell(tail, ins, right, false);
+  }
+  // Upstream's `balance-right`, its mirror.
+  function treeBalanceRight(tail, left, ins) {
+    if (ins !== null && ins.red$LKEY) {
+      const inner = ins.left$LKEY, right = ins.right$LKEY;
+      if (right !== null && right.red$LKEY) return new TreeNodeCell(ins.tail$LKEY, new TreeNodeCell(tail, left, inner, false), treeBlacken(right), true);
+      if (inner !== null && inner.red$LKEY) return new TreeNodeCell(inner.tail$LKEY, new TreeNodeCell(tail, left, inner.left$LKEY, false), new TreeNodeCell(ins.tail$LKEY, inner.right$LKEY, right, false), true);
+    }
+    return new TreeNodeCell(tail, left, ins, false);
+  }
+  //@unit treePut requires: equalPair, treeBalanceLeft, treeBalanceRight, TreeNodeCell
+  // `assoc` of `key` and `val` in a tree of the runtime's nodes, upstream's
+  // `tree-map-add` and `tree-map-replace` in one walk, calling the
+  // comparator as upstream's, the key first: the new tree, `tree` itself
+  // where it holds the key with an equal value (upstream's `=` of the value
+  // given and the one there); `state.added` where it adds the key. A
+  // replaced value keeps the key there.
+  function treePut(comp, tree, key, val, state) {
+    if (tree === null) { state.added = true; return new TreeNodeCell([key, val], null, null, true); }
+    const tail = tree.tail$LKEY, order = comp.call(null, key, tail[0]);
+    if (order === 0) return equalPair(val, tail[1]) ? tree : new TreeNodeCell([tail[0], val], tree.left$LKEY, tree.right$LKEY, tree.red$LKEY);
+    if (order < 0) {
+      const left = tree.left$LKEY, ins = treePut(comp, left, key, val, state);
+      return ins === left ? tree : !state.added || tree.red$LKEY ? new TreeNodeCell(tail, ins, tree.right$LKEY, tree.red$LKEY) : treeBalanceLeft(tail, ins, tree.right$LKEY);
+    }
+    const right = tree.right$LKEY, ins = treePut(comp, right, key, val, state);
+    return ins === right ? tree : !state.added || tree.red$LKEY ? new TreeNodeCell(tail, tree.left$LKEY, ins, tree.red$LKEY) : treeBalanceRight(tail, tree.left$LKEY, ins);
+  }
+  //@unit treeRemove requires: treeBalanceLeft, treeBalanceRight, treeBlacken, TreeNodeCell,
+  //@ treeRedden
+  // Upstream's `tree-map-remove`: the tree without `key`, or null; the
+  // removed node in `found[0]`.
+  function treeRemove(comp, tree, key, found) {
+    if (tree === null) return null;
+    const tail = tree.tail$LKEY, order = comp.call(null, key, tail[0]);
+    if (order === 0) { found[0] = tree; return treeAppend(tree.left$LKEY, tree.right$LKEY); }
+    if (order < 0) {
+      const left = tree.left$LKEY, del = treeRemove(comp, left, key, found);
+      if (del === null && found[0] === null) return null;
+      return left !== null && !left.red$LKEY ? treeBalanceLeftDel(tail, del, tree.right$LKEY) : new TreeNodeCell(tail, del, tree.right$LKEY, true);
+    }
+    const right = tree.right$LKEY, del = treeRemove(comp, right, key, found);
+    if (del === null && found[0] === null) return null;
+    return right !== null && !right.red$LKEY ? treeBalanceRightDel(tail, tree.left$LKEY, del) : new TreeNodeCell(tail, tree.left$LKEY, del, true);
+  }
+  // Upstream's `balance-left-del` and `balance-right-del`.
+  function treeBalanceLeftDel(tail, del, right) {
+    if (del !== null && del.red$LKEY) return new TreeNodeCell(tail, treeBlacken(del), right, true);
+    if (right !== null && !right.red$LKEY) return treeBalanceRight(tail, del, treeRedden(right));
+    const inner = right?.left$LKEY;
+    if (inner != null && !inner.red$LKEY)
+      return new TreeNodeCell(inner.tail$LKEY, new TreeNodeCell(tail, del, inner.left$LKEY, false), treeBalanceRight(right.tail$LKEY, inner.right$LKEY, treeRedden(right.right$LKEY)), true);
+    throw new Error("red-black tree invariant violation");
+  }
+  function treeBalanceRightDel(tail, left, del) {
+    if (del !== null && del.red$LKEY) return new TreeNodeCell(tail, left, treeBlacken(del), true);
+    if (left !== null && !left.red$LKEY) return treeBalanceLeft(tail, treeRedden(left), del);
+    const inner = left?.right$LKEY;
+    if (inner != null && !inner.red$LKEY)
+      return new TreeNodeCell(inner.tail$LKEY, treeBalanceLeft(left.tail$LKEY, treeRedden(left.left$LKEY), inner.left$LKEY), new TreeNodeCell(tail, inner.right$LKEY, del, false), true);
+    throw new Error("red-black tree invariant violation");
+  }
+  // Upstream's `tree-map-append`: the tree of `left`'s and `right`'s nodes,
+  // where a removed node held them.
+  function treeAppend(left, right) {
+    if (left === null) return right;
+    if (right === null) return left;
+    if (left.red$LKEY) {
+      if (!right.red$LKEY) return new TreeNodeCell(left.tail$LKEY, left.left$LKEY, treeAppend(left.right$LKEY, right), true);
+      const app = treeAppend(left.right$LKEY, right.left$LKEY);
+      return app !== null && app.red$LKEY
+        ? new TreeNodeCell(app.tail$LKEY, new TreeNodeCell(left.tail$LKEY, left.left$LKEY, app.left$LKEY, true), new TreeNodeCell(right.tail$LKEY, app.right$LKEY, right.right$LKEY, true), true)
+        : new TreeNodeCell(left.tail$LKEY, left.left$LKEY, new TreeNodeCell(right.tail$LKEY, app, right.right$LKEY, true), true);
+    }
+    if (right.red$LKEY) return new TreeNodeCell(right.tail$LKEY, treeAppend(left, right.left$LKEY), right.right$LKEY, true);
+    const app = treeAppend(left.right$LKEY, right.left$LKEY);
+    return app !== null && app.red$LKEY
+      ? new TreeNodeCell(app.tail$LKEY, new TreeNodeCell(left.tail$LKEY, left.left$LKEY, app.left$LKEY, false), new TreeNodeCell(right.tail$LKEY, app.right$LKEY, right.right$LKEY, false), true)
+      : treeBalanceLeftDel(left.tail$LKEY, left.left$LKEY, new TreeNodeCell(right.tail$LKEY, app, right.right$LKEY, false));
+  }
+  //@unit treeMapAssoc requires: noBranch, ownTree, preserveMeta, treeBlacken, TreeMapCell, treePut
+  // `assoc` of a sorted map, upstream's: the map itself where it holds the
+  // key with an equal value, else a map of the new tree, one more in its
+  // count (a public constructor's too) where the key is new.
+  function treeMapAssoc(self, key, item) {
+    const cnt = self.cnt$LKEY;
+    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
+    const tree = ownTree(self), comp = self.comp$LKEY, state = {added: false}, result = treePut(comp, tree, key, item, state);
+    if (result === tree) return self;
+    return preserveMeta(self, state.added ? new TreeMapCell(comp, treeBlacken(result), cnt + 1) : new TreeMapCell(comp, result, cnt));
+  }
+  //@unit treeMapDissoc requires: noBranch, ownTree, preserveMeta, treeBlacken, TreeMapCell,
+  //@ treeRemove
+  // `dissoc` of a sorted map, upstream's: the map itself without the key.
+  function treeMapDissoc(self, key) {
+    const cnt = self.cnt$LKEY;
+    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
+    const found = [null], comp = self.comp$LKEY, result = treeRemove(comp, ownTree(self), key, found);
+    if (found[0] === null) return self;
+    return preserveMeta(self, result === null ? new TreeMapCell(comp, null, 0) : new TreeMapCell(comp, treeBlacken(result), cnt - 1));
+  }
+  //@unit treeEntryAt requires: treeKey, treeLeft, treeRight
+  // The node of a sorted map that holds `key`, or null, upstream's
+  // `entry-at`: a walk of its tree that calls the comparator once a level.
+  function treeEntryAt(map, key) {
+    const comp = map.comp$LKEY;
+    let node = map.tree$LKEY;
+    if (node != null && node.red$LKEY === undefined) {
+      while (node != null) {
+        const order = comp.call(null, key, treeKey(node));
+        if (order === 0) return node;
+        node = order < 0 ? treeLeft(node) : treeRight(node);
+      }
+      return null;
+    }
+    while (node != null) {
+      const order = comp.call(null, key, node.tail$LKEY[0]);
+      if (order === 0) return node;
+      node = order < 0 ? node.left$LKEY : node.right$LKEY;
+    }
+    return null;
+  }
+  //@unit treeKvReduce requires: isReduced, treeKey, treeLeft, treeRight, treeVal
+  // `reduce-kv` of a tree, upstream's `tree-map-kv-reduce`: in order, until
+  // `f` gives a reduced value, which it gives back.
+  function treeKvReduce(node, f, init) {
+    const left = treeLeft(node);
+    if (left != null) { init = treeKvReduce(left, f, init); if (isReduced(init)) return init; }
+    init = f.call(null, init, treeKey(node), treeVal(node));
+    if (isReduced(init)) return init;
+    const right = treeRight(node);
+    return right != null ? treeKvReduce(right, f, init) : init;
   }
   //@unit deferredEntries
   // A public positional constructor stores its tree/backing-map immediately,
@@ -7660,19 +7878,15 @@
       has(_target, property) { return Reflect.has(demand(), property); }
     });
   }
-  //@unit treeMapConstructor requires: constructorSlots, deferredEntries, entryHashing, makeMap, nth
+  //@unit treeMapConstructor requires: constructorHashes, metadataValues, TreeMapCell
+  // The public constructor: a sorted map of the comparator, tree and count
+  // it is given, as they are (light-cljs-1035), which its operations read
+  // as any sorted map's; it reads no node until one of them does.
   function treeMapConstructor(comparator, tree, suppliedCount, metadata, cachedHash) {
-    const value = makeMap(treeMapConstructor, deferredEntries(() => {
-      const entries = [];
-      function visit(node) {
-        if (node == null) return;
-        visit(node.left);
-        entries.push(Object.freeze({key: "key" in node ? node.key : nth(node, 0), value: "val" in node ? node.val : nth(node, 1), get hash() { return entryHashing.hash(this.key); }}));
-        visit(node.right);
-      }
-      visit(tree); return entries;
-    }), "sorted-map", comparator);
-    return constructorSlots(value, {tree, cnt: suppliedCount}, metadata, cachedHash);
+    const value = new TreeMapCell(comparator, tree, suppliedCount);
+    metadataValues.set(value, metadata);
+    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
+    return value;
   }
   //@unit treeSetConstructor requires: comparatorOf, compareKeys, constructorSlots, deferredEntries,
   //@ makeSet, mapTraversal, sets
@@ -7682,14 +7896,46 @@
     sets.reset(value, deferredEntries(() => treeMap == null ? [] : mapTraversal(treeMap).map(entry => Object.freeze({key: entry.key, get hash() { return entry.hash; }}))));
     return constructorSlots(value, {"tree-map": treeMap}, metadata, cachedHash);
   }
-  //@unit treeMapPush requires: conj, truth
-  function treeMapPush(tree, stack, ascending) {
-    while (tree != null) { stack = conj(stack, tree); tree = truth(ascending) ? tree.left : tree.right; }
-    return stack;
-  }
-  //@unit treeMapSeqConstructor requires: constructorSlots, TreeMapStackCell
+  //@unit treeMapSeqConstructor requires: conj, constructorSlots, emptyList, first, ListCell, next,
+  //@ protocolHooks, treeLeft, TreeMapStackCell, treeRight, truth
+  // The public constructor; and the seqs a sorted map builds (light-cljs-1035),
+  // of its own, which build their cells and their stacks' lists here.
   function treeMapSeqConstructor(metadata, stack, ascending, suppliedCount, cachedHash) {
     return constructorSlots(new TreeMapStackCell(stack, ascending, suppliedCount), {stack, "ascending?": ascending, cnt: suppliedCount}, metadata, cachedHash);
+  }
+  // Whether a sorted map seq's stack is a list of one node or more, whose
+  // fields give its first and next as the list's slots do, the stacks that
+  // `treeStackPush` builds among them; where a program can give a list
+  // protocol implementations (`extend-type`, `specify!`), every stack takes
+  // `peek`, `first`, `next` and `conj`, as upstream's.
+  const isListCell = stack => !protocolHooks.extend && stack != null && stack.cljs$lang$kind$$LKEY === 12 && stack.count$LKEY >= 1;
+  // Upstream's `(conj stack node)` of a sorted map seq's stack: a list cell
+  // onto nil or a list, else `conj`.
+  const treeStackPush = (stack, node) => stack == null ? new ListCell(node, emptyList, 1) : isListCell(stack) ? new ListCell(node, stack, stack.count$LKEY + 1) : conj(stack, node);
+  // Upstream's `tree-map-seq-push`: `stack` with `tree` and its leftmost
+  // (rightmost, descending) path pushed.
+  function treeMapPush(tree, stack, ascending) {
+    const forward = truth(ascending);
+    while (tree != null) { stack = treeStackPush(stack, tree); tree = forward ? treeLeft(tree) : treeRight(tree); }
+    return stack;
+  }
+  // A sorted map's seq, `rseq` where not `ascending`: upstream's
+  // PersistentTreeMapSeq of its tree's stack and its count, or nil; or a
+  // seq of `stack` of an unknown count (`sortedSeqFrom`).
+  function treeMapSeq(map, ascending) {
+    const cnt = map.cnt$LKEY;
+    return cnt > 0 ? new TreeMapStackCell(treeMapPush(map.tree$LKEY, null, ascending), ascending, cnt) : null;
+  }
+  const treeStackSeq = (stack, ascending) => new TreeMapStackCell(stack, ascending, -1);
+  // The seq past a sorted map seq's first node, or null, upstream's `-next`:
+  // the next subtree of that node pushed onto the rest of its stack.
+  function treeSeqNext(seq) {
+    const stack = seq.stack$LKEY, ascending = seq.ascending$LKEY;
+    let node, below;
+    if (isListCell(stack)) { node = stack.first$LKEY; below = stack.count$LKEY === 1 ? null : stack.rest$LKEY; }
+    else { node = first(stack); below = next(stack); }
+    const pending = treeMapPush(node == null ? null : truth(ascending) ? treeRight(node) : treeLeft(node), below, ascending);
+    return pending == null ? null : new TreeMapStackCell(pending, ascending, seq.cnt$LKEY - 1);
   }
   //@unit sortedPosition
   function sortedPosition(entries, key, comparator) {
@@ -7751,11 +7997,17 @@
       putEntry(entries, key, value, array ? "array-map" : undefined);
     }
   }
-  //@unit buildSortedMap requires: makeMap, putSortedEntry, treeMapConstructor
+  //@unit buildSortedMap requires: treeBlacken, TreeMapCell, treePut
+  // A sorted map of `pairs`, each `assoc`ed in turn, as upstream's
+  // `sorted-map` builds it.
   function buildSortedMap(comparator, pairs) {
-    const entries = [];
-    for (let i = 0; i < pairs.length; i += 2) putSortedEntry(entries, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null, comparator);
-    return makeMap(treeMapConstructor, entries, "sorted-map", comparator);
+    let tree = null, cnt = 0;
+    for (let i = 0; i < pairs.length; i += 2) {
+      const state = {added: false};
+      tree = treePut(comparator, tree, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null, state);
+      if (state.added) { tree = treeBlacken(tree); cnt++; }
+    }
+    return new TreeMapCell(comparator, tree, cnt);
   }
   //@unit sortedMap requires: buildSortedMap, compareKeys
   function sortedMap(...pairs) { return buildSortedMap(compareKeys, pairs); }
@@ -7775,18 +8027,32 @@
   function sortedSetBy(comparator, ...items) {
     return buildSortedSet(fnComparator(comparator), items);
   }
-  //@unit sortedSeqFrom requires: comparatorOf, identity, mapEntry, maps, mapSeq, sets,
-  //@ sortedPosition, treeMapSeqConstructor, truth, view
+  //@unit sortedSeqFrom requires: comparatorOf, identity, isTreeMap, mapSeq, sets, sortedPosition,
+  //@ treeKey, treeLeft, treeRight, treeStackPush, treeStackSeq, truth
   function sortedSeqFrom(value, key, ascending) {
-    const entries = maps.get(value) ?? sets.get(value), comparator = comparatorOf(value);
+    // A sorted map's, upstream's: the stack of the path to `key`, of the
+    // nodes at or past it in the seq's order, of an unknown count.
+    if (isTreeMap(value)) {
+      if (!(value.cnt$LKEY > 0)) return null;
+      const comp = value.comp$LKEY, forward = truth(ascending);
+      let stack = null;
+      for (let node = value.tree$LKEY; node != null;) {
+        const order = comp.call(null, key, treeKey(node));
+        if (order === 0) return treeStackSeq(treeStackPush(stack, node), ascending);
+        if (forward ? order < 0 : order > 0) { stack = treeStackPush(stack, node); node = forward ? treeLeft(node) : treeRight(node); }
+        else node = forward ? treeRight(node) : treeLeft(node);
+      }
+      return stack == null ? null : treeStackSeq(stack, ascending);
+    }
+    const entries = sets.get(value), comparator = comparatorOf(value);
+    // A sorted set's members, an array until sets are classes
+    // (light-cljs-1013).
     let i = sortedPosition(entries, key, comparator);
-    const absent = () => sets.has(value) ? mapSeq(identity, null) : null;
     if (!truth(ascending)) {
       if (i === entries.length || comparator.call(null, entries[i].key, key) !== 0) i--;
-      if (i < 0) return absent();
-    } else if (i === entries.length) return absent();
-    const selected = truth(ascending) ? entries.slice(i) : entries.slice(0, i + 1).reverse();
-    return sets.has(value) ? mapSeq(entry => entry.key, selected) : view(treeMapSeqConstructor, Object.freeze(selected.map(entry => mapEntry(entry.key, entry.value))), 0, false, "sorted-map");
+      if (i < 0) return mapSeq(identity, null);
+    } else if (i === entries.length) return mapSeq(identity, null);
+    return mapSeq(entry => entry.key, truth(ascending) ? entries.slice(i) : entries.slice(0, i + 1).reverse());
   }
   //@unit mkBoundFn requires: comparatorProtocol, entryKeyProtocol, invalidArity, truth
   function mkBoundFn(sc, test, key) {
@@ -8574,7 +8840,7 @@
       : apply(fn, old, args[0], args[1], args[2], fnRest(args, 3)));
   }
   //@unit updatedMap requires: comparatorOf, constructorSlots, isArrayMap, isHashMap, kindHooks,
-  //@ makeMap, mapFromEntries, mapKinds, maps, mapTypes, meta, preserveMeta, priorLength,
+  //@ makeMap, mapFromEntries, mapKinds, mapTypes, meta, preserveMeta, priorLength,
   //@ publicCollectionSlots, recordTypes
   // The map of `original`'s kind with `entries`, which an update built: an
   // array map's count of entries is its pairs' (`arrayMapEntries`), a hash
@@ -8584,13 +8850,9 @@
   // update.
   function updatedMap(original, entries, removeRecord = false) {
     const Type = !removeRecord && recordTypes.get(original), kind = mapKinds.get(original);
-    if (kind === "sorted-map") {
-      const prior = maps.get(original);
-      if (entries.length === prior.length && entries.every((entry, i) => entry === prior[i])) return original;
-      const result = makeMap(mapTypes["sorted-map"], entries, "sorted-map", comparatorOf(original)), slots = publicCollectionSlots.get(original);
-      if (slots && "cnt" in slots) constructorSlots(result, {cnt: slots.cnt + entries.length - prior.length}, meta(original), null);
-      return preserveMeta(original, result);
-    }
+    // A sorted map's own updates build its tree (`treeMapAssoc`); these
+    // entries are its own, in its comparator's order.
+    if (kind === "sorted-map") return preserveMeta(original, makeMap(mapTypes["sorted-map"], entries, "sorted-map", comparatorOf(original)));
     const result = Type ? kindHooks.updatedRecord(Type, entries, kind)
       : mapFromEntries(entries, kind === "hash-map" || (entries.length > 8 && entries.length > priorLength(original)));
     const slots = publicCollectionSlots.get(original);
@@ -8634,7 +8896,7 @@
   //@ kindHooks, lazyCells, mapCellCopy, maps, meta, metaFunctions, methodKeys, protocolHooks,
   //@ protocolImplementations, publicCollectionSlots, queues, recordTypes, reifyValues, seqCells,
   //@ setCellOf, setComparators, setKinds, setMeta, setQueueCopy, sets, subvecSources, symbolCells,
-  //@ treeRoots, treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
+  //@ treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
@@ -8656,7 +8918,7 @@
     else if (kind === "cycle") result = kindHooks.withMetaCycle(value);
     else if (recordTypes.has(value)) result = kindHooks.withMetaRecord(value);
     else {
-      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbolCells, maps, sets, setKinds, setComparators, seqCells, viewCells, queues, vars, subvecSources];
+      const stores = [treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbolCells, maps, sets, setKinds, setComparators, seqCells, viewCells, queues, vars, subvecSources];
       const vector = holdsVector(value);
       if (!vector && !stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
       // A vector's, a view's, a symbol's or a map's copy is built by its
@@ -11206,12 +11468,12 @@
   kindHooks.print = printKind(kindHooks.print, value => isCell(value) || isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value),
     (value, writer, options) => printSequential(writer, printWriter, queues.has(value) ? "#queue [" : "(", " ", queues.has(value) ? "]" : ")", options, value));
   //@unit makeMap.print effect: ArrayMapCell, makeMap, recordMethods, treeMapConstructor when: printWriterImpl
-  //@ requires: isArrayMap, isHashMap, kindHooks, mapPairs, maps, mapTraversal, printKind,
-  //@ printMapEntries, printWriter, protocolHooks
+  //@ requires: isArrayMap, isHashMap, isTreeMap, kindHooks, mapPairs, maps, mapTraversal,
+  //@ printKind, printMapEntries, printWriter, protocolHooks
   // An array map's and a hash map's keys and values, flat (`mapPairs`),
   // where no protocol implementation walks an array's seq
   // (`printSequential`); else entries.
-  kindHooks.print = printKind(kindHooks.print, value => maps.has(value), (value, writer, options) => !protocolHooks.publicMethod && (isArrayMap(value) || isHashMap(value))
+  kindHooks.print = printKind(kindHooks.print, value => maps.has(value), (value, writer, options) => !protocolHooks.publicMethod && (isArrayMap(value) || isHashMap(value) || isTreeMap(value))
     ? printMapEntries(mapPairs(value), writer, options, "", printWriter, true) : printMapEntries(mapTraversal(value), writer, options));
   //@unit makeSet.print effect: makeSet, treeSetConstructor when: printWriterImpl requires: kindHooks,
   //@ printKind, printSequential, printWriter, sets, setTraversal
@@ -11602,8 +11864,8 @@
   //@unit clone effect requires: canonicalVectorRoots, cellCopy, cellOf, cloneablePayload,
   //@ constructorHashes, coreMethod, holdsVector, IntegerRangeValue, isCell, isView, mapCellCopy,
   //@ maps, meta, metadataValues, protocolStores, rangeChunks, RangeValue, seqCells, setCellOf,
-  //@ setComparators, setKinds, setQueueCopy, sets, subvecSources, transientCells, treeRoots,
-  //@ treeSetMaps, vectorCellCopy, vectorCells, viewAt, viewCells
+  //@ setComparators, setKinds, setQueueCopy, sets, subvecSources, transientCells, treeSetMaps,
+  //@ vectorCellCopy, vectorCells, viewAt, viewCells
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (cellOf(value)?.cell$LKEY === "range") {
       const c = cellOf(value), state = rangeChunks.get(c);
@@ -11615,7 +11877,7 @@
     const result = holdsVector(value) ? vectorCellCopy(value) : isView(value) ? viewAt(value, value.i$LKEY) : isCell(value) ? cellCopy(value) : maps.has(value) ? mapCellCopy(value)
       : setQueueCopy(value) ?? Object.create(Object.getPrototypeOf(value));
     // The class layout's tests, which hold nothing, are no stores.
-    for (const store of [...protocolStores, treeRoots, treeSetMaps, canonicalVectorRoots, constructorHashes, metadataValues, setKinds, setComparators, subvecSources]) if (store.set !== undefined && store !== vectorCells && store !== transientCells && store !== viewCells && store !== seqCells && store !== maps && !(set && (store === sets || store === setKinds)) && store.has(value)) store.set(result, store.get(value));
+    for (const store of [...protocolStores, treeSetMaps, canonicalVectorRoots, constructorHashes, metadataValues, setKinds, setComparators, subvecSources]) if (store.set !== undefined && store !== vectorCells && store !== transientCells && store !== viewCells && store !== seqCells && store !== maps && !(set && (store === sets || store === setKinds)) && store.has(value)) store.set(result, store.get(value));
     return result;
   }, cloneablePayload);
   //@unit indexedNth requires: isTransient, missing, nth, transientNth
@@ -11908,8 +12170,10 @@
   seqIndexes(IntegerRangeValue);
   IntegerRangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit treeMapConstructor.fields effect: treeMapConstructor when: resetMeta, upstreamMembers
-  //@ requires: comparatorOf, count, meta, publicFields, publicTree, slotField, treeMapConstructor
-  publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? publicTree(value) : slotField(value, field, count), meta);
+  //@ requires: comparatorOf, meta, publicFields, treeMapConstructor
+  // Its own fields (light-cljs-1035): the tree a public constructor gave it
+  // is the one it gives back.
+  publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? value.tree$LKEY : value.cnt$LKEY, meta);
   Object.defineProperty(treeMapConstructor.prototype, "comp", {get() { return comparatorOf(this); }});
   //@unit treeSetConstructor.fields effect: treeSetConstructor when: resetMeta, upstreamMembers
   //@ requires: makeMap, meta, publicCollectionSlots, publicFields, setComparators, sets,
@@ -11921,11 +12185,21 @@
     return treeSetMaps.get(value);
   }, meta);
   //@unit treeMapSeqConstructor.fields effect: treeMapSeqConstructor when: resetMeta,
-  //@ upstreamMembers requires: count, meta, missing, publicFields, slotField, treeMapSeqConstructor
-  publicFields(treeMapSeqConstructor, ["meta", "stack", "ascending?", "cnt", "__hash"], (value, field) => {
-    const slot = slotField(value, field, count);
-    return slot !== missing ? slot : undefined;
-  }, meta);
+  //@ upstreamMembers requires: meta, publicFields, treeMapSeqConstructor
+  // Its own fields, which a public constructor gave it as its slots
+  // (light-cljs-1035).
+  publicFields(treeMapSeqConstructor, ["meta", "stack", "ascending?", "cnt", "__hash"],
+    (value, field) => field === "stack" ? value.stack$LKEY : field === "cnt" ? value.cnt$LKEY : value.ascending$LKEY, meta);
+  //@unit MapEntryType.fields effect: MapEntryType when: resetMeta, upstreamMembers requires: MapEntryType
+  // A map entry's `key` and `val` (upstream's MapEntry fields) and a sorted
+  // map's node's `left` and `right` (its BlackNode's and RedNode's,
+  // `TreeNodeCell`), undefined for another map entry. A node is never
+  // written: a write gives the value an own field of that name, as the
+  // other types' immutable fields (`publicFields`), and leaves its entry and
+  // its tree as they were.
+  for (const [name, read] of [["key", node => node.tail$LKEY?.[0]], ["val", node => node.tail$LKEY?.[1]], ["left", node => node.left$LKEY], ["right", node => node.right$LKEY]])
+    Object.defineProperty(MapEntryType.prototype, name, {configurable: true, get() { return read(this); },
+      set(value) { Object.defineProperty(this, name, {value, writable: true, configurable: true, enumerable: true}); }});
   //@unit treeMapSeqConstructor.members effect: treeMapSeqConstructor requires: seqMethods,
   //@ treeMapSeqConstructor
   treeMapSeqConstructor.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
@@ -12203,8 +12477,8 @@
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
   //@unit protocolHooks.extend effect: extendType, extendInstance when: contains, containsProtocol,
-  //@ entryPrototype, ownMap, ownSet, resetMeta, upstreamMembers, vectorIndexOf, vectorPrototype
-  //@ requires: protocolHooks
+  //@ entryPrototype, ownMap, ownSet, resetMeta, treeMapSeqConstructor, upstreamMembers,
+  //@ vectorIndexOf, vectorPrototype requires: protocolHooks
   // Only `extend-type` and `specify!` can give the runtime's own values
   // protocol implementations, which their host-facing methods and fields then
   // answer through the generic operations (`hostHooks`).

@@ -3109,7 +3109,9 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // their operations, and the older layers' and the printer's paths of the
     // array and hash maps' fields (117,759), and light-cljs-1013 the sets',
     // set transients', queues', reduced values', atoms', delays', UUIDs' and
-    // the other classes' tests and constructors (119,636).
+    // the other classes' tests and constructors (119,636), and light-cljs-1035
+    // the sorted map's red-black tree, its node class and seqs of its stack
+    // (about 124,000).
     assert!(
         total + 1_000
             <= 73_207
@@ -3128,7 +3130,8 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 4_000
                 + 3_000
                 + 3_000
-                + 2_000,
+                + 2_000
+                + 4_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).
