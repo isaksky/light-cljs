@@ -2100,7 +2100,10 @@ console.log('kind tables stay private to the runtime');
     list: core.list(1, 2), emptyList: core.list(), cons: core.cons(0, core.list(1)),
     range: core.range(3), floatRange: core.range(0.5, 3), repeat: core.repeat(2, 1),
     iterate: core.iterate(x => { throw new Error('realized ' + x); }, 0), cycle: core.cycle(r.vector(1, 2)),
-    keySeq: core.keys(core.arrayMap(1, 2))
+    keySeq: core.keys(core.arrayMap(1, 2)),
+    // Array, hash and sorted maps and the map transients (light-cljs-1012).
+    arrayMap: core.arrayMap(1, 2), hashMap: core.hashMap(1, 2), sortedMap: core.sortedMap(1, 2),
+    transientArrayMap: core.transient(core.arrayMap(1, 2)), transientHashMap: core.transient(core.hashMap(1, 2))
   };
   const view = ['arr$LKEY', 'i$LKEY', 'indexed$LKEY', 'view$LKEY'];
   const trie = ['meta$LKEY', 'cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'hash$LKEY'];
@@ -2118,7 +2121,9 @@ console.log('kind tables stay private to the runtime');
     floatRange: ['cell$LKEY', 'first$LKEY', 'end$LKEY', 'step$LKEY', 'integer$LKEY'],
     repeat: ['cell$LKEY', 'remaining$LKEY', 'first$LKEY', 'next$LKEY'],
     iterate: ['cell$LKEY', 'f$LKEY', 'prev$LKEY', 'seed$LKEY', 'realized$LKEY', 'next$LKEY'],
-    cycle: ['cell$LKEY', 'all$LKEY', 'prev$LKEY', 'current$LKEY', 'next$LKEY'], keySeq: ['cell$LKEY', 'mseq$LKEY']};
+    cycle: ['cell$LKEY', 'all$LKEY', 'prev$LKEY', 'current$LKEY', 'next$LKEY'], keySeq: ['cell$LKEY', 'mseq$LKEY'],
+    arrayMap: ['entries$LKEY'], hashMap: ['entries$LKEY'], sortedMap: ['entries$LKEY', 'comp$LKEY'],
+    transientArrayMap: ['state$LKEY'], transientHashMap: ['state$LKEY']};
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name];
     assert.deepEqual(Object.keys(value), field, name);
@@ -2139,9 +2144,11 @@ console.log('kind tables stay private to the runtime');
   assert.equal(core.count(marked), 1);
   // An own `__proto__` property serializes as an object rest copied it, with
   // no setter of `Object.prototype` run (the Sol review of light-cljs-1026).
-  // So for seqs (the Sol review of light-cljs-1030).
+  // So for seqs (the Sol review of light-cljs-1030), and for maps and map
+  // transients (the Sol review of light-cljs-1012).
   for (const value of [r.vector(1), core.first(core.hashMap(1, 2)), core.subvec(r.vector(1, 2), 1), core.transient(r.vector(1)),
-    core.list(1), core.cons(0, core.list(1)), core.seq([1]), core.mapSeq(core.inc, r.vector(1))]) {
+    core.list(1), core.cons(0, core.list(1)), core.seq([1]), core.mapSeq(core.inc, r.vector(1)),
+    core.arrayMap(1, 2), core.hashMap(1, 2), core.sortedMap(1, 2), core.transient(core.arrayMap(1, 2)), core.transient(core.hashMap(1, 2))]) {
     Object.defineProperty(value, '__proto__', {value: 7, enumerable: true});
     assert.equal(JSON.stringify(value), '{"__proto__":7}');
   }
@@ -2152,6 +2159,12 @@ console.log('kind tables stay private to the runtime');
   assert.equal(core.isVector(undefinedCount), true);
   assert.equal(core.equal(core.meta(undefinedCount), core.hashMap('m', 1)), true);
   assert.equal(core.hash(undefinedCount), 17);
+  for (const markedMap of [core.arrayMap(1, 2), core.hashMap(1, 2), core.sortedMap(1, 2)]) {
+    markedMap.note = 'kept';
+    assert.equal(JSON.stringify(markedMap), '{"note":"kept"}');
+    assert.equal(JSON.stringify({m: markedMap}), '{"m":{"note":"kept"}}');
+    assert.equal(core.get(markedMap, 1), 2);
+  }
   const markedSeq = core.seq([1]);
   markedSeq.note = 'kept';
   assert.equal(JSON.stringify(markedSeq), '{"note":"kept"}');

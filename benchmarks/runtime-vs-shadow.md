@@ -1655,3 +1655,15 @@ slot-first wrappers (`map-only` 12,893 bytes, `map-printed` 19,471,
 `constant-keys` 76,472, `event-maps` 54,662, `features` 110,364); programs
 without maps keep the maps' and map transients' tests that `count` reads
 (`vector-only` 7,282, `keyword-only` 4,746).
+
+**re-frame simple and TodoMVC sizes** (`re-frame.bb port APP` then
+`re-frame.bb size simple todomvc`, each with the binary named;
+`size-1bd59e34.txt` and `size-d630b6f5.txt` in the raw results), the
+light-cljs and esbuild bundle with React, before and after:
+
+| app | raw bytes | gzip -9 | brotli -q 11 |
+| --- | ---: | ---: | ---: |
+| re-frame simple | 372,127 to 377,242 (+5,115) | 114,215 to 115,070 (+855) | 99,247 to 99,855 (+608) |
+| TodoMVC | 473,022 to 478,146 (+5,124) | 144,153 to 145,058 (+905) | 124,430 to 125,393 (+963) |
+
+shadow-cljs's whole release files are 101,065 and 137,126 bytes gzip.
