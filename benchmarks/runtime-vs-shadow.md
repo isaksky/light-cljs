@@ -925,3 +925,32 @@ converted yet.
 `features-direct` 77,785 to 81,454 (the slot units and wrappers, the store
 helpers every collection test calls, and the keyed names, five bytes each).
 re-frame simple and TodoMVC gzip sizes were not measured in this step.
+
+**Review fixes** (the commit after the class layout: slot-first wrappers
+take a slot only when it is truthy, the Pants build's slot registry and
+switch, unkeyed `IFn` invoke slots, `inspect`'s stamp test). Only the first
+of these is on a hot path: each wrapper's test of the slot is `if (method)`
+where it was `!== undefined`. The gate ran again with the same `--ops` and
+`--runs 3`, before `light-cljs-2b087a2f` (the class layout, the "after"
+above) and after `light-cljs-4e1b684d` (the fixes, on master `80b7a37b`;
+the later rebase onto light-cljs-1027 leaves output byte-identical).
+Unreserved: a peer worker was active, and the 1-minute load average before
+a run was 4.1 to 4.9. Raw results: research/output-speed/vector-classes-1009-fixes.
+
+| op | light before | light after | change | shadow-cljs | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| vec-nth-1024 | 6.07 | 5.98 (5.85-6.12) | -1% | 4.95 | 1.21 |
+| vec-peek | 4.42 | 4.36 (4.33-4.40) | -1% | 3.35 | 1.30 |
+| vec-invoke-1024 | 5.85 | 5.81 (5.74-5.93) | -1% | 4.65 | 1.25 |
+| vec-assoc-1024 | 99.5 | 95.2 (95.0-95.7) | -4% | 72.2 | 1.32 |
+| vec-conj-64 | 3,893 | 3,743 (3,709-3,804) | -4% | 1,451 | 2.58 |
+| vec-literal-4 | 23.1 | 23.0 (22.5-23.0) | +0% | 7.56 | 3.04 |
+| transient-vec-100 | 5,567 | 5,616 (5,501-5,738) | +1% | 606.5 | 9.26 |
+| count-small | 49.7 | 47.4 (47.3-47.4) | -5% | 2.06 | 23.00 |
+| get-small | 174.4 | 171.3 (170.1-171.4) | -2% | 14.4 | 11.86 |
+
+No operation moved beyond its range. Advanced size after the rebase onto
+light-cljs-1024 and these fixes: `vector-only` 5,503 bytes, `mapv-count`
+39,619, `features-direct` 81,469 (tests/support/ratchet_fixtures.rs notes
+the ceilings that moved). Workload 200k was not timed again: no change here
+touches maps, seqs or keywords, where its time goes.
