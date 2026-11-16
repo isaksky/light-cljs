@@ -231,6 +231,7 @@ impl ConfigFile {
             options.extend(
                 [
                     Setting::PseudoNames,
+                    Setting::RuntimeKey,
                     Setting::ElideAsserts,
                     Setting::CljsWarnings,
                 ]

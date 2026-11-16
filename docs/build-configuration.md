@@ -316,6 +316,7 @@ conditional, and no discard that hides a duplicate key.
 | `--optimize LEVEL` | `:compiler-options {:optimizations :none\|:prepare\|:advanced}` | build | release (ignored in dev, as shadow-cljs ignores it) |
 | `--define NS/NAME=VALUE` | `:closure-defines {NS/NAME VALUE}`, or under `:compiler-options` | build | release |
 | `--pseudo-names` | `:compiler-options {:pseudo-names true}` | build | release (ignored in dev) |
+| `--runtime-key KEY` | `:compiler-options {:runtime-key "KEY"}` | build | release (ignored in dev) |
 | `--elide-asserts` | `:compiler-options {:elide-asserts true}` | build | both (release elides by default; `{:elide-asserts false}` keeps asserts) |
 | `--checked-arrays-warn`, `--checked-arrays-error` | `:compiler-options {:checked-arrays :warn\|:error}` | build | release |
 | `--warnings` | `:compiler-options {:cljs-warnings true}` | build | release (dev implies it) |
@@ -335,7 +336,7 @@ conditional, and no discard that hides a duplicate key.
 | `--compile`, `--reloadable`, `--watch` | the command: `compile`, `watch`, `release` | - | - |
 
 Keys light-cljs adds, because shadow-cljs has no word for them:
-`:compiler-options` `:cljs-warnings` and the five `:macro-*` limits, the
+`:compiler-options` `:cljs-warnings`, `:runtime-key` (light-cljs-1018) and the five `:macro-*` limits, the
 build's `:config`, and the top-level `:cache-retention` (light-cljs-409).
 They are listed under "Names for review".
 
@@ -442,6 +443,7 @@ only in the file, the commands and messages.
 |---|---|---|
 | `:optimizations` | `:none`, `:prepare` or `:advanced` | `:advanced` in release, as shadow-cljs's; dev builds run at none semantics |
 | `:pseudo-names` | boolean | `false` |
+| `:runtime-key` | nonempty string: derives the release output's runtime key from it as well ("As built (light-cljs-1018)") | unset |
 | `:elide-asserts` | boolean: omit every `assert` and `fn` `:pre`/`:post` check | `true` in release, as shadow-cljs's release mode; `false` in dev. `false` in release keeps asserts |
 | `:checked-arrays` | `:warn` or `:error`; implies `:cljs-warnings`, as the flags do | unset |
 | `:cljs-warnings` | boolean: undeclared Vars and conflicting arities are warnings, not errors | `false` in release, implied in dev |
@@ -466,7 +468,7 @@ yet).
 dropped, as shadow-cljs's `config-merge` does; both are validated whenever
 the file is read. A key applies in the modes the table gives. A key that
 reaches a mode that does not use it is ignored where shadow-cljs ignores it
-(`:optimizations` and `:pseudo-names` in dev, `:devtools` in `compile` and
+(`:optimizations`, `:pseudo-names` and `:runtime-key` in dev, `:devtools` in `compile` and
 `release`) and an error where shadow-cljs would apply it but light-cljs
 cannot (`:closure-defines` and `:checked-arrays` in dev, a permanent
 deviation, see "Deviations").
@@ -625,7 +627,7 @@ for any flag-only build:
 | `:macro-timeout-ms`, `:macro-poll-budget` | `EvaluatorOptions` | None, as for the flags: they stop work, which is never stored |
 | `:macro-core` | `EvaluatorOptions::macro_core` | Compiler: `:real` adds to the Pants build's compiler identity; `:port`'s is unchanged |
 | `:source-paths` | `FileSourceProvider` roots | Resolution: every candidate path and the file found |
-| `:optimizations`, `:closure-defines`, `:pseudo-names`, `:output-dir`, `:modules` | `ApplicationOptions`, `OutputLayout`, the entry | Emission key only (recorded as zeros today; compiler-cache "As built (light-cljs-324)"); the entry is the build's root, not a key |
+| `:optimizations`, `:closure-defines`, `:pseudo-names`, `:runtime-key`, `:output-dir`, `:modules` | `ApplicationOptions`, `OutputLayout`, the entry | Emission key only (recorded as zeros today; compiler-cache "As built (light-cljs-324)"); the entry is the build's root, not a key |
 | `:cache-root`, `:cache-blockers`, `:cache-level` | `CacheOptions`, the policy evaluator | Policy: what may read or write, never a key |
 | `:cache-retention` | `CacheOptions::retention`, `Store::trim` | None: what the store keeps after a build, never a key |
 | `:compile-threads` | `scheduler::Slots` | None: output does not depend on it |
@@ -1853,6 +1855,44 @@ startup, an edit to 2 restarts the build and trims to two, and
 `--cache-retention 4` over `:cache-retention 1` keeps four at startup and
 after a reread that changes the key and restarts the build).
 
+### As built (light-cljs-1018): :runtime-key
+
+A runtime keeps its values apart from host objects and from other light-cljs
+runtimes on the page with its key, eight characters that end every protocol
+slot, marker and kind name (docs/value-layout.md, section 1). A release
+build's key is derived from its output, so two different programs, or one
+program at two levels or with another constant, never share one; and two
+copies of the same output do, and recognise each other's values.
+`:compiler-options {:runtime-key "KEY"}`, any nonempty string, is derived
+into the key as well, so that:
+
+- one program built twice keeps its values apart on one page (two widgets of
+  one app, embedded independently): give each build its own `:runtime-key`;
+- two different outputs whose keys match, a one in 2.8 x 10^12 accident that
+  the second runtime to load reports by throwing "Two light-cljs builds share
+  the runtime key ...: give one a different :runtime-key", can load side by
+  side.
+
+Shadow-cljs has no such option (its output has no key); the name follows
+its kebab-case `:compiler-options`. It is `--runtime-key KEY` on the
+command line, `ApplicationOptions::runtime_key` in Rust, an emission option
+in the output cache's key (a build with another key never reuses the
+output of one without), and a release option: a dev build refuses
+`--runtime-key` and ignores the key, as it ignores `:pseudo-names`, since
+every dev build takes its key from the runtime it loads and every unit,
+reload and REPL form written against its page must share that key.
+Two dev builds on one page are not supported (docs/value-layout.md,
+section 1, "Two runtimes on one page").
+
+Tests: `tests/config_file/commands.rs` (the flag and the key change only
+the key of examples/features' release chunks, with the cache on; the flag
+over the key; a dev build ignores it; an empty key is an error),
+`tests/config_file/print_config.rs` (`--runtime-key` printed as its origin,
+and the printed file building what the flags build),
+`tests/compiler/cache_keys.rs` and `tests/compiler/cache_modes.rs`, and
+the page tests of `tests/support/two_runtimes.mjs`, whose `:keyed` build is
+`two.app` with a `:runtime-key`.
+
 ## Phases
 
 Queued on 2026-10-20 as the pellets group `build-configuration`, in this
@@ -1963,6 +2003,7 @@ shadow-cljs's style:
 | ClojureScript warning compatibility | `:compiler-options {:cljs-warnings true}` | `--warnings` |
 | Macro limits | `:compiler-options` `:macro-expansions`, `:macro-nodes`, `:macro-timeout-ms`, `:macro-memory-limit`, `:macro-poll-budget` | the same names |
 | The Pants build's `cljs.core` | `:compiler-options :macro-core` | `--macro-core` |
+| What a release build's runtime key derives from besides its output (light-cljs-1018) | `:compiler-options :runtime-key` | `--runtime-key` |
 | Environment values | `#light-cljs/env`, and the variable `LIGHT_CLJS` | - |
 | Printing the merged configuration | `--print-config` | - |
 | No nREPL on the dev server's port | `:nrepl false` (shadow-cljs's) | `--no-nrepl` |

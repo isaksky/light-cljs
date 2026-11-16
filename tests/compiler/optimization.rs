@@ -292,6 +292,7 @@ fn explicit_exports_retain_otherwise_unused_definitions() {
             no_inlining: false,
             no_folding: false,
             pseudo_names: false,
+            runtime_key: None,
         },
     );
     assert!(!without.emit_js().contains("OPTIMIZER_EXPORT_SENTINEL"));

@@ -1194,8 +1194,9 @@ byte-identical output on every machine. Eight base-36 characters make an
 accidental match between two different builds a one in 2.8 x 10^12 event,
 and the runtime still detects it: as it loads it registers `key -> hash of
 its output` in one page-wide registry (`globalThis[Symbol.for(
-"light-cljs.runtime-keys")]`, a `Map`, the runtime's only global write), and
-a load that finds its key registered with a different hash throws at once,
+"light-cljs.runtime-keys")]`, a `Map`, the runtime's only global write,
+which since light-cljs-1018 also holds each key's identity-hash table, under
+"Two runtimes on one page"), and a load that finds its key registered with a different hash throws at once,
 naming `:runtime-key`, before any value exists. The same output loaded
 twice finds its own hash ("Decisions for the user" 1). The runtime text uses a placeholder suffix
 (`$LKEY`, which `src/runtime_manifest.rs` checks appears only as a keyed
@@ -1224,9 +1225,12 @@ of them in plan order), moving the source map's columns by the four bytes
 each key adds; size reports count runtime text as written, keyed
 (`runtime_key::written_len`). Raw JavaScript (`js*`) is code too: a keyed name it spells
 with the placeholder is keyed. The hash registered is 16 hexadecimal digits
-of the same SHA-256 the key's eight base-36 digits come from. `:runtime-key`
-itself is light-cljs-1018's: `RuntimeKey::release` takes it, and nothing
-passes one yet.
+of the same SHA-256 the key's eight base-36 digits come from. As
+light-cljs-1018 added it, `:runtime-key` is `:compiler-options
+{:runtime-key "KEY"}` in light-cljs.edn and `--runtime-key KEY` on the
+command line (`ApplicationOptions::runtime_key`, which the output writer
+passes to `RuntimeKey::release`), a release option that dev builds ignore
+(docs/build-configuration.md, "As built (light-cljs-1018)").
 
 **Dev builds, the REPL and hot reload.** A dev build derives its key from the
 whole runtime source instead of its slice, so its key depends on neither the
@@ -1272,8 +1276,83 @@ the placeholder.
 - **Compile time**: each compile-time runtime has a fixed key and a per-load
   brand (section 4); it never shares a realm with output.
 
-light-cljs-1018 tests these statements in Node and headless Chromium and
-records the final guarantee here.
+**The guarantee, as light-cljs-1018 tested it.** `tests/support/two_runtimes.mjs`
+builds `tests/fixtures/two-runtimes` (an app, `two.app`, released as is,
+with a `:runtime-key`, with another constant and as a dev build, and a
+second app, `two.other`) and loads them into one page, in Node
+(`runtime_key::runtimes_on_one_page_keep_apart_unless_they_share_a_key`)
+and in headless Chromium (`--chromium NPM_TOOLS`). Each runtime reports how
+it reads every runtime's values, one of each kind (vector, subvector, array
+and hash map, set, list, lazy seq, range, keyword, symbol, map entry, UUID,
+record, `deftype`, atom, `reify` of a program protocol, `ex-info`), and its
+host-value answers. What two runtimes on one page share and do not share:
+
+- **Different builds never recognise each other's values**: two apps, one
+  app and the same program with another `:runtime-key`, with another
+  constant (a `goog-define`), or a dev and a release build of one app. To
+  each, the other's value is a host object: every predicate (`vector?`,
+  `map?`, `keyword?`, `record?`, `satisfies?`) is false, `=` is false,
+  `nth`, `count`, `name` and `key` throw and `get` answers nil as for `{}`,
+  and it prints as `#object[...]`. What a host object does answer, it does:
+  the other's seqs are host iterables (`Symbol.iterator` is not keyed), so
+  `first`, `vec` and `reduce` iterate them as any iterable, and `str` of
+  the other's UUID is its text (`toString`).
+- **Host constructors**: an `extend-type js/Date` with a core protocol in
+  one is invisible to the other (`count` of a date throws there,
+  `satisfies?` is false), and two builds extending `js/Date` with the same
+  program protocol, under the same name, each keep their own method, where
+  upstream's later load would replace the earlier's.
+- **A forced key collision** between two different outputs (one written
+  with the other's key) makes the second load throw "Two light-cljs builds
+  share the runtime key ...: give one a different :runtime-key" before any
+  of its values exist; the first runtime and later different builds go on
+  as before.
+- **The same build loaded twice** shares the key: each copy recognises the
+  other's collections, keywords, symbols, map entries, UUIDs, atoms and
+  `reify` values, operates on them through the other copy's slots (an
+  `extend-type` of its own `Box` in the first copy answers in the second,
+  and a `reduce` or `reduce-kv` over the other's vector, map or range stops
+  at its own `reduced`), and compares them equal with equal hashes, a
+  collection holding a host object both copies hold included: the identity
+  hash of a host object is one per key on the page (`identityHashes`, a
+  `WeakMap` the key registry holds as `.identities[key]`, a compile-time
+  load keeping its own), so a hash map of one copy
+  keyed by its vector of the object finds the other copy's equal vector.
+  Before light-cljs-1018 each load numbered host objects itself, and the
+  two vectors hashed apart (found by the Sol review). State stays per copy:
+  each has its own `defonce` atoms, keyword intern table (keywords equal, never
+  identical) and extensions of its own types. The program's `deftype` and
+  `defrecord` types are each copy's own, as a type defined again by a
+  reload is: a record of the other copy answers `record?` and its fields
+  but is not `=` to one of its own. An `extend-type` of a host constructor
+  is shared by name, and its protocol markers are both copies': the marker
+  value is one per key on the page (`protocolSentinel`,
+  `Symbol.for("light-cljs.protocol" + key)`). Before light-cljs-1018 it
+  was one per load, so the second copy's `extend-type js/Date` made the
+  first copy's `satisfies?` false, and neither copy's `satisfies?` of a
+  program protocol held for the other's `reify`. Not yet shared:
+  `ExceptionInfo` is still recognised by `instanceof`, so `ex-data` of the
+  other copy's ex-info is nil and it prints as a host error
+  (light-cljs-1044).
+- **A dev build next to a release build** works both ways round, and a dev
+  unit evaluated again (a hot reload) with a release build on the page
+  registers in the dev runtime, whose other namespaces keep their state.
+  The release output writes no global but the key registry; a dev build
+  keeps its own in page globals (`__lightRuntime`, `__lightDev`,
+  `__lightApplicationRoots`, ...). **Two dev builds on one page** are not
+  supported: every dev build has the one dev key, so the second's
+  `runtime.js` throws at load, and their globals would collide
+  (light-cljs-1045).
+- **What they share** is the page: globals a program writes, the key
+  registry with each key's identity-hash table, and the unkeyed members:
+  `Object` protocol methods (`toString`), the `IFn` invoke entries and `Symbol.iterator`, which any
+  caller may call.
+- **Compile time**: two loads of the compile-time runtime in one engine
+  share its fixed key, so each reads the other's values through their
+  slots, but each stamps its values with its own brand, so neither's form
+  bridge nor `inspect` takes the other's vector for a language value
+  (`runtime_key::compile_time_runtime_loads_keep_their_own_brands`, in the
+  evaluator's engine and in Node).
 
 ## 2. The classes
 

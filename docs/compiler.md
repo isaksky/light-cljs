@@ -2170,7 +2170,7 @@ node -e 'require("/tmp/light-dev/index.js"); __lightDevLoaded.then(start => star
 ```
 
 A dev build takes none of `--esm`, `--optimize`, `--size-report`,
-`--pseudo-names`, `--define` and the source map flags, and `--reloadable`
+`--pseudo-names`, `--runtime-key`, `--define` and the source map flags, and `--reloadable`
 requires `--out-dir` (which without `--reloadable` writes a chunked build,
 above). The Node driver `tests/support/dev_execution.mjs`
 runs a dev build or a single-file build, calls a start function, and applies

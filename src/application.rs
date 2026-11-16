@@ -125,6 +125,14 @@ pub struct ApplicationOptions {
     /// `Advanced` output is terse ([`crate::terse`]; docs/advanced-optimization.md,
     /// Phase 3). CLI: `--pseudo-names`.
     pub pseudo_names: bool,
+    /// Any string that changes the build's runtime key and nothing else
+    /// (docs/value-layout.md, section 1, "Derivation";
+    /// [`crate::runtime_key::RuntimeKey::release`]): two builds of the same
+    /// program given different strings keep their values apart on one page,
+    /// and two different outputs whose keys collide take one to load side
+    /// by side. CLI: `--runtime-key KEY`; light-cljs.edn: `:compiler-options
+    /// {:runtime-key "KEY"}`.
+    pub runtime_key: Option<String>,
 }
 impl ApplicationOptions {
     /// Options at `optimize` without explicit exports or defines. Accepts a
@@ -137,6 +145,7 @@ impl ApplicationOptions {
             no_inlining: false,
             no_folding: false,
             pseudo_names: false,
+            runtime_key: None,
         }
     }
 }
@@ -233,6 +242,8 @@ pub struct PreparedApplication {
     movable: Vec<bool>,
     /// Defines of the options that did not apply.
     rejected_defines: Vec<crate::defines::DefineError>,
+    /// [`ApplicationOptions::runtime_key`], which the output writer reads.
+    runtime_key: Option<String>,
     stats: ApplicationStats,
 }
 impl PreparedApplication {
@@ -249,7 +260,11 @@ impl PreparedApplication {
             crate::emitter::emit_application(&self.program, self.application(), module, mapped);
         // The output writer: the build's key for its placeholder
         // (docs/value-layout.md, section 1).
-        let key = crate::runtime_key::RuntimeKey::release([code.as_str()], self.level, None);
+        let key = crate::runtime_key::RuntimeKey::release(
+            [code.as_str()],
+            self.level,
+            self.runtime_key.as_deref(),
+        );
         let code = match &mut mapping {
             Some(mapping) => key.apply_mapped(&code, mapping),
             None => key.apply(&code),
@@ -361,7 +376,7 @@ impl PreparedApplication {
         let key = crate::runtime_key::RuntimeKey::release(
             emitted.iter().map(|chunk| chunk.source.as_str()),
             self.level,
-            None,
+            self.runtime_key.as_deref(),
         );
         for chunk in &mut emitted {
             chunk.source = key.apply(&chunk.source);
@@ -504,6 +519,7 @@ pub fn prepare_owned_application(
         shapes: None,
         movable: Vec::new(),
         rejected_defines: Vec::new(),
+        runtime_key: options.runtime_key.clone(),
         stats: ApplicationStats::default(),
     };
     // Build-time defines replace `goog-define` defaults at every level, as

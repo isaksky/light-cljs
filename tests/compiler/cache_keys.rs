@@ -720,9 +720,15 @@ fn emission_options_change_only_the_emission_key() {
     no_inlining.no_inlining = true;
     let mut no_folding = ApplicationOptions::new(OptimizationLevel::None);
     no_folding.no_folding = true;
+    let mut keyed = ApplicationOptions::new(OptimizationLevel::None);
+    keyed.runtime_key = Some("a".into());
+    let mut other_key = ApplicationOptions::new(OptimizationLevel::None);
+    other_key.runtime_key = Some("b".into());
     for application in [
         &advanced,
         &pseudo,
+        &keyed,
+        &other_key,
         &defined,
         &other_value,
         &exported,

@@ -392,3 +392,70 @@ fn chunked_builds_derive_one_key_from_every_chunk() {
     assert_ne!(changed.key(), key.key());
     assert_ne!(changed.hash(), key.hash());
 }
+
+/// Light-cljs runtimes on one page (docs/value-layout.md, section 1, "Two
+/// runtimes on one page"; light-cljs-1018): tests/support/two_runtimes.mjs
+/// builds tests/fixtures/two-runtimes with this compiler (two apps, one of
+/// them also with a `:runtime-key`, with another constant and as a dev
+/// build) and loads them in pairs, and with a forced key collision, into
+/// one Node process per page. With `--chromium NPM_TOOLS` it runs the same
+/// pages in headless Chromium.
+#[test]
+fn runtimes_on_one_page_keep_apart_unless_they_share_a_key() {
+    let node = std::env::var_os("NODE").unwrap_or_else(|| "node".into());
+    let output = std::process::Command::new(node)
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/two_runtimes.mjs"
+        ))
+        .args(["--light", env!("CARGO_BIN_EXE_light-cljs")])
+        .output()
+        .expect("the two-runtime pages require Node");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("7 of 7 scenarios as expected"),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Two loads of the compile-time runtime in one engine (docs/value-layout.md,
+/// section 4): they share its fixed key, so each reads the other's values
+/// through their keyed slots, but each stamps its values with its own
+/// brand, so neither's form bridge nor `inspect` takes the other's vector
+/// for a language value. In the evaluator's engine (V8, or QuickJS in the
+/// QuickJS reference) and in Node.
+#[test]
+fn compile_time_runtime_loads_keep_their_own_brands() {
+    use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
+    let probe = "(rt, other) => {
+        const mine = rt.vectorFromArray([1, 2]), theirs = other.vectorFromArray([1, 2]);
+        const encodes = (bridge, value) => {
+          try { return 'encoded ' + bridge.encode(value, 100, 10)[0]; } catch (error) { return error.message; }
+        };
+        return JSON.stringify([rt.inspect(mine), rt.inspect(theirs), other.inspect(theirs), other.inspect(mine),
+          encodes(rt.compilerForms, mine), encodes(rt.compilerForms, theirs),
+          encodes(other.compilerForms, theirs), encodes(other.compilerForms, mine),
+          rt.core.count(theirs), other.core.count(mine), rt.core.prStr(theirs)]);
+      }";
+    let rejected = "Unsupported macro result arbitrary object (including promise) at $";
+    let expected = format!(
+        r#"[{{"kind":"vector","items":[1,2]}},null,{{"kind":"vector","items":[1,2]}},null,"encoded vector","{rejected}","encoded vector","{rejected}",2,2,"[1 2]"]"#
+    );
+    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+    let observation = evaluator
+        .evaluate_js(&format!("({probe})(rt, {RUNTIME_SOURCE})"))
+        .unwrap();
+    assert_eq!(
+        evaluator.string(observation).unwrap(),
+        expected,
+        "evaluator"
+    );
+    assert_eq!(
+        execute(&format!(
+            "const load = () => {RUNTIME_SOURCE}; console.log(({probe})(load(), load()));"
+        )),
+        format!("{expected}\n"),
+        "Node"
+    );
+}

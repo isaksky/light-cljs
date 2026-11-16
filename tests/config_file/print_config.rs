@@ -272,6 +272,7 @@ const COMMANDS_FLAGS: &str = "\
             :app/size 1}                             ; light-cljs.edn:9:46
    :compiler-options {:optimizations :prepare        ; --optimize prepare, over the release default :advanced
                       :pseudo-names true             ; --pseudo-names, over the default false
+                      :runtime-key \"k 1\"             ; --runtime-key k 1
                       :elide-asserts true            ; --elide-asserts, over the release default true
                       :cljs-warnings true            ; --warnings, over the release default false
                       :macro-nodes 5                 ; --macro-nodes 5, over the default 100000
@@ -336,6 +337,8 @@ fn flags_print_as_the_origin_of_their_settings() {
             "--warnings",
             "--checked-arrays-warn",
             "--pseudo-names",
+            "--runtime-key",
+            "k 1",
             "--optimize",
             "prepare",
             "--define",
@@ -614,6 +617,8 @@ fn the_printed_configuration_builds_what_its_flags_build() {
             "--cache-blocker",
             "app.util",
             "--pseudo-names",
+            "--runtime-key",
+            "k",
         ],
     ];
     for args in cases {

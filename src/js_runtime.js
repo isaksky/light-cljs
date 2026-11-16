@@ -927,8 +927,9 @@
   const memberMunging = {"-":"_",":":"_COLON_","+":"_PLUS_",">":"_GT_","<":"_LT_","=":"_EQ_","~":"_TILDE_","!":"_BANG_","@":"_CIRCA_","#":"_SHARP_","'":"_SINGLEQUOTE_","\"":"_DOUBLEQUOTE_","%":"_PERCENT_","^":"_CARET_","&":"_AMPERSAND_","*":"_STAR_","|":"_BAR_","{":"_LBRACE_","}":"_RBRACE_","[":"_LBRACK_","]":"_RBRACK_","/":"$","\\":"_BSLASH_","?":"_QMARK_"};
   //@unit mungeMember requires: memberMunging
   function mungeMember(name) { return Array.from(name, c => memberMunging[c] ?? c).join(""); }
-  //@unit protocolSentinel
-  const protocolSentinel = Object.freeze({}), protocolSlots = new Map();
+  //@unit protocolSentinel requires: runtimeKey
+  // One per key on the page: copies of a build share markers (docs/value-layout.md, section 1).
+  const protocolSentinel = Symbol.for("light-cljs.protocol" + runtimeKey), protocolSlots = new Map();
   //@unit protocolSlot requires: mungeMember, protocolSlots
   function protocolSlot(key, arity) {
     let slots = protocolSlots.get(key);
@@ -7070,8 +7071,9 @@
   kindHooks.comparedSeq = value => isCell(value) ? !["cycle", "iterate"].includes(cellOf(value).cell$LKEY)
     : isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value);
 
-  //@unit identityHashes
-  const identityHashes = new WeakMap();
+  //@unit identityHashes requires: runtimeKey
+  // One per key, in the key registry: copies of a build hash a host object alike.
+  const identityHashes = runtimeKey.slice(1) === "LKEY" ? new WeakMap() : (globalThis[Symbol.for("light-cljs.runtime-keys")].identities ??= {})[runtimeKey] ??= new WeakMap();
   //@unit identityCounter
   let identityCounter = 0;
   //@unit stringHash

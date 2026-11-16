@@ -667,7 +667,7 @@ changed" or "earlier namespaces changed". The components:
 
 `cache_key::emission_key` is separate: the front-end key, the compiler, and
 every `ApplicationOptions` field (`--optimize`, defines, exports,
-`--pseudo-names`, the inlining and folding switches), the output layout
+`--pseudo-names`, `--runtime-key`, the inlining and folding switches), the output layout
 (script, `--esm`, `--out-dir` chunks, `--reloadable`), the source map
 output and, once the caller has it, a fingerprint of the module plan: which
 chunk holds the namespace and what it imports, which depends on the whole
@@ -695,7 +695,7 @@ artifact's zeros. The placement of every `--compile` option is checked by
 and none had to move:
 
 - **Emission only, all hits:** `--optimize`, `--esm`, `--out-dir`,
-  `--define`, `--pseudo-names`, `--source-map`, `--source-map-inline` and
+  `--define`, `--pseudo-names`, `--runtime-key` (light-cljs-1018), `--source-map`, `--source-map-inline` and
   `--source-map-include-sources`. A define replaces a `goog-define` during
   application preparation, after analysis, and macros never see it.
 - **Front-end key, a miss:** `--elide-asserts` (assertions) and

@@ -778,10 +778,10 @@ pub struct EmissionOptions<'a> {
 
 /// The emission key of output built from the namespace whose front-end
 /// key is `front_end`: that key, the compiler, and every emission option
-/// (`--optimize`, defines, exports, `--pseudo-names` and the inlining and
-/// folding switches, the output layout, the module plan and the source
-/// map). The artifacts hold pre-optimization IR, so until they hold emitted
-/// sections nothing is reused by this key.
+/// (`--optimize`, defines, exports, `--pseudo-names`, `--runtime-key` and
+/// the inlining and folding switches, the output layout, the module plan
+/// and the source map). The artifacts hold pre-optimization IR, so until
+/// they hold emitted sections nothing is reused by this key.
 pub fn emission_key(
     environment: &KeyEnvironment,
     front_end: &FrontEndKey,
@@ -821,6 +821,7 @@ fn emission_fields(fingerprint: &mut Fingerprint, options: &EmissionOptions<'_>)
         no_inlining,
         no_folding,
         pseudo_names,
+        runtime_key,
     } = options.application;
     fingerprint
         .number(match optimize {
@@ -847,6 +848,7 @@ fn emission_fields(fingerprint: &mut Fingerprint, options: &EmissionOptions<'_>)
         .flag(*no_inlining)
         .flag(*no_folding)
         .flag(*pseudo_names)
+        .optional_text(runtime_key.as_deref())
         .number(match options.layout {
             OutputLayout::Script => 0,
             OutputLayout::Module => 1,

@@ -3011,3 +3011,72 @@ maps (`map-printed` 24,423 to 24,665, `set-only` 9,251 to 9,572); the
 features example about 500 (`features-direct` 127,104). Workload 200k's
 module grows 423 bytes (3,556,829 to 3,557,252). re-frame simple and TodoMVC
 were not ported in this run.
+
+## 2026-11-16: protocol markers shared by copies of one build (light-cljs-1018)
+
+**What.** The value every protocol marker holds (`protocolSentinel`,
+upstream's `PROTOCOL_SENTINEL`) was a frozen object per runtime load; it is
+now one per runtime key on the page, `Symbol.for("light-cljs.protocol" +
+key)`, so that two copies of one build, which share the key and both write
+the keyed markers of an `extend-type` of a host constructor, recognise each
+other's (docs/value-layout.md, section 1, "Two runtimes on one page"). Only
+the marker tests (`satisfies?` of a value without mask bits, the hash and
+lookup paths that read a marker) see the value; they compare it with `===`
+as before.
+
+Binaries, in research/shadow-credibility/bin: before `light-cljs-15b858bf`
+(master), after `light-cljs-a3347d18` (a commit of this pellet before it
+was squashed: its runtime as landed). Unreserved: one peer worker and this
+pellet's QuickJS reference suite were running. Raw results:
+research/output-speed/two-runtimes-1018.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops
+hash-fresh-vec-4,hash-fresh-map-7,eq-map-7,eq-vec-10,protocol-on-record,kw-hash100,multimethod
+--runs 5`), 1-minute load average before a run 12.89-13.48 before and
+12.67-13.22 after. ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-hash100 | 39.5 (39.2-41.7) | 39.7 (39.2-41.3) | +0% | 12.4 | 3.21 | 3.21 |
+| eq-map-7 | 218.8 (217.7-220.6) | 219.2 (215.9-219.5) | +0% | 154.8 | 1.41 | 1.42 |
+| eq-vec-10 | 76.5 (75.7-76.7) | 75.8 (75.4-77.1) | -1% | 61.3 | 1.25 | 1.24 |
+| hash-fresh-vec-4 | 51.9 (51.4-53.6) | 51.9 (51.2-54.1) | +0% | 64.4 | 0.81 | 0.81 |
+| hash-fresh-map-7 | 237.3 (236.1-237.6) | 235.3 (234.0-237.3) | -1% | 482.6 | 0.49 | 0.49 |
+| protocol-on-record | 2.57 (2.56-2.61) | 2.57 (2.55-2.63) | +0% | 2.41 | 1.04 | 1.07 |
+| multimethod | 183.6 (182.0-186.1) | 184.8 (181.3-187.1) | +1% | 43.4 | 4.20 | 4.26 |
+
+No operation moved outside its before range.
+
+**Workload 200k** (`compare.bb PROJECT --runs 5 --runtime-only --runtime
+1,40`, the project's light-cljs output rebuilt with each binary just before
+its run, two before/after pairs; load 9.3 to 14.0), wall time, median
+(range), and light-cljs's steady state:
+
+| pair | light before (1 / 40) | light after (1 / 40) | shadow-cljs at 40 (before / after runs) | steady state, ms per iteration |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.441 / 2.772 s (2.625-3.130) | 0.431 / 2.640 s (2.581-2.764) | 1.427 / 1.361 s | 59.8 to 56.6 |
+| 2 | 0.493 / 2.729 s (2.612-2.915) | 0.436 / 2.644 s (2.598-2.901) | 1.427 / 1.364 s | 57.3 to 56.6 |
+
+Unchanged within the runs' noise: shadow-cljs's runs beside the after runs
+were as much faster (light/shadow steady state 2.16 and 2.12 before, 2.17
+and 2.17 after).
+
+**Advanced size** (gzip -9): 19 bytes more where a slice keeps the marker
+value, which is written as `Symbol.for(...)`:
+- the gate: 172,677 to 172,696 bytes (gzip 43,679 to 43,667);
+- workload 200k: 3,559,707 to 3,559,726 (gzip 896,683 to 896,656);
+- the size ratchet (tests/support/ratchet_fixtures.rs, noted there):
+  `defmulti` 19,471 to 19,490; the readable runtime of `none` and
+  `prepare` 52 bytes more with the unit's comment. TodoMVC and re-frame
+  simple were not ported in this run.
+
+**After the measurements** (the Sol review of this pellet): the identity
+hash of a host object (`identityHashes`, the hash of a value with no hash
+of its own) became one `WeakMap` per runtime key, held by the key registry,
+so that copies of one build hash a collection holding the same host object
+alike. It is reached only by `hash` of such a value, which none of the
+gate's operations hashes, and it was not timed. It adds the table's lookup
+at load to slices that keep it, about 100 bytes at advanced: the
+`constant-keys` ratchet fixture went 71 bytes past its 87,000 ceiling, and
+the chunked build of `chunks::terse_chunks_write_their_runtime_units_at_module_level`
+is 130,400 bytes.

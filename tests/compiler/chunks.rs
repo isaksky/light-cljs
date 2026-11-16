@@ -3118,7 +3118,9 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // and light-cljs-1014 the classes' own `-equiv` and `-hash` slots and the
     // slot-first wrappers of `=` and `hash` (128,715),
     // and light-cljs-1016 the call-site entries of the slot-first operations,
-    // which advanced output calls (129,749).
+    // which advanced output calls (129,749), and light-cljs-1018 the
+    // protocol marker value and the identity-hash table one per runtime key
+    // on the page (130,400).
     assert!(
         total + 1_000
             <= 73_207
@@ -3141,6 +3143,7 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 4_000
                 + 1_000
                 + 4_000
+                + 1_000
                 + 1_000,
         "{total} bytes\n{listing}"
     );

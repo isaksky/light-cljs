@@ -133,6 +133,8 @@ pub enum Setting {
     Optimizations,
     /// `:compiler-options :pseudo-names`.
     PseudoNames,
+    /// `:compiler-options :runtime-key`, release only.
+    RuntimeKey,
     /// `:compiler-options :elide-asserts`.
     ElideAsserts,
     /// `:compiler-options :checked-arrays`.
@@ -165,7 +167,7 @@ impl Setting {
     pub const COUNT: usize = Self::ALL.len();
 
     /// Every setting, in discriminant order.
-    pub const ALL: [Setting; 31] = [
+    pub const ALL: [Setting; 32] = [
         Self::SourcePaths,
         Self::CacheRoot,
         Self::CacheBlockers,
@@ -184,6 +186,7 @@ impl Setting {
         Self::ClosureDefines,
         Self::Optimizations,
         Self::PseudoNames,
+        Self::RuntimeKey,
         Self::ElideAsserts,
         Self::CheckedArrays,
         Self::CljsWarnings,
@@ -225,6 +228,7 @@ impl Setting {
             Self::ClosureDefines | Self::CompilerClosureDefines => "closure-defines",
             Self::Optimizations => "optimizations",
             Self::PseudoNames => "pseudo-names",
+            Self::RuntimeKey => "runtime-key",
             Self::ElideAsserts => "elide-asserts",
             Self::CheckedArrays => "checked-arrays",
             Self::CljsWarnings => "cljs-warnings",
@@ -1397,6 +1401,7 @@ const COMPILER_OPTIONS: Table = &[
     ("macro-timeout-ms", Key::Setting(Setting::MacroTimeoutMs)),
     ("optimizations", Key::Setting(Setting::Optimizations)),
     ("pseudo-names", Key::Setting(Setting::PseudoNames)),
+    ("runtime-key", Key::Setting(Setting::RuntimeKey)),
 ];
 const BUILD_OPTIONS: Table = &[
     ("cache-blockers", Key::Setting(Setting::BuildCacheBlockers)),
@@ -2128,6 +2133,7 @@ impl Validator {
             }
             Setting::HttpPort => expect(port(value).is_some(), "a port number, 0 to 65535"),
             Setting::HttpHost => expect(nonempty_string(value), "a host name string"),
+            Setting::RuntimeKey => expect(nonempty_string(value), "a nonempty string"),
             Setting::HttpStrict
             | Setting::PseudoNames
             | Setting::ElideAsserts

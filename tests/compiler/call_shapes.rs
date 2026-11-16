@@ -505,6 +505,7 @@ fn exports_keep_their_dispatcher() {
             no_inlining: false,
             no_folding: false,
             pseudo_names: true,
+            runtime_key: None,
         },
     );
     let text = prepared.emit_js();

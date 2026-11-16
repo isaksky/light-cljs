@@ -723,12 +723,9 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// section 4). `stamp` brands the runtime's class values at compile
 /// time only: build.rs (`compiler_runtime`) turns each class constructor's
 /// `/*@brand*/` into a call of it (docs/value-layout.md, section 4).
-/// `runtimeKey` registers the build's key as a runtime loads, which the
-/// whole runtime does and every `Advanced` slice keeps (docs/value-layout.md,
-/// section 1). `mapValueAt` is the entry lookup of a map literal that only
+/// `mapValueAt` is the entry lookup of a map literal that only
 /// `Advanced` output reads (light-cljs-221, light-cljs-1034).
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
-    "runtimeKey",
     "stamp",
     "mapValueAt",
     "entryPrototype",

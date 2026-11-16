@@ -57,7 +57,8 @@ pub struct RuntimeKey {
 impl RuntimeKey {
     /// The key of release output whose files are `texts`, in order, with the
     /// placeholders in them, written at `level`; `runtime_key` is the build
-    /// option `:runtime-key` (light-cljs-1018), which changes the key of
+    /// option `:runtime-key` (`--runtime-key`,
+    /// [`crate::ApplicationOptions::runtime_key`]), which changes the key of
     /// output that is otherwise the same. The output registers the hash of
     /// the same inputs.
     pub fn release<'a>(

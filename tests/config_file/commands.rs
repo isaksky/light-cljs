@@ -182,6 +182,58 @@ fn the_features_example_builds_from_its_directory_and_below_it() {
     }
 }
 
+/// `:compiler-options {:runtime-key "KEY"}` and `--runtime-key KEY`
+/// (docs/value-layout.md, section 1, "Derivation"; light-cljs-1018) change
+/// the release output's runtime key and nothing else, the flag over the
+/// file's; the compiler cache, which the build keeps, never writes one key's
+/// output for another; dev mode ignores the key, as it ignores
+/// `:pseudo-names`.
+#[test]
+fn runtime_key_changes_only_the_release_outputs_key() {
+    use light_cljs::runtime_key::RuntimeKey;
+    let (_dir, project) = copy("config-commands-runtime-key", FEATURES);
+    let merge = "{:compiler-options {:runtime-key \"x\"}}";
+    // The chunks the build writes and the key they share, with the key and
+    // the hash written back as their placeholders.
+    let release = |args: &[&str]| {
+        let mut command = vec!["release", "features"];
+        command.extend(args);
+        succeeds(&project, &command);
+        let files = tree(&project.join("out/release"));
+        let startup = files
+            .iter()
+            .find(|(path, _)| path == Path::new("app.main.js"))
+            .map(|(_, bytes)| String::from_utf8(bytes.clone()).unwrap())
+            .expect("the startup chunk");
+        let key = RuntimeKey::written(&startup).expect("a registered key");
+        let unkeyed = files
+            .into_iter()
+            .map(|(path, bytes)| (path, key.unapply(&String::from_utf8(bytes).unwrap())))
+            .collect::<Vec<_>>();
+        (key, unkeyed)
+    };
+    let (plain, unkeyed) = release(&[]);
+    assert!(unkeyed.len() > 2, "{unkeyed:?}");
+    let (flagged, flagged_files) = release(&["--runtime-key", "x"]);
+    let (merged, merged_files) = release(&["--config-merge", merge]);
+    let (replaced, replaced_files) = release(&["--config-merge", merge, "--runtime-key", "y"]);
+    assert_ne!(flagged.key(), plain.key());
+    assert_ne!(flagged.hash(), plain.hash());
+    assert_eq!(merged, flagged);
+    assert_ne!(replaced.key(), flagged.key());
+    for files in [&flagged_files, &merged_files, &replaced_files] {
+        assert_eq!(files, &unkeyed);
+    }
+    assert_eq!(release(&[]).0, plain);
+    succeeds(&project, &["compile", "features", "--config-merge", merge]);
+    let bad = "{:compiler-options {:runtime-key \"\"}}";
+    let message = fails(&project, &["release", "features", "--config-merge", bad]);
+    assert!(
+        message.contains(":runtime-key of the merged build must be a nonempty string, got \"\""),
+        "{message}"
+    );
+}
+
 /// The release build of examples/features is what the equivalent flags
 /// write, and `--optimize none` after the command replaces the release
 /// default `:advanced`.
@@ -506,6 +558,12 @@ fn command_errors_have_exact_messages() {
             &["compile", "app", "--optimize", "advanced"],
             "light-cljs compile app --optimize advanced: --optimize applies to release builds; \
              compile writes the dev build at none semantics, as --compile --reloadable does"
+                .into(),
+        ),
+        (
+            &["watch", "app", "--runtime-key", "x"],
+            "light-cljs watch app --runtime-key x: --runtime-key applies to release builds; \
+             watch writes the dev build at none semantics, as --watch does"
                 .into(),
         ),
         (

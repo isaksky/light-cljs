@@ -702,11 +702,14 @@ pub const FIXTURES: &[Fixture] = &[
         removed: [0, 0, 0],
         printed: "#function\n",
     },
+    // light-cljs-1018 raised the whole-runtime ceilings by 1,000 for the
+    // per-key protocol marker value and identity-hash table, 151 bytes past
+    // 682,000.
     Fixture {
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [682_000, 682_000, 5_700],
+        ceilings: [683_000, 683_000, 5_700],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -828,7 +831,9 @@ pub const FIXTURES: &[Fixture] = &[
     },
     // Constant collections as keys of a hash map (light-cljs-219): the
     // runtime caches each key's hash, and at `Advanced` the pooled keys carry
-    // their hashes from the compiler.
+    // their hashes from the compiler. light-cljs-1018 raised the advanced
+    // ceiling by 1,000: the identity-hash table one per runtime key on the
+    // page (`identityHashes`) took it 71 bytes past 87,000.
     Fixture {
         name: "constant-keys",
         source: "(def table (zipmap (concat (map (fn [i] {:id i :kind :row}) (range 12))
@@ -837,19 +842,21 @@ pub const FIXTURES: &[Fixture] = &[
                                 (range 36)))
                  (+ (get table {:id 3 :kind :row}) (get table [:pos 5 6]) (get table #{7 :tag})
                     (get table {:id 11 :kind :row} 0))",
-        ceilings: [683_000, 683_000, 87_000],
+        ceilings: [683_000, 683_000, 88_000],
         removed: [0, 0, 0],
         printed: "62\n",
     },
     // Event maps, a map literal with constant keys and dynamic values
     // (light-cljs-220): at `Advanced` its keys and their hashes are a pooled
     // shape, and each evaluation passes only the values. `event`, called
-    // once, is inlined into its caller (light-cljs-214).
+    // once, is inlined into its caller (light-cljs-214). light-cljs-1018
+    // raised the whole-runtime ceilings by 1,000 for the per-key protocol
+    // marker value and identity-hash table, 153 bytes past 682,000.
     Fixture {
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [682_000, 682_000, 61_000],
+        ceilings: [683_000, 683_000, 61_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -927,13 +934,16 @@ pub const FIXTURES: &[Fixture] = &[
     // call names the method it runs and no dispatcher is defined
     // (light-cljs-212). Since light-cljs-214 `clamp` and `area` are inlined
     // at their calls and folded, and only `fib`, a `recur` target, is left.
+    // light-cljs-1018 raised the whole-runtime ceilings by 1,000: the protocol
+    // marker value became one per runtime key (`protocolSentinel`), 111 bytes
+    // past 684,000 at none and prepare; advanced did not move.
     Fixture {
         name: "multi-arity",
         source: "(defn clamp ([x] (clamp x 0 10)) ([x lo hi] (max lo (min hi x))))
                  (defn area ([w] (area w w)) ([w h] (* w h)))
                  (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
                  (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
-        ceilings: [684_000, 684_000, 400],
+        ceilings: [685_000, 685_000, 400],
         removed: [0, 0, 2],
         printed: "84\n",
     },
@@ -941,7 +951,9 @@ pub const FIXTURES: &[Fixture] = &[
     // arguments (light-cljs-229): at `Advanced` record field reads, `nth` on a
     // vector, `=` on strings and keywords and `count` of a string lower inside
     // them. Since light-cljs-214 `at`, `width` and `weight` are inlined into
-    // `score`, where the arguments' own types apply.
+    // `score`, where the arguments' own types apply. light-cljs-1018 raised
+    // the whole-runtime ceilings by 1,000 for the per-key protocol marker
+    // value and identity-hash table, 15 bytes past 684,000.
     Fixture {
         name: "closed-params",
         source: "(defrecord Pt [x y])
@@ -955,7 +967,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (if (< i 10)
                      (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
                      acc))",
-        ceilings: [684_000, 684_000, 21_000],
+        ceilings: [685_000, 685_000, 21_000],
         removed: [0, 0, 3],
         printed: "419\n",
     },
@@ -1042,10 +1054,13 @@ pub const FIXTURES: &[Fixture] = &[
     // light-cljs-239: a multimethod with keyword dispatch values and no
     // hierarchy keeps its tables as arrays, walks no hierarchy and calls no
     // `IMultiFn` dispatcher; its map argument keeps what a map literal keeps.
+    // light-cljs-1018 raised the whole-runtime ceilings by 1,000 for the
+    // per-key protocol marker value, 68 bytes past 682,000; advanced grew 19
+    // bytes, the marker value written as `Symbol.for(...)`.
     Fixture {
         name: "defmulti",
         source: "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))",
-        ceilings: [682_000, 682_000, 20_000],
+        ceilings: [683_000, 683_000, 20_000],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
     },
@@ -1168,6 +1183,8 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
         removed: [0, 1, 2],
         printed: "null\nhello lazy\n",
     },
+    // light-cljs-1018 raised the whole-runtime ceilings by 1,000 for the
+    // per-key protocol marker value, 45 bytes past 682,000.
     NamespaceFixture {
         name: "direct-site",
         entry: "app.main",
@@ -1181,7 +1198,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [682_000, 682_000, 300],
+        ceilings: [683_000, 683_000, 300],
         removed: [0, 0, 0],
         printed: "null\nhello lazy\n",
     },

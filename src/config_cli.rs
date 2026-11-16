@@ -139,10 +139,11 @@ const NOT_WATCH_FLAGS: [&str; 2] = ["--jobs", "--stats-file"];
 
 /// Flags `--compile` takes that `--reloadable` refuses: they shape release
 /// output, or, for the checked-arrays flags, no dev build takes them.
-const RELEASE_FLAGS: [&str; 6] = [
+const RELEASE_FLAGS: [&str; 7] = [
     "--optimize",
     "--size-report",
     "--pseudo-names",
+    "--runtime-key",
     "--define",
     "--checked-arrays-warn",
     "--checked-arrays-error",
@@ -157,11 +158,12 @@ const OUTPUT_FLAGS: [&str; 4] = [
 ];
 
 /// The refused flags that take a value, which the message quotes with it.
-const VALUED: [&str; 9] = [
+const VALUED: [&str; 10] = [
     "--entry",
     "--out-dir",
     "--source-map",
     "--optimize",
+    "--runtime-key",
     "--define",
     "--serve",
     "--serve-host",
@@ -956,6 +958,13 @@ fn apply_flags(
                 "--pseudo-names",
             );
         }
+        if let Some(key) = &user.runtime_key {
+            settings.set_by_flag(
+                Setting::RuntimeKey,
+                ValueKind::String(key.clone()),
+                &format!("--runtime-key {key}"),
+            );
+        }
         for text in &user.defines {
             let (name, value) = text.split_once('=').unwrap_or((text, ""));
             settings.set_entry_by_flag(
@@ -1498,6 +1507,10 @@ fn translate(
                 .map_err(|error| format!("{error}"))?
         };
         compile.pseudo_names = user.pseudo_names || boolean(settings, Setting::PseudoNames);
+        compile.runtime_key = user
+            .runtime_key
+            .clone()
+            .or_else(|| string(settings, Setting::RuntimeKey).map(str::to_owned));
         compile.size_report = user.size_report;
         for (name, value) in entries(settings, Setting::ClosureDefines) {
             let ValueKind::Symbol(name) = &name.kind else {

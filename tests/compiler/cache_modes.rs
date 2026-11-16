@@ -10,10 +10,10 @@
 //!
 //! The artifacts hold analyzed, pre-emission namespaces, so an option that
 //! only changes emission (`--optimize`, `--esm`, `--out-dir`, `--define`,
-//! `--pseudo-names` and the source map flags) reuses the artifacts a build
-//! in another mode published: every namespace hits. An option analysis
-//! reads (`--elide-asserts`, and `--reloadable`, which turns on the warning
-//! mode) is in the front-end key and misses once.
+//! `--pseudo-names`, `--runtime-key` and the source map flags) reuses the
+//! artifacts a build in another mode published: every namespace hits. An
+//! option analysis reads (`--elide-asserts`, and `--reloadable`, which
+//! turns on the warning mode) is in the front-end key and misses once.
 
 use crate::chunked_execution::run_directory;
 use crate::dev_execution::run_dev;
@@ -386,9 +386,9 @@ impl Project {
 }
 
 /// Single-file output at every level, as a script and as an ES module, with
-/// each source map flag, `--define` and `--pseudo-names`: after one script
-/// build at `none` fills the cache, every one of them installs every
-/// namespace and emits what the uncached build does.
+/// each source map flag, `--define`, `--pseudo-names` and `--runtime-key`:
+/// after one script build at `none` fills the cache, every one of them
+/// installs every namespace and emits what the uncached build does.
 #[test]
 fn single_file_modes_reuse_the_artifacts_of_another_mode() {
     let project = Project::new();
@@ -493,6 +493,12 @@ fn single_file_modes_reuse_the_artifacts_of_another_mode() {
         (
             "pseudo-names",
             &["--optimize", "advanced", "--pseudo-names"],
+            Layout::Script,
+            PRINTED,
+        ),
+        (
+            "runtime-key",
+            &["--optimize", "advanced", "--runtime-key", "k"],
             Layout::Script,
             PRINTED,
         ),
