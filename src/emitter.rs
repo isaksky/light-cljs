@@ -8334,8 +8334,173 @@ impl<'a> Emitter<'a> {
             self.short_circuit_value(parts);
             return;
         }
+        // Every nesting level of a value pays this function's frame. Kinds
+        // that need more than a call have a function of their own, so that
+        // the frame holds only the dispatch: a 128-level constructor tree
+        // fits a test thread's 2 MiB stack unoptimized (light-cljs-1027).
         match &self.program.exprs[id.0].kind {
             ExprKind::Nil => self.output.push_str("null"),
+            ExprKind::Loadable { .. } => self.loadable_value(id),
+            ExprKind::LoadableType => self.rt(RuntimeName::export("Loadable")),
+            ExprKind::Construct { .. } => self.construct_value(id),
+            ExprKind::Assert { .. } => self.assert_value(id),
+            ExprKind::Reify { .. } => self.reify_value(id),
+            ExprKind::DefType { .. } => self.def_type_value(id),
+            ExprKind::JsArguments => self.output.push_str("arguments"),
+            ExprKind::JsTemplate { .. }
+            | ExprKind::JsIndex { .. }
+            | ExprKind::JsDelete { .. }
+            | ExprKind::QualifiedMethod { .. }
+            | ExprKind::CopyArguments(_) => self.js_form_value(id),
+            ExprKind::DefProtocol { .. }
+            | ExprKind::ProtocolPredicate { .. }
+            | ExprKind::ExtendType { .. } => self.protocol_form_value(id),
+            ExprKind::Bool(value) => self.output.push_str(if *value { "true" } else { "false" }),
+            ExprKind::Number(value) => self.number(*value),
+            ExprKind::String(id) => self.string(*id),
+            // At `Advanced`, constant literals read the pool.
+            ExprKind::Vector(_)
+            | ExprKind::List(_)
+            | ExprKind::Map(_)
+            | ExprKind::Set(_)
+            | ExprKind::LiteralMap(_)
+            | ExprKind::LiteralSet(_)
+            | ExprKind::WithMeta { .. }
+            | ExprKind::ReaderLiteral { .. }
+                if self.pooled(id) => {}
+            ExprKind::ReaderLiteral { .. } => self.reader_literal_value(id),
+            ExprKind::DefinitionTest { .. }
+            | ExprKind::NamespaceView { .. }
+            | ExprKind::WithMeta { .. } => self.wrapper_value(id),
+            ExprKind::Var { .. } => self.var_value(id),
+            ExprKind::Keyword(literal) => self.named_literal(*literal, false),
+            ExprKind::Symbol(literal) => self.named_literal(*literal, true),
+            ExprKind::Vector(_)
+            | ExprKind::List(_)
+            | ExprKind::Map(_)
+            | ExprKind::Set(_)
+            | ExprKind::LiteralMap(_)
+            | ExprKind::LiteralSet(_) => self.collection_value(id),
+            ExprKind::CoreFn(core) => {
+                self.rt(RuntimeName::core(core.runtime_name()));
+            }
+            ExprKind::Local(local) => self.local_value(*local),
+            ExprKind::Global(global) => {
+                if self.construct_callee != Some(id) && self.sole_type_global(*global) {
+                    self.type_escapes = true;
+                }
+                self.global(*global)
+            }
+            ExprKind::JsGlobal(_) => self.js_global_value(id),
+            ExprKind::BooleanHint(value) => self.value(*value),
+            ExprKind::Exists(_) | ExprKind::BindingExists(_) => self.exists_value(id),
+            ExprKind::SetGlobal { .. } => self.set_global_value(id),
+            ExprKind::Def { .. } => self.def_value(id),
+            ExprKind::InstanceOf { .. } => self.instance_of_value(id),
+            ExprKind::Property { .. } | ExprKind::MethodCall { .. } => self.member_value(id),
+            ExprKind::If { test, yes, no } => {
+                self.output.push('(');
+                self.condition(*test);
+                self.output.push_str(" ? ");
+                self.value(*yes);
+                self.output.push_str(" : ");
+                self.value(*no);
+                self.output.push(')');
+            }
+            ExprKind::ThisAs { .. } => {
+                // CLJS value-context this-as has an ordinary function scope;
+                // its implicit receiver is the global object, not lexical this.
+                let wrapper = self.iife_open(id, false);
+                self.output.push('\n');
+                self.indent += 1;
+                self.emit(id, ExprContext::Return);
+                self.indent -= 1;
+                self.indentation();
+                self.iife_close(wrapper);
+            }
+            ExprKind::Try {
+                body,
+                catches,
+                finally,
+            } if catches.is_empty() && finally.is_none() => {
+                // A clause-free try is its do body. In particular a single
+                // value must not introduce a new JavaScript arguments scope.
+                if let ExprKind::Do(forms) = &self.program.exprs[body.0].kind
+                    && forms.len() <= 1
+                {
+                    if let Some(&form) = forms.first() {
+                        self.value(form);
+                    } else {
+                        self.output.push_str("null");
+                    }
+                } else {
+                    self.value(*body);
+                }
+            }
+            // At `Advanced` a `do` in value position is a comma expression,
+            // where that keeps the function scope its forms see.
+            ExprKind::Do(items) if self.shapes.is_some() && self.sequence_keeps_scope(id) => {
+                self.sequence(items);
+            }
+            ExprKind::Let { bindings, body } | ExprKind::LetFn { bindings, body }
+                if self.hoists(id) =>
+            {
+                self.hoisted_let(id, bindings, *body);
+            }
+            ExprKind::Case {
+                strict,
+                keyword_tests,
+                test,
+                branches,
+                default: Some(default),
+            } if self.shapes.is_some()
+                && self.operands.is_some()
+                && self.scope_flags(id) & SCOPE_READ == 0 =>
+            {
+                self.case_value(*strict, *keyword_tests, *test, branches, *default);
+            }
+            ExprKind::WithOutStr(_)
+            | ExprKind::Binding { .. }
+            | ExprKind::Do(_)
+            | ExprKind::Let { .. }
+            | ExprKind::LetFn { .. }
+            | ExprKind::Loop { .. }
+            | ExprKind::Try { .. }
+            | ExprKind::Throw(_)
+            | ExprKind::Case { .. } => {
+                let wrapper = self.iife_open(id, false);
+                self.output.push('\n');
+                self.indent += 1;
+                self.emit(id, ExprContext::Return);
+                self.indent -= 1;
+                self.indentation();
+                self.iife_close(wrapper);
+            }
+            ExprKind::Await(value) => {
+                self.output.push_str("(await ");
+                self.value(*value);
+                self.output.push(')');
+            }
+            ExprKind::Fn { name, methods } => {
+                let macro_function = self.program.macro_functions.contains(&id);
+                if macro_function {
+                    self.rt(RuntimeName::core("macroReaderFunction"));
+                    self.output.push('(');
+                }
+                self.function(*name, methods, macro_function);
+                if macro_function {
+                    self.output.push(')');
+                }
+            }
+            ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
+            ExprKind::Call { .. } => self.call_value(id),
+        }
+    }
+
+    /// [`Self::value_expr`] of a lazily loaded target: a chunk's importer,
+    /// or a resident getter.
+    fn loadable_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             // A target in a chunk that may not have evaluated yet: an
             // importer of that chunk, which startup's `lazy$` gives a `load`
             // that calls it (`chunked`).
@@ -8359,7 +8524,14 @@ impl<'a> Emitter<'a> {
                 }
                 self.output.push(')');
             }
-            ExprKind::LoadableType => self.rt(RuntimeName::export("Loadable")),
+            _ => unreachable!("loadable_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a construction: `new`, or in a native
+    /// compile-time unit a struct, regex or lazy seq.
+    fn construct_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             // `(lazy-seq …)` in a native compile-time unit: the engine's
             // once-realized lazy sequence of the thunk (light-cljs-479), when
             // the other constructor operands are the literal `nil`s the
@@ -8466,6 +8638,13 @@ impl<'a> Emitter<'a> {
                 }
                 self.output.push(')');
             }
+            _ => unreachable!("construct_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of an `assert` in value position.
+    fn assert_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::Assert {
                 test,
                 message,
@@ -8496,6 +8675,13 @@ impl<'a> Emitter<'a> {
                 self.output.push_str("; ");
                 self.iife_close(wrapper);
             }
+            _ => unreachable!("assert_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a `reify` object.
+    fn reify_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::Reify {
                 metadata,
                 captures,
@@ -8557,6 +8743,13 @@ impl<'a> Emitter<'a> {
                 }
                 self.output.push(')');
             }
+            _ => unreachable!("reify_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a `deftype` or `defrecord` definition.
+    fn def_type_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::DefType { .. } if self.defines_constructor(id) => {
                 let wrapper = self.iife_open(id, true);
                 self.output.push(' ');
@@ -8663,8 +8856,14 @@ impl<'a> Emitter<'a> {
                 self.output.push_str("; ");
                 self.iife_close(wrapper);
             }
+            _ => unreachable!("def_type_value of another kind"),
+        }
+    }
 
-            ExprKind::JsArguments => self.output.push_str("arguments"),
+    /// [`Self::value_expr`] of raw JavaScript, an index or delete, a qualified
+    /// method value or an arguments copy.
+    fn js_form_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::JsTemplate { segments, args } => {
                 self.output.push('(');
                 self.js_template(segments, args);
@@ -8710,6 +8909,13 @@ impl<'a> Emitter<'a> {
                 self.value(*dest);
                 self.output.push(')');
             }
+            _ => unreachable!("js_form_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a protocol definition, predicate or extension.
+    fn protocol_form_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::DefProtocol {
                 global,
                 methods,
@@ -8835,19 +9041,13 @@ impl<'a> Emitter<'a> {
                 }
                 self.output.push(')');
             }
-            ExprKind::Bool(value) => self.output.push_str(if *value { "true" } else { "false" }),
-            ExprKind::Number(value) => self.number(*value),
-            ExprKind::String(id) => self.string(*id),
-            // At `Advanced`, constant literals read the pool.
-            ExprKind::Vector(_)
-            | ExprKind::List(_)
-            | ExprKind::Map(_)
-            | ExprKind::Set(_)
-            | ExprKind::LiteralMap(_)
-            | ExprKind::LiteralSet(_)
-            | ExprKind::WithMeta { .. }
-            | ExprKind::ReaderLiteral { .. }
-                if self.pooled(id) => {}
+            _ => unreachable!("protocol_form_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a tagged or `#js` reader literal that is not pooled.
+    fn reader_literal_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::ReaderLiteral {
                 kind,
                 items,
@@ -8929,6 +9129,14 @@ impl<'a> Emitter<'a> {
                     },
                 });
             }
+            _ => unreachable!("reader_literal_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a value wrapped by a definition test, a
+    /// namespace view or metadata.
+    fn wrapper_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::DefinitionTest { value, unit } => {
                 if self.demand_roots {
                     write!(self.output, "globalThis.__lightCompilerTest({unit})").unwrap();
@@ -8962,6 +9170,13 @@ impl<'a> Emitter<'a> {
                 self.value(*metadata);
                 self.output.push(')');
             }
+            _ => unreachable!("wrapper_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a `var` object.
+    fn var_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::Var {
                 definition,
                 value,
@@ -9013,8 +9228,13 @@ impl<'a> Emitter<'a> {
                 }
                 self.output.push(')');
             }
-            ExprKind::Keyword(literal) => self.named_literal(*literal, false),
-            ExprKind::Symbol(literal) => self.named_literal(*literal, true),
+            _ => unreachable!("var_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a collection literal that is not pooled.
+    fn collection_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             // Below `Advanced`, and for literals that are not constants, each
             // evaluation builds the value; empty literals read the runtime's
             // singletons at every level. At `Advanced` a map or set literal
@@ -9037,16 +9257,13 @@ impl<'a> Emitter<'a> {
                     });
                 }
             }
-            ExprKind::CoreFn(core) => {
-                self.rt(RuntimeName::core(core.runtime_name()));
-            }
-            ExprKind::Local(local) => self.local_value(*local),
-            ExprKind::Global(global) => {
-                if self.construct_callee != Some(id) && self.sole_type_global(*global) {
-                    self.type_escapes = true;
-                }
-                self.global(*global)
-            }
+            _ => unreachable!("collection_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a JavaScript global or package import.
+    fn js_global_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::JsGlobal(global) => {
                 let program = self.program;
                 if let Some((package, members)) = program.js_globals[global.0].package() {
@@ -9060,7 +9277,13 @@ impl<'a> Emitter<'a> {
                     self.member(part);
                 }
             }
-            ExprKind::BooleanHint(value) => self.value(*value),
+            _ => unreachable!("js_global_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of an existence test of a binding or JavaScript path.
+    fn exists_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::Exists(value) | ExprKind::BindingExists(value) => {
                 let value = if let ExprKind::BooleanHint(value) = self.program.exprs[value.0].kind {
                     value
@@ -9130,6 +9353,13 @@ impl<'a> Emitter<'a> {
                 }
                 self.output.push(')');
             }
+            _ => unreachable!("exists_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a `set!` of a global, property or index.
+    fn set_global_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::SetGlobal { target, value } => {
                 if self.native_forms && self.compiler_binding(*target) {
                     self.output.push_str("globalThis.__lightSetCompilerRoot(");
@@ -9183,6 +9413,13 @@ impl<'a> Emitter<'a> {
                 );
                 self.output.push(')');
             }
+            _ => unreachable!("set_global_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a `def` in value position.
+    fn def_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::Def {
                 global,
                 init,
@@ -9290,6 +9527,13 @@ impl<'a> Emitter<'a> {
                 }
                 self.output.push(')');
             }
+            _ => unreachable!("def_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of an `instance?` test.
+    fn instance_of_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             // A native struct type is not a constructor: `instance?` of one
             // compares the value's type (light-cljs-478); the value and then
             // the class are evaluated once, as `x instanceof c` does.
@@ -9316,6 +9560,13 @@ impl<'a> Emitter<'a> {
                 self.value(*class);
                 self.output.push(')');
             }
+            _ => unreachable!("instance_of_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a property read or method call.
+    fn member_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::Property { receiver, property } => {
                 if self.demand_roots {
                     self.rt(RuntimeName::export("declarationReceiver"));
@@ -9345,101 +9596,14 @@ impl<'a> Emitter<'a> {
                 self.interop_arguments(args, Some(method));
                 self.output.push(')');
             }
-            ExprKind::If { test, yes, no } => {
-                self.output.push('(');
-                self.condition(*test);
-                self.output.push_str(" ? ");
-                self.value(*yes);
-                self.output.push_str(" : ");
-                self.value(*no);
-                self.output.push(')');
-            }
-            ExprKind::ThisAs { .. } => {
-                // CLJS value-context this-as has an ordinary function scope;
-                // its implicit receiver is the global object, not lexical this.
-                let wrapper = self.iife_open(id, false);
-                self.output.push('\n');
-                self.indent += 1;
-                self.emit(id, ExprContext::Return);
-                self.indent -= 1;
-                self.indentation();
-                self.iife_close(wrapper);
-            }
-            ExprKind::Try {
-                body,
-                catches,
-                finally,
-            } if catches.is_empty() && finally.is_none() => {
-                // A clause-free try is its do body. In particular a single
-                // value must not introduce a new JavaScript arguments scope.
-                if let ExprKind::Do(forms) = &self.program.exprs[body.0].kind
-                    && forms.len() <= 1
-                {
-                    if let Some(&form) = forms.first() {
-                        self.value(form);
-                    } else {
-                        self.output.push_str("null");
-                    }
-                } else {
-                    self.value(*body);
-                }
-            }
-            // At `Advanced` a `do` in value position is a comma expression,
-            // where that keeps the function scope its forms see.
-            ExprKind::Do(items) if self.shapes.is_some() && self.sequence_keeps_scope(id) => {
-                self.sequence(items);
-            }
-            ExprKind::Let { bindings, body } | ExprKind::LetFn { bindings, body }
-                if self.hoists(id) =>
-            {
-                self.hoisted_let(id, bindings, *body);
-            }
-            ExprKind::Case {
-                strict,
-                keyword_tests,
-                test,
-                branches,
-                default: Some(default),
-            } if self.shapes.is_some()
-                && self.operands.is_some()
-                && self.scope_flags(id) & SCOPE_READ == 0 =>
-            {
-                self.case_value(*strict, *keyword_tests, *test, branches, *default);
-            }
-            ExprKind::WithOutStr(_)
-            | ExprKind::Binding { .. }
-            | ExprKind::Do(_)
-            | ExprKind::Let { .. }
-            | ExprKind::LetFn { .. }
-            | ExprKind::Loop { .. }
-            | ExprKind::Try { .. }
-            | ExprKind::Throw(_)
-            | ExprKind::Case { .. } => {
-                let wrapper = self.iife_open(id, false);
-                self.output.push('\n');
-                self.indent += 1;
-                self.emit(id, ExprContext::Return);
-                self.indent -= 1;
-                self.indentation();
-                self.iife_close(wrapper);
-            }
-            ExprKind::Await(value) => {
-                self.output.push_str("(await ");
-                self.value(*value);
-                self.output.push(')');
-            }
-            ExprKind::Fn { name, methods } => {
-                let macro_function = self.program.macro_functions.contains(&id);
-                if macro_function {
-                    self.rt(RuntimeName::core("macroReaderFunction"));
-                    self.output.push('(');
-                }
-                self.function(*name, methods, macro_function);
-                if macro_function {
-                    self.output.push(')');
-                }
-            }
-            ExprKind::Recur { .. } => unreachable!("analysis forbids recur in value position"),
+            _ => unreachable!("member_value of another kind"),
+        }
+    }
+
+    /// [`Self::value_expr`] of a call: each level of a constructor tree such
+    /// as `(list (list …))`.
+    fn call_value(&mut self, id: ExprId) {
+        match &self.program.exprs[id.0].kind {
             ExprKind::Call { callee, args } => {
                 if let ExprKind::CoreFn(
                     core @ (crate::CoreFnId::Satisfies | crate::CoreFnId::Implements),
@@ -9579,6 +9743,7 @@ impl<'a> Emitter<'a> {
                 }
                 self.output.push(')');
             }
+            _ => unreachable!("call_value of another kind"),
         }
     }
 }

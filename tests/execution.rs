@@ -692,6 +692,17 @@ fn deeply_nested_accepted_source() {
 }
 
 #[test]
+fn call_trees_at_the_nesting_limit_compile_on_a_test_thread() {
+    // Unlike the forms above, a call tree compiles within a test thread's
+    // 2 MiB in an unoptimized build: each level pays the emitter's
+    // `value_expr` dispatch, one kind's function and `arguments`, not every
+    // kind's locals at once (light-cljs-1027).
+    let source = format!("(count {}0{})", "(list ".repeat(126), ")".repeat(126));
+    let js = compile(&source).unwrap();
+    assert_eq!(node(&format!("console.log({js});")), "1\n");
+}
+
+#[test]
 fn large_vector_literals_do_not_use_the_javascript_argument_stack() {
     // Well beyond Node's argument-count limit: literal storage is constructed
     // from an array, while ordinary variadic core calls retain their call ABI.

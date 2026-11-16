@@ -829,3 +829,29 @@ Raw results are in `research/output-speed/pants-runtime-1024`.
   3,438,709 to 3,438,773. The size ratchet's changes are noted in
   tests/support/ratchet_fixtures.rs: the readable runtime grows up to 126
   bytes, and `constant-keys` at advanced grows 30 bytes.
+
+## 2026-11-15: the emitter's value recursion (light-cljs-1027)
+
+**Change.** The emitter's `value_expr` now holds only the dispatch on an
+expression's kind; each kind that needs more than a call has a function of its
+own. This shortens the stack each nesting level of a value uses in an
+unoptimized build. It does not change the emitted JavaScript.
+
+**Setup.** The kit and machine of the sections above. Before is
+`light-cljs-80b7a37b` (master), after is `light-cljs-52191888`, a draft of
+this change with the same source code. Workload 200k was built clean
+(`release bench`, its cache is off) 10 times with each binary, the two
+alternating. **Unreserved:** a peer worker was active, and the 1-minute load
+average before a build was 7.9 to 10.5. Raw results are in
+`research/output-speed/emitter-stack-1027`.
+
+| Measure | before | after | change |
+| --- | ---: | ---: | ---: |
+| workload 200k, clean build wall time | 6.568 s (6.382-6.803) | 6.509 s (6.289-6.822) | -1% |
+| workload 200k, clean build peak memory | 1.030 GB (1.025-1.056) | 1.038 GB (1.019-1.064) | +1% |
+
+- **Output is byte-identical.** All 20 builds of workload 200k wrote the same
+  3,438,773-byte module, and the core-ops gate's `release bench` output is the
+  same file with either binary. The gate and workload 200k's steady state run
+  the same program before and after, so they were not timed again.
+- **Compile time and peak memory moved within their ranges.**
