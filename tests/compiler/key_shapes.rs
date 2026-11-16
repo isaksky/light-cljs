@@ -341,9 +341,10 @@ const sameEntries = (ex, ey) => {
     const y = ey[i];
     sameKeys(x, y, "entry");
     // An array map's entry keeps its key's hash, so it is not frozen
-    // (`ArrayMapEntry`, light-cljs-989); any other entry is a frozen object.
+    // (`ArrayMapEntry`, light-cljs-989), and since light-cljs-1034 nor is
+    // a trie's entry: no reader writes them.
     if (Object.getPrototypeOf(x) !== Object.getPrototypeOf(y)) fail("entry type", i);
-    if (Object.getPrototypeOf(x) === Object.prototype && (!Object.isFrozen(x) || !Object.isFrozen(y))) fail("entry not frozen", i);
+    if (Object.getPrototypeOf(x) === Object.prototype && (Object.isFrozen(x) || Object.isFrozen(y))) fail("entry frozen", i);
     if (x.key !== y.key || x.value !== y.value || x.hash !== y.hash) fail("entry", i, x.key, y.key, x.value, y.value, x.hash, y.hash);
   });
 };
@@ -624,7 +625,9 @@ fn event_map_allocations_per_evaluation_are_pinned() {
     // with their shapes, and each evaluation only makes the entries and copies
     // the trie, and puts only the set's other member. The literals pass
     // through `identity`: read directly, the map literals' lookups and counts
-    // fold, and the hash map is not built at all (light-cljs-221).
+    // fold, and the hash map is not built at all (light-cljs-221). Since
+    // light-cljs-1034 an array map's builder searches its flat key, value
+    // array itself (`arrayIndex`), without `putEntry` or `entryIndex`.
     let source = r#"
       (defn event [i] {:type :click :x i :y (inc i) :target "button"})
       (defn wide [i] {:a i :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j i})
@@ -650,9 +653,9 @@ fn event_map_allocations_per_evaluation_are_pinned() {
     ];
     let program = program(source);
     let expected = [
-        r#"{"keyword":16000,"mapFromArray":2000,"mapFromShape":0,"hashMapFromShape":0,"literalSetFromArray":1000,"setFromShape":0,"putEntry":16000,"putMember":2000,"entryIndex":7000,"hashNodeAssoc":16000}"#,
-        r#"{"keyword":16000,"mapFromArray":2000,"mapFromShape":0,"hashMapFromShape":0,"literalSetFromArray":1000,"setFromShape":0,"putEntry":16000,"putMember":2000,"entryIndex":7000,"hashNodeAssoc":16000}"#,
-        r#"{"keyword":15,"mapFromArray":0,"mapFromShape":1000,"hashMapFromShape":1000,"literalSetFromArray":1000,"setFromShape":1000,"putEntry":1001,"putMember":1001,"entryIndex":2001,"hashNodeAssoc":16}"#,
+        r#"{"keyword":16000,"mapFromArray":2000,"mapFromShape":0,"hashMapFromShape":0,"literalSetFromArray":1000,"setFromShape":0,"putEntry":12000,"putMember":2000,"entryIndex":2000,"hashNodeAssoc":16000}"#,
+        r#"{"keyword":16000,"mapFromArray":2000,"mapFromShape":0,"hashMapFromShape":0,"literalSetFromArray":1000,"setFromShape":0,"putEntry":12000,"putMember":2000,"entryIndex":2000,"hashNodeAssoc":16000}"#,
+        r#"{"keyword":15,"mapFromArray":0,"mapFromShape":1000,"hashMapFromShape":1000,"literalSetFromArray":1000,"setFromShape":1000,"putEntry":1001,"putMember":1001,"entryIndex":1001,"hashNodeAssoc":16}"#,
     ];
     for (level, expected) in OptimizationLevel::ALL.into_iter().zip(expected) {
         assert_eq!(

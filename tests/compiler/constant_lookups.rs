@@ -359,7 +359,7 @@ fn membership_in_value_position_compares_with_each_member() {
 /// the default, and `count`, `contains?`, `empty?` and `map?` fold; a value
 /// that is a constant or a read of a local is that, where the lookup is in
 /// the function the map was built in; another value is read from its
-/// entry, `rt$maps.get(m)[i].value`, in array maps and hash maps, also in a
+/// entry, `rt$mapValueAt(m, i)`, in array maps and hash maps, also in a
 /// closure and from a literal whose other values have effects, which still
 /// run. A literal whose other values have no effect is its value. A map with
 /// a key that is not a constant, or with two collection keys that may
@@ -404,10 +404,14 @@ fn lookups_in_maps_with_constant_keys_read_their_entries() {
     // `(:w m)`, `(alias :w)`, `(:j b)` and the two literals with effects in
     // their other values; the default with an effect keeps its lookup, a
     // `get` (light-cljs-370).
-    assert_eq!(read_map.matches("rt$maps.get(").count(), 5, "{read_map}");
+    assert_eq!(read_map.matches("rt$mapValueAt(").count(), 5, "{read_map}");
     assert_eq!(read_map.matches("rt$get(").count(), 1, "{read_map}");
     assert!(!read_map.contains(".call(null, "), "{read_map}");
-    assert_eq!(function("g3").matches("rt$maps.get(l").count(), 2, "{text}");
+    assert_eq!(
+        function("g3").matches("rt$mapValueAt(l").count(),
+        2,
+        "{text}"
+    );
     // `unshaped` keeps its lookups and its count.
     let unshaped = function("g4");
     assert!(

@@ -1743,3 +1743,121 @@ runtime grows 473 bytes. TodoMVC and re-frame simple were not rebuilt for
 
 Raw results (every gate run's EDN and Markdown, rounds 1-3, the whole
 gate and both workload pairs): research/output-speed/empty-list-seq-1033.
+
+## 2026-11-16: array maps' flat key, value arrays and hash maps' own fields (light-cljs-1034)
+
+**What.** An array map (`ArrayMapCell`) holds upstream's `cnt` and flat key,
+value array `arr` (`[k0, v0, k1, v1, ...]`) in its own keyed fields, where
+light-cljs-1012 left an array of entry objects in one `entries` field; a hash
+map (`HashMapCell`) holds its count, its trie's root, its nil entry and a
+builder's entries (`cnt`, `root`, `nil`, `lit`), where 1012 left a trie object
+`{root, nil, length}`. `get`, `assoc`, `dissoc`, `count`, `seq`, `reduce-kv`,
+map equality and hashing read the fields (`arrayIndex`, `mapPairs`, the hash
+map slots' own trie paths), a hash map's `assoc` builds the map and the path of
+new nodes and no trie object, and leaf entries are no longer frozen. Advanced
+output's constant lookups read `rt$mapValueAt(m, i)`. The older layers,
+printing and transients still read entries through `maps` (light-cljs-1036 has
+the map transients' fields and the rest). docs/value-layout.md has the notes.
+
+Binaries: before `light-cljs-765a92e1` (master), after `light-cljs-9a5cde99`
+(this pellet's src/), in research/shadow-credibility/bin. Unreserved: one peer
+worker was active. Raw results: research/output-speed/map-fields-1034
+(`*-before`, `*-after`; `gate-c212*` and `gate-d6f9*` are intermediate
+binaries of this pellet). The review's fixes after `9a5cde99` change the
+Pants profile and, in `arrayIndex`, only a key without an `fqn` field.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops kw,get,contains,count-small,assoc,dissoc,update,map-literal-3,reduce-map-inc-1000,reduce-kv-small,reduce-entries-small,eq-map-7,hash-fresh-map-7,destructure-map-3,swap-assoc,merge-small,select-keys-3,group-by-100,transient-map-100,sorted-map-assoc-100,str-sorted-map-20,str-nested-map --runs 3`,
+the same selection as light-cljs-1012's; 1-minute load average 3.55-6.86
+before, 2.37-3.53 after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 20.0 (19.4-20.0) | 20.1 (20.0-20.4) | 0% | 9.44 | 2.11 | 2.13 |
+| get-small | 23.0 (22.9-23.4) | 22.4 (22.4-24.5) | -2% | 14.3 | 1.61 | 1.57 |
+| get-small-miss | 26.7 (26.5-26.9) | 29.2 (29.1-29.6) | +9% | 18.5 | 1.44 | 1.58 |
+| contains-small | 25.3 (25.2-25.5) | 26.7 (26.4-26.7) | +6% | 11.6 | 2.18 | 2.30 |
+| count-small | 5.45 (5.43-5.55) | 2.84 (2.82-2.87) | -48% | 2.03 | 2.68 | 1.40 |
+| assoc-small-existing | 60.8 (59.5-61.5) | 58.1 (57.9-59.2) | -4% | 29.5 | 2.07 | 1.97 |
+| assoc-small-new | 80.6 (79.2-81.2) | 81.6 (80.6-81.8) | +1% | 37.7 | 2.13 | 2.16 |
+| dissoc-small | 185.2 (184.8-188.7) | 103.4 (102.5-107.9) | -44% | 76.3 | 2.43 | 1.35 |
+| update-small | 61.0 (60.6-61.2) | 60.4 (59.3-61.5) | -1% | 42.1 | 1.43 | 1.43 |
+| map-literal-3 | 31.1 (29.9-31.4) | 19.5 (19.4-20.4) | -37% | 9.51 | 3.29 | 2.05 |
+| get-hash100 | 35.5 (34.9-35.8) | 34.9 (34.3-34.9) | -2% | 11.7 | 3.13 | 2.98 |
+| kw-hash100 | 57.8 (57.0-57.9) | 56.9 (55.8-57.5) | -2% | 12.9 | 4.51 | 4.41 |
+| assoc-hash100 | 280.3 (267.9-281.7) | 115.3 (114.7-117.8) | -59% | 75.7 | 3.74 | 1.52 |
+| dissoc-hash100 | 132.6 (132.1-133.7) | 124.0 (123.6-127.8) | -6% | 73.0 | 1.82 | 1.70 |
+| update-hash100 | 322.2 (314.7-326.4) | 145.5 (145.4-149.9) | -55% | 92.8 | 3.44 | 1.57 |
+| get-in-3 | 77.0 (76.7-77.3) | 72.5 (70.8-72.9) | -6% | 52.9 | 1.45 | 1.37 |
+| assoc-in-3 | 228.2 (218.3-230.2) | 216.6 (215.3-223.3) | -5% | 128.3 | 1.77 | 1.69 |
+| update-in-3 | 250.6 (248.9-253.0) | 242.2 (239.4-242.6) | -3% | 131.0 | 1.92 | 1.85 |
+| destructure-map-3 | 123.5 (122.7-125.6) | 114.4 (113.8-118.2) | -7% | 47.5 | 2.61 | 2.41 |
+| reduce-map-inc-1000 | 48,175 (47,905-48,243) | 46,045 (45,870-46,782) | -4% | 38,952 | 1.27 | 1.18 |
+| reduce-kv-small | 84.6 (82.7-84.7) | 48.2 (47.8-49.7) | -43% | 36.8 | 2.32 | 1.31 |
+| reduce-entries-small | 489.6 (487.1-492.1) | 500.3 (497.0-504.7) | +2% | 77.0 | 6.35 | 6.50 |
+| str-nested-map | 5,706 (5,690-5,738) | 5,780 (5,769-5,826) | +1% | 2,102 | 2.68 | 2.75 |
+| eq-map-7 | 517.6 (509.4-521.6) | 374.7 (365.8-378.3) | -28% | 145.6 | 3.58 | 2.57 |
+| hash-fresh-map-7 | 801.5 (772.8-802.1) | 781.3 (761.3-806.5) | -3% | 394.4 | 2.02 | 1.98 |
+| swap-assoc | 138.2 (137.5-138.8) | 129.5 (124.2-137.0) | -6% | 36.1 | 3.73 | 3.58 |
+| merge-small | 4,637 (4,471-4,655) | 3,433 (3,415-3,443) | -26% | 763.0 | 6.05 | 4.50 |
+| select-keys-3 | 526.0 (522.9-529.7) | 472.0 (469.5-492.7) | -10% | 190.3 | 2.76 | 2.48 |
+| group-by-100 | 13,335 (13,242-13,939) | 12,126 (12,016-12,342) | -9% | 4,166 | 3.22 | 2.91 |
+| transient-map-100 | 15,865 (15,450-16,187) | 13,337 (13,228-14,021) | -16% | 3,855 | 4.09 | 3.46 |
+| sorted-map-assoc-100 | 633.1 (628.0-635.4) | 647.1 (628.4-665.9) | +2% | 200.3 | 3.20 | 3.23 |
+| str-sorted-map-20 | 41,757 (41,187-42,337) | 41,929 (41,691-44,492) | 0% | 19,847 | 2.11 | 2.11 |
+
+- **No operation is more than 10% slower.** The slowest, `get-small-miss`
+  (+9%) and `contains-small` (+6%), search a 7-key keyword map without the
+  key: the flat array's mixed keys and values tell V8 nothing of a key's
+  class, where an entry's `key` field did, so each key that is not the one
+  sought is a load and an `fqn` read of an untyped value. Reading `fqn`
+  before the kind test (upstream's `array-index-of-keyword?`) brought the
+  first measured version's +14% and +20% to these.
+- **Hash maps:** `assoc-hash100` and `update-hash100` gain 55-59% (1.52
+  and 1.57 times shadow-cljs's, from 3.74 and 3.44): an `assoc` no longer
+  builds a trie object, freezes its entry or goes through `updatedMap`.
+- **Array maps:** `count-small` reads `cnt` (-48%), `dissoc-small` copies
+  the pairs around the key (-44%, 1.35 times shadow-cljs's), `reduce-kv`
+  walks `arr` without a `[k, v]` array per entry (-43%), map literals push
+  their pairs (-37%), map equality walks the pairs (-28%), and `merge`,
+  `select-keys`, `group-by` and transients gain 9-26% through them.
+- What moves little: printing (`str-nested-map` +1%) and `reduce` over a
+  map's entries (+2%), which read entries made of the pairs, and sorted maps
+  (light-cljs-1035).
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1034 --runs 5
+--runtime-only --runtime 1,10,40`, the project rebuilt with each binary just
+before its run; load 3.20-4.54 before, 2.30-2.43 after), wall time, median
+(range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.412 s (0.408-0.416) | 0.370 s (0.368-0.390) | 0.322 s | 0.293 s |
+| 40 | 2.883 s (2.735-2.945) | 2.501 s (2.486-2.547) | 1.292 s | 1.129 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 63.3 to
+54.6 ms per iteration; shadow-cljs 24.9 and 21.4, as fast again on the
+quieter machine, so light/shadow stays 2.55: the workload's maps gain no
+more than the load moved.
+
+**The re-frame-shaped app** (`compare.bb re-frame-200k-seed42-1034 --runs 5
+--runtime-only --runtime 1,10`; load 4.30-4.54 before, 2.43-2.78 after):
+1 iteration 2.446 s (2.360-2.858) to 2.268 s (2.193-2.370), 10 iterations
+8.636 s (8.148-8.833) to 7.594 s (7.532-7.718); steady state 687.8 to 591.9
+ms per iteration (-14%), shadow-cljs 256.0 and 236.5, light/shadow 2.69 to
+2.50.
+
+**TodoMVC** (`re-frame.bb runtime todomvc --runs 5`, ported with
+`shadow-port-tool-983`; load 3.62-3.99 before, 5.92-6.30 after): the add step
+(1,000 todos) 3,995.2 ms (3,894.1-4,051.2) to 4,031.8 ms (3,964.9-4,069.9),
++1%, light/shadow 4.38 to 4.41 (shadow-cljs 913.1 and 914.8 ms): no change
+beyond the load; toggle all 66.7 to 67.5 ms; page load to interactive 41.8 to
+42.5 ms; the heap with 1,000 todos 9.20 to 9.05 MB.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): programs
+with maps keep the flat search and the field paths (`map-only` 14,270 bytes,
+`map-printed` 21,365, `event-maps` 56,355, `features` 113,191); programs
+without maps keep the longer `maps` and `mapOf` and `count`'s and `hash`'s
+array-map branches (`vector-only` 7,519, `keyword-only` 5,102). TodoMVC's
+bundle with React (`re-frame.bb size todomvc`): raw 478,192 to 481,129
+bytes, gzip -9 145,067 to 146,013, brotli -q 11 125,364 to 126,047; re-frame
+simple was not ported in this run.

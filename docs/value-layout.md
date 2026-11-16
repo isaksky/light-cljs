@@ -436,6 +436,57 @@ no walk ends on them.
   --trace-turbo-inlining` prints each candidate's bytecode size), until
   light-cljs-1016 calls the slots from the call sites.
 
+What light-cljs-1034 landed: array and hash maps hold upstream's fields,
+replacing 1012's one `entries` field for them. Sorted maps keep it until
+light-cljs-1035, and the map transients their `state` field (below).
+
+- **An array map** (`ArrayMapCell`) has the own keyed fields `cnt` and
+  `arr`, upstream's flat key, value array (`[k0, v0, k1, v1, ...]`), which
+  nothing writes once the map is built: `assoc` copies it once
+  (`arrayMapAssoc`), `dissoc` copies the pairs around each equal key
+  (`arrayMapDissoc`), and the builders (`arrayMapFromArray`,
+  `mapFromShape`) push their pairs, so that every such array is packed.
+  `arrayIndex` searches it as `entryIndex` searches entries, reading a
+  key's `fqn` before its kind test (upstream's `array-index-of-keyword?`):
+  the array's mixed keys and values tell V8 nothing of a key's class. A
+  public constructor's map holds the array and count it was given in its
+  fields as in its slots, so `count` of an array map reads `cnt` alone.
+- **A hash map** (`HashMapCell`) has `cnt`, `root`, `nil` (upstream's
+  `has-nil?` and `nil-val` in one field: the nil entry, which keeps the
+  first nil key, null or undefined) and `lit`, the builder's entries at
+  their indexes or null, which advanced output's constant lookups read
+  (`mapValueAt`, replacing `rt$maps.get(m)[i].value`). `get`, `assoc`,
+  `dissoc` and `count` read and build the fields (`hashMapLookup`,
+  `hashMapAssoc`, `hashMapDissoc`, `hashMapCount`): an `assoc` builds the
+  map and the path of new nodes, and no trie object; leaf entries are no
+  longer frozen, a trie's and a hash set's alike (`putHashEntry`,
+  `hashNodeAssoc`, `shapeEntries`), since no reader writes them. The trie
+  algorithms are unchanged.
+- **The readers of entries.** `maps.get` still answers every map with
+  entries for the call sites that read them (the older layers, public
+  constructors' maps, transients, `updatedMap`): an array map's pairs as
+  fresh `ArrayMapEntry`s (`arrayMapEntries`) and a hash map's fields as one
+  trie per map (`hashMapTrie`, positional entries included), each behind a
+  kind hook that only a program with that class keeps. `makeMap` builds
+  either class from entries or a trie. The readers that walk every pair
+  (`seq`, `reduce-kv`, map equality and hashing) read `mapPairs`: an array
+  map's own `arr`, else its traversal's keys and values, kept per hash map.
+  `with-meta` and `clone` copy the fields (`mapCellCopy`; the Pants
+  profile's own also copies an engine map, a hash map's through `hashTrie`).
+- **Left for later** (light-cljs-1036): the map transients'
+  state as their own fields, a public hash map constructor's slots as
+  fields, and removing `maps` and `mapKinds` where no caller needs them.
+  Printing, `mapIterator` and the older layers read an array map's
+  entries through `maps`, one object per pair.
+- **Profiles.** The Pants profile's `sharedOwnedMap` and `maps` build and
+  read the same fields; an array map's public constructor builds its class
+  itself, so build.rs no longer swaps its allocation (`publicArrayMap`). Its
+  own `arrayMapFromArray`, `mapFromShape` and `hashMapAssoc` build through
+  `makeMap` and `updatedMap`, so that an ordinary map stays an engine map,
+  and its `hashMapTries` and `traversalPairs` are stores that publish
+  (`sharedStore`). `arrayIndex` reads a key through `keywordOf` where it has
+  no `fqn` field, as the profile's engine keywords have none.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

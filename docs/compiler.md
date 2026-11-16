@@ -1258,8 +1258,9 @@ supplied default (nil when omitted), and `contains?` returns false.
 
 ### Hash maps
 
-An array map (at most 8 keys) holds its entries in an array of its own, in a
-keyed field of its class, unfrozen (light-cljs-1012, docs/value-layout.md); its
+An array map (at most 8 keys) holds its count and upstream's flat key, value
+array (`[k0, v0, k1, v1, ...]`) in keyed fields of its class, unfrozen and never
+written once built (light-cljs-1012, light-cljs-1034, docs/value-layout.md); its
 kind is its class's. A hash map, which an
 array map becomes at its ninth distinct key and which `hash-map`, larger literals
 and transients build, stores upstream's structure (light-cljs-235): a hash array
@@ -1287,8 +1288,10 @@ hash throws during it leaves the transient as it was. `assoc!` and `dissoc!`
 change the transient's root, nil entry and count in place. Builders (`hash-map`, larger literals) edit their
 unpublished trie the same way. New versions retain the first equivalent key and share
 unchanged entry cells, trie nodes and nested immutable values. A hash map holds
-its trie (its root, nil entry and count) in a keyed field of its class, without
-a `WeakMap` registration per version (light-cljs-1012). `seq`, printing and
+its count, its trie's root, its nil entry and a builder's entries in keyed
+fields of its class, without a `WeakMap` registration per version
+(light-cljs-1012) and without a trie object (light-cljs-1034); its leaf entries
+are not frozen. `seq`, printing and
 reduction walk the trie in upstream's order (nil first, then by hash bits), and
 a builder's map also keeps its entries in literal order, which advanced
 constant lookups read.

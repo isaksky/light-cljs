@@ -3103,7 +3103,9 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // the other cells' classes, their keyed slots and getters (104,293), and light-cljs-1028 the protocol masks and markers
     // of the vectors', subvectors', map entries' and transient vectors'
     // prototypes and their keyed slots, and light-cljs-1012 the maps' and map
-    // transients' classes and the maps' keyed slots (112,031).
+    // transients' classes and the maps' keyed slots (112,031), and
+    // light-cljs-1034 the array maps' flat search and the hash maps' field
+    // paths (115,050).
     assert!(
         total + 1_000
             <= 73_207
@@ -3119,7 +3121,8 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 3_000
                 + 6_100
                 + 4_000
-                + 4_000,
+                + 4_000
+                + 3_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).

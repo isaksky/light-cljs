@@ -724,10 +724,12 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// `/*@brand*/` into a call of it (docs/value-layout.md, section 4).
 /// `runtimeKey` registers the build's key as a runtime loads, which the
 /// whole runtime does and every `Advanced` slice keeps (docs/value-layout.md,
-/// section 1).
+/// section 1). `mapValueAt` is the entry lookup of a map literal that only
+/// `Advanced` output reads (light-cljs-221, light-cljs-1034).
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "runtimeKey",
     "stamp",
+    "mapValueAt",
     "entryPrototype",
     "MapEntryType.lean",
     "mapEntry.equiv",
@@ -1177,8 +1179,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // subvectors, map entries (seven each) and transient vectors (three)
     // (light-cljs-1028), and the 17 keyed slots of array, hash and sorted
     // maps with the slot-first wrappers of `dissoc` and `contains?` reading
-    // two of them (light-cljs-1012).
-    assert_eq!(checked, 454);
+    // two of them (light-cljs-1012), and the three hooks of the maps' fields
+    // that `maps` and `lookup` read (light-cljs-1034).
+    assert_eq!(checked, 457);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1336,6 +1339,11 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     // Hash maps' tries, which `get.maps` (light-cljs-358) and `lookup`
     // (light-cljs-302) search.
     ("trieValue", Kind::Units(&["PersistentHashMapValue"])),
+    // An array map's entries and lookup and a hash map's trie, which `maps`
+    // and `lookup` read of the maps' fields (light-cljs-1034).
+    ("arrayMapEntries", Kind::Units(&["ArrayMapCell"])),
+    ("arrayMapLookup", Kind::Units(&["ArrayMapCell"])),
+    ("hashMapTrie", Kind::Units(&["HashMapCell"])),
     // Hash sets' tries, which `get.sets` (light-cljs-373) and `lookup.sets`
     // (light-cljs-302) search.
     ("trieMember", Kind::Units(&["publicHashSet", "putMember"])),
@@ -1952,7 +1960,6 @@ fn kind_hooks_skip_records() {
             "lookup",
             "get",
             "get.maps",
-            "hashMapLookup",
             "treeMapLookup",
             "makeSet.equiv"
         ]

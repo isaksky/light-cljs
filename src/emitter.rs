@@ -9654,16 +9654,16 @@ impl<'a> Emitter<'a> {
                     self.protocol_operand = args.first().copied();
                 }
                 if let Some(&index) = self.entry_lookups.and_then(|lookups| lookups.get(&id)) {
-                    // `rt$maps.get(m)[i].value`: the entry of a map whose
+                    // `rt$mapValueAt(m, i)`: the entry of a map whose
                     // literal makes one entry per key, in order.
                     let map = match self.program.exprs[callee.0].kind {
                         ExprKind::Local(_) => *callee,
                         _ => args[0],
                     };
-                    self.rt(RuntimeName::export("maps"));
-                    self.output.push_str(".get(");
+                    self.rt(RuntimeName::export("mapValueAt"));
+                    self.output.push('(');
                     self.value(map);
-                    write!(self.output, ")[{index}].value").unwrap();
+                    write!(self.output, ", {index})").unwrap();
                     return;
                 }
                 if let Some(membership) = self.membership(id) {

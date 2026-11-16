@@ -457,7 +457,9 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     // by `arrayMapFromArray` (light-cljs-230), the constant set by
     // `arraySetFromArray` (light-cljs-231). The row passes through
     // `identity`: read directly, the lookups of its constant values and their
-    // counts fold, and no row is built at all (light-cljs-221).
+    // counts fold, and no row is built at all (light-cljs-221). Since
+    // light-cljs-1034 `mapFromArray` builds its array maps with
+    // `arrayMapFromArray`, which each of its calls here counts too.
     let source = r#"
       (defn row [i] {:id i :tags #{:a :b} :pos [1 2] :empty [] :meta {:kind :row :dims [1 2]}})
       (defn total [n]
@@ -478,8 +480,8 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     ];
     let program = program(source);
     let expected = [
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":0,"mapFromShape":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":0,"mapFromShape":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":2000,"mapFromShape":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":2000,"mapFromShape":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
         r#"{"vectorFromArray":1,"mapFromArray":0,"arrayMapFromArray":1,"mapFromShape":1000,"setFromArray":0,"arraySetFromArray":1,"keyword":10,"makeVector":2}"#,
     ];
     for (level, expected) in OptimizationLevel::ALL.into_iter().zip(expected) {

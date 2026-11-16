@@ -933,12 +933,14 @@ fn shared_runtime(base: &str, profile: &str) -> (String, String) {
 /// Public constructors and the public tree builder retain their canonical
 /// algorithms. Only their allocation boundary differs: constructorSlots and
 /// publicTree need runtime-owned objects on which they can attach fields.
+/// An array map's public constructor builds its class itself
+/// (`ArrayMapCell`, light-cljs-1034).
 fn shared_owned_allocations(base: &str) -> String {
     let (prologue, units) = sections(base);
     let mut result = base[..prologue].to_owned();
     for unit in units {
         let builder = match unit.name.as_str() {
-            "publicArrayMap" | "PersistentHashMapValue" => Some(("makeMap", "sharedOwnedMap")),
+            "PersistentHashMapValue" => Some(("makeMap", "sharedOwnedMap")),
             "publicHashSet" => Some(("makeSet", "sharedOwnedSet")),
             "publicTree" => Some(("mapEntry", "sharedTreeEntry")),
             _ => None,

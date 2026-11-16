@@ -460,16 +460,33 @@
     for (let i = 0; i < ordered.length; i++) value = __rt.formAssoc(value, ordered[i].key, ordered[i].value);
     return value;
   }
-  //@unit sharedOwnedMap
+  //@unit sharedOwnedMap requires: flatPairs
   // A public constructor must return an object on which constructorSlots can
   // retain the caller's slots, metadata and cached hash. Keep its canonical
   // payload intact (including live array getters and hash tries); only the
   // constructor units use this allocation boundary during shared assembly.
   // Sorted maps use the same runtime-owned representation: the V8 profile's
   // map classes (light-cljs-1012), of the class `Type`'s unit gives it,
-  // with `entries` and a sorted map's `comparator` in their own fields.
+  // with `entries` and a sorted map's `comparator` in their own fields, an
+  // array map with their keys and values, flat (`flatPairs`, light-cljs-1034).
   function sharedOwnedMap(Type, entries, _kind, comparator) {
-    return new Type.prototype.cljs$lang$cell$$LKEY(entries, comparator);
+    const proto = Type.prototype, kind = proto.cljs$lang$kind$$LKEY;
+    return kind === 28 ? new proto.cljs$lang$cell$$LKEY(entries.length, flatPairs(entries))
+      : kind === 29 ? new proto.cljs$lang$cell$$LKEY(entries.length, entries.root, entries.nil, entries.lit ?? null)
+      : new proto.cljs$lang$cell$$LKEY(entries, comparator);
+  }
+  //@unit mapCellCopy requires: comparatorOf, flatPairs, hashTrie, mapKinds, maps, mapTypes
+  // The V8 profile's, and of an engine map (`maps`): a map of the class its
+  // kind gives, holding the entries the profile reads of it (an array map
+  // their keys and values, flat).
+  function mapCellCopy(value) {
+    const Cell = mapTypes[mapKinds.get(value)].prototype.cljs$lang$cell$$LKEY;
+    const kind = value.cljs$lang$kind$$LKEY;
+    if (kind === 28) return new Cell(value.cnt$LKEY, value.arr$LKEY);
+    if (kind === 29) return new Cell(value.cnt$LKEY, value.root$LKEY, value.nil$LKEY, value.lit$LKEY);
+    const entries = maps.get(value), copied = Cell.prototype.cljs$lang$kind$$LKEY;
+    if (copied === 29) { const trie = hashTrie(entries); return new Cell(trie.length, trie.root, trie.nil, trie.lit ?? null); }
+    return copied === 28 ? new Cell(entries.length, flatPairs(entries)) : new Cell(entries, comparatorOf(value));
   }
   //@unit sharedOccurrenceNaN requires: sharedScalar
   // Scalar occurrences normally keep their stored identity. NaN alone is
@@ -492,6 +509,35 @@
       return sharedMapForm(ordered, kind);
     }
     return sharedOwnedMap(Type, entries, kind, comparator);
+  }
+  //@unit arrayMapFromArray requires: makeMap, PersistentArrayMapValue, putEntry
+  // The builders of array maps allocate through `makeMap`, as before the V8
+  // profile's built its class directly (light-cljs-1034), so that an ordinary
+  // array map is an engine map (`sharedMapForm`).
+  function arrayMapFromArray(pairs) {
+    const entries = [];
+    for (let i = 0; i < pairs.length; i += 2) putEntry(entries, pairs[i], pairs[i + 1], "array-map", null);
+    return makeMap(PersistentArrayMapValue, entries, "array-map");
+  }
+  //@unit mapFromShape requires: ArrayMapEntry, makeMap, PersistentArrayMapValue
+  function mapFromShape({keys, hashes}, values) {
+    const entries = [];
+    for (let i = 0; i < keys.length; i++) entries.push(new ArrayMapEntry(keys[i], values[i], hashes[i]));
+    return makeMap(PersistentArrayMapValue, entries, "array-map");
+  }
+  //@unit hashMapAssoc requires: kindHooks, mapAssocEntries, noBranch, publicCollectionSlots,
+  //@ updatedMap
+  // `assoc` of a runtime-owned hash map (a public constructor's or one with
+  // a NaN occurrence key) builds through `updatedMap`, as before the V8
+  // profile's built its class directly, so that the result is an engine map
+  // where the profile makes one.
+  function hashMapAssoc(self, key, item) {
+    const cnt = self.cnt$LKEY;
+    if (cnt === undefined) return noBranch;
+    if (publicCollectionSlots.has(self)) return mapAssocEntries(self, key, item);
+    const trie = {root: self.root$LKEY, nil: self.nil$LKEY, length: cnt};
+    kindHooks.putHashEntry(trie, key, item, null);
+    return updatedMap(self, trie);
   }
   //@unit mapFromEntries requires: makeMap, PersistentArrayMapValue, PersistentHashMapValue
   // The V8 profile's, without building a hash trie of the entries: the
@@ -591,7 +637,7 @@
     setComparators.set(value, comparator);
     return value;
   }
-  //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: first, rest, seq
+  //@unit makeMap.seq effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: first, rest, seq
   //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal,
   //@ PersistentArrayMapSeqType, publicCollectionSlots, view
   // The V8 profile's: a map entry is an engine entry (`mapEntry`), so the
@@ -623,7 +669,7 @@
     const form = sharedFormKind(value), kind = form === "map" || form === "set" ? "array-map" : mapKinds.get(value) ?? setKinds.get(value);
     return kind === "array-map" ? entryIndex(entries, key) : kindHooks.hashEntryIndex(entries, key, kind);
   }
-  //@unit maps requires: mapOf, sharedFormKind, sharedFormOf, sharedMapEntries
+  //@unit maps requires: kindHooks, mapOf, sharedFormKind, sharedFormOf, sharedMapEntries
   // A map is an engine map form (an imported one through its occurrence),
   // read as a positional map of its entries (`sharedMapEntries`, in the
   // engine's order: the verbatim units take their positional paths,
@@ -636,7 +682,13 @@
   // added by `maps.records`, as in the V8 profile (light-cljs-666).
   const maps = {
     has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
-    get: value => sharedFormKind(value) === "map" ? sharedMapEntries(sharedFormOf(value)) : mapOf(value)?.entries$LKEY,
+    get(value) {
+      if (sharedFormKind(value) === "map") return sharedMapEntries(sharedFormOf(value));
+      const map = mapOf(value);
+      if (map === undefined) return undefined;
+      const kind = map.cljs$lang$kind$$LKEY;
+      return kind === 28 ? kindHooks.arrayMapEntries(map.arr$LKEY) : kind === 29 ? kindHooks.hashMapTrie(map) : map.entries$LKEY;
+    },
     kinds: {
       has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
       get(value) {
@@ -1386,6 +1438,12 @@
   const treeRoots = sharedStore(), treeSetMaps = sharedStore();
   //@unit hashRoots requires: sharedStore
   const hashRoots = sharedStore();
+  //@unit hashMapTries requires: sharedStore
+  // The V8 profile's caches of a hash map's trie and of a hash map's
+  // traversal pairs (light-cljs-1034), as stores that publish.
+  const hashMapTries = sharedStore();
+  //@unit traversalPairs requires: sharedStore
+  const traversalPairs = sharedStore();
   //@unit hashTraversals requires: sharedStore
   const hashTraversals = sharedStore();
   //@unit makeVector requires: sharedVectorForm
@@ -1714,7 +1772,7 @@
   // not frozen: the wrapper captures it.
   maps.has = (has => value => has.call(maps, value) || recordTypes.has(value))(maps.has);
   maps.get = ((get, none) => value => sharedFormKind(value) === "record" ? sharedMapEntries(sharedFormOf(value)) : get.call(maps, value) ?? (recordTypes.get(value) && none))(maps.get, __rt.seal([]));
-  //@unit makeMap.print effect: makeMap, recordMethods, treeMapConstructor when: printWriterImpl
+  //@unit makeMap.print effect: ArrayMapCell, makeMap, recordMethods, treeMapConstructor when: printWriterImpl
   //@ requires: kindHooks, maps, mapTraversal, printKind, printMapEntries, sharedFormKind, sharedFormOf
   kindHooks.print = printKind(kindHooks.print, value => maps.has(value), (value, writer, options) =>
     printMapEntries(mapTraversal(value), writer, options, sharedFormKind(value) === "record"

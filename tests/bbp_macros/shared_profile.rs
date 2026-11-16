@@ -1340,6 +1340,7 @@ fn shared_profile_public_map_and_set_constructors_keep_slots() {
             check(core.count(core.PersistentHashMap(null, 0, null, false, null, null)) === 0, 'called hash constructor');
             check(core.count(core.PersistentHashSet(null, core.hashMap(), null)) === 0, 'called set constructor');
             check(__rt.formKind(rt.arrayMapFromArray(['k', child])) === 'map' && __rt.formKind(core.hashMap('k', child)) === 'map', 'ordinary map builders');
+            check(__rt.formKind(rt.mapFromArray(['k', child])) === 'map' && __rt.formKind(rt.mapFromShape(rt.mapShape(['k'], [core.hash('k')]), [child])) === 'map', 'array map builders');
             check(__rt.formKind(core.hashSet('k')) === 'set' && __rt.formKind(rt.setFromArray(['k'])) === 'set', 'ordinary set builders');
             return 'ok';
             "#
@@ -2225,14 +2226,14 @@ fn shared_profile_keywords_are_engine_keywords() {
              const engine = __rt.formKeyword('ns', 'a'), made = core.keyword('ns', 'a'), plain = rt.keyword(null, 'b'); \
              return [core.isKeyword(engine), core.isKeyword(made), core.isKeyword('a'), \
                core.name(engine), core.namespace(made), String(core.namespace(plain)), \
-               core.prStr(engine), core.prStr(plain), core.get(rt.arrayMapFromArray([engine, 1]), made), core.hash(engine) === core.hash(made), \
+               core.prStr(engine), core.prStr(plain), core.get(rt.arrayMapFromArray([engine, 1]), made), core.get(new core.PersistentArrayMap(null, 1, [engine, 1], null), made), core.hash(engine) === core.hash(made), \
                core.isKeyword(core.keyword(core.symbol('c', 'd'))), core.prStr(core.keyword('e'))].join(' ');"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "true true false a ns null :ns/a :b 1 true true :e"
+        "true true false a ns null :ns/a :b 1 1 true true :e"
     );
 }
 

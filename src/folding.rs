@@ -1040,7 +1040,7 @@ fn reachable_reads(
 /// one (light-cljs-221; "Constant folding extension points" in
 /// docs/advanced-optimization.md): by call, the index of the key among the
 /// map literal's keys. `Advanced` emission reads the entry at that index,
-/// `rt$maps.get(m)[i].value`, instead of calling `get`. The calls are `(:k m)`,
+/// `rt$mapValueAt(m, i)`, instead of calling `get`. The calls are `(:k m)`,
 /// `(get m k)`, `(m k)` and their forms with a default that has no effect
 /// (which a found key does not evaluate to). A local is bound by `let`
 /// (never assigned: no type field, `js*` hole or `set!` target), possibly
