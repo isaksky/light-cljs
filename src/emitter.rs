@@ -33,7 +33,7 @@ thread_local! {
 #[cfg(test)]
 mod emission_pass_tests {
     #[test]
-    fn record_kits_and_observed_private_brands_share_the_final_emission() {
+    fn record_kits_share_the_final_emission_and_types_carry_no_brand() {
         let source = "(defrecord R [a])
                       (let [r (->R 1) s (assoc r :b 2)]
                         (array (record? s) (= r (->R 1)) (hash s)))";
@@ -44,7 +44,10 @@ mod emission_pass_tests {
         super::BODY_EMISSIONS.set(0);
         let plain = prepared.emit_js();
         assert_eq!(super::BODY_EMISSIONS.get(), 2);
-        assert!(plain.contains("rt$defineClass(class { #b;"));
+        // Records are told by their prototypes' keyed kind (light-cljs-1037),
+        // so no emission is spent choosing a brand.
+        assert!(plain.contains("rt$defineType(function Type("));
+        assert!(!plain.contains("rt$defineClass") && !plain.contains("rt$TypeBrand"));
         assert!(plain.contains("this.constructor === a1.constructor"));
         assert!(plain.contains("rt$recordEntriesHash"));
         super::BODY_EMISSIONS.set(0);
@@ -720,7 +723,7 @@ fn emit_js_mode(
         None
     };
     // The prelude, the `let g<n>;` declarations and the program body.
-    let body = |register_namespaces: bool, brand_types: TypeBrands, record_kits: [bool; 2]| {
+    let body = |register_namespaces: bool, record_kits: [bool; 2]| {
         #[cfg(test)]
         BODY_EMISSIONS.with(|count| count.set(count.get() + 1));
         let mut emitter = Emitter::new(
@@ -736,7 +739,6 @@ fn emit_js_mode(
             },
             register_namespaces,
         );
-        emitter.brand_types = brand_types;
         emitter.native_forms = native_forms;
         emitter.unit_reify_sites = (shared == Some(UNIT_RUNTIME)).then(HashMap::new);
         if native_forms {
@@ -813,43 +815,23 @@ fn emit_js_mode(
     // (`RuntimeRoots::reach_reflection`): the body is emitted without the
     // registration, and again with it when those roots reach reflection.
     let slice = direct.is_some();
-    let (mut emitter, mut prelude_end) = body(!slice, TypeBrands::Shared, [false; 2]);
+    let (mut emitter, mut prelude_end) = body(!slice, [false; 2]);
     if slice && emitter.runtime.reach_reflection() {
-        (emitter, prelude_end) = body(true, TypeBrands::Shared, [false; 2]);
+        (emitter, prelude_end) = body(true, [false; 2]);
     }
     // A record type has its own `-equiv` and `-hash`, which read its fields
     // directly, where the slice installs the shared ones
     // (`Emitter::record_kit`): the body is emitted again with them, which
-    // only adds roots of units those require.
+    // only adds roots of units those require. A type's constructor brands
+    // nothing: its prototype's keyed kind tells its instances
+    // (light-cljs-1037), so no body is emitted again for brands.
     let record_kits = if slice && emitter.defined_records {
         emitter.runtime.record_kits()
     } else {
         [false; 2]
     };
     if record_kits.contains(&true) {
-        // Record kits only add runtime roots. If the first body already
-        // reads brands and its constructors cannot escape, those brands
-        // will still be read with the kits installed. Choose the final
-        // class representation now, avoiding an entire intermediate body.
-        // When brands are unread, the added roots may change that decision;
-        // keep the shared representation until the check below in that case.
-        let brands = if emitter.own_brands() && !emitter.unobserved_brands() {
-            TypeBrands::Own
-        } else {
-            TypeBrands::Shared
-        };
-        (emitter, prelude_end) = body(emitter.register_namespaces, brands, record_kits);
-    }
-    // A type's own constructor brands its instance only where a brand may be
-    // observed (`Emitter::unobserved_brands`): the body is emitted again
-    // without the brands when nothing could observe them, which only removes
-    // roots. Where the brands are read but every constructor runs only
-    // through `new`, it is emitted again with each type a class branded by a
-    // private field of its own (`Emitter::own_brands`, light-cljs-346).
-    if slice && emitter.unobserved_brands() {
-        (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Unread, record_kits);
-    } else if slice && emitter.own_brands() {
-        (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Own, record_kits);
+        (emitter, prelude_end) = body(emitter.register_namespaces, record_kits);
     }
     if let Some(temporary) = emitter.native_invoke_temporary {
         let declaration = format!("  const temporary{temporary}_0 = {NATIVE_PREPARE_INVOKE};\n");
@@ -1992,23 +1974,6 @@ struct Operands {
     lift: Option<Lift>,
 }
 
-/// How a type's own constructor ([`Emitter::defined_type`]) brands its
-/// instance, which the emission decides from what its output reads.
-#[derive(Clone, Copy, PartialEq)]
-enum TypeBrands {
-    /// Not at all: no runtime unit the output keeps reads a brand
-    /// (light-cljs-262).
-    Unread,
-    /// A `function` that ends with `new TypeBrand(this)` (a record's `(this,
-    /// Type)`), which a host can also call on an instance: the output reads
-    /// a type other than with `new`, or registers its namespaces.
-    Shared,
-    /// A `class` with a private field of its own, which `defineClass` gives
-    /// the prototype the check of (`ClassBrand`, light-cljs-346): where the
-    /// output reads brands and calls each constructor only with `new`.
-    Own,
-}
-
 struct Emitter<'a> {
     native_forms: bool,
     /// Native units bind their immutable core functions once per factory call.
@@ -2127,24 +2092,12 @@ struct Emitter<'a> {
     shapes: Option<&'a CallShapes>,
     /// Whether the output calls the prelude's `truth`.
     truth_used: bool,
-    /// How a type's own constructor ([`Emitter::defined_type`]) brands its
-    /// instance.
-    brand_types: TypeBrands,
-    /// Whether a constructor this emission wrote branded its instance.
-    branded: bool,
     /// Which of a record's `-equiv` and `-hash` [`Emitter::record_kit`] writes
     /// for each record type it defines (light-cljs-267), as
     /// [`RuntimeRoots::record_kits`] decides.
     record_kits: [bool; 2],
     /// Whether this emission defined a record type ([`Emitter::defined_type`]).
     defined_records: bool,
-    /// Whether the output may call a type's own constructor other than with
-    /// `new`, where a second brand would throw: it reads the type's global
-    /// elsewhere than as the callee of a `Construct`, or the type's global
-    /// may hold another value ([`Emitter::sole_type_global`]).
-    type_escapes: bool,
-    /// The callee of the `Construct` being emitted.
-    construct_callee: Option<ExprId>,
     /// With a source map: where the text of each expression starts
     /// ([`Emitter::mark`]), and the functions' and names' positions.
     marks: Option<Marks>,
@@ -2400,12 +2353,8 @@ impl<'a> Emitter<'a> {
             inference,
             shapes,
             truth_used: false,
-            brand_types: TypeBrands::Shared,
-            branded: false,
             record_kits: [false; 2],
             defined_records: false,
-            type_escapes: false,
-            construct_callee: None,
             marks: mapped.then(Marks::default),
             constant_marks: Vec::new(),
             function_names: setup.function_names,
@@ -7640,21 +7589,20 @@ impl<'a> Emitter<'a> {
     /// At `Advanced`, the statements that define the `deftype` or `defrecord`
     /// type `id` (light-cljs-264), without a function around them: its
     /// constructor is a function of its own, which assigns the fields and a
-    /// record's three slots and brands the instance (`TypeBrand`), and
-    /// `defineType` decorates it, so that V8 keeps each type's construction
-    /// monomorphic and the type costs little more than its own text:
+    /// record's three slots, and `defineType` decorates it, so that V8 keeps
+    /// each type's construction monomorphic and the type costs little more
+    /// than its own text:
     ///
     /// ```text
     /// g2 = rt$defineType(function Type(a0, a1, a2, a3, a4) { this["w"] = a0;
-    ///   ...; new rt$TypeBrand(this, Type); }, "cljs.user/Rect w h", [[g1, 1,
-    ///   function() {...}]], 1); g3 = (a0, a1) => new g2(a0, a1, null, null,
-    ///   null);
+    ///   ...; }, "cljs.user/Rect w h", [[g1, 1, function() {...}]], 1);
+    ///   g3 = (a0, a1) => new g2(a0, a1, null, null, null);
     /// ```
     ///
-    /// With [`TypeBrands::Own`] the constructor is a class instead, `g2 =
-    /// rt$defineClass(class { #b; constructor(a0, ...) { this["w"] = a0;
-    /// ...; } static c = (a0) => #b in a0; }, ...)` (light-cljs-346), and
-    /// with [`TypeBrands::Unread`] the function writes no brand.
+    /// The constructor brands nothing: `defineType` gives the prototype its
+    /// keyed kind, which tells the instances (light-cljs-1037; before, a
+    /// `TypeBrand` or a class's own private field did where a slice read
+    /// brands).
     ///
     /// A record's `currentConstructor` is there only where the program may
     /// define the type again ([`Emitter::sole_type`]).
@@ -7679,49 +7627,19 @@ impl<'a> Emitter<'a> {
             unreachable!("a program type with a constructor")
         };
         let (record, global) = (*record, *global);
-        if !self.sole_type_global(global) {
-            // Another definition or an assignment may give the type's global
-            // to code that calls it without `new`.
-            self.type_escapes = true;
-        }
         self.product(global);
         self.output.push_str(" = ");
-        let own = self.brand_types == TypeBrands::Own;
-        self.rt(RuntimeName::direct(
-            if own { "defineClass" } else { "defineType" },
-            None,
-        ));
+        self.rt(RuntimeName::direct("defineType", None));
         if record {
             self.record_runtime();
         }
         let members = Self::type_members(fields, record);
-        if own {
-            // The class brands its instance with its own private field, which
-            // its static `c` tests (light-cljs-346); `defineClass` takes the
-            // test off. The class has no name, which no code reads where the
-            // output calls each constructor only with `new`.
-            self.branded = true;
-            self.output.push_str("(class { #b; constructor(");
-            self.positional_params(members.len());
-            self.output.push_str(") {");
-            self.field_assignments(&members);
-            self.output.push_str(" } static c = (a0) => #b in a0; }, ");
-        } else {
-            // The function's name is the type's `name`, as at lower levels,
-            // and the binding a record brands its instances with.
-            self.output.push_str("(function Type(");
-            self.positional_params(members.len());
-            self.output.push_str(") {");
-            self.field_assignments(&members);
-            if self.brand_types == TypeBrands::Shared {
-                self.branded = true;
-                self.output.push_str(" new ");
-                self.rt(RuntimeName::direct("TypeBrand", None));
-                self.output
-                    .push_str(if record { "(this, Type);" } else { "(this);" });
-            }
-            self.output.push_str(" }, ");
-        }
+        // The function's name is the type's `name`, as at lower levels.
+        self.output.push_str("(function Type(");
+        self.positional_params(members.len());
+        self.output.push_str(") {");
+        self.field_assignments(&members);
+        self.output.push_str(" }, ");
         // "ns/T field ...", the type's name and field names.
         let binding = &program.globals[global.0];
         let name = format!("{}/{}", binding.namespace, binding.name);
@@ -7902,50 +7820,6 @@ impl<'a> Emitter<'a> {
                         if facts.top_position(definition).is_some()
                 )
             })
-    }
-
-    /// Whether this emission wrote a branded constructor whose brand nothing
-    /// could observe: the slice keeps no unit that reads brands
-    /// ([`RuntimeRoots::reads_type_brands`]), every constructor runs only
-    /// through `new`, so that none meets a second brand, which throws
-    /// ([`Emitter::type_escapes`]), and the output registers no namespace,
-    /// whose registry would hold the types.
-    fn unobserved_brands(&self) -> bool {
-        self.branded
-            && !self.type_escapes
-            && !self.register_namespaces
-            && !self.runtime.reads_type_brands()
-    }
-
-    /// Whether this emission wrote a constructor with the shared brand where
-    /// each type could be a class with a brand of its own
-    /// ([`TypeBrands::Own`]): every constructor runs only through `new`,
-    /// as for [`Emitter::unobserved_brands`], so that no code meets the
-    /// class's `TypeError` for a call without `new` where a function would
-    /// have run, but the slice reads brands. In V8's mid tier (Maglev) the
-    /// class's private field costs one store where `new TypeBrand(this,
-    /// Type)` costs two calls (benchmarks/compiler.md, "Own type brands").
-    fn own_brands(&self) -> bool {
-        self.branded
-            && self.brand_types == TypeBrands::Shared
-            && !self.type_escapes
-            && !self.register_namespaces
-    }
-
-    /// Whether `global` is the type of one `deftype` or `defrecord` that
-    /// nothing else defines or assigns, so that a read of it reads that type
-    /// (`crate::inference::Definition::Type`).
-    fn sole_type_global(&self, global: GlobalId) -> bool {
-        use crate::inference::{Definition, TypeRole};
-        self.inference.is_some_and(|inference| {
-            matches!(
-                inference.facts().definition(global),
-                Definition::Type {
-                    role: TypeRole::Constructor,
-                    ..
-                }
-            )
-        })
     }
 
     /// Whether emission writes the type definition `id` with a constructor of
@@ -8424,12 +8298,7 @@ impl<'a> Emitter<'a> {
                 self.rt(RuntimeName::core(core.runtime_name()));
             }
             ExprKind::Local(local) => self.local_value(*local),
-            ExprKind::Global(global) => {
-                if self.construct_callee != Some(id) && self.sole_type_global(*global) {
-                    self.type_escapes = true;
-                }
-                self.global(*global)
-            }
+            ExprKind::Global(global) => self.global(*global),
             ExprKind::JsGlobal(_) => self.js_global_value(id),
             ExprKind::BooleanHint(value) => self.value(*value),
             ExprKind::Exists(_) | ExprKind::BindingExists(_) => self.exists_value(id),
@@ -8617,9 +8486,7 @@ impl<'a> Emitter<'a> {
                     write!(self.output, ", a{index}").unwrap();
                 }
                 self.output.push_str("))(");
-                let enclosing = self.construct_callee.replace(*callee);
                 self.value(*callee);
-                self.construct_callee = enclosing;
                 for (index, arg) in args.iter().enumerate() {
                     self.output.push_str(", ");
                     let previous = self.native_multimethod_function;
@@ -8658,9 +8525,7 @@ impl<'a> Emitter<'a> {
                 if host {
                     self.output.push('(');
                 }
-                let enclosing = self.construct_callee.replace(*callee);
                 self.value(*callee);
-                self.construct_callee = enclosing;
                 if host {
                     self.output.push(')');
                 }

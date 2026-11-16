@@ -2887,31 +2887,30 @@ As upstream's constructor does, an instance holds each field as an own data
 property under its munged name (a record's `__meta`, `__extmap` and `__hash`
 slots follow), then its two protocol masks. The emitter writes the assignments
 once per type and the positional factory passes its arguments on, so a
-construction munges no name and writes no `WeakMap`: what makes the instance a
-type instance, and a record's type, is a class private field set by
-`TypeBrand` in `src/js_runtime.js`, which copying fields or inheriting the
-prototype cannot forge. The `typeFields` and `recordTypes` stores read it, and
-`maps` and `mapKinds` answer for a record from it until an update gives the
-record entries of its own (light-cljs-258). Below `Advanced` the runtime's
-`makeType` makes the constructor, one function for every type, around the
-emitter's assignments. At `Advanced` the emitter writes each type's
-constructor as a function of its own, `function Type(a0, a1) { this.x = a0;
-this.y = a1; new TypeBrand(this); }`, which `defineType` decorates with the
-methods, and the masks are properties of the type's prototype instead of each
+construction munges no name and writes no `WeakMap`. What makes the instance a
+type instance, a record or a `reify` value is its prototype's keyed kind (64,
+65 and 66, docs/value-layout.md), which `decorateType` in `src/js_runtime.js`
+gives the prototype with a record's type (`recordTypeOf`), as the runtime's own
+classes are told (light-cljs-1037; before, a class private field set by
+`TypeBrand` was, light-cljs-258). The compile-time runtime also stamps each
+instance (`/*@brand*/`), which the compiler form bridge tests before it reads
+the kind. A record is no map to `maps`: its methods answer, and the native
+protocol tests answer it by its kind (`recordCells`). Below `Advanced` the
+runtime's `makeType` makes the constructor, one function for every type,
+around the emitter's assignments. At `Advanced` the emitter writes each
+type's constructor as a function of its own, `function Type(a0, a1) { this.x
+= a0; this.y = a1; }`, which `defineType` decorates with the methods and the
+kind, and the masks are properties of the type's prototype instead of each
 instance (light-cljs-264): V8 then keeps every type's construction
 monomorphic, where the shared constructor's inline caches go megamorphic as a
 program adds types, and a type costs about its own text (benchmarks/compiler.md,
-"Per-type output"). Where the output keeps no runtime unit that reads a brand
-and reads no type other than in a `new`, that constructor writes none
-and the output has no `TypeBrand` (light-cljs-262). Where it reads brands but
-still reads no type other than in a `new`, each type is instead a class whose
-brand is a private field of its own, which its prototype's `ClassBrand`
-checks, cheaper in V8's mid tier and monomorphic per type (light-cljs-346;
-docs/advanced-optimization.md, "Own brands"). An instance takes the brand
-once, so calling a constructor as a plain function on an existing instance
-(`(.call T t 2)`), which upstream and earlier light-cljs allowed, throws a
-`TypeError`; a class constructor throws it before assigning any field, and
-an instance of one moved to another prototype loses its brand. A field named `__proto__` is an own field like any other. A
+"Per-type output"). No constructor writes a brand, so calling one as a plain
+function on an existing instance (`(.call T t 2)`) assigns its fields again,
+as upstream's does (light-cljs-262 to light-cljs-1037 threw a `TypeError`
+there), and calling it on a host object makes no instance: the object keeps
+its own prototype, which holds no kind. Code that reflects over a type's
+prototype (`Object.create(R.prototype)`) can make one, as for the runtime's
+classes (docs/value-layout.md, section 5). A field named `__proto__` is an own field like any other. A
 saved positional `deftype` factory passes all its arguments to the type's
 current definition, and a record factory its declared fields. An instance
 calls through its type's current `IFn` table, so an extension of `IFn`, even

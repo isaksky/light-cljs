@@ -1058,6 +1058,27 @@ fn shared_profile_engine_structs_and_records_keep_their_brands() {
     );
 }
 
+/// An engine record form is a map to the profile's `maps`, but the native
+/// tests that exclude records from the maps exclude it too (`recordCells`,
+/// light-cljs-1037): it is no `IFn`, `IFind`, `IReduce`,
+/// `IEmptyableCollection` or `IEditableCollection`, as a record of the V8
+/// profile's classes is not, where an engine map is all five.
+#[test]
+fn shared_profile_engine_records_keep_the_record_exclusions_of_the_maps() {
+    let rt = Runtime::new();
+    let out = run(&rt, &format!(
+        "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+         const type = __rt.structType('demo/R', __rt.formVector('x'), true, null); \
+         const tests = value => [core.isMap(value), core.isIFn(value), core.isIFind(value), core.isReduceable(value), \
+           core.satisfies(core.IEmptyableCollection, value), core.satisfies(core.IEditableCollection, value)].join(' '); \
+         return tests(__rt.structNew(type, 1)) + ' / ' + tests(core.arrayMap(core.keyword('x'), 1));"
+    )).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true false false false false false / true true true true true true"
+    );
+}
+
 #[test]
 fn shared_profile_record_keys_use_canonical_equality() {
     let rt = Runtime::new();

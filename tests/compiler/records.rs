@@ -391,12 +391,12 @@ fn per_type_constructors_keep_receivers_redefinitions_and_field_names() {
 
 /// light-cljs-264: at `Advanced` a type's definition is statements of the
 /// function around it. Its constructor is its own, which assigns the fields
-/// and brands the instance (since light-cljs-346 a class with a private
-/// field of its own, as this program reads brands and calls the
-/// constructors only with `new`), one string holds the type's and the
-/// fields' names, a method entry names the protocol method's dispatcher, the
-/// method reads its fields from `this`, and a positional factory nothing
-/// reads is not defined.
+/// and brands nothing (light-cljs-1037: `defineType` gives its prototype the
+/// keyed kind that tells its instances, where a `TypeBrand` or, since
+/// light-cljs-346, a class's private field branded them), one string holds
+/// the type's and the fields' names, a method entry names the protocol
+/// method's dispatcher, the method reads its fields from `this`, and a
+/// positional factory nothing reads is not defined.
 #[test]
 fn advanced_types_define_their_own_constructors() {
     let source = "(defprotocol Area (area [s]))
@@ -410,36 +410,38 @@ fn advanced_types_define_their_own_constructors() {
     )
     .emit_js();
     for expected in [
-        " = rt$defineClass(class { #b; constructor(a0, a1, a2, a3, a4) { this[\"w\"] = a0; this[\"h\"] = a1; \
-         this[\"__meta\"] = a2; this[\"__extmap\"] = a3; this[\"__hash\"] = a4; } \
-         static c = (a0) => #b in a0; }, \"cljs.user/Rect w h\", [[g",
+        " = rt$defineType(function Type(a0, a1, a2, a3, a4) { this[\"w\"] = a0; this[\"h\"] = a1; \
+         this[\"__meta\"] = a2; this[\"__extmap\"] = a3; this[\"__hash\"] = a4; }, \
+         \"cljs.user/Rect w h\", [[g",
         ", 1, function() {\n    return (this[\"w\"] * this[\"h\"]);\n  }]], 1); g",
-        " = rt$defineClass(class { #b; constructor(a0) { this[\"a\"] = a0; } \
-         static c = (a0) => #b in a0; }, \"cljs.user/T a\", [[g",
+        " = rt$defineType(function Type(a0) { this[\"a\"] = a0; }, \"cljs.user/T a\", [[g",
         ", 1, function() {\n    return this[\"a\"];\n  }]]); ",
         " = (a0, a1) => new g",
     ] {
         assert!(js.contains(expected), "{expected}\n{js}");
     }
-    let definitions = &js[js.find("rt$defineClass(class").unwrap()..];
+    let definitions = &js[js.find("rt$defineType(function Type").unwrap()..];
     for unexpected in [
         "(() => { g",
         "const self",
         "(...args) => new",
-        "cljs$lang$type",
+        "rt$TypeBrand",
+        "defineClass(",
     ] {
         assert!(!definitions.contains(unexpected), "{unexpected}\n{js}");
     }
     assert_eq!(run(source), "[6,4]\n");
 }
 
-/// light-cljs-262: at `Advanced` a type's own constructor brands its instance
-/// only where the output keeps a unit that reads brands. A program that only
-/// constructs types and calls their methods has no brand and no `TypeBrand`;
-/// one that updates and prints a record, whose runtime reads its brand, keeps
-/// both.
+/// light-cljs-1037: at `Advanced` no type's constructor brands its instance,
+/// whatever the output reads (light-cljs-262 branded where a unit read
+/// brands, and light-cljs-346 wrote a class with a private field of its own
+/// where every constructor ran only through `new`): a record and a type are
+/// told by their prototypes' keyed kinds, so updating, printing and
+/// comparing a record, and reading a type other than with `new`, keep no
+/// `TypeBrand`, `ClassBrand` or `defineClass`.
 #[test]
-fn advanced_constructors_brand_instances_only_where_a_brand_is_read() {
+fn advanced_constructors_brand_no_instance() {
     let advanced = |source: &str| {
         let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
         light_cljs::prepare_application(
@@ -448,96 +450,65 @@ fn advanced_constructors_brand_instances_only_where_a_brand_is_read() {
         )
         .emit_js()
     };
-    let unread = "(defprotocol Area (area [s]))
-                  (defrecord Rect [w h] Area (area [_] (* w h)))
-                  (deftype T [a] Area (area [_] a))
-                  (+ (area (->Rect 2 3)) (area (T. 4)))";
-    let js = advanced(unread);
-    assert!(
-        js.contains(
-            "function Type(a0, a1, a2, a3, a4) { this[\"w\"] = a0; this[\"h\"] = a1; \
-             this[\"__meta\"] = a2; this[\"__extmap\"] = a3; this[\"__hash\"] = a4; }, "
+    for (source, expected) in [
+        (
+            "(defprotocol Area (area [s]))
+             (defrecord Rect [w h] Area (area [_] (* w h)))
+             (deftype T [a] Area (area [_] a))
+             (+ (area (->Rect 2 3)) (area (T. 4)))",
+            "10\n",
         ),
-        "{js}"
-    );
-    assert!(
-        js.contains("function Type(a0) { this[\"a\"] = a0; }, "),
-        "{js}"
-    );
-    assert!(
-        !js.contains("rt$TypeBrand") && !js.contains("const TypeBrand"),
-        "{js}"
-    );
-    assert_eq!(run(unread), "10\n");
-    let read = "(defrecord R [a]) (deftype T [x])
-                (let [r (->R 1)]
-                  (array (record? (assoc r :a 2)) (pr-str (assoc r :b 2)) (= r (->R 1)) (.-x (T. 3))))";
-    // light-cljs-346: where the brands are read and every constructor runs
-    // only through `new`, each type is a class with a private brand of its
-    // own, whose check `defineClass` takes; the shared `TypeBrand` stays
-    // for `makeType`.
-    let js = advanced(read);
-    assert!(
-        js.contains(
-            "rt$defineClass(class { #b; constructor(a0, a1, a2, a3) { this[\"a\"] = a0; \
-             this[\"__meta\"] = a1; this[\"__extmap\"] = a2; this[\"__hash\"] = a3; } \
-             static c = (a0) => #b in a0; }, \"cljs.user/R a\", [], 1);"
+        (
+            "(defrecord R [a]) (deftype T [x])
+             (let [r (->R 1)]
+               (array (record? (assoc r :a 2)) (pr-str (assoc r :b 2)) (= r (->R 1)) (.-x (T. 3))))",
+            "[true,\"#cljs.user.R{:a 1, :b 2}\",true,3]\n",
         ),
-        "{js}"
-    );
-    assert!(
-        js.contains(
-            "rt$defineClass(class { #b; constructor(a0) { this[\"x\"] = a0; } \
-             static c = (a0) => #b in a0; }, \"cljs.user/T x\", []);"
+        (
+            "(defrecord R [a]) (deftype T [x])
+             (let [r (->R 1)]
+               (array (instance? R r) (pr-str (assoc r :b 2)) (.-x (T. 3))))",
+            "[true,\"#cljs.user.R{:a 1, :b 2}\",3]\n",
         ),
-        "{js}"
-    );
-    assert!(!js.contains("new rt$TypeBrand"), "{js}");
-    assert_eq!(run(read), "[true,\"#cljs.user.R{:a 1, :b 2}\",true,3]\n");
-    // A read of a type other than with `new` keeps the shared brand, which
-    // a call without `new` meets.
-    let escaping = "(defrecord R [a]) (deftype T [x])
-                    (let [r (->R 1)]
-                      (array (instance? R r) (pr-str (assoc r :b 2)) (.-x (T. 3))))";
-    let js = advanced(escaping);
-    assert!(
-        js.contains("this[\"__hash\"] = a3; new rt$TypeBrand(this, Type); }, "),
-        "{js}"
-    );
-    assert!(
-        js.contains("this[\"x\"] = a0; new rt$TypeBrand(this); }, "),
-        "{js}"
-    );
-    assert!(!js.contains("rt$defineClass"), "{js}");
-    assert_eq!(run(escaping), "[true,\"#cljs.user.R{:a 1, :b 2}\",3]\n");
+    ] {
+        let js = advanced(source);
+        assert!(
+            js.contains(
+                "function Type(a0, a1, a2, a3) { this[\"a\"] = a0; this[\"__meta\"] = a1; \
+                 this[\"__extmap\"] = a2; this[\"__hash\"] = a3; }, "
+            ) || js.contains(
+                "function Type(a0, a1, a2, a3, a4) { this[\"w\"] = a0; this[\"h\"] = a1; \
+                 this[\"__meta\"] = a2; this[\"__extmap\"] = a3; this[\"__hash\"] = a4; }, "
+            ),
+            "{js}"
+        );
+        for unexpected in [
+            "rt$TypeBrand",
+            "const TypeBrand",
+            "const ClassBrand",
+            "function defineClass",
+            "#b;",
+        ] {
+            assert!(!js.contains(unexpected), "{unexpected}\n{js}");
+        }
+        assert_eq!(run(source), expected);
+    }
 }
 
-/// An instance takes its brand once, so calling a type's constructor as a
-/// plain function on an existing instance throws at every level, also at
-/// `Advanced` in a program whose runtime reads no brand (light-cljs-262),
-/// after assigning the fields again:
-/// a read of the type other than with `new` keeps the brands.
+/// A type's constructor called as a plain function on an existing instance
+/// assigns its fields again, as upstream's does, at every level: no brand
+/// rejects a second initialization since light-cljs-1037 (light-cljs-262
+/// threw where a brand was written). Calling it on a host object makes no
+/// instance: the host object keeps its prototype, which holds no kind.
 #[test]
-fn constructors_reject_reinitializing_existing_instances() {
+fn constructors_called_without_new_only_assign_fields() {
     assert_eq!(
         run("(deftype T [x]) (defrecord R [a])
-             (let [t (T. 1) r (->R 1)
+             (let [t (T. 1) r (->R 1) host (js-obj)
                    again (fn [f] (try (f) false (catch :default _ true)))]
-               (array (again #(.call T t 2)) (again #(.call R r 2 nil nil nil)) (.-x t) (.-a r)))"),
-        "[true,true,2,2]\n"
-    );
-    // light-cljs-346: where a program reads brands but its types only with
-    // `new`, `Advanced` writes each type as a class, which a call without
-    // `new` cannot run at all: a host's call of an instance's constructor
-    // still throws at every level, after the program printed the record.
-    assert_eq!(
-        run("(deftype T [x]) (defrecord R [a])
-             (let [t (T. 1) r (->R 1)
-                   again (fn [f] (try (f) false (catch :default _ true)))]
-               (array (pr-str r) (record? (assoc r :b 2))
-                      (again #(.call (.-constructor t) t 2)) (again #(.call (.-constructor r) r 2 nil nil nil))
-                      (again #(.apply (.-constructor r) r (array 2 nil nil nil)))))"),
-        "[\"#cljs.user.R{:a 1}\",true,true,true,true]\n"
+               (array (again #(.call T t 2)) (again #(.call R r 2 nil nil nil)) (.-x t) (.-a r)
+                      (again #(.call T host 5)) (.-x host) (instance? T host) (record? r) (pr-str r)))"),
+        "[false,false,2,2,false,5,false,true,\"#cljs.user.R{:a 2}\"]\n"
     );
 }
 
@@ -558,8 +529,8 @@ fn nested_record_redefinitions_copy_to_the_current_constructor() {
         ),
         "[true,true,true,false,2]\n"
     );
-    // light-cljs-346: a program that reads no `R` as a value writes it as a
-    // class at `Advanced`, which keeps its `currentConstructor`.
+    // A program that reads no `R` as a value keeps its `currentConstructor`
+    // at `Advanced` too (light-cljs-346 wrote it as a class there).
     let source = "(defn make [x] (defrecord R [a]) (->R x))
                   (let [[old current] (mapv make [1 2])]
                     (array (identical? (type (assoc old :a 3)) (type current))
@@ -572,7 +543,7 @@ fn nested_record_redefinitions_copy_to_the_current_constructor() {
         super::optimization::readable(light_cljs::OptimizationLevel::Advanced),
     )
     .emit_js();
-    assert!(js.contains("rt$defineClass(class"), "{js}");
+    assert!(js.contains("rt$defineType(function Type("), "{js}");
     assert_eq!(
         run(source),
         "[true,true,true,false,\"#cljs.user.R{:a 3}\"]\n"

@@ -703,6 +703,74 @@ whose nodes are map entries.
   `(sorted-map 1 2 3 4)`'s seq counts both nodes, 2, as upstream's
   (`builtin_types.rs`, it gave 1).
 
+What light-cljs-1037 landed: records, program types and `reify` values are
+told by their prototypes' keyed kinds, and no type brands its instances in
+release or dev output.
+
+- **The kinds.** `decorateType` (`defineType` at `Advanced`, `makeType`
+  below it and in dev builds) gives a type's prototype kind 64 (a
+  `deftype`, and light.lazy's `Loadable`) or 65 (a `defrecord`), and a
+  record's prototype its type under the keyed `record` name, which
+  `recordTypeOf` reads. `reify` gives its site's type kind 66, `makeReify`
+  builds a `ReifyCell` (kind 66, its methods its own properties), and the
+  functions with metadata that `makeIFn` builds have kind 66 on
+  `ifnPrototype`, as they were `reifyValues` before. The kinds start at 64
+  so that the runtime's classes, below 64, keep a range of their own
+  (light-cljs-1038 and later add some).
+- **The stores.** `typeFields`, `recordTypes`, `reifyValues` and
+  `recordMaps`, with `typeFields.brands`, `recordTypes.brands`,
+  `maps.records` and `mapKinds.records`, are deleted: `recordTypeOf`,
+  `recordCells`, `isTypeValue` and `reifyCells` are kind tests. A record is
+  no map to `maps` or `mapKinds`; the native tests that answered it as one
+  (`seqableValue`, `countedValue`, `collectionValue`, `lookupValue`,
+  `associativeValue`, `kvReduceValue`, `mapValue`, `metaValue`,
+  `withMetaValue` and `protocolStores`) answer it by its kind
+  (`recordCells`), and those that excluded it (`ifnValue`, `findValue`,
+  `editableValue`, `reduceValue`, `cloneablePayload`, `emptyableValue`,
+  `ownMap`, `find`) still do by the same test, as the Pants profile's
+  `maps` holds its engine record forms (the Sol review of this pellet), so
+  `satisfies?`, `implements?` and the host tables answer as before. Where the record's own method answers first, as it
+  does for every operation a program keeps, the paths that built a record
+  of entries (`updatedRecord`, the record branch of `updatedMap` and
+  `dissocEntries`) are deleted; `with-meta` of a record without its
+  method builds a record of its class with its fields (`recordCopy`, as
+  `recordMethods.withMeta`). `kindedStore` and `payloads` remain only for
+  the sorted sets (light-cljs-1038).
+- **The emitter** writes no brand (the `TypeBrands` choice, the brand
+  readers of `runtime_slice` and the emissions that chose a brand are
+  deleted): `defineType(function Type(a0, ...) { this.a = a0; ... }, ...)`
+  at `Advanced`, chunked or not. `makeType`'s constructor ends with
+  `/*@brand*/`, so the compile-time runtime stamps each instance, and the
+  compiler form bridge and `inspect` test `stamped` before the kind.
+  `TypeBrand`, `ClassBrand`, `ClassBrand.types` and `defineClass` are
+  compile-time units no other unit requires, kept with their tests.
+  Calling a constructor without `new` on an instance assigns its fields
+  again, as upstream's does, where a second brand threw a `TypeError`
+  (`records::constructors_called_without_new_only_assign_fields`).
+- **The 1028 handoff.** `ownMethod`, `publicMethod`, `contains.own` and
+  `ownDeclared` take mask bits as native only for a runtime class's kind,
+  below 64 (`!(kind < 64)` reads the masks of a value without a kind and
+  of a program type's alike), so a program type's mask bits still declare
+  its methods. The slot-first wrappers take any keyed kind, so where a
+  program keeps them they call a record's or type's slot (its method)
+  first, as `get.own` did for a declared `ILookup`.
+- **Profiles.** The Pants profile's `maps` answers its engine record forms
+  (their entries, kind "record"), where `maps.records` did, and its
+  `recordTypeOf`, `recordCells` and `isTypeValue` its engine record and
+  struct forms;
+  its `typeFields`, `recordTypes`, `reifyValues` and brand units are
+  deleted.
+- **Forgery (section 5).** Items 12 to 15 are rescoped in
+  tests/support/js_runtime.test.js: `inspect` of `Object.create` of a
+  record's prototype, alone or with a record's fields, is a record, and a
+  record moved to `Object.prototype` is a host object (`inspect` gives
+  null). The copy of a record's fields onto `{}` stays no record. Item 17
+  (the runtime types' public field accessors) needed no change. The Proxy
+  of `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked
+  828 times (790 for the second extension set) at every level, where it
+  was 794 (757) below `Advanced` and 838 (798) at it, as the record and
+  `reify` tests read the kind and no class brand walks the prototypes.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

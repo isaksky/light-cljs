@@ -558,9 +558,11 @@ fn a_program_type_opens_the_protocol_hooks() {
     // `count` and `hash` read an array map's; 11,609 after light-cljs-1013
     // (2026-11-16): the tests of the sets, queues, reduced values, atoms and
     // the other values that became classes, where theirs were private
-    // stores.
+    // stores; 11,942 after light-cljs-1037 (2026-11-16): the record test
+    // (`recordTypeOf`, `recordCells`) that `count`'s native test reads where
+    // `maps.records` answered records as maps, and a type's keyed kind.
     let size = advanced(source).emit_js().len();
-    assert!(size < 11_700, "{size} bytes");
+    assert!(size < 12_000, "{size} bytes");
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -985,7 +987,9 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // the array and hash maps' fields apart (4,633 bytes), and since
     // light-cljs-1013 (2026-11-16) the tests of the sets and queues that
     // `count` and `seqableValue` read, where theirs were private stores
-    // (5,218 bytes).
+    // (5,218 bytes), and since light-cljs-1037 the records' kind test
+    // (`recordCells`) that `countedValue` reads, where `maps.records`
+    // answered records as maps.
     let size = advanced("(count (.split \"a,b\" \",\"))").emit_js().len();
     assert!(size < 5_300, "{size} bytes");
     for (source, expected) in [
@@ -2715,7 +2719,10 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// 5, item 3), which declares the vector's protocols. light-cljs-1034's
 /// `count` reads the keyed kind once more for an array map's field, and
 /// light-cljs-1035's once less: `maps` no longer reads it for a sorted map's
-/// entries, which no map of the classes has.
+/// entries, which no map of the classes has. Since light-cljs-1037 a record
+/// and a `reify` are told by their keyed kinds (`recordCells`, `reifyCells`),
+/// where their brands read nothing, and `Advanced` output no longer keeps
+/// the class brands' prototype walk, so each level asks the same number.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -2808,7 +2815,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [794, 794, 838],
+            [828, 828, 828],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2869,7 +2876,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [757, 757, 798],
+            [790, 790, 790],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2936,7 +2943,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [794, 794, 794],
+            [828, 828, 828],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");

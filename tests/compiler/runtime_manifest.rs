@@ -717,9 +717,10 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// `Advanced` program that could see the tables of its multimethods
 /// otherwise roots, and `addMethodDirect` is `-add-method` where only
 /// multimethods implement `IMultiFn`, which only `Advanced` output calls
-/// (light-cljs-239). `ClassBrand`, its `TypeBrand.type` extension and
-/// `defineClass` brand the types only `Advanced` emission writes as classes
-/// (light-cljs-346). `stamp` brands the runtime's class values at compile
+/// (light-cljs-239). `TypeBrand`, `ClassBrand`, its `TypeBrand.type`
+/// extension and `defineClass` brand no type the emitter writes since
+/// light-cljs-1037; they stay compile-time units (docs/value-layout.md,
+/// section 4). `stamp` brands the runtime's class values at compile
 /// time only: build.rs (`compiler_runtime`) turns each class constructor's
 /// `/*@brand*/` into a call of it (docs/value-layout.md, section 4).
 /// `runtimeKey` registers the build's key as a runtime loads, which the
@@ -736,6 +737,7 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "multiTables",
     "addMethodDirect",
     "mapEntry.lean",
+    "TypeBrand",
     "ClassBrand",
     "ClassBrand.types",
     "defineClass",
@@ -1182,8 +1184,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // two of them (light-cljs-1012), and the three hooks of the maps' fields
     // that `maps` and `lookup` read (light-cljs-1034), and less those two of
     // `maps`, a hash map's lookup hook and the four map transient units of
-    // their own fields (light-cljs-1036).
-    assert_eq!(checked, 466);
+    // their own fields (light-cljs-1036), less the brand readers of
+    // `typeFields` and `recordTypes` and the record wrappers of `maps` and
+    // `mapKinds`, as records are told by their kinds (light-cljs-1037).
+    assert_eq!(checked, 462);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1439,8 +1443,9 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("withMetaIterate", Kind::Units(&["iterateNode"])),
     ("withMetaCycle", Kind::Units(&["cycleNode"])),
     ("withMetaChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
-    ("withMetaRecord", Kind::Stores(&["recordTypes"])),
-    ("updatedRecord", Kind::Stores(&["recordTypes"])),
+    // Records, told by their prototypes' kind since light-cljs-1037, which
+    // only a program that keeps `recordMethods` defines.
+    ("withMetaRecord", Kind::Units(&["recordMethods"])),
     ("lookupTransient", Kind::Stores(&["transients"])),
     // Vectors other than map entries, whose lookup reads their tail.
     ("nthVector", Kind::Units(&["makeVector"])),
@@ -1663,11 +1668,12 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
         }
         writers
     };
-    // Only a record's brand holds a record type, so those effects target
-    // `recordMethods`, which emission keeps for every record type, and a
-    // hook for records waits for that unit (light-cljs-251).
-    let make_type = body(manifest.unit_named("makeType").unwrap().0);
-    assert!(make_type.contains("new TypeBrand(this, record === true ? Type : null)"));
+    // Only a record's prototype holds the record kind (light-cljs-1037;
+    // its brand did since light-cljs-251), which `decorateType` gives where
+    // `recordMethods` decorates a record type, so a hook for records waits
+    // for that unit.
+    let decorate_type = body(manifest.unit_named("decorateType").unwrap().0);
+    assert!(decorate_type.contains("Type.prototype.cljs$lang$kind$$LKEY = record ? 65 : 64;"));
     // So the hooks a record reaches (`makeMap.seq`, `makeMap.print`,
     // `str.collections`, ...) wait for `recordMethods`, which only a program
     // with records keeps; none waits for `makeType`, which every `deftype`
@@ -2477,19 +2483,29 @@ fn print_runtime_unit_sizes() {
     }
 }
 
-/// `Advanced` output brands the instances of a type's own constructor only
-/// where its slice keeps a unit that reads a brand (light-cljs-262), so the
-/// list of those units is every unit that requires `TypeBrand` except
-/// `makeType`, which writes the brand of its own instances.
+/// No type the emitter writes brands its instances since light-cljs-1037:
+/// a program's types, records and `reify` values are told by their
+/// prototypes' keyed kinds (`decorateType`), so `TypeBrand`, `ClassBrand`
+/// and `defineClass` are compile-time units that only each other require,
+/// and no release or dev output keeps them (docs/value-layout.md, section 4).
 #[test]
-fn brand_readers_are_the_units_that_require_type_brand() {
-    let readers = manifest()
+fn type_brands_are_compile_time_units_no_other_unit_requires() {
+    let manifest = manifest();
+    for name in ["TypeBrand", "ClassBrand", "ClassBrand.types", "defineClass"] {
+        let unit = &manifest.units[manifest.unit_named(name).expect("brand unit").0];
+        assert!(unit.compile_time, "`{name}` is a compile-time unit");
+    }
+    let readers = manifest
         .units
         .iter()
-        .filter(|unit| unit.name != "makeType" && unit.requires.contains(&"TypeBrand"))
+        .filter(|unit| {
+            unit.requires
+                .iter()
+                .any(|name| ["TypeBrand", "ClassBrand"].contains(name))
+        })
         .map(|unit| unit.name)
         .collect::<Vec<_>>();
-    assert_eq!(readers, light_cljs::runtime_slice::BRAND_READERS);
+    assert_eq!(readers, ["ClassBrand.types", "defineClass"]);
 }
 
 /// The generic operations pass the protocol lookups (`ownMethod`,

@@ -32,7 +32,7 @@
   //@unit payloads requires: canHoldField
   // The private-field brand of the runtime's collections and seqs: `#s` a
   // value's payload, `#k` its kind, the number of the store holding it
-  // (`kindedStore`: a sorted set's and a record's), and `#m` a map's or set's
+  // (`kindedStore`: a sorted set's), and `#m` a map's or set's
   // kind. One read of `#k` (`kind`) names the store, where kind tests
   // probed each store's field in turn; no host object can have or copy
   // them (light-cljs-990). A value is in one store, so `set` requires a new
@@ -130,6 +130,13 @@
   // `TransientHashSet`. The rest of light-cljs-1013's classes are 35
   // `Reduced`, 36 `PersistentQueue`, 37 the iterator seqs, 38 `Atom`, 39
   // `Volatile`, 40 `Delay`, 41 `MultiFn`, 42 `UUID` and 43 `Eduction`.
+  // Kinds from 64 are the program's types (light-cljs-1037), which
+  // `decorateType` gives their prototypes: 64 a `deftype`'s (and light.lazy's
+  // `Loadable`), 65 a `defrecord`'s, 66 a `reify`'s (`reify`, `ReifyCell`,
+  // and the functions with metadata `makeIFn` builds). A runtime class's kind
+  // is below 64: its mask bits declare what it implements natively, which
+  // the older lookups do not read (`ownMethod`), where a program type's
+  // declare its methods.
   const kinds = Object.freeze({vector: 1, subvec: 2, entry: 3, transientVector: 4});
   //@unit unkeyedJSON
   // The JSON of a value of the class bases that have a `toJSON`: its own
@@ -573,7 +580,7 @@
   function stamped(value) { return stampBrand.has(value); }
   //@unit kindedStore requires: payloads, weakMapStores
   // The store of the values that are not classes yet, the sorted sets
-  // (`sets.store`) and the records' updates (`recordMaps`), in the private
+  // (`sets.store`), in the private
   // fields of `payloads`: a value's payload and its kind (`setKinds`), each
   // in a private field of its own, so that a value gets both with one
   // construction (light-cljs-291). A value's kind is set after its payload.
@@ -589,13 +596,13 @@
   // the class layout (`mapOf`), as its `has`. No map of the classes has
   // entries (light-cljs-1036, and a sorted map's tree since light-cljs-1035):
   // their readers read their fields (`mapPairs`, `mapTraversal`, the map
-  // slots), so `get` answers undefined for them. A record, a map until it
-  // becomes a class (light-cljs-1013), is added by `maps.records`, with the
-  // entries an update gave it (`recordMaps`).
+  // slots), so `get` answers undefined for them. A record is no map here:
+  // its methods answer, and the native tests that took it for one test it
+  // by its kind (`recordCells`, light-cljs-1037).
   const maps = {has: value => mapOf(value) !== undefined, get: () => undefined};
   //@unit mapKinds requires: mapOf
   // A map's kind, which its class gives: "array-map", "hash-map" or
-  // "sorted-map" (and a record's, `mapKinds.records`).
+  // "sorted-map".
   const mapKinds = {
     has: value => mapOf(value) !== undefined,
     get(value) {
@@ -603,11 +610,6 @@
       return kind === 28 ? "array-map" : kind === 29 ? "hash-map" : kind === 30 ? "sorted-map" : undefined;
     }
   };
-  //@unit recordMaps requires: kindedStore
-  // The entries of a record that an update or `with-meta` built
-  // (`updatedRecord`), and their kind, until records become classes
-  // (light-cljs-1013).
-  const recordMaps = kindedStore(4);
   //@unit setComparators
   // The comparators of the sorted sets, until they become classes
   // (light-cljs-1013); a sorted map holds its own (`TreeMapCell`).
@@ -821,14 +823,28 @@
   const metaFunctions = new WeakMap();
   //@unit typeNames
   const typeNames = new WeakMap();
-  //@unit typeFields
-  // Type instances, and a record's type by instance. `makeType` writes
-  // neither: its brands answer them (`typeFields.brands`).
-  const typeFields = new WeakMap();
-  //@unit recordTypes
-  const recordTypes = new WeakMap();
-  //@unit reifyValues
-  const reifyValues = new WeakSet();
+  //@unit recordTypeOf
+  // The type of a record, a value of kind 65 (`kinds`): the keyed `record`
+  // its prototype holds (`decorateType`), else undefined. A record is told
+  // by its prototype's keyed kind, as the runtime's classes are
+  // (docs/value-layout.md, section 4), where a private-field brand of each
+  // instance (`TypeBrand`) told it before light-cljs-1037.
+  function recordTypeOf(value) {
+    return value != null && value.cljs$lang$kind$$LKEY === 65 ? value.cljs$lang$record$$LKEY : undefined;
+  }
+  //@unit recordCells
+  // The records (kind 65, `recordTypeOf`) as an entry of the store
+  // inventories (`storesPredicate`, `protocolStores`), as `vectorCells`: the
+  // native tests that answered a record as a map answer it by its kind.
+  const recordCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 65});
+  //@unit isTypeValue
+  // Whether a value is of a program's type, record or `reify` (kinds 64 to
+  // 66, `kinds`).
+  const isTypeValue = value => value != null && value.cljs$lang$kind$$LKEY >= 64;
+  //@unit reifyCells
+  // The `reify` values (kind 66, `kinds`), as an entry of the store
+  // inventories: they implement `IMeta` natively.
+  const reifyCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 66});
   //@unit protocolHooks
   // Generic operations' protocol dispatch, empty unless `installMethods` is kept.
   const protocolHooks = {};
@@ -3184,10 +3200,10 @@
     return preserveMeta(value, makeVector(null, store));
   };
 
-  //@unit ownMap requires: maps, protocolHooks, publicCollectionSlots, recordTypes
+  //@unit ownMap requires: maps, protocolHooks, publicCollectionSlots, recordCells
   // Whether a map iterates its own entries (see `hostHooks`); a record, whose
   // entries are its fields, is another type to these methods.
-  function ownMap(value) { return !protocolHooks.extend && maps.has(value) && !recordTypes.has(value) && !("tree" in (publicCollectionSlots.get(value) ?? {})); }
+  function ownMap(value) { return !protocolHooks.extend && maps.has(value) && !recordCells.has(value) && !("tree" in (publicCollectionSlots.get(value) ?? {})); }
   //@unit mapCount requires: isArrayMap, isHashMap, isTreeMap, maps, publicCollectionSlots
   // `count` of a map without protocol implementations: an array map's and
   // a hash map's `cnt`, a public constructor's too.
@@ -3933,8 +3949,8 @@
     if (!original) throw new Error("dissoc not supported on this type");
     return dissocEntries(value, original, keys);
   }
-  //@unit dissocEntries requires: collectionEntryIndex, copyEntries, equalPair, hashRoots, keyword,
-  //@ kindHooks, mapKinds, recordTypes, removeHashEntry, updatedMap
+  //@unit dissocEntries requires: collectionEntryIndex, copyEntries, equalPair, hashRoots,
+  //@ kindHooks, mapKinds, removeHashEntry, updatedMap
   // `dissoc` of `keys` from a map past its protocol lookup, of its entries
   // (`original`): also the map slots' (`arrayMapDissoc`) for a map a public
   // constructor built.
@@ -3956,9 +3972,7 @@
         else entries.splice(index, 1);
       }
     }
-    const Type = recordTypes.get(value);
-    const removeRecord = Type && keys.some(key => Type.fieldNames.some(name => equalPair(key, keyword(null, name))));
-    return updatedMap(value, entries, removeRecord);
+    return updatedMap(value, entries);
   }
 
   //@unit mapConj requires: assoc, first, holdsVector, methodKeys, next, nth, protocolHooks, seq
@@ -5233,8 +5247,7 @@
   kindHooks.nthVector = vectorNth;
   //@unit makeMap.lookup effect: ArrayMapCell, makeMap, treeMapConstructor, makeSet,
   //@ treeSetConstructor when: lookup requires: collectionEntryIndex, kindHooks
-  // A record is a map too, but `get` finds its `-lookup` (`recordMethods.lookup`)
-  // first.
+  // A record, no map here, has its own `-lookup` (`recordMethods.lookup`).
   kindHooks.entryIndex = collectionEntryIndex;
 
   //@unit get requires: invalidArity, lookup, methodKeys, protocolHooks
@@ -6359,12 +6372,12 @@
   }
   //@unit contains.own effect: installMethods when: contains requires: contains, demandKey, keySlot,
   //@ methodKeys, protocolHooks
-  // As `get.own`, but for a runtime class's value, whose mask bit declares
-  // what it implements natively and which has no `-contains-key?` slot
-  // (light-cljs-1028).
+  // As `get.own`, but not for a runtime class's value (a kind below 64),
+  // whose mask bit declares what it implements natively and which has no
+  // `-contains-key?` slot (light-cljs-1028).
   contains = (operation => Object.defineProperty(function (value, key) {
     const resolved = methodKeys[2];
-    if (value != null && (value[resolved.mask] & resolved.bit) !== 0 && value.cljs$lang$kind$$LKEY === undefined) {
+    if (value != null && (value[resolved.mask] & resolved.bit) !== 0 && !(value.cljs$lang$kind$$LKEY < 64)) {
       demandKey(resolved, 2, value);
       const slot = value[keySlot(resolved, 2)], own = slot ? slot : protocolHooks.declaredMethod(value, resolved, 2, slot);
       if (own) return own.call(value, value, key);
@@ -6388,7 +6401,7 @@
   }
   //@unit find requires: arrayIndex, collectionEntryIndex, contains, get, hash, hashNodeFind,
   //@ isArrayMap, isAssociative, isHashMap, isTreeMap, kindHooks, mapEntry, maps, methodKeys,
-  //@ protocolHooks, recordTypes
+  //@ protocolHooks, recordCells
   function find(value, key) {
     const method = protocolHooks.publicMethod?.(value, methodKeys[19], 2);
     if (method) return method.call(value, value, key);
@@ -6405,7 +6418,7 @@
     // A sorted map's node that holds the key, itself a map entry, as
     // upstream's (light-cljs-1035).
     if (isTreeMap(value)) return kindHooks.treeEntryAt(value, key);
-    const entries = !recordTypes.has(value) && maps.get(value);
+    const entries = !recordCells.has(value) && maps.get(value);
     if (entries) {
       // IFind returns the retained entry from one search. Repeating contains?
       // or get would repeat observable IHash/IEquiv calls on the query key.
@@ -6701,8 +6714,8 @@
     if (equiv) return equiv.call(left, left, right);
     return structuralEqualPair(left, right);
   }
-  //@unit structuralEqualPair requires: comparedSequential, keywordOf, kindHooks, maps, recordTypes,
-  //@ sets
+  //@unit structuralEqualPair requires: comparedSequential, keywordOf, kindHooks, maps,
+  //@ recordTypeOf, sets
   function structuralEqualPair(left, right) {
     if (left instanceof Date) return right instanceof Date && left.valueOf() === right.valueOf();
     // Keywords compare by kind and `fqn` (docs/value-layout.md, section 3).
@@ -6711,7 +6724,7 @@
       const rightKeyword = keywordOf(right);
       return !!rightKeyword && leftKeyword.fqn$LKEY === rightKeyword.fqn$LKEY;
     }
-    if (recordTypes.get(left) !== recordTypes.get(right)) return false;
+    if (recordTypeOf(left) !== recordTypeOf(right)) return false;
     if (maps.has(left)) return kindHooks.equivMap(left, right);
     if (sets.has(left)) return kindHooks.equivSet(left, right);
     if (comparedSequential(left)) return (kindHooks.equivSequential ?? kindHooks.equivVectors)(left, right);
@@ -6738,7 +6751,7 @@
   //@unit makeMap.equiv effect: ArrayMapCell, makeMap, treeMapConstructor when: structuralEqualPair
   //@ requires: equalPair, get, kindHooks, mapCount, mapKinds, mapPairs, maps, methodKeys, missing,
   //@ protocolHooks
-  // A record is a map too, but compares through its `IEquiv` method
+  // A record, no map here, compares through its `IEquiv` method
   // (`recordMethods.equiv`), which every reader of this hook keeps.
   kindHooks.equivMap = (left, right) => {
     if (!(right != null && (protocolHooks.satisfies?.(methodKeys[33], right) ?? maps.has(right))) || (protocolHooks.satisfies?.(methodKeys[42], right) ?? false)) return false;
@@ -7007,11 +7020,10 @@
 
   //@unit compilerFormBridge compile-time requires: atoms, cellOf, chunkedConsFirst, chunkedConsOf,
   //@ chunkedConsRest, EmptyListCell, generatedNames, holdsVector, ifnValues, isCell, isChunkedCons,
-  //@ isLazy, isView, jsObject, keyword, lazyOf, lazyStep, listFromArray, mapFromArray, maps,
-  //@ mapTraversal, metadataValues, name, namedOf, ownMeta, queueFromArray, queues, recordTypes,
-  //@ reifyValues, rePattern, setFromArray, setMeta, sets, setTraversal, stamped, symbol, symbolOf,
-  //@ toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectorItems, vectorNth, vectorStore,
-  //@ viewAt, viewOf, volatiles
+  //@ isLazy, isTypeValue, isView, jsObject, keyword, lazyOf, lazyStep, listFromArray, mapFromArray,
+  //@ maps, mapTraversal, metadataValues, name, namedOf, ownMeta, queueFromArray, queues, rePattern,
+  //@ setFromArray, setMeta, sets, setTraversal, stamped, symbol, symbolOf, toArray, uuid, uuids,
+  //@ vars, vectorFromArray, vectorItems, vectorNth, vectorStore, viewAt, viewOf, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -7163,7 +7175,7 @@
           else if (vars.has(v)) fail("Var", path);
           else if (stamped(v) && atoms.has(v)) fail("atom", path);
           else if (stamped(v) && volatiles.has(v)) fail("volatile", path);
-          else if (typeFields.has(v) || recordTypes.has(v) || reifyValues.has(v) || ifnValues.has(v)) fail("protocol/type instance", path);
+          else if (stamped(v) && isTypeValue(v) || ifnValues.has(v)) fail("protocol/type instance", path);
           else if (stamped(v) && namedOf(v) !== undefined) {
             const n = namedOf(v); tag = symbolOf(v) !== undefined ? "symbol" : "keyword";
             a = n.ns$LKEY == null ? null : n.ns$LKEY; b = n.name$LKEY;
@@ -7292,7 +7304,7 @@
   }
 
   //@unit inspect requires: atoms, cellOf, first, holdsVector, isCell, isChunkedCons, isReduced,
-  //@ isView, keywordOf, mapTraversal, next, nth, recordEntries, recordTypes, seq, sets,
+  //@ isView, keywordOf, mapTraversal, next, nth, recordEntries, recordTypeOf, seq, sets,
   //@ setTraversal, symbolOf, uuids, vars, vectorItems, volatiles
   // A value's shape for the reader (EDN data included) and the observation
   // harness, which alone registers inspect. Exposed storage remains frozen.
@@ -7304,8 +7316,9 @@
     if (named) return Object.freeze({kind: kw ? "keyword" : "symbol",
       namespace: named.ns$LKEY, name: named.name$LKEY, spelling: kw ? named.fqn$LKEY : named.str$LKEY});
     if (/*@stamped*/holdsVector(value)) return Object.freeze({kind: "vector", items: Object.freeze(vectorItems(value))});
-    const entries = recordTypes.has(value)
-      ? recordEntries(value, recordTypes.get(value)).map(pair => ({key: nth(pair, 0), value: nth(pair, 1)}))
+    const record = /*@stamped*/recordTypeOf(value);
+    const entries = record
+      ? recordEntries(value, record).map(pair => ({key: nth(pair, 0), value: nth(pair, 1)}))
       : /*@stamped*/mapTraversal(value);
     if (entries) return Object.freeze({kind: "map", entries: Object.freeze(entries.map(
       entry => Object.freeze([entry.key, entry.value]))), count: entries.length});
@@ -7496,13 +7509,13 @@
   //@unit empty requires: cellOf, collectionWithMeta, comparatorOf, emptyList, holdsVector,
   //@ isArrayMap, isCell, isChunkedCons, isEntryCell, isLazy, isTreeMap, isView, makeMap, makeSet,
   //@ mapKinds, maps, mapTypes, meta, methodKeys, preserveMeta, protocolHooks,
-  //@ publicCollectionSlots, queueFromArray, queues, recordTypes, setComparators, setKinds, sets,
+  //@ publicCollectionSlots, queueFromArray, queues, recordTypeOf, setComparators, setKinds, sets,
   //@ setType, vector, viewOf
   function empty(value) {
     const method = value == null ? null : protocolHooks.publicMethod?.(value, methodKeys[15], 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
-    if (recordTypes.has(value) || isEntryCell(value)) return null;
+    if (recordTypeOf(value) !== undefined || isEntryCell(value)) return null;
     if (holdsVector(value)) return preserveMeta(value, vector());
     if (maps.has(value)) return preserveMeta(value, makeMap(mapTypes[mapKinds.get(value)], isArrayMap(value) || isTreeMap(value) || Array.isArray(maps.get(value)) ? [] : {root: null, nil: null, length: 0}, mapKinds.get(value), comparatorOf(value)));
     if (sets.has(value)) return preserveMeta(value, makeSet(setType(setKinds.get(value)), Array.isArray(sets.get(value)) ? [] : {root: null, nil: null, length: 0}, setKinds.get(value), setComparators.get(value)));
@@ -8180,7 +8193,7 @@
     return coreName ? !!(protocol[nativeType(value)] || protocol._ || nativeMethods.get(coreName)?.get(nativeType(value)) || nativeMethods.get(coreName)?.get("_")) : false;
   }
   //@unit countedValue requires: cellOf, chunkBufferOf, chunkOf, holdsVector, isChunkedCons, isLazy,
-  //@ isTransient, isView, maps, queues, sets, viewOf
+  //@ isTransient, isView, maps, queues, recordCells, sets, viewOf
   // A core protocol's native test, without the protocol objects (one per
   // protocol, here ICounted; see `builtinCoreImplementation`).
   function countedValue(value) {
@@ -8188,7 +8201,7 @@
     // and a chunked cons, which `count` walks one by one, is no other value.
     const cell = cellOf(value);
     if (cell !== undefined) return cell.cell$LKEY === "tree-seq" || cell.integer$LKEY === true || cell.cell$LKEY === "list";
-    return !isChunkedCons(value) && !isLazy(value) && (isTransient(value) || chunkBufferOf(value) !== undefined || chunkOf(value) !== undefined || holdsVector(value) || maps.has(value) || sets.has(value) || queues.has(value) || (isView(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(viewOf(value).view$LKEY)));
+    return !isChunkedCons(value) && !isLazy(value) && (isTransient(value) || chunkBufferOf(value) !== undefined || chunkOf(value) !== undefined || holdsVector(value) || maps.has(value) || recordCells.has(value) || sets.has(value) || queues.has(value) || (isView(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(viewOf(value).view$LKEY)));
   }
   //@unit seqValue requires: chunkOf, isCell, isChunkedCons, isLazy, isView, iteratorSeqs, queues
   function seqValue(value) {
@@ -8218,9 +8231,9 @@
       return false;
     };
   }
-  //@unit seqableValue requires: chunkedConsCells, iteratorSeqs, lazyCells, maps, queues, seqCells,
-  //@ sets, storesPredicate, vectorCells, viewCells
-  const seqableValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, iteratorSeqs);
+  //@unit seqableValue requires: chunkedConsCells, iteratorSeqs, lazyCells, maps, queues,
+  //@ recordCells, seqCells, sets, storesPredicate, vectorCells, viewCells
+  const seqableValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, iteratorSeqs, recordCells);
   //@unit indexedValue requires: cellOf, chunkOf, holdsVector, isTransientCell, transientState,
   //@ viewOf
   function indexedValue(value) {
@@ -8228,26 +8241,26 @@
     if (transientState(value)) return isTransientCell(value);
     return chunkOf(value) !== undefined || cellOf(value)?.integer$LKEY === true || holdsVector(value) || viewOf(value)?.indexed$LKEY === true;
   }
-  //@unit cloneablePayload requires: cellOf, holdsVector, isEntryCell, maps, queues, recordTypes,
+  //@unit cloneablePayload requires: cellOf, holdsVector, isEntryCell, maps, queues, recordCells,
   //@ sets, viewOf
-  function cloneablePayload(value) { return (holdsVector(value) && !isEntryCell(value)) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cellOf(value)?.cell$LKEY) || ["indexed", "reverse"].includes(viewOf(value)?.view$LKEY); }
-  //@unit lookupValue requires: holdsVector, isTransient, maps, sets
-  const lookupValue = value => isTransient(value) || holdsVector(value) || maps.has(value) || sets.has(value);
-  //@unit associativeValue requires: holdsVector, maps
-  const associativeValue = value => holdsVector(value) || maps.has(value);
-  //@unit collectionValue requires: chunkedConsCells, lazyCells, maps, queues, seqCells, sets,
-  //@ storesPredicate, vectorCells, viewCells
-  const collectionValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells);
-  //@unit emptyableValue requires: collectionValue, recordTypes
-  const emptyableValue = value => !recordTypes.has(value) && collectionValue(value);
-  //@unit editableValue requires: comparatorOf, holdsVector, isEntryCell, maps, recordTypes, sets,
+  function cloneablePayload(value) { return (holdsVector(value) && !isEntryCell(value)) || (maps.has(value) && !recordCells.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cellOf(value)?.cell$LKEY) || ["indexed", "reverse"].includes(viewOf(value)?.view$LKEY); }
+  //@unit lookupValue requires: holdsVector, isTransient, maps, recordCells, sets
+  const lookupValue = value => isTransient(value) || holdsVector(value) || maps.has(value) || sets.has(value) || recordCells.has(value);
+  //@unit associativeValue requires: holdsVector, maps, recordCells
+  const associativeValue = value => holdsVector(value) || maps.has(value) || recordCells.has(value);
+  //@unit collectionValue requires: chunkedConsCells, lazyCells, maps, queues, recordCells,
+  //@ seqCells, sets, storesPredicate, vectorCells, viewCells
+  const collectionValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, recordCells);
+  //@unit emptyableValue requires: collectionValue, recordCells
+  const emptyableValue = value => !recordCells.has(value) && collectionValue(value);
+  //@unit editableValue requires: comparatorOf, holdsVector, isEntryCell, maps, recordCells, sets,
   //@ subvecSources
-  const editableValue = value => holdsVector(value) && !isEntryCell(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && comparatorOf(value) === undefined || sets.has(value) && comparatorOf(value) === undefined;
-  //@unit reduceValue requires: chunkOf, holdsVector, isCell, isLazy, isView, maps, recordTypes,
+  const editableValue = value => holdsVector(value) && !isEntryCell(value) && !subvecSources.has(value) || maps.has(value) && !recordCells.has(value) && comparatorOf(value) === undefined || sets.has(value) && comparatorOf(value) === undefined;
+  //@unit reduceValue requires: chunkOf, holdsVector, isCell, isLazy, isView, maps, recordCells,
   //@ viewOf
-  const reduceValue = value => (chunkOf(value)?.step$LKEY === null || holdsVector(value) || (maps.has(value) && !recordTypes.has(value)) || isCell(value) || isLazy(value) || (isView(value) && viewOf(value).view$LKEY !== "queue"));
-  //@unit kvReduceValue requires: holdsVector, isEntryCell, maps
-  const kvReduceValue = value => holdsVector(value) && !isEntryCell(value) || maps.has(value);
+  const reduceValue = value => (chunkOf(value)?.step$LKEY === null || holdsVector(value) || (maps.has(value) && !recordCells.has(value)) || isCell(value) || isLazy(value) || (isView(value) && viewOf(value).view$LKEY !== "queue"));
+  //@unit kvReduceValue requires: holdsVector, isEntryCell, maps, recordCells
+  const kvReduceValue = value => holdsVector(value) && !isEntryCell(value) || maps.has(value) || recordCells.has(value);
   //@unit iterableValue requires: cellOf, collectionValue, isChunkedCons
   const iterableValue = value => !["cycle", "iterate", "repeat"].includes(cellOf(value)?.cell$LKEY) && !isChunkedCons(value) && collectionValue(value);
   //@unit stackValue requires: cellOf, holdsVector, isCell, queues
@@ -8259,8 +8272,8 @@
   //@unit namedValue requires: multiFns, namedOf
   const namedValue = value => namedOf(value) !== undefined || multiFns.has(value);
   //@unit ifnValue requires: holdsVector, ifnMethods, isIdent, isTransient, maps, multiFns,
-  //@ recordTypes, sets, vars
-  const ifnValue = value => multiFns.has(value) || isTransient(value) || !!ifnMethods(value) || isIdent(value) || holdsVector(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || vars.has(value);
+  //@ recordCells, sets, vars
+  const ifnValue = value => multiFns.has(value) || isTransient(value) || !!ifnMethods(value) || isIdent(value) || holdsVector(value) || (maps.has(value) && !recordCells.has(value)) || sets.has(value) || vars.has(value);
   //@unit fnValue requires: metaFunctions, vars
   const fnValue = value => metaFunctions.has(value) || vars.has(value);
   //@unit multiFnValue requires: multiFns
@@ -8279,8 +8292,8 @@
   const mapEntryValue = value => isEntryCell(value);
   //@unit sortedValue requires: comparatorOf
   const sortedValue = value => comparatorOf(value) !== undefined;
-  //@unit findValue requires: holdsVector, maps, recordTypes
-  const findValue = value => holdsVector(value) || (maps.has(value) && !recordTypes.has(value));
+  //@unit findValue requires: holdsVector, maps, recordCells
+  const findValue = value => holdsVector(value) || (maps.has(value) && !recordCells.has(value));
   //@unit reversibleValue requires: comparatorOf, holdsVector, viewOf
   const reversibleValue = value => holdsVector(value) || viewOf(value)?.view$LKEY === "indexed" || comparatorOf(value) !== undefined;
   //@unit dropValue requires: cellOf, holdsVector, isLazy, mapKinds, viewOf
@@ -8291,11 +8304,13 @@
     return !isLazy(value) && (mapKinds.get(value) === "array-map" || holdsVector(value) || ["indexed", "chunked", "array-map"].includes(viewOf(value)?.view$LKEY));
   };
   //@unit metaValue requires: atoms, chunkedConsCells, lazyCells, maps, metaFunctions, queues,
-  //@ reifyValues, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells, viewCells
-  const metaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, atoms, metaFunctions, reifyValues);
+  //@ recordCells, reifyCells, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells,
+  //@ viewCells
+  const metaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, atoms, metaFunctions, reifyCells, recordCells);
   //@unit withMetaValue requires: chunkedConsCells, lazyCells, maps, metaFunctions, queues,
-  //@ reifyValues, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells, viewCells
-  const withMetaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, metaFunctions, reifyValues);
+  //@ recordCells, reifyCells, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells,
+  //@ viewCells
+  const withMetaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, metaFunctions, reifyCells, recordCells);
   //@unit instValue
   const instValue = value => value instanceof Date;
   //@unit uuidImplementation requires: uuids
@@ -8313,8 +8328,8 @@
   const hashableValue = value => !["cycle", "iterate"].includes(cellOf(value)?.cell$LKEY) && printableValue(value);
   //@unit vectorValue requires: holdsVector
   const vectorValue = value => holdsVector(value);
-  //@unit mapValue requires: maps
-  const mapValue = value => maps.has(value);
+  //@unit mapValue requires: maps, recordCells
+  const mapValue = value => maps.has(value) || recordCells.has(value);
   //@unit setValue requires: sets
   const setValue = value => sets.has(value);
   //@unit comparableValue requires: holdsVector, namedOf, uuids
@@ -8839,22 +8854,20 @@
       ? fn.call(null, old, ...args)
       : apply(fn, old, args[0], args[1], args[2], fnRest(args, 3)));
   }
-  //@unit updatedMap requires: comparatorOf, constructorSlots, isArrayMap, isHashMap, kindHooks,
-  //@ makeMap, mapFromEntries, mapKinds, mapTypes, meta, preserveMeta, priorLength,
-  //@ publicCollectionSlots, recordTypes
+  //@unit updatedMap requires: comparatorOf, constructorSlots, isArrayMap, isHashMap, makeMap,
+  //@ mapFromEntries, mapKinds, mapTypes, meta, preserveMeta, priorLength, publicCollectionSlots
   // The map of `original`'s kind with `entries`, which an update built: an
   // array map's count of entries is its pairs' (`arrayMapEntries`), a hash
   // map's its `cnt` (light-cljs-1036). A public constructor's array map
   // keeps its count's difference from its pairs in its result's slots and
   // field; a public hash map's count is a field, which its own operations
   // update.
-  function updatedMap(original, entries, removeRecord = false) {
-    const Type = !removeRecord && recordTypes.get(original), kind = mapKinds.get(original);
+  function updatedMap(original, entries) {
+    const kind = mapKinds.get(original);
     // A sorted map's own updates build its tree (`treeMapAssoc`); these
     // entries are its own, in its comparator's order.
     if (kind === "sorted-map") return preserveMeta(original, makeMap(mapTypes["sorted-map"], entries, "sorted-map", comparatorOf(original)));
-    const result = Type ? kindHooks.updatedRecord(Type, entries, kind)
-      : mapFromEntries(entries, kind === "hash-map" || (entries.length > 8 && entries.length > priorLength(original)));
+    const result = mapFromEntries(entries, kind === "hash-map" || (entries.length > 8 && entries.length > priorLength(original)));
     const slots = publicCollectionSlots.get(original);
     if (slots?.cnt != null) {
       const cnt = slots.cnt + entries.length - priorLength(original);
@@ -8894,16 +8907,17 @@
   //@unit collectionWithMeta requires: canonicalVectorRoots, cellCopy, cellOf, chunkedConsCells,
   //@ constructorHashes, holdsVector, ifnValues, isCell, isChunkedCons, isEntryCell, isLazy, isView,
   //@ kindHooks, lazyCells, mapCellCopy, maps, meta, metaFunctions, methodKeys, protocolHooks,
-  //@ protocolImplementations, publicCollectionSlots, queues, recordTypes, reifyValues, seqCells,
-  //@ setCellOf, setComparators, setKinds, setMeta, setQueueCopy, sets, subvecSources, symbolCells,
-  //@ treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
+  //@ protocolImplementations, prototypeCopy, publicCollectionSlots, queues, recordCells,
+  //@ reifyCells, seqCells, setCellOf, setComparators, setKinds, setMeta, setQueueCopy, sets,
+  //@ subvecSources, symbolCells, treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells,
+  //@ viewOf
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
     if (value == null) return null;
     const method = protocolHooks.builtin?.(value, methodKeys[66], 2);
     if (method) return method.call(value, value, metadata);
-    if (!recordTypes.has(value) && !isEntryCell(value) &&
+    if (!isEntryCell(value) &&
         [vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells].some(store => store.has(value)) && meta(value) === metadata) return value;
     let result;
     if (isEntryCell(value)) return collectionWithMeta(kindHooks.entryVector(value), metadata);
@@ -8916,22 +8930,20 @@
     else if (kind === "iterate") result = kindHooks.withMetaIterate(value);
     else if (viewOf(value)?.vec$LKEY) result = kindHooks.withMetaChunkedSeq(value, metadata);
     else if (kind === "cycle") result = kindHooks.withMetaCycle(value);
-    else if (recordTypes.has(value)) result = kindHooks.withMetaRecord(value);
+    else if (recordCells.has(value)) return kindHooks.withMetaRecord(value, metadata);
     else {
       const stores = [treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbolCells, maps, sets, setKinds, setComparators, seqCells, viewCells, queues, vars, subvecSources];
       const vector = holdsVector(value);
-      if (!vector && !stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
+      if (!vector && !stores.some(store => store.has(value)) && !reifyCells.has(value)) throw new Error("value does not support metadata");
       // A vector's, a view's, a symbol's or a map's copy is built by its
       // class, with its fields.
       const set = setCellOf(value) !== undefined;
       result = vector ? vectorCellCopy(value) : isView(value) ? viewAt(value, value.i$LKEY) : isCell(value) ? cellCopy(value) : maps.has(value) ? mapCellCopy(value)
-        : setQueueCopy(value) ?? kindHooks.symbolCopy?.(value) ?? Object.create(Object.getPrototypeOf(value));
-      // A copy of a reify value has no brand of its type: `reifyValues` holds it.
+        : setQueueCopy(value) ?? kindHooks.symbolCopy?.(value) ?? prototypeCopy(value);
       // The class layout's tests, which hold nothing, are no stores.
       for (const store of [...stores, protocolImplementations]) if (store.set !== undefined && store !== viewCells && store !== symbolCells && store !== seqCells && store !== maps && !(set && (store === sets || store === setKinds)) && store.has(value)) store.set(result, store.get(value));
-      if (reifyValues.has(value)) reifyValues.add(result);
       if (ifnValues.has(value)) ifnValues.set(result, ifnValues.get(value));
-      if (ifnValues.has(value) || reifyValues.has(value) || recordTypes.has(value)) Object.defineProperties(result, Object.getOwnPropertyDescriptors(value));
+      if (ifnValues.has(value) || reifyCells.has(value)) Object.defineProperties(result, Object.getOwnPropertyDescriptors(value));
     }
     setMeta(result, metadata);
     return result;
@@ -8992,24 +9004,23 @@
     const c = cellOf(value);
     return cycleNode(c.all$LKEY, c.prev$LKEY, c.current$LKEY, c.next$LKEY);
   };
-  //@unit makeType.meta effect: recordMethods when: collectionWithMeta, updatedMap requires: equalPair,
-  //@ kindHooks, mapKinds, maps, recordKeys, recordMaps, recordTypes
-  // A record copy owns fresh mutable host fields. Copying accessor
-  // descriptors would leave their closures pointing at the old instance.
-  kindHooks.withMetaRecord = value => {
-    const Type = recordTypes.get(value), result = new Type(...Type.members.map(member => value[member]));
-    recordMaps.set(result, maps.get(value)); recordMaps.kinds.set(result, mapKinds.get(value));
-    return result;
-  };
-  // A record of `entries`, for `updatedMap`.
-  kindHooks.updatedRecord = (Type, entries, kind) => {
-    const result = new Type(...recordKeys(Type).map(key => {
-      const entry = entries.find(e => equalPair(e.key, key));
-      return entry?.value;
-    }));
-    recordMaps.set(result, Object.freeze(entries)); recordMaps.kinds.set(result, kind);
-    return result;
-  };
+  //@unit makeType.meta effect: recordMethods when: collectionWithMeta requires: kindHooks,
+  //@ recordCopy, recordTypeOf
+  // A record's metadata copy, where its type has no `-with-meta` method: a
+  // record of its class with its fields, as `recordMethods.withMeta` builds
+  // (light-cljs-1037). A record copy owns fresh mutable host fields.
+  kindHooks.withMetaRecord = (value, metadata) => recordCopy(value, recordTypeOf(value), metadata, value.__extmap, value.__hash);
+  //@unit prototypeCopy requires: ReifyCell, reifyCells
+  // An object of `value`'s prototype, for its metadata copy
+  // (`collectionWithMeta`): a `reify` value's is built by `ReifyCell`, so
+  // that the compile-time runtime stamps it as its own (`/*@brand*/`).
+  function prototypeCopy(value) {
+    const prototype = Object.getPrototypeOf(value);
+    if (!reifyCells.has(value)) return Object.create(prototype);
+    const Copy = function () {};
+    Copy.prototype = prototype;
+    return Reflect.construct(ReifyCell, [], Copy);
+  }
   //@unit uuidPrototype requires: unkeyedJSON, uuids
   const uuidPrototype = Object.freeze({
     toString() { return uuids.get(this); },
@@ -9564,14 +9575,14 @@
     }
     return entry;
   }
-  //@unit makeIFn requires: ifnInvokeEntry, ifnPrototype, ifnValues, reifyValues
+  //@unit makeIFn requires: ifnInvokeEntry, ifnPrototype, ifnValues
+  // A value of `ifnPrototype`, whose kind is a `reify`'s (66, `kinds`).
   function makeIFn(methods, invokeMethods = methods) {
     const value = Object.create(ifnPrototype);
     ifnValues.set(value, methods);
     for (const [arity, method] of Object.entries(invokeMethods)) {
       value["cljs$core$IFn$_invoke$arity$" + arity] = ifnInvokeEntry(method);
     }
-    reifyValues.add(value);
     return value;
   }
   //@unit protocolKeys
@@ -9609,9 +9620,9 @@
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
   }
   //@unit protocolStores requires: atoms, chunkedConsCells, delays, keywordCells, lazyCells, maps,
-  //@ metaFunctions, multiFns, queues, reducedValues, seqCells, sets, symbolCells, transientCells,
-  //@ vars, vectorCells, viewCells, volatiles
-  const protocolStores = [multiFns, transientCells, keywordCells, symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
+  //@ metaFunctions, multiFns, queues, recordCells, reducedValues, seqCells, sets, symbolCells,
+  //@ transientCells, vars, vectorCells, viewCells, volatiles
+  const protocolStores = [multiFns, transientCells, keywordCells, symbolCells, vectorCells, maps, recordCells, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
   //@unit ownedProtocolValue requires: protocolStores, storesPredicate
   const ownedProtocolValue = storesPredicate(...protocolStores);
   //@unit demandKey requires: demandMethod
@@ -9689,8 +9700,8 @@
     };
   })(payloadStores);
   //@unit kindStore requires: holdsVector, payloads, payloadStores
-  // `payloadStore` from the kind alone, else 0: probing the maps' store asks
-  // if a host value is a record, which may run a Proxy's `getPrototypeOf`.
+  // `payloadStore` from the kind alone, else 0, without probing the stores
+  // that are not exact.
   // A vector cell, which has no payload kind, is store 3 (`vectorCells`).
   const kindStore = (byKind => value => byKind[payloads.kind(value)] || (holdsVector(value) ? 3 : 0))(payloadStores.byKind);
   //@unit storeNativeProtocols
@@ -9718,7 +9729,7 @@
     const info = key.info || (key.info = publicMethodInfo(key.key)), protocol = info.protocol, mask = info.mask, native = info.native;
     // A runtime class's mask bits are its native tests' answers (see
     // `ownMethod`), which the payload stores' step below gives.
-    let direct = !!(mask && (value?.[mask[0]] & mask[1])) && value.cljs$lang$kind$$LKEY === undefined;
+    let direct = !!(mask && (value?.[mask[0]] & mask[1])) && !(value.cljs$lang$kind$$LKEY < 64);
     if (!direct && info.name) {
       demandMethod(info.name, 0, value);
       direct = value != null && value[info.marker] === protocolSentinel;
@@ -9796,24 +9807,24 @@
     // A runtime class's mask bits (its keyed kind, docs/value-layout.md,
     // section 3) declare what it implements natively, which the operation
     // answers: as before they were there, only a marker declares a method
-    // for its value here (light-cljs-1028). Program types are told by their
-    // brands until their kinds are keyed (light-cljs-1013).
-    const declared = key.bit !== 0 && value != null && (value[key.mask] & key.bit) !== 0 && value.cljs$lang$kind$$LKEY === undefined || keyMarker(value, key);
+    // for its value here (light-cljs-1028). A program type's kind (64 to 66,
+    // `kinds`) is no runtime class's: its mask bits declare its methods.
+    const declared = key.bit !== 0 && value != null && (value[key.mask] & key.bit) !== 0 && !(value.cljs$lang$kind$$LKEY < 64) || keyMarker(value, key);
     return declared || meta ? ownDeclared(value, key, arity, keyMethod(value, key, arity)) : undefined;
   }
-  //@unit ownDeclared requires: reifyValues
+  //@unit ownDeclared requires: reifyCells
   // The rest of `ownMethod` once the value declares the key's protocol (or,
   // for `IMeta`, is a function), given the `method` its slot held: that, else
   // nothing for the natively implemented `IMeta` of a function or a `reify`,
   // else an error.
   function ownDeclared(value, key, arity, method) {
     if (method) return method;
-    if (key.meta && (typeof value === "function" || reifyValues.has(value))) return undefined;
-    // A runtime class's value (its keyed kind) declares the protocols it
+    if (key.meta && (typeof value === "function" || reifyCells.has(value))) return undefined;
+    // A runtime class's value (a keyed kind below 64) declares the protocols it
     // implements natively on its prototype (docs/value-layout.md, section
     // 3), with slots for some operations only: where no program method is
     // there, the operation answers it natively.
-    if (value != null && value.cljs$lang$kind$$LKEY !== undefined) return undefined;
+    if (value != null && value.cljs$lang$kind$$LKEY < 64) return undefined;
     throw new Error("No protocol method " + key.key + " defined for this value");
   }
   //@unit metadataMethod requires: get, meta, symbolCore, truth
@@ -9967,13 +9978,20 @@
     protocolImplementations.set(value, implementations);
     return value;
   }
-  //@unit makeReify requires: installMethods, reifyValues
-  function makeReify(methods) { const value = installMethods({}, methods); reifyValues.add(value); return value; }
+  //@unit ReifyCell effect
+  // A `reify` value that `makeReify` builds, of kind 66 (`kinds`): its
+  // methods are its own properties, its prototype holds only the kind (not
+  // enumerable) over `Object.prototype`'s. The compile-time runtime stamps it.
+  function ReifyCell() { /*@brand*/ }
+  ReifyCell.prototype = Object.defineProperty({}, "cljs$lang$kind$$LKEY", {value: 66});
+  //@unit makeReify requires: installMethods, ReifyCell
+  function makeReify(methods) { return installMethods(new ReifyCell(), methods); }
   //@unit reifySites
   const reifySites = new Map();
-  //@unit reify requires: makeType, metadataValues, reifySites, reifyValues
+  //@unit reify requires: makeType, metadataValues, reifySites
   // The methods read the captured locals under `members` (`decorateType`),
-  // which the emitter munges the same way.
+  // which the emitter munges the same way. A site's type has a `reify`'s
+  // kind (66, `kinds`).
   function reify(site, fields, values, methods, metadata = null) {
     let Type = reifySites.get(site);
     if (!Type) {
@@ -9982,18 +10000,17 @@
         ["IMeta/-meta", 1, function () { return metadataValues.has(this) ? metadataValues.get(this) : null; }],
         ["IWithMeta/-with-meta", 2, function (_self, metadata) {
           const result = new Type(...Type.members.map(member => this[member]));
-          reifyValues.add(result);
           metadataValues.set(result, metadata);
           return result;
         }], ...methods()], false, null, null, null, function (...values) {
         // Own fields like a type's, whatever their names (`__proto__`).
         Type.members.forEach((member, i) => Object.defineProperty(this, member, {value: values[i], writable: true, enumerable: true, configurable: true}));
       });
+      Type.prototype.cljs$lang$kind$$LKEY = 66;
       reifySites.set(site, Type);
     }
     const value = new Type(...values);
     metadataValues.set(value, metadata);
-    reifyValues.add(value);
     return value;
   }
   //@unit mungeCharacters effect requires: memberMunging
@@ -10181,41 +10198,28 @@
     ["IKVReduce/-kv-reduce", 3, function (_self, fn, init) {
       return reduce((result, entry) => fn.call(null, result, nth(entry, 0), nth(entry, 1)), init, this);
     }]]);
-  //@unit TypeBrand
+  //@unit TypeBrand compile-time
   // A type instance's brand: a private field holding its record type, or
   // `null` for another type. Like the stores, copying fields or inheriting a
   // prototype cannot forge it, and setting it writes no WeakMap. The base
   // class returns the instance as `this`, and `TypeBrand` adds the field.
-  // A binding, not a declaration, so terse output renames it.
+  // A binding, not a declaration, so terse output renames it. No type the
+  // emitter writes brands its instances with it since light-cljs-1037: a
+  // program's types are told by their prototypes' keyed kinds
+  // (`decorateType`), and it stays a compile-time unit with `ClassBrand`
+  // and `defineClass` (docs/value-layout.md, section 4).
   const TypeBrand = class extends (class { constructor(value) { return value; } }) {
     #t;
     constructor(value, type = null) { super(value); this.#t = type; }
     // The brand of `value`, or `undefined` for a value without one.
     static type(value) { if (Object(value) === value && #t in value) return value.#t; }
   };
-  //@unit typeFields.brands effect: TypeBrand when: typeFields requires: TypeBrand, typeFields
-  typeFields.has = value => TypeBrand.type(value) !== undefined;
-  //@unit recordTypes.brands effect: recordMethods when: recordTypes requires: recordTypes,
-  //@ TypeBrand
-  // Only a program with records keeps `recordMethods`; in any other no
-  // instance has a record type.
-  recordTypes.has = value => !!TypeBrand.type(value);
-  recordTypes.get = value => TypeBrand.type(value) ?? undefined;
-  //@unit maps.records effect: recordMethods when: maps requires: maps, recordMaps, recordTypes
-  // A record is a map without entries of its own until `updatedRecord` gives
-  // it some (`recordMaps`), so constructing one writes no store: these
-  // answer for it, with `none` as its entries (a record type is a function).
-  maps.has = (has => value => has(value) || recordTypes.has(value))(maps.has);
-  maps.get = ((get, none) => value => get(value) ?? recordMaps.get(value) ?? (recordTypes.get(value) && none))(maps.get, Object.freeze([]));
-  //@unit mapKinds.records effect: recordMethods when: mapKinds requires: mapKinds, recordMaps,
-  //@ recordTypes
-  mapKinds.has = (has => value => has(value) || recordTypes.has(value))(mapKinds.has);
-  mapKinds.get = (get => value => get(value) ?? recordMaps.kinds.get(value) ?? (recordTypes.has(value) ? "record" : undefined))(mapKinds.get);
   //@unit decorateType requires: installMethods, mungeMember, protocolMaskNames, typeHooks,
   //@ typeNames
-  // Gives a type its methods; returns the masks its markers declare. The
-  // methods read fields under `members`, the names the constructor
-  // assigns them to, munged once per type.
+  // Gives a type its methods and its kind, and a record's prototype its type
+  // (`recordTypeOf`); returns the masks its markers declare. The methods
+  // read fields under `members`, the names the constructor assigns them to,
+  // munged once per type.
   function decorateType(Type, fields, methods, record, name, currentConstructor) {
     const masks = [0, 0];
     Type.fieldNames = fields;
@@ -10228,12 +10232,16 @@
       if (index >= 0) masks[index >> 5] |= 1 << (index % 32);
     }
     installMethods(Type.prototype, implementations);
+    Type.prototype.cljs$lang$kind$$LKEY = record ? 65 : 64;
+    if (record) Type.prototype.cljs$lang$record$$LKEY = Type;
     return masks;
   }
-  //@unit makeType requires: decorateType, TypeBrand
+  //@unit makeType requires: decorateType
   // `init`, which the emitter (or `reify`) writes, assigns the arguments to
   // the munged fields and a record's three slots; `masks` sets a raw type's
   // masks (`typeMasks`). A construction munges no name and writes no WeakMap.
+  // Its prototype's keyed kind tells its instances (`decorateType`); the
+  // compile-time runtime stamps them (`/*@brand*/`).
   function makeType(fields, methods, record, masks, name, currentConstructor, init) {
     let implicitMasks;
     const Type = function () {
@@ -10243,16 +10251,16 @@
         this.cljs$lang$protocol_mask$partition0$$LKEY = implicitMasks[0];
         this.cljs$lang$protocol_mask$partition1$$LKEY = implicitMasks[1];
       }
-      new TypeBrand(this, record === true ? Type : null);
+      /*@brand*/
     };
     implicitMasks = decorateType(Type, fields, methods, record === true, name, currentConstructor);
     return Type;
   }
   //@unit defineType requires: decorateType
-  // At `Advanced` the emitter writes each type's constructor, which ends with
-  // `new TypeBrand(this)` (a record's `(this, Type)`); its masks are its
-  // prototype's. `names` is "ns/T field ...", or an array of them where one
-  // holds a space.
+  // At `Advanced` the emitter writes each type's constructor, which brands
+  // nothing (light-cljs-1037): its prototype's keyed kind tells its
+  // instances (`decorateType`), and its masks are its prototype's. `names`
+  // is "ns/T field ...", or an array of them where one holds a space.
   function defineType(Type, names, methods, record, currentConstructor) {
     const [name, ...fields] = names.split?.(" ") ?? names;
     decorateType(Type, fields, methods, record, name, currentConstructor)
@@ -10261,7 +10269,7 @@
     if (!record) Type.cljs$lang$ctorStr = name;
     return Type;
   }
-  //@unit ClassBrand
+  //@unit ClassBrand compile-time
   // The brand of an instance of a type the emitter writes as a class
   // (light-cljs-346): a private field of the class's own, which V8's mid
   // tier adds without the two calls `TypeBrand` costs. The class's prototype
@@ -10280,12 +10288,12 @@
       if (ClassBrand.#some) for (let p = Object.getPrototypeOf(value), n = 64; p !== null && n--; p = Object.getPrototypeOf(p)) if (#c in p) return p.#c(value);
     }
   };
-  //@unit ClassBrand.types effect: ClassBrand requires: ClassBrand, TypeBrand
+  //@unit ClassBrand.types compile-time effect: ClassBrand requires: ClassBrand, TypeBrand
   TypeBrand.type = (type => value => {
     const brand = type(value);
     return brand === undefined && Object(value) === value ? ClassBrand.type(value) : brand;
   })(TypeBrand.type);
-  //@unit defineClass requires: ClassBrand, defineType
+  //@unit defineClass compile-time requires: ClassBrand, defineType
   // `defineType` of `class { #b; constructor(a0) {...} static c = (a0) => #b
   // in a0; }`: the prototype's brand answers with the check `c`.
   function defineClass(Type, names, methods, record, currentConstructor) {
@@ -10317,7 +10325,9 @@
     return ifnValues.get(value) ?? (value == null ? undefined : ifnValues.get(Object.getPrototypeOf(value)));
   }
   //@unit ifnPrototype requires: ifnApply, ifnMethods, ifnVariadics, invalidArity
-  const ifnPrototype = Object.freeze({
+  // The prototype of the values `makeIFn` builds, whose kind is a `reify`'s
+  // (66, `kinds`, not enumerable): they implement `IMeta` natively.
+  const ifnPrototype = Object.freeze(Object.defineProperty({
     call(_self, ...args) {
       const methods = ifnMethods(this), keys = Object.keys(methods);
       const variadic = ifnVariadics.get(methods);
@@ -10330,7 +10340,7 @@
       return method.call(receiver, receiver, ...args);
     },
     apply(_self, args) { return ifnApply(this, args); }
-  });
+  }, "cljs$lang$kind$$LKEY", {value: 66}));
   //@unit ifnApply
   // Unlike Function.apply, an IFn apply must bundle the 21st and later values
   // exactly once. Keep that path independent of .call's already-expanded ABI.
@@ -11568,8 +11578,8 @@
     return prStr(value).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g,
       units => units.length === 2 ? units : "\\u" + units.charCodeAt(0).toString(16).padStart(4, "0"));
   }
-  //@unit str requires: kindHooks, maps, recordTypes, sequential, sets
-  function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? kindHooks.strCollection(value) : String(value)).join(""); }
+  //@unit str requires: kindHooks, maps, sequential, sets
+  function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || maps.has(value) || sets.has(value) ? kindHooks.strCollection(value) : String(value)).join(""); }
   //@unit str.collections effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,

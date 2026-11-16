@@ -2197,3 +2197,97 @@ to interactive 44.1 to 43.0 ms; the heap with 1,000 todos 9.03 to 8.75 MB.
 Its bundle with React (`re-frame.bb size todomvc`): raw 484,186 to 489,777
 bytes, gzip -9 146,709 to 147,874, brotli -q 11 126,600 to 127,602; re-frame
 simple, which builds no sorted map, was not ported in this run.
+
+## 2026-11-16: records, program types and `reify` told by their keyed kinds (light-cljs-1037)
+
+**What.** A record, a `deftype` and a `reify` value are told by the keyed
+kind on their prototype (64 to 66), which `defineType` and `makeType` give
+it, where a private-field brand of each instance (`TypeBrand`, or a class's
+own field) and the `typeFields`, `recordTypes`, `reifyValues` and
+`recordMaps` stores told them. No constructor writes a brand, and a record
+is no longer a map to `maps` (its methods answer; the native protocol tests
+read its kind). Where a program keeps the slot-first wrappers, `get`,
+`assoc`, `count` and the others call a record's or type's slot first.
+docs/value-layout.md has the notes.
+
+Binaries: before `light-cljs-daea1afc` (master), after
+`light-cljs-5ad9f96d` (a commit of this pellet before it was squashed: its
+runtime and emitter but for comments), in research/shadow-credibility/bin.
+Unreserved: one or two peer workers were active. Raw results:
+research/output-speed/record-kinds-1037 (`gate-*`, the projects' logs,
+`load.txt`).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops
+protocol-on-record,record-kw-field,record-dot-field,record-assoc --runs 5`;
+1-minute load average 6.47-6.95 before, 7.32 after), ns per operation,
+median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| protocol-on-record | 3.29 (3.28-3.36) | 3.28 (3.27-3.42) | +0% | 2.29 | 1.44 | 1.43 |
+| record-kw-field | 13.0 (12.8-13.4) | 5.23 (5.23-5.61) | -60% | 2.68 | 4.83 | 1.95 |
+| record-dot-field | 1.88 (1.87-1.89) | 1.87 (1.87-1.92) | -1% | 0.84 | 2.24 | 2.23 |
+| record-assoc | 85.0 (84.6-88.4) | 53.8 (53.5-54.7) | -37% | 8.04 | 10.56 | 6.69 |
+
+- **No operation is more than 10% slower.**
+- **`record-kw-field`** reads `(:w r)` through `get`'s slot-first wrapper,
+  which now takes the record's kind and calls its `-lookup` slot, where
+  `get.own` read the mask bit, demanded the key and read the slot under
+  its computed name. **`record-assoc`** calls the record's `-assoc` slot
+  first in the same way, and its new record writes no brand; the rest of
+  its time is the method's own copy of the fields (`Type.members.map` and
+  a spread into the constructor), which light-cljs-1023's review of the
+  gate takes up. `protocol-on-record` and `record-dot-field` never read a
+  brand: unchanged (light-cljs-1022 is the protocol call).
+
+The map operations whose `maps.has` lost the record wrapper (`--ops
+kw-small,get-small,contains-small,count-small,assoc-small-new,dissoc-small,merge-small,eq-map-7,str-nested-map,reduce-kv-small
+--runs 3`; load 5.68-6.64 before, 6.59-9.25 after):
+
+| op | light before | light after | change |
+| --- | ---: | ---: | ---: |
+| kw-small | 21.0 (20.4-21.2) | 20.9 (20.8-21.2) | +0% |
+| get-small | 25.0 (24.7-25.8) | 25.5 (25.0-25.8) | +2% |
+| contains-small | 25.7 (25.4-26.6) | 26.2 (25.4-26.5) | +2% |
+| count-small | 2.88 (2.83-2.96) | 2.93 (2.82-2.97) | +2% |
+| assoc-small-new | 78.5 (78.4-82.3) | 81.3 (78.3-82.7) | +4% |
+| dissoc-small | 102.7 (102.4-107.8) | 104.0 (101.9-106.5) | +1% |
+| reduce-kv-small | 43.4 (43.2-45.6) | 44.8 (43.5-46.0) | +3% |
+| str-nested-map | 5,633 (5,623-5,837) | 4,711 (4,686-4,895) | -16% |
+| eq-map-7 | 368.8 (368.5-382.2) | 226.7 (225.2-230.5) | -39% |
+| merge-small | 3,119 (2,867-3,160) | 2,647 (2,625-2,892) | -15% |
+
+The slower medians are within each other's ranges, at the higher load of
+the after run. Equality, `str` and `merge` of maps ask `maps.has` of
+every map they meet, which no longer calls the record wrapper (a record
+test by private-field brand and, where a program had class brands, a walk
+of the prototype chain) after the map test.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1037 --runs 5
+--runtime-only --runtime 1,40`, the project's light-cljs output rebuilt
+with each binary just before its run; load 5.37-6.14 before, 4.00-4.69
+after), wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.373 s (0.370-0.394) | 0.378 s (0.367-0.383) | 0.293 s | 0.305 s |
+| 40 | 2.444 s (2.434-2.483) | 2.396 s (2.361-2.437) | 1.176 s | 1.167 s |
+
+Steady state 53.1 to 51.8 ms per iteration (-2%), shadow-cljs 22.6 and
+22.1; light/shadow 2.35 to 2.34.
+
+**The re-frame-shaped app** (`compare.bb re-frame-200k-seed42-1037 --runs 5
+--runtime-only --runtime 1,10`; load 3.98-5.74 before, 3.80-7.17 after): 1
+iteration 2.309 s (2.265-2.454) to 2.357 s (2.274-2.534), 10 iterations
+8.164 s (7.674-9.814) to 8.186 s (7.671-8.317); steady state 650.6 to 647.6
+ms per iteration, unchanged; shadow-cljs 278.0 and 256.5 (its own runs
+moved 8%), so light/shadow 2.34 to 2.53 moves with shadow-cljs alone. The
+app builds no record on its hot path.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): the
+native tests that answered a record as a map read its kind (`recordCells`)
+in every program that keeps them (`vector-only` 7,813, `constant-lookups`
+5,913, `constant-keys` 82,214, `features-direct` 121,353); record programs
+keep the kinds and `recordTypeOf` but no brand (`record-protocol` 5,814,
+`three-records` 5,809). TodoMVC and re-frame simple were not ported in
+this run.

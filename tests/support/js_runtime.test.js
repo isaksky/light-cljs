@@ -1372,16 +1372,16 @@ console.log('protocol identities, receiver, metadata and fallback assertions pas
   core.printReadably = false;
   assert.equal(core.prStr(record), '#sample.R{:value text}');
   core.printReadably = true;
-  // A type's brand is private (light-cljs-258): a host object made from the
-  // prototype or given an instance's fields is no record, and a record keeps
-  // its brand when its prototype changes.
+  // A record is told by its prototype's keyed kind (light-cljs-1037, where a
+  // private brand of each instance told it since light-cljs-258): a host
+  // object given an instance's fields is no record, and a record moved to
+  // another prototype is a host object. (An object made from the prototype
+  // is one: deliberate reflection, docs/value-layout.md, section 5.)
   assert.equal(r.inspect(record).kind, 'map');
-  assert.equal(r.inspect(Object.create(Record.prototype)), null);
   assert.equal(r.inspect(Object.defineProperties({}, Object.getOwnPropertyDescriptors(record))), null);
-  assert.equal(r.inspect(Object.defineProperties(Object.create(Record.prototype), Object.getOwnPropertyDescriptors(record))), null);
   const moved = new Record('moved');
   Object.setPrototypeOf(moved, Object.prototype);
-  assert.equal(r.inspect(moved).count, 1);
+  assert.equal(r.inspect(moved), null);
   const native = {};
   assert.equal(core.hash(native), core.hash(native));
   assert.equal(core.equal(native, {}), false);
@@ -1409,17 +1409,18 @@ console.log('public core protocol consumers and reduction boundaries passed');
   assert.equal(core.prStr(core.assoc(record, core.keyword('b'), 2)), '#sample.C{:value "text", :b 2}');
   // Neither the prototype, nor an instance's fields, nor an instance as a
   // prototype forge it; a host's subclass constructs through the class and
-  // keeps it; a makeType instance keeps its own.
+  // keeps it. A makeType instance has none since light-cljs-1037: its
+  // prototype's keyed kind tells it.
   for (const forged of [Object.create(Record.prototype), Object.create(record), Object.create(Plain.prototype),
     Object.defineProperties({}, Object.getOwnPropertyDescriptors(record)),
     Object.defineProperties(Object.create(Record.prototype), Object.getOwnPropertyDescriptors(record)),
     Record.prototype, Plain.prototype, {}, [], () => 1, Object.create(null)]) {
     assert.equal(r.TypeBrand.type(forged), undefined);
   }
-  assert.equal(r.inspect(Object.create(Record.prototype)), null);
   assert.equal(r.TypeBrand.type(new (class extends Record {})('sub', null, null, null)), Record);
   const Made = r.makeType(['value'], [], true, null, 'sample/M', null, function (value) { this.value = value; });
-  assert.equal(r.TypeBrand.type(new Made(1)), Made);
+  assert.equal(r.TypeBrand.type(new Made(1)), undefined);
+  assert.equal(r.inspect(new Made(1)).kind, 'map');
   for (const value of [null, undefined, 1, 'text', true]) assert.equal(r.TypeBrand.type(value), undefined);
   // An instance takes its brand once: a class constructor cannot be called
   // without `new`, on an instance or otherwise.

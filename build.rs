@@ -263,9 +263,9 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   `externalMethod` where it is still the hook) inlined. Where the stores
 ///   are WeakMaps (`weakMapStores`), a `storesPredicate` answers false for
 ///   a primitive, which no store holds, tests the stores whose test is a
-///   WeakMap's first, and `maps` and `mapKinds`, whose record test walks
-///   the prototype chain and can reach a proxy's trap, last and in order,
-///   with the first eight tests unrolled.
+///   WeakMap's first, and `maps` and `mapKinds`, last and in order, as
+///   before records left them (light-cljs-1037), with the first eight tests
+///   unrolled.
 fn compiler_runtime(runtime: &str) -> String {
     compiler_hooks(runtime, false)
 }
@@ -358,7 +358,7 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         "    return undefined; }; // interpreterDispatch\n",
     );
     const DISPATCH_STORES: &str = concat!(
-        "  if (weakMapStores) storesPredicate = (...stores) => { const late = [maps, mapKinds, recordTypes, typeFields], weak = WeakMap.prototype.has; // interpreterDispatch\n",
+        "  if (weakMapStores) storesPredicate = (...stores) => { const late = [maps, mapKinds], weak = WeakMap.prototype.has; // interpreterDispatch\n",
         "    const ordered = [...stores.filter(store => !late.includes(store) && store.has === weak), ...stores.filter(store => !late.includes(store) && store.has !== weak), ...stores.filter(store => late.includes(store))], n = ordered.length, [a, b, c, d, e, f, g, h] = ordered; // interpreterDispatch\n",
         "    return value => { if (typeof value === \"object\" ? value === null : typeof value !== \"function\") return false; // interpreterDispatch\n",
         "      if (n > 0 && (a.has(value) || n > 1 && (b.has(value) || n > 2 && (c.has(value) || n > 3 && (d.has(value) || n > 4 && (e.has(value) || n > 5 && (f.has(value) || n > 6 && (g.has(value) || n > 7 && h.has(value))))))))) return true; // interpreterDispatch\n",

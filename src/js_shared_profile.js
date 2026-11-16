@@ -709,18 +709,23 @@
   // profile's classes (`mapOf`, light-cljs-1012): a sorted map, a map a
   // public constructor built or one with a NaN occurrence key, whose
   // entries are its fields' (`mapTraversal`), which `get` gives none of
-  // (light-cljs-1036, and a sorted map's since light-cljs-1035). A record
-  // is added by `maps.records`, as in the V8 profile (light-cljs-666).
+  // (light-cljs-1036, and a sorted map's since light-cljs-1035). An engine
+  // record form is a map too, with its fields' and extension map's entries
+  // and the kind "record", where the V8 profile's records, classes since
+  // light-cljs-1037, are maps only to the native tests (`recordCells`).
   const maps = {
-    has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
+    has: value => { const form = sharedFormKind(value); return form === "map" || form === "record" || mapOf(value) !== undefined; },
     get(value) {
-      if (sharedFormKind(value) === "map") return sharedMapEntries(sharedFormOf(value));
+      const form = sharedFormKind(value);
+      if (form === "map" || form === "record") return sharedMapEntries(sharedFormOf(value));
       return undefined;
     },
     kinds: {
-      has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
+      has: value => { const form = sharedFormKind(value); return form === "map" || form === "record" || mapOf(value) !== undefined; },
       get(value) {
-        if (sharedFormKind(value) === "map") return __rt.formIsArrayMap(sharedFormOf(value)) ? "array-map" : "hash-map";
+        const form = sharedFormKind(value);
+        if (form === "map") return __rt.formIsArrayMap(sharedFormOf(value)) ? "array-map" : "hash-map";
+        if (form === "record") return "record";
         const kind = mapOf(value)?.cljs$lang$kind$$LKEY;
         return kind === 28 ? "array-map" : kind === 29 ? "hash-map" : kind === 30 ? "sorted-map" : undefined;
       }
@@ -916,8 +921,8 @@
     const namespace = __rt.formNamespace(value), name = __rt.formName(value);
     return (kind === "keyword" ? ":" : "") + (namespace == null ? name : namespace + "/" + name);
   }
-  //@unit str requires: kindHooks, maps, recordTypes, sequential, sets, sharedNamedString, sharedScalar
-  function str(...values) { return values.map(value => { value = sharedScalar(value); return value == null ? "" : typeof value === "string" ? value : sharedNamedString(value) ?? (sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? kindHooks.strCollection(value) : String(value)); }).join(""); }
+  //@unit str requires: kindHooks, maps, recordTypeOf, sequential, sets, sharedNamedString, sharedScalar
+  function str(...values) { return values.map(value => { value = sharedScalar(value); return value == null ? "" : typeof value === "string" ? value : sharedNamedString(value) ?? (sequential(value) || (maps.has(value) && recordTypeOf(value) === undefined) || sets.has(value) ? kindHooks.strCollection(value) : String(value)); }).join(""); }
   //@unit displayStr requires: sharedNamedString, sharedScalar
   const displayStr = value => { value = sharedScalar(value); return value == null ? "" : sharedNamedString(value) ?? String(value); };
   //@unit Namespace effect requires: equalPair, hash, installMethods, keyword, makeVar,
@@ -1292,19 +1297,23 @@
   // A registry on the task's cells: a brand on a type's function would keep
   // its record from sealing (`sharedTaskDefaults`).
   const typeNames = sharedRegistryStore("typeNames");
-  //@unit typeFields requires: sharedStore
-  const typeFields = sharedStore();
-  //@unit recordTypes requires: sharedStore
-  const recordTypes = sharedStore();
-  //@unit typeFields.brands effect: TypeBrand when: typeFields
-  //@ requires: sharedFormKind, typeFields, TypeBrand
-  typeFields.has = value => ["struct", "record"].includes(sharedFormKind(value)) || TypeBrand.type(value) !== undefined;
-  //@unit recordTypes.brands effect: recordMethods when: recordTypes
-  //@ requires: recordTypes, sharedFormKind, sharedFormOf, TypeBrand
-  recordTypes.has = value => sharedFormKind(value) === "record" || !!TypeBrand.type(value);
-  recordTypes.get = value => sharedFormKind(value) === "record" ? __rt.structTypeOf(sharedFormOf(value)) : TypeBrand.type(value) ?? undefined;
-  //@unit isRecord requires: methodKeys, protocolHooks, recordTypes, sharedFormKind
-  const isRecord = value => sharedFormKind(value) === "record" || (protocolHooks.satisfies?.(methodKeys[42], value) ?? recordTypes.has(value));
+  //@unit recordTypeOf requires: sharedFormKind, sharedFormOf
+  // The V8 profile's, which also answers an engine record form with its
+  // struct type (light-cljs-1037).
+  function recordTypeOf(value) {
+    if (sharedFormKind(value) === "record") return __rt.structTypeOf(sharedFormOf(value));
+    return value != null && value.cljs$lang$kind$$LKEY === 65 ? value.cljs$lang$record$$LKEY : undefined;
+  }
+  //@unit recordCells requires: sharedFormKind
+  // The V8 profile's, which also answers an engine record form: the native
+  // tests that exclude records from the maps (`ifnValue`, `findValue`,
+  // `emptyableValue`, ...) exclude it, as `maps` holds it.
+  const recordCells = Object.freeze({has: value => sharedFormKind(value) === "record" || value != null && value.cljs$lang$kind$$LKEY === 65});
+  //@unit isTypeValue requires: sharedFormKind
+  // The V8 profile's, which also answers an engine struct or record form.
+  const isTypeValue = value => ["struct", "record"].includes(sharedFormKind(value)) || value != null && value.cljs$lang$kind$$LKEY >= 64;
+  //@unit isRecord requires: methodKeys, protocolHooks, recordTypeOf, sharedFormKind
+  const isRecord = value => sharedFormKind(value) === "record" || (protocolHooks.satisfies?.(methodKeys[42], value) ?? recordTypeOf(value) !== undefined);
   //@unit isInstance requires: Atom, Delay, MultiFn, sharedEngineVar, sharedFormKind, sharedFormOf, Var
   const isInstance = (type, value) => sharedFormKind(type) === "type" ? __rt.structTypeOf(sharedFormOf(value)) === sharedFormOf(type)
     : type === Var && sharedEngineVar(value) || type === Atom && __rt.cljIsAtom(value)
@@ -1375,8 +1384,6 @@
   seq = (operation => value => sharedFormKind(value) === "record" ? __rt.cljSeq(sharedFormOf(value)) : operation(value))(seq);
   collectionWithMeta = (operation => (value, metadata) => sharedFormKind(value) === "record"
     ? __rt.cljWithMeta(value, metadata) : operation(value, metadata))(collectionWithMeta);
-  //@unit reifyValues requires: sharedSet
-  const reifyValues = sharedSet();
   //@unit emptyList
   const emptyList = __rt.formList();
   //@unit sharedSeqForm requires: first, rest, seq
@@ -1554,7 +1561,7 @@
     fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
     return fn;
   }
-  //@unit ClassBrand
+  //@unit ClassBrand compile-time
   // The V8 profile's `ClassBrand`, whose "some class is branded" flag is the
   // task's cell `classBrands` instead of a private static of the class,
   // which would keep the class's record from sealing (light-cljs-666).
@@ -1779,13 +1786,6 @@
   //@ uuidImplementation, vectorValue, volatileValue, watchableValue, withMetaValue, writerValue
   function builtinCoreImplementation(protocol, value) { return !!nativeImplementations.get(protocol)?.(value); }
   const nativeImplementations = sharedMap([[Inst, instValue], [IUUID, uuidImplementation], [ASeq, aseqValue], [INamed, namedValue], [IMultiFn, multiFnValue], [IFn, ifnValue], [IEditableCollection, editableValue], [ITransientCollection, transientValue], [ITransientAssociative, transientAssociativeValue], [ITransientVector, transientVectorValue], [ITransientMap, transientMapValue], [ITransientSet, transientSetValue], [Fn, fnValue], [IList, listValue], [IChunk, chunkValue], [IChunkedNext, chunkedSeqValue], [IDrop, dropValue], [IReduce, reduceValue], [IKVReduce, kvReduceValue], [IPrintWithWriter, printableValue], [IHash, hashableValue], [IEquiv, hashableValue], [IMapEntry, mapEntryValue], [IFind, findValue], [ISorted, sortedValue], [IChunkedSeq, chunkedSeqValue], [ICloneable, cloneablePayload], [IVector, vectorValue], [IMap, mapValue], [ISet, setValue], [ICollection, collectionValue], [IEmptyableCollection, emptyableValue], [IStack, stackValue], [IReversible, reversibleValue], [IIterable, iterableValue], [IComparable, comparableValue], [ISeqable, seqableValue], [ISeq, seqValue], [INext, nextValue], [ISequential, sequential], [ICounted, countedValue], [IIndexed, indexedValue], [ILookup, lookupValue], [IAssociative, associativeValue], [IMeta, metaValue], [IWithMeta, withMetaValue], [IAtom, atomValue], [IPending, pendingValue], [IDeref, derefValue], [IVolatile, volatileValue], [IWatchable, watchableValue], [IWriter, writerValue]]);
-  //@unit maps.records effect: recordMethods when: maps requires: maps, recordTypes, sharedFormKind, sharedFormOf, sharedMapEntries
-  // A record is a map without entries of its own until `updatedRecord` gives
-  // it some, so constructing one writes no store: these answer for it, with
-  // `none` as its entries (a record type is a function). `none` is sealed,
-  // not frozen: the wrapper captures it.
-  maps.has = (has => value => has.call(maps, value) || recordTypes.has(value))(maps.has);
-  maps.get = ((get, none) => value => sharedFormKind(value) === "record" ? sharedMapEntries(sharedFormOf(value)) : get.call(maps, value) ?? (recordTypes.get(value) && none))(maps.get, __rt.seal([]));
   //@unit makeMap.print effect: ArrayMapCell, makeMap, recordMethods, treeMapConstructor when: printWriterImpl
   //@ requires: kindHooks, maps, mapTraversal, printKind, printMapEntries, sharedFormKind, sharedFormOf
   kindHooks.print = printKind(kindHooks.print, value => maps.has(value), (value, writer, options) =>
