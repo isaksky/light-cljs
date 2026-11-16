@@ -106,8 +106,8 @@
   // The kind number of each runtime class converted to the class layout
   // (docs/value-layout.md, section 2), which its prototype holds under the
   // keyed name `cljs$lang$kind$$LKEY`: a value of this runtime, of this
-  // class. Kinds 1 to 3 hold a vector's store (`vectorStore`), 4 a
-  // transient vector's state (`transientState`). Kinds 5 to 11 are the seqs
+  // class. Kinds 1 to 3 are their own vector store (`vectorStore`), 4 a
+  // transient vector, its own state (`transientState`). Kinds 5 to 11 are the seqs
   // over an array or a string (`viewOf`), each set by its type's unit with
   // `viewType`: 5 `IndexedSeq`, 6 `ChunkedSeq`, 7 `NodeSeq`, 8
   // `ArrayNodeSeq`, 9 `PersistentArrayMapSeq`, 10 `RSeq`, 11
@@ -119,17 +119,41 @@
   // keywords and symbols (`keywordOf`, `symbolOf`), numbered apart from the
   // seq kinds still to convert.
   const kinds = Object.freeze({vector: 1, subvec: 2, entry: 3, transientVector: 4});
+  //@unit unkeyedJSON
+  // The JSON of a value of the class bases that have a `toJSON`: its own
+  // properties but its keyed fields, as before it had them
+  // (docs/value-layout.md, question 3).
+  function unkeyedJSON(value) {
+    const json = {};
+    // Own data properties, as an object rest gives, so that no setter of
+    // `Object.prototype` (`__proto__`) runs.
+    for (const key of Object.keys(value)) if (!key.endsWith("$LKEY")) Object.defineProperty(json, key, {value: value[key], writable: true, enumerable: true, configurable: true});
+    return json;
+  }
   //@unit vectorStore
   // The store (see `vectorTailOffset`) of a vector, a subvector or a map
-  // entry, the classes of kinds 1 to 3 (`kinds`), which hold it as their own
-  // keyed field (`VectorCell`, `SubvecCell`, `EntryCell`), else undefined.
-  // A value is told by its prototype's keyed kind, which no host object has
-  // by accident (docs/value-layout.md, section 5); one made by reflection
-  // from a vector's prototype holds no store, and is no vector.
+  // entry, the classes of kinds 1 to 3 (`kinds`): the value itself, whose
+  // own keyed fields are the store's (`VectorCell`, `VectorViewCell`,
+  // `EntryCell`), else undefined. A value is told by its prototype's keyed
+  // kind, which no host object has by accident (docs/value-layout.md,
+  // section 5); one made by reflection from a vector's prototype has no
+  // `cnt` field, and is no vector.
   function vectorStore(value) {
     if (value == null) return undefined;
     const kind = value.cljs$lang$kind$$LKEY;
-    return kind === 1 || kind === 2 || kind === 3 ? value.store$LKEY : undefined;
+    return (kind === 1 || kind === 2 || kind === 3) && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? value : undefined;
+  }
+  //@unit ownMeta
+  // Whether a value holds its metadata and its cached hash in its own keyed
+  // fields `meta` and `hash` (docs/value-layout.md, section 2), which
+  // `meta`, `withMeta` and `hash` read, rather than in the `metadataValues`
+  // and `constructorHashes` stores: a vector, a subvector or a map entry of
+  // this runtime's classes (`VectorCell`, `VectorViewCell`, `SubvecCell`,
+  // `EntryCell`), but no engine vector form of the Pants build's profile.
+  function ownMeta(value) {
+    if (value == null) return false;
+    const kind = value.cljs$lang$kind$$LKEY;
+    return (kind === 1 || kind === 2 || kind === 3) && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
   }
   //@unit holdsVector requires: vectorStore
   // Whether a value is a vector, a subvector or a map entry, as the
@@ -137,34 +161,51 @@
   const holdsVector = value => vectorStore(value) !== undefined;
   //@unit isEntryCell
   // Whether a value is a map entry of the runtime's class (`EntryCell`).
-  const isEntryCell = value => value != null && value.cljs$lang$kind$$LKEY === 3 && value.store$LKEY !== undefined;
+  const isEntryCell = value => value != null && value.cljs$lang$kind$$LKEY === 3 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
   //@unit vectorCells requires: holdsVector
   // `holdsVector` as an entry of the store inventories (`storesPredicate`,
   // `payloadStores`), which probe it as a store that is not exact.
   const vectorCells = Object.freeze({has: holdsVector});
   //@unit vectorCellCopy
-  // A new value of a vector cell's prototype holding its store, built by a
-  // constructor (so the compile-time runtime stamps it), for `withMeta` and
-  // `clone`; `VectorCellCopy` keeps no vector type.
+  // A new value of a vector cell's prototype with its fields, its metadata
+  // and hash included, built by a constructor (so the compile-time runtime
+  // stamps it), for `withMeta` and `clone`; the copy constructors keep no
+  // vector type. A view's copy shares the trie it built.
   function vectorCellCopy(value) {
     const Type = function () {};
     Type.prototype = Object.getPrototypeOf(value);
-    return Reflect.construct(VectorCellCopy, [value.store$LKEY], Type);
+    return value.sub$LKEY !== undefined ? Reflect.construct(VectorViewCopy, [value], Type) : Reflect.construct(VectorCellCopy, [value], Type);
   }
-  function VectorCellCopy(store) { this.store$LKEY = store; /*@brand*/ }
+  function VectorCellCopy(v) {
+    this.meta$LKEY = v.meta$LKEY; this.cnt$LKEY = v.cnt$LKEY; this.shift$LKEY = v.shift$LKEY; this.root$LKEY = v.root$LKEY; this.tail$LKEY = v.tail$LKEY; this.hash$LKEY = v.hash$LKEY;
+    if (v.callerTail$LKEY) this.callerTail$LKEY = true;
+    /*@brand*/
+  }
+  function VectorViewCopy(v) {
+    this.meta$LKEY = v.meta$LKEY; this.cnt$LKEY = v.cnt$LKEY; this.sub$LKEY = v.sub$LKEY; this.begin$LKEY = v.begin$LKEY; this.built$LKEY = v.built$LKEY; this.hash$LKEY = v.hash$LKEY; /*@brand*/
+  }
   //@unit VectorCell
-  // A persistent vector: its store is its own keyed field, and its
-  // prototype `PersistentVectorValue`'s (`PersistentVectorValue.type`).
-  // Nothing in it is frozen. The compile-time runtime stamps it (`stamp`).
-  function VectorCell(store) { this.store$LKEY = store; /*@brand*/ }
+  // A persistent vector, upstream's PersistentVector: its own keyed fields
+  // are its metadata, its store's `cnt`, `shift`, `root` and `tail` (see
+  // `vectorTailOffset`) and its hash, null until computed; `callerTail`,
+  // where it is there, marks a tail the caller gave. Its prototype is
+  // `PersistentVectorValue`'s (`PersistentVectorValue.type`). Nothing in it
+  // is frozen. The compile-time runtime stamps it (`stamp`).
+  function VectorCell(meta, cnt, shift, root, tail, hash) { this.meta$LKEY = meta; this.cnt$LKEY = cnt; this.shift$LKEY = shift; this.root$LKEY = root; this.tail$LKEY = tail; this.hash$LKEY = hash; /*@brand*/ }
+  //@unit VectorViewCell
+  // A view (`vectorView`) as a vector, with `PersistentVectorValue`'s
+  // prototype: what `assoc` and `pop` of a subvector give.
+  function VectorViewCell(meta, cnt, sub, start, hash) { this.meta$LKEY = meta; this.cnt$LKEY = cnt; this.sub$LKEY = sub; this.begin$LKEY = start; this.built$LKEY = null; this.hash$LKEY = hash; /*@brand*/ }
   //@unit SubvecCell
-  // A subvector (`subvec`): a vector whose store is a view (`VectorView`) or
-  // a trie of getters, with `SubvecValue`'s prototype.
-  function SubvecCell(store) { this.store$LKEY = store; /*@brand*/ }
+  // A subvector (`subvec`), upstream's Subvec: a view (`vectorView`) of
+  // `cnt` items of the vector store `sub` from its index `begin` (upstream's `start`), with
+  // `SubvecValue`'s prototype, its metadata and its hash.
+  function SubvecCell(meta, cnt, sub, start, hash) { this.meta$LKEY = meta; this.cnt$LKEY = cnt; this.sub$LKEY = sub; this.begin$LKEY = start; this.built$LKEY = null; this.hash$LKEY = hash; /*@brand*/ }
   //@unit EntryCell
   // A map entry: a vector store of its key and value, which its tail holds,
-  // with `MapEntryType`'s prototype.
-  function EntryCell(store) { this.store$LKEY = store; /*@brand*/ }
+  // with `MapEntryType`'s prototype. Its metadata is always nil (`withMeta`
+  // of one is a vector).
+  function EntryCell(key, val) { this.meta$LKEY = null; this.cnt$LKEY = 2; this.shift$LKEY = 5; this.root$LKEY = []; this.tail$LKEY = [key, val]; this.hash$LKEY = null; /*@brand*/ }
   //@unit viewOf
   // A seq over an array or a string, the classes of kinds 5 to 11 (`kinds`):
   // the value itself, whose own keyed fields are its storage `arr` (an array
@@ -348,16 +389,21 @@
   // own (`TransientVectorCell`).
   const transients = privateStore(9);
   //@unit TransientVectorCell
-  // A transient vector: its state (`makeTransient`) is its own keyed field,
-  // and its prototype `TransientVectorType`'s (`TransientVectorCell.type`).
-  function TransientVectorCell(state) { this.state$LKEY = state; /*@brand*/ }
+  // A transient vector, upstream's TransientVector: its own keyed fields are
+  // the store it edits (`cnt`, `shift`, `root`, `tail`, see
+  // `vectorTailOffset`), the nodes it owns (`owned`, see `vectorEditor`)
+  // and whether it is still `editable`, so that it is its own state
+  // (`transientState`). Its prototype is `TransientVectorType`'s
+  // (`TransientVectorCell.type`).
+  function TransientVectorCell(cnt, shift, root, tail, owned) { this.cnt$LKEY = cnt; this.shift$LKEY = shift; this.root$LKEY = root; this.tail$LKEY = tail; this.owned$LKEY = owned; this.editable$LKEY = true; /*@brand*/ }
   //@unit isTransientCell
   // Whether a value is a transient vector of the runtime's class, by its
   // prototype's keyed kind (`kinds`), as `vectorStore` tells a vector.
-  const isTransientCell = value => value != null && value.cljs$lang$kind$$LKEY === 4 && value.state$LKEY !== undefined;
+  const isTransientCell = value => value != null && value.cljs$lang$kind$$LKEY === 4 && value.cnt$LKEY !== undefined;
   //@unit transientState requires: isTransientCell, transients
-  // The state of a transient (`makeTransient`), else undefined.
-  const transientState = value => isTransientCell(value) ? value.state$LKEY : transients.get(value);
+  // The state of a transient (`makeTransient`): a transient vector itself,
+  // else undefined.
+  const transientState = value => isTransientCell(value) ? value : transients.get(value);
   //@unit isTransient requires: isTransientCell, transients
   // Whether a value is a transient, as the transients' store answered.
   const isTransient = value => isTransientCell(value) || transients.has(value);
@@ -988,25 +1034,34 @@
     metadataValues.set(value, metadata);
     return value;
   }
-  //@unit PersistentVectorValue requires: constructorSlots, makeVector, vectorRoots
+  //@unit PersistentVectorValue requires: makeVector, publicCollectionSlots, VectorCell, vectorRoots
   // Root slots are opaque canonical tokens, never an upstream trie-node ABI:
   // a token names the private root of the vector whose `root` field gave it.
-  // The supplied tail is shared, as upstream.
+  // The supplied tail is shared, as upstream; the metadata and the hash are
+  // kept as given, an undefined one too, as the public slots keep them.
   function PersistentVectorValue(metadata, cnt, shift, root, tail, cachedHash) {
-    // `callerTail` marks the tail, which stores that keep it inherit, as the
-    // caller's: no seq freezes it (`vectorChunk`).
-    const value = makeVector(null, {cnt, shift, root: vectorRoots.get(root) ?? [], tail, callerTail: true});
-    return constructorSlots(value, {cnt, shift, root, tail}, metadata, cachedHash);
+    // `callerTail` marks the tail, which vectors that keep it inherit, as
+    // the caller's: no seq freezes it (`vectorChunk`).
+    const store = new VectorCell(metadata, cnt, shift, vectorRoots.get(root) ?? [], tail, cachedHash);
+    store.callerTail$LKEY = true;
+    const value = makeVector(null, store);
+    publicCollectionSlots.set(value, {cnt, shift, root, tail});
+    return value;
   }
-  //@unit SubvecValue requires: constructorSlots, methodKeys, nth, protocolHooks, SubvecCell,
-  //@ subvecSources, vectorStore, vectorTrie, VectorView
+  //@unit subvecOfTrie requires: SubvecCell, VectorCell
+  // A subvector whose store is the vector `trie`'s trie, not a view: of the
+  // items a protocol implementation gave (`subvec`), or of getters
+  // (`SubvecValue`).
+  const subvecOfTrie = trie => Reflect.construct(VectorCell, [null, trie.cnt$LKEY, trie.shift$LKEY, trie.root$LKEY, trie.tail$LKEY, null], SubvecCell);
+  //@unit SubvecValue requires: methodKeys, nth, protocolHooks, publicCollectionSlots, subvecOfTrie,
+  //@ subvecSources, vectorStore, vectorTrie, vectorView
   function SubvecValue(metadata, source, start, end, cachedHash) {
     const store = vectorStore(source), cnt = Math.max(0, end - start);
     let value;
     // A view of a vector's store holding every index it names, as `subvec`;
     // else items that ask `nth` of the source when read.
-    if (store && Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start + cnt <= store.cnt
-      && !protocolHooks.publicMethod?.(source, methodKeys[25], 2, true, true)) value = new SubvecCell(new VectorView(store, start, cnt));
+    if (store && Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start + cnt <= store.cnt$LKEY
+      && !protocolHooks.publicMethod?.(source, methodKeys[25], 2, true, true)) value = vectorView(store, start, cnt);
     else {
       // Every leaf keeps the getters, and the store is marked as reading a
       // caller's array (`callerTail`), so that no copy of an item is kept.
@@ -1015,10 +1070,14 @@
         for (let i = from; i < to; i++) Object.defineProperty(node, i - from, {enumerable: true, get: () => nth(source, start + i)});
         return node;
       };
-      value = new SubvecCell({...vectorTrie(getters(0, cnt), getters), callerTail: true});
+      value = subvecOfTrie(vectorTrie(getters(0, cnt), getters));
+      value.callerTail$LKEY = true;
     }
+    value.meta$LKEY = metadata;
+    value.hash$LKEY = cachedHash;
     subvecSources.set(value, source);
-    return constructorSlots(value, {start, end}, metadata, cachedHash);
+    publicCollectionSlots.set(value, {start, end});
+    return value;
   }
   //@unit ChunkedSeqValue requires: ChunkedSeqCell, constructorHashes, metadataValues
   function ChunkedSeqValue(source, node, index, offset, metadata, cachedHash) {
@@ -1334,7 +1393,7 @@
   //@ IndexedSeqCell, kindHooks, vectorChunk
   // A vector of at most 32 items walks its tail; a longer one is upstream's
   // chunked seq over its trie's leaves.
-  kindHooks.seqVector = (value, store) => !store.cnt ? null : store.cnt <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), 0, true, "indexed")
+  kindHooks.seqVector = (value, store) => !store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), 0, true, "indexed")
     : new ChunkedSeqCell(vectorChunk(value, 0), 0, value, 0);
   //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: first, rest, seq
   //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal,
@@ -1581,8 +1640,8 @@
     if (store === undefined) return noBranch;
     const own = protocolHooks.publicMethod?.(value, methodKeys[52], 1, true);
     return own ? firstSeq(own.call(value, value))
-      : publicCollectionSlots.has(value) || (store.sub ?? store).callerTail ? firstSeq(kindHooks.seqVector(value, store))
-      : store.cnt ? vectorNth(store, 0) : null;
+      : publicCollectionSlots.has(value) || (store.sub$LKEY ?? store).callerTail$LKEY ? firstSeq(kindHooks.seqVector(value, store))
+      : store.cnt$LKEY ? vectorNth(store, 0) : null;
   }
   //@unit vectorRest requires: ChunkedSeqCell, IndexedSeqCell, kindHooks, methodKeys, noBranch,
   //@ protocolHooks, publicCollectionSlots, rest, restSeq, seq, vectorChunk, vectorStore
@@ -1594,9 +1653,9 @@
   function vectorRest(value, empty) {
     const store = vectorStore(value);
     if (store === undefined) return noBranch;
-    const method = protocolHooks.publicMethod, shared = publicCollectionSlots.has(value) || (store.sub ?? store).callerTail;
+    const method = protocolHooks.publicMethod, shared = publicCollectionSlots.has(value) || (store.sub$LKEY ?? store).callerTail$LKEY;
     const own = empty === null ? undefined : method?.(value, methodKeys[52], 1, true);
-    if (!shared && !own && (empty !== null || !method)) return store.cnt < 2 ? empty : store.cnt <= 32
+    if (!shared && !own && (empty !== null || !method)) return store.cnt$LKEY < 2 ? empty : store.cnt$LKEY <= 32
       ? new IndexedSeqCell(vectorChunk(value, 0), 1, true, "indexed") : new ChunkedSeqCell(vectorChunk(value, 0), 1, value, 0);
     return empty === null ? seq(rest(value)) : restSeq(own ? own.call(value, value) : kindHooks.seqVector(value, store));
   }
@@ -2093,7 +2152,7 @@
     // received), and a public ChunkedSeq over one, walk its store.
     const store = vectorStore(chunked ? chunked.vec$LKEY : source);
     if (store && (chunked || chunkedSlots?.cnt != null && arity === 2
-      || (store.cnt > 32 || store.sub) && !protocolHooks.publicMethod?.(source, methodKeys[52], 1, true)))
+      || (store.cnt$LKEY > 32 || store.sub$LKEY) && !protocolHooks.publicMethod?.(source, methodKeys[52], 1, true)))
       return vectorReduce(store, rf, init, chunked ? chunked.base$LKEY + chunked.i$LKEY : 0, arity);
     const producer = cells.get(source);
     if (producer?.integer && arity === 2) {
@@ -2321,8 +2380,8 @@
   }
   //@unit subvecSources
   const subvecSources = new WeakMap();
-  //@unit subvec requires: count, isVector, methodKeys, nth, protocolHooks, SubvecCell,
-  //@ subvecSources, vectorFromArray, vectorStore, VectorView
+  //@unit subvec requires: count, isVector, methodKeys, nth, protocolHooks, subvecOfTrie,
+  //@ subvecSources, vectorFromArray, vectorStore, vectorView
   function subvec(value, start, end = count(value)) {
     if (start == null || end == null) throw new Error("Assert failed: subvec indices cannot be nil");
     start = start | 0; end = end | 0;
@@ -2331,8 +2390,8 @@
     // A view of a vector's store, as upstream's Subvec, unless a protocol
     // implementation answers its `nth`: then a copy of what that answers.
     const store = !protocolHooks.publicMethod?.(value, methodKeys[25], 2, true, true) && vectorStore(value);
-    const result = new SubvecCell(store ? new VectorView(store, start, end - start)
-      : vectorStore(vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)))));
+    const result = store ? vectorView(store, start, end - start)
+      : subvecOfTrie(vectorStore(vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)))));
     subvecSources.set(result, subvecSources.get(value) ?? value);
     return result;
   }
@@ -2409,15 +2468,16 @@
   }
 
   //@unit conj requires: cells, cons, emptyList, holdsVector, isChunkedCons, isLazy, isView,
-  //@ kindHooks, makeVector, maps, metadataValues, methodKeys, missing, preserveMeta, protocolHooks,
-  //@ publicCollectionSlots, queues, sets, subvecSources, vectorStore
+  //@ kindHooks, makeVector, maps, metadataValues, methodKeys, missing, ownMeta, preserveMeta,
+  //@ protocolHooks, publicCollectionSlots, queues, setMeta, sets, subvecSources, vectorStore
   function conj(coll, item) {
     // One item onto a vector, where no protocol implementation or public
     // constructor can intervene: the hot path of building one.
     const store = arguments.length === 2 && !protocolHooks.builtin ? vectorStore(coll) : undefined;
     if (store && !subvecSources.has(coll)) {
       const built = kindHooks.conjVector(store, item);
-      if (metadataValues.has(coll)) metadataValues.set(built, metadataValues.get(coll));
+      if (ownMeta(coll)) { if (coll.meta$LKEY !== null) setMeta(built, coll.meta$LKEY); }
+      else if (metadataValues.has(coll)) metadataValues.set(built, metadataValues.get(coll));
       return built;
     }
     // Likewise one member onto a set (light-cljs-236).
@@ -2499,13 +2559,14 @@
     const kind = coll?.[kindOps], result = typeof kind === "number" && arguments.length === 2 ? kindTables[kind & 15][7](coll, item) : noBranch;
     return result !== noBranch ? result : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(conj);
-  //@unit conjMeta requires: metadataValues, preserveMeta, protocolHooks
+  //@unit conjMeta requires: metadataValues, ownMeta, preserveMeta, protocolHooks, setMeta
   // What `conj` of a vector or a set gives `built` from `coll`: its metadata,
   // which its fast path copies and its other path reads with `meta`, which
   // protocol implementations can answer.
   function conjMeta(coll, built) {
     if (protocolHooks.builtin) return preserveMeta(coll, built);
-    if (metadataValues.has(coll)) metadataValues.set(built, metadataValues.get(coll));
+    if (ownMeta(coll)) { if (coll.meta$LKEY !== null) setMeta(built, coll.meta$LKEY); }
+    else if (metadataValues.has(coll)) setMeta(built, metadataValues.get(coll));
     return built;
   }
   //@unit conj.vectors effect: PersistentVectorValue, SubvecValue when: conj requires: conjMeta,
@@ -2627,8 +2688,8 @@
   kindHooks.assocVector = (value, store, key, item, pairs) => {
     const assign = (index, value) => {
       if (typeof index !== "number") throw new Error("Vector key must be a number");
-      if (index >= 0 && index < store.cnt) store = vectorAssoc(store, index, value);
-      else if (index === store.cnt) store = vectorConj(store, value);
+      if (index >= 0 && index < store.cnt$LKEY) store = vectorAssoc(store, index, value);
+      else if (index === store.cnt$LKEY) store = vectorConj(store, value);
       else outOfBounds();
     };
     // The fixed arity follows JS argument binding, including missing item.
@@ -3428,14 +3489,14 @@
     return preserveMeta(value, makeSet(setType(setKinds.get(value)), entries, setKinds.get(value), sortedComparators.get(value)));
   }
 
-  //@unit transientPrototype requires: invalidArity, printHooks, transientLookup
+  //@unit transientPrototype requires: invalidArity, printHooks, transientLookup, unkeyedJSON
   // Transient payloads own a private mutable copy of canonical collection
   // storage. Persistence freezes that storage; no persistent alias can mutate it.
   const transientPrototype = Object.freeze({
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
-    // JSON of a class value: its own properties but its keyed field, as
-    // before it had one (docs/value-layout.md, question 3).
-    toJSON() { const {state$LKEY: _, ...json} = this; return json; },
+    // JSON of a class value: its own properties but its keyed fields, as
+    // before it had them (docs/value-layout.md, question 3).
+    toJSON() { return unkeyedJSON(this); },
     toString() { return printHooks.collection(this); },
     call(_self, key, notFound) {
       if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
@@ -3456,9 +3517,11 @@
   //@unit TransientHashSetType effect requires: builtinType, transientPrototype
   const TransientHashSetType = builtinType(function () {}, transientPrototype);
   //@unit makeTransient requires: TransientArrayMapType, TransientHashMapType, TransientHashSetType,
-  //@ transients, TransientVectorCell
+  //@ transients
+  // A transient of `entries`: a transient vector is the `TransientVectorCell`
+  // it is given (`makeVector.transient`), its own state.
   function makeTransient(kind, entries, mapKind) {
-    if (kind === "vector") return new TransientVectorCell({kind, entries, mapKind, editable: true, edit: {}});
+    if (kind === "vector") return entries;
     const Type = kind === "set" ? TransientHashSetType : mapKind === "array-map" ? TransientArrayMapType : TransientHashMapType;
     const result = Object.create(Type.prototype);
     transients.set(result, {kind, entries, mapKind, editable: true, edit: {}});
@@ -3467,7 +3530,8 @@
   //@unit editableTransient requires: transientState
   function editableTransient(value, operation) {
     const state = transientState(value);
-    if (!state?.editable) throw new Error(operation === "persistent!" ? "persistent! called twice" : operation + " after persistent!");
+    // A transient vector is its own state (`TransientVectorCell`).
+    if (!(state === value ? state.editable$LKEY : state?.editable)) throw new Error(operation === "persistent!" ? "persistent! called twice" : operation + " after persistent!");
     return state;
   }
   //@unit transient requires: asTransientProtocol
@@ -3484,25 +3548,29 @@
   //@unit persistTransient requires: editableTransient, kindHooks
   function persistTransient(value) {
     const state = editableTransient(value, "persistent!");
+    if (state === value) { state.editable$LKEY = false; return kindHooks.persistVector(state); }
     state.editable = false;
-    if (state.kind === "vector") return kindHooks.persistVector(state.entries);
     if (state.kind === "map") return kindHooks.persistMap(state.entries, state.mapKind);
     return kindHooks.persistSet(state.entries, state.mapKind);
   }
   //@unit makeVector.persist effect: makeVector, mapEntry when: persistTransient requires: kindHooks,
-  //@ makeVector, vectorTailOffset
+  //@ makeVector, VectorCell, vectorTailOffset
   // A transient vector, map or set comes from a persistent one of its kind.
   // The vector's tail is trimmed to its count; the nodes it owned no longer
   // change, as nothing can edit them, and a leaf freezes where a seq first
   // shares it (`vectorChunk`).
-  kindHooks.persistVector = ({cnt, shift, root, tail}) => makeVector(null, {cnt, shift, root, tail: tail.slice(0, cnt - vectorTailOffset(cnt))});
-  //@unit makeVector.transient effect: makeVector, mapEntry when: asTransient requires: kindHooks
+  kindHooks.persistVector = store => {
+    const cnt = store.cnt$LKEY;
+    return makeVector(null, new VectorCell(null, cnt, store.shift$LKEY, store.root$LKEY, store.tail$LKEY.slice(0, cnt - vectorTailOffset(cnt)), null));
+  };
+  //@unit makeVector.transient effect: makeVector, mapEntry when: asTransient requires: kindHooks,
+  //@ TransientVectorCell, viewTrie
   // A transient vector edits a copy of the tail, and copies of the trie's
   // nodes along the paths it changes, which it owns (`vectorEditor`): a weak
   // set, which keeps no node a `pop!` discarded.
-  kindHooks.transientVector = ({cnt, shift, root, tail}) => {
-    tail = tail.slice();
-    return {cnt, shift, root, tail, owned: new WeakSet([tail])};
+  kindHooks.transientVector = store => {
+    const trie = viewTrie(store), tail = trie.tail$LKEY.slice();
+    return new TransientVectorCell(trie.cnt$LKEY, trie.shift$LKEY, trie.root$LKEY, tail, new WeakSet([tail]));
   };
   //@unit makeMap.persist effect: makeMap, treeMapConstructor, recordMethods when: persistTransient
   //@ requires: hashTrie, kindHooks, makeMap, PersistentArrayMapValue, PersistentHashMapValue
@@ -3512,12 +3580,12 @@
   kindHooks.persistSet = (entries, kind) => makeSet(PersistentHashSetValue, entries, kind);
   //@unit transientNth requires: editableTransient, missing, transientState, vectorNth
   function transientNth(value, index, fallback) {
-    const state = transientState(value);
+    const state = transientState(value), store = state === value ? state : state.entries;
     // Pinned CLJS's three-argument -nth returns an out-of-range fallback
     // even after persistence; in-range access still checks ownership.
-    if (fallback !== missing && !(index >= 0 && index < state.entries.cnt)) return fallback;
+    if (fallback !== missing && !(index >= 0 && index < store.cnt$LKEY)) return fallback;
     editableTransient(value, "nth");
-    return vectorNth(state.entries, index, fallback);
+    return vectorNth(store, index, fallback);
   }
   //@unit transientLookup requires: editableTransient, kindHooks, transientNth, transientState
   function transientLookup(value, key, notFound) {
@@ -3525,7 +3593,7 @@
     // TransientHashMap (and its set wrapper) retains readable lookup after
     // persistence in both pinned versions. Array maps and vectors reject it.
     if (state.mapKind !== "hash-map") editableTransient(value, "lookup");
-    if (state.kind === "vector") return typeof key === "number" ? transientNth(value, key, notFound) : notFound;
+    if (state === value) return typeof key === "number" ? transientNth(value, key, notFound) : notFound;
     // A transient hash map or set edits a trie (see `asTransient`).
     if (!Array.isArray(state.entries)) {
       const entry = kindHooks.trieEntry(state.entries, key);
@@ -3541,10 +3609,10 @@
   //@ putEntry, transientState
   function assocTransient(value, key, item, indexed = false) {
     const state = transientState(value);
-    if (state.kind === "vector") {
+    if (state === value) {
       if (!indexed && typeof key !== "number") throw new Error("TransientVector's key for assoc! must be a number.");
       editableTransient(value, "assoc!");
-      kindHooks.assocTransientVector(state.entries, key, item);
+      kindHooks.assocTransientVector(state, key, item);
     } else {
       editableTransient(value, "assoc!");
       if (state.mapKind === "array-map" && state.entries.length >= 8 && entryIndex(state.entries, key) < 0) {
@@ -3559,7 +3627,7 @@
   //@unit conjTransient requires: editableTransient, kindHooks
   function conjTransient(value, member) {
     const state = editableTransient(value, "conj!");
-    if (state.kind === "vector") { kindHooks.conjTransientVector(state.entries, member); return value; }
+    if (state === value) { kindHooks.conjTransientVector(state, member); return value; }
     return state.kind === "set" ? kindHooks.conjTransientSet(value, state, member) : kindHooks.conjTransientMap(value, member);
   }
   //@unit conjBangOwn requires: conjBangProtocol, conjTransient, isTransient, protocolHooks
@@ -3573,10 +3641,10 @@
   //@ kindHooks, outOfBounds, vectorAssocNode, vectorEditor, vectorTailOffset
   // `assoc!` of an index of a transient vector, or of its count.
   kindHooks.assocTransientVector = (store, key, item) => {
-    if (key >= 0 && key < store.cnt) {
-      if (key >= vectorTailOffset(store.cnt)) store.tail[key & 31] = item;
-      else store.root = vectorAssocNode(store.shift, store.root, key, item, vectorEditor(store.owned));
-    } else if (key === store.cnt) conjVectorBang(store, item);
+    if (key >= 0 && key < store.cnt$LKEY) {
+      if (key >= vectorTailOffset(store.cnt$LKEY)) store.tail$LKEY[key & 31] = item;
+      else store.root$LKEY = vectorAssocNode(store.shift$LKEY, store.root$LKEY, key, item, vectorEditor(store.owned$LKEY));
+    } else if (key === store.cnt$LKEY) conjVectorBang(store, item);
     else outOfBounds();
   };
   //@unit makeSet.conjTransient effect: makeSet, treeSetConstructor when: conjTransient requires: kindHooks,
@@ -3621,16 +3689,16 @@
   // overwrites it or `persistent!` trims it; a vector whose tail empties
   // takes its last leaf for its tail.
   function popTransient(value) {
-    const store = editableTransient(value, "pop!").entries, {cnt, shift} = store;
+    const store = editableTransient(value, "pop!"), cnt = store.cnt$LKEY, shift = store.shift$LKEY;
     if (!cnt) throw new Error("Can't pop empty vector");
     if (cnt > 1 && !((cnt - 1) & 31)) {
-      const edit = vectorEditor(store.owned);
-      store.tail = edit(vectorLeaf(store, cnt - 2));
-      const root = vectorPopTail(cnt, shift, store.root, edit) ?? [];
-      if (shift > 5 && root.length < 2) { store.root = edit(root[0]); store.shift -= 5; }
-      else store.root = root;
+      const edit = vectorEditor(store.owned$LKEY);
+      store.tail$LKEY = edit(vectorLeaf(store, cnt - 2));
+      const root = vectorPopTail(cnt, shift, store.root$LKEY, edit) ?? [];
+      if (shift > 5 && root.length < 2) { store.root$LKEY = edit(root[0]); store.shift$LKEY -= 5; }
+      else store.root$LKEY = root;
     }
-    store.cnt--;
+    store.cnt$LKEY--;
     return value;
   }
   //@unit conjBang requires: conjBangProtocol, transient, vector
@@ -3671,19 +3739,19 @@
   // when it is read, so the iterator, the printer and equality read no more
   // than they use.
   function vectorStorage(value) {
-    const store = vectorStore(value);
-    if (!store.cnt) return null;
-    if (!(store.sub ?? store).callerTail) return store.cnt <= 32 ? store.tail : vectorItems(value);
-    if (store.cnt <= 32 && !store.sub) return store.tail;
+    const store = vectorStore(value), cnt = store.cnt$LKEY, sub = store.sub$LKEY;
+    if (!cnt) return null;
+    if (!(sub ?? store).callerTail$LKEY) return cnt <= 32 && !sub ? store.tail$LKEY : vectorItems(value);
+    if (cnt <= 32 && !sub) return store.tail$LKEY;
     const items = [];
-    for (let i = 0; i < store.cnt; i++) Object.defineProperty(items, i, {enumerable: true, get: () => vectorNth(store, i, null)});
+    for (let i = 0; i < cnt; i++) Object.defineProperty(items, i, {enumerable: true, get: () => vectorNth(store, i, null)});
     return items;
   }
   //@unit vectorCount requires: publicCollectionSlots, subvecSources, vectorStore
   function vectorCount(value) {
     const slots = publicCollectionSlots.get(value);
     if (slots && "cnt" in slots) return slots.cnt;
-    return slots && subvecSources.has(value) ? slots.end - slots.start : vectorStore(value).cnt;
+    return slots && subvecSources.has(value) ? slots.end - slots.start : vectorStore(value).cnt$LKEY;
   }
   //@unit vectorIndexOf requires: holdsVector, hostHooks, indexIn, isEntryCell, missing,
   //@ outOfBounds, protocolHooks, vectorCount, vectorNth, vectorStore
@@ -3693,13 +3761,13 @@
     return indexIn(vectorCount(coll), i => entry && i !== 0 && i !== 1 ? outOfBounds() : vectorNth(store, i, missing), value, start, reverse);
   }
   //@unit vectorPrototype requires: holdsVector, hostHooks, invalidArity, itemIterator, missing,
-  //@ objectEquiv, outOfBounds, printHooks, protocolHooks, vectorCount, vectorIndexOf, vectorNth,
-  //@ vectorStorage, vectorStore
+  //@ objectEquiv, outOfBounds, printHooks, protocolHooks, unkeyedJSON, vectorCount, vectorIndexOf,
+  //@ vectorNth, vectorStorage, vectorStore
   const vectorPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
-    // JSON of a class value: its own properties but its keyed field, as
-    // before it had one (docs/value-layout.md, question 3).
-    toJSON() { const {store$LKEY: _, ...json} = this; return json; },
+    // JSON of a class value: its own properties but its keyed fields, as
+    // before it had them (docs/value-layout.md, question 3).
+    toJSON() { return unkeyedJSON(this); },
     [Symbol.iterator]() { return protocolHooks.extend || !holdsVector(this) ? hostHooks.iterator(this) : itemIterator(vectorStorage(this), item => item); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return printHooks.collection(this); },
@@ -3714,11 +3782,11 @@
       // few classes, rather than in `vectorStore`, which every kind test
       // calls with every kind of value.
       const kind = this.cljs$lang$kind$$LKEY;
-      const store = kind === 1 || kind === 2 || kind === 3 ? this.store$LKEY : vectorStore(this);
+      const store = (kind === 1 || kind === 2 || kind === 3) && this.cnt$LKEY !== undefined ? this : vectorStore(this);
       if (!store) throw new Error("Expected vector");
       if (kind === 3) {
         if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
-        if (index === 0 || index === 1) return store.tail[index];
+        if (index === 0 || index === 1) return store.tail$LKEY[index];
         return arguments.length === 3 ? arguments[2] : outOfBounds();
       }
       if (typeof index !== "number") throw new Error("Key must be integer");
@@ -3733,6 +3801,8 @@
   //@unit VectorCell.type effect: VectorCell requires: PersistentVectorValue, VectorCell
   // A vector cell has the vectors' prototype, which the unit above builds.
   VectorCell.prototype = PersistentVectorValue.prototype;
+  //@unit VectorViewCell.type effect: VectorViewCell requires: PersistentVectorValue, VectorViewCell
+  VectorViewCell.prototype = PersistentVectorValue.prototype;
   //@unit SubvecValue.type effect: SubvecValue requires: builtinType, kindOps, kinds, SubvecValue,
   //@ vectorPrototype
   builtinType(SubvecValue, vectorPrototype).prototype[kindOps] = 4;
@@ -3740,16 +3810,16 @@
   //@unit SubvecCell.type effect: SubvecCell requires: SubvecCell, SubvecValue
   SubvecCell.prototype = SubvecValue.prototype;
   //@unit entryPrototype requires: hostHooks, indexIn, invalidArity, itemIterator, objectEquiv,
-  //@ outOfBounds, printHooks, protocolHooks, vectorStore
+  //@ outOfBounds, printHooks, protocolHooks, unkeyedJSON, vectorStore
   // The host-facing members of map entries where no vector can be built
   // (`MapEntryType.lean`): those of `vectorPrototype` for a vector of a key
   // and a value, as map entries are, the only values with items there. An
   // entry's store is a vector's of two items, which its tail holds.
   const entryPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
-    // JSON of a class value: its own properties but its keyed field, as
-    // before it had one (docs/value-layout.md, question 3).
-    toJSON() { const {store$LKEY: _, ...json} = this; return json; },
+    // JSON of a class value: its own properties but its keyed fields, as
+    // before it had them (docs/value-layout.md, question 3).
+    toJSON() { return unkeyedJSON(this); },
     [Symbol.iterator]() { const items = entryItems(this); return items ? itemIterator(items, item => item) : hostHooks.iterator(this); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     toString() { return printHooks.collection(this); },
@@ -3759,12 +3829,12 @@
       const store = vectorStore(this);
       if (!store) throw new Error("Expected vector");
       if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length - 1);
-      return index === 0 || index === 1 ? store.tail[index] : arguments.length === 3 ? arguments[2] : outOfBounds();
+      return index === 0 || index === 1 ? store.tail$LKEY[index] : arguments.length === 3 ? arguments[2] : outOfBounds();
     }
   });
   // An entry's items, unless protocol implementations could answer for it
   // or it is not one.
-  function entryItems(entry) { return !protocolHooks.extend && vectorStore(entry)?.tail; }
+  function entryItems(entry) { return !protocolHooks.extend && vectorStore(entry)?.tail$LKEY; }
   // `lastIndexOf` without a start searches from the end.
   function entryIndexOf(entry, value, start, reverse) {
     const items = entryItems(entry);
@@ -3821,25 +3891,29 @@
   // What keyword case compares, or null.
   const keywordFqn = value => keywordOf(value)?.fqn$LKEY ?? null;
 
-  //@unit makeVector requires: VectorCell, vectorTrie
-  // A vector of the new array `items`, or with the store an operation built.
-  function makeVector(items, store = vectorTrie(items)) {
-    return new VectorCell(store);
+  //@unit makeVector requires: vectorTrie
+  // A vector of the new array `items`, or the vector an operation built,
+  // which is its own store (`vectorConj`, `vectorAssoc`, `vectorPop`); the
+  // Pants build's profile swaps it for one that builds an engine vector.
+  function makeVector(items, store) {
+    return store === undefined ? vectorTrie(items) : store;
   }
 
   //@unit vectorTailOffset
-  // A vector's store (`vectors`) is upstream's PersistentVector: `cnt` items,
-  // the last 1 to 32 of them in the array `tail` and the others in the full
-  // 32-item leaves of a 32-way trie, whose `root` is `shift` / 5 levels above
-  // them. Nodes are arrays with no trailing holes. No operation changes a
-  // persistent vector's nodes; only a transient changes those it owns
-  // (`vectorEditor`). Seqs share leaves, which are frozen, and the tail,
-  // which freezes when one first does (`vectorChunk`); the root and the
-  // other nodes stay private.
+  // A vector's store, the vector itself (`vectorStore`), is upstream's
+  // PersistentVector: `cnt` items, the last 1 to 32 of them in the array
+  // `tail` and the others in the full 32-item leaves of a 32-way trie, whose
+  // `root` is `shift` / 5 levels above them; each a keyed field
+  // (`VectorCell`). Nodes are arrays with no trailing holes. No operation
+  // changes a persistent vector's nodes; only a transient changes those it
+  // owns (`vectorEditor`). Seqs share leaves, which are frozen, and the
+  // tail, which freezes when one first does (`vectorChunk`); the root and
+  // the other nodes stay private. A view (`vectorView`) has `sub` and
+  // `begin` instead of the trie's fields.
   // The index of the first item in the tail:
   const vectorTailOffset = cnt => cnt < 32 ? 0 : (cnt - 1) & -32;
-  //@unit vectorTrie requires: vectorTailOffset
-  // The store of the new array `items`, which it keeps as its tail where it
+  //@unit vectorTrie requires: VectorCell, vectorTailOffset
+  // A vector of the new array `items`, which it keeps as its tail where it
   // can; `slice` gives the items of each leaf and of a shorter tail.
   function vectorTrie(items, slice = (from, to) => items.slice(from, to)) {
     const cnt = items.length, end = vectorTailOffset(cnt);
@@ -3851,16 +3925,19 @@
       for (let i = 0; i < nodes.length; i += 32) parents.push(nodes.slice(i, i + 32));
       nodes = parents;
     }
-    return {cnt, shift, root: nodes, tail: end ? slice(end, cnt) : items};
+    return new VectorCell(null, cnt, shift, nodes, end ? slice(end, cnt) : items, null);
   }
-  //@unit vectorLeaf requires: vectorTailOffset
+  //@unit vectorLeaf requires: vectorSlice, vectorTailOffset
   // The leaf, or the tail, that holds index `i` of a store; of a view
-  // (`VectorView`), a new array of its items from index `i & -32`.
+  // (`vectorView`), a new array of its items from index `i & -32`.
   function vectorLeaf(store, i) {
-    if (store.sub) return store.leaf(i);
-    if (i >= vectorTailOffset(store.cnt)) return store.tail;
-    let node = store.root;
-    for (let level = store.shift; level > 0; level -= 5) node = node[(i >>> level) & 31];
+    if (store.tail$LKEY === undefined && store.sub$LKEY !== undefined) {
+      const from = store.begin$LKEY + (i & -32);
+      return vectorSlice(store.sub$LKEY, from, Math.min(from + 32, store.begin$LKEY + store.cnt$LKEY));
+    }
+    if (i >= vectorTailOffset(store.cnt$LKEY)) return store.tail$LKEY;
+    let node = store.root$LKEY;
+    for (let level = store.shift$LKEY; level > 0; level -= 5) node = node[(i >>> level) & 31];
     return node;
   }
   //@unit vectorChunk requires: vectorLeaf, vectorStore
@@ -3870,7 +3947,7 @@
   // `assoc` kept): that one stays its caller's, as upstream.
   function vectorChunk(value, i) {
     const store = vectorStore(value), leaf = vectorLeaf(store, i);
-    return !store.sub && store.callerTail && leaf === store.tail ? leaf : Object.freeze(leaf);
+    return !store.sub$LKEY && store.callerTail$LKEY && leaf === store.tail$LKEY ? leaf : Object.freeze(leaf);
   }
   //@unit vectorSlice requires: vectorLeaf
   // A new array of a store's items from index `from` to `to`.
@@ -3881,44 +3958,35 @@
   }
   //@unit vectorItems requires: vectorSlice, vectorStore
   // A new array of a vector's items.
-  const vectorItems = value => vectorSlice(vectorStore(value), 0, vectorStore(value).cnt);
-  //@unit VectorView requires: vectorAssoc, vectorSlice, vectorTrie
-  // The store of a `subvec`: a view of `cnt` items of another store, from its
-  // index `start`, which shares that store. `nth`, `reduce`, `pop` and `assoc`
-  // read or update the store it views; an operation that reads the fields of
-  // a trie (`shift`, `root`, `tail`) reads those of one it builds of its
-  // items, once.
-  class VectorView {
-    constructor(store, start, cnt) {
-      // A view of a view is a view of the store that one views.
-      this.cnt = cnt;
-      this.sub = store.sub ?? store;
-      this.start = store.sub ? store.start + start : start;
-      this.built = null;
-    }
-    // Built anew each time where the store it views reads a caller's array
-    // (`callerTail`), whose items can change.
-    get trie() {
-      const trie = this.built ?? vectorTrie(vectorSlice(this.sub, this.start, this.start + this.cnt));
-      if (!this.sub.callerTail) this.built = trie;
-      return trie;
-    }
-    get shift() { return this.trie.shift; }
-    get root() { return this.trie.root; }
-    get tail() { return this.trie.tail; }
-    leaf(i) {
-      const from = this.start + (i & -32);
-      return vectorSlice(this.sub, from, Math.min(from + 32, this.start + this.cnt));
-    }
-    assoc(i, item) { return new VectorView(vectorAssoc(this.sub, this.start + i, item), this.start, this.cnt); }
-    pop() { return new VectorView(this.sub, this.start, this.cnt - 1); }
+  const vectorItems = value => vectorSlice(vectorStore(value), 0, vectorStore(value).cnt$LKEY);
+  //@unit vectorView requires: SubvecCell
+  // A subvector (`SubvecCell`), or with `Cell` another view class
+  // (`VectorViewCell`), of `cnt` items of a store from its index `start`,
+  // which shares that store: a view of a view is a view of the store that
+  // one views. `nth`, `reduce`, `pop` and `assoc` read or update the store
+  // it views; an operation that reads the fields of a trie (`shift`,
+  // `root`, `tail`) reads those of one it builds of its items (`viewTrie`).
+  function vectorView(store, start, cnt, Cell = SubvecCell) {
+    const sub = store.sub$LKEY;
+    return sub ? new Cell(null, cnt, sub, store.begin$LKEY + start, null) : new Cell(null, cnt, store, start, null);
+  }
+  //@unit viewTrie requires: vectorSlice, vectorTrie
+  // A store with the trie's fields: itself, or for a view a vector of its
+  // items, built once, or each time where the store it views reads a
+  // caller's array (`callerTail`), whose items can change.
+  function viewTrie(store) {
+    const sub = store.sub$LKEY;
+    if (!sub) return store;
+    const trie = store.built$LKEY ?? vectorTrie(vectorSlice(sub, store.begin$LKEY, store.begin$LKEY + store.cnt$LKEY));
+    if (!sub.callerTail$LKEY) store.built$LKEY = trie;
+    return trie;
   }
   //@unit vectorReduce requires: isReduced, reducedValue, vectorLeaf, vectorNth
   // `reduce` of a store's items from index `i`: from `init` where `arity` is
   // 3, else from the first of them. A view's walks the store it views.
   function vectorReduce(store, rf, init, i, arity) {
-    let end = store.cnt;
-    if (store.sub) { i += store.start; end += store.start; store = store.sub; }
+    let end = store.cnt$LKEY;
+    if (store.sub$LKEY) { i += store.begin$LKEY; end += store.begin$LKEY; store = store.sub$LKEY; }
     if (arity === 2) { if (i >= end) return rf.call(null); init = vectorNth(store, i++, null); }
     for (let leaf = vectorLeaf(store, i); i < end;) {
       init = rf.call(null, init, leaf[i & 31]);
@@ -3943,34 +4011,38 @@
     node[i] = level === 5 ? leaf : node[i] ? vectorPushTail(cnt, level - 5, node[i], leaf, edit) : vectorPath(level - 5, leaf);
     return node;
   }
-  //@unit vectorConj requires: vectorPath, vectorPushTail, vectorTailOffset
-  // `store` with `item` added: to a copy of the tail, or else as the tail of
-  // one item after a frozen copy of the full tail moves into the trie, which
-  // grows a level where its root is full.
-  function vectorConj({cnt, shift, root, tail}, item) {
+  //@unit vectorConj requires: VectorCell, vectorPath, vectorPushTail, vectorTailOffset, viewTrie
+  // A vector of `store`'s items and `item`: with a copy of the tail and
+  // `item`, or else with the tail of one item after a frozen copy of the
+  // full tail moves into the trie, which grows a level where its root is
+  // full.
+  function vectorConj(store, item) {
+    if (store.sub$LKEY) store = viewTrie(store);
+    const cnt = store.cnt$LKEY, shift = store.shift$LKEY, root = store.root$LKEY, tail = store.tail$LKEY;
     if (cnt - vectorTailOffset(cnt) < 32) {
       // A copying loop: spreading the tail costs more than the rest of `conj`.
       const length = tail.length, copy = new Array(length + 1);
       for (let i = 0; i < length; i++) copy[i] = tail[i];
       copy[length] = item;
-      return {cnt: cnt + 1, shift, root, tail: copy};
+      return new VectorCell(null, cnt + 1, shift, root, copy, null);
     }
     const grow = (cnt >>> 5) > (1 << shift), leaf = Object.freeze(tail.slice());
-    return {cnt: cnt + 1, shift: grow ? shift + 5 : shift, tail: [item],
-      root: grow ? [root, vectorPath(shift, leaf)] : vectorPushTail(cnt, shift, root, leaf)};
+    return new VectorCell(null, cnt + 1, grow ? shift + 5 : shift,
+      grow ? [root, vectorPath(shift, leaf)] : vectorPushTail(cnt, shift, root, leaf), [item], null);
   }
   //@unit conjVectorBang requires: vectorEditor, vectorPath, vectorPushTail, vectorTailOffset
-  // `conj!` onto a transient vector's store: `vectorConj` in place.
+  // `conj!` onto a transient vector (`TransientVectorCell`), its own store:
+  // `vectorConj` in place.
   function conjVectorBang(store, item) {
-    const {cnt, shift, root, tail, owned} = store;
-    if (cnt - vectorTailOffset(cnt) < 32) tail[cnt & 31] = item;
+    const cnt = store.cnt$LKEY, shift = store.shift$LKEY;
+    if (cnt - vectorTailOffset(cnt) < 32) store.tail$LKEY[cnt & 31] = item;
     else {
-      const grow = (cnt >>> 5) > (1 << shift);
-      store.root = grow ? [root, vectorPath(shift, tail)] : vectorPushTail(cnt, shift, root, tail, vectorEditor(owned));
-      if (grow) { owned.add(store.root); store.shift += 5; }
-      owned.add(store.tail = [item]);
+      const owned = store.owned$LKEY, grow = (cnt >>> 5) > (1 << shift);
+      store.root$LKEY = grow ? [store.root$LKEY, vectorPath(shift, store.tail$LKEY)] : vectorPushTail(cnt, shift, store.root$LKEY, store.tail$LKEY, vectorEditor(owned));
+      if (grow) { owned.add(store.root$LKEY); store.shift$LKEY = shift + 5; }
+      owned.add(store.tail$LKEY = [item]);
     }
-    store.cnt++;
+    store.cnt$LKEY = cnt + 1;
     return store;
   }
   //@unit vectorAssocNode
@@ -3981,14 +4053,22 @@
     copy[at] = level ? vectorAssocNode(level - 5, node[at], i, item, edit) : item;
     return edit || level ? copy : Object.freeze(copy);
   }
-  //@unit vectorAssoc requires: vectorAssocNode, vectorTailOffset
-  // `store` with `item` at its index `i`.
+  //@unit vectorAssoc requires: vectorAssocNode, VectorCell, vectorTailOffset, VectorViewCell
+  // A vector of `store`'s items with `item` at its index `i`; of a view, a
+  // view (`VectorViewCell`) of the store it views with that item. A tail the
+  // caller gave (`callerTail`) stays marked where it is kept.
   function vectorAssoc(store, i, item) {
-    if (store.sub) return store.assoc(i, item);
-    if (i < vectorTailOffset(store.cnt)) return {...store, root: vectorAssocNode(store.shift, store.root, i, item)};
-    const tail = store.tail.slice();
+    const cnt = store.cnt$LKEY;
+    if (store.sub$LKEY) return new VectorViewCell(null, cnt, vectorAssoc(store.sub$LKEY, store.begin$LKEY + i, item), store.begin$LKEY, null);
+    const shift = store.shift$LKEY;
+    if (i < vectorTailOffset(cnt)) {
+      const result = new VectorCell(null, cnt, shift, vectorAssocNode(shift, store.root$LKEY, i, item), store.tail$LKEY, null);
+      if (store.callerTail$LKEY) result.callerTail$LKEY = true;
+      return result;
+    }
+    const tail = store.tail$LKEY.slice();
     tail[i & 31] = item;
-    return {cnt: store.cnt, shift: store.shift, root: store.root, tail};
+    return new VectorCell(null, cnt, shift, store.root$LKEY, tail, null);
   }
   //@unit vectorPopTail
   // `node`, `level` above the leaves of a store of `cnt` items, without its
@@ -4002,19 +4082,21 @@
     if (child) copy.push(child);
     return copy;
   }
-  //@unit vectorPop requires: vectorLeaf, vectorPopTail, vectorTailOffset, vectorTrie
-  // `store`, of at least one item, without its last: where the tail empties,
-  // the trie's last leaf becomes the tail and the trie loses a level where
-  // its root is left with one child.
+  //@unit vectorPop requires: VectorCell, vectorLeaf, vectorPopTail, vectorTailOffset, vectorTrie,
+  //@ VectorViewCell
+  // A vector of `store`'s items, of which it has at least one, without its
+  // last: where the tail empties, the trie's last leaf becomes the tail and
+  // the trie loses a level where its root is left with one child. Of a
+  // view, a view (`VectorViewCell`) of one item fewer.
   function vectorPop(store) {
-    if (store.sub) return store.pop();
-    const {cnt, shift, root, tail} = store;
+    const cnt = store.cnt$LKEY;
+    if (store.sub$LKEY) return new VectorViewCell(null, cnt - 1, store.sub$LKEY, store.begin$LKEY, null);
+    const shift = store.shift$LKEY, root = store.root$LKEY, tail = store.tail$LKEY;
     if (cnt === 1) return vectorTrie([]);
-    if (cnt - vectorTailOffset(cnt) > 1) return {cnt: cnt - 1, shift, root, tail: tail.slice(0, -1)};
+    if (cnt - vectorTailOffset(cnt) > 1) return new VectorCell(null, cnt - 1, shift, root, tail.slice(0, -1), null);
     const popped = vectorPopTail(cnt, shift, root) ?? [], shrink = shift > 5 && popped.length < 2;
-    return {cnt: cnt - 1, shift: shrink ? shift - 5 : shift, root: shrink ? popped[0] : popped, tail: vectorLeaf(store, cnt - 2)};
+    return new VectorCell(null, cnt - 1, shrink ? shift - 5 : shift, shrink ? popped[0] : popped, vectorLeaf(store, cnt - 2), null);
   }
-
   //@unit vector requires: makeVector
   function vector(...items) {
     return makeVector(items);
@@ -4108,7 +4190,7 @@
     if (Array.isArray(value)) return value.length;
     if (value == null) return 0;
     const store = vectorStore(value);
-    if (store) return store.cnt;
+    if (store) return store.cnt$LKEY;
     if (typeof value === "string") return value.length;
     const entries = maps.get(value);
     if (entries) return entries.length;
@@ -4176,7 +4258,7 @@
   // (light-cljs-358). A public constructor's value, whose slots can give
   // another count (`cnt`), a subvector's bounds or a sorted set's map, takes
   // the operation.
-  kindTables[4][4] = value => { const store = vectorStore(value); return store && !publicCollectionSlots.has(value) ? store.cnt : noBranch; };
+  kindTables[4][4] = value => { const store = vectorStore(value); return store && !publicCollectionSlots.has(value) ? store.cnt$LKEY : noBranch; };
   //@unit count.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
   //@ when: count requires: kindTables, maps, noBranch, publicCollectionSlots
   kindTables[5][4] = value => { const entries = maps.get(value); return entries && !publicCollectionSlots.has(value) ? entries.length : noBranch; };
@@ -4188,7 +4270,7 @@
   kindTables[7][4] = value => { const queue = queues.get(value); return queue && !publicCollectionSlots.has(value) ? queue.length : noBranch; };
   //@unit count.entries effect: MapEntryType when: count requires: kindTables, noBranch,
   //@ publicCollectionSlots, vectorStore
-  kindTables[8][4] = value => { const store = vectorStore(value); return store && !publicCollectionSlots.has(value) ? store.cnt : noBranch; };
+  kindTables[8][4] = value => { const store = vectorStore(value); return store && !publicCollectionSlots.has(value) ? store.cnt$LKEY : noBranch; };
   //@unit IndexedSeqValue.viewKind effect: IndexedSeqValue when: first.branches requires: IndexedSeqValue,
   //@ kindOps
   // Views, the seqs of arrays, strings and vectors, are kind 3 where a kind
@@ -4207,11 +4289,20 @@
   };
 
 
-  //@unit vectorNth requires: missing, outOfBounds, vectorLeaf
+  //@unit vectorNth requires: missing, outOfBounds, vectorTailOffset
   // The item of a vector's store at a number `index`, truncated; a view's is
-  // that of the store it views.
+  // that of the store it views. A view is told by the trie's own `tail`
+  // field, which it lacks: a vector reads only its own fields here.
   function vectorNth(store, index, notFound) {
-    if (index >= 0 && index < store.cnt) return store.sub ? vectorNth(store.sub, store.start + index, notFound) : vectorLeaf(store, index)[index & 31];
+    const cnt = store.cnt$LKEY;
+    if (index >= 0 && index < cnt) {
+      const tail = store.tail$LKEY;
+      if (tail === undefined && store.sub$LKEY !== undefined) return vectorNth(store.sub$LKEY, store.begin$LKEY + index, notFound);
+      if (index >= vectorTailOffset(cnt)) return tail[index & 31];
+      let node = store.root$LKEY;
+      for (let level = store.shift$LKEY; level > 0; level -= 5) node = node[(index >>> level) & 31];
+      return node[index & 31];
+    }
     if (notFound === missing) return outOfBounds();
     return notFound;
   }
@@ -4228,7 +4319,7 @@
     // A vector first, the most common: only a map entry, of two items, has
     // no index but 0 and 1.
     const store = vectorStore(value);
-    if (store) return store.cnt === 2 && index !== 0 && index !== 1 && isEntryCell(value) ? fallback === missing ? outOfBounds() : fallback : vectorNth(store, index, fallback);
+    if (store) return store.cnt$LKEY === 2 && index !== 0 && index !== 1 && isEntryCell(value) ? fallback === missing ? outOfBounds() : fallback : vectorNth(store, index, fallback);
     if (isTransient(value)) return kindHooks.nthTransient(value, index, fallback);
     if (chunkOf(value) !== undefined) return kindHooks.nthChunk(value, index, fallback);
     if (cells.get(value)?.integer) { const c = cells.get(value); return index >= 0 && index < c.count ? c.head + Math.floor(index) * c.step : fallback === missing ? outOfBounds() : fallback; }
@@ -4288,7 +4379,7 @@
   // A map entry, of two items, has no index but 0 and 1 (see `nth`).
   kindTables[4][5] = (value, index, notFound) => {
     const store = vectorStore(value);
-    return store && !(store.cnt === 2 && isEntryCell(value)) ? vectorNth(store, index, notFound) : noBranch;
+    return store && !(store.cnt$LKEY === 2 && isEntryCell(value)) ? vectorNth(store, index, notFound) : noBranch;
   };
   //@unit nth.entries effect: MapEntryType when: nth requires: isEntryCell, kindTables, missing,
   //@ noBranch, outOfBounds, vectorStore
@@ -4297,8 +4388,8 @@
   // the entries' prototype takes the operation at those.
   kindTables[8][5] = (value, index, notFound) => {
     const store = vectorStore(value);
-    if (store && store.cnt === 2 && !store.sub && (index === 0 || index === 1)) return store.tail[index];
-    return store && store.cnt === 2 && isEntryCell(value) ? notFound === missing ? outOfBounds() : notFound : noBranch;
+    if (store && store.cnt$LKEY === 2 && !store.sub$LKEY && (index === 0 || index === 1)) return store.tail$LKEY[index];
+    return store && store.cnt$LKEY === 2 && isEntryCell(value) ? notFound === missing ? outOfBounds() : notFound : noBranch;
   };
   //@unit nth.protocol effect: installMethods when: nth requires: methodKeys, nth, protocolHooks
   nth = (operation => Object.defineProperty(function (value, index, notFound) {
@@ -4317,7 +4408,7 @@
       return index < 0 ? notFound : entries[index].value;
     }
     const store = vectorStore(value);
-    if (store) return isEntryCell(value) ? key === 0 || key === 1 ? store.tail[key] : notFound : typeof key === "number" && key >= 0 && key < store.cnt ? kindHooks.nthVector(store, key, notFound) : notFound;
+    if (store) return isEntryCell(value) ? key === 0 || key === 1 ? store.tail$LKEY[key] : notFound : typeof key === "number" && key >= 0 && key < store.cnt$LKEY ? kindHooks.nthVector(store, key, notFound) : notFound;
     if (typeof value === "string" && key != null && key > -1 && key < value.length) {
       return value.charAt(key | 0);
     }
@@ -4386,7 +4477,7 @@
     if (!store || isEntryCell(value)) return noBranch;
     const method = protocolHooks.publicMethod?.(value, methodKeys[30], arity, true);
     if (method) return arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound);
-    return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, notFound) : notFound;
+    return typeof key === "number" && key >= 0 && key < store.cnt$LKEY ? vectorNth(store, key, notFound) : notFound;
   };
   //@unit get.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor when: get
   //@ requires: collectionEntryIndex, kindHooks, kindTables, lookup, maps, methodKeys, noBranch,
@@ -4423,7 +4514,7 @@
   // protocol implementations exist, the operation, which looks them up.
   kindTables[8][6] = (value, key, notFound) => {
     const store = vectorStore(value);
-    return store && !protocolHooks.publicMethod && isEntryCell(value) ? key === 0 || key === 1 ? store.tail[key] : notFound : noBranch;
+    return store && !protocolHooks.publicMethod && isEntryCell(value) ? key === 0 || key === 1 ? store.tail$LKEY[key] : notFound : noBranch;
   };
   //@unit get.own effect: installMethods when: get requires: demandKey, get, keySlot, methodKeys,
   //@ protocolHooks
@@ -4471,59 +4562,59 @@
   //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: nth requires: builtinSlot,
   //@ missing, noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
-    const store = self.store$LKEY;
-    if (store === undefined) return noBranch;
+    const store = self;
+    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return vectorNth(store, index, missing);
   });
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
-    const store = self.store$LKEY;
-    if (store === undefined) return noBranch;
+    const store = self;
+    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return vectorNth(store, index, notFound);
   });
   //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count requires: builtinSlot,
   //@ noBranch, PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
-    const store = self.store$LKEY;
-    if (store === undefined) return noBranch;
-    return store.cnt;
+    const store = self;
+    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
+    return store.cnt$LKEY;
   });
   //@unit PersistentVectorValue.peek effect: PersistentVectorValue when: peek requires: builtinSlot,
   //@ noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
-    const store = self.store$LKEY;
-    if (store === undefined) return noBranch;
-    return store.cnt ? vectorNth(store, store.cnt - 1, null) : null;
+    const store = self;
+    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
+    return store.cnt$LKEY ? vectorNth(store, store.cnt$LKEY - 1, null) : null;
   });
   //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj requires: builtinSlot,
   //@ conjMeta, makeVector, noBranch, PersistentVectorValue, vectorConj
   PersistentVectorValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
-    const store = self.store$LKEY;
-    if (store === undefined) return noBranch;
+    const store = self;
+    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return conjMeta(self, makeVector(null, vectorConj(store, item)));
   });
   //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc requires: builtinSlot,
   //@ makeVector, noBranch, outOfBounds, PersistentVectorValue, preserveMeta, vectorAssoc,
   //@ vectorConj
   PersistentVectorValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
-    let store = self.store$LKEY;
-    if (store === undefined) return noBranch;
+    let store = self;
+    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     if (typeof key !== "number") throw new Error("Vector key must be a number");
-    if (key >= 0 && key < store.cnt) store = vectorAssoc(store, key, item);
-    else if (key === store.cnt) store = vectorConj(store, item);
+    if (key >= 0 && key < store.cnt$LKEY) store = vectorAssoc(store, key, item);
+    else if (key === store.cnt$LKEY) store = vectorConj(store, item);
     else outOfBounds();
     return preserveMeta(self, makeVector(null, store));
   });
   //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: get requires: builtinSlot,
   //@ noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
-    const store = self.store$LKEY;
-    if (store === undefined) return noBranch;
-    return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, null) : null;
+    const store = self;
+    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
+    return typeof key === "number" && key >= 0 && key < store.cnt$LKEY ? vectorNth(store, key, null) : null;
   });
   PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
-    const store = self.store$LKEY;
-    if (store === undefined) return noBranch;
-    return typeof key === "number" && key >= 0 && key < store.cnt ? vectorNth(store, key, notFound) : notFound;
+    const store = self;
+    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
+    return typeof key === "number" && key >= 0 && key < store.cnt$LKEY ? vectorNth(store, key, notFound) : notFound;
   });
 
   // Slot-first dispatch (docs/value-layout.md, section 3): an operation
@@ -4674,8 +4765,8 @@
   //@unit PersistentVectorValue.seq effect: PersistentVectorValue when: seq requires: builtinSlot,
   //@ kindHooks, noBranch, PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    const store = self.store$LKEY;
-    if (store === undefined) return noBranch;
+    const store = self;
+    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return kindHooks.seqVector(self, store);
   });
   // A lazy seq, a chunked cons and a chunk answer their operations from
@@ -4827,7 +4918,7 @@
     const method = protocolHooks.publicMethod?.(value, methodKeys[2], 2);
     if (method) return method.call(value, value, key);
     const store = vectorStore(value);
-    if (store) return Number.isInteger(key) && key >= 0 && key < store.cnt;
+    if (store) return Number.isInteger(key) && key >= 0 && key < store.cnt$LKEY;
     return get(value, key, missing) !== missing;
   }
   //@unit contains.own effect: installMethods when: contains requires: contains, demandKey, keySlot,
@@ -5240,7 +5331,7 @@
   // `makeVector.equiv`, which follows, where map entries, of two items, are
   // the only values with items.
   kindHooks.equivVectors = (left, right) => {
-    const a = vectorStore(left).tail, b = vectorStore(right)?.tail;
+    const a = vectorStore(left).tail$LKEY, b = vectorStore(right)?.tail$LKEY;
     return !!b && equalPair(a[0], b[0]) && equalPair(a[1], b[1]);
   };
   //@unit makeVector.equiv effect: makeVector when: structuralEqualPair requires: equalPair,
@@ -5370,8 +5461,8 @@
   }
   //@unit hash requires: comparedSequential, constructorHashes, hashDouble, hashInt, hashNamed,
   //@ identityCounter, identityHashes, keywordOf, kindHooks, maps, mapTraversal, methodKeys,
-  //@ mixCollectionHash, protocolHooks, sets, setTraversal, stringHash, symbolOf, uuidHashes, uuids,
-  //@ vars
+  //@ mixCollectionHash, ownMeta, protocolHooks, sets, setTraversal, stringHash, symbolOf,
+  //@ uuidHashes, uuids, vars
   // Weak identity bookkeeping never reads or mutates foreign object fields.
   function hash(value) {
     if (value == null) return 0;
@@ -5396,6 +5487,8 @@
       const known = named.hash$LKEY;
       return known != null ? known | 0 : (named.hash$LKEY = (hashNamed(named) + (kw !== undefined ? 0x9e3779b9 : 0)) | 0);
     }
+    // A vector, a subvector or a map entry caches its hash in its own field.
+    if (ownMeta(value)) { const known = value.hash$LKEY; if (known != null) return known | 0; }
     const cached = constructorHashes.get(value);
     if (cached != null) return cached | 0;
     const entries = maps.get(value);
@@ -5426,13 +5519,14 @@
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
   //@ IndexedSeqValue, queueFromArray, LazySeq when: hash requires: cells, chunkedConsOf,
-  //@ constructorHashes, hashOrderedColl, holdsVector, kindHooks, lazyOf, publicCollectionSlots,
-  //@ queues, viewOf
+  //@ constructorHashes, hashOrderedColl, holdsVector, kindHooks, lazyOf, ownMeta,
+  //@ publicCollectionSlots, queues, viewOf
   // Sequential values (see `makeVector.equiv`).
   kindHooks.hashSequential = value => {
     if (holdsVector(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value) || viewOf(value)?.view$LKEY === "chunked") {
       const result = hashOrderedColl(value);
-      constructorHashes.set(value, result);
+      if (ownMeta(value)) value.hash$LKEY = result;
+      else constructorHashes.set(value, result);
       return result;
     }
     const cached = lazyOf(value) ?? chunkedConsOf(value);
@@ -5448,15 +5542,18 @@
   //@unit hash.entries effect: hash requires: entryHashing, hash
   entryHashing.hash = hash;
   //@unit hashed requires: constructorHashes
-  function hashed(value, cached) { constructorHashes.set(value, cached); return value; }
+  // A constant with the hash the compiler computed, in its own field where
+  // its class has one, which a fresh constant holds as null (`ownMeta`
+  // tells the classes `hash` reads it of).
+  function hashed(value, cached) { if (value.hash$LKEY === null) value.hash$LKEY = cached; else constructorHashes.set(value, cached); return value; }
 
   //@unit compilerFormBridge compile-time requires: atoms, cells, chunkedConsFirst, chunkedConsOf,
   //@ chunkedConsRest, emptyList, EmptyListValue, generatedNames, holdsVector, ifnValues,
   //@ isChunkedCons, isLazy, isView, jsObject, keyword, lazyOf, lazyStep, listFromArray,
-  //@ mapFromArray, maps, mapTraversal, metadataValues, name, namedOf, queueFromArray, queues,
-  //@ recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal, stamped, symbol,
-  //@ symbolOf, toArray, typeFields, uuid, uuids, vars, vectorFromArray, vectorItems, vectorNth,
-  //@ vectorStore, viewAt, viewOf, volatiles
+  //@ mapFromArray, maps, mapTraversal, metadataValues, name, namedOf, ownMeta, queueFromArray,
+  //@ queues, recordTypes, reifyValues, rePattern, setFromArray, setMeta, sets, setTraversal,
+  //@ stamped, symbol, symbolOf, toArray, typeFields, uuid, uuids, vars, vectorFromArray,
+  //@ vectorItems, vectorNth, vectorStore, viewAt, viewOf, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -5549,7 +5646,7 @@
         const m = decode(metadata);
         // Compiler metadata uses the canonical private store, never user hooks.
         if (value == null || (typeof value !== "object" && typeof value !== "function")) throw new Error("Invalid compiler metadata target");
-        metadataValues.set(value, m);
+        setMeta(value, m);
       }
       if (id != null && id !== 0) {
         // Scalars and interned keywords: the latest provenance in this call's table.
@@ -5615,7 +5712,7 @@
           } else if (stamped(v) && holdsVector(v)) {
             // Each item is read just before it is visited, within the limits.
             tag = "vector"; a = []; const store = vectorStore(v);
-            for (let i = 0; i < store.cnt; i++) a.push(visit(vectorNth(store, i, null), path + "[" + i + "]", depth + 1));
+            for (let i = 0; i < store.cnt$LKEY; i++) a.push(visit(vectorNth(store, i, null), path + "[" + i + "]", depth + 1));
           }
           else if (maps.has(v)) { tag = "map"; a = []; let i = 0;
             for (const e of mapTraversal(v)) { a.push(visit(e.key, path + ".key[" + i + "]", depth + 1), visit(e.value, path + ".value[" + i++ + "]", depth + 1)); }
@@ -5672,7 +5769,7 @@
                   if (!first && --remaining < 0) fail("sequence limit", path);
                   a.push(visit(slots.arr$LKEY[j], path + "[" + a.length + "]", depth + 1));
                 }
-                for (let i = chunked ? slots.base$LKEY + slots.arr$LKEY.length : 0; i < store.cnt; i++, first = false) {
+                for (let i = chunked ? slots.base$LKEY + slots.arr$LKEY.length : 0; i < store.cnt$LKEY; i++, first = false) {
                   if (!first && --remaining < 0) fail("sequence limit", path);
                   a.push(visit(vectorNth(store, i, null), path + "[" + a.length + "]", depth + 1));
                 }
@@ -5715,7 +5812,9 @@
             if (!tag) fail("arbitrary object (including promise)", path);
           }
           // A lazy seq, chunked cons or repeat has metadata, nil where none is stored.
-          const metadata = object && (metadataValues.has(v) || (stamped(v) && (isLazy(v) || isChunkedCons(v))) || cells.get(v)?.kind === "repeat")
+          // A vector, a subvector or a map entry holds its own (`ownMeta`).
+          const metadata = object && stamped(v) && ownMeta(v) ? v.meta$LKEY === null ? null : visit(v.meta$LKEY, path + ".meta", depth + 1)
+            : object && (metadataValues.has(v) || (stamped(v) && (isLazy(v) || isChunkedCons(v))) || cells.get(v)?.kind === "repeat")
             ? visit(metadataValues.has(v) ? metadataValues.get(v) : null, path + ".meta", depth + 1) : null;
           if (object) unseen?.delete(v);
           return [tag, (object && tag !== "keyword" ? borrowed.get(v) : primitives.get(primitiveKey(v))) ?? null, metadata, a, b];
@@ -5730,7 +5829,7 @@
       jsObject: pairs => { const v = jsObject(pairs); literals.set(v, "js-object"); return v; },
       withMeta: (value, metadata) => {
         if (!literals.has(value)) throw new Error("Invalid compiler literal metadata target");
-        metadataValues.set(value, metadata); return value;
+        setMeta(value, metadata); return value;
       }});
   }
 
@@ -5920,12 +6019,13 @@
   IHash._ = true;
   //@unit IEquiv.defaults effect: IEquiv requires: IEquiv
   IEquiv._ = true;
-  //@unit meta requires: atoms, deferredVarMetadata, kindHooks, metadataValues, methodKeys,
+  //@unit meta requires: atoms, deferredVarMetadata, kindHooks, metadataValues, methodKeys, ownMeta,
   //@ protocolHooks
   // Metadata belongs to values, never structural equality or hash payloads.
   function meta(value) {
     const method = value == null ? null : protocolHooks.publicMethod?.(value, methodKeys[35], 1);
     if (method) return method.call(value, value);
+    if (ownMeta(value)) return value.meta$LKEY;
     const deferred = deferredVarMetadata.get(value);
     if (deferred) kindHooks.metaDeferred(value, deferred);
     return atoms.has(value) ? value.meta : metadataValues.has(value) ? metadataValues.get(value) : null;
@@ -5962,7 +6062,7 @@
     const method = value == null ? null : protocolHooks.builtin?.(value, methodKeys[57], 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
-    if (holdsVector(value)) { const store = vectorStore(value); return store.cnt ? vectorNth(store, store.cnt - 1, null) : null; }
+    if (holdsVector(value)) { const store = vectorStore(value); return store.cnt$LKEY ? vectorNth(store, store.cnt$LKEY - 1, null) : null; }
     if (queues.has(value) && publicCollectionSlots.has(value)) return first(publicCollectionSlots.get(value).front);
     if (queues.has(value) || cells.get(value)?.kind === "list") return first(value);
     throw new Error("No protocol method IStack.-peek defined for this value");
@@ -5976,7 +6076,7 @@
     if (value == null) return null;
     if (holdsVector(value)) {
       const store = vectorStore(value);
-      if (!store.cnt) throw new Error("Can't pop empty vector");
+      if (!store.cnt$LKEY) throw new Error("Can't pop empty vector");
       const slots = publicCollectionSlots.get(value);
       if (slots && subvecSources.has(value)) return SubvecValue(meta(value), subvecSources.get(value), slots.start, slots.end - 1, null);
       return preserveMeta(value, makeVector(null, vectorPop(store)));
@@ -6437,8 +6537,9 @@
   const seqableValue = storesPredicate(vectorCells, maps, sets, cells, chunkedConsCells, viewCells, queues, lazyCells, iteratorSeqs);
   //@unit indexedValue requires: cells, chunkOf, holdsVector, transientState, viewOf
   function indexedValue(value) {
+    // A transient vector is its own state (`transientState`).
     const transient = transientState(value);
-    if (transient) return transient.kind === "vector";
+    if (transient) return transient === value;
     return chunkOf(value) !== undefined || cells.get(value)?.integer === true || holdsVector(value) || viewOf(value)?.indexed$LKEY === true;
   }
   //@unit cloneablePayload requires: cells, holdsVector, isEntryCell, maps, queues, recordTypes,
@@ -6482,8 +6583,8 @@
   const transientValue = value => isTransient(value);
   //@unit transientAssociativeValue requires: isTransient, transientState
   const transientAssociativeValue = value => isTransient(value) && transientState(value).kind !== "set";
-  //@unit transientVectorValue requires: transientState
-  const transientVectorValue = value => transientState(value)?.kind === "vector";
+  //@unit transientVectorValue requires: isTransientCell
+  const transientVectorValue = isTransientCell;
   //@unit transientMapValue requires: transientState
   const transientMapValue = value => transientState(value)?.kind === "map";
   //@unit transientSetValue requires: transientState
@@ -6581,11 +6682,20 @@
     // A function here has metadata, or a protocol implementation.
     return typeof value === "function" ? (protocolHooks.fnWithMeta ?? kindHooks.withMetaFn)(value, metadata) : collectionWithMeta(value, metadata);
   }
-  //@unit preserveMeta requires: meta, metadataValues
+  //@unit preserveMeta requires: meta, metadataValues, ownMeta, setMeta
+  // `result` with the metadata of `original` where it has some: one in its
+  // own field has some unless it is nil (`ownMeta`).
   function preserveMeta(original, result) {
     const metadata = meta(original);
-    if (metadata != null || metadataValues.has(original)) metadataValues.set(result, metadata);
+    if (metadata != null || (ownMeta(original) ? metadata !== null : metadataValues.has(original))) setMeta(result, metadata);
     return result;
+  }
+  //@unit setMeta requires: metadataValues, ownMeta
+  // Gives a value the metadata `metadata`: in its own field (`ownMeta`), else
+  // in `metadataValues`.
+  function setMeta(value, metadata) {
+    if (ownMeta(value)) value.meta$LKEY = metadata;
+    else metadataValues.set(value, metadata);
   }
   //@unit varyMeta requires: apply, meta, withMeta
   function varyMeta(value, fn, ...args) { return withMeta(value, apply(fn, meta(value), args)); }
@@ -6691,7 +6801,7 @@
   // The items of a vector that `isa?` compares, or null. Where no vector can
   // be built map entries, which hold their two in the tail of their store,
   // are the only values with items (`makeVector.isa`).
-  const isaItems = value => !holdsVector(value) ? null : kindHooks.isaItems ? kindHooks.isaItems(value) : vectorStore(value).tail;
+  const isaItems = value => !holdsVector(value) ? null : kindHooks.isaItems ? kindHooks.isaItems(value) : vectorStore(value).tail$LKEY;
   //@unit makeVector.isa effect: makeVector when: isaItems requires: kindHooks, vectorItems
   kindHooks.isaItems = vectorItems;
   //@unit hierarchyRel requires: bases, count, deref, get, getGlobalHierarchy, hierarchyPart,
@@ -7064,10 +7174,10 @@
   }
   //@unit collectionWithMeta requires: canonicalVectorRoots, cells, chunkedConsCells,
   //@ constructorHashes, holdsVector, ifnValues, isChunkedCons, isEntryCell, isLazy, isView,
-  //@ kindHooks, lazyCells, mapKinds, maps, meta, metadataValues, metaFunctions, methodKeys,
-  //@ protocolHooks, protocolImplementations, publicCollectionSlots, queues, recordTypes,
-  //@ reifyValues, setKinds, sets, sortedComparators, subvecSources, symbolCells, treeRoots,
-  //@ treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
+  //@ kindHooks, lazyCells, mapKinds, maps, meta, metaFunctions, methodKeys, protocolHooks,
+  //@ protocolImplementations, publicCollectionSlots, queues, recordTypes, reifyValues, setKinds,
+  //@ setMeta, sets, sortedComparators, subvecSources, symbolCells, treeRoots, treeSetMaps, vars,
+  //@ vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
@@ -7102,7 +7212,7 @@
       if (ifnValues.has(value)) ifnValues.set(result, ifnValues.get(value));
       if (ifnValues.has(value) || reifyValues.has(value) || recordTypes.has(value)) Object.defineProperties(result, Object.getOwnPropertyDescriptors(value));
     }
-    metadataValues.set(result, metadata);
+    setMeta(result, metadata);
     return result;
   }
   //@unit fnWithMeta.meta effect: fnWithMeta when: collectionWithMeta, withMetaProtocol requires: fnWithMeta,
@@ -7122,7 +7232,7 @@
   //@unit mapEntry.meta effect: mapEntry, clone when: collectionWithMeta requires: kindHooks,
   //@ makeVector, vectorStore
   // A map entry's metadata copy is a vector.
-  kindHooks.entryVector = value => makeVector(null, vectorStore(value));
+  kindHooks.entryVector = value => makeVector(vectorStore(value).tail$LKEY.slice());
   //@unit LazySeq.meta effect: LazySeq when: collectionWithMeta requires: kindHooks, lazyOf,
   //@ LazySeq, seq
   kindHooks.withMetaLazy = (value, metadata) => new LazySeq(metadata, () => seq(value), null, lazyOf(value).hash$LKEY);
@@ -8180,12 +8290,12 @@
   let mapEntry;
   //@unit mapEntry.lean effect: mapEntry unless: makeVector requires: EntryCell, mapEntry
   mapEntry = (key, value) => {
-    return new EntryCell({cnt: 2, shift: 5, root: [], tail: [key, value]});
+    return new EntryCell(key, value);
   };
   //@unit mapEntry.vector effect: mapEntry when: makeVector requires: EntryCell, mapEntry
   // The same as `mapEntry.lean`.
   mapEntry = (key, value) => {
-    return new EntryCell({cnt: 2, shift: 5, root: [], tail: [key, value]});
+    return new EntryCell(key, value);
   };
   //@unit recordKeys requires: keyword
   // A record type's field keywords, interned once per type (the members its
@@ -8578,7 +8688,7 @@
   //@unit makeTransient.count effect: makeTransient when: count requires: editableTransient,
   //@ kindHooks
   // A transient vector's entries are its store; a map's or set's an array.
-  kindHooks.countTransient = value => { const entries = editableTransient(value, "count").entries; return entries.cnt ?? entries.length; };
+  kindHooks.countTransient = value => { const state = editableTransient(value, "count"); return state === value ? state.cnt$LKEY : state.entries.cnt ?? state.entries.length; };
   // The chunk operations call a value's keyed slot first, as the slot-first
   // wrappers do (`nth.slots`, light-cljs-1029): a lazy pipeline's step reads
   // its source's chunk without the protocol dispatcher's lookups. A value
@@ -8754,7 +8864,7 @@
   // As `makeVector.seq`, from index `n`.
   kindHooks.dropVector = (value, n) => {
     const store = vectorStore(value);
-    return n >= store.cnt ? null : store.cnt <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), n, true, "indexed")
+    return n >= store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), n, true, "indexed")
       : new ChunkedSeqCell(vectorChunk(value, n), n & 31, value, n & -32);
   };
   //@unit numberArgument
@@ -9587,7 +9697,7 @@
   //@ kindHooks, printKind, transientState, write
   kindHooks.print = printKind(kindHooks.print, value => isTransient(value), (value, writer) => {
     const state = transientState(value);
-    return write(writer, "#object[cljs.core." + (state.kind === "vector" ? "TransientVector" : state.kind === "set" ? "TransientHashSet" : state.mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap") + "]");
+    return write(writer, "#object[cljs.core." + (state === value ? "TransientVector" : state.kind === "set" ? "TransientHashSet" : state.mapKind === "array-map" ? "TransientArrayMap" : "TransientHashMap") + "]");
   });
   //@unit Atom.print effect: Atom, Volatile when: printWriterImpl requires: atoms, kindHooks,
   //@ printKind, printWriter, volatiles, write
@@ -10053,7 +10163,7 @@
   // them (`UPSTREAM_MEMBERS` in src/runtime_slice.rs), or for `resetMeta`,
   // which assigns `meta`.
   const upstreamMembers = null;
-  //@unit publicFields mutator requires: constructorHashes, ownedProtocolValue
+  //@unit publicFields mutator requires: constructorHashes, ownedProtocolValue, ownMeta
   // The upstream deftype fields; `read` answers all but `meta` (from `meta`)
   // and the hash, and `write` sets a mutable field other than the hash.
   function publicFields(Type, fields, read, meta = null, write = null) {
@@ -10061,12 +10171,12 @@
     for (const field of fields) Object.defineProperty(Type.prototype, field.replaceAll("-", "_").replaceAll("?", "_QMARK_"), {
       get() {
         if (field === "meta") return meta(this);
-        if (field === "__hash" || field === "_hash") return constructorHashes.has(this) ? constructorHashes.get(this) : null;
+        if (field === "__hash" || field === "_hash") return ownMeta(this) ? this.hash$LKEY : constructorHashes.has(this) ? constructorHashes.get(this) : null;
         return read(this, field);
       },
       set: ["__hash", "_hash", "next", "_next", "current", "seed", "chunk", "chunk-next"].includes(field) ? function (value) {
         if (!ownedProtocolValue(this) || !(this instanceof Type)) throw new Error("Expected public core value");
-        if (field === "__hash" || field === "_hash") constructorHashes.set(this, value);
+        if (field === "__hash" || field === "_hash") { if (ownMeta(this)) this.hash$LKEY = value; else constructorHashes.set(this, value); }
         else write(this, field, value);
       } : function (value) {
         // A host field shadow cannot mutate an immutable branded payload.
@@ -10223,16 +10333,17 @@
   //@unit PersistentVectorValue.fields effect: PersistentVectorValue when: resetMeta,
   //@ upstreamMembers requires: canonicalVectorRoots, hostHooks, meta, missing,
   //@ PersistentVectorValue, protocolHooks, publicFields, slotField, vectorCount, vectorRoots,
-  //@ vectorStore, vectorTailOffset
+  //@ vectorStore, vectorTailOffset, viewTrie
   publicFields(PersistentVectorValue, ["meta", "cnt", "shift", "root", "tail", "__hash"], (value, field) => {
     const slot = slotField(value, field, protocolHooks.extend ? hostHooks.count : vectorCount);
     if (slot !== missing) return slot;
-    // A copy of the tail and a token of the root keep the store private.
-    const store = vectorStore(value);
-    if (field === "tail") return store.tail.slice(0, store.cnt - vectorTailOffset(store.cnt));
-    if (field === "shift") return store.shift;
+    // A copy of the tail and a token of the root keep the store private;
+    // a view (`VectorViewCell`) gives those of the trie of its items.
+    const store = viewTrie(vectorStore(value));
+    if (field === "tail") return store.tail$LKEY.slice(0, store.cnt$LKEY - vectorTailOffset(store.cnt$LKEY));
+    if (field === "shift") return store.shift$LKEY;
     if (field === "root") {
-      if (!canonicalVectorRoots.has(value)) { const root = {}; vectorRoots.set(root, store.root); canonicalVectorRoots.set(value, root); }
+      if (!canonicalVectorRoots.has(value)) { const root = {}; vectorRoots.set(root, store.root$LKEY); canonicalVectorRoots.set(value, root); }
       return canonicalVectorRoots.get(value);
     }
   }, meta);

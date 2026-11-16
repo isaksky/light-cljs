@@ -401,14 +401,17 @@
   // swapped storage units, which use `form` instead.
   function sharedVectorStore(form) {
     const cnt = __rt.formCount(form);
-    return {cnt, form, get tail() { return sharedVectorItems(form, vectorTailOffset(cnt), cnt); }};
+    return {cnt$LKEY: cnt, form$LKEY: form, get tail$LKEY() { return sharedVectorItems(form, vectorTailOffset(cnt), cnt); }};
   }
   //@unit sharedVectorForm requires: vectorSlice
-  // The engine vector of a store: its own, or one of the items of a trie
-  // store (a transient's, a map entry's) or a view (a subvector's).
+  // The engine vector of a store: its own, that of an engine store a view
+  // covers (`vectorCellCopy`), or one of the items of a trie store (a
+  // transient's, a map entry's) or of a view (a subvector's).
   function sharedVectorForm(store) {
-    if (store.form !== undefined) return store.form;
-    const items = vectorSlice(store, 0, store.cnt);
+    if (store.form$LKEY !== undefined) return store.form$LKEY;
+    const sub = store.sub$LKEY;
+    if (sub !== undefined && sub.form$LKEY !== undefined && store.begin$LKEY === 0 && store.cnt$LKEY === sub.cnt$LKEY) return sub.form$LKEY;
+    const items = vectorSlice(store, 0, store.cnt$LKEY);
     let value = __rt.formVector();
     for (let i = 0; i < items.length; i++) value = __rt.formConj(value, items[i]);
     return value;
@@ -703,25 +706,35 @@
   // (light-cljs-666). `MapEntryType.prototype` is not its prototype, as an
   // engine keyword has no `Keyword` prototype.
   mapEntry = (key, value) => __rt.cljFirst(__rt.formArrayMap(__rt.formVector(key, value)));
-  //@unit vectorCellCopy requires: sharedFormKind, sharedFormOf, sharedVectorStore, VectorCell
+  //@unit vectorCellCopy requires: sharedFormKind, sharedFormOf, sharedVectorStore, VectorViewCell
   // The V8 profile's, and for an engine vector, which `with-meta` of nil
-  // wraps (`preserveMeta`, light-cljs-699), a vector cell holding the
-  // form's store (`sharedVectorStore`), as the vectors' view held it
-  // before vectors were classes.
+  // wraps (`preserveMeta`, light-cljs-699), a view (`VectorViewCell`) of all
+  // of the form's store (`sharedVectorStore`), which `sharedVectorForm`
+  // gives back as the form.
   function vectorCellCopy(value) {
-    if (sharedFormKind(value) === "vector") return new VectorCell(sharedVectorStore(sharedFormOf(value)));
+    if (sharedFormKind(value) === "vector") {
+      const store = sharedVectorStore(sharedFormOf(value));
+      return new VectorViewCell(null, store.cnt$LKEY, store, 0, null);
+    }
     const Type = function () {};
     Type.prototype = Object.getPrototypeOf(value);
-    return Reflect.construct(VectorCellCopy, [value.store$LKEY], Type);
+    return value.sub$LKEY !== undefined ? Reflect.construct(VectorViewCopy, [value], Type) : Reflect.construct(VectorCellCopy, [value], Type);
   }
-  function VectorCellCopy(store) { this.store$LKEY = store; /*@brand*/ }
+  function VectorCellCopy(v) {
+    this.meta$LKEY = v.meta$LKEY; this.cnt$LKEY = v.cnt$LKEY; this.shift$LKEY = v.shift$LKEY; this.root$LKEY = v.root$LKEY; this.tail$LKEY = v.tail$LKEY; this.hash$LKEY = v.hash$LKEY;
+    if (v.callerTail$LKEY) this.callerTail$LKEY = true;
+    /*@brand*/
+  }
+  function VectorViewCopy(v) {
+    this.meta$LKEY = v.meta$LKEY; this.cnt$LKEY = v.cnt$LKEY; this.sub$LKEY = v.sub$LKEY; this.begin$LKEY = v.begin$LKEY; this.built$LKEY = v.built$LKEY; this.hash$LKEY = v.hash$LKEY; /*@brand*/
+  }
   //@unit sharedTreeEntry requires: EntryCell
   // publicTree attaches fields to its nodes, so its allocation boundary must
   // return a runtime-owned entry, of the V8 profile's class. Keep the
   // canonical builder and cache intact; ordinary map entries still use the
   // immutable engine form above.
   function sharedTreeEntry(key, value) {
-    return new EntryCell({cnt: 2, shift: 5, root: [], tail: [key, value]});
+    return new EntryCell(key, value);
   }
   //@unit mapEntryValue requires: isEntryCell
   const mapEntryValue = value => __rt.cljIsMapEntry(value) || isEntryCell(value);
@@ -742,12 +755,12 @@
   // A vector is an engine vector form (an engine map entry is one), whose
   // store is read from the form; a vector the runtime builds as a class
   // value (a subvector's `SubvecCell`, a sorted map's `sharedTreeEntry`)
-  // holds its store in its own keyed field, as the V8 profile's do.
+  // is its own store, as the V8 profile's are.
   function vectorStore(value) {
     if (sharedFormKind(value) === "vector") return sharedVectorStore(sharedFormOf(value));
     if (value == null) return undefined;
     const kind = value.cljs$lang$kind$$LKEY;
-    return kind === 1 || kind === 2 || kind === 3 ? value.store$LKEY : undefined;
+    return (kind === 1 || kind === 2 || kind === 3) && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? value : undefined;
   }
   //@unit stamped compile-time requires: sharedFormKind, stampBrand
   // An engine vector form is the runtime's own value too: the compiler form
@@ -854,7 +867,8 @@
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
     return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
-  //@unit preserveMeta requires: collectionWithMeta, meta, metadataValues, sharedFormKind, sharedFormOf
+  //@unit preserveMeta requires: collectionWithMeta, meta, metadataValues, ownMeta, setMeta,
+  //@ sharedFormKind, sharedFormOf
   // An operation's engine result (a vector, a list) takes its input's
   // metadata as a form (`formWithMeta`; the form itself when it is the same
   // map already), since a form's metadata is given where the form is built
@@ -872,7 +886,7 @@
       if (metadata == null) return __rt.formMeta(result) == null ? result : __rt.formWithMeta(result, null);
       return sharedFormKind(metadata) === "map" ? __rt.formWithMeta(result, sharedFormOf(metadata)) : collectionWithMeta(result, metadata);
     }
-    if (metadata != null || metadataValues.has(original)) metadataValues.set(result, metadata);
+    if (metadata != null || (ownMeta(original) ? metadata !== null : metadataValues.has(original))) setMeta(result, metadata);
     return result;
   }
   //@unit varPrototype requires: ifnApply, ifnPrototype, meta, str, Var, vars
@@ -1338,7 +1352,7 @@
   //@unit subvecSources requires: sharedStore
   const subvecSources = sharedStore();
   //@unit subvec requires: count, isVector, makeVector, methodKeys, nth, protocolHooks,
-  //@ vectorFromArray, vectorStore, VectorView
+  //@ vectorFromArray, vectorStore, vectorView
   // An engine vector of the items: the engine has no view kind, so the
   // result is a vector of its own, not upstream's `Subvec` with its source.
   function subvec(value, start, end = count(value)) {
@@ -1347,7 +1361,7 @@
     if (start < 0 || end < start || end > count(value)) throw new Error("Index out of bounds");
     if (!isVector(value)) throw new Error("subvec requires a vector");
     const store = !protocolHooks.publicMethod?.(value, methodKeys[25], 2, true, true) && vectorStore(value);
-    return store ? makeVector(null, new VectorView(store, start, end - start))
+    return store ? makeVector(null, vectorView(store, start, end - start))
       : vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)));
   }
   //@unit treeRoots requires: sharedStore
@@ -1367,22 +1381,25 @@
     for (let i = 0; i < items.length; i++) value = __rt.formConj(value, items[i]);
     return value;
   }
-  //@unit vectorLeaf requires: sharedVectorItems, vectorTailOffset
+  //@unit vectorLeaf requires: sharedVectorItems, vectorSlice, vectorTailOffset
   // The leaf, or the tail, that holds index `i` of a store; of an engine
   // store, a new array of its items from index `i & -32`; of a view
-  // (`VectorView`), a new array of its items from index `i & -32`.
+  // (`vectorView`), a new array of its items from index `i & -32`.
   function vectorLeaf(store, i) {
-    if (store.sub) return store.leaf(i);
-    if (store.form !== undefined) return sharedVectorItems(store.form, i & -32, Math.min((i & -32) + 32, store.cnt));
-    if (i >= vectorTailOffset(store.cnt)) return store.tail;
-    let node = store.root;
-    for (let level = store.shift; level > 0; level -= 5) node = node[(i >>> level) & 31];
+    if (store.sub$LKEY) {
+      const from = store.begin$LKEY + (i & -32);
+      return vectorSlice(store.sub$LKEY, from, Math.min(from + 32, store.begin$LKEY + store.cnt$LKEY));
+    }
+    if (store.form$LKEY !== undefined) return sharedVectorItems(store.form$LKEY, i & -32, Math.min((i & -32) + 32, store.cnt$LKEY));
+    if (i >= vectorTailOffset(store.cnt$LKEY)) return store.tail$LKEY;
+    let node = store.root$LKEY;
+    for (let level = store.shift$LKEY; level > 0; level -= 5) node = node[(i >>> level) & 31];
     return node;
   }
   //@unit vectorSlice requires: sharedVectorItems, vectorLeaf
   // A new array of a store's items from index `from` to `to`.
   function vectorSlice(store, from, to) {
-    if (store.form !== undefined) return sharedVectorItems(store.form, from, to);
+    if (store.form$LKEY !== undefined) return sharedVectorItems(store.form$LKEY, from, to);
     const items = [];
     for (let i = from; i < to; i = (i | 31) + 1) items.push(...vectorLeaf(store, i).slice(i & 31, (i & 31) + to - i));
     return items;
@@ -1392,18 +1409,18 @@
   function vectorConj(store, item) {
     return sharedVectorStore(__rt.formConj(sharedVectorForm(store), item));
   }
-  //@unit vectorAssoc requires: sharedVectorForm, sharedVectorStore
+  //@unit vectorAssoc requires: sharedVectorForm, sharedVectorStore, VectorViewCell
   // `store` with `item` at its index `i`: the engine's `assoc`. The callers
   // check the bounds; a fractional index truncates, as the V8 profile's
   // bitwise indexing of its trie has it, where the engine wants an integer.
   function vectorAssoc(store, i, item) {
-    if (store.sub) return store.assoc(i, item);
+    if (store.sub$LKEY) return new VectorViewCell(null, store.cnt$LKEY, vectorAssoc(store.sub$LKEY, store.begin$LKEY + i, item), store.begin$LKEY, null);
     return sharedVectorStore(__rt.formAssoc(sharedVectorForm(store), Math.trunc(i), item));
   }
-  //@unit vectorPop requires: sharedVectorForm, sharedVectorStore
+  //@unit vectorPop requires: sharedVectorForm, sharedVectorStore, VectorViewCell
   // `store`, of at least one item, without its last: the engine's `pop`.
   function vectorPop(store) {
-    if (store.sub) return store.pop();
+    if (store.sub$LKEY) return new VectorViewCell(null, store.cnt$LKEY - 1, store.sub$LKEY, store.begin$LKEY, null);
     return sharedVectorStore(__rt.cljPop(sharedVectorForm(store)));
   }
   //@unit vectorNth requires: missing, outOfBounds, vectorLeaf
@@ -1411,23 +1428,23 @@
   // bounds (a negative fraction keeps its fallback); a view's is that of
   // the store it views.
   function vectorNth(store, index, notFound) {
-    if (index >= 0 && index < store.cnt) {
-      if (store.sub) return vectorNth(store.sub, store.start + index, notFound);
-      return store.form !== undefined ? __rt.formNth(store.form, Math.trunc(index)) : vectorLeaf(store, index)[index & 31];
+    if (index >= 0 && index < store.cnt$LKEY) {
+      if (store.sub$LKEY) return vectorNth(store.sub$LKEY, store.begin$LKEY + index, notFound);
+      return store.form$LKEY !== undefined ? __rt.formNth(store.form$LKEY, Math.trunc(index)) : vectorLeaf(store, index)[index & 31];
     }
     if (notFound === missing) return outOfBounds();
     return notFound;
   }
   //@unit makeVector.transient effect: makeVector, mapEntry when: asTransient requires: kindHooks,
-  //@ vectorSlice, vectorTrie
+  //@ TransientVectorCell, vectorSlice, vectorTrie, viewTrie
   // A transient vector edits a trie of the vector's items, a task-owned
   // value (design point 8), as the V8 profile's edits a copy of the tail
   // and the nodes along the paths it changes, which it owns
   // (`vectorEditor`): a weak set, which keeps no node a `pop!` discarded.
   kindHooks.transientVector = store => {
-    const trie = store.form !== undefined ? vectorTrie(vectorSlice(store, 0, store.cnt)) : store;
-    const tail = trie.tail.slice();
-    return {cnt: trie.cnt, shift: trie.shift, root: trie.root, tail, owned: new WeakSet([tail])};
+    const trie = store.form$LKEY !== undefined ? vectorTrie(vectorSlice(store, 0, store.cnt$LKEY)) : viewTrie(store);
+    const tail = trie.tail$LKEY.slice();
+    return new TransientVectorCell(trie.cnt$LKEY, trie.shift$LKEY, trie.root$LKEY, tail, new WeakSet([tail]));
   };
   //@unit callable requires: fnApplyTo, fnRest
   // The V8 profile's `callable`, with the arity table it captures sealed:

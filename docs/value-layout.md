@@ -196,6 +196,49 @@ and chunk buffers.
   conses, its `delays` is a unit of its own, and its `stamped` accepts the
   engine's lazy seqs and conses, which the form bridge reads.
 
+What light-cljs-1026 landed: the vector classes hold their data themselves,
+replacing 1009's one `store$LKEY` (`state$LKEY`) field.
+
+- **A vector is its own store.** `VectorCell` has the own keyed fields
+  `meta`, `cnt`, `shift`, `root`, `tail` and `hash` (null until computed),
+  in upstream's order, and `callerTail` only where the public constructor
+  gave the tail. `vectorStore` returns the value itself (a value of kinds 1
+  to 3 with a `cnt` field), and the store algorithms read and build these
+  fields: `vectorTrie`, `vectorConj`, `vectorAssoc` and `vectorPop` return a
+  new `VectorCell`, so `conj` and `assoc` allocate the vector and its new
+  nodes and no store object. A map entry (`EntryCell(key, val)`) has the
+  same fields, its metadata always nil.
+- **Views are values too.** The `VectorView` class is gone: a subvector is
+  a `SubvecCell` with `meta`, `cnt`, `sub` (the vector it views, upstream's
+  `v`), `begin` (upstream's `start`, a name the tests' `rt$` scans would
+  take for a runtime reference), `built` (the trie of its items, built once by `viewTrie`
+  for the operations that read a trie's fields) and `hash`; `vectorView`
+  builds one. `assoc` and `pop` of a view give a view of kind 1, a
+  `VectorViewCell` on `PersistentVectorValue`'s prototype, as they gave a
+  vector holding a view before. A subvector of items a protocol
+  implementation answers, or the public constructor's subvector of
+  getters, is a trie with the subvector prototype (`subvecOfTrie`).
+- **Transient vectors** are their own state: `TransientVectorCell` has
+  `cnt`, `shift`, `root`, `tail`, `owned` (the nodes it may edit) and
+  `editable`; `transientState` returns it, and the transient operations tell
+  it from a map or set transient's state by `state === value`. The map and
+  set transients keep the `transients` store until light-cljs-1012.
+- **Metadata and hashes.** `ownMeta` tells a value that holds them in its
+  own fields (these classes, never an engine form of the Pants profile);
+  `meta`, `preserveMeta`, `conjMeta`, `collectionWithMeta` (through
+  `setMeta`), `hash`, `hashed`, the sequential hash and the public
+  `__hash` field read and write the fields for such a value and the
+  `metadataValues` and `constructorHashes` stores for the rest. The
+  compiler form bridge reads a vector's field behind `stamped`.
+- **Enumeration.** `Object.keys` of these values lists the fields above
+  (`runtime_value_enumeration_contract`); their `toJSON` drops every keyed
+  field (`unkeyedJSON`).
+- **Profiles.** The Pants profile's engine vector stores have keyed fields
+  too (`cnt`, `form`, a `tail` getter); `with-meta` of an engine vector is a
+  `VectorViewCell` of the whole form's store, which `sharedVectorForm` gives
+  back as the form; its swapped storage units take views as the V8
+  profile's do. The emitter's `count` of a known vector reads `cnt$LKEY`.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

@@ -1293,13 +1293,16 @@ fn multi_tables(program: &Program, live: &[bool], facts: &ProgramFacts) -> Optio
                 if ["IEquiv/", "IHash/", "IMultiFn/"].iter().any(|protocol| key.starts_with(protocol)))
         })
     };
-    // A runtime type's public constructor, which takes a cached hash.
+    // A runtime type's public constructor, which takes a cached hash: one
+    // that keeps it in a store, or a vector's or a subvector's, which keep it
+    // in their own field (light-cljs-1026).
     let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
     let chosen_hash = |op: CoreFnId| {
-        op.operation().runtime_units(manifest).iter().any(|&unit| {
-            let requires = &manifest.unit(unit).requires;
-            requires.contains(&"constructorSlots") || requires.contains(&"constructorHashes")
-        })
+        matches!(op, CoreFnId::PersistentVector | CoreFnId::SubvecType)
+            || op.operation().runtime_units(manifest).iter().any(|&unit| {
+                let requires = &manifest.unit(unit).requires;
+                requires.contains(&"constructorSlots") || requires.contains(&"constructorHashes")
+            })
     };
     // An operation the runtime keeps the tables in atoms for itself: one of
     // whose units `MultiFn.tables` waits for, or requires one (`methods`,

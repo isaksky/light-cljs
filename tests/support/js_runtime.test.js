@@ -2081,13 +2081,17 @@ console.log('kind tables stay private to the runtime');
     chunk: core.arrayChunk([1, 2], 0, 2), chunkBuffer: core.chunkBuffer(2)
   };
   const view = ['arr$LKEY', 'i$LKEY', 'indexed$LKEY', 'view$LKEY'];
-  const fields = {transientVector: ['state$LKEY'], indexedSeq: view, stringSeq: view, restArguments: view,
+  const trie = ['meta$LKEY', 'cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'hash$LKEY'];
+  // Vectors, subvectors, map entries and transient vectors hold their store's
+  // fields, their metadata and their hash themselves (light-cljs-1026).
+  const fields = {vector: trie, entry: trie, subvec: ['meta$LKEY', 'cnt$LKEY', 'sub$LKEY', 'begin$LKEY', 'built$LKEY', 'hash$LKEY'],
+    transientVector: ['cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'owned$LKEY', 'editable$LKEY'], indexedSeq: view, stringSeq: view, restArguments: view,
     chunkedSeq: [...view, 'vec$LKEY', 'base$LKEY'], keyword: ['ns$LKEY', 'name$LKEY', 'fqn$LKEY', 'hash$LKEY'],
     symbol: ['ns$LKEY', 'name$LKEY', 'str$LKEY', 'hash$LKEY'], lazySeq: ['fn$LKEY', 's$LKEY', 'hash$LKEY'],
     chunkedCons: ['chunk$LKEY', 'more$LKEY', 'hash$LKEY'], chunk: ['arr$LKEY', 'off$LKEY', 'end$LKEY', 'first$LKEY', 'step$LKEY'],
     chunkBuffer: ['buf$LKEY', 'end$LKEY']};
   for (const [name, value] of Object.entries(values)) {
-    const field = fields[name] ?? ['store$LKEY'];
+    const field = fields[name];
     assert.deepEqual(Object.keys(value), field, name);
     assert.deepEqual(Object.entries(value).map(([key]) => key), field, name);
     assert.deepEqual(Object.keys({...value}), field, name);
@@ -2104,6 +2108,19 @@ console.log('kind tables stay private to the runtime');
   marked.note = 'kept';
   assert.equal(JSON.stringify(marked), '{"note":"kept"}');
   assert.equal(core.count(marked), 1);
+  // An own `__proto__` property serializes as an object rest copied it, with
+  // no setter of `Object.prototype` run (the Sol review of light-cljs-1026).
+  for (const value of [r.vector(1), core.first(core.hashMap(1, 2)), core.subvec(r.vector(1, 2), 1), core.transient(r.vector(1))]) {
+    Object.defineProperty(value, '__proto__', {value: 7, enumerable: true});
+    assert.equal(JSON.stringify(value), '{"__proto__":7}');
+  }
+  // A public constructor's vector keeps an undefined count as given, and is
+  // still a vector with its metadata and hash (the Sol review of
+  // light-cljs-1026).
+  const undefinedCount = new core.PersistentVector(core.hashMap('m', 1), undefined, 5, null, [], 17);
+  assert.equal(core.isVector(undefinedCount), true);
+  assert.equal(core.equal(core.meta(undefinedCount), core.hashMap('m', 1)), true);
+  assert.equal(core.hash(undefinedCount), 17);
   const markedSeq = core.seq([1]);
   markedSeq.note = 'kept';
   assert.equal(JSON.stringify(markedSeq), '{"note":"kept"}');

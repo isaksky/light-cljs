@@ -1269,3 +1269,94 @@ names: `seq-pipeline` 37,748 bytes, `mapv-count` 48,444, `keyword-lookups`
 programs that keep no lazy seq less, through the kind tests the older layers
 call (`rest-fn` 15,603, `map-printed` 15,275, `atom-str` 3,738). re-frame
 simple and TodoMVC gzip sizes were not measured in this step.
+
+## 2026-11-16: vectors, subvectors, map entries and transient vectors hold their own data (light-cljs-1026)
+
+**What.** A vector is its own store: `VectorCell` has upstream's fields,
+`meta`, `cnt`, `shift`, `root`, `tail` and `hash`, as its own keyed fields,
+where light-cljs-1009 gave it one keyed field holding a store object, and its
+metadata and cached hash were entries in the `metadataValues` and
+`constructorHashes` WeakMaps. `conj`, `assoc`, `pop` and vector literals
+build one object per vector instead of a store object and a vector; `nth`,
+`count` and `peek` read the vector's own fields; `meta`, `with-meta`, `hash`
+and the metadata `conj` and `assoc` carry over read and write fields instead
+of WeakMap entries. A subvector is a view with `sub`, `begin` and `cnt`
+fields of its own (the `VectorView` store class is gone), a map entry has the
+vector fields, and a transient vector is its own state. docs/value-layout.md
+has the notes.
+
+Binaries: before `light-cljs-ef5c9df2` (master), after `light-cljs-e1631216`
+(a work-in-progress commit of this pellet; the review fixes after it only
+add a presence test behind an undefined `cnt`, which a defined count skips,
+own data properties in `toJSON` and a compile-time check of multimethod
+tables), in research/shadow-credibility/bin. Unreserved: one peer worker
+was active.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops vec-conj,vec-literal,vec-assoc,transient-vec,vec-nth,vec-peek,vec-invoke,destructure-vec,eq-vec,hash-fresh-vec,mapv,reduce-vec,reduce-entries-small`,
+5 runs, the same selection both times; 1-minute load average 8.17-11.29
+before, 2.56-7.10 after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| vec-conj-64 | 3,144 (3,014-3,230) | 2,154 (2,133-2,400) | -32% | 1,651 | 1.93 | 1.30 |
+| vec-literal-4 | 22.9 (22.3-23.2) | 24.5 (24.3-24.6) | +7% | 7.94 | 2.99 | 3.09 |
+| vec-nth-1024 | 7.45 (7.17-7.77) | 6.40 (5.93-7.13) | -14% | 5.16 | 1.46 | 1.24 |
+| vec-invoke-1024 | 5.83 (5.68-6.70) | 5.99 (5.70-6.04) | +3% | 4.84 | 1.20 | 1.24 |
+| vec-peek | 4.50 (4.28-4.52) | 4.23 (4.19-4.24) | -6% | 3.48 | 1.29 | 1.22 |
+| vec-assoc-1024 | 86.3 (82.5-87.3) | 63.0 (61.1-65.7) | -27% | 76.1 | 1.16 | 0.83 |
+| destructure-vec-3 | 19.3 (17.9-20.0) | 16.3 (15.8-16.3) | -16% | 9.88 | 1.96 | 1.65 |
+| reduce-vec-1000 | 5,277 (5,016-5,542) | 5,325 (5,227-5,439) | +1% | 2,511 | 2.11 | 2.12 |
+| mapv-1000 | 62,737 (59,654-62,956) | 64,267 (64,022-65,253) | +2% | 13,073 | 4.87 | 4.92 |
+| reduce-entries-small | 1,264 (1,195-1,288) | 1,319 (1,312-1,323) | +4% | 89.3 | 14.28 | 14.78 |
+| eq-vec-10 | 618.7 (591.8-621.4) | 636.0 (635.2-638.2) | +3% | 55.5 | 11.17 | 11.45 |
+| hash-fresh-vec-4 | 571.9 (549.1-575.0) | 495.7 (493.4-499.3) | -13% | 35.3 | 16.45 | 14.03 |
+| transient-vec-100 | 5,309 (5,263-5,534) | 5,521 (5,444-5,652) | +4% | 1,024 | 5.21 | 5.39 |
+
+- `vec-conj` and `vec-assoc` gain 27-32%: each step builds one object, and
+  copying the metadata reads a field instead of probing `metadataValues`;
+  `assoc` of a large vector is now faster than shadow-cljs's (0.83).
+  `vec-nth` reads the vector's own fields with no store indirection, and
+  tells a view by its missing own `tail` field instead of a `sub` lookup
+  that walks the vector's prototype chain. `hash-fresh-vec` caches the hash
+  in the vector's field instead of a WeakMap entry.
+- No operation is more than 10% slower. `vec-literal`, `transient-vec` and
+  `eq-vec`, 3-7% slower here, are within what runs of the same binaries
+  vary: back to back with one selection (`--ops
+  vec-nth,vec-invoke,vec-literal,transient-vec`, an earlier commit of this
+  pellet, load 6.34-8.16) `vec-literal` was 14% faster and `transient-vec`
+  2% slower. What `transient-vec` and `vec-literal` spend is elsewhere
+  (`conj!`'s protocol dispatch, the literal's array copy); the transient
+  itself no longer builds a state object.
+- The first gate of this pellet (commit `d621ed82`, before `vectorNth` read
+  the fields directly) had `vec-invoke` 26% slower with a wide range
+  (5.79-9.58, load up to 7.0); back to back it was 6% slower, and with the
+  direct field reads it is 3% slower in the final run above.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1026 --runs 5
+--runtime-only --runtime 1,10,40`, a copy of the project rebuilt with each
+binary just before its run; load average 12.5-13.1 before, 11.4-13.2 after),
+wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.445 s (0.435-0.456) | 0.423 s (0.413-0.436) | 0.328 s | 0.317 s | 1.36 | 1.33 |
+| 10 | 1.325 s (1.215-1.369) | 1.219 s (1.146-1.245) | 0.620 s | 0.614 s | 2.14 | 1.99 |
+| 40 | 3.462 s (3.417-3.545) | 3.464 s (3.432-3.476) | 1.328 s | 1.314 s | 2.61 | 2.64 |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 77.4 and
+78.0 ms per iteration (unchanged within the runs' spread), shadow-cljs 25.6
+both times; light/shadow 3.02 and 3.05. The workload's steady state is not
+vector-bound: its maps, keyword lookups and seqs are later pellets'. One
+iteration (startup and the first pass) is 5% faster.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): every
+keyed field read spells the key, so programs with vectors grow: `vector-only`
+6,051 to 6,824 bytes, `vector-printed` 12,633 to 13,607, `map-only` (its
+entries) 9,895 to 10,313, `mapv-count` 48,549 to 51,189, `constant-keys`
+63,142 to 66,159, `features` 92,705 to 96,306; programs without a vector move
+by under 100 bytes. re-frame simple and TodoMVC gzip sizes were not measured
+in this step.
+
+Raw results (the core-ops EDN and Markdown of every run above, the first
+gate and the back-to-back recheck included, and both workload runs):
+research/output-speed/vector-fields-1026.

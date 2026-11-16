@@ -279,6 +279,16 @@ fn programs_that_could_see_the_tables_keep_them_in_atoms() {
             "(def k1 (Keyword. nil \"a\" \"same\" 1)) (def k2 (Keyword. nil \"b\" \"same\" 2)) (def h {:parents {} :ancestors (hash-map k1 #{::left} k2 #{::right}) :descendants {}}) (defmulti m identity :hierarchy #'h) (defmethod m ::left [_] :left) (defmethod m ::right [_] :right) (defmethod m :default [_] :default) (doseq [i (range 6)] (m i)) (js/console.log (pr-str [(m k1) (m k2)]))",
             "[:left :right]",
         ),
+        // A vector's and a subvector's, which they hold in their own field
+        // (light-cljs-1026).
+        (
+            "(def v1 (PersistentVector. nil 1 5 nil #js [:x] 1)) (def v2 (PersistentVector. nil 1 5 nil #js [:x] 2)) (def h {:parents {} :ancestors (hash-map v1 #{::left} v2 #{::right}) :descendants {}}) (defmulti m identity :hierarchy #'h) (defmethod m ::left [_] :left) (defmethod m ::right [_] :right) (defmethod m :default [_] :default) (doseq [i (range 6)] (m i)) (js/console.log (pr-str [(m v1) (m v2)]))",
+            "[:left :right]",
+        ),
+        (
+            "(def s1 (Subvec. nil [:x :y] 0 1 1)) (def s2 (Subvec. nil [:x :z] 0 1 2)) (def h {:parents {} :ancestors (hash-map s1 #{::left} s2 #{::right}) :descendants {}}) (defmulti m identity :hierarchy #'h) (defmethod m ::left [_] :left) (defmethod m ::right [_] :right) (defmethod m :default [_] :default) (doseq [i (range 6)] (m i)) (js/console.log (pr-str [(m s1) (m s2)]))",
+            "[:left :right]",
+        ),
         (
             "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}) (some? (aget #js {} \"_hash\")))",
             "1 false",

@@ -59,7 +59,7 @@ const SWAPS: &[(&str, &str)] = &[
     (
         "vectorStore",
         r#"  function vectorStore(value) {
-    return __rt.formKind(value) === "vector" ? {cnt: __rt.formCount(value)} : undefined;
+    return __rt.formKind(value) === "vector" ? {cnt$LKEY: __rt.formCount(value)} : undefined;
   }"#,
     ),
     (

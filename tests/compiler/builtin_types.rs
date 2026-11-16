@@ -586,8 +586,11 @@ fn program_types_keep_no_machinery_for_builtin_values() {
         // 11,867 to 12,178 bytes for the record and vector after
         // light-cljs-990 (2026-11-14): the stores' kind brand (`payloads`);
         // 13,206 for the record and keyword after light-cljs-1011
-        // (2026-11-15): keywords as classes and the keyword constant's hash.
-        assert!(advanced(source).emit_js().len() < 13_600, "{source}");
+        // (2026-11-15): keywords as classes and the keyword constant's hash;
+        // about 13,600 for the record and vector after light-cljs-1026
+        // (2026-11-16): the vector's store, metadata and hash as its own
+        // keyed fields, each read by its keyed name.
+        assert!(advanced(source).emit_js().len() < 14_000, "{source}");
     }
     every_level(record_and_vector, "64");
     // The vector's host-facing methods with records about: items of a program
@@ -1630,9 +1633,13 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // registration and the key in each keyed name; 9,737 after
     // light-cljs-1011 (2026-11-15): keywords and symbols as classes
     // (`keywordOf`, `symbolOf`, the keyword cell, its kind and `toJSON`), a
-    // keyword key's own search loops and each keyword constant's hash.
+    // keyword key's own search loops and each keyword constant's hash;
+    // about 10,300 after light-cljs-1026 (2026-11-16): a map entry's store, metadata
+    // and hash as its own keyed fields, and the class bases' `toJSON` leaving
+    // out every keyed field (`unkeyedJSON`), so the ceiling moves to the next
+    // 1,000.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 10_000, "{} bytes", output.len());
+    assert!(output.len() < 11_000, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]

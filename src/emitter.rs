@@ -4871,8 +4871,8 @@ impl<'a> Emitter<'a> {
         true
     }
 
-    /// `(count x)`: `.length` of a string or JavaScript array, and `cnt` of a
-    /// flat vector's store.
+    /// `(count x)`: `.length` of a string or JavaScript array, and the keyed
+    /// `cnt` field of a flat vector, its own store.
     fn count(&mut self, inference: &Inference, value: ExprId) -> bool {
         if !inference.facts().core_protocols_intact() {
             return false;
@@ -4890,7 +4890,7 @@ impl<'a> Emitter<'a> {
             self.rt(RuntimeName::export("vectorStore"));
             self.output.push('(');
             self.value(value);
-            self.output.push_str(").cnt");
+            self.output.push_str(").cnt$LKEY");
             return true;
         }
         false
