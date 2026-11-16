@@ -843,10 +843,12 @@
   // bridge reads it (`vectorStore`) without reading a property of it; so
   // are its keywords and symbols, and the engine's lazy seqs, lists and
   // conses, chunked ones among them, which `lazyOf`, `cellOf` and
-  // `chunkedConsOf` read, and its maps, which `maps` reads (light-cljs-1012).
+  // `chunkedConsOf` read, and its maps, which `maps` reads (light-cljs-1012),
+  // and its sets, reduced markers and atoms, which `sets`, `isReduced` and
+  // `atoms` read (light-cljs-1013).
   function stamped(value) {
     const kind = sharedFormKind(value);
-    return kind === "vector" || kind === "keyword" || kind === "symbol" || kind === "lazy-seq" || kind === "cons" || kind === "list" || kind === "chunked-cons" || kind === "map" || stampBrand.has(value);
+    return kind === "vector" || kind === "keyword" || kind === "symbol" || kind === "lazy-seq" || kind === "cons" || kind === "list" || kind === "chunked-cons" || kind === "map" || kind === "set" || __rt.cljIsReduced(value) || __rt.cljIsAtom(value) || stampBrand.has(value);
   }
   //@unit symbolOf requires: sharedFormKind, sharedFormOf
   // A symbol is an engine symbol form, whose fields are read from the form
@@ -1090,10 +1092,6 @@
   // its collection; design point 6), so every object has one and the
   // verbatim `hash` unit's counter is never reached.
   const identityHashes = {has: () => true, get: value => __rt.identityHash(value), set() { return this; }};
-  //@unit uuids requires: sharedStore
-  const uuids = sharedStore();
-  //@unit uuidHashes requires: sharedStore
-  const uuidHashes = sharedStore();
   //@unit sharedEngineVar requires: sharedFormOf
   // A Var's keyed type, also recognized for a Var another task (or the
   // compiler's declaration adapter) constructed. Reading its brand never
@@ -1170,7 +1168,9 @@
     has: value => __rt.cljIsAtom(value) || store.has(value),
     get: value => __rt.cljIsAtom(value) ? value : store.get(value),
     set(value, payload) { store.set(value, payload); return this; }
-  }))(sharedStore()), volatiles = sharedStore();
+  }))(sharedStore()),
+    // A volatile is the V8 profile's class (light-cljs-1013).
+    volatiles = {has: value => value != null && value.cljs$lang$kind$$LKEY === 39 && "state" in value};
   //@unit Atom requires: sharedAtomOptions, sharedAtomStore
   function Atom(state, metadata, validator, watches) {
     const value = __rt.atomNew(state);
@@ -1290,8 +1290,6 @@
   function reduced(value) {
     return __rt.cljReduced(value);
   }
-  //@unit eductions requires: sharedStore
-  const eductions = sharedStore();
   //@unit ifnValues requires: sharedStore
   const ifnValues = sharedStore(), ifnVariadics = sharedStore();
   //@unit metaFunctions requires: sharedStore

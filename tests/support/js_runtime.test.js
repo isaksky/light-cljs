@@ -1139,8 +1139,11 @@ console.log('metadata copy, hashing, lazy sharing, protocols and invocation asse
   const volatile = c.volatile(undefined);
   assert.equal(c.deref(volatile), undefined);
   assert.equal(c.vreset(volatile, null), null);
-  assert.equal(c.isVolatile(Object.create(volatile)), false);
-  assert.throws(() => c.deref(Object.create(a)), /deref/);
+  // Atoms and volatiles are classes (light-cljs-1013): `Object.create` of
+  // one is deliberate reflection (docs/value-layout.md, section 5), so only
+  // host objects of their shape are checked.
+  assert.equal(c.isVolatile({state: 1}), false);
+  assert.throws(() => c.deref({state: 1, meta: null, validator: null, watches: null}), /deref/);
 }
 {
   const target = c.atom(0), tail = c.list(3, 4), observed = [];
@@ -1683,9 +1686,10 @@ console.log('seq payloads are private fields that host objects cannot copy');
       // (light-cljs-1010) are class values whose data are their own keyed
       // fields: a copy of those onto their prototype is deliberate
       // reflection, and one (docs/value-layout.md, section 5); so are a
-      // repeat and its rest (light-cljs-1030), and the maps and the map
-      // transient (light-cljs-1012).
-      const copies = ['transientVector', 'view', 'repeat', 'repeated', 'transientMap', 'arrayMap', 'assoc', 'persisted'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+      // repeat and its rest (light-cljs-1030), the maps and the map
+      // transient (light-cljs-1012), and the hash sets and the set transient
+      // (light-cljs-1013).
+      const copies = ['transientVector', 'view', 'repeat', 'repeated', 'transientMap', 'arrayMap', 'assoc', 'persisted', 'transientSet', 'set', 'conj', 'reduced', 'queue', 'iteratorSeq'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
       // A transient vector's prototype declares the protocols it implements
       // (light-cljs-1028): what the protocol tests say of `Object.create` of
       // it is deliberate reflection (docs/value-layout.md, section 5); it
@@ -1729,9 +1733,16 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
       persisted: f.persistentBang(f.assocBang(f.transient(map), 5, 1)), repeat: f.repeat(2, 1)
     };
     assert.ok(writes > 0);
+    // A sorted set still keeps a store (light-cljs-1013): it writes entries.
     writes = 0;
-    f.reduced(2);
-    assert.equal(writes, 1);
+    f.sortedSet(2);
+    assert.ok(writes > 0);
+    // A reduced value, a queue, a hash set and a set transient are classes
+    // with their own fields (light-cljs-1013): they write no entry, where
+    // each wrote one.
+    writes = 0;
+    f.reduced(2); fresh.queueFromArray([1]); f.hashSet(1, 2); f.transient(members);
+    assert.equal(writes, 0);
     // An array map is a class with its own fields (light-cljs-1012): it
     // writes no entry, where its store and its kind's wrote two.
     writes = 0;
@@ -1758,9 +1769,10 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
     // As above: a copy of a transient vector's, a seq's, a lazy seq's, a
     // chunked cons's or a chunk's own fields onto its prototype is one
     // (light-cljs-1009, light-cljs-1010, light-cljs-1029), and so is a
-    // cons's, a list's or a repeat's (light-cljs-1030), and a map's or a map
-    // transient's (light-cljs-1012).
-    const copies = ['transientVector', 'view', 'lazy', 'chunked', 'chunk', 'cons', 'list', 'repeat', 'transientMap', 'arrayMap', 'assoc', 'persisted'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+    // cons's, a list's or a repeat's (light-cljs-1030), a map's or a map
+    // transient's (light-cljs-1012), and a hash set's or a set transient's
+    // (light-cljs-1013).
+    const copies = ['transientVector', 'view', 'lazy', 'chunked', 'chunk', 'cons', 'list', 'repeat', 'transientMap', 'arrayMap', 'assoc', 'persisted', 'transientSet', 'set', 'conj', 'reduced', 'queue', 'iteratorSeq'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
     // As above, a transient vector's prototype declares its protocols
     // (light-cljs-1028).
     const declares = name === 'transientVector';
@@ -2103,7 +2115,14 @@ console.log('kind tables stay private to the runtime');
     keySeq: core.keys(core.arrayMap(1, 2)),
     // Array, hash and sorted maps and the map transients (light-cljs-1012).
     arrayMap: core.arrayMap(1, 2), hashMap: core.hashMap(1, 2), sortedMap: core.sortedMap(1, 2),
-    transientArrayMap: core.transient(core.arrayMap(1, 2)), transientHashMap: core.transient(core.hashMap(1, 2))
+    transientArrayMap: core.transient(core.arrayMap(1, 2)), transientHashMap: core.transient(core.hashMap(1, 2)),
+    // Hash and array sets, set transients, queues, reduced values and
+    // iterator seqs (light-cljs-1013).
+    arraySet: core.hashSet(1, 2), hashSet: core.set(Array.from({length: 20}, (_, i) => i)), transientSet: core.transient(core.hashSet(1)),
+    queue: core.conj(r.queueFromArray([1]), 2), reduced: core.reduced(1), iteratorSeq: core.seq(new Set([1, 2])),
+    // An iterator seq is a plain object to enumeration and printing, as
+    // before, and so is an eduction: their fields are not enumerable.
+    delay: new core.Delay(() => 1, null), uuid: core.uuid('00000000-0000-0000-0000-000000000000'), eduction: new core.Eduction(core.identity, r.vector(1))
   };
   const view = ['arr$LKEY', 'i$LKEY', 'indexed$LKEY', 'view$LKEY'];
   const trie = ['meta$LKEY', 'cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'hash$LKEY'];
@@ -2123,7 +2142,9 @@ console.log('kind tables stay private to the runtime');
     iterate: ['cell$LKEY', 'f$LKEY', 'prev$LKEY', 'seed$LKEY', 'realized$LKEY', 'next$LKEY'],
     cycle: ['cell$LKEY', 'all$LKEY', 'prev$LKEY', 'current$LKEY', 'next$LKEY'], keySeq: ['cell$LKEY', 'mseq$LKEY'],
     arrayMap: ['cnt$LKEY', 'arr$LKEY'], hashMap: ['cnt$LKEY', 'root$LKEY', 'nil$LKEY', 'lit$LKEY'], sortedMap: ['entries$LKEY', 'comp$LKEY'],
-    transientArrayMap: ['editable$LKEY', 'arr$LKEY'], transientHashMap: ['edit$LKEY', 'cnt$LKEY', 'root$LKEY', 'nil$LKEY']};
+    transientArrayMap: ['editable$LKEY', 'arr$LKEY'], transientHashMap: ['edit$LKEY', 'cnt$LKEY', 'root$LKEY', 'nil$LKEY'],
+    arraySet: ['entries$LKEY', 'skind$LKEY'], hashSet: ['entries$LKEY', 'skind$LKEY'], transientSet: ['state$LKEY'], queue: ['arr$LKEY'],
+    reduced: ['val$LKEY'], iteratorSeq: [], delay: ['state$LKEY'], uuid: ['uuid$LKEY', 'hash$LKEY'], eduction: []};
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name];
     assert.deepEqual(Object.keys(value), field, name);

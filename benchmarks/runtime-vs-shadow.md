@@ -2037,3 +2037,82 @@ with maps keep the transients' paths and the older layers' field branches
 printer's pairs path (5,360); programs without maps keep the shorter `maps`
 (`vector-only` 7,519 to 7,368, `keyword-only` 5,102 to 5,005). TodoMVC and
 re-frame simple were not ported in this run.
+
+## 2026-11-16: sets, queues, atoms and the other store-held values as classes (light-cljs-1013)
+
+**What.** Hash and array sets, set transients, queues, reduced values,
+iterator seqs, delays, UUIDs and eductions hold their data in their own
+fields, and atoms, volatiles and multimethods are told by their prototypes'
+keyed kinds, where private-field payload stores and WeakMaps held or branded
+each value. An atom's `swap!` with at most two arguments for its function
+calls it directly, without a rest-argument seq. Sorted sets and records keep
+their stores (light-cljs-1038 and light-cljs-1037). docs/value-layout.md has
+the notes.
+
+Binaries: before `light-cljs-31578fd9` (master), after `light-cljs-5d32355d`
+(a commit of this pellet before it was squashed: its runtime but for the
+notes and an engine-atom fix to `swap!`'s fast path in the Pants build), in
+research/shadow-credibility/bin. Unreserved: one peer worker was active.
+Raw results: research/output-speed/remaining-classes-1013 (`gate-*`,
+`workload-*`).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops
+protocol-on-record,record-kw-field,record-dot-field,record-assoc,multimethod,swap-inc,swap-assoc
+--runs 3`; 1-minute load average 3.31-3.54 before, 5.18-6.06 after), ns per
+operation, median (range). The gate has no set operation.
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| swap-inc | 15.2 (14.5-15.4) | 4.87 (4.60-4.95) | -68% | 5.68 | 2.74 | 0.86 |
+| swap-assoc | 122.2 (119.9-123.4) | 68.5 (67.9-68.9) | -44% | 38.3 | 3.32 | 1.79 |
+| multimethod | 173.1 (169.9-173.8) | 150.9 (150.3-152.7) | -13% | 42.9 | 4.11 | 3.52 |
+| protocol-on-record | 3.34 (3.29-3.37) | 3.45 (3.40-3.46) | +3% | 2.41 | 1.46 | 1.43 |
+| record-kw-field | 13.6 (12.9-13.6) | 13.7 (13.5-13.8) | +1% | 2.80 | 5.07 | 4.88 |
+| record-dot-field | 1.89 (1.88-1.89) | 1.96 (1.91-1.97) | +4% | 0.88 | 2.25 | 2.23 |
+| record-assoc | 89.4 (84.9-89.8) | 94.0 (89.5-94.1) | +5% | 8.47 | 11.13 | 11.10 |
+
+- **No operation is more than 10% slower.** The record operations move
+  1-5% up with shadow-cljs's own runs (+4-6% between the two runs, at the
+  higher load of the after run), so light/shadow is unchanged or lower for
+  each; records are not converted yet (light-cljs-1037).
+- **`swap!`** no longer builds a rest-argument seq and turns it back into an
+  array for an atom's function of at most two arguments, and an atom is
+  told by its kind rather than a WeakMap lookup: `swap-inc` is now faster
+  than shadow-cljs's, and `swap-assoc`'s remaining time is the map's
+  `assoc`.
+- **`multimethod`** gains 13%: its method cache and hierarchy are atoms, and
+  the multimethod and atom tests are kind reads.
+
+**Sets.** The gate has no set operation, so a small program times five
+(research/output-speed/remaining-classes-1013/sets.cljs, built at
+`:advanced` by each binary, three runs each alternated, light-cljs only;
+load 7.19-7.40), ns per operation, median (range):
+
+| op | before | after | change |
+| --- | ---: | ---: | ---: |
+| `conj` onto a 4-member set | 399.9 (396.8-401.5) | 78.6 (78.1-81.0) | -80% |
+| `conj` onto a 64-member set | 134.6 (133.8-136.3) | 110.2 (109.6-111.3) | -18% |
+| `contains?` of a 64-member set | 49.9 (49.3-50.7) | 29.4 (29.4-29.7) | -41% |
+| `disj` from a 64-member set | 168.8 (167.2-171.8) | 119.2 (118.9-119.7) | -29% |
+| `(into #{} (range 100))` | 5,965 (5,889-5,971) | 4,758 (4,740-4,815) | -20% |
+
+A set is one object of its class where it was an object, a frozen payload
+and its private-field brand, and a set test reads its kind where it probed
+the stores.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1013 --runs 5
+--runtime-only --runtime 1,40`, the project's light-cljs output rebuilt with
+each binary just before its run; load 8.04-9.50 before, 9.50-9.94 after),
+wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.581 s (0.427-0.752) | 0.423 s (0.417-0.429) | 0.360 s | 0.332 s |
+| 40 | 2.922 s (2.863-2.974) | 2.757 s (2.746-2.786) | 1.343 s | 1.336 s |
+
+The 40-iteration run is 6% faster, with shadow-cljs's within 1%; light/shadow
+2.18 to 2.06 there. The before run's 1-iteration median was disturbed by the
+load (its range is 0.43-0.75 s), so the steady state from the two medians
+(60.0 and 59.8 ms per iteration) hides the change; from each run's fastest
+1-iteration time it is 64.0 to 60.0 ms per iteration (shadow-cljs 25.8 and
+25.9).

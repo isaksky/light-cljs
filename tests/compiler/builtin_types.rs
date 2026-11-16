@@ -555,9 +555,12 @@ fn a_program_type_opens_the_protocol_hooks() {
     // map transients' tests (`mapOf`, `maps`, `transientMapState`) where
     // theirs were private stores; 11,026 after light-cljs-1034 (2026-11-16):
     // `maps` and `mapOf` tell the array and hash maps' fields apart, and
-    // `count` and `hash` read an array map's.
+    // `count` and `hash` read an array map's; 11,609 after light-cljs-1013
+    // (2026-11-16): the tests of the sets, queues, reduced values, atoms and
+    // the other values that became classes, where theirs were private
+    // stores.
     let size = advanced(source).emit_js().len();
-    assert!(size < 11_100, "{size} bytes");
+    assert!(size < 11_700, "{size} bytes");
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -883,14 +886,16 @@ fn protocol_tests_of_program_types_need_no_protocol_tables() {
     // the program type's 7,897. The cells' test (`cellOf`), where theirs was
     // a private store (light-cljs-1030): 8,011. The maps' and map
     // transients' tests (light-cljs-1012): 8,387. Their fields told apart
-    // (light-cljs-1034): 8,631.
+    // (light-cljs-1034): 8,631. The tests of the sets, queues and the other
+    // values that became classes (light-cljs-1013), where theirs were
+    // private stores: 9,048.
     for source in [
         "(deftype T [] ICounted (-count [_] 7)) (counted? (T.))",
         "(defrecord R [x]) (map? (->R 1))",
     ] {
         assert_keeps_none(source, &EXTENSION_MACHINERY);
         let size = advanced(source).emit_js().len();
-        assert!(size < 8_700, "{source}: {size} bytes");
+        assert!(size < 9_300, "{source}: {size} bytes");
     }
 }
 
@@ -977,9 +982,12 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // (`mapOf`, `maps`, `transientMapState`), since light-cljs-1012
     // (2026-11-16), where theirs were private stores (4,273 bytes), and
     // since light-cljs-1034 (2026-11-16) `maps`, `mapOf` and `count` telling
-    // the array and hash maps' fields apart (4,633 bytes).
+    // the array and hash maps' fields apart (4,633 bytes), and since
+    // light-cljs-1013 (2026-11-16) the tests of the sets and queues that
+    // `count` and `seqableValue` read, where theirs were private stores
+    // (5,218 bytes).
     let size = advanced("(count (.split \"a,b\" \",\"))").emit_js().len();
-    assert!(size < 4_700, "{size} bytes");
+    assert!(size < 5_300, "{size} bytes");
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -1719,9 +1727,13 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // which its prototype's methods keep, with their slot-first wrappers;
     // 14,353 after light-cljs-1034 (2026-11-16): the array map's flat search
     // (`arrayIndex`), its pairs' readers and the kind hooks through which
-    // `maps` still answers entries, so the ceiling moves to 15,000.
+    // `maps` still answers entries, so the ceiling moves to 15,000; 15,186
+    // after light-cljs-1013 (2026-11-16): the tests of the sets, queues,
+    // atoms and the other values that became classes (`setCellOf`, `sets`,
+    // `queues`, `atoms` and the rest), which the stores' inventories read
+    // where those were private stores, so the ceiling moves to 16,000.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 15_000, "{} bytes", output.len());
+    assert!(output.len() < 16_000, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -2781,7 +2793,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [553, 553, 597],
+            [795, 795, 839],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2842,7 +2854,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [529, 529, 570],
+            [758, 758, 799],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2909,7 +2921,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [553, 553, 553],
+            [795, 795, 795],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");

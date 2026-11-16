@@ -556,6 +556,81 @@ hash map's entries through `maps`.
   entries as the V8 profile's `mapTraversal` does, and builds a public
   hash map's update as a class with slots.
 
+What light-cljs-1013 landed: the values of the payload stores but sorted
+sets and records, and the values of the WeakMap stores that section 2 gives
+1013 but vars, functions with metadata and string writers, are classes.
+
+- **The classes.** Each holds what its store held, in own fields, and its
+  type's prototype holds its kind (`kinds`): a hash or array set is a
+  `HashSetCell` (kind 33) with `entries` (an array set's entries, a hash
+  set's trie) and `skind` (what `setKinds` answers); a set transient a
+  `TransientHashSetCell` (34) whose `state` field holds its state, as the
+  map transients' did after light-cljs-1012; a reduced value a
+  `ReducedCell` (35) with `val`; a queue a `QueueCell` (36) with `arr`, its
+  items; an iterator seq an `IteratorSeqCell` (37) with `first`, `iter` and
+  `tail`; a delay a `DelayCell` (40) with `state` (its thunk and value); a
+  UUID a `UUIDCell` (42) with `uuid` and `hash`; an eduction an
+  `EductionCell` (43) with its read-only `xform` and `coll`. `Atom` (38),
+  `Volatile` (39) and `MultiFn` (41) were classes already and keep
+  upstream's unkeyed public fields (`state`, `meta`, `validator`,
+  `watches`, `dispatch_fn` and the rest); their prototypes now hold the
+  kind and their constructors the brand marker, where each value was put in
+  a WeakMap or WeakSet. Nothing in them is frozen.
+- **The stores.** `transients`, `privateStore` and `trieBrand` are deleted.
+  `queues`, `reducedValues`, `iteratorSeqs`, `atoms`, `volatiles`, `delays`,
+  `eductions`, `uuids` and `multiFns` keep their names as kind tests (a
+  value of the class with its first own field), as `maps` did, so their
+  callers and the store inventories are unchanged; `uuidHashes` is gone (a
+  UUID's hash is its field). `sets` answers a `HashSetCell` by its kind and
+  a sorted set by the kinded store it keeps (`sets.store`), with
+  `setComparators`, until light-cljs-1035's sorted maps settle what a
+  sorted set holds. `with-meta` and `clone` build a set's or queue's copy
+  by its class (`setQueueCopy`) and copy only real stores.
+- **What is left** (light-cljs-1037 and light-cljs-1038, before
+  light-cljs-1022): records, program types and `reify` (`TypeBrand`,
+  `typeFields`, `recordTypes`, `reifyValues`, and the records' updates,
+  `recordMaps`, the last user of `kindedStore` beside sorted sets) through
+  the emitter, with the 1028 handoff below; and sorted sets, vars
+  (`vars`), functions with metadata (`metaFunctions`) and string writers
+  (`stringBufferWriters`). The "lite" types (`VectorLite`, `HashMapLite`,
+  `ObjMap`, `SetLite`, `ArrayList`) are upstream names with no light-cljs
+  value (empty constructors a protocol can be extended to), so they hold
+  nothing to convert; `Loadable`, `TaggedLiteral` and `Namespace` hold their
+  own fields already.
+- **`swap!`.** An atom's `swap!` and `swap-vals!` call its function with
+  the arguments as they came, or, past two, with the first two and an
+  indexed seq of the others (upstream's `apply`), and build no seq of them
+  all for `swapState` to walk; the Pants build's engine atoms take
+  `swapState`.
+- **Enumeration.** `Object.keys` of a set, set transient, queue, reduced
+  value, delay or UUID lists its keyed fields, and its `toJSON` (the set,
+  reduced, UUID and delay prototypes', the transient and sequence bases')
+  leaves them out (`runtime_value_enumeration_contract`). An iterator seq
+  and an eduction define their fields as not enumerable, so an iterator
+  seq still prints as `#js {}` and both stringify as `{}`, as before.
+- **Profiles.** The constructors end with `/*@brand*/`. The compiler form
+  bridge tests `stamped` before a set's, queue's, UUID's, atom's or
+  volatile's kind (a sorted set by its store first), and `inspect` carries
+  `/*@stamped*/` on those tests and the reduced test. The Pants profile's
+  `stamped` also accepts the engine's sets, reduced markers and atoms; it
+  drops its own `uuids`, `uuidHashes` and `eductions` stores, which the V8
+  profile's classes replace, and its `volatiles` is the V8 kind test.
+- **Forgery (section 5).** The own fields of a set, a set transient, a
+  queue, a reduced value or an iterator seq copied onto its prototype make
+  one (items 19 and 20 of tests/support/js_runtime.test.js gain those
+  candidates); `Object.create` of an atom or a volatile (a value, not a
+  prototype) is one, so those two checks keep host objects of their shape.
+  The QuickJS session test of the reduced store
+  (`quickjs_sessions_brand_class_values_with_a_weak_set`) now counts the
+  compile-time stamp's one `WeakSet` entry and no WeakMap entry. The
+  Proxy of `protocol_hooks_answer_runtime_values_as_the_full_lookup` is
+  asked the same names more often (795 reads at none, where 553), as each
+  new kind test reads the keyed kind.
+- **The 1028 handoff** (the older lookups ignore mask bits on a value with
+  a keyed kind) stays as it is: program types did not get keyed kinds in
+  this pellet, so `ownMethod`, `publicMethod` and `contains.own` still tell
+  them by having none.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
