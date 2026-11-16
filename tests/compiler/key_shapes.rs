@@ -678,8 +678,8 @@ fn event_map_allocations_per_evaluation_are_pinned() {
     // The shapes, with the keys' hashes, and the sites, which pass the values
     // and the set's other member in their operand order. Each builder is
     // called once, so its site is inlined into the loop (light-cljs-214), where
-    // `(:x m)` is `rt$get(m, :x)` (light-cljs-370), so `:x` is read after the
-    // map's first key.
+    // `(:x m)` is `rt$getSite(m, :x)` (light-cljs-370, light-cljs-1016), so
+    // `:x` is read after the map's first key.
     let advanced = emit(&program, OptimizationLevel::Advanced);
     let shaped: Vec<_> = advanced
         .lines()
@@ -694,9 +694,9 @@ fn event_map_allocations_per_evaluation_are_pinned() {
              [1381269198, 1738089905, -1763192079, -1397974765, 1109658740, 1482224470, \
              1972142424, -1597136552, -1386841315, -2123407586]);",
             "const k17 = rt$setShape([null]);",
-            "const next1 = (l5 + rt$get(rt$identity(rt$mapFromShape(k4, [k5, l4, (l4 + 1), \"button\"])), k1) \
-             + rt$count(rt$identity(rt$hashMapFromShape(k16, [5, 7, 3, l4, 8, 2, 4, 6, 9, l4]))) \
-             + rt$count(rt$identity(rt$setFromShape(k17, [l4]))));",
+            "const next1 = (l5 + rt$getSite(rt$identity(rt$mapFromShape(k4, [k5, l4, (l4 + 1), \"button\"])), k1) \
+             + rt$countSite(rt$identity(rt$hashMapFromShape(k16, [5, 7, 3, l4, 8, 2, 4, 6, 9, l4]))) \
+             + rt$countSite(rt$identity(rt$setFromShape(k17, [l4]))));",
         ]
     );
 }

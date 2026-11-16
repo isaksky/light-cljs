@@ -3116,7 +3116,9 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // (about 124,000), and light-cljs-1038 the sorted sets on that tree, the
     // vars', functions with metadata's and string writers' classes (124,627),
     // and light-cljs-1014 the classes' own `-equiv` and `-hash` slots and the
-    // slot-first wrappers of `=` and `hash` (128,715).
+    // slot-first wrappers of `=` and `hash` (128,715),
+    // and light-cljs-1016 the call-site entries of the slot-first operations,
+    // which advanced output calls (129,749).
     assert!(
         total + 1_000
             <= 73_207
@@ -3138,7 +3140,8 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 2_000
                 + 4_000
                 + 1_000
-                + 4_000,
+                + 4_000
+                + 1_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).

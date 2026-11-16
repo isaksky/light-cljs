@@ -250,10 +250,10 @@ fn truth_tests_drop_truth_when_javascript_truthiness_agrees() {
         "[:lt :ge :ge :none :none :some :none :kw :not :counted :counted :text :text [:truthy :truthy :truthy :truthy :falsy :falsy :falsy :truthy :truthy :truthy :truthy :truthy :truthy]]",
     );
     assert!(js.contains("if ((l"), "{js}");
-    for test in ["rt$seq(l", "rt$keywordCore(l"] {
+    for test in ["rt$seqSite(l", "rt$keywordCore(l"] {
         assert!(js.contains(&format!("if ({test}")), "{test}: {js}");
     }
-    for kept in ["truth(rt$count(l", "truth(rt$str(l", "truth(l"] {
+    for kept in ["truth(rt$countSite(l", "truth(rt$str(l", "truth(l"] {
         assert!(js.contains(kept), "{kept}: {js}");
     }
     // A program that tests only booleans declares no `truth`.
@@ -573,7 +573,7 @@ fn equality_lowers_to_identity_for_primitives_and_spelling_for_keyword_literals(
         "(\"a\" !== l",
         // An operand that cannot be read twice is tested by its spelling only;
         // `(:type m)` is a `get` (light-cljs-370).
-        "(rt$keywordFqn(rt$get(l",
+        "(rt$keywordFqn(rt$getSite(l",
     ] {
         assert!(js.contains(lowered), "{lowered}: {js}");
     }
@@ -613,8 +613,8 @@ fn count_reads_the_length_of_strings_arrays_and_flat_vectors() {
     for lowered in [").length", "rt$vectorStore("] {
         assert!(js.contains(lowered), "{lowered}: {js}");
     }
-    // Map entries, subvectors and nil keep the runtime's `count`.
-    assert!(js.contains("rt$count("), "{js}");
+    // Map entries, subvectors and nil keep the runtime's `count`, through its call-site entry.
+    assert!(js.contains("rt$countSite("), "{js}");
     // An extension of `ICounted` to strings turns it off.
     let js = every_level(
         r#"(extend-type string ICounted (-count [_] 42))
@@ -639,8 +639,97 @@ fn nth_on_flat_vectors_uses_the_direct_index_path() {
     );
     assert!(js.contains("rt$vectorNth(rt$vectorStore(l"), "{js}");
     assert!(js.contains(", rt$missing)"), "{js}");
-    // A string index, map entries, subvectors and arrays keep `nth`.
-    assert!(js.contains("rt$nth("), "{js}");
+    // A string index, map entries, subvectors and arrays keep `nth`, through its call-site entry.
+    assert!(js.contains("rt$nthSite("), "{js}");
+}
+
+/// At `Advanced` the slot-first core operations call their call-site entries
+/// (light-cljs-1016), which call a value's keyed slot and take the operation
+/// for every other value: each operation answers as at every other level for
+/// nil, strings, arrays, host objects, the runtime's collections, seqs and
+/// transients, records, a program type and `reify`, errors included.
+/// `(:k m)` is one call, of `getSite`. (A value made by reflection from a
+/// vector's prototype is left out: on master its `count` already overflows
+/// the stack at `Advanced` alone, with or without the entries.)
+#[test]
+fn core_operations_call_their_site_entries() {
+    let source = r#"
+      (defrecord R [a])
+      (deftype C [] ICounted (-count [_] 7) ILookup (-lookup [_ k] [:l k]) (-lookup [_ k nf] [:l k nf]))
+      (defn safe [f] (try (f) (catch :default e (str "threw: " (.-message e)))))
+      (defn reads [x]
+        (mapv safe [#(count x) #(get x :a) #(get x 0 :nf) #(:a x) #(:a x :d) #(first x)
+                    #(rest x) #(next x) #(seq x) #(nth x 0) #(nth x 9 :nf) #(nth x "0") #(peek x)
+                    #(contains? x :a)]))
+      (defn writes [x] (mapv safe [#(conj x :c) #(assoc x 0 :z) #(dissoc x :a)]))
+      (do
+        (pr-str (mapv (juxt reads writes)
+                      [nil [1 2] {:a 1} "ab" (array 1 2) (js-obj "a" 1) (->R 1) (C.)
+                       (reify ILookup (-lookup [_ k] [:r k]) (-lookup [_ k nf] [:r k nf]))
+                       '(1 2) () (lazy-seq [1]) (range 3) #{:a} (first {:a 1}) (subvec [1 2 3] 1)
+                       (sorted-map :a 1) (sorted-set 1) (transient [1])])))"#;
+    let program = program(source);
+    let expected = execute(&format!(
+        "console.log({});",
+        prepare_application(&program, options(OptimizationLevel::None)).emit_js()
+    ));
+    let js = every_level(source, expected.trim_end());
+    for call in [
+        "rt$countSite(",
+        "rt$getSite(",
+        "rt$getSite3(",
+        "rt$nthSite(",
+        "rt$nthSite3(",
+        "rt$firstSite(",
+        "rt$restSite(",
+        "rt$nextSite(",
+        "rt$seqSite(",
+        "rt$peekSite(",
+        "rt$containsSite(",
+        "rt$conjSite(",
+        "rt$assocSite(",
+        "rt$dissocSite(",
+    ] {
+        assert!(js.contains(call), "{call}: {js}");
+    }
+    // `(:a x)` is one call, of the lookup's entry.
+    assert!(
+        js.contains("return __light0_rt$getSite(__light0_l14, __light0_k1);"),
+        "{js}"
+    );
+    for call in ["rt$count(", "rt$get(", "rt$nth(", "rt$first(", "rt$seq("] {
+        assert!(!js.contains(call), "{call}: {js}");
+    }
+    // A program that can give a host object a core protocol slot keeps the
+    // operations' own calls, which read a value's keyed kind first:
+    // `specify!`, and a member written by name, which the operations ignore
+    // on a host object.
+    for source in [
+        r#"(defn size [x] (count x))
+           (pr-str [(size [1 2]) (size (specify! (js-obj) ICounted (-count [_] 5)))])"#,
+        r#"(defn size [x] (get x "k"))
+           (let [o (js-obj)]
+             (set! (.-cljs$core$ILookup$_lookup$arity$2 o) (fn [_ k] 7))
+             (pr-str [(size {"k" 5}) (size o)]))"#,
+        // The member as a component of a `js/` path, and in a raw text's
+        // hole (the Sol review of light-cljs-1016).
+        r#"(defn size [x] (get x "k"))
+           (set! js/globalThis.reviewHost (js-obj))
+           (set! js/globalThis.reviewHost.cljs$core$ILookup$_lookup$arity$2 (fn [_ k] 7))
+           (pr-str [(size {"k" 5}) (size js/globalThis.reviewHost)])"#,
+        r#"(defn size [x] (get x "k"))
+           (let [o (js-obj)]
+             (js* "~{} = ~{}" (.-cljs$core$ILookup$_lookup$arity$2 o) (fn [_ k] 7))
+             (pr-str [(size {"k" 5}) (size o)]))"#,
+    ] {
+        let (expected, call) = if source.contains("specify!") {
+            ("[2 5]", "rt$count(")
+        } else {
+            ("[5 nil]", "rt$get(")
+        };
+        let js = every_level(source, expected);
+        assert!(js.contains(call) && !js.contains("Site("), "{js}");
+    }
 }
 
 #[test]
@@ -955,7 +1044,9 @@ fn typed_lowerings_apply_to_the_parameters_of_closed_functions() {
     }
     for call in [
         "rt$count(",
+        "rt$countSite(",
         "rt$nth(",
+        "rt$nthSite",
         "rt$equal(",
         "rt$notEqual(",
         "truth(",
@@ -991,7 +1082,7 @@ fn parameters_with_unseen_or_mixed_callers_keep_the_runtime_operations() {
         "[3 2 0 2 3 2 [1 2 1] true true 1 9 2 2 \"Index argument to nth must be a number\" \
          :yes :yes :yes 2 [3]]",
     );
-    for kept in ["rt$count(", "rt$equal(", "rt$nth(", "truth("] {
+    for kept in ["rt$countSite(", "rt$equal(", "rt$nthSite(", "truth("] {
         assert!(js.contains(kept), "{kept}: {js}");
     }
     // `P`'s own `-equiv` compares constructors with `===`, as the shared
@@ -1268,7 +1359,10 @@ fn typed_lowerings_apply_to_atom_states_and_keep_the_results() {
     for lowered in ["if (l", ").length", ")[\"x\"]", "truth("] {
         assert!(js.contains(lowered), "{lowered}: {js}");
     }
-    assert!(!js.contains("rt$count("), "{js}");
+    assert!(
+        !js.contains("rt$count(") && !js.contains("rt$countSite("),
+        "{js}"
+    );
 }
 
 /// On a closed atom (light-cljs-256), `deref` returns what the atom holds,
@@ -1387,7 +1481,10 @@ fn typed_lowerings_apply_to_closed_atom_results_and_keep_the_results() {
     for lowered in ["truth(", ").length", "if (l"] {
         assert!(js.contains(lowered), "{lowered}: {js}");
     }
-    assert!(!js.contains("rt$count("), "{js}");
+    assert!(
+        !js.contains("rt$count(") && !js.contains("rt$countSite("),
+        "{js}"
+    );
     // A replaced `atom` makes a program type whose `-reset!` and `-swap!`
     // return `""` where an atom would return `false`.
     every_level(

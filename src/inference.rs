@@ -434,6 +434,9 @@ pub struct ProgramFacts {
     replaced: Vec<bool>,
     /// Core protocols are extended only to the program's own types.
     core_protocols: bool,
+    /// The program writes a core protocol's keyed member by name, or raw
+    /// text spells one.
+    core_slots_by_name: bool,
     /// Some program type implements `IEquiv`.
     equiv: bool,
     /// Some program type implements a core protocol whose methods receive the
@@ -529,14 +532,45 @@ impl ProgramFacts {
                 });
             }
         }
+        // Whether the program writes a core protocol's keyed member by its
+        // name (`(set! (.-cljs$core$ICounted$_count$arity$1 o) f)`), or raw
+        // text spells one with the key's placeholder, which can give any
+        // object, a host object too, a core protocol slot.
+        // A target names one as a property (`(.-cljs$core$... o)`) or as a
+        // component of a `js/` path (`js/o.cljs$core$...`), which the
+        // analyzer keys alike; `set!`, `binding` and a raw text's hole may
+        // assign it.
+        let mut core_slots_by_name = false;
+        let core_member =
+            |name: &str| name.starts_with("cljs$core$") && crate::analyzer::keyed_name(name);
+        let core_slot_target = |target: &ExprId| match &program.exprs[target.0].kind {
+            ExprKind::Property { property, .. } => core_member(property),
+            ExprKind::JsGlobal(global) => program.js_globals[global.0]
+                .path
+                .iter()
+                .any(|component| core_member(component)),
+            _ => false,
+        };
         for (index, expr) in program.exprs.iter().enumerate() {
             match &expr.kind {
-                ExprKind::SetGlobal { target, .. } => assign(target),
+                ExprKind::SetGlobal { target, .. } => {
+                    core_slots_by_name |= core_slot_target(target);
+                    assign(target)
+                }
                 ExprKind::Binding { bindings, .. } => {
+                    core_slots_by_name |=
+                        bindings.iter().any(|(target, _)| core_slot_target(target));
                     bindings.iter().for_each(|(target, _)| assign(target))
                 }
                 // Raw text may assign its holes.
-                ExprKind::JsTemplate { args, .. } => args.iter().for_each(&mut assign),
+                ExprKind::JsTemplate { segments, args } => {
+                    core_slots_by_name |= args.iter().any(core_slot_target)
+                        || segments.iter().any(|segment| {
+                            segment.contains("cljs$core$")
+                                && segment.contains(crate::rta::RUNTIME_KEY)
+                        });
+                    args.iter().for_each(&mut assign)
+                }
                 ExprKind::ExtendType {
                     target, methods, ..
                 } => {
@@ -734,6 +768,7 @@ impl ProgramFacts {
         Self {
             replaced,
             core_protocols,
+            core_slots_by_name,
             equiv,
             receives_functions,
             globals,
@@ -768,6 +803,16 @@ impl ProgramFacts {
     /// the runtime's implementations on runtime and host values.
     pub fn core_protocols_intact(&self) -> bool {
         self.core_protocols
+    }
+
+    /// Whether only the runtime's classes, the program's types and `reify`
+    /// values, which all have a keyed kind, can hold a core protocol's keyed
+    /// slot: the core protocols are intact, and the program neither writes a
+    /// core protocol member by name nor spells one in raw text. Then a
+    /// value's slot is what an operation's slot-first wrapper would call
+    /// first, without reading the value's kind (light-cljs-1016).
+    pub fn core_slots_runtime_only(&self) -> bool {
+        self.core_protocols && !self.core_slots_by_name
     }
 
     /// Whether a `deftype`, `defrecord`, `reify` or `extend-type` of the program

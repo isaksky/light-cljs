@@ -83,7 +83,7 @@ fn keyword_literal_calls_are_get_calls() {
     for (level, text) in OptimizationLevel::ALL.into_iter().zip(&texts) {
         let program = &text[text.rfind("cljs.user").unwrap_or(0)..];
         let get = if level.advanced() {
-            "rt$get("
+            "rt$getSite("
         } else {
             "rt.get("
         };

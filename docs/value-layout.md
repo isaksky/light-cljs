@@ -916,6 +916,51 @@ What light-cljs-1014 landed: each class compares and hashes its own values
   method no longer answers `=` of it. Its hash is unchanged
   (`hashStructural` still asks the protocol lookup last).
 
+What light-cljs-1016 landed: the slot-first core operations' call sites at
+`:advanced` (section 3, "Core operations").
+
+- **Call-site entries.** `count`, `nth` (two and three arguments), `get`
+  (two and three, and `(:k m)` and `(:k m d)`, which are `get`), `first`,
+  `rest`, `next`, `seq`, `peek`, `conj` and `dissoc` (two), `assoc`
+  (three) and `contains?` call one small runtime unit each, `countSite`,
+  `getSite`, `getSite3` and the others (`Emitter::site_call`):
+  `rt$getSite(m, k)` for `(:k m)`, one call. Each entry is its operation's
+  slot-first wrapper for its arity without the wrapper's other reads:
+  `value != null && value.cljs$core$ICounted$_count$arity$1$<key> && (result
+  = value.cljs$core$ICounted$_count$arity$1$<key>(value)) !== noBranch ?
+  result : count(value)`, the keyed name dotted, the slot read twice to call
+  it as upstream's protocol functions read it, a slot that holds no method
+  (false, nil) or answers `noBranch` (a value made by reflection) taking
+  the operation through its wrappers, whose order for nil, strings, arrays
+  and host tables is unchanged; `nthSite` tests a number index first and
+  `seqSite` sends the empty list to the operation, as their wrappers do.
+  They are 47 to 75 bytes of bytecode, which V8 inlines into each site
+  (the 100 of light-cljs-1033). A slot unit names its entries in its
+  `when:`.
+- **When.** The entries read no keyed kind, which the wrappers read first,
+  so they are called only where every value that can hold a core protocol
+  slot has a kind: the core protocols are intact (only the program's types
+  extend them) and the program neither writes a core protocol member by
+  name (`(set! (.-cljs$core$ILookup$_lookup$arity$2 o) f)`) nor spells one
+  with the key's placeholder in raw text
+  (`ProgramFacts::core_slots_runtime_only`). Elsewhere, and below
+  `:advanced`, the operations are called as before. Which arguments each
+  operation takes is the rule, never the program.
+- **What was measured and left out.** The slot test written at each call
+  site, `(x != null && x.slot != null ? x.slot(x) : rt$count(x))`, was the
+  fastest form without `noBranch` (`count-small` 1.6 ns against the
+  entry's 2.0), but kept no answer for a value made by reflection, and with
+  `noBranch` it was no faster than the entry (2.8); it would also grow
+  workload 200k's output by about half (its 16,000 calls of these
+  operations, about 110 bytes each with the eight-character key). Reading
+  the keyed kind in the entry, as the wrappers do, cost 1.3 ns of
+  `count-small`'s 2. benchmarks/runtime-vs-shadow.md has the gate.
+- **What is left.** `kw-small` and `get-small` gain little (under 1 ns of
+  13 and 18): an array map's lookup of a keyword reads the key's `IEquiv`
+  implementation through the protocol hooks once per lookup (`arrayIndex`,
+  `protocolHooks.keyMethod`), about 4.5 ns, which upstream's
+  `array-index-of-keyword?` does not (light-cljs-1041).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

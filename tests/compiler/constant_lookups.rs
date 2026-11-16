@@ -70,19 +70,28 @@ fn every_level(source: &str, expected: &str) -> String {
     advanced[start..].to_owned()
 }
 
-/// Runtime operations that a folded site no longer calls.
-const LOOKUPS: [&str; 14] = [
+/// Runtime operations that a folded site no longer calls, with their
+/// call-site entries (light-cljs-1016).
+const LOOKUPS: [&str; 22] = [
     "rt$get(",
+    "rt$getSite",
     "rt$getIn(",
     "rt$nth(",
+    "rt$nthSite",
     "rt$vectorNth(",
     "rt$count(",
+    "rt$countSite(",
     "rt$isEmpty(",
     "rt$contains(",
+    "rt$containsSite(",
     "rt$seq(",
+    "rt$seqSite(",
     "rt$first(",
+    "rt$firstSite(",
     "rt$rest(",
+    "rt$restSite(",
     "rt$next(",
+    "rt$nextSite(",
     "rt$isSeq(",
     "rt$notEmpty(",
     ".call(null, ",
@@ -173,21 +182,21 @@ fn calls_that_may_throw_or_are_undecided_stay() {
     );
     for call in [
         "rt$vectorNth(rt$vectorStore(k0), 5, rt$missing)",
-        "rt$nth(k0, \"a\")",
-        "rt$nth(k2, 0)",
-        "rt$nth(k3, 0)",
+        "rt$nthSite(k0, \"a\")",
+        "rt$nthSite(k2, 0)",
+        "rt$nthSite(k3, 0)",
         "(k4).call(null, 5)",
         "(k4).call(null, k1)",
         "(k4).call(null)",
-        "rt$nth(k5, 5)",
-        "rt$nth(k5, -1)",
+        "rt$nthSite(k5, 5)",
+        "rt$nthSite(k5, -1)",
         ".call(null, k1, k6, k7)",
         ", -0)",
         ", NaN, k",
-        "rt$count(k",
-        "rt$get(\"abc\", 1)",
+        "rt$countSite(k",
+        "rt$getSite(\"abc\", 1)",
         "rt$getIn(",
-        "rt$get(\"abc\", \"1\")",
+        "rt$getSite(\"abc\", \"1\")",
     ] {
         assert!(text.contains(call), "{call}:\n{text}");
     }
@@ -261,7 +270,7 @@ fn folded_items_keep_identity_and_metadata() {
         "{text}"
     );
     // `early` reads `K` before its definition runs.
-    assert!(text.contains("rt$get(g"), "{text}");
+    assert!(text.contains("rt$getSite(g"), "{text}");
 }
 
 /// Folding needs the runtime's own operations: with a core protocol extended
@@ -345,7 +354,13 @@ fn membership_in_value_position_compares_with_each_member() {
         source,
         r#"[[[true :a :a true] [true :b nil false] [false nil nil false] [true :a :a true] [false nil nil true] [false nil nil false] [false nil nil false]] [[true "a" nil "out"] [true "b" nil "out"] [false nil 1 "in"] [false nil 2 "out"] [false nil nil "in"] [false nil nil "out"] [false nil nil "out"]] ["in" "in" "in" "out" "out"] 14]"#,
     );
-    for call in ["rt$contains(", "rt$get(", ".call(null, l"] {
+    for call in [
+        "rt$contains(",
+        "rt$containsSite(",
+        "rt$get(",
+        "rt$getSite",
+        ".call(null, l",
+    ] {
         assert!(!text.contains(call), "{call}: {text}");
     }
     assert_eq!(text.matches("((caseValue) => ").count(), 4, "{text}");
@@ -398,14 +413,21 @@ fn lookups_in_maps_with_constant_keys_read_their_entries() {
         &text[start..start + text[start..].find("})));").unwrap()]
     };
     let read_map = function("g2");
-    for call in ["rt$count(", "rt$contains(", "rt$isEmpty(", "rt$isMap("] {
+    for call in [
+        "rt$count(",
+        "rt$countSite(",
+        "rt$contains(",
+        "rt$containsSite(",
+        "rt$isEmpty(",
+        "rt$isMap(",
+    ] {
         assert!(!read_map.contains(call), "{call}: {read_map}");
     }
     // `(:w m)`, `(alias :w)`, `(:j b)` and the two literals with effects in
     // their other values; the default with an effect keeps its lookup, a
     // `get` (light-cljs-370).
     assert_eq!(read_map.matches("rt$mapValueAt(").count(), 5, "{read_map}");
-    assert_eq!(read_map.matches("rt$get(").count(), 1, "{read_map}");
+    assert_eq!(read_map.matches("rt$getSite").count(), 1, "{read_map}");
     assert!(!read_map.contains(".call(null, "), "{read_map}");
     assert_eq!(
         function("g3").matches("rt$mapValueAt(l").count(),
@@ -415,7 +437,7 @@ fn lookups_in_maps_with_constant_keys_read_their_entries() {
     // `unshaped` keeps its lookups and its count.
     let unshaped = function("g4");
     assert!(
-        unshaped.contains("rt$count(") && unshaped.matches("rt$get(l").count() == 2,
+        unshaped.contains("rt$countSite(") && unshaped.matches("rt$getSite(l").count() == 2,
         "{unshaped}"
     );
 }

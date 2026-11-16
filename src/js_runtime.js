@@ -1889,8 +1889,8 @@
     if (publicCollectionSlots.has(value)) { const q = publicCollectionSlots.get(value); return seq(concat(q.front, q.rear)); }
     return queue.length ? view(IndexedSeqValue, queue, 0, false, "queue") : null;
   };
-  //@unit makeVector.seq effect: makeVector, mapEntry when: seq, vectorFirst, vectorRest requires: ChunkedSeqCell,
-  //@ IndexedSeqCell, kindHooks, vectorChunk
+  //@unit makeVector.seq effect: makeVector, mapEntry when: seq, vectorFirst, vectorRest, seqSite
+  //@ requires: ChunkedSeqCell, IndexedSeqCell, kindHooks, vectorChunk
   // A vector of at most 32 items walks its tail; a longer one is upstream's
   // chunked seq over its trie's leaves.
   kindHooks.seqVector = (value, store) => !store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), 0, true, "indexed")
@@ -3033,8 +3033,8 @@
   //@unit makeVector.conj effect: makeVector, mapEntry when: conj requires: kindHooks, makeVector,
   //@ vectorConj
   kindHooks.conjVector = (store, item) => makeVector(null, vectorConj(store, item));
-  //@unit SubvecValue.conj effect: SubvecValue when: conj requires: assoc, kindHooks, meta,
-  //@ publicCollectionSlots, subvecSources, SubvecValue
+  //@unit SubvecValue.conj effect: SubvecValue when: conj, conjSite requires: assoc, kindHooks,
+  //@ meta, publicCollectionSlots, subvecSources, SubvecValue
   // A vector with slots and a source is a Subvec its public constructor built.
   kindHooks.conjSubvec = (result, item) => {
     const slots = publicCollectionSlots.get(result);
@@ -3202,8 +3202,8 @@
     putCollectionEntry(value, updated, key, item);
     return updatedMap(value, updated);
   };
-  //@unit SubvecValue.assoc effect: SubvecValue when: assoc requires: assoc, kindHooks, meta,
-  //@ outOfBounds, publicCollectionSlots, subvecSources, SubvecValue
+  //@unit SubvecValue.assoc effect: SubvecValue when: assoc, assocSite requires: assoc, kindHooks,
+  //@ meta, outOfBounds, publicCollectionSlots, subvecSources, SubvecValue
   // See `SubvecValue.conj`.
   kindHooks.assocSubvec = (value, key, item, pairs) => {
     const slots = publicCollectionSlots.get(value);
@@ -5418,8 +5418,8 @@
   // next call runs the program's method. A value with the prototype but no
   // store of its own (one made by reflection) answers `noBranch`, and the
   // slot-first wrapper then takes the operation, which answers it as before.
-  //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: nth requires: builtinSlot,
-  //@ missing, noBranch, PersistentVectorValue, vectorNth
+  //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: nth, nthSite, nthSite3
+  //@ requires: builtinSlot, missing, noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
@@ -5430,28 +5430,28 @@
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return vectorNth(store, index, notFound);
   });
-  //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count requires: builtinSlot,
+  //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count, countSite requires: builtinSlot,
   //@ noBranch, PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return store.cnt$LKEY;
   });
-  //@unit PersistentVectorValue.peek effect: PersistentVectorValue when: peek requires: builtinSlot,
+  //@unit PersistentVectorValue.peek effect: PersistentVectorValue when: peek, peekSite requires: builtinSlot,
   //@ noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
     const store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return store.cnt$LKEY ? vectorNth(store, store.cnt$LKEY - 1, null) : null;
   });
-  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj requires: builtinSlot,
+  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj, conjSite requires: builtinSlot,
   //@ conjMeta, makeVector, noBranch, PersistentVectorValue, vectorConj
   PersistentVectorValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     const store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return conjMeta(self, makeVector(null, vectorConj(store, item)));
   });
-  //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc requires: builtinSlot,
+  //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc, assocSite requires: builtinSlot,
   //@ makeVector, noBranch, outOfBounds, PersistentVectorValue, preserveMeta, vectorAssoc,
   //@ vectorConj
   PersistentVectorValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
@@ -5463,8 +5463,8 @@
     else outOfBounds();
     return preserveMeta(self, makeVector(null, store));
   });
-  //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: get requires: builtinSlot,
-  //@ noBranch, PersistentVectorValue, vectorNth
+  //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: get, getSite, getSite3
+  //@ requires: builtinSlot, noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
     const store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
@@ -5482,8 +5482,8 @@
   // operations give it (`SubvecValue.conj`, `SubvecValue.assoc`). Each slot
   // is complete for a subvector: the compile-time runtime's protocol lookup
   // finds a slot and calls it.
-  //@unit SubvecValue.nth effect: SubvecValue when: nth requires: builtinSlot, missing, noBranch,
-  //@ SubvecValue, vectorNth
+  //@unit SubvecValue.nth effect: SubvecValue when: nth, nthSite, nthSite3 requires: builtinSlot,
+  //@ missing, noBranch, SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return vectorNth(self, index, missing);
@@ -5492,29 +5492,30 @@
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return vectorNth(self, index, notFound);
   });
-  //@unit SubvecValue.count effect: SubvecValue when: count requires: builtinSlot, noBranch,
-  //@ publicCollectionSlots, SubvecValue
+  //@unit SubvecValue.count effect: SubvecValue when: count, countSite requires: builtinSlot,
+  //@ noBranch, publicCollectionSlots, SubvecValue
   SubvecValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     const slots = publicCollectionSlots.get(self);
     return slots ? slots.end - slots.start : self.cnt$LKEY;
   });
-  //@unit SubvecValue.peek effect: SubvecValue when: peek requires: builtinSlot, noBranch,
+  //@unit SubvecValue.peek effect: SubvecValue when: peek, peekSite requires: builtinSlot, noBranch,
   //@ SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return self.cnt$LKEY ? vectorNth(self, self.cnt$LKEY - 1, null) : null;
   });
-  //@unit SubvecValue.conjSlot effect: SubvecValue when: conj requires: builtinSlot, conjMeta,
-  //@ kindHooks, makeVector, noBranch, preserveMeta, publicCollectionSlots, SubvecValue, vectorConj
+  //@unit SubvecValue.conjSlot effect: SubvecValue when: conj, conjSite requires: builtinSlot,
+  //@ conjMeta, kindHooks, makeVector, noBranch, preserveMeta, publicCollectionSlots, SubvecValue,
+  //@ vectorConj
   SubvecValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     if (publicCollectionSlots.has(self)) return preserveMeta(self, kindHooks.conjSubvec(self, item));
     return conjMeta(self, makeVector(null, vectorConj(self, item)));
   });
-  //@unit SubvecValue.assocSlot effect: SubvecValue when: assoc requires: builtinSlot, kindHooks,
-  //@ makeVector, noBranch, outOfBounds, preserveMeta, publicCollectionSlots, SubvecValue,
-  //@ vectorAssoc, vectorConj
+  //@unit SubvecValue.assocSlot effect: SubvecValue when: assoc, assocSite requires: builtinSlot,
+  //@ kindHooks, makeVector, noBranch, outOfBounds, preserveMeta, publicCollectionSlots,
+  //@ SubvecValue, vectorAssoc, vectorConj
   SubvecValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     if (publicCollectionSlots.has(self)) return kindHooks.assocSubvec(self, key, item, []);
@@ -5525,8 +5526,8 @@
     else outOfBounds();
     return preserveMeta(self, makeVector(null, store));
   });
-  //@unit SubvecValue.lookup effect: SubvecValue when: get requires: builtinSlot, noBranch,
-  //@ SubvecValue, vectorNth
+  //@unit SubvecValue.lookup effect: SubvecValue when: get, getSite, getSite3 requires: builtinSlot,
+  //@ noBranch, SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return typeof key === "number" && key >= 0 && key < self.cnt$LKEY ? vectorNth(self, key, null) : null;
@@ -5540,8 +5541,8 @@
   // vector's `conj`, `assoc` and `peek`, which give what a vector of its
   // items gives. A value of the entries' prototype that is not an entry of
   // two items in a tail, as only reflection makes, takes the operation.
-  //@unit MapEntryType.nth effect: MapEntryType when: nth requires: builtinSlot, MapEntryType,
-  //@ noBranch, outOfBounds
+  //@unit MapEntryType.nth effect: MapEntryType when: nth, nthSite, nthSite3 requires: builtinSlot,
+  //@ MapEntryType, noBranch, outOfBounds
   MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const tail = self.tail$LKEY;
     if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
@@ -5552,27 +5553,27 @@
     if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
     return index === 0 || index === 1 ? tail[index] : notFound;
   });
-  //@unit MapEntryType.count effect: MapEntryType when: count requires: builtinSlot, MapEntryType,
-  //@ noBranch
+  //@unit MapEntryType.count effect: MapEntryType when: count, countSite requires: builtinSlot,
+  //@ MapEntryType, noBranch
   MapEntryType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     return 2;
   });
-  //@unit MapEntryType.peek effect: MapEntryType when: peek requires: builtinSlot, MapEntryType,
-  //@ noBranch
+  //@unit MapEntryType.peek effect: MapEntryType when: peek, peekSite requires: builtinSlot,
+  //@ MapEntryType, noBranch
   MapEntryType.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
     const tail = self.tail$LKEY;
     if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
     return tail[1];
   });
-  //@unit MapEntryType.conjSlot effect: MapEntryType when: conj requires: builtinSlot, conjMeta,
-  //@ makeVector, MapEntryType, noBranch, vectorConj
+  //@unit MapEntryType.conjSlot effect: MapEntryType when: conj, conjSite requires: builtinSlot,
+  //@ conjMeta, makeVector, MapEntryType, noBranch, vectorConj
   MapEntryType.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     return conjMeta(self, makeVector(null, vectorConj(self, item)));
   });
-  //@unit MapEntryType.assocSlot effect: MapEntryType when: assoc requires: builtinSlot, makeVector,
-  //@ MapEntryType, noBranch, outOfBounds, preserveMeta, vectorAssoc, vectorConj
+  //@unit MapEntryType.assocSlot effect: MapEntryType when: assoc, assocSite requires: builtinSlot,
+  //@ makeVector, MapEntryType, noBranch, outOfBounds, preserveMeta, vectorAssoc, vectorConj
   MapEntryType.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
     if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     if (typeof key !== "number") throw new Error("Vector key must be a number");
@@ -5582,8 +5583,8 @@
     else outOfBounds();
     return preserveMeta(self, makeVector(null, store));
   });
-  //@unit MapEntryType.lookup effect: MapEntryType when: get requires: builtinSlot, MapEntryType,
-  //@ noBranch
+  //@unit MapEntryType.lookup effect: MapEntryType when: get, getSite, getSite3 requires: builtinSlot,
+  //@ MapEntryType, noBranch
   MapEntryType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
     const tail = self.tail$LKEY;
     if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
@@ -5599,7 +5600,7 @@
   // `editableTransient`: it throws, but the three-argument `nth` gives its
   // item for an index out of bounds. Each slot is complete for a transient
   // vector, as the compile-time runtime's protocol lookup finds and calls it.
-  //@unit TransientVectorType.nth effect: TransientVectorType when: nth requires: builtinSlot,
+  //@unit TransientVectorType.nth effect: TransientVectorType when: nth, nthSite, nthSite3 requires: builtinSlot,
   //@ missing, noBranch, transientNth, TransientVectorType, vectorNth
   TransientVectorType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const editable = self.editable$LKEY;
@@ -5611,15 +5612,15 @@
     if (editable === true) return vectorNth(self, index, notFound);
     return editable === undefined ? noBranch : transientNth(self, index, notFound);
   });
-  //@unit TransientVectorType.count effect: TransientVectorType when: count requires: builtinSlot,
+  //@unit TransientVectorType.count effect: TransientVectorType when: count, countSite requires: builtinSlot,
   //@ editableTransient, noBranch, TransientVectorType
   TransientVectorType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const editable = self.editable$LKEY;
     if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "count"); }
     return self.cnt$LKEY;
   });
-  //@unit TransientVectorType.lookup effect: TransientVectorType when: get requires: builtinSlot,
-  //@ editableTransient, noBranch, TransientVectorType, vectorNth
+  //@unit TransientVectorType.lookup effect: TransientVectorType when: get, getSite, getSite3
+  //@ requires: builtinSlot, editableTransient, noBranch, TransientVectorType, vectorNth
   // A key that is no number is no index; a number is `nth` with the item
   // for a missing key, as `transientLookup` takes it.
   TransientVectorType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
@@ -5887,69 +5888,69 @@
   function mapConjSlot(self, item) {
     return mapOf(self) === undefined ? noBranch : preserveMeta(self, mapConj(self, item));
   }
-  //@unit PersistentArrayMapValue.lookup effect: PersistentArrayMapValue when: get requires: arrayMapLookup,
-  //@ builtinSlot, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.lookup effect: PersistentArrayMapValue when: get, getSite,
+  //@ getSite3 requires: arrayMapLookup, builtinSlot, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return arrayMapLookup(self, key, null); });
   PersistentArrayMapValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return arrayMapLookup(self, key, notFound); });
-  //@unit PersistentHashMapValue.lookup effect: PersistentHashMapValue when: get requires: builtinSlot,
-  //@ hashMapLookup, PersistentHashMapValue
+  //@unit PersistentHashMapValue.lookup effect: PersistentHashMapValue when: get, getSite, getSite3
+  //@ requires: builtinSlot, hashMapLookup, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return hashMapLookup(self, key, null); });
   PersistentHashMapValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return hashMapLookup(self, key, notFound); });
-  //@unit treeMapConstructor.lookupSlot effect: treeMapConstructor when: get requires: builtinSlot,
-  //@ treeMapConstructor, treeMapLookup
+  //@unit treeMapConstructor.lookupSlot effect: treeMapConstructor when: get, getSite, getSite3
+  //@ requires: builtinSlot, treeMapConstructor, treeMapLookup
   treeMapConstructor.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return treeMapLookup(self, key, null); });
   treeMapConstructor.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return treeMapLookup(self, key, notFound); });
-  //@unit PersistentArrayMapValue.count effect: PersistentArrayMapValue when: count requires: arrayMapCount,
-  //@ builtinSlot, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.count effect: PersistentArrayMapValue when: count, countSite
+  //@ requires: arrayMapCount, builtinSlot, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return arrayMapCount(self); });
-  //@unit PersistentHashMapValue.count effect: PersistentHashMapValue when: count requires: builtinSlot,
-  //@ hashMapCount, PersistentHashMapValue
+  //@unit PersistentHashMapValue.count effect: PersistentHashMapValue when: count, countSite
+  //@ requires: builtinSlot, hashMapCount, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return hashMapCount(self); });
-  //@unit treeMapConstructor.countSlot effect: treeMapConstructor when: count requires: builtinSlot,
+  //@unit treeMapConstructor.countSlot effect: treeMapConstructor when: count, countSite requires: builtinSlot,
   //@ treeMapConstructor, treeMapCount
   treeMapConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return treeMapCount(self); });
-  //@unit PersistentArrayMapValue.assocSlot effect: PersistentArrayMapValue when: assoc requires: arrayMapAssoc,
-  //@ builtinSlot, kindHooks, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.assocSlot effect: PersistentArrayMapValue when: assoc, assocSite
+  //@ requires: arrayMapAssoc, builtinSlot, kindHooks, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return arrayMapAssoc(self, key, item); });
   // The operation's own path of an array map (`assoc`, light-cljs-1036).
   kindHooks.assocArrayMap = arrayMapAssoc;
-  //@unit PersistentHashMapValue.assocSlot effect: PersistentHashMapValue when: assoc requires: builtinSlot,
-  //@ hashMapAssoc, kindHooks, PersistentHashMapValue
+  //@unit PersistentHashMapValue.assocSlot effect: PersistentHashMapValue when: assoc, assocSite
+  //@ requires: builtinSlot, hashMapAssoc, kindHooks, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return hashMapAssoc(self, key, item); });
   kindHooks.assocHashMap = hashMapAssoc;
-  //@unit treeMapConstructor.assocSlot effect: treeMapConstructor when: assoc requires: builtinSlot,
+  //@unit treeMapConstructor.assocSlot effect: treeMapConstructor when: assoc, assocSite requires: builtinSlot,
   //@ kindHooks, treeMapAssoc, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return treeMapAssoc(self, key, item); });
   kindHooks.assocTreeMap = treeMapAssoc;
-  //@unit PersistentArrayMapValue.dissocSlot effect: PersistentArrayMapValue when: dissoc requires: arrayMapDissoc,
-  //@ builtinSlot, kindHooks, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.dissocSlot effect: PersistentArrayMapValue when: dissoc,
+  //@ dissocSite requires: arrayMapDissoc, builtinSlot, kindHooks, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return arrayMapDissoc(self, key); });
   // The operation's own path of an array map (`dissoc`, light-cljs-1036).
   kindHooks.dissocArrayMap = arrayMapDissoc;
-  //@unit PersistentHashMapValue.dissocSlot effect: PersistentHashMapValue when: dissoc requires: builtinSlot,
-  //@ hashMapDissoc, kindHooks, PersistentHashMapValue
+  //@unit PersistentHashMapValue.dissocSlot effect: PersistentHashMapValue when: dissoc, dissocSite
+  //@ requires: builtinSlot, hashMapDissoc, kindHooks, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return hashMapDissoc(self, key); });
   kindHooks.dissocHashMap = hashMapDissoc;
-  //@unit treeMapConstructor.dissocSlot effect: treeMapConstructor when: dissoc requires: builtinSlot,
-  //@ kindHooks, treeMapConstructor, treeMapDissoc
+  //@unit treeMapConstructor.dissocSlot effect: treeMapConstructor when: dissoc, dissocSite
+  //@ requires: builtinSlot, kindHooks, treeMapConstructor, treeMapDissoc
   treeMapConstructor.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return treeMapDissoc(self, key); });
   kindHooks.dissocTreeMap = treeMapDissoc;
-  //@unit PersistentArrayMapValue.containsSlot effect: PersistentArrayMapValue when: contains
-  //@ requires: builtinSlot, mapContains, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.containsSlot effect: PersistentArrayMapValue when: contains,
+  //@ containsSite requires: builtinSlot, mapContains, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
-  //@unit PersistentHashMapValue.containsSlot effect: PersistentHashMapValue when: contains
-  //@ requires: builtinSlot, mapContains, PersistentHashMapValue
+  //@unit PersistentHashMapValue.containsSlot effect: PersistentHashMapValue when: contains,
+  //@ containsSite requires: builtinSlot, mapContains, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
-  //@unit treeMapConstructor.containsSlot effect: treeMapConstructor when: contains requires: builtinSlot,
-  //@ mapContains, treeMapConstructor
+  //@unit treeMapConstructor.containsSlot effect: treeMapConstructor when: contains, containsSite
+  //@ requires: builtinSlot, mapContains, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
-  //@unit PersistentArrayMapValue.conjSlot effect: PersistentArrayMapValue when: conj requires: builtinSlot,
-  //@ mapConjSlot, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.conjSlot effect: PersistentArrayMapValue when: conj, conjSite
+  //@ requires: builtinSlot, mapConjSlot, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
-  //@unit PersistentHashMapValue.conjSlot effect: PersistentHashMapValue when: conj requires: builtinSlot,
-  //@ mapConjSlot, PersistentHashMapValue
+  //@unit PersistentHashMapValue.conjSlot effect: PersistentHashMapValue when: conj, conjSite
+  //@ requires: builtinSlot, mapConjSlot, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
-  //@unit treeMapConstructor.conjSlot effect: treeMapConstructor when: conj requires: builtinSlot,
+  //@unit treeMapConstructor.conjSlot effect: treeMapConstructor when: conj, conjSite requires: builtinSlot,
   //@ mapConjSlot, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
 
@@ -5962,7 +5963,7 @@
   // `next` takes of a chunked seq), the slot takes it too, through the
   // operation's wrappers, so that a program's `extend-type` of that
   // operation's protocol answers as before.
-  //@unit IndexedSeqValue.first effect: IndexedSeqValue when: first requires: builtinSlot,
+  //@unit IndexedSeqValue.first effect: IndexedSeqValue when: first, firstSite requires: builtinSlot,
   //@ IndexedSeqValue, noBranch
   IndexedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
@@ -5970,8 +5971,8 @@
     const i = self.i$LKEY;
     return i < arr.length ? arr[i] : null;
   });
-  //@unit IndexedSeqValue.rest effect: IndexedSeqValue when: rest requires: builtinSlot, emptyList,
-  //@ IndexedSeqCell, IndexedSeqValue, noBranch, restSeq
+  //@unit IndexedSeqValue.rest effect: IndexedSeqValue when: rest, restSite requires: builtinSlot,
+  //@ emptyList, IndexedSeqCell, IndexedSeqValue, noBranch, restSeq
   IndexedSeqValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
     if (arr === undefined) return noBranch;
@@ -5979,7 +5980,7 @@
     const i = self.i$LKEY + 1;
     return i < arr.length ? new IndexedSeqCell(arr, i, self.indexed$LKEY, "indexed") : emptyList;
   });
-  //@unit IndexedSeqValue.next effect: IndexedSeqValue when: next requires: builtinSlot,
+  //@unit IndexedSeqValue.next effect: IndexedSeqValue when: next, nextSite requires: builtinSlot,
   //@ IndexedSeqCell, IndexedSeqValue, noBranch, rest, seq
   // The flat kinds advance directly, as `next` advances them; the seqs of
   // queues and sorted maps take the seq of their rest.
@@ -5991,21 +5992,21 @@
     const i = self.i$LKEY + 1;
     return i < arr.length ? new IndexedSeqCell(arr, i, self.indexed$LKEY, kind) : null;
   });
-  //@unit IndexedSeqValue.seq effect: IndexedSeqValue when: seq requires: builtinSlot,
+  //@unit IndexedSeqValue.seq effect: IndexedSeqValue when: seq, seqSite requires: builtinSlot,
   //@ IndexedSeqValue, noBranch
   IndexedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
     if (arr === undefined) return noBranch;
     return self.i$LKEY < arr.length ? self : null;
   });
-  //@unit IndexedSeqValue.count effect: IndexedSeqValue when: count requires: builtinSlot,
+  //@unit IndexedSeqValue.count effect: IndexedSeqValue when: count, countSite requires: builtinSlot,
   //@ IndexedSeqValue, noBranch
   IndexedSeqValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
     if (arr === undefined) return noBranch;
     return Math.max(0, arr.length - self.i$LKEY);
   });
-  //@unit ChunkedSeqValue.first effect: ChunkedSeqValue when: first requires: builtinSlot,
+  //@unit ChunkedSeqValue.first effect: ChunkedSeqValue when: first, firstSite requires: builtinSlot,
   //@ ChunkedSeqValue, noBranch
   ChunkedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
@@ -6013,7 +6014,7 @@
     const i = self.i$LKEY;
     return i < arr.length ? arr[i] : null;
   });
-  //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest requires: builtinSlot,
+  //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest, restSite requires: builtinSlot,
   //@ ChunkedSeqCell, ChunkedSeqValue, chunkedVectorRest, emptyList, noBranch, restSeq
   ChunkedSeqValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
@@ -6023,34 +6024,34 @@
     if (i > arr.length) return emptyList;
     return i < arr.length ? new ChunkedSeqCell(arr, i, vec, self.base$LKEY) : chunkedVectorRest(self);
   });
-  //@unit ChunkedSeqValue.next effect: ChunkedSeqValue when: next requires: builtinSlot,
+  //@unit ChunkedSeqValue.next effect: ChunkedSeqValue when: next, nextSite requires: builtinSlot,
   //@ ChunkedSeqValue, noBranch, rest, seq
   // The seq of its rest, as `next` takes it.
   ChunkedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     if (self.arr$LKEY === undefined) return noBranch;
     return seq(rest(self));
   });
-  //@unit ChunkedSeqValue.seq effect: ChunkedSeqValue when: seq requires: builtinSlot,
+  //@unit ChunkedSeqValue.seq effect: ChunkedSeqValue when: seq, seqSite requires: builtinSlot,
   //@ ChunkedSeqValue, noBranch
   ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
     if (arr === undefined) return noBranch;
     return self.i$LKEY < arr.length ? self : null;
   });
-  //@unit PersistentVectorValue.seq effect: PersistentVectorValue when: seq requires: builtinSlot,
+  //@unit PersistentVectorValue.seq effect: PersistentVectorValue when: seq, seqSite requires: builtinSlot,
   //@ kindHooks, noBranch, PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     const store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return kindHooks.seqVector(self, store);
   });
-  //@unit SubvecValue.seq effect: SubvecValue when: seq requires: builtinSlot, kindHooks, noBranch,
-  //@ SubvecValue
+  //@unit SubvecValue.seq effect: SubvecValue when: seq, seqSite requires: builtinSlot, kindHooks,
+  //@ noBranch, SubvecValue
   SubvecValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return kindHooks.seqVector(self, self);
   });
-  //@unit MapEntryType.seq effect: MapEntryType when: seq requires: builtinSlot, kindHooks,
+  //@unit MapEntryType.seq effect: MapEntryType when: seq, seqSite requires: builtinSlot, kindHooks,
   //@ MapEntryType, noBranch
   MapEntryType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
@@ -6065,52 +6066,53 @@
   // `first` and `rest` read its chunk through `nth`, `count` and
   // `-drop-first` where protocol implementations exist, through their
   // wrappers.
-  //@unit LazySeq.seqSlot effect: LazySeq when: seq requires: builtinSlot, lazyRealized, LazySeq,
-  //@ noBranch, seq
+  //@unit LazySeq.seqSlot effect: LazySeq when: seq, seqSite requires: builtinSlot, lazyRealized,
+  //@ LazySeq, noBranch, seq
   LazySeq.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     if (!("fn$LKEY" in self)) return noBranch;
     return seq(lazyRealized(self));
   });
-  //@unit LazySeq.firstSlot effect: LazySeq when: first requires: builtinSlot, first, LazySeq,
-  //@ noBranch, seq
+  //@unit LazySeq.firstSlot effect: LazySeq when: first, firstSite requires: builtinSlot, first,
+  //@ LazySeq, noBranch, seq
   LazySeq.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     if (!("fn$LKEY" in self)) return noBranch;
     seq(self);
     return first(self.s$LKEY);
   });
-  //@unit LazySeq.restSlot effect: LazySeq when: rest requires: builtinSlot, LazySeq, noBranch,
-  //@ rest, seq
+  //@unit LazySeq.restSlot effect: LazySeq when: rest, restSite requires: builtinSlot, LazySeq,
+  //@ noBranch, rest, seq
   LazySeq.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     if (!("fn$LKEY" in self)) return noBranch;
     seq(self);
     return rest(self.s$LKEY);
   });
-  //@unit LazySeq.nextSlot effect: LazySeq when: next requires: builtinSlot, LazySeq, next,
-  //@ noBranch, seq
+  //@unit LazySeq.nextSlot effect: LazySeq when: next, nextSite requires: builtinSlot, LazySeq,
+  //@ next, noBranch, seq
   LazySeq.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     if (!("fn$LKEY" in self)) return noBranch;
     seq(self);
     return next(self.s$LKEY);
   });
-  //@unit ChunkedCons.first effect: ChunkedCons when: first requires: builtinSlot, ChunkedCons,
-  //@ chunkedConsFirst, noBranch
+  //@unit ChunkedCons.first effect: ChunkedCons when: first, firstSite requires: builtinSlot,
+  //@ ChunkedCons, chunkedConsFirst, noBranch
   ChunkedCons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     if (!("chunk$LKEY" in self)) return noBranch;
     return chunkedConsFirst(self);
   });
-  //@unit ChunkedCons.rest effect: ChunkedCons when: rest requires: builtinSlot, ChunkedCons,
-  //@ chunkedConsRest, noBranch
+  //@unit ChunkedCons.rest effect: ChunkedCons when: rest, restSite requires: builtinSlot,
+  //@ ChunkedCons, chunkedConsRest, noBranch
   ChunkedCons.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     if (!("chunk$LKEY" in self)) return noBranch;
     return chunkedConsRest(self);
   });
-  //@unit ChunkedCons.next effect: ChunkedCons when: next requires: builtinSlot, ChunkedCons,
-  //@ noBranch, rest, seq
+  //@unit ChunkedCons.next effect: ChunkedCons when: next, nextSite requires: builtinSlot,
+  //@ ChunkedCons, noBranch, rest, seq
   ChunkedCons.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     if (!("chunk$LKEY" in self)) return noBranch;
     return seq(rest(self));
   });
-  //@unit ChunkedCons.seq effect: ChunkedCons when: seq requires: builtinSlot, ChunkedCons, noBranch
+  //@unit ChunkedCons.seq effect: ChunkedCons when: seq, seqSite requires: builtinSlot, ChunkedCons,
+  //@ noBranch
   ChunkedCons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return !("chunk$LKEY" in self) ? noBranch : self;
   });
@@ -6146,13 +6148,13 @@
   ChunkedSeqValue.prototype.cljs$core$IChunkedNext$_chunked_next$arity$1$LKEY = builtinSlot(function (self) {
     return self.arr$LKEY === undefined ? noBranch : seq(ownedChunkRest(self));
   });
-  //@unit arrayChunk.countSlot effect: arrayChunk when: count requires: arrayChunk, builtinSlot,
-  //@ noBranch
+  //@unit arrayChunk.countSlot effect: arrayChunk when: count, countSite requires: arrayChunk,
+  //@ builtinSlot, noBranch
   arrayChunk.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return !("arr$LKEY" in self) ? noBranch : self.end$LKEY - self.off$LKEY;
   });
-  //@unit arrayChunk.nthSlot effect: arrayChunk when: nth requires: arrayChunk, builtinSlot,
-  //@ chunkNth, missing, noBranch
+  //@unit arrayChunk.nthSlot effect: arrayChunk when: nth, nthSite, nthSite3 requires: arrayChunk,
+  //@ builtinSlot, chunkNth, missing, noBranch
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     return !("arr$LKEY" in self) ? noBranch : chunkNth(self, index, missing);
   });
@@ -6185,173 +6187,193 @@
   const cellNextSlot = builtinSlot(function (self) { return self.cell$LKEY === undefined ? noBranch : seq(rest(self)); });
   //@unit cellSeqSlot requires: builtinSlot, noBranch
   const cellSeqSlot = builtinSlot(function (self) { return self.cell$LKEY === undefined ? noBranch : self; });
-  //@unit Cons.firstSlot effect: Cons when: first requires: builtinSlot, Cons, noBranch
+  //@unit Cons.firstSlot effect: Cons when: first, firstSite requires: builtinSlot, Cons, noBranch
   // A cons's slots of its own, which only conses reach.
   Cons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : self.first$LKEY;
   });
-  //@unit Cons.restSlot effect: Cons when: rest requires: builtinSlot, Cons, emptyList, noBranch
+  //@unit Cons.restSlot effect: Cons when: rest, restSite requires: builtinSlot, Cons, emptyList,
+  //@ noBranch
   Cons.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : self.rest$LKEY ?? emptyList;
   });
-  //@unit Cons.nextSlot effect: Cons when: next requires: builtinSlot, Cons, noBranch, rest, seq
+  //@unit Cons.nextSlot effect: Cons when: next, nextSite requires: builtinSlot, Cons, noBranch,
+  //@ rest, seq
   Cons.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : seq(rest(self));
   });
-  //@unit Cons.seqSlot effect: Cons when: seq requires: builtinSlot, Cons, noBranch
+  //@unit Cons.seqSlot effect: Cons when: seq, seqSite requires: builtinSlot, Cons, noBranch
   Cons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : self;
   });
-  //@unit ListValue.firstSlot effect: ListValue when: first requires: builtinSlot, ListValue,
-  //@ noBranch, publicCollectionSlots
+  //@unit ListValue.firstSlot effect: ListValue when: first, firstSite requires: builtinSlot,
+  //@ ListValue, noBranch, publicCollectionSlots
   // A list of count 0 is empty unless a public constructor gave it the
   // count (`(List. nil 1 nil 0 nil)`), as the operations read it.
   ListValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cell$LKEY === undefined) return noBranch;
     return self.count$LKEY === 0 && !publicCollectionSlots.has(self) ? null : self.first$LKEY;
   });
-  //@unit ListValue.restSlot effect: ListValue when: rest requires: builtinSlot, emptyList,
-  //@ ListValue, noBranch, publicCollectionSlots
+  //@unit ListValue.restSlot effect: ListValue when: rest, restSite requires: builtinSlot,
+  //@ emptyList, ListValue, noBranch, publicCollectionSlots
   ListValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cell$LKEY === undefined) return noBranch;
     const count = self.count$LKEY;
     return count === 1 || count === 0 && !publicCollectionSlots.has(self) ? emptyList : self.rest$LKEY;
   });
-  //@unit ListValue.nextSlot effect: ListValue when: next requires: builtinSlot, ListValue,
-  //@ noBranch, publicCollectionSlots
+  //@unit ListValue.nextSlot effect: ListValue when: next, nextSite requires: builtinSlot,
+  //@ ListValue, noBranch, publicCollectionSlots
   ListValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cell$LKEY === undefined) return noBranch;
     const count = self.count$LKEY;
     return count === 1 || count === 0 && !publicCollectionSlots.has(self) ? null : self.rest$LKEY;
   });
-  //@unit ListValue.seqSlot effect: ListValue when: seq requires: builtinSlot, ListValue, noBranch,
-  //@ publicCollectionSlots
+  //@unit ListValue.seqSlot effect: ListValue when: seq, seqSite requires: builtinSlot, ListValue,
+  //@ noBranch, publicCollectionSlots
   ListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cell$LKEY === undefined) return noBranch;
     return self.count$LKEY === 0 && !publicCollectionSlots.has(self) ? null : self;
   });
-  //@unit ListValue.countSlot effect: ListValue when: count requires: builtinSlot, ListValue,
-  //@ noBranch
+  //@unit ListValue.countSlot effect: ListValue when: count, countSite requires: builtinSlot,
+  //@ ListValue, noBranch
   ListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : self.count$LKEY;
   });
-  //@unit EmptyListValue.firstSlot effect: EmptyListValue when: first requires: builtinSlot,
+  //@unit EmptyListValue.firstSlot effect: EmptyListValue when: first, firstSite requires: builtinSlot,
   //@ EmptyListValue, noBranch
   EmptyListValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : null;
   });
-  //@unit EmptyListValue.restSlot effect: EmptyListValue when: rest requires: builtinSlot,
+  //@unit EmptyListValue.restSlot effect: EmptyListValue when: rest, restSite requires: builtinSlot,
   //@ emptyList, EmptyListValue, noBranch
   EmptyListValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : emptyList;
   });
-  //@unit EmptyListValue.nextSlot effect: EmptyListValue when: next requires: builtinSlot,
+  //@unit EmptyListValue.nextSlot effect: EmptyListValue when: next, nextSite requires: builtinSlot,
   //@ EmptyListValue, noBranch
   EmptyListValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : null;
   });
-  //@unit EmptyListValue.seqSlot effect: EmptyListValue when: seq requires: builtinSlot,
+  //@unit EmptyListValue.seqSlot effect: EmptyListValue when: seq, seqSite requires: builtinSlot,
   //@ EmptyListValue, noBranch
   EmptyListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : null;
   });
-  //@unit EmptyListValue.countSlot effect: EmptyListValue when: count requires: builtinSlot,
+  //@unit EmptyListValue.countSlot effect: EmptyListValue when: count, countSite requires: builtinSlot,
   //@ EmptyListValue, noBranch
   EmptyListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : 0;
   });
-  //@unit IntegerRangeValue.countSlot effect: IntegerRangeValue when: count requires: builtinSlot,
+  //@unit IntegerRangeValue.countSlot effect: IntegerRangeValue when: count, countSite requires: builtinSlot,
   //@ IntegerRangeValue, noBranch
   IntegerRangeValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : self.count$LKEY;
   });
-  //@unit RepeatValue.nextSlot effect: RepeatValue when: next requires: builtinSlot, noBranch,
-  //@ RepeatValue
+  //@unit RepeatValue.nextSlot effect: RepeatValue when: next, nextSite requires: builtinSlot,
+  //@ noBranch, RepeatValue
   // A repeat's next is its next step; one without end is its own.
   RepeatValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     if (self.cell$LKEY === undefined) return noBranch;
     const remaining = self.remaining$LKEY;
     return self.next$LKEY ?? (remaining === -1 ? self : remaining > 1 ? self.rest$LKEY : null);
   });
-  //@unit IntegerRangeValue.firstSlot effect: IntegerRangeValue when: first requires: cellFirstSlot,
+  //@unit IntegerRangeValue.firstSlot effect: IntegerRangeValue when: first, firstSite requires: cellFirstSlot,
   //@ IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit IntegerRangeValue.restSlot effect: IntegerRangeValue when: rest requires: cellRestSlot,
+  //@unit IntegerRangeValue.restSlot effect: IntegerRangeValue when: rest, restSite requires: cellRestSlot,
   //@ IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
-  //@unit IntegerRangeValue.nextSlot effect: IntegerRangeValue when: next requires: cellNextSlot,
+  //@unit IntegerRangeValue.nextSlot effect: IntegerRangeValue when: next, nextSite requires: cellNextSlot,
   //@ IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit IntegerRangeValue.seqSlot effect: IntegerRangeValue when: seq requires: cellSeqSlot,
+  //@unit IntegerRangeValue.seqSlot effect: IntegerRangeValue when: seq, seqSite requires: cellSeqSlot,
   //@ IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit RangeValue.firstSlot effect: RangeValue when: first requires: cellFirstSlot, RangeValue
+  //@unit RangeValue.firstSlot effect: RangeValue when: first, firstSite requires: cellFirstSlot,
+  //@ RangeValue
   RangeValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit RangeValue.restSlot effect: RangeValue when: rest requires: cellRestSlot, RangeValue
+  //@unit RangeValue.restSlot effect: RangeValue when: rest, restSite requires: cellRestSlot,
+  //@ RangeValue
   RangeValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
-  //@unit RangeValue.nextSlot effect: RangeValue when: next requires: cellNextSlot, RangeValue
+  //@unit RangeValue.nextSlot effect: RangeValue when: next, nextSite requires: cellNextSlot,
+  //@ RangeValue
   RangeValue.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit RangeValue.seqSlot effect: RangeValue when: seq requires: cellSeqSlot, RangeValue
+  //@unit RangeValue.seqSlot effect: RangeValue when: seq, seqSite requires: cellSeqSlot, RangeValue
   RangeValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit IterateValue.firstSlot effect: IterateValue when: first requires: cellFirstSlot,
+  //@unit IterateValue.firstSlot effect: IterateValue when: first, firstSite requires: cellFirstSlot,
   //@ IterateValue
   IterateValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit IterateValue.restSlot effect: IterateValue when: rest requires: cellRestSlot, IterateValue
+  //@unit IterateValue.restSlot effect: IterateValue when: rest, restSite requires: cellRestSlot,
+  //@ IterateValue
   IterateValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
-  //@unit IterateValue.nextSlot effect: IterateValue when: next requires: cellNextSlot, IterateValue
+  //@unit IterateValue.nextSlot effect: IterateValue when: next, nextSite requires: cellNextSlot,
+  //@ IterateValue
   IterateValue.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit IterateValue.seqSlot effect: IterateValue when: seq requires: cellSeqSlot, IterateValue
+  //@unit IterateValue.seqSlot effect: IterateValue when: seq, seqSite requires: cellSeqSlot,
+  //@ IterateValue
   IterateValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit CycleValue.firstSlot effect: CycleValue when: first requires: cellFirstSlot, CycleValue
+  //@unit CycleValue.firstSlot effect: CycleValue when: first, firstSite requires: cellFirstSlot,
+  //@ CycleValue
   CycleValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit CycleValue.restSlot effect: CycleValue when: rest requires: cellRestSlot, CycleValue
+  //@unit CycleValue.restSlot effect: CycleValue when: rest, restSite requires: cellRestSlot,
+  //@ CycleValue
   CycleValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
-  //@unit CycleValue.nextSlot effect: CycleValue when: next requires: cellNextSlot, CycleValue
+  //@unit CycleValue.nextSlot effect: CycleValue when: next, nextSite requires: cellNextSlot,
+  //@ CycleValue
   CycleValue.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit CycleValue.seqSlot effect: CycleValue when: seq requires: cellSeqSlot, CycleValue
+  //@unit CycleValue.seqSlot effect: CycleValue when: seq, seqSite requires: cellSeqSlot, CycleValue
   CycleValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit RepeatValue.firstSlot effect: RepeatValue when: first requires: cellFirstSlot, RepeatValue
+  //@unit RepeatValue.firstSlot effect: RepeatValue when: first, firstSite requires: cellFirstSlot,
+  //@ RepeatValue
   RepeatValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit RepeatValue.restSlot effect: RepeatValue when: rest requires: cellRestSlot, RepeatValue
+  //@unit RepeatValue.restSlot effect: RepeatValue when: rest, restSite requires: cellRestSlot,
+  //@ RepeatValue
   RepeatValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
-  //@unit RepeatValue.seqSlot effect: RepeatValue when: seq requires: cellSeqSlot, RepeatValue
+  //@unit RepeatValue.seqSlot effect: RepeatValue when: seq, seqSite requires: cellSeqSlot,
+  //@ RepeatValue
   RepeatValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit KeySeqCell.firstSlot effect: KeySeqCell when: first requires: cellFirstSlot, KeySeqCell
+  //@unit KeySeqCell.firstSlot effect: KeySeqCell when: first, firstSite requires: cellFirstSlot,
+  //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit KeySeqCell.restSlot effect: KeySeqCell when: rest requires: cellRestSlot, KeySeqCell
+  //@unit KeySeqCell.restSlot effect: KeySeqCell when: rest, restSite requires: cellRestSlot,
+  //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
-  //@unit KeySeqCell.nextSlot effect: KeySeqCell when: next requires: cellNextSlot, KeySeqCell
+  //@unit KeySeqCell.nextSlot effect: KeySeqCell when: next, nextSite requires: cellNextSlot,
+  //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit KeySeqCell.seqSlot effect: KeySeqCell when: seq requires: cellSeqSlot, KeySeqCell
+  //@unit KeySeqCell.seqSlot effect: KeySeqCell when: seq, seqSite requires: cellSeqSlot, KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit ReSeqCell.firstSlot effect: ReSeqCell when: first requires: cellFirstSlot, ReSeqCell
+  //@unit ReSeqCell.firstSlot effect: ReSeqCell when: first, firstSite requires: cellFirstSlot,
+  //@ ReSeqCell
   ReSeqCell.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit ReSeqCell.restSlot effect: ReSeqCell when: rest requires: cellRestSlot, ReSeqCell
+  //@unit ReSeqCell.restSlot effect: ReSeqCell when: rest, restSite requires: cellRestSlot,
+  //@ ReSeqCell
   ReSeqCell.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
-  //@unit ReSeqCell.nextSlot effect: ReSeqCell when: next requires: cellNextSlot, ReSeqCell
+  //@unit ReSeqCell.nextSlot effect: ReSeqCell when: next, nextSite requires: cellNextSlot,
+  //@ ReSeqCell
   ReSeqCell.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit ReSeqCell.seqSlot effect: ReSeqCell when: seq requires: cellSeqSlot, ReSeqCell
+  //@unit ReSeqCell.seqSlot effect: ReSeqCell when: seq, seqSite requires: cellSeqSlot, ReSeqCell
   ReSeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit treeMapSeqConstructor.firstSlot effect: treeMapSeqConstructor when: first requires: builtinSlot,
-  //@ noBranch, treeMapSeqConstructor
+  //@unit treeMapSeqConstructor.firstSlot effect: treeMapSeqConstructor when: first, firstSite
+  //@ requires: builtinSlot, noBranch, treeMapSeqConstructor
   // A sorted map's seq is a cell of its stack of nodes (light-cljs-1035),
   // whatever builds it; a value made by reflection, with no `cell` field,
   // takes the operation.
   treeMapSeqConstructor.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : self.first$LKEY;
   });
-  //@unit treeMapSeqConstructor.restSlot effect: treeMapSeqConstructor when: rest requires: builtinSlot,
-  //@ emptyList, noBranch, treeMapSeqConstructor
+  //@unit treeMapSeqConstructor.restSlot effect: treeMapSeqConstructor when: rest, restSite
+  //@ requires: builtinSlot, emptyList, noBranch, treeMapSeqConstructor
   treeMapSeqConstructor.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : self.rest$LKEY ?? emptyList;
   });
-  //@unit treeMapSeqConstructor.nextSlot effect: treeMapSeqConstructor when: next requires: builtinSlot,
-  //@ noBranch, rest, seq, treeMapSeqConstructor
+  //@unit treeMapSeqConstructor.nextSlot effect: treeMapSeqConstructor when: next, nextSite
+  //@ requires: builtinSlot, noBranch, rest, seq, treeMapSeqConstructor
   // The seq of its rest, through the wrappers.
   treeMapSeqConstructor.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : seq(rest(self));
   });
-  //@unit treeMapSeqConstructor.seqSlot effect: treeMapSeqConstructor when: seq requires: builtinSlot,
+  //@unit treeMapSeqConstructor.seqSlot effect: treeMapSeqConstructor when: seq, seqSite requires: builtinSlot,
   //@ noBranch, treeMapSeqConstructor
   treeMapSeqConstructor.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : self;
@@ -6406,6 +6428,110 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(seq, emptyList, noBranch);
+
+  // Call-site entries (light-cljs-1016, docs/value-layout.md section 3):
+  // what `:advanced` output calls for a core operation of a fixed arity
+  // where only the runtime's classes, the program's types and `reify`
+  // values can hold a core protocol's keyed slot, all of them values with a
+  // keyed kind (`ProgramFacts::core_slots_runtime_only`). Each is that
+  // operation's slot-first wrapper for its arity: the receiver's keyed slot
+  // where it holds a method, else, or where the slot answers `noBranch` (a
+  // value made by reflection), the operation through its wrappers, which
+  // keeps the operation's order for nil, strings, arrays and host tables.
+  // With no kind read (which cost 1.3 ns of `count-small`'s 2), no
+  // `arguments` and no `.call`, each is 47 to 75 bytes of bytecode, which
+  // V8 inlines into its call site (the wrappers' 100, light-cljs-1033);
+  // `noBranch` and the empty list are parameters, read with no check for an
+  // uninitialized `const`. `seqSite` sends the empty list to the operation,
+  // as `seq.slots` does.
+  //@unit countSite requires: count, noBranch
+  const countSite = (none => value => {
+    let result;
+    return value != null && value.cljs$core$ICounted$_count$arity$1$LKEY
+      && (result = value.cljs$core$ICounted$_count$arity$1$LKEY(value)) !== none ? result : count(value);
+  })(noBranch);
+  //@unit nthSite requires: noBranch, nth
+  const nthSite = (none => (value, index) => {
+    let result;
+    return value != null && typeof index === "number" && value.cljs$core$IIndexed$_nth$arity$2$LKEY
+      && (result = value.cljs$core$IIndexed$_nth$arity$2$LKEY(value, index)) !== none ? result : nth(value, index);
+  })(noBranch);
+  //@unit nthSite3 requires: noBranch, nth
+  const nthSite3 = (none => (value, index, notFound) => {
+    let result;
+    return value != null && typeof index === "number" && value.cljs$core$IIndexed$_nth$arity$3$LKEY
+      && (result = value.cljs$core$IIndexed$_nth$arity$3$LKEY(value, index, notFound)) !== none ? result
+      : nth(value, index, notFound);
+  })(noBranch);
+  //@unit getSite requires: get, noBranch
+  const getSite = (none => (value, key) => {
+    let result;
+    return value != null && value.cljs$core$ILookup$_lookup$arity$2$LKEY
+      && (result = value.cljs$core$ILookup$_lookup$arity$2$LKEY(value, key)) !== none ? result : get(value, key);
+  })(noBranch);
+  //@unit getSite3 requires: get, noBranch
+  const getSite3 = (none => (value, key, notFound) => {
+    let result;
+    return value != null && value.cljs$core$ILookup$_lookup$arity$3$LKEY
+      && (result = value.cljs$core$ILookup$_lookup$arity$3$LKEY(value, key, notFound)) !== none ? result
+      : get(value, key, notFound);
+  })(noBranch);
+  //@unit firstSite requires: first, noBranch
+  const firstSite = (none => value => {
+    let result;
+    return value != null && value.cljs$core$ISeq$_first$arity$1$LKEY
+      && (result = value.cljs$core$ISeq$_first$arity$1$LKEY(value)) !== none ? result : first(value);
+  })(noBranch);
+  //@unit restSite requires: noBranch, rest
+  const restSite = (none => value => {
+    let result;
+    return value != null && value.cljs$core$ISeq$_rest$arity$1$LKEY
+      && (result = value.cljs$core$ISeq$_rest$arity$1$LKEY(value)) !== none ? result : rest(value);
+  })(noBranch);
+  //@unit nextSite requires: next, noBranch
+  const nextSite = (none => value => {
+    let result;
+    return value != null && value.cljs$core$INext$_next$arity$1$LKEY
+      && (result = value.cljs$core$INext$_next$arity$1$LKEY(value)) !== none ? result : next(value);
+  })(noBranch);
+  //@unit seqSite requires: emptyList, noBranch, seq
+  const seqSite = ((empty, none) => value => {
+    let result;
+    return value != null && value !== empty && value.cljs$core$ISeqable$_seq$arity$1$LKEY
+      && (result = value.cljs$core$ISeqable$_seq$arity$1$LKEY(value)) !== none ? result : seq(value);
+  })(emptyList, noBranch);
+  //@unit peekSite requires: noBranch, peek
+  const peekSite = (none => value => {
+    let result;
+    return value != null && value.cljs$core$IStack$_peek$arity$1$LKEY
+      && (result = value.cljs$core$IStack$_peek$arity$1$LKEY(value)) !== none ? result : peek(value);
+  })(noBranch);
+  //@unit conjSite requires: conj, noBranch
+  const conjSite = (none => (coll, item) => {
+    let result;
+    return coll != null && coll.cljs$core$ICollection$_conj$arity$2$LKEY
+      && (result = coll.cljs$core$ICollection$_conj$arity$2$LKEY(coll, item)) !== none ? result : conj(coll, item);
+  })(noBranch);
+  //@unit assocSite requires: assoc, noBranch
+  const assocSite = (none => (value, key, item) => {
+    let result;
+    return value != null && value.cljs$core$IAssociative$_assoc$arity$3$LKEY
+      && (result = value.cljs$core$IAssociative$_assoc$arity$3$LKEY(value, key, item)) !== none ? result
+      : assoc(value, key, item);
+  })(noBranch);
+  //@unit dissocSite requires: dissoc, noBranch
+  const dissocSite = (none => (value, key) => {
+    let result;
+    return value != null && value.cljs$core$IMap$_dissoc$arity$2$LKEY
+      && (result = value.cljs$core$IMap$_dissoc$arity$2$LKEY(value, key)) !== none ? result : dissoc(value, key);
+  })(noBranch);
+  //@unit containsSite requires: contains, noBranch
+  const containsSite = (none => (value, key) => {
+    let result;
+    return value != null && value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY
+      && (result = value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY(value, key)) !== none ? result
+      : contains(value, key);
+  })(noBranch);
   //@unit contains requires: get, methodKeys, missing, protocolHooks, vectorStore
   function contains(value, key) {
     const method = protocolHooks.publicMethod?.(value, methodKeys[2], 2);

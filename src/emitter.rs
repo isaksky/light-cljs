@@ -4654,8 +4654,18 @@ impl<'a> Emitter<'a> {
             return false;
         };
         match self.program.exprs[callee.0].kind {
+            // `(:k m)` is the runtime's own `get` of the keyword, whether or
+            // not the program replaces `cljs.core/get` ([`Self::keyword_get`]).
             ExprKind::Keyword(literal) => match args {
-                [receiver] => self.field_read(inference, *receiver, literal),
+                [receiver] => {
+                    self.field_read(inference, *receiver, literal)
+                        || self.site_call(inference, crate::CoreFnId::Get, &[*receiver, callee])
+                }
+                [receiver, not_found] => self.site_call(
+                    inference,
+                    crate::CoreFnId::Get,
+                    &[*receiver, callee, *not_found],
+                ),
                 _ => false,
             },
             ExprKind::CoreFn(core) if !self.replaced(core.runtime_name()) => {
@@ -4793,7 +4803,9 @@ impl<'a> Emitter<'a> {
                 self.value(*value);
                 self.output.push_str(", null, null, null)");
             }
-            (C::Count, [value]) => return self.count(inference, *value),
+            (C::Count, [value]) => {
+                return self.count(inference, *value) || self.site_call(inference, core, args);
+            }
             // Only multimethods have `-add-method` where their tables are
             // arrays (`crate::rta`).
             (C::AddMethod, _) if self.lean_multi => {
@@ -4808,16 +4820,66 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
             }
             (C::Nth, [vector, index] | [vector, index, _]) => {
-                return self.nth(inference, *vector, *index, args.get(2).copied());
+                return self.nth(inference, *vector, *index, args.get(2).copied())
+                    || self.site_call(inference, core, args);
             }
-            (C::Get, [receiver, key]) => match self.program.exprs[key.0].kind {
-                ExprKind::Keyword(literal) => {
-                    return self.field_read(inference, *receiver, literal);
-                }
-                _ => return false,
-            },
-            _ => return false,
+            (C::Get, [receiver, key]) => {
+                return match self.program.exprs[key.0].kind {
+                    ExprKind::Keyword(literal) => self.field_read(inference, *receiver, literal),
+                    _ => false,
+                } || self.site_call(inference, core, args);
+            }
+            _ => return self.site_call(inference, core, args),
         }
+        true
+    }
+
+    /// At `Advanced`, a call of a core operation whose runtime function calls
+    /// a value's keyed slot first (its slot-first wrapper, docs/value-layout.md
+    /// section 3), at a fixed arity, as a call of the operation's call-site
+    /// entry (light-cljs-1016): `(count x)` is `rt$countSite(x)`, `(:k m)` and
+    /// `(get m :k)` are `rt$getSite(m, k)`. The entry calls the receiver's
+    /// keyed slot where it holds one, `x.cljs$core$ICounted$_count$arity$1$<key>(x)`,
+    /// and the operation otherwise, so a host value (nil, a string, an array,
+    /// a host object) takes the operation's own order. It reads no keyed kind,
+    /// as the wrappers do, which takes a program in which only values with a
+    /// keyed kind (the runtime's classes, the program's types and `reify`
+    /// values) can hold a core protocol's slot
+    /// ([`ProgramFacts::core_slots_runtime_only`](crate::inference::ProgramFacts::core_slots_runtime_only));
+    /// a program that gives a host object one (`specify!`, an `extend-type` of
+    /// its constructor, a member written by name) keeps the operation's call.
+    /// The entries are each 47 to 75 bytes of bytecode, which V8 inlines into
+    /// the call site. Writing the slot test at every call site instead
+    /// measured no faster once it kept `noBranch` and the wrappers' truth
+    /// test, and would grow workload 200k's output by about half (its 16,000
+    /// calls of these operations).
+    fn site_call(&mut self, inference: &Inference, core: crate::CoreFnId, args: &[ExprId]) -> bool {
+        use crate::CoreFnId as C;
+        if !inference.facts().core_slots_runtime_only() {
+            return false;
+        }
+        let entry = match (core, args.len()) {
+            (C::Count, 1) => "countSite",
+            (C::Nth, 2) => "nthSite",
+            (C::Nth, 3) => "nthSite3",
+            (C::Get, 2) => "getSite",
+            (C::Get, 3) => "getSite3",
+            (C::First, 1) => "firstSite",
+            (C::Rest, 1) => "restSite",
+            (C::Next, 1) => "nextSite",
+            (C::Seq, 1) => "seqSite",
+            (C::Peek, 1) => "peekSite",
+            (C::Conj, 2) => "conjSite",
+            (C::Assoc, 3) => "assocSite",
+            (C::Dissoc, 2) => "dissocSite",
+            (C::Contains, 2) => "containsSite",
+            _ => return false,
+        };
+        let text = self.runtime_read(RuntimeName::direct(entry, None), self.site, NameUse::Call);
+        self.output.push_str(&text);
+        self.output.push('(');
+        self.arguments(args);
+        self.output.push(')');
         true
     }
 

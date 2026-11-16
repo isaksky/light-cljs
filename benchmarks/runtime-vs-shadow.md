@@ -2767,3 +2767,98 @@ classes it builds and the two wrappers (`vector-printed` 15,062 to 16,037,
 7,797 to 9,214); the features example about 4,000 (`features-direct`
 122,470 to 126,491, its shared chunk 98,209 to 101,762). re-frame simple and
 TodoMVC were not ported in this run.
+
+## 2026-11-16: core operations call their call-site entries (light-cljs-1016)
+
+**What.** At `:advanced`, a call of `count`, `nth`, `get` (and `(:k m)`,
+`(:k m d)`), `first`, `rest`, `next`, `seq`, `peek`, `conj`, `assoc`,
+`dissoc` or `contains?` at the arity its slot-first wrapper serves calls
+that operation's call-site entry, `rt$countSite(x)`, `rt$getSite(m, k)`: a
+47 to 75-byte runtime unit that V8 inlines into the site, which calls the
+value's keyed slot (dotted, `x.cljs$core$ICounted$_count$arity$1$<key>(x)`)
+and else, or where the slot answers `noBranch`, the operation. It reads no
+keyed kind, so it is used only where every value that can hold a core
+protocol slot has one (`ProgramFacts::core_slots_runtime_only`: core
+protocols intact, no core protocol member written by name or spelled in raw
+text); elsewhere the operations are called as before. `(:k m)` is one call,
+`rt$getSite(m, k)`. docs/value-layout.md, "What light-cljs-1016 landed",
+has the forms measured and left out (the slot test written at each site:
+no faster once it kept `noBranch`, and about half again workload 200k's
+output).
+
+Binaries, in research/shadow-credibility/bin: before `light-cljs-1bd3ac3d`
+(master, with light-cljs-1014), after `light-cljs-28019e68` (a commit of
+this pellet before it was squashed: its emitter and runtime as landed).
+Unreserved: one peer worker had been active. Raw results:
+research/output-speed/call-sites-1016.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops
+kw-small,get-small,get-small-miss,contains-small,count-small,assoc-small,dissoc-small,kw-hash100,get-hash100,vec-conj,vec-nth,vec-peek,destructure-vec,destructure-map,lazy-walk,seq-walk-vec,filter-count,reduce-entries-small
+--runs 5`), 1-minute load average before a run 3.87-5.18 before and
+4.34-5.12 after. ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 13.4 (12.5-14.0) | 13.2 (13.1-13.7) | -1% | 11.1 | 1.23 | 1.19 |
+| get-small | 18.3 (17.3-18.8) | 17.9 (17.4-17.9) | -3% | 16.8 | 1.11 | 1.06 |
+| get-small-miss | 24.4 (23.5-24.7) | 23.3 (22.0-24.0) | -5% | 21.7 | 1.14 | 1.07 |
+| contains-small | 19.5 (18.5-19.8) | 16.9 (16.6-17.4) | -13% | 13.4 | 1.43 | 1.26 |
+| count-small | 2.99 (2.70-3.02) | 2.15 (2.15-2.22) | -28% | 2.39 | 1.25 | 0.90 |
+| assoc-small-existing | 50.7 (46.0-51.1) | 51.1 (51.0-53.9) | +1% | 33.9 | 1.48 | 1.51 |
+| assoc-small-new | 81.7 (75.8-81.9) | 84.5 (83.6-88.2) | +3% | 43.9 | 1.86 | 1.92 |
+| dissoc-small | 92.0 (85.9-92.5) | 92.4 (91.3-96.6) | +0% | 87.8 | 1.02 | 1.05 |
+| get-hash100 | 20.5 (19.0-21.0) | 20.0 (19.8-20.9) | -2% | 13.4 | 1.56 | 1.50 |
+| kw-hash100 | 44.1 (41.8-45.9) | 41.1 (39.6-42.8) | -7% | 14.9 | 2.93 | 2.75 |
+| vec-conj-64 | 3,008 (2,966-3,152) | 3,095 (2,971-3,152) | +3% | 1,555 | 1.87 | 1.99 |
+| vec-nth-1024 | 6.31 (5.92-6.69) | 5.53 (5.29-5.73) | -12% | 5.82 | 1.12 | 0.95 |
+| vec-peek | 4.40 (3.98-4.43) | 4.02 (3.82-4.19) | -9% | 3.71 | 1.14 | 1.08 |
+| destructure-vec-3 | 15.6 (14.1-16.0) | 7.85 (7.55-8.31) | -50% | 11.1 | 1.42 | 0.71 |
+| destructure-map-3 | 107.2 (97.1-109.4) | 104.7 (101.2-111.5) | -2% | 54.5 | 1.92 | 1.92 |
+| filter-count-1000 | 48,673 (46,575-49,091) | 43,854 (43,576-47,092) | -10% | 31,756 | 1.50 | 1.38 |
+| lazy-walk-1000 | 58,858 (56,821-60,664) | 50,407 (49,517-51,562) | -14% | 44,528 | 1.32 | 1.13 |
+| seq-walk-vec-1000 | 32,043 (29,766-33,582) | 27,465 (26,798-28,506) | -14% | 11,268 | 2.89 | 2.44 |
+| reduce-entries-small | 420.6 (400.1-445.5) | 390.6 (360.9-393.2) | -7% | 82.3 | 4.99 | 4.75 |
+
+- **At or below shadow-cljs:** `count-small`, `vec-nth-1024` and
+  `destructure-vec-3`, whose `nth` calls are the entries.
+- **No operation is 10% slower.** `vec-conj-64` and `assoc-small-new` (+3%)
+  are inside their before ranges' spread; their `conj` and `assoc` call
+  their slots through the entries as through the wrappers.
+- **`kw-small` and `get-small` gain under 1 ns**: an array map's lookup of
+  a keyword reads the key's `IEquiv` through the protocol hooks once per
+  lookup (`arrayIndex`), about 4.5 ns of `kw-small`'s 12.4 in a scratch
+  edit of the output; light-cljs-1041.
+- **`seq-walk-vec-1000`** stays 2.44 times shadow-cljs's, its gap now in
+  the slots its steps call (not profiled here). Selected with four other
+  operations only (`--ops
+  kw-small,get-small,count-small,vec-nth,seq-walk-vec`, 3 alternated scratch
+  runs of the outputs, load 8-12) it went from 20,500-21,000 to
+  13,900-14,000 ns.
+
+**Workload 200k and the re-frame-shaped 200k app** (`compare.bb PROJECT
+--runs 5 --runtime-only --runtime 1,40`, the project's light-cljs output
+rebuilt with each binary just before its run, two before/after pairs each;
+load 4.1 to 8.4), wall time, median (range), and light-cljs's steady state:
+
+| project, pair | light before (1 / 40) | light after (1 / 40) | shadow-cljs at 40 (before / after runs) | steady state, ms per iteration |
+| --- | ---: | ---: | ---: | ---: |
+| workload 200k, 1 | 0.448 / 2.735 s (2.710-2.889) | 0.428 / 2.655 s (2.646-2.681) | 1.455 / 1.353 s | 58.6 to 57.1 |
+| workload 200k, 2 | 0.433 / 2.671 s (2.658-2.686) | 0.431 / 2.720 s (2.698-2.734) | 1.367 / 1.456 s | 57.4 to 58.7 |
+| re-frame-shaped, 1 | 2.575 / 26.863 s (26.609-27.217) | 2.443 / 27.116 s (26.656-27.257) | 12.645 / 12.661 s | 622.8 to 632.6 |
+| re-frame-shaped, 2 | 2.463 / 26.536 s (26.436-26.811) | 2.460 / 26.345 s (26.270-26.844) | 12.403 / 12.323 s | 617.2 to 612.4 |
+
+Steady state is unchanged within the runs' noise in both programs: their
+time is in the runtime's own operations, which call the operations and
+not the entries, and the entries only replace the wrapper at each program
+call site.
+
+**Advanced size** (gzip -9):
+- the gate: 170,584 to 172,677 bytes (gzip 43,277 to 43,679);
+- workload 200k: 3,556,829 to 3,559,707 (gzip 896,001 to 896,683);
+- the re-frame-shaped 200k app: 5,915,357 to 5,918,979 (gzip 1,198,864 to
+  1,199,571);
+- the size ratchet (tests/support/ratchet_fixtures.rs, noted there): 154
+  to 328 bytes where a fixture calls the operations in its functions, 939
+  for the features example; the readable runtime of `none` and `prepare`
+  about 4,500 bytes. TodoMVC and re-frame simple were not ported in this
+  run.

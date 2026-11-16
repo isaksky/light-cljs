@@ -1105,7 +1105,15 @@ and `Prepare` output does not change.
   - writes `(nth v i)` on a flat vector with a number index as the runtime's
     direct path, `rt$vectorNth(rt$vectors.get(v), i, rt$missing)`;
   - writes `(:k rec)` and `(get rec :k)` as the field's property when `rec`
-    is a record of a known type with a field `k` and no program `ILookup`.
+    is a record of a known type with a field `k` and no program `ILookup`;
+  - writes every other call of `count`, `nth`, `get`, `(:k m)`, `first`,
+    `rest`, `next`, `seq`, `peek`, `conj`, `assoc`, `dissoc` and `contains?`
+    at the arities their slot-first wrappers serve as a call of the
+    operation's call-site entry, `rt$countSite(x)`, `rt$getSite(m, k)`,
+    which calls the value's keyed slot or else the operation
+    (light-cljs-1016, docs/value-layout.md). These need, besides core
+    protocols intact, that the program writes no core protocol member by
+    name and spells none in raw text.
 
   Except for the operators, these lowerings need core protocols intact. A
   replaced operation keeps its call.
