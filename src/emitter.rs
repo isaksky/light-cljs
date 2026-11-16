@@ -3066,6 +3066,15 @@ impl<'a> Emitter<'a> {
         }
         self.output.push_str(", ");
         self.string(name.name);
+        // A keyword of the `Advanced` constant table carries its hash, which
+        // the runtime's keyword caches (`hash`), as upstream's constants
+        // carry theirs (docs/value-layout.md, section 7).
+        if !symbol && !self.native_forms && self.constants.is_some() {
+            let program = self.program;
+            let namespace = name.namespace.map(|id| &program.strings[id.0][..]);
+            let hash = crate::value_hash::keyword(namespace, &program.strings[name.name.0]);
+            write!(self.output, ", {hash}").unwrap();
+        }
         self.output.push(')');
     }
 

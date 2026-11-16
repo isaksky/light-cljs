@@ -2066,11 +2066,14 @@ console.log('kind tables stay private to the runtime');
     // The seqs over an array or a string, and rest arguments (light-cljs-1010).
     indexedSeq: core.seq([1, 2]), stringSeq: core.next(core.seq('ab')),
     chunkedSeq: core.next(core.seq(core.vec(Array.from({length: 40}, (_, i) => i)))),
-    restArguments: r.fnRest([1, 2, 3], 1)
+    restArguments: r.fnRest([1, 2, 3], 1),
+    // Keywords and symbols (light-cljs-1011).
+    keyword: core.keyword('n', 'k'), symbol: core.symbol('n', 's')
   };
   const view = ['arr$LKEY', 'i$LKEY', 'indexed$LKEY', 'view$LKEY'];
   const fields = {transientVector: ['state$LKEY'], indexedSeq: view, stringSeq: view, restArguments: view,
-    chunkedSeq: [...view, 'vec$LKEY', 'base$LKEY']};
+    chunkedSeq: [...view, 'vec$LKEY', 'base$LKEY'], keyword: ['ns$LKEY', 'name$LKEY', 'fqn$LKEY', 'hash$LKEY'],
+    symbol: ['ns$LKEY', 'name$LKEY', 'str$LKEY', 'hash$LKEY']};
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name] ?? ['store$LKEY'];
     assert.deepEqual(Object.keys(value), field, name);
@@ -2103,6 +2106,36 @@ console.log('kind tables stay private to the runtime');
 }
 console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is unchanged');
 
+// Keywords and symbols of two copies of one build (docs/value-layout.md,
+// sections 1 and 3, light-cljs-1011): each copy interns its own, so they are
+// never identical, but equality reads the keyed kind and `fqn` (`str`), never
+// `instanceof`, so they are equal, hash alike, and find each other's entries
+// in array maps and hash maps; a host object holding the same field names
+// without the keyed kind is no keyword.
+{
+  const other = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  const a = runtime.core, b = other.core;
+  const ka = a.keyword('n', 'k'), kb = b.keyword('n', 'k'), sa = a.symbol('n', 's'), sb = b.symbol('n', 's');
+  assert.notEqual(ka, kb);
+  assert.equal(a.equal(ka, kb), true);
+  assert.equal(b.equal(kb, ka), true);
+  assert.equal(a.equal(sa, sb), true);
+  assert.equal(a.equal(ka, b.keyword('n', 'j')), false);
+  assert.equal(a.equal(ka, sb), false);
+  assert.equal(a.hash(ka), b.hash(kb));
+  assert.equal(a.get(a.arrayMap(a.keyword('x'), 0, ka, 1), kb), 1);
+  assert.equal(a.get(a.hashMap(ka, 2), kb), 2);
+  assert.equal(a.isKeyword(kb), true);
+  assert.equal(a.isSymbol(sb), true);
+  assert.equal(a.name(kb), 'k');
+  assert.equal(a.namespace(sb), 'n');
+  const host = {ns: 'n', name: 'k', fqn: 'n/k', ns$LKEY: 'n', name$LKEY: 'k', fqn$LKEY: 'n/k', hash$LKEY: null};
+  assert.equal(a.isKeyword(host), false);
+  assert.equal(a.equal(ka, host), false);
+  assert.equal(a.get(a.arrayMap(ka, 1), host, 'none'), 'none');
+}
+console.log('keywords and symbols of two copies of one build compare by kind and fqn');
+
 // The page-wide runtime key registry (docs/value-layout.md, section 1,
 // light-cljs-1025): this file keeps the placeholder as its key and
 // registers nothing; a copy whose placeholders the output writer replaced
@@ -2130,8 +2163,18 @@ console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is
     error => error.message === 'Two light-cljs builds share the runtime key abcd1234: give one a different :runtime-key');
   const other = load(written('wxyz5678', 'bbbbbbbbbbbbbbbb'));
   assert.equal(keys.size, 2);
-  // Different keys: neither runtime recognises the other's vector.
+  // Different keys: neither runtime recognises the other's vector, nor its
+  // keywords and symbols (light-cljs-1011), which are no keys of its maps.
   assert.equal(other.core.isVector(a.vector(1)), false);
   assert.equal(a.core.isVector(a.vector(1)), true);
+  const [ka, ko, sa, so] = [a.core.keyword('n', 'k'), other.core.keyword('n', 'k'), a.core.symbol('n', 's'), other.core.symbol('n', 's')];
+  for (const [mine, theirs, isKind] of [[a, ko, 'isKeyword'], [other, ka, 'isKeyword'], [a, so, 'isSymbol'], [other, sa, 'isSymbol']])
+    assert.equal(mine.core[isKind](theirs), false, isKind);
+  assert.equal(a.core.equal(ka, ko), false);
+  assert.equal(other.core.equal(ko, ka), false);
+  assert.equal(a.core.equal(sa, so), false);
+  assert.equal(a.core.get(a.core.arrayMap(ka, 1), ko, 'none'), 'none');
+  assert.equal(a.core.get(a.core.hashMap(ka, 1), ko, 'none'), 'none');
+  assert.equal(other.core.get(other.core.arrayMap(ko, 1), ka, 'none'), 'none');
 }
 console.log('runtime_key_registry: keys register page-wide and collisions throw');

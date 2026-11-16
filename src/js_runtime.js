@@ -62,10 +62,44 @@
       };
     }
   };
-  //@unit keywords
-  // Brands and payloads stay private: copying fields or inheriting a value's
-  // prototype cannot turn a host object into a language value.
-  const keywords = new WeakMap();
+  //@unit keywordOf
+  // A keyword, the class of kind 20 (`kinds`, `KeywordCell`): the value
+  // itself, whose own keyed fields are upstream's `ns`, `name`, `fqn` and
+  // `hash` (null until computed), else undefined. Equality reads only the
+  // kind and `fqn`, never `instanceof`, so the keywords of two copies of one
+  // build are equal (docs/value-layout.md, section 3). One made by
+  // reflection from a keyword's prototype has no `fqn` field, and is no
+  // keyword; the public constructor may give the field an undefined `fqn`.
+  // The Pants build's profile swaps it for one that also reads engine
+  // keyword forms, whose fields it gives in a fresh object: a caller reads
+  // the fields of what it returns and never hands that on as a value.
+  function keywordOf(value) {
+    return value != null && value.cljs$lang$kind$$LKEY === 20 && "fqn$LKEY" in value ? value : undefined;
+  }
+  //@unit keywordCells requires: keywordOf
+  // `keywordOf` as an entry of the store inventories (`storesPredicate`,
+  // `protocolStores`), as `vectorCells`.
+  const keywordCells = Object.freeze({has: value => keywordOf(value) !== undefined});
+  //@unit KeywordCell
+  // A keyword (see `keywordOf`) with `KeywordValue`'s prototype. Nothing in
+  // it is frozen. The compile-time runtime stamps it (`stamp`).
+  function KeywordCell(ns, name, fqn, hash) { this.ns$LKEY = ns; this.name$LKEY = name; this.fqn$LKEY = fqn; this.hash$LKEY = hash; /*@brand*/ }
+  //@unit symbolOf
+  // A symbol, the class of kind 21 (`SymbolCell`), as `keywordOf`: its own
+  // keyed fields are upstream's `ns`, `name`, `str` and `hash`; its metadata
+  // stays in `metadataValues`. The Pants build's profile swaps it as
+  // `keywordOf`.
+  function symbolOf(value) {
+    return value != null && value.cljs$lang$kind$$LKEY === 21 && "str$LKEY" in value ? value : undefined;
+  }
+  //@unit symbolCells requires: symbolOf
+  const symbolCells = Object.freeze({has: value => symbolOf(value) !== undefined});
+  //@unit namedOf requires: keywordOf, symbolOf
+  // A keyword's or a symbol's fields (`ns`, `name`, `hash`), else undefined.
+  const namedOf = value => keywordOf(value) ?? symbolOf(value);
+  //@unit SymbolCell
+  // A symbol (see `symbolOf`) with `SymbolValue`'s prototype.
+  function SymbolCell(ns, name, str, hash) { this.ns$LKEY = ns; this.name$LKEY = name; this.str$LKEY = str; this.hash$LKEY = hash; /*@brand*/ }
   //@unit internedKeywords
   const internedKeywords = new Map();
   //@unit kinds
@@ -78,7 +112,9 @@
   // `viewType`: 5 `IndexedSeq`, 6 `ChunkedSeq`, 7 `NodeSeq`, 8
   // `ArrayNodeSeq`, 9 `PersistentArrayMapSeq`, 10 `RSeq`, 11
   // `PersistentTreeMapSeq`; numbers, so that a program that keeps one of
-  // them keeps no table of the others.
+  // them keeps no table of the others. Kinds 20 and 21 are keywords and
+  // symbols (`keywordOf`, `symbolOf`), numbered apart from the seq kinds
+  // still to convert.
   const kinds = Object.freeze({vector: 1, subvec: 2, entry: 3, transientVector: 4});
   //@unit vectorStore
   // The store (see `vectorTailOffset`) of a vector, a subvector or a map
@@ -194,8 +230,6 @@
   function stamp(value) { stampBrand.add(value); }
   //@unit stamped compile-time requires: stampBrand
   function stamped(value) { return stampBrand.has(value); }
-  //@unit symbols
-  const symbols = new WeakMap();
   //@unit privateStore requires: payloads, weakMapStores
   // A store like a vector's, in the private fields of `payloads`: the seq
   // kinds' stores (`cells`, `views`, `lazyValues`, `chunks`), and those of
@@ -736,59 +770,76 @@
   //@unit outOfBounds
   const outOfBounds = () => { throw new Error("Index out of bounds"); };
 
-  //@unit keywordPrototype requires: get, invalidArity, keywords, objectEquiv
+  //@unit keywordPrototype requires: get, invalidArity, keywordOf, objectEquiv
+  // A keyword called as a function is `get` of its argument by itself
+  // (upstream's `-invoke`); it reads its own `fqn`, no store. Its `IFn`
+  // arity entries, which `apply` calls, are its `call`, so that an
+  // `extend-type` of `IFn` replacing `call` answers through them too.
   const keywordPrototype = Object.freeze({
+    cljs$core$IFn$_invoke$arity$1(collection) { return this.call(null, collection); },
+    cljs$core$IFn$_invoke$arity$2(collection, notFound) { return this.call(null, collection, notFound); },
     equiv(other) { return objectEquiv(this, other); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     call(_self, collection, notFound) {
-      if (!keywords.has(this)) throw new Error("Expected keyword");
+      if (keywordOf(this) === undefined) throw new Error("Expected keyword");
       switch (arguments.length) {
         case 2: return get(collection, this);
         case 3: return get(collection, this, notFound);
         default: return invalidArity(arguments.length - 1);
       }
     },
+    // JSON of a keyword: its own properties but its keyed fields, as before
+    // it had them (docs/value-layout.md, question 3).
+    toJSON() { const {ns$LKEY: _n, name$LKEY: _m, fqn$LKEY: _f, hash$LKEY: _h, ...json} = this; return json; },
     toString() {
-      const value = keywords.get(this);
+      const value = keywordOf(this);
       if (!value) throw new Error("Expected keyword");
-      return ":" + value.spelling;
+      return ":" + value.fqn$LKEY;
     }
   });
   //@unit KeywordValue.type effect: KeywordValue requires: builtinType, keywordPrototype,
   //@ KeywordValue
   builtinType(KeywordValue, keywordPrototype);
+  //@unit KeywordCell.type effect: KeywordCell requires: KeywordCell, KeywordValue
+  // Keywords are kind 20 (`keywordOf`); a keyword cell has their prototype,
+  // which the unit above builds.
+  KeywordValue.prototype.cljs$lang$kind$$LKEY = 20;
+  KeywordCell.prototype = KeywordValue.prototype;
 
-  //@unit symbolPrototype requires: get, invalidArity, objectEquiv, symbols
+  //@unit symbolPrototype requires: get, invalidArity, objectEquiv, symbolOf
   const symbolPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     apply(_self, args) { return this.call(null, ...Array.from(args)); },
     call(_self, collection, notFound) {
-      if (!symbols.has(this)) throw new Error("Expected symbol");
+      if (symbolOf(this) === undefined) throw new Error("Expected symbol");
       switch (arguments.length) {
         case 2: return get(collection, this);
         case 3: return get(collection, this, notFound);
         default: return invalidArity(arguments.length - 1);
       }
     },
+    toJSON() { const {ns$LKEY: _n, name$LKEY: _m, str$LKEY: _s, hash$LKEY: _h, ...json} = this; return json; },
     toString() {
-      const value = symbols.get(this);
+      const value = symbolOf(this);
       if (!value) throw new Error("Expected symbol");
-      return value.spelling;
+      return value.str$LKEY;
     }
   });
   //@unit SymbolValue.type effect: SymbolValue requires: builtinType, symbolPrototype, SymbolValue
   builtinType(SymbolValue, symbolPrototype);
+  //@unit SymbolCell.type effect: SymbolCell requires: SymbolCell, SymbolValue
+  // Symbols are kind 21 (`symbolOf`); a symbol cell has their prototype.
+  SymbolValue.prototype.cljs$lang$kind$$LKEY = 21;
+  SymbolCell.prototype = SymbolValue.prototype;
 
-  //@unit SymbolValue requires: constructorHashes, invalidArity, metadataValues, symbols
+  //@unit SymbolValue requires: invalidArity, metadataValues, SymbolCell
   // Positional constructors retain the supplied slots; unlike cons/symbol they
   // do not normalize a tail or derive the printed spelling from name/namespace.
+  // A null hash reads as none: `hash` computes it, the `_hash` field gives
+  // null (an undefined one is kept, as the field gives it back).
   function SymbolValue(namespace, name, spelling, cachedHash, metadata) {
     if (arguments.length !== 5) return invalidArity(arguments.length);
-    const value = Object.create(SymbolValue.prototype);
-    symbols.set(value, Object.freeze({namespace, name, spelling}));
-    // A null hash reads as none: `hash` computes it, the `_hash` field gives
-    // null (an undefined one is stored, as the field gives it back).
-    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
+    const value = new SymbolCell(namespace, name, spelling, cachedHash);
     metadataValues.set(value, metadata);
     return value;
   }
@@ -823,11 +874,9 @@
     metadataValues.set(value, metadata);
     return value;
   }
-  //@unit KeywordValue requires: constructorHashes, makeKeyword
+  //@unit KeywordValue requires: makeKeyword
   function KeywordValue(namespace, name, spelling, cachedHash) {
-    const value = makeKeyword(namespace, name, spelling);
-    constructorHashes.set(value, cachedHash);
-    return value;
+    return makeKeyword(namespace, name, spelling, cachedHash);
   }
   //@unit CycleValue requires: cycleNode, metadataValues
   function CycleValue(metadata, all, previous, current, following) {
@@ -954,22 +1003,19 @@
     return reduced(value);
   }
 
-  //@unit symbol requires: symbols, SymbolValue
+  //@unit symbol requires: SymbolCell
   function symbol(namespace, name) {
-    const value = Object.create(SymbolValue.prototype);
-    symbols.set(value, Object.freeze({namespace, name,
-      spelling: namespace == null ? name : namespace + "/" + name}));
-    return value;
+    return new SymbolCell(namespace, name, namespace == null ? name : namespace + "/" + name, null);
   }
 
-  //@unit symbolCore requires: invalidArity, keywords, symbol, symbols, vars
+  //@unit symbolCore requires: invalidArity, keywordOf, symbol, symbolOf, vars
   function symbolCore(namespace, name) {
     switch (arguments.length) {
       case 1: {
-        if (symbols.has(namespace)) return namespace;
+        if (symbolOf(namespace) !== undefined) return namespace;
         if (vars.has(namespace)) return vars.get(namespace).symbol;
-        const kw = keywords.get(namespace);
-        if (kw) namespace = kw.spelling;
+        const kw = keywordOf(namespace);
+        if (kw) namespace = kw.fqn$LKEY;
         if (typeof namespace !== "string") throw new Error("no conversion to symbol");
         const slash = namespace.indexOf("/");
         return slash < 1 ? symbol(null, namespace)
@@ -1823,8 +1869,8 @@
   // Printing shows function names; keep the public one.
   const isNaNCore = Object.defineProperty(x => isNaN(x), "name", {value: "isNaN"});
 
-  //@unit isIdent requires: keywords, symbols
-  const isIdent = x => keywords.has(x) || symbols.has(x);
+  //@unit isIdent requires: namedOf
+  const isIdent = x => namedOf(x) !== undefined;
   //@unit isCollectionValue requires: cells, directMethod, holdsVector, isView, lazyValues, maps,
   //@ queues, sets
   const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || holdsVector(x) || cells.has(x) || isView(x) || queues.has(x) || lazyValues.has(x) || maps.has(x) || sets.has(x);
@@ -1855,26 +1901,26 @@
   const isString = x => typeof x === "string";
   //@unit isChar
   const isChar = x => typeof x === "string" && x.length === 1;
-  //@unit isKeyword requires: keywords
-  const isKeyword = x => keywords.has(x);
-  //@unit isSymbol requires: symbols
-  const isSymbol = x => symbols.has(x);
+  //@unit isKeyword requires: keywordOf
+  const isKeyword = x => keywordOf(x) !== undefined;
+  //@unit isSymbol requires: symbolOf
+  const isSymbol = x => symbolOf(x) !== undefined;
   //@unit isSimpleIdent requires: isIdent, namespace
   const isSimpleIdent = x => isIdent(x) && namespace(x) == null;
   //@unit isQualifiedIdent requires: isIdent, namespace
   const isQualifiedIdent = x => isIdent(x) && namespace(x) != null;
-  //@unit isSimpleKeyword requires: keywords, namespace
-  const isSimpleKeyword = x => keywords.has(x) && namespace(x) == null;
-  //@unit isQualifiedKeyword requires: keywords, namespace
-  const isQualifiedKeyword = x => keywords.has(x) && namespace(x) != null;
-  //@unit isSimpleSymbol requires: namespace, symbols
-  const isSimpleSymbol = x => symbols.has(x) && namespace(x) == null;
-  //@unit isQualifiedSymbol requires: namespace, symbols
-  const isQualifiedSymbol = x => symbols.has(x) && namespace(x) != null;
-  //@unit keywordIdentical requires: equalPair, keywords
-  const keywordIdentical = (x, y) => x === y || (keywords.has(x) && keywords.has(y) && equalPair(x, y));
-  //@unit symbolIdentical requires: equalPair, symbols
-  const symbolIdentical = (x, y) => x === y || (symbols.has(x) && symbols.has(y) && equalPair(x, y));
+  //@unit isSimpleKeyword requires: keywordOf, namespace
+  const isSimpleKeyword = x => keywordOf(x) !== undefined && namespace(x) == null;
+  //@unit isQualifiedKeyword requires: keywordOf, namespace
+  const isQualifiedKeyword = x => keywordOf(x) !== undefined && namespace(x) != null;
+  //@unit isSimpleSymbol requires: namespace, symbolOf
+  const isSimpleSymbol = x => symbolOf(x) !== undefined && namespace(x) == null;
+  //@unit isQualifiedSymbol requires: namespace, symbolOf
+  const isQualifiedSymbol = x => symbolOf(x) !== undefined && namespace(x) != null;
+  //@unit keywordIdentical requires: equalPair, keywordOf
+  const keywordIdentical = (x, y) => x === y || (keywordOf(x) !== undefined && keywordOf(y) !== undefined && equalPair(x, y));
+  //@unit symbolIdentical requires: equalPair, symbolOf
+  const symbolIdentical = (x, y) => x === y || (symbolOf(x) !== undefined && symbolOf(y) !== undefined && equalPair(x, y));
   //@unit isFn requires: fnValue, methodKeys, protocolHooks
   // Native answers (`countedValue`) unless protocol implementations exist.
   const isFn = x => typeof x === "function" || (protocolHooks.satisfies?.(methodKeys[0], x) ?? fnValue(x));
@@ -2896,24 +2942,50 @@
     return value;
   }
 
-  //@unit entryIndex requires: equalPair, keywords, methodKeys, protocolHooks
+  //@unit entryIndex requires: equalPair, keywordOf, methodKeys, protocolHooks
   // The index of `key` in the entries of an array map, or -1.
   function entryIndex(entries, key) {
     // Canonical array maps compare keys without a hash guard. Keyword equality uses
     // fqn, while hashing uses namespace/name; unusual equal keywords can have
     // different hashes and therefore remain distinct in hash maps.
     // The entries there are at the start, as `findIndex` (light-cljs-989).
-    // A keyword compares with each key as in `equalPair`: identity, its own
-    // `IEquiv` slot, read each time, then `extend-type`'s, which reads
-    // nothing of it and is looked up again only after an `-equiv` runs.
-    const n = entries.length, spelling = keywords.get(key)?.spelling, builtin = protocolHooks.builtin, own = protocolHooks.keyMethod, k = methodKeys[18];
-    let external, equiv;
-    for (let i = 0; i < n; i++) {
-      const other = entries[i].key;
-      if (key == null ? other == null : typeof key === "string" || typeof key === "number" ? other === key : spelling === undefined ? equalPair(key, other)
-        : other === key || ((equiv = builtin && (own ? own(key, k, 2) ?? (external === undefined ? external = protocolHooks.externalMethod?.(key, k, 2) ?? null : external) : builtin(key, k, 2)))
-          ? (external = undefined, equiv.call(key, key, other)) : keywords.get(other)?.spelling === spelling)) return i;
+    const n = entries.length;
+    if (key == null) {
+      for (let i = 0; i < n; i++) if (entries[i].key == null) return i;
+      return -1;
     }
+    if (typeof key === "string" || typeof key === "number") {
+      for (let i = 0; i < n; i++) if (entries[i].key === key) return i;
+      return -1;
+    }
+    // A keyword compares with each key by identity, then by kind and `fqn`
+    // (upstream's `array-index-of-keyword?`), with no read of a store or of
+    // a slot per entry. Its own `IEquiv` slot is read once, at the first key
+    // that is not it: where a program gave it one (`extend-type`,
+    // `specify!`), that key and the rest compare as `equalPair` compares
+    // them, calling it, as before light-cljs-1011.
+    const keyword = keywordOf(key);
+    if (keyword !== undefined) {
+      const fqn = keyword.fqn$LKEY;
+      let read = false;
+      for (let i = 0; i < n; i++) {
+        const other = entries[i].key;
+        if (other === key) return i;
+        if (!read) {
+          read = true;
+          const builtin = protocolHooks.builtin, own = protocolHooks.keyMethod, k = methodKeys[18];
+          const equiv = builtin && (own ? own(key, k, 2) ?? protocolHooks.externalMethod?.(key, k, 2) : builtin(key, k, 2));
+          if (equiv) {
+            if (equiv.call(key, key, other)) return i;
+            for (i++; i < n; i++) if (equalPair(key, entries[i].key)) return i;
+            return -1;
+          }
+        }
+        if (keywordOf(other)?.fqn$LKEY === fqn) return i;
+      }
+      return -1;
+    }
+    for (let i = 0; i < n; i++) if (equalPair(key, entries[i].key)) return i;
     return -1;
   }
 
@@ -3622,33 +3694,36 @@
   MapEntryType.prototype.cljs$lang$kind$$LKEY = kinds.entry;
   //@unit EntryCell.type effect: EntryCell requires: EntryCell, MapEntryType
   EntryCell.prototype = MapEntryType.prototype;
-  //@unit makeKeyword requires: keywords, KeywordValue
-  function makeKeyword(namespace, name, spelling) {
-    const value = Object.create(KeywordValue.prototype);
-    keywords.set(value, Object.freeze({namespace, name, spelling}));
-    return value;
+  //@unit makeKeyword requires: KeywordCell
+  // A keyword of these fields; a null or undefined `hash` is computed on
+  // first use. The public constructor's hash is kept as given, undefined
+  // included, as its `_hash` field gives it back.
+  function makeKeyword(namespace, name, spelling, hash) {
+    return new KeywordCell(namespace, name, spelling, arguments.length < 4 ? null : hash);
   }
 
   //@unit freshKeyword requires: makeKeyword
   // Keywords built from data are fresh, as upstream.
-  function freshKeyword(namespace, name) {
+  function freshKeyword(namespace, name, hash = null) {
     return makeKeyword(namespace, name,
-      namespace == null ? name : namespace + "/" + name);
+      namespace == null ? name : namespace + "/" + name, hash);
   }
 
   //@unit keyword requires: freshKeyword, internedKeywords
   // Literal construction receives separately owned namespace/name strings
-  // and is interned: one keyword per namespace and name.
-  function keyword(namespace, name) {
+  // and is interned: one keyword per namespace and name. At `Advanced` a
+  // literal also gives its hash, which the compiler computed
+  // (`value_hash::keyword`), as upstream's constants carry it.
+  function keyword(namespace, name, hash = null) {
     const key = namespace == null ? "/" + name : namespace.length + "/" + namespace + name;
     let value = internedKeywords.get(key);
-    if (!value) internedKeywords.set(key, value = freshKeyword(namespace, name));
+    if (!value) internedKeywords.set(key, value = freshKeyword(namespace, name, hash));
     return value;
   }
 
-  //@unit keywordFqn requires: keywords
+  //@unit keywordFqn requires: keywordOf
   // What keyword case compares, or null.
-  const keywordFqn = value => keywords.get(value)?.spelling ?? null;
+  const keywordFqn = value => keywordOf(value)?.fqn$LKEY ?? null;
 
   //@unit makeVector requires: VectorCell, vectorTrie
   // A vector of the new array `items`, or with the store an operation built.
@@ -3856,13 +3931,14 @@
     return makeVector(Array.from(items));
   }
 
-  //@unit keywordCore requires: freshKeyword, invalidArity, keywords, makeKeyword, symbols
+  //@unit keywordCore requires: freshKeyword, invalidArity, keywordOf, makeKeyword, namedOf,
+  //@ symbolOf
   function keywordCore(namespace, name) {
     switch (arguments.length) {
       case 1: {
-        if (keywords.has(namespace)) return namespace;
-        const sym = symbols.get(namespace);
-        if (sym) return makeKeyword(sym.namespace, sym.name, sym.spelling);
+        if (keywordOf(namespace) !== undefined) return namespace;
+        const sym = symbolOf(namespace);
+        if (sym) return makeKeyword(sym.ns$LKEY, sym.name$LKEY, sym.str$LKEY);
         if (typeof namespace !== "string") return null;
         if (namespace === "/") return freshKeyword(null, namespace);
         const parts = namespace.split("/");
@@ -3870,10 +3946,10 @@
           parts.length === 2 ? parts[1] : parts[0], namespace);
       }
       case 2: {
-        const nsKeyword = keywords.get(namespace) || symbols.get(namespace);
-        const nameKeyword = keywords.get(name) || symbols.get(name);
-        if (nsKeyword) namespace = nsKeyword.name;
-        if (nameKeyword) name = nameKeyword.name;
+        const nsKeyword = namedOf(namespace);
+        const nameKeyword = namedOf(name);
+        if (nsKeyword) namespace = nsKeyword.name$LKEY;
+        if (nameKeyword) name = nameKeyword.name$LKEY;
         if ((namespace != null && typeof namespace !== "string") ||
             typeof name !== "string") {
           throw new Error("keyword expects strings or keywords and an optional nil namespace");
@@ -3884,13 +3960,13 @@
     }
   }
 
-  //@unit name requires: keywords, methodKeys, multiFns, protocolHooks, symbols
+  //@unit name requires: methodKeys, multiFns, namedOf, protocolHooks
   function name(value) {
     if (multiFns.has(value)) return name(value.name);
     const method = protocolHooks.implements?.(methodKeys[36], value) ? protocolHooks.builtin?.(value, methodKeys[37], 1) : null;
     if (method) return method.call(value, value);
-    const named = keywords.get(value) || symbols.get(value);
-    if (named) return named.name;
+    const named = namedOf(value);
+    if (named) return named.name$LKEY;
     if (typeof value === "string") return value;
     throw new Error("Doesn't support name on this type");
   }
@@ -3905,13 +3981,13 @@
     }
   }
 
-  //@unit namespace requires: keywords, methodKeys, multiFns, protocolHooks, symbols
+  //@unit namespace requires: methodKeys, multiFns, namedOf, protocolHooks
   function namespace(value) {
     if (multiFns.has(value)) return namespace(value.name);
     const method = protocolHooks.implements?.(methodKeys[36], value) ? protocolHooks.builtin?.(value, methodKeys[38], 1) : null;
     if (method) return method.call(value, value);
-    const named = keywords.get(value) || symbols.get(value);
-    if (named) return named.namespace;
+    const named = namedOf(value);
+    if (named) return named.ns$LKEY;
     throw new Error("Doesn't support namespace on this type");
   }
 
@@ -4782,10 +4858,10 @@
   }
   //@unit specialSymbols
   const specialSymbols = new Set("if def fn* do let* loop* letfn* throw try catch finally recur new set! ns deftype* defrecord* . js* & quote case* var ns*".split(" "));
-  //@unit isSpecialSymbol requires: specialSymbols, symbols
+  //@unit isSpecialSymbol requires: specialSymbols, symbolOf
   function isSpecialSymbol(value) {
-    const data = symbols.get(value);
-    return !!data && data.namespace === null && specialSymbols.has(data.name);
+    const data = symbolOf(value);
+    return !!data && data.ns$LKEY === null && specialSymbols.has(data.name$LKEY);
   }
   //@unit parsingString
   function parsingString(value) {
@@ -4860,8 +4936,8 @@
     for (let current = seq(value); current != null; current = next(current)) members = putMember(members, first(current), edit);
     return makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   }
-  //@unit objectEquiv requires: comparedSequential, equalPair, keywords, maps, methodKeys,
-  //@ protocolHooks, sets, structuralEqualPair, symbols
+  //@unit objectEquiv requires: comparedSequential, equalPair, maps, methodKeys, namedOf,
+  //@ protocolHooks, sets, structuralEqualPair
   // Object.equiv calls the receiver's IEquiv implementation directly, even
   // when an extension rejects an identical value. Language = keeps its own
   // identity shortcut. Saved Object methods dispatch on the borrowed receiver.
@@ -4871,8 +4947,9 @@
     if (maps.has(value)) return structuralEqualPair(value, other);
     // Sequence/collection protocols compare contents even for the same receiver
     // (for example, a list containing NaN is not equivalent to itself). Cycle
-    // and Iterate retain their default identity equality.
-    return sets.has(value) || keywords.has(value) || symbols.has(value) || comparedSequential(value)
+    // and Iterate retain their default identity equality, and so does a
+    // keyword or symbol whose public constructor was given a NaN `fqn`.
+    return sets.has(value) || namedOf(value) !== undefined || comparedSequential(value)
       ? structuralEqualPair(value, other) : equalPair(value, other);
   }
   //@unit equalPair requires: methodKeys, protocolHooks, structuralEqualPair
@@ -4883,14 +4960,15 @@
     if (equiv) return equiv.call(left, left, right);
     return structuralEqualPair(left, right);
   }
-  //@unit structuralEqualPair requires: comparedSequential, keywords, kindHooks, maps, recordTypes,
+  //@unit structuralEqualPair requires: comparedSequential, keywordOf, kindHooks, maps, recordTypes,
   //@ sets
   function structuralEqualPair(left, right) {
     if (left instanceof Date) return right instanceof Date && left.valueOf() === right.valueOf();
-    const leftKeyword = keywords.get(left);
+    // Keywords compare by kind and `fqn` (docs/value-layout.md, section 3).
+    const leftKeyword = keywordOf(left);
     if (leftKeyword) {
-      const rightKeyword = keywords.get(right);
-      return !!rightKeyword && leftKeyword.spelling === rightKeyword.spelling;
+      const rightKeyword = keywordOf(right);
+      return !!rightKeyword && leftKeyword.fqn$LKEY === rightKeyword.fqn$LKEY;
     }
     if (recordTypes.get(left) !== recordTypes.get(right)) return false;
     if (maps.has(left)) return kindHooks.equivMap(left, right);
@@ -4901,15 +4979,15 @@
     return kindHooks.equivNamed?.(left, right) ?? false;
   }
   //@unit structuralEqualPair.symbols effect: SymbolValue, symbol when: structuralEqualPair
-  //@ requires: structuralEqualPair, symbols
-  // Symbols compare their spelling, kept only where a program builds them
-  // (light-cljs-247). No other kind's branch takes a symbol, so it may come
-  // first.
+  //@ requires: structuralEqualPair, symbolOf
+  // Symbols compare their kind and `str`, kept only where a program builds
+  // them (light-cljs-247). No other kind's branch takes a symbol, so it may
+  // come first.
   structuralEqualPair = (operation => (left, right) => {
-    const leftSymbol = symbols.get(left);
+    const leftSymbol = symbolOf(left);
     if (!leftSymbol) return operation(left, right);
-    const rightSymbol = symbols.get(right);
-    return !!rightSymbol && leftSymbol.spelling === rightSymbol.spelling;
+    const rightSymbol = symbolOf(right);
+    return !!rightSymbol && leftSymbol.str$LKEY === rightSymbol.str$LKEY;
   })(structuralEqualPair);
   //@unit uuidValue.equiv effect: uuidValue, makeVar when: structuralEqualPair requires: equalPair,
   //@ kindHooks, uuids, vars
@@ -5054,9 +5132,10 @@
     return fmix(h, value.length * 2);
   }
   //@unit hashNamed requires: hashChars, stringHash
+  // The hash of a keyword's or symbol's fields (`namedOf`).
   function hashNamed(value) {
-    const seed = hashChars(value.name);
-    return seed ^ (stringHash(value.namespace) + 0x9e3779b9 + (seed << 6) + (seed >> 2));
+    const seed = hashChars(value.name$LKEY);
+    return seed ^ (stringHash(value.ns$LKEY) + 0x9e3779b9 + (seed << 6) + (seed >> 2));
   }
   //@unit hashDouble
   function hashDouble(value) {
@@ -5082,8 +5161,8 @@
     return mixCollectionHash(result, n);
   }
   //@unit hash requires: comparedSequential, constructorHashes, hashDouble, hashInt, hashNamed,
-  //@ identityCounter, identityHashes, keywords, kindHooks, maps, mapTraversal, methodKeys,
-  //@ mixCollectionHash, protocolHooks, sets, setTraversal, stringHash, symbols, uuidHashes, uuids,
+  //@ identityCounter, identityHashes, keywordOf, kindHooks, maps, mapTraversal, methodKeys,
+  //@ mixCollectionHash, protocolHooks, sets, setTraversal, stringHash, symbolOf, uuidHashes, uuids,
   //@ vars
   // Weak identity bookkeeping never reads or mutates foreign object fields.
   function hash(value) {
@@ -5102,17 +5181,15 @@
       return uuidHashes.get(value);
     }
     if (vars.has(value)) return hash(vars.get(value).symbol);
+    // A keyword or a symbol caches its hash in its own field, which a
+    // keyword literal at `Advanced` holds from its construction.
+    const kw = keywordOf(value), named = kw ?? symbolOf(value);
+    if (named !== undefined) {
+      const known = named.hash$LKEY;
+      return known != null ? known | 0 : (named.hash$LKEY = (hashNamed(named) + (kw !== undefined ? 0x9e3779b9 : 0)) | 0);
+    }
     const cached = constructorHashes.get(value);
     if (cached != null) return cached | 0;
-    const named = keywords.get(value) || symbols.get(value);
-    if (named) {
-      if (symbols.has(value) || keywords.has(value)) {
-        const result = (hashNamed(named) + (keywords.has(value) ? 0x9e3779b9 : 0)) | 0;
-        constructorHashes.set(value, result);
-        return result;
-      }
-      return (hashNamed(named) + (keywords.has(value) ? 0x9e3779b9 : 0)) | 0;
-    }
     const entries = maps.get(value);
     if (entries) {
       let result = 0;
@@ -5165,10 +5242,10 @@
   function hashed(value, cached) { constructorHashes.set(value, cached); return value; }
 
   //@unit compilerFormBridge compile-time requires: atoms, cells, deferredValue, emptyList,
-  //@ EmptyListValue, generatedNames, holdsVector, ifnValues, isView, jsObject, keyword, keywords,
-  //@ lazyValues, listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name,
+  //@ EmptyListValue, generatedNames, holdsVector, ifnValues, isView, jsObject, keyword, lazyValues,
+  //@ listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name, namedOf,
   //@ queueFromArray, queues, recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal,
-  //@ stamped, symbol, symbols, toArray, typeFields, uuid, uuids, vars, vectorFromArray,
+  //@ stamped, symbol, symbolOf, toArray, typeFields, uuid, uuids, vars, vectorFromArray,
   //@ vectorItems, vectorNth, vectorStore, viewAt, viewOf, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
@@ -5322,9 +5399,9 @@
           else if (atoms.has(v)) fail("atom", path);
           else if (volatiles.has(v)) fail("volatile", path);
           else if (typeFields.has(v) || recordTypes.has(v) || reifyValues.has(v) || ifnValues.has(v)) fail("protocol/type instance", path);
-          else if (symbols.has(v) || keywords.has(v)) {
-            const n = symbols.get(v) || keywords.get(v); tag = symbols.has(v) ? "symbol" : "keyword";
-            a = n.namespace == null ? null : n.namespace; b = n.name;
+          else if (stamped(v) && namedOf(v) !== undefined) {
+            const n = namedOf(v); tag = symbolOf(v) !== undefined ? "symbol" : "keyword";
+            a = n.ns$LKEY == null ? null : n.ns$LKEY; b = n.name$LKEY;
           } else if (stamped(v) && holdsVector(v)) {
             // Each item is read just before it is visited, within the limits.
             tag = "vector"; a = []; const store = vectorStore(v);
@@ -5441,8 +5518,8 @@
       }});
   }
 
-  //@unit inspect requires: atoms, cells, first, holdsVector, isReduced, isView, keywords,
-  //@ mapTraversal, next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids,
+  //@unit inspect requires: atoms, cells, first, holdsVector, isReduced, isView, keywordOf,
+  //@ mapTraversal, next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbolOf, uuids,
   //@ vars, vectorItems, volatiles
   // A value's shape for the reader (EDN data included) and the observation
   // harness, which alone registers inspect. Exposed storage remains frozen.
@@ -5450,9 +5527,9 @@
   // (`/*@stamped*/`, build.rs), so a host value's getters never run.
   function inspect(value) {
     if (isReduced(value) || uuids.has(value) || vars.has(value) || atoms.has(value) || volatiles.has(value)) return Object.freeze({kind: "opaque"});
-    const named = keywords.get(value) || symbols.get(value);
-    if (named) return Object.freeze({kind: keywords.has(value) ? "keyword" : "symbol",
-      namespace: named.namespace, name: named.name, spelling: named.spelling});
+    const kw = /*@stamped*/keywordOf(value), named = kw || /*@stamped*/symbolOf(value);
+    if (named) return Object.freeze({kind: kw ? "keyword" : "symbol",
+      namespace: named.ns$LKEY, name: named.name$LKEY, spelling: kw ? named.fqn$LKEY : named.str$LKEY});
     if (/*@stamped*/holdsVector(value)) return Object.freeze({kind: "vector", items: Object.freeze(vectorItems(value))});
     const entries = recordTypes.has(value)
       ? recordEntries(value, recordTypes.get(value)).map(pair => ({key: nth(pair, 0), value: nth(pair, 1)}))
@@ -5759,8 +5836,8 @@
     const start = seq(collection);
     return start === null ? emptyList : cycleNode(start, null, start);
   }
-  //@unit compareKeys requires: displayStr, holdsVector, keywords, methodKeys, protocolHooks,
-  //@ symbols, uuids, vectorItems
+  //@unit compareKeys requires: displayStr, holdsVector, keywordOf, methodKeys, namedOf,
+  //@ protocolHooks, uuids, vectorItems
   function compareKeys(a, b) {
     if (a === b) return 0;
     if (a == null) return -1;
@@ -5771,10 +5848,10 @@
     if (method) return method.call(a, a, b);
     if (uuids.has(a)) return uuids.has(b) ? compareKeys(uuids.get(a), uuids.get(b)) : cannotCompare();
     if (a instanceof Date) return b instanceof Date ? compareKeys(a.valueOf(), b.valueOf()) : cannotCompare();
-    const left = keywords.get(a) || symbols.get(a), right = keywords.get(b) || symbols.get(b);
+    const left = namedOf(a), right = namedOf(b);
     if (left || right) {
-      if (!left || !right || keywords.has(a) !== keywords.has(b)) throw new Error("Cannot compare different types");
-      return compareKeys(left.namespace, right.namespace) || compareKeys(left.name, right.name);
+      if (!left || !right || (keywordOf(a) === undefined) !== (keywordOf(b) === undefined)) throw new Error("Cannot compare different types");
+      return compareKeys(left.ns$LKEY, right.ns$LKEY) || compareKeys(left.name$LKEY, right.name$LKEY);
     }
     if (holdsVector(a) && holdsVector(b)) {
       const xs = vectorItems(a), ys = vectorItems(b);
@@ -6175,8 +6252,8 @@
   const chunkedSeqValue = value => { const kind = cells.get(value)?.kind; return kind === "range" || kind === "chunked-cons" || viewOf(value)?.view$LKEY === "chunked"; };
   //@unit chunkValue requires: chunks
   const chunkValue = value => chunks.has(value);
-  //@unit namedValue requires: keywords, multiFns, symbols
-  const namedValue = value => keywords.has(value) || symbols.has(value) || multiFns.has(value);
+  //@unit namedValue requires: multiFns, namedOf
+  const namedValue = value => namedOf(value) !== undefined || multiFns.has(value);
   //@unit ifnValue requires: holdsVector, ifnMethods, isIdent, isTransient, maps, multiFns,
   //@ recordTypes, sets, vars
   const ifnValue = value => multiFns.has(value) || isTransient(value) || !!ifnMethods(value) || isIdent(value) || holdsVector(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || vars.has(value);
@@ -6210,11 +6287,11 @@
     return !lazyValues.has(value) && (mapKinds.get(value) === "array-map" || holdsVector(value) || ["indexed", "chunked", "array-map"].includes(viewOf(value)?.view$LKEY));
   };
   //@unit metaValue requires: atoms, cells, lazyValues, maps, metaFunctions, queues, reifyValues,
-  //@ sets, storesPredicate, symbols, vars, vectorCells, viewCells
-  const metaValue = storesPredicate(symbols, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, vars, atoms, metaFunctions, reifyValues);
+  //@ sets, storesPredicate, symbolCells, vars, vectorCells, viewCells
+  const metaValue = storesPredicate(symbolCells, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, vars, atoms, metaFunctions, reifyValues);
   //@unit withMetaValue requires: cells, lazyValues, maps, metaFunctions, queues, reifyValues, sets,
-  //@ storesPredicate, symbols, vars, vectorCells, viewCells
-  const withMetaValue = storesPredicate(symbols, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, vars, metaFunctions, reifyValues);
+  //@ storesPredicate, symbolCells, vars, vectorCells, viewCells
+  const withMetaValue = storesPredicate(symbolCells, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, vars, metaFunctions, reifyValues);
   //@unit instValue
   const instValue = value => value instanceof Date;
   //@unit uuidImplementation requires: uuids
@@ -6236,8 +6313,8 @@
   const mapValue = value => maps.has(value);
   //@unit setValue requires: sets
   const setValue = value => sets.has(value);
-  //@unit comparableValue requires: holdsVector, keywords, symbols, uuids
-  const comparableValue = value => holdsVector(value) || uuids.has(value) || symbols.has(value) || keywords.has(value) || value instanceof Date;
+  //@unit comparableValue requires: holdsVector, namedOf, uuids
+  const comparableValue = value => holdsVector(value) || uuids.has(value) || namedOf(value) !== undefined || value instanceof Date;
   //@unit atomValue requires: atoms, directMethod, isTransient
   const atomValue = value => atoms.has(value) || !isTransient(value) && !!directMethod(value, "IAtom", 0);
   //@unit pendingValue requires: cells, delays, lazyValues
@@ -6771,8 +6848,9 @@
   //@unit collectionWithMeta requires: canonicalVectorRoots, cells, constructorHashes, holdsVector,
   //@ ifnValues, isEntryCell, isView, kindHooks, lazyValues, mapKinds, maps, meta, metadataValues,
   //@ metaFunctions, methodKeys, protocolHooks, protocolImplementations, publicCollectionSlots,
-  //@ queues, recordTypes, reifyValues, setKinds, sets, sortedComparators, subvecSources, symbols,
-  //@ treeRoots, treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
+  //@ queues, recordTypes, reifyValues, setKinds, sets, sortedComparators, subvecSources,
+  //@ symbolCells, treeRoots, treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells,
+  //@ viewOf
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
@@ -6794,13 +6872,15 @@
     else if (kind === "cycle") result = kindHooks.withMetaCycle(value);
     else if (recordTypes.has(value)) result = kindHooks.withMetaRecord(value);
     else {
-      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbols, maps, mapKinds, sets, setKinds, sortedComparators, cells, viewCells, queues, lazyValues, vars, subvecSources];
+      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbolCells, maps, mapKinds, sets, setKinds, sortedComparators, cells, viewCells, queues, lazyValues, vars, subvecSources];
       const vector = holdsVector(value);
       if (!vector && !stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
-      // A vector's or a view's copy is built by its class, with its fields.
-      result = vector ? vectorCellCopy(value) : isView(value) ? viewAt(value, value.i$LKEY) : Object.create(Object.getPrototypeOf(value));
+      // A vector's, a view's or a symbol's copy is built by its class, with
+      // its fields.
+      result = vector ? vectorCellCopy(value) : isView(value) ? viewAt(value, value.i$LKEY)
+        : kindHooks.symbolCopy?.(value) ?? Object.create(Object.getPrototypeOf(value));
       // A copy of a reify value has no brand of its type: `reifyValues` holds it.
-      for (const store of [...stores, protocolImplementations]) if (store !== viewCells && store.has(value)) store.set(result, store.get(value));
+      for (const store of [...stores, protocolImplementations]) if (store !== viewCells && store !== symbolCells && store.has(value)) store.set(result, store.get(value));
       if (reifyValues.has(value)) reifyValues.add(result);
       if (ifnValues.has(value)) ifnValues.set(result, ifnValues.get(value));
       if (ifnValues.has(value) || reifyValues.has(value) || recordTypes.has(value)) Object.defineProperties(result, Object.getOwnPropertyDescriptors(value));
@@ -6811,6 +6891,17 @@
   //@unit fnWithMeta.meta effect: fnWithMeta when: collectionWithMeta, withMetaProtocol requires: fnWithMeta,
   //@ kindHooks
   kindHooks.withMetaFn = fnWithMeta;
+  //@unit SymbolCell.meta effect: symbol, SymbolValue when: collectionWithMeta requires: kindHooks,
+  //@ SymbolCell, symbolOf
+  // A symbol's metadata copy: a symbol cell of its prototype with its
+  // fields, else undefined.
+  kindHooks.symbolCopy = value => {
+    const symbol = symbolOf(value);
+    if (symbol === undefined) return undefined;
+    const Type = function () {};
+    Type.prototype = Object.getPrototypeOf(value);
+    return Reflect.construct(SymbolCell, [symbol.ns$LKEY, symbol.name$LKEY, symbol.str$LKEY, symbol.hash$LKEY], Type);
+  };
   //@unit mapEntry.meta effect: mapEntry, clone when: collectionWithMeta requires: kindHooks,
   //@ makeVector, vectorStore
   // A map entry's metadata copy is a vector.
@@ -7063,10 +7154,10 @@
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
     return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
-  //@unit createNs compile-time mutator requires: invalidArity, Namespace, namespaces, str, symbols
+  //@unit createNs compile-time mutator requires: invalidArity, Namespace, namespaces, str, symbolOf
   function createNs(name, obj = null) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
-    if (!symbols.has(name)) throw new TypeError("create-ns requires a symbol");
+    if (symbolOf(name) === undefined) throw new TypeError("create-ns requires a symbol");
     const key = str(name);
     if (!namespaces.has(key)) namespaces.set(key, new Namespace(obj, name));
     else if (obj != null) namespaces.get(key).obj = obj;
@@ -7135,20 +7226,20 @@
     try { return Reflect.apply(fn, null, args); }
     finally { ns.readerContext = previous; coreCells.currentNs = saved; }
   }
-  //@unit findNs compile-time requires: invalidArity, Namespace, namespaces, str, symbols
+  //@unit findNs compile-time requires: invalidArity, Namespace, namespaces, str, symbolOf
   function findNs(name) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     if (name == null) return null;
     if (name instanceof Namespace) return name;
-    if (!symbols.has(name)) throw new TypeError("find-ns requires a symbol or Namespace");
+    if (symbolOf(name) === undefined) throw new TypeError("find-ns requires a symbol or Namespace");
     return namespaces.get(str(name)) ?? null;
   }
-  //@unit nsName requires: invalidArity, symbols
+  //@unit nsName requires: invalidArity, symbolOf
   function nsName(value) {
     if (arguments.length !== 1) return invalidArity(arguments.length);
     // Pinned ns-name reads .name: metadata symbols expose their string name,
     // while explicitly constructed Namespaces preserve their supplied slot.
-    if (symbols.has(value)) return symbols.get(value).name;
+    if (symbolOf(value) !== undefined) return symbolOf(value).name$LKEY;
     return value.name;
   }
   //@unit theNs compile-time requires: findNs, invalidArity, str
@@ -7470,10 +7561,10 @@
     if (method !== undefined && builtinSlots.has(method)) return undefined;
     return arity === 0 ? (method === protocolSentinel ? method : undefined) : method;
   }
-  //@unit protocolStores requires: atoms, cells, delays, keywords, lazyValues, maps, metaFunctions,
-  //@ multiFns, queues, reducedValues, sets, symbols, transientCells, transients, vars, vectorCells,
-  //@ viewCells, volatiles
-  const protocolStores = [multiFns, transients, transientCells, keywords, symbols, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
+  //@unit protocolStores requires: atoms, cells, delays, keywordCells, lazyValues, maps,
+  //@ metaFunctions, multiFns, queues, reducedValues, sets, symbolCells, transientCells, transients,
+  //@ vars, vectorCells, viewCells, volatiles
+  const protocolStores = [multiFns, transients, transientCells, keywordCells, symbolCells, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
   //@unit ownedProtocolValue requires: protocolStores, storesPredicate
   const ownedProtocolValue = storesPredicate(...protocolStores);
   //@unit demandKey requires: demandMethod
@@ -7859,10 +7950,10 @@
   const reservedNames = new Set("arguments abstract await boolean break byte case catch char class const continue debugger default delete do double else enum export extends final finally float for function goto if implements import in instanceof int interface let long native new package private protected public return short static super switch synchronized this throw throws transient try typeof var void volatile while with yield methods null constructor".split(" "));
   //@unit mungeStr requires: mungeCharacters
   function mungeStr(value) { let result = ""; for (let i = 0; i < value.length; i++) result += mungeCharacters[value.charAt(i)] ?? value.charAt(i); return result; }
-  //@unit munge requires: mungeStr, reservedNames, str, symbolCore, symbols
-  function munge(value) { let result = mungeStr(str(value)); result = result === ".." ? "_DOT__DOT_" : reservedNames.has(result) ? result + "$" : result; return symbols.has(value) ? symbolCore(result) : result; }
-  //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbols
-  function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(demungePattern, key => key === "$" ? "/" : demungeCharacters[key]); return symbols.has(value) ? symbolCore(result) : result; }
+  //@unit munge requires: mungeStr, reservedNames, str, symbolCore, symbolOf
+  function munge(value) { let result = mungeStr(str(value)); result = result === ".." ? "_DOT__DOT_" : reservedNames.has(result) ? result + "$" : result; return symbolOf(value) !== undefined ? symbolCore(result) : result; }
+  //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbolOf
+  function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(demungePattern, key => key === "$" ? "/" : demungeCharacters[key]); return symbolOf(value) !== undefined ? symbolCore(result) : result; }
   //@unit mapEntry
   // A map entry is a vector of its key and value of type `MapEntryType`: one
   // `makeVector` builds where the program can build vectors
@@ -9072,8 +9163,8 @@
       ["IPrintWithWriter/-pr-writer", 3, (_self, writer, options) => { write(writer, "#" + str(tag) + " "); return printWriter(form, writer, options); }]]);
   }
   TaggedLiteral.prototype.toString = function () { return prStr(this); };
-  //@unit taggedLiteral requires: symbols, TaggedLiteral
-  function taggedLiteral(tag, form) { if (!symbols.has(tag)) throw new Error("Assert failed: (symbol? tag)"); return new TaggedLiteral(tag, form); }
+  //@unit taggedLiteral requires: symbolOf, TaggedLiteral
+  function taggedLiteral(tag, form) { if (symbolOf(tag) === undefined) throw new Error("Assert failed: (symbol? tag)"); return new TaggedLiteral(tag, form); }
   //@unit printItems requires: coreCells, prStr, stringPrint
   function printItems(values) {
     const saved = coreCells.printReadably;
@@ -9153,15 +9244,15 @@
     }, (ns ? "#:" + ns : "") + "{", ", ", "}", options, entries);
   }
   //@unit makeKeyword.namespaceOf effect: makeKeyword, SymbolValue, symbol when: printMapEntries
-  //@ requires: coreCells, freshKeyword, keywords, kindHooks, name, symbol, symbols, truth
+  //@ requires: coreCells, freshKeyword, keywordOf, kindHooks, name, namedOf, symbol, truth
   // The namespace `*print-namespace-maps*` lifts out of keys that all have
   // it, else a falsy value.
   kindHooks.namespaceOf = entries => {
-    const names = entries.map(entry => keywords.get(entry.key) || symbols.get(entry.key));
-    const ns = truth(coreCells.printNamespaceMaps) && names.length && names[0]?.namespace;
-    return ns && names.every(name => name?.namespace === ns) && ns;
+    const names = entries.map(entry => namedOf(entry.key));
+    const ns = truth(coreCells.printNamespaceMaps) && names.length && names[0]?.ns$LKEY;
+    return ns && names.every(name => name?.ns$LKEY === ns) && ns;
   };
-  kindHooks.unqualified = key => keywords.has(key) ? freshKeyword(null, name(key)) : symbol(null, name(key));
+  kindHooks.unqualified = key => keywordOf(key) !== undefined ? freshKeyword(null, name(key)) : symbol(null, name(key));
   //@unit printNumber
   function printNumber(value) {
     return Number.isNaN(value) ? "##NaN" : value === Infinity ? "##Inf" : value === -Infinity ? "##-Inf" : Object.is(value, -0) ? "-0.0" : String(value);
@@ -9269,8 +9360,8 @@
     write(writer, "#object[cljs.core.Delay {:status " + (state.thunk == null ? ":ready" : ":pending") + ", :val "); printWriter(state.value, writer, options); return write(writer, "}]");
   });
   //@unit makeKeyword.print effect: makeKeyword, makeVar, SymbolValue, symbol when: printWriterImpl
-  //@ requires: keywords, kindHooks, printKind, symbols, vars, write
-  kindHooks.print = printKind(kindHooks.print, value => keywords.has(value) || symbols.has(value) || vars.has(value), (value, writer) => write(writer, String(value)));
+  //@ requires: kindHooks, namedOf, printKind, vars, write
+  kindHooks.print = printKind(kindHooks.print, value => namedOf(value) !== undefined || vars.has(value), (value, writer) => write(writer, String(value)));
   //@unit uuidValue.print effect: uuidValue when: printWriterImpl requires: kindHooks, printKind,
   //@ uuids, write
   kindHooks.print = printKind(kindHooks.print, value => uuids.has(value), (value, writer) => write(writer, '#uuid "' + uuids.get(value) + '"'));
@@ -9570,22 +9661,21 @@
   function jsKeys(object) { const keys = []; for (const key in object) keys.push(key); return keys; }
   //@unit jsInvoke
   function jsInvoke(object, key, ...args) { return object[key].apply(object, args); }
-  //@unit keyToJs requires: cljToJs, encodeJsProtocol, keywords, methodKeys, protocolHooks, prStr,
-  //@ symbols
+  //@unit keyToJs requires: cljToJs, encodeJsProtocol, methodKeys, namedOf, protocolHooks, prStr
   function keyToJs(key, primitive = cljToJs) {
     if (protocolHooks.satisfies?.(methodKeys[17], key)) return encodeJsProtocol(key);
-    return typeof key === "string" || typeof key === "number" || keywords.has(key) || symbols.has(key) ? primitive.call(null, key) : prStr(key);
+    return typeof key === "string" || typeof key === "number" || namedOf(key) !== undefined ? primitive.call(null, key) : prStr(key);
   }
-  //@unit cljToJs requires: encodeJsProtocol, first, get, isColl, isMap, keyToJs, keyword, keywords,
-  //@ listFromArray, mapSeq, methodKeys, name, next, nth, protocolHooks, seq, seqToMap, str,
-  //@ symbols, toArray
+  //@unit cljToJs requires: encodeJsProtocol, first, get, isColl, isMap, keyToJs, keyword,
+  //@ keywordOf, listFromArray, mapSeq, methodKeys, name, next, nth, protocolHooks, seq, seqToMap,
+  //@ str, symbolOf, toArray
   function cljToJs(value, ...options) {
     const opts = seqToMap(listFromArray(options)), keywordFn = get(opts, keyword(null, "keyword-fn"), name);
     const convert = value => {
       if (value == null) return null;
       if (protocolHooks.satisfies?.(methodKeys[17], value)) return encodeJsProtocol(value);
-      if (keywords.has(value)) return keywordFn.call(null, value);
-      if (symbols.has(value)) return str(value);
+      if (keywordOf(value) !== undefined) return keywordFn.call(null, value);
+      if (symbolOf(value) !== undefined) return str(value);
       if (isMap(value)) {
         const result = {};
         for (let s = seq(value); s !== null; s = next(s)) { const entry = first(s); result[keyToJs(nth(entry, 0), convert)] = convert(nth(entry, 1)); }
@@ -9791,25 +9881,20 @@
       lastIndexOf: seqMethods.lastIndexOf
     }));
   }
-  //@unit SymbolValue.fields effect: SymbolValue when: resetMeta, upstreamMembers requires: constructorHashes,
-  //@ metadataValues, symbols, SymbolValue
-  for (const [field, key] of Object.entries({ns: "namespace", name: "name", str: "spelling"})) Object.defineProperty(SymbolValue.prototype, field, {
-    get() { return symbols.get(this)[key]; },
+  //@unit SymbolValue.fields effect: SymbolValue when: resetMeta, upstreamMembers requires: metadataValues,
+  //@ symbolOf, SymbolValue
+  // Upstream's fields read and write the keyed ones (`_hash` the cache,
+  // null until computed); `_meta` the metadata.
+  for (const field of ["ns", "name", "str", "_hash"]) Object.defineProperty(SymbolValue.prototype, field, {
+    get() { const value = symbolOf(this); return value === undefined ? undefined : value[field === "_hash" ? "hash$LKEY" : field + "$LKEY"]; },
     set(value) {
-      if (!symbols.has(this)) throw new Error("Expected public core value");
-      symbols.set(this, Object.freeze({...symbols.get(this), [key]: value}));
-    }
-  });
-  Object.defineProperty(SymbolValue.prototype, "_hash", {
-    get() { return constructorHashes.has(this) ? constructorHashes.get(this) : null; },
-    set(value) {
-      if (!symbols.has(this)) throw new Error("Expected public core value");
-      constructorHashes.set(this, value);
+      if (symbolOf(this) !== this) throw new Error("Expected public core value");
+      this[field === "_hash" ? "hash$LKEY" : field + "$LKEY"] = value;
     }
   });
   Object.defineProperty(SymbolValue.prototype, "_meta", {
     get() { return metadataValues.has(this) ? metadataValues.get(this) : null; }, set(value) {
-      if (!symbols.has(this)) throw new Error("Expected public core value");
+      if (symbolOf(this) === undefined) throw new Error("Expected public core value");
       metadataValues.set(this, value);
     }
   });
@@ -9859,9 +9944,20 @@
   //@ seqMethods
   seqIndexes(EmptyListValue);
   EmptyListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit KeywordValue.fields effect: KeywordValue when: resetMeta, upstreamMembers requires: keywords,
-  //@ KeywordValue, publicFields
-  publicFields(KeywordValue, ["ns", "name", "fqn", "_hash"], (value, field) => keywords.get(value)[{ns: "namespace", name: "name", fqn: "spelling"}[field]]);
+  //@unit KeywordValue.fields effect: KeywordValue when: resetMeta, upstreamMembers requires: keywordOf,
+  //@ KeywordValue
+  // Upstream's fields read the keyed ones; `_hash` is null until computed.
+  // Writing `ns`, `name` or `fqn` makes a shadow property, as before, and
+  // `_hash` sets the cache.
+  for (const field of ["ns", "name", "fqn", "_hash"]) Object.defineProperty(KeywordValue.prototype, field, {
+    get() { const value = keywordOf(this); return value === undefined ? undefined : value[field === "_hash" ? "hash$LKEY" : field + "$LKEY"]; },
+    set: field === "_hash" ? function (value) {
+      if (keywordOf(this) !== this) throw new Error("Expected public core value");
+      this.hash$LKEY = value;
+    } : function (value) {
+      Object.defineProperty(this, field, {value, writable: true, configurable: true, enumerable: true});
+    }
+  });
   //@unit RepeatValue.fields effect: RepeatValue when: resetMeta, upstreamMembers requires: cells,
   //@ cellStateField, meta, publicFields, RepeatValue
   publicFields(RepeatValue, ["meta", "count", "val", "next", "__hash"], (value, field) => {
@@ -10515,9 +10611,10 @@
   const compilerForms = compilerFormBridge();
   readerJsLiterals.array = compilerForms.jsArray; readerJsLiterals.object = compilerForms.jsObject;
   //@unit reader requires: cells, conj, contains, coreCells, first, freshKeyword, gensym, hashMap,
-  //@ hashSet, holdsVector, inspect, into, isRecord, isView, keywords, listFromArray, mapFromArray,
+  //@ hashSet, holdsVector, inspect, into, isRecord, isView, keywordOf, listFromArray, mapFromArray,
   //@ maps, merge, meta, next, nsName, PersistentQueueValue, prStr, readerJsLiterals, rePattern,
-  //@ seq, setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, withMeta
+  //@ seq, setFromArray, sets, str, symbol, symbolOf, toArray, uuid, uuids, vectorFromArray,
+  //@ withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
   const reader = (rt => {
   const inspect = rt.inspect;
@@ -11090,7 +11187,7 @@
     readerRegisterTagParser: register, readerDeregisterTagParser: deregister,
     readerRegisterDefaultTagParser: registerDefault, readerDeregisterDefaultTagParser: deregisterDefault,
     readerWithInput: withInput, readerCurrentInput: () => coreCells.readerCurrentInputValue, readerClose: close};
-  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : holdsVector(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || isView(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
+  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbolOf(value) !== undefined ? 'symbol' : keywordOf(value) !== undefined ? 'keyword' : holdsVector(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || isView(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
 
   //@unit codeReader compile-time requires: reader, readerCoreNames
   // Code reading qualifies symbols by `*ns*`: reflection, unlike EDN data.

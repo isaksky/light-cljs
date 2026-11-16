@@ -1617,17 +1617,18 @@ fn the_features_startup_declares_only_the_constants_it_reads() {
     };
     let output = prepare_application(&program, options).emit_chunks();
     let startup = &output.startup().source;
+    // A keyword constant carries its hash (light-cljs-1011).
     for keyword in ["editor", "reports"] {
-        let declaration = format!("keyword(null, \"{keyword}\")");
+        let declaration = format!("keyword(null, \"{keyword}\", ");
         assert_eq!(files_containing(&output, &declaration), ["app.main.js"]);
     }
     for constant in [
-        "keyword(null, \"id\")",
-        "keyword(null, \"title\")",
-        "keyword(null, \"words\")",
-        "keyword(null, \"tags\")",
-        "keyword(null, \"draft\")",
-        "keyword(null, \"guide\")",
+        "keyword(null, \"id\", ",
+        "keyword(null, \"title\", ",
+        "keyword(null, \"words\", ",
+        "keyword(null, \"tags\", ",
+        "keyword(null, \"draft\", ",
+        "keyword(null, \"guide\", ",
         "\"Introduction\"",
         "\"Questions\"",
         "vectorFromArray([",
@@ -3092,9 +3093,10 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // wrappers (82,959), and light-cljs-1010 the seqs' classes, their keyed
     // slots and the slot-first wrappers of `first`, `rest`, `next` and `seq`
     // (87,823; 88,981 with light-cljs-1025's key, four bytes more on each
-    // keyed name, and its registration).
+    // keyed name, and its registration), and light-cljs-1011 the keyword and
+    // symbol classes and each keyword constant's hash (90,263).
     assert!(
-        total + 1_000 <= 73_207 + 2_944 + 600 + 2_500 + 1_000 + 1_000 + 4_000 + 5_000,
+        total + 1_000 <= 73_207 + 2_944 + 600 + 2_500 + 1_000 + 1_000 + 4_000 + 5_000 + 2_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).

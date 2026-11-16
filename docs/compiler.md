@@ -1117,7 +1117,7 @@ calls are rejected with a located analysis diagnostic (upstream's invalid-call
 inlining artifacts are not reproduced). A valid one, `(:k m)` or `(:k m d)`, is
 emitted at every level as the runtime's own `get(m, :k)` or `get(m, :k, d)`
 (`rt.get`, `rt$get` at `advanced`), which is what the keyword's `.call` does
-after its brand test and argument count; upstream likewise calls the keyword's
+after its kind test and argument count; upstream likewise calls the keyword's
 `IFn` arity method, which is `get` (light-cljs-370). It is not `cljs.core/get`, so a program that
 replaces that still gets the lookup from a keyword call; a keyword called
 through a local or passed to `map` or `apply` keeps `.call`.
@@ -1198,7 +1198,8 @@ fields that one construction adds. A kind test such as `seqable?`, `coll?`, `sat
 core protocol, printing's "is this a runtime value" or the protocol lookup in
 front of the core operations (`payloadStore`) reads the kind once, where it
 probed each store's private field in turn; only the stores that are not private
-fields (the `WeakMap`s of keywords, symbols, vars, atoms and the like) and the
+fields (the `WeakMap`s of vars, atoms and the like; keywords and symbols are
+classes told by their keyed kind since light-cljs-1011) and the
 tests that other brands widen (a hash trie or a record is a map) are still
 probed one by one. A map entry is a vector of its own kind rather than a vector
 plus a `WeakSet` entry, which cost six times what building the entry did. A

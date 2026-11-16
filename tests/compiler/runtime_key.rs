@@ -296,7 +296,28 @@ fn ordinary_property_names_keep_their_spelling() {
     )]);
     let dir = crate::temp_dir::TempDir::new("runtime-key-names");
     let [none, dev] = crate::dev_execution::none_and_dev(&program, &sources, &dir, false);
-    assert_eq!(dev, none);
+    // The record types print with the field keywords they cache, whose own
+    // keyed fields (light-cljs-1011) end in each build's key: `$`, eight
+    // characters of [0-9a-z] and the closing quote of the property name.
+    let unkeyed = |output: &String| {
+        let (mut text, mut rest) = (String::new(), output.as_str());
+        while let Some(at) = rest.find('$') {
+            text.push_str(&rest[..=at]);
+            rest = &rest[at + 1..];
+            let keyed = rest.as_bytes().get(..9).is_some_and(|key| {
+                key[8] == b'\''
+                    && key[..8]
+                        .iter()
+                        .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+            });
+            if keyed {
+                text.push_str("<key>'");
+                rest = &rest[9..];
+            }
+        }
+        text + rest
+    };
+    assert_eq!(dev.as_ref().map(unkeyed), none.as_ref().map(unkeyed));
     assert!(none.as_ref().unwrap().contains("bar$LHASH"), "{none:?}");
 }
 

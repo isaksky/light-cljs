@@ -581,8 +581,10 @@ fn program_types_keep_no_machinery_for_builtin_values() {
             assert!(!units.contains(&unit), "{source} keeps `{unit}`");
         }
         // 11,867 to 12,178 bytes for the record and vector after
-        // light-cljs-990 (2026-11-14): the stores' kind brand (`payloads`).
-        assert!(advanced(source).emit_js().len() < 13_000, "{source}");
+        // light-cljs-990 (2026-11-14): the stores' kind brand (`payloads`);
+        // 13,206 for the record and keyword after light-cljs-1011
+        // (2026-11-15): keywords as classes and the keyword constant's hash.
+        assert!(advanced(source).emit_js().len() < 13_600, "{source}");
     }
     every_level(record_and_vector, "64");
     // The vector's host-facing methods with records about: items of a program
@@ -652,11 +654,11 @@ fn program_types_keep_the_dispatch_of_interop() {
         "7",
     );
     let borrowed = "(defrecord R [x])
-         (try (.-done (.next (.call (.-keys {:a 1}) (->R 1)))) (catch js/TypeError _ :unsupported))";
+         (pr-str (try (.-done (.next (.call (.-keys {:a 1}) (->R 1)))) (catch js/TypeError _ :unsupported)))";
     every_level("(defrecord R [x]) (.-done (.next (.keys {:a 1})))", "false");
     let printed = execute(&format!("console.log({});", advanced(borrowed).emit_js()));
     assert!(
-        ["false\n", "KeywordValue {}\n"].contains(&printed.as_str()),
+        ["false\n", ":unsupported\n"].contains(&printed.as_str()),
         "{printed}"
     );
 }
@@ -1138,9 +1140,9 @@ fn host_facing_methods_of_builtin_prototypes() {
     );
     every_level(
         "(let [s #{1 2}]
-           (array (.has s 1) (.has s 3) (.equiv s #{2 1}) (.call s nil 2) (.call s nil 3 :none)
+           (array (.has s 1) (.has s 3) (.equiv s #{2 1}) (.call s nil 2) (pr-str (.call s nil 3 :none))
                   (.-length (js/Array.from s))))",
-        "[ true, false, true, 2, KeywordValue {}, 2 ]",
+        "[ true, false, true, 2, ':none', 2 ]",
     );
 }
 
@@ -1172,9 +1174,9 @@ fn transients_chunks_and_entries_through_the_generic_operations() {
     every_level(
         "(let [tv (transient [1 2 3]) tm (transient {:a 1}) chunk (chunk-first (seq (vec (range 40))))]
            (array (nth tv 1) (count tv) (get tm :a) (count tm) (nth chunk 3) (count chunk)
-                  (key (first {:a 1})) (val (first {:a 1})) (pr-str (keys {:a 1})) (pr-str (find {:a 1} :a))
+                  (pr-str (key (first {:a 1}))) (val (first {:a 1})) (pr-str (keys {:a 1})) (pr-str (find {:a 1} :a))
                   (count (persistent! (reduce conj! (transient {}) (map vector (range 9) (range 9)))))))",
-        "[ 2, 3, 1, 1, 3, 32, KeywordValue {}, 1, '(:a)', '[:a 1]', 9 ]",
+        "[ 2, 3, 1, 1, 3, 32, ':a', 1, '(:a)', '[:a 1]', 9 ]",
     );
     // A projection of entries that are not map entries fails as `-key` does.
     every_level(
@@ -1381,8 +1383,8 @@ fn protocol_extensions_of_builtin_and_host_types_reach_the_generic_operations() 
     every_level(
         "(deftype Pair [a b] ISeqable (-seq [_] (list a b)) ICounted (-count [_] 2)
            IIndexed (-nth [_ i] (if (zero? i) a b)) (-nth [_ i d] (case i 0 a 1 b d)))
-         (let [p (Pair. :x :y)] (array (pr-str (seq p)) (count p) (nth p 1) (pr-str (into [] p)) (= [:x :y] (vec p))))",
-        "[ '(:x :y)', 2, KeywordValue {}, '[:x :y]', true ]",
+         (let [p (Pair. :x :y)] (array (pr-str (seq p)) (count p) (pr-str (nth p 1)) (pr-str (into [] p)) (= [:x :y] (vec p))))",
+        "[ '(:x :y)', 2, ':y', '[:x :y]', true ]",
     );
     every_level(
         "(def s (seq (js/Set. #js [1 2])))
@@ -1616,9 +1618,12 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // entry class and a keyword key's longer search; 8,779 after
     // light-cljs-990 (2026-11-14): the stores' kind brand (`payloads`);
     // 9,145 after light-cljs-1025 (2026-11-15): the runtime key's
-    // registration and the key in each keyed name.
+    // registration and the key in each keyed name; 9,737 after
+    // light-cljs-1011 (2026-11-15): keywords and symbols as classes
+    // (`keywordOf`, `symbolOf`, the keyword cell, its kind and `toJSON`), a
+    // keyword key's own search loops and each keyword constant's hash.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 9_400, "{} bytes", output.len());
+    assert!(output.len() < 10_000, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -1707,6 +1712,17 @@ fn keywords_and_symbols_from_public_constructors_compare_their_spelling() {
         "(let [k (Keyword. nil \"k\" js/NaN nil) s (Symbol. nil \"s\" js/NaN nil nil)]
            (pr-str [(.equiv k k) (.equiv s s) (= k k) (= s s)]))",
         "[false false true true]",
+    );
+    // The Sol review of light-cljs-1011: an undefined spelling or hash is
+    // kept as given; the value is still a keyword or a symbol, and an
+    // undefined hash is computed on first use.
+    every_level(
+        "(let [k (Keyword. nil \"k\" js/undefined js/undefined) s (Symbol. nil \"s\" js/undefined js/undefined nil)
+               h (.-_hash k) j (.-_hash s)]
+           (pr-str [(keyword? k) (symbol? s) (name k) (name s) (undefined? (.-fqn k)) (undefined? (.-str s))
+                    (undefined? h) (undefined? j) (= (hash k) (hash :k)) (= (hash s) (hash 's))
+                    (= k (Keyword. nil \"j\" js/undefined nil)) (= k :k)]))",
+        "[true true \"k\" \"s\" true true true true true true true false]",
     );
 }
 
@@ -2495,7 +2511,9 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// its keyed kind (`vectorStore`, `isTransientCell`), where the private
 /// brands read nothing, so the Proxy is asked the same names more often,
 /// and more again since light-cljs-1010: a view test (`viewOf`) and the
-/// slot-first wrappers of `first`, `rest`, `next` and `seq` read it too.
+/// slot-first wrappers of `first`, `rest`, `next` and `seq` read it too,
+/// and since light-cljs-1011 a keyword or symbol test (`keywordOf`,
+/// `symbolOf`), where the `keywords` and `symbols` stores read nothing.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -2589,7 +2607,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [268, 268, 312],
+            [314, 314, 358],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2651,7 +2669,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [253, 253, 294],
+            [297, 297, 338],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2714,7 +2732,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [268, 268, 268],
+            [314, 314, 314],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
@@ -3180,10 +3198,14 @@ fn small_maps_keep_their_key_tests_entries_and_hashes() {
 #[test]
 fn small_map_searches_read_a_keyword_key_and_bound_the_entries_as_before() {
     // light-cljs-989: a keyword key's search makes its `extend-type` lookup
-    // once, but compares each entry as `equalPair` did: identity first, then
-    // a read of the key's own `IEquiv` slot, which a getter can watch or make
-    // throw. The search covers the entries there were when it started, as
-    // `findIndex` did, though a key's `-equiv` adds one to a transient.
+    // once and compares each entry by identity first. Since light-cljs-1011
+    // it reads the key's own `IEquiv` slot once per search, at the first
+    // entry that is not the key, where a getter can watch or make it throw
+    // (a getter on a keyed name is deliberate reflection,
+    // docs/value-layout.md section 5); without a program's `-equiv` the
+    // other entries compare by kind and `fqn`, with no read. The search
+    // covers the entries there were when it started, as `findIndex` did,
+    // though a key's `-equiv` adds one to a transient.
     every_level(
         "(let [k (keyword \"t989\" \"k\") slot (js* \"'cljs$core$IEquiv$_equiv$arity$2$LKEY'\") reads (atom 0) calls (atom [])
                watch (fn [f] (js/Object.defineProperty k slot #js {:configurable true :get f}))
@@ -3195,7 +3217,7 @@ fn small_map_searches_read_a_keyword_key_and_bound_the_entries_as_before() {
                q (reify IEquiv (-equiv [_ o] (assoc! t :b 2) (= o :b)))]
            (js-delete k slot)
            (pr-str [a b (get t q :nf) (get (array-map :x 1 k 2) k)]))",
-        "[[1 0 :nf 0 :nf 3 [:y :z]] [1 \"read\"] :nf 2]",
+        "[[1 0 :nf 0 :nf 1 []] [1 \"read\"] :nf 2]",
     );
 }
 

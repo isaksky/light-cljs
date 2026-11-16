@@ -398,8 +398,10 @@ const FEATURES_STARTUP_LOADER: usize = 612;
 /// that holds its features. Rounded up to the next 100 bytes, under the
 /// Goal's 200 bytes per `loadable` (400 here). The starting slack of
 /// light-cljs-280, the larger of 10% and 1,000 bytes, was 1,500 when chunk
-/// loading still counted (1,487 bytes over, before light-cljs-353).
-const FEATURES_STARTUP_SLACK: usize = 200;
+/// loading still counted (1,487 bytes over, before light-cljs-353). 300
+/// since light-cljs-1011 (201 over), whose keyword constants carry their
+/// hashes.
+const FEATURES_STARTUP_SLACK: usize = 300;
 
 /// The analyzed program of entry `app.main` under the source root `root`.
 fn root_program(root: &Path) -> Program {

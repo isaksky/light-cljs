@@ -1089,3 +1089,89 @@ wrappers, about 3 to 4 KB: `rest-fn` 11,079 to 14,003 bytes, `mapv-count`
 53,037 to 57,117, `event-maps` 35,420 to 39,449; printing programs grow
 173 bytes (`vector-printed`, `map-printed`). re-frame simple and TodoMVC
 gzip sizes were not measured in this step.
+
+## 2026-11-15: keywords and symbols as classes (light-cljs-1011)
+
+What landed (docs/value-layout.md, the light-cljs-1011 notes): a keyword
+is one object of its class with its namespace, name, `fqn` and hash in own
+keyed fields, where it was `Object.create` plus a frozen payload in the
+`keywords` WeakMap; symbols likewise (`str` for `fqn`). Both stores are
+deleted. An array map's search for a keyword key compares each key by
+identity, then by kind and `fqn`, and reads the key's `IEquiv` slot once
+per search instead of once per entry. `hash` caches in the keyword's own
+field, and at `:advanced` each keyword constant carries the hash the
+compiler computed. Lookups still pass the old layers (`get`'s protocol
+check, `maps.get`, `collectionEntryIndex`) until light-cljs-1012 and
+light-cljs-1015.
+
+Binaries: before `light-cljs-f91e0e62` (master), after `light-cljs-c11a4060`
+(this pellet's runtime and emitter; later commits change tests and
+comments only), in research/shadow-credibility/bin. Unreserved: one peer
+worker was active, and this worktree's Pants suite ran during the after
+gate. Raw results: research/output-speed/keyword-classes-1011.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops kw-small,kw-hash100,destructure-map-3,record-kw-field,multimethod,get-small,get-small-miss,contains-small,map-literal-3,str-nested-map,hash-fresh-map-7,eq-map-7`,
+5 runs, the same selection both times; 1-minute load average 3.29-4.46
+before, 6.75-16.73 after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 124.1 (123.0-127.0) | 104.3 (103.3-105.2) | -16% | 9.81 | 12.67 | 10.63 |
+| kw-hash100 | 100.1 (98.7-101.0) | 88.5 (86.7-90.2) | -12% | 13.0 | 7.73 | 6.81 |
+| destructure-map-3 | 413.2 (411.0-422.0) | 347.7 (338.3-350.1) | -16% | 47.6 | 8.70 | 7.31 |
+| record-kw-field | 13.7 (13.6-14.7) | 14.1 (13.9-14.2) | +3% | 4.21 | 3.28 | 3.35 |
+| multimethod | 532.2 (526.6-546.4) | 525.6 (521.4-533.8) | -1% | 41.1 | 12.79 | 12.78 |
+| get-small | 162.5 (157.3-165.9) | 116.0 (115.0-117.0) | -29% | 15.0 | 10.96 | 7.76 |
+| get-small-miss | 210.4 (202.1-213.5) | 126.2 (125.6-126.8) | -40% | 19.3 | 10.95 | 6.53 |
+| contains-small | 161.6 (159.8-167.5) | 129.1 (127.8-129.9) | -20% | 12.1 | 13.40 | 10.64 |
+| map-literal-3 | 90.1 (89.6-92.5) | 93.9 (88.8-95.2) | +4% | 11.2 | 8.35 | 8.38 |
+| str-nested-map | 6,214 (6,084-6,246) | 6,399 (6,249-6,422) | +3% | 2,338 | 2.73 | 2.74 |
+| eq-map-7 | 1,782 (1,746-1,802) | 1,532 (1,524-1,540) | -14% | 149.5 | 11.93 | 10.24 |
+| hash-fresh-map-7 | 1,486 (1,434-1,569) | 1,472 (1,458-1,476) | -1% | 374.4 | 3.98 | 3.93 |
+
+- No gate operation is more than 10% slower. `record-kw-field` and
+  `map-literal-3` stay within their ranges: a record's keyword field read
+  goes through `recordKeywordFieldIndex`'s identity cache, and a map
+  literal builds its entries without searching. `str-nested-map` is 3%
+  slower, just outside its range, measured at three to four times the
+  before run's load; printing a keyword still goes through `String`.
+- The keyword search itself is upstream's now; what is left of
+  `get-small`'s 7.8x is the dispatch in front of it, which light-cljs-1012
+  (array maps as classes) and light-cljs-1015 (the old layers) remove.
+  `multimethod` dispatches through the hierarchy and the method table's
+  maps, which this step does not reach.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1011 --runs 5
+--runtime-only --runtime 1,10,40`, a copy of the project rebuilt with each
+binary just before its run; load average 4.65-6.20), wall time, median
+(range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.425 s (0.421-0.435) | 0.407 s (0.403-0.415) | 0.311 s | 0.300 s | 1.37 | 1.36 |
+| 10 | 1.231 s (1.190-1.258) | 1.153 s (1.148-1.197) | 0.572 s | 0.562 s | 2.15 | 2.05 |
+| 40 | 3.709 s (3.683-3.961) | 3.600 s (3.581-3.626) | 1.345 s | 1.269 s | 2.76 | 2.84 |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 84.4 to
+82.0 ms per iteration (-3%), shadow-cljs 26.6 and 25.0; light/shadow 3.17
+and 3.28, the change in the ratio being shadow-cljs's own run.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): each
+keyword constant carries its hash (10 to 13 bytes), and `keywordOf`,
+`symbolOf` and the keyword class replace two `WeakMap` declarations:
+`keyword-only` 4,354 bytes, `vector-only` 6,067, `keyword-lookups`
+44,624, `constant-keys` 59,003, `features` 88,550; the features example's
+startup chunk 7,744. re-frame simple and TodoMVC gzip sizes were not
+measured in this step.
+
+After the Sol review's fixes (a keyword or symbol is told by its keyed
+kind and the presence of its `fqn` or `str` field, so the public
+constructor's undefined spelling still makes one; a keyword's `IFn` arity
+entries call its `call`), binary `light-cljs-69d007bb` against
+`light-cljs-c11a4060`, the same keyword operations but `map-literal-3`,
+`str-nested-map`, `eq-map-7` and `hash-fresh-map-7`, 3 runs, load average
+13.02-24.72: every median within 3% of the after run above (`kw-small`
+105.4 ns, `get-small-miss` 124.2, `kw-hash100` 91.1, `destructure-map-3`
+352.7, `record-kw-field` 14.1, `multimethod` 522.4). The keyword programs
+at advanced grow by the two arity entries (125 bytes): `keyword-only`
+4,479 bytes, `keyword-case` 4,575, the features startup chunk 7,869.

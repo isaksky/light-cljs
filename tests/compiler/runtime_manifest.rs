@@ -1159,8 +1159,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // wrappers reading them (light-cljs-1009), and the ten keyed slots of
     // indexed and chunked seqs and a vector's `-seq` with the four
     // slot-first wrappers of `first`, `rest`, `next` and `seq`, less the
-    // removed hook of a chunked seq's `vec` field (light-cljs-1010).
-    assert_eq!(checked, 351);
+    // removed hook of a chunked seq's `vec` field (light-cljs-1010), and a
+    // symbol's metadata copy (light-cljs-1011).
+    assert_eq!(checked, 352);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1534,6 +1535,8 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("reduceCycle", Kind::Units(&["cycleNode"])),
     // Keys of these kinds lift a namespace out of a printed map.
     ("namespaceOf", Kind::Stores(&["keywords", "symbols"])),
+    // A symbol's metadata copy (light-cljs-1011).
+    ("symbolCopy", Kind::Stores(&["symbols"])),
     ("unqualified", Kind::Stores(&["keywords", "symbols"])),
 ];
 
@@ -1549,7 +1552,15 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
     let manifest = manifest();
     let body = |unit: usize| &ANNOTATED_RUNTIME[manifest.units[unit].body_range.clone()];
     let writers = |store: &str| -> Vec<&str> {
-        let calls = [format!("{store}.set("), format!("{store}.add(")];
+        // Keywords and symbols are classes, with no store: their builders
+        // construct the class (docs/value-layout.md, light-cljs-1011).
+        let class = match store {
+            "keywords" => Some("KeywordCell"),
+            "symbols" => Some("SymbolCell"),
+            _ => None,
+        };
+        let mut calls = vec![format!("{store}.set("), format!("{store}.add(")];
+        calls.extend(class.map(|class| format!("new {class}(")));
         // A unit declaring a binding, or an effect defining one of its targets
         // (`mapEntry = ...` in `mapEntry.lean`, light-cljs-247), which is
         // then the writer.
@@ -2334,7 +2345,7 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
         (unit("uncheckedAdd"), RootUse::Call),
     ]);
     assert_eq!(escaped[unit("add.variadic").0], Some(1));
-    assert!(!manifest.reachable([unit("keywords")])[unit("add.variadic").0]);
+    assert!(!manifest.reachable([unit("keywordOf")])[unit("add.variadic").0]);
     // The core hub reaches every operation; its cells reach none of the hub.
     let core = manifest.reachable([unit("core")]);
     for kept in ["reader", "coreCells", "core.seal", "namespaces.cljsUser"] {

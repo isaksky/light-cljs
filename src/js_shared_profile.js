@@ -363,12 +363,16 @@
       delete() { throw new TypeError("shared profile: " + name + ".delete"); }
     };
   }
-  //@unit keywords requires: sharedView
-  // A keyword is an engine keyword form; its payload is read from the form.
-  const keywords = sharedView("keywords", kind => kind === "keyword", value => {
-    const namespace = __rt.formNamespace(value), name = __rt.formName(value);
-    return {namespace, name, spelling: namespace == null ? name : namespace + "/" + name};
-  });
+  //@unit keywordOf requires: sharedFormKind, sharedFormOf
+  // A keyword is an engine keyword form: its fields (the V8 profile's
+  // `keywordOf`) are read from the form, in a fresh object, with the
+  // engine's hash. No keyword of the V8 profile's class is built here
+  // (`makeKeyword`, `keyword`).
+  function keywordOf(value) {
+    if (sharedFormKind(value) !== "keyword") return undefined;
+    const form = sharedFormOf(value), ns = __rt.formNamespace(form), name = __rt.formName(form);
+    return {ns$LKEY: ns, name$LKEY: name, fqn$LKEY: ns == null ? name : ns + "/" + name, hash$LKEY: __rt.formHash(value)};
+  }
   //@unit makeKeyword requires: sharedScalar
   // Engine keywords compare by value and hash in the engine; `spelling` is
   // the form's.
@@ -748,38 +752,40 @@
   //@unit stamped compile-time requires: sharedFormKind, stampBrand
   // An engine vector form is the runtime's own value too: the compiler form
   // bridge reads it (`vectorStore`) without reading a property of it.
-  function stamped(value) { return sharedFormKind(value) === "vector" || stampBrand.has(value); }
-  //@unit symbols requires: sharedView
-  // A symbol is an engine symbol form; its payload is read from the form.
-  // The two symbols the engine's forms do not carry (`sharedSymbol`) take
-  // the view's fallback, with the V8 profile's prototype (light-cljs-666).
-  const symbols = sharedView("symbols", kind => kind === "symbol", value => {
-    const namespace = __rt.formNamespace(value), name = __rt.formName(value);
-    return {namespace, name, spelling: namespace == null ? name : namespace + "/" + name};
-  });
+  function stamped(value) { const kind = sharedFormKind(value); return kind === "vector" || kind === "keyword" || kind === "symbol" || stampBrand.has(value); }
+  //@unit symbolOf requires: sharedFormKind, sharedFormOf
+  // A symbol is an engine symbol form, whose fields are read from the form
+  // as `keywordOf` reads a keyword's, or one of the symbols the engine's
+  // forms do not carry (`sharedSymbol`), a symbol cell of the V8 profile
+  // with its own fields (light-cljs-666).
+  function symbolOf(value) {
+    if (sharedFormKind(value) === "symbol") {
+      const form = sharedFormOf(value), ns = __rt.formNamespace(form), name = __rt.formName(form);
+      return {ns$LKEY: ns, name$LKEY: name, str$LKEY: ns == null ? name : ns + "/" + name, hash$LKEY: __rt.formHash(value)};
+    }
+    return value != null && value.cljs$lang$kind$$LKEY === 21 && "str$LKEY" in value ? value : undefined;
+  }
   //@unit sharedNamedSplits
   // Whether an engine keyword or symbol can carry the pair: its spelling
   // splits back into the namespace and name at its first `/` (the engine's
   // `FormName::splits_back`; `formSymbol` of another pair is an error).
   const sharedNamedSplits = (namespace, name) => namespace == null ? name === "/" || !name.includes("/") : !namespace.includes("/") && (namespace !== "" || name !== "");
-  //@unit sharedSymbol requires: constructorHashes, metadataValues, sharedFormKind, sharedFormOf,
-  //@ sharedNamedSplits, symbols, SymbolValue
+  //@unit sharedSymbol requires: metadataValues, sharedFormKind, sharedFormOf, sharedNamedSplits,
+  //@ SymbolCell
   // A fresh engine symbol, with its metadata when that is an engine map
   // (`formWithMeta`). The engine's forms carry neither a pair that does not
   // split back (a `/` inside an unqualified name, as `(symbol nil "a/b")`
   // asks for) nor runtime-built metadata (a map of the verbatim `maps`,
-  // until the maps view): such a symbol is a runtime-owned object over the
-  // views' fallbacks with the V8 profile's prototype, which `symbols`,
-  // equality, hashing and printing read alike, and its task's own.
+  // until the maps view): such a symbol is a runtime-owned symbol cell of
+  // the V8 profile, with its own fields, which `symbolOf`, equality,
+  // hashing and printing read alike, and its task's own.
   function sharedSymbol(namespace, name, metadata = null, cachedHash = null, spelling = null) {
     const canonical = namespace == null ? name : namespace + "/" + name;
     if ((spelling === null || spelling === canonical) && sharedNamedSplits(namespace, name) && (metadata == null || sharedFormKind(metadata) === "map")) {
       const value = __rt.formSymbol(namespace, name);
       if (cachedHash === null || cachedHash === __rt.formHash(value)) return metadata == null ? value : __rt.formWithMeta(value, sharedFormOf(metadata));
     }
-    const value = Object.create(SymbolValue.prototype);
-    symbols.set(value, Object.freeze({namespace, name, spelling: spelling === null ? canonical : spelling}));
-    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
+    const value = new SymbolCell(namespace, name, spelling === null ? canonical : spelling, cachedHash);
     if (metadata != null) metadataValues.set(value, metadata);
     return value;
   }
@@ -797,7 +803,7 @@
     return sharedSymbol(namespace, name, metadata, cachedHash, spelling);
   }
   //@unit collectionWithMeta.symbols effect: symbol, SymbolValue when: collectionWithMeta
-  //@ requires: collectionWithMeta, constructorHashes, sharedFormKind, sharedSymbol, symbols
+  //@ requires: collectionWithMeta, sharedFormKind, sharedSymbol, symbolOf
   // `with-meta` of a symbol builds a symbol of the metadata's kind
   // (`sharedSymbol`): an engine symbol, or a runtime-owned one for
   // runtime-built metadata; a runtime-owned symbol given engine metadata or
@@ -805,9 +811,9 @@
   // its own (the positional constructor's), which the copy keeps.
   collectionWithMeta = (operation => (value, metadata) => {
     const own = __rt.formKind(value) === null;
-    const data = !own || (symbols.has(value) && (metadata == null || sharedFormKind(metadata) === "map")) ? symbols.get(value) : undefined;
+    const data = !own || (symbolOf(value) !== undefined && (metadata == null || sharedFormKind(metadata) === "map")) ? symbolOf(value) : undefined;
     return data === undefined ? operation(value, metadata)
-      : sharedSymbol(data.namespace, data.name, metadata, own && constructorHashes.has(value) ? constructorHashes.get(value) : null, own ? data.spelling : null);
+      : sharedSymbol(data.ns$LKEY, data.name$LKEY, metadata, own ? data.hash$LKEY : null, own ? data.str$LKEY : null);
   })(collectionWithMeta);
   //@unit sharedNamedString requires: sharedEngineVar, sharedFormKind, sharedFormOf
   // An engine keyword's or symbol's string (an imported one's through its
@@ -1435,8 +1441,8 @@
   // takes no `g` flag (its `lastIndex` would be state), so `demunge` builds
   // the global regex when it is called (light-cljs-666).
   const demungePattern = Object.keys(demungeCharacters).sort((a, b) => b.length - a.length).join("|") + "|\\$";
-  //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbols
-  function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(new RegExp(demungePattern, "g"), key => key === "$" ? "/" : demungeCharacters[key]); return symbols.has(value) ? symbolCore(result) : result; }
+  //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbolOf
+  function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(new RegExp(demungePattern, "g"), key => key === "$" ? "/" : demungeCharacters[key]); return symbolOf(value) !== undefined ? symbolCore(result) : result; }
   //@unit sharedIntrinsicRegExp
   const sharedIntrinsicRegExp = RegExp;
   //@unit sharedRegExpCall requires: sharedFormOf
@@ -1682,11 +1688,11 @@
     return makeMap(PersistentHashMapValue, entries, "hash-map");
   };
   //@unit makeKeyword.print effect: makeKeyword, makeVar, SymbolValue, symbol when: printWriterImpl
-  //@ requires: keywords, kindHooks, printKind, sharedNamedString, symbols, vars, write
-  // An engine keyword or symbol prints from its payload; a runtime-built
-  // symbol or a Var through its `toString`, as in the V8 profile.
-  kindHooks.print = printKind(kindHooks.print, value => keywords.has(value) || symbols.has(value) || vars.has(value),
-    (value, writer) => write(writer, keywords.has(value) ? ":" + keywords.get(value).spelling : symbols.has(value) ? symbols.get(value).spelling : sharedNamedString(value) ?? String(value)));
+  //@ requires: keywordOf, kindHooks, printKind, sharedNamedString, symbolOf, vars, write
+  // A keyword or a symbol prints from its fields; a Var through its
+  // `toString`, as in the V8 profile.
+  kindHooks.print = printKind(kindHooks.print, value => keywordOf(value) !== undefined || symbolOf(value) !== undefined || vars.has(value),
+    (value, writer) => write(writer, keywordOf(value) !== undefined ? ":" + keywordOf(value).fqn$LKEY : symbolOf(value) !== undefined ? symbolOf(value).str$LKEY : sharedNamedString(value) ?? String(value)));
   //@unit isArray requires: sharedFormOf
   // Reader-created #js arrays and imported literal occurrences are engine
   // descriptors; ordinary JavaScript arrays keep the host predicate.

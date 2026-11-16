@@ -127,6 +127,37 @@ first slice of section 2's seq rows.
   `List`, `EmptyList`, ranges, `Repeat`, `Iterate`, `Cycle`, the key and
   value seqs and the tree map seq, `cells`).
 
+What light-cljs-1011 landed: keywords and symbols.
+
+- **The classes.** A keyword is a `KeywordCell` on `KeywordValue`'s
+  prototype, kind 20, with the own keyed fields `ns$LKEY`, `name$LKEY`,
+  `fqn$LKEY` and `hash$LKEY`; a symbol a `SymbolCell` on `SymbolValue`'s,
+  kind 21, with `ns$LKEY`, `name$LKEY`, `str$LKEY` and `hash$LKEY` (kinds 12
+  to 19 are left to the seq kinds still to convert). `keywordOf` and
+  `symbolOf` replace `keywords.get` and `symbols.get`: the value itself
+  where its kind and its `fqn` (`str`) field are there (the public
+  constructor may give it an undefined spelling), else undefined, so equality
+  reads the kind and `fqn`, never `instanceof`. The `keywords` and `symbols`
+  stores are deleted; `keywordCells` and `symbolCells` stand for them in the
+  store inventories. A symbol's metadata stays in `metadataValues`, as the
+  seqs' does; its `meta$LKEY` field is left to the pellet that moves
+  metadata out of that store (light-cljs-1031). Upstream's public fields
+  (`.-fqn`, `.-_hash`, `.-str`) read the keyed ones. A keyword's `call`
+  is `get` without a store read, and its `IFn` arity entries, which
+  `apply` calls, call `call`, so an `extend-type` of `IFn` still answers.
+- **Lookups and hashes.** `entryIndex` compares a keyword key with each key
+  by identity, then by kind and `fqn`, with no store and no slot read per
+  entry; it reads the key's own `IEquiv` slot once, and a program's
+  implementation (`extend-type`, `specify!` of the key) takes `equalPair`
+  per key as before. `hash` caches a keyword's or symbol's hash in its
+  field. At `Advanced` each keyword constant carries its hash, which the
+  compiler computes (`value_hash::keyword`): `rt$keyword(null, "a", h)`.
+- **Profiles.** The keyword and symbol constructors end with `/*@brand*/`,
+  and the compiler form bridge and `inspect` test `stamped` first. The Pants
+  profile swaps `keywordOf` and `symbolOf` for ones that read engine forms
+  (a fresh object of their fields, with the engine's hash), and its
+  runtime-owned symbols (`sharedSymbol`) are symbol cells.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
