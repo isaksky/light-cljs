@@ -20,7 +20,7 @@ fn field_reads_and_writes_remain_live_in_escaped_closures() {
 fn field_receiver_is_the_actual_method_call_receiver() {
     assert_eq!(
         run(
-            "(defprotocol P (f [this])) (deftype T [x] P (f [this] (array x this))) (let [a (T. 1) b (T. 2) f (aget a \"cljs$user$P$f$arity$1$LKEY\") r (.call f b a)] (array (aget r 0) (identical? b (aget r 1))))"
+            "(defprotocol P (f [this])) (deftype T [x] P (f [this] (array x this))) (let [a (T. 1) b (T. 2) f (.-cljs$user$P$f$arity$1 a) r (.call f b a)] (array (aget r 0) (identical? b (aget r 1))))"
         ),
         "[2,true]\n"
     );

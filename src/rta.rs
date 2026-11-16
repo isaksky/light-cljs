@@ -1506,8 +1506,9 @@ fn retain<T>(methods: &mut Vec<T>, kept: &[bool]) -> usize {
 
 /// The suffix of every protocol slot, marker and mask name, `$` and the
 /// build's key (docs/value-layout.md, section 1). Emission and the runtime
-/// text write this placeholder; the compile-time runtime keeps it as its key.
-pub(crate) const RUNTIME_KEY: &str = "$LKEY";
+/// text write this placeholder, which the output writer replaces
+/// ([`crate::runtime_key`]); the compile-time runtime keeps it as its key.
+pub(crate) const RUNTIME_KEY: &str = crate::runtime_key::KEY_PLACEHOLDER;
 
 /// The property holding a protocol method's implementation of `arity`
 /// (receiver included) on an instance: `protocolSlot` in `src/js_runtime.js`,

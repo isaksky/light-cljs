@@ -253,7 +253,7 @@ fn list_construction_keeps_intrinsic_count_while_public_count_remains_live() {
     // Declare the extension so Advanced retains its public dispatch hooks.
     let body = r#"(do (extend-type List ICounted (-count [xs] (.-count xs)))
                      (let [prototype (.-prototype List)
-                       slot "cljs$core$ICounted$_count$arity$1$LKEY"
+                       slot (js* "'cljs$core$ICounted$_count$arity$1$LKEY'")
                        previous (js/Object.getOwnPropertyDescriptor prototype slot)
                        calls (atom 0)
                        value (atom nil)
@@ -288,9 +288,9 @@ fn selected_protocol_missing_method_does_not_fall_back_after_a_getter_mutation()
                                            (-lookup [_ _] :two)
                                            (-lookup [_ _ _] :three))]
                                (js/Object.defineProperty
-                                 value "cljs$core$ILookup$_lookup$arity$3$LKEY"
+                                 value (js* "'cljs$core$ILookup$_lookup$arity$3$LKEY'")
                                  #js {:get (fn []
-                                             (js-delete value "cljs$core$ILookup$$LKEY")
+                                             (js-delete value (js* "'cljs$core$ILookup$$LKEY'"))
                                              (if found (fn [_ _ _] :found) nil))})
                                (try (get value :key :fallback)
                                     (catch :default error (.-message error)))))]
@@ -314,8 +314,8 @@ fn masked_lookup_getters_preserve_selected_dispatch() {
         format!(
             r#"(let [run (fn [found]
                      (let [value {make}]
-                       (doseq [[slot marker] [["cljs$core$ILookup$_lookup$arity$3$LKEY" "cljs$core$ILookup$$LKEY"]
-                                              ["cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY" "cljs$core$IAssociative$$LKEY"]]]
+                       (doseq [[slot marker] [[(js* "'cljs$core$ILookup$_lookup$arity$3$LKEY'") (js* "'cljs$core$ILookup$$LKEY'")]
+                                              [(js* "'cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY'") (js* "'cljs$core$IAssociative$$LKEY'")]]]
                          (js/Object.defineProperty value slot
                            #js {{:get (fn []
                                        (set! (.-cljs$lang$protocol_mask$partition0$ value) 0)
@@ -523,8 +523,10 @@ fn a_program_type_opens_the_protocol_hooks() {
     // 8,355 to 8,644 after light-cljs-990 (2026-11-14): the stores' kind
     // brand (`payloads`); about 8,770 after light-cljs-1009 (2026-11-15):
     // the vectors' keyed kind, their `count` slot and the slot-first wrapper
-    // of `count`.
-    assert!(advanced(source).emit_js().len() < 9_000);
+    // of `count`; 9,162 after light-cljs-1025 (2026-11-16): the runtime
+    // key's registration (about 290 bytes) and the key in each keyed name
+    // (4 bytes more than the placeholder).
+    assert!(advanced(source).emit_js().len() < 9_400);
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -631,9 +633,9 @@ fn program_types_keep_no_machinery_for_builtin_values() {
 fn program_types_keep_the_dispatch_of_interop() {
     every_level(
         "(let [f (fn [] 1)]
-           (aset f \"cljs$core$IMeta$_meta$arity$1$LKEY\" (fn [_] {:m 1}))
+           (set! (.-cljs$core$IMeta$_meta$arity$1 f) (fn [_] {:m 1}))
            (pr-str [(get (reify ILookup (-lookup [_ k] 1)) \"x\")
-                    (get (js-obj \"cljs$core$ILookup$_lookup$arity$2$LKEY\" (fn [_ k] 7)) \"x\")
+                    (get (let [o (js-obj)] (set! (.-cljs$core$ILookup$_lookup$arity$2 o) (fn [_ k] 7)) o) \"x\")
                     (meta f)]))",
         "[1 nil {:m 1}]",
     );
@@ -729,8 +731,8 @@ fn protocol_test_rows(extensions: &str, extra: &str) -> String {
                             [:reify (reify)] [:vector [1 2]] [:list '(1 2)] [:map {{:a 1}}] [:set #{{1}}]
                             [:range (range 3)] [:lazy (map inc [1])] [:string \"ab\"] [:nil nil] [:number 5]
                             [:array #js [1 2]] [:object #js {{:a 1}}] [:fn (fn [] 1)]
-                            [:masked (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 2)]
-                            [:marker (js-obj \"cljs$core$ICounted$$LKEY\" true)] {extra}]]
+                            [:masked (let [o (js-obj)] (set! (.-cljs$lang$protocol_mask$partition0$ o) 2) o)]
+                            [:marker (let [o (js-obj)] (set! (.-cljs$core$ICounted$ o) true) o)] {extra}]]
              (pr-str [label
                       (apply str (map #(if (% v) 1 0)
                                       [counted? seq? seqable? sequential? coll? map? vector? set? record?
@@ -883,8 +885,9 @@ fn core_protocol_tables_written_directly_reach_the_protocol_tests() {
     every_level(read, "[7 false false false]");
     every_level(
         "(deftype T [] ICounted (-count [_] 7))
-         (let [o (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 2)]
-           (js/Object.defineProperty o \"cljs$core$ICounted$$LKEY\"
+         (let [o (js-obj)]
+           (set! (.-cljs$lang$protocol_mask$partition0$ o) 2)
+           (js/Object.defineProperty o (js* \"'cljs$core$ICounted$$LKEY'\")
              (js-obj \"get\" (fn [] (throw (js/Error. \"marker read\")))))
            (pr-str [(count (T.)) (counted? o)]))",
         "[7 true]",
@@ -916,8 +919,10 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // more (1,876 to 2,361 bytes), and the kind brand they share, since
     // light-cljs-990 (2026-11-14), about 220 more (2,288 to 2,510 bytes), and
     // the stores' metadata read by descriptor, since light-cljs-1024 (the
-    // Pants engine has no `Object.hasOwn`), 2,575 to 2,600.
-    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 2_700);
+    // Pants engine has no `Object.hasOwn`), 2,575 to 2,600, and the runtime
+    // key's registration, since light-cljs-1025 (2026-11-16), about 290 more
+    // (2,894 bytes).
+    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 3_000);
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -1010,43 +1015,47 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     for (source, expected) in [
         (
             "(deftype T [] ICounted (-count [_] 7))
-             (let [o (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 8388608
-                             \"cljs$core$ISeqable$_seq$arity$1$LKEY\" (fn [_] nil))]
+             (let [o (js-obj)]
+               (set! (.-cljs$lang$protocol_mask$partition0$ o) 8388608)
+               (set! (.-cljs$core$ISeqable$_seq$arity$1 o) (fn [_] nil))
                (array (count (T.)) (count o)))",
             "[ 7, 0 ]",
         ),
         (
-            "(count (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 8388608
-                            \"cljs$core$ISeqable$_seq$arity$1$LKEY\" (fn [_] (list 1 2))))",
+            "(let [o (js-obj)]
+               (set! (.-cljs$lang$protocol_mask$partition0$ o) 8388608)
+               (set! (.-cljs$core$ISeqable$_seq$arity$1 o) (fn [_] (list 1 2)))
+               (count o))",
             "2",
         ),
         (
             "(deftype T [] ICounted (-count [_] 7)) (def n (count (T.)))
-             (try (count (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 8388608))
+             (try (count (doto (js-obj) (-> .-cljs$lang$protocol_mask$partition0$ (set! 8388608))))
                (catch :default e (.-message e)))",
             "No protocol method ISeqable/-seq defined for this value",
         ),
         (
-            "(try (count (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 2))
+            "(try (count (doto (js-obj) (-> .-cljs$lang$protocol_mask$partition0$ (set! 2))))
                (catch :default e (.-message e)))",
             "No protocol method ICounted/-count defined for this value",
         ),
     ] {
         every_level(source, expected);
     }
-    let masked = self::units("(count (js-obj \"cljs$lang$protocol_mask$partition0$$LKEY\" 2))");
+    let masked =
+        self::units("(count (doto (js-obj) (-> .-cljs$lang$protocol_mask$partition0$ (set! 2))))");
     for unit in ["installMethods", "ISeqable", "ISequential", "count.seqs"] {
         assert!(masked.contains(&unit), "{unit}: {masked:?}");
     }
-    // A mask whose name the program computes is outside the contract: where
-    // nothing implements `ISeqable`, `count` throws a `TypeError` naming the
-    // hook at `Advanced`.
+    // A mask name the program computes is a string, which names no keyed
+    // mask (docs/value-layout.md, section 1, light-cljs-1025): the object is
+    // a host object to `count` at every level. (Before the key was real, the
+    // computed name reached the mask, outside the contract.)
     let computed = "(deftype T [] ICounted (-count [_] 7)) (def n (count (T.)))
          (let [o (js-obj)]
-           (aset o (.concat \"cljs$lang$protocol_mask$\" \"partition0$$LKEY\") 8388608)
+           (aset o (.concat \"cljs$lang$protocol_mask$\" \"partition0$\") 8388608)
            (try (count o) (catch js/TypeError _ :unsupported) (catch :default e (.-message e))))";
-    let printed = execute(&format!("console.log({});", advanced(computed).emit_js()));
-    assert_eq!(printed, "KeywordValue {}\n");
+    every_level(computed, "count not supported on this type");
 }
 
 /// light-cljs-251: `satisfies?` and `implements?` only read their protocol
@@ -1274,8 +1283,8 @@ fn vector_reductions_keep_protocol_implementations() {
 fn vector_fast_paths_honor_direct_protocol_slots() {
     every_level(
         "(let [v [1]]
-           (aset v \"cljs$lang$protocol_mask$partition0$$LKEY\" 8)
-           (aset v \"cljs$core$ICollection$_conj$arity$2$LKEY\" (fn [_ x] [:custom x]))
+           (set! (.-cljs$lang$protocol_mask$partition0$ v) 8)
+           (set! (.-cljs$core$ICollection$_conj$arity$2 v) (fn [_ x] [:custom x]))
            (pr-str [(conj v 2) (conj [5] 6) (into [] (range 3))]))",
         "[[:custom 2] [5 6] [0 1 2]]",
     );
@@ -1291,11 +1300,14 @@ fn vector_slot_first_preserves_missing_slot_fallbacks() {
         every_level(
             &format!(
                 "(let [v [1 2]]
-                   (doseq [slot [\"cljs$core$IIndexed$_nth$arity$2$LKEY\" \"cljs$core$IIndexed$_nth$arity$3$LKEY\"
-                                 \"cljs$core$ICounted$_count$arity$1$LKEY\" \"cljs$core$IStack$_peek$arity$1$LKEY\"
-                                 \"cljs$core$ICollection$_conj$arity$2$LKEY\" \"cljs$core$IAssociative$_assoc$arity$3$LKEY\"
-                                 \"cljs$core$ILookup$_lookup$arity$2$LKEY\" \"cljs$core$ILookup$_lookup$arity$3$LKEY\"]]
-                     (aset v slot {missing}))
+                   (set! (.-cljs$core$IIndexed$_nth$arity$2 v) {missing})
+                   (set! (.-cljs$core$IIndexed$_nth$arity$3 v) {missing})
+                   (set! (.-cljs$core$ICounted$_count$arity$1 v) {missing})
+                   (set! (.-cljs$core$IStack$_peek$arity$1 v) {missing})
+                   (set! (.-cljs$core$ICollection$_conj$arity$2 v) {missing})
+                   (set! (.-cljs$core$IAssociative$_assoc$arity$3 v) {missing})
+                   (set! (.-cljs$core$ILookup$_lookup$arity$2 v) {missing})
+                   (set! (.-cljs$core$ILookup$_lookup$arity$3 v) {missing})
                    (pr-str [(nth v 0) (nth v 5 :none) (count v) (peek v) (conj v 3) (assoc v 0 :a)
                             (get v 1) (get v 7 :none)]))"
             ),
@@ -1596,9 +1608,11 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // 8,124 after light-cljs-373: the map entries' kind and `get` branch;
     // 8,137 to 8,449 after light-cljs-989 (2026-11-14): the array maps'
     // entry class and a keyword key's longer search; 8,779 after
-    // light-cljs-990 (2026-11-14): the stores' kind brand (`payloads`).
+    // light-cljs-990 (2026-11-14): the stores' kind brand (`payloads`);
+    // 9,145 after light-cljs-1025 (2026-11-16): the runtime key's
+    // registration and the key in each keyed name.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 8_800, "{} bytes", output.len());
+    assert!(output.len() < 9_400, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -2071,12 +2085,12 @@ fn named_generated_record_slots_remain_callable() {
         // as `this` only: the method reads "missing" as its receiver argument
         // and looks up "nf" without a default.
         (
-            "(array (.equiv [1] [1]) (.call (aget r \"cljs$core$ILookup$_lookup$arity$3$LKEY\") r \"missing\" \"nf\"))",
+            "(array (.equiv [1] [1]) (.call (.-cljs$core$ILookup$_lookup$arity$3 r) r \"missing\" \"nf\"))",
             "[ true, undefined ]",
             "recordMethods.lookup",
         ),
         (
-            "(.call (aget r \"cljs$core$ILookup$_lookup$arity$3$LKEY\") r r \"missing\" \"nf\")",
+            "(.call (.-cljs$core$ILookup$_lookup$arity$3 r) r r \"missing\" \"nf\")",
             "nf",
             "recordMethods.lookup",
         ),
@@ -2699,8 +2713,11 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
         let program = program(&source);
         for (level, reads) in OptimizationLevel::ALL.into_iter().zip(reads) {
             let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+            // The Proxy is asked keyed names: the key, normalised
+            // (docs/value-layout.md, section 5, item 4).
+            let key = light_cljs::runtime_key::RuntimeKey::written(&js).expect("a runtime");
             assert_eq!(
-                execute(&format!("console.log({js});")),
+                key.unapply(&execute(&format!("console.log({js});"))),
                 format!("{expected}{reads}\n"),
                 "at {level}: {extensions}"
             );
@@ -3121,7 +3138,7 @@ fn small_map_searches_read_a_keyword_key_and_bound_the_entries_as_before() {
     // throw. The search covers the entries there were when it started, as
     // `findIndex` did, though a key's `-equiv` adds one to a transient.
     every_level(
-        "(let [k (keyword \"t989\" \"k\") slot \"cljs$core$IEquiv$_equiv$arity$2$LKEY\" reads (atom 0) calls (atom [])
+        "(let [k (keyword \"t989\" \"k\") slot (js* \"'cljs$core$IEquiv$_equiv$arity$2$LKEY'\") reads (atom 0) calls (atom [])
                watch (fn [f] (js/Object.defineProperty k slot #js {:configurable true :get f}))
                _ (watch (fn [] (swap! reads inc) (when (> @reads 1) (fn [_ o] (swap! calls conj o) false))))
                a [(get (array-map k 1) k) @reads (get {} k :nf) @reads (get (array-map :x 1 :y 2 :z 3) k :nf) @reads @calls]

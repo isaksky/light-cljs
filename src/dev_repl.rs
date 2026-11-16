@@ -237,24 +237,32 @@ fn compile(
     }
     // What the form loaded, which the session now counts as loaded, goes
     // to the runtimes also when a later part of the form failed.
+    // Everything goes to pages, which have the dev key
+    // (`crate::dev_build::runtime_file`); the session keeps the placeholder.
+    let key = crate::runtime_key::RuntimeKey::dev_units();
     let loads = if loads.iter().any(|action| matches!(action, Action::Load(_))) {
-        script(&loads)
+        key.apply(&script(&loads))
     } else {
         String::new()
     };
     let outcome = match error {
         Some(error) => Outcome::Error { error, loads },
         None => Outcome::Run {
-            setup: script(&setup),
+            setup: key.apply(&script(&setup)),
             loads,
-            unit: unit.map(|unit| {
+            unit: unit.map(|mut unit| {
                 // The server names the unit's text for its error stacks.
                 let url = format!(
                     "\n//# sourceURL={}\n",
                     crate::dev_build::unit_file(&unit.namespace)
                 );
+                let js = unit.js.strip_suffix(&url).unwrap_or(&unit.js);
+                let js = match &mut unit.mapping {
+                    Some(mapping) => key.apply_mapped(js, mapping),
+                    None => key.apply(js),
+                };
                 ReplUnit {
-                    js: unit.js.strip_suffix(&url).unwrap_or(&unit.js).to_owned(),
+                    js,
                     namespace: unit.namespace,
                     mapping: unit.mapping,
                 }

@@ -341,6 +341,36 @@ impl SourceMapping {
         self.segments.is_empty()
     }
 
+    /// The generated text changed within lines: at each `(line, column,
+    /// delta)`, in text order, `delta` UTF-16 code units were inserted
+    /// (removed when negative), so each segment after it on its line moves
+    /// by `delta` ([`crate::runtime_key::RuntimeKey::apply_mapped`]).
+    pub(crate) fn shift_columns(&mut self, shifts: &[(u32, u32, isize)]) {
+        if shifts.is_empty() {
+            return;
+        }
+        let mut next = 0;
+        let mut moved = 0isize;
+        let mut line = None;
+        for segment in &mut self.segments {
+            if line != Some(segment.line) {
+                line = Some(segment.line);
+                moved = 0;
+                while next < shifts.len() && shifts[next].0 < segment.line {
+                    next += 1;
+                }
+            }
+            while next < shifts.len()
+                && shifts[next].0 == segment.line
+                && shifts[next].1 < segment.column
+            {
+                moved += shifts[next].2;
+                next += 1;
+            }
+            segment.column = segment.column.wrapping_add_signed(moved as i32);
+        }
+    }
+
     /// The program source index and byte offset that the output position at
     /// zero-based `line` and `column` (UTF-16 code units) maps to: that of
     /// the last segment of the line at or before the column. None where the

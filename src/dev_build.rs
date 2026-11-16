@@ -5,7 +5,9 @@
 //! The directory holds
 //!
 //! - `runtime.js`, the whole runtime once:
-//!   `globalThis.__lightRuntime = (factory)();`;
+//!   `globalThis.__lightRuntime = (factory)();`, with the key every dev
+//!   build has ([`runtime_file`]), which each unit written for the page
+//!   has too (docs/value-layout.md, section 1);
 //! - `client.js`, the dev client ([`CLIENT`]), which defines
 //!   `globalThis.__lightDev.define`, which records each namespace's unit and
 //!   runs it against the runtime at once, keeping its value, and in a page
@@ -36,6 +38,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use crate::analyzer::{ExprId, ExprKind, Program};
+use crate::runtime_key::RuntimeKey;
 use crate::source_map::{SourceFile, json_string};
 
 /// One file of a dev build: its name in the directory and its text.
@@ -72,20 +75,18 @@ pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevF
                 .all(|namespace| entries.contains_key(namespace.as_str())),
         "a dev build needs a program analyzed from namespace sources"
     );
+    let manifest = DevManifest::new(program);
     let mut files = vec![
         DevFile {
             name: "runtime.js".into(),
-            text: format!(
-                "globalThis.__lightRuntime = {};\n",
-                crate::runtime_manifest::RUNTIME.trim()
-            ),
+            text: runtime_file(&manifest.entry),
         },
         DevFile {
             name: "client.js".into(),
             text: CLIENT.into(),
         },
     ];
-    let manifest = DevManifest::new(program);
+    let key = RuntimeKey::dev_units();
     let units = crate::emitter::NamespaceUnits::new(program);
     for (index, namespace) in manifest.namespaces.iter().enumerate() {
         let map = format!("{}.map", namespace.file);
@@ -94,11 +95,12 @@ pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevF
         define.push_str(", ");
         json_list(&mut define, &namespace.requires);
         define.push_str(", ");
-        let (mut unit, mapping) = units.emit(
+        let (unit, mut mapping) = units.emit(
             entries[namespace.name.as_str()],
             index == 0,
             [&define, ");\n"],
         );
+        let mut unit = key.apply_mapped(&unit, &mut mapping);
         writeln!(unit, "//# sourceMappingURL={map}").unwrap();
         files.push(DevFile {
             name: namespace.file.clone(),
@@ -118,6 +120,17 @@ pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevF
         text: manifest.index(),
     });
     files
+}
+
+/// `runtime.js` of the dev build whose entry namespace is `entry`: the whole
+/// runtime with the dev key ([`RuntimeKey::dev`]), which registers the
+/// entry as the build's identity, so that two different dev builds on one
+/// page stop as the second loads.
+pub fn runtime_file(entry: &str) -> String {
+    format!(
+        "globalThis.__lightRuntime = {};\n",
+        RuntimeKey::dev(entry).apply(crate::runtime_manifest::RUNTIME.trim())
+    )
 }
 
 /// What `manifest.json` of a dev build says: the entry namespace, the
@@ -503,8 +516,11 @@ pub fn namespace_unit(
             text: source.text(),
         })
         .collect::<Vec<_>>();
-    let json = text.mapping.to_json(Some(&file), &files, false);
-    let mut unit = text.text;
+    // The page has the dev key (`runtime_file`); the session's own runtime
+    // keeps the placeholder.
+    let mut mapping = text.mapping;
+    let mut unit = RuntimeKey::dev_units().apply_mapped(&text.text, &mut mapping);
+    let json = mapping.to_json(Some(&file), &files, false);
     writeln!(unit, "//# sourceMappingURL={map}").unwrap();
     [
         DevFile {

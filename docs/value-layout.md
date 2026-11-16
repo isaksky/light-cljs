@@ -25,7 +25,9 @@ Answered by the user on 2026-11-15; the questions below are kept as asked.
 2. **Answered: key every protocol name**, program protocols included.
    String-named slot interop (`aget`/`aset`/`defineProperty` of a slot name,
    JavaScript implementing a protocol by name) stops working; the test cases
-   pinning it are rescoped to the keyed names (light-cljs-1009).
+   pinning it are rescoped to the keyed names (light-cljs-1009), written as
+   members, or as raw `js*` JavaScript where a test computes a name, once
+   the key is real (light-cljs-1025).
 3. **Answered: yes.** `Object.keys`, `Object.entries`, `for...in` and spread
    of a runtime value may list its keyed fields; `JSON.stringify` is
    unchanged. The `runtime_value_enumeration_contract` test pins it.
@@ -40,9 +42,11 @@ while the migration is under way:
   scan for `rta::protocol_slot_stem`, which a keyed name contains). The
   analyzer keys a member, dotted field or `js/` path component with the shape
   of a slot, marker or mask (`analyzer::keyed_js_member`); the invoke
-  convention `cljs$core$IFn$_invoke$arity$N` stays unkeyed. The key is the
-  placeholder itself everywhere for now: the derivation, the registry and the
-  output writer's substitution are still to come.
+  convention `cljs$core$IFn$_invoke$arity$N` stays unkeyed. Since
+  light-cljs-1025 the output writer writes each build's key for the
+  placeholder and the runtime registers it page-wide (section 1,
+  "Derivation", `src/runtime_key.rs`); the compile-time runtime keeps the
+  placeholder as its key.
 - **Slot-first dispatch (section 3), for persistent vectors.** Their
   prototype holds the keyed kind (`kinds`) and keyed slots for `-nth`,
   `-count`, `-peek`, `-conj`, `-assoc` and `-lookup`. The wrappers `nth.slots`,
@@ -287,10 +291,28 @@ twice finds its own hash ("Decisions for the user" 1). The runtime text uses a p
 name's suffix), which embedding replaces; the raw `src/js_runtime.js` that
 tests evaluate runs with the literal placeholder as its key. Compiled
 namespace artifacts in the compile cache carry the emitter's placeholder for
-the key and the output writer substitutes it (light-cljs-1009 picks a
-placeholder that no emitted string literal can contain, for example one
-written only through an escape the emitter always applies), so the key is
-not part of a namespace's cache key.
+the key and the output writer substitutes it, so the key is not part of a
+namespace's cache key.
+
+As light-cljs-1025 built it (`src/runtime_key.rs`): the emitter's
+placeholder is the runtime's, `$LKEY`, and the hash's is `"$LHASH"`, one
+string literal of the first runtime unit, `runtimeKey`, which every
+`:advanced` slice keeps and which registers the key with the hash (it
+registers nothing while its key is the placeholder, at compile time). A
+string literal the emitter writes spells the `$` that starts a placeholder
+`\u0024`, so no string of the program (a value, a keyword's or symbol's
+name, a name the runtime looks up by its spelling) holds one and the
+substitution never changes it; a property name the emitter writes in
+brackets (`x["cljs$core$ISeq$$LKEY"]`) and the head of a `js/` path are
+code and keep the placeholder. The output writer replaces a placeholder
+only where it ends a name, in the output of `PreparedApplication`'s
+`emit_*` (one key for all the chunks of a chunked build, derived from all
+of them in plan order), moving the source map's columns by the four bytes
+each key adds. Raw JavaScript (`js*`) is code too: a keyed name it spells
+with the placeholder is keyed. The hash registered is 16 hexadecimal digits
+of the same SHA-256 the key's eight base-36 digits come from. `:runtime-key`
+itself is light-cljs-1018's: `RuntimeKey::release` takes it, and nothing
+passes one yet.
 
 **Dev builds, the REPL and hot reload.** A dev build derives its key from the
 whole runtime source instead of its slice, so its key depends on neither the
@@ -302,7 +324,13 @@ keeps it with the build. A change to the runtime text (a light-cljs upgrade)
 changes the key, and a page with the old runtime then needs a full reload,
 which it needs anyway. A dev build registers its build identity (build id
 and entry namespaces) as its hash, so two different dev builds that match
-keys are caught at load too.
+keys are caught at load too. As light-cljs-1025 built it, the identity is
+the entry namespace alone (the dev build's writer is not given the build
+id); the output writer of a dev build is `dev_build::runtime_file` for
+`runtime.js`, the namespace units it and a watch step write, the units the
+dev server's `invoke` sends and the scripts of a connected REPL's forms
+(`dev_repl`), each with the one dev key; the session's own runtime keeps
+the placeholder.
 
 ### Two runtimes on one page
 
@@ -787,7 +815,8 @@ build tests passing, while converted and unconverted kinds coexist.
 - **Names are global from the first step.** light-cljs-1009 keys every slot,
   marker and mask name at once: the runtime's `protocolSlot` and mask table,
   `rta::protocol_slot` and the emitter's mask names, the analyzer's keying of
-  slot-shaped members, the key derivation and the cache placeholder. Program
+  slot-shaped members, the key derivation and the cache placeholder (the
+  last two in light-cljs-1025). Program
   types, `reify`, `extend-type` and `specify!` then write keyed names, so the
   slot-first path serves them from that step on. Expected data that only
   spell the names change with it (renames, listed in the commit).

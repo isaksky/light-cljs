@@ -23,19 +23,23 @@ fn direct_saved_metadata_and_receiver_identity_have_literal_expectations() {
     );
 }
 
+/// Slots and markers are keyed names (docs/value-layout.md, section 1):
+/// source that names one as a member reaches it, as the analyzer keys the
+/// member, and a string naming one sees nothing ("Decisions for the user"
+/// 2, which rescoped these cases from `aget` and `aset` of the names).
 #[test]
 fn protocol_dispatch_uses_public_slots_and_native_tables() {
     assert_eq!(
         run(
-            "(defprotocol Slashy (/ [_])) (let [v (reify Slashy (/ [_] 7))] (array (/ v) (fn? (aget v \"cljs$user$Slashy$_SLASH_$arity$1$LKEY\"))))"
+            "(defprotocol Slashy (/ [_])) (let [v (reify Slashy (/ [_] 7))] (array (/ v) (fn? (.-cljs$user$Slashy$_SLASH_$arity$1 v)) (undefined? (aget v \"cljs$user$Slashy$_SLASH_$arity$1\"))))"
         ),
-        "[7,true]\n"
+        "[7,true,true]\n"
     );
     assert_eq!(
         run(
-            "(defprotocol P (f [this])) (let [v #js {}] (aset v \"cljs$user$P$f$arity$1$LKEY\" (fn [self] (this-as receiver (identical? self receiver)))) (aset v \"cljs$user$P$$LKEY\" PROTOCOL_SENTINEL) (array (f v) (implements? P v) (satisfies? P v)))"
+            "(defprotocol P (f [this])) (let [v #js {} w #js {}] (set! (.-cljs$user$P$f$arity$1 v) (fn [self] (this-as receiver (identical? self receiver)))) (set! (.-cljs$user$P$ v) PROTOCOL_SENTINEL) (aset w \"cljs$user$P$f$arity$1\" (fn [_] true)) (aset w \"cljs$user$P$\" PROTOCOL_SENTINEL) (array (f v) (implements? P v) (satisfies? P v) (implements? P w) (satisfies? P w)))"
         ),
-        "[true,true,true]\n"
+        "[true,true,true,false,false]\n"
     );
     assert_eq!(
         run(
@@ -104,6 +108,9 @@ fn protocol_functions_as_values_keep_dispatch_at_every_level() {
 /// reads a slot that holds nothing once before the `object` implementation,
 /// and keeps the shared dispatcher's `length`. How often it reads a slot that
 /// holds a method is not part of the contract (docs/advanced-optimization.md).
+/// A slot is a keyed name (docs/value-layout.md, section 1), so the getter's
+/// name is the one a member write gives (`slot`): a string can no longer
+/// name it ("Decisions for the user" 2).
 #[test]
 fn protocol_dispatchers_call_host_slots_and_keep_their_length() {
     assert_eq!(
@@ -116,17 +123,22 @@ fn protocol_dispatchers_call_host_slots_and_keep_their_length() {
                  (js/Object.defineProperty o slot #js {:get (fn [] (swap! reads inc) value)})
                  o))
              (def fs [f g h])
+             (defn slot [write] (let [o #js {}] (write o) (aget (js-keys o) 0)))
              (defn call [slot value call]
                (reset! reads 0)
                (let [result (str (call (host slot value)))] (if value result (array result @reads))))
-             (array (call \"cljs$user$P$f$arity$1$LKEY\" (fn [_] 42) #((fs 0) %))
-                    (call \"cljs$user$P$f$arity$1$LKEY\" nil #((fs 0) %))
-                    (call \"cljs$user$P$g$arity$1$LKEY\" (fn [_] 1) #((fs 1) %))
-                    (call \"cljs$user$P$g$arity$2$LKEY\" (fn [_ y] (* 2 y)) #((fs 1) % 3))
-                    (call \"cljs$user$P$g$arity$2$LKEY\" nil #((fs 1) % 3))
-                    (call \"cljs$user$P$h$arity$3$LKEY\" (fn [_ y z] (+ y z)) #((fs 2) % 3 4))
-                    (call \"cljs$user$P$h$arity$3$LKEY\" nil #((fs 2) % 3 4))
-                    (.-length f) (.-length g) (.-length h))"
+             (let [f1 (slot #(set! (.-cljs$user$P$f$arity$1 %) nil))
+                   g1 (slot #(set! (.-cljs$user$P$g$arity$1 %) nil))
+                   g2 (slot #(set! (.-cljs$user$P$g$arity$2 %) nil))
+                   h3 (slot #(set! (.-cljs$user$P$h$arity$3 %) nil))]
+             (array (call f1 (fn [_] 42) #((fs 0) %))
+                    (call f1 nil #((fs 0) %))
+                    (call g1 (fn [_] 1) #((fs 1) %))
+                    (call g2 (fn [_ y] (* 2 y)) #((fs 1) % 3))
+                    (call g2 nil #((fs 1) % 3))
+                    (call h3 (fn [_ y z] (+ y z)) #((fs 2) % 3 4))
+                    (call h3 nil #((fs 2) % 3 4))
+                    (.-length f) (.-length g) (.-length h)))"
         ),
         "[\"42\",[\":default\",1],\"1\",\"6\",[\"3\",1],\"7\",[\"4\",1],1,1,1]\n"
     );

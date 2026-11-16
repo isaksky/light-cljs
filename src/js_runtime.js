@@ -3,6 +3,23 @@
 (() => {
   "use strict";
 
+  //@unit runtimeKey
+  // The build's key (docs/value-layout.md, section 1): every keyed name ends
+  // in it, `$` and eight characters of [0-9a-z] that the output writer
+  // writes for this text's placeholder (src/runtime_key.rs), with the hash
+  // of the output (of a dev build's identity) for the hash's. As it loads,
+  // before any value exists, the runtime registers the key with the hash in
+  // the page's registry, its only global write, and stops when another
+  // build registered the key with another hash. The compile-time runtime
+  // and this file as tests evaluate it keep the placeholder as their key and
+  // register nothing.
+  const runtimeKey = ((key, hash) => {
+    if (key.slice(1) === "LKEY") return key;
+    const name = Symbol.for("light-cljs.runtime-keys"), keys = globalThis[name] || (globalThis[name] = new Map()), known = keys.get(key);
+    if (known === undefined) keys.set(key, hash);
+    else if (known !== hash) throw new Error(`Two light-cljs builds share the runtime key ${key.slice(1)}: give one a different :runtime-key`);
+    return key;
+  })("$LKEY", "$LHASH");
   //@unit weakMapStores
   // A host whose WeakMap entries cost less than private fields, as the
   // evaluator's reference-counting QuickJS, states so before the runtime
@@ -277,8 +294,9 @@
   // Membership checks are on every generic collection operation. Resolve the
   // fixed ABI once as [property, bit], including the last occurrence of
   // duplicate protocol names. Every mask, marker and slot name ends in the
-  // build's key, `$LKEY` here, which embedding replaces (docs/value-layout.md,
-  // section 1): no host object holds one by accident.
+  // build's key, a placeholder here that the output writer replaces
+  // (`runtimeKey`, docs/value-layout.md, section 1): no host object holds
+  // one by accident.
   const protocolMasks = new Map(protocolMaskNames.map((name, index) => [name,
     ["cljs$lang$protocol_mask$partition" + (index >> 5) + "$$LKEY", 1 << (index % 32)]]));
   //@unit memberMunging

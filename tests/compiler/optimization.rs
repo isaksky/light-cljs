@@ -36,6 +36,8 @@ pub(crate) fn readable(level: OptimizationLevel) -> ApplicationOptions {
 /// (the oracle) prints; returns that output. The protocol, record, reify,
 /// type and extension suites run their programs through this, so rapid type
 /// analysis (light-cljs-211) and every other `Advanced` pass see them.
+/// Keyed names the program prints are compared with each output's key
+/// written as the placeholder (docs/value-layout.md, section 1).
 pub(crate) fn json_at_every_level(source: &str) -> String {
     let program = analyze(
         source,
@@ -44,7 +46,11 @@ pub(crate) fn json_at_every_level(source: &str) -> String {
     .unwrap_or_else(|error| panic!("{source}: {error}"));
     let outputs = OptimizationLevel::ALL.map(|level| {
         let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
-        execute(&format!("console.log(JSON.stringify({js}));"))
+        let printed = execute(&format!("console.log(JSON.stringify({js}));"));
+        match light_cljs::runtime_key::RuntimeKey::written(&js) {
+            Some(key) => key.unapply(&printed),
+            None => printed,
+        }
     });
     for (level, output) in OptimizationLevel::ALL.iter().zip(&outputs).skip(1) {
         assert_eq!(output, &outputs[0], "at {level}: {source}");

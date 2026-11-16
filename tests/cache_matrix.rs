@@ -883,9 +883,11 @@ const GENERATIONS: &[(&str, &str)] = &[
 /// differently from an uncached one, and must not otherwise differ.
 /// Everything else, other generated names included, compares byte for byte.
 fn normalized(js: &str) -> String {
+    // The runtime key follows the text, gensyms included.
+    let js = &light_cljs::runtime_key::unkeyed(js);
     let mut out = String::with_capacity(js.len());
     let mut seen: Vec<&str> = Vec::new();
-    let mut rest = js;
+    let mut rest = js.as_str();
     while let Some(at) = rest.find("\"t") {
         out.push_str(&rest[..at]);
         let digits = rest[at + 2..]

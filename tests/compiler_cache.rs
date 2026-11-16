@@ -179,6 +179,54 @@ fn warm_fresh_process_build() {
     );
 }
 
+/// The runtime key is the output writer's (docs/value-layout.md, section 1,
+/// light-cljs-1025): a namespace's artifact holds the key's placeholder, so
+/// a library namespace's artifact serves builds whose outputs have other
+/// keys, and a cached build writes the uncached build's bytes, its key
+/// included.
+#[test]
+fn artifacts_hold_no_runtime_key() {
+    let main = |n: u32| {
+        format!(
+            "(ns main (:require [shapes :as s])) (js/console.log (s/area (s/->Square {n})) (s/counted (s/->Square 1)) (s/counted (js-obj)))"
+        )
+    };
+    let project = Project::new(&[
+        (
+            "shapes.cljs",
+            "(ns shapes) (defprotocol Area (area [s])) (defrecord Square [n] Area (area [_] (* n n)))
+             (defn counted [x] (boolean (.-cljs$core$ICounted$ x)))",
+        ),
+        ("main.cljs", &main(3)),
+    ]);
+    let key = |build: &Build| {
+        assert!(!build.js.contains("$LKEY"), "{}", build.js);
+        light_cljs::runtime_key::RuntimeKey::written(&build.js)
+            .expect("the output registers its key")
+            .key()
+            .to_owned()
+    };
+    let oracle = project.uncached("main");
+    assert_eq!(oracle.run(), "9 true false\n");
+    let populating = project.cached("main", &[]);
+    assert_eq!(populating.js, oracle.js);
+    assert_eq!(key(&populating), key(&oracle));
+    assert_eq!(populating.stat("cache.published"), 2);
+    // Another constant in `main`: another output and key, and `shapes`'s
+    // artifact, stored with the first key, hits.
+    project.write("main.cljs", &main(4));
+    let edited = project.uncached("main");
+    assert_eq!(edited.run(), "16 true false\n");
+    assert_ne!(key(&edited), key(&oracle));
+    let mixed = project.cached("main", &[]);
+    assert_eq!(mixed.stat("cache.hits"), 1, "{}", mixed.stats);
+    assert_eq!(mixed.rows(), ["main miss source: source changed"]);
+    assert_eq!(mixed.js, edited.js);
+    let warm = project.cached("main", &[]);
+    assert_eq!(warm.stat("cache.hits"), 2, "{}", warm.stats);
+    assert_eq!(warm.js, edited.js);
+}
+
 #[test]
 fn dynamic_core_bindings_reuse_cached_artifacts() {
     let project = Project::new(&[

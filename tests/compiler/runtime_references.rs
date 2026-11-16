@@ -353,7 +353,10 @@ fn shared_and_lower_level_output_keep_reading_the_core_hub() {
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
         let js = prepared(source, level).emit_js();
         assert!(js.contains("rt.core.inc = rt.core.dec"), "{level}");
-        assert!(js.contains(RUNTIME.trim()), "{level}");
+        assert!(
+            light_cljs::runtime_key::unkeyed(&js).contains(RUNTIME.trim()),
+            "{level}"
+        );
         assert!(!js.contains("rt$") && !cell_reads(&js), "{level}");
     }
 }

@@ -450,6 +450,57 @@ fn hidden_edges_and_stale_requires_in_the_runtime_fail_validation() {
     );
 }
 
+/// The runtime key's placeholders (docs/value-layout.md, section 1), which
+/// the output writer replaces: the key's ends a keyed name wherever the
+/// runtime text holds it (`value.store$LKEY`, `stem + "$LKEY"`), and the
+/// hash's is one string literal, which only the `runtimeKey` unit holds.
+#[test]
+fn runtime_key_placeholders_end_keyed_names() {
+    let manifest = manifest();
+    let unit = &manifest.units[manifest.unit_named("runtimeKey").unwrap().0];
+    assert_eq!(ANNOTATED_RUNTIME.matches("$LHASH").count(), 1);
+    assert!(ANNOTATED_RUNTIME[unit.body_range.clone()].contains("})(\"$LKEY\", \"$LHASH\");"));
+    assert!(ANNOTATED_RUNTIME.matches("$LKEY").count() > 50);
+    let messages = |source: &str| {
+        RuntimeManifest::parse(source)
+            .unwrap()
+            .validate()
+            .unwrap_err()
+            .into_iter()
+            .map(|error| error.message)
+            .collect::<Vec<_>>()
+    };
+    let unit = "  //@unit mungeMember requires: memberMunging\n  function mungeMember(name) { return Array.from(name, c => memberMunging[c] ?? c).join(\"\"); }\n";
+    assert!(ANNOTATED_RUNTIME.contains(unit));
+    let with = |text: &str| ANNOTATED_RUNTIME.replace(unit, &unit.replace("join(\"\")", text));
+    let misplaced = "`$LKEY` appears other than as a keyed name's suffix";
+    for text in [
+        "join(\"\") + \" $LKEY\"",
+        "join(\"\") + \"$LKEYS\"",
+        "join(\"$LKEY_\")",
+        "join(\"\") /* the `$LKEY` */",
+    ] {
+        assert_eq!(messages(&with(text)), [misplaced], "{text}");
+    }
+    for text in ["join(\"\") + \"$LKEY\"", "join(\"\") + \"$$LKEY\""] {
+        RuntimeManifest::parse(&with(text))
+            .unwrap()
+            .validate()
+            .unwrap();
+    }
+    assert_eq!(
+        messages(&with("join(\"$LHASH\")")),
+        ["`$LHASH` appears again: only the `runtimeKey` unit holds it"]
+    );
+    assert_eq!(
+        messages(&with("join(\"\") + \"x$LHASH\"")),
+        [
+            "`$LHASH` appears other than as a whole string literal",
+            "`$LHASH` appears again: only the `runtimeKey` unit holds it"
+        ]
+    );
+}
+
 /// Load-time code that mutates state is an effect the header must declare:
 /// top-level statements, and calls of a `mutator` (installing methods,
 /// registering a core protocol dispatcher, setting a builtin type's prototype).
@@ -671,7 +722,11 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// (light-cljs-346). `stamp` brands the runtime's class values at compile
 /// time only: build.rs (`compiler_runtime`) turns each class constructor's
 /// `/*@brand*/` into a call of it (docs/value-layout.md, section 4).
+/// `runtimeKey` registers the build's key as a runtime loads, which the
+/// whole runtime does and every `Advanced` slice keeps (docs/value-layout.md,
+/// section 1).
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
+    "runtimeKey",
     "stamp",
     "entryPrototype",
     "MapEntryType.lean",

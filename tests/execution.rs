@@ -1609,12 +1609,16 @@ fn collection_namespace_macros_execute_typed_results_once_with_fresh_runtime_sta
     // Compiled macros use fresh JS roots for both compilations. The complete
     // output assertions above retain generated values, order and effects.
     // Two units in one host process retain separate globals, runtime brands and
-    // immutable values. No observer/runtime must be installed for production JS.
+    // immutable values. No observer/runtime must be installed for production JS:
+    // the page's runtime key registry is the runtime's only global write
+    // (docs/value-layout.md, section 1), which the same output loaded twice
+    // finds holding its own key.
     let isolation = format!(
         "const before = Reflect.ownKeys(globalThis); const a = {}; const b = {};\n\
          const x = a(x => x), y = a(x => x), z = b(x => x);\n\
          if (x === y || x === z || Object.isFrozen(x)) throw Error('shared result');\n\
-         if (Reflect.ownKeys(globalThis).length !== before.length) throw Error('global install');\n\
+         const added = Reflect.ownKeys(globalThis).filter(key => !before.includes(key));\n\
+         if (added.length !== 1 || added[0] !== Symbol.for('light-cljs.runtime-keys')) throw Error('global install');\n\
          console.log('isolated');",
         outputs[0], outputs[1]
     );

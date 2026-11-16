@@ -917,13 +917,16 @@ impl Shared {
     ) -> Result<Invocation, String> {
         let mut state = self.state();
         let target = state.target(runtime)?;
+        // The page has the dev key (`crate::dev_build::runtime_file`); the
+        // session's unit holds the placeholder.
+        let js = crate::runtime_key::RuntimeKey::dev_units().apply(&unit.js);
         state.send_invoke(
             target,
             &InvokeMessage {
                 session: None,
                 namespace: &unit.namespace,
                 setup: "",
-                js: Some(&unit.js),
+                js: Some(&js),
                 print,
             },
         )

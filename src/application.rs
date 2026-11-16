@@ -245,7 +245,16 @@ impl PreparedApplication {
         crate::runtime_slice::EmittedRuntime,
         Option<crate::source_map::SourceMapping>,
     ) {
-        crate::emitter::emit_application(&self.program, self.application(), module, mapped)
+        let (code, runtime, mut mapping) =
+            crate::emitter::emit_application(&self.program, self.application(), module, mapped);
+        // The output writer: the build's key for its placeholder
+        // (docs/value-layout.md, section 1).
+        let key = crate::runtime_key::RuntimeKey::release([code.as_str()], self.level, None);
+        let code = match &mut mapping {
+            Some(mapping) => key.apply_mapped(&code, mapping),
+            None => key.apply(&code),
+        };
+        (code, runtime, mapping)
     }
     /// What preparation decided for emission.
     fn application(&self) -> crate::emitter::Application<'_> {
@@ -346,8 +355,17 @@ impl PreparedApplication {
             return Some((output, None));
         }
         // The constant table and the runtime may add chunks to the plan.
-        let (plan, emitted) =
+        let (plan, mut emitted) =
             crate::emitter::emit_chunked(&self.program, self.application(), plan, reflective)?;
+        // The chunks of one build share its key, derived from all of them.
+        let key = crate::runtime_key::RuntimeKey::release(
+            emitted.iter().map(|chunk| chunk.source.as_str()),
+            self.level,
+            None,
+        );
+        for chunk in &mut emitted {
+            chunk.source = key.apply(&chunk.source);
+        }
         let report = self.level.advanced().then(|| {
             let chunks = plan
                 .chunks

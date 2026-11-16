@@ -491,11 +491,15 @@ fn features_startup_is_the_application_without_its_features_within_its_slack() {
     copy_without(&example, &dir, &removed);
     let lower = root_program(&dir);
     assert!(lower.lazy_namespaces.is_empty());
-    let lower = prepare_application(&lower, ApplicationOptions::new(OptimizationLevel::Advanced))
-        .emit_esm()
-        .len();
+    // Measured with the key's placeholder, as the report's unit bytes are
+    // (docs/value-layout.md, section 1).
+    let unkeyed = |text: &str| light_cljs::runtime_key::unkeyed(text).len();
+    let lower = unkeyed(
+        &prepare_application(&lower, ApplicationOptions::new(OptimizationLevel::Advanced))
+            .emit_esm(),
+    );
     let (output, report) = advanced_chunks(&program);
-    let startup = output.startup().source.len();
+    let startup = unkeyed(&output.startup().source);
     let held = report.chunks[0]
         .units
         .iter()

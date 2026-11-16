@@ -616,6 +616,10 @@ pub(crate) fn emit_chunked(
         if let Some(chunks) = &mut emitter.chunks {
             chunks.write_startup();
         }
+        if slice {
+            // Startup's runtime registers the build's key as it loads.
+            emitter.keep_runtime(super::RUNTIME_KEY_UNIT);
+        }
         let retained = |global: usize| !slice || application.globals[global];
         emitter.registration(None, &[], true, retained, None)
     } else {

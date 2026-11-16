@@ -348,10 +348,13 @@ fn pool_composites(js: &str) -> usize {
 /// size, and without the hashes constant declarations embed
 /// (`rt$hashed(<value>, <hash>)`, light-cljs-219), whose length varies with
 /// the source paths in var metadata. Digits of other numeric literals count.
+/// The runtime key and hash, which the output's text gives, are counted as
+/// their placeholders.
 fn normalized_len(js: &str) -> usize {
     let mut length = 0;
     let mut identifier = false;
-    let unhashed: String = js
+    let unkeyed = light_cljs::runtime_key::unkeyed(js);
+    let unhashed: String = unkeyed
         .split_inclusive('\n')
         .map(|line| {
             let Some(body) = line

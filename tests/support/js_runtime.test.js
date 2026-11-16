@@ -2078,3 +2078,36 @@ console.log('kind tables stay private to the runtime');
   assert.equal(core.count(marked), 1);
 }
 console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is unchanged');
+
+// The page-wide runtime key registry (docs/value-layout.md, section 1,
+// light-cljs-1025): this file keeps the placeholder as its key and
+// registers nothing; a copy whose placeholders the output writer replaced
+// registers its key with its hash as it loads, a load that finds its key
+// with another hash throws before any value exists, naming `:runtime-key`,
+// and the same text loaded twice finds its own hash.
+{
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8');
+  const registry = Symbol.for('light-cljs.runtime-keys');
+  assert.equal(Object.getOwnPropertySymbols(globalThis).includes(registry), false);
+  // Placeholders end names, as src/runtime_key.rs substitutes them.
+  const written = (key, hash) =>
+    source.replace(/\$LKEY(?![\p{ID_Continue}$])/gu, '$' + key).replace(/"\$LHASH"/g, JSON.stringify(hash));
+  const realm = vm.createContext({});
+  const load = text => vm.runInContext(text, realm);
+  const a = load(written('abcd1234', 'aaaaaaaaaaaaaaaa'));
+  const keys = vm.runInContext('globalThis', realm)[registry];
+  assert.ok(keys instanceof vm.runInContext('Map', realm));
+  assert.deepEqual(Array.from(keys, ([key, hash]) => [key, hash]), [['$abcd1234', 'aaaaaaaaaaaaaaaa']]);
+  assert.equal(a.core.count(a.vector(1, 2)), 2);
+  const twice = load(written('abcd1234', 'aaaaaaaaaaaaaaaa'));
+  assert.equal(twice.core.count(a.vector(1, 2, 3)), 3);
+  assert.throws(() => load(written('abcd1234', 'bbbbbbbbbbbbbbbb')),
+    error => error.message === 'Two light-cljs builds share the runtime key abcd1234: give one a different :runtime-key');
+  const other = load(written('wxyz5678', 'bbbbbbbbbbbbbbbb'));
+  assert.equal(keys.size, 2);
+  // Different keys: neither runtime recognises the other's vector.
+  assert.equal(other.core.isVector(a.vector(1)), false);
+  assert.equal(a.core.isVector(a.vector(1)), true);
+}
+console.log('runtime_key_registry: keys register page-wide and collisions throw');

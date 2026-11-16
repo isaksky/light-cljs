@@ -680,7 +680,7 @@ fn an_invoke_replies_with_the_printed_value() {
     )
     .unwrap();
     let address = server.address().to_string();
-    let runtime = Runtime::connect(&build, &address, 5);
+    let runtime = Runtime::connect(&build, &address, 6);
     runtime.until("message hello 1");
     assert_eq!(server.runtimes(), [1]);
     let session = DevSession::new(&EvalOptions {
@@ -710,6 +710,17 @@ fn an_invoke_replies_with_the_printed_value() {
     let value = reply("(+ 1 2)", &print);
     assert_eq!(field(&value, "value").as_deref(), Some("3"));
     assert_eq!(field(&value, "runtime").as_deref(), Some("1"));
+    // The form's keyed names have the key the page's runtime loaded with
+    // (docs/value-layout.md, section 1): the runtime counts a host object
+    // through the slot and marker the form writes.
+    let counted = "(let [o (js-obj)] (set! (.-cljs$core$ICounted$ o) true)
+                     (set! (.-cljs$core$ICounted$_count$arity$1 o) (fn [_] 4)) (count o))";
+    let counted = reply(counted, &print);
+    assert_eq!(
+        field(&counted, "value").as_deref(),
+        Some("4"),
+        "{counted:?}"
+    );
     assert_eq!(
         field(&reply("@app.state/state", &print), "value").as_deref(),
         Some("{:clicks 1, :card #app.view.Card{:label \"clicks\", :clicks 1}}")

@@ -138,18 +138,24 @@ fn advanced_output_embeds_exactly_the_units_its_runtime_reads_reach() {
             }
         }
         let (declaration, factory) = slice(&units, &bindings);
+        // The runtime text holds the key's placeholder, which the output
+        // writer replaces (docs/value-layout.md, section 1).
+        let unkeyed = light_cljs::runtime_key::unkeyed(&js);
         assert!(
-            js.contains(&declaration),
+            unkeyed.contains(&declaration),
             "{source}: the output embeds the slice"
         );
         // Outside the runtime, Advanced output reads it only directly.
         assert!(
-            !js.replacen(&declaration, "", 1).contains("rt."),
+            !unkeyed.replacen(&declaration, "", 1).contains("rt."),
             "{source}"
         );
         assert_eq!(report.runtime_bytes, factory.trim().len());
         let whole = prepared(source, OptimizationLevel::Prepare).emit_js();
-        assert!(whole.contains(RUNTIME.trim()), "{source}");
+        assert!(
+            light_cljs::runtime_key::unkeyed(&whole).contains(RUNTIME.trim()),
+            "{source}"
+        );
         assert!(js.len() < whole.len(), "{source}");
         let none = execute(&format!(
             "console.log({});",
@@ -179,8 +185,10 @@ fn bundler_modules_embed_the_same_slice() {
             readable(OptimizationLevel::Advanced),
         ] {
             let advanced = prepare_application(&program(source), options);
-            let js = advanced.emit_js();
-            let module = advanced.emit_esm();
+            // Each output's key is its own text's: compared as written
+            // with the placeholder.
+            let js = light_cljs::runtime_key::unkeyed(&advanced.emit_js());
+            let module = light_cljs::runtime_key::unkeyed(&advanced.emit_esm());
             assert_eq!(
                 module,
                 format!("export default {};\n", js.trim_end()),
@@ -199,7 +207,7 @@ fn levels_below_advanced_embed_the_whole_runtime_and_programs_without_reads_none
         assert_eq!(report.embedding, RuntimeEmbedding::Whole);
         assert_eq!(report.units.len(), manifest.units.len());
         assert_eq!(report.runtime_bytes, RUNTIME.trim().len());
-        assert!(application.emit_js().contains(RUNTIME.trim()));
+        assert!(light_cljs::runtime_key::unkeyed(&application.emit_js()).contains(RUNTIME.trim()));
         // Units no root reaches are embedded only because the runtime is whole.
         let roots = report
             .roots
@@ -266,6 +274,8 @@ fn retention_attributes_each_unit_to_the_first_root_and_its_source_span() {
                 RuntimeName::direct("coreCells", Some("currentNs")),
                 Some(expression("*ns*"))
             ),
+            // Every slice registers the build's key.
+            (RuntimeName::direct("runtimeKey", None), None),
             (RuntimeName::direct("registerReaderNamespace", None), None),
             (RuntimeName::direct("theNs", None), None),
             (RuntimeName::direct("symbol", None), None),
@@ -447,9 +457,10 @@ fn plain_calls_leave_out_the_variadic_arity_that_escaping_values_keep() {
         assert!(report.to_string().contains(&format!("{}(...)", root.name)));
         assert!(!embedded(&call).contains(&install), "{called}");
         // The call keeps its own unit and helpers (`bitOperation`,
-        // `numericFold`) and nothing else: without reflection there is no
-        // namespace registration.
-        assert!(report.units.len() <= 3, "{called}:\n{report}");
+        // `numericFold`) and the key's registration (`runtimeKey`), and
+        // nothing else: without reflection there is no namespace
+        // registration.
+        assert!(report.units.len() <= 4, "{called}:\n{report}");
         let apply = prepared(applied, OptimizationLevel::Advanced);
         assert!(embedded(&apply).contains(&install), "{applied}");
         assert_eq!(

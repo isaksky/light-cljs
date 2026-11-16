@@ -64,17 +64,19 @@ fn every_level(source: &str, expected: &str) -> String {
     }
     let advanced =
         prepare_application(&program, readable_options(OptimizationLevel::Advanced)).emit_js();
-    program_text(&advanced).to_owned()
+    program_text(&advanced)
 }
 
 /// The program part of `Advanced` output: what follows the runtime slice.
 /// Runtime units are indented, so the slice ends at its first unindented
 /// closing line.
-fn program_text(js: &str) -> &str {
+/// Keyed names are written with the placeholder (the key normalised).
+fn program_text(js: &str) -> String {
+    let js = light_cljs::runtime_key::unkeyed(js);
     match js.find("  const [") {
         Some(start) => {
             let end = start + js[start..].find("\n})();\n").expect("the slice ends");
-            &js[end..]
+            js[end..].to_owned()
         }
         None => js,
     }
@@ -1510,7 +1512,7 @@ fn protocol_method_parameters_join_visible_calls() {
         format!("{protocol} (mapv m [(T.)])"),
         format!("{protocol} (def g m)"),
         format!("{protocol} (.cljs$user$P$m$arity$2 (T.) (T.) \"a\")"),
-        format!("{protocol} (aget (T.) \"cljs$user$P$m$arity$2$LKEY\")"),
+        format!("{protocol} (.-cljs$user$P$m$arity$2 (T.))"),
         format!("{protocol} (js* \"~{{}}.cljs$user$P$m$arity$2$LKEY(~{{}}, 'a')\" (T.) (T.))"),
         format!("{protocol} (with-redefs [m (fn [_ x] x)] (m (T.) 1))"),
         "(defprotocol P (m [this x])) (deftype T [])
@@ -1593,7 +1595,7 @@ fn typed_lowerings_apply_inside_protocol_methods_and_keep_the_results() {
             r#"(deftype W [] P (m [_ flag] (if flag :yes :no)))
                (def w (W.))
                (pr-str [(m w false) (.cljs$user$P$m$arity$2 w w "")
-                        ((aget w "cljs$user$P$m$arity$2$LKEY") w 0)])"#,
+                        ((.-cljs$user$P$m$arity$2 w) w 0)])"#,
             "[:no :yes :yes]",
         ),
         (
@@ -1657,7 +1659,7 @@ fn protocol_method_parameters_keep_hidden_callers() {
         (
             r#"(defprotocol P (m😀 [this flag]))
                (deftype T [] P (m😀 [_ flag] (if flag :yes :no)))
-               (let [t (T.)] (pr-str [(m😀 t false) ((aget t "cljs$user$P$m😀$arity$2$LKEY") t "")]))"#,
+               (let [t (T.)] (pr-str [(m😀 t false) ((.-cljs$user$P$m😀$arity$2 t) t "")]))"#,
             "flag",
             "[:no :yes]",
         ),
@@ -1665,7 +1667,7 @@ fn protocol_method_parameters_keep_hidden_callers() {
             "(defprotocol P (m\u{301} [this flag]))
              (deftype T [] P (m\u{301} [_ flag] (if flag :yes :no)))
              (let [t (T.)]
-               (pr-str [(m\u{301} t false) ((aget t \"cljs$user$P$m\u{301}$arity$2$LKEY\") t \"\")]))",
+               (pr-str [(m\u{301} t false) ((.-cljs$user$P$m\u{301}$arity$2 t) t \"\")]))",
             "flag",
             "[:no :yes]",
         ),
@@ -1892,10 +1894,7 @@ fn same_at_every_level(source: &str) -> (String, ApplicationStats) {
         assert_eq!(output, &printed[0], "at {level}:\n{source}");
     }
     let advanced = prepare_application(&program, readable(OptimizationLevel::Advanced));
-    (
-        program_text(&advanced.emit_js()).to_owned(),
-        advanced.stats().clone(),
-    )
+    (program_text(&advanced.emit_js()), advanced.stats().clone())
 }
 
 #[test]

@@ -353,6 +353,15 @@ fn a_form_round_trips_through_a_node_runtime() {
     );
     assert_eq!(repl.value("(str *ns*)"), "\"app.main\"");
     assert_eq!(repl.eval("(def x 5) (inc x)"), ["5", "6"]);
+    // A form's keyed names have the key the page's runtime loaded with
+    // (docs/value-layout.md, section 1).
+    assert_eq!(
+        repl.value(
+            "(let [o (js-obj)] (set! (.-cljs$core$ICounted$ o) true) \
+             (set! (.-cljs$core$ICounted$_count$arity$1 o) (fn [_] 4)) (count o))"
+        ),
+        "4"
+    );
     // Data comes back as text alone; anything else with a reference.
     assert_eq!(
         repl.value("[1 :a \"b\" {:c #{2}} nil]"),

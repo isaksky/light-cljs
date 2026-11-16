@@ -1273,6 +1273,12 @@ impl<'a> RuntimeManifest<'a> {
                 message: format!("returns the exports through `{wrapper}`, which no unit declares"),
             });
         }
+        for (offset, message) in placeholder_errors(self.source) {
+            errors.push(ManifestError {
+                line: line_at(self.source, offset),
+                message,
+            });
+        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -1394,6 +1400,46 @@ impl<'a> RuntimeManifest<'a> {
         text.push_str(&self.source[self.exports.body_range.clone()]);
         text
     }
+}
+
+/// Where the runtime text holds a runtime key placeholder
+/// ([`crate::runtime_key`]) that the output writer would not replace as a
+/// keyed name's suffix, with why: the key placeholder must end a name
+/// (`value.store$LKEY`, `"$$LKEY"`), so it follows a name's character or
+/// opens a string that is appended to a name's stem, and is followed by a
+/// character that cannot continue a name; the hash placeholder is one
+/// whole string literal, at most once.
+pub(crate) fn placeholder_errors(source: &str) -> Vec<(usize, String)> {
+    use crate::runtime_key::{HASH_PLACEHOLDER, KEY_PLACEHOLDER};
+    let name = |c: char| c.is_alphanumeric() || matches!(c, '_' | '$');
+    let mut errors = Vec::new();
+    for (offset, _) in source.match_indices(KEY_PLACEHOLDER) {
+        let before = source[..offset].chars().next_back();
+        let after = source[offset + KEY_PLACEHOLDER.len()..].chars().next();
+        if !before.is_some_and(|c| name(c) || matches!(c, '"' | '\'')) || after.is_some_and(name) {
+            errors.push((
+                offset,
+                format!("`{KEY_PLACEHOLDER}` appears other than as a keyed name's suffix"),
+            ));
+        }
+    }
+    let hashes = source.match_indices(HASH_PLACEHOLDER).collect::<Vec<_>>();
+    for &(offset, _) in &hashes {
+        let quoted = |at: usize| source.as_bytes().get(at).is_some_and(|&b| b == b'"');
+        if offset == 0 || !quoted(offset - 1) || !quoted(offset + HASH_PLACEHOLDER.len()) {
+            errors.push((
+                offset,
+                format!("`{HASH_PLACEHOLDER}` appears other than as a whole string literal"),
+            ));
+        }
+    }
+    if hashes.len() > 1 {
+        errors.push((
+            hashes[1].0,
+            format!("`{HASH_PLACEHOLDER}` appears again: only the `runtimeKey` unit holds it"),
+        ));
+    }
+    errors
 }
 
 fn line_at(source: &str, offset: usize) -> usize {

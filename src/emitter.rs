@@ -54,6 +54,11 @@ mod emission_pass_tests {
     }
 }
 
+/// The runtime unit that registers the build's key in the page's registry
+/// as the runtime loads (docs/value-layout.md, section 1), which every
+/// `Advanced` slice keeps; below `Advanced` the whole runtime holds it.
+pub(crate) const RUNTIME_KEY_UNIT: &str = "runtimeKey";
+
 /// What `rt.core.<name>` holds in the embedded runtime's core table.
 fn core_reference(name: &str) -> CoreReference<'static> {
     RuntimeManifest::embedded()
@@ -895,6 +900,10 @@ fn emit_js_mode(
     let mut runtime_statement = 0..0;
     let mut unit_bytes = None;
     if embed {
+        if slice {
+            // A runtime registers its key as it loads (`runtimeKey`).
+            emitter.keep_runtime(RUNTIME_KEY_UNIT);
+        }
         // At `Advanced` a namespace lists only the definitions the output keeps.
         let retained = |global: usize| {
             !slice || application.is_none_or(|application| application.globals[global])
@@ -3670,7 +3679,7 @@ impl<'a> Emitter<'a> {
             self.needs_host = true;
             let path = crate::analyzer::munge_js_path(name);
             self.output.push_str("host(");
-            self.string_units(&path[0].encode_utf16().collect::<Vec<_>>());
+            self.property_name(&path[0]);
             self.output.push(')');
             for member in &path[1..] {
                 self.member(member);
@@ -3851,7 +3860,7 @@ impl<'a> Emitter<'a> {
 
     fn member(&mut self, name: &str) {
         self.output.push('[');
-        self.string_units(&name.encode_utf16().collect::<Vec<_>>());
+        self.property_name(name);
         self.output.push(']');
     }
 
@@ -5132,17 +5141,18 @@ impl<'a> Emitter<'a> {
         self.string_units(&self.program.strings[id.0]);
     }
 
+    /// A string literal of `units`: a value or a name the runtime reads by
+    /// its spelling, which never holds a runtime key placeholder
+    /// ([`crate::runtime_key`]), so the output writer never changes it.
     fn string_units(&mut self, units: &[u16]) {
-        self.output.push('"');
-        for &unit in units {
-            match unit {
-                0x22 => self.output.push_str("\\\""),
-                0x5c => self.output.push_str("\\\\"),
-                0x20..=0x7e => self.output.push(char::from_u32(unit.into()).unwrap()),
-                _ => write!(self.output, "\\u{unit:04x}").unwrap(),
-            }
-        }
-        self.output.push('"');
+        write_string(&mut self.output, units.iter().copied(), true);
+    }
+
+    /// A string literal of `name`, a property name the emitter writes in
+    /// brackets (`x["name"]`): code, whose keyed names keep the
+    /// placeholder the output writer replaces with the build's key.
+    fn property_name(&mut self, name: &str) {
+        write_string(&mut self.output, name.encode_utf16(), false);
     }
 
     fn emit(&mut self, id: ExprId, context: ExprContext) {
@@ -9991,17 +10001,40 @@ pub(crate) fn emit_namespace_registration(
 /// rename compiler names skip string literals, so a name needs no escapes,
 /// which made TodoMVC's registration four times its size (light-cljs-979).
 fn quoted(text: &str) -> String {
-    let mut out = String::from("\"");
-    for unit in text.encode_utf16() {
+    let mut out = String::new();
+    write_string(&mut out, text.encode_utf16(), true);
+    out
+}
+
+/// Append a JavaScript string literal of `units`; non-ASCII and controls
+/// are escaped. With `values`, the `$` that starts a runtime key placeholder
+/// ([`crate::runtime_key`]) is written `\u0024`, so a value or a name read
+/// by its spelling never holds one and the output writer, which replaces
+/// the placeholders with the build's key, never changes it.
+fn write_string(out: &mut String, units: impl Iterator<Item = u16>, values: bool) {
+    const KEY: &[u8] = crate::runtime_key::KEY_PLACEHOLDER.as_bytes();
+    const HASH: &[u8] = crate::runtime_key::HASH_PLACEHOLDER.as_bytes();
+    out.push('"');
+    let start = out.len();
+    for unit in units {
         match unit {
             0x22 => out.push_str("\\\""),
             0x5c => out.push_str("\\\\"),
             0x20..=0x7e => out.push(char::from_u32(unit.into()).unwrap()),
             _ => write!(out, "\\u{unit:04x}").unwrap(),
         }
+        // A placeholder is complete at its last byte, `Y` or `H`.
+        if values
+            && matches!(unit, 0x59 | 0x48)
+            && let Some(placeholder) = [KEY, HASH]
+                .into_iter()
+                .find(|placeholder| out.as_bytes()[start..].ends_with(placeholder))
+        {
+            let at = out.len() - placeholder.len();
+            out.replace_range(at..at + 1, "\\u0024");
+        }
     }
     out.push('"');
-    out
 }
 
 #[cfg(test)]

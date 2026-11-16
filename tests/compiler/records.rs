@@ -158,11 +158,14 @@ fn type_instances_hold_fields_as_own_data_properties() {
 /// type are its prototype's, so an instance's own keys are its fields and a
 /// record's three slots; lower levels give every instance its masks after
 /// them, as upstream's constructor does. Reading a mask gives the same value.
+/// The masks are keyed names (docs/value-layout.md, section 1): the keys
+/// they list are compared with the build's key normalised, and `own` names
+/// the mask in raw JavaScript, which the output writer keys.
 #[test]
 fn advanced_types_hold_their_masks_on_the_prototype() {
     let source = "(defrecord R [a]) (deftype T [x] ICounted (-count [_] 1))
                   (let [r (->R 1) t (T. 2)
-                        own (fn [o] (.hasOwnProperty o \"cljs$lang$protocol_mask$partition0$$LKEY\"))]
+                        own (fn [o] (.hasOwnProperty o (js* \"'cljs$lang$protocol_mask$partition0$$LKEY'\")))]
                     (array (js/Object.keys r) (js/Object.keys t) (.-cljs$lang$protocol_mask$partition0$ t)
                            (own t) (own (js/Object.getPrototypeOf t)) (count t) (count r)))";
     let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
@@ -170,7 +173,10 @@ fn advanced_types_hold_their_masks_on_the_prototype() {
         let js =
             light_cljs::prepare_application(&program, light_cljs::ApplicationOptions::new(level))
                 .emit_js();
-        super::optimization::execute(&format!("console.log(JSON.stringify({js}));"))
+        let key = light_cljs::runtime_key::RuntimeKey::written(&js).expect("a runtime");
+        key.unapply(&super::optimization::execute(&format!(
+            "console.log(JSON.stringify({js}));"
+        )))
     };
     let masks =
         "\"cljs$lang$protocol_mask$partition0$$LKEY\",\"cljs$lang$protocol_mask$partition1$$LKEY\"";

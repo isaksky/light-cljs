@@ -61,15 +61,17 @@ fn program_at_every_level(program: &Program, source: &str, expected: &str) -> St
         );
     }
     let output = prepare_application(program, readable(OptimizationLevel::Advanced)).emit_js();
-    program_text(&output).to_owned()
+    program_text(&output)
 }
 
 /// The program part of `Advanced` output: what follows the runtime slice.
-fn program_text(js: &str) -> &str {
+/// Keyed names are written with the placeholder (the key normalised).
+fn program_text(js: &str) -> String {
+    let js = light_cljs::runtime_key::unkeyed(js);
     match js.find("  const [") {
         Some(start) => {
             let end = start + js[start..].find("\n})();\n").expect("the slice ends");
-            &js[end..]
+            js[end..].to_owned()
         }
         None => js,
     }
@@ -182,13 +184,17 @@ fn every_way_to_make_or_reach_an_instance_keeps_its_methods() {
 
 #[test]
 fn slots_the_program_names_keep_their_methods() {
-    // Read with `aget`, called as a method, named in raw text: the method can
-    // run although nothing calls its dispatcher.
+    // Read as a property, called as a method, named in raw text (whose
+    // placeholder the output writer keys): the method can run although
+    // nothing calls its dispatcher. A slot is a keyed name, which a string
+    // does not name (docs/value-layout.md, section 1; light-cljs-1025
+    // rescoped the reads from `aget` of the names).
     for (read, expected) in [
-        ("(.call (aget t \"cljs$user$P$m$arity$1$LKEY\") t t)", "7"),
+        ("(.call (.-cljs$user$P$m$arity$1 t) t t)", "7"),
         ("(.cljs$user$P$m$arity$1 t t)", "7"),
         ("(js* \"~{}.cljs$user$P$m$arity$1$LKEY(~{})\" t t)", "7"),
-        ("(some? (aget t \"cljs$user$P$$LKEY\"))", "true"),
+        ("(some? (.-cljs$user$P$ t))", "true"),
+        ("(undefined? (aget t \"cljs$user$P$m$arity$1\"))", "true"),
     ] {
         every_level(
             &format!("(defprotocol P (m [x])) (deftype T [v] P (m [_] v)) (let [t (T. 7)] {read})"),
@@ -196,7 +202,7 @@ fn slots_the_program_names_keep_their_methods() {
         );
     }
     every_level(
-        "(defprotocol P (m [x])) (let [r (reify P (m [_] 7))] (.call (aget r \"cljs$user$P$m$arity$1$LKEY\") r r))",
+        "(defprotocol P (m [x])) (let [r (reify P (m [_] 7))] (.call (.-cljs$user$P$m$arity$1 r) r r))",
         "7",
     );
 }
@@ -209,19 +215,19 @@ fn slots_named_through_javascript_global_paths_keep_their_methods() {
     for (read, expected) in [
         ("(js/probe.cljs$user$P$m$arity$2 js/probe 1)", "1"),
         ("(some? js/probe.cljs$user$P$)", "true"),
-        // A string holding JavaScript names the slot wherever it appears.
-        (
-            "(js/eval \"probe.cljs$user$P$m$arity$2$LKEY(probe, 1)\")",
-            "1",
-        ),
+        // Raw JavaScript names the slot with the key's placeholder, which
+        // the output writer keys; a string of JavaScript cannot name a keyed
+        // slot (docs/value-layout.md, section 1).
+        ("(js* \"probe.cljs$user$P$m$arity$2$LKEY(probe, 1)\")", "1"),
+        ("(js/eval \"probe.cljs$user$P$m$arity$2\")", "undefined"),
     ] {
         every_level(&format!("{protocol} {read}"), expected);
     }
     // A slot whose method name holds characters outside identifiers, within
-    // a string.
+    // a string of raw JavaScript.
     every_level(
         "(defprotocol P (m😀 [this x])) (deftype T [] P (m😀 [_ x] x)) (set! js/probe (T.))
-         (js/eval \"probe['cljs$user$P$m😀$arity$2$LKEY'](probe, 1)\")",
+         (js* \"probe['cljs$user$P$m😀$arity$2$LKEY'](probe, 1)\")",
         "1",
     );
     // ... and named as a member, which the analyzer keys whatever characters
@@ -235,12 +241,13 @@ fn slots_named_through_javascript_global_paths_keep_their_methods() {
 
 #[test]
 fn runtime_names_in_javascript_global_paths_and_strings_keep_their_units() {
-    // A record method's slot, named through a `js/` path or inside a string
-    // of JavaScript, keeps the record method (light-cljs-255).
+    // A record method's slot, named through a `js/` path or in raw
+    // JavaScript, keeps the record method (light-cljs-255). Raw JavaScript
+    // spells a keyed name with the key's placeholder (light-cljs-1025).
     let record = "(defrecord R [a b]) (set! js/probe (->R 1 2))";
     for read in [
         "(js/probe.cljs$core$ICounted$_count$arity$1 js/probe)",
-        "(js/eval \"probe.cljs$core$ICounted$_count$arity$1$LKEY(probe)\")",
+        "(js* \"probe.cljs$core$ICounted$_count$arity$1$LKEY(probe)\")",
     ] {
         let source = format!("{record} {read}");
         every_level(&source, "2");
@@ -254,13 +261,13 @@ fn runtime_names_in_javascript_global_paths_and_strings_keep_their_units() {
         "2",
     );
     every_level("(set! js/probe [1 2 3]) js/probe.cnt", "3");
-    // A protocol mask named through a path or inside a string keeps the
-    // protocol hooks and the units of `PROTOCOL_ROOTS`, as a whole mask
-    // string does (`builtin_types::count_walks_the_seqs_of_the_values_that_need_it`).
+    // A protocol mask named through a path or in raw JavaScript keeps the
+    // protocol hooks and the units of `PROTOCOL_ROOTS`, as a mask named as a
+    // property does (`builtin_types::count_walks_the_seqs_of_the_values_that_need_it`).
     for source in [
         "(set! js/probe (js-obj)) (set! js/probe.cljs$lang$protocol_mask$partition0$ 2)
          (try (count js/probe) (catch :default e (.-message e)))",
-        "(try (count (js/eval \"({cljs$lang$protocol_mask$partition0$$LKEY: 2})\"))
+        "(try (count (js* \"({cljs$lang$protocol_mask$partition0$$LKEY: 2})\"))
            (catch :default e (.-message e)))",
     ] {
         every_level(
