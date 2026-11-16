@@ -2032,7 +2032,7 @@ Steady state, from the medians at 1 and 40 iterations: light-cljs 62.8 to
 
 **Advanced size** (tests/support/ratchet_fixtures.rs, noted there): programs
 with maps keep the transients' paths and the older layers' field branches
-(`map-only` 14,270 to 14,613, `map-printed` 21,365 to 21,928, `event-maps`
+(`map-only` 14,270 to 14,613, `map-printed` 21,365 to 22,038, `event-maps`
 56,372 to 56,871, `features` 113,208 to 116,130); `println-hi` takes the
 printer's pairs path (5,360); programs without maps keep the shorter `maps`
 (`vector-only` 7,519 to 7,368, `keyword-only` 5,102 to 5,005). TodoMVC and
