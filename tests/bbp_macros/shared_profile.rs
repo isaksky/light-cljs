@@ -162,17 +162,29 @@ fn shared_profile_task_cells_are_writable() {
              const a = core.name(core.gensym()), b = core.name(core.gensym()); \
              const before = core.prStr('a'); \
              cells.printReadably = false; const plain = core.prStr('a'); cells.printReadably = true; \
-             const slotFirst = cells.slotFirst; rt.setDeclarationDemand(null); \
-             const demanded = [cells.slotFirst, core.sharedTaskCells().slotFirst, core.nth(rt.vectorFromArray([1, 2]), 1)].join(' '); \
+             const log = [], slot = 'cljs$core$IIndexed$_nth$arity$2$LKEY', tag = core.keyword(null, 'tag'); \
+             const cv = core.withMeta(__rt.formWithMeta(core.vector(1, 2), __rt.formMap(tag, true)), null); \
+             Object.defineProperty(cv, slot, {{get() {{ log.push('slot'); return Object.getPrototypeOf(cv)[slot]; }}}}); \
+             const probe = () => {{ log.length = 0; const item = core.nth(cv, 1); return item + ':' + log.join(','); }}; \
+             const slotFirst = [cells.slotFirst, cv instanceof core.PersistentVector, probe()].join(' '); \
+             rt.setDeclarationDemand(key => {{ if (key.includes('IIndexed')) log.push('demand'); }}); \
+             const demanded = [cells.slotFirst, probe()].join(' '); \
+             const other = core.sharedTaskCells(); globalThis.__lightSharedCells = other; \
+             const elsewhere = [other.slotFirst, probe()].join(' '); globalThis.__lightSharedCells = cells; \
              return [cells.macroexpandServices.macroexpand === expand, a !== b, cells.gensymCounter, \
                before, plain, core.prStr('a'), Object.isFrozen(core), typeof core.sharedTaskCells().gensymCounter, \
-               slotFirst, demanded].join(' ');"
+               '|', slotFirst, '|', demanded, '|', elsewhere].join(' ');"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
+    // A class-backed vector (`with-meta` of nil over an engine vector)
+    // answers `nth` from its slot first, with no demand; once the task
+    // installs a declaration demand, the protocol is demanded (by each of
+    // the older layers) before any read of the slot; a task with cells of
+    // its own keeps slot-first.
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "true true 2 \"a\" a \"a\" true number true false true 2"
+        "true true 2 \"a\" a \"a\" true number | true true 2:slot | false 2:demand,demand,slot | true 2:slot"
     );
 }
 
