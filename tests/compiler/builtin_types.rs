@@ -523,7 +523,7 @@ fn a_program_type_opens_the_protocol_hooks() {
     // 8,355 to 8,644 after light-cljs-990 (2026-11-14): the stores' kind
     // brand (`payloads`); about 8,770 after light-cljs-1009 (2026-11-15):
     // the vectors' keyed kind, their `count` slot and the slot-first wrapper
-    // of `count`; 9,162 after light-cljs-1025 (2026-11-16): the runtime
+    // of `count`; 9,162 after light-cljs-1025 (2026-11-15): the runtime
     // key's registration (about 290 bytes) and the key in each keyed name
     // (4 bytes more than the placeholder).
     assert!(advanced(source).emit_js().len() < 9_400);
@@ -920,7 +920,7 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // light-cljs-990 (2026-11-14), about 220 more (2,288 to 2,510 bytes), and
     // the stores' metadata read by descriptor, since light-cljs-1024 (the
     // Pants engine has no `Object.hasOwn`), 2,575 to 2,600, and the runtime
-    // key's registration, since light-cljs-1025 (2026-11-16), about 290 more
+    // key's registration, since light-cljs-1025 (2026-11-15), about 290 more
     // (2,894 bytes).
     assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 3_000);
     for (source, expected) in [
@@ -1609,7 +1609,7 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // 8,137 to 8,449 after light-cljs-989 (2026-11-14): the array maps'
     // entry class and a keyword key's longer search; 8,779 after
     // light-cljs-990 (2026-11-14): the stores' kind brand (`payloads`);
-    // 9,145 after light-cljs-1025 (2026-11-16): the runtime key's
+    // 9,145 after light-cljs-1025 (2026-11-15): the runtime key's
     // registration and the key in each keyed name.
     let output = advanced(target).emit_js();
     assert!(output.len() < 9_400, "{} bytes", output.len());

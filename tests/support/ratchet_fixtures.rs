@@ -271,7 +271,7 @@
 //! features example's shared chunk move to the next 100 (1,000 from 10,000
 //! up).
 //!
-//! The per-build runtime key (light-cljs-1025, 2026-11-16, docs/value-layout.md
+//! The per-build runtime key (light-cljs-1025, 2026-11-15, docs/value-layout.md
 //! section 1): the output writer writes each build's eight-character key for
 //! the placeholder, four bytes more on every keyed name, and every runtime
 //! registers it in the page's registry as it loads (`runtimeKey`, about 290

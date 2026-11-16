@@ -2663,13 +2663,13 @@ fn watch_id_compiles_what_its_equivalent_watch_flags_compile() {
         fs::write(&main, &text).unwrap();
         let mut watch = file_watch::Light::spawn(&project, args, merged);
         let (startup, _) = watch.until(&format!("{lead}built "));
-        let started = file_watch::tree(&out);
+        let started = without_identity(file_watch::tree(&out));
         let saving = project.join("src/app/.saving");
         fs::write(&saving, format!("{text}\n(def saved \"saved\")\n")).unwrap();
         fs::rename(&saving, &main).unwrap();
         let (_, step) = watch.until(&format!("{lead}recompiled "));
         let step = step.split(" in ").next().unwrap()[lead.len()..].to_owned();
-        let saved = file_watch::tree(&out);
+        let saved = without_identity(file_watch::tree(&out));
         let bypasses = startup
             .iter()
             .skip_while(|line| *line != "[cache-misses-and-bypasses]")
@@ -2737,6 +2737,25 @@ fn watch_id_compiles_what_its_equivalent_watch_flags_compile() {
     assert_eq!(file.3, flags.3);
     assert_eq!(file.3.len(), 3, "{:#?}", file.5);
     assert_eq!(flags.4.as_deref(), Some("cache.misses 0"), "{:#?}", flags.5);
+}
+
+/// `files` with each dev build `runtime.js`'s key and registered identity
+/// written back as their placeholders: a build of light-cljs.edn registers
+/// its build id with its entry, which its flags do not name
+/// (docs/value-layout.md, section 1), and is otherwise byte for byte what
+/// its flags write.
+fn without_identity(files: Vec<(PathBuf, Vec<u8>)>) -> Vec<(PathBuf, Vec<u8>)> {
+    files
+        .into_iter()
+        .map(|(path, bytes)| {
+            if path.file_name() == Some("runtime.js".as_ref()) {
+                let text = String::from_utf8(bytes).unwrap();
+                (path, light_cljs::runtime_key::unkeyed(&text).into_bytes())
+            } else {
+                (path, bytes)
+            }
+        })
+        .collect()
 }
 
 /// A `watch app` of a temporary copy of the commands fixture, whose file

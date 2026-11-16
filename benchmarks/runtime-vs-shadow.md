@@ -954,3 +954,68 @@ light-cljs-1024 and these fixes: `vector-only` 5,503 bytes, `mapv-count`
 39,619, `features-direct` 81,469 (tests/support/ratchet_fixtures.rs notes
 the ceilings that moved). Workload 200k was not timed again: no change here
 touches maps, seqs or keywords, where its time goes.
+
+## 2026-11-15: the per-build runtime key (light-cljs-1025)
+
+What landed (docs/value-layout.md, section 1, "Derivation"): the output
+writer writes each build's eight-character key where the runtime text and
+emission hold the placeholder `$LKEY`, four bytes more per keyed name, and
+every runtime registers the key page-wide as it loads (the `runtimeKey`
+unit: one `Symbol.for`, one global read and one `Map` lookup, about 290
+terse bytes, which every `:advanced` slice keeps). No operation's code
+changes otherwise; the keyed names are as long as dotted names were in the
+measurement that chose them (section 1, "Measured": S against U).
+
+Binaries: before `light-cljs-cf613766` (master), after
+`light-cljs-85bf5d44` (this pellet's first commit; the review fixes after it
+change only property names that end in the placeholder's spelling without
+being keyed, a dev build's identity and size reports, none of which these
+outputs hold), in research/shadow-credibility/bin. Unreserved: a peer
+worker was active. Raw results: research/output-speed/runtime-key-1025.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops
+protocol-on-record,vec-nth,vec-conj,count-small,get-small,kw-small,seq-walk-vec,eq-vec,record-kw-field
+--runs 3`, before then after; load average 2.85-4.86 before, 2.85-4.39
+after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs before / after run | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| protocol-on-record | 3.28 (3.27-3.40) | 3.35 (3.34-3.41) | +2% | 2.36 / 2.39 | 1.39 | 1.40 |
+| vec-nth-1024 | 5.78 (5.76-6.05) | 5.99 (5.87-6.07) | +4% | 5.08 / 5.19 | 1.14 | 1.15 |
+| vec-conj-64 | 3,610 (3,517-3,675) | 3,724 (3,676-3,779) | +3% | 1,442 / 1,481 | 2.50 | 2.51 |
+| count-small | 47.1 (47.0-47.1) | 49.4 (47.8-73.1) | +5% | 2.03 / 2.14 | 23.22 | 23.06 |
+| get-small | 165.2 (164.0-179.0) | 170.9 (169.8-171.1) | +3% | 14.4 / 14.9 | 11.45 | 11.48 |
+| kw-small | 125.4 (123.9-141.2) | 128.6 (128.4-129.5) | +3% | 9.44 / 9.81 | 13.29 | 13.11 |
+| seq-walk-vec-1000 | 404,243 (397,716-408,155) | 460,457 (443,112-487,483) | +14% | 7,572 / 7,737 | 53.39 | 59.51 |
+| eq-vec-10 | 3,459 (3,457-3,489) | 3,536 (3,502-3,646) | +2% | 54.2 / 56.3 | 63.83 | 62.80 |
+| record-kw-field | 13.5 (13.4-13.7) | 13.6 (13.3-13.6) | +0% | 3.76 / 3.90 | 3.60 | 3.48 |
+
+- shadow-cljs's own output ran 2-5% slower in the second run, as light-cljs's
+  did: the light/shadow ratios do not move, except `seq-walk-vec-1000`.
+- `seq-walk-vec-1000` again, with `lazy-walk-1000` and `reduce-vec-1000`,
+  before and after alternated twice (`--runs 3` each, load average 3.4-8.8
+  in the first pair and 14.2-27.3 in the second): light/shadow 53.26 before
+  and 53.71 after, then 54.75 and 54.91; `lazy-walk-1000` 13.54 and 13.76,
+  then 12.67 and 13.36; `reduce-vec-1000` 2.20 and 2.22, then 2.22 and 2.17.
+  The first pair's +14% was noise; no operation changes.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1025 --runs 5
+--runtime-only --runtime 1,10,40`, a copy of the project, each output
+built by its binary; load average 4.6-6.3), wall time, median (range):
+
+| iterations | light before | shadow-cljs (before run) | light after | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.460 s (0.455-0.466) | 0.332 s | 0.414 s (0.408-0.449) | 0.300 s | 1.39 | 1.38 |
+| 10 | 1.372 s (1.354-1.408) | 0.618 s | 1.297 s (1.288-1.299) | 0.567 s | 2.22 | 2.29 |
+| 40 | 3.987 s (3.747-4.073) | 1.287 s | 3.728 s (3.682-3.828) | 1.166 s | 3.10 | 3.20 |
+
+Both compilers' outputs ran 7-10% faster in the second run; the ratios
+stay within that drift. Startup (1 iteration), which now registers the
+key, does not move.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): every
+slice grows by the registration (about 290 bytes) and four bytes per keyed
+name, `vector-only` 5,503 to 5,879 bytes, `mapv-count` 39,619 to 40,088,
+`features-direct` 81,469 to 82,006. The workload's output grows from
+3,442,997 to 3,444,422 bytes (+0.04%), 859,129 to 859,420 gzipped.
+re-frame simple and TodoMVC gzip sizes were not measured in this step.

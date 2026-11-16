@@ -238,9 +238,9 @@ impl Case {
                 let _ = fs::remove_dir_all(project.join(store));
             }
             let stored = run(&project, &project, first, &[]);
-            outputs.push(tree(&project.join("out/app")));
+            outputs.push(without_identity(tree(&project.join("out/app"))));
             let served = run(&project, &project, second, &[]);
-            outputs.push(tree(&project.join("out/app")));
+            outputs.push(without_identity(tree(&project.join("out/app"))));
             match (&stored, &served) {
                 (Some(stored), Some(served)) => {
                     assert!(stored.published > 0, "{label}: {stored:?}");
@@ -268,6 +268,25 @@ impl Case {
             assert!(*output == outputs[0], "{label}: the outputs differ");
         }
     }
+}
+
+/// `files` with each dev build `runtime.js`'s key and registered identity
+/// written back as their placeholders: a build of light-cljs.edn registers
+/// its build id with its entry, which its flags do not name
+/// (docs/value-layout.md, section 1), and is otherwise byte for byte what
+/// its flags write.
+fn without_identity(files: Vec<(PathBuf, Vec<u8>)>) -> Vec<(PathBuf, Vec<u8>)> {
+    files
+        .into_iter()
+        .map(|(path, bytes)| {
+            if path.file_name() == Some("runtime.js".as_ref()) {
+                let text = String::from_utf8(bytes).unwrap();
+                (path, light_cljs::runtime_key::unkeyed(&text).into_bytes())
+            } else {
+                (path, bytes)
+            }
+        })
+        .collect()
 }
 
 /// The rows `compile` and `release` both read.

@@ -104,7 +104,10 @@ key, value and behavior.
   starts with a flag never reads the file.
 - A build from the file compiles exactly what the equivalent flags
   compile: the same output bytes and the same cache keys. The cache never
-  sees the file, only the compiler inputs the file produced.
+  sees the file, only the compiler inputs the file produced. One string
+  differs, by design: a dev build's `runtime.js` registers the build's id
+  with its entry namespace as its identity on the page, which no flag
+  names (docs/value-layout.md, section 1; light-cljs-1025).
 - The file is strict: an unknown key, a misplaced key or a bad value is an
   error at its line and column, with a suggestion where one exists.
 
