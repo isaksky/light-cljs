@@ -6795,8 +6795,8 @@
   //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue, treeMapConstructor,
   //@ treeSetConstructor when: equalPair requires: equalPair, noBranch, slotFirst
   // Slot-first equality (docs/value-layout.md, section 3, light-cljs-1014):
-  // after `=`'s identity test, a value of a runtime class (a keyed kind
-  // below 64) is compared by its keyed `-equiv` slot, which is its class's
+  // a value of a runtime class (a keyed kind below 64) is, after `=`'s
+  // identity test, compared by its keyed `-equiv` slot, which is its class's
   // own comparison (`classEquiv`, `mapEquiv`) or the method an
   // `extend-type` or `specify!` of `IEquiv` wrote, which the operation's
   // protocol lookup would have called; any other value, and a value whose
@@ -6804,8 +6804,8 @@
   // the program's types (kinds from 64) keep the operation's path. The
   // wrapper stays under 100 bytes of bytecode (light-cljs-1033).
   equalPair = ((operation, noBranch, slotFirst) => Object.defineProperty(function (left, right) {
-    if (left === right) return true;
     if (left != null && left.cljs$lang$kind$$LKEY < 64 && slotFirst.on) {
+      if (left === right) return true;
       const method = left.cljs$core$IEquiv$_equiv$arity$2$LKEY;
       if (method) { const result = method.call(left, left, right); if (result !== noBranch) return result; }
     }
