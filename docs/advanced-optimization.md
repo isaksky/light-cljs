@@ -1440,7 +1440,7 @@ collection's host-facing methods only where it builds another kind of seq.
   `into` (IEditableCollection), the chunked seqs of `concat`, `drop` and
   `map`, `print-meta?`, `clj->js` and `js->clj`.
 - **String writer.** `StringBufferWriter` implements `IWriter` natively
-  (the `stringBufferWriters` store, `writerValue`), without
+  (its kind test `stringBufferWriters`, `writerValue`), without
   `installMethods`.
 - **Print options.** Options other than nil reach the printer only from its
   public entries `pr-str-with-opts`, `pr-seq-writer`, `pr-sequential-writer`,

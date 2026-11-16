@@ -1904,6 +1904,27 @@ fn keywords_and_symbols_from_public_constructors_compare_their_spelling() {
     );
 }
 
+/// light-cljs-1038 (its Sol review): a sorted set counts its tree map with
+/// `count`, as upstream's `(count tree-map)`, so a protocol implementation
+/// of the map's, `specify!`'s or `extend-type`'s, answers for a set the
+/// public constructor built of it; the set's own operations still read the
+/// map's tree.
+#[test]
+fn public_tree_sets_honor_backing_map_count_overrides() {
+    every_level(
+        r#"(let [m (specify! (sorted-map 1 nil 3 nil) ICounted (-count [_] 7))
+                 s (cljs.core/PersistentTreeSet. nil m nil)]
+             (pr-str [(count s) (contains? s 3) (get s 2 :none) (seq s) (conj s 2) (count (sorted-set 1 2))]))"#,
+        "[7 true :none (1 3) #{1 2 3} 2]",
+    );
+    every_level(
+        r#"(extend-type PersistentTreeMap ICounted (-count [_] 9))
+           (let [s (cljs.core/PersistentTreeSet. nil (sorted-map 1 nil) nil)]
+             (pr-str [(count s) (count (sorted-set 1 2)) (disj s 1)]))"#,
+        "[9 9 #{}]",
+    );
+}
+
 #[test]
 fn sets_answer_host_facing_methods_from_their_members() {
     // light-cljs-231: without protocol implementations a set iterates
@@ -2723,6 +2744,9 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// and a `reify` are told by their keyed kinds (`recordCells`, `reifyCells`),
 /// where their brands read nothing, and `Advanced` output no longer keeps
 /// the class brands' prototype walk, so each level asks the same number.
+/// Light-cljs-1038's tests of sorted sets, vars, functions with metadata and
+/// string writers (`treeSetOf`, `vars`, `metaFunctions`,
+/// `stringBufferWriters`) read it where their stores read nothing.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -2815,7 +2839,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [828, 828, 828],
+            [877, 877, 877],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2876,7 +2900,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [790, 790, 790],
+            [837, 837, 837],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2943,7 +2967,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [828, 828, 828],
+            [877, 877, 877],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");

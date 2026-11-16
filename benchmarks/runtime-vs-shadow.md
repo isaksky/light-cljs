@@ -2291,3 +2291,100 @@ in every program that keeps them (`vector-only` 7,813, `constant-lookups`
 keep the kinds and `recordTypeOf` but no brand (`record-protocol` 5,814,
 `three-records` 5,809). TodoMVC and re-frame simple were not ported in
 this run.
+## 2026-11-16: sorted sets, vars, functions with metadata and string writers as classes (light-cljs-1038)
+
+**What.** A sorted set is upstream's PersistentTreeSet: its own field holds
+its tree map, the red-black sorted map of light-cljs-1035 whose keys are its
+members, where a private-field store held a sorted array of its members and
+a WeakMap its comparator. `conj`, `disj`, `contains?`, `get` and `count`
+are its map's `assoc`, `dissoc`, node lookup and count, and its seq is the
+keys of its map's seq, as upstream's. A var holds its `val` and `sym`, a
+function with metadata its `afn` and a string writer its `sb` in their own
+fields, told by their prototypes' keyed kinds, where WeakMaps and a WeakSet
+held or branded them. docs/value-layout.md has the notes.
+
+Binaries: before `light-cljs-daea1afc` (master), after `light-cljs-acbf41e0`
+(this pellet's runtime but for the Sol review's fixes: a var's and a
+function with metadata's fields made not enumerable, a public sorted set
+counted through its map's `count`, a public constructor's undefined
+arguments kept, which no measured operation but `@` of a var reaches), in
+research/shadow-credibility/bin. Unreserved: one
+peer worker was active, and the 1-minute load average was high throughout
+(10 to 21). Raw results: research/output-speed/sorted-sets-1038 (`*-before`,
+`*-after3` for the gate, `*-before2`/`*-after2` for the workload).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops sorted-map-assoc-100,str-sorted-map-20,multimethod,str-nested-map,str-concat --runs 3`;
+1-minute load average 14.19-19.46 before, 17.44-20.74 after), ns per
+operation, median (range):
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sorted-map-assoc-100 | 183.4 (182.7-187.2) | 202.3 (193.2-206.4) | +10% | 184.3 / 201.1 | 1.00 | 1.01 |
+| str-sorted-map-20 | 36,704 (36,606-37,189) | 36,738 (36,669-39,278) | 0% | 19,033 / 20,525 | 1.93 | 1.79 |
+| multimethod | 140.4 (140.4-142.0) | 142.3 (141.7-142.7) | +1% | 37.5 / 39.4 | 3.74 | 3.61 |
+| str-nested-map | 5,671 (5,462-8,438) | 5,307 (5,276-5,522) | -6% | 2,181 / 2,435 | 2.60 | 2.18 |
+| str-concat | 190.0 (189.9-202.1) | 205.5 (204.0-212.3) | +8% | 15.0 / 15.6 | 12.68 | 13.17 |
+
+- **`sorted-map-assoc-100` +10% is the load**: shadow-cljs's own time rose
+  9% between the runs, the light/shadow ratio stays at parity (1.00 to
+  1.01), and the gate builds no sorted set, so no changed path runs. An
+  earlier run of the same change at a lower load (11.78-12.21, binary
+  `light-cljs-c8bed362`, which differs only in a sorted set's seq) gave
+  193.5 ns, +5%, with shadow-cljs's +4%.
+- **`str-concat` +8%** (`(str "a" i "b" s)`): `str` asks `sets.has` of
+  each argument, which now reads a non-string's keyed kind once to tell
+  both set classes, where the payload store's test of a number read
+  nothing; shadow-cljs's own time rose 4%. Under 10%.
+- **`multimethod`** reads a var's or a function with metadata's kind in its
+  dispatch tests where WeakMaps were probed: -2% at the lower load, +1% here.
+- **`str-nested-map` -6%**: printing builds its string writer as a class,
+  where it made an object and added it to a WeakSet, and the writer's test
+  is its kind.
+
+**Sorted sets, vars and functions with metadata** (the gate has none; a small
+program, research/output-speed/sorted-sets-1038/sorted-sets.cljs, built at
+advanced by each binary and run alternately three times, load 13.81-18.31),
+ns per operation, median (range):
+
+| op | before | after | change |
+| --- | ---: | ---: | ---: |
+| `conj` onto a 4-member sorted set | 553.2 (547.4-583.2) | 73.7 (72.3-125.7) | -87% |
+| `conj` onto a 64-member sorted set | 1,997.3 (1,996.2-2,073.5) | 120.9 (120.7-127.4) | -94% |
+| `contains?` of a 64-member sorted set | 128.8 (128.5-201.6) | 42.6 (42.2-58.9) | -67% |
+| `disj` from a 64-member sorted set | 2,640.0 (1,980.7-2,965.4) | 181.5 (172.3-367.2) | -93% |
+| `into` an empty sorted set of 100 | 262,629 (252,569-285,762) | 23,201 (22,921-38,666) | -91% |
+| `first` of a 64-member sorted set | 622.4 (619.0-627.7) | 49.1 (48.7-64.5) | -92% |
+| `first` of a `subseq` | 1,686.0 (1,663.8-1,758.3) | 389.5 (388.0-472.0) | -77% |
+| `str` of a new 20-member sorted set | 24,494 (23,735-26,789) | 5,525.6 (5,405.3-6,806.9) | -77% |
+| `@` of a var | 16.0 (15.5-25.9) | 5.0 (4.9-5.5) | -69% |
+| calling a function with metadata | 185.4 (184.0-260.5) | 177.8 (177.4-253.9) | -4% |
+| `pr-str` of a 3-item vector | 761.7 (748.9-1,291.4) | 563.7 (557.6-565.9) | -26% |
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1038 --runs 5
+--runtime-only --runtime 1,10,40`, the project rebuilt with each binary just
+before its run, the two runs back to back; load 15.38 and 15.09 at most),
+wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.462 s (0.453-0.466) | 0.463 s (0.458-0.468) | 0.363 s | 0.363 s |
+| 40 | 2.962 s (2.875-3.011) | 2.923 s (2.833-3.229) | 1.482 s | 1.476 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 64.1 to
+63.1 ms per iteration (-2%); shadow-cljs 28.7 and 28.5; light/shadow 2.23
+and 2.21. The workload builds few sorted sets or vars. (A first pair of runs
+at different loads, 8.18 before and 16.60 after, gave 59.3 and 65.6 ms, with
+shadow-cljs's 25.9 and 29.3: the load, light/shadow 2.29 and 2.24.)
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there), of the
+final change rebased onto master `c88f22ae` (light-cljs-1037's records),
+against that master: most programs shrink about 450 bytes, since no store
+inventory reads a private-field kind any more and `payloads` is gone
+(`set-only` 8,093 to 7,797, `keyword-only` 5,472 to 5,025, `map-only`
+15,459 to 15,057); `println-hi` grows 177 (5,537: the string writer's class
+and kind test outweigh its WeakSet); the features example, whose sorted
+sets now hold the tree map, about 1,100 (`features-direct` 121,353 to
+122,470, its editor chunk 12,435). A program that builds a sorted set keeps
+the sorted map's tree algorithms, as upstream's does (the small program
+above: 122,501 to 132,086 bytes, against `daea1afc`). re-frame simple and
+TodoMVC were not ported in this run.

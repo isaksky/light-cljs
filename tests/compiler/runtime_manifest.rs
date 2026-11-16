@@ -1186,8 +1186,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // `maps`, a hash map's lookup hook and the four map transient units of
     // their own fields (light-cljs-1036), less the brand readers of
     // `typeFields` and `recordTypes` and the record wrappers of `maps` and
-    // `mapKinds`, as records are told by their kinds (light-cljs-1037).
-    assert_eq!(checked, 462);
+    // `mapKinds`, as records are told by their kinds (light-cljs-1037), and
+    // the five hooks of a sorted set's tree map and a var's copy
+    // (light-cljs-1038).
+    assert_eq!(checked, 468);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1363,6 +1365,15 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("treeMapEntries", Kind::Units(&["TreeMapCell"])),
     ("treeEntryAt", Kind::Units(&["TreeMapCell"])),
     ("treeKvReduce", Kind::Units(&["TreeMapCell"])),
+    // A sorted set's members, seq, comparator, count and lookup, of its tree
+    // map (light-cljs-1038).
+    ("treeSetMembers", Kind::Units(&["TreeSetCell"])),
+    ("treeSetSeq", Kind::Units(&["TreeSetCell"])),
+    // A var's copy for `with-meta`, which only `makeVar` builds (light-cljs-1038).
+    ("varCopy", Kind::Units(&["makeVar"])),
+    ("treeSetComparator", Kind::Units(&["TreeSetCell"])),
+    ("treeSetCount", Kind::Units(&["TreeSetCell"])),
+    ("treeSetLookup", Kind::Units(&["TreeSetCell"])),
     ("assocTreeMap", Kind::Units(&["treeMapConstructor"])),
     ("dissocTreeMap", Kind::Units(&["treeMapConstructor"])),
     // Hash sets' tries, which `get.sets` (light-cljs-373) and `lookup.sets`
@@ -1506,11 +1517,9 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("disjTrie", Kind::Units(&["publicHashSet", "putMember"])),
     // The map of a set of another kind than array-map.
     ("hashSetMap", Kind::Units(&["publicHashSet", "putMember"])),
-    // Sets with public slots, which only the public constructors build.
-    (
-        "countPublicSet",
-        Kind::Units(&["publicHashSet", "treeSetConstructor"]),
-    ),
+    // Hash sets with public slots, which only their public constructor
+    // builds; a sorted set holds its tree map in a field (light-cljs-1038).
+    ("countPublicSet", Kind::Units(&["publicHashSet"])),
     ("nthChunk", Kind::Stores(&["chunks"])),
     ("nthTransient", Kind::Stores(&["transients"])),
     // A transient of a kind comes from a persistent value of that kind.

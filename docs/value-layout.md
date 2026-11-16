@@ -770,6 +770,74 @@ release or dev output.
   828 times (790 for the second extension set) at every level, where it
   was 794 (757) below `Advanced` and 838 (798) at it, as the record and
   `reify` tests read the kind and no class brand walks the prototypes.
+What light-cljs-1038 landed: sorted sets, vars, functions with metadata and
+string writers are classes, so no runtime value of section 2 keeps a store
+of its own (after light-cljs-1037's records).
+
+- **Sorted sets.** A sorted set is upstream's PersistentTreeSet, a
+  `TreeSetCell` (kind 44, `treeSetOf`) whose own keyed field `treeMap` is
+  its `tree-map`: a sorted map (`TreeMapCell`) whose keys are its members,
+  each with a nil value. `sorted-set` and `sorted-set-by` build that map as
+  `sorted-map` does (`buildSortedSet` on `buildSortedMap`); `conj` and
+  `disj` `assoc` and `dissoc` it (the set itself where it does not change),
+  `count` reads its count, lookup, `get`, `contains?` and invoking the set
+  take the key of the node that holds the member (`treeEntryAt`), `empty`
+  empties it and `subseq`/`rsubseq` map `key` over its
+  `-sorted-seq-from`, as upstream's; the kind hooks `treeSetCount`,
+  `treeSetLookup`, `treeSetSeq`, `treeSetComparator` and `treeSetMembers`
+  are effects of `TreeSetCell`. The public constructor holds the map it is given as it
+  is, undefined too, which `.-tree-map` gives back; `count` is the map's
+  `count`, which its protocol implementations may answer; `comparatorOf` is its
+  map's comparator, or `compare` where it was given no sorted map, as
+  before. Its seq is upstream's, the keys of its tree map's seq (a key
+  seq, `setSeqs`, where it was an indexed seq of an array of the members),
+  so `first` and `rest` read one path of the tree. The readers that take
+  every member (`rseq`, printing, hashing, equality, `inspect`) take
+  `sets.get`'s fresh array of the members' entries in order, walked once
+  per operation.
+  `sets` is no store: `sets.store`, `setComparators`, `setTypes`,
+  `setType`, `treeSetMaps` and `deferredEntries` are deleted, and `makeSet`
+  builds hash and array sets only.
+- **Vars** are `VarCell`s (kind 45, `vars`) on `Var`'s prototype: callable
+  values (`makeIFn` takes the value to fill) whose own keyed fields are
+  upstream's `val`, the function giving the root, and `sym`, kept as
+  given; the fields of a var and of a function with metadata are not
+  enumerable, so they stringify and enumerate as before. `with-meta` of a
+  var builds a var of its fields (`makeVar`, `kindHooks.varCopy`), callable
+  where another load of the build made it. **Functions with
+  metadata** are `MetaFnCell`s (kind 46, `metaFunctions`), callable values
+  whose own keyed field `afn` is the function they call, on a prototype of
+  `ifnPrototype` with the kind, not enumerable. **String writers** are
+  `StringBufferWriterCell`s (kind 47, `stringBufferWriters`) whose own
+  field is upstream's public `sb`; `StringBufferWriter` builds one. Their
+  metadata stays in `metadataValues`, as every class's does.
+- **`payloads` and `kindedStore` are deleted**, the sorted sets their last
+  user once light-cljs-1037 deleted `recordMaps`: no release output has
+  them. No value has a private-field kind, so the inventories
+  (`storesPredicate`, `payloadStore`, `kindStore`) probe their stores in
+  turn without reading one; the private fields left are the compile-time
+  stamp's (`stampBrand`).
+- **Functions with metadata** had a `reify`'s kind (66) on `ifnPrototype`
+  since light-cljs-1037; their class's prototype now holds their own,
+  a runtime class's (46, below 64), so `reifyCells` no longer answers
+  them; `ownDeclared` answers their natively implemented `IMeta` as a
+  runtime class's, as it did as a `reify`'s.
+- **Profiles.** Each constructor ends with `/*@brand*/`; the compiler form
+  bridge tests `stamped` before a set's and a var's kind, and `inspect`
+  carries `/*@stamped*/` on its var and set tests. The Pants profile's
+  `sets` reads its engine sets and the classes (`setCellOf`, `treeSetOf`),
+  its `sharedOwnedSet` builds a `HashSetCell`, as its `setQueueCopy` does
+  of an engine set's members for `with-meta` and `clone`, its `vars` reads its engine
+  Vars' fields as the keyed names, its `varPrototype` reads the fields,
+  its `stamped` accepts engine Vars, and its `setComparators`,
+  `treeSetMaps`, `metaFunctions` and `stringBufferWriters` stores are
+  deleted.
+- **Tests.** Under WeakMap stores a sorted set writes no entry
+  (tests/support/js_runtime.test.js), whose enumeration contract gains it
+  (`treeMap`); the Proxy of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked the
+  same names more often (877 reads at each level, where 828), one keyed kind read
+  per new kind test.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
@@ -1096,12 +1164,12 @@ slots and plain field names: only the runtime's own methods reach them, and
 | hash map | `PersistentHashMap` (`PersistentHashMapValue`); nodes `BitmapIndexedNode`, `ArrayNode`, `HashCollisionNode` | meta, cnt, root, hasNil, nilVal, hash; the nodes keep today's fields (edit, bitmap, arr, occupied count, capacity) | the trie's private fields | 1012 |
 | sorted map | `PersistentTreeMap` (`treeMapConstructor`); `RedNode`, `BlackNode` as map entries | comp, tree, cnt, meta, hash; key, val, left, right, hash | `maps`, `sortedComparators` | 1012, tree 1035 |
 | map transients | `TransientArrayMap`, `TransientHashMap` (`...Type`) | editable, len, arr; edit, root, count, hasNil, nilVal (as `HashMapCell`'s cnt, root, nil) | `transients` | 1012, fields 1036 |
-| sets | `PersistentHashSet`, `PersistentTreeSet`, `TransientHashSet` | meta, the members as today (an array set's array, a hash set's trie), hash; meta, treeMap, hash; the transient's members | `sets` (kind 6), `setKinds` | 1013 |
+| sets | `PersistentHashSet`, `PersistentTreeSet`, `TransientHashSet` | meta, the members as today (an array set's array, a hash set's trie), hash; meta, treeMap, hash; the transient's members | `sets` (kind 6), `setKinds` | 1013, sorted 1038 |
 | queue | `PersistentQueue`, `PersistentQueueSeq` (`PersistentQueueValue`) | meta, count, front, rear, hash; meta, front, rear, hash | `queues` | 1013 |
 | atom, volatile | `Atom`, `Volatile` | state, meta, validator, watches; state | `atoms`, `volatiles` | 1013 |
 | reduced, delay | `Reduced`, `Delay` | val; f, value | `reducedValues`, `delays` | 1013 |
-| var, multimethod | `Var`, `MultiFn` | val, sym, meta; name, dispatchFn, defaultDispatchVal, hierarchy, methodTable, preferTable, methodCache, cachedHierarchy | `vars`, `multiFns` | 1013 |
-| the rest | `UUID`, `TaggedLiteral`, `Namespace`, `Eduction`, `MetaFn`, `StringBufferWriter`, iterator seqs (`ES6IteratorSeq`), `Loadable` | uuid, hash; tag, form; obj, name; xform, coll; afn, meta; sb; value, iter, rest | `uuids`, `uuidHashes`, `eductions`, `metaFunctions`, `stringBufferWriters`, `iteratorSeqs` | 1013 |
+| var, multimethod | `Var`, `MultiFn` | val, sym, meta; name, dispatchFn, defaultDispatchVal, hierarchy, methodTable, preferTable, methodCache, cachedHierarchy | `vars`, `multiFns` | 1013, var 1038 |
+| the rest | `UUID`, `TaggedLiteral`, `Namespace`, `Eduction`, `MetaFn`, `StringBufferWriter`, iterator seqs (`ES6IteratorSeq`), `Loadable` | uuid, hash; tag, form; obj, name; xform, coll; afn, meta; sb; value, iter, rest | `uuids`, `uuidHashes`, `eductions`, `metaFunctions`, `stringBufferWriters`, `iteratorSeqs` | 1013, `MetaFn` and `StringBufferWriter` 1038 |
 | records, program types | the emitter's constructors (`defineType`, `makeType`) | the program's munged fields; a record's `__meta`, `__extmap`, `__hash` (not keyed) | `TypeBrand`, `typeFields`, `recordTypes` in release and dev | 1013 |
 | reify | the per-site type `reify` makes | captured locals under `members`, as today | `reifyValues` | 1013 |
 | iterators | `StringIter`, `ArrayIter`, `SeqIter`, `RangedIterator`, `HashMapIter` and the rest | upstream's | (helpers, no kind) | with their collection |

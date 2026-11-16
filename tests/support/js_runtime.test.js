@@ -1734,15 +1734,11 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
       persisted: f.persistentBang(f.assocBang(f.transient(map), 5, 1)), repeat: f.repeat(2, 1)
     };
     assert.ok(writes > 0);
-    // A sorted set still keeps a store (light-cljs-1013): it writes entries.
-    writes = 0;
-    f.sortedSet(2);
-    assert.ok(writes > 0);
     // A reduced value, a queue, a hash set and a set transient are classes
-    // with their own fields (light-cljs-1013): they write no entry, where
-    // each wrote one.
+    // with their own fields (light-cljs-1013), and so is a sorted set
+    // (light-cljs-1038): they write no entry, where each wrote one.
     writes = 0;
-    f.reduced(2); fresh.queueFromArray([1]); f.hashSet(1, 2); f.transient(members);
+    f.reduced(2); fresh.queueFromArray([1]); f.hashSet(1, 2); f.transient(members); f.sortedSet(2);
     assert.equal(writes, 0);
     // An array map is a class with its own fields (light-cljs-1012): it
     // writes no entry, where its store and its kind's wrote two.
@@ -2126,7 +2122,9 @@ console.log('kind tables stay private to the runtime');
     delay: new core.Delay(() => 1, null), uuid: core.uuid('00000000-0000-0000-0000-000000000000'), eduction: new core.Eduction(core.identity, r.vector(1)),
     // A sorted map's nodes, map entries, and its seq over them
     // (light-cljs-1035).
-    treeNode: core.first(core.sortedMap(1, 2)), sortedMapSeq: core.seq(core.sortedMap(1, 2))
+    treeNode: core.first(core.sortedMap(1, 2)), sortedMapSeq: core.seq(core.sortedMap(1, 2)),
+    // A sorted set holds its tree map (light-cljs-1038).
+    sortedSet: core.sortedSet(1, 2)
   };
   const view = ['arr$LKEY', 'i$LKEY', 'indexed$LKEY', 'view$LKEY'];
   const trie = ['meta$LKEY', 'cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'hash$LKEY'];
@@ -2149,7 +2147,8 @@ console.log('kind tables stay private to the runtime');
     transientArrayMap: ['editable$LKEY', 'arr$LKEY'], transientHashMap: ['edit$LKEY', 'cnt$LKEY', 'root$LKEY', 'nil$LKEY'],
     arraySet: ['entries$LKEY', 'skind$LKEY'], hashSet: ['entries$LKEY', 'skind$LKEY'], transientSet: ['state$LKEY'], queue: ['arr$LKEY'],
     reduced: ['val$LKEY'], iteratorSeq: [], delay: ['state$LKEY'], uuid: ['uuid$LKEY', 'hash$LKEY'], eduction: [],
-    treeNode: [...trie, 'left$LKEY', 'right$LKEY', 'red$LKEY'], sortedMapSeq: ['cell$LKEY', 'stack$LKEY', 'ascending$LKEY', 'cnt$LKEY']};
+    treeNode: [...trie, 'left$LKEY', 'right$LKEY', 'red$LKEY'], sortedMapSeq: ['cell$LKEY', 'stack$LKEY', 'ascending$LKEY', 'cnt$LKEY'],
+    sortedSet: ['treeMap$LKEY']};
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name];
     assert.deepEqual(Object.keys(value), field, name);
@@ -2163,6 +2162,40 @@ console.log('kind tables stay private to the runtime');
     // The fields carry the key: none is an upstream name a host could read
     // by accident.
     for (const key of Object.keys(value)) assert.ok(key.endsWith('$LKEY'), key);
+  }
+  // A var's and a function with metadata's fields are not enumerable
+  // (light-cljs-1038 and its Sol review): they stringify and enumerate as
+  // before, when they held only their functions, a wrapped function's
+  // `toJSON` included.
+  const aVar = new core.Var(() => 1, core.symbol('x'), null), wrapped = () => 1;
+  wrapped.toJSON = () => 7;
+  const metaFn = core.withMeta(wrapped, core.hashMap(1, 2));
+  for (const value of [aVar, metaFn, core.withMeta(aVar, core.hashMap(1, 2))]) {
+    assert.equal(JSON.stringify(value), '{}');
+    for (const key of Object.keys(value)) assert.ok(!key.endsWith('$LKEY'), key);
+  }
+  assert.equal(core.isVar(core.withMeta(aVar, core.hashMap(1, 2))), true);
+  assert.equal(metaFn.call(null), 1);
+  // A public constructor's undefined arguments stay undefined, and the value
+  // stays what it is (the same review).
+  const noMap = new core.PersistentTreeSet(null, undefined, null), noSym = new core.Var(() => 1, undefined, null);
+  assert.equal(noMap.tree_map, undefined);
+  assert.equal(core.isSet(noMap), true);
+  assert.equal(core.count(noMap), 0);
+  assert.equal(core.prStr(core.clone(noMap)), '#{}');
+  assert.equal(noSym.sym, undefined);
+  assert.equal(core.isVar(noSym), true);
+  assert.equal(core.isVar(core.withMeta(noSym, core.hashMap(1, 2))), true);
+  // Two loads of one build recognize each other's vars by the shared key;
+  // a copy `with-meta` makes in either is callable (the second Sol review).
+  const other = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  for (const [from, to] of [[r, other], [other, r]]) {
+    const v = from.makeVar(() => x => x + 1, from.core.symbol('f')), copy = to.core.withMeta(v, to.core.hashMap(1, 2));
+    assert.equal(to.core.isVar(copy), true);
+    assert.equal(copy.call(null, 1), 2);
+    assert.equal(to.core.apply(copy, [2]), 3);
+    assert.equal(to.core.deref(copy)(3), 4);
+    assert.equal(to.core.prStr(to.core.meta(copy)), '{1 2}');
   }
   const marked = r.vector(1);
   marked.note = 'kept';

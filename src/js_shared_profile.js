@@ -609,39 +609,45 @@
     },
     lookup(value, key, notFound) { return __rt.formGet(sharedFormOf(value), key, notFound); }
   };
-  //@unit sharedOwnedSet requires: setKinds, sets
+  //@unit sharedOwnedSet
   // The set counterpart: preserve the constructor's source-map slot on a
   // wrapper without changing ordinary builders' engine-form return values.
+  // A runtime-owned set is the V8 profile's class of its type
+  // (`HashSetCell`, light-cljs-1038), its members frozen.
   function sharedOwnedSet(Type, entries, kind) {
-    const value = Object.create(Type.prototype);
-    sets.set(value, Object.freeze(entries));
-    setKinds.set(value, kind);
-    return value;
+    return new Type.prototype.cljs$lang$cell$$LKEY(Object.freeze(entries), kind);
   }
-  //@unit makeSet requires: hashTrie, kindHooks, sharedOccurrenceNaN, sharedOwnedSet,
-  //@ setComparators
+  //@unit setQueueCopy requires: HashSetCell, queues, setCellOf, setKinds, sets, sharedFormKind,
+  //@ treeSetOf
+  // The V8 profile's, and the copy `with-meta` and `clone` make of an engine
+  // set: a runtime-owned set of its members and kind (`HashSetCell`), as
+  // the copy its kinded store held was before light-cljs-1038.
+  function setQueueCopy(value) {
+    if (sharedFormKind(value) === "set") return new HashSetCell(sets.get(value), setKinds.get(value));
+    const set = setCellOf(value);
+    return set !== undefined ? new set.cljs$lang$cell$$LKEY(set.entries$LKEY, set.skind$LKEY)
+      : treeSetOf(value) !== undefined ? new value.cljs$lang$cell$$LKEY(value.treeMap$LKEY)
+      : queues.has(value) ? new value.cljs$lang$cell$$LKEY(value.arr$LKEY) : undefined;
+  }
+  //@unit makeSet requires: hashTrie, kindHooks, sharedOccurrenceNaN, sharedOwnedSet
   // A set of the `array-map` kind is a positional engine set
   // (`formLiteralSet`, in the members' order) and one of the `hash-map`
-  // kind an engine hash set (`formSet`); a sorted set keeps the V8
-  // profile's object (light-cljs-666). NaN occurrence members likewise keep
-  // the runtime representation so canonical insertion retains every slot.
-  function makeSet(Type, entries, kind, comparator) {
-    if (kind !== "sorted-set") {
-      const ordered = Array.isArray(entries) ? entries : kindHooks.hashTraversal(entries);
-      // As with maps, the traversal must not replace the canonical routing.
-      if (kind === "hash-map" && ordered.some(sharedOccurrenceNaN))
-        return sharedOwnedSet(Type, hashTrie(entries), kind);
-      if (kind === "array-map") {
-        let members = __rt.formVector();
-        for (let i = 0; i < ordered.length; i++) members = __rt.formConj(members, ordered[i].key);
-        return __rt.formLiteralSet(members);
-      }
-      let value = __rt.formSet();
-      for (let i = 0; i < ordered.length; i++) value = __rt.formConj(value, ordered[i].key);
-      return value;
+  // kind an engine hash set (`formSet`); a sorted set is the V8 profile's
+  // class, which `makeSet` never builds (light-cljs-1038). NaN occurrence
+  // members likewise keep the runtime representation so canonical
+  // insertion retains every slot.
+  function makeSet(Type, entries, kind) {
+    const ordered = Array.isArray(entries) ? entries : kindHooks.hashTraversal(entries);
+    // As with maps, the traversal must not replace the canonical routing.
+    if (kind === "hash-map" && ordered.some(sharedOccurrenceNaN))
+      return sharedOwnedSet(Type, hashTrie(entries), kind);
+    if (kind === "array-map") {
+      let members = __rt.formVector();
+      for (let i = 0; i < ordered.length; i++) members = __rt.formConj(members, ordered[i].key);
+      return __rt.formLiteralSet(members);
     }
-    const value = sharedOwnedSet(Type, entries, kind);
-    setComparators.set(value, comparator);
+    let value = __rt.formSet();
+    for (let i = 0; i < ordered.length; i++) value = __rt.formConj(value, ordered[i].key);
     return value;
   }
   //@unit makeMap.seq effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: first, rest, seq
@@ -754,7 +760,8 @@
     cache.set(form, Object.freeze(members));
     return members;
   }
-  //@unit sets requires: kindedStore, sharedFormKind, sharedFormOf, sharedSetMembers
+  //@unit sets requires: kindHooks, setCellOf, sharedFormKind, sharedFormOf, sharedSetMembers,
+  //@ treeSetOf
   // A set is an engine set form (an imported one through its occurrence),
   // read as a positional set of its members (`sharedSetMembers`, in the
   // engine's order; the verbatim units take their positional paths:
@@ -762,22 +769,17 @@
   // hashing, `conj` and `disj`, which build an engine set again,
   // `makeSet`), of the `array-map` kind when it is positional
   // (`formLiteralSet`) and the `hash-map` kind when the engine hashes it
-  // (`formSet`); or a runtime-owned set over the V8 profile's kinded store
-  // (`sets.store`): a sorted set (light-cljs-666). A form takes no
-  // payload: `set` on one throws.
+  // (`formSet`); or a runtime-owned set of the V8 profile's classes
+  // (light-cljs-1038): a sorted set (`TreeSetCell`, light-cljs-666), or a
+  // hash set a public constructor or NaN members keep (`sharedOwnedSet`).
   const sets = {
-    store: kindedStore(6),
-    has: value => sharedFormKind(value) === "set" || sets.store.has(value),
-    get: value => sharedFormKind(value) === "set" ? sharedSetMembers(sharedFormOf(value)) : sets.store.get(value),
-    set(value, payload) {
-      if (__rt.formKind(value) !== null) throw new TypeError("shared profile: sets.set on an engine form");
-      sets.store.set(value, payload);
-    },
-    reset(value, payload) { sets.store.reset(value, payload); },
+    has: value => sharedFormKind(value) === "set" || setCellOf(value) !== undefined || treeSetOf(value) !== undefined,
+    get: value => sharedFormKind(value) === "set" ? sharedSetMembers(sharedFormOf(value))
+      : setCellOf(value)?.entries$LKEY ?? (treeSetOf(value) !== undefined ? kindHooks.treeSetMembers(value) : undefined),
     kinds: {
-      has: value => sharedFormKind(value) === "set" || sets.store.kinds.has(value),
-      get: value => sharedFormKind(value) === "set" ? (__rt.formIsArrayMap(sharedFormOf(value)) ? "array-map" : "hash-map") : sets.store.kinds.get(value),
-      set(value, kind) { sets.store.kinds.set(value, kind); return this; }
+      has: value => sharedFormKind(value) === "set" || setCellOf(value) !== undefined || treeSetOf(value) !== undefined,
+      get: value => sharedFormKind(value) === "set" ? (__rt.formIsArrayMap(sharedFormOf(value)) ? "array-map" : "hash-map")
+        : setCellOf(value)?.skind$LKEY ?? (treeSetOf(value) !== undefined ? "sorted-set" : undefined)
     }
   };
   //@unit mapEntry.vector effect: mapEntry when: makeVector requires: mapEntry
@@ -837,17 +839,18 @@
     const kind = value.cljs$lang$kind$$LKEY;
     return (kind === 1 || kind === 2 || kind === 3) && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? value : undefined;
   }
-  //@unit stamped compile-time requires: sharedFormKind, stampBrand
+  //@unit stamped compile-time requires: sharedEngineVar, sharedFormKind, stampBrand
   // An engine vector form is the runtime's own value too: the compiler form
   // bridge reads it (`vectorStore`) without reading a property of it; so
   // are its keywords and symbols, and the engine's lazy seqs, lists and
   // conses, chunked ones among them, which `lazyOf`, `cellOf` and
   // `chunkedConsOf` read, and its maps, which `maps` reads (light-cljs-1012),
   // and its sets, reduced markers and atoms, which `sets`, `isReduced` and
-  // `atoms` read (light-cljs-1013).
+  // `atoms` read (light-cljs-1013), and its Vars, which `vars` reads
+  // (light-cljs-1038).
   function stamped(value) {
     const kind = sharedFormKind(value);
-    return kind === "vector" || kind === "keyword" || kind === "symbol" || kind === "lazy-seq" || kind === "cons" || kind === "list" || kind === "chunked-cons" || kind === "map" || kind === "set" || __rt.cljIsReduced(value) || __rt.cljIsAtom(value) || stampBrand.has(value);
+    return kind === "vector" || kind === "keyword" || kind === "symbol" || kind === "lazy-seq" || kind === "cons" || kind === "list" || kind === "chunked-cons" || kind === "map" || kind === "set" || __rt.cljIsReduced(value) || __rt.cljIsAtom(value) || sharedEngineVar(value) || stampBrand.has(value);
   }
   //@unit symbolOf requires: sharedFormKind, sharedFormOf
   // A symbol is an engine symbol form, whose fields are read from the form
@@ -970,16 +973,14 @@
   // engine symbol, which `String` cannot take (light-cljs-692).
   const varPrototype = Object.freeze({
     constructor: Var,
-    isMacro() { return vars.get(this).get.call(null).cljs$lang$macro; },
-    get val() { return vars.get(this).get; },
-    get sym() { return vars.get(this).symbol; },
+    isMacro() { return vars.get(this).val$LKEY.call(null).cljs$lang$macro; },
+    get val() { return vars.get(this).val$LKEY; },
+    get sym() { return vars.get(this).sym$LKEY; },
     get _meta() { return meta(this); },
     apply(_self, args) { return ifnApply(this, args); },
     call(_self, ...args) { return ifnPrototype.call.call(this, _self, ...args); },
-    toString() { return "#'" + str(vars.get(this).symbol); }
+    toString() { return "#'" + str(vars.get(this).sym$LKEY); }
   });
-  //@unit setComparators requires: sharedStore
-  const setComparators = sharedStore();
   //@unit cellOf requires: sharedChunked, sharedFormKind, sharedFormOf
   // The engine's lists and conses, read through a view of the V8 profile's
   // keyed fields (`cellOf`): a list's `first`, `rest` and `count`, a cons's
@@ -1018,8 +1019,6 @@
     if (value == null) return undefined;
     return value.cljs$lang$kind$$LKEY === 17 && "chunk$LKEY" in value ? value : undefined;
   }
-  //@unit stringBufferWriters requires: sharedSet
-  const stringBufferWriters = sharedSet();
   //@unit sharedFormHashes
   // The hash cache of the engine collections that hold values (vectors,
   // lists, conses, lazy seqs, maps, sets): the engine hashes a host object inside
@@ -1108,12 +1107,17 @@
     if (!cache.has(value)) cache.set(value, __rt.cljAssoc(metadata, __rt.formKeyword(null, "test"), deferred.call(null)));
     return cache.get(value);
   }
-  //@unit vars requires: sharedEngineVar, sharedFormOf, sharedStore
-  const vars = (store => ({
-    has: value => sharedEngineVar(value) || store.has(value),
-    get: value => sharedEngineVar(value) ? {get: __rt.structField(sharedFormOf(value), "val"), symbol: __rt.structField(sharedFormOf(value), "sym")} : store.get(value),
-    set(value, payload) { store.set(value, payload); return this; }
-  }))(sharedStore());
+  //@unit vars requires: sharedEngineVar, sharedFormOf
+  // An engine Var, whose fields `get` gives in a fresh object of the V8
+  // profile's keyed names, or a Var of the V8 profile's class (`VarCell`,
+  // light-cljs-1038).
+  const vars = {
+    has: value => sharedEngineVar(value) || value != null && value.cljs$lang$kind$$LKEY === 45 && (value.sym$LKEY !== undefined || "sym$LKEY" in value),
+    get(value) {
+      if (sharedEngineVar(value)) return {val$LKEY: __rt.structField(sharedFormOf(value), "val"), sym$LKEY: __rt.structField(sharedFormOf(value), "sym")};
+      if (vars.has(value)) return value;
+    }
+  };
   //@unit collectionWithMeta.vars effect: makeVar when: collectionWithMeta
   //@ requires: collectionWithMeta, sharedEngineVar, sharedFormOf
   collectionWithMeta = (operation => (value, metadata) => sharedEngineVar(value)
@@ -1291,8 +1295,6 @@
   }
   //@unit ifnValues requires: sharedStore
   const ifnValues = sharedStore(), ifnVariadics = sharedStore();
-  //@unit metaFunctions requires: sharedStore
-  const metaFunctions = sharedStore();
   //@unit typeNames requires: sharedRegistryStore
   // A registry on the task's cells: a brand on a type's function would keep
   // its record from sealing (`sharedTaskDefaults`).
@@ -1457,8 +1459,6 @@
     return store ? makeVector(null, vectorView(store, start, end - start))
       : vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)));
   }
-  //@unit treeSetMaps requires: sharedStore
-  const treeSetMaps = sharedStore();
   //@unit hashRoots requires: sharedStore
   const hashRoots = sharedStore();
   //@unit traversalPairs requires: sharedStore

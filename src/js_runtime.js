@@ -23,45 +23,14 @@
   //@unit weakMapStores
   // A host whose WeakMap entries cost less than private fields, as the
   // evaluator's reference-counting QuickJS, states so before the runtime
-  // loads; a `kindedStore` is then a WeakMap, as
+  // loads; the compile-time stamp (`stampBrand`) is then a WeakSet, as
   // unforgeable a brand. The engine is never sniffed (light-cljs-292).
-  // Where it is not, a store tests that a value can hold a private field
-  // with `canHoldField`, which V8 inlines.
+  // Where it is not, a brand tests that a value can hold a private field
+  // with `canHoldField`, which V8 inlines. No runtime value keeps a
+  // private-field payload (`payloads` and `kindedStore`, deleted in
+  // light-cljs-1038): every one is a class with its own fields.
   const weakMapStores = globalThis.lightCljsWeakMapStores === true,
     canHoldField = value => typeof value === "object" ? value !== null : typeof value === "function";
-  //@unit payloads requires: canHoldField
-  // The private-field brand of the runtime's collections and seqs: `#s` a
-  // value's payload, `#k` its kind, the number of the store holding it
-  // (`kindedStore`: a sorted set's), and `#m` a map's or set's
-  // kind. One read of `#k` (`kind`) names the store, where kind tests
-  // probed each store's field in turn; no host object can have or copy
-  // them (light-cljs-990). A value is in one store, so `set` requires a new
-  // object. `kindBits` are a store's kinds; `exact` that its `has` is the
-  // kind test alone (hash tries and records widen the maps' and sets').
-  // Kinds 1 to 7 are `payloadStore`'s (3, the vectors', is no longer a
-  // payload: `vectorStore`), 9 to 12 the rest.
-  const payloads = class extends (function (value) { return value; }) {
-    #s; #k; #m;
-    static kind(value) { return canHoldField(value) && #k in value ? value.#k : 0; }
-    // A store of `kind` with a WeakMap's methods; `reset` replaces a payload
-    // (light-cljs-237), and a kinded store's `kinds` keep `#m`. The stores
-    // share this code and so V8's feedback, which seq operations do not feel.
-    static store(kind, kinded) {
-      return class {
-        static kindBits = 1 << kind;
-        static exact = !kinded;
-        static has(value) { return canHoldField(value) && #k in value && value.#k === kind; }
-        static get(value) { if (canHoldField(value) && #k in value && value.#k === kind) return value.#s; }
-        static set(value, payload) { const brand = new payloads(value); brand.#k = kind; brand.#s = payload; }
-        static reset(value, payload) { value.#s = payload; }
-        static kinds = kinded && {
-          has: value => canHoldField(value) && #k in value && value.#k === kind && value.#m !== undefined,
-          get(value) { if (canHoldField(value) && #k in value && value.#k === kind) return value.#m; },
-          set(value, mapKind) { value.#m = mapKind; return this; }
-        };
-      };
-    }
-  };
   //@unit keywordOf
   // A keyword, the class of kind 20 (`kinds`, `KeywordCell`): the value
   // itself, whose own keyed fields are upstream's `ns`, `name`, `fqn` and
@@ -137,6 +106,9 @@
   // is below 64: its mask bits declare what it implements natively, which
   // the older lookups do not read (`ownMethod`), where a program type's
   // declare its methods.
+  // Light-cljs-1038's are 44 `PersistentTreeSet` (`treeSetOf`), 45 `Var`
+  // (`vars`), 46 the functions with metadata (`metaFunctions`) and 47
+  // `StringBufferWriter` (`stringBufferWriters`).
   const kinds = Object.freeze({vector: 1, subvec: 2, entry: 3, transientVector: 4});
   //@unit unkeyedJSON
   // The JSON of a value of the class bases that have a `toJSON`: its own
@@ -512,14 +484,15 @@
       : kind === 29 ? new Cell(value.cnt$LKEY, value.root$LKEY, value.nil$LKEY, value.lit$LKEY)
       : new Cell(value.comp$LKEY, value.tree$LKEY, value.cnt$LKEY);
   }
-  //@unit setQueueCopy requires: queues, setCellOf
-  // A copy of a hash or array set's or a queue's fields, built by its class
-  // (`HashSetCell`, `QueueCell`), for `with-meta` and `clone`, which copy
-  // the rest (metadata, hashes, a public constructor's slots) from the
-  // stores; else undefined.
+  //@unit setQueueCopy requires: queues, setCellOf, treeSetOf
+  // A copy of a set's or a queue's fields, built by its class
+  // (`HashSetCell`, `TreeSetCell`, `QueueCell`), for `with-meta` and
+  // `clone`, which copy the rest (metadata, hashes, a public constructor's
+  // slots) from the stores; else undefined.
   function setQueueCopy(value) {
     const set = setCellOf(value);
     return set !== undefined ? new set.cljs$lang$cell$$LKEY(set.entries$LKEY, set.skind$LKEY)
+      : treeSetOf(value) !== undefined ? new value.cljs$lang$cell$$LKEY(value.treeMap$LKEY)
       : queues.has(value) ? new value.cljs$lang$cell$$LKEY(value.arr$LKEY) : undefined;
   }
   //@unit TransientArrayMapCell
@@ -578,19 +551,6 @@
   function stamp(value) { stampBrand.add(value); }
   //@unit stamped compile-time requires: stampBrand
   function stamped(value) { return stampBrand.has(value); }
-  //@unit kindedStore requires: payloads, weakMapStores
-  // The store of the values that are not classes yet, the sorted sets
-  // (`sets.store`), in the private
-  // fields of `payloads`: a value's payload and its kind (`setKinds`), each
-  // in a private field of its own, so that a value gets both with one
-  // construction (light-cljs-291). A value's kind is set after its payload.
-  // Every other runtime value is a class with its own fields
-  // (docs/value-layout.md, section 2; the stores that held them before
-  // light-cljs-1013 were `privateStore`s of these private fields).
-  function kindedStore(kind) {
-    if (weakMapStores) { const store = new WeakMap(); store.reset = store.set; store.kinds = new WeakMap(); return store; }
-    return payloads.store(kind, true);
-  }
   //@unit maps requires: mapOf
   // The maps (light-cljs-1012): no longer a store, but what tells a map of
   // the class layout (`mapOf`), as its `has`. No map of the classes has
@@ -610,17 +570,15 @@
       return kind === 28 ? "array-map" : kind === 29 ? "hash-map" : kind === 30 ? "sorted-map" : undefined;
     }
   };
-  //@unit setComparators
-  // The comparators of the sorted sets, until they become classes
-  // (light-cljs-1013); a sorted map holds its own (`TreeMapCell`).
-  const setComparators = new WeakMap();
-  //@unit comparatorOf requires: setComparators
-  // A sorted map's comparator (its own `comp` field) or a sorted set's,
-  // else undefined: whether a value is sorted.
+  //@unit comparatorOf requires: kindHooks
+  // A sorted map's comparator (its own `comp` field) or a sorted set's (its
+  // tree map's, `TreeSetCell.comparator`), else undefined: whether a value
+  // is sorted.
   function comparatorOf(value) {
     if (value == null) return undefined;
     const kind = value.cljs$lang$kind$$LKEY;
-    return kind === 28 || kind === 29 ? undefined : kind === 30 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? value.comp$LKEY : setComparators.get(value);
+    return kind === 30 ? (value.cnt$LKEY !== undefined || "cnt$LKEY" in value ? value.comp$LKEY : undefined)
+      : kind === 44 && (value.treeMap$LKEY !== undefined || "treeMap$LKEY" in value) ? kindHooks.treeSetComparator(value) : undefined;
   }
   //@unit HashSetCell
   // A hash or array set, upstream's PersistentHashSet, with
@@ -639,28 +597,65 @@
   function setCellOf(value) {
     return value != null && value.cljs$lang$kind$$LKEY === 33 && value.entries$LKEY !== undefined ? value : undefined;
   }
-  //@unit sets requires: kindedStore, setCellOf
-  // The sets: a hash or array set is a `HashSetCell`, which `has` tells by
-  // its kind and `get` reads the members of; a sorted set keeps its members
-  // in the kinded store (`sets.store`) until it becomes a class too.
-  const sets = (store => ({
-    store,
-    has: value => setCellOf(value) !== undefined || store.has(value),
-    get: value => setCellOf(value)?.entries$LKEY ?? store.get(value),
-    set: (value, payload) => store.set(value, payload),
-    reset: (value, payload) => store.reset(value, payload),
+  //@unit TreeSetCell
+  // A sorted set, upstream's PersistentTreeSet, with `treeSetConstructor`'s
+  // prototype, kind 44 (`treeSetOf`, light-cljs-1038): its own keyed field
+  // `treeMap` is upstream's `tree-map`, the sorted map (`TreeMapCell`) whose
+  // keys are its members, each with a nil value; a public constructor's set
+  // holds the map it was given, as it was given (undefined among them), so
+  // its tests read the field's presence where it is undefined. Nothing in
+  // it is frozen. The compile-time runtime stamps it (`stamp`).
+  function TreeSetCell(treeMap) { this.treeMap$LKEY = treeMap; /*@brand*/ }
+  //@unit treeSetOf
+  // A sorted set of the class layout (`TreeSetCell`): the value itself where
+  // its prototype's keyed kind is 44 and its own `treeMap` field is there,
+  // else undefined.
+  function treeSetOf(value) {
+    return value != null && value.cljs$lang$kind$$LKEY === 44 && (value.treeMap$LKEY !== undefined || "treeMap$LKEY" in value) ? value : undefined;
+  }
+  //@unit sets requires: kindHooks
+  // The sets, which are all classes (light-cljs-1038): a hash or array set
+  // is a `HashSetCell`, which `has` tells by its kind and `get` reads the
+  // members of; a sorted set a `TreeSetCell`, whose members `get` gives as a
+  // fresh array of entries in their order (`TreeSetCell.members`), for the
+  // readers that take every member (`seq`, printing, hashing, equality).
+  // Its updates, lookups and count read its tree map instead. Each test
+  // reads the keyed kind once, as `setCellOf` and `treeSetOf` would in turn.
+  const sets = {
+    has(value) {
+      if (value == null) return false;
+      const kind = value.cljs$lang$kind$$LKEY;
+      return kind === 33 ? value.entries$LKEY !== undefined : kind === 44 && (value.treeMap$LKEY !== undefined || "treeMap$LKEY" in value);
+    },
+    get(value) {
+      if (value == null) return undefined;
+      const kind = value.cljs$lang$kind$$LKEY;
+      return kind === 33 ? value.entries$LKEY : kind === 44 && (value.treeMap$LKEY !== undefined || "treeMap$LKEY" in value) ? kindHooks.treeSetMembers(value) : undefined;
+    },
     kinds: {
-      has: value => setCellOf(value) !== undefined || store.kinds.has(value),
-      get: value => setCellOf(value)?.skind$LKEY ?? store.kinds.get(value),
-      set(value, kind) { store.kinds.set(value, kind); return this; }
+      has: value => sets.has(value),
+      get(value) {
+        if (value == null) return undefined;
+        const kind = value.cljs$lang$kind$$LKEY;
+        return kind === 33 ? value.entries$LKEY !== undefined ? value.skind$LKEY : undefined : kind === 44 && (value.treeMap$LKEY !== undefined || "treeMap$LKEY" in value) ? "sorted-set" : undefined;
+      }
     }
-  }))(kindedStore(6));
+  };
   //@unit setKinds requires: sets
   const setKinds = sets.kinds;
+  //@unit setSeqs requires: kindHooks, sets, treeSetOf
+  // The sets as the seq branches of `seq`, `first` and `rest` read them
+  // (`seqBranch`, light-cljs-1038): a sorted set is its own payload, whose
+  // seq is its tree map's keys (`TreeSetCell.seq`), so that they build no
+  // array of its members; another set's payload is its members.
+  const setSeqs = {
+    get: value => treeSetOf(value) ?? sets.get(value),
+    seq: (value, payload) => payload === value ? kindHooks.treeSetSeq(value) : kindHooks.seqSet(value, payload)
+  };
   //@unit mapTypes
   // The type of each map kind that a kept map type builds, for building a map
-  // of an existing map's kind; `setTypes` likewise for sorted sets.
-  const mapTypes = {}, setTypes = {};
+  // of an existing map's kind.
+  const mapTypes = {};
   //@unit TransientHashSetCell
   // A transient set, with `TransientHashSetType`'s prototype, kind 34
   // (`transientSetOf`, light-cljs-1013): its own keyed field `state` holds
@@ -732,8 +727,15 @@
     get(value) { if (reducedValues.has(value)) return value.val$LKEY; },
     reset(value, val) { value.val$LKEY = val; }
   };
+  //@unit StringBufferWriterCell
+  // A string writer, upstream's StringBufferWriter, with its prototype, kind
+  // 47 (`stringBufferWriters`, light-cljs-1038): its own field is
+  // upstream's public `sb`, the buffer it appends to, as before.
+  function StringBufferWriterCell(sb) { this.sb = sb; /*@brand*/ }
   //@unit stringBufferWriters
-  const stringBufferWriters = new WeakSet();
+  // The string writers (`StringBufferWriterCell`): `has` tells one by its
+  // kind and its own `sb`, where a WeakSet held each.
+  const stringBufferWriters = {has: value => value != null && value.cljs$lang$kind$$LKEY === 47 && "sb" in value};
   //@unit constructorHashes
   const constructorHashes = new WeakMap();
   //@unit publicCollectionSlots
@@ -767,8 +769,25 @@
     has: value => value != null && value.cljs$lang$kind$$LKEY === 42 && "uuid$LKEY" in value,
     get(value) { if (uuids.has(value)) return value.uuid$LKEY; }
   };
+  //@unit VarCell
+  // A var, upstream's Var, with `Var`'s prototype, kind 45 (`vars`,
+  // light-cljs-1038): a callable value (`makeIFn`) whose own keyed fields
+  // are upstream's `val`, the function that gives its value, and `sym`, its
+  // symbol, as the `vars` store held them. Its metadata stays in
+  // `metadataValues`, as the other classes' do. The fields are not
+  // enumerable, so a var stringifies and enumerates as before, when it held
+  // only its functions (`makeIFn`).
+  function VarCell(val, sym) { Object.defineProperties(this, {val$LKEY: {value: val}, sym$LKEY: {value: sym}}); /*@brand*/ }
   //@unit vars
-  const vars = new WeakMap();
+  // The vars (`VarCell`): `has` tells one by its kind and own `sym` field
+  // (by its presence where a public constructor gave it undefined), `get`
+  // gives it, whose `val` and `sym` its
+  // readers read. The Pants build's profile swaps it for one that also
+  // reads the engine's vars, whose fields it gives in a fresh object.
+  const vars = {
+    has: value => value != null && value.cljs$lang$kind$$LKEY === 45 && (value.sym$LKEY !== undefined || "sym$LKEY" in value),
+    get(value) { if (vars.has(value)) return value; }
+  };
   //@unit isAtomCell
   // Whether a value is an atom of this runtime's class (`Atom`, kind 38,
   // with its own `state` field, upstream's); the Pants build's engine atoms
@@ -819,8 +838,21 @@
   };
   //@unit ifnValues
   const ifnValues = new WeakMap(), ifnVariadics = new WeakMap();
+  //@unit MetaFnCell
+  // A function with metadata, upstream's MetaFn, kind 46 (`metaFunctions`,
+  // light-cljs-1038): a callable value (`makeIFn`) whose own keyed field
+  // `afn` is the function it calls, as the `metaFunctions` store held it.
+  // Its metadata stays in `metadataValues`. Its prototype is the callable
+  // values' (`ifnPrototype`) with the kind (`MetaFnCell.type`). The field
+  // is not enumerable, so the value stringifies and enumerates as before.
+  function MetaFnCell(afn) { Object.defineProperty(this, "afn$LKEY", {value: afn}); /*@brand*/ }
   //@unit metaFunctions
-  const metaFunctions = new WeakMap();
+  // The functions with metadata (`MetaFnCell`): `has` tells one by its kind
+  // and own `afn` field, `get` reads the function it calls.
+  const metaFunctions = {
+    has: value => value != null && value.cljs$lang$kind$$LKEY === 46 && value.afn$LKEY !== undefined,
+    get(value) { if (metaFunctions.has(value)) return value.afn$LKEY; }
+  };
   //@unit typeNames
   const typeNames = new WeakMap();
   //@unit recordTypeOf
@@ -1628,7 +1660,7 @@
     switch (arguments.length) {
       case 1: {
         if (symbolOf(namespace) !== undefined) return namespace;
-        if (vars.has(namespace)) return vars.get(namespace).symbol;
+        if (vars.has(namespace)) return vars.get(namespace).sym$LKEY;
         const kw = keywordOf(namespace);
         if (kw) namespace = kw.fqn$LKEY;
         if (typeof namespace !== "string") throw new Error("no conversion to symbol");
@@ -1882,10 +1914,12 @@
   // Only the sorted-map operations, which keep its constructor, build a map
   // of that kind.
   kindHooks.seqTree = treeMapSeq;
-  //@unit makeSet.seq effect: makeSet, treeSetConstructor when: first, rest, seq requires: IndexedSeqValue,
-  //@ kindHooks, setTraversal, view
+  //@unit makeSet.seq effect: makeSet, treeSetConstructor when: seq, setSeqs requires: collectionTraversal,
+  //@ IndexedSeqValue, kindHooks, setKinds, view
+  // The members it is given, which a sorted set builds of its tree map on
+  // each `sets.get` (light-cljs-1038), in their traversal order.
   kindHooks.seqSet = (value, members) => members.length
-    ? view(IndexedSeqValue, Object.freeze(setTraversal(value).map(entry => entry.key)), 0, false, "set") : null;
+    ? view(IndexedSeqValue, Object.freeze(collectionTraversal(members, setKinds.get(value)).map(entry => entry.key)), 0, false, "set") : null;
   //@unit seq.vectors effect: PersistentVectorValue, SubvecValue when: seq requires: kindHooks,
   //@ kindTables, noBranch, vectorStore
   // The seqs of the collections, kinds 4 to 7 (light-cljs-358), as the
@@ -1894,9 +1928,9 @@
   //@unit seq.maps effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor when: seq
   //@ requires: kindHooks, kindTables, maps, noBranch
   kindTables[5][0] = value => maps.has(value) ? kindHooks.seqMap(value) : noBranch;
-  //@unit seq.sets effect: PersistentHashSetValue, treeSetConstructor when: seq requires: kindHooks,
-  //@ kindTables, noBranch, sets
-  kindTables[6][0] = value => { const members = sets.get(value); return members ? kindHooks.seqSet(value, members) : noBranch; };
+  //@unit seq.sets effect: PersistentHashSetValue, treeSetConstructor when: seq requires: kindTables,
+  //@ noBranch, setSeqs
+  kindTables[6][0] = value => { const payload = setSeqs.get(value); return payload ? setSeqs.seq(value, payload) : noBranch; };
   //@unit seq.queues effect: PersistentQueueValue when: seq requires: kindHooks, kindTables,
   //@ noBranch, queues
   kindTables[7][0] = value => { const queue = queues.get(value); return queue ? kindHooks.seqQueue(value, queue) : noBranch; };
@@ -2145,11 +2179,11 @@
   //@ when: rest requires: kindHooks, kindTables, maps, restSeq, seqBranch
   kindTables[5][2] = seqBranch(maps, value => kindHooks.seqMap(value), restSeq);
   //@unit first.sets effect: PersistentHashSetValue, treeSetConstructor when: first requires: firstSeq,
-  //@ kindHooks, kindTables, seqBranch, sets
-  kindTables[6][1] = seqBranch(sets, (value, members) => kindHooks.seqSet(value, members), firstSeq);
-  //@unit rest.sets effect: PersistentHashSetValue, treeSetConstructor when: rest requires: kindHooks,
-  //@ kindTables, restSeq, seqBranch, sets
-  kindTables[6][2] = seqBranch(sets, (value, members) => kindHooks.seqSet(value, members), restSeq);
+  //@ kindTables, seqBranch, setSeqs
+  kindTables[6][1] = seqBranch(setSeqs, setSeqs.seq, firstSeq);
+  //@unit rest.sets effect: PersistentHashSetValue, treeSetConstructor when: rest requires: kindTables,
+  //@ restSeq, seqBranch, setSeqs
+  kindTables[6][2] = seqBranch(setSeqs, setSeqs.seq, restSeq);
   //@unit first.queues effect: PersistentQueueValue when: first requires: firstSeq, kindHooks,
   //@ kindTables, noBranch, publicCollectionSlots, queues, seqBranch
   // A queue that the public constructor built takes the operations, whose
@@ -2191,7 +2225,7 @@
     const method = protocolHooks.builtin?.(value, methodKeys[12], 1);
     if (method) return method.call(value, value);
     if (delays.has(value)) return deferredValue(delays.get(value));
-    if (vars.has(value)) return vars.get(value).get.call(null);
+    if (vars.has(value)) return vars.get(value).val$LKEY.call(null);
     if (atoms.has(value) || volatiles.has(value)) return value.state;
     if (!isReduced(value)) throw new Error("No protocol method IDeref.-deref defined for this value");
     return reducedValues.get(value);
@@ -3011,21 +3045,24 @@
   kindHooks.conjMap = mapConj;
   //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj requires: assoc, copyEntries,
   //@ kindHooks, makeSet, meta, missing, PersistentHashSetValue, publicCollectionSlots, putMember,
-  //@ putSortedEntry, setComparators, sets, setTypes
+  //@ sets, treeSetOf
   // The set `conj` builds, or `missing` where it adds nothing. A hash set's
-  // trie copies one path (`putMember`).
+  // trie copies one path (`putMember`); a sorted set's tree map adds the
+  // member with a nil value, as upstream's (light-cljs-1038).
   kindHooks.conjSet = (previous, result, item) => {
     if (publicCollectionSlots.has(result)) {
-      const slots = publicCollectionSlots.get(result), source = slots["tree-map"] ?? slots["hash-map"], updated = assoc(source, item, null);
-      return updated === source ? result : slots["tree-map"] ? setTypes["sorted-set"](meta(result), updated, null) : PersistentHashSetValue(meta(result), updated, null);
+      const slots = publicCollectionSlots.get(result), source = slots["hash-map"], updated = assoc(source, item, null);
+      return updated === source ? result : PersistentHashSetValue(meta(result), updated, null);
     }
-    const original = sets.get(result), comparator = setComparators.get(previous);
-    let members = copyEntries(original);
-    if (comparator) putSortedEntry(members, item, undefined, comparator, true);
-    else members = putMember(members, item);
+    const tree = treeSetOf(result);
+    if (tree !== undefined) {
+      const map = tree.treeMap$LKEY, updated = assoc(map, item, null);
+      return updated === map ? missing : new tree.cljs$lang$cell$$LKEY(updated);
+    }
+    const original = sets.get(result);
+    const members = putMember(copyEntries(original), item);
     if (members.length === original.length) return missing;
-    return comparator ? makeSet(setTypes["sorted-set"], members, "sorted-set", comparator)
-      : makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
+    return makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   };
   //@unit conj.branches effect: PersistentArrayMapValue, PersistentHashMapValue,
   //@ PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue, SubvecValue,
@@ -3314,7 +3351,7 @@
   //@ PersistentHashMapValue
   mapTypes["hash-map"] = PersistentHashMapValue;
   //@unit lookup.sets effect: makeSet, treeSetConstructor when: lookup requires: kindHooks, lookup,
-  //@ sets
+  //@ sets, treeSetOf
   // The branches of `lookup` for sets, transients and sorted maps, kept only
   // where a program builds them (light-cljs-247). They wrap it in the order
   // its branches had; the hash tries take the hooks of `get.trie` and
@@ -3322,6 +3359,8 @@
   // their kinds' builders install, so that a chunk building neither keeps no
   // more than these.
   lookup = (operation => (value, key, notFound) => {
+    const tree = treeSetOf(value);
+    if (tree !== undefined) return kindHooks.treeSetLookup(tree, key, notFound);
     const members = sets.get(value);
     if (!members) return operation(value, key, notFound);
     if (!Array.isArray(members)) return kindHooks.trieMember(members, key, notFound);
@@ -4032,27 +4071,20 @@
   // As `ArrayMapCell.type`: a set built directly keeps its type.
   HashSetCell.prototype = PersistentHashSetValue.prototype;
   //@unit treeSetConstructor.type effect: treeSetConstructor requires: builtinType, kindOps,
-  //@ setPrototype, treeSetConstructor
-  builtinType(treeSetConstructor, setPrototype).prototype[kindOps] = 6;
-  //@unit treeSetConstructor.kind effect: treeSetConstructor requires: setTypes, treeSetConstructor
-  setTypes["sorted-set"] = treeSetConstructor;
-  //@unit setType requires: PersistentHashSetValue, setTypes
-  // The type of an existing set's kind.
-  function setType(kind) { return kind === "sorted-set" ? setTypes[kind] : PersistentHashSetValue; }
-  //@unit makeSet requires: setComparators, setKinds, sets
-  // A set of the type the caller builds; `setType` gives an existing set's. A
-  // hash or array set is an instance of the class its type's unit gives it
-  // (`HashSetCell`, light-cljs-1013) with its members unfrozen; a sorted set
-  // keeps the kinded store (`sets.store`) and its comparator
-  // (`setComparators`).
-  function makeSet(Type, entries, kind, comparator) {
-    const Cell = Type.prototype.cljs$lang$cell$$LKEY;
-    if (Cell !== undefined && kind !== "sorted-set") return new Cell(entries, kind);
-    const value = Object.create(Type.prototype);
-    sets.set(value, Object.freeze(entries));
-    setKinds.set(value, kind);
-    if (kind === "sorted-set") setComparators.set(value, comparator);
-    return value;
+  //@ setPrototype, TreeSetCell, treeSetConstructor, viewType
+  // A sorted set is a class of its type's prototype (`TreeSetCell`,
+  // light-cljs-1038); the kind table number stays until light-cljs-1015.
+  viewType(builtinType(treeSetConstructor, setPrototype), TreeSetCell, 44).prototype[kindOps] = 6;
+  //@unit TreeSetCell.type effect: TreeSetCell requires: TreeSetCell, treeSetConstructor
+  // As `HashSetCell.type`: a set built directly keeps its type.
+  TreeSetCell.prototype = treeSetConstructor.prototype;
+  //@unit makeSet
+  // A hash or array set of the type the caller builds, an instance of the
+  // class its type's unit gives it (`HashSetCell`, light-cljs-1013) with its
+  // members unfrozen. A sorted set is built by its own class
+  // (`TreeSetCell`, light-cljs-1038).
+  function makeSet(Type, entries, kind) {
+    return new Type.prototype.cljs$lang$cell$$LKEY(entries, kind);
   }
 
   //@unit putMember requires: entryIndex, hashRoots, putEntry
@@ -4130,16 +4162,20 @@
 
   //@unit disj requires: collectionEntryIndex, copyEntries, dissoc, hashRoots, kindHooks, makeSet,
   //@ meta, methodKeys, PersistentHashSetValue, preserveMeta, protocolHooks, publicCollectionSlots,
-  //@ removeHashEntry, setComparators, setKinds, sets, setType, treeSetConstructor
+  //@ removeHashEntry, setKinds, sets, treeSetOf
   function disj(value, ...keys) {
     if (value != null && protocolHooks.builtin?.(value, methodKeys[54], 2)) return keys.reduce((result, key) => protocolHooks.builtin?.(result, methodKeys[54], 2).call(result, result, key), value);
     if (arguments.length === 0) return null;
     if (keys.length === 0) return value;
     if (value == null) return null;
+    // A sorted set's tree map removes each key, upstream's (light-cljs-1038).
+    const tree = treeSetOf(value);
+    if (tree !== undefined) {
+      const map = tree.treeMap$LKEY, updated = dissoc(map, ...keys);
+      return updated === map ? value : preserveMeta(value, new tree.cljs$lang$cell$$LKEY(updated));
+    }
     const original = sets.get(value);
     if (!original) throw new Error("disj not supported on this type");
-    const treeMap = publicCollectionSlots.get(value)?.["tree-map"];
-    if (treeMap) return treeSetConstructor(meta(value), dissoc(treeMap, ...keys), null);
     const hashMap = publicCollectionSlots.get(value)?.["hash-map"];
     if (hashMap) return PersistentHashSetValue(meta(value), dissoc(hashMap, ...keys), null);
     // A hash set removes each member from its trie in O(log32 n).
@@ -4155,7 +4191,7 @@
       }
     }
     if (entries.length === original.length) return value;
-    return preserveMeta(value, makeSet(setType(setKinds.get(value)), entries, setKinds.get(value), setComparators.get(value)));
+    return preserveMeta(value, makeSet(PersistentHashSetValue, entries, setKinds.get(value)));
   }
 
   //@unit transientPrototype requires: invalidArity, printHooks, transientLookup, unkeyedJSON
@@ -4984,7 +5020,6 @@
     // A sorted map's seq holds its count, or one below 0 where it counts its
     // nodes, as upstream's (light-cljs-1035).
     if (cell?.cell$LKEY === "tree-seq") return cell.cnt$LKEY < 0 ? kindHooks.countTreeSeq(value) : cell.cnt$LKEY;
-    if (slots && "tree-map" in slots) return count(slots["tree-map"]);
     if (slots && ("cnt" in slots || "count" in slots)) return "cnt" in slots ? slots.cnt : slots.count;
     const chunked = viewOf(value);
     if (chunked?.vec$LKEY) return count(chunked.vec$LKEY) - chunked.base$LKEY - chunked.i$LKEY;
@@ -5006,6 +5041,8 @@
     const mapKind = value.cljs$lang$kind$$LKEY;
     if (mapKind === 28 && value.arr$LKEY !== undefined) return (value.arr$LKEY.length + 1) >> 1;
     if ((mapKind === 29 || mapKind === 30) && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return value.cnt$LKEY;
+    // A sorted set counts its tree map, as upstream's (light-cljs-1038).
+    if (mapKind === 44 && (value.treeMap$LKEY !== undefined || "treeMap$LKEY" in value)) return count(value.treeMap$LKEY);
     const entries = maps.get(value);
     if (entries) return entries.length;
     const members = sets.get(value);
@@ -5082,9 +5119,15 @@
     const entries = maps.get(value);
     return entries && !publicCollectionSlots.has(value) ? entries.length : noBranch;
   };
-  //@unit count.sets effect: PersistentHashSetValue, treeSetConstructor when: count requires: kindTables,
-  //@ noBranch, publicCollectionSlots, sets
-  kindTables[6][4] = value => { const members = sets.get(value); return members && !publicCollectionSlots.has(value) ? members.length : noBranch; };
+  //@unit count.sets effect: PersistentHashSetValue, treeSetConstructor when: count requires: kindHooks,
+  //@ kindTables, noBranch, publicCollectionSlots, sets, treeSetOf
+  // A sorted set counts its tree map (light-cljs-1038).
+  kindTables[6][4] = value => {
+    const tree = treeSetOf(value);
+    if (tree !== undefined) return kindHooks.treeSetCount(tree);
+    const members = sets.get(value);
+    return members && !publicCollectionSlots.has(value) ? members.length : noBranch;
+  };
   //@unit count.queues effect: PersistentQueueValue when: count requires: kindTables, noBranch,
   //@ publicCollectionSlots, queues
   kindTables[7][4] = value => { const queue = queues.get(value); return queue && !publicCollectionSlots.has(value) ? queue.length : noBranch; };
@@ -5306,15 +5349,16 @@
     return index < 0 ? notFound : entries[index].value;
   };
   //@unit get.sets effect: PersistentHashSetValue, treeSetConstructor when: get requires: collectionEntryIndex,
-  //@ kindHooks, kindTables, methodKeys, noBranch, protocolHooks, sets
+  //@ kindHooks, kindTables, methodKeys, noBranch, protocolHooks, sets, treeSetOf
   // Likewise of a set (light-cljs-373), whose member equal to the key it
   // gives: from a hash set's trie or an array of members, as
-  // `lookup.sets` does.
+  // `lookup.sets` does, or a sorted set's tree map (light-cljs-1038).
   kindTables[6][6] = (value, key, notFound, arity) => {
-    const members = sets.get(value);
-    if (!members) return noBranch;
+    const tree = treeSetOf(value), members = tree === undefined ? sets.get(value) : null;
+    if (tree === undefined && !members) return noBranch;
     const method = protocolHooks.publicMethod?.(value, methodKeys[30], arity, true);
     if (method) return arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound);
+    if (tree !== undefined) return kindHooks.treeSetLookup(tree, key, notFound);
     if (!Array.isArray(members)) return kindHooks.trieMember(members, key, notFound);
     const index = collectionEntryIndex(value, members, key);
     return index < 0 ? notFound : members[index].key;
@@ -6747,7 +6791,7 @@
   //@ kindHooks, uuids, vars
   // A UUID or a Var, or undefined for another value.
   kindHooks.equivNamed = (left, right) => uuids.has(left) ? uuids.has(right) && uuids.get(left) === uuids.get(right)
-    : vars.has(left) ? vars.has(right) && equalPair(vars.get(left).symbol, vars.get(right).symbol) : undefined;
+    : vars.has(left) ? vars.has(right) && equalPair(vars.get(left).sym$LKEY, vars.get(right).sym$LKEY) : undefined;
   //@unit makeMap.equiv effect: ArrayMapCell, makeMap, treeMapConstructor when: structuralEqualPair
   //@ requires: equalPair, get, kindHooks, mapCount, mapKinds, mapPairs, maps, methodKeys, missing,
   //@ protocolHooks
@@ -6774,16 +6818,17 @@
     try { return setTraversal(left).every(entry => protocolHooks.has ? protocolHooks.has(right, entry.key) : lookup(right, entry.key, missing) !== missing); }
     catch (error) { if (error instanceof Error) return false; throw error; }
   };
-  //@unit setCount requires: kindHooks, publicCollectionSlots, sets
+  //@unit setCount requires: kindHooks, publicCollectionSlots, sets, treeSetOf
   // `count` of a set without protocol implementations.
   function setCount(value) {
+    const tree = treeSetOf(value);
+    if (tree !== undefined) return kindHooks.treeSetCount(tree);
     const slots = publicCollectionSlots.get(value);
     return slots ? kindHooks.countPublicSet(slots) : sets.get(value).length;
   }
-  //@unit publicHashSet.count effect: publicHashSet, treeSetConstructor when: setCount requires: count,
-  //@ kindHooks
-  // A set its public constructor built counts the map it received.
-  kindHooks.countPublicSet = slots => count("tree-map" in slots ? slots["tree-map"] : slots["hash-map"]);
+  //@unit publicHashSet.count effect: publicHashSet when: setCount requires: count, kindHooks
+  // A hash set its public constructor built counts the map it received.
+  kindHooks.countPublicSet = slots => count(slots["hash-map"]);
   //@unit mapEntry.equiv effect: mapEntry when: structuralEqualPair unless: makeVector requires: equalPair,
   //@ kindHooks, vectorStore
   // `makeVector.equiv`, which follows, where map entries, of two items, are
@@ -6917,10 +6962,10 @@
       result = (result + hash(first(current))) | 0;
     return mixCollectionHash(result, n);
   }
-  //@unit hash requires: comparedSequential, constructorHashes, hashDouble, hashInt, hashNamed,
-  //@ identityCounter, identityHashes, keywordOf, kindHooks, maps, mapTraversal, methodKeys,
-  //@ mixCollectionHash, ownMeta, protocolHooks, sets, setTraversal, stringHash, symbolOf, uuids,
-  //@ vars
+  //@unit hash requires: collectionTraversal, comparedSequential, constructorHashes, hashDouble,
+  //@ hashInt, hashNamed, identityCounter, identityHashes, keywordOf, kindHooks, maps, mapTraversal,
+  //@ methodKeys, mixCollectionHash, ownMeta, protocolHooks, setKinds, sets, stringHash, symbolOf,
+  //@ uuids, vars
   // Weak identity bookkeeping never reads or mutates foreign object fields.
   function hash(value) {
     if (value == null) return 0;
@@ -6937,7 +6982,7 @@
       if (value.hash$LKEY == null) value.hash$LKEY = hash(value.uuid$LKEY);
       return value.hash$LKEY;
     }
-    if (vars.has(value)) return hash(vars.get(value).symbol);
+    if (vars.has(value)) return hash(vars.get(value).sym$LKEY);
     // A keyword or a symbol caches its hash in its own field, which a
     // keyword literal at `Advanced` holds from its construction.
     const kw = keywordOf(value), named = kw ?? symbolOf(value);
@@ -6973,7 +7018,7 @@
     const members = sets.get(value);
     if (members) {
       let result = 0;
-      for (const entry of setTraversal(value)) result = (result + entry.hash) | 0;
+      for (const entry of collectionTraversal(members, setKinds.get(value))) result = (result + entry.hash) | 0;
       const resultHash = mixCollectionHash(result, members.length);
       constructorHashes.set(value, resultHash);
       return resultHash;
@@ -7172,7 +7217,7 @@
           else if (kind === "number") { tag = "number"; a = v; }
           else if (kind === "string") { tag = "string"; a = v; }
           else if (kind !== "object") fail(kind, path);
-          else if (vars.has(v)) fail("Var", path);
+          else if (stamped(v) && vars.has(v)) fail("Var", path);
           else if (stamped(v) && atoms.has(v)) fail("atom", path);
           else if (stamped(v) && volatiles.has(v)) fail("volatile", path);
           else if (stamped(v) && isTypeValue(v) || ifnValues.has(v)) fail("protocol/type instance", path);
@@ -7186,7 +7231,7 @@
           }
           else if (stamped(v) && maps.has(v)) { tag = "map"; a = []; let i = 0;
             for (const e of mapTraversal(v)) { a.push(visit(e.key, path + ".key[" + i + "]", depth + 1), visit(e.value, path + ".value[" + i++ + "]", depth + 1)); }
-          } else if (sets.store.has(v) || stamped(v) && sets.has(v)) { tag = "set"; a = setTraversal(v).map((e, i) => visit(e.key, path + "[" + i + "]", depth + 1)); }
+          } else if (stamped(v) && sets.has(v)) { tag = "set"; a = setTraversal(v).map((e, i) => visit(e.key, path + "[" + i + "]", depth + 1)); }
           else if (stamped(v) && queues.has(v)) { tag = "queue"; a = visit(vectorFromArray(toArray(v)), path + ".payload", depth + 1); }
           else if (stamped(v) && uuids.has(v)) { tag = "uuid"; a = visit(uuids.get(v), path + ".payload", depth + 1); }
           else if (literals.has(v)) {
@@ -7311,7 +7356,7 @@
   // At compile time a vector is told by its stamp before its keyed kind
   // (`/*@stamped*/`, build.rs), so a host value's getters never run.
   function inspect(value) {
-    if (/*@stamped*/isReduced(value) || /*@stamped*/uuids.has(value) || vars.has(value) || /*@stamped*/atoms.has(value) || /*@stamped*/volatiles.has(value)) return Object.freeze({kind: "opaque"});
+    if (/*@stamped*/isReduced(value) || /*@stamped*/uuids.has(value) || /*@stamped*/vars.has(value) || /*@stamped*/atoms.has(value) || /*@stamped*/volatiles.has(value)) return Object.freeze({kind: "opaque"});
     const kw = /*@stamped*/keywordOf(value), named = kw || /*@stamped*/symbolOf(value);
     if (named) return Object.freeze({kind: kw ? "keyword" : "symbol",
       namespace: named.ns$LKEY, name: named.name$LKEY, spelling: kw ? named.fqn$LKEY : named.str$LKEY});
@@ -7322,8 +7367,8 @@
       : /*@stamped*/mapTraversal(value);
     if (entries) return Object.freeze({kind: "map", entries: Object.freeze(entries.map(
       entry => Object.freeze([entry.key, entry.value]))), count: entries.length});
-    // A sorted set by its store's brand, another set by its stamp first.
-    const members = sets.store.has(value) || /*@stamped*/sets.has(value) ? sets.get(value) : undefined;
+    // A set by its stamp first.
+    const members = /*@stamped*/sets.has(value) ? sets.get(value) : undefined;
     if (members) return Object.freeze({kind: "set",
       items: Object.freeze(setTraversal(value).map(entry => entry.key)), count: members.length});
     if (/*@stamped*/isCell(value) || /*@stamped*/isChunkedCons(value) || /*@stamped*/isView(value)) {
@@ -7508,9 +7553,9 @@
   };
   //@unit empty requires: cellOf, collectionWithMeta, comparatorOf, emptyList, holdsVector,
   //@ isArrayMap, isCell, isChunkedCons, isEntryCell, isLazy, isTreeMap, isView, makeMap, makeSet,
-  //@ mapKinds, maps, mapTypes, meta, methodKeys, preserveMeta, protocolHooks,
-  //@ publicCollectionSlots, queueFromArray, queues, recordTypeOf, setComparators, setKinds, sets,
-  //@ setType, vector, viewOf
+  //@ mapKinds, maps, mapTypes, meta, methodKeys, PersistentHashSetValue, preserveMeta,
+  //@ protocolHooks, publicCollectionSlots, queueFromArray, queues, recordTypeOf, setKinds, sets,
+  //@ treeSetOf, vector, viewOf
   function empty(value) {
     const method = value == null ? null : protocolHooks.publicMethod?.(value, methodKeys[15], 1);
     if (method) return method.call(value, value);
@@ -7518,7 +7563,10 @@
     if (recordTypeOf(value) !== undefined || isEntryCell(value)) return null;
     if (holdsVector(value)) return preserveMeta(value, vector());
     if (maps.has(value)) return preserveMeta(value, makeMap(mapTypes[mapKinds.get(value)], isArrayMap(value) || isTreeMap(value) || Array.isArray(maps.get(value)) ? [] : {root: null, nil: null, length: 0}, mapKinds.get(value), comparatorOf(value)));
-    if (sets.has(value)) return preserveMeta(value, makeSet(setType(setKinds.get(value)), Array.isArray(sets.get(value)) ? [] : {root: null, nil: null, length: 0}, setKinds.get(value), setComparators.get(value)));
+    // A sorted set's empty tree map keeps its comparator (light-cljs-1038).
+    const tree = treeSetOf(value);
+    if (tree !== undefined) return preserveMeta(value, new tree.cljs$lang$cell$$LKEY(empty(tree.treeMap$LKEY)));
+    if (sets.has(value)) return preserveMeta(value, makeSet(PersistentHashSetValue, Array.isArray(sets.get(value)) ? [] : {root: null, nil: null, length: 0}, setKinds.get(value)));
     if (queues.has(value)) return preserveMeta(value, queueFromArray([]));
     if (cellOf(value)?.cell$LKEY === "list" && cellOf(value).count$LKEY === 0 && !publicCollectionSlots.has(value)) return value;
     if (isCell(value) || isChunkedCons(value) || isView(value) || isLazy(value))
@@ -7677,9 +7725,6 @@
   //@unit sequentialIndex.host effect: sequentialIndex, extendType, extendInstance when: entryPrototype,
   //@ vectorIndexOf requires: hostHooks, sequentialIndex
   hostHooks.index = sequentialIndex;
-  //@unit treeSetMaps
-  // The sorted map a sorted set's `tree-map` field gives, built once.
-  const treeSetMaps = new WeakMap();
   //@unit treeKey requires: nth
   // A sorted map's tree is its nodes (`TreeNodeCell`), or what a public
   // constructor was given, which its readers read as upstream's do, by the
@@ -7879,18 +7924,6 @@
     const right = treeRight(node);
     return right != null ? treeKvReduce(right, f, init) : init;
   }
-  //@unit deferredEntries
-  // A public positional constructor stores its tree/backing-map immediately,
-  // without traversing nodes, hashing keys or calling the comparator. Only
-  // operations that consume entries demand this private array facade.
-  function deferredEntries(realize) {
-    let entries;
-    const demand = () => entries ?? (entries = Object.freeze(realize()));
-    return new Proxy([], {
-      get(_target, property) { return Reflect.get(demand(), property); },
-      has(_target, property) { return Reflect.has(demand(), property); }
-    });
-  }
   //@unit treeMapConstructor requires: constructorHashes, metadataValues, TreeMapCell
   // The public constructor: a sorted map of the comparator, tree and count
   // it is given, as they are (light-cljs-1035), which its operations read
@@ -7901,14 +7934,65 @@
     if (cachedHash !== null) constructorHashes.set(value, cachedHash);
     return value;
   }
-  //@unit treeSetConstructor requires: comparatorOf, compareKeys, constructorSlots, deferredEntries,
-  //@ makeSet, mapTraversal, sets
+  //@unit treeSetConstructor requires: constructorHashes, metadataValues, TreeSetCell
+  // The public constructor: a sorted set of the tree map it is given, as it
+  // is (light-cljs-1038), which its operations read as any sorted set's; it
+  // reads no node until one of them does.
   function treeSetConstructor(metadata, treeMap, cachedHash) {
-    const comparator = comparatorOf(treeMap);
-    const value = makeSet(treeSetConstructor, [], "sorted-set", comparator === undefined ? compareKeys : comparator);
-    sets.reset(value, deferredEntries(() => treeMap == null ? [] : mapTraversal(treeMap).map(entry => Object.freeze({key: entry.key, get hash() { return entry.hash; }}))));
-    return constructorSlots(value, {"tree-map": treeMap}, metadata, cachedHash);
+    const value = new TreeSetCell(treeMap);
+    metadataValues.set(value, metadata);
+    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
+    return value;
   }
+  //@unit TreeSetCell.members effect: TreeSetCell when: sets requires: ArrayMapEntry, isTreeMap,
+  //@ kindHooks, mapTraversal, treeKey, treeLeft, treeRight
+  // A sorted set's members in their order, as the entries `sets.get` gives
+  // (light-cljs-1038): a fresh frozen array of entries of its tree map's
+  // keys, walked in order, which the readers that take every member read
+  // once per operation (printing, hashing, equality); of the map's entries
+  // where a public constructor gave it another map.
+  kindHooks.treeSetMembers = set => {
+    const map = set.treeMap$LKEY;
+    if (!isTreeMap(map)) return Object.freeze(map == null ? [] : mapTraversal(map).map(entry => new ArrayMapEntry(entry.key, null)));
+    const members = [], walk = node => { if (node != null) { walk(treeLeft(node)); members.push(new ArrayMapEntry(treeKey(node), null)); walk(treeRight(node)); } };
+    walk(map.tree$LKEY);
+    return Object.freeze(members);
+  };
+  //@unit TreeSetCell.seq effect: TreeSetCell when: setSeqs requires: isTreeMap, KeySeqCell,
+  //@ kindHooks, sets, treeMapSeq
+  // A sorted set's seq, upstream's `(keys tree-map)`: the keys of its tree
+  // map's seq (light-cljs-1038); the seq of its members where a public
+  // constructor gave it another map.
+  kindHooks.treeSetSeq = set => {
+    const map = set.treeMap$LKEY;
+    if (!isTreeMap(map)) { const members = sets.get(set); return members.length ? kindHooks.seqSet(set, members) : null; }
+    const s = treeMapSeq(map, true);
+    return s === null ? null : new KeySeqCell("keys", s);
+  };
+  //@unit TreeSetCell.comparator effect: TreeSetCell when: comparatorOf requires: compareKeys,
+  //@ isTreeMap, kindHooks
+  // A sorted set's comparator, its tree map's (`comparatorOf`), or `compare`
+  // where a public constructor gave it no sorted map.
+  kindHooks.treeSetComparator = set => {
+    const map = set.treeMap$LKEY, comp = isTreeMap(map) ? map.comp$LKEY : undefined;
+    return comp === undefined ? compareKeys : comp;
+  };
+  //@unit TreeSetCell.count effect: TreeSetCell when: count, setCount requires: count, kindHooks
+  // `count` of a sorted set: its tree map's `count` (upstream's), which a
+  // protocol implementation of the map's may answer.
+  kindHooks.treeSetCount = set => count(set.treeMap$LKEY);
+  //@unit TreeSetCell.lookup effect: TreeSetCell when: lookup, get requires: comparatorOf,
+  //@ isTreeMap, kindHooks, sets, sortedPosition, treeEntryAt, treeKey
+  // The member of a sorted set equal to `key`, else `notFound`: the key of
+  // the node of its tree map that holds it (`treeEntryAt`), as upstream's;
+  // a search of its members where a public constructor gave it no sorted
+  // map.
+  kindHooks.treeSetLookup = (set, key, notFound) => {
+    const map = set.treeMap$LKEY;
+    if (isTreeMap(map)) { const node = treeEntryAt(map, key); return node === null ? notFound : treeKey(node); }
+    const members = sets.get(set), comparator = comparatorOf(set), i = sortedPosition(members, key, comparator);
+    return i < members.length && comparator.call(null, members[i].key, key) === 0 ? members[i].key : notFound;
+  };
   //@unit treeMapSeqConstructor requires: conj, constructorSlots, emptyList, first, ListCell, next,
   //@ protocolHooks, treeLeft, TreeMapStackCell, treeRight, truth
   // The public constructor; and the seqs a sorted map builds (light-cljs-1035),
@@ -8028,11 +8112,13 @@
   function sortedMapBy(comparator, ...pairs) {
     return buildSortedMap(fnComparator(comparator), pairs);
   }
-  //@unit buildSortedSet requires: makeSet, putSortedEntry, treeSetConstructor
+  //@unit buildSortedSet requires: buildSortedMap, TreeSetCell
+  // A sorted set of `items`: its tree map of each item in turn with a nil
+  // value (light-cljs-1038), as upstream's `sorted-set` conjs them.
   function buildSortedSet(comparator, items) {
-    const entries = [];
-    for (const item of items) putSortedEntry(entries, item, undefined, comparator, true);
-    return makeSet(treeSetConstructor, entries, "sorted-set", comparator);
+    const pairs = [];
+    for (const item of items) pairs.push(item, null);
+    return new TreeSetCell(buildSortedMap(comparator, pairs));
   }
   //@unit sortedSet requires: buildSortedSet, compareKeys
   function sortedSet(...items) { return buildSortedSet(compareKeys, items); }
@@ -8041,7 +8127,7 @@
     return buildSortedSet(fnComparator(comparator), items);
   }
   //@unit sortedSeqFrom requires: comparatorOf, identity, isTreeMap, mapSeq, sets, sortedPosition,
-  //@ treeKey, treeLeft, treeRight, treeStackPush, treeStackSeq, truth
+  //@ treeKey, treeLeft, treeRight, treeSetOf, treeStackPush, treeStackSeq, truth
   function sortedSeqFrom(value, key, ascending) {
     // A sorted map's, upstream's: the stack of the path to `key`, of the
     // nodes at or past it in the seq's order, of an unknown count.
@@ -8057,9 +8143,12 @@
       }
       return stack == null ? null : treeStackSeq(stack, ascending);
     }
+    // A sorted set's, upstream's: the keys of its tree map's
+    // (light-cljs-1038); the search of its members where a public
+    // constructor gave it no sorted map.
+    const set = treeSetOf(value);
+    if (set !== undefined && isTreeMap(set.treeMap$LKEY)) return mapSeq(treeKey, sortedSeqFrom(set.treeMap$LKEY, key, ascending));
     const entries = sets.get(value), comparator = comparatorOf(value);
-    // A sorted set's members, an array until sets are classes
-    // (light-cljs-1013).
     let i = sortedPosition(entries, key, comparator);
     if (!truth(ascending)) {
       if (i === entries.length || comparator.call(null, entries[i].key, key) !== 0) i--;
@@ -8211,22 +8300,17 @@
   function nextValue(value) {
     return isCell(value) || isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value);
   }
-  //@unit storesPredicate requires: canHoldField, payloads
+  //@unit storesPredicate requires: canHoldField
   // Brand inventories are fixed. Build one private inventory per predicate,
   // without allocating an array and invoking a callback for each probe.
-  // The private-field stores answer together, with one read of the value's
-  // kind (`payloads`, light-cljs-990); only the stores that are not exact,
-  // the WeakMaps and the wider tests of maps and sets (`stores`), are probed
-  // one by one.
+  // Each store is a class's kind test or a WeakMap, probed in turn: no value
+  // keeps a private-field payload (`payloads`, deleted in light-cljs-1038),
+  // which one read of its kind answered (light-cljs-990).
   // No store holds a value that cannot hold a private field.
   function storesPredicate(...inventory) {
-    // Own metadata only: a host may have given `Object.prototype` some. By
-    // descriptor, as the Pants engine has no `Object.hasOwn`.
-    const kinds = inventory.reduce((bits, store) => bits | Object.getOwnPropertyDescriptor(store, "kindBits")?.value, 0),
-      stores = inventory.filter(store => Object.getOwnPropertyDescriptor(store, "exact")?.value !== true);
+    const stores = inventory.slice();
     return value => {
       if (!canHoldField(value)) return false;
-      if (kinds >> payloads.kind(value) & 1) return true;
       for (let i = 0; i < stores.length; i++) if (stores[i].has(value)) return true;
       return false;
     };
@@ -8892,15 +8976,14 @@
   function withMeta(value, metadata) {
     return typeof value === "function" ? fnWithMeta(value, metadata) : collectionWithMeta(value, metadata);
   }
-  //@unit fnWithMeta requires: apply, makeIFn, metadataValues, metaFunctions
+  //@unit fnWithMeta requires: apply, makeIFn, metadataValues, MetaFnCell, metaFunctions
   // A function, or a function with metadata, with `metadata`.
   function fnWithMeta(value, metadata) {
     const original = metaFunctions.get(value) || value;
     const methods = {};
     for (let n = 0; n <= 20; n++) methods[n] = function (_self, ...args) { return original.call(null, ...args); };
     methods[21] = function (_self, ...args) { return apply(original, ...args); };
-    const result = makeIFn(methods);
-    metaFunctions.set(result, original);
+    const result = makeIFn(methods, methods, new MetaFnCell(original));
     metadataValues.set(result, metadata);
     return result;
   }
@@ -8908,9 +8991,8 @@
   //@ constructorHashes, holdsVector, ifnValues, isCell, isChunkedCons, isEntryCell, isLazy, isView,
   //@ kindHooks, lazyCells, mapCellCopy, maps, meta, metaFunctions, methodKeys, protocolHooks,
   //@ protocolImplementations, prototypeCopy, publicCollectionSlots, queues, recordCells,
-  //@ reifyCells, seqCells, setCellOf, setComparators, setKinds, setMeta, setQueueCopy, sets,
-  //@ subvecSources, symbolCells, treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells,
-  //@ viewOf
+  //@ reifyCells, seqCells, setMeta, setQueueCopy, sets, subvecSources, symbolCells, vars,
+  //@ vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
@@ -8932,16 +9014,16 @@
     else if (kind === "cycle") result = kindHooks.withMetaCycle(value);
     else if (recordCells.has(value)) return kindHooks.withMetaRecord(value, metadata);
     else {
-      const stores = [treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbolCells, maps, sets, setKinds, setComparators, seqCells, viewCells, queues, vars, subvecSources];
+      const stores = [canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbolCells, maps, sets, seqCells, viewCells, queues, vars, subvecSources];
       const vector = holdsVector(value);
       if (!vector && !stores.some(store => store.has(value)) && !reifyCells.has(value)) throw new Error("value does not support metadata");
-      // A vector's, a view's, a symbol's or a map's copy is built by its
-      // class, with its fields.
-      const set = setCellOf(value) !== undefined;
+      // A vector's, a view's, a symbol's, a map's, a set's or a var's copy
+      // is built by its class, with its fields.
       result = vector ? vectorCellCopy(value) : isView(value) ? viewAt(value, value.i$LKEY) : isCell(value) ? cellCopy(value) : maps.has(value) ? mapCellCopy(value)
-        : setQueueCopy(value) ?? kindHooks.symbolCopy?.(value) ?? prototypeCopy(value);
+        : setQueueCopy(value) ?? kindHooks.symbolCopy?.(value)
+        ?? (vars.has(value) ? kindHooks.varCopy(value) : prototypeCopy(value));
       // The class layout's tests, which hold nothing, are no stores.
-      for (const store of [...stores, protocolImplementations]) if (store.set !== undefined && store !== viewCells && store !== symbolCells && store !== seqCells && store !== maps && !(set && (store === sets || store === setKinds)) && store.has(value)) store.set(result, store.get(value));
+      for (const store of [...stores, protocolImplementations]) if (store.set !== undefined && store !== viewCells && store !== symbolCells && store !== seqCells && store !== maps && store.has(value)) store.set(result, store.get(value));
       if (ifnValues.has(value)) ifnValues.set(result, ifnValues.get(value));
       if (ifnValues.has(value) || reifyCells.has(value)) Object.defineProperties(result, Object.getOwnPropertyDescriptors(value));
     }
@@ -9149,14 +9231,14 @@
       }
     } finally { tapQueue.length = 0; tapDraining = false; tapDelivered = 0; }
   }
-  //@unit makeVar requires: apply, makeIFn, metadataValues, Var, vars
+  //@unit makeVar requires: apply, makeIFn, metadataValues, VarCell
+  // A var of the class layout (`VarCell`, light-cljs-1038), callable as its
+  // value.
   function makeVar(get, symbol, metadata = null) {
     const methods = {};
     for (let n = 0; n <= 20; n++) methods[n] = function (_self, ...args) { return get.call(null).call(null, ...args); };
     methods[21] = function (_self, ...args) { return apply(get.call(null), ...args); };
-    const value = makeIFn(methods);
-    Object.setPrototypeOf(value, Var.prototype);
-    vars.set(value, Object.freeze({get, symbol}));
+    const value = makeIFn(methods, methods, new VarCell(get, symbol));
     metadataValues.set(value, metadata);
     return value;
   }
@@ -9170,6 +9252,11 @@
     if (deferredMetadata) deferredVarMetadata.set(value, deferredMetadata);
     return value;
   }
+  //@unit makeVar.copy effect: makeVar when: collectionWithMeta requires: kindHooks, makeVar
+  // A var's copy for `with-meta`, a var of its fields with its own callable
+  // methods (light-cljs-1038): one another load of the build made has none
+  // this runtime knows (`ifnValues`).
+  kindHooks.varCopy = value => makeVar(value.val$LKEY, value.sym$LKEY);
   //@unit Var requires: makeVar, metadataValues
   function Var(get, symbol, metadata) { const value = makeVar(get, symbol, metadata); metadataValues.set(value, metadata); return value; }
   //@unit test requires: get, keyword, meta, truth, vars
@@ -9182,18 +9269,21 @@
   //@unit varPrototype requires: ifnApply, ifnPrototype, meta, Var, vars
   const varPrototype = Object.freeze({
     constructor: Var,
-    isMacro() { return vars.get(this).get.call(null).cljs$lang$macro; },
-    get val() { return vars.get(this).get; },
-    get sym() { return vars.get(this).symbol; },
+    isMacro() { return vars.get(this).val$LKEY.call(null).cljs$lang$macro; },
+    get val() { return vars.get(this).val$LKEY; },
+    get sym() { return vars.get(this).sym$LKEY; },
     get _meta() { return meta(this); },
     apply(_self, args) { return ifnApply(this, args); },
     call(_self, ...args) { return ifnPrototype.call.call(this, _self, ...args); },
-    toString() { return "#'" + vars.get(this).symbol; }
+    toString() { return "#'" + vars.get(this).sym$LKEY; }
   });
   //@unit Var.prototype effect: Var requires: builtinType, Var, varPrototype
   // Extensible, like every builtin type's: `extend-type Var` installs methods
   // here, above the frozen base every Var inherits through it.
   builtinType(Var, varPrototype);
+  //@unit VarCell.type effect: VarCell requires: Var, VarCell, viewType
+  // A var is a class of its type's prototype, kind 45 (light-cljs-1038).
+  viewType(Var, VarCell, 45);
   //@unit namespaces compile-time
   // Namespace identities are session-owned, with source registration from emitted units.
   const namespaces = new Map();
@@ -9576,9 +9666,10 @@
     return entry;
   }
   //@unit makeIFn requires: ifnInvokeEntry, ifnPrototype, ifnValues
-  // A value of `ifnPrototype`, whose kind is a `reify`'s (66, `kinds`).
-  function makeIFn(methods, invokeMethods = methods) {
-    const value = Object.create(ifnPrototype);
+  // A value of `ifnPrototype`, whose kind is a `reify`'s (66, `kinds`), by
+  // default; a var and a function with metadata pass their class's value
+  // (`VarCell`, `MetaFnCell`, light-cljs-1038).
+  function makeIFn(methods, invokeMethods = methods, value = Object.create(ifnPrototype)) {
     ifnValues.set(value, methods);
     for (const [arity, method] of Object.entries(invokeMethods)) {
       value["cljs$core$IFn$_invoke$arity$" + arity] = ifnInvokeEntry(method);
@@ -9671,39 +9762,24 @@
   }
   //@unit payloadStores requires: chunkedConsCells, lazyCells, maps, queues, seqCells, sets,
   //@ vectorCells, viewCells
-  // `payloadStore`'s stores, numbered from 1, and the store each kind
-  // (`payloads`) names, else 0: each entry its own, so that no index a host
-  // gives `Array.prototype` is read (the Sol review of light-cljs-998).
-  const payloadStores = (stores => {
-    const byKind = Array(32).fill(0);
-    stores.forEach((store, i) => {
-      const bits = Object.getOwnPropertyDescriptor(store, "kindBits")?.value;
-      for (let kind = 1; kind < 31; kind++) if (bits >> kind & 1) byKind[kind] = i + 1;
-    });
-    return {stores, byKind};
-  })([viewCells, seqCells, vectorCells, maps, lazyCells, sets, queues, chunkedConsCells]);
-  //@unit payloadStore requires: payloads, payloadStores
+  // `payloadStore`'s stores, numbered from 1.
+  const payloadStores = {stores: [viewCells, seqCells, vectorCells, maps, lazyCells, sets, queues, chunkedConsCells]};
+  //@unit payloadStore requires: payloadStores
   // Which store of the runtime's collections and seqs holds a value, by a
-  // number from 1 to 8, else 0. These are brand checks, which read no
-  // property of the value, so no getter or Proxy trap of a host value runs.
-  // A value is in one payload store (`countedValue`). The value's kind
-  // (`payloads`) names an exact store at once; the stores that are not
-  // exact are then probed in this order (light-cljs-990).
-  const payloadStore = (({stores, byKind}) => {
-    const probed = [];
-    stores.forEach((store, i) => { if (Object.getOwnPropertyDescriptor(store, "exact")?.value !== true) probed.push(store, i + 1); });
-    return value => {
-      const number = byKind[payloads.kind(value)];
-      if (number) return number;
-      for (let i = 0; i < probed.length; i += 2) if (probed[i].has(value)) return probed[i + 1];
-      return 0;
-    };
+  // number from 1 to 8, else 0, probing them in this order: each is a kind
+  // test of a class (light-cljs-990, whose private-field kinds answered
+  // some at once until light-cljs-1013 and light-cljs-1038). A value is in
+  // one payload store (`countedValue`).
+  const payloadStore = (({stores}) => value => {
+    for (let i = 0; i < stores.length; i++) if (stores[i].has(value)) return i + 1;
+    return 0;
   })(payloadStores);
-  //@unit kindStore requires: holdsVector, payloads, payloadStores
-  // `payloadStore` from the kind alone, else 0, without probing the stores
-  // that are not exact.
-  // A vector cell, which has no payload kind, is store 3 (`vectorCells`).
-  const kindStore = (byKind => value => byKind[payloads.kind(value)] || (holdsVector(value) ? 3 : 0))(payloadStores.byKind);
+  //@unit kindStore requires: holdsVector
+  // `payloadStore` from the kind alone, else 0: probing the maps' store asks
+  // if a host value is a record, which may run a Proxy's `getPrototypeOf`.
+  // Only a vector cell is told so, store 3 (`vectorCells`): no store is a
+  // private-field kind any more (`payloads`).
+  const kindStore = value => holdsVector(value) ? 3 : 0;
   //@unit storeNativeProtocols
   // The core protocols of `publicMethodInfo`'s `stores`.
   const storeNativeProtocols = new Set(["ISeqable", "ISeq", "INext", "IMeta", "ILookup"]);
@@ -10341,6 +10417,11 @@
     },
     apply(_self, args) { return ifnApply(this, args); }
   }, "cljs$lang$kind$$LKEY", {value: 66}));
+  //@unit MetaFnCell.type effect: MetaFnCell requires: ifnPrototype, MetaFnCell
+  // A function with metadata's prototype (light-cljs-1038): the callable
+  // values' with its own kind, a runtime class's (below 64, `kinds`) where
+  // it had a `reify`'s, which no enumeration lists.
+  MetaFnCell.prototype = Object.defineProperty(Object.create(ifnPrototype), "cljs$lang$kind$$LKEY", {value: 46});
   //@unit ifnApply
   // Unlike Function.apply, an IFn apply must bundle the 21st and later values
   // exactly once. Keep that path independent of .call's already-expanded ABI.
@@ -11258,13 +11339,15 @@
     const buffer = {text: "", append(text) { this.text += text; return this; }};
     return {buffer, writer: new StringBufferWriter(buffer)};
   }
-  //@unit StringBufferWriter requires: stringBufferWriters
-  function StringBufferWriter(sb) {
-    const writer = Object.create(StringBufferWriter.prototype);
-    writer.sb = sb;
-    stringBufferWriters.add(writer);
-    return writer;
-  }
+  //@unit StringBufferWriter requires: StringBufferWriterCell
+  // The public constructor: a writer of the class layout
+  // (`StringBufferWriterCell`, light-cljs-1038).
+  function StringBufferWriter(sb) { return new StringBufferWriterCell(sb); }
+  //@unit StringBufferWriter.type effect: StringBufferWriter requires: StringBufferWriter,
+  //@ StringBufferWriterCell
+  // Its kind on its prototype, which the writers it builds share.
+  StringBufferWriterCell.prototype = StringBufferWriter.prototype;
+  StringBufferWriter.prototype.cljs$lang$kind$$LKEY = 47;
   //@unit prStrStar requires: flushWriter, prWriter, stringWriter
   function prStrStar(value) {
     // The public helper calls the protocol directly with nil options. In
@@ -11873,9 +11956,8 @@
   const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => printWriterImpl(value, writer, options, true), printableValue);
   //@unit clone effect requires: canonicalVectorRoots, cellCopy, cellOf, cloneablePayload,
   //@ constructorHashes, coreMethod, holdsVector, IntegerRangeValue, isCell, isView, mapCellCopy,
-  //@ maps, meta, metadataValues, protocolStores, rangeChunks, RangeValue, seqCells, setCellOf,
-  //@ setComparators, setKinds, setQueueCopy, sets, subvecSources, transientCells, treeSetMaps,
-  //@ vectorCellCopy, vectorCells, viewAt, viewCells
+  //@ maps, meta, metadataValues, protocolStores, rangeChunks, RangeValue, seqCells, setQueueCopy,
+  //@ subvecSources, transientCells, vectorCellCopy, vectorCells, viewAt, viewCells
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (cellOf(value)?.cell$LKEY === "range") {
       const c = cellOf(value), state = rangeChunks.get(c);
@@ -11883,11 +11965,10 @@
         : RangeValue(meta(value), c.first$LKEY, c.end$LKEY, c.step$LKEY, state?.chunk, state?.tail, constructorHashes.get(value));
     }
     if (!cloneablePayload(value)) throw new Error("No protocol method ICloneable.-clone defined for this value");
-    const set = setCellOf(value) !== undefined;
     const result = holdsVector(value) ? vectorCellCopy(value) : isView(value) ? viewAt(value, value.i$LKEY) : isCell(value) ? cellCopy(value) : maps.has(value) ? mapCellCopy(value)
       : setQueueCopy(value) ?? Object.create(Object.getPrototypeOf(value));
     // The class layout's tests, which hold nothing, are no stores.
-    for (const store of [...protocolStores, treeSetMaps, canonicalVectorRoots, constructorHashes, metadataValues, setKinds, setComparators, subvecSources]) if (store.set !== undefined && store !== vectorCells && store !== transientCells && store !== viewCells && store !== seqCells && store !== maps && !(set && (store === sets || store === setKinds)) && store.has(value)) store.set(result, store.get(value));
+    for (const store of [...protocolStores, canonicalVectorRoots, constructorHashes, metadataValues, subvecSources]) if (store.set !== undefined && store !== vectorCells && store !== transientCells && store !== viewCells && store !== seqCells && store !== maps && store.has(value)) store.set(result, store.get(value));
     return result;
   }, cloneablePayload);
   //@unit indexedNth requires: isTransient, missing, nth, transientNth
@@ -12186,14 +12267,10 @@
   publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? value.tree$LKEY : value.cnt$LKEY, meta);
   Object.defineProperty(treeMapConstructor.prototype, "comp", {get() { return comparatorOf(this); }});
   //@unit treeSetConstructor.fields effect: treeSetConstructor when: resetMeta, upstreamMembers
-  //@ requires: makeMap, meta, publicCollectionSlots, publicFields, setComparators, sets,
-  //@ treeMapConstructor, treeSetConstructor, treeSetMaps
-  publicFields(treeSetConstructor, ["meta", "tree-map", "__hash"], (value, field) => {
-    const slots = publicCollectionSlots.get(value);
-    if (slots && field in slots) return slots[field];
-    if (!treeSetMaps.has(value)) treeSetMaps.set(value, makeMap(treeMapConstructor, sets.get(value).map(e => ({key: e.key, value: null, get hash() { return e.hash; }})), "sorted-map", setComparators.get(value)));
-    return treeSetMaps.get(value);
-  }, meta);
+  //@ requires: meta, publicFields, treeSetConstructor
+  // Its own field (light-cljs-1038): the tree map that holds its members,
+  // the one a public constructor gave it.
+  publicFields(treeSetConstructor, ["meta", "tree-map", "__hash"], value => value.treeMap$LKEY, meta);
   //@unit treeMapSeqConstructor.fields effect: treeMapSeqConstructor when: resetMeta,
   //@ upstreamMembers requires: meta, publicFields, treeMapSeqConstructor
   // Its own fields, which a public constructor gave it as its slots
