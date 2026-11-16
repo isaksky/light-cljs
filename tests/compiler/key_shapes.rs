@@ -293,7 +293,7 @@ fn set_literals_add_their_other_members_to_a_shape_of_their_first_members() {
 /// by [`exposed`].
 const INTERNALS: &str = "maps, mapKinds, sets, setKinds, hashRoots, hash, keyword, symbol, \
      vectorFromArray, listFromArray, setFromArray, mapFromArray, mapShape, mapFromShape, \
-     hashMapShape, hashMapFromShape, setShape, setFromShape, literalSetFromArray, transients, core";
+     hashMapShape, hashMapFromShape, setShape, setFromShape, literalSetFromArray, transientState, core";
 
 /// `None` output of a program whose runtime exposes [`INTERNALS`] as
 /// `globalThis.lightInternals` when it loads.
@@ -495,7 +495,7 @@ const unchanged = (nodes, what) => {
   }
 };
 const original = snapshot(I.maps.get(m).root);
-const rootOf = t => I.transients.get(t).entries.root;
+const rootOf = t => I.transientState(t).entries.root;
 let t = c.assocBang(c.transient(m), 0, "a");
 const owned = rootOf(t);
 if (owned === I.maps.get(m).root) fail("the first edit shares the persistent root");
@@ -565,7 +565,7 @@ const unchanged = (nodes, what) => {
   }
 };
 const original = snapshot(I.sets.get(s).root);
-const rootOf = t => I.transients.get(t).entries.root;
+const rootOf = t => I.transientState(t).entries.root;
 let t = c.disjBang(c.transient(s), 0);
 const owned = rootOf(t);
 if (owned === I.sets.get(s).root) fail("the first edit shares the persistent root");

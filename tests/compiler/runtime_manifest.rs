@@ -1175,8 +1175,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // repeats, iterates, cycles, key and value seqs, `re-seq`'s conses and
     // sorted maps' seqs (light-cljs-1030), and the 17 keyed slot units of
     // subvectors, map entries (seven each) and transient vectors (three)
-    // (light-cljs-1028).
-    assert_eq!(checked, 435);
+    // (light-cljs-1028), and the 17 keyed slots of array, hash and sorted
+    // maps with the slot-first wrappers of `dissoc` and `contains?` reading
+    // two of them (light-cljs-1012).
+    assert_eq!(checked, 454);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1950,6 +1952,8 @@ fn kind_hooks_skip_records() {
             "lookup",
             "get",
             "get.maps",
+            "hashMapLookup",
+            "treeMapLookup",
             "makeSet.equiv"
         ]
     );
@@ -2152,6 +2156,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "conj <- conj.branches",
             "conj <- conj.slots",
             "contains <- contains.own",
+            "contains <- contains.slots",
             "count <- count.branches",
             "count <- count.protocol",
             "count <- count.slots",
@@ -2176,6 +2181,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- satisfies",
             "demandProtocol <- setDeclarationDemand",
             "demandProtocol <- storeProtocol",
+            "dissoc <- dissoc.slots",
             "first <- first.branches",
             "first <- first.protocol",
             "first <- first.slots",

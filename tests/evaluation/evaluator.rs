@@ -15,6 +15,19 @@ fn program(source: &str) -> light_cljs::Program {
 
 const COLLECTION_SOURCE: &str = "[{:a 1} #{2 3} (apply (fn [a b] (+ a b)) [4 5])]";
 
+/// The maps' keyed slots (light-cljs-1012), which the compile-time
+/// protocol lookup calls directly, answer every map of their class, a public
+/// constructor's included (tests/compiler/builtin_types.rs has the same).
+const MAP_SLOTS_SOURCE: &str = "(let [pub (cljs.core/PersistentArrayMap. nil 2 (array :a 1 :b 2) nil)
+      big (cljs.core/PersistentArrayMap. nil 8 (array :a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8) nil)
+      h (hash-map :a 1 :b 2) s (sorted-map :b 2 :a 1) m (with-meta {:x 1} {:m 1})]
+  [(-count pub) (-lookup pub :a) (-lookup pub :z :none) (-contains-key? pub :b) (-assoc pub :c 3) (-dissoc pub :a)
+   (count (-assoc big :i 9)) (map? (-assoc big :i 9)) (-count h) (-dissoc h :a) (-lookup (-assoc h :c 3) :c) (-count (-conj h [:d 4]))
+   (-lookup s :a) (-assoc s :c 3) (-count s) (count pub) (get pub :b) (contains? pub :z) (assoc pub :c 3) (dissoc pub :b)
+   (conj s [:c 3]) (meta (assoc m :y 2)) (meta (dissoc m :x)) (dissoc {:a 1 :b 2 :c 3} :b) (dissoc {:a 1} :a) (dissoc {:a 1} :z)
+   (get (dissoc (zipmap (range 20) (range 20)) 3) 4) (count (dissoc (zipmap (range 20) (range 20)) 3 4)) (contains? {nil 1} nil)
+   (get (assoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8} :i 9) :i) (persistent! (assoc! (transient {:a 1}) :b 2))])";
+
 #[test]
 fn compiler_units_execute_with_identical_expected_results_in_quickjs_and_node() {
     let cases = [
@@ -36,6 +49,10 @@ fn compiler_units_execute_with_identical_expected_results_in_quickjs_and_node() 
             "[9 \"HI\" true 7 1]",
         ),
         ("(if false (js/process.exit 1) 42)", "42"),
+        (
+            MAP_SLOTS_SOURCE,
+            "[2 1 :none true {:a 1, :b 2, :c 3} {:b 2} 9 true 2 {:b 2} 3 3 1 {:a 1, :b 2, :c 3} 2 2 2 false {:a 1, :b 2, :c 3} {:a 1} {:a 1, :b 2, :c 3} {:m 1} {:m 1} {:a 1, :c 3} {} {:a 1} 4 18 true 9 {:a 1, :b 2}]",
+        ),
     ];
     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
     for (source, expected) in cases {

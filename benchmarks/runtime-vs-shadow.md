@@ -1536,3 +1536,122 @@ simple was not measured: its port could not be generated in this worktree
 
 Raw results (the core-ops EDN and Markdown of every gate above, the first
 two included, and every workload run): research/output-speed/vector-protocols-1028.
+
+## 2026-11-16: array, hash and sorted maps and map transients as classes (light-cljs-1012)
+
+**What.** An array map, a hash map and a sorted map are each one object of an
+internal class on its type's prototype (`ArrayMapCell`, `HashMapCell`,
+`TreeMapCell`, kinds 28 to 30), holding its entries (an array map's and a
+sorted map's entry array, a hash map's trie) unfrozen in an own keyed field,
+and a sorted map its comparator; a map transient (`TransientArrayMapCell`,
+`TransientHashMapCell`, kinds 31 and 32) holds its state likewise. They were
+`Object.create` plus a frozen entry array in the private-field store `maps`,
+a kind in `mapKinds`, a sorted map's comparator in the `sortedComparators`
+WeakMap and a hash map's trie in a private field; those stores are gone for
+the maps (records keep theirs until light-cljs-1013). The maps have keyed
+`-lookup`, `-count`, `-assoc`, `-contains-key?`, `-conj` and (array and hash
+maps) `-dissoc` slots, which the slot-first wrappers call; an array map's
+`assoc` copies its entries once and its `dissoc` removes in one loop.
+Upstream's flat key, value array and hash map fields are light-cljs-1034's,
+and a sorted map as a red-black tree light-cljs-1035's. docs/value-layout.md
+has the notes.
+
+Binaries: before `light-cljs-1bd59e34` (master, with light-cljs-1028), after
+`light-cljs-d630b6f5` (this pellet's src/), in research/shadow-credibility/bin.
+Unreserved: one peer worker was active at first, then none. Raw results:
+research/output-speed/map-classes-1012 (`*-before2`, `*-after`; the
+`*-before` files are master `bb6e8fad`, before light-cljs-1028 landed, with
+TodoMVC under more load).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops kw,get,contains,count-small,assoc,dissoc,update,map-literal-3,reduce-map-inc-1000,reduce-kv-small,reduce-entries-small,eq-map-7,hash-fresh-map-7,destructure-map-3,swap-assoc,merge-small,select-keys-3,group-by-100,transient-map-100,sorted-map-assoc-100,str-sorted-map-20,str-nested-map --runs 3`,
+the same selection both times; 1-minute load average 2.31-3.87 before,
+3.31-4.72 after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 94.8 (94.6-98.4) | 19.6 (19.2-19.9) | -79% | 9.73 | 10.05 | 2.01 |
+| get-small | 106.5 (104.3-108.3) | 22.9 (22.4-23.5) | -79% | 14.8 | 7.46 | 1.55 |
+| get-small-miss | 114.3 (113.6-118.3) | 26.5 (26.1-27.3) | -77% | 19.2 | 6.20 | 1.38 |
+| contains-small | 134.8 (131.9-135.5) | 25.0 (24.8-26.0) | -81% | 11.9 | 11.63 | 2.10 |
+| count-small | 31.8 (30.5-32.2) | 5.45 (5.45-5.60) | -83% | 2.11 | 15.36 | 2.58 |
+| assoc-small-existing | 579.2 (577.4-595.7) | 61.5 (60.1-63.1) | -89% | 31.0 | 19.27 | 1.99 |
+| assoc-small-new | 613.7 (611.4-637.0) | 81.8 (80.4-84.7) | -87% | 39.5 | 15.98 | 2.07 |
+| dissoc-small | 907.6 (896.4-925.4) | 187.6 (182.1-191.1) | -79% | 80.3 | 11.45 | 2.34 |
+| update-small | 643.3 (638.8-664.0) | 62.4 (60.0-63.3) | -90% | 44.4 | 15.07 | 1.41 |
+| map-literal-3 | 86.2 (84.2-86.8) | 31.3 (29.6-31.6) | -64% | 10.3 | 9.08 | 3.05 |
+| get-hash100 | 62.5 (62.4-63.2) | 34.9 (34.1-35.1) | -44% | 12.2 | 5.38 | 2.86 |
+| kw-hash100 | 79.5 (79.3-79.5) | 57.6 (56.4-58.7) | -28% | 13.4 | 6.09 | 4.28 |
+| assoc-hash100 | 375.7 (375.3-380.9) | 272.7 (264.2-278.6) | -27% | 79.3 | 4.99 | 3.44 |
+| dissoc-hash100 | 327.3 (326.7-345.8) | 130.6 (130.3-134.0) | -60% | 77.0 | 4.48 | 1.70 |
+| update-hash100 | 443.1 (442.9-454.7) | 322.7 (320.2-328.5) | -27% | 95.7 | 4.86 | 3.37 |
+| get-in-3 | 246.1 (241.7-246.3) | 77.3 (76.4-80.3) | -69% | 56.0 | 4.56 | 1.38 |
+| assoc-in-3 | 1,540 (1,535-1,584) | 225.2 (223.9-236.7) | -85% | 131.9 | 11.79 | 1.71 |
+| update-in-3 | 1,611 (1,605-1,631) | 250.0 (244.2-265.7) | -84% | 134.2 | 12.13 | 1.86 |
+| destructure-map-3 | 288.9 (281.5-289.6) | 127.0 (126.8-128.9) | -56% | 48.9 | 6.11 | 2.60 |
+| reduce-map-inc-1000 | 47,054 (46,649-48,540) | 46,764 (46,258-46,784) | -1% | 39,653 | 1.23 | 1.18 |
+| reduce-kv-small | 136.7 (136.2-141.3) | 83.9 (82.4-85.4) | -39% | 37.5 | 3.73 | 2.24 |
+| reduce-entries-small | 559.4 (557.2-573.1) | 490.4 (479.3-497.2) | -12% | 74.9 | 7.25 | 6.54 |
+| str-nested-map | 5,820 (5,776-5,891) | 5,707 (5,617-5,722) | -2% | 2,165 | 2.74 | 2.64 |
+| eq-map-7 | 1,547 (1,545-1,591) | 513.5 (503.6-515.6) | -67% | 148.3 | 10.70 | 3.46 |
+| hash-fresh-map-7 | 1,328 (1,322-1,437) | 799.9 (785.9-807.5) | -40% | 401.4 | 3.32 | 1.99 |
+| swap-assoc | 612.1 (605.5-615.8) | 140.5 (137.3-145.1) | -77% | 37.8 | 16.86 | 3.72 |
+| merge-small | 5,803 (5,783-5,811) | 4,771 (4,560-4,791) | -18% | 788.6 | 7.57 | 6.05 |
+| select-keys-3 | 1,934 (1,928-1,935) | 534.9 (520.3-539.4) | -72% | 200.9 | 10.06 | 2.66 |
+| group-by-100 | 67,233 (66,525-68,900) | 13,389 (13,123-13,811) | -80% | 4,315 | 15.78 | 3.10 |
+| transient-map-100 | 19,077 (19,049-19,287) | 15,740 (15,561-15,901) | -17% | 3,831 | 5.02 | 4.11 |
+| sorted-map-assoc-100 | 3,232 (3,227-3,237) | 622.7 (610.3-647.8) | -81% | 201.2 | 16.50 | 3.10 |
+| str-sorted-map-20 | 41,815 (41,726-43,590) | 41,817 (41,497-43,130) | +0% | 20,569 | 2.11 | 2.03 |
+
+- **No operation reads slower.** The small-map operations gain 77-90%
+  (`get-small` 106.5 to 22.9 ns, 1.55 times shadow-cljs's;
+  `assoc-small-existing` 579.2 to 61.5, 1.99 times; `update-small` 1.41
+  times): a lookup, `assoc`, `count` or `contains?` of a map takes its keyed
+  slot, where it reached the native code through the kind tables, the
+  private-field store test and `publicMethod`, and an array map's `assoc`
+  slices an unfrozen array, where `copyEntries` sliced a frozen one, read
+  `mapKinds`, `sortedComparators` and the record brand, and froze the copy
+  again.
+- `group-by-100`, `select-keys-3`, `assoc-in-3` and `update-in-3` gain
+  72-85% through the same `get` and `assoc`; `sorted-map-assoc-100` gains
+  81% (its `assoc` slot skips the store probes; the insertion is still an
+  array splice, light-cljs-1035).
+- What moves little: `reduce-map-inc-1000`, `str-nested-map` and
+  `str-sorted-map-20` (printing and reduction walk the entries as before),
+  `merge-small` (-18%) and `transient-map-100` (-17%), whose `conj` and
+  `assoc!` paths still take the older layers, and `reduce-entries-small`
+  (-12%), which builds map entries.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1012 --runs 5
+--runtime-only --runtime 1,10,40`, the project rebuilt with each binary just
+before its run; load 2.23-2.89 before, 3.27-3.65 after), wall time, median
+(range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.398 s (0.394-0.400) | 0.388 s (0.367-0.389) | 0.307 s | 0.295 s |
+| 40 | 2.879 s (2.670-2.911) | 2.681 s (2.552-2.716) | 1.204 s | 1.201 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 63.6 to
+58.8 ms per iteration (-8%); shadow-cljs 23.0 and 23.2; light/shadow 2.77 to
+2.53.
+
+**The re-frame-shaped app** (`compare.bb re-frame-200k-seed42-1012 --runs 5
+--runtime-only --runtime 1,10`; load 2.52-3.11 before, 2.89-3.68 after):
+1 iteration 2.466 s (2.437-2.496) to 2.344 s (2.272-2.409), 10 iterations
+9.472 s (8.963-9.554) to 7.710 s (7.685-7.809); steady state 778.4 to 596.2
+ms per iteration (-23%), shadow-cljs 264.0 and 244.5, light/shadow 2.95 to
+2.44.
+
+**TodoMVC** (`re-frame.bb runtime todomvc --runs 5`, ported with
+`shadow-port-tool-983`; load 4.00-4.19 before, 3.40-3.80 after): the add
+step (1,000 todos) 4,826.6 ms (4,742.8-4,888.6) to 3,922.8 ms
+(3,893.7-3,980.7), -19%, light/shadow 5.26 to 4.30 (shadow-cljs 918.3 and
+912.3 ms); toggle all 100.7 to 65.4 ms; page load to interactive 44.2 to
+41.3 ms; the heap with 1,000 todos 9.18 and 9.20 MB.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): programs
+with maps keep the maps' 17 slot units, their helpers and two more
+slot-first wrappers (`map-only` 12,893 bytes, `map-printed` 19,471,
+`constant-keys` 76,472, `event-maps` 54,662, `features` 110,364); programs
+without maps keep the maps' and map transients' tests that `count` reads
+(`vector-only` 7,282, `keyword-only` 4,746).

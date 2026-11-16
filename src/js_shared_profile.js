@@ -460,17 +460,16 @@
     for (let i = 0; i < ordered.length; i++) value = __rt.formAssoc(value, ordered[i].key, ordered[i].value);
     return value;
   }
-  //@unit sharedOwnedMap requires: mapKinds, maps
+  //@unit sharedOwnedMap
   // A public constructor must return an object on which constructorSlots can
   // retain the caller's slots, metadata and cached hash. Keep its canonical
   // payload intact (including live array getters and hash tries); only the
   // constructor units use this allocation boundary during shared assembly.
-  // Sorted maps use the same runtime-owned representation.
-  function sharedOwnedMap(Type, entries, kind) {
-    const value = Object.create(Type.prototype);
-    maps.set(value, Object.freeze(entries));
-    mapKinds.set(value, kind);
-    return value;
+  // Sorted maps use the same runtime-owned representation: the V8 profile's
+  // map classes (light-cljs-1012), of the class `Type`'s unit gives it,
+  // with `entries` and a sorted map's `comparator` in their own fields.
+  function sharedOwnedMap(Type, entries, _kind, comparator) {
+    return new Type.prototype.cljs$lang$cell$$LKEY(entries, comparator);
   }
   //@unit sharedOccurrenceNaN requires: sharedScalar
   // Scalar occurrences normally keep their stored identity. NaN alone is
@@ -479,7 +478,7 @@
   // on runtime-owned collections so rebuilding cannot merge distinct slots.
   const sharedOccurrenceNaN = entry => typeof entry.key === "object" && Number.isNaN(sharedScalar(entry.key));
   //@unit makeMap requires: hashTrie, kindHooks, sharedMapForm, sharedOccurrenceNaN,
-  //@ sharedOwnedMap, sortedComparators
+  //@ sharedOwnedMap
   // A map of the `array-map` or `hash-map` kind is an engine map
   // (`sharedMapForm`); a sorted map or a NaN occurrence key keeps the V8
   // profile's object and canonical key comparison.
@@ -492,9 +491,7 @@
         return sharedOwnedMap(Type, hashTrie(entries), kind);
       return sharedMapForm(ordered, kind);
     }
-    const value = sharedOwnedMap(Type, entries, kind);
-    sortedComparators.set(value, comparator);
-    return value;
+    return sharedOwnedMap(Type, entries, kind, comparator);
   }
   //@unit mapFromEntries requires: makeMap, PersistentArrayMapValue, PersistentHashMapValue
   // The V8 profile's, without building a hash trie of the entries: the
@@ -569,7 +566,7 @@
     return value;
   }
   //@unit makeSet requires: hashTrie, kindHooks, sharedOccurrenceNaN, sharedOwnedSet,
-  //@ sortedComparators
+  //@ setComparators
   // A set of the `array-map` kind is a positional engine set
   // (`formLiteralSet`, in the members' order) and one of the `hash-map`
   // kind an engine hash set (`formSet`); a sorted set keeps the V8
@@ -591,7 +588,7 @@
       return value;
     }
     const value = sharedOwnedSet(Type, entries, kind);
-    sortedComparators.set(value, comparator);
+    setComparators.set(value, comparator);
     return value;
   }
   //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: first, rest, seq
@@ -617,41 +614,42 @@
   function setTraversal(value) {
     return sharedFormKind(value) === "set" ? sets.get(value) : collectionTraversal(sets.get(value), setKinds.get(value));
   }
-  //@unit collectionEntryIndex requires: entryIndex, kindHooks, mapKinds, setKinds, sharedFormKind,
-  //@ sortedComparators
+  //@unit collectionEntryIndex requires: comparatorOf, entryIndex, kindHooks, mapKinds, setKinds,
+  //@ sharedFormKind
   // An engine map's or set's entries are positional whatever its kind.
   function collectionEntryIndex(value, entries, key) {
-    const comparator = sortedComparators.get(value);
+    const comparator = comparatorOf(value);
     if (comparator) return kindHooks.sortedEntryIndex(entries, key, comparator);
     const form = sharedFormKind(value), kind = form === "map" || form === "set" ? "array-map" : mapKinds.get(value) ?? setKinds.get(value);
     return kind === "array-map" ? entryIndex(entries, key) : kindHooks.hashEntryIndex(entries, key, kind);
   }
-  //@unit maps requires: kindedStore, sharedFormKind, sharedFormOf, sharedMapEntries
+  //@unit maps requires: mapOf, sharedFormKind, sharedFormOf, sharedMapEntries
   // A map is an engine map form (an imported one through its occurrence),
   // read as a positional map of its entries (`sharedMapEntries`, in the
   // engine's order: the verbatim units take their positional paths,
   // `collectionEntryIndex`, and never a hash trie), of the `array-map`
   // kind when it is positional (`formArrayMap`, a literal) and the
   // `hash-map` kind when the engine hashes it (`formMap`), as the V8
-  // profile keeps the two apart; or a runtime-owned
-  // map over the V8 profile's kinded store (`maps.store`, a property so the
-  // boot seals it and its kinds): a sorted map or a record (light-cljs-666).
-  // A form takes no payload: `set` on one throws.
+  // profile keeps the two apart; or a runtime-owned map of the V8
+  // profile's classes (`mapOf`, light-cljs-1012): a sorted map, a map a
+  // public constructor built or one with a NaN occurrence key. A record is
+  // added by `maps.records`, as in the V8 profile (light-cljs-666).
   const maps = {
-    store: kindedStore(4),
-    has: value => sharedFormKind(value) === "map" || maps.store.has(value),
-    get: value => sharedFormKind(value) === "map" ? sharedMapEntries(sharedFormOf(value)) : maps.store.get(value),
-    set(value, payload) {
-      if (__rt.formKind(value) !== null) throw new TypeError("shared profile: maps.set on an engine form");
-      maps.store.set(value, payload);
-    },
-    reset(value, payload) { maps.store.reset(value, payload); },
+    has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
+    get: value => sharedFormKind(value) === "map" ? sharedMapEntries(sharedFormOf(value)) : mapOf(value)?.entries$LKEY,
     kinds: {
-      has: value => sharedFormKind(value) === "map" || maps.store.kinds.has(value),
-      get: value => sharedFormKind(value) === "map" ? (__rt.formIsArrayMap(sharedFormOf(value)) ? "array-map" : "hash-map") : maps.store.kinds.get(value),
-      set(value, kind) { maps.store.kinds.set(value, kind); return this; }
+      has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
+      get(value) {
+        if (sharedFormKind(value) === "map") return __rt.formIsArrayMap(sharedFormOf(value)) ? "array-map" : "hash-map";
+        const kind = mapOf(value)?.cljs$lang$kind$$LKEY;
+        return kind === 28 ? "array-map" : kind === 29 ? "hash-map" : kind === 30 ? "sorted-map" : undefined;
+      }
     }
   };
+  //@unit mapKinds requires: maps
+  // The V8 profile's reads only the classes; an engine map's kind is its
+  // form's (`maps.kinds`).
+  const mapKinds = maps.kinds;
   //@unit sharedSetMembers requires: entryHashing
   // The members of an engine set, as the verbatim units read a positional
   // set's payload: a frozen array of `{key, hash}` in the engine's print
@@ -767,10 +765,10 @@
   // bridge reads it (`vectorStore`) without reading a property of it; so
   // are its keywords and symbols, and the engine's lazy seqs, lists and
   // conses, chunked ones among them, which `lazyOf`, `cellOf` and
-  // `chunkedConsOf` read.
+  // `chunkedConsOf` read, and its maps, which `maps` reads (light-cljs-1012).
   function stamped(value) {
     const kind = sharedFormKind(value);
-    return kind === "vector" || kind === "keyword" || kind === "symbol" || kind === "lazy-seq" || kind === "cons" || kind === "list" || kind === "chunked-cons" || stampBrand.has(value);
+    return kind === "vector" || kind === "keyword" || kind === "symbol" || kind === "lazy-seq" || kind === "cons" || kind === "list" || kind === "chunked-cons" || kind === "map" || stampBrand.has(value);
   }
   //@unit symbolOf requires: sharedFormKind, sharedFormOf
   // A symbol is an engine symbol form, whose fields are read from the form
@@ -903,8 +901,8 @@
     call(_self, ...args) { return ifnPrototype.call.call(this, _self, ...args); },
     toString() { return "#'" + str(vars.get(this).symbol); }
   });
-  //@unit sortedComparators requires: sharedStore
-  const sortedComparators = sharedStore();
+  //@unit setComparators requires: sharedStore
+  const setComparators = sharedStore();
   //@unit cellOf requires: sharedChunked, sharedFormKind, sharedFormOf
   // The engine's lists and conses, read through a view of the V8 profile's
   // keyed fields (`cellOf`): a list's `first`, `rest` and `count`, a cons's

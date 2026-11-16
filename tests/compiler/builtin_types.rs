@@ -535,9 +535,11 @@ fn a_program_type_opens_the_protocol_hooks() {
     // `seqCells`) where theirs was a private store; 10,322 after
     // light-cljs-1028: `ownMethod` and `ownDeclared` tell a runtime class's
     // value, whose mask bits declare what it implements natively, by its
-    // keyed kind.
+    // keyed kind; 10,664 after light-cljs-1012 (2026-11-16): the maps' and
+    // map transients' tests (`mapOf`, `maps`, `transientMapState`) where
+    // theirs were private stores.
     let size = advanced(source).emit_js().len();
-    assert!(size < 10_400, "{size} bytes");
+    assert!(size < 10_700, "{size} bytes");
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -861,14 +863,15 @@ fn protocol_tests_of_program_types_need_no_protocol_tables() {
     // The tests of chunks, chunk buffers, lazy seqs and chunked conses that
     // `counted?` reads (light-cljs-1029), where those were private stores:
     // the program type's 7,897. The cells' test (`cellOf`), where theirs was
-    // a private store (light-cljs-1030): 8,011.
+    // a private store (light-cljs-1030): 8,011. The maps' and map
+    // transients' tests (light-cljs-1012): 8,387.
     for source in [
         "(deftype T [] ICounted (-count [_] 7)) (counted? (T.))",
         "(defrecord R [x]) (map? (->R 1))",
     ] {
         assert_keeps_none(source, &EXTENSION_MACHINERY);
         let size = advanced(source).emit_js().len();
-        assert!(size < 8_100, "{source}: {size} bytes");
+        assert!(size < 8_600, "{source}: {size} bytes");
     }
 }
 
@@ -951,9 +954,11 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // lazy seqs and chunked conses, since light-cljs-1029 (2026-11-16),
     // where theirs were (3,725 bytes), and the cells' test (`cellOf`,
     // `seqCells`), since light-cljs-1030 (2026-11-16), where theirs was a
-    // `privateStore` (3,892 bytes).
+    // `privateStore` (3,892 bytes), and the maps' and map transients' tests
+    // (`mapOf`, `maps`, `transientMapState`), since light-cljs-1012
+    // (2026-11-16), where theirs were private stores (4,273 bytes).
     let size = advanced("(count (.split \"a,b\" \",\"))").emit_js().len();
-    assert!(size < 4_000, "{size} bytes");
+    assert!(size < 4_300, "{size} bytes");
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -1688,9 +1693,11 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // prototype declares its protocols (masks and the `IFind` marker) and
     // holds its keyed `-lookup` slots, which `get`'s slot-first wrapper
     // (`get.slots`, `slotFirst`, `builtinSlots`) reads, so the ceiling moves
-    // to 12,000.
+    // to 12,000; 12,976 after light-cljs-1012 (2026-11-16): the array map's
+    // class and kind and its keyed `get`, `count` and `contains?` slots,
+    // which its prototype's methods keep, with their slot-first wrappers.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 12_000, "{} bytes", output.len());
+    assert!(output.len() < 13_000, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -1996,7 +2003,7 @@ fn array_maps_keep_no_hash_map_trie() {
         &[
             "mapFromArray",
             "PersistentHashMapValue",
-            "PersistentHashMapValue.brand",
+            "HashMapCell",
             "hashTrie",
             "trieEntry",
             "get.trie",
@@ -2006,7 +2013,7 @@ fn array_maps_keep_no_hash_map_trie() {
     );
     every_level(source, "1 1\nundefined");
     let units = units("(js/console.log (count (hash-map :a 1)))");
-    for unit in ["hashTrie", "PersistentHashMapValue.brand"] {
+    for unit in ["hashTrie", "HashMapCell"] {
         assert!(units.contains(&unit), "{unit}: {units:?}");
     }
 }
@@ -2378,11 +2385,14 @@ fn printing_with_options_dispatchers_and_into() {
 
 #[test]
 fn metadata_through_the_generic_operations() {
+    // The public `meta` field's map is printed with `pr-str`: Node's
+    // `console.log` of a map lists its keyed fields since light-cljs-1012
+    // (docs/value-layout.md, question 3), whose names hold the build's key.
     every_level(
         "(defn ^{:test (fn [] :ok)} f [] 1)
-         (array (pr-str (meta (with-meta [1] {:a 1}))) (some? (:test (meta #'f))) (.-meta (with-meta [1] {:a 2}))
-                (pr-str (meta (conj (with-meta [1] {:b 1}) 2))) (nil? (.-meta [1])))",
-        "[ '{:a 1}', true, PersistentArrayMapValue {}, '{:b 1}', true ]",
+         (array (pr-str (meta (with-meta [1] {:a 1}))) (some? (:test (meta #'f))) (pr-str (.-meta (with-meta [1] {:a 2})))
+                (map? (.-meta (with-meta [1] {:a 2}))) (pr-str (meta (conj (with-meta [1] {:b 1}) 2))) (nil? (.-meta [1])))",
+        "[ '{:a 1}', true, '{:a 2}', true, '{:b 1}', true ]",
     );
 }
 
@@ -2746,7 +2756,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [474, 474, 518],
+            [552, 552, 596],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2807,7 +2817,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [452, 452, 493],
+            [528, 528, 569],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2831,7 +2841,12 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "float-range 010011100000000010010 3 0 4\n",
                 "array-map 001011011000010010100 1 :error 2\n",
                 "hash-map 001011011000010010000 20 :error 21\n",
-                "sorted-map 011011011011010010000 1 :error 2\n",
+                // A sorted map has a keyed kind since light-cljs-1012, so the
+                // older lookups ignore the mask bits a program wrote on its
+                // prototype (light-cljs-1028), and `nth` walks its seq: a
+                // write to a runtime prototype (docs/value-layout.md, section
+                // 5, item 23).
+                "sorted-map 011011011011010010000 1 [:a 1] 2\n",
                 "set 000111010000010000000 :unmarked :error 2\n",
                 "hash-set 000111010000010000000 :unmarked :error 21\n",
                 "sorted-set 000111010011010000000 1 :error 2\n",
@@ -2869,7 +2884,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [474, 474, 474],
+            [552, 552, 552],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
@@ -3566,7 +3581,9 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
         "fn 0000000000000010000001000000010000\n",
         "proxy 0000000000000000000000000000010000\n",
         "forged-map 0000010000000000000000000000010000\n",
-        "copied-map 0000010000000000000000000000010000\n",
+        // A map's own fields copied onto its prototype make one by deliberate
+        // reflection (light-cljs-1012, docs/value-layout.md section 5).
+        "copied-map 0010011011000010001111101111111000\n",
         "forged-list 0000010000000000000000000000010000\n",
         // A list's own fields copied onto its prototype make one by deliberate
         // reflection (light-cljs-1030, docs/value-layout.md section 5).
@@ -3596,4 +3613,24 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
             assert_eq!(execute(&script), expected, "at {level}: {pollution}");
         }
     }
+}
+
+/// The keyed slots of array, hash and sorted maps (light-cljs-1012) answer
+/// every map of their class, a public constructor's included, through
+/// the operations' slot-first wrappers and the protocol functions, with
+/// the answers the operations gave before (the same program on master).
+const MAP_SLOTS_SOURCE: &str = "(let [pub (cljs.core/PersistentArrayMap. nil 2 (array :a 1 :b 2) nil)
+      big (cljs.core/PersistentArrayMap. nil 8 (array :a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8) nil)
+      h (hash-map :a 1 :b 2) s (sorted-map :b 2 :a 1) m (with-meta {:x 1} {:m 1})]
+  [(-count pub) (-lookup pub :a) (-lookup pub :z :none) (-contains-key? pub :b) (-assoc pub :c 3) (-dissoc pub :a)
+   (count (-assoc big :i 9)) (map? (-assoc big :i 9)) (-count h) (-dissoc h :a) (-lookup (-assoc h :c 3) :c) (-count (-conj h [:d 4]))
+   (-lookup s :a) (-assoc s :c 3) (-count s) (count pub) (get pub :b) (contains? pub :z) (assoc pub :c 3) (dissoc pub :b)
+   (conj s [:c 3]) (meta (assoc m :y 2)) (meta (dissoc m :x)) (dissoc {:a 1 :b 2 :c 3} :b) (dissoc {:a 1} :a) (dissoc {:a 1} :z)
+   (get (dissoc (zipmap (range 20) (range 20)) 3) 4) (count (dissoc (zipmap (range 20) (range 20)) 3 4)) (contains? {nil 1} nil)
+   (get (assoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8} :i 9) :i) (persistent! (assoc! (transient {:a 1}) :b 2))])";
+const MAP_SLOTS_EXPECTED: &str = "[2 1 :none true {:a 1, :b 2, :c 3} {:b 2} 9 true 2 {:b 2} 3 3 1 {:a 1, :b 2, :c 3} 2 2 2 false {:a 1, :b 2, :c 3} {:a 1} {:a 1, :b 2, :c 3} {:m 1} {:m 1} {:a 1, :c 3} {} {:a 1} 4 18 true 9 {:a 1, :b 2}]";
+
+#[test]
+fn map_slots_answer_every_map_of_their_class() {
+    every_level(&format!("(pr-str {MAP_SLOTS_SOURCE})"), MAP_SLOTS_EXPECTED);
 }

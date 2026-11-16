@@ -350,6 +350,68 @@ answer their operations from slots.
   and the transient vector's forged candidates in
   tests/support/js_runtime.test.js (items 19 and 20) are rescoped.
 
+What light-cljs-1012 landed: array, hash and sorted maps and the map
+transients are classes, each holding today's payload in an own keyed field,
+as light-cljs-1009 did for vectors before light-cljs-1026.
+
+- **The classes.** An array map is an `ArrayMapCell` (kind 28), a hash map
+  a `HashMapCell` (29) and a sorted map a `TreeMapCell` (30), on their
+  public types' prototypes (`viewType`). Their own keyed field `entries`
+  holds what the `maps` store held, unfrozen: an array map's entries in
+  order (`ArrayMapEntry`, or the public constructor's getters), a hash map's
+  trie (`{root, nil, length}`), a sorted map's entries in its comparator's
+  order; a sorted map also holds its comparator, `comp`. `mapOf` tells them
+  by kind and `entries`; `makeMap` builds the class its type gives
+  (`Type.prototype.cljs$lang$cell$$LKEY`); `with-meta` and `clone` copy a
+  map through `mapCellCopy`. A map transient is a `TransientArrayMapCell`
+  (31) or `TransientHashMapCell` (32) whose own field `state` holds the
+  state the `transients` store held (`transientMapState`); the set
+  transients keep that store until light-cljs-1013. Upstream's fields (the
+  flat key, value array, a hash map's `cnt`, `root`, `hasNil` and `nilVal`)
+  are light-cljs-1034's, and a sorted map as a red-black tree of entries
+  light-cljs-1035's. Metadata and hashes stay in `metadataValues` and
+  `constructorHashes`; a public constructor's slots in
+  `publicCollectionSlots`.
+- **The stores.** `maps` and `mapKinds` are no longer stores: they read a
+  map's `entries` field and its class's kind for the call sites that read
+  the stores, and `maps.records` adds records, whose entries an update
+  gives them in `recordMaps` (a `kindedStore`) until they become classes in
+  light-cljs-1013. `sortedComparators` is deleted: `comparatorOf` reads a
+  sorted map's `comp`, and the sorted sets keep theirs in `setComparators`.
+  The trie's private field (`trieBrand`) is the hash sets' alone.
+- **Slots.** The three map prototypes have keyed `-lookup` (both arities),
+  `-count`, `-assoc`, `-contains-key?` and `-conj` slots, and array and
+  hash maps `-dissoc`; `dissoc` and `contains?` have slot-first wrappers
+  (`dissoc.slots`, `contains.slots`), and the others' wrappers name the map
+  types. An array map's `assoc` copies its unfrozen entries once
+  (`arrayMapAssoc`) where it stays an array map, and its `dissoc` removes in
+  one loop without a closure (`arrayMapDissoc`); a hash map's copies its
+  trie's three fields (`hashMapAssoc`); `contains?` is `get` through its
+  wrapper, so an `extend-type` of `ILookup` answers as before. Each slot is
+  complete for every map of its class, as the compile-time protocol lookup
+  calls it (light-cljs-1028): a public constructor's map takes `mapCount`,
+  `mapAssocEntries` (with the promotion of `assocArrayMapSlots`) and
+  `dissocEntries`, the operations' own paths; only a value made by
+  reflection answers `noBranch`.
+- **Profiles.** The map and map transient constructors end with
+  `/*@brand*/`; the compiler form bridge tests `stamped` before `maps.has`,
+  and `inspect`'s map traversal carries `/*@stamped*/`. The Pants profile's
+  `maps` reads its engine maps' forms and the classes' fields, its
+  `sharedOwnedMap` builds the V8 profile's classes, its `mapKinds` is
+  `maps.kinds`, and its sorted set comparators are `setComparators`.
+- **Records** become classes in light-cljs-1013, as section 2 says: a
+  converted map's operations go slot-first and never reach `maps.has`'s
+  record test.
+- **Forgery (section 5).** A map's or map transient's own fields copied onto
+  its prototype make one: the `copied-map` row of
+  `value_kind_predicates_answer_as_the_brand_stores_did` (item 1) and the
+  maps' and map transient's copied candidates in
+  tests/support/js_runtime.test.js (items 19 and 20) are rescoped, and an
+  array map built in the `lightCljsWeakMapStores` runtime writes no WeakMap
+  entry, where its store wrote two. A sorted map's prototype mask written by
+  a program (item 23) is now ignored by the older lookups, as a vector's is
+  since light-cljs-1028, so its `nth` walks its seq where it threw.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

@@ -1683,8 +1683,9 @@ console.log('seq payloads are private fields that host objects cannot copy');
       // (light-cljs-1010) are class values whose data are their own keyed
       // fields: a copy of those onto their prototype is deliberate
       // reflection, and one (docs/value-layout.md, section 5); so are a
-      // repeat and its rest (light-cljs-1030).
-      const copies = ['transientVector', 'view', 'repeat', 'repeated'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+      // repeat and its rest (light-cljs-1030), and the maps and the map
+      // transient (light-cljs-1012).
+      const copies = ['transientVector', 'view', 'repeat', 'repeated', 'transientMap', 'arrayMap', 'assoc', 'persisted'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
       // A transient vector's prototype declares the protocols it implements
       // (light-cljs-1028): what the protocol tests say of `Object.create` of
       // it is deliberate reflection (docs/value-layout.md, section 5); it
@@ -1731,9 +1732,11 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
     writes = 0;
     f.reduced(2);
     assert.equal(writes, 1);
+    // An array map is a class with its own fields (light-cljs-1012): it
+    // writes no entry, where its store and its kind's wrote two.
     writes = 0;
     f.arrayMap(key, 3);
-    assert.equal(writes, 2);
+    assert.equal(writes, 0);
   } finally { WeakMap.prototype.set = set; }
   const f = fresh.core, key = f.keyword('a');
   assert.equal(f.isChunkedSeq(built.chunked), true);
@@ -1755,8 +1758,9 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
     // As above: a copy of a transient vector's, a seq's, a lazy seq's, a
     // chunked cons's or a chunk's own fields onto its prototype is one
     // (light-cljs-1009, light-cljs-1010, light-cljs-1029), and so is a
-    // cons's, a list's or a repeat's (light-cljs-1030).
-    const copies = ['transientVector', 'view', 'lazy', 'chunked', 'chunk', 'cons', 'list', 'repeat'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+    // cons's, a list's or a repeat's (light-cljs-1030), and a map's or a map
+    // transient's (light-cljs-1012).
+    const copies = ['transientVector', 'view', 'lazy', 'chunked', 'chunk', 'cons', 'list', 'repeat', 'transientMap', 'arrayMap', 'assoc', 'persisted'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
     // As above, a transient vector's prototype declares its protocols
     // (light-cljs-1028).
     const declares = name === 'transientVector';

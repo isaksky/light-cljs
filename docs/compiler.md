@@ -1258,10 +1258,9 @@ supplied default (nil when omitted), and `contains?` returns false.
 
 ### Hash maps
 
-An array map (at most 8 keys) stores a frozen entry array, and its kind, in
-class-private fields that one construction adds (`kindedStore`, light-cljs-291;
-the stores' shared brand class since light-cljs-990), as an array set does its
-members. A hash map, which an
+An array map (at most 8 keys) holds its entries in an array of its own, in a
+keyed field of its class, unfrozen (light-cljs-1012, docs/value-layout.md); its
+kind is its class's. A hash map, which an
 array map becomes at its ninth distinct key and which `hash-map`, larger literals
 and transients build, stores upstream's structure (light-cljs-235): a hash array
 mapped trie of its entries (bitmap nodes, array nodes past 16 children, collision
@@ -1287,9 +1286,9 @@ node's packing. That array node gets new slots, as upstream's, so a key whose
 hash throws during it leaves the transient as it was. `assoc!` and `dissoc!`
 change the transient's root, nil entry and count in place. Builders (`hash-map`, larger literals) edit their
 unpublished trie the same way. New versions retain the first equivalent key and share
-unchanged entry cells, trie nodes and nested immutable values. A hash map keeps
-its trie in a class-private field rather than a `WeakMap` entry: as unforgeable
-a brand, without a `WeakMap` registration per version. `seq`, printing and
+unchanged entry cells, trie nodes and nested immutable values. A hash map holds
+its trie (its root, nil entry and count) in a keyed field of its class, without
+a `WeakMap` registration per version (light-cljs-1012). `seq`, printing and
 reduction walk the trie in upstream's order (nil first, then by hash bits), and
 a builder's map also keeps its entries in literal order, which advanced
 constant lookups read.
