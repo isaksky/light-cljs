@@ -847,9 +847,9 @@ null`, where it read `r0?.[m1] != null`. The record's layout was not the
 cost: the chained read was about 0.5 to 0.7 ns of the call (3.47 to 2.93
 ns, 1.44 to 1.16 times shadow-cljs's, on master; 1.32 to 1.07 with
 light-cljs-1020's bit operators, whose loop is shadow-cljs's). Nothing
-about the classes, the
-slots or `extend-type` changes. benchmarks/runtime-vs-shadow.md has the
-measurements, and the call-site form it measured and left out.
+about the classes, the slots or `extend-type` changes.
+benchmarks/runtime-vs-shadow.md has the measurements, and the call-site
+form it measured and left out.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,

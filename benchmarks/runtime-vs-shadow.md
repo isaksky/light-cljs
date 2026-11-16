@@ -2601,3 +2601,62 @@ Nanoseconds per operation, medians over the runs, ranges in brackets.
 
   No size ratchet fixture calls `array` or a bit operation, so the ratchet is
   unchanged (noted in tests/support/ratchet_fixtures.rs).
+
+## 2026-11-16: bit operators with the receiver test (light-cljs-1020, light-cljs-1022)
+
+**What.** The two previous sections' changes landed together, rebased onto
+master `5cd32c66`: the bit operations and `array` calls as JavaScript
+operators and literals at `:advanced` (light-cljs-1020, light-cljs-1021),
+and each protocol method's dispatcher testing its receiver as `r0 != null
+&& r0[m1] != null` (light-cljs-1022). light-cljs-1020's gate includes
+`protocol-on-record`, which needs both.
+
+Binaries, in research/shadow-credibility/bin: before `light-cljs-5cd32c66`
+(master), after `light-cljs-a224bc05` (both changes, the emitter as
+landed). Unreserved: one peer worker was active. Raw results:
+research/output-speed/combined-1020-1022.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops
+bit-and,aget-bit-and,record-dot-field,protocol-on-record --runs 5`), two
+before/after pairs run one after the other, each run alternating the
+compilers; 1-minute load average before a run 5.51 and 5.61 in the first
+pair, 6.86-7.29 and 6.50-6.71 in the second. ns per operation, median
+(range), first pair then second:
+
+| op | light before | light after | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| protocol-on-record | 3.86 (3.67-3.88), 3.92 (3.85-3.93) | 2.86 (2.85-2.87), 2.86 (2.67-2.88) | 2.71, 2.72 | 1.43, 1.45 | 1.06, 1.05 |
+| record-dot-field | 2.22 (1.99-2.23), 2.24 (2.23-2.25) | 0.99 (0.98-1.00), 0.95 (0.91-1.00) | 1.00, 0.99 | 2.22, 2.24 | 0.99, 0.96 |
+| bit-and | 1.73 (1.61-1.74), 1.73 (1.70-1.75) | 0.67 (0.64-0.68), 0.67 (0.61-0.68) | 0.68, 0.68 | 2.58, 2.54 | 0.99, 0.99 |
+| aget-bit-and | 2.06 (2.01-2.07), 2.08 (2.06-2.09) | 0.68 (0.65-0.70), 0.67 (0.63-0.69) | 0.68, 0.69 | 3.03, 3.06 | 1.00, 0.97 |
+
+All four operations are within 1.1x of shadow-cljs's output, which meets
+light-cljs-1020's and light-cljs-1022's gates. The per-call-site slot test
+that light-cljs-1022 measured and left out stays out: the dispatcher alone
+reaches the gate.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1020x1022 --runs 5
+--runtime-only --runtime 1,40`, the project's light-cljs output rebuilt
+with each binary just before its run, two before/after pairs, load 4.6 to
+6.4). Its advanced output differs from master's only in the dispatchers'
+receiver tests (no bit operation or `array` call reaches it), as
+light-cljs-1022's section measured. Wall time, median:
+
+| pair | light before (1 / 40) | light after (1 / 40) | shadow-cljs (1 / 40) | light steady state, ms per iteration |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.437 / 2.690 s | 0.429 / 2.684 s | 0.344-0.349 / 1.348-1.349 s | 57.8 to 57.8 |
+| 2 | 0.434 / 2.702 s | 0.437 / 2.720 s | 0.349-0.350 / 1.361-1.364 s | 58.2 to 58.5 |
+
+Steady state is unchanged within the load's noise.
+
+**Output size** (gzip -9):
+- the gate: 173,499 to 173,334 bytes (gzip 44,369 to 44,304);
+- workload 200k: 3,549,831 to 3,552,771 (gzip 895,066 to 895,214), the
+  receiver tests;
+- TodoMVC: 372,560 to 372,640 bytes (gzip 99,932 to 99,930);
+- re-frame simple: 255,425 to 255,458 bytes (gzip 69,074 to 69,072).
+
+  TodoMVC and re-frame simple are light-cljs's own release output of the
+  ports (`shadow-port-tool-983`), without React. The size ratchet moves
+  only by light-cljs-1022's receiver test (`eight-records` 52,245 to
+  52,252); no fixture calls a bit operation or `array`.
