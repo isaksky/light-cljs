@@ -150,7 +150,11 @@ fn advanced_output_embeds_exactly_the_units_its_runtime_reads_reach() {
             !unkeyed.replacen(&declaration, "", 1).contains("rt."),
             "{source}"
         );
-        assert_eq!(report.runtime_bytes, factory.trim().len());
+        // Counted as written, with the key (docs/value-layout.md, section 1).
+        assert_eq!(
+            report.runtime_bytes,
+            light_cljs::runtime_key::written_len(factory.trim())
+        );
         let whole = prepared(source, OptimizationLevel::Prepare).emit_js();
         assert!(
             light_cljs::runtime_key::unkeyed(&whole).contains(RUNTIME.trim()),
@@ -206,7 +210,10 @@ fn levels_below_advanced_embed_the_whole_runtime_and_programs_without_reads_none
         let report = application.retention();
         assert_eq!(report.embedding, RuntimeEmbedding::Whole);
         assert_eq!(report.units.len(), manifest.units.len());
-        assert_eq!(report.runtime_bytes, RUNTIME.trim().len());
+        assert_eq!(
+            report.runtime_bytes,
+            light_cljs::runtime_key::written_len(RUNTIME.trim())
+        );
         assert!(light_cljs::runtime_key::unkeyed(&application.emit_js()).contains(RUNTIME.trim()));
         // Units no root reaches are embedded only because the runtime is whole.
         let roots = report

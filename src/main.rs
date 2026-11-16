@@ -494,12 +494,15 @@ fn print_size_report(prepared: &light_cljs::PreparedApplication) -> io::Result<(
 }
 
 /// Write the dev build of `program` (`--reloadable`) into `out_dir`.
-/// `sources` are the program's source files by source index. With `phases`
+/// `sources` are the program's source files by source index. `build` is the
+/// build of light-cljs.edn it is, if any, part of its identity
+/// ([`light_cljs::dev_build::emit_dev_build_of`]). With `phases`
 /// (`--stats`), add the emission and write times to them.
 fn write_dev_build(
     program: &light_cljs::Program,
     sources: &[(PathBuf, String)],
     out_dir: &Path,
+    build: Option<&str>,
     mut phases: Option<&mut PhaseTimes>,
 ) -> Result<(), Box<dyn Error>> {
     let started = phases.is_some().then(Instant::now);
@@ -516,7 +519,7 @@ fn write_dev_build(
         .zip(sources)
         .map(|(url, (_, text))| SourceFile { url, text })
         .collect::<Vec<_>>();
-    let output = light_cljs::dev_build::emit_dev_build(program, &files);
+    let output = light_cljs::dev_build::emit_dev_build_of(program, &files, build);
     let written = phases.is_some().then(Instant::now);
     if let (Some(phases), Some(started), Some(written)) = (phases.as_deref_mut(), started, written)
     {
@@ -565,6 +568,9 @@ struct NamespaceFlags {
     esm: bool,
     reloadable: bool,
     out_dir: Option<PathBuf>,
+    /// The build of light-cljs.edn being compiled (`compile ID`), no flag's:
+    /// a dev build registers it with its entry as its identity.
+    build: Option<String>,
 }
 
 impl NamespaceFlags {
@@ -632,6 +638,7 @@ fn build_namespace(
         mut esm,
         reloadable,
         out_dir,
+        build,
     } = namespace;
     let entry = entry.ok_or("namespace compilation requires --entry NAMESPACE")?;
     if flags.no_cache && flags.cache_dir.is_some() {
@@ -724,6 +731,7 @@ fn build_namespace(
             &program,
             &files,
             out_dir,
+            build.as_deref(),
             stats.as_mut().map(|stats| &mut stats.phases),
         )?;
         return report_stats(stats, begun, flags.stats_file.as_deref());

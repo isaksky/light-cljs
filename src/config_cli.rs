@@ -1476,6 +1476,7 @@ fn translate(
         },
         esm: false,
         reloadable: !release,
+        build: Some(settings.name().to_owned()),
         out_dir: flags
             .namespace
             .out_dir

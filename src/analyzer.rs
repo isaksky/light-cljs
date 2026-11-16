@@ -13628,6 +13628,14 @@ pub(crate) fn keyed_js_member(name: &str) -> String {
     }
 }
 
+/// Whether `name` is a keyed name as [`keyed_js_member`] writes one: the
+/// shape of a protocol slot, marker or mask followed by the key's
+/// placeholder.
+pub(crate) fn keyed_name(name: &str) -> bool {
+    name.strip_suffix(crate::rta::RUNTIME_KEY)
+        .is_some_and(protocol_member)
+}
+
 /// Whether the munged `member` has the shape of a protocol slot, marker or
 /// mask name ([`keyed_js_member`]).
 fn protocol_member(member: &str) -> bool {

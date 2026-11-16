@@ -3,7 +3,7 @@
 //! keyed name, derived from the output's text and level, and each runtime
 //! registers it page-wide as it loads.
 use super::optimization::execute;
-use light_cljs::dev_build::emit_dev_build;
+use light_cljs::dev_build::{DevFile, emit_dev_build_of};
 use light_cljs::runtime_key::{KEY_LENGTH, RuntimeKey, unkeyed};
 use light_cljs::source_map::SourceFile;
 use light_cljs::{
@@ -176,72 +176,198 @@ fn outputs_register_their_keys_page_wide() {
     );
 }
 
+/// The program of entry `app.main` whose sources are `files`, by path, with
+/// them as a dev build's sources.
+fn namespace_program(files: &[(&str, &str)]) -> (Program, Vec<(std::path::PathBuf, String)>) {
+    let root = crate::temp_dir::TempDir::new("runtime-key-sources");
+    for (path, text) in files {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+    }
+    light_cljs::compiler::analyze_namespace_entry_with_sources(
+        "app.main",
+        &[root.to_path_buf()],
+        &mut light_cljs::MacroHost::new(),
+        Default::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"))
+}
+
+fn dev_build(
+    program: &Program,
+    sources: &[(std::path::PathBuf, String)],
+    build: Option<&str>,
+) -> Vec<DevFile> {
+    let urls = sources
+        .iter()
+        .map(|(path, _)| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let files = urls
+        .iter()
+        .zip(sources)
+        .map(|(url, (_, text))| SourceFile { url, text })
+        .collect::<Vec<_>>();
+    emit_dev_build_of(program, &files, build)
+}
+
+fn file(files: &[DevFile], name: &str) -> String {
+    files
+        .iter()
+        .find(|file| file.name == name)
+        .unwrap_or_else(|| panic!("no {name}"))
+        .text
+        .clone()
+}
+
 #[test]
 fn dev_builds_share_the_runtimes_key_and_register_their_identity() {
-    let dev = |entry: &str| {
-        let root = crate::temp_dir::TempDir::new("runtime-key-dev");
-        let path = root.join("src").join(format!("{entry}.cljs"));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let text = format!(
-            "(ns {entry}) (deftype T [] ICounted (-count [_] 2))
+    let main = |n: u32| {
+        format!(
+            "(ns app.main) (deftype T [] ICounted (-count [_] {n}))
              (js/console.log (count (T.)) (.cljs$core$ICounted$_count$arity$1 (T.) nil))"
-        );
-        std::fs::write(&path, &text).unwrap();
-        let program = light_cljs::compiler::analyze_namespace_entry(
-            entry,
-            &[root.join("src")],
-            &mut light_cljs::MacroHost::new(),
-            Default::default(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        let url = path.to_string_lossy().into_owned();
-        emit_dev_build(
-            &program,
-            &[SourceFile {
-                url: &url,
-                text: &text,
-            }],
         )
     };
-    let (one, two) = (dev("one"), dev("two"));
-    let runtime = |files: &[light_cljs::dev_build::DevFile]| {
-        files
-            .iter()
-            .find(|file| file.name == "runtime.js")
-            .unwrap()
-            .text
-            .clone()
-    };
-    let unit = |files: &[light_cljs::dev_build::DevFile], name: &str| {
-        files
-            .iter()
-            .find(|file| file.name == name)
-            .unwrap()
-            .text
-            .clone()
-    };
+    let (one, one_sources) = namespace_program(&[("app/main.cljs", &main(1))]);
+    let (two, two_sources) = namespace_program(&[("app/main.cljs", &main(2))]);
+    let builds = [
+        dev_build(&one, &one_sources, None),
+        dev_build(&two, &two_sources, None),
+        dev_build(&one, &one_sources, Some("app")),
+        dev_build(&one, &one_sources, Some("worker")),
+    ];
     let key = RuntimeKey::dev_units();
-    for (files, name) in [(&one, "one.js"), (&two, "two.js")] {
-        let (runtime, unit) = (runtime(files), unit(files, name));
+    for files in &builds {
+        let (runtime, unit) = (file(files, "runtime.js"), file(files, "app.main.js"));
         assert!(!runtime.contains("$LKEY") && !runtime.contains("$LHASH"));
         assert!(!unit.contains("$LKEY"), "{unit}");
-        assert!(runtime.contains(&format!("${}", key.key())));
-        assert!(unit.contains(&format!("${}", key.key())), "{unit}");
+        assert!(
+            unit.contains(&format!("cljs$core$ICounted$_count$arity$1${}", key.key())),
+            "{unit}"
+        );
         assert_eq!(RuntimeKey::written(&runtime).unwrap().key(), key.key());
     }
-    // Two different dev builds have the same key and their own identities.
-    let (runtime_one, runtime_two) = (runtime(&one), runtime(&two));
-    assert_ne!(
-        RuntimeKey::written(&runtime_one).unwrap().hash(),
-        RuntimeKey::written(&runtime_two).unwrap().hash()
-    );
+    // An edit changes neither the key nor the identity; another build of
+    // light-cljs.edn with the same entry is another identity.
+    let runtimes = builds.each_ref().map(|files| file(files, "runtime.js"));
+    let hash = |runtime: &str| {
+        RuntimeKey::written(runtime)
+            .unwrap()
+            .hash()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(runtimes[0], runtimes[1]);
+    assert_ne!(hash(&runtimes[0]), hash(&runtimes[2]));
+    assert_ne!(hash(&runtimes[2]), hash(&runtimes[3]));
     let collision = format!(
         "Two light-cljs builds share the runtime key {}: give one a different :runtime-key",
         key.key()
     );
     assert_eq!(
-        load_in_one_realm(&[&runtime_one, &runtime_one, &runtime_two]),
-        format!("ok\nok\n{collision}\n")
+        load_in_one_realm(&[&runtimes[2], &runtimes[2], &runtimes[3], &runtimes[0]]),
+        format!("ok\nok\n{collision}\n{collision}\n")
     );
+}
+
+/// A host property whose name ends in a placeholder's spelling but is no
+/// keyed name keeps that name at every level and in a dev build: read as a
+/// member, written as a member or a string, and as a type's or a record's
+/// field (the Sol review of light-cljs-1025).
+#[test]
+fn ordinary_property_names_keep_their_spelling() {
+    let body = "(defrecord R [a$LKEY]) (deftype T [b$LKEY])
+        (let [o (js-obj \"foo$LKEY\" 7 \"bar$LHASH\" 8) r (->R 1) t (T. 2)]
+          (set! (.-baz$LKEY o) 9)
+          (pr-str [(.-foo$LKEY o) (.-bar$LHASH o) (aget o \"baz$LKEY\") (vec (sort (js-keys o)))
+                   (:a$LKEY r) (.-a$LKEY r) (.-b$LKEY t) (get (assoc r :a$LKEY 3) :a$LKEY)]))";
+    let expected = "[7 8 9 [\"bar$LHASH\" \"baz$LKEY\" \"foo$LKEY\"] 1 1 2 3]";
+    for level in OptimizationLevel::ALL {
+        assert_eq!(
+            execute(&format!("console.log({});", release(body, level))),
+            format!("{expected}\n"),
+            "{level}"
+        );
+    }
+    let (program, sources) = namespace_program(&[(
+        "app/main.cljs",
+        &format!("(ns app.main) (js/console.log {body})"),
+    )]);
+    let dir = crate::temp_dir::TempDir::new("runtime-key-names");
+    let [none, dev] = crate::dev_execution::none_and_dev(&program, &sources, &dir, false);
+    assert_eq!(dev, none);
+    assert!(none.as_ref().unwrap().contains("bar$LHASH"), "{none:?}");
+}
+
+/// A chunked build's chunks share one key, derived from all of them: a
+/// constant only a feature's chunk holds changes the key and the hash
+/// startup registers (the Sol review of light-cljs-1025).
+#[test]
+fn chunked_builds_derive_one_key_from_every_chunk() {
+    let files = |n: u32| {
+        vec![
+            (
+                "app/main.cljs",
+                "(ns app.main (:require [light.lazy :as lazy]))
+                 (deftype T [] ICounted (-count [_] 1))
+                 (def editor (lazy/loadable app.editor/start))
+                 (fn [] [(count (T.)) editor])"
+                    .to_owned(),
+            ),
+            (
+                "app/editor.cljs",
+                format!(
+                    "(ns app.editor) (deftype E [] ICounted (-count [_] {n}))
+                     (defn start [] [(count (E.)) (.-cljs$core$ICounted$ (E.))])"
+                ),
+            ),
+        ]
+    };
+    let build = |n: u32| {
+        let files = files(n);
+        let borrowed = files
+            .iter()
+            .map(|(path, text)| (*path, text.as_str()))
+            .collect::<Vec<_>>();
+        let (program, _) = namespace_program(&borrowed);
+        prepare_application(
+            &program,
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+        )
+        .emit_chunks()
+    };
+    let (first, again, other) = (build(2), build(2), build(3));
+    assert_eq!(first, again);
+    assert!(
+        first.files.len() >= 2,
+        "{:?}",
+        first
+            .files
+            .iter()
+            .map(|file| &file.name)
+            .collect::<Vec<_>>()
+    );
+    let key = RuntimeKey::written(&first.startup().source).expect("startup registers the key");
+    for chunk in &first.files {
+        assert!(
+            !chunk.source.contains("$LKEY") && !chunk.source.contains("$LHASH"),
+            "{}",
+            chunk.name
+        );
+    }
+    let editor = first
+        .files
+        .iter()
+        .find(|chunk| chunk.name == "app.editor.js")
+        .expect("the feature's chunk");
+    assert!(
+        editor.source.contains(&format!("${}", key.key())),
+        "the feature's keyed names have startup's key:\n{}",
+        editor.source
+    );
+    let changed = RuntimeKey::written(&other.startup().source).unwrap();
+    assert_eq!(first.startup().source.len(), other.startup().source.len());
+    assert_ne!(changed.key(), key.key());
+    assert_ne!(changed.hash(), key.hash());
 }

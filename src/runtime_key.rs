@@ -82,9 +82,10 @@ impl RuntimeKey {
     /// runtime source, so it depends on neither a build's sources nor an
     /// edit, and every unit, reload and REPL form written against a page
     /// has the key the page's `runtime.js` loaded with. The page registers
-    /// the hash of `identity`, the build's identity (its entry namespace),
-    /// so two different dev builds on one page, which share the key, are
-    /// caught as they load.
+    /// the hash of `identity`, the build's identity (its build of
+    /// light-cljs.edn and its entry namespace,
+    /// `crate::dev_build::runtime_file`), so two different dev builds on
+    /// one page, which share the key, are caught as they load.
     pub fn dev(identity: &str) -> Self {
         let mut fingerprint = Fingerprint::new("light-cljs dev build identity 1");
         fingerprint.text(identity);
@@ -199,6 +200,28 @@ impl RuntimeKey {
         out.push_str(&text[copied..]);
         out
     }
+}
+
+/// The length of `text` once the output writer has written a key and a
+/// hash for its placeholders, whatever the key: four bytes more than each
+/// key placeholder at a name's end, ten more than the hash's. Size reports
+/// count runtime text this way.
+pub fn written_len(text: &str) -> usize {
+    text.len() + growth(text)
+}
+
+/// The bytes [`written_len`] adds to `text`.
+pub(crate) fn growth(text: &str) -> usize {
+    if !text.contains("$L") {
+        return 0;
+    }
+    let key = RuntimeKey {
+        key: "0".repeat(KEY_LENGTH),
+        hash: Some("0".repeat(16)),
+    };
+    let mut added = 0isize;
+    key.substitute(text, |_, delta| added += delta);
+    added as usize
 }
 
 /// `text`, output that may hold a runtime, with the key and hash its

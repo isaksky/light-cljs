@@ -833,6 +833,7 @@ fn start(
         &program,
         &sources,
         &options.out_dir,
+        options.mount.as_deref(),
         stats.as_mut().map(|stats| &mut stats.phases),
     )?;
     let manifest = DevManifest::new(&program);

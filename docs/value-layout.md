@@ -304,11 +304,14 @@ string literal the emitter writes spells the `$` that starts a placeholder
 name, a name the runtime looks up by its spelling) holds one and the
 substitution never changes it; a property name the emitter writes in
 brackets (`x["cljs$core$ISeq$$LKEY"]`) and the head of a `js/` path are
-code and keep the placeholder. The output writer replaces a placeholder
+code and keep the placeholder where the name is keyed (the shape of a slot,
+marker or mask, `analyzer::keyed_name`), and any other is written as a
+value is. The output writer replaces a placeholder
 only where it ends a name, in the output of `PreparedApplication`'s
 `emit_*` (one key for all the chunks of a chunked build, derived from all
 of them in plan order), moving the source map's columns by the four bytes
-each key adds. Raw JavaScript (`js*`) is code too: a keyed name it spells
+each key adds; size reports count runtime text as written, keyed
+(`runtime_key::written_len`). Raw JavaScript (`js*`) is code too: a keyed name it spells
 with the placeholder is keyed. The hash registered is 16 hexadecimal digits
 of the same SHA-256 the key's eight base-36 digits come from. `:runtime-key`
 itself is light-cljs-1018's: `RuntimeKey::release` takes it, and nothing
@@ -325,8 +328,9 @@ changes the key, and a page with the old runtime then needs a full reload,
 which it needs anyway. A dev build registers its build identity (build id
 and entry namespaces) as its hash, so two different dev builds that match
 keys are caught at load too. As light-cljs-1025 built it, the identity is
-the entry namespace alone (the dev build's writer is not given the build
-id); the output writer of a dev build is `dev_build::runtime_file` for
+the build of light-cljs.edn (`compile ID`, `watch ID`; none for the flag
+commands) and the entry namespace; the output writer of a dev build is
+`dev_build::runtime_file` for
 `runtime.js`, the namespace units it and a watch step write, the units the
 dev server's `invoke` sends and the scripts of a connected REPL's forms
 (`dev_repl`), each with the one dev key; the session's own runtime keeps

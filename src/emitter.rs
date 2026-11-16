@@ -928,8 +928,9 @@ fn emit_js_mode(
             embedding = RuntimeEmbedding::Slice;
             let (factory, bindings, bytes) =
                 crate::runtime_slice::sliced_runtime(&emitter.runtime, terse);
-            unit_bytes = bytes;
-            runtime_bytes = factory.trim().len();
+            // Counted as the output writer writes them, keyed.
+            unit_bytes = bytes.map(crate::runtime_slice::written_unit_bytes);
+            runtime_bytes = crate::runtime_key::written_len(factory.trim());
             let pattern = bindings
                 .iter()
                 .map(|binding| format!("rt${binding}"))
@@ -957,7 +958,13 @@ fn emit_js_mode(
             statement
         } else {
             embedding = RuntimeEmbedding::Whole;
-            runtime_bytes = crate::runtime_manifest::RUNTIME.trim().len();
+            let whole = crate::runtime_manifest::RUNTIME.trim();
+            // An application's output is keyed (`crate::runtime_key`).
+            runtime_bytes = if application.is_some() {
+                crate::runtime_key::written_len(whole)
+            } else {
+                whole.len()
+            };
             let statement = format!(
                 "  const rt = {};\n",
                 crate::runtime_manifest::RUNTIME.trim()
@@ -3864,6 +3871,14 @@ impl<'a> Emitter<'a> {
         self.output.push(']');
     }
 
+    /// `["slot"]` for a protocol slot `crate::rta::protocol_slot` named,
+    /// which holds the key's placeholder by construction.
+    fn keyed_member(&mut self, slot: &str) {
+        self.output.push('[');
+        write_string(&mut self.output, slot.encode_utf16(), false);
+        self.output.push(']');
+    }
+
     /// `a0, a1, ...`: `count` positional parameters, or the same names as
     /// arguments.
     fn positional_params(&mut self, count: usize) {
@@ -4071,7 +4086,7 @@ impl<'a> Emitter<'a> {
             self.output.push('(');
             self.value(*receiver);
             self.output.push(')');
-            self.member(slot);
+            self.keyed_member(slot);
             self.output.push('(');
             self.arguments(args);
             self.output.push(')');
@@ -4121,7 +4136,7 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
-            self.member(slot);
+            self.keyed_member(slot);
             self.output.push('(');
             for (index, (&arg, operand)) in args.iter().zip(&held).enumerate() {
                 if index > 0 {
@@ -5149,10 +5164,15 @@ impl<'a> Emitter<'a> {
     }
 
     /// A string literal of `name`, a property name the emitter writes in
-    /// brackets (`x["name"]`): code, whose keyed names keep the
-    /// placeholder the output writer replaces with the build's key.
+    /// brackets (`x["name"]`): a keyed name, the shape of a protocol slot,
+    /// marker or mask ending in the key's placeholder as the analyzer keys
+    /// one ([`crate::analyzer::keyed_name`]), keeps the placeholder the
+    /// output writer replaces with the build's key; any other name is
+    /// written as a value is, so a host property whose name ends in the
+    /// placeholder's spelling keeps it.
     fn property_name(&mut self, name: &str) {
-        write_string(&mut self.output, name.encode_utf16(), false);
+        let keyed = crate::analyzer::keyed_name(name);
+        write_string(&mut self.output, name.encode_utf16(), !keyed);
     }
 
     fn emit(&mut self, id: ExprId, context: ExprContext) {

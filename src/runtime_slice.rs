@@ -486,6 +486,22 @@ impl RuntimeRoots {
     }
 }
 
+/// `bytes`, a terse slice's bytes by unit ([`crate::terse::terse_slice`]),
+/// as the output writer writes them ([`crate::runtime_key::written_len`]).
+pub(crate) fn written_unit_bytes(mut bytes: Vec<usize>) -> Vec<usize> {
+    for (unit, bytes) in crate::terse::TERSE_UNITS.iter().zip(&mut bytes) {
+        if *bytes > 0 {
+            *bytes += crate::runtime_key::growth(unit.text);
+        }
+    }
+    bytes
+}
+
+/// The bytes of a readable unit's body as the output writer writes them.
+fn written_body(body: &std::ops::Range<usize>) -> usize {
+    crate::runtime_key::written_len(&crate::runtime_manifest::ANNOTATED_RUNTIME[body.clone()])
+}
+
 /// How an application's output embeds the runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeEmbedding {
@@ -808,7 +824,7 @@ impl RetentionReport {
                 bytes: emitted
                     .unit_bytes
                     .as_ref()
-                    .map_or(unit.body_range.len(), |bytes| bytes[index]),
+                    .map_or_else(|| written_body(&unit.body_range), |bytes| bytes[index]),
                 root: first[index],
             })
             .collect();
@@ -1120,7 +1136,7 @@ impl ChunkedRetention {
                         bytes: runtime
                             .unit_bytes
                             .as_ref()
-                            .map_or(unit.body_range.len(), |bytes| bytes[index]),
+                            .map_or_else(|| written_body(&unit.body_range), |bytes| bytes[index]),
                         root: first[index].map(|root| positions[root]),
                     })
                     .collect(),

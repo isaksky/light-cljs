@@ -894,8 +894,9 @@ pub(crate) fn emit_chunked(
             text.runtime = Some(open.len()..open.len() + factory.len());
             let runtime = &mut chunk_runtimes[chunk];
             runtime.kept = slice.kept.clone();
-            runtime.bytes = factory.len();
-            runtime.unit_bytes = unit_bytes;
+            // Counted as the output writer writes them, keyed.
+            runtime.bytes = crate::runtime_key::written_len(factory);
+            runtime.unit_bytes = unit_bytes.map(crate::runtime_slice::written_unit_bytes);
         }
     } else if embed {
         let statement = format!(
@@ -1137,8 +1138,8 @@ pub(crate) fn emit_chunked(
                 let table = table.as_ref().expect("terse output names every text");
                 let (units, unit_bytes) =
                     crate::terse::terse_module_units(&runtime.kept, |word| table[word].as_str());
-                runtime.bytes = units.len();
-                runtime.unit_bytes = Some(unit_bytes);
+                runtime.bytes = crate::runtime_key::written_len(&units);
+                runtime.unit_bytes = Some(crate::runtime_slice::written_unit_bytes(unit_bytes));
                 source.push_str(&units);
                 source.push('\n');
             }

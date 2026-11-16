@@ -62,6 +62,17 @@ pub const CLIENT: &str = include_str!("dev_client.js");
 ///
 /// When `program` was not analyzed from namespace sources.
 pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevFile> {
+    emit_dev_build_of(program, sources, None)
+}
+
+/// [`emit_dev_build`] for `build`, the build of light-cljs.edn it is
+/// (`compile ID`, `watch ID`), if any: its `runtime.js` registers the build
+/// with the entry namespace as the build's identity ([`runtime_file`]).
+pub fn emit_dev_build_of(
+    program: &Program,
+    sources: &[SourceFile<'_>],
+    build: Option<&str>,
+) -> Vec<DevFile> {
     let entries = program
         .namespace_entries
         .iter()
@@ -79,7 +90,7 @@ pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevF
     let mut files = vec![
         DevFile {
             name: "runtime.js".into(),
-            text: runtime_file(&manifest.entry),
+            text: runtime_file(build, &manifest.entry),
         },
         DevFile {
             name: "client.js".into(),
@@ -122,14 +133,16 @@ pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevF
     files
 }
 
-/// `runtime.js` of the dev build whose entry namespace is `entry`: the whole
-/// runtime with the dev key ([`RuntimeKey::dev`]), which registers the
-/// entry as the build's identity, so that two different dev builds on one
-/// page stop as the second loads.
-pub fn runtime_file(entry: &str) -> String {
+/// `runtime.js` of the dev build `build` (of light-cljs.edn, if any) whose
+/// entry namespace is `entry`: the whole runtime with the dev key
+/// ([`RuntimeKey::dev`]), which registers the build and the entry as the
+/// build's identity, so that two different dev builds on one page stop as
+/// the second loads.
+pub fn runtime_file(build: Option<&str>, entry: &str) -> String {
+    let identity = format!("{}\n{entry}", build.unwrap_or(""));
     format!(
         "globalThis.__lightRuntime = {};\n",
-        RuntimeKey::dev(entry).apply(crate::runtime_manifest::RUNTIME.trim())
+        RuntimeKey::dev(&identity).apply(crate::runtime_manifest::RUNTIME.trim())
     )
 }
 
