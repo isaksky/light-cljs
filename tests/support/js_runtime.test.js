@@ -2123,7 +2123,7 @@ console.log('kind tables stay private to the runtime');
     iterate: ['cell$LKEY', 'f$LKEY', 'prev$LKEY', 'seed$LKEY', 'realized$LKEY', 'next$LKEY'],
     cycle: ['cell$LKEY', 'all$LKEY', 'prev$LKEY', 'current$LKEY', 'next$LKEY'], keySeq: ['cell$LKEY', 'mseq$LKEY'],
     arrayMap: ['cnt$LKEY', 'arr$LKEY'], hashMap: ['cnt$LKEY', 'root$LKEY', 'nil$LKEY', 'lit$LKEY'], sortedMap: ['entries$LKEY', 'comp$LKEY'],
-    transientArrayMap: ['state$LKEY'], transientHashMap: ['state$LKEY']};
+    transientArrayMap: ['editable$LKEY', 'arr$LKEY'], transientHashMap: ['edit$LKEY', 'cnt$LKEY', 'root$LKEY', 'nil$LKEY']};
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name];
     assert.deepEqual(Object.keys(value), field, name);

@@ -1948,3 +1948,92 @@ Raw results (each gate run's EDN and Markdown, for the first attempt
 `b2de61eb`, the `in` form `7fc05b66`, the kept form `a0c72a04` and the
 rebased `175c47ae`, and both workload runs):
 research/output-speed/symbol-meta-1031.
+
+## 2026-11-16: map transients' own fields and the maps' field readers (light-cljs-1036)
+
+**What.** A transient array map holds `editable` and `arr`, upstream's flat
+key, value array, which `assoc!` and `dissoc!` edit in place; a transient hash
+map holds `edit`, `cnt`, `root` and `nil`, where light-cljs-1012 left the old
+state object in one `state` field with an array of entry objects or a trie
+object. The public hash map constructor's map holds its count and nil entry as
+fields, so `count`, `assoc` and `dissoc` of it take the hash map paths instead
+of a `publicCollectionSlots` lookup and entries. `maps` no longer answers an
+array or hash map's entries: the older layers of `assoc`, `dissoc`, `count`,
+`get`, `find`, `hash` and `transient` call the maps' slot functions or read
+their fields, and printing (where no protocol implementation can see an
+array's seq) and `mapIterator` walk the flat pairs. docs/value-layout.md has
+the notes.
+
+Binaries: before `light-cljs-87e5db4b` (master), after `light-cljs-b0854175`
+(this pellet's runtime but for a later fix to a public constructor's
+odd-length array's transient), in research/shadow-credibility/bin.
+Unreserved: one peer worker was active. Raw results:
+research/output-speed/map-transients-1036 (`*-before`, `*-after`).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops transient-map-100,assoc-small,assoc-hash100,dissoc-small,dissoc-hash100,get-small,get-small-miss,get-hash100,count-small,merge-small,group-by-100,str-nested-map,reduce-entries-small,reduce-kv-small,eq-map-7,hash-fresh-map-7,select-keys-3,update-small,update-hash100,contains-small --runs 3`;
+1-minute load average 4.29-10.24 before, 10.82-12.55 after), ns per
+operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| transient-map-100 | 14,092 (14,036-14,138) | 13,368 (13,366-13,395) | -5% | 3,902 | 3.63 | 3.43 |
+| group-by-100 | 13,378 (13,219-13,494) | 13,092 (12,742-13,135) | -2% | 4,424 | 3.07 | 2.96 |
+| merge-small | 3,708 (3,662-3,715) | 3,621 (3,617-3,665) | -2% | 826.6 | 4.49 | 4.38 |
+| assoc-small-existing | 63.2 (62.6-63.4) | 63.2 (63.0-63.6) | 0% | 31.2 | 2.04 | 2.02 |
+| assoc-small-new | 87.8 (87.2-87.9) | 88.2 (85.3-88.8) | 0% | 39.0 | 2.21 | 2.26 |
+| assoc-hash100 | 121.2 (121.1-122.8) | 116.0 (115.5-116.8) | -4% | 80.4 | 1.53 | 1.44 |
+| dissoc-small | 112.3 (111.3-114.8) | 113.6 (113.1-116.9) | +1% | 79.7 | 1.41 | 1.43 |
+| dissoc-hash100 | 137.5 (136.0-144.0) | 128.9 (123.5-129.3) | -6% | 77.6 | 1.78 | 1.66 |
+| update-small | 63.4 (63.1-63.5) | 62.8 (62.6-63.7) | -1% | 43.5 | 1.44 | 1.44 |
+| update-hash100 | 153.7 (153.3-162.4) | 148.1 (146.8-149.3) | -4% | 99.5 | 1.57 | 1.49 |
+| get-small | 27.1 (26.9-27.2) | 27.1 (27.0-27.2) | 0% | 15.0 | 1.82 | 1.81 |
+| get-small-miss | 32.8 (32.5-33.0) | 32.8 (32.6-33.0) | 0% | 19.4 | 1.69 | 1.70 |
+| get-hash100 | 35.8 (34.9-36.1) | 35.7 (35.7-35.9) | 0% | 12.1 | 2.93 | 2.96 |
+| contains-small | 28.0 (27.6-28.1) | 27.8 (27.7-27.8) | -1% | 12.1 | 2.30 | 2.29 |
+| count-small | 2.97 (2.94-2.97) | 2.96 (2.96-2.97) | 0% | 2.10 | 1.42 | 1.41 |
+| str-nested-map | 6,537 (6,519-8,063) | 6,475 (6,399-6,513) | -1% | 2,320 | 2.85 | 2.79 |
+| reduce-entries-small | 551.2 (548.4-556.8) | 554.6 (547.5-562.6) | +1% | 89.6 | 8.34 | 6.19 |
+| reduce-kv-small | 45.8 (45.7-46.8) | 45.8 (45.1-46.1) | 0% | 38.6 | 1.19 | 1.19 |
+| eq-map-7 | 443.2 (438.9-444.7) | 440.9 (438.8-441.2) | -1% | 150.7 | 2.93 | 2.93 |
+| hash-fresh-map-7 | 780.1 (763.8-796.3) | 779.8 (777.7-783.1) | 0% | 374.3 | 1.95 | 2.08 |
+| select-keys-3 | 537.0 (534.0-539.8) | 531.5 (523.0-537.4) | -1% | 201.5 | 2.67 | 2.64 |
+
+- **No operation is more than 10% slower**; the largest change up is
+  `dissoc-small`'s +1%, inside its ranges. `reduce-entries-small` and
+  `hash-fresh-map-7` move in shadow-cljs's runs (67.2-92.5 and 368.3-401.7
+  ns after), not in light-cljs's.
+- **Transients** gain 5% (`transient-map-100`) and 2% (`group-by-100`): the
+  state is now fields, but each `assoc!` still goes through its protocol
+  dispatcher (`coreMethod`: a rest-argument array and its slice, the
+  protocol lookup and the native predicate, `transientAssociativeValue`),
+  which is most of what remains of the 3.4 times shadow-cljs's;
+  light-cljs-1016's direct slot calls are the change that reaches it.
+- **Hash maps** gain 4-6% (`assoc-hash100`, `dissoc-hash100`,
+  `update-hash100`): their slots no longer ask `publicCollectionSlots`
+  whether a public constructor built them.
+- **Printing** (`str-nested-map`) moves 1%: the gate's program has protocol
+  implementations, so the printer walks an array's seq as before, of the
+  entries `mapTraversal` makes of the pairs; only programs without them
+  print the flat pairs directly.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1036 --runs 5
+--runtime-only --runtime 1,10,40`, the project rebuilt with each binary just
+before its run; load 9.70-10.03 before, 10.88-11.13 after), wall time, median
+(range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.423 s (0.415-0.425) | 0.421 s (0.416-0.423) | 0.329 s | 0.337 s |
+| 40 | 2.873 s (2.845-2.878) | 2.830 s (2.792-2.849) | 1.322 s | 1.286 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 62.8 to
+61.8 ms per iteration (-2%); shadow-cljs 25.5 and 24.3; light/shadow 2.47 and
+2.54, within what the load moved.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): programs
+with maps keep the transients' paths and the older layers' field branches
+(`map-only` 14,270 to 14,613, `map-printed` 21,365 to 21,928, `event-maps`
+56,372 to 56,871, `features` 113,208 to 116,130); `println-hi` takes the
+printer's pairs path (5,360); programs without maps keep the shorter `maps`
+(`vector-only` 7,519 to 7,368, `keyword-only` 5,102 to 5,005). TodoMVC and
+re-frame simple were not ported in this run.

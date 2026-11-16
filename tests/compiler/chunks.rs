@@ -3105,7 +3105,9 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // prototypes and their keyed slots, and light-cljs-1012 the maps' and map
     // transients' classes and the maps' keyed slots (112,031), and
     // light-cljs-1034 the array maps' flat search and the hash maps' field
-    // paths (115,050).
+    // paths (115,050), and light-cljs-1036 the map transients' own fields and
+    // their operations, and the older layers' and the printer's paths of the
+    // array and hash maps' fields (117,759).
     assert!(
         total + 1_000
             <= 73_207
@@ -3122,6 +3124,7 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 6_100
                 + 4_000
                 + 4_000
+                + 3_000
                 + 3_000,
         "{total} bytes\n{listing}"
     );

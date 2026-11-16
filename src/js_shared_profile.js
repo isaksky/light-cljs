@@ -525,19 +525,22 @@
     for (let i = 0; i < keys.length; i++) entries.push(new ArrayMapEntry(keys[i], values[i], hashes[i]));
     return makeMap(PersistentArrayMapValue, entries, "array-map");
   }
-  //@unit hashMapAssoc requires: kindHooks, mapAssocEntries, noBranch, publicCollectionSlots,
-  //@ updatedMap
+  //@unit hashMapAssoc requires: constructorSlots, kindHooks, meta, noBranch, PersistentHashMapValue,
+  //@ publicCollectionSlots, sharedOwnedMap, updatedMap
   // `assoc` of a runtime-owned hash map (a public constructor's or one with
   // a NaN occurrence key) builds through `updatedMap`, as before the V8
   // profile's built its class directly, so that the result is an engine map
-  // where the profile makes one.
+  // where the profile makes one. A public constructor's map, whose count is
+  // its field (light-cljs-1036), gives a map of its class with that count
+  // and slots, as `updatedMap` gave it before.
   function hashMapAssoc(self, key, item) {
     const cnt = self.cnt$LKEY;
     if (cnt === undefined) return noBranch;
-    if (publicCollectionSlots.has(self)) return mapAssocEntries(self, key, item);
     const trie = {root: self.root$LKEY, nil: self.nil$LKEY, length: cnt};
     kindHooks.putHashEntry(trie, key, item, null);
-    return updatedMap(self, trie);
+    if (!publicCollectionSlots.has(self)) return updatedMap(self, trie);
+    const result = sharedOwnedMap(PersistentHashMapValue, trie, "hash-map"), nil = trie.nil;
+    return constructorSlots(result, {root: result, "has-nil?": nil != null, "nil-val": nil?.value}, meta(self), null);
   }
   //@unit mapFromEntries requires: makeMap, PersistentArrayMapValue, PersistentHashMapValue
   // The V8 profile's, without building a hash trie of the entries: the
@@ -651,10 +654,32 @@
       : kind === "array-map" ? PersistentArrayMapSeqType : IndexedSeqValue,
       Object.freeze(entries.map(entry => mapEntry(entry.key, entry.value))), 0, false, kind) : null;
   };
-  //@unit mapTraversal requires: collectionTraversal, mapKinds, maps, sharedFormKind
-  // An engine map's entries are in its order already (`sharedMapEntries`).
+  //@unit makeMap.persist effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: persistTransient
+  //@ requires: ArrayMapEntry, kindHooks, makeMap, PersistentArrayMapValue, PersistentHashMapValue
+  // The V8 profile's, through `makeMap`, so that a persisted map transient
+  // is an engine map where the profile makes one, as before the transients
+  // held their fields (light-cljs-1036).
+  kindHooks.persistMap = value => {
+    if (value.cljs$lang$kind$$LKEY === 31) {
+      value.editable$LKEY = false;
+      const arr = value.arr$LKEY, entries = [];
+      for (let i = 0; i < arr.length; i += 2) entries.push(new ArrayMapEntry(arr[i], arr[i + 1]));
+      return makeMap(PersistentArrayMapValue, entries, "array-map");
+    }
+    value.edit$LKEY = null;
+    return makeMap(PersistentHashMapValue, {root: value.root$LKEY, nil: value.nil$LKEY, length: value.cnt$LKEY}, "hash-map");
+  };
+  //@unit mapTraversal requires: arrayMapEntries, collectionTraversal, kindHooks, mapKinds, maps,
+  //@ sharedFormKind
+  // An engine map's entries are in its order already (`sharedMapEntries`);
+  // a runtime-owned array or hash map's are of its fields, as the V8
+  // profile's (light-cljs-1036).
   function mapTraversal(value) {
-    return sharedFormKind(value) === "map" ? maps.get(value) : collectionTraversal(maps.get(value), mapKinds.get(value));
+    if (sharedFormKind(value) === "map") return maps.get(value);
+    const kind = value?.cljs$lang$kind$$LKEY;
+    if (kind === 28 && value.arr$LKEY !== undefined) return arrayMapEntries(value.arr$LKEY);
+    if (kind === 29 && value.cnt$LKEY !== undefined) return kindHooks.hashMapTraversal(value);
+    return collectionTraversal(maps.get(value), mapKinds.get(value));
   }
   //@unit setTraversal requires: collectionTraversal, setKinds, sets, sharedFormKind
   function setTraversal(value) {
@@ -669,7 +694,7 @@
     const form = sharedFormKind(value), kind = form === "map" || form === "set" ? "array-map" : mapKinds.get(value) ?? setKinds.get(value);
     return kind === "array-map" ? entryIndex(entries, key) : kindHooks.hashEntryIndex(entries, key, kind);
   }
-  //@unit maps requires: kindHooks, mapOf, sharedFormKind, sharedFormOf, sharedMapEntries
+  //@unit maps requires: mapOf, sharedFormKind, sharedFormOf, sharedMapEntries
   // A map is an engine map form (an imported one through its occurrence),
   // read as a positional map of its entries (`sharedMapEntries`, in the
   // engine's order: the verbatim units take their positional paths,
@@ -678,16 +703,15 @@
   // `hash-map` kind when the engine hashes it (`formMap`), as the V8
   // profile keeps the two apart; or a runtime-owned map of the V8
   // profile's classes (`mapOf`, light-cljs-1012): a sorted map, a map a
-  // public constructor built or one with a NaN occurrence key. A record is
-  // added by `maps.records`, as in the V8 profile (light-cljs-666).
+  // public constructor built or one with a NaN occurrence key, whose
+  // entries are its fields' (`mapTraversal`): `get` reads a sorted map's
+  // own (light-cljs-1036). A record is added by `maps.records`, as in the
+  // V8 profile (light-cljs-666).
   const maps = {
     has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
     get(value) {
       if (sharedFormKind(value) === "map") return sharedMapEntries(sharedFormOf(value));
-      const map = mapOf(value);
-      if (map === undefined) return undefined;
-      const kind = map.cljs$lang$kind$$LKEY;
-      return kind === 28 ? kindHooks.arrayMapEntries(map.arr$LKEY) : kind === 29 ? kindHooks.hashMapTrie(map) : map.entries$LKEY;
+      return mapOf(value)?.entries$LKEY;
     },
     kinds: {
       has: value => sharedFormKind(value) === "map" || mapOf(value) !== undefined,
@@ -1436,11 +1460,9 @@
   const treeRoots = sharedStore(), treeSetMaps = sharedStore();
   //@unit hashRoots requires: sharedStore
   const hashRoots = sharedStore();
-  //@unit hashMapTries requires: sharedStore
-  // The V8 profile's caches of a hash map's trie and of a hash map's
-  // traversal pairs (light-cljs-1034), as stores that publish.
-  const hashMapTries = sharedStore();
   //@unit traversalPairs requires: sharedStore
+  // The V8 profile's cache of a hash map's traversal pairs
+  // (light-cljs-1034), as a store that publishes.
   const traversalPairs = sharedStore();
   //@unit hashTraversals requires: sharedStore
   const hashTraversals = sharedStore();

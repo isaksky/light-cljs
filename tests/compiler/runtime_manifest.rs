@@ -1180,8 +1180,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // (light-cljs-1028), and the 17 keyed slots of array, hash and sorted
     // maps with the slot-first wrappers of `dissoc` and `contains?` reading
     // two of them (light-cljs-1012), and the three hooks of the maps' fields
-    // that `maps` and `lookup` read (light-cljs-1034).
-    assert_eq!(checked, 457);
+    // that `maps` and `lookup` read (light-cljs-1034), and less those two of
+    // `maps`, a hash map's lookup hook and the four map transient units of
+    // their own fields (light-cljs-1036).
+    assert_eq!(checked, 460);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1339,11 +1341,16 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     // Hash maps' tries, which `get.maps` (light-cljs-358) and `lookup`
     // (light-cljs-302) search.
     ("trieValue", Kind::Units(&["PersistentHashMapValue"])),
-    // An array map's entries and lookup and a hash map's trie, which `maps`
-    // and `lookup` read of the maps' fields (light-cljs-1034).
-    ("arrayMapEntries", Kind::Units(&["ArrayMapCell"])),
+    // An array map's and a hash map's lookup, which `lookup` reads of the
+    // maps' fields (light-cljs-1034, light-cljs-1036), and their `assoc` and
+    // `dissoc`, the operations' own paths, and a hash map's traversal.
     ("arrayMapLookup", Kind::Units(&["ArrayMapCell"])),
-    ("hashMapTrie", Kind::Units(&["HashMapCell"])),
+    ("hashMapLookup", Kind::Units(&["HashMapCell"])),
+    ("assocArrayMap", Kind::Units(&["PersistentArrayMapValue"])),
+    ("assocHashMap", Kind::Units(&["PersistentHashMapValue"])),
+    ("dissocArrayMap", Kind::Units(&["PersistentArrayMapValue"])),
+    ("dissocHashMap", Kind::Units(&["PersistentHashMapValue"])),
+    ("hashMapTraversal", Kind::Units(&["PersistentHashMapValue"])),
     // Hash sets' tries, which `get.sets` (light-cljs-373) and `lookup.sets`
     // (light-cljs-302) search.
     ("trieMember", Kind::Units(&["publicHashSet", "putMember"])),
@@ -1495,13 +1502,18 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     // A transient of a kind comes from a persistent value of that kind.
     ("persistVector", Kind::Stores(&["vectors"])),
     ("persistMap", Kind::Stores(&["maps"])),
+    // The map transients' operations (light-cljs-1036).
+    ("transientMap", Kind::Stores(&["maps"])),
+    ("transientMapLookup", Kind::Stores(&["maps"])),
+    ("assocTransientMap", Kind::Stores(&["maps"])),
+    ("dissocTransientMap", Kind::Stores(&["maps"])),
     ("persistSet", Kind::Stores(&["sets"])),
     ("transientVector", Kind::Stores(&["vectors"])),
     ("conjTransientVector", Kind::Stores(&["vectors"])),
     ("assocTransientVector", Kind::Stores(&["vectors"])),
     ("conjTransientMap", Kind::Stores(&["maps"])),
     ("conjTransientSet", Kind::Stores(&["sets"])),
-    ("transientEntryIndex", Kind::Stores(&["maps", "sets"])),
+    ("transientEntryIndex", Kind::Stores(&["sets"])),
     ("countTransient", Kind::Stores(&["transients"])),
     // Values `count` walks: cells (those without a count), lazy seqs and host
     // iterators' seqs.

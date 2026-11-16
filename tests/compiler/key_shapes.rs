@@ -291,7 +291,7 @@ fn set_literals_add_their_other_members_to_a_shape_of_their_first_members() {
 
 /// Runtime internals the structural test compares, exposed on `globalThis`
 /// by [`exposed`].
-const INTERNALS: &str = "maps, mapKinds, sets, setKinds, hashRoots, hash, keyword, symbol, \
+const INTERNALS: &str = "maps, mapKinds, arrayMapEntries, sets, setKinds, hashRoots, hash, keyword, symbol, \
      vectorFromArray, listFromArray, setFromArray, mapFromArray, mapShape, mapFromShape, \
      hashMapShape, hashMapFromShape, setShape, setFromShape, literalSetFromArray, transientState, core";
 
@@ -373,8 +373,16 @@ const sameNode = (x, y, ex, ey, path) => {
 // and its count, with a builder's entries at their indexes.
 const entriesOf = e => Array.isArray(e) ? e : Array.from({length: e.length}, (_, i) => e[i]);
 const rootOf = e => Array.isArray(e) ? I.hashRoots.get(e) : e.root;
+// A map's fields as the payload these checks compare (light-cljs-1036): an
+// array map's pairs as entries, a hash map's fields as its trie with the
+// builder's entries at their indexes, as `maps` read them until then.
+// A value's own keyed field `name`: its keyed fields enumerate
+// (docs/value-layout.md, question 3), under the build's key.
+const field = (v, name) => { const k = Object.keys(v).find(k => k.startsWith(name + "$")); return k === undefined ? undefined : v[k]; };
+const payloadOf = m => field(m, "arr") !== undefined ? I.arrayMapEntries(field(m, "arr"))
+  : Object.assign({root: field(m, "root"), nil: field(m, "nil"), length: field(m, "cnt")}, field(m, "lit"));
 const sameMap = (a, b) => {
-  const ea = I.maps.get(a), eb = I.maps.get(b);
+  const ea = payloadOf(a), eb = payloadOf(b);
   if (I.mapKinds.get(a) !== I.mapKinds.get(b)) fail("map kind", I.mapKinds.get(a), I.mapKinds.get(b));
   if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) fail("map type");
   if (Array.isArray(ea) !== Array.isArray(eb) || Object.isFrozen(ea) !== Object.isFrozen(eb)) fail("payload");
@@ -419,7 +427,7 @@ for (let trial = 0; trial < 600; trial++) {
   // A shape builds any number of maps, which share no entries or nodes.
   const other = fromShape(shape, values.map(valueOf));
   sameMap(built, fromShape(shape, values));
-  if (I.maps.get(other)[0] === I.maps.get(built)[0] || (big && rootOf(I.maps.get(other)) === rootOf(I.maps.get(built)))) fail("shared");
+  if (payloadOf(other)[0] === payloadOf(built)[0] || (big && rootOf(payloadOf(other)) === rootOf(payloadOf(built)))) fail("shared");
   if (big) hashMaps++; else maps++;
 }
 for (let trial = 0; trial < 600; trial++) {
@@ -495,11 +503,14 @@ const unchanged = (nodes, what) => {
     if (now.length !== held.length || now.some((slot, i) => slot !== held[i])) fail(what, "node changed");
   }
 };
-const original = snapshot(I.maps.get(m).root);
-const rootOf = t => I.transientState(t).entries.root;
+// A hash map and a transient hash map hold their root in their own keyed
+// field (light-cljs-1036), which enumerates (docs/value-layout.md, question 3).
+const field = (v, name) => { const k = Object.keys(v).find(k => k.startsWith(name + "$")); return k === undefined ? undefined : v[k]; };
+const original = snapshot(field(m, "root"));
+const rootOf = t => field(t, "root");
 let t = c.assocBang(c.transient(m), 0, "a");
 const owned = rootOf(t);
-if (owned === I.maps.get(m).root) fail("the first edit shares the persistent root");
+if (owned === field(m, "root")) fail("the first edit shares the persistent root");
 for (let i = 0; i < n; i += 3) t = c.assocBang(t, i, "x" + i);
 for (let i = 1; i < n; i += 3) t = c.dissocBang(t, i);
 t = c.assocBang(t, n, "new");
@@ -513,7 +524,7 @@ for (let i = 0; i < n; i++) if (i % 3 !== 1) expected.push(i, i % 3 === 0 ? "x" 
 expected.push(n, "new");
 if (!c.equal(edited, I.mapFromArray(expected, "hash-map"))) fail("edited map");
 // A later transient over the edited map copies its nodes again.
-const kept = snapshot(I.maps.get(edited).root);
+const kept = snapshot(field(edited, "root"));
 let again = c.transient(edited);
 for (let i = 0; i < n; i += 2) again = c.dissocBang(again, i);
 unchanged(kept, "edited");

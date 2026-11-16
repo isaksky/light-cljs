@@ -514,6 +514,48 @@ What light-cljs-1031 landed: a symbol's metadata in its own field.
   field; engine symbol forms keep the engine's metadata (`formWithMeta`),
   which `ownMeta` does not answer.
 
+What light-cljs-1036 landed: the map transients hold their own fields, a
+public hash map its count and nil entry, and no reader takes an array or
+hash map's entries through `maps`.
+
+- **Map transients.** A `TransientArrayMapCell` (kind 31) has the own keyed
+  fields `editable` and `arr`, upstream's flat key, value array, which
+  `assoc!` and `dissoc!` edit in place (upstream's `len` is the array's
+  length; `dissoc!` moves the last pair into the key's place); its ninth
+  key builds a `TransientHashMapCell` of its pairs. A `TransientHashMapCell`
+  (kind 32) has `edit` (the token of the nodes it owns, null once
+  persisted, as upstream's) and a hash map's `cnt`, `root` and `nil`, the
+  names `HashMapCell` uses for upstream's `count`, `has-nil?` and
+  `nil-val`. A map transient is its own state (`transientState`,
+  `isMapTransient`), as a transient vector; `persistent!` gives the map of
+  its fields, sharing them. The set transients keep the `transients` store
+  until light-cljs-1013. The kind hooks `transientMap`,
+  `transientMapLookup`, `assocTransientMap` and `dissocTransientMap` hold
+  the map transients' paths.
+- **The public hash map constructor** builds a `HashMapCell` whose `cnt` is
+  the count it is given and whose `nil` is its nil entry, so `count`,
+  `assoc` and `dissoc` of it read and update the fields as any hash map's;
+  its slots keep `root`, `has-nil?` and `nil-val` for its public fields
+  alone. Its updates have no slots, so `.-nil-val` of one without a nil
+  key reads `get`'s nil where the slot held undefined.
+- **The readers of entries.** `maps.get` answers only a sorted map's
+  entries (and a record's, `maps.records`); `arrayMapEntries` and
+  `hashMapTrie` are no longer kind hooks, and `hashMapTrie` and its store
+  are deleted. Printing and `mapIterator` walk `mapPairs` (printing only
+  where no protocol implementation can see an array's seq, else
+  `mapTraversal`'s entries); the older layers of `assoc`, `dissoc`,
+  `count`, `get`, `lookup`, `find`, `hash` and `transient` call the array
+  and hash maps' slot functions or read their fields (`isHashMap`, the
+  kind hooks `assocArrayMap`, `assocHashMap`, `dissocArrayMap`,
+  `dissocHashMap` and `hashMapLookup`); `mapTraversal` makes an array map's
+  entries of its pairs and walks a hash map's trie once per map
+  (`hashMapTraversal`). A public constructor's array map still updates
+  through entries of its pairs (`mapAssocEntries`, `dissocEntries`).
+- **Profiles.** The Pants profile persists a map transient through
+  `makeMap`, so that it stays an engine map, reads a runtime-owned map's
+  entries as the V8 profile's `mapTraversal` does, and builds a public
+  hash map's update as a class with slots.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -838,7 +880,7 @@ slots and plain field names: only the runtime's own methods reach them, and
 | array map | `PersistentArrayMap` (`PersistentArrayMapValue`) | meta, cnt, arr (upstream's flat key, value array), hash | `maps` (kind 4), `mapKinds` | 1012 |
 | hash map | `PersistentHashMap` (`PersistentHashMapValue`); nodes `BitmapIndexedNode`, `ArrayNode`, `HashCollisionNode` | meta, cnt, root, hasNil, nilVal, hash; the nodes keep today's fields (edit, bitmap, arr, occupied count, capacity) | the trie's private fields | 1012 |
 | sorted map | `PersistentTreeMap` (`treeMapConstructor`); `RedNode`, `BlackNode` as map entries | comp, tree, cnt, meta, hash; key, val, left, right, hash | `maps`, `sortedComparators` | 1012 |
-| map transients | `TransientArrayMap`, `TransientHashMap` (`...Type`) | editable, len, arr; edit, root, count, hasNil, nilVal | `transients` | 1012 |
+| map transients | `TransientArrayMap`, `TransientHashMap` (`...Type`) | editable, len, arr; edit, root, count, hasNil, nilVal (as `HashMapCell`'s cnt, root, nil) | `transients` | 1012, fields 1036 |
 | sets | `PersistentHashSet`, `PersistentTreeSet`, `TransientHashSet` | meta, the members as today (an array set's array, a hash set's trie), hash; meta, treeMap, hash; the transient's members | `sets` (kind 6), `setKinds` | 1013 |
 | queue | `PersistentQueue`, `PersistentQueueSeq` (`PersistentQueueValue`) | meta, count, front, rear, hash; meta, front, rear, hash | `queues` | 1013 |
 | atom, volatile | `Atom`, `Volatile` | state, meta, validator, watches; state | `atoms`, `volatiles` | 1013 |
