@@ -887,16 +887,24 @@ What light-cljs-1014 landed: each class compares and hashes its own values
   every class's slot takes the structural comparison and hash, so a
   program's `ICounted`, `ISeqable`, `ISeq` or `ILookup` of a runtime type
   is read as before (`classes_compare_and_hash_as_the_generic_walk_did`).
-  The Pants build's profile throws on such an extension, so it always
-  compares by fields.
+  A session that demands declarations (`slotFirst` off) takes the walk too,
+  whose operations demand the extensions they could reach. The Pants
+  build's profile throws on such an extension, so it always compares by
+  fields. An `extend-type` of `js/Object` with `IEquiv` or `IHash` no
+  longer reaches these classes, whose own slots now outrank the inherited
+  method, as upstream's own `-equiv` and `-hash` do; before, `=` and `hash`
+  took it below `Advanced` and `=` did not at it (the Sol review of this
+  pellet).
 - **Complete slots.** The compile-time protocol lookup (build.rs) calls the
   runtime's own slots, so each answers every value of its class: a value
   made by reflection takes the structural comparison and hash, and
   `hashStructural` does not call a runtime slot it finds as a program's
-  method (`builtinSlots`), which would ask it again. The compile-time `-equiv`
-  protocol function, which reaches a class's slot first, answers a
-  collection holding NaN against itself as upstream's `-equiv` does
-  (false), where `=` keeps its identity test.
+  method (`builtinSlots`), which would ask it again. The `-equiv` slots
+  answer identical values true, as the `-equiv` protocol function's
+  fallback (`equalPair`) does, so a macro's `(-equiv v v)` of a vector
+  holding NaN is true, as the program's; `objectEquiv` (`.equiv`) takes no
+  runtime slot as an implementation, so its comparison keeps no identity
+  test there either.
 - **Primitives.** `hash` of a number, a string or another primitive reads
   its prototype's `IHash` mask bit and marker by name, as upstream's
   `implements?` does, before the protocol lookup's computed names (a keyed

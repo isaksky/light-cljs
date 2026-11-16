@@ -6734,14 +6734,17 @@
     for (let current = seq(value); current != null; current = next(current)) members = putMember(members, first(current), edit);
     return makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   }
-  //@unit objectEquiv requires: comparedSequential, equalPair, maps, methodKeys, namedOf,
-  //@ protocolHooks, sets, structuralEqualPair
+  //@unit objectEquiv requires: builtinSlots, comparedSequential, equalPair, maps, methodKeys,
+  //@ namedOf, protocolHooks, sets, structuralEqualPair
   // Object.equiv calls the receiver's IEquiv implementation directly, even
   // when an extension rejects an identical value. Language = keeps its own
   // identity shortcut. Saved Object methods dispatch on the borrowed receiver.
+  // A class's own `-equiv` slot, which the compile-time lookup (build.rs)
+  // finds and which answers identical values as `=` does (light-cljs-1014),
+  // is no implementation here: the comparison below has no identity test.
   function objectEquiv(value, other) {
     const equiv = protocolHooks.builtin?.(value, methodKeys[18], 2);
-    if (equiv) return equiv.call(value, value, other);
+    if (equiv && !builtinSlots.has(equiv)) return equiv.call(value, value, other);
     if (maps.has(value)) return structuralEqualPair(value, other);
     // Sequence/collection protocols compare contents even for the same receiver
     // (for example, a list containing NaN is not equivalent to itself). Cycle
@@ -7137,13 +7140,18 @@
   // or `ILookup` method could then answer differently from the fields;
   // after one, each class compares and hashes structurally, as before.
   // Cycles and iterates keep identity, and no slot.
-  //@unit classEquiv requires: equalPair, kindTables, structuralEqualPair, vectorLeaf
-  // A vector's or a map entry's `-equiv`: where both hold their items in
-  // their own trie and tail (no view, no caller's tail), their counts, then
-  // their items index by index, the first unequal pair ending it, as their
-  // seqs' walk compared them.
+  //@unit classEquiv requires: equalPair, kindTables, slotFirst, structuralEqualPair, vectorLeaf
+  // The `-equiv` of a vector, a map entry, a set or a seq. Identical values
+  // are equal, as `equalPair` (the `-equiv` protocol function's fallback)
+  // answers them. Where both are vectors or map entries holding their items
+  // in their own trie and tail (no view, no caller's tail), their counts,
+  // then their items index by index, the first unequal pair ending it, as
+  // their seqs' walk compared them; else the structural comparison. A
+  // session that demands declarations (`slotFirst`) takes the walk, whose
+  // operations demand.
   function classEquiv(self, other) {
-    if (other != null && kindTables[4] !== kindTables[0]) {
+    if (self === other) return true;
+    if (other != null && kindTables[4] !== kindTables[0] && slotFirst.on) {
       const kind = self.cljs$lang$kind$$LKEY, otherKind = other.cljs$lang$kind$$LKEY, cnt = self.cnt$LKEY;
       if ((kind === 1 || kind === 3) && (otherKind === 1 || otherKind === 3) && self.tail$LKEY !== undefined && other.tail$LKEY !== undefined
         && self.callerTail$LKEY === undefined && other.callerTail$LKEY === undefined) {
@@ -7157,14 +7165,15 @@
     }
     return structuralEqualPair(self, other);
   }
-  //@unit vectorHash requires: hash, hashStructural, kindTables, mixCollectionHash, vectorLeaf
+  //@unit vectorHash requires: hash, hashStructural, kindTables, mixCollectionHash, slotFirst,
+  //@ vectorLeaf
   // A vector's or a map entry's `-hash`, upstream's `hash-ordered-coll` of
   // its items index by index where it holds them in its own trie and tail,
   // cached in its `hash` field, as `hashSequential` caches its seq's.
   function vectorHash(self) {
     const known = self.hash$LKEY, kind = self.cljs$lang$kind$$LKEY;
     if (known != null) return known;
-    if (known === null && (kind === 1 || kind === 3) && self.tail$LKEY !== undefined && self.callerTail$LKEY === undefined && kindTables[4] !== kindTables[0]) {
+    if (known === null && (kind === 1 || kind === 3) && self.tail$LKEY !== undefined && self.callerTail$LKEY === undefined && kindTables[4] !== kindTables[0] && slotFirst.on) {
       const cnt = self.cnt$LKEY;
       let result = 1;
       for (let i = 0; i < cnt; i += 32) {
@@ -7175,15 +7184,18 @@
     }
     return hashStructural(self);
   }
-  //@unit mapEquiv requires: arrayIndex, equalPair, get, kindTables, mapPairs, missing,
+  //@unit mapEquiv requires: arrayIndex, equalPair, get, kindTables, mapPairs, missing, slotFirst,
   //@ structuralEqualPair
   // An array, hash or sorted map's `-equiv`: against another such map, their
   // counts, then each key of this one looked up in the other (an array map's
   // keys searched as its `-lookup` searches them, `arrayIndex`), an array
   // map comparing its value first and the others the value found, as
-  // `equivMap` does.
+  // `equivMap` does; identical maps are equal (see `classEquiv`). A value's
+  // `IEquiv` method that extends a runtime type midway sends the remaining
+  // keys through `get`, as `equivMap` looked each up.
   function mapEquiv(self, other) {
-    if (other != null && kindTables[4] !== kindTables[0]) {
+    if (self === other) return true;
+    if (other != null && kindTables[4] !== kindTables[0] && slotFirst.on) {
       const kind = self.cljs$lang$kind$$LKEY, otherKind = other.cljs$lang$kind$$LKEY, arr = otherKind === 28 ? other.arr$LKEY : undefined;
       if ((otherKind === 28 ? arr !== undefined : (otherKind === 29 || otherKind === 30) && (other.cnt$LKEY !== undefined || "cnt$LKEY" in other))
         && (kind === 28 ? self.arr$LKEY !== undefined : self.cnt$LKEY !== undefined || "cnt$LKEY" in self)) {
@@ -7191,7 +7203,7 @@
         const pairs = mapPairs(self), leftFirst = kind === 28;
         for (let i = 0; i < pairs.length; i += 2) {
           let found;
-          if (otherKind === 28) { const index = arrayIndex(arr, pairs[i]); found = index < 0 ? missing : arr[index + 1]; }
+          if (otherKind === 28 && kindTables[4] !== kindTables[0]) { const index = arrayIndex(arr, pairs[i]); found = index < 0 ? missing : arr[index + 1]; }
           else found = get(other, pairs[i], missing);
           if (found === missing || !(leftFirst ? equalPair(pairs[i + 1], found) : equalPair(found, pairs[i + 1]))) return false;
         }

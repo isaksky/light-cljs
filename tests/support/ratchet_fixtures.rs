@@ -592,13 +592,14 @@
 //! it) or `hash` is, for the classes a program builds. The readable runtime
 //! grows about 11,000 bytes, so every none and prepare ceiling moves to the
 //! next 1,000 above its size. Advanced, against master `5cd32c66`: about
-//! 1,000 to 2,000 bytes per program (`vector-printed` 15,062 to 16,037,
-//! `map-printed` 22,905 to 24,328, `vector-only` 7,366 to 8,330, `map-only`
-//! 15,057 to 16,934, `set-only` 7,797 to 9,214), about 4,000 for the
-//! features example (`features-direct` 122,470 to 126,491, `features`
-//! 126,881; the shared chunk 98,209 to 101,762). Each exceeded advanced
-//! ceiling, and the shared chunk's, moves to the next 100 below 10,000 and
-//! the next 1,000 above. Speed comes first (pl group 1661).
+//! 1,000 to 2,000 bytes per program (`vector-printed` 15,062 to 16,075,
+//! `map-printed` 22,905 to 24,424, `vector-only` 7,366 to 8,368, `map-only`
+//! 15,057 to 17,029, `set-only` 7,797 to 9,252), about 4,000 for the
+//! features example (`features-direct` 122,470 to 126,593, `features`
+//! 126,983; the shared chunk 98,209 to 101,798, startup 9,752). Each
+//! exceeded advanced ceiling, and the features chunks', moves to the next
+//! 100 below 10,000 and the next 1,000 above. Speed comes first (pl group
+//! 1661).
 
 pub struct Fixture {
     pub name: &'static str,
@@ -654,7 +655,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "add",
         source: "(+ 1 2)",
-        ceilings: [674_000, 674_000, 100],
+        ceilings: [675_000, 675_000, 100],
         removed: [0, 0, 0],
         printed: "3\n",
     },
@@ -678,7 +679,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defprotocol Area (area [shape]))
                  (defrecord Rect [w h] Area (area [_] (* w h)))
                  (area (->Rect 3 4))",
-        ceilings: [675_000, 675_000, 5_900],
+        ceilings: [676_000, 676_000, 5_900],
         removed: [0, 0, 0],
         printed: "12\n",
     },
@@ -722,7 +723,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (reduce + (map (fn [i] (let [r (row i)]
                                           (+ (count (:pos r)) (count (get-in r [:meta :dims])))))
                                 (range 10)))",
-        ceilings: [675_000, 675_000, 42_000],
+        ceilings: [676_000, 676_000, 42_000],
         removed: [0, 0, 1],
         printed: "50\n",
     },
@@ -753,7 +754,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defrecord Circle [r] Shape (area [_] (* 3 r r)) (perimeter [_] (* 6 r)))
                  (defrecord Tri [a b c] Shape (area [_] (* a b)) (perimeter [_] (+ a b c)))
                  (area (->Square 3))",
-        ceilings: [677_000, 677_000, 5_900],
+        ceilings: [678_000, 678_000, 5_900],
         removed: [0, 0, 0],
         printed: "9\n",
     },
@@ -841,7 +842,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "map-only",
         source: "(js/console.log (.get {:a 1} :a))",
-        ceilings: [675_000, 675_000, 17_000],
+        ceilings: [675_000, 675_000, 18_000],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
     },
@@ -882,7 +883,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn add ([x] x) ([x y] (+ x y)))
                  (js* "void 0")
                  (add 1 2)"#,
-        ceilings: [675_000, 675_000, 100],
+        ceilings: [676_000, 676_000, 100],
         removed: [0, 0, 2],
         printed: "3\n",
     },
@@ -972,7 +973,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (+ (reduce add-cost 0 (filter heavy? items))
                       (reduce + (map (fn [item] (count (:label item))) items))
                       @counter))",
-        ceilings: [676_000, 676_000, 69_000],
+        ceilings: [677_000, 677_000, 69_000],
         removed: [0, 0, 1],
         printed: "26\n",
     },
@@ -1062,7 +1063,7 @@ const FEATURES_REPORTS: (&str, &str) = (
 /// and the 612-byte chunk loader beside what the application without its
 /// features holds (`size_ratchet::FEATURES_STARTUP_SLACK`).
 pub const FEATURES_CHUNK_CEILINGS: &[(&str, usize)] = &[
-    ("app.main.js", 9_700),
+    ("app.main.js", 9_800),
     ("app.editor+app.reports.js", 102_000),
     ("app.editor.js", 13_000),
     ("app.reports.js", 5_000),
@@ -1086,7 +1087,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [693_000, 693_000, 128_000],
+        ceilings: [694_000, 694_000, 128_000],
         removed: [0, 0, 21],
         printed: "menu: Editor | Reports\n#function\n",
     },

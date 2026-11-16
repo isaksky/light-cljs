@@ -3769,4 +3769,18 @@ fn classes_compare_and_hash_as_the_generic_walk_did() {
                                      (= [1 2] '(1)) (= '(1) [7 8]))))",
         "[true,true,false,false,true,false,false,false]",
     );
+    // `hash` of a primitive reads its prototype's `IHash` by name, which an
+    // `extend-type` of `js/Number` or `js/String` writes; the `-equiv`
+    // protocol function answers an identical collection holding NaN as `=`
+    // does, and `.equiv` without the identity test, in the program and in a
+    // macro (the compile-time lookup calls the classes' own slots).
+    every_level(
+        "(defmacro probe [] (let [v [js/NaN] m {:a js/NaN}] [(-equiv v v) (.equiv v v) (-equiv m m) (.equiv m m) (= v v)]))
+         (let [nan [js/NaN] m {:a js/NaN} p (probe)]
+           (extend-type js/Number IHash (-hash [_] 37))
+           (extend-type js/String IHash (-hash [_] 38))
+           (js/JSON.stringify (array (hash 2) (hash \"x\") (hash [2 \"x\"]) (-equiv nan nan) (.equiv nan nan)
+                                     (-equiv m m) (.equiv m m) (nth p 0) (nth p 1) (nth p 2) (nth p 3) (nth p 4))))",
+        "[37,38,-1156898992,true,false,true,false,true,false,true,false,true]",
+    );
 }
