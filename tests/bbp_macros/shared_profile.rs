@@ -1382,6 +1382,11 @@ fn shared_profile_public_collection_updates_keep_constructor_slots() {
             const nil = core.assoc(h, null, 9);
             check(nil.has_nil_QMARK_ === true && nil.nil_val === 9 && core.get(nil, null) === 9, 'nil slots');
             check(core.dissoc(nil, null).has_nil_QMARK_ === false, 'removed nil slot');
+            // A public count that differs from the entries' survives updates
+            // without slots (light-cljs-1036).
+            const offset = new core.PersistentHashMap(null, 7, null, true, 9, null);
+            const kept = core.assoc(core.dissoc(offset, 'absent'), 'k', 1);
+            check(core.count(kept) === 8 && core.get(kept, null) === 9 && core.get(kept, 'k') === 1, 'offset count across updates');
             const set = new core.PersistentHashSet(metadata, h, 67);
             const added = core.conj(set, 'new'), removed = core.disj(added, 'k');
             check(added instanceof core.PersistentHashSet && removed instanceof core.PersistentHashSet, 'set wrappers');

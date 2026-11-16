@@ -442,7 +442,7 @@
     if (value == null) return undefined;
     const kind = value.cljs$lang$kind$$LKEY;
     return kind === 28 ? value.arr$LKEY !== undefined ? value : undefined
-      : kind === 29 ? value.cnt$LKEY !== undefined ? value : undefined
+      : kind === 29 ? (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? value : undefined
       : kind === 30 && value.entries$LKEY !== undefined ? value : undefined;
   }
   //@unit isArrayMap
@@ -450,7 +450,7 @@
   const isArrayMap = value => value != null && value.cljs$lang$kind$$LKEY === 28 && value.arr$LKEY !== undefined;
   //@unit isHashMap
   // Whether a value is a hash map of the class layout (`HashMapCell`).
-  const isHashMap = value => value != null && value.cljs$lang$kind$$LKEY === 29 && value.cnt$LKEY !== undefined;
+  const isHashMap = value => value != null && value.cljs$lang$kind$$LKEY === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
   //@unit arrayMapEntries requires: ArrayMapEntry
   // An array map's pairs (`arr`) as entries, for the few readers that take
   // entries of every map (`mapTraversal`) and the updates of a public
@@ -507,7 +507,7 @@
   function isMapTransient(value) {
     if (value == null) return false;
     const kind = value.cljs$lang$kind$$LKEY;
-    return kind === 31 ? value.arr$LKEY !== undefined : kind === 32 && value.cnt$LKEY !== undefined;
+    return kind === 31 ? value.arr$LKEY !== undefined : kind === 32 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
   }
   //@unit viewType mutator
   // Makes `Type` a class of kind `kind` (`kinds`), whose values `Cell`
@@ -1413,12 +1413,17 @@
     if (isHashMap(root)) trie = root.root$LKEY;
     else {
       const pairs = root == null ? undefined : mapPairs(root), entries = [];
-      for (let i = 0; pairs !== undefined && i < pairs.length; i += 2) if (pairs[i] != null) entries.push({key: pairs[i], value: pairs[i + 1], hash: hash(pairs[i])});
+      // Each key and value is read once, in order, as its entries read them:
+      // a public constructor's array may hold getters.
+      for (let i = 0; pairs !== undefined && i < pairs.length; i += 2) {
+        const key = pairs[i], value = pairs[i + 1];
+        if (key != null) entries.push({key, value, hash: hash(key)});
+      }
       trie = ensureHashRoot(entries);
     }
-    // An undefined count is nil, so that the map has its `cnt` field.
+    // An undefined count stays undefined, an own field all the same.
     const nil = hasNil ? {key: null, value: nilValue, hash: 0} : null;
-    return constructorSlots(makeMap(PersistentHashMapValue, {root: trie, nil, length: cnt === undefined ? null : cnt}, "hash-map"), {root, "has-nil?": hasNil, "nil-val": nilValue}, metadata, cachedHash);
+    return constructorSlots(makeMap(PersistentHashMapValue, {root: trie, nil, length: cnt}, "hash-map"), {root, "has-nil?": hasNil, "nil-val": nilValue}, metadata, cachedHash);
   }
   //@unit PersistentHashSetValue requires: typeHooks
   // The hash set type, which builders instantiate with `makeSet`. Called, it
@@ -3053,11 +3058,13 @@
       return {value: result, done: false};
     }};
   }
-  //@unit mapIterator requires: mapPairs
+  //@unit mapIterator requires: mapPairs, publicCollectionSlots
   // Of a map's seq (`makeMap.seq`): `item` of each key and value, which it
-  // reads of the map's pairs (`mapPairs`, light-cljs-1036).
+  // reads of the map's pairs (`mapPairs`, light-cljs-1036): a copy of a
+  // public constructor's, whose caller's array can change after the
+  // iterator is made, as its entries were made then.
   function mapIterator(value, item) {
-    const pairs = mapPairs(value);
+    const pairs = publicCollectionSlots.has(value) ? mapPairs(value).slice() : mapPairs(value);
     let index = 0;
     return {next() {
       if (index >= pairs.length) return {value: null, done: true};
@@ -3342,7 +3349,7 @@
   function mapTraversal(value) {
     const kind = value?.cljs$lang$kind$$LKEY;
     if (kind === 28 && value.arr$LKEY !== undefined) return arrayMapEntries(value.arr$LKEY);
-    if (kind === 29 && value.cnt$LKEY !== undefined) return kindHooks.hashMapTraversal(value);
+    if (kind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return kindHooks.hashMapTraversal(value);
     return collectionTraversal(maps.get(value), mapKinds.get(value));
   }
   //@unit traversalPairs
@@ -4108,7 +4115,7 @@
       if (arr.length & 1) arr.push(undefined);
       return new TransientArrayMapCell(arr);
     }
-    if (kind === 29 && value.cnt$LKEY !== undefined) return new TransientHashMapCell({}, value.cnt$LKEY, value.root$LKEY, value.nil$LKEY);
+    if (kind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return new TransientHashMapCell({}, value.cnt$LKEY, value.root$LKEY, value.nil$LKEY);
     const entries = maps.get(value);
     if (Array.isArray(entries) && mapKinds.get(value) === "array-map") return new TransientArrayMapCell(flatPairs(entries));
     const trie = hashTrie(entries);
@@ -4811,7 +4818,7 @@
     // An array map's and a hash map's fields, of one read of the keyed kind.
     const mapKind = value.cljs$lang$kind$$LKEY;
     if (mapKind === 28 && value.arr$LKEY !== undefined) return (value.arr$LKEY.length + 1) >> 1;
-    if (mapKind === 29 && value.cnt$LKEY !== undefined) return value.cnt$LKEY;
+    if (mapKind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return value.cnt$LKEY;
     const entries = maps.get(value);
     if (entries) return entries.length;
     const members = sets.get(value);
@@ -5029,7 +5036,7 @@
     // An array map's and a hash map's fields, of one read of the keyed kind.
     const mapKind = value?.cljs$lang$kind$$LKEY;
     if (mapKind === 28 && value.arr$LKEY !== undefined) return kindHooks.arrayMapLookup(value, key, notFound);
-    if (mapKind === 29 && value.cnt$LKEY !== undefined) return kindHooks.hashMapLookup(value, key, notFound);
+    if (mapKind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return kindHooks.hashMapLookup(value, key, notFound);
     const entries = maps.get(value);
     if (entries) {
       if (!Array.isArray(entries)) return kindHooks.trieValue(entries, key, notFound);
@@ -5518,7 +5525,7 @@
   // finds it: its `nil` entry, or the key's in its `root`.
   function hashMapLookup(self, key, notFound) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined) return noBranch;
+    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     let entry;
     if (key == null) entry = self.nil$LKEY;
     else { const root = self.root$LKEY; entry = root ? hashNodeFind(root, 0, hash(key), key) : null; }
@@ -5529,7 +5536,7 @@
   // (light-cljs-1036).
   function hashMapCount(self) {
     const cnt = self.cnt$LKEY;
-    return cnt === undefined ? noBranch : cnt;
+    return cnt === undefined && !("cnt$LKEY" in self) ? noBranch : cnt;
   }
   //@unit treeMapLookup requires: lookup, noBranch
   // `get` of a sorted map, as `lookup` finds it.
@@ -5594,7 +5601,7 @@
   // (light-cljs-1036).
   function hashMapAssoc(self, key, item) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined) return noBranch;
+    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     let root = self.root$LKEY, nil = self.nil$LKEY, n = cnt;
     if (key == null) { n += !nil; nil = {key: nil ? nil.key : key, value: item, hash: 0}; }
     else {
@@ -5642,7 +5649,7 @@
   // whose count is its `cnt` (light-cljs-1036).
   function hashMapDissoc(self, key) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined) return noBranch;
+    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     const root = self.root$LKEY, nil = self.nil$LKEY;
     const entry = key == null ? nil : root ? hashNodeFind(root, 0, hash(key), key) : null;
     if (!entry) return preserveMeta(self, new HashMapCell(cnt, root, nil, self.lit$LKEY));
@@ -6785,7 +6792,7 @@
       return resultHash;
     }
     // A hash map's entries are its trie's leaves (light-cljs-1036).
-    const entries = mapKind === 29 && value.cnt$LKEY !== undefined ? mapTraversal(value) : maps.get(value) && mapTraversal(value);
+    const entries = mapKind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value) ? mapTraversal(value) : maps.get(value) && mapTraversal(value);
     if (entries) {
       let result = 0;
       for (const entry of entries) result = (result + mixCollectionHash((Math.imul(31, 31 + hash(entry.key)) + hash(entry.value)) | 0, 2)) | 0;
@@ -7550,11 +7557,11 @@
     return constructorSlots(value, {tree, cnt: suppliedCount}, metadata, cachedHash);
   }
   //@unit treeSetConstructor requires: comparatorOf, compareKeys, constructorSlots, deferredEntries,
-  //@ makeSet, maps, sets
+  //@ makeSet, mapTraversal, sets
   function treeSetConstructor(metadata, treeMap, cachedHash) {
     const comparator = comparatorOf(treeMap);
     const value = makeSet(treeSetConstructor, [], "sorted-set", comparator === undefined ? compareKeys : comparator);
-    sets.reset(value, deferredEntries(() => treeMap == null ? [] : maps.get(treeMap).map(entry => Object.freeze({key: entry.key, get hash() { return entry.hash; }}))));
+    sets.reset(value, deferredEntries(() => treeMap == null ? [] : mapTraversal(treeMap).map(entry => Object.freeze({key: entry.key, get hash() { return entry.hash; }}))));
     return constructorSlots(value, {"tree-map": treeMap}, metadata, cachedHash);
   }
   //@unit treeMapPush requires: conj, truth

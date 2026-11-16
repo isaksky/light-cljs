@@ -2369,3 +2369,36 @@ console.log('lazy seq and chunked cons fields keep undefined');
   assert.equal(other.core.get(other.core.arrayMap(ko, 1), ka, 'none'), 'none');
 }
 console.log('runtime_key_registry: keys register page-wide and collisions throw');
+
+// Map transients' own fields and the readers of the maps' fields
+// (light-cljs-1036), at the public constructors' edges.
+{
+  // A public array of odd length ends in a key without a value; its
+  // transient pads it, so `assoc!` keeps keys at even indexes.
+  const t = c.assocBang(c.transient(new c.PersistentArrayMap(null, 1, ['a'], null)), 'b', 2);
+  assert.equal(c.count(t), 2);
+  const persisted = c.persistentBang(t);
+  assert.equal(c.get(persisted, 'b'), 2);
+  assert.equal(c.get(persisted, 'a', 'none'), undefined);
+  // A public sorted set of an array map's keys.
+  const sortedKeys = c.PersistentTreeSet(null, c.arrayMap(1, null), null);
+  assert.equal(c.count(sortedKeys), 1);
+  assert.equal(c.get(sortedKeys, 1), 1);
+  // A map iterator reads a public constructor's array as it was when made.
+  const backing = ['a', 1], values = new c.PersistentArrayMap(null, 1, backing, null).values();
+  backing[1] = 99;
+  assert.equal(values.next().value, 1);
+  // An undefined public hash map count stays undefined.
+  assert.equal(c.count(new c.PersistentHashMap(null, undefined, null, false, null, null)), undefined);
+  // A hash map built of a public array map reads each key once.
+  let reads = 0;
+  const arr = [];
+  Object.defineProperty(arr, 0, {enumerable: true, get: () => { reads++; return 'k'; }});
+  arr[1] = 1;
+  const root = new c.PersistentArrayMap(null, 1, arr, null);
+  reads = 0;
+  const built = new c.PersistentHashMap(null, 1, root, false, null, null);
+  assert.equal(reads, 1);
+  assert.equal(c.get(built, 'k'), 1);
+}
+console.log('map transients and public map constructors read their fields once');

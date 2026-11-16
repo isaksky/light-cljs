@@ -525,20 +525,22 @@
     for (let i = 0; i < keys.length; i++) entries.push(new ArrayMapEntry(keys[i], values[i], hashes[i]));
     return makeMap(PersistentArrayMapValue, entries, "array-map");
   }
-  //@unit hashMapAssoc requires: constructorSlots, kindHooks, meta, noBranch, PersistentHashMapValue,
-  //@ publicCollectionSlots, sharedOwnedMap, updatedMap
+  //@unit hashMapAssoc requires: constructorSlots, kindHooks, mapTraversal, meta, noBranch,
+  //@ PersistentHashMapValue, publicCollectionSlots, sharedOwnedMap, updatedMap
   // `assoc` of a runtime-owned hash map (a public constructor's or one with
   // a NaN occurrence key) builds through `updatedMap`, as before the V8
   // profile's built its class directly, so that the result is an engine map
-  // where the profile makes one. A public constructor's map, whose count is
-  // its field (light-cljs-1036), gives a map of its class with that count
-  // and slots, as `updatedMap` gave it before.
+  // where the profile makes one. A public constructor's map, or one updated
+  // from it, whose count is its field and may differ from its entries'
+  // (light-cljs-1036), gives a map of its class with that count and slots,
+  // as `updatedMap` gave it before.
   function hashMapAssoc(self, key, item) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined) return noBranch;
+    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
+    const exact = !publicCollectionSlots.has(self) && cnt === mapTraversal(self).length;
     const trie = {root: self.root$LKEY, nil: self.nil$LKEY, length: cnt};
     kindHooks.putHashEntry(trie, key, item, null);
-    if (!publicCollectionSlots.has(self)) return updatedMap(self, trie);
+    if (exact) return updatedMap(self, trie);
     const result = sharedOwnedMap(PersistentHashMapValue, trie, "hash-map"), nil = trie.nil;
     return constructorSlots(result, {root: result, "has-nil?": nil != null, "nil-val": nil?.value}, meta(self), null);
   }
@@ -678,7 +680,7 @@
     if (sharedFormKind(value) === "map") return maps.get(value);
     const kind = value?.cljs$lang$kind$$LKEY;
     if (kind === 28 && value.arr$LKEY !== undefined) return arrayMapEntries(value.arr$LKEY);
-    if (kind === 29 && value.cnt$LKEY !== undefined) return kindHooks.hashMapTraversal(value);
+    if (kind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return kindHooks.hashMapTraversal(value);
     return collectionTraversal(maps.get(value), mapKinds.get(value));
   }
   //@unit setTraversal requires: collectionTraversal, setKinds, sets, sharedFormKind
