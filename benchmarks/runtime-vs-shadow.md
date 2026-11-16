@@ -1444,3 +1444,95 @@ long keyed names and the cell classes: `seq-pipeline` 42,513 bytes,
 through the cells' test the older layers call (`rest-fn` 16,668,
 `atom-str` 4,047). re-frame simple and TodoMVC gzip sizes were not measured
 in this step.
+
+## 2026-11-16: protocol masks, markers and slots of the vector classes (light-cljs-1028)
+
+**What.** The prototypes of vectors, subvectors, map entries and transient
+vectors declare the core protocols their values implement, as upstream's
+deftypes do: keyed protocol mask bits and the keyed `IFind` marker, exactly
+the protocols the native tests answered, so `implements?` and `satisfies?`
+answer as before. Subvectors and map entries get the keyed `-nth`, `-count`,
+`-peek`, `-conj`, `-assoc`, `-lookup` and `-seq` slots vectors have, and
+transient vectors `-nth`, `-count` and `-lookup`, so the slot-first wrappers
+serve them where they took the older layers before. docs/value-layout.md
+has the notes.
+
+Binaries: before `light-cljs-518edac7` (master), after
+`light-cljs-cb060c15` (a work-in-progress commit of this pellet; what
+follows it changes tests and documents only), in research/shadow-credibility/bin.
+Unreserved: one peer worker was active.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops vec-conj,vec-literal,vec-assoc,transient-vec,vec-nth,vec-peek,vec-invoke,destructure-vec,eq-vec,hash-fresh-vec,mapv,reduce-vec,reduce-entries-small,reduce-kv-small,seq-walk-vec`,
+5 runs, the same selection both times; 1-minute load average 2.47-2.83
+before, 3.15-4.28 after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| vec-conj-64 | 2,227 (2,067-2,308) | 2,146 (2,089-2,419) | -4% | 1,421 | 1.37 | 1.51 |
+| vec-literal-4 | 23.6 (23.1-23.7) | 23.8 (23.6-24.0) | +1% | 7.67 | 3.07 | 3.10 |
+| vec-nth-1024 | 5.87 (5.82-6.59) | 6.02 (5.83-7.41) | +3% | 5.03 | 1.18 | 1.20 |
+| vec-invoke-1024 | 5.77 (5.67-6.89) | 5.82 (5.74-6.00) | +1% | 4.72 | 1.19 | 1.23 |
+| vec-peek | 4.09 (4.07-4.16) | 4.09 (4.08-4.23) | +0% | 3.38 | 1.21 | 1.21 |
+| vec-assoc-1024 | 63.1 (59.7-64.1) | 61.8 (59.6-65.4) | -2% | 73.9 | 0.87 | 0.84 |
+| destructure-vec-3 | 15.8 (15.2-16.1) | 15.4 (15.0-15.8) | -2% | 9.63 | 1.64 | 1.60 |
+| reduce-vec-1000 | 5,190 (5,153-5,277) | 5,235 (5,148-5,303) | +1% | 2,431 | 2.13 | 2.15 |
+| mapv-1000 | 62,248 (61,325-62,984) | 61,879 (61,037-63,433) | -1% | 12,418 | 4.98 | 4.98 |
+| seq-walk-vec-1000 | 17,856 (17,695-17,893) | 17,808 (17,525-18,144) | +0% | 6,654 | 2.64 | 2.68 |
+| reduce-kv-small | 162.7 (161.6-163.5) | 162.7 (162.0-167.1) | +0% | 37.2 | 4.36 | 4.37 |
+| reduce-entries-small | 1,283 (1,265-1,301) | 703.7 (690.0-731.5) | -45% | 86.0 | 14.95 | 8.18 |
+| eq-vec-10 | 680.4 (674.3-682.2) | 584.4 (577.8-596.9) | -14% | 54.4 | 12.61 | 10.75 |
+| hash-fresh-vec-4 | 499.3 (492.9-502.0) | 519.9 (518.5-534.6) | +4% | 44.2 | 11.24 | 11.75 |
+| transient-vec-100 | 5,474 (5,261-5,570) | 5,421 (5,388-5,441) | -1% | 997.7 | 5.45 | 5.43 |
+
+- `reduce-entries-small` gains 45%: destructuring each map entry the
+  reduction hands its function (`[_ v]`) calls `nth`, which the entry now
+  answers from its own slot instead of the kind tables and the protocol
+  lookup. `eq-vec` gains 14% in each of the three gates of this pellet: the
+  protocol tests that `=` makes of each vector (`sequential?` and the like,
+  through `ownProtocol`) answer from the mask bit in one read, where they
+  took the native test, which probes the payload stores (not profiled).
+- No operation is more than 10% slower. `hash-fresh-vec`, 4% slower in each
+  of the three gates of this pellet, keeps its path (the hash of a vector
+  reads `meta` and the items through the older layers): the masks put one
+  more keyed-kind read on the older layers' protocol lookup of a runtime
+  class's value.
+- The first gate of this pellet (commit `b0d64d43`, load 3.22-3.70) had
+  `vec-conj` 23% and `vec-assoc` 14% slower: `conj` and `assoc` copy the
+  metadata through `meta`, whose protocol lookup for a program's method
+  (`ownMethod`) found the new `IMeta` mask bit and then looked for a slot by
+  computed name on every call. The older layers' lookups now read a mask
+  bit only for a value without a keyed kind (docs/value-layout.md, the 1028
+  notes), and both operations are back at their times (the table above).
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1028 --runs 5
+--runtime-only --runtime 1,10,40`, a copy of the project rebuilt with each
+binary just before its run, the two runs back to back; load average
+3.71-4.12 before, 3.62-4.25 after), wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.406 s (0.401-0.414) | 0.403 s (0.399-0.404) | 0.307 s | 0.299 s | 1.32 | 1.35 |
+| 10 | 1.131 s (1.119-1.138) | 1.113 s (1.106-1.132) | 0.559 s | 0.552 s | 2.02 | 2.02 |
+| 40 | 3.237 s (3.219-3.259) | 3.186 s (3.153-3.205) | 1.175 s | 1.178 s | 2.75 | 2.70 |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 72.6 ms
+per iteration before and 71.4 after (2% faster, within the runs' spread),
+shadow-cljs 22.2 and 22.5; light/shadow 3.26 and 3.17. An earlier pair of
+runs (the after one with `b0d64d43`), the first under a Pants test run
+(load 14.4-15.0) and the second at load 3.2-3.4, is not comparable and is
+kept with the raw results.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): every
+program with vectors carries the masks and the marker (`vector-only` 6,824
+to 7,089 bytes, `vector-printed` 13,607 to 13,875), and a program with maps
+the entries' slots and the slot-first wrappers of the operations it keeps
+(`map-only` 10,313 to 11,372, `mapv-count` 51,189 to 52,079,
+`constant-keys` 66,159 to 67,882, `features` 96,306 to 99,368). TodoMVC
+(research/todomvc-port, one clean `release client --no-cache` per binary):
+light-cljs's own module, before esbuild adds React, 280,888 to 286,232
+bytes (+1.9%), 80,260 to 80,917 with gzip -9 (+657 bytes, +0.8%). re-frame
+simple was not measured: its port could not be generated in this worktree
+(`re-frame.bb port simple` failed in the porter's shadow-cljs run).
+
+Raw results (the core-ops EDN and Markdown of every gate above, the first
+two included, and every workload run): research/output-speed/vector-protocols-1028.

@@ -179,12 +179,14 @@ fn shared_profile_task_cells_are_writable() {
     .unwrap_or_else(|e| panic!("{e}"));
     // A class-backed vector (`with-meta` of nil over an engine vector)
     // answers `nth` from its slot first, with no demand; once the task
-    // installs a declaration demand, the protocol is demanded (by each of
-    // the older layers) before any read of the slot; a task with cells of
-    // its own keeps slot-first.
+    // installs a declaration demand, the protocol is demanded before any
+    // read of the slot (once since light-cljs-1028: the vector's prototype
+    // declares IIndexed by its mask bit, which the older layer's protocol
+    // lookup reads before it would demand the protocol to read the marker,
+    // as for a program type); a task with cells of its own keeps slot-first.
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "true true 2 \"a\" a \"a\" true number | true true 2:slot | false 2:demand,demand,slot | true 2:slot"
+        "true true 2 \"a\" a \"a\" true number | true true 2:slot | false 2:demand,slot | true 2:slot"
     );
 }
 

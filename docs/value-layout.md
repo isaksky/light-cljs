@@ -293,6 +293,63 @@ were the last values of the `cells` store.
   keyed fields, its `cons` builds a `ListCell` onto a runtime-owned tail,
   and its `stamped` accepts the engine's lists.
 
+What light-cljs-1028 landed: the vector classes declare their protocols and
+answer their operations from slots.
+
+- **Masks and markers (section 3).** The prototypes of
+  `PersistentVectorValue`, `SubvecValue`, `MapEntryType` and
+  `TransientVectorType` hold the keyed masks
+  (`cljs$lang$protocol_mask$partition0$$LKEY`, `...partition1$$LKEY`), as
+  literals in each class's type unit, and the keyed marker of `IFind`, the
+  one protocol of theirs without a mask bit. They declare exactly what the
+  native tests (`builtinCoreImplementation`) answer for their values, so
+  `implements?` and `satisfies?` give the same answers: a vector IFn,
+  ICounted, IEmptyableCollection, ICollection, IIndexed, ILookup,
+  IAssociative, IStack, IVector, IMeta, IWithMeta, IReduce, IKVReduce,
+  IEquiv, IHash, ISeqable, ISequential, IReversible, IPrintWithWriter,
+  IEditableCollection, IComparable, ICloneable, IIterable, IDrop and IFind;
+  a subvector the same but IEditableCollection; a map entry the same but
+  IKVReduce, IEditableCollection and ICloneable, and with IMapEntry; a
+  transient vector IFn, ICounted, IIndexed, ILookup, ITransientCollection,
+  ITransientAssociative and ITransientVector
+  (`vector_family_prototype_contract` in tests/support/js_runtime.test.js
+  pins them). The other converted kinds carry none yet.
+- **Slots.** A subvector and a map entry have the keyed `-nth`, `-count`,
+  `-peek`, `-conj`, `-assoc`, `-lookup` and `-seq` slots a vector has, and a
+  transient vector `-nth`, `-count` and `-lookup`, each a unit that is an
+  effect of its class and waits for its operation (`when: nth`, ...), and
+  the slot-first wrappers name the classes among their targets, so a
+  program that builds entries and no vector keeps the entries' slots and
+  the wrappers. A map entry's slots answer from its tail at indexes 0 and 1
+  only, as `nth.entries` and `get.entries` did; a subvector its public
+  constructor built (`SubvecValue`) answers `count`, `conj` and `assoc` by
+  its bounds and the vector it views (`kindHooks.conjSubvec`, `assocSubvec`);
+  a transient vector that is no longer editable throws, through
+  `transientNth` and `editableTransient`. Each slot is complete for every
+  value of its class, because the compile-time runtime's protocol lookup
+  (build.rs `interpreterDispatch`) does not skip the runtime's own slots and
+  calls them; only a value with the prototype and none of the class's
+  fields, which reflection alone makes, answers `noBranch`.
+- **The older layers.** A runtime class's mask bits declare what it
+  implements natively, with no slot for most operations, so the protocol
+  lookups that look for a program's method (`ownMethod`, `publicMethod`,
+  `contains.own`) read them only for a value without a keyed kind, and see a
+  runtime class's value as before (a marker, then the payload stores' step);
+  `ownDeclared` answers such a value with no method (the operation's native
+  path) instead of "No protocol method"; `get.own`, which calls the
+  `-lookup` slot a declared `ILookup` mask names, takes the operation where
+  that slot answers `noBranch`. The membership tests (`implementsProtocol`,
+  `storeProtocol`, `ownProtocol`) read the masks, with the native tests'
+  answers. When program types get keyed kinds (light-cljs-1013), these
+  kind tests must tell them from the runtime's classes, whose masks alone
+  are native.
+- **Forgery (section 5).** `Object.create` of these prototypes now
+  type-tests as their kinds; the forged vector, entry and transient rows of
+  `value_kind_predicates_answer_as_the_brand_stores_did` and
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup` (items 1 and 3)
+  and the transient vector's forged candidates in
+  tests/support/js_runtime.test.js (items 19 and 20) are rescoped.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

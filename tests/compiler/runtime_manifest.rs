@@ -1173,8 +1173,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // seqs with the chunked conses' two hooks of `firstSeq` and `restSeq`
     // (light-cljs-1029), and the 47 keyed slots of lists, conses, ranges,
     // repeats, iterates, cycles, key and value seqs, `re-seq`'s conses and
-    // sorted maps' seqs (light-cljs-1030).
-    assert_eq!(checked, 418);
+    // sorted maps' seqs (light-cljs-1030), and the 17 keyed slot units of
+    // subvectors, map entries (seven each) and transient vectors (three)
+    // (light-cljs-1028).
+    assert_eq!(checked, 435);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s

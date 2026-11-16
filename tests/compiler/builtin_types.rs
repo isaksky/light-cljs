@@ -532,9 +532,12 @@ fn a_program_type_opens_the_protocol_hooks() {
     // seqs and chunked conses (`chunkOf`, `chunkBufferOf`, `lazyCells`,
     // `chunkedConsCells`) that they read where those were private stores;
     // 10,171 after light-cljs-1030 (2026-11-16): the cells' test (`cellOf`,
-    // `seqCells`) where theirs was a private store.
+    // `seqCells`) where theirs was a private store; 10,322 after
+    // light-cljs-1028: `ownMethod` and `ownDeclared` tell a runtime class's
+    // value, whose mask bits declare what it implements natively, by its
+    // keyed kind.
     let size = advanced(source).emit_js().len();
-    assert!(size < 10_300, "{size} bytes");
+    assert!(size < 10_400, "{size} bytes");
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -591,8 +594,11 @@ fn program_types_keep_no_machinery_for_builtin_values() {
         // (2026-11-15): keywords as classes and the keyword constant's hash;
         // about 13,600 for the record and vector after light-cljs-1026
         // (2026-11-16): the vector's store, metadata and hash as its own
-        // keyed fields, each read by its keyed name.
-        assert!(advanced(source).emit_js().len() < 14_000, "{source}");
+        // keyed fields, each read by its keyed name; 14,032 for the record and
+        // vector after light-cljs-1028 (2026-11-16): the vector's and the map
+        // entry's prototypes declare their protocols (masks and the `IFind`
+        // marker), so the ceiling moves to 15,000.
+        assert!(advanced(source).emit_js().len() < 15_000, "{source}");
     }
     every_level(record_and_vector, "64");
     // The vector's host-facing methods with records about: items of a program
@@ -1339,6 +1345,42 @@ fn vector_slot_first_preserves_missing_slot_fallbacks() {
             "[1 :none 2 2 [1 2 3] [:a 2] 2 :none]",
         );
     }
+    // Likewise a map entry, a subvector (of `subvec` and of its public
+    // constructor) with these slots and `-seq`, and a transient vector with
+    // `-nth`, `-count` and `-lookup`, also once it is persistent
+    // (light-cljs-1028).
+    for missing in ["nil", "false"] {
+        every_level(
+            &format!(
+                "(let [answers (fn [v]
+                                 (set! (.-cljs$core$IIndexed$_nth$arity$2 v) {missing})
+                                 (set! (.-cljs$core$IIndexed$_nth$arity$3 v) {missing})
+                                 (set! (.-cljs$core$ICounted$_count$arity$1 v) {missing})
+                                 (set! (.-cljs$core$IStack$_peek$arity$1 v) {missing})
+                                 (set! (.-cljs$core$ICollection$_conj$arity$2 v) {missing})
+                                 (set! (.-cljs$core$IAssociative$_assoc$arity$3 v) {missing})
+                                 (set! (.-cljs$core$ILookup$_lookup$arity$2 v) {missing})
+                                 (set! (.-cljs$core$ILookup$_lookup$arity$3 v) {missing})
+                                 (set! (.-cljs$core$ISeqable$_seq$arity$1 v) {missing})
+                                 [(nth v 0) (nth v 5 :none) (count v) (peek v) (conj v 3) (assoc v 0 :a)
+                                  (get v 1) (get v 7 :none) (seq v)])
+                       t (transient [1 2])]
+                   (set! (.-cljs$core$IIndexed$_nth$arity$2 t) {missing})
+                   (set! (.-cljs$core$IIndexed$_nth$arity$3 t) {missing})
+                   (set! (.-cljs$core$ICounted$_count$arity$1 t) {missing})
+                   (set! (.-cljs$core$ILookup$_lookup$arity$2 t) {missing})
+                   (set! (.-cljs$core$ILookup$_lookup$arity$3 t) {missing})
+                   (let [editable [(nth t 0) (nth t 5 :none) (count t) (get t 1) (get t 7 :none)]]
+                     (persistent! t)
+                     (pr-str [(answers (first {{:k 1}})) (answers (subvec [1 2 3] 1))
+                              (answers (Subvec. nil [1 2 3] 1 3 nil)) editable
+                              (try (count t) (catch :default _ :persisted)) (nth t 5 :none)
+                              (try (nth t 0) (catch :default _ :persisted)) (try (get t 0) (catch :default _ :persisted))])))"
+            ),
+            "[[:k :none 2 1 [:k 1 3] [:a 1] 1 :none (:k 1)] [2 :none 2 3 [2 3 3] [:a 3] 3 :none (2 3)] \
+             [2 :none 2 3 [2 3 3] [:a 3] 3 :none (2 3)] [1 :none 2 2 :none] :persisted :none :persisted :persisted]",
+        );
+    }
 }
 
 /// A vector reading a caller's array reads each item as it is printed or
@@ -1642,9 +1684,13 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     // about 10,300 after light-cljs-1026 (2026-11-16): a map entry's store, metadata
     // and hash as its own keyed fields, and the class bases' `toJSON` leaving
     // out every keyed field (`unkeyedJSON`), so the ceiling moves to the next
-    // 1,000.
+    // 1,000; 11,455 after light-cljs-1028 (2026-11-16): a map entry's
+    // prototype declares its protocols (masks and the `IFind` marker) and
+    // holds its keyed `-lookup` slots, which `get`'s slot-first wrapper
+    // (`get.slots`, `slotFirst`, `builtinSlots`) reads, so the ceiling moves
+    // to 12,000.
     let output = advanced(target).emit_js();
-    assert!(output.len() < 11_000, "{} bytes", output.len());
+    assert!(output.len() < 12_000, "{} bytes", output.len());
     // The public constructor, by name and through a quoted literal, which
     // keeps its positional array.
     let public = "(let [m (cljs.core/PersistentArrayMap. nil 2 #js [:a 1 :b 2] nil) q '{:x 1 \"y\" 2}]
@@ -1722,6 +1768,68 @@ fn lean_map_entries_answer_host_methods_through_protocol_extensions() {
         "{kept:?}"
     );
     every_level(source, "2 0 1 3 20 :a,1 2");
+}
+
+#[test]
+fn entry_only_and_transient_only_slices_keep_and_call_their_slots() {
+    // light-cljs-1028: a program that builds map entries and no vector keeps
+    // the keyed slots of map entries for the operations it keeps, each an
+    // effect of `MapEntryType`, with those operations' slot-first wrappers,
+    // and no vector's; they answer as the operations always have.
+    let entries = "(let [e (first (if (js/Math.random) {:a 1} nil))]
+           (.join (array (count e) (nth e 0) (nth e 1) (nth e 2 :nf) (get e 0) (get e 7 :nf) (peek e) (first (seq e))
+                         (try (nth e 2) (catch :default _ :out)))
+                  \" \"))";
+    let kept = units(entries);
+    for unit in [
+        "MapEntryType.lean",
+        "MapEntryType.type",
+        "MapEntryType.count",
+        "MapEntryType.nth",
+        "MapEntryType.lookup",
+        "MapEntryType.peek",
+        "MapEntryType.seq",
+        "count.slots",
+        "nth.slots",
+        "get.slots",
+        "peek.slots",
+        "seq.slots",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    for unit in [
+        "makeVector",
+        "PersistentVectorValue.count",
+        "SubvecValue.count",
+        "TransientVectorType.count",
+        "MapEntryType.conjSlot",
+        "MapEntryType.assocSlot",
+    ] {
+        assert!(!kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    every_level(entries, "2 :a 1 :nf :a :nf 1 :a :out");
+    // A program using transient vectors through `count`, `nth` and `get`
+    // keeps their slots, and answers as before, also once the transient is
+    // persistent (the slots throw as the operations did).
+    let transients = "(let [t (conj! (transient []) 1 2 3) answers (array (count t) (nth t 0) (nth t 5 :nf) (get t 1) (get t :k :nf))]
+           (persistent! t)
+           (.join (.concat answers (array (try (count t) (catch :default _ :persisted)) (nth t 5 :nf)
+                                          (try (get t 0) (catch :default _ :persisted))))
+                  \" \"))";
+    let kept = units(transients);
+    for unit in [
+        "TransientVectorType.kind",
+        "TransientVectorType.count",
+        "TransientVectorType.nth",
+        "TransientVectorType.lookup",
+        "count.slots",
+        "nth.slots",
+        "get.slots",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    assert!(!kept.contains(&"MapEntryType.count"), "{kept:?}");
+    every_level(transients, "3 1 :nf 2 :nf :persisted :nf :persisted");
 }
 
 #[test]
@@ -2543,7 +2651,9 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// `symbolOf`), where the `keywords` and `symbols` stores read nothing,
 /// and since light-cljs-1029 the tests of lazy seqs, chunked conses, chunks
 /// and chunk buffers (`lazyOf` and the others), where their private stores
-/// read nothing (about 100 reads more per program).
+/// read nothing (about 100 reads more per program). light-cljs-1028 removed
+/// the row forged from a vector's prototype (docs/value-layout.md, section
+/// 5, item 3), which declares the vector's protocols.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -2560,9 +2670,9 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                       (seq [1 2]) (seq {:a 1}) (seq (sorted-map :a 1)) (rseq [1 2]) (seq (zipmap (range 20) (range 20)))
                       (iterate inc 0) (repeat 1) (cycle [1]) (reduced 1) (atom 1) :k 'sym "s" 1 nil (array 1)
                       (js-obj) inc (uuid "00000000-0000-0000-0000-000000000000") (T.) proxy
-                      (forge [1]) (forge (list 1)) (forge {:a 1}) (forge (range 3)) (forge (seq [1 2]))
+                      (forge (list 1)) (forge {:a 1}) (forge (range 3)) (forge (seq [1 2]))
                       cljs.core/PersistentQueue.EMPTY (specify! {:s 1} ISequential IList) (specify! [1] ICounted (-count [_] 5))]
-              labels (quote [vector entry list empty-list lazy-seq cons range float-range array-map hash-map sorted-map set hash-set sorted-set queue transient-vector subvec record vector-seq map-seq sorted-map-seq rseq hash-map-seq iterate repeat cycle reduced atom keyword symbol string number null array object fn uuid type proxy forged-vector forged-list forged-map forged-range forged-seq empty-queue specified-map specified-vector])
+              labels (quote [vector entry list empty-list lazy-seq cons range float-range array-map hash-map sorted-map set hash-set sorted-set queue transient-vector subvec record vector-seq map-seq sorted-map-seq rseq hash-map-seq iterate repeat cycle reduced atom keyword symbol string number null array object fn uuid type proxy forged-list forged-map forged-range forged-seq empty-queue specified-map specified-vector])
               preds [vector? seq? map? set? seqable? coll? sequential? counted? associative? list? sorted?
                      reversible? record? ifn? fn? indexed? reduceable? empty? map-entry? chunked-seq? uuid?]
               attempt (fn [f] (try (f) (catch :default _ :error)))
@@ -2627,7 +2737,6 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000000e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-vector 01001000000000000e000 :error :error :error\n",
                 "forged-list 00001000000000000e000 :error :error :error\n",
                 "forged-map 00001000000000000e000 :error :error :error\n",
                 "forged-range 00001000000000000e000 :error :error :error\n",
@@ -2689,7 +2798,6 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 110000110100000000001 42 :error :error\n",
                 "type 110000110100000000000 42 :error :error\n",
                 "proxy 110000110100000000000 42 :error :error\n",
-                "forged-vector 110010110100000000000 42 :error :error\n",
                 "forged-list 110010110100000000000 42 :error :error\n",
                 "forged-map 110010110100000000000 42 :error :error\n",
                 "forged-range 110010110100000000000 42 :error :error\n",
@@ -2752,7 +2860,6 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000001e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-vector 00001000000000000e000 :error :error :error\n",
                 "forged-list 10001000000000000e000 :error :error :error\n",
                 "forged-map 00001000000000000e100 :error :error :error\n",
                 "forged-range 00001000000000000e000 :error :error :error\n",
@@ -3380,7 +3487,11 @@ row_tests!(corpus;
 /// inheriting them is one to `satisfies?`, as it was). The table is what
 /// master `f0f5e81b`'s runtime prints. The Proxy is asked for nothing but
 /// protocol mask and marker properties, `Symbol.iterator` and its prototype:
-/// the kind tests read no property of a host value.
+/// the kind tests read no property of a host value. light-cljs-1028 removed
+/// the rows forged from a vector's, a map entry's and a transient vector's
+/// prototypes (docs/value-layout.md, section 5, item 1): those prototypes
+/// declare their protocols, so such a value, deliberate reflection,
+/// type-tests as its kind.
 #[test]
 fn value_kind_predicates_answer_as_the_brand_stores_did() {
     let source = r#"
@@ -3399,10 +3510,10 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
                       (->R 1) (assoc (->R 1) :b 2) (seq [1 2]) (seq {:a 1}) (seq (sorted-map :a 1)) (rseq [1 2])
                       (seq (zipmap (range 20) (range 20))) (iterate inc 0) (repeat 1) (cycle [1]) (reduced 1)
                       (atom 1) (volatile! 1) :k 'sym "s" 1 nil (array 1) (js-obj) inc proxy
-                      (forge [1]) (forge e) (forge {:a 1}) (copy {:a 1})
+                      (forge {:a 1}) (copy {:a 1})
                       (forge (list 1)) (copy (list 1)) (forge #{1}) (forge (lazy-seq [1])) (forge (range 3))
-                      (forge (seq [1 2])) (forge (transient [])) (forge (->R 1))]
-              labels (quote [vector entry list empty-list lazy-seq cons range float-range array-map hash-map sorted-map set hash-set sorted-set queue transient-vector transient-map subvec record record+ vector-seq map-seq sorted-map-seq rseq hash-map-seq iterate repeat cycle reduced atom volatile keyword symbol string number null array object fn proxy forged-vector forged-entry forged-map copied-map forged-list copied-list forged-set forged-lazy-seq forged-range forged-seq forged-transient forged-record])
+                      (forge (seq [1 2])) (forge (->R 1))]
+              labels (quote [vector entry list empty-list lazy-seq cons range float-range array-map hash-map sorted-map set hash-set sorted-set queue transient-vector transient-map subvec record record+ vector-seq map-seq sorted-map-seq rseq hash-map-seq iterate repeat cycle reduced atom volatile keyword symbol string number null array object fn proxy forged-map copied-map forged-list copied-list forged-set forged-lazy-seq forged-range forged-seq forged-record])
               preds [vector? seq? map? map-entry? set? seqable? coll? sequential? counted? associative? list?
                      sorted? reversible? record? ifn? indexed? reduced? chunked-seq? reduceable?
                      #(satisfies? ISeqable %) #(satisfies? ICollection %) #(satisfies? IMeta %)
@@ -3454,8 +3565,6 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
         "object 0000000000000000000000000000010000\n",
         "fn 0000000000000010000001000000010000\n",
         "proxy 0000000000000000000000000000010000\n",
-        "forged-vector 0000010000000000000000000000010000\n",
-        "forged-entry 0000010000000000000000000000010000\n",
         "forged-map 0000010000000000000000000000010000\n",
         "copied-map 0000010000000000000000000000010000\n",
         "forged-list 0000010000000000000000000000010000\n",
@@ -3466,7 +3575,6 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
         "forged-lazy-seq 0000010000000000000000000000010000\n",
         "forged-range 0000010000000000000000000000010000\n",
         "forged-seq 0000010000000000000000000000010000\n",
-        "forged-transient 0000000000000000000000000000010000\n",
         "forged-record 0010011011000100000111101101011000\n",
         "get:Symbol(Symbol.iterator) proto\n",
     );

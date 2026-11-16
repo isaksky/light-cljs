@@ -3656,7 +3656,12 @@
   //@unit TransientVectorType effect requires: builtinType, transientPrototype
   const TransientVectorType = builtinType(function () {}, transientPrototype);
   //@unit TransientVectorType.kind effect: TransientVectorType requires: kinds, TransientVectorType
+  // Its protocols (see `PersistentVectorValue.type`): partition 0 IFn
+  // ICounted IIndexed ILookup, partition 1 ITransientCollection
+  // ITransientAssociative ITransientVector.
   TransientVectorType.prototype.cljs$lang$kind$$LKEY = kinds.transientVector;
+  TransientVectorType.prototype.cljs$lang$protocol_mask$partition0$$LKEY = 275;
+  TransientVectorType.prototype.cljs$lang$protocol_mask$partition1$$LKEY = 88;
   //@unit TransientVectorCell.type effect: TransientVectorCell requires: TransientVectorCell,
   //@ TransientVectorType
   TransientVectorCell.prototype = TransientVectorType.prototype;
@@ -3945,18 +3950,34 @@
   });
 
   //@unit PersistentVectorValue.type effect: PersistentVectorValue requires: builtinType, kindOps,
-  //@ kinds, PersistentVectorValue, vectorPrototype
+  //@ kinds, PersistentVectorValue, protocolSentinel, vectorPrototype
+  // A class declares the core protocols it implements (docs/value-layout.md,
+  // section 3): the mask bits of `protocolMasks`, as literals, and a marker
+  // for each protocol without one. A vector's are partition 0 IFn ICounted
+  // IEmptyableCollection ICollection IIndexed ILookup IAssociative IStack
+  // IVector IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable
+  // ISequential IReversible IPrintWithWriter, partition 1 IEditableCollection
+  // IComparable ICloneable IIterable IDrop, and the marker IFind: the
+  // protocols its native tests (`builtinCoreImplementation`) answer.
   builtinType(PersistentVectorValue, vectorPrototype).prototype[kindOps] = 4;
   PersistentVectorValue.prototype.cljs$lang$kind$$LKEY = kinds.vector;
+  PersistentVectorValue.prototype.cljs$lang$protocol_mask$partition0$$LKEY = -1979817185;
+  PersistentVectorValue.prototype.cljs$lang$protocol_mask$partition1$$LKEY = 403460;
+  PersistentVectorValue.prototype.cljs$core$IFind$$LKEY = protocolSentinel;
   //@unit VectorCell.type effect: VectorCell requires: PersistentVectorValue, VectorCell
   // A vector cell has the vectors' prototype, which the unit above builds.
   VectorCell.prototype = PersistentVectorValue.prototype;
   //@unit VectorViewCell.type effect: VectorViewCell requires: PersistentVectorValue, VectorViewCell
   VectorViewCell.prototype = PersistentVectorValue.prototype;
-  //@unit SubvecValue.type effect: SubvecValue requires: builtinType, kindOps, kinds, SubvecValue,
-  //@ vectorPrototype
+  //@unit SubvecValue.type effect: SubvecValue requires: builtinType, kindOps, kinds,
+  //@ protocolSentinel, SubvecValue, vectorPrototype
+  // A vector's protocols (`PersistentVectorValue.type`) but
+  // IEditableCollection.
   builtinType(SubvecValue, vectorPrototype).prototype[kindOps] = 4;
   SubvecValue.prototype.cljs$lang$kind$$LKEY = kinds.subvec;
+  SubvecValue.prototype.cljs$lang$protocol_mask$partition0$$LKEY = -1979817185;
+  SubvecValue.prototype.cljs$lang$protocol_mask$partition1$$LKEY = 403456;
+  SubvecValue.prototype.cljs$core$IFind$$LKEY = protocolSentinel;
   //@unit SubvecCell.type effect: SubvecCell requires: SubvecCell, SubvecValue
   SubvecCell.prototype = SubvecValue.prototype;
   //@unit entryPrototype requires: hostHooks, indexIn, invalidArity, itemIterator, objectEquiv,
@@ -4003,11 +4024,17 @@
   //@unit MapEntryType.vector effect: MapEntryType when: makeVector requires: builtinType, mapEntry,
   //@ MapEntryType, vectorPrototype
   MapEntryType = builtinType(function (key, value) { return mapEntry(key, value); }, vectorPrototype);
-  //@unit MapEntryType.type effect: MapEntryType requires: kindOps, kinds, MapEntryType
+  //@unit MapEntryType.type effect: MapEntryType requires: kindOps, kinds, MapEntryType,
+  //@ protocolSentinel
   // Map entries are kind 8 (light-cljs-373), with branches of their own, so
   // that a program building entries and no vector keeps no vector branch.
+  // Their protocols are a vector's (`PersistentVectorValue.type`) but
+  // IKVReduce, IEditableCollection and ICloneable, and with IMapEntry.
   MapEntryType.prototype[kindOps] = 8;
   MapEntryType.prototype.cljs$lang$kind$$LKEY = kinds.entry;
+  MapEntryType.prototype.cljs$lang$protocol_mask$partition0$$LKEY = -1980863713;
+  MapEntryType.prototype.cljs$lang$protocol_mask$partition1$$LKEY = 395264;
+  MapEntryType.prototype.cljs$core$IFind$$LKEY = protocolSentinel;
   //@unit EntryCell.type effect: EntryCell requires: EntryCell, MapEntryType
   EntryCell.prototype = MapEntryType.prototype;
   //@unit makeKeyword requires: KeywordCell
@@ -4667,7 +4694,7 @@
     return store && !protocolHooks.publicMethod && isEntryCell(value) ? key === 0 || key === 1 ? store.tail$LKEY[key] : notFound : noBranch;
   };
   //@unit get.own effect: installMethods when: get requires: demandKey, get, keySlot, methodKeys,
-  //@ protocolHooks
+  //@ noBranch, protocolHooks
   // `get` of a value whose type declares `ILookup` by its mask bit, as the
   // program's types and records do: the method its slot holds, read here, so
   // that the engine's feedback for the read is this operation's own, not that
@@ -4675,13 +4702,17 @@
   // without a method finishes as the protocol lookup would
   // (`protocolHooks.declaredMethod`), from the slot as read, which a getter
   // could have produced after changing the value; any other value takes the
-  // operation.
+  // operation, and so does a runtime class's value whose slot answers
+  // `noBranch` (`get.slots`).
   get = (operation => Object.defineProperty(function (value, key, notFound) {
     const resolved = methodKeys[30], arity = arguments.length;
     if (value != null && (arity === 2 || arity === 3) && (value[resolved.mask] & resolved.bit) !== 0) {
       demandKey(resolved, arity, value);
       const slot = value[keySlot(resolved, arity)], own = slot ? slot : protocolHooks.declaredMethod(value, resolved, arity, slot);
-      if (own) return arity === 2 ? own.call(value, value, key) : own.call(value, value, key, notFound);
+      if (own) {
+        const result = arity === 2 ? own.call(value, value, key) : own.call(value, value, key, notFound);
+        if (result !== noBranch) return result;
+      }
     }
     return arity === 2 ? operation(value, key) : arity === 3 ? operation(value, key, notFound) : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(get);
@@ -4766,6 +4797,163 @@
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return typeof key === "number" && key >= 0 && key < store.cnt$LKEY ? vectorNth(store, key, notFound) : notFound;
   });
+  // A subvector's slots (light-cljs-1028) are a vector's, over the view it
+  // is (`vectorNth` reads through it), but for a subvector its public
+  // constructor built (`SubvecValue`), whose bounds give its count and whose
+  // `conj` and `assoc` build a subvector of the vector it views, as the
+  // operations give it (`SubvecValue.conj`, `SubvecValue.assoc`). Each slot
+  // is complete for a subvector: the compile-time runtime's protocol lookup
+  // finds a slot and calls it.
+  //@unit SubvecValue.nth effect: SubvecValue when: nth requires: builtinSlot, missing, noBranch,
+  //@ SubvecValue, vectorNth
+  SubvecValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    return vectorNth(self, index, missing);
+  });
+  SubvecValue.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    return vectorNth(self, index, notFound);
+  });
+  //@unit SubvecValue.count effect: SubvecValue when: count requires: builtinSlot, noBranch,
+  //@ publicCollectionSlots, SubvecValue
+  SubvecValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    const slots = publicCollectionSlots.get(self);
+    return slots ? slots.end - slots.start : self.cnt$LKEY;
+  });
+  //@unit SubvecValue.peek effect: SubvecValue when: peek requires: builtinSlot, noBranch,
+  //@ SubvecValue, vectorNth
+  SubvecValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    return self.cnt$LKEY ? vectorNth(self, self.cnt$LKEY - 1, null) : null;
+  });
+  //@unit SubvecValue.conjSlot effect: SubvecValue when: conj requires: builtinSlot, conjMeta,
+  //@ kindHooks, makeVector, noBranch, preserveMeta, publicCollectionSlots, SubvecValue, vectorConj
+  SubvecValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    if (publicCollectionSlots.has(self)) return preserveMeta(self, kindHooks.conjSubvec(self, item));
+    return conjMeta(self, makeVector(null, vectorConj(self, item)));
+  });
+  //@unit SubvecValue.assocSlot effect: SubvecValue when: assoc requires: builtinSlot, kindHooks,
+  //@ makeVector, noBranch, outOfBounds, preserveMeta, publicCollectionSlots, SubvecValue,
+  //@ vectorAssoc, vectorConj
+  SubvecValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    if (publicCollectionSlots.has(self)) return kindHooks.assocSubvec(self, key, item, []);
+    if (typeof key !== "number") throw new Error("Vector key must be a number");
+    let store = self;
+    if (key >= 0 && key < store.cnt$LKEY) store = vectorAssoc(store, key, item);
+    else if (key === store.cnt$LKEY) store = vectorConj(store, item);
+    else outOfBounds();
+    return preserveMeta(self, makeVector(null, store));
+  });
+  //@unit SubvecValue.lookup effect: SubvecValue when: get requires: builtinSlot, noBranch,
+  //@ SubvecValue, vectorNth
+  SubvecValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    return typeof key === "number" && key >= 0 && key < self.cnt$LKEY ? vectorNth(self, key, null) : null;
+  });
+  SubvecValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    return typeof key === "number" && key >= 0 && key < self.cnt$LKEY ? vectorNth(self, key, notFound) : notFound;
+  });
+  // A map entry's slots (light-cljs-1028): its two items, which its tail
+  // holds, at indexes 0 and 1 only (`nth.entries`, `get.entries`), and a
+  // vector's `conj`, `assoc` and `peek`, which give what a vector of its
+  // items gives. A value of the entries' prototype that is not an entry of
+  // two items in a tail, as only reflection makes, takes the operation.
+  //@unit MapEntryType.nth effect: MapEntryType when: nth requires: builtinSlot, MapEntryType,
+  //@ noBranch, outOfBounds
+  MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
+    const tail = self.tail$LKEY;
+    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
+    return index === 0 || index === 1 ? tail[index] : outOfBounds();
+  });
+  MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
+    const tail = self.tail$LKEY;
+    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
+    return index === 0 || index === 1 ? tail[index] : notFound;
+  });
+  //@unit MapEntryType.count effect: MapEntryType when: count requires: builtinSlot, MapEntryType,
+  //@ noBranch
+  MapEntryType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
+    return 2;
+  });
+  //@unit MapEntryType.peek effect: MapEntryType when: peek requires: builtinSlot, MapEntryType,
+  //@ noBranch
+  MapEntryType.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
+    const tail = self.tail$LKEY;
+    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
+    return tail[1];
+  });
+  //@unit MapEntryType.conjSlot effect: MapEntryType when: conj requires: builtinSlot, conjMeta,
+  //@ makeVector, MapEntryType, noBranch, vectorConj
+  MapEntryType.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
+    if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
+    return conjMeta(self, makeVector(null, vectorConj(self, item)));
+  });
+  //@unit MapEntryType.assocSlot effect: MapEntryType when: assoc requires: builtinSlot, makeVector,
+  //@ MapEntryType, noBranch, outOfBounds, preserveMeta, vectorAssoc, vectorConj
+  MapEntryType.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
+    if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
+    if (typeof key !== "number") throw new Error("Vector key must be a number");
+    let store = self;
+    if (key >= 0 && key < 2) store = vectorAssoc(store, key, item);
+    else if (key === 2) store = vectorConj(store, item);
+    else outOfBounds();
+    return preserveMeta(self, makeVector(null, store));
+  });
+  //@unit MapEntryType.lookup effect: MapEntryType when: get requires: builtinSlot, MapEntryType,
+  //@ noBranch
+  MapEntryType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
+    const tail = self.tail$LKEY;
+    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
+    return key === 0 || key === 1 ? tail[key] : null;
+  });
+  MapEntryType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
+    const tail = self.tail$LKEY;
+    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
+    return key === 0 || key === 1 ? tail[key] : notFound;
+  });
+  // A transient vector's slots (light-cljs-1028). One that is no longer
+  // editable answers as the operations do, through `transientNth` and
+  // `editableTransient`: it throws, but the three-argument `nth` gives its
+  // item for an index out of bounds. Each slot is complete for a transient
+  // vector, as the compile-time runtime's protocol lookup finds and calls it.
+  //@unit TransientVectorType.nth effect: TransientVectorType when: nth requires: builtinSlot,
+  //@ missing, noBranch, transientNth, TransientVectorType, vectorNth
+  TransientVectorType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
+    const editable = self.editable$LKEY;
+    if (editable === true) return vectorNth(self, index, missing);
+    return editable === undefined ? noBranch : transientNth(self, index, missing);
+  });
+  TransientVectorType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
+    const editable = self.editable$LKEY;
+    if (editable === true) return vectorNth(self, index, notFound);
+    return editable === undefined ? noBranch : transientNth(self, index, notFound);
+  });
+  //@unit TransientVectorType.count effect: TransientVectorType when: count requires: builtinSlot,
+  //@ editableTransient, noBranch, TransientVectorType
+  TransientVectorType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    const editable = self.editable$LKEY;
+    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "count"); }
+    return self.cnt$LKEY;
+  });
+  //@unit TransientVectorType.lookup effect: TransientVectorType when: get requires: builtinSlot,
+  //@ editableTransient, noBranch, TransientVectorType, vectorNth
+  // A key that is no number is no index; a number is `nth` with the item
+  // for a missing key, as `transientLookup` takes it.
+  TransientVectorType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
+    const editable = self.editable$LKEY;
+    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "lookup"); }
+    return typeof key === "number" ? vectorNth(self, key, null) : null;
+  });
+  TransientVectorType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
+    const editable = self.editable$LKEY;
+    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "lookup"); }
+    return typeof key === "number" ? vectorNth(self, key, notFound) : notFound;
+  });
 
   // Slot-first dispatch (docs/value-layout.md, section 3): an operation
   // given a value of a converted runtime class, which its keyed kind tells,
@@ -4775,8 +4963,8 @@
   // operation as before. Each wrapper is the operation's outermost, so it follows the
   // operation's other wrappers here. Program types keep their path until
   // their recognition moves to the keyed kind (light-cljs-1013).
-  //@unit nth.slots effect: arrayChunk, PersistentVectorValue when: nth requires: noBranch, nth,
-  //@ slotFirst
+  //@unit nth.slots effect: arrayChunk, MapEntryType, PersistentVectorValue, SubvecValue,
+  //@ TransientVectorType when: nth requires: noBranch, nth, slotFirst
   nth = (operation => Object.defineProperty(function (value, index, notFound) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && typeof index === "number") {
       const arity = arguments.length;
@@ -4786,7 +4974,8 @@
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
   //@unit count.slots effect: arrayChunk, EmptyListValue, IndexedSeqValue, IntegerRangeValue,
-  //@ ListValue, PersistentVectorValue when: count requires: count, noBranch, slotFirst
+  //@ ListValue, MapEntryType, PersistentVectorValue, SubvecValue, TransientVectorType when: count
+  //@ requires: count, noBranch, slotFirst
   count = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
@@ -4794,7 +4983,8 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(count);
-  //@unit peek.slots effect: PersistentVectorValue when: peek requires: noBranch, peek, slotFirst
+  //@unit peek.slots effect: MapEntryType, PersistentVectorValue, SubvecValue when: peek requires: noBranch,
+  //@ peek, slotFirst
   peek = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
       const method = value.cljs$core$IStack$_peek$arity$1$LKEY;
@@ -4802,7 +4992,8 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(peek);
-  //@unit conj.slots effect: PersistentVectorValue when: conj requires: conj, noBranch, slotFirst
+  //@unit conj.slots effect: MapEntryType, PersistentVectorValue, SubvecValue when: conj requires: conj,
+  //@ noBranch, slotFirst
   conj = (operation => Object.defineProperty(function (coll, item) {
     if (slotFirst.on && coll != null && coll.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
       const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
@@ -4810,7 +5001,8 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(conj);
-  //@unit assoc.slots effect: PersistentVectorValue when: assoc requires: assoc, noBranch, slotFirst
+  //@unit assoc.slots effect: MapEntryType, PersistentVectorValue, SubvecValue when: assoc requires: assoc,
+  //@ noBranch, slotFirst
   assoc = (operation => Object.defineProperty(function (value, key, item) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
       const method = value.cljs$core$IAssociative$_assoc$arity$3$LKEY;
@@ -4818,7 +5010,8 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(assoc);
-  //@unit get.slots effect: PersistentVectorValue when: get requires: get, noBranch, slotFirst
+  //@unit get.slots effect: MapEntryType, PersistentVectorValue, SubvecValue, TransientVectorType
+  //@ when: get requires: get, noBranch, slotFirst
   get = (operation => Object.defineProperty(function (value, key, notFound) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
       const arity = arguments.length;
@@ -4918,6 +5111,18 @@
     const store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return kindHooks.seqVector(self, store);
+  });
+  //@unit SubvecValue.seq effect: SubvecValue when: seq requires: builtinSlot, kindHooks, noBranch,
+  //@ SubvecValue
+  SubvecValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    return kindHooks.seqVector(self, self);
+  });
+  //@unit MapEntryType.seq effect: MapEntryType when: seq requires: builtinSlot, kindHooks,
+  //@ MapEntryType, noBranch
+  MapEntryType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
+    return kindHooks.seqVector(self, self);
   });
   // A lazy seq, a chunked cons and a chunk answer their operations from
   // slots of their prototypes too (light-cljs-1029), so that a step of a
@@ -5257,10 +5462,10 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(next);
-  //@unit seq.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq,
-  //@ PersistentVectorValue, Cons, CycleValue, EmptyListValue, IntegerRangeValue, IterateValue,
-  //@ KeySeqCell, ListValue, RangeValue, RepeatValue, ReSeqCell, treeMapSeqConstructor when: seq
-  //@ requires: noBranch, seq, slotFirst
+  //@unit seq.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq, MapEntryType,
+  //@ PersistentVectorValue, SubvecValue, Cons, CycleValue, EmptyListValue, IntegerRangeValue,
+  //@ IterateValue, KeySeqCell, ListValue, RangeValue, RepeatValue, ReSeqCell, treeMapSeqConstructor
+  //@ when: seq requires: noBranch, seq, slotFirst
   seq = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY;
@@ -5278,10 +5483,12 @@
   }
   //@unit contains.own effect: installMethods when: contains requires: contains, demandKey, keySlot,
   //@ methodKeys, protocolHooks
-  // As `get.own`.
+  // As `get.own`, but for a runtime class's value, whose mask bit declares
+  // what it implements natively and which has no `-contains-key?` slot
+  // (light-cljs-1028).
   contains = (operation => Object.defineProperty(function (value, key) {
     const resolved = methodKeys[2];
-    if (value != null && (value[resolved.mask] & resolved.bit) !== 0) {
+    if (value != null && (value[resolved.mask] & resolved.bit) !== 0 && value.cljs$lang$kind$$LKEY === undefined) {
       demandKey(resolved, 2, value);
       const slot = value[keySlot(resolved, 2)], own = slot ? slot : protocolHooks.declaredMethod(value, resolved, 2, slot);
       if (own) return own.call(value, value, key);
@@ -8353,7 +8560,9 @@
   // Of a resolved key (`methodKey`), whose `info` it fills in once.
   function publicMethod(value, key, arity, fast = false, directOnly = false) {
     const info = key.info || (key.info = publicMethodInfo(key.key)), protocol = info.protocol, mask = info.mask, native = info.native;
-    let direct = !!(mask && (value?.[mask[0]] & mask[1]));
+    // A runtime class's mask bits are its native tests' answers (see
+    // `ownMethod`), which the payload stores' step below gives.
+    let direct = !!(mask && (value?.[mask[0]] & mask[1])) && value.cljs$lang$kind$$LKEY === undefined;
     if (!direct && info.name) {
       demandMethod(info.name, 0, value);
       direct = value != null && value[info.marker] === protocolSentinel;
@@ -8428,7 +8637,12 @@
     const meta = key.meta && typeof value === "function";
     // The mask bit first: a value of a type the program defines has it, and
     // declaring the protocol demands the method (`keyMethod`) as the marker would.
-    const declared = key.bit !== 0 && value != null && (value[key.mask] & key.bit) !== 0 || keyMarker(value, key);
+    // A runtime class's mask bits (its keyed kind, docs/value-layout.md,
+    // section 3) declare what it implements natively, which the operation
+    // answers: as before they were there, only a marker declares a method
+    // for its value here (light-cljs-1028). Program types are told by their
+    // brands until their kinds are keyed (light-cljs-1013).
+    const declared = key.bit !== 0 && value != null && (value[key.mask] & key.bit) !== 0 && value.cljs$lang$kind$$LKEY === undefined || keyMarker(value, key);
     return declared || meta ? ownDeclared(value, key, arity, keyMethod(value, key, arity)) : undefined;
   }
   //@unit ownDeclared requires: reifyValues
@@ -8439,6 +8653,11 @@
   function ownDeclared(value, key, arity, method) {
     if (method) return method;
     if (key.meta && (typeof value === "function" || reifyValues.has(value))) return undefined;
+    // A runtime class's value (its keyed kind) declares the protocols it
+    // implements natively on its prototype (docs/value-layout.md, section
+    // 3), with slots for some operations only: where no program method is
+    // there, the operation answers it natively.
+    if (value != null && value.cljs$lang$kind$$LKEY !== undefined) return undefined;
     throw new Error("No protocol method " + key.key + " defined for this value");
   }
   //@unit metadataMethod requires: get, meta, symbolCore, truth

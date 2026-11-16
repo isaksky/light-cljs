@@ -1685,10 +1685,15 @@ console.log('seq payloads are private fields that host objects cannot copy');
       // reflection, and one (docs/value-layout.md, section 5); so are a
       // repeat and its rest (light-cljs-1030).
       const copies = ['transientVector', 'view', 'repeat', 'repeated'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+      // A transient vector's prototype declares the protocols it implements
+      // (light-cljs-1028): what the protocol tests say of `Object.create` of
+      // it is deliberate reflection (docs/value-layout.md, section 5); it
+      // holds no state, so it is still no value to `inspect` or `persistent!`.
+      const declares = name === 'transientVector';
       for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
-        for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
+        if (!declares) for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
         assert.equal(fresh.inspect(candidate), null);
-        assert.throws(() => f.count(candidate), /count not supported/);
+        if (!declares) assert.throws(() => f.count(candidate), /count not supported/);
         assert.throws(() => f.persistentBang(candidate));
       }
     }
@@ -1752,10 +1757,13 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
     // (light-cljs-1009, light-cljs-1010, light-cljs-1029), and so is a
     // cons's, a list's or a repeat's (light-cljs-1030).
     const copies = ['transientVector', 'view', 'lazy', 'chunked', 'chunk', 'cons', 'list', 'repeat'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+    // As above, a transient vector's prototype declares its protocols
+    // (light-cljs-1028).
+    const declares = name === 'transientVector';
     for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
-      for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isChunkedSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
+      if (!declares) for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isChunkedSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
       assert.equal(fresh.inspect(candidate), null);
-      assert.throws(() => f.count(candidate), /count not supported/);
+      if (!declares) assert.throws(() => f.count(candidate), /count not supported/);
     }
   }
 }
@@ -2153,6 +2161,85 @@ console.log('kind tables stay private to the runtime');
   assert.equal(r.fnRest(own, 2), null);
 }
 console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is unchanged');
+
+// vector_family_prototype_contract (light-cljs-1028; docs/value-layout.md,
+// section 3): the prototypes of vectors, subvectors, map entries and
+// transient vectors declare exactly the core protocols their values
+// implement, the ones with a mask bit by the keyed masks (`protocolMaskNames`'
+// bits, the last of a duplicated name) and the others by a keyed marker,
+// and hold the keyed slots of the slot-first operations, each answering as
+// its operation does. `implements?` and `satisfies?` give every value of
+// these kinds, its prototype's or another constructor's, the same answers.
+{
+  const source = fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8');
+  const maskNames = /const protocolMaskNames = "([^"]+)"/.exec(source)[1].split(' ');
+  const masks = new Map(maskNames.map((name, index) => [name, [index >> 5, 1 << (index % 32)]]));
+  const protocols = Object.keys(c).filter(name => /^I[A-Z]|^ASeq$|^Fn$|^Inst$/.test(name) && typeof c[name] === 'function');
+  const vectorLike = 'IFn ICounted IEmptyableCollection ICollection IIndexed ILookup IAssociative IStack IVector IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IReversible IPrintWithWriter IComparable IIterable IDrop IFind';
+  const nth = ['cljs$core$IIndexed$_nth$arity$2$LKEY', 'cljs$core$IIndexed$_nth$arity$3$LKEY'];
+  const lookup = ['cljs$core$ILookup$_lookup$arity$2$LKEY', 'cljs$core$ILookup$_lookup$arity$3$LKEY'];
+  const count = 'cljs$core$ICounted$_count$arity$1$LKEY', peek = 'cljs$core$IStack$_peek$arity$1$LKEY';
+  const conj = 'cljs$core$ICollection$_conj$arity$2$LKEY', assoc = 'cljs$core$IAssociative$_assoc$arity$3$LKEY';
+  const seq = 'cljs$core$ISeqable$_seq$arity$1$LKEY';
+  const persistentSlots = [...nth, ...lookup, count, peek, conj, assoc, seq];
+  const source3 = r => r.vector(1, 2, 3, 4);
+  const kinds = [
+    ['vector', () => [runtime.vector(1, 2, 3), c.vector(), c.assoc(c.subvec(source3(runtime), 1, 3), 0, 9), c.PersistentVector(null, 2, 5, null, [1, 2], null)],
+      vectorLike + ' IKVReduce IEditableCollection ICloneable', persistentSlots],
+    ['subvec', () => [c.subvec(source3(runtime), 1, 3), c.subvec(c.vec(c.range(40)), 2, 39), c.Subvec(null, source3(runtime), 1, 3, null), c.Subvec(null, c.list(1, 2, 3), 0, 2, null), c.Subvec(null, source3(runtime), 3, 1, null)],
+      vectorLike + ' IKVReduce ICloneable', persistentSlots],
+    ['entry', () => [c.first(c.hashMap(1, 2)), c.find(c.hashMap('a', 'b'), 'a'), c.MapEntry('k', 'v', null)],
+      vectorLike + ' IMapEntry', persistentSlots],
+    // A transient vector that is no longer editable too: its slots throw as
+    // the operations do.
+    ['transientVector', () => { const persisted = c.transient(runtime.vector(1)); c.persistentBang(persisted); return [c.transient(runtime.vector(1, 2)), c.transient(c.vec(c.range(40))), persisted]; },
+      'IFn ICounted IIndexed ILookup ITransientCollection ITransientAssociative ITransientVector', [...nth, ...lookup, count]]
+  ];
+  for (const [kind, make, implemented, slots] of kinds) {
+    const values = make(), proto = Object.getPrototypeOf(values[0]), names = implemented.split(' ');
+    const parts = [0, 0];
+    for (const name of names) if (masks.has(name)) parts[masks.get(name)[0]] |= masks.get(name)[1];
+    for (const value of values) assert.equal(Object.getPrototypeOf(value), proto, `${kind}: one prototype`);
+    for (const part of [0, 1]) {
+      const mask = 'cljs$lang$protocol_mask$partition' + part + '$$LKEY';
+      assert.ok(Object.prototype.hasOwnProperty.call(proto, mask), `${kind}: own ${mask}`);
+      assert.equal(proto[mask], parts[part], `${kind}: ${mask}`);
+    }
+    for (const name of protocols) {
+      const marker = proto['cljs$core$' + name + '$$LKEY'];
+      assert.equal(marker, !masks.has(name) && names.includes(name) ? c.protocolSentinel : undefined, `${kind}: marker ${name}`);
+      for (const value of values) {
+        assert.equal(c.implements(c[name], value), names.includes(name), `${kind}: implements? ${name}`);
+        assert.equal(c.satisfies(c[name], value), names.includes(name), `${kind}: satisfies? ${name}`);
+      }
+    }
+    for (const slot of [...persistentSlots]) {
+      assert.equal(Object.prototype.hasOwnProperty.call(proto, slot), slots.includes(slot), `${kind}: own ${slot}`);
+      if (slots.includes(slot)) assert.equal(typeof proto[slot], 'function', `${kind}: ${slot}`);
+    }
+    // Each slot answers as its operation does, for every value of the kind:
+    // the compile-time runtime's protocol lookup finds and calls it.
+    for (const value of values) {
+      const answers = [
+        [nth[0], [0], () => c.nth(value, 0)], [nth[1], [7, 'nf'], () => c.nth(value, 7, 'nf')],
+        [lookup[0], [1], () => c.get(value, 1)], [lookup[1], ['k', 'nf'], () => c.get(value, 'k', 'nf')],
+        [count, [], () => c.count(value)], [peek, [], () => c.peek(value)],
+        [conj, [5], () => c.conj(value, 5)], [assoc, [0, 6], () => c.assoc(value, 0, 6)], [seq, [], () => c.seq(value)]];
+      // An answer, or the message of what the call threw.
+      const outcome = thunk => { try { const result = thunk(); return 'ok ' + c.prStr(result); } catch (error) { return 'error ' + error.message; } };
+      for (const [slot, args, operation] of answers) {
+        if (!slots.includes(slot)) continue;
+        // What a slot gives a value with the prototype and no fields, as
+        // only reflection makes, is the private answer by which the
+        // operation's older path takes the value (`noBranch`).
+        const forged = Object.create(proto), noBranch = proto[slot].call(forged, forged, ...args);
+        assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${kind}: ${slot} of a forged value`);
+        assert.equal(outcome(() => proto[slot].call(value, value, ...args)), outcome(operation), `${kind}: ${slot} of ${c.prStr(value)}`);
+      }
+    }
+  }
+}
+console.log('vector_family_prototype_contract: masks, markers and slots of the vector classes');
 
 // Keywords and symbols of two copies of one build (docs/value-layout.md,
 // sections 1 and 3, light-cljs-1011): each copy interns its own, so they are
