@@ -88,6 +88,45 @@ while the migration is under way:
   and masks before any kind test, as it did before this pellet. The Pants
   profile's `stamped` also accepts engine vector forms.
 
+What light-cljs-1010 landed: the seqs over an array or a string, the
+first slice of section 2's seq rows.
+
+- **The view classes.** Every seq `view` built, `IndexedSeq` (rest
+  arguments, the seqs of arrays, strings, vectors of up to 32 items,
+  queues and sets), `ChunkedSeq`, and the map seqs over an array of entries
+  (`NodeSeq`, `ArrayNodeSeq`, `PersistentArrayMapSeq`, `RSeq` and the
+  `PersistentTreeMapSeq` that `rseq` and `subseq` give), is an instance of
+  an internal constructor on its type's prototype (`IndexedSeqCell`,
+  `ChunkedSeqCell`, ...), kinds 5 to 11, with four own keyed fields:
+  `arr$LKEY` (the storage), `i$LKEY` (the offset), `indexed$LKEY` and
+  `view$LKEY` (today's view kind). A chunked seq adds `vec$LKEY` and
+  `base$LKEY` (upstream's `vec` and `i`; its `off` is `i$LKEY`), where it
+  kept them in `publicCollectionSlots`. `viewOf` replaces `views.get`; the
+  `views` store is deleted, and with it a view's frozen payload and the
+  chunked seq's slots entry per step. A view's `tail` was always null and
+  is gone. Metadata and hashes stay in `metadataValues` and
+  `constructorHashes` (light-cljs-1026). `RSeq` still copies its items.
+- **Slots and slot-first dispatch.** `IndexedSeq` and `ChunkedSeq` have
+  keyed `-first`, `-rest`, `-next` and `-seq` slots (`IndexedSeq` also
+  `-count`), a vector a `-seq` slot, and `first`, `rest`, `next` and `seq`
+  have slot-first wrappers (`first.slots` and the rest), as 1009's six
+  operations. Where today's operation takes a further operation (`next` of
+  a chunked seq or of a queue's seq is the `seq` of its `rest`), the slot
+  takes it through the operations' wrappers, so an `extend-type` of that
+  protocol answers as before.
+- **Rest arguments** are an `IndexedSeq` over one fresh array, neither
+  frozen nor stamped in release: `fnRest` copies a dispatcher's `arguments`
+  and takes a direct call's array literal as it is.
+- **The compile-time brand.** The view constructors end with `/*@brand*/`.
+  The marker `/*@stamped*/` (build.rs `STAMPED_MARKER`) is now any kind
+  test's prefix, so `inspect`'s view test carries it too; the compiler form
+  bridge tests `stamped` before `isView` and `viewOf`.
+- **What is left for the seq kinds** (filed as their own pellets before
+  light-cljs-1011): lazy seqs, chunked conses, array chunks and chunk
+  buffers (`lazyValues`, `chunks`, `chunkBuffers`), and the cells (`Cons`,
+  `List`, `EmptyList`, ranges, `Repeat`, `Iterate`, `Cycle`, the key and
+  value seqs and the tree map seq, `cells`).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

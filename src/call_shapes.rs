@@ -41,8 +41,11 @@
 //!   ([`FunctionShape::Entries`]). Calls choose the method at compile time:
 //!   `g3_1(a)`, or for a variadic method `g3_2(a, b, rt$fnRest([c, d], 0))`
 //!   (`null` without rest arguments), exactly the values its dispatcher would
-//!   pass. Calls through the name of a named function are calls of the same
-//!   entries. The global itself, its dispatcher and its arity properties exist
+//!   pass; the array literal is the call's own, so `fnRest` makes it the rest
+//!   seq's storage without a copy (light-cljs-1010), where a dispatcher's
+//!   `arguments` are copied. Calls through the name of a named function are
+//!   calls of the same entries. The global itself, its dispatcher and its
+//!   arity properties exist
 //!   only when the function escapes; without them a method that no call
 //!   selects has no entry ([`CallShapes::entry_used`], light-cljs-421), as
 //!   Closure drops an arity property nothing reads. The dispatcher of a top-level `def`, which

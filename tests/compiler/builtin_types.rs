@@ -525,8 +525,11 @@ fn a_program_type_opens_the_protocol_hooks() {
     // the vectors' keyed kind, their `count` slot and the slot-first wrapper
     // of `count`; 9,162 after light-cljs-1025 (2026-11-15): the runtime
     // key's registration (about 290 bytes) and the key in each keyed name
-    // (4 bytes more than the placeholder).
-    assert!(advanced(source).emit_js().len() < 9_400);
+    // (4 bytes more than the placeholder); 9,413 after
+    // light-cljs-1010 (2026-11-15): the view test (`viewOf`, `isView`,
+    // `viewCells`) that `count` and `seqableValue` read.
+    let size = advanced(source).emit_js().len();
+    assert!(size < 9_500, "{size} bytes");
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -921,8 +924,11 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // the stores' metadata read by descriptor, since light-cljs-1024 (the
     // Pants engine has no `Object.hasOwn`), 2,575 to 2,600, and the runtime
     // key's registration, since light-cljs-1025 (2026-11-15), about 290 more
-    // (2,894 bytes).
-    assert!(advanced("(count (.split \"a,b\" \",\"))").emit_js().len() < 3_000);
+    // (2,894 bytes), and the view test (`viewOf`, `isView`, `viewCells`),
+    // since light-cljs-1010 (2026-11-15), where the views' store was a
+    // `privateStore` (3,141 bytes).
+    let size = advanced("(count (.split \"a,b\" \",\"))").emit_js().len();
+    assert!(size < 3_200, "{size} bytes");
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -2487,7 +2493,9 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// `e379d6c5`'s runtime prints, except the number of times: since
 /// light-cljs-1009 a vector or transient vector test of a host value reads
 /// its keyed kind (`vectorStore`, `isTransientCell`), where the private
-/// brands read nothing, so the Proxy is asked the same names more often.
+/// brands read nothing, so the Proxy is asked the same names more often,
+/// and more again since light-cljs-1010: a view test (`viewOf`) and the
+/// slot-first wrappers of `first`, `rest`, `next` and `seq` read it too.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -2581,7 +2589,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [213, 213, 257],
+            [268, 268, 312],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2643,7 +2651,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [202, 202, 243],
+            [253, 253, 294],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2706,7 +2714,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [213, 213, 213],
+            [268, 268, 268],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
@@ -2760,6 +2768,31 @@ fn lazy_branches_preserve_host_iterator_demand() {
                     (count (lazy-seq (it))) (into [] (seq (lazy-seq (it)))) (first (lazy-seq (lazy-seq (it))))
                     (into [] (next (cons 0 (lazy-seq (it)))))]))",
         "[2 [3 4 5 6] [3 4 5 6] 6 [1 2 3 4 5 6] 2 [1 2 3 4 5 6]]",
+    );
+}
+
+/// The seqs over vectors and arrays and rest arguments answer from keyed
+/// slots since light-cljs-1010, and an `extend-type` of one of those
+/// protocols still answers as master `cf613766` did: a chunked seq's `next`
+/// is the seq of its `rest`, which the program's `-rest` gives, an indexed
+/// seq's `next` advances without its `-rest`, and a program's `-count` of
+/// `IndexedSeq` counts rest arguments too.
+#[test]
+fn seq_slots_keep_the_answers_of_extended_protocols() {
+    every_level(
+        "(extend-type ChunkedSeq ISeq (-rest [_] (list :r)))
+         (extend-type IndexedSeq ICounted (-count [_] 9))
+         (let [s (seq (vec (range 40))) t (seq [1 2 3])]
+           (pr-str [(first s) (rest s) (next s) (first (next t)) (count (rest t))
+                    ((fn [& xs] (count xs)) 1 2) (seq? (rest t))]))",
+        "[0 (:r) (:r) 2 9 9 true]",
+    );
+    every_level(
+        "(let [s (seq (vec (range 40))) t (seq (to-array [1 2 3]))]
+           (pr-str [(first s) (first (next s)) (count (rest s)) (first (drop 33 s)) (reduce + (next s))
+                    (first (rest t)) (next (next (next t))) (count t) ((fn [a & xs] [a xs (count xs)]) 1 2 3)
+                    (apply + 1 [2 3]) (vec (rest (seq \"abc\"))) (meta (with-meta (next s) {:m 1}))]))",
+        "[0 1 39 33 780 2 nil 3 [1 (2 3) 2] 6 [\"b\" \"c\"] {:m 1}]",
     );
 }
 

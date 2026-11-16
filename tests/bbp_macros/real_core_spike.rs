@@ -95,6 +95,22 @@ const SWAPS: &[(&str, &str)] = &[
         r#"  const kindHooks = {seqVector: value => __rt.cljSeq(value)};"#,
     ),
     ("emptyList", "  const emptyList = __rt.formList();"),
+    // The slot-first wrappers serve the V8 profile's class values, which this
+    // slice of engine forms never builds; each captures the operation it
+    // wraps, which the seal below, walking properties only, cannot reach.
+    ("count.slots", ""),
+    ("first.slots", ""),
+    ("rest.slots", ""),
+    ("next.slots", ""),
+    ("seq.slots", ""),
+    // The seqs' slots that `map` reaches mark themselves while the slice
+    // loads (light-cljs-1010): an array, as the shared-heap profile's
+    // `builtinSlots`, where the V8 profile's WeakSet never publishes.
+    (
+        "builtinSlots",
+        r#"  const builtinSlots = {members: [], has(method) { return this.members.includes(method); }};
+  function builtinSlot(method) { builtinSlots.members.push(method); return method; }"#,
+    ),
     // Shareable once booted (light-cljs-646): the captured rest array is
     // sealed.
     (

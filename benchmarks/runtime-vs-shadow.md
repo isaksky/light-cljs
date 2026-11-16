@@ -959,7 +959,7 @@ touches maps, seqs or keywords, where its time goes.
 
 What landed (docs/value-layout.md, section 1, "Derivation"): the output
 writer writes each build's eight-character key where the runtime text and
-emission hold the placeholder `$LKEY`, four bytes more per keyed name, and
+emission hold the placeholder `\$LKEY`, four bytes more per keyed name, and
 every runtime registers the key page-wide as it loads (the `runtimeKey`
 unit: one `Symbol.for`, one global read and one `Map` lookup, about 290
 terse bytes, which every `:advanced` slice keeps). No operation's code
@@ -1019,3 +1019,73 @@ name, `vector-only` 5,503 to 5,879 bytes, `mapv-count` 39,619 to 40,088,
 `features-direct` 81,469 to 82,006. The workload's output grows from
 3,442,997 to 3,444,422 bytes (+0.04%), 859,129 to 859,420 gzipped.
 re-frame simple and TodoMVC gzip sizes were not measured in this step.
+
+## 2026-11-15: seqs over arrays and strings, and rest arguments, as classes (light-cljs-1010)
+
+What landed (docs/value-layout.md, the light-cljs-1010 notes after
+"Decisions for the user"): every seq the runtime built as a view (indexed
+seqs over arrays, strings, short vectors, queues and sets, a vector's
+chunked seq, and the map seqs over an array of entries) is one object of
+its type's class, with its storage, offset and kind in own keyed fields,
+where it was `Object.create`, a private stamp and a frozen six-field
+payload, and a chunked seq also a `publicCollectionSlots` entry per step.
+Indexed and chunked seqs have keyed `first`, `rest`, `next` and `seq` slots
+(an indexed seq also `count`), a vector a `seq` slot, and the four
+operations call them first. Rest arguments are an indexed seq over one
+fresh array: a direct call's array literal is taken as it is, a
+dispatcher's `arguments` copied once, nothing frozen. Lazy seqs, chunked
+conses, chunks and the list cells are not converted yet (light-cljs-1029,
+light-cljs-1030).
+
+Binaries: before `light-cljs-cf613766` (master), after `light-cljs-e7ef321b`
+(this pellet's runtime; later commits change tests and comments only), in
+research/shadow-credibility/bin. Unreserved: one peer worker was active.
+Raw results: research/output-speed/seq-classes-1010.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops seq-walk-vec,lazy-walk,reduce-map-inc,filter-count,mapv,into-xform,variadic-call,apply-vec --runs 3`,
+the same selection both times; 1-minute load average 3.62-4.82 before,
+2.81-4.64 after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| seq-walk-vec-1000 | 562,294 (562,292-586,120) | 21,089 (21,005-21,683) | -96% | 9,587 | 57.43 | 2.20 |
+| variadic-call | 342.8 (340.4-342.9) | 9.23 (8.88-9.36) | -97% | 8.85 | 36.78 | 1.04 |
+| apply-vec | 1,050 (1,044-1,059) | 352.6 (349.8-358.1) | -66% | 51.3 | 19.57 | 6.88 |
+| lazy-walk-1000 | 620,992 (620,194-622,153) | 584,091 (574,747-588,441) | -6% | 38,028 | 15.48 | 15.36 |
+| reduce-map-inc-1000 | 628,944 (627,880-634,819) | 582,989 (578,307-593,599) | -7% | 40,677 | 14.82 | 14.33 |
+| filter-count-1000 | 330,617 (325,930-330,974) | 297,693 (294,622-304,807) | -10% | 27,275 | 11.79 | 10.91 |
+| into-xform-1000 | 72,179 (72,127-73,078) | 72,339 (70,939-73,802) | +0% | 13,172 | 5.39 | 5.49 |
+| mapv-1000 | 52,299 (51,931-55,269) | 51,995 (50,910-52,076) | -1% | 12,706 | 3.97 | 4.09 |
+
+- No gate operation is slower beyond its range. The ratios of
+  `into-xform-1000` and `mapv-1000` move only with shadow-cljs's own run:
+  both reduce a vector through a transient and reach no converted seq.
+- `apply-vec` still conses its argument list (a `cells` value) and counts
+  it through the old layers; `lazy-walk`, `reduce-map-inc` and
+  `filter-count` walk lazy seqs and chunked conses, which pass the new
+  slot-first wrappers without a slot and then the old layers. They gain
+  only where their source is a vector's chunked seq: light-cljs-1029 and
+  light-cljs-1030 convert them.
+
+**Workload 200k** (`compare.bb workload-200k-seed42 --runs 5 --runtime-only
+--runtime 1,10,40`, a copy of the project rebuilt with each binary just
+before its run; load average 2.97-3.58), wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.424 s (0.412-0.436) | 0.417 s (0.402-0.428) | 0.298 s | 0.300 s | 1.42 | 1.39 |
+| 10 | 1.352 s (1.318-1.402) | 1.281 s (1.171-1.333) | 0.608 s | 0.602 s | 2.22 | 2.13 |
+| 40 | 3.960 s (3.754-4.041) | 3.656 s (3.444-3.731) | 1.217 s | 1.221 s | 3.25 | 2.99 |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 90.7 to
+83.1 ms per iteration (-8%), shadow-cljs 23.6 both times; light/shadow 3.85
+to 3.52. (A first before run timed the output the copied project already
+had, built by an older binary, at 122.1 ms per iteration; it is discarded.)
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): programs
+that walk seqs keep the seq classes' slots and the four slot-first
+wrappers, about 3 to 4 KB: `rest-fn` 11,079 to 14,003 bytes, `mapv-count`
+39,619 to 43,238, `keyword-lookups` 39,028 to 42,846, `constant-keys`
+53,037 to 57,117, `event-maps` 35,420 to 39,449; printing programs grow
+173 bytes (`vector-printed`, `map-printed`). re-frame simple and TodoMVC
+gzip sizes were not measured in this step.

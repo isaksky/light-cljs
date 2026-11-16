@@ -73,7 +73,12 @@
   // (docs/value-layout.md, section 2), which its prototype holds under the
   // keyed name `cljs$lang$kind$$LKEY`: a value of this runtime, of this
   // class. Kinds 1 to 3 hold a vector's store (`vectorStore`), 4 a
-  // transient vector's state (`transientState`).
+  // transient vector's state (`transientState`). Kinds 5 to 11 are the seqs
+  // over an array or a string (`viewOf`), each set by its type's unit with
+  // `viewType`: 5 `IndexedSeq`, 6 `ChunkedSeq`, 7 `NodeSeq`, 8
+  // `ArrayNodeSeq`, 9 `PersistentArrayMapSeq`, 10 `RSeq`, 11
+  // `PersistentTreeMapSeq`; numbers, so that a program that keeps one of
+  // them keeps no table of the others.
   const kinds = Object.freeze({vector: 1, subvec: 2, entry: 3, transientVector: 4});
   //@unit vectorStore
   // The store (see `vectorTailOffset`) of a vector, a subvector or a map
@@ -121,6 +126,56 @@
   // A map entry: a vector store of its key and value, which its tail holds,
   // with `MapEntryType`'s prototype.
   function EntryCell(store) { this.store$LKEY = store; /*@brand*/ }
+  //@unit viewOf
+  // A seq over an array or a string, the classes of kinds 5 to 11 (`kinds`):
+  // the value itself, whose own keyed fields are its storage `arr` (an array
+  // or a string), the offset `i` of its first item, whether `nth` reads the
+  // storage by absolute index (`indexed`) and the seq's kind (`view`:
+  // "indexed", "chunked", "queue", "set", "reverse" or a map's kind), else
+  // undefined. As `vectorStore`, one made by reflection holds no storage.
+  function viewOf(value) {
+    if (value == null) return undefined;
+    const kind = value.cljs$lang$kind$$LKEY;
+    return kind >= 5 && kind <= 11 && value.arr$LKEY !== undefined ? value : undefined;
+  }
+  //@unit isView requires: viewOf
+  const isView = value => viewOf(value) !== undefined;
+  //@unit viewCells requires: isView
+  // `isView` as an entry of the store inventories, as `vectorCells`.
+  const viewCells = Object.freeze({has: isView});
+  //@unit IndexedSeqCell
+  // A seq over an array or a string with `IndexedSeqValue`'s prototype (see
+  // `viewOf`); rest arguments are one over a fresh array of their own.
+  // Nothing in it is frozen. The compile-time runtime stamps it (`stamp`).
+  function IndexedSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit ChunkedSeqCell
+  // A vector's chunked seq, with `ChunkedSeqValue`'s prototype: its leaf
+  // `node` is the view's storage; besides a view's fields, `vec` is the
+  // vector and `base` the index of the leaf's first item, so upstream's `i`
+  // and `off` are its `base` and `i`. Only a chunked seq has `vec`.
+  function ChunkedSeqCell(node, off, vec, base) { this.arr$LKEY = node; this.i$LKEY = off; this.indexed$LKEY = false; this.view$LKEY = "chunked"; this.vec$LKEY = vec; this.base$LKEY = base; /*@brand*/ }
+  //@unit NodeSeqCell
+  // The seqs of maps over an array of their entries, one class per map seq
+  // type, with the fields of `viewOf`.
+  function NodeSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit ArrayNodeSeqCell
+  function ArrayNodeSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit ArrayMapSeqCell
+  function ArrayMapSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit RSeqCell
+  function RSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit TreeMapSeqCell
+  function TreeMapSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit viewType mutator
+  // Makes `Type` a view class (`viewOf`) of kind `kind`, whose values `Cell`
+  // builds, which its prototype holds under the keyed name `cljs$lang$cell$` for
+  // `view` and `viewAt`.
+  function viewType(Type, Cell, kind) {
+    Cell.prototype = Type.prototype;
+    Type.prototype.cljs$lang$cell$$LKEY = Cell;
+    Type.prototype.cljs$lang$kind$$LKEY = kind;
+    return Type;
+  }
   //@unit stampBrand compile-time requires: canHoldField, weakMapStores
   // The compile-time brand of the runtime's class values (docs/value-layout.md,
   // section 4): the compiler form bridge, `inspect` and the compile-time
@@ -203,8 +258,6 @@
   const transientCells = Object.freeze({has: isTransientCell});
   //@unit cells requires: privateStore
   const cells = privateStore(2);
-  //@unit views requires: privateStore
-  const views = privateStore(1);
   //@unit iteratorSeqs requires: privateStore
   const iteratorSeqs = privateStore(10);
   //@unit reducedValues requires: privateStore
@@ -573,6 +626,9 @@
   //@unit sequencePrototype requires: count, objectEquiv, printHooks, sequentialIndex
   const sequencePrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
+    // JSON of a seq of a class (`viewOf`): its own properties but its keyed
+    // fields, as before it had them (docs/value-layout.md, question 3).
+    toJSON() { const {arr$LKEY: _a, i$LKEY: _i, indexed$LKEY: _x, view$LKEY: _v, vec$LKEY: _c, base$LKEY: _b, ...json} = this; return json; },
     toString() { return printHooks.collection(this); },
     indexOf(value, start = 0) { return sequentialIndex(this, value, start, false); },
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); }
@@ -585,12 +641,18 @@
   builtinType(EmptyListValue, sequencePrototype);
   //@unit Cons.type effect: Cons requires: builtinType, Cons, kindOps, sequencePrototype
   builtinType(Cons, sequencePrototype).prototype[kindOps] = 2;
-  //@unit IndexedSeqValue.type effect: IndexedSeqValue requires: builtinType, IndexedSeqValue,
-  //@ sequencePrototype
-  builtinType(IndexedSeqValue, sequencePrototype);
-  //@unit ChunkedSeqValue.type effect: ChunkedSeqValue requires: builtinType, ChunkedSeqValue,
-  //@ sequencePrototype
-  builtinType(ChunkedSeqValue, sequencePrototype);
+  //@unit IndexedSeqValue.type effect: IndexedSeqValue requires: builtinType, IndexedSeqCell,
+  //@ IndexedSeqValue, sequencePrototype, viewType
+  viewType(builtinType(IndexedSeqValue, sequencePrototype), IndexedSeqCell, 5);
+  //@unit ChunkedSeqValue.type effect: ChunkedSeqValue requires: builtinType, ChunkedSeqCell,
+  //@ ChunkedSeqValue, sequencePrototype, viewType
+  viewType(builtinType(ChunkedSeqValue, sequencePrototype), ChunkedSeqCell, 6);
+  //@unit IndexedSeqCell.type effect: IndexedSeqCell requires: IndexedSeqCell, IndexedSeqValue
+  // Operations that build an indexed seq directly keep its type, whose unit
+  // above gives it its prototype, kind and slots.
+  IndexedSeqCell.prototype = IndexedSeqValue.prototype;
+  //@unit ChunkedSeqCell.type effect: ChunkedSeqCell requires: ChunkedSeqCell, ChunkedSeqValue
+  ChunkedSeqCell.prototype = ChunkedSeqValue.prototype;
   //@unit ChunkedCons.type effect: ChunkedCons requires: builtinType, ChunkedCons, kindOps,
   //@ sequencePrototype
   builtinType(ChunkedCons, sequencePrototype).prototype[kindOps] = 2;
@@ -612,15 +674,17 @@
   //@unit IntegerRangeValue.type effect: IntegerRangeValue requires: builtinType, IntegerRangeValue,
   //@ kindOps, sequencePrototype
   builtinType(IntegerRangeValue, sequencePrototype).prototype[kindOps] = 2;
-  //@unit NodeSeqType effect requires: builtinType, sequencePrototype
-  const NodeSeqType = builtinType(function () {}, sequencePrototype);
-  //@unit PersistentArrayMapSeqType effect requires: builtinType, sequencePrototype
+  //@unit NodeSeqType effect requires: builtinType, NodeSeqCell, sequencePrototype, viewType
+  const NodeSeqType = viewType(builtinType(function () {}, sequencePrototype), NodeSeqCell, 7);
+  //@unit PersistentArrayMapSeqType effect requires: ArrayMapSeqCell, builtinType,
+  //@ sequencePrototype, viewType
   // The seq of an array map, as NodeSeqType is a hash map's.
-  const PersistentArrayMapSeqType = builtinType(function () {}, sequencePrototype);
-  //@unit ArrayNodeSeqType effect requires: builtinType, sequencePrototype
-  const ArrayNodeSeqType = builtinType(function () {}, sequencePrototype);
-  //@unit RSeqType effect requires: builtinType, sequencePrototype
-  const RSeqType = builtinType(function () {}, sequencePrototype);
+  const PersistentArrayMapSeqType = viewType(builtinType(function () {}, sequencePrototype), ArrayMapSeqCell, 9);
+  //@unit ArrayNodeSeqType effect requires: ArrayNodeSeqCell, builtinType, sequencePrototype,
+  //@ viewType
+  const ArrayNodeSeqType = viewType(builtinType(function () {}, sequencePrototype), ArrayNodeSeqCell, 8);
+  //@unit RSeqType effect requires: builtinType, RSeqCell, sequencePrototype, viewType
+  const RSeqType = viewType(builtinType(function () {}, sequencePrototype), RSeqCell, 10);
   //@unit ArrayList
   // Upstream types no light-cljs value has (lite mode's, and its collections'
   // internals): a protocol extended to one never dispatches.
@@ -656,8 +720,10 @@
   //@unit VectorNode
   function VectorNode() {}
   //@unit treeMapSeqConstructor.type effect: treeMapSeqConstructor requires: builtinType,
-  //@ sequencePrototype, treeMapSeqConstructor
-  builtinType(treeMapSeqConstructor, sequencePrototype);
+  //@ sequencePrototype, TreeMapSeqCell, treeMapSeqConstructor, viewType
+  // Its views (`viewOf`) are the seqs `rseq` and `subseq` give over an array
+  // of entries; the constructor's values are cells.
+  viewType(builtinType(treeMapSeqConstructor, sequencePrototype), TreeMapSeqCell, 11);
   //@unit emptyList effect requires: cells, EmptyListValue
   const emptyList = Object.create(EmptyListValue.prototype);
   cells.set(emptyList, Object.freeze({kind: "list", count: 0}));
@@ -820,13 +886,14 @@
     subvecSources.set(value, source);
     return constructorSlots(value, {start, end}, metadata, cachedHash);
   }
-  //@unit ChunkedSeqValue requires: constructorSlots, publicCollectionSlots, view
+  //@unit ChunkedSeqValue requires: ChunkedSeqCell, constructorHashes, metadataValues
   function ChunkedSeqValue(source, node, index, offset, metadata, cachedHash) {
-    const value = view(ChunkedSeqValue, node, offset, false, "chunked"), slots = {vec: source, node, i: index, off: offset};
+    const value = new ChunkedSeqCell(node, offset, source, index);
     // Without metadata or a hash, which a vector's seq has at every step,
     // no entry reads differently from a null one.
-    if (metadata == null && cachedHash == null) { publicCollectionSlots.set(value, slots); return value; }
-    return constructorSlots(value, slots, metadata, cachedHash);
+    if (metadata != null) metadataValues.set(value, metadata);
+    if (cachedHash != null) constructorHashes.set(value, cachedHash);
+    return value;
   }
   //@unit PersistentQueueValue requires: constructorSlots, queueFromArray
   function PersistentQueueValue(metadata, cnt, front, rear, cachedHash) {
@@ -984,31 +1051,41 @@
   //@unit list requires: listFromArray
   function list(...items) { return listFromArray(items); }
 
-  //@unit view requires: views
-  // A seq over `storage` from `offset`, of the type the caller builds
-  // (IndexedSeq, ChunkedSeq, NodeSeq or PersistentTreeMapSeq for `kind`), so
-  // that a caller keeps only the types it can build. A view rebuilt further
-  // on reads its type from the view.
-  function view(Type, storage, offset, indexed, kind = "indexed", tail = null) {
-    const value = Object.create(Type.prototype);
-    views.set(value, Object.freeze({storage, offset, indexed, kind, tail, Type}));
-    return value;
+  //@unit view
+  // A seq over `storage` from `offset` (`viewOf`), of the type the caller
+  // builds (IndexedSeq, NodeSeq or PersistentTreeMapSeq for `kind`), so that
+  // a caller keeps only the types it can build: one object, of the class
+  // its prototype names (`viewType`). A view rebuilt further on is of the
+  // same class (`viewAt`).
+  function view(Type, storage, offset, indexed, kind = "indexed") {
+    const Cell = Type.prototype.cljs$lang$cell$$LKEY;
+    return new Cell(storage, offset, indexed, kind);
+  }
+  //@unit viewAt
+  // A view of `slice`'s class, storage and kind from `offset`; a chunked
+  // seq's class takes its vector and base where the others take `indexed`
+  // and the kind.
+  function viewAt(slice, offset) {
+    const Cell = slice.cljs$lang$cell$$LKEY;
+    return slice.view$LKEY === "chunked" ? new Cell(slice.arr$LKEY, offset, slice.vec$LKEY, slice.base$LKEY)
+      : new Cell(slice.arr$LKEY, offset, slice.indexed$LKEY, slice.view$LKEY);
   }
 
-  //@unit seq requires: cells, IndexedSeqValue, iteratorSeq, iteratorSeqs, kindHooks, lazyValues,
-  //@ maps, publicCollectionSlots, queues, sets, vectorStore, view, views
+  //@unit seq requires: cells, IndexedSeqCell, iteratorSeq, iteratorSeqs, kindHooks, lazyValues,
+  //@ maps, publicCollectionSlots, queues, sets, vectorStore, viewOf
   function seq(value) {
     if (value == null || (cells.get(value)?.kind === "list" && cells.get(value).count === 0 && !publicCollectionSlots.has(value))) return null;
     const lazy = lazyValues.get(value);
     if (lazy) return kindHooks.seqLazy(lazy);
     const queue = queues.get(value);
     if (queue) return kindHooks.seqQueue(value, queue);
-    if (Array.isArray(value)) return value.length ? view(IndexedSeqValue, value, 0, true) : null;
+    if (Array.isArray(value)) return value.length ? new IndexedSeqCell(value, 0, true, "indexed") : null;
     if (cells.has(value)) return value;
-    if (views.has(value)) { const v = views.get(value); return v.offset < v.storage.length ? value : null; }
+    const v = viewOf(value);
+    if (v !== undefined) return v.i$LKEY < v.arr$LKEY.length ? value : null;
     const items = vectorStore(value);
     if (items) return kindHooks.seqVector(value, items);
-    if (typeof value === "string") return value.length ? view(IndexedSeqValue, value, 0, true) : null;
+    if (typeof value === "string") return value.length ? new IndexedSeqCell(value, 0, true, "indexed") : null;
     if (maps.has(value)) return kindHooks.seqMap(value);
     const members = sets.get(value);
     if (members) return kindHooks.seqSet(value, members);
@@ -1117,12 +1194,12 @@
     if (publicCollectionSlots.has(value)) { const q = publicCollectionSlots.get(value); return seq(concat(q.front, q.rear)); }
     return queue.length ? view(IndexedSeqValue, queue, 0, false, "queue") : null;
   };
-  //@unit makeVector.seq effect: makeVector, mapEntry when: seq, vectorFirst, vectorRest requires: ChunkedSeqValue,
-  //@ IndexedSeqValue, kindHooks, vectorChunk, view
+  //@unit makeVector.seq effect: makeVector, mapEntry when: seq, vectorFirst, vectorRest requires: ChunkedSeqCell,
+  //@ IndexedSeqCell, kindHooks, vectorChunk
   // A vector of at most 32 items walks its tail; a longer one is upstream's
   // chunked seq over its trie's leaves.
-  kindHooks.seqVector = (value, store) => !store.cnt ? null : store.cnt <= 32 ? view(IndexedSeqValue, vectorChunk(value, 0), 0, true)
-    : ChunkedSeqValue(value, vectorChunk(value, 0), 0, 0, null, null);
+  kindHooks.seqVector = (value, store) => !store.cnt ? null : store.cnt <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), 0, true, "indexed")
+    : new ChunkedSeqCell(vectorChunk(value, 0), 0, value, 0);
   //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: first, rest, seq
   //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal,
   //@ PersistentArrayMapSeqType, publicCollectionSlots, view
@@ -1181,26 +1258,26 @@
     }});
     return value;
   }
-  //@unit first requires: cells, chunks, firstSeq, iteratorSeqs, lazyValues, publicCollectionSlots,
-  //@ queues, seq, views
+  //@unit first requires: cells, chunks, firstSeq, isView, iteratorSeqs, lazyValues,
+  //@ publicCollectionSlots, queues, seq
   function first(value) {
     if (value == null) return null;
     if (queues.has(value) && publicCollectionSlots.has(value)) return first(publicCollectionSlots.get(value).front);
     if (chunks.get(value)?.integer) return chunks.get(value).start;
     if (lazyValues.has(value)) { seq(value); return first(lazyValues.get(value).value); }
     // Existing ISeq values do not redispatch ISeqable.
-    return firstSeq(cells.has(value) || views.has(value) || iteratorSeqs.has(value) ? value : seq(value));
+    return firstSeq(cells.has(value) || isView(value) || iteratorSeqs.has(value) ? value : seq(value));
   }
   //@unit firstSeq requires: cells, iteratorSeqs, methodKeys, protocolHooks, publicCollectionSlots,
-  //@ views
+  //@ viewOf
   // `first`'s steps once it has the seq `current` of its value, which the
   // collections' branches take too (`seqBranch`, light-cljs-375).
   function firstSeq(current) {
     if (current === null) return null;
     const cell = cells.get(current);
     if (cell) return cell.kind === "list" && cell.count === 0 && !publicCollectionSlots.has(current) ? null : cell.head;
-    const slice = views.get(current);
-    if (slice) return slice.offset < slice.storage.length ? slice.storage[slice.offset] : null;
+    const slice = viewOf(current);
+    if (slice) return slice.i$LKEY < slice.arr$LKEY.length ? slice.arr$LKEY[slice.i$LKEY] : null;
     const own = iteratorSeqs.get(current);
     if (own) return own.first;
     const firstMethod = protocolHooks.builtin?.(current, methodKeys[48], 1);
@@ -1232,23 +1309,20 @@
   //@unit LazySeq.first effect: LazySeq when: first requires: first, kindTables, lazyBranch
   kindTables[1][1] = lazyBranch(1, value => first(value));
 
-  //@unit rest requires: cells, emptyList, iteratorSeqs, lazyValues, restSeq, seq, views
+  //@unit rest requires: cells, emptyList, isView, iteratorSeqs, lazyValues, restSeq, seq
   function rest(value) {
     if (value == null) return emptyList;
     if (lazyValues.has(value)) { seq(value); return rest(lazyValues.get(value).value); }
-    return restSeq(cells.has(value) || views.has(value) || iteratorSeqs.has(value) ? value : seq(value));
+    return restSeq(cells.has(value) || isView(value) || iteratorSeqs.has(value) ? value : seq(value));
   }
   //@unit restSeq requires: cells, emptyList, iteratorSeqs, kindHooks, methodKeys, protocolHooks,
-  //@ publicCollectionSlots, view, views
+  //@ publicCollectionSlots, viewAt, viewOf
   // `rest`'s steps once it has the seq `current` of its value, as `firstSeq`.
   function restSeq(current) {
     if (current === null) return emptyList;
     const cell = cells.get(current);
     if (cell) return cell.kind === "list" ? cell.count === 1 || cell.count === 0 && !publicCollectionSlots.has(current) ? emptyList : cell.tail : cell.tail ?? emptyList;
-    const slice = views.get(current);
-    if (slice && !(slice.offset < slice.storage.length)) return emptyList;
-    const slots = publicCollectionSlots.get(current);
-    if (slice && slots?.vec) return kindHooks.restChunkedSeq(current, slice, slots);
+    const slice = viewOf(current);
     if (!slice) {
       const own = iteratorSeqs.get(current);
       if (own) return own.rest();
@@ -1256,9 +1330,10 @@
       if (restMethod) return restMethod.call(current, current);
       throw new Error("ISeq.-rest not supported on this type");
     }
-    const tail = slice.offset + 1 < slice.storage.length
-      ? view(slice.Type, slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
-    return slice.kind === "queue" ? kindHooks.restQueue(tail, current) : tail;
+    if (!(slice.i$LKEY < slice.arr$LKEY.length)) return emptyList;
+    if (slice.vec$LKEY) return kindHooks.restChunkedSeq(slice);
+    const tail = slice.i$LKEY + 1 < slice.arr$LKEY.length ? viewAt(slice, slice.i$LKEY + 1) : emptyList;
+    return slice.view$LKEY === "queue" ? kindHooks.restQueue(tail, current) : tail;
   }
   //@unit rest.branches effect: ChunkedCons, Cons, IntegerRangeValue, LazySeq, ListValue,
   //@ MapEntryType, PersistentArrayMapValue, PersistentHashMapValue, PersistentHashSetValue,
@@ -1281,16 +1356,16 @@
   };
   //@unit LazySeq.rest effect: LazySeq when: rest requires: kindTables, lazyBranch, rest
   kindTables[1][2] = lazyBranch(2, value => rest(value));
-  //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: restSeq requires: ChunkedSeqValue,
+  //@unit ChunkedSeqValue.restChunked effect: ChunkedSeqValue when: restSeq requires: ChunkedSeqCell,
   //@ chunkedVectorRest, kindHooks
-  // A view with the `vec` slot is a ChunkedSeq its public constructor built.
-  kindHooks.restChunkedSeq = (current, slice, slots) => slice.offset + 1 < slice.storage.length
-    ? ChunkedSeqValue(slots.vec, slots.node, slots.i, slice.offset + 1, null, null) : chunkedVectorRest(slots);
+  // A chunked seq with a vector (`ChunkedSeqCell`) continues past its leaf.
+  kindHooks.restChunkedSeq = slice => slice.i$LKEY + 1 < slice.arr$LKEY.length
+    ? new ChunkedSeqCell(slice.arr$LKEY, slice.i$LKEY + 1, slice.vec$LKEY, slice.base$LKEY) : chunkedVectorRest(slice);
   //@unit queueFromArray.rest effect: queueFromArray when: restSeq requires: collectionWithMeta,
   //@ kindHooks, meta
   kindHooks.restQueue = (tail, current) => collectionWithMeta(tail, meta(current));
 
-  //@unit next requires: cells, lazyValues, publicCollectionSlots, rest, seq, view, views
+  //@unit next requires: cells, lazyValues, publicCollectionSlots, rest, seq, viewAt, viewOf
   function next(value) {
     if (value == null) return null;
     if (lazyValues.has(value)) { seq(value); return next(lazyValues.get(value).value); }
@@ -1298,9 +1373,9 @@
     if (cell?.kind === "list") return cell.count === 1 || cell.count === 0 && !publicCollectionSlots.has(value) ? null : cell.tail;
     if (cell?.kind === "repeat") return cell.state?.following ?? (cell.remaining === -1 ? value : cell.remaining > 1 ? cell.tail : null);
     // Flat views advance directly; other kinds keep their rest/seq behavior.
-    const slice = views.get(value);
-    if (slice && slice.tail == null && (slice.kind === "indexed" || slice.kind === "hash-map" || slice.kind === "array-map" || slice.kind === "set"))
-      return slice.offset + 1 < slice.storage.length ? view(slice.Type, slice.storage, slice.offset + 1, slice.indexed, slice.kind) : null;
+    const slice = viewOf(value), kind = slice?.view$LKEY;
+    if (slice && (kind === "indexed" || kind === "hash-map" || kind === "array-map" || kind === "set"))
+      return slice.i$LKEY + 1 < slice.arr$LKEY.length ? viewAt(slice, slice.i$LKEY + 1) : null;
     return seq(rest(value));
   }
 
@@ -1366,8 +1441,8 @@
       : publicCollectionSlots.has(value) || (store.sub ?? store).callerTail ? firstSeq(kindHooks.seqVector(value, store))
       : store.cnt ? vectorNth(store, 0) : null;
   }
-  //@unit vectorRest requires: ChunkedSeqValue, IndexedSeqValue, kindHooks, methodKeys, noBranch,
-  //@ protocolHooks, publicCollectionSlots, rest, restSeq, seq, vectorChunk, vectorStore, view
+  //@unit vectorRest requires: ChunkedSeqCell, IndexedSeqCell, kindHooks, methodKeys, noBranch,
+  //@ protocolHooks, publicCollectionSlots, rest, restSeq, seq, vectorChunk, vectorStore
   // `rest` of a vector or a map entry, and with `empty` null its `next`, as
   // `vectorFirst`: the rest of its seq, built from index 1 (`kindHooks.seqVector`
   // chunks a vector of more than 32 items), which is its own seq. Where
@@ -1379,7 +1454,7 @@
     const method = protocolHooks.publicMethod, shared = publicCollectionSlots.has(value) || (store.sub ?? store).callerTail;
     const own = empty === null ? undefined : method?.(value, methodKeys[52], 1, true);
     if (!shared && !own && (empty !== null || !method)) return store.cnt < 2 ? empty : store.cnt <= 32
-      ? view(IndexedSeqValue, vectorChunk(value, 0), 1, true) : ChunkedSeqValue(value, vectorChunk(value, 0), 0, 1, null, null);
+      ? new IndexedSeqCell(vectorChunk(value, 0), 1, true, "indexed") : new ChunkedSeqCell(vectorChunk(value, 0), 1, value, 0);
     return empty === null ? seq(rest(value)) : restSeq(own ? own.call(value, value) : kindHooks.seqVector(value, store));
   }
   //@unit first.vectors effect: PersistentVectorValue, SubvecValue when: first requires: kindTables,
@@ -1748,9 +1823,9 @@
 
   //@unit isIdent requires: keywords, symbols
   const isIdent = x => keywords.has(x) || symbols.has(x);
-  //@unit isCollectionValue requires: cells, directMethod, holdsVector, lazyValues, maps, queues,
-  //@ sets, views
-  const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || holdsVector(x) || cells.has(x) || views.has(x) || queues.has(x) || lazyValues.has(x) || maps.has(x) || sets.has(x);
+  //@unit isCollectionValue requires: cells, directMethod, holdsVector, isView, lazyValues, maps,
+  //@ queues, sets
+  const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || holdsVector(x) || cells.has(x) || isView(x) || queues.has(x) || lazyValues.has(x) || maps.has(x) || sets.has(x);
   //@unit boolean
   // Core predicates, one unit each.
   const boolean = x => x != null && x !== false;
@@ -1848,7 +1923,7 @@
 
   //@unit reduce requires: cells, chunks, first, invalidArity, isReduced, iterableValue, iterator,
   //@ iteratorProtocol, kindHooks, lazyValues, methodKeys, next, protocolHooks,
-  //@ publicCollectionSlots, reducedValue, reduceValue, seq, vectorReduce, vectorStore, views
+  //@ publicCollectionSlots, reducedValue, reduceValue, seq, vectorReduce, vectorStore, viewOf
   function reduce(rf, init, collection) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
@@ -1862,7 +1937,7 @@
       }
       return init;
     }
-    const chunkedSlots = publicCollectionSlots.get(source);
+    const chunkedSlots = publicCollectionSlots.get(source), chunked = viewOf(source)?.vec$LKEY ? source : undefined;
     if (chunkedSlots?.arr) {
       const iter = iterator(source);
       if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
@@ -1873,10 +1948,10 @@
     // protocol implementation replaces, one the public constructor built
     // without `init` (with one, as upstream, its seq walks the whole tail it
     // received), and a public ChunkedSeq over one, walk its store.
-    const store = vectorStore(chunkedSlots?.vec ?? source);
-    if (store && (chunkedSlots?.vec || chunkedSlots?.cnt != null && arity === 2
+    const store = vectorStore(chunked ? chunked.vec$LKEY : source);
+    if (store && (chunked || chunkedSlots?.cnt != null && arity === 2
       || (store.cnt > 32 || store.sub) && !protocolHooks.publicMethod?.(source, methodKeys[52], 1, true)))
-      return vectorReduce(store, rf, init, chunkedSlots?.vec ? chunkedSlots.i + chunkedSlots.off : 0, arity);
+      return vectorReduce(store, rf, init, chunked ? chunked.base$LKEY + chunked.i$LKEY : 0, arity);
     const producer = cells.get(source);
     if (producer?.integer && arity === 2) {
       if (producer.count === 0) return rf.call(null);
@@ -1925,13 +2000,13 @@
     let initialized = arity === 3, result = init;
     let current = seq(initialized ? collection : init);
     // A chunked seq over a vector's leaf continues past its storage.
-    const walked = value => publicCollectionSlots.get(value)?.vec ? undefined : views.get(value);
-    let slice = walked(current), offset = slice?.offset;
+    const walked = value => { const slice = viewOf(value); return slice?.vec$LKEY ? undefined : slice; };
+    let slice = walked(current), offset = slice?.i$LKEY;
     // Traverse immutable storage directly. No recursive calls, per-step seq
     // wrappers, captured closures or persistent traversal caches are needed.
     while (current !== null) {
       const cell = cells.get(current);
-      const item = cell ? cell.head : slice ? slice.storage[offset] : first(current);
+      const item = cell ? cell.head : slice ? slice.arr$LKEY[offset] : first(current);
       if (!initialized) {
         result = item;
         initialized = true;
@@ -1944,10 +2019,10 @@
       if (cell || !slice) {
         current = cell ? seq(cell.tail) : next(current);
         slice = walked(current);
-        offset = slice?.offset;
-      } else if (++offset >= slice.storage.length) {
-        current = seq(slice.tail);
-        slice = walked(current); offset = slice?.offset;
+        offset = slice?.i$LKEY;
+      } else if (++offset >= slice.arr$LKEY.length) {
+        current = null;
+        slice = undefined;
       }
     }
     return initialized ? result : rf.call(null);
@@ -2189,9 +2264,9 @@
     return n === count(other);
   }
 
-  //@unit conj requires: cells, cons, emptyList, holdsVector, kindHooks, lazyValues, makeVector,
-  //@ maps, metadataValues, methodKeys, missing, preserveMeta, protocolHooks, publicCollectionSlots,
-  //@ queues, sets, subvecSources, vectorStore, views
+  //@unit conj requires: cells, cons, emptyList, holdsVector, isView, kindHooks, lazyValues,
+  //@ makeVector, maps, metadataValues, methodKeys, missing, preserveMeta, protocolHooks,
+  //@ publicCollectionSlots, queues, sets, subvecSources, vectorStore
   function conj(coll, item) {
     // One item onto a vector, where no protocol implementation or public
     // constructor can intervene: the hot path of building one.
@@ -2225,7 +2300,7 @@
         result = updated;
       }
       else if (result == null) result = cons(args[i], emptyList, "list");
-      else if (cells.has(result) || views.has(result) || lazyValues.has(result))
+      else if (cells.has(result) || isView(result) || lazyValues.has(result))
         result = cons(args[i], result, cells.get(result)?.kind === "list" ? "list" : "cons");
       else throw new Error("conj not supported on this type");
       if (holdsVector(previous) || maps.has(previous) || sets.has(previous) || queues.has(previous) || cells.get(previous)?.kind === "list") result = preserveMeta(previous, result);
@@ -3840,13 +3915,14 @@
 
   //@unit count requires: cells, chunkBuffers, chunks, isTransient, kindHooks, maps, methodKeys,
   //@ protocolHooks, publicCollectionSlots, queues, seqableValue, sets, subvecSources, vectorStore,
-  //@ views
+  //@ viewOf
   function count(value) {
     const slots = publicCollectionSlots.get(value), cell = cells.get(value);
     if (cell?.kind === "tree-seq" && slots.cnt < 0) return kindHooks.countTreeSeq(value);
     if (slots && "tree-map" in slots) return count(slots["tree-map"]);
     if (slots && ("cnt" in slots || "count" in slots)) return "cnt" in slots ? slots.cnt : slots.count;
-    if (slots?.vec) return count(slots.vec) - slots.i - slots.off;
+    const chunked = viewOf(value);
+    if (chunked?.vec$LKEY) return count(chunked.vec$LKEY) - chunked.base$LKEY - chunked.i$LKEY;
     if (slots && subvecSources.has(value)) return slots.end - slots.start;
     if (slots && sets.has(value)) return count(slots["hash-map"]);
     if (isTransient(value)) return kindHooks.countTransient(value);
@@ -3863,8 +3939,8 @@
     const members = sets.get(value);
     if (members) return members.length;
     if (cell && "count" in cell) return cell.count;
-    const slice = views.get(value);
-    if (slice) return Math.max(0, slice.storage.length - slice.offset) + count(slice.tail);
+    const slice = viewOf(value);
+    if (slice) return Math.max(0, slice.arr$LKEY.length - slice.i$LKEY);
     // Lazy seqs, cells without a count and other seqables walk their seqs.
     if (protocolHooks.implements?.(methodKeys[51], value) ?? seqableValue(value)) return kindHooks.countSeq(value);
     const nativeCount = protocolHooks.builtin?.(value, methodKeys[10], 1);
@@ -3948,10 +4024,10 @@
   //@ kindOps
   ChunkedSeqValue.prototype[kindOps] = 3;
   //@unit first.views effect: ChunkedSeqValue, IndexedSeqValue when: first.branches requires: kindTables,
-  //@ noBranch, views
+  //@ noBranch, viewOf
   kindTables[3][1] = value => {
-    const slice = views.get(value);
-    return slice === undefined ? noBranch : slice.offset < slice.storage.length ? slice.storage[slice.offset] : null;
+    const slice = viewOf(value);
+    return slice === undefined ? noBranch : slice.i$LKEY < slice.arr$LKEY.length ? slice.arr$LKEY[slice.i$LKEY] : null;
   };
 
 
@@ -3966,7 +4042,7 @@
 
   //@unit nth requires: cells, chunks, first, indexedValue, invalidArity, isEntryCell, isTransient,
   //@ kindHooks, methodKeys, missing, next, outOfBounds, protocolHooks, seq, sequential, seqValue,
-  //@ vectorNth, vectorStore, views
+  //@ vectorNth, vectorStore, viewOf
   function nth(value, index, notFound) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
@@ -3991,13 +4067,13 @@
       // Lists traverse to an exact zero. Indexed finite views retain the
       // pinned absolute-offset lookup, including fractional/missing slots.
       let current = value, remaining = index;
-      if (!views.get(current)?.indexed && remaining < 0)
+      if (!viewOf(current)?.indexed$LKEY && remaining < 0)
         return fallback === missing ? outOfBounds() : fallback;
       while (current !== null) {
-        const slice = views.get(current);
-        if (slice?.indexed) {
-          const absolute = slice.offset + remaining;
-          if (absolute >= 0 && absolute < slice.storage.length) return slice.storage[absolute];
+        const slice = viewOf(current);
+        if (slice?.indexed$LKEY) {
+          const absolute = slice.i$LKEY + remaining;
+          if (absolute >= 0 && absolute < slice.arr$LKEY.length) return slice.arr$LKEY[absolute];
           break;
         }
         if (remaining === 0) {
@@ -4291,7 +4367,8 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
-  //@unit count.slots effect: PersistentVectorValue when: count requires: count, noBranch, slotFirst
+  //@unit count.slots effect: IndexedSeqValue, PersistentVectorValue when: count requires: count,
+  //@ noBranch, slotFirst
   count = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
@@ -4332,6 +4409,134 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(get);
+
+  // The seqs over an array or a string (`viewOf`) answer `first`, `rest`,
+  // `next` and `seq`, and an indexed seq `count`, from slots of their
+  // prototypes, as a vector answers its operations (light-cljs-1010): a step
+  // builds one object, of the seq's own class. Each slot is complete for a
+  // view of its class and reads only the value's own fields; where today's
+  // operation would take a further operation (the `rest` and `seq` that
+  // `next` takes of a chunked seq), the slot takes it too, through the
+  // operation's wrappers, so that a program's `extend-type` of that
+  // operation's protocol answers as before.
+  //@unit IndexedSeqValue.first effect: IndexedSeqValue when: first requires: builtinSlot,
+  //@ IndexedSeqValue, noBranch
+  IndexedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
+    const arr = self.arr$LKEY;
+    if (arr === undefined) return noBranch;
+    const i = self.i$LKEY;
+    return i < arr.length ? arr[i] : null;
+  });
+  //@unit IndexedSeqValue.rest effect: IndexedSeqValue when: rest requires: builtinSlot, emptyList,
+  //@ IndexedSeqCell, IndexedSeqValue, noBranch, restSeq
+  IndexedSeqValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
+    const arr = self.arr$LKEY;
+    if (arr === undefined) return noBranch;
+    if (self.view$LKEY !== "indexed") return restSeq(self);
+    const i = self.i$LKEY + 1;
+    return i < arr.length ? new IndexedSeqCell(arr, i, self.indexed$LKEY, "indexed") : emptyList;
+  });
+  //@unit IndexedSeqValue.next effect: IndexedSeqValue when: next requires: builtinSlot,
+  //@ IndexedSeqCell, IndexedSeqValue, noBranch, rest, seq
+  // The flat kinds advance directly, as `next` advances them; the seqs of
+  // queues and sorted maps take the seq of their rest.
+  IndexedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
+    const arr = self.arr$LKEY;
+    if (arr === undefined) return noBranch;
+    const kind = self.view$LKEY;
+    if (kind !== "indexed" && kind !== "set" && kind !== "hash-map" && kind !== "array-map") return seq(rest(self));
+    const i = self.i$LKEY + 1;
+    return i < arr.length ? new IndexedSeqCell(arr, i, self.indexed$LKEY, kind) : null;
+  });
+  //@unit IndexedSeqValue.seq effect: IndexedSeqValue when: seq requires: builtinSlot,
+  //@ IndexedSeqValue, noBranch
+  IndexedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    const arr = self.arr$LKEY;
+    if (arr === undefined) return noBranch;
+    return self.i$LKEY < arr.length ? self : null;
+  });
+  //@unit IndexedSeqValue.count effect: IndexedSeqValue when: count requires: builtinSlot,
+  //@ IndexedSeqValue, noBranch
+  IndexedSeqValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    const arr = self.arr$LKEY;
+    if (arr === undefined) return noBranch;
+    return Math.max(0, arr.length - self.i$LKEY);
+  });
+  //@unit ChunkedSeqValue.first effect: ChunkedSeqValue when: first requires: builtinSlot,
+  //@ ChunkedSeqValue, noBranch
+  ChunkedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
+    const arr = self.arr$LKEY;
+    if (arr === undefined) return noBranch;
+    const i = self.i$LKEY;
+    return i < arr.length ? arr[i] : null;
+  });
+  //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest requires: builtinSlot,
+  //@ ChunkedSeqCell, ChunkedSeqValue, chunkedVectorRest, emptyList, noBranch, restSeq
+  ChunkedSeqValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
+    const arr = self.arr$LKEY;
+    if (arr === undefined) return noBranch;
+    const vec = self.vec$LKEY, i = self.i$LKEY + 1;
+    if (!vec) return restSeq(self);
+    if (i > arr.length) return emptyList;
+    return i < arr.length ? new ChunkedSeqCell(arr, i, vec, self.base$LKEY) : chunkedVectorRest(self);
+  });
+  //@unit ChunkedSeqValue.next effect: ChunkedSeqValue when: next requires: builtinSlot,
+  //@ ChunkedSeqValue, noBranch, rest, seq
+  // The seq of its rest, as `next` takes it.
+  ChunkedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
+    if (self.arr$LKEY === undefined) return noBranch;
+    return seq(rest(self));
+  });
+  //@unit ChunkedSeqValue.seq effect: ChunkedSeqValue when: seq requires: builtinSlot,
+  //@ ChunkedSeqValue, noBranch
+  ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    const arr = self.arr$LKEY;
+    if (arr === undefined) return noBranch;
+    return self.i$LKEY < arr.length ? self : null;
+  });
+  //@unit PersistentVectorValue.seq effect: PersistentVectorValue when: seq requires: builtinSlot,
+  //@ kindHooks, noBranch, PersistentVectorValue
+  PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    const store = self.store$LKEY;
+    if (store === undefined) return noBranch;
+    return kindHooks.seqVector(self, store);
+  });
+  //@unit first.slots effect: ChunkedSeqValue, IndexedSeqValue when: first requires: first,
+  //@ noBranch, slotFirst
+  first = (operation => Object.defineProperty(function (value) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
+      const method = value.cljs$core$ISeq$_first$arity$1$LKEY;
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(first);
+  //@unit rest.slots effect: ChunkedSeqValue, IndexedSeqValue when: rest requires: noBranch, rest,
+  //@ slotFirst
+  rest = (operation => Object.defineProperty(function (value) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
+      const method = value.cljs$core$ISeq$_rest$arity$1$LKEY;
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(rest);
+  //@unit next.slots effect: ChunkedSeqValue, IndexedSeqValue when: next requires: next, noBranch,
+  //@ slotFirst
+  next = (operation => Object.defineProperty(function (value) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
+      const method = value.cljs$core$INext$_next$arity$1$LKEY;
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(next);
+  //@unit seq.slots effect: ChunkedSeqValue, IndexedSeqValue, PersistentVectorValue when: seq
+  //@ requires: noBranch, seq, slotFirst
+  seq = (operation => Object.defineProperty(function (value) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
+      const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY;
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(seq);
   //@unit contains requires: get, methodKeys, missing, protocolHooks, vectorStore
   function contains(value, key) {
     const method = protocolHooks.publicMethod?.(value, methodKeys[2], 2);
@@ -4766,8 +4971,8 @@
   };
   //@unit cons.equiv effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
   //@ listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
-  //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq, Eduction,
-  //@ ISequential, extendType, extendInstance when: structuralEqualPair requires: count,
+  //@ iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue, IndexedSeqValue, queueFromArray,
+  //@ LazySeq, Eduction, ISequential, extendType, extendInstance when: structuralEqualPair requires: count,
   //@ countedValue, equalPair, first, kindHooks, methodKeys, next, protocolHooks, seq, sequential
   // Sequential values: vectors, cells, views, queues and lazy seqs, and the
   // values of a program type that implements `ISequential`, which keep the
@@ -4792,9 +4997,9 @@
     return true;
   }
 
-  //@unit sequential requires: cells, holdsVector, lazyValues, queues, views
+  //@unit sequential requires: cells, holdsVector, isView, lazyValues, queues
   function sequential(value) {
-    return holdsVector(value) || cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
+    return holdsVector(value) || cells.has(value) || isView(value) || queues.has(value) || lazyValues.has(value);
   }
   //@unit comparedSequential requires: holdsVector, kindHooks
   // The sequential values that equality and hashing compare by their items:
@@ -4805,10 +5010,10 @@
   }
   //@unit cons.compared effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
   //@ listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
-  //@ iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue, queueFromArray, LazySeq when: comparedSequential
-  //@ requires: cells, kindHooks, lazyValues, queues, views
+  //@ iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue, IndexedSeqValue, queueFromArray,
+  //@ LazySeq when: comparedSequential requires: cells, isView, kindHooks, lazyValues, queues
   kindHooks.comparedSeq = value => cells.has(value) ? !["cycle", "iterate"].includes(cells.get(value).kind)
-    : views.has(value) || queues.has(value) || lazyValues.has(value);
+    : isView(value) || queues.has(value) || lazyValues.has(value);
 
   //@unit identityHashes
   const identityHashes = new WeakMap();
@@ -4932,12 +5137,12 @@
 
   //@unit makeVector.hash effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
-  //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue,
-  //@ queueFromArray, LazySeq when: hash requires: cells, constructorHashes, hashOrderedColl,
-  //@ holdsVector, kindHooks, lazyValues, publicCollectionSlots, queues
+  //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
+  //@ IndexedSeqValue, queueFromArray, LazySeq when: hash requires: cells, constructorHashes,
+  //@ hashOrderedColl, holdsVector, kindHooks, lazyValues, publicCollectionSlots, queues, viewOf
   // Sequential values (see `makeVector.equiv`).
   kindHooks.hashSequential = value => {
-    if (holdsVector(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value)) {
+    if (holdsVector(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cells.get(value)?.kind) || publicCollectionSlots.has(value) || viewOf(value)?.view$LKEY === "chunked") {
       const result = hashOrderedColl(value);
       constructorHashes.set(value, result);
       return result;
@@ -4958,11 +5163,11 @@
   function hashed(value, cached) { constructorHashes.set(value, cached); return value; }
 
   //@unit compilerFormBridge compile-time requires: atoms, cells, deferredValue, emptyList,
-  //@ EmptyListValue, generatedNames, holdsVector, ifnValues, jsObject, keyword, keywords,
+  //@ EmptyListValue, generatedNames, holdsVector, ifnValues, isView, jsObject, keyword, keywords,
   //@ lazyValues, listFromArray, mapFromArray, maps, mapTraversal, metadataValues, name,
-  //@ publicCollectionSlots, queueFromArray, queues, recordTypes, reifyValues, rePattern,
-  //@ setFromArray, sets, setTraversal, stamped, symbol, symbols, toArray, typeFields, uuid, uuids,
-  //@ vars, vectorFromArray, vectorItems, vectorNth, vectorStore, view, views, volatiles
+  //@ queueFromArray, queues, recordTypes, reifyValues, rePattern, setFromArray, sets, setTraversal,
+  //@ stamped, symbol, symbols, toArray, typeFields, uuid, uuids, vars, vectorFromArray,
+  //@ vectorItems, vectorNth, vectorStore, viewAt, viewOf, volatiles
   // Versioned in-process compiler bridge. Descriptors are private arrays,
   // never printed text or JSON. Only brands above authorize language values.
   function compilerFormBridge() {
@@ -5148,13 +5353,13 @@
               }
             }
             a = [tag === "js-array" ? "vector" : "map", null, null, items];
-          } else if (cells.has(v) || views.has(v) || lazyValues.has(v)) {
+          } else if (cells.has(v) || (stamped(v) && isView(v)) || lazyValues.has(v)) {
             tag = "list"; a = [];
             const seen = new WeakSet(); let current = v;
             while (true) {
               if (--remaining < 0) fail("sequence limit", path);
               if (current == null) break;
-              if (!cells.has(current) && !views.has(current) && !lazyValues.has(current)) fail("noncanonical sequence tail", path);
+              if (!cells.has(current) && !(stamped(current) && isView(current)) && !lazyValues.has(current)) fail("noncanonical sequence tail", path);
               if (seen.has(current)) fail("cyclic sequence", path); seen.add(current);
               // Lazy realization is intentionally executable but shares limits.
               // Work only with private payloads. User protocol objects are not
@@ -5170,15 +5375,15 @@
               // seq's node from its offset, as its `first` and `rest` read it,
               // then the vector's items after that node, each read within the
               // limit.
-              const chunked = publicCollectionSlots.get(current)?.vec, store = stamped(chunked ?? current) ? vectorStore(chunked ?? current) : undefined;
+              const slots = stamped(current) ? viewOf(current) : undefined, chunked = slots?.vec$LKEY || undefined;
+              const store = stamped(chunked ?? current) ? vectorStore(chunked ?? current) : undefined;
               if (store) {
-                const slots = chunked && publicCollectionSlots.get(current);
                 let first = true;
-                if (slots) for (let j = slots.off; j < slots.node.length; j++, first = false) {
+                if (chunked) for (let j = slots.i$LKEY; j < slots.arr$LKEY.length; j++, first = false) {
                   if (!first && --remaining < 0) fail("sequence limit", path);
-                  a.push(visit(slots.node[j], path + "[" + a.length + "]", depth + 1));
+                  a.push(visit(slots.arr$LKEY[j], path + "[" + a.length + "]", depth + 1));
                 }
-                for (let i = slots ? slots.i + slots.node.length : 0; i < store.cnt; i++, first = false) {
+                for (let i = chunked ? slots.base$LKEY + slots.arr$LKEY.length : 0; i < store.cnt; i++, first = false) {
                   if (!first && --remaining < 0) fail("sequence limit", path);
                   a.push(visit(vectorNth(store, i, null), path + "[" + a.length + "]", depth + 1));
                 }
@@ -5191,11 +5396,11 @@
                 try { head = cell.head; tail = cell.tail; } catch (_) { fail("sequence realization failure", path); }
                 a.push(visit(head, path + "[" + a.length + "]", depth + 1));
                 current = tail;
-              } else if (views.has(current)) {
-                const slice = views.get(current);
-                if (slice.offset >= slice.storage.length) break;
-                a.push(visit(slice.storage[slice.offset], path + "[" + a.length + "]", depth + 1));
-                current = slice.offset + 1 < slice.storage.length ? view(slice.Type, slice.storage, slice.offset + 1, slice.indexed, slice.kind, slice.tail) : slice.tail;
+              } else if (stamped(current) && isView(current)) {
+                const slice = viewOf(current);
+                if (slice.i$LKEY >= slice.arr$LKEY.length) break;
+                a.push(visit(slice.arr$LKEY[slice.i$LKEY], path + "[" + a.length + "]", depth + 1));
+                current = slice.i$LKEY + 1 < slice.arr$LKEY.length ? viewAt(slice, slice.i$LKEY + 1) : null;
               } else fail("noncanonical sequence tail", path);
             }
           } else {
@@ -5234,9 +5439,9 @@
       }});
   }
 
-  //@unit inspect requires: atoms, cells, first, holdsVector, isReduced, keywords, mapTraversal,
-  //@ next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids, vars,
-  //@ vectorItems, views, volatiles
+  //@unit inspect requires: atoms, cells, first, holdsVector, isReduced, isView, keywords,
+  //@ mapTraversal, next, nth, recordEntries, recordTypes, seq, sets, setTraversal, symbols, uuids,
+  //@ vars, vectorItems, volatiles
   // A value's shape for the reader (EDN data included) and the observation
   // harness, which alone registers inspect. Exposed storage remains frozen.
   // At compile time a vector is told by its stamp before its keyed kind
@@ -5255,7 +5460,7 @@
     const members = sets.get(value);
     if (members) return Object.freeze({kind: "set",
       items: Object.freeze(setTraversal(value).map(entry => entry.key)), count: members.length});
-    if (cells.has(value) || views.has(value)) {
+    if (cells.has(value) || /*@stamped*/isView(value)) {
       const items = [];
       for (let current = seq(value); current !== null; current = next(current)) items.push(first(current));
       return Object.freeze({kind: cells.get(value)?.kind === "list" ? "list" : "seq", items: Object.freeze(items)});
@@ -5438,10 +5643,10 @@
     metadataValues.set(value, metadata);
     deferredVarMetadata.delete(value);
   };
-  //@unit empty requires: cells, collectionWithMeta, emptyList, holdsVector, isEntryCell,
+  //@unit empty requires: cells, collectionWithMeta, emptyList, holdsVector, isEntryCell, isView,
   //@ lazyValues, makeMap, makeSet, mapKinds, maps, mapTypes, meta, methodKeys, preserveMeta,
   //@ protocolHooks, publicCollectionSlots, queueFromArray, queues, recordTypes, setKinds, sets,
-  //@ setType, sortedComparators, vector, views
+  //@ setType, sortedComparators, vector, viewOf
   function empty(value) {
     const method = value == null ? null : protocolHooks.publicMethod?.(value, methodKeys[15], 1);
     if (method) return method.call(value, value);
@@ -5452,8 +5657,8 @@
     if (sets.has(value)) return preserveMeta(value, makeSet(setType(setKinds.get(value)), Array.isArray(sets.get(value)) ? [] : {root: null, nil: null, length: 0}, setKinds.get(value), sortedComparators.get(value)));
     if (queues.has(value)) return preserveMeta(value, queueFromArray([]));
     if (cells.get(value)?.kind === "list" && cells.get(value).count === 0 && !publicCollectionSlots.has(value)) return value;
-    if (cells.has(value) || views.has(value) || lazyValues.has(value))
-      return cells.get(value)?.kind === "list" || views.get(value)?.kind === "queue" || lazyValues.has(value) ? collectionWithMeta(emptyList, meta(value)) : emptyList;
+    if (cells.has(value) || isView(value) || lazyValues.has(value))
+      return cells.get(value)?.kind === "list" || viewOf(value)?.view$LKEY === "queue" || lazyValues.has(value) ? collectionWithMeta(emptyList, meta(value)) : emptyList;
     return null;
   }
   //@unit peek requires: cells, first, holdsVector, methodKeys, protocolHooks,
@@ -5495,11 +5700,11 @@
   }
   //@unit rseq requires: holdsVector, IndexedSeqValue, maps, methodKeys, protocolHooks,
   //@ publicCollectionSlots, RSeqType, sortedComparators, toArray, treeMapSeqConstructor,
-  //@ vectorItems, view, views
+  //@ vectorItems, view, viewOf
   function rseq(value) {
     const method = protocolHooks.builtin?.(value, methodKeys[47], 1);
     if (method) return method.call(value, value);
-    if (!holdsVector(value) && views.get(value)?.kind !== "indexed" && !sortedComparators.has(value))
+    if (!holdsVector(value) && viewOf(value)?.view$LKEY !== "indexed" && !sortedComparators.has(value))
       throw new Error("No protocol method IReversible.-rseq defined for this value");
     // A vector's items copy leaf by leaf; one a public constructor built, or
     // whose seq a protocol implementation replaces, walks its seq, as before.
@@ -5893,23 +6098,23 @@
     if (mask && value?.[mask[0]]) return false;
     return coreName ? !!(protocol[nativeType(value)] || protocol._ || nativeMethods.get(coreName)?.get(nativeType(value)) || nativeMethods.get(coreName)?.get("_")) : false;
   }
-  //@unit countedValue requires: cells, chunkBuffers, chunks, holdsVector, isTransient, lazyValues,
-  //@ maps, queues, sets, views
+  //@unit countedValue requires: cells, chunkBuffers, chunks, holdsVector, isTransient, isView,
+  //@ lazyValues, maps, queues, sets, viewOf
   // A core protocol's native test, without the protocol objects (one per
   // protocol, here ICounted; see `builtinCoreImplementation`).
   function countedValue(value) {
     // A value is in one payload store: a cell or a lazy seq is in no other.
     const cell = cells.get(value);
     if (cell !== undefined) return cell.kind === "tree-seq" || cell.integer === true || cell.kind === "list";
-    return !lazyValues.has(value) && (isTransient(value) || chunkBuffers.has(value) || chunks.has(value) || holdsVector(value) || maps.has(value) || sets.has(value) || queues.has(value) || (views.has(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(views.get(value).kind)));
+    return !lazyValues.has(value) && (isTransient(value) || chunkBuffers.has(value) || chunks.has(value) || holdsVector(value) || maps.has(value) || sets.has(value) || queues.has(value) || (isView(value) && ["indexed", "array-map", "sorted-map", "chunked"].includes(viewOf(value).view$LKEY)));
   }
-  //@unit seqValue requires: cells, chunks, iteratorSeqs, lazyValues, queues, views
+  //@unit seqValue requires: cells, chunks, isView, iteratorSeqs, lazyValues, queues
   function seqValue(value) {
-    return cells.has(value) || lazyValues.has(value) || views.has(value) || chunks.get(value)?.integer === true || queues.has(value) || iteratorSeqs.has(value);
+    return cells.has(value) || lazyValues.has(value) || isView(value) || chunks.get(value)?.integer === true || queues.has(value) || iteratorSeqs.has(value);
   }
-  //@unit nextValue requires: cells, lazyValues, queues, views
+  //@unit nextValue requires: cells, isView, lazyValues, queues
   function nextValue(value) {
-    return cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value);
+    return cells.has(value) || isView(value) || queues.has(value) || lazyValues.has(value);
   }
   //@unit storesPredicate requires: canHoldField, payloads
   // Brand inventories are fixed. Build one private inventory per predicate,
@@ -5932,39 +6137,40 @@
     };
   }
   //@unit seqableValue requires: cells, iteratorSeqs, lazyValues, maps, queues, sets,
-  //@ storesPredicate, vectorCells, views
-  const seqableValue = storesPredicate(vectorCells, maps, sets, cells, views, queues, lazyValues, iteratorSeqs);
-  //@unit indexedValue requires: cells, chunks, holdsVector, transientState, views
+  //@ storesPredicate, vectorCells, viewCells
+  const seqableValue = storesPredicate(vectorCells, maps, sets, cells, viewCells, queues, lazyValues, iteratorSeqs);
+  //@unit indexedValue requires: cells, chunks, holdsVector, transientState, viewOf
   function indexedValue(value) {
     const transient = transientState(value);
     if (transient) return transient.kind === "vector";
-    return chunks.has(value) || cells.get(value)?.integer === true || holdsVector(value) || views.get(value)?.indexed === true;
+    return chunks.has(value) || cells.get(value)?.integer === true || holdsVector(value) || viewOf(value)?.indexed$LKEY === true;
   }
   //@unit cloneablePayload requires: cells, holdsVector, isEntryCell, maps, queues, recordTypes,
-  //@ sets, views
-  function cloneablePayload(value) { return (holdsVector(value) && !isEntryCell(value)) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cells.get(value)?.kind) || ["indexed", "reverse"].includes(views.get(value)?.kind); }
+  //@ sets, viewOf
+  function cloneablePayload(value) { return (holdsVector(value) && !isEntryCell(value)) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cells.get(value)?.kind) || ["indexed", "reverse"].includes(viewOf(value)?.view$LKEY); }
   //@unit lookupValue requires: holdsVector, isTransient, maps, sets
   const lookupValue = value => isTransient(value) || holdsVector(value) || maps.has(value) || sets.has(value);
   //@unit associativeValue requires: holdsVector, maps
   const associativeValue = value => holdsVector(value) || maps.has(value);
   //@unit collectionValue requires: cells, lazyValues, maps, queues, sets, storesPredicate,
-  //@ vectorCells, views
-  const collectionValue = storesPredicate(vectorCells, maps, sets, cells, views, queues, lazyValues);
+  //@ vectorCells, viewCells
+  const collectionValue = storesPredicate(vectorCells, maps, sets, cells, viewCells, queues, lazyValues);
   //@unit emptyableValue requires: collectionValue, recordTypes
   const emptyableValue = value => !recordTypes.has(value) && collectionValue(value);
   //@unit editableValue requires: holdsVector, isEntryCell, maps, recordTypes, sets,
   //@ sortedComparators, subvecSources
   const editableValue = value => holdsVector(value) && !isEntryCell(value) && !subvecSources.has(value) || maps.has(value) && !recordTypes.has(value) && !sortedComparators.has(value) || sets.has(value) && !sortedComparators.has(value);
-  //@unit reduceValue requires: cells, chunks, holdsVector, lazyValues, maps, recordTypes, views
-  const reduceValue = value => cells.get(value)?.kind !== "chunked-cons" && (chunks.has(value) && !chunks.get(value).integer || holdsVector(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || lazyValues.has(value) || (views.has(value) && views.get(value).kind !== "queue"));
+  //@unit reduceValue requires: cells, chunks, holdsVector, isView, lazyValues, maps, recordTypes,
+  //@ viewOf
+  const reduceValue = value => cells.get(value)?.kind !== "chunked-cons" && (chunks.has(value) && !chunks.get(value).integer || holdsVector(value) || (maps.has(value) && !recordTypes.has(value)) || cells.has(value) || lazyValues.has(value) || (isView(value) && viewOf(value).view$LKEY !== "queue"));
   //@unit kvReduceValue requires: holdsVector, isEntryCell, maps
   const kvReduceValue = value => holdsVector(value) && !isEntryCell(value) || maps.has(value);
   //@unit iterableValue requires: cells, collectionValue
   const iterableValue = value => !["cycle", "iterate", "repeat", "chunked-cons"].includes(cells.get(value)?.kind) && collectionValue(value);
   //@unit stackValue requires: cells, holdsVector, queues
   const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat", "chunked-cons"].includes(cells.get(value)?.kind) && (holdsVector(value) || cells.has(value) || queues.has(value));
-  //@unit chunkedSeqValue requires: cells, views
-  const chunkedSeqValue = value => { const kind = cells.get(value)?.kind; return kind === "range" || kind === "chunked-cons" || views.get(value)?.kind === "chunked"; };
+  //@unit chunkedSeqValue requires: cells, viewOf
+  const chunkedSeqValue = value => { const kind = cells.get(value)?.kind; return kind === "range" || kind === "chunked-cons" || viewOf(value)?.view$LKEY === "chunked"; };
   //@unit chunkValue requires: chunks
   const chunkValue = value => chunks.has(value);
   //@unit namedValue requires: keywords, multiFns, symbols
@@ -5992,28 +6198,28 @@
   const sortedValue = value => sortedComparators.has(value);
   //@unit findValue requires: holdsVector, maps, recordTypes
   const findValue = value => holdsVector(value) || (maps.has(value) && !recordTypes.has(value));
-  //@unit reversibleValue requires: holdsVector, sortedComparators, views
-  const reversibleValue = value => holdsVector(value) || views.get(value)?.kind === "indexed" || sortedComparators.has(value);
-  //@unit dropValue requires: cells, holdsVector, lazyValues, mapKinds, views
+  //@unit reversibleValue requires: holdsVector, sortedComparators, viewOf
+  const reversibleValue = value => holdsVector(value) || viewOf(value)?.view$LKEY === "indexed" || sortedComparators.has(value);
+  //@unit dropValue requires: cells, holdsVector, lazyValues, mapKinds, viewOf
   const dropValue = value => {
     // As `countedValue`, a cell or a lazy seq is in no other store.
     const cell = cells.get(value);
     if (cell !== undefined) return cell.integer === true || cell.kind === "repeat";
-    return !lazyValues.has(value) && (mapKinds.get(value) === "array-map" || holdsVector(value) || ["indexed", "chunked", "array-map"].includes(views.get(value)?.kind));
+    return !lazyValues.has(value) && (mapKinds.get(value) === "array-map" || holdsVector(value) || ["indexed", "chunked", "array-map"].includes(viewOf(value)?.view$LKEY));
   };
   //@unit metaValue requires: atoms, cells, lazyValues, maps, metaFunctions, queues, reifyValues,
-  //@ sets, storesPredicate, symbols, vars, vectorCells, views
-  const metaValue = storesPredicate(symbols, vectorCells, maps, sets, cells, views, queues, lazyValues, vars, atoms, metaFunctions, reifyValues);
+  //@ sets, storesPredicate, symbols, vars, vectorCells, viewCells
+  const metaValue = storesPredicate(symbols, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, vars, atoms, metaFunctions, reifyValues);
   //@unit withMetaValue requires: cells, lazyValues, maps, metaFunctions, queues, reifyValues, sets,
-  //@ storesPredicate, symbols, vars, vectorCells, views
-  const withMetaValue = storesPredicate(symbols, vectorCells, maps, sets, cells, views, queues, lazyValues, vars, metaFunctions, reifyValues);
+  //@ storesPredicate, symbols, vars, vectorCells, viewCells
+  const withMetaValue = storesPredicate(symbols, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, vars, metaFunctions, reifyValues);
   //@unit instValue
   const instValue = value => value instanceof Date;
   //@unit uuidImplementation requires: uuids
   const uuidImplementation = value => uuids.has(value);
-  //@unit aseqValue requires: cells, publicCollectionSlots, views
+  //@unit aseqValue requires: cells, publicCollectionSlots, viewOf
   function aseqValue(value) {
-    const cell = cells.get(value), kind = views.get(value)?.kind;
+    const cell = cells.get(value), kind = viewOf(value)?.view$LKEY;
     return publicCollectionSlots.has(value) && cell?.kind === "list" || kind === "chunked" || cell?.kind === "cons" || (cell?.kind === "list" && cell.count > 0) || cell?.kind === "chunked-cons" || kind === "indexed" || kind === "hash-map";
   }
   //@unit listValue requires: cells
@@ -6561,10 +6767,10 @@
     return result;
   }
   //@unit collectionWithMeta requires: canonicalVectorRoots, cells, constructorHashes, holdsVector,
-  //@ ifnValues, isEntryCell, kindHooks, lazyValues, mapKinds, maps, meta, metadataValues,
+  //@ ifnValues, isEntryCell, isView, kindHooks, lazyValues, mapKinds, maps, meta, metadataValues,
   //@ metaFunctions, methodKeys, protocolHooks, protocolImplementations, publicCollectionSlots,
   //@ queues, recordTypes, reifyValues, setKinds, sets, sortedComparators, subvecSources, symbols,
-  //@ treeRoots, treeSetMaps, vars, vectorCellCopy, vectorCells, views
+  //@ treeRoots, treeSetMaps, vars, vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
@@ -6572,7 +6778,7 @@
     const method = protocolHooks.builtin?.(value, methodKeys[66], 2);
     if (method) return method.call(value, value, metadata);
     if (!recordTypes.has(value) && !isEntryCell(value) &&
-        [vectorCells, maps, sets, cells, views, queues, lazyValues].some(store => store.has(value)) && meta(value) === metadata) return value;
+        [vectorCells, maps, sets, cells, viewCells, queues, lazyValues].some(store => store.has(value)) && meta(value) === metadata) return value;
     let result;
     if (isEntryCell(value)) return collectionWithMeta(kindHooks.entryVector(value), metadata);
     const kind = cells.get(value)?.kind;
@@ -6582,17 +6788,17 @@
     else if (kind === "chunked-cons") result = kindHooks.withMetaChunkedCons(value, metadata);
     else if (kind === "repeat") result = kindHooks.withMetaRepeat(value, metadata);
     else if (kind === "iterate") result = kindHooks.withMetaIterate(value);
-    else if (publicCollectionSlots.get(value)?.vec) result = kindHooks.withMetaChunkedSeq(value, metadata);
+    else if (viewOf(value)?.vec$LKEY) result = kindHooks.withMetaChunkedSeq(value, metadata);
     else if (kind === "cycle") result = kindHooks.withMetaCycle(value);
     else if (recordTypes.has(value)) result = kindHooks.withMetaRecord(value);
     else {
-      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbols, maps, mapKinds, sets, setKinds, sortedComparators, cells, views, queues, lazyValues, vars, subvecSources];
+      const stores = [treeRoots, treeSetMaps, canonicalVectorRoots, publicCollectionSlots, constructorHashes, symbols, maps, mapKinds, sets, setKinds, sortedComparators, cells, viewCells, queues, lazyValues, vars, subvecSources];
       const vector = holdsVector(value);
       if (!vector && !stores.some(store => store.has(value)) && !reifyValues.has(value)) throw new Error("value does not support metadata");
-      // A vector's copy is built by its class, with its store.
-      result = vector ? vectorCellCopy(value) : Object.create(Object.getPrototypeOf(value));
+      // A vector's or a view's copy is built by its class, with its fields.
+      result = vector ? vectorCellCopy(value) : isView(value) ? viewAt(value, value.i$LKEY) : Object.create(Object.getPrototypeOf(value));
       // A copy of a reify value has no brand of its type: `reifyValues` holds it.
-      for (const store of [...stores, protocolImplementations]) if (store.has(value)) store.set(result, store.get(value));
+      for (const store of [...stores, protocolImplementations]) if (store !== viewCells && store.has(value)) store.set(result, store.get(value));
       if (reifyValues.has(value)) reifyValues.add(result);
       if (ifnValues.has(value)) ifnValues.set(result, ifnValues.get(value));
       if (ifnValues.has(value) || reifyValues.has(value) || recordTypes.has(value)) Object.defineProperties(result, Object.getOwnPropertyDescriptors(value));
@@ -6636,11 +6842,9 @@
     return iterateNode(c.fn, c.previous, state.value, state.realized, state.following);
   };
   //@unit ChunkedSeqValue.meta effect: ChunkedSeqValue when: collectionWithMeta requires: ChunkedSeqValue,
-  //@ kindHooks, publicCollectionSlots
-  kindHooks.withMetaChunkedSeq = (value, metadata) => {
-    const c = publicCollectionSlots.get(value);
-    return ChunkedSeqValue(c.vec, c.node, c.i, c.off, metadata, null);
-  };
+  //@ kindHooks
+  kindHooks.withMetaChunkedSeq = (value, metadata) =>
+    ChunkedSeqValue(value.vec$LKEY, value.arr$LKEY, value.base$LKEY, value.i$LKEY, metadata, null);
   //@unit cycleNode.meta effect: cycleNode when: collectionWithMeta requires: cells, cycleNode,
   //@ kindHooks
   kindHooks.withMetaCycle = value => {
@@ -7174,9 +7378,15 @@
     const values = toArray(args);
     return new Eduction(comp(...values.slice(0, -1)), values.length ? values.at(-1) : null);
   });
-  //@unit fnRest requires: IndexedSeqValue, view
+  //@unit fnRest requires: IndexedSeqCell
+  // The rest arguments from `start`: an indexed seq over one fresh array of
+  // them, neither frozen nor stamped (docs/value-layout.md, section 2). An
+  // array from 0 is the call's own (a direct call's `fnRest([b, c], 0)`, see
+  // src/call_shapes.rs), which the seq takes as it is; `arguments` and a
+  // later start are copied.
   function fnRest(args, start) {
-    return args.length > start ? view(IndexedSeqValue, Object.freeze(Array.prototype.slice.call(args, start)), 0, true) : null;
+    if (args.length <= start) return null;
+    return new IndexedSeqCell(start === 0 && Array.isArray(args) ? args : Array.prototype.slice.call(args, start), 0, true, "indexed");
   }
   //@unit fnApplyTo requires: first, next, rest, seq
   function fnApplyTo(delegate, fixed, args) {
@@ -7260,8 +7470,8 @@
   }
   //@unit protocolStores requires: atoms, cells, delays, keywords, lazyValues, maps, metaFunctions,
   //@ multiFns, queues, reducedValues, sets, symbols, transientCells, transients, vars, vectorCells,
-  //@ views, volatiles
-  const protocolStores = [multiFns, transients, transientCells, keywords, symbols, vectorCells, maps, sets, cells, views, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
+  //@ viewCells, volatiles
+  const protocolStores = [multiFns, transients, transientCells, keywords, symbols, vectorCells, maps, sets, cells, viewCells, queues, lazyValues, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
   //@unit ownedProtocolValue requires: protocolStores, storesPredicate
   const ownedProtocolValue = storesPredicate(...protocolStores);
   //@unit demandKey requires: demandMethod
@@ -7308,7 +7518,7 @@
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
     return dispatch ?? cell.natives?.get(nativeType(value))?.get(arity) ?? cell.natives?.get("_")?.get(arity);
   }
-  //@unit payloadStores requires: cells, lazyValues, maps, queues, sets, vectorCells, views
+  //@unit payloadStores requires: cells, lazyValues, maps, queues, sets, vectorCells, viewCells
   // `payloadStore`'s stores, numbered from 1, and the store each kind
   // (`payloads`) names, else 0: each entry its own, so that no index a host
   // gives `Array.prototype` is read (the Sol review of light-cljs-998).
@@ -7319,7 +7529,7 @@
       for (let kind = 1; kind < 31; kind++) if (bits >> kind & 1) byKind[kind] = i + 1;
     });
     return {stores, byKind};
-  })([views, cells, vectorCells, maps, lazyValues, sets, queues]);
+  })([viewCells, cells, vectorCells, maps, lazyValues, sets, queues]);
   //@unit payloadStore requires: payloads, payloadStores
   // Which store of the runtime's collections and seqs holds a value, by a
   // number from 1 to 7, else 0. These are brand checks, which read no
@@ -8077,7 +8287,7 @@
     return (protocolHooks.implements?.(methodKeys[4], value) ?? chunkedSeqValue(value)) ? chunkedNextProtocol(value) : seq(chunkRest(value));
   }
   //@unit ownedChunkFirst requires: arrayChunk, cells, chunks, forceRangeChunk,
-  //@ publicCollectionSlots, views
+  //@ publicCollectionSlots, viewOf
   function ownedChunkFirst(value) {
     const cell = cells.get(value);
     if (cell?.kind === "chunked-cons") return cell.chunk;
@@ -8089,10 +8299,10 @@
       }
       return forceRangeChunk(cell).chunk;
     }
-    const slice = views.get(value);
-    if (publicCollectionSlots.has(value)) return arrayChunk(slice.storage, slice.offset);
-    const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
-    return arrayChunk(slice.storage, slice.offset, end);
+    const slice = viewOf(value);
+    if (slice.view$LKEY === "chunked" || publicCollectionSlots.has(value)) return arrayChunk(slice.arr$LKEY, slice.i$LKEY);
+    const end = Math.min(slice.arr$LKEY.length, slice.i$LKEY + 32 - slice.i$LKEY % 32);
+    return arrayChunk(slice.arr$LKEY, slice.i$LKEY, end);
   }
   //@unit rangeChunks
   const rangeChunks = new WeakMap();
@@ -8110,26 +8320,26 @@
     }
     return rangeChunks.get(cell);
   }
-  //@unit ownedChunkRest requires: cells, emptyList, forceRangeChunk, kindHooks,
-  //@ publicCollectionSlots, rangeNode, view, views
+  //@unit ownedChunkRest requires: cells, emptyList, forceRangeChunk, kindHooks, rangeNode, viewAt,
+  //@ viewOf
   function ownedChunkRest(value) {
     const cell = cells.get(value);
     if (cell?.kind === "chunked-cons") return cell.more ?? emptyList;
     if (cell?.kind === "range") return cell.integer ? (cell.count <= 32 ? emptyList : rangeNode(cell.head + 32 * cell.step, cell.end, cell.step, true)) : forceRangeChunk(cell).tail ?? emptyList;
-    const slice = views.get(value), slots = publicCollectionSlots.get(value);
-    if (slots?.vec) return kindHooks.chunkedVectorRest(slots);
-    const end = Math.min(slice.storage.length, slice.offset + 32 - slice.offset % 32);
-    return end < slice.storage.length ? view(slice.Type, slice.storage, end, slice.indexed, slice.kind, slice.tail) : slice.tail ?? emptyList;
+    const slice = viewOf(value);
+    if (slice.vec$LKEY) return kindHooks.chunkedVectorRest(slice);
+    const end = Math.min(slice.arr$LKEY.length, slice.i$LKEY + 32 - slice.i$LKEY % 32);
+    return end < slice.arr$LKEY.length ? viewAt(slice, end) : emptyList;
   }
   //@unit ChunkedSeqValue.chunkRest effect: ChunkedSeqValue when: ownedChunkRest requires: chunkedVectorRest,
   //@ kindHooks
-  // A view with the `vec` slot is a ChunkedSeq its public constructor built.
+  // A chunked seq with a vector (`ChunkedSeqCell`) continues past its leaf.
   kindHooks.chunkedVectorRest = chunkedVectorRest;
-  //@unit chunkedVectorRest requires: ChunkedSeqValue, count, emptyList, vectorChunk
-  // The chunks after a public ChunkedSeq's node.
-  function chunkedVectorRest(slots) {
-    const end = slots.i + slots.node.length;
-    return end < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectorChunk(slots.vec, end), end, 0, null, null) : emptyList;
+  //@unit chunkedVectorRest requires: ChunkedSeqCell, count, emptyList, vectorChunk
+  // The chunks after a chunked seq's leaf.
+  function chunkedVectorRest(slice) {
+    const vec = slice.vec$LKEY, end = slice.base$LKEY + slice.arr$LKEY.length;
+    return end < count(vec) ? new ChunkedSeqCell(vectorChunk(vec, end), 0, vec, end) : emptyList;
   }
   //@unit chunkStore requires: chunks, protocolHooks
   // A runtime chunk's store where no protocol implementation exists, which
@@ -8182,36 +8392,36 @@
   }
   //@unit chunkCons requires: ChunkedCons, count
   function chunkCons(chunk, tail) { return count(chunk) === 0 ? tail : ChunkedCons(chunk, tail, null, null); }
-  //@unit dropOwned requires: cells, holdsVector, kindHooks, maps, publicCollectionSlots, rangeNode,
-  //@ repeat, seq, view, views
+  //@unit dropOwned requires: cells, holdsVector, kindHooks, maps, rangeNode, repeat, seq, viewAt,
+  //@ viewOf
   function dropOwned(value, n) {
     if (value == null) return null;
     if (maps.has(value)) return dropOwned(seq(value), n);
     const cell = cells.get(value);
     if (cell?.kind === "repeat") return cell.remaining === -1 ? value : repeat(cell.remaining - n, cell.head);
     if (cell?.kind === "range") return n > 0 ? n < cell.count ? rangeNode(cell.head + cell.step * n, cell.end, cell.step, true) : null : value;
-    const slice = views.get(value), slots = publicCollectionSlots.get(value);
-    if (slots?.vec) return kindHooks.dropChunkedSeq(slots, n);
+    const slice = viewOf(value);
+    if (slice?.vec$LKEY) return kindHooks.dropChunkedSeq(slice, n);
     if (holdsVector(value)) return kindHooks.dropVector(value, n);
-    const offset = slice.offset + n;
-    return offset < slice.storage.length ? view(slice.Type, slice.storage, offset, slice.indexed, slice.kind) : null;
+    const offset = slice.i$LKEY + n;
+    return offset < slice.arr$LKEY.length ? viewAt(slice, offset) : null;
   }
-  //@unit ChunkedSeqValue.drop effect: ChunkedSeqValue when: dropOwned requires: ChunkedSeqValue,
+  //@unit ChunkedSeqValue.drop effect: ChunkedSeqValue when: dropOwned requires: ChunkedSeqCell,
   //@ count, kindHooks, vectorChunk
-  // A view with the `vec` slot is a ChunkedSeq its public constructor built.
-  kindHooks.dropChunkedSeq = (slots, n) => {
-    const offset = slots.off + n;
-    if (offset < slots.node.length) return ChunkedSeqValue(slots.vec, slots.node, slots.i, offset, null, null);
-    const i = slots.i + offset, newOffset = i % 32;
-    return i < count(slots.vec) ? ChunkedSeqValue(slots.vec, vectorChunk(slots.vec, i), i - newOffset, newOffset, null, null) : null;
+  // A chunked seq with a vector (`ChunkedSeqCell`) drops into later leaves.
+  kindHooks.dropChunkedSeq = (slice, n) => {
+    const vec = slice.vec$LKEY, offset = slice.i$LKEY + n;
+    if (offset < slice.arr$LKEY.length) return new ChunkedSeqCell(slice.arr$LKEY, offset, vec, slice.base$LKEY);
+    const i = slice.base$LKEY + offset, newOffset = i % 32;
+    return i < count(vec) ? new ChunkedSeqCell(vectorChunk(vec, i), newOffset, vec, i - newOffset) : null;
   };
-  //@unit makeVector.drop effect: makeVector, mapEntry when: dropOwned requires: ChunkedSeqValue,
-  //@ IndexedSeqValue, kindHooks, vectorChunk, vectorStore, view
+  //@unit makeVector.drop effect: makeVector, mapEntry when: dropOwned requires: ChunkedSeqCell,
+  //@ IndexedSeqCell, kindHooks, vectorChunk, vectorStore
   // As `makeVector.seq`, from index `n`.
   kindHooks.dropVector = (value, n) => {
     const store = vectorStore(value);
-    return n >= store.cnt ? null : store.cnt <= 32 ? view(IndexedSeqValue, vectorChunk(value, 0), n, true)
-      : ChunkedSeqValue(value, vectorChunk(value, n), n & -32, n & 31, null, null);
+    return n >= store.cnt ? null : store.cnt <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), n, true, "indexed")
+      : new ChunkedSeqCell(vectorChunk(value, n), n & 31, value, n & -32);
   };
   //@unit numberArgument
   function numberArgument(value) {
@@ -8538,13 +8748,12 @@
     count;
     constructor(head, end, step, integer, count) { super(head, end, step, integer); this.count = count; }
   };
-  //@unit IndexedSeqValue requires: metadataValues, views
+  //@unit IndexedSeqValue requires: IndexedSeqCell, metadataValues
   function IndexedSeqValue(arr, i, metadata) {
-    const value = Object.create(IndexedSeqValue.prototype);
+    // Positional construction retains the supplied public array and
+    // observes subsequent host-array writes.
+    const value = new IndexedSeqCell(arr, i, true, "indexed");
     metadataValues.set(value, metadata);
-    // Ordinary views snapshot inputs; positional construction retains
-    // the supplied public array and observes subsequent host-array writes.
-    views.set(value, {storage: arr, offset: i, indexed: true, kind: "indexed", tail: null, Type: IndexedSeqValue});
     return value;
   }
   //@unit primSeq requires: IndexedSeqValue, invalidArity
@@ -9021,8 +9230,8 @@
   //@ installMethods, iterateNode, LazySeq, ListValue, makeIFn, makeMap, makeReify, makeSet,
   //@ recordMethods, makeVar, makeVector, mapEntry, mapProjection, queueFromArray, rangeNode, reify,
   //@ RepeatValue, reSeq, symbol, SymbolValue, treeMapConstructor, treeMapSeqConstructor,
-  //@ treeSetConstructor, view when: printWriterImpl requires: kindHooks, meta, printsMeta,
-  //@ printWriter, write
+  //@ treeSetConstructor, view, ChunkedSeqValue when: printWriterImpl requires: kindHooks, meta,
+  //@ printsMeta, printWriter, write
   // Only values of these kinds, and of types with protocol implementations,
   // have metadata to print.
   kindHooks.printMetadata = (value, writer, options) => {
@@ -9074,9 +9283,10 @@
   });
   //@unit cons.print effect: ChunkedCons, compilerFormBridge, Cons, cons, listFromArray, cycleNode,
   //@ emptyList, EmptyListValue, IndexedSeqValue, iterateNode, LazySeq, ListValue, mapProjection,
-  //@ queueFromArray, rangeNode, RepeatValue, reSeq, treeMapSeqConstructor, view when: printWriterImpl
-  //@ requires: cells, kindHooks, lazyValues, printKind, printSequential, printWriter, queues, views
-  kindHooks.print = printKind(kindHooks.print, value => cells.has(value) || views.has(value) || queues.has(value) || lazyValues.has(value),
+  //@ queueFromArray, rangeNode, RepeatValue, reSeq, treeMapSeqConstructor, view, ChunkedSeqValue
+  //@ when: printWriterImpl requires: cells, isView, kindHooks, lazyValues, printKind,
+  //@ printSequential, printWriter, queues
+  kindHooks.print = printKind(kindHooks.print, value => cells.has(value) || isView(value) || queues.has(value) || lazyValues.has(value),
     (value, writer, options) => printSequential(writer, printWriter, queues.has(value) ? "#queue [" : "(", " ", queues.has(value) ? "]" : ")", options, value));
   //@unit makeMap.print effect: makeMap, recordMethods, treeMapConstructor when: printWriterImpl
   //@ requires: kindHooks, maps, mapTraversal, printKind, printMapEntries
@@ -9088,7 +9298,8 @@
   //@unit printSequential.seq effect: ChunkedCons, compilerFormBridge, Cons, cons, listFromArray,
   //@ cycleNode, emptyList, EmptyListValue, IndexedSeqValue, installMethods, iterateNode, LazySeq,
   //@ ListValue, mapProjection, prSequentialWriter, queueFromArray, rangeNode, RepeatValue, reSeq,
-  //@ treeMapSeqConstructor, view when: printSequential requires: first, next, printHooks, seq
+  //@ treeMapSeqConstructor, view, ChunkedSeqValue when: printSequential requires: first, next,
+  //@ printHooks, seq
   // What `printSequential` walks other than arrays: the seqs these build, and
   // what the public entry and protocol implementations pass.
   printHooks.seq = seq;
@@ -9177,8 +9388,8 @@
   function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? kindHooks.strCollection(value) : String(value)).join(""); }
   //@unit str.collections effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
-  //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, IndexedSeqValue,
-  //@ queueFromArray, LazySeq, makeMap, treeMapConstructor, recordMethods, makeSet,
+  //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
+  //@ IndexedSeqValue, queueFromArray, LazySeq, makeMap, treeMapConstructor, recordMethods, makeSet,
   //@ treeSetConstructor when: str requires: kindHooks, print
   kindHooks.strCollection = value => print(value, true);
   //@unit displayStr
@@ -9468,9 +9679,9 @@
   //@unit prWriter effect requires: coreMethod, printableValue, printWriterImpl
   const prWriter = coreMethod("IPrintWithWriter/-pr-writer", [3], (value, writer, options) => printWriterImpl(value, writer, options, true), printableValue);
   //@unit clone effect requires: canonicalVectorRoots, cells, cloneablePayload, constructorHashes,
-  //@ coreMethod, holdsVector, IntegerRangeValue, mapKinds, meta, metadataValues, protocolStores,
-  //@ rangeChunks, RangeValue, setKinds, sortedComparators, subvecSources, transientCells,
-  //@ treeRoots, treeSetMaps, vectorCellCopy, vectorCells
+  //@ coreMethod, holdsVector, IntegerRangeValue, isView, mapKinds, meta, metadataValues,
+  //@ protocolStores, rangeChunks, RangeValue, setKinds, sortedComparators, subvecSources,
+  //@ transientCells, treeRoots, treeSetMaps, vectorCellCopy, vectorCells, viewAt, viewCells
   const clone = coreMethod("ICloneable/-clone", [1], value => {
     if (cells.get(value)?.kind === "range") {
       const c = cells.get(value), state = rangeChunks.get(c);
@@ -9478,8 +9689,8 @@
         : RangeValue(meta(value), c.head, c.end, c.step, state?.chunk, state?.tail, constructorHashes.get(value));
     }
     if (!cloneablePayload(value)) throw new Error("No protocol method ICloneable.-clone defined for this value");
-    const result = holdsVector(value) ? vectorCellCopy(value) : Object.create(Object.getPrototypeOf(value));
-    for (const store of [...protocolStores, treeRoots, treeSetMaps, canonicalVectorRoots, constructorHashes, metadataValues, mapKinds, setKinds, sortedComparators, subvecSources]) if (store !== vectorCells && store !== transientCells && store.has(value)) store.set(result, store.get(value));
+    const result = holdsVector(value) ? vectorCellCopy(value) : isView(value) ? viewAt(value, value.i$LKEY) : Object.create(Object.getPrototypeOf(value));
+    for (const store of [...protocolStores, treeRoots, treeSetMaps, canonicalVectorRoots, constructorHashes, metadataValues, mapKinds, setKinds, sortedComparators, subvecSources]) if (store !== vectorCells && store !== transientCells && store !== viewCells && store.has(value)) store.set(result, store.get(value));
     return result;
   }, cloneablePayload);
   //@unit indexedNth requires: isTransient, missing, nth, transientNth
@@ -9694,17 +9905,13 @@
   }, meta);
   Object.defineProperty(SubvecValue.prototype, "v", {get() { return subvecSources.get(this); }});
   //@unit ChunkedSeqValue.fields effect: ChunkedSeqValue when: resetMeta, upstreamMembers requires: ChunkedSeqValue,
-  //@ count, kindHooks, meta, missing, publicFields, slotField, views
+  //@ meta, publicFields, viewOf
+  // A chunked seq's fields are its own (`ChunkedSeqCell`): upstream's `i` and
+  // `off` are its `base` and `i`.
   publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "meta", "__hash"], (value, field) => {
-    const slot = slotField(value, field, count);
-    if (slot !== missing) return slot;
-    const v = views.get(value);
-    return field === "node" ? v.storage : field === "off" ? v.offset : field === "i" ? 0 : kindHooks.vectorOfItems(v.storage);
+    const v = viewOf(value);
+    return field === "vec" ? v.vec$LKEY : field === "node" ? v.arr$LKEY : field === "i" ? v.base$LKEY : v.i$LKEY;
   }, meta);
-  //@unit makeVector.chunkedSeq effect: makeVector when: resetMeta, upstreamMembers requires: kindHooks,
-  //@ vectorFromArray
-  // A chunked seq its public constructor did not build walks a vector's items.
-  kindHooks.vectorOfItems = vectorFromArray;
   //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, seqIndexes,
   //@ seqMethods
   seqIndexes(ChunkedSeqValue);
@@ -9748,10 +9955,10 @@
   // Only promotion and the public constructor build sets of other kinds.
   kindHooks.hashSetMap = mapFromArray;
   //@unit IndexedSeqValue.fields effect: IndexedSeqValue when: resetMeta, upstreamMembers requires: IndexedSeqValue,
-  //@ meta, publicFields, views
+  //@ meta, publicFields, viewOf
   publicFields(IndexedSeqValue, ["arr", "i", "meta"], (value, field) => {
-    const v = views.get(value);
-    return field === "arr" ? v.storage : v.offset;
+    const v = viewOf(value);
+    return field === "arr" ? v.arr$LKEY : v.i$LKEY;
   }, meta);
   //@unit IndexedSeqValue.members effect: IndexedSeqValue requires: IndexedSeqValue, seqIndexes,
   //@ seqMethods
@@ -10306,10 +10513,9 @@
   const compilerForms = compilerFormBridge();
   readerJsLiterals.array = compilerForms.jsArray; readerJsLiterals.object = compilerForms.jsObject;
   //@unit reader requires: cells, conj, contains, coreCells, first, freshKeyword, gensym, hashMap,
-  //@ hashSet, holdsVector, inspect, into, isRecord, keywords, listFromArray, mapFromArray, maps,
-  //@ merge, meta, next, nsName, PersistentQueueValue, prStr, readerJsLiterals, rePattern, seq,
-  //@ setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, views,
-  //@ withMeta
+  //@ hashSet, holdsVector, inspect, into, isRecord, isView, keywords, listFromArray, mapFromArray,
+  //@ maps, merge, meta, next, nsName, PersistentQueueValue, prStr, readerJsLiterals, rePattern,
+  //@ seq, setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
   const reader = (rt => {
   const inspect = rt.inspect;
@@ -10882,7 +11088,7 @@
     readerRegisterTagParser: register, readerDeregisterTagParser: deregister,
     readerRegisterDefaultTagParser: registerDefault, readerDeregisterDefaultTagParser: deregisterDefault,
     readerWithInput: withInput, readerCurrentInput: () => coreCells.readerCurrentInputValue, readerClose: close};
-  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : holdsVector(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
+  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : holdsVector(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || isView(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
 
   //@unit codeReader compile-time requires: reader, readerCoreNames
   // Code reading qualifies symbols by `*ns*`: reflection, unlike EDN data.

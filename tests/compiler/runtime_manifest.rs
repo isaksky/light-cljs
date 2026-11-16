@@ -17,10 +17,10 @@ fn manifest() -> &'static RuntimeManifest<'static> {
     RuntimeManifest::embedded()
 }
 
-/// A vector test of a value that may be a host object at compile time, and
+/// A kind test of a value that may be a host object at compile time, and
 /// the compile-time runtime's text in its place (build.rs `STAMPED_MARKER`).
-const STAMPED_MARKER: &str = "/*@stamped*/holdsVector(value)";
-const STAMPED_TEST: &str = "stamped(value) && holdsVector(value)";
+const STAMPED_MARKER: &str = "/*@stamped*/";
+const STAMPED_TEST: &str = "stamped(value) && ";
 
 #[test]
 fn every_unit_declares_exactly_the_runtime_bindings_it_references() {
@@ -1156,8 +1156,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // entries (light-cljs-375), the seq type of hash maps (light-cljs-983),
     // and the slot read of a keyword key's array-map search (light-cljs-989),
     // and the six keyed slots of persistent vectors with the six slot-first
-    // wrappers reading them (light-cljs-1009).
-    assert_eq!(checked, 338);
+    // wrappers reading them (light-cljs-1009), and the ten keyed slots of
+    // indexed and chunked seqs and a vector's `-seq` with the four
+    // slot-first wrappers of `first`, `rest`, `next` and `seq`, less the
+    // removed hook of a chunked seq's `vec` field (light-cljs-1010).
+    assert_eq!(checked, 351);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1524,9 +1527,6 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
         Kind::Units(&["PersistentArrayMapValue"]),
     ),
     ("iteratorVector", Kind::Stores(&["vectors"])),
-    // A chunked seq that its public constructor did not build is a vector's
-    // of more than 32 items, which `makeVector` builds: a map entry has two.
-    ("vectorOfItems", Kind::Units(&["makeVector"])),
     ("dropChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
     ("dropVector", Kind::Stores(&["vectors"])),
     ("chunkedVectorRest", Kind::Units(&["ChunkedSeqValue"])),
@@ -2135,6 +2135,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- storeProtocol",
             "first <- first.branches",
             "first <- first.protocol",
+            "first <- first.slots",
             "gensymCounter <- gensym",
             "get <- get.branches",
             "get <- get.own",
@@ -2150,6 +2151,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "mapEntry <- mapEntry.vector",
             "next <- next.branches",
             "next <- next.protocol",
+            "next <- next.slots",
             "nth <- nth.branches",
             "nth <- nth.protocol",
             "nth <- nth.slots",
@@ -2175,8 +2177,10 @@ fn units_assigning_a_binding_share_its_unit() {
             "reduce <- reduce.protocol",
             "rest <- rest.branches",
             "rest <- rest.protocol",
+            "rest <- rest.slots",
             "seq <- seq.branches",
             "seq <- seq.protocol",
+            "seq <- seq.slots",
             "setDeclaration <- declarationTransaction",
             "setDeclaration <- extendType",
             "setDeclaration <- protocol",

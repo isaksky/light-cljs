@@ -754,8 +754,9 @@ about known local/global arity mismatches at compile time, while the light-cljs
 strict analyzer does not. Multiple fixed methods throw `Error("Invalid arity: N")`
 for unmatched counts. When a variadic method is present it supplies the default
 branch, including underfilled calls: missing fixed parameters receive `undefined`,
-and an absent rest receives nil. Direct rest arguments are immutable indexed
-sequences, not JavaScript arrays; `apply` can retain its existing sequence tail.
+and an absent rest receives nil. Direct rest arguments are indexed sequences
+over one fresh array of the arguments (`IndexedSeq` class values, neither
+frozen nor copied twice, light-cljs-1010), not JavaScript arrays; `apply` can retain its existing sequence tail.
 Prefix lengths are unrestricted. Upstream's `apply` helper has a separate
 20-argument limit when it selects the bounded fixed-call path of a variadic
 function; direct calls and the variadic sequence entry support larger prefixes
@@ -1167,10 +1168,11 @@ copy the tail, or the trie's path to one leaf; list prepend, first and tail are
 O(1), and list construction/indexing are O(n).
 
 `seq` of an empty value is nil; nonempty lists can reuse their identity, and
-vectors/strings produce views with frozen private offset/storage descriptors.
+vectors, arrays and strings produce views: class values whose storage, offset
+and kind are their own keyed fields (light-cljs-1010, docs/value-layout.md).
 A vector of more than 32 items gives upstream's ChunkedSeq over its trie's
-leaves and tail, which a seq shares frozen. Cons cells, views, lazy seqs and
-chunks keep their payloads in class-private fields, as vectors do, rather than
+leaves and tail, which a seq shares frozen. Cons cells, lazy seqs and chunks
+keep their payloads in class-private fields, as vectors do, rather than
 in `WeakMap` entries (light-cljs-259): each step of a lazy pipeline builds new
 values, and their entries, which the collector traces as ephemerons, cost more
 than the step. A lazy seq or chunked cons built with nil metadata stores none;
@@ -1232,7 +1234,8 @@ JavaScript gave a value where it did before; `extend-type` of a type with a kind
 or of `Object`, and `specify!` of a value with one, empty the tables. The views
 of vectors and arrays (`IndexedSeq`, `ChunkedSeq`) are a third kind with a
 branch of `first` only, and take their number only where a program keeps the
-wrappers. At `Advanced` the wrappers and branches are effects of the kinds'
+wrappers; since light-cljs-1010 their keyed `first`, `rest`, `next` and `seq`
+slots (and an `IndexedSeq`'s `count`) are what those operations call first. At `Advanced` the wrappers and branches are effects of the kinds'
 types that wait for their operations, so a program that builds no lazy seq or
 cell keeps none of them. The same pellet made a step of a seq cheaper: a
 range's cell is a class instance instead of a frozen literal with a getter

@@ -1601,9 +1601,14 @@ console.log('public constructor fields preserve canonical payload brands');
   assert.equal(c.count(chunk), 32);
   assert.equal(c.meta(lazy), null);
   assert.equal(lazy.meta, null);
-  for (const value of [lazy, chunked, chunk, c.seq([1, 2, 3]), c.cons(0, lazy), c.list(1, 2)]) {
+  // A seq over an array is a class value (light-cljs-1010): its own keyed
+  // fields copied onto its prototype make one by deliberate reflection
+  // (docs/value-layout.md, section 5), so only its bare prototype is checked.
+  const classValue = c.seq([1, 2, 3]);
+  for (const value of [lazy, chunked, chunk, classValue, c.cons(0, lazy), c.list(1, 2)]) {
     const forged = Object.create(Object.getPrototypeOf(value));
-    for (const candidate of [forged, Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))]) {
+    const copied = Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value));
+    for (const candidate of value === classValue ? [forged] : [forged, copied]) {
       assert.equal(c.isSeq(candidate), false);
       assert.equal(c.isChunkedSeq(candidate), false);
       assert.equal(runtime.inspect(candidate), null);
@@ -1671,10 +1676,11 @@ console.log('seq payloads are private fields that host objects cannot copy');
     assert.equal(f.meta(undefinedSlots), undefined);
     assert.equal(f.Repeat(null, 2, 1, null, null).__hash, null);
     for (const [name, value] of Object.entries(built)) {
-      // A transient vector is a class value whose state is its own keyed
-      // field (light-cljs-1009): a copy of its fields onto its prototype is
-      // deliberate reflection, and one (docs/value-layout.md, section 5).
-      const copies = name === 'transientVector' ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+      // A transient vector (light-cljs-1009) and a seq over an array
+      // (light-cljs-1010) are class values whose data are their own keyed
+      // fields: a copy of those onto their prototype is deliberate
+      // reflection, and one (docs/value-layout.md, section 5).
+      const copies = name === 'transientVector' || name === 'view' ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
       for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
         for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
         assert.equal(fresh.inspect(candidate), null);
@@ -1737,9 +1743,9 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
   assert.equal(f.isMap(built.arrayMap), true);
   assert.equal(f.isSet(built.conj), true);
   for (const [name, value] of Object.entries(built)) {
-    // As above: a copy of a transient vector's own fields onto its prototype
-    // is one (light-cljs-1009).
-    const copies = name === 'transientVector' ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
+    // As above: a copy of a transient vector's or a seq's own fields onto its
+    // prototype is one (light-cljs-1009, light-cljs-1010).
+    const copies = name === 'transientVector' || name === 'view' ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
     for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
       for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isChunkedSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
       assert.equal(fresh.inspect(candidate), null);
@@ -2056,16 +2062,23 @@ console.log('kind tables stay private to the runtime');
   const r = runtime, core = r.core;
   const values = {
     vector: r.vector(1, 2), entry: core.first(core.hashMap(1, 2)), subvec: core.subvec(r.vector(1, 2, 3), 1),
-    transientVector: core.transient(r.vector(1))
+    transientVector: core.transient(r.vector(1)),
+    // The seqs over an array or a string, and rest arguments (light-cljs-1010).
+    indexedSeq: core.seq([1, 2]), stringSeq: core.next(core.seq('ab')),
+    chunkedSeq: core.next(core.seq(core.vec(Array.from({length: 40}, (_, i) => i)))),
+    restArguments: r.fnRest([1, 2, 3], 1)
   };
+  const view = ['arr$LKEY', 'i$LKEY', 'indexed$LKEY', 'view$LKEY'];
+  const fields = {transientVector: ['state$LKEY'], indexedSeq: view, stringSeq: view, restArguments: view,
+    chunkedSeq: [...view, 'vec$LKEY', 'base$LKEY']};
   for (const [name, value] of Object.entries(values)) {
-    const field = name === 'transientVector' ? 'state$LKEY' : 'store$LKEY';
-    assert.deepEqual(Object.keys(value), [field], name);
-    assert.deepEqual(Object.entries(value).map(([key]) => key), [field], name);
-    assert.deepEqual(Object.keys({...value}), [field], name);
+    const field = fields[name] ?? ['store$LKEY'];
+    assert.deepEqual(Object.keys(value), field, name);
+    assert.deepEqual(Object.entries(value).map(([key]) => key), field, name);
+    assert.deepEqual(Object.keys({...value}), field, name);
     const listed = [];
     for (const key in value) if (Object.hasOwn(value, key)) listed.push(key);
-    assert.deepEqual(listed, [field], name);
+    assert.deepEqual(listed, field, name);
     assert.equal(JSON.stringify(value), '{}', name);
     assert.equal(JSON.stringify([value]), '[{}]', name);
     // The fields carry the key: none is an upstream name a host could read
@@ -2076,6 +2089,17 @@ console.log('kind tables stay private to the runtime');
   marked.note = 'kept';
   assert.equal(JSON.stringify(marked), '{"note":"kept"}');
   assert.equal(core.count(marked), 1);
+  const markedSeq = core.seq([1]);
+  markedSeq.note = 'kept';
+  assert.equal(JSON.stringify(markedSeq), '{"note":"kept"}');
+  assert.equal(core.first(markedSeq), 1);
+  // Rest arguments are neither frozen nor copied twice: an array a call
+  // built for them from 0 is the seq's own.
+  const own = [1, 2], rest = r.fnRest(own, 0);
+  assert.equal(Object.isFrozen(own), false);
+  assert.equal(core.count(rest), 2);
+  assert.equal(core.first(core.next(rest)), 2);
+  assert.equal(r.fnRest(own, 2), null);
 }
 console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is unchanged');
 
