@@ -47,6 +47,9 @@
     // the boot task fills for the runtime's own keys (`sharedProfileBoot`)
     // and every task fills for the keys it meets.
     get protocolSlots() { return sharedTaskOwn(this, "protocolSlots", new Map()); },
+    // Whether the slot-first wrappers run (`slotFirst`): until the task's
+    // `setDeclarationDemand` turns them off.
+    slotFirst: true,
     // The hashes the runtime computes for engine sequences and maps
     // (`sharedFormHashes`): the task's own cache, as the V8 profile's
     // `constructorHashes` WeakMap is, keyed by the form.
@@ -212,6 +215,21 @@
   // `storeProtocol` could not fill its per-store memo (`stores`,
   // light-cljs-988) afterwards; here the native test answers every call.
   const storeNativeProtocols = sharedWords([]);
+  //@unit builtinSlots
+  // The runtime's own slot methods, a WeakSet in the V8 profile, which never
+  // publishes: membership over the array of the methods `builtinSlot`
+  // marks while the runtime loads, which the boot's walk seals.
+  const builtinSlots = {members: [], has(method) { return this.members.includes(method); }};
+  function builtinSlot(method) { builtinSlots.members.push(method); return method; }
+  //@unit slotFirst
+  // The V8 profile's switch, whose object the boot seals, so that no
+  // assignment reaches it: `on` reads the task's cells
+  // (`sharedTaskDefaults.slotFirst`) and `off` writes them, so that
+  // `setDeclarationDemand` turns the wrappers off in its own task only.
+  const slotFirst = {
+    get on() { const cells = globalThis.__lightSharedCells; return cells.slotFirst; },
+    off() { const cells = globalThis.__lightSharedCells; cells.slotFirst = false; }
+  };
   //@unit sharedMethodKeys
   // The resolved keys `coreMethod` makes for the core protocol dispatchers,
   // which only their dispatchers hold: `sharedProfileBoot` fills their memos
@@ -681,6 +699,18 @@
   // (light-cljs-666). `MapEntryType.prototype` is not its prototype, as an
   // engine keyword has no `Keyword` prototype.
   mapEntry = (key, value) => __rt.cljFirst(__rt.formArrayMap(__rt.formVector(key, value)));
+  //@unit vectorCellCopy requires: sharedFormKind, sharedFormOf, sharedVectorStore, VectorCell
+  // The V8 profile's, and for an engine vector, which `with-meta` of nil
+  // wraps (`preserveMeta`, light-cljs-699), a vector cell holding the
+  // form's store (`sharedVectorStore`), as the vectors' view held it
+  // before vectors were classes.
+  function vectorCellCopy(value) {
+    if (sharedFormKind(value) === "vector") return new VectorCell(sharedVectorStore(sharedFormOf(value)));
+    const Type = function () {};
+    Type.prototype = Object.getPrototypeOf(value);
+    return Reflect.construct(VectorCellCopy, [value.store$LKEY], Type);
+  }
+  function VectorCellCopy(store) { this.store$LKEY = store; /*@brand*/ }
   //@unit sharedTreeEntry requires: EntryCell
   // publicTree attaches fields to its nodes, so its allocation boundary must
   // return a runtime-owned entry, of the V8 profile's class. Keep the

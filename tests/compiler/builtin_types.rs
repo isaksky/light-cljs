@@ -1281,6 +1281,29 @@ fn vector_fast_paths_honor_direct_protocol_slots() {
     );
 }
 
+/// A vector whose own protocol slots a program sets to nil or false answers
+/// every slot-first operation (`nth`, `count`, `peek`, `conj`, `assoc`,
+/// `get`) by the operation's older path, whose lookups take either for no
+/// method, as they did before slot-first dispatch (light-cljs-1009).
+#[test]
+fn vector_slot_first_preserves_missing_slot_fallbacks() {
+    for missing in ["nil", "false"] {
+        every_level(
+            &format!(
+                "(let [v [1 2]]
+                   (doseq [slot [\"cljs$core$IIndexed$_nth$arity$2$LKEY\" \"cljs$core$IIndexed$_nth$arity$3$LKEY\"
+                                 \"cljs$core$ICounted$_count$arity$1$LKEY\" \"cljs$core$IStack$_peek$arity$1$LKEY\"
+                                 \"cljs$core$ICollection$_conj$arity$2$LKEY\" \"cljs$core$IAssociative$_assoc$arity$3$LKEY\"
+                                 \"cljs$core$ILookup$_lookup$arity$2$LKEY\" \"cljs$core$ILookup$_lookup$arity$3$LKEY\"]]
+                     (aset v slot {missing}))
+                   (pr-str [(nth v 0) (nth v 5 :none) (count v) (peek v) (conj v 3) (assoc v 0 :a)
+                            (get v 1) (get v 7 :none)]))"
+            ),
+            "[1 :none 2 2 [1 2 3] [:a 2] 2 :none]",
+        );
+    }
+}
+
 /// A vector reading a caller's array reads each item as it is printed or
 /// iterated (light-cljs-234): printing within `*print-length*` stops before
 /// an item that throws, and an iterator reads the tail as it is when it gets

@@ -94,6 +94,39 @@ fn complete_collection_fixture_preserves_typed_values_and_printing_in_both_engin
         "Node"
     );
 }
+/// The compile-time runtime's `inspect` tells a vector by its compile-time
+/// stamp before it reads the keyed kind (docs/value-layout.md, section 4;
+/// light-cljs-1009): inspecting a host Proxy runs none of its traps, and a
+/// vector, which the runtime's constructor stamped, still inspects and
+/// prints.
+#[test]
+fn compile_time_inspect_tests_the_stamp_before_the_keyed_kind() {
+    let probe = "(rt => { const reads = []; \
+        const proxy = new Proxy({}, {get(target, key, receiver) { reads.push(String(key)); return Reflect.get(target, key, receiver); }}); \
+        const shape = rt.inspect(proxy); \
+        const vector = rt.vectorFromArray([1, 2]); \
+        return JSON.stringify([shape, reads, rt.inspect(vector), rt.core.prStr(vector)]); })";
+    let expected = r#"[null,[],{"kind":"vector","items":[1,2]},"[1 2]"]"#;
+    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+    let observation = evaluator.evaluate_js(&format!("({probe})(rt)")).unwrap();
+    assert_eq!(evaluator.string(observation).unwrap(), expected, "QuickJS");
+    let script = format!(
+        "const rt = {}; console.log(({probe})(rt));",
+        light_cljs::evaluator::RUNTIME_SOURCE
+    );
+    let out = Command::new("node").args(["-e", &script]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap().trim(),
+        expected,
+        "Node"
+    );
+}
+
 #[test]
 fn units_share_brands_and_functions_but_sessions_reject_foreign_ids() {
     let a = Evaluator::new(EvaluatorOptions::default()).unwrap();

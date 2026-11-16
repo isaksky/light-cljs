@@ -1512,9 +1512,15 @@ pub(crate) const RUNTIME_KEY: &str = "$LKEY";
 /// The property holding a protocol method's implementation of `arity`
 /// (receiver included) on an instance: `protocolSlot` in `src/js_runtime.js`,
 /// whose munging is [`crate::analyzer::munge_js_member`]. It ends in
-/// [`RUNTIME_KEY`].
+/// [`RUNTIME_KEY`], except the functions' invoke convention
+/// (`cljs$core$IFn$_invoke$arity$N`), which is not keyed.
 pub(crate) fn protocol_slot(key: &str, arity: usize) -> String {
-    protocol_slot_stem(key, arity) + RUNTIME_KEY
+    let stem = protocol_slot_stem(key, arity);
+    if arity != 0 && stem.starts_with("cljs$core$IFn$_invoke$arity$") {
+        stem
+    } else {
+        stem + RUNTIME_KEY
+    }
 }
 
 /// [`protocol_slot`] without the key: what a text that names the slot holds
@@ -1584,6 +1590,12 @@ mod tests {
         );
         assert_eq!(protocol_slot("my.ns/P", 0), "my$ns$P$$LKEY");
         assert_eq!(protocol_slot("ISeq", 0), "cljs$core$ISeq$$LKEY");
+        // The functions' invoke convention is not keyed; the IFn marker is.
+        assert_eq!(
+            protocol_slot("IFn/-invoke", 2),
+            "cljs$core$IFn$_invoke$arity$2"
+        );
+        assert_eq!(protocol_slot("IFn", 0), "cljs$core$IFn$$LKEY");
         assert_eq!(
             super::protocol_slot_stem("ISeq/-first", 1),
             "cljs$core$ISeq$_first$arity$1"

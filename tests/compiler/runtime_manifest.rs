@@ -17,6 +17,11 @@ fn manifest() -> &'static RuntimeManifest<'static> {
     RuntimeManifest::embedded()
 }
 
+/// A vector test of a value that may be a host object at compile time, and
+/// the compile-time runtime's text in its place (build.rs `STAMPED_MARKER`).
+const STAMPED_MARKER: &str = "/*@stamped*/holdsVector(value)";
+const STAMPED_TEST: &str = "stamped(value) && holdsVector(value)";
+
 #[test]
 fn every_unit_declares_exactly_the_runtime_bindings_it_references() {
     let manifest = manifest();
@@ -325,14 +330,21 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
     // embedded runtime lacks, read through the task's cells in the shared
     // profile; a line restores to the V8 text by the inverse rewrite. A
     // class constructor's compile-time stamp is no hook line: it restores to
-    // the brand marker it replaces.
+    // the brand marker it replaces, and a vector test's stamp test to its
+    // marker.
     let runtime_lines = RUNTIME.lines().collect::<std::collections::HashSet<_>>();
     let hook_lines = RUNTIME_SOURCE
         .lines()
-        .filter(|line| !runtime_lines.contains(line) && !line.contains("stamp(this);"))
+        .filter(|line| {
+            !runtime_lines.contains(line)
+                && !line.contains("stamp(this);")
+                && !line.contains(STAMPED_TEST)
+        })
         .collect::<std::collections::HashSet<_>>();
     let restore = |line: &str| {
-        let mut line = line.replace("stamp(this);", "/*@brand*/");
+        let mut line = line
+            .replace("stamp(this);", "/*@brand*/")
+            .replace(STAMPED_TEST, STAMPED_MARKER);
         for name in per_task {
             line = line.replace(&format!("{cells}{name}"), name);
         }
@@ -544,15 +556,19 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
         );
     }
     // ... and with each runtime class constructor's brand marker as the
-    // compile-time stamp (docs/value-layout.md, section 4).
+    // compile-time stamp (docs/value-layout.md, section 4), and each marked
+    // vector test (`inspect`) testing the stamp first.
     assert!(RUNTIME.contains("/*@brand*/") && !RUNTIME.contains("stamp(this);"));
     assert!(!RUNTIME_SOURCE.contains("/*@brand*/"));
+    assert!(RUNTIME.contains(STAMPED_MARKER) && !RUNTIME.contains(STAMPED_TEST));
+    assert!(!RUNTIME_SOURCE.contains(STAMPED_MARKER));
     assert_eq!(
         RUNTIME_SOURCE
             .split_inclusive('\n')
             .filter(|line| !hook(line))
             .collect::<String>()
-            .replace("stamp(this);", "/*@brand*/"),
+            .replace("stamp(this);", "/*@brand*/")
+            .replace(STAMPED_TEST, STAMPED_MARKER),
         RUNTIME
     );
     assert!(!RUNTIME.contains("//@"));

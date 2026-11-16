@@ -300,7 +300,10 @@
     const name = arity === 0 ? remainder : remainder.slice(0, separator);
     const method = remainder.slice(separator + 1);
     const prefix = mungeMember(namespace).replaceAll(".", "$") + "$" + mungeMember(name) + "$";
-    const slot = (arity === 0 ? prefix : prefix + (method === "/" ? "_SLASH_" : mungeMember(method)) + "$arity$" + arity) + "$LKEY";
+    const stem = arity === 0 ? prefix : prefix + (method === "/" ? "_SLASH_" : mungeMember(method)) + "$arity$" + arity;
+    // The functions' invoke convention is not keyed (docs/value-layout.md,
+    // section 1), as `installMethods` writes it and the analyzer reads it.
+    const slot = arity !== 0 && stem.startsWith("cljs$core$IFn$_invoke$arity$") ? stem : stem + "$LKEY";
     slots.set(arity, slot); return slot;
   }
   //@unit methodKeys
@@ -3426,9 +3429,9 @@
     const store = vectorStore(coll), entry = isEntryCell(coll);
     return indexIn(vectorCount(coll), i => entry && i !== 0 && i !== 1 ? outOfBounds() : vectorNth(store, i, missing), value, start, reverse);
   }
-  //@unit vectorPrototype requires: holdsVector, hostHooks, invalidArity, isEntryCell, itemIterator,
-  //@ missing, objectEquiv, outOfBounds, printHooks, protocolHooks, vectorCount, vectorIndexOf,
-  //@ vectorNth, vectorStorage, vectorStore
+  //@unit vectorPrototype requires: holdsVector, hostHooks, invalidArity, itemIterator, missing,
+  //@ objectEquiv, outOfBounds, printHooks, protocolHooks, vectorCount, vectorIndexOf, vectorNth,
+  //@ vectorStorage, vectorStore
   const vectorPrototype = Object.freeze({
     equiv(other) { return objectEquiv(this, other); },
     // JSON of a class value: its own properties but its keyed field, as
@@ -4173,10 +4176,12 @@
   }, "name", {value: operation.name}))(get);
 
   //@unit slotFirst
-  // Turns the slot-first wrappers off where a compiler session demands
-  // declarations (`setDeclarationDemand`): there the operations' older
-  // layers demand each protocol before they read a slot.
-  const slotFirst = {on: true};
+  // Whether the slot-first wrappers run: `off` where a compiler session
+  // demands declarations (`setDeclarationDemand`), as there the operations'
+  // older layers demand each protocol before they read a slot. A method, not
+  // an assignment, so that the shared-heap profile, which seals this object,
+  // keeps the switch on the task's cells.
+  const slotFirst = {on: true, off() { slotFirst.on = false; }};
   //@unit builtinSlots
   // The runtime's own slot methods (`PersistentVectorValue.nth` and the
   // rest), which `builtinSlot` marks: the protocol lookups of the
@@ -4254,16 +4259,17 @@
   // Slot-first dispatch (docs/value-layout.md, section 3): an operation
   // given a value of a converted runtime class, which its keyed kind tells,
   // calls the value's keyed slot before any layer of its own; any other
-  // value, and a converted value whose slot is gone, takes the operation as
-  // before. Each wrapper is the operation's outermost, so it follows the
+  // value, and a converted value whose slot is gone or holds nil or false
+  // (which the older layers' lookups take for no method), takes the
+  // operation as before. Each wrapper is the operation's outermost, so it follows the
   // operation's other wrappers here. Program types keep their path until
   // their recognition moves to the keyed kind (light-cljs-1013).
   //@unit nth.slots effect: PersistentVectorValue when: nth requires: noBranch, nth, slotFirst
   nth = (operation => Object.defineProperty(function (value, index, notFound) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && typeof index === "number") {
       const arity = arguments.length;
-      if (arity === 2) { const method = value.cljs$core$IIndexed$_nth$arity$2$LKEY; if (method !== undefined) { const result = method.call(value, value, index); if (result !== noBranch) return result; } }
-      else if (arity === 3) { const method = value.cljs$core$IIndexed$_nth$arity$3$LKEY; if (method !== undefined) { const result = method.call(value, value, index, notFound); if (result !== noBranch) return result; } }
+      if (arity === 2) { const method = value.cljs$core$IIndexed$_nth$arity$2$LKEY; if (method) { const result = method.call(value, value, index); if (result !== noBranch) return result; } }
+      else if (arity === 3) { const method = value.cljs$core$IIndexed$_nth$arity$3$LKEY; if (method) { const result = method.call(value, value, index, notFound); if (result !== noBranch) return result; } }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(nth);
@@ -4271,7 +4277,7 @@
   count = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
-      if (method !== undefined) { const result = method.call(value, value); if (result !== noBranch) return result; }
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(count);
@@ -4279,7 +4285,7 @@
   peek = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
       const method = value.cljs$core$IStack$_peek$arity$1$LKEY;
-      if (method !== undefined) { const result = method.call(value, value); if (result !== noBranch) return result; }
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(peek);
@@ -4287,7 +4293,7 @@
   conj = (operation => Object.defineProperty(function (coll, item) {
     if (slotFirst.on && coll != null && coll.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
       const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
-      if (method !== undefined) { const result = method.call(coll, coll, item); if (result !== noBranch) return result; }
+      if (method) { const result = method.call(coll, coll, item); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(conj);
@@ -4295,7 +4301,7 @@
   assoc = (operation => Object.defineProperty(function (value, key, item) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
       const method = value.cljs$core$IAssociative$_assoc$arity$3$LKEY;
-      if (method !== undefined) { const result = method.call(value, value, key, item); if (result !== noBranch) return result; }
+      if (method) { const result = method.call(value, value, key, item); if (result !== noBranch) return result; }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(assoc);
@@ -4303,8 +4309,8 @@
   get = (operation => Object.defineProperty(function (value, key, notFound) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
       const arity = arguments.length;
-      if (arity === 2) { const method = value.cljs$core$ILookup$_lookup$arity$2$LKEY; if (method !== undefined) { const result = method.call(value, value, key); if (result !== noBranch) return result; } }
-      else if (arity === 3) { const method = value.cljs$core$ILookup$_lookup$arity$3$LKEY; if (method !== undefined) { const result = method.call(value, value, key, notFound); if (result !== noBranch) return result; } }
+      if (arity === 2) { const method = value.cljs$core$ILookup$_lookup$arity$2$LKEY; if (method) { const result = method.call(value, value, key); if (result !== noBranch) return result; } }
+      else if (arity === 3) { const method = value.cljs$core$ILookup$_lookup$arity$3$LKEY; if (method) { const result = method.call(value, value, key, notFound); if (result !== noBranch) return result; } }
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(get);
@@ -5215,12 +5221,14 @@
   //@ vectorItems, views, volatiles
   // A value's shape for the reader (EDN data included) and the observation
   // harness, which alone registers inspect. Exposed storage remains frozen.
+  // At compile time a vector is told by its stamp before its keyed kind
+  // (`/*@stamped*/`, build.rs), so a host value's getters never run.
   function inspect(value) {
     if (isReduced(value) || uuids.has(value) || vars.has(value) || atoms.has(value) || volatiles.has(value)) return Object.freeze({kind: "opaque"});
     const named = keywords.get(value) || symbols.get(value);
     if (named) return Object.freeze({kind: keywords.has(value) ? "keyword" : "symbol",
       namespace: named.namespace, name: named.name, spelling: named.spelling});
-    if (holdsVector(value)) return Object.freeze({kind: "vector", items: Object.freeze(vectorItems(value))});
+    if (/*@stamped*/holdsVector(value)) return Object.freeze({kind: "vector", items: Object.freeze(vectorItems(value))});
     const entries = recordTypes.has(value)
       ? recordEntries(value, recordTypes.get(value)).map(pair => ({key: nth(pair, 0), value: nth(pair, 1)}))
       : mapTraversal(value);
@@ -5790,7 +5798,7 @@
   function setDeclarationDemand(demand) {
     // A session that demands declarations reads no slot before its demand
     // (`slotFirst`).
-    slotFirst.on = false;
+    slotFirst.off();
     const methodProtocols = new Map();
     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
     demandMethod = (key, arity, value) => {

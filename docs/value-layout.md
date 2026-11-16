@@ -78,7 +78,11 @@ while the migration is under way:
   `/*@brand*/`, which build.rs turns into `stamp(this);` in the compile-time
   runtime only; the compiler form bridge tests `stamped` before it reads a
   value's kind, so rejecting a macro result still reads no property of a
-  host value. The Pants profile's `stamped` also accepts engine vector forms.
+  host value, and so does `inspect`, whose vector test carries
+  `/*@stamped*/`, which build.rs turns into `stamped(value) &&` there. The
+  printer is not changed: printing a host value reads its protocol markers
+  and masks before any kind test, as it did before this pellet. The Pants
+  profile's `stamped` also accepts engine vector forms.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
@@ -550,8 +554,10 @@ with a per-load brand:
   regression for the macro host), a `WeakSet` add where the host states
   `lightCljsWeakMapStores` (QuickJS, where private fields cost more than
   entries, light-cljs-292);
-- the bridge, `inspect` and the compile-time printer test `stamped(value)`
-  first, which reads no property, and only then the keyed kind.
+- the bridge and `inspect` test `stamped(value)` first, which reads no
+  property, and only then the keyed kind. (The compile-time printer, which
+  this list also named, reads a host value's protocol markers and masks
+  before it classifies it, so testing the stamp there would guard nothing.)
 
 **The one emitter.** Program types already have the switch: `TypeBrands`
 (src/emitter.rs). Release and dev emission use `TypeBrands::Unread`, no

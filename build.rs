@@ -510,13 +510,26 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         runtime.contains(BRAND_MARKER),
         "no runtime class carries {BRAND_MARKER}"
     );
-    runtime.replace(BRAND_MARKER, BRAND_STAMP)
+    // A marked vector test of a value that may be a host object (`inspect`)
+    // tests that stamp first, which reads no property.
+    assert!(
+        runtime.contains(STAMPED_MARKER),
+        "no vector test carries {STAMPED_MARKER}"
+    );
+    runtime
+        .replace(BRAND_MARKER, BRAND_STAMP)
+        .replace(STAMPED_MARKER, STAMPED_TEST)
 }
 
 /// The marker that ends each runtime class constructor, and what the
 /// compile-time runtime has in its place ([`compiler_hooks`]).
 const BRAND_MARKER: &str = "/*@brand*/";
 const BRAND_STAMP: &str = "stamp(this);";
+/// The marker of a vector test whose value may be a host object at compile
+/// time, and the compile-time runtime's test in its place: the stamp first,
+/// so that the keyed kind is read only from the runtime's own values.
+const STAMPED_MARKER: &str = "/*@stamped*/holdsVector(value)";
+const STAMPED_TEST: &str = "stamped(value) && holdsVector(value)";
 
 /// The bindings of the runtime that functions assign after boot, which the
 /// shared-heap profile keeps per task on the task's cells

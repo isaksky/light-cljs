@@ -147,7 +147,9 @@ fn shared_profile_boots_and_publishes_with_zero_rejected_paths() {
 /// A task's cells (`sharedTaskCells` in the profile) own the state the
 /// runtime assigns per task, so an assignment lands on the task's object
 /// where an inherited property of the sealed hub would throw: the evaluator
-/// services, the gensym counter and names, and a temporary print setting.
+/// services, the gensym counter and names, a temporary print setting, and
+/// the slot-first switch that installing a declaration demand turns off in
+/// that task only (light-cljs-1009).
 #[test]
 fn shared_profile_task_cells_are_writable() {
     let rt = Runtime::new();
@@ -160,14 +162,17 @@ fn shared_profile_task_cells_are_writable() {
              const a = core.name(core.gensym()), b = core.name(core.gensym()); \
              const before = core.prStr('a'); \
              cells.printReadably = false; const plain = core.prStr('a'); cells.printReadably = true; \
+             const slotFirst = cells.slotFirst; rt.setDeclarationDemand(null); \
+             const demanded = [cells.slotFirst, core.sharedTaskCells().slotFirst, core.nth(rt.vectorFromArray([1, 2]), 1)].join(' '); \
              return [cells.macroexpandServices.macroexpand === expand, a !== b, cells.gensymCounter, \
-               before, plain, core.prStr('a'), Object.isFrozen(core), typeof core.sharedTaskCells().gensymCounter].join(' ');"
+               before, plain, core.prStr('a'), Object.isFrozen(core), typeof core.sharedTaskCells().gensymCounter, \
+               slotFirst, demanded].join(' ');"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "true true 2 \"a\" a \"a\" true number"
+        "true true 2 \"a\" a \"a\" true number true false true 2"
     );
 }
 

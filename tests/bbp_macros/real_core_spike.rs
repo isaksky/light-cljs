@@ -10,6 +10,12 @@ use light_cljs::runtime_manifest::{RootUse, RuntimeManifest};
 /// `returned`.
 fn assemble(roots: &[&str], swaps: &[(&str, &str)], returned: &str) -> String {
     let m = RuntimeManifest::embedded();
+    for (name, _) in swaps {
+        assert!(
+            m.unit_named(name).is_some(),
+            "the swap {name} names no unit"
+        );
+    }
     let roots = roots
         .iter()
         .map(|n| (m.unit_of(n).unwrap(), RootUse::Call))
@@ -51,12 +57,10 @@ fn describe(e: PublishError) -> String {
 /// runtime's own text.
 const SWAPS: &[(&str, &str)] = &[
     (
-        "vectors",
-        r#"  const vectors = {
-    has: value => __rt.formKind(value) === "vector",
-    get: value => __rt.formKind(value) === "vector" ? {cnt: __rt.formCount(value)} : undefined,
-    set() { throw new TypeError("shared profile: vectors.set"); }
-  };"#,
+        "vectorStore",
+        r#"  function vectorStore(value) {
+    return __rt.formKind(value) === "vector" ? {cnt: __rt.formCount(value)} : undefined;
+  }"#,
     ),
     (
         "cells",
