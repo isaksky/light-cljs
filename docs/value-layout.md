@@ -412,6 +412,30 @@ as light-cljs-1009 did for vectors before light-cljs-1026.
   a program (item 23) is now ignored by the older lookups, as a vector's is
   since light-cljs-1028, so its `nth` walks its seq where it threw.
 
+What light-cljs-1033 changed: `seq`'s slot-first wrapper sends the empty
+list to the operation, as before light-cljs-1030 gave it slots. Every walk
+ends there (a `rest` at the end gives the empty list, and `next` takes its
+`seq`), and its slot was a fifth class at the slot read and call that each
+step takes: once a program also walked lazy seqs (a vector's chunked seq, a
+lazy seq, a chunked cons and the vector itself are the other four), they
+went megamorphic, and lazy-walk was 10% and seq-walk-vec 18% slower timed
+as a pair. The operation's protocol lookup finds a program's `-seq` of
+`EmptyList`, so `extend-type` answers as before; `seq` of the empty list
+costs the operation's path (about 27 ns against 11 through its slot, 36
+before light-cljs-1030). The other wrappers keep the empty list's slots, as
+no walk ends on them.
+
+- **The wrappers' size.** V8's mid tier (Maglev) inlines a function of at
+  most 100 bytes of bytecode, and every step of a walk calls these
+  wrappers. The `seq` wrapper was 90 bytes; the empty-list test made it
+  102, and seq-walk-vec alone was then 19% slower (the shape of the test
+  did not matter, only the size). The wrapper takes the empty list and
+  `noBranch` as parameters of the function that makes it, whose reads need
+  no check for an uninitialized `const`, and is 94 bytes. An edit to a
+  slot-first wrapper should keep it under 100 (`node
+  --trace-turbo-inlining` prints each candidate's bytecode size), until
+  light-cljs-1016 calls the slots from the call sites.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

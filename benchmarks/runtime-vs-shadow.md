@@ -1667,3 +1667,79 @@ light-cljs and esbuild bundle with React, before and after:
 | TodoMVC | 473,022 to 478,146 (+5,124) | 144,153 to 145,058 (+905) | 124,430 to 125,393 (+963) |
 
 shadow-cljs's whole release files are 101,065 and 137,126 bytes gzip.
+
+## 2026-11-16: the empty list off `seq`'s slot path (light-cljs-1033)
+
+**What.** After light-cljs-1030 the empty list has a kind and slots, so
+`seq`'s slot-first wrapper called its slot at the end of every walk (a
+`rest` at the end gives the empty list, and `next` takes its `seq`). V8's
+inline-cache log showed it as a fifth class at the wrapper's slot read and
+call, beside a vector, its chunked seq, a lazy seq and a chunked cons:
+once a process had walked a vector and a lazy seq, both went megamorphic,
+and every step of every later walk paid. The wrapper now sends the empty
+list to the operation, as before light-cljs-1030. Its first form made the
+wrapper's bytecode 102 bytes, over the 100 that V8's mid tier (Maglev)
+inlines, and seq-walk-vec alone was then 20% slower (round 2 in the raw
+results, `33314f17`); the empty list and `noBranch` are now parameters of
+the wrapper's maker, which need no check for an uninitialized `const`, and
+the wrapper is 94 bytes. docs/value-layout.md has the notes.
+
+Binaries in research/shadow-credibility/bin: `light-cljs-518edac7` (before
+light-cljs-1030, the pellet's reference), `light-cljs-765a92e1` (master)
+and `light-cljs-04d4aa12` (this change, before its commit gained these
+notes; the runtime is the same). Unreserved: one peer worker was
+active.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 3`, each selection as
+light-cljs-1030 timed it, two rounds with the binaries' order reversed;
+1-minute load average 3.2-4.2 in the first, 3.9-5.4 in the second), light
+ns per operation, median of the round's three runs, round one / round two:
+
+| selection | op | 518edac7 | master 765a92e1 | this change | change against 518edac7 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| pair | lazy-walk-1000 | 34,263 / 35,738 | 38,671 / 39,138 | 34,364 / 35,076 | +0% / -2% |
+| pair | seq-walk-vec-1000 | 25,246 / 26,387 | 29,623 / 30,247 | 25,300 / 26,051 | +0% / -1% |
+| 7-op | lazy-walk-1000 | 41,803 / 42,237 | 45,912 / 46,295 | 43,748 / 42,901 | +5% / +2% |
+| 7-op | seq-walk-vec-1000 | 23,704 / 23,463 | 27,598 / 28,435 | 24,847 / 24,087 | +5% / +3% |
+| 7-op | apply-vec | 349.0 / 345.8 | 199.1 / 205.6 | 216.3 / 208.8 | -38% / -40% |
+| alone | seq-walk-vec-1000 | 19,129 / 18,289 | 19,242 / 18,792 | 19,333 / 18,963 | +1% / +4% |
+
+The pair is `--ops seq-walk-vec,lazy-walk`, the 7-op selection
+`--ops filter-count,into-xform,lazy-walk,seq-walk-vec,reduce-range,variadic-call,apply-vec`.
+Master was 9-13% (lazy-walk) and 15-21% (seq-walk-vec) slower than
+`518edac7` in these runs; this change is within 5% in every one. The
+7-op selection's first round of this change ran while the shadow-cljs
+numbers also rose 3-5%. `apply-vec` keeps light-cljs-1030's gain, but is
+2-9% slower than master: each call takes `seq` of the empty list once or
+twice, now through the operation's path (about 27 ns, where the slot took
+11 and the older layers 36). The whole gate (all 64 operations in one
+process, master `1bd59e34` at load 5.5-14.0 against `583567da`, the same
+runtime change before the rebase, at load 2.1-6.6) has no operation more
+than 4% slower (filter-count), lazy-walk +1% and seq-walk-vec -1%: with
+every operation in one process the wrappers see many classes either way.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1033 --runs 5
+--runtime-only --runtime 1,10,40`, a copy of the project rebuilt with each
+binary just before its run, the two runs back to back; load 3.9-5.2
+before, 3.2-3.7 after), wall time, median (range):
+
+| iterations | master 765a92e1 | this change | shadow-cljs (master run) | shadow-cljs (this run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.378 s (0.371-0.390) | 0.374 s (0.371-0.396) | 0.293 s | 0.295 s |
+| 10 | 0.951 s (0.940-0.976) | 0.932 s (0.923-0.959) | 0.541 s | 0.529 s |
+| 40 | 2.552 s (2.514-2.580) | 2.595 s (2.523-2.598) | 1.140 s | 1.134 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 55.8 ms
+per iteration before and 56.9 after (2% slower, within the runs' spread;
+10 iterations are 2% faster), shadow-cljs 21.7 and 21.5; light/shadow 2.57
+and 2.64. An earlier pair of runs (master `1bd59e34` against `583567da`,
+load 20-23) gave 73.0 and 73.8 ms.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there):
+programs that keep the wrapper grow 17 bytes (`seq-pipeline` 43,707 to
+43,724, `features` 110,364 to 110,381), under every ceiling; the readable
+runtime grows 473 bytes. TodoMVC and re-frame simple were not rebuilt for
+17 bytes.
+
+Raw results (every gate run's EDN and Markdown, rounds 1-3, the whole
+gate and both workload pairs): research/output-speed/empty-list-seq-1033.

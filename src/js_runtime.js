@@ -5789,14 +5789,20 @@
   //@unit seq.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq, MapEntryType,
   //@ PersistentVectorValue, SubvecValue, Cons, CycleValue, EmptyListValue, IntegerRangeValue,
   //@ IterateValue, KeySeqCell, ListValue, RangeValue, RepeatValue, ReSeqCell, treeMapSeqConstructor
-  //@ when: seq requires: noBranch, seq, slotFirst
-  seq = (operation => Object.defineProperty(function (value) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
+  //@ when: seq requires: emptyList, noBranch, seq, slotFirst
+  // The empty list takes the operation, as before it had slots: every walk
+  // ends with its `seq`, and its slot made the read and call each step takes
+  // megamorphic (light-cljs-1033, docs/value-layout.md). The empty list and
+  // `noBranch` are parameters, read with no check for an uninitialized
+  // `const`, so the wrapper keeps under the 100 bytes of bytecode that V8's
+  // Maglev tier inlines (94).
+  seq = ((operation, empty, none) => Object.defineProperty(function (value) {
+    if (slotFirst.on && value != null && value !== empty && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY;
-      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
+      if (method) { const result = method.call(value, value); if (result !== none) return result; }
     }
     return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(seq);
+  }, "name", {value: operation.name}))(seq, emptyList, noBranch);
   //@unit contains requires: get, methodKeys, missing, protocolHooks, vectorStore
   function contains(value, key) {
     const method = protocolHooks.publicMethod?.(value, methodKeys[2], 2);

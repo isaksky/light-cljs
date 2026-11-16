@@ -84,6 +84,22 @@ fn existing_sequences_dispatch_only_the_requested_protocol() {
 }
 
 #[test]
+fn an_extended_empty_list_answers_seq_where_walks_end() {
+    // `seq` takes the empty list past its slot (light-cljs-1033), to the
+    // operation, whose protocol lookup finds a program's `-seq`; an empty
+    // list with metadata takes its slot, which `extend-type` replaced. Each
+    // call runs the program's method once. The answers are printed with
+    // `str`, as printing a collection walks it, and a walk's `next` takes
+    // the `seq` of the empty list that ends it.
+    let source = r#"(def calls (atom 0))
+                    (extend-type EmptyList ISeqable (-seq [_] (swap! calls inc) (list :extended)))
+                    (defn once [f] (let [before @calls s (f)] (str (first s) "/" (- @calls before))))
+                    (str (once #(seq ())) " " (once #(seq (with-meta () {:m 1}))) " "
+                         (once #(seq (rest (list 1)))) " " (once #(seq (rest (cons 1 nil)))))"#;
+    every_level(source, ":extended/1 :extended/1 :extended/1 :extended/1");
+}
+
+#[test]
 fn map_seq_types_resolve_and_dispatch_as_upstream() {
     // Upstream's seq of an array map is a PersistentArrayMapSeq, and of a
     // hash map a NodeSeq; libraries dispatch on both names (light-cljs-982).
