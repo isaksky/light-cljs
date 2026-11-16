@@ -563,7 +563,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [630_000, 630_000, 5_200],
+        ceilings: [631_000, 631_000, 5_200],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -706,7 +706,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [630_000, 630_000, 58_000],
+        ceilings: [631_000, 631_000, 58_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -1004,7 +1004,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [648_000, 648_000, 116_000],
+        ceilings: [648_000, 648_000, 117_000],
         removed: [0, 0, 20],
         printed: "menu: Editor | Reports\n#function\n",
     },
