@@ -49,6 +49,32 @@ fn protocol_dispatch_uses_public_slots_and_native_tables() {
     );
 }
 
+/// A dispatcher tests its receiver as upstream's `x != null` (light-cljs-1022):
+/// nil and `undefined` take the `nil` table, and the other falsy values
+/// (false, 0, the empty string, NaN) read their slot and take their type's
+/// table, at every level, called directly and through the method's value, of
+/// one arity and of several.
+#[test]
+fn dispatchers_send_nil_receivers_to_the_nil_table_and_falsy_ones_to_their_type() {
+    assert_eq!(
+        run("(defprotocol P (f [x]) (g [x] [x y]))
+             (extend-protocol P
+               nil (f [_] :nil) (g ([_] :nil) ([_ y] [:nil y]))
+               boolean (f [_] :boolean) (g ([_] :boolean) ([_ y] [:boolean y]))
+               number (f [_] :number) (g ([_] :number) ([_ y] [:number y]))
+               string (f [_] :string) (g ([_] :string) ([_ y] [:string y])))
+             (defn each [x] [(f x) (g x) (g x 1)])
+             (def fs [f g])
+             (pr-str (mapv (fn [x] [(each x) ((fs 0) x) ((fs 1) x 2)])
+                           [nil js/undefined false 0 \"\" ##NaN]))"),
+        "\"[[[:nil :nil [:nil 1]] :nil [:nil 2]] [[:nil :nil [:nil 1]] :nil [:nil 2]] \
+         [[:boolean :boolean [:boolean 1]] :boolean [:boolean 2]] \
+         [[:number :number [:number 1]] :number [:number 2]] \
+         [[:string :string [:string 1]] :string [:string 2]] \
+         [[:number :number [:number 1]] :number [:number 2]]]\"\n"
+    );
+}
+
 /// Protocol methods called as values, whose receivers no level can type: at
 /// `Advanced` each method's dispatcher is a function of its own that calls the
 /// receiver's slot and leaves the rest to the shared path (light-cljs-265).
@@ -94,8 +120,8 @@ fn protocol_functions_as_values_keep_dispatch_at_every_level() {
     // A method of fixed signatures gets its own dispatcher; a variadic one and
     // one extendable through metadata keep the shared one.
     for expected in [
-        "(m0, m1) => function (r0) { return r0?.[m1] != null ? r0[m1](r0) : m0(r0); })",
-        "(m0, m1, m2) => function (r0, a1 = undefined) { if (arguments.length === 1) { if (r0?.[m1] != null) return r0[m1](r0); } else if (arguments.length === 2) { if (r0?.[m2] != null) return r0[m2](r0, a1); } return m0.apply(null, arguments); })",
+        "(m0, m1) => function (r0) { return r0 != null && r0[m1] != null ? r0[m1](r0) : m0(r0); })",
+        "(m0, m1, m2) => function (r0, a1 = undefined) { if (arguments.length === 1) { if (r0 != null && r0[m1] != null) return r0[m1](r0); } else if (arguments.length === 2) { if (r0 != null && r0[m2] != null) return r0[m2](r0, a1); } return m0.apply(null, arguments); })",
         "\"cljs.user/h\", [3], false, 1, () => ",
         "\"cljs.user/m\", [1], true, null, () => ",
     ] {

@@ -2291,6 +2291,7 @@ in every program that keeps them (`vector-only` 7,813, `constant-lookups`
 keep the kinds and `recordTypeOf` but no brand (`record-protocol` 5,814,
 `three-records` 5,809). TodoMVC and re-frame simple were not ported in
 this run.
+
 ## 2026-11-16: sorted sets, vars, functions with metadata and string writers as classes (light-cljs-1038)
 
 **What.** A sorted set is upstream's PersistentTreeSet: its own field holds
@@ -2388,3 +2389,91 @@ sets now hold the tree map, about 1,100 (`features-direct` 121,353 to
 the sorted map's tree algorithms, as upstream's does (the small program
 above: 122,501 to 132,086 bytes, against `daea1afc`). re-frame simple and
 TodoMVC were not ported in this run.
+
+## 2026-11-16: protocol calls test their receiver as upstream's (light-cljs-1022)
+
+**What.** A program protocol method of fixed arities gets its own
+dispatcher at `:advanced` (light-cljs-265), which calls the receiver's
+slot where it holds something. It now tests the receiver as upstream's
+protocol functions do, `r0 != null && r0[m1] != null ? r0[m1](r0) :
+m0(r0)`, where it read `r0?.[m1] != null`. Nothing else changes: the
+slots, the records' classes, `extend-type`, `specify!`, `satisfies?` and
+`implements?` are as they were.
+
+Binaries, in research/shadow-credibility/bin: before `light-cljs-c88f22ae`
+(master), after `light-cljs-59d6fa08` (a commit of this pellet before it
+was squashed: its emitter as landed). To measure the operation with the
+loop shadow-cljs has, light-cljs-1020's emitter change (`src/emitter.rs`
+of its commit `6bdde1ae`, not on master: the bit operations as operators)
+was applied to each, `light-cljs-c88f22ae-with-1020` and
+`light-cljs-59d6fa08-with-1020`. Unreserved: one peer worker was active.
+Raw results: research/output-speed/protocol-call-1022.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --ops protocol-on-record --runs
+5`), ns per operation, median (range):
+
+| loop | light before | light after | change | shadow-cljs (after run) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| master's (`bitAnd` call) | 3.47 (3.46-3.48) | 2.93 (2.88-2.94) | -16% | 2.52 (2.50-2.54) | 1.44 | 1.16 |
+| with light-cljs-1020 | 3.70 (3.67-3.71) | 2.74 (2.59-2.77) | -26% | 2.57 (2.40-2.59) | 1.32 | 1.07 |
+
+1-minute load average 12.17 before and 7.59-7.65 after on master's loop,
+6.35-6.65 and 6.33-6.38 with light-cljs-1020. The operation is within
+1.1x of shadow-cljs's once light-cljs-1020 lands; on master the loop's
+`bitAnd` call, which that pellet removes, keeps it at 1.16.
+
+**Where the time went.** The profile (`--pseudo-names protocol-on-record`)
+has the same parts in both outputs: the loop, the dispatcher (V8 inlines
+light-cljs's into the loop, `--trace-turbo-inlining`) and the two records'
+methods, which take the same time in both. Edits of light-cljs's
+release output, each timed against shadow-cljs's in alternated processes
+(scratch measurements, not the gate; shadow-cljs 2.45 to 2.79 ns as the
+machine's state moved):
+
+- **Optional chaining** in the dispatcher was most of the gap: `r0 != null
+  && r0[m1] != null` took 2.83-2.91 against 3.51-3.56 ns for `r0?.[m1] !=
+  null`. A dotted slot name instead of the computed `r0[m1]` made no
+  difference, a strict `!== null && !== undefined` test was 0.1 ns slower,
+  and `var` in place of the program's `let` bindings at most 0.15 ns
+  faster.
+- **The loop's `bitAnd` call** was 0.2 to 0.3 ns of the rest, as
+  light-cljs-1020 found.
+- **The call through the dispatcher's binding.** With both fixed, writing
+  the dispatcher's test at the call site, `(o = r, o != null && o.slot !=
+  null ? o.slot(o) : area(o))`, took 1.93 against 2.62 ns (0.78 against
+  1.06 times shadow-cljs's), and so did a dispatcher declared as a
+  module-level function (2.05): V8 calls a closure held in a `let` of the
+  program's function with a check of the binding and of the closure on
+  every call. This pellet leaves the call-site form out. It grew workload
+  200k by 82,274 bytes (2.3%, 16,280 gzipped; its 360 calls of program
+  protocol methods) with no change to its steady state, and a slot that
+  holds nothing would be read twice, at the call site and in the
+  dispatcher, where the dispatcher reads it once
+  (`protocol_dispatchers_call_host_slots_and_keep_their_length`). The diff
+  is research/output-speed/protocol-call-1022/call-site-dispatch.diff for
+  light-cljs-1023's review of the gate.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1022 --runs 5
+--runtime-only --runtime 1,40`, the project's light-cljs output rebuilt
+with each binary just before its run, two before/after pairs; load
+6.28-7.22 and 13.59-14.20 before, 14.42-22.30 and 15.06-15.62 after), wall
+time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before runs) | shadow-cljs (after runs) |
+| --- | ---: | ---: | ---: | ---: |
+| 1, pair 1 | 0.444 s (0.439-0.448) | 0.455 s (0.427-1.089) | 0.358 s | 0.365 s |
+| 40, pair 1 | 2.833 s (2.756-2.925) | 2.877 s (2.867-4.846) | 1.386 s | 1.480 s |
+| 1, pair 2 | 0.475 s (0.458-0.480) | 0.531 s (0.477-0.571) | 0.368 s | 0.449 s |
+| 40, pair 2 | 2.926 s (2.877-2.999) | 2.876 s (2.868-2.903) | 1.498 s | 1.488 s |
+
+Steady state 61.3 to 62.1 and 62.8 to 60.1 ms per iteration: unchanged
+within the load's noise, as the scratch edit of its output for this change
+alone measured (2,844 against 2,839 ms at 40 iterations). The load rose to
+22 during the first after run.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there): 7
+bytes per slot test, one per arity of each method's dispatcher; a
+two-method protocol costs 330 bytes where it cost 316, `eight-records`
+52,598 to 52,605, workload 200k 3,550,336 to 3,553,276 (904,978 to 905,108
+gzipped). No ceiling moves. TodoMVC and re-frame simple were not ported in
+this run.

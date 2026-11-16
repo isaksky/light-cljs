@@ -2807,8 +2807,14 @@ impl<'a> Emitter<'a> {
     /// each arity, `m1`, ... The dispatcher calls the receiver's slot with the
     /// receiver as `this`, as the shared path does, where it holds something,
     /// and otherwise gives the call to `m0`, which goes on from that read:
-    /// `(m0, m1) => function (r0, a1 = undefined) { return r0?.[m1] != null ?
-    /// r0[m1](r0, a1) : m0(r0, a1); }`. It is a function literal of the
+    /// `(m0, m1) => function (r0, a1 = undefined) { return r0 != null &&
+    /// r0[m1] != null ? r0[m1](r0, a1) : m0(r0, a1); }`. The receiver test is
+    /// upstream's `x != null && x.slot != null`, not optional chaining
+    /// (`r0?.[m1] != null`), which took 3.56 against 2.85 ns a call of the
+    /// gate's `protocol-on-record` (light-cljs-1022): the chained read joins
+    /// the nil branch's `undefined` to the slot's value, which seems to keep
+    /// V8 from folding the test of a slot it reads from a record's prototype.
+    /// It is a function literal of the
     /// method's own, so that each method's dispatcher keeps call feedback of
     /// its own in the engine. It reads the slot twice to call it, as upstream's
     /// protocol functions do: the call through the property is what lets V8
@@ -2843,7 +2849,7 @@ impl<'a> Emitter<'a> {
             let arguments = parameters(*arity, false);
             write!(
                 self.output,
-                "return r0?.[m1] != null ? r0[m1]({arguments}) : m0({arguments}); }}"
+                "return r0 != null && r0[m1] != null ? r0[m1]({arguments}) : m0({arguments}); }}"
             )
             .unwrap();
             return;
@@ -2855,7 +2861,7 @@ impl<'a> Emitter<'a> {
             let slot = index + 1;
             write!(
                 self.output,
-                "if (arguments.length === {arity}) {{ if (r0?.[m{slot}] != null) return r0[m{slot}]({}); }} ",
+                "if (arguments.length === {arity}) {{ if (r0 != null && r0[m{slot}] != null) return r0[m{slot}]({}); }} ",
                 parameters(*arity, false)
             )
             .unwrap();

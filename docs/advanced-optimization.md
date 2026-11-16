@@ -1216,7 +1216,10 @@ extension points").
   of `protocolMethod`, which makes the dispatcher from it, a function that
   goes on after the slot read, and each arity's slot
   (`Emitter::protocol_fast_path`):
-  `(m0, m1) => function (r0, a1 = undefined) { return r0?.[m1] != null ? r0[m1](r0, a1) : m0(r0, a1); }`.
+  `(m0, m1) => function (r0, a1 = undefined) { return r0 != null && r0[m1] != null ? r0[m1](r0, a1) : m0(r0, a1); }`.
+  The receiver test is upstream's `x != null`, not optional chaining
+  (`r0?.[m1]`), which took 3.56 against 2.85 ns a call of the core-ops
+  gate's `protocol-on-record` (light-cljs-1022).
   The default keeps the dispatcher's `length` 1, the shared path's. With
   several arities `arguments.length` selects the slot, and a count that
   selects none goes to the shared path, which throws the arity error. The

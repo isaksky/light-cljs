@@ -293,7 +293,8 @@ fn protocols_program(protocols: usize) -> String {
 /// light-cljs-265: at `Advanced` each protocol of two methods past the first
 /// adds at most 350 bytes (upstream `:advanced` adds 488 for the same
 /// program; benchmarks/compiler.md, "Per-method protocol dispatchers"), of
-/// which each method's own dispatcher is about 53.
+/// which each method's own dispatcher is about 60 (53 before light-cljs-1022
+/// tested its receiver as `r0 != null`).
 #[test]
 fn each_two_method_protocol_costs_at_most_its_budget() {
     let size = |protocols| {

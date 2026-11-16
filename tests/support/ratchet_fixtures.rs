@@ -562,6 +562,15 @@
 //! its editor chunk 12,435, the shared chunk 98,209). Each exceeded advanced
 //! ceiling, and the shared chunk's, moves to the next 100 below 10,000 and
 //! the next 1,000 above. Speed comes first (pl group 1661).
+//!
+//! The protocol dispatcher's receiver test as upstream's `x != null`
+//! (light-cljs-1022, 2026-11-16): each method's own dispatcher tests
+//! `r0 != null && r0[m1] != null` where it read `r0?.[m1] != null`, 7 bytes
+//! more at `Advanced` per slot test (one per arity). Against master
+//! `5cd32c66`: `eight-records` 52,245 to 52,252, and a two-method protocol
+//! 316 to 330 bytes (`each_two_method_protocol_costs_at_most_its_budget`);
+//! no ceiling moves. Workload 200k grows 2,940 bytes (420 slot tests), 130
+//! gzipped (against `c88f22ae`).
 
 pub struct Fixture {
     pub name: &'static str,
