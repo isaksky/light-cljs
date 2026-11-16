@@ -674,6 +674,13 @@ fn runtime_reader_profiles_missing_alias_locations_and_nested_tag_reads() {
         try { return c.readString('::absent/x'); } finally { c.currentNs = saved; }
       });
       assert.throws(() => c.readString('#bad 0'), /Missing namespace alias/);
+      // A chunked cons a tag parser gives is a sequence, alone, nested and as a
+      // tail (the Sol review of light-cljs-1029, finding 1).
+      c.readerRegisterTagParser(rt.symbol(null,'chunked'), value => c.chunkCons(c.arrayChunk([1, 2]), value));
+      c.readerRegisterTagParser(rt.symbol(null,'tail'), value => c.cons(0, c.chunkCons(c.arrayChunk([1, 2]), value)));
+      assert.equal(c.prStr(c.readString('#chunked nil')), '(1 2)');
+      assert.equal(c.prStr(c.readString('[#chunked nil {:k #chunked (3)}]')), '[(1 2) {:k (1 2 3)}]');
+      assert.equal(c.prStr(c.readString('(#tail (3))')), '((0 1 2 3))');
       assert.equal(c.prStr(c.readString('::x')), ':reader.outer/x');
       assert.throws(() => c.readString('#=(1)'), /Unsupported dispatch syntax/);
       const env = c.hashMap(rt.keyword(null,'ns'), c.hashMap(rt.keyword(null,'name'), rt.symbol(null,'reader.caller'),

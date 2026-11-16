@@ -165,13 +165,13 @@ and chunk buffers.
   `ChunkBufferCell` are internal constructors on the public types'
   prototypes, kinds 16 to 19 (the keywords and symbols of light-cljs-1011
   are 20 and 21), set with `viewType`. Their own keyed fields
-  are upstream's: a lazy seq's `fn` (null once realized; an undefined one
-  is null), `s` and `hash`; a chunked cons's `chunk`, `more` and `hash`; a
+  are upstream's: a lazy seq's `fn` (null once realized), `s` and `hash`; a chunked cons's `chunk`, `more` and `hash`; a
   chunk's `arr`, `off` and `end`, and a range's integer chunk also its
   `first` item and `step` (null in an array chunk); a chunk buffer's `buf`
-  and `end`. Each kind has a test that also requires its first field
-  (`lazyOf`, `chunkedConsOf`, `chunkOf`, `chunkBufferOf`), so a value made
-  by reflection from the prototype is none of them. `lazyValues`, `chunks`
+  and `end`. Each kind has a test that also requires its first own field
+  to be present (`lazyOf`, `chunkedConsOf`, `chunkOf`, `chunkBufferOf`;
+  present, as a field may hold undefined), so a value made by reflection
+  from the prototype is none of them. `lazyValues`, `chunks`
   and `chunkBuffers` are deleted, and a chunked cons is no longer a cell
   (`cells`): every reader takes the test, and the store inventories take
   `lazyCells` and `chunkedConsCells`. `lazyStep` replaces `deferredValue`

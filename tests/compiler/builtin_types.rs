@@ -2843,6 +2843,57 @@ fn seq_slots_keep_the_answers_of_extended_protocols() {
     );
 }
 
+/// The lazy seqs, chunked conses, chunks and a vector's chunked seq answer
+/// from keyed slots since light-cljs-1029, which the chunk operations
+/// (`chunkFirst`, `chunkRest`, `chunkNext`, `chunkDropFirst`) call first, and an
+/// `extend-type` or `specify!` of their protocols still answers as master
+/// `f91e0e62` did, in the operations and in a lazy pipeline over them (the
+/// Sol review of light-cljs-1029, finding 3).
+#[test]
+fn chunk_slots_keep_the_answers_of_extended_protocols() {
+    every_level(
+        "(extend-type ChunkedCons
+           IChunkedSeq (-chunked-first [_] (array-chunk (array 10 20))) (-chunked-rest [_] (list :rest))
+           IChunkedNext (-chunked-next [_] (list :next)))
+         (let [cc (seq (map identity (vec (range 40))))]
+           (pr-str [(chunked-seq? cc) (vec (chunk-first cc)) (chunk-rest cc) (chunk-next cc)
+                    (vec (map identity cc)) (first cc) (vec (take 3 (filter some? cc)))]))",
+        "[true [10 20] (:rest) (:next) [10 20 :rest] 0 [10 20 :rest]]",
+    );
+    every_level(
+        "(extend-type ArrayChunk ICounted (-count [_] 2)
+           IIndexed (-nth ([_ i] (* 100 i)) ([_ i nf] (* 10 i)))
+           IChunk (-drop-first [_] (array-chunk (array :d))))
+         (let [c (array-chunk (array 1 2 3)) cc (chunk-cons c nil)]
+           (pr-str [(count c) (nth c 1) (nth c 5 :nf) (vec (-drop-first c)) (first cc) (first (rest cc))
+                    (vec (take 5 (map identity (vec (range 40)))))]))",
+        "[2 100 50 [:d] 0 0 [0 0 0 0 0]]",
+    );
+    every_level(
+        "(let [sp (specify! (seq (map identity (vec (range 40))))
+                    IChunkedSeq (-chunked-first [_] (array-chunk (array :s))) (-chunked-rest [_] ())
+                    ISeq (-first [_] :sf) (-rest [_] ()))
+               cc (seq (map identity (vec (range 40))))]
+           (pr-str [(vec (chunk-first sp)) (chunk-rest sp) (first sp) (rest sp) (vec (map identity sp))
+                    (first cc) (count (chunk-first cc))]))",
+        "[[:s] () :sf () [:s] 0 32]",
+    );
+    every_level(
+        "(extend-type ChunkedSeq IChunkedSeq (-chunked-first [_] (array-chunk (array :x :y))) (-chunked-rest [_] ())
+           IChunkedNext (-chunked-next [_] (list :n)))
+         (let [s (seq (vec (range 40)))]
+           (pr-str [(vec (map identity (vec (range 40)))) (vec (chunk-first s)) (chunk-rest s) (chunk-next s)
+                    (vec (filter keyword? (vec (range 40)))) (first s)]))",
+        "[[:x :y] [:x :y] () (:n) [:x :y] 0]",
+    );
+    every_level(
+        "(extend-type LazySeq ISeqable (-seq [_] (list :q)))
+         (let [l (map inc [1 2 3])]
+           (pr-str [(first l) (rest l) (next l) (seq l) (count (map inc [1 2]))]))",
+        "[nil () nil (:q) 1]",
+    );
+}
+
 /// An `ISeqable` marker and method that JavaScript writes on a runtime seq
 /// give what the operations' own paths give where protocol implementations
 /// exist, as the branches look for what those paths would find there

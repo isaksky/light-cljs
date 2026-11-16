@@ -2148,6 +2148,24 @@ console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is
 }
 console.log('keywords and symbols of two copies of one build compare by kind and fqn');
 
+// A lazy seq's and a chunked cons's public fields keep an undefined value as
+// given, as their payloads did (the Sol review of light-cljs-1029, finding
+// 2): the class tests ask whether the field is present, not what it holds.
+{
+  const c = runtime.core;
+  const xs = new c.LazySeq(null, undefined, c.list(1), null), ys = new c.LazySeq(null, () => c.list(2, 3), null, null);
+  assert.equal(xs.fn, undefined);
+  assert.equal(c.prStr(c.vec(xs)), '[1]');
+  ys.fn = undefined;
+  assert.equal(ys.fn, undefined);
+  assert.equal(c.prStr(c.vec(ys)), '[]');
+  assert.equal(c.isSeq(ys), true);
+  const cc = new c.ChunkedCons(undefined, c.list(9), null, null);
+  assert.equal(cc.chunk, undefined);
+  assert.equal(c.isChunkedSeq(cc), true);
+}
+console.log('lazy seq and chunked cons fields keep undefined');
+
 // The page-wide runtime key registry (docs/value-layout.md, section 1,
 // light-cljs-1025): this file keeps the placeholder as its key and
 // registers nothing; a copy whose placeholders the output writer replaced

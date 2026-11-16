@@ -207,20 +207,21 @@
   function TreeMapSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
   //@unit LazySeqCell
   // A lazy seq with `LazySeq`'s prototype (`lazyOf`), upstream's fields:
-  // `fn` the thunk until the seq is realized, then null (an undefined one is
-  // null), `s` what the thunk gave and `hash` the cached hash. Nothing in it
+  // `fn` the thunk until the seq is realized, then null (one given as
+  // undefined stays so), `s` what the thunk gave and `hash` the cached hash. Nothing in it
   // is frozen; a step of a lazy pipeline builds this one object. The
   // compile-time runtime stamps it (`stamp`).
-  function LazySeqCell(fn, s, hash) { this.fn$LKEY = fn === undefined ? null : fn; this.s$LKEY = s; this.hash$LKEY = hash; /*@brand*/ }
+  function LazySeqCell(fn, s, hash) { this.fn$LKEY = fn; this.s$LKEY = s; this.hash$LKEY = hash; /*@brand*/ }
   //@unit lazyOf
   // A lazy seq, kind 16 (`kinds`): the value itself, whose own keyed fields
   // are its state (`LazySeqCell`), else undefined. As `viewOf`, one made by
-  // reflection from the prototype holds no state, and is no lazy seq. The
+  // reflection from the prototype has no such own field, and is no lazy seq
+  // (a test of the field's presence, as any of them can be undefined). The
   // shared-heap profile's also answers the engine's lazy seqs, with a view
   // of the same fields.
   function lazyOf(value) {
     if (value == null) return undefined;
-    return value.cljs$lang$kind$$LKEY === 16 && value.fn$LKEY !== undefined ? value : undefined;
+    return value.cljs$lang$kind$$LKEY === 16 && "fn$LKEY" in value ? value : undefined;
   }
   //@unit isLazy requires: lazyOf
   const isLazy = value => lazyOf(value) !== undefined;
@@ -239,15 +240,14 @@
   }
   //@unit ChunkedConsCell
   // A chunked cons with `ChunkedCons`'s prototype (`chunkedConsOf`): its
-  // `chunk` (an undefined one is null), the seq `more` after it and its
-  // cached `hash`.
-  function ChunkedConsCell(chunk, more, hash) { this.chunk$LKEY = chunk === undefined ? null : chunk; this.more$LKEY = more; this.hash$LKEY = hash; /*@brand*/ }
+  // `chunk`, the seq `more` after it and its cached `hash`.
+  function ChunkedConsCell(chunk, more, hash) { this.chunk$LKEY = chunk; this.more$LKEY = more; this.hash$LKEY = hash; /*@brand*/ }
   //@unit chunkedConsOf
   // A chunked cons, kind 17: the value itself (`ChunkedConsCell`), else
   // undefined; the shared-heap profile's also answers the engine's.
   function chunkedConsOf(value) {
     if (value == null) return undefined;
-    return value.cljs$lang$kind$$LKEY === 17 && value.chunk$LKEY !== undefined ? value : undefined;
+    return value.cljs$lang$kind$$LKEY === 17 && "chunk$LKEY" in value ? value : undefined;
   }
   //@unit isChunkedCons requires: chunkedConsOf
   const isChunkedCons = value => chunkedConsOf(value) !== undefined;
@@ -263,7 +263,7 @@
   // A chunk, kind 18: the value itself (`ArrayChunkCell`), else undefined.
   function chunkOf(value) {
     if (value == null) return undefined;
-    return value.cljs$lang$kind$$LKEY === 18 && value.arr$LKEY !== undefined ? value : undefined;
+    return value.cljs$lang$kind$$LKEY === 18 && "arr$LKEY" in value ? value : undefined;
   }
   //@unit ChunkBufferCell
   // A chunk buffer with `ChunkBuffer`'s prototype (`chunkBufferOf`): the
@@ -273,7 +273,7 @@
   // A chunk buffer, kind 19: the value itself, else undefined.
   function chunkBufferOf(value) {
     if (value == null) return undefined;
-    return value.cljs$lang$kind$$LKEY === 19 && value.end$LKEY !== undefined ? value : undefined;
+    return value.cljs$lang$kind$$LKEY === 19 && "end$LKEY" in value ? value : undefined;
   }
   //@unit viewType mutator
   // Makes `Type` a class of kind `kind` (`kinds`), whose values `Cell`
@@ -4690,51 +4690,51 @@
   //@unit LazySeq.seqSlot effect: LazySeq when: seq requires: builtinSlot, lazyRealized, LazySeq,
   //@ noBranch, seq
   LazySeq.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.fn$LKEY === undefined) return noBranch;
+    if (!("fn$LKEY" in self)) return noBranch;
     return seq(lazyRealized(self));
   });
   //@unit LazySeq.firstSlot effect: LazySeq when: first requires: builtinSlot, first, LazySeq,
   //@ noBranch, seq
   LazySeq.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.fn$LKEY === undefined) return noBranch;
+    if (!("fn$LKEY" in self)) return noBranch;
     seq(self);
     return first(self.s$LKEY);
   });
   //@unit LazySeq.restSlot effect: LazySeq when: rest requires: builtinSlot, LazySeq, noBranch,
   //@ rest, seq
   LazySeq.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.fn$LKEY === undefined) return noBranch;
+    if (!("fn$LKEY" in self)) return noBranch;
     seq(self);
     return rest(self.s$LKEY);
   });
   //@unit LazySeq.nextSlot effect: LazySeq when: next requires: builtinSlot, LazySeq, next,
   //@ noBranch, seq
   LazySeq.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.fn$LKEY === undefined) return noBranch;
+    if (!("fn$LKEY" in self)) return noBranch;
     seq(self);
     return next(self.s$LKEY);
   });
   //@unit ChunkedCons.first effect: ChunkedCons when: first requires: builtinSlot, ChunkedCons,
   //@ chunkedConsFirst, noBranch
   ChunkedCons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.chunk$LKEY === undefined) return noBranch;
+    if (!("chunk$LKEY" in self)) return noBranch;
     return chunkedConsFirst(self);
   });
   //@unit ChunkedCons.rest effect: ChunkedCons when: rest requires: builtinSlot, ChunkedCons,
   //@ chunkedConsRest, noBranch
   ChunkedCons.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.chunk$LKEY === undefined) return noBranch;
+    if (!("chunk$LKEY" in self)) return noBranch;
     return chunkedConsRest(self);
   });
   //@unit ChunkedCons.next effect: ChunkedCons when: next requires: builtinSlot, ChunkedCons,
   //@ noBranch, rest, seq
   ChunkedCons.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.chunk$LKEY === undefined) return noBranch;
+    if (!("chunk$LKEY" in self)) return noBranch;
     return seq(rest(self));
   });
   //@unit ChunkedCons.seq effect: ChunkedCons when: seq requires: builtinSlot, ChunkedCons, noBranch
   ChunkedCons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return self.chunk$LKEY === undefined ? noBranch : self;
+    return !("chunk$LKEY" in self) ? noBranch : self;
   });
   //@unit ChunkedCons.chunkedFirst effect: ChunkedCons when: chunkFirst requires: builtinSlot,
   //@ ChunkedCons, noBranch
@@ -4745,12 +4745,12 @@
   //@unit ChunkedCons.chunkedRest effect: ChunkedCons when: chunkRest requires: builtinSlot,
   //@ ChunkedCons, emptyList, noBranch
   ChunkedCons.prototype.cljs$core$IChunkedSeq$_chunked_rest$arity$1$LKEY = builtinSlot(function (self) {
-    return self.chunk$LKEY === undefined ? noBranch : self.more$LKEY ?? emptyList;
+    return !("chunk$LKEY" in self) ? noBranch : self.more$LKEY ?? emptyList;
   });
   //@unit ChunkedCons.chunkedNext effect: ChunkedCons when: chunkNext requires: builtinSlot,
   //@ ChunkedCons, noBranch
   ChunkedCons.prototype.cljs$core$IChunkedNext$_chunked_next$arity$1$LKEY = builtinSlot(function (self) {
-    return self.chunk$LKEY === undefined ? noBranch : self.more$LKEY ?? null;
+    return !("chunk$LKEY" in self) ? noBranch : self.more$LKEY ?? null;
   });
   //@unit ChunkedSeqValue.chunkedFirst effect: ChunkedSeqValue when: chunkFirst requires: builtinSlot,
   //@ ChunkedSeqValue, noBranch, ownedChunkFirst
@@ -4771,20 +4771,20 @@
   //@unit arrayChunk.countSlot effect: arrayChunk when: count requires: arrayChunk, builtinSlot,
   //@ noBranch
   arrayChunk.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
-    return self.arr$LKEY === undefined ? noBranch : self.end$LKEY - self.off$LKEY;
+    return !("arr$LKEY" in self) ? noBranch : self.end$LKEY - self.off$LKEY;
   });
   //@unit arrayChunk.nthSlot effect: arrayChunk when: nth requires: arrayChunk, builtinSlot,
   //@ chunkNth, missing, noBranch
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
-    return self.arr$LKEY === undefined ? noBranch : chunkNth(self, index, missing);
+    return !("arr$LKEY" in self) ? noBranch : chunkNth(self, index, missing);
   });
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
-    return self.arr$LKEY === undefined ? noBranch : chunkNth(self, index, notFound);
+    return !("arr$LKEY" in self) ? noBranch : chunkNth(self, index, notFound);
   });
   //@unit arrayChunk.dropFirstSlot effect: arrayChunk when: chunkDropFirst requires: arrayChunk,
   //@ builtinSlot, dropFirstChunk, noBranch
   arrayChunk.prototype.cljs$core$IChunk$_drop_first$arity$1$LKEY = builtinSlot(function (self) {
-    return self.arr$LKEY === undefined ? noBranch : dropFirstChunk(self);
+    return !("arr$LKEY" in self) ? noBranch : dropFirstChunk(self);
   });
   //@unit first.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq when: first
   //@ requires: first, noBranch, slotFirst
@@ -10385,9 +10385,8 @@
   });
   //@unit LazySeq.fields effect: LazySeq when: resetMeta, upstreamMembers requires: isLazy, lazyOf,
   //@ LazySeq, lazyStep, metadataValues
-  // An undefined `fn` is null, as `LazySeqCell` keeps it.
   for (const [field, key] of Object.entries({fn: "fn$LKEY", s: "s$LKEY", __hash: "hash$LKEY"})) Object.defineProperty(LazySeq.prototype, field, {
-    configurable: true, get() { return lazyOf(this)[key]; }, set(value) { lazyOf(this)[key] = field === "fn" && value === undefined ? null : value; }
+    configurable: true, get() { return lazyOf(this)[key]; }, set(value) { lazyOf(this)[key] = value; }
   });
   Object.defineProperty(LazySeq.prototype, "meta", {
     // `LazySeq` stores no nil metadata.
@@ -10856,10 +10855,10 @@
   const compilerForms = compilerFormBridge();
   readerJsLiterals.array = compilerForms.jsArray; readerJsLiterals.object = compilerForms.jsObject;
   //@unit reader requires: cells, conj, contains, coreCells, first, freshKeyword, gensym, hashMap,
-  //@ hashSet, holdsVector, inspect, into, isRecord, isView, keywordOf, listFromArray, mapFromArray,
-  //@ maps, merge, meta, next, nsName, PersistentQueueValue, prStr, readerJsLiterals, rePattern,
-  //@ seq, setFromArray, sets, str, symbol, symbolOf, toArray, uuid, uuids, vectorFromArray,
-  //@ withMeta
+  //@ hashSet, holdsVector, inspect, into, isChunkedCons, isRecord, isView, keywordOf,
+  //@ listFromArray, mapFromArray, maps, merge, meta, next, nsName, PersistentQueueValue, prStr,
+  //@ readerJsLiterals, rePattern, seq, setFromArray, sets, str, symbol, symbolOf, toArray, uuid,
+  //@ uuids, vectorFromArray, withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
   const reader = (rt => {
   const inspect = rt.inspect;
@@ -11432,7 +11431,7 @@
     readerRegisterTagParser: register, readerDeregisterTagParser: deregister,
     readerRegisterDefaultTagParser: registerDefault, readerDeregisterDefaultTagParser: deregisterDefault,
     readerWithInput: withInput, readerCurrentInput: () => coreCells.readerCurrentInputValue, readerClose: close};
-  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbolOf(value) !== undefined ? 'symbol' : keywordOf(value) !== undefined ? 'keyword' : holdsVector(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || isView(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
+  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbolOf(value) !== undefined ? 'symbol' : keywordOf(value) !== undefined ? 'keyword' : holdsVector(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || isChunkedCons(value) || isView(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
 
   //@unit codeReader compile-time requires: reader, readerCoreNames
   // Code reading qualifies symbols by `*ns*`: reflection, unlike EDN data.

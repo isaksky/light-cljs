@@ -920,7 +920,7 @@
         get hash$LKEY() { return sharedFormHashes.get(form); }, set hash$LKEY(hash) { sharedFormHashes.set(form, hash); }};
     }
     if (value == null) return undefined;
-    return value.cljs$lang$kind$$LKEY === 17 && value.chunk$LKEY !== undefined ? value : undefined;
+    return value.cljs$lang$kind$$LKEY === 17 && "chunk$LKEY" in value ? value : undefined;
   }
   //@unit stringBufferWriters requires: sharedSet
   const stringBufferWriters = sharedSet();
@@ -1159,7 +1159,7 @@
       };
     }
     if (value == null) return undefined;
-    return value.cljs$lang$kind$$LKEY === 16 && value.fn$LKEY !== undefined ? value : undefined;
+    return value.cljs$lang$kind$$LKEY === 16 && "fn$LKEY" in value ? value : undefined;
   }
   //@unit delays requires: sharedView
   // A delay over the engine's once-cell. Its `value` is read without
