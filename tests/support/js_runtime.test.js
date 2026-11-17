@@ -2276,6 +2276,54 @@ console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is
 }
 console.log('vector_family_prototype_contract: masks, markers and slots of the vector classes');
 
+// A hash or array set's and a queue's `-count`, `-seq` and `-conj`, a set's
+// `-lookup` and a vector's, a subvector's and a map entry's
+// `-contains-key?` are slots of their prototypes (light-cljs-1046): each
+// answers as its operation does for every value of the class, a public
+// constructor's included, and a value made by reflection gets `noBranch`.
+{
+  const count = 'cljs$core$ICounted$_count$arity$1$LKEY', seq = 'cljs$core$ISeqable$_seq$arity$1$LKEY';
+  const conj = 'cljs$core$ICollection$_conj$arity$2$LKEY', lookup = ['cljs$core$ILookup$_lookup$arity$2$LKEY', 'cljs$core$ILookup$_lookup$arity$3$LKEY'];
+  const contains = 'cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY';
+  const outcome = thunk => { try { return 'ok ' + c.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
+  const kinds = [
+    ['set', [c.hashSet(), c.hashSet(1, 2), c.set(c.range(40)), c.withMeta(c.hashSet(3), c.hashMap('m', 1)), c.PersistentHashSet(null, null, null),
+      c.PersistentHashSet(null, c.arrayMap('a', null, 'b', null), null), c.PersistentHashSet(null, c.PersistentArrayMap(null, 5, ['a', null], null), null),
+      c.PersistentHashSet(null, c.into(c.hashMap(), c.mapSeq(x => c.vector(x, null), c.range(20))), null)],
+      [[count, []], [seq, []], [conj, [7]], [conj, [1]], [lookup[0], [1]], [lookup[1], ['a', 'nf']], [lookup[1], [5, 'nf']]]],
+    ['queue', [c.PersistentQueue.EMPTY, c.into(c.PersistentQueue.EMPTY, c.vector(1, 2)), c.withMeta(c.conj(c.PersistentQueue.EMPTY, 1), c.hashMap('m', 1)),
+      c.PersistentQueue(null, 3, c.list(1, 2), c.vector(3), null), c.PersistentQueue(null, 9, null, c.vector(1), null)],
+      [[count, []], [seq, []], [conj, [7]]]],
+    ['vector', [c.vector(), c.vector(1, 2), c.vec(c.range(40)), c.subvec(c.vector(1, 2, 3), 1), c.first(c.hashMap('k', 'v')), c.PersistentVector(null, 2, 5, null, [1, 2], null)],
+      [[contains, [0]], [contains, [1]], [contains, [2]], [contains, [-1]], [contains, [0.5]], [contains, ['a']], [contains, [null]]]]
+  ];
+  const operations = new Map([[count, v => c.count(v)], [seq, v => c.seq(v)], [conj, (v, x) => c.conj(v, x)], [lookup[0], (v, k) => c.get(v, k)],
+    [lookup[1], (v, k, nf) => c.get(v, k, nf)], [contains, (v, k) => c.contains(v, k)]]);
+  for (const [kind, values, slots] of kinds) {
+    for (const value of values) {
+      for (const [slot, args] of slots) {
+        const method = value[slot];
+        assert.equal(typeof method, 'function', `${kind}: ${slot}`);
+        const forged = Object.create(Object.getPrototypeOf(value)), noBranch = method.call(forged, forged, ...args);
+        assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${kind}: ${slot} of a forged value`);
+        // The operation's own path: the slot taken off the prototype.
+        const proto = Object.getPrototypeOf(value), own = () => {
+          delete proto[slot];
+          try { return [outcome(() => operations.get(slot)(value, ...args)), outcome(() => c.meta(operations.get(slot)(value, ...args)))]; }
+          finally { proto[slot] = method; }
+        };
+        const [expected, expectedMeta] = own();
+        assert.equal(outcome(() => method.call(value, value, ...args)), expected, `${kind}: ${slot} of ${c.prStr(value)}`);
+        if (slot === conj) assert.equal(outcome(() => c.meta(method.call(value, value, ...args))), expectedMeta, `${kind}: meta of conj`);
+      }
+    }
+  }
+  // Their answers by the operations' own paths, as before the slots.
+  assert.deepEqual([c.count(c.PersistentHashSet(null, c.PersistentArrayMap(null, 5, ['a', null], null), null)), c.count(c.PersistentQueue(null, 9, null, c.vector(1), null)),
+    c.prStr(c.seq(c.PersistentQueue(null, 3, c.list(1, 2), c.vector(3), null))), c.contains(c.vector(1, 2), 1), c.contains(c.vector(1, 2), 2)], [5, 9, '(1 2 3)', true, false]);
+}
+console.log('set, queue and vector contains slots answer as their operations');
+
 // Keywords and symbols of two copies of one build (docs/value-layout.md,
 // sections 1 and 3, light-cljs-1011): each copy interns its own, so they are
 // never identical, but equality reads the keyed kind and `fqn` (`str`), never

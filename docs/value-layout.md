@@ -1050,6 +1050,50 @@ operations that release and dev output run.
   651,992 without the header lines); the runtime slices of the
   measured programs are in benchmarks/runtime-vs-shadow.md (light-cljs-1015).
 
+What light-cljs-1046 landed: no protocol lookup probes the stores in turn.
+
+- **One store test.** Every store of the inventories is a class's kind
+  test, and names the keyed kinds of its classes (`classKinds`). A table
+  by kind (`kindTable`, 128 dense entries, so that no index a host gives
+  `Array.prototype` is read) holds each kind's store, and a test reads the
+  value's keyed kind once and asks that one store (`storeHolds`), which
+  tells a value of the class from one made by reflection as before. The
+  lookup of `extend-type` programs (`extendedMethod`) and the `satisfies`
+  and `implements` hooks take a runtime class's value (`runtimeKind`: a
+  kind below 64 whose store holds it) in one step, the native test cached
+  by kind for the five protocols whose answer is the same for every value
+  of a class (`kinds`, where it was by store); `payloadStore`,
+  `payloadStores` and `kindStore` are deleted. The inventories
+  (`ownedProtocolValue`, which `satisfies` and printing read, and
+  `seqableValue`, `collectionValue`, `metaValue`, `withMetaValue`) are one
+  store test each. The answers do not change: `ownedStores` is
+  `protocolStores` by kind, and uuids, eductions, iterator seqs, chunks,
+  chunk buffers and string writers stay outside it, so `extend-type` of
+  `object` or `default` still reaches them; the Proxy of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked 340
+  and 345 times, where 842 and 809. The Pants build's profile, whose
+  engine forms have no kind, keeps probing (its `storesPredicate` and
+  `ownedProtocolValue`), and the QuickJS reference's reordering of the
+  probes (build.rs) is gone.
+- **Slots.** A hash or array set has `-count`, `-seq`, `-conj` and
+  `-lookup` slots, a queue `-count`, `-seq` and `-conj`, and a vector, a
+  subvector and a map entry `-contains-key?` (`vectorContains`), each
+  complete for every value of its class (a public constructor's count
+  is its slots', as a subvector's), so those operations answer slot-first
+  where an `extend-type` program took the lookup before their own paths:
+  in a program with one `extend-type`, `count` of a set 185 to 10 ns,
+  `conj` 589 to 56, `get` 138 to 12, `contains?` of a vector 93 to 5.
+- **Mask guards.** `ownMethod` and `contains.own` no longer skip a runtime
+  class's mask bits: `contains.own` finds the vectors' slot, and
+  `ownMethod` leaves a natively implemented protocol without a slot to
+  `ownDeclared`'s kind test, as before. `extendedMethod` keeps its guard,
+  where the kind's step answers.
+- **What is left.** `reduce` of a vector or a map still takes the lookup
+  before its own path in an `extend-type` program (their `-reduce` slots
+  must keep the walk of an extended `-seq`, light-cljs-1055), and `count`
+  of a cons walks its seq with the `satisfies` hook per step (204 ns for
+  two items there, 34 without extensions, as before light-cljs-1015's 40).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -1653,8 +1697,8 @@ keywords and symbols their `-equiv`; mixed comparisons keep their answers.
 
 **Release and dev builds** adopt the class layout and nothing else: after
 light-cljs-1015 no payload class, kind table, `behindProtocol`,
-`publicMethod` or brand class is in their units (the payload stores'
-probes stay in `extendedMethod` for a runtime class's value, light-cljs-1046).
+`publicMethod`, brand class or probe of the payload stores in turn is in
+their units (light-cljs-1046 left one store test, `kindTable`).
 Release is the gate.
 
 **The compile-time runtime** (the macro host's `compilerFormBridge` and the

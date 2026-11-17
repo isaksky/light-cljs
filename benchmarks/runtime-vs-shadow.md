@@ -3244,3 +3244,147 @@ The light-cljs and esbuild bundle with React, gzip -9, from the group's start to
   - light-cljs-1038 gave simple back 2,752 bytes: simple no longer keeps the sorted map's tree code.
   - light-cljs-1015 gave back 1,393, 1,620 and 1,442 bytes in simple, TodoMVC and flow.
 - **The browser behaviour checks** pass 3/3 on master (`56bf7795` and `685f86dd`) for TodoMVC, simple and flow, on both compilers (`bb benchmarks/re-frame.bb browser todomvc simple flow`).
+
+## 2026-11-17: one store test for the runtime's values (light-cljs-1046)
+
+**What.** The protocol lookup of `extend-type` programs (`extendedMethod`),
+the `satisfies` and `implements` hooks and the store inventories
+(`ownedProtocolValue`, `seqableValue` and the other native tests) read a
+value's keyed kind once and test its class's store (`kindTable`), where
+they probed the stores in turn (`payloadStore`, `storesPredicate`); the
+hash sets and queues have `-count`, `-seq` and `-conj` slots, the sets
+`-lookup`, and the vectors, subvectors and map entries `-contains-key?`.
+docs/value-layout.md, "What light-cljs-1046 landed".
+
+Binaries, in research/shadow-credibility/bin: before `light-cljs-685f86dd`
+(master), after `light-cljs-f40b8d79` (this pellet's runtime as landed but
+for comments and tests). Unreserved: one peer worker and its suites ran
+throughout, with the 1-minute load average up to 122 during the workload
+runs. Raw results: research/output-speed/store-test-1046.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, every operation, the
+before binary run first and the after binary next), 1-minute load average
+before a run 5.92-28.75 before and 3.84-17.61 after. ns per operation,
+median (range):
+
+| op | light before | light after | change | shadow (before / after runs) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 8.14 (8.11-8.17) | 8.16 (8.02-8.21) | +0% | 9.81 / 9.75 | 0.83 | 0.84 |
+| get-small | 11.5 (11.5-11.6) | 11.5 (11.4-11.8) | +0% | 15.0 / 14.9 | 0.77 | 0.77 |
+| get-small-miss | 16.0 (15.9-16.0) | 15.9 (15.7-16.0) | -1% | 19.2 / 19.3 | 0.83 | 0.82 |
+| contains-small | 14.0 (12.0-14.1) | 14.0 (13.9-14.0) | +0% | 12.1 / 12.1 | 1.16 | 1.15 |
+| count-small | 1.98 (1.94-2.00) | 1.97 (1.97-2.07) | -1% | 2.12 / 2.13 | 0.93 | 0.92 |
+| assoc-small-existing | 38.1 (37.1-38.4) | 37.3 (36.7-38.6) | -2% | 31.2 / 30.9 | 1.22 | 1.21 |
+| assoc-small-new | 64.8 (63.5-65.6) | 65.1 (63.5-66.6) | +0% | 39.5 / 39.4 | 1.64 | 1.65 |
+| dissoc-small | 66.0 (64.8-68.6) | 65.0 (63.8-66.3) | -2% | 58.1 / 57.2 | 1.14 | 1.14 |
+| update-small | 48.2 (46.3-49.5) | 47.7 (47.4-48.2) | -1% | 43.9 / 43.7 | 1.10 | 1.09 |
+| map-literal-3 | 20.5 (19.5-21.4) | 19.8 (19.5-21.4) | -3% | 10.2 / 10.1 | 2.00 | 1.96 |
+| get-hash100 | 19.7 (19.5-19.9) | 19.7 (19.4-20.1) | +0% | 12.1 / 12.2 | 1.64 | 1.61 |
+| kw-hash100 | 22.2 (21.9-22.3) | 22.3 (21.9-22.5) | +0% | 13.6 / 13.7 | 1.63 | 1.63 |
+| assoc-hash100 | 96.0 (92.2-96.3) | 92.5 (91.9-95.1) | -4% | 79.7 / 78.4 | 1.21 | 1.18 |
+| dissoc-hash100 | 105.3 (101.5-106.4) | 104.1 (103.3-107.3) | -1% | 77.4 / 77.7 | 1.36 | 1.34 |
+| update-hash100 | 110.8 (108.0-180.9) | 109.1 (107.9-111.3) | -2% | 98.0 / 96.4 | 1.13 | 1.13 |
+| get-in-3 | 57.2 (56.2-232.1) | 56.8 (55.9-58.3) | -1% | 58.0 / 57.6 | 0.99 | 0.99 |
+| assoc-in-3 | 211.2 (208.6-397.0) | 206.4 (203.7-213.8) | -2% | 137.1 / 131.7 | 1.54 | 1.57 |
+| update-in-3 | 235.5 (233.1-483.8) | 232.8 (226.3-238.0) | -1% | 139.8 / 139.2 | 1.68 | 1.67 |
+| vec-conj-64 | 2,203 (2,135-2,460) | 2,509 (2,434-2,886) | +14% | 1,352 / 1,310 | 1.63 | 1.91 |
+| vec-literal-4 | 20.8 (20.4-21.8) | 20.7 (20.4-25.9) | +0% | 6.85 / 6.80 | 3.04 | 3.04 |
+| vec-nth-1024 | 5.16 (5.13-5.23) | 5.22 (5.12-5.44) | +1% | 5.16 / 5.22 | 1.00 | 1.00 |
+| vec-invoke-1024 | 5.11 (4.96-5.19) | 5.22 (5.00-5.44) | +2% | 4.85 / 5.03 | 1.05 | 1.04 |
+| vec-peek | 3.73 (3.65-3.78) | 3.71 (3.62-3.78) | -1% | 3.46 / 3.47 | 1.08 | 1.07 |
+| vec-assoc-1024 | 68.6 (67.2-71.1) | 72.7 (71.5-76.8) | +6% | 74.8 / 74.5 | 0.92 | 0.98 |
+| destructure-vec-3 | 7.39 (7.34-7.82) | 7.40 (7.35-7.48) | +0% | 10.3 / 9.87 | 0.72 | 0.75 |
+| destructure-map-3 | 66.5 (62.9-70.7) | 64.4 (62.3-67.9) | -3% | 50.0 / 49.1 | 1.33 | 1.31 |
+| reduce-vec-1000 | 5,328 (5,242-5,485) | 5,254 (5,200-5,584) | -1% | 2,516 / 2,528 | 2.12 | 2.08 |
+| reduce-map-inc-1000 | 51,518 (49,069-51,838) | 49,479 (48,589-68,413) | -4% | 41,543 / 40,898 | 1.24 | 1.21 |
+| filter-count-1000 | 41,888 (41,173-44,461) | 41,785 (40,240-69,497) | +0% | 28,670 / 28,665 | 1.46 | 1.46 |
+| into-xform-1000 | 68,641 (66,751-71,707) | 68,126 (67,629-143,606) | -1% | 18,421 / 18,529 | 3.73 | 3.68 |
+| mapv-1000 | 49,148 (47,569-50,631) | 48,231 (47,463-67,824) | -2% | 14,458 / 14,462 | 3.40 | 3.33 |
+| lazy-walk-1000 | 44,205 (43,729-46,990) | 44,676 (43,174-51,806) | +1% | 39,856 / 40,796 | 1.11 | 1.10 |
+| seq-walk-vec-1000 | 25,511 (24,746-26,536) | 25,244 (24,437-43,104) | -1% | 9,998 / 9,964 | 2.55 | 2.53 |
+| reduce-range-1000 | 4,873 (4,855-5,102) | 5,109 (4,841-8,263) | +5% | 5,538 / 5,485 | 0.88 | 0.93 |
+| reduce-kv-small | 50.4 (49.7-53.8) | 51.0 (49.9-99.5) | +1% | 38.0 / 38.1 | 1.33 | 1.34 |
+| reduce-entries-small | 362.3 (354.9-439.0) | 357.4 (353.9-544.5) | -1% | 79.7 / 79.8 | 4.55 | 4.48 |
+| str-nested-map | 4,105 (4,033-4,865) | 4,108 (4,079-6,729) | +0% | 2,256 / 2,276 | 1.82 | 1.80 |
+| str-concat | 171.2 (168.8-172.2) | 165.7 (164.9-182.2) | -3% | 15.0 / 14.8 | 11.41 | 11.18 |
+| eq-map-7 | 124.5 (121.7-126.1) | 122.4 (118.9-129.2) | -2% | 151.4 / 152.2 | 0.82 | 0.80 |
+| eq-vec-10 | 40.1 (39.9-42.2) | 39.0 (38.8-39.8) | -3% | 81.8 / 82.4 | 0.49 | 0.47 |
+| hash-fresh-vec-4 | 53.0 (50.9-65.0) | 51.7 (50.1-53.1) | -2% | 73.4 / 73.1 | 0.72 | 0.71 |
+| hash-fresh-map-7 | 293.3 (260.9-323.1) | 268.9 (257.6-301.1) | -8% | 552.1 / 554.1 | 0.53 | 0.49 |
+| protocol-on-record | 2.56 (2.53-2.70) | 2.54 (2.52-2.56) | -1% | 2.38 / 2.40 | 1.08 | 1.06 |
+| record-kw-field | 8.12 (8.01-10.3) | 8.04 (7.88-8.12) | -1% | 4.24 / 4.23 | 1.92 | 1.90 |
+| record-dot-field | 0.88 (0.88-0.88) | 0.88 (0.87-0.89) | +0% | 0.88 / 0.88 | 1.00 | 1.00 |
+| record-assoc | 57.3 (55.7-58.5) | 55.9 (54.2-58.5) | -2% | 13.8 / 14.2 | 4.14 | 3.94 |
+| multimethod | 116.6 (113.3-119.3) | 115.8 (114.8-118.6) | -1% | 48.0 / 47.4 | 2.43 | 2.44 |
+| multi-arity-call | 2.02 (1.99-2.04) | 2.03 (1.95-2.56) | +0% | 2.02 / 2.01 | 1.00 | 1.01 |
+| variadic-call | 13.8 (13.3-14.3) | 14.1 (13.6-19.6) | +2% | 14.5 / 14.6 | 0.95 | 0.97 |
+| apply-vec | 192.9 (190.4-198.0) | 191.0 (188.1-236.3) | -1% | 93.8 / 94.2 | 2.06 | 2.03 |
+| unknown-fn-call | 4.54 (4.50-4.62) | 4.53 (4.40-4.85) | +0% | 6.52 / 6.60 | 0.70 | 0.69 |
+| closure-alloc-call | 9.31 (9.04-10.6) | 9.11 (9.10-13.1) | -2% | 8.46 / 8.46 | 1.10 | 1.08 |
+| swap-inc | 4.91 (4.74-5.16) | 4.79 (4.68-5.09) | -2% | 5.70 / 5.69 | 0.86 | 0.84 |
+| swap-assoc | 62.0 (60.9-63.9) | 62.0 (60.3-66.6) | +0% | 38.5 / 38.5 | 1.61 | 1.61 |
+| merge-small | 2,788 (2,605-2,856) | 2,682 (2,610-3,632) | -4% | 894.7 / 912.7 | 3.12 | 2.94 |
+| select-keys-3 | 397.0 (390.2-409.4) | 384.4 (379.2-421.8) | -3% | 253.0 / 255.5 | 1.57 | 1.50 |
+| group-by-100 | 11,819 (11,437-12,393) | 12,518 (11,894-14,343) | +6% | 5,091 / 5,207 | 2.32 | 2.40 |
+| sort-by-100 | 7,398 (7,152-7,442) | 7,270 (7,185-10,156) | -2% | 4,759 / 4,748 | 1.55 | 1.53 |
+| transient-vec-100 | 4,934 (4,867-5,343) | 5,061 (4,845-6,099) | +3% | 1,163 / 1,172 | 4.24 | 4.32 |
+| transient-map-100 | 10,756 (10,415-11,703) | 10,571 (10,345-13,736) | -2% | 4,132 / 4,306 | 2.60 | 2.46 |
+| sorted-map-assoc-100 | 216.1 (203.0-225.5) | 213.1 (208.5-316.4) | -1% | 210.8 / 212.5 | 1.03 | 1.00 |
+| str-sorted-map-20 | 32,021 (31,286-35,388) | 32,197 (31,089-60,988) | +1% | 20,578 / 21,108 | 1.56 | 1.53 |
+| bit-and | 0.59 (0.56-0.60) | 0.59 (0.59-1.84) | +0% | 0.59 / 0.60 | 1.00 | 0.98 |
+| aget-bit-and | 0.60 (0.59-0.62) | 0.60 (0.59-2.06) | +0% | 0.60 / 0.60 | 1.00 | 1.00 |
+
+- **One operation more than 10% slower in this run**: `vec-conj-64`
+  (+14%, after range 2,434-2,886). Two rechecks of a build of the five
+  operations that moved over 5% (`--ops`, before and after alternated,
+  load 4-12) gave it +9% and +5% (before 2,347 and 2,332, after 2,555 and
+  2,448), and `vec-assoc-1024` +8% and `group-by-100` +7% and +6% in both,
+  where `reduce-range-1000` and `hash-fresh-map-7` were within 2%. No
+  unit on their paths changed (`conj`'s and `assoc`'s call-site entries and
+  the vector slots are as before; the gate's slice differs by the stores'
+  kinds, the table and the vectors' `-contains-key?` slot), and renaming
+  that slot away in the built output changed nothing (`vec-conj-64`
+  2,432-2,553 without it, 2,450-2,672 with it). The cause of the 5-9% is not
+  found and is recorded as a loss (light-cljs-1056). Every other change is
+  within 8% and inside the runs' spread; the gate keeps no `extend-type`,
+  so none of its operations takes the lookup this pellet changes.
+- **Off the gate**, in a scratch program with one `extend-type` (a record
+  extended with `ICounted`), each operation 1 to 5 million times, median
+  of 7 rounds, three processes each (load 4.5-16.6 before, 9.8-11.8
+  after): `count` of a hash set 185 to 10.4 ns, of a queue 187 to 10.1,
+  `conj` of a set 589 to 56, `get` of a set 138 to 12, `seq` of a set 193
+  to 49, `contains?` of a vector 93 to 4.8, `reduce` of a 3-item vector 225
+  to 166 and of a set 674 to 331, `meta` of a map 94 to 60, `empty` of a
+  vector 194 to 124, `counted?` of a cons 154 to 44, `seqable?` of a set 91
+  to 31, `count` of a two-item cons 401 to 204; `count` of a record
+  unchanged (14.8). Without `extend-type`, `count` of a set 34 to 10.4 and
+  of a queue 33 to 10.2, and `count` of a two-item cons 34 as before (40 at
+  `0b473fdb`, before light-cljs-1015: the 65% loss light-cljs-1015 measured
+  does not reproduce in this program).
+
+**Workload 200k and the re-frame-shaped 200k app** (`compare.bb PROJECT
+--runs 5 --runtime-only --runtime 1,40`, the project's light-cljs output
+rebuilt with each binary just before its run, one before/after pair each),
+wall time at 40 iterations, median (range), and light-cljs's steady state:
+
+| project | light before | light after | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k | 2.753 s (2.669-2.851) | 2.345 s (2.335-2.440) | 1.458 / 1.364 s | 59.3 to 49.4 (shadow-cljs 28.4 / 26.0) | 41-53 / 27-33 |
+| re-frame-shaped | 26.129 s (25.326-26.516) | 21.562 s (20.822-22.536) | 12.528 / 12.441 s | 608.6 to 498.8 (shadow-cljs 283.1 / 281.7) | 7-17 / 6-7 |
+
+The re-frame-shaped app keeps `extend-type`, so its operations on sets,
+queues and the other runtime values took the lookup: its steady state is
+18% lower, light/shadow 2.15 to 1.77, with shadow-cljs's unchanged. The
+generated workload's 17% is part load (the before run was at a load of 41
+to 53 and shadow-cljs's own time fell 6% between the runs): light/shadow
+2.09 to 1.90.
+
+**Advanced size** (the runtime slice, `--size-report`):
+- the gate: 147,575 to 148,438 runtime bytes (961 to 968 units);
+- workload 200k: 180,078 to 181,776 (1,254 to 1,264 units);
+- the re-frame-shaped 200k app: 196,177 to 198,497 (1,378 to 1,392 units);
+- the readable runtime of `none`, `prepare` and dev builds: about 6,000
+  bytes larger (`add` at none 660,822 to 666,777); the size ratchet
+  (tests/support/ratchet_fixtures.rs, noted there): `keyword-case` at
+  advanced 5,738, past its 5,700. TodoMVC and re-frame simple were not
+  ported in this run.

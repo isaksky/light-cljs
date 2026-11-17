@@ -650,6 +650,19 @@
 //! 20,182, its slice taking other units); one byte
 //! more for `keyword-case`, `keyword-only` and `constant-lookups`.
 //! `rest-fn`'s ceiling moves to 21,000; no other ceiling moves.
+//!
+//! One store test for the runtime's values (light-cljs-1046, 2026-11-17):
+//! the protocol lookup (`extendedMethod`), the `satisfies` hooks and the
+//! store inventories (`storesPredicate`, `ownedProtocolValue`) read a
+//! value's keyed kind once and test its class's store (`kindTable`, each
+//! store naming its classes' kinds in `classKinds`) where they probed the
+//! stores in turn (`payloadStore`), and the hash sets, queues and vectors
+//! have the `-count`, `-seq`, `-conj`, `-lookup` and `-contains-key?` slots
+//! they lacked. The readable runtime grows about 6,000 bytes (none 666,777
+//! for `add`, where 660,822), under every none and prepare ceiling. At
+//! advanced a program keeping an inventory keeps the stores' kinds and the
+//! table, about 350 bytes (`keyword-case` 5,738, past 5,700, its ceiling
+//! moving to 5,800).
 
 pub struct Fixture {
     pub name: &'static str,
@@ -723,7 +736,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [683_000, 683_000, 5_700],
+        ceilings: [683_000, 683_000, 5_800],
         removed: [0, 0, 0],
         printed: "321\n",
     },

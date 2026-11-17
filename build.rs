@@ -260,12 +260,10 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   protocol its method demands; and `keyMethod`, `builtin`,
 ///   `externalMethod` and `extendedMethod` run with the calls between them
 ///   (`demandMethod`, `keySlot`, `nativeType`, `extendedDeclared` and
-///   `externalMethod` where it is still the hook) inlined. Where the stores
-///   are WeakMaps (`weakMapStores`), a `storesPredicate` answers false for
-///   a primitive, which no store holds, tests the stores whose test is a
-///   WeakMap's first, and `maps` and `mapKinds`, last and in order, as
-///   before records left them (light-cljs-1037), with the first eight tests
-///   unrolled.
+///   `externalMethod` where it is still the hook) inlined. (A
+///   `storesPredicate` tests one store, its class's, where it probed each in
+///   turn, so the QuickJS reference no longer reorders and unrolls its
+///   probes, light-cljs-1046.)
 fn compiler_runtime(runtime: &str) -> String {
     compiler_hooks(runtime, false)
 }
@@ -357,15 +355,7 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         "    if (!declared.native?.(value)) throw new Error(\"No protocol method \" + key.key + \" defined for this value\"); // interpreterDispatch\n",
         "    return undefined; }; // interpreterDispatch\n",
     );
-    const DISPATCH_STORES: &str = concat!(
-        "  if (weakMapStores) storesPredicate = (...stores) => { const late = [maps, mapKinds], weak = WeakMap.prototype.has; // interpreterDispatch\n",
-        "    const ordered = [...stores.filter(store => !late.includes(store) && store.has === weak), ...stores.filter(store => !late.includes(store) && store.has !== weak), ...stores.filter(store => late.includes(store))], n = ordered.length, [a, b, c, d, e, f, g, h] = ordered; // interpreterDispatch\n",
-        "    return value => { if (typeof value === \"object\" ? value === null : typeof value !== \"function\") return false; // interpreterDispatch\n",
-        "      if (n > 0 && (a.has(value) || n > 1 && (b.has(value) || n > 2 && (c.has(value) || n > 3 && (d.has(value) || n > 4 && (e.has(value) || n > 5 && (f.has(value) || n > 6 && (g.has(value) || n > 7 && h.has(value))))))))) return true; // interpreterDispatch\n",
-        "      for (let i = 8; i < n; i++) if (ordered[i].has(value)) return true; // interpreterDispatch\n",
-        "      return false; }; }; // interpreterDispatch\n",
-    );
-    const HOOKS: [(&str, &str, &str); 18] = [
+    const HOOKS: [(&str, &str, &str); 17] = [
         (
             "  const namespaces = new Map();\n",
             "",
@@ -455,11 +445,6 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
             "  protocolHooks.builtin = builtin;\n",
             "  protocolHooks",
             DISPATCH,
-        ),
-        (
-            "      for (let i = 0; i < stores.length; i++) if (stores[i].has(value)) return true;\n      return false;\n    };\n  }\n",
-            "",
-            DISPATCH_STORES,
         ),
     ];
     let mut runtime = runtime.to_owned();

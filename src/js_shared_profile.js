@@ -212,7 +212,7 @@
   }
   //@unit storeNativeProtocols requires: sharedWords
   // None: the boot seals each resolved key's `info`, so `extendedMethod` and
-  // `storeProtocol` could not fill its per-store memo (`stores`,
+  // `storeProtocol` could not fill its per-kind memo (`kinds`,
   // light-cljs-988) afterwards; here the native test answers every call.
   const storeNativeProtocols = sharedWords([]);
   //@unit builtinSlots
@@ -1582,6 +1582,11 @@
       return false;
     };
   }
+  //@unit ownedProtocolValue requires: protocolStores, storesPredicate
+  // The V8 profile's reads the keyed kind (`ownedKind`, light-cljs-1046),
+  // which this profile's engine forms do not have: here the stores of
+  // `protocolStores` are probed in turn, as before.
+  const ownedProtocolValue = storesPredicate(...protocolStores);
   //@unit demungePattern requires: demungeCharacters
   // The source of the V8 profile's global `RegExp`, a string: a regex
   // object is exotic data a seal cannot take, and an engine regex form

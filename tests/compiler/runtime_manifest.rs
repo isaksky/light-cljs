@@ -1204,8 +1204,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // classes with the slot-first wrappers of `=` and `hash` (light-cljs-1014),
     // and the keywords' and symbols' `-equiv` slots (light-cljs-1040), less
     // the kind tables' 55 branch and wrapper units and the five protocol
-    // wrappers of `seq`, `first`, `rest`, `next` and `count` (light-cljs-1015).
-    assert_eq!(checked, 442);
+    // wrappers of `seq`, `first`, `rest`, `next` and `count` (light-cljs-1015),
+    // and the seven `-count`, `-seq`, `-conj` and `-lookup` slots of the hash
+    // sets and queues and the three `-contains-key?` slots of the vectors,
+    // subvectors and map entries (light-cljs-1046).
+    assert_eq!(checked, 452);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s

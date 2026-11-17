@@ -48,7 +48,7 @@
   //@unit keywordCells requires: keywordOf
   // `keywordOf` as an entry of the store inventories (`storesPredicate`,
   // `protocolStores`), as `vectorCells`.
-  const keywordCells = Object.freeze({has: value => keywordOf(value) !== undefined});
+  const keywordCells = Object.freeze({has: value => keywordOf(value) !== undefined, classKinds: [20]});
   //@unit KeywordCell
   // A keyword (see `keywordOf`) with `KeywordValue`'s prototype. Nothing in
   // it is frozen. The compile-time runtime stamps it (`stamp`).
@@ -62,7 +62,7 @@
     return value != null && value.cljs$lang$kind$$LKEY === 21 && "str$LKEY" in value ? value : undefined;
   }
   //@unit symbolCells requires: symbolOf
-  const symbolCells = Object.freeze({has: value => symbolOf(value) !== undefined});
+  const symbolCells = Object.freeze({has: value => symbolOf(value) !== undefined, classKinds: [21]});
   //@unit namedOf requires: keywordOf, symbolOf
   // A keyword's or a symbol's fields (`ns`, `name`, `hash`), else undefined.
   const namedOf = value => keywordOf(value) ?? symbolOf(value);
@@ -158,8 +158,8 @@
   const isEntryCell = value => value != null && value.cljs$lang$kind$$LKEY === 3 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
   //@unit vectorCells requires: holdsVector
   // `holdsVector` as an entry of the store inventories (`storesPredicate`,
-  // `payloadStores`), which probe it as a store that is not exact.
-  const vectorCells = Object.freeze({has: holdsVector});
+  // `ownedStores`), which test it as a store that is not exact.
+  const vectorCells = Object.freeze({has: holdsVector, classKinds: [1, 2, 3]});
   //@unit vectorCellCopy
   // A new value of a vector cell's prototype with its fields, its metadata
   // and hash included, built by a constructor (so the compile-time runtime
@@ -216,7 +216,7 @@
   const isView = value => viewOf(value) !== undefined;
   //@unit viewCells requires: isView
   // `isView` as an entry of the store inventories, as `vectorCells`.
-  const viewCells = Object.freeze({has: isView});
+  const viewCells = Object.freeze({has: isView, classKinds: [5, 6, 7, 8, 9, 10]});
   //@unit IndexedSeqCell
   // A seq over an array or a string with `IndexedSeqValue`'s prototype (see
   // `viewOf`); rest arguments are one over a fresh array of their own.
@@ -260,7 +260,7 @@
   const isLazy = value => lazyOf(value) !== undefined;
   //@unit lazyCells requires: isLazy
   // `isLazy` as an entry of the store inventories, as `viewCells`.
-  const lazyCells = Object.freeze({has: isLazy});
+  const lazyCells = Object.freeze({has: isLazy, classKinds: [16]});
   //@unit lazyStep
   // What the thunk of a lazy seq's state (`lazyOf`) gave, calling it on the
   // first call only. The state changes only after the call returns, so a
@@ -286,7 +286,7 @@
   const isChunkedCons = value => chunkedConsOf(value) !== undefined;
   //@unit chunkedConsCells requires: isChunkedCons
   // `isChunkedCons` as an entry of the store inventories, as `viewCells`.
-  const chunkedConsCells = Object.freeze({has: isChunkedCons});
+  const chunkedConsCells = Object.freeze({has: isChunkedCons, classKinds: [17]});
   //@unit ArrayChunkCell
   // A chunk with `ArrayChunk`'s prototype (`chunkOf`): the items of `arr`
   // from `off` to `end`; a range's chunk (an integer chunk) has no items but
@@ -328,7 +328,7 @@
   const isCell = value => cellOf(value) !== undefined;
   //@unit seqCells requires: isCell
   // `isCell` as an entry of the store inventories, as `viewCells`.
-  const seqCells = Object.freeze({has: isCell});
+  const seqCells = Object.freeze({has: isCell, classKinds: [11, 12, 13, 14, 15, 22, 23, 24, 25, 26, 27]});
   //@unit cellFields
   // A cell's copy (`cellOf`), for its metadata: a value of its prototype
   // with its own keyed fields, in their order, and none of the slots or
@@ -559,7 +559,7 @@
   // slots), so `get` answers undefined for them. A record is no map here:
   // its methods answer, and the native tests that took it for one test it
   // by its kind (`recordCells`, light-cljs-1037).
-  const maps = {has: value => mapOf(value) !== undefined, get: () => undefined};
+  const maps = {has: value => mapOf(value) !== undefined, get: () => undefined, classKinds: [28, 29, 30]};
   //@unit mapKinds requires: mapOf
   // A map's kind, which its class gives: "array-map", "hash-map" or
   // "sorted-map".
@@ -622,6 +622,7 @@
   // Its updates, lookups and count read its tree map instead. Each test
   // reads the keyed kind once, as `setCellOf` and `treeSetOf` would in turn.
   const sets = {
+    classKinds: [33, 44],
     has(value) {
       if (value == null) return false;
       const kind = value.cljs$lang$kind$$LKEY;
@@ -691,7 +692,7 @@
   //@unit transientCells requires: isTransient
   // The transients, which are all classes, as an entry of the store
   // inventories (`protocolStores`).
-  const transientCells = Object.freeze({has: isTransient});
+  const transientCells = Object.freeze({has: isTransient, classKinds: [4, 31, 32, 34]});
   //@unit IteratorSeqCell
   // A seq of a host iterable's iterator, upstream's ES6IteratorSeq, kind 37
   // (`iteratorSeqs`, light-cljs-1013): its own keyed fields are its `first`
@@ -711,6 +712,7 @@
   // The iterator seqs (`IteratorSeqCell`): `has` tells one by its kind and
   // own `iter` field, `get` gives it.
   const iteratorSeqs = {
+    classKinds: [37],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 37 && "iter$LKEY" in value,
     get(value) { if (iteratorSeqs.has(value)) return value; }
   };
@@ -723,6 +725,7 @@
   // The reduced values (`ReducedCell`): `has` tells one by its kind and own
   // `val` field, which `get` reads and `reset` replaces.
   const reducedValues = {
+    classKinds: [35],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 35 && "val$LKEY" in value,
     get(value) { if (reducedValues.has(value)) return value.val$LKEY; },
     reset(value, val) { value.val$LKEY = val; }
@@ -785,6 +788,7 @@
   // readers read. The Pants build's profile swaps it for one that also
   // reads the engine's vars, whose fields it gives in a fresh object.
   const vars = {
+    classKinds: [45],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 45 && (value.sym$LKEY !== undefined || "sym$LKEY" in value),
     get(value) { if (vars.has(value)) return value; }
   };
@@ -797,8 +801,8 @@
   // The atoms and the volatiles (light-cljs-1013): instances of `Atom` and
   // `Volatile`, whose prototypes' keyed kinds are 38 and 39, with their own
   // `state` field, upstream's.
-  const atoms = {has: isAtomCell},
-    volatiles = {has: value => value != null && value.cljs$lang$kind$$LKEY === 39 && "state" in value};
+  const atoms = {has: isAtomCell, classKinds: [38]},
+    volatiles = {has: value => value != null && value.cljs$lang$kind$$LKEY === 39 && "state" in value, classKinds: [39]};
   //@unit QueueCell
   // A queue, upstream's PersistentQueue, with `PersistentQueueValue`'s
   // prototype, kind 36 (`queues`, light-cljs-1013): its own keyed field
@@ -809,6 +813,7 @@
   // The queues (`QueueCell`): `has` tells one by its kind and own `arr`
   // field, `get` reads its items.
   const queues = {
+    classKinds: [36],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 36 && value.arr$LKEY !== undefined,
     get(value) { if (queues.has(value)) return value.arr$LKEY; }
   };
@@ -821,6 +826,7 @@
   // The delays (`DelayCell`): `has` tells one by its kind and own field,
   // `get` reads its state.
   const delays = {
+    classKinds: [40],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 40 && value.state$LKEY !== undefined,
     get(value) { if (delays.has(value)) return value.state$LKEY; }
   };
@@ -850,6 +856,7 @@
   // The functions with metadata (`MetaFnCell`): `has` tells one by its kind
   // and own `afn` field, `get` reads the function it calls.
   const metaFunctions = {
+    classKinds: [46],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 46 && value.afn$LKEY !== undefined,
     get(value) { if (metaFunctions.has(value)) return value.afn$LKEY; }
   };
@@ -868,7 +875,7 @@
   // The records (kind 65, `recordTypeOf`) as an entry of the store
   // inventories (`storesPredicate`, `protocolStores`), as `vectorCells`: the
   // native tests that answered a record as a map answer it by its kind.
-  const recordCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 65});
+  const recordCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 65, classKinds: [65]});
   //@unit isTypeValue
   // Whether a value is of a program's type, record or `reify` (kinds 64 to
   // 66, `kinds`).
@@ -876,7 +883,7 @@
   //@unit reifyCells
   // The `reify` values (kind 66, `kinds`), as an entry of the store
   // inventories: they implement `IMeta` natively.
-  const reifyCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 66});
+  const reifyCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 66, classKinds: [66]});
   //@unit protocolHooks
   // Generic operations' protocol dispatch, empty unless `installMethods` is kept.
   const protocolHooks = {};
@@ -1821,7 +1828,7 @@
     }
     return lazy.s$LKEY = current;
   }
-  //@unit queueFromArray.seq effect: queueFromArray when: seq requires: concat, IndexedSeqValue,
+  //@unit queueFromArray.seq effect: queueFromArray when: seq, seqSite requires: concat, IndexedSeqValue,
   //@ kindHooks, publicCollectionSlots, seq, view
   kindHooks.seqQueue = (value, queue) => {
     if (publicCollectionSlots.has(value)) { const q = publicCollectionSlots.get(value); return seq(concat(q.front, q.rear)); }
@@ -1852,8 +1859,8 @@
   // Only the sorted-map operations, which keep its constructor, build a map
   // of that kind.
   kindHooks.seqTree = treeMapSeq;
-  //@unit makeSet.seq effect: makeSet, treeSetConstructor when: seq, setSeqs requires:
-  //@ collectionTraversal, IndexedSeqValue, kindHooks, setKinds, view
+  //@unit makeSet.seq effect: makeSet, treeSetConstructor when: seq, seqSite, setSeqs requires: collectionTraversal,
+  //@ IndexedSeqValue, kindHooks, setKinds, view
   // The members it is given, which a sorted set builds of its tree map on
   // each `sets.get` (light-cljs-1038), in their traversal order.
   kindHooks.seqSet = (value, members) => members.length
@@ -2794,7 +2801,7 @@
     }
     return result;
   }
-  //@unit queueFromArray.conj effect: queueFromArray when: conj requires: conj, kindHooks,
+  //@unit queueFromArray.conj effect: queueFromArray when: conj, conjSite requires: conj, kindHooks,
   //@ makeVector, meta, PersistentQueueValue, publicCollectionSlots, queueFromArray, queues
   kindHooks.conjQueue = (result, item) => {
     const q = publicCollectionSlots.get(result);
@@ -2814,7 +2821,7 @@
   //@unit makeMap.conj effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: conj
   //@ requires: kindHooks, mapConj
   kindHooks.conjMap = mapConj;
-  //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj requires: assoc, copyEntries,
+  //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj, conjSite requires: assoc, copyEntries,
   //@ kindHooks, makeSet, meta, missing, PersistentHashSetValue, publicCollectionSlots, putMember,
   //@ sets, treeSetOf
   // The set `conj` builds, or `missing` where it adds nothing. A hash set's
@@ -3066,7 +3073,7 @@
   // (light-cljs-235; a hook rather than a wrapper of `lookup` since
   // light-cljs-302, so that a chunk places it with the hash maps).
   kindHooks.trieValue = (trie, key, notFound) => { const entry = trieEntry(trie, key); return entry ? entry.value : notFound; };
-  //@unit get.members effect: publicHashSet, putMember when: lookup requires: kindHooks, trieEntry
+  //@unit get.members effect: publicHashSet, putMember when: lookup, setLookup requires: kindHooks, trieEntry
   // Likewise the member of a hash set's trie (`putMember`), which `get.sets`
   // (light-cljs-373) and `lookup.sets` read, kept only where a program builds
   // hash sets (light-cljs-236).
@@ -4905,7 +4912,7 @@
   //@unit makeVector.lookup effect: makeVector when: lookup requires: kindHooks, vectorNth
   kindHooks.nthVector = vectorNth;
   //@unit makeMap.lookup effect: ArrayMapCell, makeMap, treeMapConstructor, makeSet,
-  //@ treeSetConstructor when: lookup requires: collectionEntryIndex, kindHooks
+  //@ treeSetConstructor when: lookup, setLookup requires: collectionEntryIndex, kindHooks
   // A record, no map here, has its own `-lookup` (`recordMethods.lookup`).
   kindHooks.entryIndex = collectionEntryIndex;
 
@@ -5112,6 +5119,25 @@
     if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     return 2;
   });
+  //@unit vectorContains requires: noBranch
+  // `contains?` of a vector, a subvector or a map entry: whether the key is
+  // an index of its store, as `contains` answers it (light-cljs-1046), so
+  // that `contains.own`, which their `IAssociative` mask bit sends here,
+  // finds the slot.
+  function vectorContains(self, key) {
+    const cnt = self.cnt$LKEY;
+    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
+    return Number.isInteger(key) && key >= 0 && key < cnt;
+  }
+  //@unit PersistentVectorValue.containsSlot effect: PersistentVectorValue when: contains,
+  //@ containsSite requires: builtinSlot, PersistentVectorValue, vectorContains
+  PersistentVectorValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(vectorContains);
+  //@unit SubvecValue.containsSlot effect: SubvecValue when: contains, containsSite requires: builtinSlot,
+  //@ SubvecValue, vectorContains
+  SubvecValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(vectorContains);
+  //@unit MapEntryType.containsSlot effect: MapEntryType when: contains, containsSite requires: builtinSlot,
+  //@ MapEntryType, vectorContains
+  MapEntryType.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(vectorContains);
   //@unit MapEntryType.peek effect: MapEntryType when: peek, peekSite requires: builtinSlot,
   //@ MapEntryType, noBranch
   MapEntryType.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
@@ -5207,8 +5233,8 @@
   }, "name", {value: operation.name}))(nth);
   //@unit count.slots effect: arrayChunk, EmptyListValue, IndexedSeqValue, IntegerRangeValue,
   //@ ListValue, MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentVectorValue, SubvecValue, TransientVectorType, treeMapConstructor when: count
-  //@ requires: count, noBranch, slotFirst
+  //@ PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue, SubvecValue,
+  //@ TransientVectorType, treeMapConstructor when: count requires: count, noBranch, slotFirst
   count = (operation => Object.defineProperty(function (value) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
       const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
@@ -5226,8 +5252,8 @@
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(peek);
   //@unit conj.slots effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentVectorValue, SubvecValue, treeMapConstructor when: conj requires: conj, noBranch,
-  //@ slotFirst
+  //@ PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue, SubvecValue,
+  //@ treeMapConstructor when: conj requires: conj, noBranch, slotFirst
   conj = (operation => Object.defineProperty(function (coll, item) {
     if (slotFirst.on && coll != null && coll.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
       const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
@@ -5246,8 +5272,8 @@
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(assoc);
   //@unit get.slots effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentVectorValue, SubvecValue, TransientVectorType, treeMapConstructor when: get
-  //@ requires: get, noBranch, slotFirst
+  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue, TransientVectorType,
+  //@ treeMapConstructor when: get requires: get, noBranch, slotFirst
   get = (operation => Object.defineProperty(function (value, key, notFound) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
       const arity = arguments.length;
@@ -5266,8 +5292,9 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(dissoc);
-  //@unit contains.slots effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
-  //@ when: contains requires: contains, noBranch, slotFirst
+  //@unit contains.slots effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
+  //@ PersistentVectorValue, SubvecValue, treeMapConstructor when: contains requires: contains,
+  //@ noBranch, slotFirst
   contains = (operation => Object.defineProperty(function (value, key) {
     if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
       const method = value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY;
@@ -5496,6 +5523,69 @@
   //@unit treeMapConstructor.containsSlot effect: treeMapConstructor when: contains, containsSite
   //@ requires: builtinSlot, mapContains, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
+  // A hash or array set's and a queue's `-count`, `-seq` and `-conj`, and a
+  // set's `-lookup`, are slots of their prototypes too (light-cljs-1046),
+  // so that the operations answer them slot-first where the protocol lookup
+  // (`extendedMethod`) took them before their own paths. Each gives what its
+  // operation's path gives every value of the class layout (`setCellOf`,
+  // `queues`), one a public constructor built (`constructorSlots`)
+  // included, whose count is its slots' as a subvector's; a value made by
+  // reflection, which has no `entries` (`arr`), answers `noBranch` and
+  // takes the operation.
+  //@unit PersistentHashSetValue.countSlot effect: PersistentHashSetValue when: count, countSite
+  //@ requires: builtinSlot, count, noBranch, PersistentHashSetValue, publicCollectionSlots
+  PersistentHashSetValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    const members = self.entries$LKEY;
+    if (members == null) return noBranch;
+    const slots = publicCollectionSlots.get(self);
+    return slots === undefined ? members.length : count(slots["hash-map"]);
+  });
+  //@unit PersistentHashSetValue.seqSlot effect: PersistentHashSetValue when: seq, seqSite requires: builtinSlot,
+  //@ kindHooks, noBranch, PersistentHashSetValue
+  PersistentHashSetValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    const members = self.entries$LKEY;
+    return members == null ? noBranch : kindHooks.seqSet(self, members);
+  });
+  //@unit PersistentHashSetValue.conjSlot effect: PersistentHashSetValue when: conj, conjSite
+  //@ requires: builtinSlot, kindHooks, missing, noBranch, PersistentHashSetValue, preserveMeta
+  PersistentHashSetValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
+    if (self.entries$LKEY === undefined) return noBranch;
+    const built = kindHooks.conjSet(self, self, item);
+    return built === missing ? self : preserveMeta(self, built);
+  });
+  //@unit setLookup requires: kindHooks, noBranch
+  // `get` of a hash or array set: its members' trie, or the entry its
+  // members' array holds, as `lookup` reads them (`lookup.sets`).
+  function setLookup(self, key, notFound) {
+    const members = self.entries$LKEY;
+    if (!members) return noBranch;
+    if (!Array.isArray(members)) return kindHooks.trieMember(members, key, notFound);
+    const index = kindHooks.entryIndex(self, members, key);
+    return index < 0 ? notFound : members[index].key;
+  }
+  //@unit PersistentHashSetValue.lookupSlot effect: PersistentHashSetValue when: get, getSite,
+  //@ getSite3 requires: builtinSlot, PersistentHashSetValue, setLookup
+  PersistentHashSetValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return setLookup(self, key, null); });
+  PersistentHashSetValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return setLookup(self, key, notFound); });
+  //@unit PersistentQueueValue.countSlot effect: PersistentQueueValue when: count, countSite
+  //@ requires: builtinSlot, noBranch, PersistentQueueValue, publicCollectionSlots
+  PersistentQueueValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    const items = self.arr$LKEY;
+    if (items === undefined) return noBranch;
+    const slots = publicCollectionSlots.get(self);
+    return slots === undefined ? items.length : "cnt" in slots ? slots.cnt : "count" in slots ? slots.count : items.length;
+  });
+  //@unit PersistentQueueValue.seqSlot effect: PersistentQueueValue when: seq, seqSite requires: builtinSlot,
+  //@ kindHooks, noBranch, PersistentQueueValue
+  PersistentQueueValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    const items = self.arr$LKEY;
+    return items === undefined ? noBranch : kindHooks.seqQueue(self, items);
+  });
+  //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjSite
+  //@ requires: builtinSlot, kindHooks, noBranch, PersistentQueueValue, preserveMeta
+  PersistentQueueValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
+    return self.arr$LKEY === undefined ? noBranch : preserveMeta(self, kindHooks.conjQueue(self, item));
+  });
   //@unit PersistentArrayMapValue.conjSlot effect: PersistentArrayMapValue when: conj, conjSite
   //@ requires: builtinSlot, mapConjSlot, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
@@ -5964,9 +6054,9 @@
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(next);
   //@unit seq.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq, MapEntryType,
-  //@ PersistentVectorValue, SubvecValue, Cons, CycleValue, EmptyListValue, IntegerRangeValue,
-  //@ IterateValue, KeySeqCell, ListValue, RangeValue, RepeatValue, ReSeqCell, treeMapSeqConstructor
-  //@ when: seq requires: emptyList, noBranch, seq, slotFirst
+  //@ PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue, SubvecValue, Cons,
+  //@ CycleValue, EmptyListValue, IntegerRangeValue, IterateValue, KeySeqCell, ListValue, RangeValue,
+  //@ RepeatValue, ReSeqCell, treeMapSeqConstructor when: seq requires: emptyList, noBranch, seq, slotFirst
   // The empty list takes the operation, as before it had slots: every walk
   // ends with its `seq`, and its slot made the read and call each step takes
   // megamorphic (light-cljs-1033, docs/value-layout.md). The empty list and
@@ -6093,16 +6183,17 @@
     return get(value, key, missing) !== missing;
   }
   //@unit contains.own effect: installMethods when: contains requires: contains, demandKey, keySlot,
-  //@ methodKeys, protocolHooks
-  // As `get.own`, but not for a runtime class's value (a kind below 64),
-  // whose mask bit declares what it implements natively and which has no
-  // `-contains-key?` slot (light-cljs-1028).
+  //@ methodKeys, noBranch, protocolHooks
+  // As `get.own`: a vector's, a subvector's and a map entry's mask bit find
+  // their `-contains-key?` slot (`vectorContains`, light-cljs-1046, where
+  // until then this skipped every runtime class's value), and a value made
+  // by reflection, whose slot answers `noBranch`, takes the operation.
   contains = (operation => Object.defineProperty(function (value, key) {
     const resolved = methodKeys[2];
-    if (value != null && (value[resolved.mask] & resolved.bit) !== 0 && !(value.cljs$lang$kind$$LKEY < 64)) {
+    if (value != null && (value[resolved.mask] & resolved.bit) !== 0) {
       demandKey(resolved, 2, value);
       const slot = value[keySlot(resolved, 2)], own = slot ? slot : protocolHooks.declaredMethod(value, resolved, 2, slot);
-      if (own) return own.call(value, value, key);
+      if (own) { const result = own.call(value, value, key); if (result !== noBranch) return result; }
     }
     return operation(value, key);
   }, "name", {value: operation.name}))(contains);
@@ -8248,20 +8339,39 @@
   function nextValue(value) {
     return isCell(value) || isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value);
   }
-  //@unit storesPredicate requires: canHoldField
-  // Brand inventories are fixed. Build one private inventory per predicate,
-  // without allocating an array and invoking a callback for each probe.
-  // Each store is a class's kind test or a WeakMap, probed in turn: no value
-  // keeps a private-field payload (`payloads`, deleted in light-cljs-1038),
-  // which one read of its kind answered (light-cljs-990).
-  // No store holds a value that cannot hold a private field.
+  //@unit kindTable
+  // Each store of `stores` at the keyed kinds of the classes whose values it
+  // holds (its `classKinds`), by the kind's number, else null: every store
+  // of the inventories (`storesPredicate`, `protocolStores`) is a class's
+  // kind test, and a value is in one store at most, its class's, whose test
+  // then tells it from a value made by reflection from the class's
+  // prototype, so an inventory tests one store where it probed each in turn
+  // (light-cljs-1046). Dense, so that no index a host gives
+  // `Array.prototype` is read (`storeHolds`). A store without `classKinds`
+  // (the Pants build's profile swaps some for ones that hold engine forms,
+  // which have no kind) is in no entry.
+  function kindTable(stores) {
+    const table = Array(128).fill(null);
+    for (const store of stores) for (const kind of store.classKinds ?? []) table[kind] = store;
+    return table;
+  }
+  //@unit storeHolds
+  // Whether the store of `table` (`kindTable`) for the keyed kind `kind`
+  // holds `value`: a kind that is no number from 0 to 127 has none.
+  function storeHolds(table, value, kind) {
+    if ((kind & 127) !== kind) return false;
+    const store = table[kind];
+    return store !== null && store.has(value);
+  }
+  //@unit storesPredicate requires: canHoldField, kindTable, storeHolds
+  // Whether a value is in one of the stores of `inventory`, which is fixed:
+  // one read of its keyed kind and the test of its class's store, where
+  // that is in the inventory (`kindTable`). No store holds a value that
+  // cannot hold a field. The Pants build's profile, whose engine forms have
+  // no kind, probes the stores in turn.
   function storesPredicate(...inventory) {
-    const stores = inventory.slice();
-    return value => {
-      if (!canHoldField(value)) return false;
-      for (let i = 0; i < stores.length; i++) if (stores[i].has(value)) return true;
-      return false;
-    };
+    const table = kindTable(inventory);
+    return value => canHoldField(value) && storeHolds(table, value, value.cljs$lang$kind$$LKEY);
   }
   //@unit seqableValue requires: chunkedConsCells, iteratorSeqs, lazyCells, maps, queues,
   //@ recordCells, seqCells, sets, storesPredicate, vectorCells, viewCells
@@ -8471,7 +8581,7 @@
   //@unit multiFns
   // The multimethods: instances of `MultiFn`, whose prototype's keyed kind
   // is 41 (light-cljs-1013), with their own `dispatch_fn` field.
-  const multiFns = {has: value => value != null && value.cljs$lang$kind$$LKEY === 41 && "dispatch_fn" in value};
+  const multiFns = {has: value => value != null && value.cljs$lang$kind$$LKEY === 41 && "dispatch_fn" in value, classKinds: [41]};
   //@unit makeHierarchy requires: arrayMapFromArray, invalidArity, keyword
   function makeHierarchy() {
     if (arguments.length) return invalidArity(arguments.length);
@@ -9662,8 +9772,22 @@
   //@ metaFunctions, multiFns, queues, recordCells, reducedValues, seqCells, sets, symbolCells,
   //@ transientCells, vars, vectorCells, viewCells, volatiles
   const protocolStores = [multiFns, transientCells, keywordCells, symbolCells, vectorCells, maps, recordCells, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
-  //@unit ownedProtocolValue requires: protocolStores, storesPredicate
-  const ownedProtocolValue = storesPredicate(...protocolStores);
+  //@unit ownedStores requires: kindTable, protocolStores
+  // The stores of `protocolStores` by kind (`kindTable`): the runtime's own
+  // values to the protocol lookups (`ownedKind`), which a record is and an
+  // iterator seq, a `reify`, a uuid, an eduction, a chunk, a chunk buffer
+  // and a string writer are not.
+  const ownedStores = kindTable(protocolStores);
+  //@unit ownedKind requires: ownedStores, storeHolds
+  // Whether a value whose keyed kind is `kind` is in its class's store of
+  // `protocolStores` (`ownedStores`).
+  const ownedKind = (value, kind) => storeHolds(ownedStores, value, kind);
+  //@unit ownedProtocolValue requires: canHoldField, ownedKind
+  // Whether a value is in a store of `protocolStores`, by one read of its
+  // keyed kind and the test of its class's store (`ownedKind`), as
+  // `storesPredicate` tests its inventory. The Pants build's profile, whose
+  // engine forms have no kind, probes the stores in turn.
+  const ownedProtocolValue = value => canHoldField(value) && ownedKind(value, value.cljs$lang$kind$$LKEY);
   //@unit demandKey requires: demandMethod
   // The declaration demand of a method's resolved key (`methodKey`), for an
   // operation that reads the method's slot itself (`get`).
@@ -9708,28 +9832,21 @@
     if (protocol && builtinCoreImplementation(protocol, value)) return undefined;
     return dispatch ?? cell.natives?.get(nativeType(value))?.get(arity) ?? cell.natives?.get("_")?.get(arity);
   }
-  //@unit payloadStores requires: chunkedConsCells, lazyCells, maps, queues, seqCells, sets,
-  //@ vectorCells, viewCells
-  // `payloadStore`'s stores, numbered from 1.
-  const payloadStores = {stores: [viewCells, seqCells, vectorCells, maps, lazyCells, sets, queues, chunkedConsCells]};
-  //@unit payloadStore requires: payloadStores
-  // Which store of the runtime's collections and seqs holds a value, by a
-  // number from 1 to 8, else 0, probing them in this order: each is a kind
-  // test of a class (light-cljs-990, whose private-field kinds answered
-  // some at once until light-cljs-1013 and light-cljs-1038). A value is in
-  // one payload store (`countedValue`).
-  const payloadStore = (({stores}) => value => {
-    for (let i = 0; i < stores.length; i++) if (stores[i].has(value)) return i + 1;
-    return 0;
-  })(payloadStores);
-  //@unit kindStore requires: holdsVector
-  // `payloadStore` from the kind alone, else 0: probing the maps' store asks
-  // if a host value is a record, which may run a Proxy's `getPrototypeOf`.
-  // Only a vector cell is told so, store 3 (`vectorCells`): no store is a
-  // private-field kind any more (`payloads`).
-  const kindStore = value => holdsVector(value) ? 3 : 0;
+  //@unit runtimeKind requires: ownedKind
+  // The keyed kind of a value of the runtime's classes (a kind below 64)
+  // that its class's store holds (`ownedKind`), else 0: what the protocol
+  // lookups (`extendedMethod`, the `satisfies` and `implements` hooks) test
+  // for it in one step, where they probed the payload stores in turn
+  // (`payloadStore`, removed in light-cljs-1046). A host value, a value of
+  // a program type and one made by reflection from a class's prototype
+  // have none.
+  const runtimeKind = value => {
+    if (value == null) return 0;
+    const kind = value.cljs$lang$kind$$LKEY;
+    return kind < 64 && ownedKind(value, kind) ? kind : 0;
+  };
   //@unit storeNativeProtocols
-  // The core protocols of `protocolMethodInfo`'s `stores`.
+  // The core protocols of `protocolMethodInfo`'s `kinds`.
   const storeNativeProtocols = new Set(["ISeqable", "ISeq", "INext", "IMeta", "ILookup"]);
   //@unit protocolMethodInfo requires: coreProtocolNames, coreProtocolsByName,
   //@ nativeImplementations, protocolMasks, protocolSlot, storeNativeProtocols
@@ -9738,16 +9855,16 @@
   // extensions and receiver properties must still be observed on every call.
   function protocolMethodInfo(key) {
     const protocol = coreProtocolsByName.get(key.split("/")[0]), name = coreProtocolNames.get(protocol);
-    // `stores` (`extendedMethod`) only for the protocols whose native test of
-    // the runtime's collections and seqs is which payload store holds the
-    // value (`payloadStore`), so that one answer serves the store:
-    // `seqableValue`, `seqValue`, `nextValue`, `metaValue` and `lookupValue`
-    // read no payload.
-    const stores = storeNativeProtocols.has(name) ? Array(9).fill(undefined) : null;
-    return {protocol, name, mask: protocolMasks.get(name), marker: name && protocolSlot(name, 0), native: nativeImplementations.get(protocol), stores};
+    // `kinds` (`extendedMethod`, `storeProtocol`) only for the protocols
+    // whose native test is the same for every value of a runtime class
+    // (`runtimeKind`), so that one answer serves the kind: `seqableValue`,
+    // `seqValue`, `nextValue`, `metaValue` and `lookupValue` read no field
+    // but the stores' own (light-cljs-988, by kind since light-cljs-1046).
+    const kinds = storeNativeProtocols.has(name) ? Array(64).fill(undefined) : null;
+    return {protocol, name, mask: protocolMasks.get(name), marker: name && protocolSlot(name, 0), native: nativeImplementations.get(protocol), kinds};
   }
-  //@unit extendedMethod requires: demandMethod, extendedDeclared, keyMethod, payloadStore,
-  //@ protocolMethodInfo, protocolSentinel, satisfies
+  //@unit extendedMethod requires: demandMethod, extendedDeclared, keyMethod, protocolMethodInfo,
+  //@ protocolSentinel, runtimeKind, satisfies
   // The generic operations' protocol lookup where `extend-type` or
   // `specify!` exist (their `programMethod` hook; `ownMethod` where only
   // `installMethods` is kept), after the slot-first wrappers and call-site
@@ -9757,28 +9874,27 @@
   function extendedMethod(value, key, arity, fast = false, directOnly = false) {
     const info = key.info || (key.info = protocolMethodInfo(key.key)), protocol = info.protocol, mask = info.mask, native = info.native;
     // A runtime class's mask bits are its native tests' answers (see
-    // `ownMethod`), which the payload stores' step below gives.
+    // `ownMethod`), which the kind's step below gives.
     let direct = !!(mask && (value?.[mask[0]] & mask[1])) && !(value.cljs$lang$kind$$LKEY < 64);
     if (!direct && info.name) {
       demandMethod(info.name, 0, value);
       direct = value != null && value[info.marker] === protocolSentinel;
-      // One of the runtime's collections or seqs (`payloadStore`) that
-      // declares no core protocol of its own (light-cljs-988): the native
-      // test alone decides, once. Where it is false, the value is the
-      // runtime's own and not in the protocol (`satisfies`), so no
-      // implementation exists; where it is true, the value's slot is the
-      // only one, as an implementation that `extend-type` gave a host type,
-      // `object` or `default` cannot override a native one
-      // (`externalMethod`). Either way this gives what the steps below give,
-      // without testing the value against every store up to three times.
-      // `stores` keeps the test's answer by store, where it is the same for
-      // every value the store holds.
-      // Only a runtime class's value (a keyed kind below 64) can be in a
-      // store, so a host value takes none of their probes (light-cljs-1015).
-      const store = direct || !(value?.cljs$lang$kind$$LKEY < 64) ? 0 : payloadStore(value);
-      if (store) {
-        const stores = info.stores;
-        if (!(stores ? stores[store] ?? (stores[store] = !!native(value)) : native?.(value))) return undefined;
+      // A value of the runtime's classes (`runtimeKind`) that declares no
+      // core protocol of its own (light-cljs-988): the native test alone
+      // decides, once. Where it is false, the value is the runtime's own
+      // and not in the protocol (`satisfies`), so no implementation exists;
+      // where it is true, the value's slot is the only one, as an
+      // implementation that `extend-type` gave a host type, `object` or
+      // `default` cannot override a native one (`externalMethod`). Either
+      // way this gives what the steps below give, without the native test
+      // up to three times and the stores' inventory (`ownedProtocolValue`).
+      // `kinds` keeps the test's answer by kind, where it is the same for
+      // every value of the kind. A host value reads one property here, the
+      // keyed kind (light-cljs-1015, one store test since light-cljs-1046).
+      const kind = direct ? 0 : runtimeKind(value);
+      if (kind) {
+        const kinds = info.kinds;
+        if (!(kinds ? kinds[kind] ?? (kinds[kind] = !!native(value)) : native?.(value))) return undefined;
         return keyMethod(value, key, arity) || undefined;
       }
     }
@@ -9789,17 +9905,17 @@
   }
   //@unit storeProtocol requires: demandMethod, demandProtocol, protocolSentinel
   // What `satisfies` (`satisfying`) or `implementsProtocol` gives a value of
-  // `store` (`kindStore`), with the same reads and demands: mask bit, then
-  // marker, else the native test, as the value is the runtime's own
-  // (`ownedProtocolValue`), which `extend-type` of host types, `object` or
-  // `default` cannot reach (light-cljs-998).
-  function storeProtocol(info, value, store, satisfying) {
-    const name = info.name, mask = info.mask, stores = info.stores;
+  // the runtime's classes of `kind` (`runtimeKind`), with the same reads and
+  // demands: mask bit, then marker, else the native test, as the value is
+  // the runtime's own (`ownedProtocolValue`), which `extend-type` of host
+  // types, `object` or `default` cannot reach (light-cljs-998).
+  function storeProtocol(info, value, kind, satisfying) {
+    const name = info.name, mask = info.mask, kinds = info.kinds;
     if (satisfying) demandProtocol(name, value);
     if (mask && (value[mask[0]] & mask[1])) return true;
     demandMethod(name, 0, value);
     if (value[info.marker] === protocolSentinel) return true;
-    return stores ? stores[store] ?? (stores[store] = !!info.native(value)) : !!info.native?.(value);
+    return kinds ? kinds[kind] ?? (kinds[kind] = !!info.native(value)) : !!info.native?.(value);
   }
   //@unit extendedDeclared requires: IMeta, protocolHooks, protocolMethodInfo
   // The rest of `extendedMethod` once the value is in the key's protocol, given
@@ -9837,10 +9953,10 @@
     // declaring the protocol demands the method (`keyMethod`) as the marker would.
     // A runtime class's mask bits (its keyed kind, docs/value-layout.md,
     // section 3) declare what it implements natively, which the operation
-    // answers: as before they were there, only a marker declares a method
-    // for its value here (light-cljs-1028). A program type's kind (64 to 66,
-    // `kinds`) is no runtime class's: its mask bits declare its methods.
-    const declared = key.bit !== 0 && value != null && (value[key.mask] & key.bit) !== 0 && !(value.cljs$lang$kind$$LKEY < 64) || keyMarker(value, key);
+    // answers: its slot, which `keyMethod` does not take for a program's
+    // method, or none, which `ownDeclared` answers for a kind below 64
+    // (light-cljs-1028; this read the kind first until light-cljs-1046).
+    const declared = key.bit !== 0 && value != null && (value[key.mask] & key.bit) !== 0 || keyMarker(value, key);
     return declared || meta ? ownDeclared(value, key, arity, keyMethod(value, key, arity)) : undefined;
   }
   //@unit ownDeclared requires: reifyCells
@@ -12558,22 +12674,22 @@
   //@ boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isEmpty,
   //@ isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable,
   //@ isReversible, isSeq, isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs,
-  //@ makeMap.equiv, makeSet.equiv, mapConj, KeySeqCell, nth, reduce, sequenceIterator requires: kindStore,
-  //@ protocolHooks, protocolMethodInfo, satisfies, storeProtocol
+  //@ makeMap.equiv, makeSet.equiv, mapConj, KeySeqCell, nth, reduce, sequenceIterator requires: protocolHooks,
+  //@ protocolMethodInfo, runtimeKind, satisfies, storeProtocol
   // ... and with them also what those give the runtime's and host values.
   // Each reads the protocol of a resolved key (`methodKey`) from its `info`.
-  // A value of a payload store's kind (`kindStore`) takes one step.
+  // A value of the runtime's classes (`runtimeKind`) takes one step.
   protocolHooks.satisfies = (key, value) => {
-    const info = key.info || (key.info = protocolMethodInfo(key.key)), store = info.name ? kindStore(value) : 0;
-    return store ? storeProtocol(info, value, store, true) : satisfies(info.protocol, value);
+    const info = key.info || (key.info = protocolMethodInfo(key.key)), kind = info.name ? runtimeKind(value) : 0;
+    return kind ? storeProtocol(info, value, kind, true) : satisfies(info.protocol, value);
   };
   //@unit protocolHooks.implements effect: extendType, extendInstance when: chunkNext, concatMany,
   //@ concatTwo, cons, count, drop, filter, hash, indexedSequence, into, isChunkedSeq, isMapEntry,
-  //@ isUuid, mapSeq, name, namespace, nth, printsMeta requires: implementsProtocol, kindStore,
-  //@ protocolHooks, protocolMethodInfo, storeProtocol
+  //@ isUuid, mapSeq, name, namespace, nth, printsMeta requires: implementsProtocol, protocolHooks,
+  //@ protocolMethodInfo, runtimeKind, storeProtocol
   protocolHooks.implements = (key, value) => {
-    const info = key.info || (key.info = protocolMethodInfo(key.key)), store = info.name ? kindStore(value) : 0;
-    return store ? storeProtocol(info, value, store, false) : implementsProtocol(info.protocol, value);
+    const info = key.info || (key.info = protocolMethodInfo(key.key)), kind = info.name ? runtimeKind(value) : 0;
+    return kind ? storeProtocol(info, value, kind, false) : implementsProtocol(info.protocol, value);
   };
   //@unit protocolHooks.countProtocol effect: installMethods when: accumulatingCount requires: countProtocol,
   //@ protocolHooks

@@ -560,9 +560,12 @@ fn a_program_type_opens_the_protocol_hooks() {
     // the other values that became classes, where theirs were private
     // stores; 11,942 after light-cljs-1037 (2026-11-16): the record test
     // (`recordTypeOf`, `recordCells`) that `count`'s native test reads where
-    // `maps.records` answered records as maps, and a type's keyed kind.
+    // `maps.records` answered records as maps, and a type's keyed kind;
+    // 12,016 after light-cljs-1046 (2026-11-17): the keyed kinds of the
+    // stores' classes (`classKinds`, `kindTable`, `storeHolds`), by which an
+    // inventory (`storesPredicate`) tests one store where it probed each.
     let size = advanced(source).emit_js().len();
-    assert!(size < 12_000, "{size} bytes");
+    assert!(size < 12_100, "{size} bytes");
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -989,9 +992,12 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     // `count` and `seqableValue` read, where theirs were private stores
     // (5,218 bytes), and since light-cljs-1037 the records' kind test
     // (`recordCells`) that `countedValue` reads, where `maps.records`
-    // answered records as maps.
+    // answered records as maps, and since light-cljs-1046 (2026-11-17) the
+    // keyed kinds of the stores' classes (`classKinds`, `kindTable`,
+    // `storeHolds`), by which `seqableValue` tests one store where it probed
+    // each in turn (5,270 to 5,622 bytes).
     let size = advanced("(count (.split \"a,b\" \",\"))").emit_js().len();
-    assert!(size < 5_300, "{size} bytes");
+    assert!(size < 5_700, "{size} bytes");
     for (source, expected) in [
         ("(count (.split \"a,b\" \",\"))", "2"),
         ("(defrecord R [x]) (count (assoc (->R 1) :y 2))", "2"),
@@ -2547,14 +2553,27 @@ fn views_read_their_first_from_the_kind_table() {
 /// kind table, protocol wrapper or `publicMethod`, even where a program
 /// defines a type, extends a runtime type and specifies a host object, which
 /// keep the protocol lookup (`extendedMethod`); the operations answer as
-/// before at every level.
+/// before at every level. Since light-cljs-1046 the lookup and the
+/// `satisfies` hooks test a runtime class's value by one store, its class's
+/// (`runtimeKind`, `ownedProtocolValue`), so no payload store probe
+/// (`payloadStore`, `kindStore`) is left either, with records and the operations of sets, queues and maps that have no
+/// slot (`meta`, `empty`, `find`, `reduce`, printing).
 #[test]
 fn release_runtime_keeps_no_old_dispatch_layers() {
     let source = "(deftype T [a] ICounted (-count [_] a))
+         (defrecord R [a])
          (extend-type PersistentVector IMeta (-meta [_] {:x 1}))
          (pr-str [(count (T. 3)) (meta [1]) (count (specify! #js {} ICounted (-count [_] 7))) (first (map inc [1 2]))
-                  (seq {:a 1}) (rest #{1}) (next (list 1 2)) (get (sorted-map 1 2) 1) (seq (sorted-set 2 1)) (count #{1 2})])";
-    every_level(source, "[3 {:x 1} 7 2 ([:a 1]) () (2) 2 (1 2) 2]");
+                  (seq {:a 1}) (rest #{1}) (next (list 1 2)) (get (sorted-map 1 2) 1) (seq (sorted-set 2 1)) (count #{1 2})
+                  (:a (->R 4)) (count (->R 4)) (count (into cljs.core/PersistentQueue.EMPTY [1 2])) (seq (conj #{} 5))
+                  (get #{:k} :k) (conj (with-meta #{1} {:m 1}) 2) (contains? [1 2] 1) (contains? (subvec [1 2 3] 1) 2)
+                  (reduce + #{1 2}) (reduce + (into cljs.core/PersistentQueue.EMPTY [3 4])) (meta (with-meta {:a 1} {:m 2}))
+                  (empty #{1}) (find {:a 1} :a) (satisfies? ICounted #{}) (implements? ISeq (cons 1 nil)) (counted? (list 1))
+                  (seq? (cons 1 nil)) (count (cons 1 (cons 2 nil)))])";
+    every_level(
+        source,
+        "[3 {:x 1} 7 2 ([:a 1]) () (2) 2 (1 2) 2 4 1 2 (5) :k #{1 2} true false 3 7 {:m 2} #{} [:a 1] true true true true 2]",
+    );
     let kept = units(&format!("(js/console.log {source})"));
     for unit in [
         "payloads",
@@ -2563,10 +2582,15 @@ fn release_runtime_keeps_no_old_dispatch_layers() {
         "kindTables",
         "kindOps",
         "publicMethod",
+        "payloadStore",
+        "payloadStores",
+        "kindStore",
     ] {
         assert!(!kept.contains(&unit), "{unit}: {kept:?}");
     }
-    assert!(kept.contains(&"extendedMethod"), "{kept:?}");
+    for unit in ["extendedMethod", "runtimeKind", "recordCells"] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
 }
 
 /// `extend-type` of a runtime type with branches or of `Object`, and
@@ -2774,7 +2798,11 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// Since light-cljs-1015 the Proxy is asked fewer times (842 and 809, where
 /// 877 and 837): no kind table reads its symbol key (`kindOps`), and the
 /// protocol lookup (`extendedMethod`) probes the payload stores only for a
-/// value of a runtime class, which a host value is not.
+/// value of a runtime class, which a host value is not. Since light-cljs-1046
+/// less than half as many (340 and 345): the store inventories
+/// (`ownedProtocolValue` of `satisfies`, `seqableValue` and the other native
+/// tests) read a value's keyed kind once and test its class's store
+/// (`kindTable`), where they asked every store in turn, each reading it.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -2867,7 +2895,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [842, 842, 842],
+            [340, 340, 340],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2928,7 +2956,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [809, 809, 809],
+            [345, 345, 345],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2995,7 +3023,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [842, 842, 842],
+            [340, 340, 340],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
