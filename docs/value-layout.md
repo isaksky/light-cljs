@@ -999,6 +999,57 @@ What light-cljs-1040 landed: keywords and symbols compare by their own
   of a keyword at `Advanced`, which took that method for the key's and
   matched the first key (`(get {:x 1 :y 2} :y)` gave 1), finds the key.
 
+What light-cljs-1015 landed: the old dispatch layers are gone from the
+operations that release and dev output run.
+
+- **The kind tables.** `kindOps`, `kindTables`, the nine wrappers that read
+  them (`seq.branches` to `assoc.branches`) and their branch units (`seq.cells`,
+  `count.vectors`, `vectorFirst`, `seqBranch`, `lazyBranch` and the rest, 61
+  units) are deleted, and no prototype holds a kind number. A value whose
+  class has the operation's slot takes it from the slot-first wrapper or the
+  call-site entry; every other value takes the operation's own path, which
+  the branches only shortened; `count` keeps two of their shortcuts on its
+  own path (a cons, a range of fractions and a lazy seq walk at once, and a
+  queue counts its items before the other kind tests), as without them
+  `count` of a cons took three times as long. `seq` of a sorted set
+  gives its tree map's keys (`setSeqs`) on that path too, which only the
+  branch gave, and the seq of its members once an extension would have
+  emptied the tables (`fieldComparisons`), as before.
+- **The protocol wrappers.** `behindProtocol` and the wrappers of `seq`,
+  `first`, `rest`, `next` and `count` (`seq.protocol` and the others) are
+  deleted: each operation looks a program's implementation up itself, first
+  after its nil case (`protocolHooks.programMethod`, which `ownMethod` fills
+  where only `installMethods` is kept), so the order of every lookup is
+  unchanged and a call takes one function less.
+- **The lookup where `extend-type` or `specify!` exist** is `extendedMethod`,
+  the old `publicMethod`, which only the runtime's classes' values (a keyed
+  kind below 64) take through the payload stores' probes (`payloadStore`): a
+  host value no longer probes the eight stores, so the Proxy of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked 842 and
+  809 times where 877 and 837 (`count` asks for a lazy seq's kind early).
+  `publicMethodInfo` is `protocolMethodInfo` and
+  `publicDeclared` `extendedDeclared`. The compile-time runtime keeps its
+  demanding lookup (build.rs `interpreterDispatch`), now assigned to
+  `extendedMethod`.
+- **The 1014 guard** (comparisons and hashes by fields only until an
+  extension reaches a runtime class) is not dead: a program's `ICounted` or
+  `ILookup` of a vector or map would answer differently from the fields. It
+  reads `fieldComparisons.on`, which `extend-type` of `Object` or of a
+  type that had a kind table number (`tabledKind`) and `specify!` of its
+  value turn off, as they emptied the tables. The shared-heap profile
+  seals it, so such an extension still throws there.
+- **What is left** (light-cljs-1046): a runtime class's value that an
+  operation without a slot gives the lookup (`count` of a set or queue,
+  `reduce`, `meta`, printing) still probes the payload stores in turn
+  (`payloadStore`), and the `satisfies` hooks' inventories
+  (`storesPredicate`, `ownedProtocolValue`) are unchanged; `ownMethod`'s,
+  `extendedMethod`'s and `contains.own`'s mask guard for runtime classes
+  stays, as their mask bits declare native implementations without slots.
+  No record prototype walk is left in release units (light-cljs-1037).
+- **Size.** The readable runtime is 22,083 bytes smaller (674,075 to
+  651,992 without the header lines); the runtime slices of the
+  measured programs are in benchmarks/runtime-vs-shadow.md (light-cljs-1015).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -1601,8 +1652,10 @@ keywords and symbols their `-equiv`; mixed comparisons keep their answers.
 | Pants build, shared-heap profile (`src/js_shared_profile.js`) | engine forms for the kinds it swaps; classes for the kinds it inherits | fixed | engine forms; per-load brand for inherited classes |
 
 **Release and dev builds** adopt the class layout and nothing else: after
-light-cljs-1015 no payload store, kind table, `behindProtocol`,
-`publicMethod` or brand class is in their units. Release is the gate.
+light-cljs-1015 no payload class, kind table, `behindProtocol`,
+`publicMethod` or brand class is in their units (the payload stores'
+probes stay in `extendedMethod` for a runtime class's value, light-cljs-1046).
+Release is the gate.
 
 **The compile-time runtime** (the macro host's `compilerFormBridge` and the
 evaluator, which load the same factory with the `compile-time` units) adopts

@@ -211,7 +211,7 @@
     return {has: name => words.includes(name)};
   }
   //@unit storeNativeProtocols requires: sharedWords
-  // None: the boot seals each resolved key's `info`, so `publicMethod` and
+  // None: the boot seals each resolved key's `info`, so `extendedMethod` and
   // `storeProtocol` could not fill its per-store memo (`stores`,
   // light-cljs-988) afterwards; here the native test answers every call.
   const storeNativeProtocols = sharedWords([]);
@@ -265,7 +265,7 @@
       for (let arity = 0; arity <= maxArity; arity++) keySlot(key, arity);
       key.cell ??= dispatchCell(key.key);
       key.cell.protocol ??= coreProtocolsByName.get(key.name) ?? null;
-      key.info ??= publicMethodInfo(key.key);
+      key.info ??= protocolMethodInfo(key.key);
     }
     // The boot's writes to the hub's cells are the hub's defaults; its
     // registries' entries seed every task's copy.
@@ -1455,7 +1455,7 @@
     start = start | 0; end = end | 0;
     if (start < 0 || end < start || end > count(value)) throw new Error("Index out of bounds");
     if (!isVector(value)) throw new Error("subvec requires a vector");
-    const store = !protocolHooks.publicMethod?.(value, methodKeys[25], 2, true, true) && vectorStore(value);
+    const store = !protocolHooks.programMethod?.(value, methodKeys[25], 2, true, true) && vectorStore(value);
     return store ? makeVector(null, vectorView(store, start, end - start))
       : vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)));
   }

@@ -1202,8 +1202,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // the five hooks of a sorted set's tree map and a var's copy
     // (light-cljs-1038), and the 30 `-equiv` and `-hash` slots of the runtime's
     // classes with the slot-first wrappers of `=` and `hash` (light-cljs-1014),
-    // and the keywords' and symbols' `-equiv` slots (light-cljs-1040).
-    assert_eq!(checked, 502);
+    // and the keywords' and symbols' `-equiv` slots (light-cljs-1040), less
+    // the kind tables' 55 branch and wrapper units and the five protocol
+    // wrappers of `seq`, `first`, `rest`, `next` and `count` (light-cljs-1015).
+    assert_eq!(checked, 442);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1754,195 +1756,6 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
     assert_eq!(seen, listed);
 }
 
-/// A kind table entry is the branch of a generic operation for the values of
-/// the types whose prototypes hold the kind's number (`builtinType(Cons,
-/// sequencePrototype).prototype[kindOps] = 2`, light-cljs-237). The unit
-/// installing it is an effect of exactly those types, so a program keeps the
-/// branches of the kinds it builds, and no type of the kind can build a value
-/// whose branch is missing. Each kind's entry for an operation is installed
-/// once, and the operations' wrappers, which read the entries, are effects of
-/// every type of the kinds with an entry for their operation: lazy seqs (1),
-/// cells (2), vectors (4), maps (5), sets (6), queues (7) and map entries
-/// (8), light-cljs-358 adding kinds 4 to 7 and the wrappers of `nth`, `get`,
-/// `conj` and `assoc`, light-cljs-373 map entries, light-cljs-375 the entries
-/// of `first` and `rest` for kinds 4 to 8 and of `next` for kinds 4 and 8.
-/// The types of kind 3
-/// (views) take their number only where a wrapper of an operation with a
-/// kind 3 entry is kept, so a program that builds views and no lazy seq or
-/// cell keeps no wrapper.
-#[test]
-fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
-    let manifest = manifest();
-    let body = |unit: usize| &ANNOTATED_RUNTIME[manifest.units[unit].body_range.clone()];
-    let mut types: std::collections::BTreeMap<u32, Vec<&str>> = Default::default();
-    let mut riding: Vec<(&str, Vec<&str>)> = Vec::new();
-    for (index, unit) in manifest.units.iter().enumerate() {
-        let text = body(index);
-        // `builtinType(Cons, sequencePrototype).prototype[kindOps] = 2` or
-        // `IndexedSeqValue.prototype[kindOps] = 3`.
-        for (start, _) in text.match_indices(".prototype[kindOps] = ") {
-            let after = &text[start + ".prototype[kindOps] = ".len()..];
-            let kind = after[..after.find(';').unwrap()].parse::<u32>().unwrap();
-            let before = &text[..start];
-            let binding = match before.strip_suffix(')') {
-                Some(call) => {
-                    let arguments =
-                        &call[call.rfind("builtinType(").unwrap() + "builtinType(".len()..];
-                    arguments.split(", ").next().unwrap()
-                }
-                None => before
-                    .rsplit(|c: char| !c.is_ascii_alphanumeric())
-                    .next()
-                    .unwrap(),
-            };
-            assert!(
-                manifest.unit_of(binding).is_some(),
-                "`{binding}` in `{}`",
-                unit.name
-            );
-            let effect = unit.effect.as_ref().expect("a kind number is an effect");
-            assert_eq!(effect.targets, [binding], "targets of `{}`", unit.name);
-            assert_eq!(
-                effect.when.is_empty(),
-                kind != 3,
-                "`when:` of `{}`",
-                unit.name
-            );
-            if kind == 3 {
-                let mut when = effect.when.clone();
-                when.sort_unstable();
-                riding.push((unit.name, when));
-            }
-            types.entry(kind).or_default().push(binding);
-        }
-    }
-    assert_eq!(
-        types.keys().copied().collect::<Vec<_>>(),
-        [1, 2, 3, 4, 5, 6, 7, 8]
-    );
-    let mut wrapped = Vec::new();
-    let mut seen = Vec::new();
-    for (index, unit) in manifest.units.iter().enumerate() {
-        if let Some((operation, entry)) = branches_wrapper(body(index)) {
-            let mut targets = unit
-                .effect
-                .as_ref()
-                .expect("a wrapper is an effect")
-                .targets
-                .clone();
-            targets.sort_unstable();
-            wrapped.push((entry, operation, unit.name, targets));
-        }
-        for (kind, operation) in installed_kind_entries(body(index)) {
-            let effect = unit
-                .effect
-                .as_ref()
-                .expect("a kind table entry install is an effect");
-            assert!(!effect.when.is_empty(), "`{}` needs `when:`", unit.name);
-            let mut targets = effect.targets.clone();
-            let mut expected = types[&kind].clone();
-            targets.sort_unstable();
-            expected.sort_unstable();
-            assert_eq!(targets, expected, "targets of `{}`", unit.name);
-            assert!(
-                !seen.contains(&(kind, operation)),
-                "`kindTables[{kind}][{operation}]` twice"
-            );
-            seen.push((kind, operation));
-        }
-    }
-    // A wrapper is an effect of every type of the kinds with types of their
-    // own (all but views) that have an entry for its operation.
-    for (entry, operation, name, targets) in &wrapped {
-        let mut building: Vec<&str> = types
-            .iter()
-            .filter(|(kind, _)| **kind != 3 && seen.contains(&(**kind, *entry)))
-            .flat_map(|(_, bindings)| bindings.clone())
-            .collect();
-        building.sort_unstable();
-        assert_eq!(targets, &building, "targets of `{name}` ({operation})");
-    }
-    wrapped.sort_unstable();
-    assert_eq!(
-        wrapped
-            .iter()
-            .map(|(entry, operation, _, _)| (*entry, *operation))
-            .collect::<Vec<_>>(),
-        [
-            (0, "seq"),
-            (1, "first"),
-            (2, "rest"),
-            (3, "next"),
-            (4, "count"),
-            (5, "nth"),
-            (6, "get"),
-            (7, "conj"),
-            (8, "assoc")
-        ]
-    );
-    seen.sort_unstable();
-    assert_eq!(
-        seen,
-        [
-            (1, 0),
-            (1, 1),
-            (1, 2),
-            (1, 3),
-            (1, 4),
-            (2, 0),
-            (2, 1),
-            (2, 2),
-            (2, 3),
-            (2, 4),
-            (3, 1),
-            (4, 0),
-            (4, 1),
-            (4, 2),
-            (4, 3),
-            (4, 4),
-            (4, 5),
-            (4, 6),
-            (4, 7),
-            (4, 8),
-            (5, 0),
-            (5, 1),
-            (5, 2),
-            (5, 4),
-            (5, 6),
-            (5, 7),
-            (5, 8),
-            (6, 0),
-            (6, 1),
-            (6, 2),
-            (6, 4),
-            (6, 6),
-            (6, 7),
-            (7, 0),
-            (7, 1),
-            (7, 2),
-            (7, 4),
-            (7, 7),
-            (8, 0),
-            (8, 1),
-            (8, 2),
-            (8, 3),
-            (8, 4),
-            (8, 5),
-            (8, 6),
-        ]
-    );
-    // A view's number waits for the wrappers that read a kind 3 entry.
-    let mut readers: Vec<&str> = wrapped
-        .iter()
-        .filter(|(entry, _, _, _)| seen.contains(&(3, *entry)))
-        .map(|(_, _, name, _)| *name)
-        .collect();
-    readers.sort_unstable();
-    for (name, when) in riding {
-        assert_eq!(when, readers, "`when:` of `{name}`");
-    }
-}
-
 /// A record is in the `maps` store, but the hooks of `Kind::Maps` need not
 /// wait for `makeType` (light-cljs-246): wherever an operation could pass a
 /// record to them, the record answers through its own method first.
@@ -1951,7 +1764,7 @@ fn kind_table_entries_are_installed_by_the_types_of_their_kind() {
 /// and from the classes' `-equiv` slots (`classEquiv`, `mapEquiv`,
 /// light-cljs-1014), which require `equalPair`; `recordMethods.equiv` and that hook wait for `equalPair`, which
 /// `structuralEqualPair` requires. `kindHooks.entryIndex` is read by `lookup`,
-/// which a record reaches only from `get`, after `protocolHooks.publicMethod`
+/// which a record reaches only from `get`, after `protocolHooks.programMethod`
 /// finds `recordMethods.lookup`: both wait for `get`. The other callers of
 /// `lookup` take maps and sets: their own prototypes' methods, set
 /// equality, whose other value implements `ISet`, and `get.maps`, the branch
@@ -2016,14 +1829,13 @@ fn kind_hooks_skip_records() {
             "setPrototype",
             "lookup",
             "get",
-            "get.maps",
             "makeSet.equiv"
         ]
     );
     for effect in [
         "recordMethods.lookup",
         "protocolHooks.ownMethod",
-        "protocolHooks.publicMethod",
+        "protocolHooks.programMethod",
     ] {
         waits_for(effect, "get");
     }
@@ -2031,7 +1843,7 @@ fn kind_hooks_skip_records() {
         body("installMethods.ILookupLookupKey")
             .contains("methodKeys[30] = methodKey(\"ILookup/-lookup\");")
     );
-    assert!(body("get").contains("protocolHooks.publicMethod?.(value, methodKeys[30]"));
+    assert!(body("get").contains("protocolHooks.programMethod?.(value, methodKeys[30]"));
 }
 
 /// `PROTOCOL_ROOTS` are exactly the core protocols that conditional effects
@@ -2090,9 +1902,9 @@ fn protocol_roots_are_the_protocols_effects_wait_for() {
             continue;
         }
         // `count.seqs` installs the branch of `count` for values implementing
-        // `ISeqable` without `ICounted`; `count.protocol` asks a value's
-        // `ICounted` method first, which `recordMethods.count` gives a record
-        // wherever `count` is kept.
+        // `ISeqable` without `ICounted`; `count` asks a value's `ICounted`
+        // method first (light-cljs-1015; its protocol wrapper before), which
+        // `recordMethods.count` gives a record wherever `count` is kept.
         assert!(implemented);
         let effects: Vec<&str> = manifest
             .units
@@ -2106,7 +1918,7 @@ fn protocol_roots_are_the_protocols_effects_wait_for() {
             .map(|other| other.name)
             .collect();
         assert_eq!(effects, ["count.seqs"]);
-        for effect in ["count.seqs", "count.protocol", "recordMethods.count"] {
+        for effect in ["count.seqs", "recordMethods.count"] {
             assert!(
                 manifest.conditions(unit(effect)).contains(&unit("count")),
                 "`{effect}` waits for `count`"
@@ -2214,14 +2026,10 @@ fn units_assigning_a_binding_share_its_unit() {
         [
             "MapEntryType <- MapEntryType.lean",
             "MapEntryType <- MapEntryType.vector",
-            "assoc <- assoc.branches",
             "assoc <- assoc.slots",
-            "conj <- conj.branches",
             "conj <- conj.slots",
             "contains <- contains.own",
             "contains <- contains.slots",
-            "count <- count.branches",
-            "count <- count.protocol",
             "count <- count.slots",
             "declarationJournal <- MultiFn.tables",
             "declarationJournal <- declarationTransaction",
@@ -2231,6 +2039,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- declarationReceiver",
             "demandProtocol <- demandKey",
             "demandProtocol <- directMethod",
+            "demandProtocol <- extendedMethod",
             "demandProtocol <- keyMarker",
             "demandProtocol <- keyMethod",
             "demandProtocol <- methods",
@@ -2238,7 +2047,6 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- prefers",
             "demandProtocol <- protocolMethod",
             "demandProtocol <- protocolPredicate",
-            "demandProtocol <- publicMethod",
             "demandProtocol <- removeMethod",
             "demandProtocol <- resetMulti",
             "demandProtocol <- satisfies",
@@ -2246,11 +2054,8 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- storeProtocol",
             "dissoc <- dissoc.slots",
             "equalPair <- equalPair.slots",
-            "first <- first.branches",
-            "first <- first.protocol",
             "first <- first.slots",
             "gensymCounter <- gensym",
-            "get <- get.branches",
             "get <- get.own",
             "get <- get.slots",
             "globalHierarchy <- getGlobalHierarchy",
@@ -2263,10 +2068,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "macroexpandServices <- setMacroexpandServices",
             "mapEntry <- mapEntry.lean",
             "mapEntry <- mapEntry.vector",
-            "next <- next.branches",
-            "next <- next.protocol",
             "next <- next.slots",
-            "nth <- nth.branches",
             "nth <- nth.protocol",
             "nth <- nth.slots",
             "patchDeclaration <- declarationTransaction",
@@ -2289,11 +2091,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "recordMethodTable <- recordMethods.seq",
             "recordMethodTable <- recordMethods.withMeta",
             "reduce <- reduce.protocol",
-            "rest <- rest.branches",
-            "rest <- rest.protocol",
             "rest <- rest.slots",
-            "seq <- seq.branches",
-            "seq <- seq.protocol",
             "seq <- seq.slots",
             "setDeclaration <- declarationTransaction",
             "setDeclaration <- extendType",
@@ -2397,17 +2195,7 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
         manifest.attached_effects(unit("ListValue")),
         [
             unit("ListValue.type"),
-            unit("seq.branches"),
-            unit("seq.cells"),
-            unit("first.branches"),
-            unit("first.cells"),
-            unit("rest.branches"),
-            unit("rest.cells"),
-            unit("next.branches"),
-            unit("next.cells"),
-            unit("count.branches"),
             unit("count.seqs"),
-            unit("count.cells"),
             unit("count.slots"),
             unit("ListValue.firstSlot"),
             unit("ListValue.restSlot"),
@@ -2545,7 +2333,7 @@ fn type_brands_are_compile_time_units_no_other_unit_requires() {
 }
 
 /// The generic operations pass the protocol lookups (`ownMethod`,
-/// `publicMethod`, `builtin`, `ownProtocol` and the `satisfies` hooks) a key
+/// `extendedMethod`, `builtin`, `ownProtocol` and the `satisfies` hooks) a key
 /// resolved where the runtime loads, read by number (`methodKeys[30]`), never
 /// a key's text, which the lookups sliced and looked up in maps on every call
 /// wherever `installMethods` is kept (light-cljs-358). Every number read has
@@ -2571,7 +2359,7 @@ fn protocol_lookups_take_keys_resolved_at_load() {
     for unit in 0..manifest.units.len() {
         let text = body(unit);
         for lookup in [
-            "protocolHooks.publicMethod?.(",
+            "protocolHooks.programMethod?.(",
             "protocolHooks.builtin?.(",
             "protocolHooks.satisfies?.(",
             "protocolHooks.implements?.(",
@@ -2609,8 +2397,8 @@ fn protocol_lookups_take_keys_resolved_at_load() {
         "ownMethod",
         "ownProtocol",
         "builtin",
-        "publicMethod",
-        "publicDeclared",
+        "extendedMethod",
+        "extendedDeclared",
         "externalMethod",
     ] {
         let text = body(manifest.unit_of(lookup).unwrap().0);

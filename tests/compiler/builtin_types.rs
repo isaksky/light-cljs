@@ -377,7 +377,7 @@ const PROTOCOL_MACHINERY: [&str; 12] = [
     "builtin",
     "ownMethod",
     "ownProtocol",
-    "publicMethod",
+    "extendedMethod",
     "satisfies",
     "implementsProtocol",
     "builtinCoreImplementation",
@@ -392,10 +392,10 @@ const PROTOCOL_MACHINERY: [&str; 12] = [
 /// implementations all belong to its own types drops (light-cljs-246), with
 /// the protocol tables its protocol tests read (light-cljs-251).
 const EXTENSION_MACHINERY: [&str; 11] = [
-    "publicMethod",
+    "extendedMethod",
     "externalMethod",
     "protocolHooks.extend",
-    "protocolHooks.publicMethod",
+    "protocolHooks.programMethod",
     "protocolHooks.external",
     "satisfies",
     "implementsProtocol",
@@ -567,8 +567,8 @@ fn a_program_type_opens_the_protocol_hooks() {
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
     for unit in [
-        "publicMethod",
-        "protocolHooks.publicMethod",
+        "extendedMethod",
+        "protocolHooks.programMethod",
         "protocolHooks.external",
         "protocolHooks.implements",
         "protocolHooks.satisfies",
@@ -666,7 +666,7 @@ fn program_types_keep_no_machinery_for_builtin_values() {
 }
 
 /// light-cljs-246: with a program type but no `extend-type`, a value counts
-/// as implementing a protocol only where it declares it, as `publicMethod`
+/// as implementing a protocol only where it declares it, as `extendedMethod`
 /// decides: a host object holding a slot-named function is no lookup, but a
 /// function's `IMeta` slot is its metadata. A core dispatcher read as a value
 /// may be extended by type through its table, so the program keeps the
@@ -802,9 +802,9 @@ fn protocol_tests_of_program_types_need_no_protocol_tables() {
     let units = assert_keeps_none(
         &closed,
         &[
-            "publicMethod",
+            "extendedMethod",
             "externalMethod",
-            "protocolHooks.publicMethod",
+            "protocolHooks.programMethod",
             "protocolHooks.satisfies",
             "protocolHooks.implements",
         ],
@@ -2499,16 +2499,17 @@ fn seq_operations_read_the_kind_tables() {
          [false (nil) nil () true 1] [false (nil) nil () true 1] [false (5 3 1) 5 (3 1) false 3] \
          [false (33 34 35) 33 (34 35 36) false 7]]",
     );
+    // No kind tables are left (light-cljs-1015): the slots and the
+    // operations answer every kind.
     let kept = units("(js/console.log (first (map inc (list 1 2))))");
-    for unit in [
-        "first.branches",
-        "first.cells",
-        "LazySeq.first",
-        "seq.branches",
-        "seq.cells",
-    ] {
-        assert!(kept.contains(&unit), "{unit}: {kept:?}");
-    }
+    assert!(
+        !kept.iter().any(|unit| unit.ends_with(".branches")
+            || unit.ends_with(".cells")
+            || unit.ends_with(".views")
+            || unit.ends_with(".viewKind")
+            || *unit == "kindTables"),
+        "{kept:?}"
+    );
     let kept = units("(js/console.log (count [1 2]) (get {:a 1} :a) (first [3]))");
     assert!(
         !kept.iter().any(|unit| unit.ends_with(".branches")
@@ -2520,9 +2521,9 @@ fn seq_operations_read_the_kind_tables() {
     );
 }
 
-/// Where the wrappers exist, `first` of a view (an IndexedSeq or a
-/// ChunkedSeq, kind 3) reads the view's branch (light-cljs-237), which gives
-/// at every level what the operation's path gives: of a public constructor's
+/// `first` of a view (an IndexedSeq or a ChunkedSeq) gives at every level
+/// what the operation's path gives (a kind table branch read it from
+/// light-cljs-237 until light-cljs-1015, and its slot since light-cljs-1010): of a public constructor's
 /// IndexedSeq over a caller's array, which sees later writes, of strings,
 /// subvectors, a vector's chunks and their ends, and of the views without a
 /// kind (map, set and reversed seqs). Expected values are master's at `none`.
@@ -2539,14 +2540,33 @@ fn views_read_their_first_from_the_kind_table() {
                     (first (cljs.core/ChunkedSeq. v (.-tail v) 64 3 nil nil))]))",
         "[2 5 2 \"x\" \"y\" 69 32 2 nil nil 2 [:a 1] 7 3 32 2 nil 2 30 67]",
     );
-    let kept = units("(js/console.log (first (map inc (seq [1 2]))))");
+}
+
+/// The release runtime keeps none of the old dispatch layers
+/// (light-cljs-1015, docs/value-layout.md, section 4): no payload class,
+/// kind table, protocol wrapper or `publicMethod`, even where a program
+/// defines a type, extends a runtime type and specifies a host object, which
+/// keep the protocol lookup (`extendedMethod`); the operations answer as
+/// before at every level.
+#[test]
+fn release_runtime_keeps_no_old_dispatch_layers() {
+    let source = "(deftype T [a] ICounted (-count [_] a))
+         (extend-type PersistentVector IMeta (-meta [_] {:x 1}))
+         (pr-str [(count (T. 3)) (meta [1]) (count (specify! #js {} ICounted (-count [_] 7))) (first (map inc [1 2]))
+                  (seq {:a 1}) (rest #{1}) (next (list 1 2)) (get (sorted-map 1 2) 1) (seq (sorted-set 2 1)) (count #{1 2})])";
+    every_level(source, "[3 {:x 1} 7 2 ([:a 1]) () (2) 2 (1 2) 2]");
+    let kept = units(&format!("(js/console.log {source})"));
     for unit in [
-        "first.views",
-        "IndexedSeqValue.viewKind",
-        "ChunkedSeqValue.viewKind",
+        "payloads",
+        "kindedStore",
+        "behindProtocol",
+        "kindTables",
+        "kindOps",
+        "publicMethod",
     ] {
-        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+        assert!(!kept.contains(&unit), "{unit}: {kept:?}");
     }
+    assert!(kept.contains(&"extendedMethod"), "{kept:?}");
 }
 
 /// `extend-type` of a runtime type with branches or of `Object`, and
@@ -2751,6 +2771,10 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// Light-cljs-1038's tests of sorted sets, vars, functions with metadata and
 /// string writers (`treeSetOf`, `vars`, `metaFunctions`,
 /// `stringBufferWriters`) read it where their stores read nothing.
+/// Since light-cljs-1015 the Proxy is asked fewer times (842 and 809, where
+/// 877 and 837): no kind table reads its symbol key (`kindOps`), and the
+/// protocol lookup (`extendedMethod`) probes the payload stores only for a
+/// value of a runtime class, which a host value is not.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -2841,9 +2865,9 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 110011111001010110000 5 1 2\n",
-                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [877, 877, 877],
+            [842, 842, 842],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -2902,9 +2926,9 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
-                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [837, 837, 837],
+            [809, 809, 809],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -2969,9 +2993,9 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "empty-queue 010011110000000001000 0 :queue 2\n",
                 "specified-map 001011111100010010100 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
-                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:Symbol(kind) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [877, 877, 877],
+            [842, 842, 842],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
@@ -2990,7 +3014,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     }
 }
 
-/// The kind lookup of the protocol hooks and `publicMethod` reads only its
+/// The kind lookup of the protocol hooks and `extendedMethod` reads only its
 /// own entries: indices a host gives `Array.prototype` after the runtime
 /// loads change no answer for host values, transients or the runtime's
 /// collections (the Sol review of light-cljs-998). Each row is computed
@@ -3181,23 +3205,9 @@ fn collection_operations_read_the_kind_tables() {
            (js/console.log (get m 1) (nth v 1) (count v) (conj v 1) (assoc m 1 2) (seq #{1}) (count q)))",
     );
     for unit in [
-        "kindTables",
         "PersistentVectorValue.type",
         "PersistentHashMapValue.type",
-        "get.branches",
-        "get.maps",
         "get.trie",
-        "nth.branches",
-        "nth.vectors",
-        "count.branches",
-        "count.vectors",
-        "count.queues",
-        "conj.branches",
-        "conj.vectors",
-        "assoc.branches",
-        "assoc.maps",
-        "seq.branches",
-        "seq.sets",
     ] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
@@ -3226,17 +3236,7 @@ fn collection_operations_read_the_kind_tables() {
                 (nth f 0) \" \" (count f) \" \" (try (nth e 5) (catch :default x \"oob\")) \" \" (get (hash-set :a (key e)) :k) \" \" (get (hash-set (val e)) :z :nf)))";
     every_level(lean, ":k :v :nf :v :nf 2 (:k :v) 1 2 oob :k :nf");
     let kept = units(lean);
-    for unit in [
-        "MapEntryType.lean",
-        "MapEntryType.type",
-        "seq.entries",
-        "count.entries",
-        "nth.branches",
-        "nth.entries",
-        "get.branches",
-        "get.entries",
-        "get.sets",
-    ] {
+    for unit in ["MapEntryType.lean", "MapEntryType.type"] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
     for unit in ["PersistentVectorValue", "nth.vectors", "get.vectors"] {
@@ -3283,29 +3283,14 @@ fn collection_operations_read_the_kind_tables() {
         "[nil true nil 1 (8 9) (8 9)]",
     );
     let kept = units(seqs);
-    for unit in [
-        "first.branches",
-        "rest.branches",
-        "next.branches",
-        "first.vectors",
-        "rest.vectors",
-        "next.vectors",
-        "first.entries",
-        "first.maps",
-        "rest.sets",
-        "next.entries",
-        "vectorFirst",
-        "vectorRest",
-    ] {
-        assert!(kept.contains(&unit), "{unit}: {kept:?}");
-    }
-    // A program with vectors and no other collection keeps the vectors'
-    // branches and not the helpers of the other kinds.
-    let kept = units("(js/console.log (first (vec (range 3))) (first [:a]))");
-    assert!(kept.contains(&"first.vectors"), "{kept:?}");
-    for unit in ["first.maps", "seqBranch", "nextBranch"] {
-        assert!(!kept.contains(&unit), "{unit}: {kept:?}");
-    }
+    assert!(
+        !kept.iter().any(|unit| unit.ends_with(".branches")
+            || unit.ends_with(".cells")
+            || unit.ends_with(".views")
+            || unit.ends_with(".viewKind")
+            || *unit == "kindTables"),
+        "{kept:?}"
+    );
 }
 
 /// Where protocol implementations exist, the collections' branches make the

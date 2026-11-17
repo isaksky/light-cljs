@@ -258,8 +258,8 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   and demands only a protocol some bundle extends, since no other can
 ///   force one (compiler_roots.js); a resolved key (`methodKey`) keeps the
 ///   protocol its method demands; and `keyMethod`, `builtin`,
-///   `externalMethod` and `publicMethod` run with the calls between them
-///   (`demandMethod`, `keySlot`, `nativeType`, `publicDeclared` and
+///   `externalMethod` and `extendedMethod` run with the calls between them
+///   (`demandMethod`, `keySlot`, `nativeType`, `extendedDeclared` and
 ///   `externalMethod` where it is still the hook) inlined. Where the stores
 ///   are WeakMaps (`weakMapStores`), a `storesPredicate` answers false for
 ///   a primitive, which no store holds, tests the stores whose test is a
@@ -336,8 +336,8 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         "    const dispatch = external?.[type] ?? external?._; if (!nativeMethods.size && !dispatch) return undefined; // interpreterDispatch\n",
         "    const protocol = cell.protocol ?? (cell.protocol = coreProtocolsByName.get(key.name) ?? null); if (protocol && nativeImplementations.get(protocol)?.(value)) return undefined; // interpreterDispatch\n",
         "    return dispatch ?? cell.natives?.get(type)?.get(arity) ?? cell.natives?.get(\"_\")?.get(arity); }; // interpreterDispatch\n",
-        "  publicMethod = function (value, key, arity, fast = false, directOnly = false) { // interpreterDispatch\n",
-        "    const info = key.info || (key.info = publicMethodInfo(key.key)), protocol = info.protocol, mask = info.mask, native = info.native, name = info.name; // interpreterDispatch\n",
+        "  extendedMethod = function (value, key, arity, fast = false, directOnly = false) { // interpreterDispatch\n",
+        "    const info = key.info || (key.info = protocolMethodInfo(key.key)), protocol = info.protocol, mask = info.mask, native = info.native, name = info.name; // interpreterDispatch\n",
         "    let direct = !!(mask && (value?.[mask[0]] & mask[1])); // interpreterDispatch\n",
         "    if (!direct && name) { // interpreterDispatch\n",
         "      if (demandGate === null) demandProtocol(name, value); else if (demandGate.has(name)) demandHost(name, value, typeNames.get(value?.constructor)); // interpreterDispatch\n",
@@ -352,7 +352,7 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         external_inline!("      "),
         "    } // interpreterDispatch\n",
         "    if (method) return method; // interpreterDispatch\n",
-        "    const declared = key.info || (key.info = publicMethodInfo(key.key)); // interpreterDispatch\n",
+        "    const declared = key.info || (key.info = protocolMethodInfo(key.key)); // interpreterDispatch\n",
         "    if (declared.protocol === IMeta && typeof value === \"function\") return undefined; // interpreterDispatch\n",
         "    if (!declared.native?.(value)) throw new Error(\"No protocol method \" + key.key + \" defined for this value\"); // interpreterDispatch\n",
         "    return undefined; }; // interpreterDispatch\n",

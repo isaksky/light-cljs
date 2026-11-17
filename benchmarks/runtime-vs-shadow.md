@@ -3080,3 +3080,137 @@ at load to slices that keep it, about 100 bytes at advanced: the
 `constant-keys` ratchet fixture went 71 bytes past its 87,000 ceiling, and
 the chunked build of `chunks::terse_chunks_write_their_runtime_units_at_module_level`
 is 130,400 bytes.
+
+## 2026-11-16: the kind tables and protocol wrappers removed (light-cljs-1015)
+
+**What.** The kind tables (`kindOps`, `kindTables`, the nine wrappers that
+read them and their 61 branch units) and the protocol wrappers of `seq`,
+`first`, `rest`, `next` and `count` (`behindProtocol`) are deleted: a value
+whose class has the operation's slot takes the slot-first wrapper or the
+call-site entry, every other value the operation's own path, which looks a
+program's implementation up after its nil case. `publicMethod` is
+`extendedMethod`, which a host value takes without the payload stores'
+probes; a runtime class's value without a slot still probes them
+(light-cljs-1046). docs/value-layout.md, "What light-cljs-1015 landed".
+
+Binaries, in research/shadow-credibility/bin: before `light-cljs-0b473fdb`
+(master), after `light-cljs-a2c54b1c` (a commit of this pellet before it was
+squashed: its runtime as landed but for the narrower extension test of
+`fieldComparisons`, which only programs extending a runtime type reach;
+the gate does not). Unreserved: one peer worker and its suites ran
+throughout. Raw results: research/output-speed/remove-layers-1015.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, every operation, the
+before binary run first and the after binary next), 1-minute load average
+before a run 8.10-18.57 before and 11.94-23.38 after. ns per operation,
+median (range):
+
+| op | light before | light after | change | shadow (before / after runs) | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 8.15 (8.13-8.24) | 8.19 (8.13-15.7) | +0% | 9.91 / 9.95 | 0.82 | 0.82 |
+| get-small | 11.5 (11.5-11.7) | 12.2 (11.5-16.3) | +6% | 15.0 / 15.0 | 0.77 | 0.81 |
+| get-small-miss | 16.0 (15.9-16.1) | 16.1 (15.9-22.0) | +1% | 19.5 / 19.4 | 0.82 | 0.83 |
+| contains-small | 14.0 (12.0-14.1) | 14.1 (13.9-20.7) | +1% | 12.2 / 12.1 | 1.15 | 1.17 |
+| count-small | 1.99 (1.91-1.99) | 2.01 (1.93-2.61) | +1% | 2.14 / 2.14 | 0.93 | 0.94 |
+| assoc-small-existing | 37.8 (37.3-38.2) | 37.9 (36.9-59.5) | +0% | 32.3 / 31.2 | 1.17 | 1.22 |
+| assoc-small-new | 65.0 (64.8-66.1) | 65.6 (64.1-83.3) | +1% | 40.3 / 39.6 | 1.61 | 1.66 |
+| dissoc-small | 65.2 (64.7-69.6) | 72.8 (65.0-259.0) | +12% | 58.0 / 57.9 | 1.12 | 1.26 |
+| update-small | 48.4 (47.7-49.0) | 48.4 (47.1-60.6) | +0% | 44.8 / 44.7 | 1.08 | 1.08 |
+| map-literal-3 | 21.2 (20.9-27.0) | 21.6 (20.7-86.8) | +2% | 10.6 / 10.6 | 2.00 | 2.04 |
+| get-hash100 | 19.9 (19.8-20.0) | 19.9 (19.8-22.0) | +0% | 12.2 / 12.2 | 1.62 | 1.63 |
+| kw-hash100 | 22.3 (21.9-29.6) | 22.2 (21.8-34.9) | -0% | 13.8 / 13.6 | 1.62 | 1.63 |
+| assoc-hash100 | 98.3 (94.3-103.4) | 96.6 (92.2-129.3) | -2% | 80.6 / 81.8 | 1.22 | 1.18 |
+| dissoc-hash100 | 105.8 (101.8-112.1) | 104.3 (99.8-123.0) | -1% | 78.5 / 78.1 | 1.35 | 1.33 |
+| update-hash100 | 111.9 (111.0-119.2) | 111.7 (107.2-143.7) | -0% | 97.1 / 99.3 | 1.15 | 1.13 |
+| get-in-3 | 57.4 (56.5-61.9) | 57.0 (55.9-66.9) | -1% | 59.0 / 60.7 | 0.97 | 0.94 |
+| assoc-in-3 | 211.7 (210.7-223.4) | 210.5 (206.7-233.7) | -1% | 133.6 / 135.8 | 1.58 | 1.55 |
+| update-in-3 | 234.9 (233.8-237.0) | 232.2 (225.7-356.5) | -1% | 142.0 / 140.5 | 1.65 | 1.65 |
+| vec-conj-64 | 2,257 (2,154-2,407) | 2,199 (2,128-2,523) | -3% | 1,330 / 1,401 | 1.70 | 1.57 |
+| vec-literal-4 | 21.5 (20.6-22.0) | 21.5 (20.8-22.7) | +0% | 6.90 / 6.85 | 3.11 | 3.13 |
+| vec-nth-1024 | 5.15 (4.91-5.17) | 5.10 (4.89-5.28) | -1% | 5.28 / 5.15 | 0.98 | 0.99 |
+| vec-invoke-1024 | 5.17 (5.14-5.29) | 5.11 (5.04-5.68) | -1% | 4.87 / 4.92 | 1.06 | 1.04 |
+| vec-peek | 3.71 (3.69-3.74) | 3.75 (3.68-3.77) | +1% | 3.48 / 3.49 | 1.07 | 1.07 |
+| vec-assoc-1024 | 68.2 (67.8-68.4) | 67.9 (66.3-69.5) | -0% | 75.2 / 76.8 | 0.91 | 0.88 |
+| destructure-vec-3 | 7.40 (7.39-7.42) | 7.41 (7.20-7.44) | +0% | 9.89 / 9.86 | 0.75 | 0.75 |
+| destructure-map-3 | 66.2 (62.6-67.4) | 64.5 (62.6-65.2) | -3% | 49.8 / 49.5 | 1.33 | 1.30 |
+| reduce-vec-1000 | 5,283 (5,235-5,455) | 5,272 (5,246-5,477) | -0% | 2,515 / 2,523 | 2.10 | 2.09 |
+| reduce-map-inc-1000 | 49,477 (48,807-50,102) | 49,819 (49,517-50,868) | +1% | 41,741 / 41,823 | 1.19 | 1.19 |
+| filter-count-1000 | 41,862 (41,349-42,397) | 41,101 (40,849-43,342) | -2% | 29,355 / 30,144 | 1.43 | 1.36 |
+| into-xform-1000 | 69,575 (68,488-70,604) | 69,413 (65,341-73,779) | -0% | 18,642 / 18,849 | 3.73 | 3.68 |
+| mapv-1000 | 48,906 (48,167-50,456) | 49,471 (46,951-52,280) | +1% | 14,414 / 14,551 | 3.39 | 3.40 |
+| lazy-walk-1000 | 44,118 (43,514-44,568) | 43,922 (43,333-45,142) | -0% | 40,036 / 40,652 | 1.10 | 1.08 |
+| seq-walk-vec-1000 | 25,268 (25,097-25,592) | 25,022 (24,495-25,429) | -1% | 10,284 / 10,113 | 2.46 | 2.47 |
+| reduce-range-1000 | 4,942 (4,882-5,007) | 4,908 (4,807-5,080) | -1% | 5,528 / 5,520 | 0.89 | 0.89 |
+| reduce-kv-small | 50.2 (49.9-51.2) | 50.2 (49.8-50.8) | +0% | 38.2 / 38.2 | 1.32 | 1.32 |
+| reduce-entries-small | 357.4 (349.5-363.2) | 359.7 (355.8-374.2) | +1% | 77.1 / 80.0 | 4.63 | 4.50 |
+| str-nested-map | 4,148 (4,073-4,260) | 4,103 (4,054-4,136) | -1% | 2,254 / 2,277 | 1.84 | 1.80 |
+| str-concat | 171.0 (167.0-182.8) | 169.6 (167.2-173.9) | -1% | 14.8 / 14.9 | 11.55 | 11.35 |
+| eq-map-7 | 124.8 (122.2-127.4) | 121.8 (119.1-122.5) | -2% | 153.3 / 151.1 | 0.81 | 0.81 |
+| eq-vec-10 | 40.4 (40.2-41.6) | 39.4 (38.5-39.8) | -2% | 82.6 / 82.0 | 0.49 | 0.48 |
+| hash-fresh-vec-4 | 52.1 (51.3-53.3) | 51.3 (47.5-51.4) | -2% | 72.5 / 72.5 | 0.72 | 0.71 |
+| hash-fresh-map-7 | 285.5 (274.0-286.8) | 277.7 (270.5-285.5) | -3% | 557.3 / 555.6 | 0.51 | 0.50 |
+| protocol-on-record | 2.55 (2.47-2.92) | 2.55 (2.50-2.55) | +0% | 2.40 / 2.40 | 1.06 | 1.06 |
+| record-kw-field | 8.04 (8.03-9.06) | 8.01 (7.94-8.07) | -0% | 4.23 / 4.24 | 1.90 | 1.89 |
+| record-dot-field | 0.88 (0.84-0.93) | 0.88 (0.86-0.89) | +0% | 0.88 / 0.88 | 1.00 | 1.00 |
+| record-assoc | 57.2 (56.2-60.7) | 56.5 (55.2-57.0) | -1% | 14.1 / 14.3 | 4.05 | 3.96 |
+| multimethod | 116.4 (115.2-120.1) | 117.1 (115.8-118.4) | +1% | 48.9 / 48.4 | 2.38 | 2.42 |
+| multi-arity-call | 2.04 (2.03-2.04) | 2.02 (2.01-2.04) | -1% | 2.04 / 2.03 | 1.00 | 1.00 |
+| variadic-call | 15.1 (14.9-15.3) | 13.8 (13.5-14.3) | -9% | 14.5 / 14.4 | 1.04 | 0.95 |
+| apply-vec | 191.7 (179.2-198.0) | 192.0 (184.2-194.5) | +0% | 93.4 / 92.8 | 2.05 | 2.07 |
+| unknown-fn-call | 4.51 (4.47-4.52) | 4.53 (4.39-4.55) | +0% | 6.62 / 6.65 | 0.68 | 0.68 |
+| closure-alloc-call | 9.25 (9.22-9.31) | 9.31 (9.09-9.31) | +1% | 8.58 / 8.77 | 1.08 | 1.06 |
+| swap-inc | 4.82 (4.74-4.90) | 4.80 (4.67-4.93) | -0% | 5.65 / 5.71 | 0.85 | 0.84 |
+| swap-assoc | 60.4 (60.3-60.5) | 61.1 (59.8-64.6) | +1% | 38.6 / 38.8 | 1.57 | 1.57 |
+| merge-small | 2,804 (2,784-3,287) | 2,852 (2,766-2,951) | +2% | 916.7 / 970.2 | 3.06 | 2.94 |
+| select-keys-3 | 387.8 (379.4-400.2) | 392.6 (388.6-407.9) | +1% | 253.9 / 280.2 | 1.53 | 1.40 |
+| group-by-100 | 11,381 (11,280-12,094) | 11,789 (11,401-12,216) | +4% | 5,139 / 5,573 | 2.21 | 2.12 |
+| sort-by-100 | 7,508 (7,376-7,782) | 7,295 (7,227-7,374) | -3% | 4,767 / 5,366 | 1.57 | 1.36 |
+| transient-vec-100 | 4,945 (4,865-5,094) | 4,933 (4,904-5,007) | -0% | 1,167 / 1,342 | 4.24 | 3.68 |
+| transient-map-100 | 10,855 (10,520-20,037) | 10,590 (10,509-10,810) | -2% | 4,273 / 4,336 | 2.54 | 2.44 |
+| sorted-map-assoc-100 | 210.8 (203.0-310.8) | 206.7 (205.0-213.8) | -2% | 211.6 / 223.6 | 1.00 | 0.92 |
+| str-sorted-map-20 | 32,053 (31,862-45,529) | 31,809 (31,261-32,054) | -1% | 20,857 / 22,230 | 1.54 | 1.43 |
+| bit-and | 0.60 (0.59-0.61) | 0.60 (0.58-0.64) | +0% | 0.60 / 0.60 | 1.00 | 1.00 |
+| aget-bit-and | 0.60 (0.60-0.61) | 0.60 (0.59-0.62) | +0% | 0.60 / 0.60 | 1.00 | 1.00 |
+
+- **No operation is more than 10% slower but `dissoc-small`** (+12%): its
+  after range is 65.0-259.0, one run at the highest load of the session,
+  and its lowest run equals the before median; `dissoc` takes its
+  slot-first wrapper and call-site entry, which this pellet does not touch,
+  and shadow-cljs's `dissoc-small` moved by 0.2%. Every other change is
+  within 9% and inside the runs' spread (`variadic-call` -9%, unrelated).
+- **No gate operation reached the removed layers' fast paths**: its values
+  take their classes' slots, and the gate keeps no protocol lookup.
+- **What got slower off the gate**, in scratch runs of a small program
+  (each operation 2 to 5 million times): `count` of a cons about 65%
+  slower (35 to 60 ns), after `count` regained the branch's walk on its
+  own path (three times slower without it), and of a queue about 10%; a
+  `next` of a vector and `conj` and `seq` of a set within 12%. None has a
+  slot (upstream's `Cons` does not implement `ICounted`); light-cljs-1046
+  gives the classes the slots they lack.
+
+**Workload 200k and the re-frame-shaped 200k app** (`compare.bb PROJECT
+--runs 5 --runtime-only --runtime 1,40`, the project's light-cljs output
+rebuilt with each binary just before its run, one before/after pair each;
+load 7.8 to 23), wall time at 40 iterations, median (range), and
+light-cljs's steady state:
+
+| project | light before | light after | shadow-cljs (before / after runs) | steady state, ms per iteration |
+| --- | ---: | ---: | ---: | ---: |
+| workload 200k | 3.340 s (3.235-3.902) | 2.646 s (2.567-2.730) | 2.116 s (1.454-2.801) / 1.383 s (1.339-1.447) | 70.6 to 56.2 |
+| re-frame-shaped | 26.872 s (26.307-27.146) | 27.351 s (26.718-33.377) | 13.020 / 13.154 s | 628.2 to 636.9 |
+
+The workload 200k before run was disturbed (shadow-cljs's own range
+1.45-2.80 s); its after numbers match light-cljs-1016's (2.655-2.720 s at
+40, shadow-cljs 1.35-1.46 s). Steady state is unchanged within noise in
+both programs, as the gate's operations are: their time is in the slots,
+which this pellet does not change.
+
+**Advanced size** (the runtime slice, `--size-report`):
+- the gate: 153,386 to 147,541 runtime bytes (1,015 to 961 units);
+- workload 200k: 186,552 to 179,975 (1,314 to 1,253 units);
+- the re-frame-shaped 200k app: 203,015 to 196,074 (1,443 to 1,377 units);
+- the readable runtime of `none`, `prepare` and dev builds: 674,075 to
+  651,992 bytes; the size ratchet (tests/support/ratchet_fixtures.rs,
+  noted there) 75 to 5,640 bytes smaller where a fixture keeps
+  collections, `rest-fn` 735 larger. TodoMVC and re-frame simple were not
+  ported in this run.

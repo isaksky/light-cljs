@@ -1816,68 +1816,27 @@ console.log('a host that states WeakMap stores keeps its payloads in WeakMaps, a
 }
 console.log('public find preserves one search and direct receiver dispatch');
 
-// The kind tables (light-cljs-237) are private: a host object that inherits
-// a lazy seq's, a cell's or a view's prototype, or holds a kind number under the key a
-// prototype shows, is still not a seq; a runtime value that holds another
-// kind's number answers as its own kind; and no prototype holds a function
-// that an operation would call.
+// No runtime prototype holds a kind table's number (light-cljs-237, whose
+// tables light-cljs-1015 removed): the slots and the operations answer every
+// kind. A host object that inherits a lazy seq's, a cell's or a view's
+// prototype is still not a seq, and one that inherits a collection's
+// prototype answers every operation as it did when the tables were there.
 {
   const values = [c.list(1, 2), c.cons(0, c.list(1)), c.mapSeq(c.inc, c.vector(1, 2)), c.range(3), c.seq(c.mapSeq(c.inc, c.range(40))),
     c.seq(c.vector(1, 2)), c.seq(c.vec(c.range(40)))];
-  // Besides the well-known `Symbol.iterator`, a prototype holds the key.
   const own = prototype => Object.getOwnPropertySymbols(prototype).filter(symbol => symbol !== Symbol.iterator);
-  const [key] = own(Object.getPrototypeOf(values[0]));
-  for (const value of values) {
-    const prototype = Object.getPrototypeOf(value);
-    // A chunked cons is a class whose operations are its keyed slots
-    // (light-cljs-1029): its prototype holds no kind table's number.
-    if (value === values[4]) { assert.deepEqual(own(prototype), []); continue; }
-    assert.deepEqual(own(prototype), [key]);
-    assert.equal(typeof prototype[key], 'number');
-  }
-  const answers = value => [c.prStr(c.seq(value)), c.prStr(c.first(value)), c.prStr(c.rest(value)), c.prStr(c.next(value)), c.count(value)];
-  const expected = values.map(answers);
-  for (const kind of [0, 1, 2, 3, 4, 1.5, -1, NaN, '1', null]) {
-    for (const forged of [{[key]: kind}, ...values.map(value => Object.create(Object.getPrototypeOf(value)))]) {
-      if (kind !== 0) forged[key] = kind;
-      for (const op of [c.seq, c.first, c.rest, c.next]) assert.throws(() => op(forged));
-      assert.throws(() => c.count(forged), /count not supported on this type/);
-    }
-    // Fresh values, each holding the number as its own property.
-    const fresh = [c.list(1, 2), c.cons(0, c.list(1)), c.mapSeq(c.inc, c.vector(1, 2)), c.range(3), c.seq(c.mapSeq(c.inc, c.range(40))),
-      c.seq(c.vector(1, 2)), c.seq(c.vec(c.range(40)))];
-    for (const value of fresh) Object.defineProperty(value, key, {value: kind});
-    assert.deepEqual(fresh.map(answers), expected);
+  for (const value of values) assert.deepEqual(own(Object.getPrototypeOf(value)), []);
+  for (const forged of values.map(value => Object.create(Object.getPrototypeOf(value)))) {
+    for (const op of [c.seq, c.first, c.rest, c.next]) assert.throws(() => op(forged));
+    assert.throws(() => c.count(forged), /count not supported on this type/);
   }
 }
-// ... and so are those of vectors, maps, sets and queues and the branches of
-// `nth`, `get`, `conj` and `assoc` (light-cljs-358): a host object that
-// inherits a collection's prototype answers every operation as it would
-// without a kind number, whatever number it holds, and a collection holding
-// another kind's number answers as its own kind.
 {
   const make = () => [c.vector(1, 2), c.subvec(c.vector(1, 2, 3), 1), c.vec(c.range(40)), c.hashMap('a', 1),
     c.arrayMap('a', 1, 'b', 2), c.sortedMap('b', 2, 'a', 1), c.hashSet(1, 2), c.sortedSet(2, 1),
     c.into(c.PersistentQueue.EMPTY, c.vector(1, 2)), c.list(1, 2), c.mapSeq(c.inc, c.vector(1, 2)), c.first(c.hashMap('k', 'v'))];
   const own = prototype => Object.getOwnPropertySymbols(prototype).filter(symbol => symbol !== Symbol.iterator);
-  const [key] = own(Object.getPrototypeOf(c.list(1)));
-  const outcome = thunk => { try { return 'ok ' + c.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
-  const answers = value => [() => c.seq(value), () => c.first(value), () => c.rest(value), () => c.next(value), () => c.count(value),
-    () => c.nth(value, 0), () => c.nth(value, 1, 'nf'), () => c.nth(value, 7, 'nf'), () => c.get(value, 0), () => c.get(value, 'a', 'nf'),
-    () => c.get(value, 1, 'nf'), () => c.contains(value, 'a'), () => c.conj(value, 3), () => c.assoc(value, 0, 9), () => c.assoc(value, 'z', 9)]
-    .map(outcome);
-  for (const value of [...make().slice(0, 9), make()[11]]) assert.equal(typeof Object.getPrototypeOf(value)[key], 'number');
-  const expected = make().map(answers);
-  // A host object without a kind number takes the operations' own paths.
-  const forge = (value, kind) => Object.defineProperty(Object.create(Object.getPrototypeOf(value)), key, {value: kind});
-  const plain = make().map(value => answers(forge(value, undefined)));
-  for (const kind of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 24, 1.5, -1, NaN, '5', null]) {
-    assert.deepEqual(make().map(value => answers(forge(value, kind))), plain, `forged with kind ${String(kind)}`);
-    assert.deepEqual(answers({[key]: kind}), answers({}), `host object with kind ${String(kind)}`);
-    const fresh = make();
-    for (const value of fresh) Object.defineProperty(value, key, {value: kind});
-    assert.deepEqual(fresh.map(answers), expected, `values holding kind ${String(kind)}`);
-  }
+  for (const value of make()) assert.deepEqual(own(Object.getPrototypeOf(value)), []);
 }
 // The collections' and the lazy seqs' branches look a method that
 // JavaScript gives a runtime value up once, as the operations do (the Sol

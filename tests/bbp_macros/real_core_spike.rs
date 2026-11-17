@@ -190,14 +190,17 @@ fn real_core_map_over_an_engine_vector_in_one_task() {
         out.string().unwrap().to_string_lossy(),
         "lazy-seq 2 3 4 2 3 4 calls 3"
     );
-    // As booted, `mapSeq` reaches a binding the runtime reassigned while
-    // loading (`seq = behindProtocol(seq, ...)`); sealed at the end of the
-    // boot, with its registries, it publishes (light-cljs-646).
+    // As booted, `mapSeq` reaches state the boot has not sealed: a binding
+    // the runtime reassigned while loading (`seq = ...`, its slot-first
+    // wrapper) or, first since light-cljs-1015 removed the protocol
+    // wrapper the walk met before, a prototype the boot filled; sealed at
+    // the end of the boot, with its registries, it publishes (light-cljs-646).
     for text in [&verbatim, &swapped] {
         let f = run(&rt, &format!("return (\n{text}\n);")).unwrap();
         let error = rt.publish(&f).unwrap_err().to_string();
         assert!(
-            error.contains("is a task-owned unsealed binding cell"),
+            error.contains("is a task-owned unsealed binding cell")
+                || error.contains("property(prototype) is a task-owned object"),
             "{error}"
         );
     }

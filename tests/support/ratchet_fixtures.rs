@@ -636,6 +636,20 @@
 //! Each exceeded advanced ceiling, and the features chunks', moves to the
 //! next 100 below 10,000 and the next 1,000 above. Speed comes first (pl
 //! group 1661).
+//!
+//! The old dispatch layers removed (light-cljs-1015, 2026-11-16): no kind
+//! tables, branches or protocol wrappers, and the protocol lookup of
+//! `extend-type` programs is `extendedMethod`. The readable runtime is
+//! about 22,000 bytes smaller (none 659,486 for `console-log-sum`, where
+//! 681,377 before light-cljs-1040's note; every none and prepare ceiling
+//! keeps its value). Advanced, against master `0b473fdb` (the command line's
+//! output): 75 to 5,640 bytes smaller where a program keeps the collections
+//! (`map-printed` 24,685 to 23,955, `keyword-lookups` 62,785 to 58,586,
+//! `constant-keys` 87,087 to 81,447, `callbacks` 68,515 to 64,662,
+//! `protocol-params` 74,642 to 70,790); `rest-fn` 735 larger (19,447 to
+//! 20,182, its slice taking other units); one byte
+//! more for `keyword-case`, `keyword-only` and `constant-lookups`.
+//! `rest-fn`'s ceiling moves to 21,000; no other ceiling moves.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -698,7 +712,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "rest-fn",
         source: "(fn [& xs] xs)",
-        ceilings: [682_000, 682_000, 20_000],
+        ceilings: [682_000, 682_000, 21_000],
         removed: [0, 0, 0],
         printed: "#function\n",
     },

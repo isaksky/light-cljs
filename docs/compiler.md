@@ -1026,7 +1026,8 @@ The resolved core includes arithmetic and variadic comparisons, `inc`/`dec`,
 `max`/`min`/`abs`, integer/floating/character and unchecked coercions, quotient,
 remainder, modulo and every public bit operation. Boolean, nil, number, string,
 named-value, function and collection predicates are first-class functions.
-They preserve JavaScript Number, UTF-16 and private collection-brand semantics.
+They preserve JavaScript Number and UTF-16 semantics and recognise only
+values of this runtime's classes (docs/value-layout.md).
 `int` wraps to 32 bits; `long` truncates without wrapping.
 
 Numbers are JavaScript Numbers everywhere — in applications and during macro
@@ -1076,11 +1077,12 @@ Primitive-only output omits it. The source file is partitioned into units by
 `//@unit` header comments that declare each unit's runtime dependencies;
 `src/runtime_manifest.rs` documents the format and validates the headers
 against the code, and `build.rs` removes the header lines, so the embedded
-runtime is the file without them. Owned arrays/cells and base callable storage are
-frozen; per-type extension prototypes and public value wrappers remain extensible
-for protocol and JavaScript property writes. Those properties do not replace the
-private collection payloads; private brands prevent host arrays or objects from
-impersonating language values. Nested immutable values and opaque host
+runtime is the file without them. A runtime value is an instance of its kind's
+class: its data are own fields, its protocol methods, masks and kind are
+properties of the class prototype, and every such name ends in the build's
+secret key (docs/value-layout.md), so no host array or object is a language
+value by accident. A value is not frozen; the shared bases holding `call`,
+`toString` and `equiv` are. Nested immutable values and opaque host
 references are shared; caller-owned host objects are never frozen or converted
 into collections.
 
@@ -1174,80 +1176,44 @@ A vector of more than 32 items gives upstream's ChunkedSeq over its trie's
 leaves and tail, which a seq shares frozen. Lazy seqs, chunked conses, chunks
 and chunk buffers are class values too, with upstream's fields as their own
 keyed fields and keyed slots for their operations (light-cljs-1029): a step of
-a lazy pipeline builds one object. Cons cells keep their payloads in
-class-private fields rather than in `WeakMap` entries (light-cljs-259): each
-step of a lazy pipeline builds new values, and their entries, which the
-collector traces as ephemerons, cost more than the step. A lazy seq or chunked cons built with nil metadata stores none;
-`meta` and its `meta` field read nil either way. The other values that an
-operation builds one per call keep theirs in private fields too
-(light-cljs-291): `reduced` markers, transients, queues, iterator seqs, and the
-array maps and sets ([Hash maps](#hash-maps)). A step of `repeat` stores no nil
-metadata or hash, and no positional constructor stores a null hash; the compiler
-form bridge reads a repeat as having nil metadata, as it does a lazy seq.
-A host that states `globalThis.lightCljsWeakMapStores` before a runtime loads,
-as the evaluator does in its QuickJS sessions (macro expansion there, and
-`--eval` or `--repl` with `--engine quickjs`), gets all of these stores as
-`WeakMap`s instead (light-cljs-292), as unforgeable a brand: QuickJS frees
-short-lived values by reference counting, so an entry costs it less than
-adding a private field, which runs a class's constructors. The runtime reads
-the statement once when it loads and never sniffs the engine; vectors and the
-hash tries keep their private fields in every host.
+a lazy pipeline builds one object. Lists, conses, ranges and the other seq
+cells hold upstream's fields as their own keyed fields too (light-cljs-1030),
+as `reduced` markers, transients, queues, iterator seqs and the array maps and
+sets hold theirs (light-cljs-1013, light-cljs-1034), so a step builds no store
+entry. A lazy seq or chunked cons built with nil metadata stores none;
+`meta` and its `meta` field read nil either way. A step of `repeat` stores no
+nil metadata or hash, and no positional constructor stores a null hash; the
+compiler form bridge reads a repeat as having nil metadata, as it does a lazy
+seq. A host that states `globalThis.lightCljsWeakMapStores` before a runtime
+loads, as the evaluator does in its QuickJS sessions (macro expansion there,
+and `--eval` or `--repl` with `--engine quickjs`), has its compile-time values
+branded by a `WeakSet` rather than a private field (light-cljs-292,
+docs/value-layout.md, section 4): QuickJS frees short-lived values by
+reference counting, so an entry costs it less than adding a private field,
+which runs a class's constructors. The runtime reads the statement once when
+it loads and never sniffs the engine.
 
-These private-field stores share one brand class (`payloads`, light-cljs-990):
-a value holds its payload, its kind (the number of the store that holds it) and,
-for a map or set outside the hash tries, its map or set kind, in three private
-fields that one construction adds. A kind test such as `seqable?`, `coll?`, `satisfies?` of a
-core protocol, printing's "is this a runtime value" or the protocol lookup in
-front of the core operations (`payloadStore`) reads the kind once, where it
-probed each store's private field in turn; only the stores that are not private
-fields (the `WeakMap`s of vars, atoms and the like; keywords and symbols are
-classes told by their keyed kind since light-cljs-1011) and the
-tests that other brands widen (a hash trie or a record is a map) are still
-probed one by one. A map entry is a vector of its own kind rather than a vector
-plus a `WeakSet` entry, which cost six times what building the entry did. A
-value is in at most one of these stores.
+A kind test reads the value's keyed kind, one property of its prototype (and
+for most kinds an own field the class always holds). A map entry is a value
+of its own class.
 
-Unforgeability is kept everywhere: every kind test still reads a private field
-that no host object can have, inherit or copy, so a value forged with
-`Object.create` of a runtime type's prototype, or by copying a value's own
-properties, is no vector, map, seq or map entry, as before
-(`builtin_types::value_kind_predicates_answer_as_the_brand_stores_did`). It is
-dropped nowhere: the kind number on a type's prototype (below), which a host
-object can inherit, only picks a branch that then reads the private brand. In
-the QuickJS hosts that state `lightCljsWeakMapStores`, the stores other than
-vectors stay `WeakMap`s and kind tests probe them as before.
+No host value is a language value by accident: every kind test reads a
+property whose name ends in the build's secret key, which no host object holds
+or inherits, and copying a value's own fields onto a plain object copies no
+kind. Deliberate reflection can forge a value (`Object.create` of a runtime
+prototype, reading the prototype's keys); as in upstream ClojureScript, that
+is outside the guarantee (docs/value-layout.md, section 5;
+`builtin_types::value_kind_predicates_answer_as_the_brand_stores_did`).
 `rest` at the end (including nil) is the empty list, while `next` is nil. Each tail
 is O(1), so complete traversal is linear. String traversal produces UTF-16
 one-unit strings. `conj` of a generic seq produces a seq-cons, distinct from a list.
 
-`seq`, `first`, `rest`, `next` and `count` read a value's kind once, instead of
-probing each payload store in turn (light-cljs-237). The prototypes of the lazy
-seq type and of the cell types (`List`, `Cons`, `ChunkedCons` and the two range
-types) hold a kind number under a private symbol, which picks the kind's
-branches from a table that only the runtime can reach. Each operation is
-wrapped, inside its protocol wrapper, by a function that calls its kind's branch
-and else the operation; a value with no kind number calls no branch. A branch
-takes the value apart from its store and payload and gives a private `missing`
-for anything it leaves to the operation, so a host object that inherits a
-prototype or holds a kind number is still no language value. A lazy seq's
-branches realize it and answer with the cell branch of what it realized. Where
-protocol implementations exist, the branches of `first`, `rest` and `next`
-leave every value to the operation, whose path finds an `ISeqable` slot
-JavaScript gave a value where it did before; `extend-type` of a type with a kind
-or of `Object`, and `specify!` of a value with one, empty the tables. The views
-of vectors and arrays (`IndexedSeq`, `ChunkedSeq`) are a third kind with a
-branch of `first` only, and take their number only where a program keeps the
-wrappers; since light-cljs-1010 their keyed `first`, `rest`, `next` and `seq`
-slots (and an `IndexedSeq`'s `count`) are what those operations call first. At `Advanced` the wrappers and branches are effects of the kinds'
-types that wait for their operations, so a program that builds no lazy seq or
-cell keeps none of them. The same pellet made a step of a seq cheaper: a
-range's cell is a class instance instead of a frozen literal with a getter
-closure, a chunked cons's cell is its own hash holder, list and cons cells are
-not frozen (their payloads are private and never written), a store's `set`
-assumes a new value (`reset` replaces a payload), and where no protocol
-implementation exists a chunked cons and `map`, `filter` and the indexed
-sequence functions read a runtime chunk's store instead of calling `nth` and
-`count`.
+`seq`, `first`, `rest`, `next` and `count` call the value's keyed slot;
+`extend-type` and `specify!` overwrite slots. A value without the slot takes
+the operation's own path: its nil, string and array cases, a program's
+implementation where protocol implementations exist, the host tables, then
+the error (docs/value-layout.md, section 3; light-cljs-1015 removed the kind
+tables and protocol wrappers that stood in front of the operations).
 
 List `nth` requires an exact reachable integer; fractions default or throw.
 Indexed seq views (strings and vectors of at most 32 elements) instead use
@@ -1352,7 +1318,7 @@ A set of at most 8 members stores a frozen member array, as an array map. At its
 ninth distinct member it becomes a hash set, which stores what upstream's
 PersistentHashSet does through its PersistentHashMap (light-cljs-236): the hash
 map's trie of its members (each with a nil value), its nil member beside the
-trie, and its count, in a class-private field of its own as a hash map's (see
+trie, and its count, in keyed fields of its own as a hash map's (see
 [Hash maps](#hash-maps)). The members go into the trie as upstream's transient
 array map promotes to a transient hash map, so traversal order and the calls
 that hash members are as before. Set count is O(1). Hash-set lookup (`get`,
@@ -2990,8 +2956,8 @@ only the methods supplied by its body. `pr-str` prints tagged record data; defau
 `extend-type` and `extend-protocol` extend named types and records, JavaScript
 constructors, built-in collection/named-value types, `nil`, `object`, `boolean`,
 `number`, `string`, `array`, `function`, `symbol`, `bigint`, and `default`.
-Built-in types have distinct public extension prototypes while their immutable
-payloads and private brands remain protected. Extensions affect existing instances.
+Built-in types are classes whose prototypes hold their protocol methods;
+`extend-type` replaces a method in place. Extensions affect existing instances.
 
 `specify!` evaluates its target once and installs instance methods, returning that
 same value. `specify` clones through `ICloneable` before installing methods. The
