@@ -1035,7 +1035,7 @@
   //@unit installMethods.IEncodeJSKey effect: installMethods when: cljToJs, keyToJs requires: methodKey,
   //@ methodKeys
   methodKeys[17] = methodKey("IEncodeJS");
-  //@unit installMethods.IEquivEquivKey effect: installMethods when: equalPair, keywordProgramEquiv,
+  //@unit installMethods.IEquivEquivKey effect: installMethods when: equalPair, keywordLookupEquiv,
   //@ objectEquiv requires: methodKey, methodKeys
   methodKeys[18] = methodKey("IEquiv/-equiv");
   //@unit installMethods.IFindFindKey effect: installMethods when: find requires: methodKey,
@@ -1828,8 +1828,8 @@
     }
     return lazy.s$LKEY = current;
   }
-  //@unit queueFromArray.seq effect: queueFromArray when: seq, seqSite requires: concat, IndexedSeqValue,
-  //@ kindHooks, publicCollectionSlots, seq, view
+  //@unit queueFromArray.seq effect: queueFromArray when: seq, seqSite requires: concat,
+  //@ IndexedSeqValue, kindHooks, publicCollectionSlots, seq, view
   kindHooks.seqQueue = (value, queue) => {
     if (publicCollectionSlots.has(value)) { const q = publicCollectionSlots.get(value); return seq(concat(q.front, q.rear)); }
     return queue.length ? view(IndexedSeqValue, queue, 0, false, "queue") : null;
@@ -2821,9 +2821,9 @@
   //@unit makeMap.conj effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: conj
   //@ requires: kindHooks, mapConj
   kindHooks.conjMap = mapConj;
-  //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj, conjSite requires: assoc, copyEntries,
-  //@ kindHooks, makeSet, meta, missing, PersistentHashSetValue, publicCollectionSlots, putMember,
-  //@ sets, treeSetOf
+  //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj, conjSite requires: assoc,
+  //@ copyEntries, kindHooks, makeSet, meta, missing, PersistentHashSetValue, publicCollectionSlots,
+  //@ putMember, sets, treeSetOf
   // The set `conj` builds, or `missing` where it adds nothing. A hash set's
   // trie copies one path (`putMember`); a sorted set's tree map adds the
   // member with a nil value, as upstream's (light-cljs-1038).
@@ -3073,7 +3073,8 @@
   // (light-cljs-235; a hook rather than a wrapper of `lookup` since
   // light-cljs-302, so that a chunk places it with the hash maps).
   kindHooks.trieValue = (trie, key, notFound) => { const entry = trieEntry(trie, key); return entry ? entry.value : notFound; };
-  //@unit get.members effect: publicHashSet, putMember when: lookup, setLookup requires: kindHooks, trieEntry
+  //@unit get.members effect: publicHashSet, putMember when: lookup, setLookup requires: kindHooks,
+  //@ trieEntry
   // Likewise the member of a hash set's trie (`putMember`), which `get.sets`
   // (light-cljs-373) and `lookup.sets` read, kept only where a program builds
   // hash sets (light-cljs-236).
@@ -3408,55 +3409,70 @@
       : new proto.cljs$lang$cell$$LKEY(comparator, kindHooks.treeOfEntries(entries), entries.length);
   }
 
-  //@unit arrayIndex requires: equalPair, keywordOf, keywordProgramEquiv
+  //@unit arrayIndex requires: arrayIndexOf, keywordOf, keywordProgramEquiv
   // The index of `key` in an array map's keys and values (`arr`), even, or
   // -1: upstream's `array-index-of`, as `entryIndex` searches entries; from
-  // the key at `from` on.
+  // the key at `from` on. A keyword is searched here, every other key, and a
+  // keyword with a program's `IEquiv` method, by `arrayIndexOf`. That keeps
+  // this function small (246 bytes of bytecode, the read of the program's
+  // method 71), so that V8 still inlines an array map's `get` whole into a
+  // lookup call that also takes hash maps and records, as `getSite`'s call
+  // of the `-lookup` slot, which every `(:k m)` of a program shares
+  // (light-cljs-1041). At 381 and 180 bytes, 636 with `arrayMapLookup`, it
+  // put such a call over TurboFan's budget.
   function arrayIndex(arr, key, from = 0) {
     const n = arr.length;
-    if (key == null) {
-      for (let i = from; i < n; i += 2) if (arr[i] == null) return i;
-      return -1;
-    }
-    if (typeof key === "string" || typeof key === "number") {
-      for (let i = from; i < n; i += 2) if (arr[i] === key) return i;
-      return -1;
-    }
+    if (key == null || typeof key === "string" || typeof key === "number") return arrayIndexOf(arr, key, from, n);
     // A keyword as in `entryIndex`: by identity, then by kind and `fqn`,
     // reading its own `IEquiv` slot once.
     const keyword = keywordOf(key);
-    if (keyword !== undefined) {
-      const fqn = keyword.fqn$LKEY;
-      let read = false;
-      for (let i = from; i < n; i += 2) {
-        const other = arr[i];
-        if (other === key) return i;
-        if (!read) {
-          read = true;
-          const equiv = keywordProgramEquiv(key);
-          if (equiv) {
-            if (equiv.call(key, key, other)) return i;
-            for (i += 2; i < n; i += 2) if (equalPair(key, arr[i])) return i;
-            return -1;
-          }
-        }
-        // Its `fqn` first: the keys and values of `arr` tell V8 nothing of a
-        // key's class, so the kind test runs only where the spelling matches
-        // (upstream's `array-index-of-keyword?`); a value without the field
-        // (another kind, or the Pants profile's engine keyword) is read
-        // through `keywordOf`.
-        if (other != null) {
-          const spelling = other.fqn$LKEY;
-          if (spelling === fqn ? keywordOf(other) !== undefined : spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn) return i;
-        }
+    if (keyword === undefined) return arrayIndexOf(arr, key, from, n);
+    const fqn = keyword.fqn$LKEY;
+    let read = false;
+    for (let i = from; i < n; i += 2) {
+      const other = arr[i];
+      if (other === key) return i;
+      if (!read) {
+        read = true;
+        const equiv = keywordProgramEquiv(key);
+        if (equiv) return arrayIndexOf(arr, key, i, n, equiv, other);
       }
+      // Its `fqn` first: the keys and values of `arr` tell V8 nothing of a
+      // key's class, so the kind test runs only where the spelling matches
+      // (upstream's `array-index-of-keyword?`); a value without the field
+      // (another kind, or the Pants profile's engine keyword) is read
+      // through `keywordOf`.
+      if (other != null) {
+        const spelling = other.fqn$LKEY;
+        if (spelling === fqn ? keywordOf(other) !== undefined : spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn) return i;
+      }
+    }
+    return -1;
+  }
+  //@unit arrayIndexOf requires: equalPair
+  // `arrayIndex` of a key that is no keyword: nil by `==`, a string or a
+  // number by identity, any other value by `equalPair`; and of a keyword
+  // whose program gave it `equiv` (`keywordProgramEquiv`): `other`, the key
+  // at `from` that `arrayIndex` read and found not identical, by `equiv`,
+  // the rest by `equalPair`. The keys are those of the `n` items there were
+  // when the search started, each read once, as a public constructor's
+  // array can have getters.
+  function arrayIndexOf(arr, key, from, n, equiv, other) {
+    if (equiv !== undefined) {
+      if (equiv.call(key, key, other)) return from;
+      from += 2;
+    } else if (key == null) {
+      for (let i = from; i < n; i += 2) if (arr[i] == null) return i;
+      return -1;
+    } else if (typeof key === "string" || typeof key === "number") {
+      for (let i = from; i < n; i += 2) if (arr[i] === key) return i;
       return -1;
     }
     for (let i = from; i < n; i += 2) if (equalPair(key, arr[i])) return i;
     return -1;
   }
 
-  //@unit keywordProgramEquiv requires: keywordEquiv, methodKeys, protocolHooks, slotFirst
+  //@unit keywordProgramEquiv requires: keywordEquiv, keywordLookupEquiv, protocolHooks, slotFirst
   // The `IEquiv` method a program gave the keyword `key` (`extend-type`,
   // `specify!`), else undefined, which the keyword searches read once
   // (`arrayIndex`, `entryIndex`, `arrayMapDissoc`): the key's slot, else a
@@ -3468,17 +3484,24 @@
   // slots (`builtinSlots`) is a WeakSet probe in the V8 profile and a linear
   // search in the Pants build's; a session that demands takes the lookup,
   // which at compile time (build.rs, light-cljs-439) answers the class's own
-  // slot too.
+  // slot too. Both lookups are `keywordLookupEquiv`'s, so that a search
+  // inlines the slot's read alone (light-cljs-1041).
   function keywordProgramEquiv(key) {
-    const builtin = protocolHooks.builtin, k = methodKeys[18];
-    if (!builtin) return undefined;
-    let equiv;
-    if (slotFirst.on) {
-      equiv = key.cljs$core$IEquiv$_equiv$arity$2$LKEY;
-      return equiv === keywordEquiv ? undefined : equiv ?? protocolHooks.externalMethod?.(key, k, 2);
-    }
+    if (!protocolHooks.builtin) return undefined;
+    if (!slotFirst.on) return keywordLookupEquiv(key, false);
+    const equiv = key.cljs$core$IEquiv$_equiv$arity$2$LKEY;
+    return equiv === keywordEquiv ? undefined : equiv ?? keywordLookupEquiv(key, true);
+  }
+  //@unit keywordLookupEquiv requires: keywordEquiv, methodKeys, protocolHooks
+  // `keywordProgramEquiv`'s lookups: a host type's method (`externalMethod`)
+  // for a key whose slot holds none (`external`), else, where a session
+  // demands declarations, the protocol lookup's method, the class's own
+  // none.
+  function keywordLookupEquiv(key, external) {
+    const k = methodKeys[18];
+    if (external) return protocolHooks.externalMethod?.(key, k, 2);
     const own = protocolHooks.keyMethod;
-    equiv = own ? own(key, k, 2) ?? protocolHooks.externalMethod?.(key, k, 2) : builtin(key, k, 2);
+    const equiv = own ? own(key, k, 2) ?? protocolHooks.externalMethod?.(key, k, 2) : protocolHooks.builtin(key, k, 2);
     return equiv === keywordEquiv ? undefined : equiv;
   }
   //@unit entryIndex requires: equalPair, keywordOf, keywordProgramEquiv
@@ -5023,8 +5046,8 @@
     else outOfBounds();
     return preserveMeta(self, makeVector(null, store));
   });
-  //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: get, getSite, getSite3
-  //@ requires: builtinSlot, noBranch, PersistentVectorValue, vectorNth
+  //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: arrayMapContains, get,
+  //@ getSite, getSite3 requires: builtinSlot, noBranch, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
     const store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
@@ -5086,8 +5109,8 @@
     else outOfBounds();
     return preserveMeta(self, makeVector(null, store));
   });
-  //@unit SubvecValue.lookup effect: SubvecValue when: get, getSite, getSite3 requires: builtinSlot,
-  //@ noBranch, SubvecValue, vectorNth
+  //@unit SubvecValue.lookup effect: SubvecValue when: arrayMapContains, get, getSite, getSite3
+  //@ requires: builtinSlot, noBranch, SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return typeof key === "number" && key >= 0 && key < self.cnt$LKEY ? vectorNth(self, key, null) : null;
@@ -5162,8 +5185,8 @@
     else outOfBounds();
     return preserveMeta(self, makeVector(null, store));
   });
-  //@unit MapEntryType.lookup effect: MapEntryType when: get, getSite, getSite3 requires: builtinSlot,
-  //@ MapEntryType, noBranch
+  //@unit MapEntryType.lookup effect: MapEntryType when: arrayMapContains, get, getSite, getSite3
+  //@ requires: builtinSlot, MapEntryType, noBranch
   MapEntryType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
     const tail = self.tail$LKEY;
     if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
@@ -5198,8 +5221,9 @@
     if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "count"); }
     return self.cnt$LKEY;
   });
-  //@unit TransientVectorType.lookup effect: TransientVectorType when: get, getSite, getSite3
-  //@ requires: builtinSlot, editableTransient, noBranch, TransientVectorType, vectorNth
+  //@unit TransientVectorType.lookup effect: TransientVectorType when: arrayMapContains, get,
+  //@ getSite, getSite3 requires: builtinSlot, editableTransient, noBranch, TransientVectorType,
+  //@ vectorNth
   // A key that is no number is no index; a number is `nth` with the item
   // for a missing key, as `transientLookup` takes it.
   TransientVectorType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
@@ -5467,16 +5491,40 @@
   function mapConjSlot(self, item) {
     return mapOf(self) === undefined ? noBranch : preserveMeta(self, mapConj(self, item));
   }
-  //@unit PersistentArrayMapValue.lookup effect: PersistentArrayMapValue when: get, getSite,
-  //@ getSite3 requires: arrayMapLookup, builtinSlot, PersistentArrayMapValue
+  //@unit arrayMapGet requires: arrayMapLookup, builtinSlot
+  // An array map's three-argument `-lookup` slot, which `contains?` of an
+  // array map looks for (`arrayMapContains`).
+  const arrayMapGet = builtinSlot(function (self, key, notFound) { return arrayMapLookup(self, key, notFound); });
+  //@unit arrayMapContains requires: arrayIndex, arrayMapGet, get, missing, noBranch, slotFirst
+  // `contains?` of an array map: whether its keys hold the key, as
+  // `arrayIndex` finds it, and its value is not `missing` (which a
+  // program's `-lookup` can keep from its `notFound`), as `get` of the key
+  // with `missing` answers, where the map's three-argument `-lookup` slot
+  // is its class's own (`arrayMapGet`), the method `get` would call; else,
+  // as `mapContains`, `get` of the key through the operation's wrappers, so
+  // that an `extend-type` or `specify!` of `ILookup`, and a session that
+  // demands declarations (`slotFirst`), answer as before. Without `get`'s
+  // wrapper `contains?` of a small map takes less time than `get` of it
+  // (light-cljs-1041).
+  function arrayMapContains(self, key) {
+    const arr = self.arr$LKEY;
+    if (arr === undefined) return noBranch;
+    let index;
+    return slotFirst.on && self.cljs$core$ILookup$_lookup$arity$3$LKEY === arrayMapGet
+      ? (index = arrayIndex(arr, key)) >= 0 && arr[index + 1] !== missing
+      : get(self, key, missing) !== missing;
+  }
+  //@unit PersistentArrayMapValue.lookup effect: PersistentArrayMapValue when: arrayMapContains,
+  //@ get, getSite, getSite3 requires: arrayMapGet, arrayMapLookup, builtinSlot,
+  //@ PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return arrayMapLookup(self, key, null); });
-  PersistentArrayMapValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return arrayMapLookup(self, key, notFound); });
-  //@unit PersistentHashMapValue.lookup effect: PersistentHashMapValue when: get, getSite, getSite3
-  //@ requires: builtinSlot, hashMapLookup, PersistentHashMapValue
+  PersistentArrayMapValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = arrayMapGet;
+  //@unit PersistentHashMapValue.lookup effect: PersistentHashMapValue when: arrayMapContains, get,
+  //@ getSite, getSite3 requires: builtinSlot, hashMapLookup, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return hashMapLookup(self, key, null); });
   PersistentHashMapValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return hashMapLookup(self, key, notFound); });
-  //@unit treeMapConstructor.lookupSlot effect: treeMapConstructor when: get, getSite, getSite3
-  //@ requires: builtinSlot, treeMapConstructor, treeMapLookup
+  //@unit treeMapConstructor.lookupSlot effect: treeMapConstructor when: arrayMapContains, get,
+  //@ getSite, getSite3 requires: builtinSlot, treeMapConstructor, treeMapLookup
   treeMapConstructor.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return treeMapLookup(self, key, null); });
   treeMapConstructor.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return treeMapLookup(self, key, notFound); });
   //@unit PersistentArrayMapValue.count effect: PersistentArrayMapValue when: count, countSite
@@ -5515,8 +5563,8 @@
   treeMapConstructor.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return treeMapDissoc(self, key); });
   kindHooks.dissocTreeMap = treeMapDissoc;
   //@unit PersistentArrayMapValue.containsSlot effect: PersistentArrayMapValue when: contains,
-  //@ containsSite requires: builtinSlot, mapContains, PersistentArrayMapValue
-  PersistentArrayMapValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
+  //@ containsSite requires: arrayMapContains, builtinSlot, PersistentArrayMapValue
+  PersistentArrayMapValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return arrayMapContains(self, key); });
   //@unit PersistentHashMapValue.containsSlot effect: PersistentHashMapValue when: contains,
   //@ containsSite requires: builtinSlot, mapContains, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
@@ -5563,8 +5611,8 @@
     const index = kindHooks.entryIndex(self, members, key);
     return index < 0 ? notFound : members[index].key;
   }
-  //@unit PersistentHashSetValue.lookupSlot effect: PersistentHashSetValue when: get, getSite,
-  //@ getSite3 requires: builtinSlot, PersistentHashSetValue, setLookup
+  //@unit PersistentHashSetValue.lookupSlot effect: PersistentHashSetValue when: arrayMapContains,
+  //@ get, getSite, getSite3 requires: builtinSlot, PersistentHashSetValue, setLookup
   PersistentHashSetValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return setLookup(self, key, null); });
   PersistentHashSetValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return setLookup(self, key, notFound); });
   //@unit PersistentQueueValue.countSlot effect: PersistentQueueValue when: count, countSite
@@ -5581,8 +5629,8 @@
     const items = self.arr$LKEY;
     return items === undefined ? noBranch : kindHooks.seqQueue(self, items);
   });
-  //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjSite
-  //@ requires: builtinSlot, kindHooks, noBranch, PersistentQueueValue, preserveMeta
+  //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjSite requires: builtinSlot,
+  //@ kindHooks, noBranch, PersistentQueueValue, preserveMeta
   PersistentQueueValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     return self.arr$LKEY === undefined ? noBranch : preserveMeta(self, kindHooks.conjQueue(self, item));
   });
@@ -6055,8 +6103,9 @@
   }, "name", {value: operation.name}))(next);
   //@unit seq.slots effect: ChunkedCons, ChunkedSeqValue, IndexedSeqValue, LazySeq, MapEntryType,
   //@ PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue, SubvecValue, Cons,
-  //@ CycleValue, EmptyListValue, IntegerRangeValue, IterateValue, KeySeqCell, ListValue, RangeValue,
-  //@ RepeatValue, ReSeqCell, treeMapSeqConstructor when: seq requires: emptyList, noBranch, seq, slotFirst
+  //@ CycleValue, EmptyListValue, IntegerRangeValue, IterateValue, KeySeqCell, ListValue,
+  //@ RangeValue, RepeatValue, ReSeqCell, treeMapSeqConstructor when: seq requires: emptyList,
+  //@ noBranch, seq, slotFirst
   // The empty list takes the operation, as before it had slots: every walk
   // ends with its `seq`, and its slot made the read and call each step takes
   // megamorphic (light-cljs-1033, docs/value-layout.md). The empty list and
@@ -10265,7 +10314,7 @@
       return this.__hash = recordEntriesHash(recordEntries(this, Type), 0) ^ stringHash(typeNames.get(Type) ?? "");
     }]]);
   //@unit recordMethods.equiv effect: recordMethods when: equalPair, equivProtocol,
-  //@ keywordProgramEquiv, objectEquiv requires: equalPair, recordMethodTable
+  //@ keywordLookupEquiv, objectEquiv requires: equalPair, recordMethodTable
   recordMethodTable.push(Type => [
     ["IEquiv/-equiv", 2, function (_self, other) {
       return other != null && this.constructor === other.constructor &&
@@ -12622,16 +12671,16 @@
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
   //@ assoc, collectionWithMeta, compareKeys, conj, conjBangOwn, conjMeta, conjTransient,
   //@ coreMethod, count, derefProtocol, disj, dissoc, equalPair, firstSeq, hash, hashStructural,
-  //@ iterator, keywordProgramEquiv, metaSupported, name, namespace, notifyWatches, objectEquiv,
-  //@ peek, pop, removeWatchProtocol, restSeq, rseq, stateProtocol, vresetProtocol,
-  //@ withMetaSupported requires: builtin, protocolHooks
+  //@ iterator, keywordLookupEquiv, keywordProgramEquiv, metaSupported, name, namespace,
+  //@ notifyWatches, objectEquiv, peek, pop, removeWatchProtocol, restSeq, rseq, stateProtocol,
+  //@ vresetProtocol, withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
-  //@unit protocolHooks.keyMethod effect: installMethods when: keywordProgramEquiv requires: keyMethod,
+  //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,
   //@ protocolHooks
   // `builtin`'s first half, which the keyword searches read a keyword key's
   // slot with (light-cljs-989, `keywordProgramEquiv`).
   protocolHooks.keyMethod = keyMethod;
-  //@unit protocolHooks.external effect: extendType when: builtin, keywordProgramEquiv,
+  //@unit protocolHooks.external effect: extendType when: builtin, keywordLookupEquiv,
   //@ extendedDeclared requires: externalMethod, protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;

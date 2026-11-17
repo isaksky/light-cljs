@@ -999,6 +999,37 @@ What light-cljs-1040 landed: keywords and symbols compare by their own
   of a keyword at `Advanced`, which took that method for the key's and
   matched the first key (`(get {:x 1 :y 2} :y)` gave 1), finds the key.
 
+What light-cljs-1041 landed: an array map's keyword search small enough for
+V8 to inline, and `contains?` of an array map without `get`'s layers.
+
+- **The search's size.** `arrayIndex` keeps the keyword search alone; nil,
+  strings, numbers, other keys, and a keyword whose program gave it an
+  `IEquiv` method (from the first key that is not identical), are searched
+  by `arrayIndexOf`. `keywordProgramEquiv` keeps the slot's read, and its
+  lookups (a host type's method, a session that demands declarations) are
+  `keywordLookupEquiv`'s. Their bytecode went from 381 and 180 bytes to 246
+  and 71. TurboFan inlines a call of several targets only while their
+  bytecode, with what each target's own optimized code inlined, fits its
+  budget (920 bytes, a fifth more reserved for the candidate):
+  `getSite`'s call of the `-lookup` slot, which every `(:k m)` of a program
+  shares, had seen an array map's, a hash map's and a record's in the gate,
+  and the array map's `-lookup` with the search was 636 bytes, so the call
+  stayed a call and a record's `-lookup` ran out of line (light-cljs-1040's
+  `record-kw-field` +30%). It is now about 390, and the call inlines its
+  three targets. Where a call has seen array maps but takes hash maps, the
+  array map's now inlined search takes budget the hash map's lookup used to
+  get (`kw-hash100` after the small-map operations alone: +10%).
+- **`contains?`.** An array map's `-contains-key?` slot
+  (`arrayMapContains`) searches its keys with `arrayIndex` where the map's
+  three-argument `-lookup` slot is its class's own (`arrayMapGet`), the
+  method `get` would call; otherwise, and where a session demands
+  declarations, it calls `get` as `mapContains` does, so `specify!` and
+  `extend-type` of `ILookup` answer as before. Hash and sorted maps keep
+  `mapContains`. Every unit that installs a `-lookup` slot names
+  `arrayMapContains` in its `when:`, which changes no slice (it requires
+  `get`).
+- Answers are unchanged, and a getter on a key's slot runs as often.
+
 What light-cljs-1015 landed: the old dispatch layers are gone from the
 operations that release and dev output run.
 

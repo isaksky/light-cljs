@@ -663,6 +663,18 @@
 //! advanced a program keeping an inventory keeps the stores' kinds and the
 //! table, about 350 bytes (`keyword-case` 5,738, past 5,700, its ceiling
 //! moving to 5,800).
+//!
+//! An array map's keyword search kept small, and `contains?` of an array map
+//! without `get`'s layers (light-cljs-1041, 2026-11-17): `arrayIndexOf`,
+//! `keywordLookupEquiv`, `arrayMapGet` and `arrayMapContains`, split off
+//! or added so that V8 inlines a shared `-lookup` call's array map target
+//! (docs/value-layout.md). The readable runtime grows 2,468 bytes (none
+//! 669,245 for `add`), under every none and prepare ceiling. Advanced,
+//! against master `e0168930`: about 290 bytes where a program keeps array
+//! maps (`map-printed` 24,598 to 24,889, `keyword-lookups` 59,298 to
+//! 59,590, `map-only` 16,888 to 17,176, `defmulti` 19,344 to 19,635), 350
+//! for `constant-keys` (82,977 to 83,327) and the features example
+//! (`features` 124,058 to 124,408), 62 for `set-only`. No ceiling moves.
 
 pub struct Fixture {
     pub name: &'static str,

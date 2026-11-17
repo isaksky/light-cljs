@@ -3388,3 +3388,143 @@ to 53 and shadow-cljs's own time fell 6% between the runs): light/shadow
   (tests/support/ratchet_fixtures.rs, noted there): `keyword-case` at
   advanced 5,738, past its 5,700. TodoMVC and re-frame simple were not
   ported in this run.
+
+## 2026-11-17: an array map's keyword search inlined, and `contains?` of an array map (light-cljs-1041)
+
+**What.** First re-measured on master (`d0c26527`): light-cljs-1040 had
+already made the keyword search of an array map read the key's `IEquiv`
+slot once, so `kw-small`, `get-small` and `get-small-miss` were under
+shadow-cljs's (0.80, 0.75, 0.81 in the gate). What remained was
+`contains-small` (1.14) and `record-kw-field` (1.87 in the gate, +30% from
+light-cljs-1040). This pellet splits the search (`arrayIndex`, 381 to 246
+bytes of bytecode; `keywordProgramEquiv`, 180 to 71) so that TurboFan inlines
+`getSite`'s three-target `-lookup` call again, and gives an array map's
+`-contains-key?` slot its own search where its `-lookup` slot is its own
+(`arrayMapContains`). docs/value-layout.md has the notes.
+
+Binaries in research/shadow-credibility/bin: `light-cljs-685f86dd` (master
+`d0c26527`'s runtime) and `light-cljs-c67ae112` (this change on it), then,
+after rebasing onto light-cljs-1046, `light-cljs-e0168930` (master) and
+`light-cljs-e327b4ed` (this change; the final commit differs in notes and
+tests). `light-cljs-fc1dd3fa` is the split without the `contains?` slot,
+for the comparison below. Unreserved: one or two peer workers were active.
+Raw results: research/output-speed/kw-index-1041.
+
+**Gate** (`bb benchmarks/core-ops/run.bb`, every operation, 5 runs;
+`685f86dd` load 3.72-7.59, `c67ae112` 5.57-11.08), ns per operation,
+median (range), the operations of this pellet and every one that moved by
+5% or more:
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 7.80 (7.76-8.06) | 7.99 (7.88-8.02) | +2% | 9.79 / 9.78 | 0.80 | 0.82 |
+| get-small | 11.1 (11.0-11.4) | 11.4 (11.1-11.5) | +2% | 14.8 / 14.9 | 0.75 | 0.77 |
+| get-small-miss | 15.6 (15.2-15.9) | 15.8 (15.4-15.9) | +1% | 19.2 / 19.2 | 0.81 | 0.82 |
+| contains-small | 13.5 (13.5-13.9) | 9.77 (9.60-9.98) | -28% | 11.9 / 12.1 | 1.14 | 0.81 |
+| kw-hash100 | 21.7 (21.1-25.2) | 22.0 (21.9-22.3) | +2% | 13.4 / 13.6 | 1.62 | 1.61 |
+| destructure-map-3 | 62.7 (59.6-64.6) | 67.2 (64.6-68.6) | +7% | 49.2 / 49.1 | 1.28 | 1.37 |
+| record-kw-field | 7.81 (7.70-8.08) | 5.94 (5.82-5.97) | -24% | 4.17 / 4.19 | 1.87 | 1.42 |
+| get-hash100 | 19.3 (18.8-19.4) | 20.3 (19.9-20.5) | +5% | 12.1 / 12.1 | 1.60 | 1.68 |
+| get-in-3 | 55.5 (54.0-56.0) | 62.8 (62.4-63.6) | +13% | 57.4 / 57.2 | 0.97 | 1.10 |
+| hash-fresh-vec-4 | 49.3 (48.6-51.7) | 52.0 (49.6-55.8) | +6% | 71.5 / 70.3 | 0.69 | 0.74 |
+| hash-fresh-map-7 | 238.0 (230.3-282.4) | 275.4 (251.5-290.7) | +16% | 547.9 / 540.3 | 0.43 | 0.51 |
+| merge-small | 2,573 (2,531-2,799) | 2,689 (2,571-2,728) | +5% | 883 / 891 | 2.91 | 3.02 |
+
+Every other operation moved by less than 5%, most by +1 to +3% (`bit-and`
++4%, which runs no map code): the after run's load was about 3 higher.
+
+**The same three outputs in one process each, alternated** (`node
+run-light.mjs 7 5 all 1` on the `:bench` outputs of `685f86dd`, `fc1dd3fa`
+and `c67ae112`, 4 rounds, load 6.90-9.67), light-cljs ns per operation,
+median of the 4:
+
+| op | before | split only | after (split and `contains?` slot) |
+| --- | ---: | ---: | ---: |
+| contains-small | 14.05 | 10.80 | 9.85 |
+| update-small | 47.78 | 48.00 | 45.27 |
+| get-hash100 | 19.80 | 20.23 | 20.36 |
+| kw-hash100 | 22.21 | 22.19 | 22.20 |
+| get-in-3 | 56.46 | 56.55 | 63.00 |
+| destructure-map-3 | 65.58 | 67.06 | 66.98 |
+| hash-fresh-map-7 | 257.37 | 261.63 | 257.88 |
+| record-kw-field | 8.07 | 5.98 | 5.97 |
+
+- **`record-kw-field`** is the inlining: TurboFan's trace
+  (`--trace-turbo-inlining`) of the benchmark's loop shows the `-lookup`
+  call's three targets (the array map's, 17 bytes of bytecode with 636
+  inlined in its own optimized code; the hash map's, 17; the record's, 25
+  with 67) refused at 48 of 920 bytes used, as 1.2 times their 762 would
+  pass the budget, and inlined now that the array map's is about 350
+  (`c67ae112`; about 390 in the final commit, below).
+- **`contains-small`** gains 3.2 ns from the split (the `contains?`
+  path's `get` now inlines the search too) and 1 ns more from the slot.
+- **The final commit** (`light-cljs-61e0bc5c`) also reads the value that
+  `contains?` finds, and each key of the search once (Sol review), which
+  makes `arrayIndex` 246 bytes: alternated twice with `685f86dd`'s output
+  in one process each, `contains-small` 10.1 and 10.1 against 14.1 and
+  11.9, `record-kw-field` 6.0 and 6.1 against 8.1 and 8.1, `get-in-3` 63.7
+  and 64.3 against 57.1 and 56.6.
+- **`get-in-3` +13% is the gate process's history of `get`, not its
+  lookups.** Only the `contains?` slot moves it (the split alone leaves it
+  at 56.5), and only after the gate's other operations: alone it is 61.7,
+  60.2 and 59.9 ns (before, split, after), after `contains-small` 57.9, 57.3
+  and 56.5, after the small-map operations through `update-small` 54.1,
+  54.4 and 52.2. `get-in` calls `get`'s slot-first wrapper, which
+  `contains?` of an array map no longer calls, so in the gate the wrapper is
+  first optimized later (during `update-small`, which gains 5%), with other
+  feedback; in `get-in-3` the array map's `-lookup` and `keywordOf` then run
+  as frames of their own (a profile of the benchmark's frames: 3.9% and
+  4.5%), where they were inlined. The inlining decisions inside `getIn`
+  itself are the same.
+- **`hash-fresh-map-7`, `hash-fresh-vec-4` and `get-hash100`** are within
+  their spread in the alternated runs (`get-hash100` +3%, its hash map
+  lookups unchanged); `destructure-map-3`, which spread from 57 to 71 in
+  this pellet's runs before the change, is +2% there.
+
+**The operations of this pellet, alone** (`--ops
+kw-small,get-small,get-small-miss,contains-small,kw-hash100,destructure-map,record-kw-field`,
+5 runs), on master `e0168930` (load 2.75-3.06 before, 2.95-3.32 after), ns
+per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 7.90 (7.77-8.06) | 7.63 (7.62-8.08) | -3% | 9.41 / 9.60 | 0.79 |
+| get-small | 12.2 (12.2-12.5) | 12.2 (12.1-12.4) | +0% | 14.3 / 14.3 | 0.85 |
+| get-small-miss | 16.5 (16.5-17.0) | 16.4 (16.4-16.7) | -1% | 18.5 / 18.5 | 0.89 |
+| contains-small | 13.5 (13.4-13.7) | 10.8 (10.7-11.1) | -20% | 11.6 / 11.6 | 0.93 |
+| kw-hash100 | 19.9 (19.9-20.2) | 21.8 (21.5-21.9) | +10% | 12.9 / 12.7 | 1.72 |
+| destructure-map-3 | 67.9 (67.4-68.8) | 62.8 (61.4-64.8) | -8% | 45.8 / 45.8 | 1.37 |
+| record-kw-field | 5.75 (5.71-5.93) | 5.75 (5.73-5.83) | +0% | 4.01 / 4.09 | 1.41 |
+
+On `d0c26527` the same selection gave the same picture (load 4.06-4.20 and
+7.24): `contains-small` 13.9 to 11.2, `kw-hash100` 20.7 to 22.5 (+9%),
+`destructure-map-3` 69.9 to 64.5. **`kw-hash100` +10% here is budget the
+array map's search now takes:** in this process the `-lookup` call of the
+benchmark's loop has seen array maps and hash maps; before, the array map's
+target was too large to inline and the hash map's lookup took the budget
+(`hashMapLookup`, `hashNodeFind`, `equalPair`, `keywordEquiv` inlined),
+now the array map's search is inlined and `hashNodeFind` and the comparison
+are calls. In the whole gate, where the call has more targets, it is
+unchanged. light-cljs-1057 compares a keyword key by its spelling in hash
+map lookups, as upstream's `key-test` does, which is most of the
+remaining 1.6 times.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1041 --runs 5
+--runtime-only --runtime 1,10,40`, the project rebuilt with each binary just
+before its run; `e0168930` load 2.41-2.92, `e327b4ed` 3.36-3.90), wall
+time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.365 s (0.363-0.377) | 0.373 s (0.366-0.385) | 0.304 s | 0.311 s |
+| 10 | 0.844 s (0.835-0.847) | 0.842 s (0.829-0.911) | 0.567 s | 0.573 s |
+| 40 | 2.119 s (2.090-2.157) | 2.109 s (2.088-2.125) | 1.215 s | 1.214 s |
+
+Steady state, from 1 and 40 iterations: light-cljs 45.0 to 44.5 ms per
+iteration (-1%), shadow-cljs 23.4 and 23.2; light/shadow 1.93 and 1.92.
+
+**Advanced size** (tests/support/ratchet_fixtures.rs, noted there), against
+master `e0168930`: about 290 bytes where a program keeps array maps
+(`map-printed` 24,598 to 24,889, `keyword-lookups` 59,298 to 59,590), 350
+for `constant-keys` and the features example; no ceiling moves. re-frame
+simple and TodoMVC were not ported in this run.

@@ -3557,6 +3557,67 @@ fn keyword_searches_call_a_program_equiv_of_keywords() {
 }
 
 #[test]
+fn contains_of_an_array_map_searches_its_keys_where_its_lookup_is_its_own() {
+    // light-cljs-1041: `contains?` of an array map searches its keys as `get`
+    // does (`arrayIndex`) where the map's three-argument `-lookup` slot is
+    // its class's own (`arrayMapContains`), and otherwise calls `get`, so
+    // that a `specify!` or an `extend-type` of `ILookup` answers as before:
+    // keys of every kind, and a keyword whose `specify!` of `IEquiv` decides
+    // which key is equal at the first key that is not it, at every level and
+    // inside a macro, whose lookup runs at compile time.
+    let body = r#"(let [m (array-map :a 1 nil 2 "s" 3 4 5 [6] 7 (keyword "n" "k") 8 :v nil)
+                        own [(contains? m :a) (contains? m (keyword "n" "k")) (contains? m :b) (contains? m nil)
+                             (contains? m "s") (contains? m 4) (contains? m '(6)) (contains? m 9) (contains? m :v)
+                             (contains? (array-map) :a)]
+                        specified (specify! (array-map :a 1)
+                                    ILookup (-lookup ([_ k] (= k :b)) ([_ k nf] (if (= k :b) 1 nf))))
+                        k (specify! (keyword "s" "k") IEquiv (-equiv [_ o] (= o :hit)))
+                        searched [(contains? (array-map :x 1 :hit 2) k) (contains? (array-map :hit 1) k)
+                                  (contains? (array-map k 1) k) (contains? (array-map :x 1) k) (get (array-map :x 1 :hit 2) k)]]
+                    [own (contains? specified :a) (contains? specified :b) searched
+                     (do (extend-type PersistentArrayMap ILookup (-lookup ([_ k] nil) ([_ k nf] (if (= k :z) 0 nf))))
+                         [(contains? (array-map :a 1) :a) (contains? (array-map :a 1) :z) (contains? {:a 1} :z)])])"#;
+    let expected = "[[true true false true true true true false true false] false true \
+                    [true true true false 2] [false true true]]";
+    every_level(&format!("(pr-str {body})"), expected);
+    every_level(
+        &format!("(defmacro result [] (list 'quote {body})) (pr-str (result))"),
+        expected,
+    );
+}
+
+#[test]
+fn array_map_searches_read_each_key_once_and_contains_reads_the_value() {
+    // light-cljs-1041: `contains?` of an array map reads the value it found
+    // and compares it with the `notFound` that `get` would pass, as before,
+    // which a program's `-lookup` can keep; and a keyword whose `specify!`
+    // of `IEquiv` decides the search compares the key `arrayIndex` read,
+    // within the keys there were when it started, though a public
+    // constructor's array has getters.
+    let body = r#"(let [saved (atom nil)
+                        r (reify ILookup (-lookup [_ k] nil) (-lookup [_ k nf] (reset! saved nf) nf))
+                        _ (contains? r :x)
+                        kept [(contains? (array-map :a @saved) :a) (contains? (array-map :a 1) :a)]
+                        v #js [:a nil]
+                        _ (js/Object.defineProperty v 1 #js {:get (fn [] (throw (js/Error. "value")))})
+                        thrown (try (contains? (PersistentArrayMap. nil 1 v nil) :a) (catch :default e (.-message e)))
+                        k (specify! (keyword "s" "k") IEquiv (-equiv [_ o] (= o :hit)))
+                        reads (atom 0)
+                        a #js [nil 7]
+                        _ (js/Object.defineProperty a 0 #js {:get (fn [] (swap! reads inc) (if (= @reads 1) :hit :miss))})
+                        b #js [nil 1]
+                        _ (js/Object.defineProperty b 0 #js {:get (fn [] (.push b :hit 2) :x)})]
+                    [kept thrown (get (PersistentArrayMap. nil 1 a nil) k :nf) @reads
+                     (get (PersistentArrayMap. nil 1 b nil) k :nf) (alength b)])"#;
+    let expected = "[[false true] \"value\" 7 1 :nf 4]";
+    every_level(&format!("(pr-str {body})"), expected);
+    every_level(
+        &format!("(defmacro result [] (list 'quote {body})) (pr-str (result))"),
+        expected,
+    );
+}
+
+#[test]
 fn keywords_and_symbols_compare_by_their_own_slot_over_an_object_extension() {
     // light-cljs-1040: a keyword's and a symbol's own `-equiv` slot outranks
     // an `extend-type` of `js/Object` with `IEquiv`, as upstream's `Keyword`
