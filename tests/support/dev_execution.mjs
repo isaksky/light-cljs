@@ -68,7 +68,7 @@ if (!dev && units.length > 0) throw new Error("units apply only to a dev build")
 
 const script = file => runInThisContext(readFileSync(file, "utf8"), { filename: file });
 const hook = ({ name, async }) => {
-  const run = globalThis.__lightApplicationRoots[name];
+  const run = globalThis.__lightDev.roots[name];
   return async ? new Promise(done => run(done)) : run();
 };
 
@@ -147,7 +147,11 @@ process.stdout.write = write;
 
 // Replay the settled run as one synchronous case, so execution.js encodes the
 // record: the trace, the captured output, then the value or the thrown error.
-globalThis.lightInspectValue = value => globalThis.__lightRuntime?.inspect?.(value) ?? null;
+// A dev build's runtime is its client's (`__lightDev.runtime`, whose global
+// ends in the build's key); a single-file build's is the one the driver
+// exposed.
+const runtime = dev ? globalThis.__lightDev?.runtime : globalThis.__lightRuntime;
+globalThis.lightInspectValue = value => runtime?.inspect?.(value) ?? null;
 globalThis.lightCases = [replay => {
   for (const value of trace) replay(value);
   process.stdout.write(Buffer.concat(stdout));

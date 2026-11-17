@@ -390,8 +390,12 @@ fn units_without_a_heap_reload_a_running_dev_build_in_node() {
             "invoke cljs.user"
         ]
     );
+    // The script names the dev build's globals and keyed names with the
+    // build's key (docs/value-layout.md, section 1): `--compile --entry
+    // app.main` of no build of light-cljs.edn.
+    let key = light_cljs::dev_build::dev_key(None, "app.main").units();
     let file = dir.join("actions.js");
-    fs::write(&file, script(&actions)).unwrap();
+    fs::write(&file, key.apply(&script(&actions))).unwrap();
     assert_eq!(
         run_dev(&out, true, &[file]).unwrap(),
         r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"start\nclicks: [1]\nreloading\nprobe app.probe\nafter cljs.user\nrender: clicks: [2]\n"}"#

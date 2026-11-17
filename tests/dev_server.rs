@@ -693,6 +693,9 @@ fn an_invoke_replies_with_the_printed_value() {
     // The session loads app.state to compile against it; the runtime
     // already runs it.
     session.source(&SourceInput::new("<repl>", "(require 'app.state)"));
+    // The key of the page's build, `--compile --entry app.main` of no build
+    // of light-cljs.edn, for the placeholder of the session's units.
+    let key = light_cljs::dev_build::dev_key(None, "app.main");
     let unit = |text: &str| -> Unit {
         let actions = session.source(&SourceInput::new("<repl>", text));
         match actions.last() {
@@ -701,7 +704,7 @@ fn an_invoke_replies_with_the_printed_value() {
         }
     };
     let reply = |text: &str, print: &PrintOptions| -> Json {
-        let invocation = server.invoke(None, &unit(text), print).unwrap();
+        let invocation = server.invoke(None, &unit(text), &key, print).unwrap();
         assert_eq!(invocation.runtime, 1);
         invocation.reply.recv_timeout(TIMEOUT).unwrap()
     };
@@ -748,6 +751,7 @@ fn an_invoke_replies_with_the_printed_value() {
         .invoke(
             None,
             &unit("(let [end (+ (js/Date.now) 1000)] (while (< (js/Date.now) end)) 42)"),
+            &key,
             &print,
         )
         .unwrap();
@@ -783,7 +787,10 @@ fn an_invoke_replies_with_the_printed_value() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(
-        server.invoke(None, &unit("1"), &print).err().as_deref(),
+        server
+            .invoke(None, &unit("1"), &key, &print)
+            .err()
+            .as_deref(),
         Some("no runtime is connected")
     );
 }

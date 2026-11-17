@@ -729,10 +729,10 @@ impl Evaluator {
               const get = id => {{ if (!values.has(id)) throw new Error('Released or unknown value ID'); return values.get(id); }};
               return Object.freeze({{
                 save,
-                bind: (name, id) => {{ (globalThis.__lightApplicationRoots ??= Object.create(null))[name] = get(id); }},
+                bind: (name, id) => {{ (globalThis.__lightApplicationRoots$LKEY ??= Object.create(null))[name] = get(id); }},
                 coreBinding: (name, id) => {{ rt.core[name] = get(id); }},
                 coreLookup: name => save(rt.core[name]),
-                lookup: name => save((globalThis.__lightApplicationRoots ??= Object.create(null))[name]),
+                lookup: name => save((globalThis.__lightApplicationRoots$LKEY ??= Object.create(null))[name]),
                 hostFunction: callback => (...args) => {{
                   const ids = args.map(save);
                   try {{ const [result, ...owned] = callback(ids); try {{ return get(result); }} finally {{ owned.forEach(id => values.delete(id)); }} }}

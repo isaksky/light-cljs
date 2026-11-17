@@ -1879,10 +1879,13 @@ command line, `ApplicationOptions::runtime_key` in Rust, an emission option
 in the output cache's key (a build with another key never reuses the
 output of one without), and a release option: a dev build refuses
 `--runtime-key` and ignores the key, as it ignores `:pseudo-names`, since
-every dev build takes its key from the runtime it loads and every unit,
-reload and REPL form written against its page must share that key.
-Two dev builds on one page are not supported (docs/value-layout.md,
-section 1, "Two runtimes on one page").
+every dev build takes its key from the runtime it loads and its identity,
+the build of light-cljs.edn and the entry, and every unit, reload and REPL
+form written against its page must share that key. Since light-cljs-1045
+two dev builds of different builds, `light-cljs watch app worker` served
+under `/app/` and `/worker/` say, run on one page, each with its own key
+(docs/value-layout.md, section 1, "Two runtimes on one page"), so a dev
+build needs no `:runtime-key` for that either.
 
 Tests: `tests/config_file/commands.rs` (the flag and the key change only
 the key of examples/features' release chunks, with the cache on; the flag

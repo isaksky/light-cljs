@@ -221,8 +221,15 @@ fn file(files: &[DevFile], name: &str) -> String {
         .clone()
 }
 
+/// A dev build's key is one per build identity, its build of light-cljs.edn
+/// and its entry (light-cljs-1045): an edit changes neither, another build
+/// of light-cljs.edn with the same entry gets another key, and every global
+/// of the build ends in it, so different dev builds load side by side into
+/// one realm. Two copies of one build share the key; two different builds
+/// whose keys match (one written with the other's) stop as the second
+/// loads.
 #[test]
-fn dev_builds_share_the_runtimes_key_and_register_their_identity() {
+fn dev_builds_have_a_key_per_build_identity() {
     let main = |n: u32| {
         format!(
             "(ns app.main) (deftype T [] ICounted (-count [_] {n}))
@@ -232,42 +239,69 @@ fn dev_builds_share_the_runtimes_key_and_register_their_identity() {
     let (one, one_sources) = namespace_program(&[("app/main.cljs", &main(1))]);
     let (two, two_sources) = namespace_program(&[("app/main.cljs", &main(2))]);
     let builds = [
-        dev_build(&one, &one_sources, None),
-        dev_build(&two, &two_sources, None),
-        dev_build(&one, &one_sources, Some("app")),
-        dev_build(&one, &one_sources, Some("worker")),
+        (None, dev_build(&one, &one_sources, None)),
+        (None, dev_build(&two, &two_sources, None)),
+        (Some("app"), dev_build(&one, &one_sources, Some("app"))),
+        (
+            Some("worker"),
+            dev_build(&one, &one_sources, Some("worker")),
+        ),
     ];
-    let key = RuntimeKey::dev_units();
-    for files in &builds {
+    for (build, files) in &builds {
+        let key = light_cljs::dev_build::dev_key(*build, "app.main");
+        let key = key.key();
+        for name in ["runtime.js", "client.js", "app.main.js", "index.js"] {
+            let text = file(files, name);
+            assert!(
+                !text.contains("$LKEY") && !text.contains("$LHASH"),
+                "{name}"
+            );
+        }
         let (runtime, unit) = (file(files, "runtime.js"), file(files, "app.main.js"));
-        assert!(!runtime.contains("$LKEY") && !runtime.contains("$LHASH"));
-        assert!(!unit.contains("$LKEY"), "{unit}");
+        assert!(runtime.starts_with(&format!("globalThis.__lightRuntime${key} = ")));
+        assert_eq!(RuntimeKey::written(&runtime).unwrap().key(), key);
         assert!(
-            unit.contains(&format!("cljs$core$ICounted$_count$arity$1${}", key.key())),
+            unit.starts_with(&format!("globalThis.__lightDev${key}.define(")),
             "{unit}"
         );
-        assert_eq!(RuntimeKey::written(&runtime).unwrap().key(), key.key());
+        for keyed in [
+            format!("cljs$core$ICounted$_count$arity$1${key}"),
+            format!("globalThis.__lightApplicationRoots${key}["),
+        ] {
+            assert!(unit.contains(&keyed), "{keyed}: {unit}");
+        }
+        assert!(file(files, "client.js").contains(&format!(
+            "globalThis.__lightDev = globalThis.__lightDev${key} = "
+        )));
+        assert!(file(files, "index.js").contains(&format!(
+            "globalThis.__lightDevLoaded = globalThis.__lightDevLoaded${key} = "
+        )));
     }
-    // An edit changes neither the key nor the identity; another build of
-    // light-cljs.edn with the same entry is another identity.
-    let runtimes = builds.each_ref().map(|files| file(files, "runtime.js"));
-    let hash = |runtime: &str| {
-        RuntimeKey::written(runtime)
-            .unwrap()
-            .hash()
-            .unwrap()
-            .to_owned()
-    };
+    let runtimes = builds
+        .each_ref()
+        .map(|(_, files)| file(files, "runtime.js"));
+    let key = |runtime: &str| RuntimeKey::written(runtime).unwrap().key().to_owned();
     assert_eq!(runtimes[0], runtimes[1]);
-    assert_ne!(hash(&runtimes[0]), hash(&runtimes[2]));
-    assert_ne!(hash(&runtimes[2]), hash(&runtimes[3]));
+    assert_ne!(key(&runtimes[0]), key(&runtimes[2]));
+    assert_ne!(key(&runtimes[2]), key(&runtimes[3]));
+    // worker's runtime, written with app's key.
+    let forged = runtimes[3].replace(
+        &format!("${}", key(&runtimes[3])),
+        &format!("${}", key(&runtimes[2])),
+    );
     let collision = format!(
         "Two light-cljs builds share the runtime key {}: give one a different :runtime-key",
-        key.key()
+        key(&runtimes[2])
     );
     assert_eq!(
-        load_in_one_realm(&[&runtimes[2], &runtimes[2], &runtimes[3], &runtimes[0]]),
-        format!("ok\nok\n{collision}\n{collision}\n")
+        load_in_one_realm(&[
+            &runtimes[2],
+            &runtimes[2],
+            &runtimes[3],
+            &runtimes[0],
+            &forged
+        ]),
+        format!("ok\nok\nok\nok\n{collision}\n")
     );
 }
 
@@ -413,7 +447,7 @@ fn runtimes_on_one_page_keep_apart_unless_they_share_a_key() {
         .expect("the two-runtime pages require Node");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        output.status.success() && stdout.contains("7 of 7 scenarios as expected"),
+        output.status.success() && stdout.contains("9 of 9 scenarios as expected"),
         "{stdout}{}",
         String::from_utf8_lossy(&output.stderr)
     );

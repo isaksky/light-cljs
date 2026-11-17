@@ -237,9 +237,10 @@ fn compile(
     }
     // What the form loaded, which the session now counts as loaded, goes
     // to the runtimes also when a later part of the form failed.
-    // Everything goes to pages, which have the dev key
-    // (`crate::dev_build::runtime_file`); the session keeps the placeholder.
-    let key = crate::runtime_key::RuntimeKey::dev_units();
+    // Everything goes to pages, which have their build's key, which the
+    // session keeps (`DevSession::page_key`); the session's own runtime keeps
+    // the placeholder.
+    let key = session.page_key().units();
     let loads = if loads.iter().any(|action| matches!(action, Action::Load(_))) {
         key.apply(&script(&loads))
     } else {

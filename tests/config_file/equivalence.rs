@@ -270,21 +270,27 @@ impl Case {
     }
 }
 
-/// `files` with each dev build `runtime.js`'s key and registered identity
-/// written back as their placeholders: a build of light-cljs.edn registers
-/// its build id with its entry, which its flags do not name
+/// `files` with a dev build's key and registered identity, as its
+/// `runtime.js` writes them, written back as their placeholders in every
+/// file: a build of light-cljs.edn has its build id with its entry as its
+/// identity, which its flags do not name, and so another key
 /// (docs/value-layout.md, section 1), and is otherwise byte for byte what
 /// its flags write.
 fn without_identity(files: Vec<(PathBuf, Vec<u8>)>) -> Vec<(PathBuf, Vec<u8>)> {
+    let key = files
+        .iter()
+        .find(|(path, _)| path.file_name() == Some("runtime.js".as_ref()))
+        .and_then(|(_, bytes)| {
+            light_cljs::runtime_key::RuntimeKey::written(std::str::from_utf8(bytes).ok()?)
+        });
+    let Some(key) = key else {
+        return files;
+    };
     files
         .into_iter()
-        .map(|(path, bytes)| {
-            if path.file_name() == Some("runtime.js".as_ref()) {
-                let text = String::from_utf8(bytes).unwrap();
-                (path, light_cljs::runtime_key::unkeyed(&text).into_bytes())
-            } else {
-                (path, bytes)
-            }
+        .map(|(path, bytes)| match String::from_utf8(bytes) {
+            Ok(text) => (path, key.unapply(&text).into_bytes()),
+            Err(error) => (path, error.into_bytes()),
         })
         .collect()
 }

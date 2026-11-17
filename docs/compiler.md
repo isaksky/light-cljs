@@ -2077,8 +2077,8 @@ application can replace one at a time (docs/dev-workflow.md, "The dev build").
 
 ```text
 DIR/
-  runtime.js           globalThis.__lightRuntime = (factory)(); the whole runtime, once
-  client.js            the dev client: globalThis.__lightDev.define, and in a page
+  runtime.js           globalThis.__lightRuntime$KEY = (factory)(); the whole runtime, once
+  client.js            the dev client: globalThis.__lightDev$KEY.define, and in a page
                          served by --watch --serve the reader of its event stream
   app.state.js         one unit per namespace, in dependency order,
   app.state.js.map       each with its source map
@@ -2087,17 +2087,26 @@ DIR/
   index.js             loads runtime.js, client.js and the units in manifest order
 ```
 
+`KEY` is the build's runtime key (docs/value-layout.md, section 1), eight
+characters derived from the runtime and the build's identity, its build of
+light-cljs.edn (`compile ID`, `watch ID`; none for the flags) and its entry
+namespace (`dev_build::dev_key`). Every global of a dev build ends in it, so
+two dev builds of different builds keep apart on one page; the client is
+also `globalThis.__lightDev`, and `index.js`'s promise also
+`globalThis.__lightDevLoaded`, of the dev build that loaded last, and the
+client's `runtime` and `roots` are its build's runtime and definitions.
+
 A unit's file is `NAMESPACE.js`, except that the namespaces `runtime`,
 `client` and `index` get `runtime$.js`, `client$.js` and `index$.js`, since
 no namespace name contains a `$`.
 
 A unit is the namespace's forms emitted as an interactive unit, the storage
 model of the session (docs/evaluation.md): every definition is
-`globalThis.__lightApplicationRoots["ns/name"]`, read at each use, and nothing
-is sealed in a closure. The unit is wrapped in a registration call,
+`globalThis.__lightApplicationRoots$KEY["ns/name"]`, read at each use, and
+nothing is sealed in a closure. The unit is wrapped in a registration call,
 
 ```js
-globalThis.__lightDev.define("app.view", ["app.macros", "app.state"], (__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots ??= Object.create(null); return (() => {
+globalThis.__lightDev$KEY.define("app.view", ["app.macros", "app.state"], (__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots$KEY ??= Object.create(null); return (() => {
   /* the namespace's registration and forms */
 })()
 ; });
@@ -2105,9 +2114,9 @@ globalThis.__lightDev.define("app.view", ["app.macros", "app.state"], (__lightIn
 ```
 
 whose second argument lists the namespace's source requires. The client's
-`define` records the unit by namespace in `__lightDev.units` and runs it
-against `globalThis.__lightRuntime` at once, keeping its value in
-`__lightDev.values`. Evaluating a unit again replaces its namespace's
+`define` records the unit by namespace in `__lightDev$KEY.units` and runs it
+against `globalThis.__lightRuntime$KEY` at once, keeping its value in
+`__lightDev$KEY.values`. Evaluating a unit again replaces its namespace's
 definitions for every caller, with the session's semantics: `def` values are
 reinitialized and `defonce` values kept, a redefined record or type gets a new
 constructor while old instances keep their fields and methods, and functions
@@ -2151,8 +2160,9 @@ continuation), in definition order:
 
 `index.js` loads the files in that order, as script elements after its own
 in a page and with `require` in Node (CommonJS), and sets
-`globalThis.__lightDevLoaded` to a promise of the entry namespace's value,
-the value of the single-file output. A file that throws while it runs
+`globalThis.__lightDevLoaded$KEY` and `globalThis.__lightDevLoaded` to a
+promise of the entry namespace's value, the value of the single-file
+output. A file that throws while it runs
 rejects the promise with that error and leaves the later files unloaded; in a
 page the error is the page's next `error` event before the script's `load`.
 Hooks are listed by namespace in load order, and within a namespace in the

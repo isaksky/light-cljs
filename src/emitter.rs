@@ -626,8 +626,9 @@ fn emit_unit_parts(
 
 /// An interactive unit: a function of the runtime,
 /// `(__lightInteractiveRuntime) => ...`, whose definitions live in the
-/// application registry, `globalThis.__lightApplicationRoots["ns/name"]`,
-/// which every unit of a session or a dev build reads and writes.
+/// application registry, `globalThis.__lightApplicationRoots$LKEY["ns/name"]`
+/// ([`APPLICATION_ROOTS`]), which every unit of a session or a dev build
+/// reads and writes.
 #[derive(Clone, Copy)]
 struct Interactive<'a> {
     /// A dev build unit: this namespace entry of the program, emitted
@@ -1308,7 +1309,13 @@ const PRELUDE_OPEN: &str = "(() => {\n";
 const PRELUDE_TRUTH: &str = "  const truth = (value) => value != null && value !== false;\n";
 /// The opening of an interactive unit ([`Interactive`]), before its
 /// expression.
-const INTERACTIVE_OPEN: &str = "(__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots ??= Object.create(null); return ";
+const INTERACTIVE_OPEN: &str = "(__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots$LKEY ??= Object.create(null); return ";
+/// The application registry of interactive units ([`Interactive`]): its name
+/// ends in the key placeholder, which a dev build's writer replaces with the
+/// build's key, so two dev builds on one page keep their definitions apart
+/// (docs/value-layout.md, section 1); at compile time it stays the
+/// placeholder.
+pub(crate) const APPLICATION_ROOTS: &str = "globalThis.__lightApplicationRoots$LKEY";
 /// The end of an interactive unit, after its last statement.
 pub(crate) const INTERACTIVE_CLOSE: &str = "})()\n; }";
 
@@ -3656,7 +3663,8 @@ impl<'a> Emitter<'a> {
                 self.member(member);
             }
         } else if self.application_roots {
-            self.output.push_str("globalThis.__lightApplicationRoots[");
+            self.output.push_str(APPLICATION_ROOTS);
+            self.output.push('[');
             let global = &self.program.globals[id.0];
             self.string_units(
                 &format!("{}/{}", global.namespace, global.name)

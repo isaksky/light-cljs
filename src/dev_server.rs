@@ -69,7 +69,7 @@ use std::time::Duration;
 
 /// One namespace's unit in a `load` message: the text of its file in the
 /// build directory, which defines the namespace through
-/// `globalThis.__lightDev.define`.
+/// `globalThis.__lightDev$KEY.define` of its build.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadUnit {
     pub namespace: String,
@@ -608,9 +608,10 @@ impl DevServer {
         &self,
         runtime: Option<u64>,
         unit: &crate::dev_session::Unit,
+        key: &crate::runtime_key::RuntimeKey,
         print: &PrintOptions,
     ) -> Result<Invocation, String> {
-        self.site.mounts[0].invoke(runtime, unit, print)
+        self.site.mounts[0].invoke(runtime, unit, key, print)
     }
 
     /// [`DevMount::serve_repl`] on the first mount.
@@ -647,14 +648,18 @@ impl DevMount {
     /// Send `unit`, a REPL form's unit, to the runtime `runtime` of the
     /// mount, or to its most recently connected one, to evaluate in its
     /// namespace and reply with the value printed by `pr-str` under `print`,
-    /// or with the error it threw.
+    /// or with the error it threw. `key` is the key of the mount's dev build
+    /// ([`crate::dev_build::dev_key`], which a watch's session keeps as
+    /// [`crate::dev_session::DevSession::page_key`]), which the server writes
+    /// for the placeholder of the session's unit.
     pub fn invoke(
         &self,
         runtime: Option<u64>,
         unit: &crate::dev_session::Unit,
+        key: &crate::runtime_key::RuntimeKey,
         print: &PrintOptions,
     ) -> Result<Invocation, String> {
-        self.shared.invoke(runtime, unit, print)
+        self.shared.invoke(runtime, unit, key, print)
     }
 
     /// Answer its `POST /repl` (under its prefix) from now on, the connected
@@ -913,13 +918,14 @@ impl Shared {
         &self,
         runtime: Option<u64>,
         unit: &crate::dev_session::Unit,
+        key: &crate::runtime_key::RuntimeKey,
         print: &PrintOptions,
     ) -> Result<Invocation, String> {
         let mut state = self.state();
         let target = state.target(runtime)?;
-        // The page has the dev key (`crate::dev_build::runtime_file`); the
-        // session's unit holds the placeholder.
-        let js = crate::runtime_key::RuntimeKey::dev_units().apply(&unit.js);
+        // The page has its build's key; the session's unit holds the
+        // placeholder.
+        let js = key.units().apply(&unit.js);
         state.send_invoke(
             target,
             &InvokeMessage {

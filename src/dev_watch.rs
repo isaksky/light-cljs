@@ -860,6 +860,12 @@ fn start(
         // steps compile against; the build printed the warnings.
         None => DevSession::new(&session_options)?,
     };
+    // The build's key, which its runtime.js loaded with: every unit, step
+    // and REPL form the session writes for the page has it.
+    session.set_page_key(light_cljs::dev_build::dev_key(
+        options.mount.as_deref(),
+        &manifest.entry,
+    ));
     // A `require` of the entry, which a seeded session has loaded already.
     let actions = session.source(&SourceInput::new(
         "<watch>",
@@ -876,7 +882,7 @@ fn start(
     crate::print_stats(stats, begun)?;
     let base = light_cljs::canonical_path::canonicalize(&options.out_dir)?;
     let mut watch = Watch {
-        written: [manifest.to_json(), manifest.index()],
+        written: [manifest.to_json(), manifest.index(&session.page_key())],
         session,
         provider,
         roots: roots.clone(),
@@ -2245,7 +2251,7 @@ impl Watch {
     fn write_manifest(&mut self) -> Result<()> {
         for (at, name, text) in [
             (0, "manifest.json", self.manifest.to_json()),
-            (1, "index.js", self.manifest.index()),
+            (1, "index.js", self.manifest.index(&self.session.page_key())),
         ] {
             if text != self.written[at] {
                 self.write(&DevFile {

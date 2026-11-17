@@ -396,11 +396,20 @@ fn a_saved_change_rewrites_the_unit_the_running_build_reloads() {
         ["app.state.js", "app.macros.js", "app.main.js", "index.js"].map(|file| watch.read(file)),
         others
     );
+    // The step's unit has the key runtime.js loaded with, the key of the
+    // build of no light-cljs.edn whose entry is app.main, which the session
+    // keeps.
     let unit = watch.read("app.view.js");
+    let key = light_cljs::runtime_key::RuntimeKey::written(&watch.read("runtime.js")).unwrap();
+    assert_eq!(
+        key.key(),
+        light_cljs::dev_build::dev_key(None, "app.main").key()
+    );
     assert!(
-        unit.starts_with(
-            "globalThis.__lightDev.define(\"app.view\", [\"app.macros\", \"app.state\"], "
-        ) && unit.ends_with("});\n//# sourceMappingURL=app.view.js.map\n"),
+        unit.starts_with(&format!(
+            "globalThis.__lightDev${}.define(\"app.view\", [\"app.macros\", \"app.state\"], ",
+            key.key()
+        )) && unit.ends_with("});\n//# sourceMappingURL=app.view.js.map\n"),
         "{unit}"
     );
     assert_eq!(
@@ -2739,21 +2748,27 @@ fn watch_id_compiles_what_its_equivalent_watch_flags_compile() {
     assert_eq!(flags.4.as_deref(), Some("cache.misses 0"), "{:#?}", flags.5);
 }
 
-/// `files` with each dev build `runtime.js`'s key and registered identity
-/// written back as their placeholders: a build of light-cljs.edn registers
-/// its build id with its entry, which its flags do not name
+/// `files` with a dev build's key and registered identity, as its
+/// `runtime.js` writes them, written back as their placeholders in every
+/// file: a build of light-cljs.edn has its build id with its entry as its
+/// identity, which its flags do not name, and so another key
 /// (docs/value-layout.md, section 1), and is otherwise byte for byte what
 /// its flags write.
 fn without_identity(files: Vec<(PathBuf, Vec<u8>)>) -> Vec<(PathBuf, Vec<u8>)> {
+    let key = files
+        .iter()
+        .find(|(path, _)| path.file_name() == Some("runtime.js".as_ref()))
+        .and_then(|(_, bytes)| {
+            light_cljs::runtime_key::RuntimeKey::written(std::str::from_utf8(bytes).ok()?)
+        });
+    let Some(key) = key else {
+        return files;
+    };
     files
         .into_iter()
-        .map(|(path, bytes)| {
-            if path.file_name() == Some("runtime.js".as_ref()) {
-                let text = String::from_utf8(bytes).unwrap();
-                (path, light_cljs::runtime_key::unkeyed(&text).into_bytes())
-            } else {
-                (path, bytes)
-            }
+        .map(|(path, bytes)| match String::from_utf8(bytes) {
+            Ok(text) => (path, key.unapply(&text).into_bytes()),
+            Err(error) => (path, error.into_bytes()),
         })
         .collect()
 }

@@ -199,7 +199,7 @@ directory instead of one expression:
 
 ```text
 dev/
-  runtime.js        the whole runtime, once: globalThis.__lightRuntime = (factory)();
+  runtime.js        the whole runtime, once: globalThis.__lightRuntime$KEY = (factory)();
   client.js         the dev client (Phase 3; a stub that only defined `define` before)
   app.main.js       one unit per namespace, in dependency order
   app.view.js
@@ -211,14 +211,19 @@ dev/
 A unit file is the interactive unit wrapped in a registration call:
 
 ```js
-globalThis.__lightDev.define("app.view", ["app.macros", "app.state"],
-  (__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots ??= Object.create(null); /* forms */ return value; });
+globalThis.__lightDev$KEY.define("app.view", ["app.macros", "app.state"],
+  (__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots$KEY ??= Object.create(null); /* forms */ return value; });
 //# sourceMappingURL=app.view.js.map
 ```
 
+`KEY` is the build's runtime key, derived from the runtime and the build's
+identity (docs/value-layout.md, section 1; one per build since
+light-cljs-1045), so two dev builds on one page keep apart; the session
+keeps it for every unit it writes for the page.
+
 The requires are the namespace's source requires; `cljs.core` is the
 runtime, which every unit reads. `define` records the unit by namespace and
-runs it against `globalThis.__lightRuntime` immediately, keeping its value.
+runs it against `globalThis.__lightRuntime$KEY` immediately, keeping its value.
 The same text serves the first load (as a script file) and every reload
 (evaluated by the client with a `sourceURL`), so there is one unit writer.
 `index.js` is a few lines that insert script elements in manifest order, all
@@ -246,7 +251,7 @@ the session's units in order sees every namespace as the session knows it;
 a unit that a watch step rewrites registers its namespace once, with the
 definitions of all its forms, as the build's unit does (light-cljs-301).
 
-Definitions live in `globalThis.__lightApplicationRoots` keyed by
+Definitions live in `globalThis.__lightApplicationRoots$KEY` keyed by
 `"ns/name"`. This is the session's registry today; keeping it means the
 session's tests cover the dev build's storage. Nested namespace objects
 were considered and rejected (see "Settled questions").

@@ -1,7 +1,9 @@
 ;; The builds tests/support/two_runtimes.mjs loads together into one page
 ;; (docs/value-layout.md, section 1, "Two runtimes on one page";
 ;; light-cljs-1018): one app (two.app) released as is, with a :runtime-key
-;; and with another constant, its dev build, and another app (two.other).
+;; and with another constant, and another app (two.other); and the dev
+;; builds of app, of other and of flavor, a second build of app's entry
+;; (light-cljs-1045).
 {:source-paths ["src"]
  :builds
  {:app {:target :esm
@@ -18,8 +20,10 @@
            :output-dir "out/flavor"
            :modules {:main {:entries [two.app]}}
            :build-options {:cache-level :off}
-           :release {:closure-defines {two.app/flavor "flavor"}}}
+           :release {:closure-defines {two.app/flavor "flavor"}}
+           :dev {:output-dir "out/flavor-dev"}}
   :other {:target :esm
           :output-dir "out/other"
           :modules {:main {:entries [two.other]}}
-          :build-options {:cache-level :off}}}}
+          :build-options {:cache-level :off}
+          :dev {:output-dir "out/other-dev"}}}}

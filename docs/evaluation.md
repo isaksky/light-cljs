@@ -38,8 +38,10 @@ Release retained IDs when finished. The entire heap and its root registry are
 reclaimed on drop, including cycles.
 
 Evaluated definitions live in the heap's application registry,
-`globalThis.__lightApplicationRoots["ns/name"]`, which later code reads at each
-use, so a redefinition is seen by every caller the next time it runs. A dev
+`globalThis.__lightApplicationRoots$LKEY["ns/name"]`, which later code reads at
+each use, so a redefinition is seen by every caller the next time it runs; a
+page's writer puts its dev build's key for the placeholder `$LKEY`
+(docs/value-layout.md, section 1), which the session's own heap keeps. A dev
 build (`--compile --entry NS --source-root DIR --reloadable --out-dir DIR`,
 [Dev builds](compiler.md#dev-builds)) emits a program's namespaces as units of
 the same shape over the same registry, so reloading a namespace there
@@ -98,7 +100,7 @@ Each returns the actions in order:
 
 A `Unit` is one top-level form: its `namespace`, its `js` (the function
 expression `(__lightInteractiveRuntime) => ...` that a runtime calls with the
-runtime, writing definitions to `globalThis.__lightApplicationRoots`, ending
+runtime, writing definitions to `globalThis.__lightApplicationRoots$LKEY`, ending
 with a `//# sourceURL=` comment), its `source_map` and the `location` of the
 form, where an error it throws is located. Before the form runs, the unit
 registers with the runtime each namespace whose reader context or
@@ -142,9 +144,11 @@ last form is a definition has that definition's value.
 `dev_session::script` writes actions as a script that applies them to a
 running [dev build](compiler.md#dev-builds) as the session's heap does: a
 `Namespace` sets the runtime's current namespace, the units of a `Load` are a
-`globalThis.__lightDev.define` call per namespace, an `Invoke` runs its unit
-and an `Error` throws. So a `DevSession` can replace the namespaces of a
-running dev build (`tests/evaluation/dev_session.rs` does so in Node).
+`globalThis.__lightDev$LKEY.define` call per namespace, an `Invoke` runs its
+unit and an `Error` throws; its sender writes the dev build's key for the
+placeholder (`DevSession::page_key`, which a watch sets to its build's). So
+a `DevSession` can replace the namespaces of a running dev build
+(`tests/evaluation/dev_session.rs` does so in Node).
 
 `EvalSession` is the interpreter of these actions over its heap: a unit runs
 in the heap, and a `Namespace` sets the runtime's `*ns*`. It interprets each
@@ -654,7 +658,9 @@ its own load run.
 `client.js` of every dev build (src/dev_client.js) is the client. In a page
 loaded over HTTP it connects to the server it came from once the build has
 loaded; elsewhere `globalThis.__lightDev.connect(url, {log, onHandled})`
-connects it, which is how Node runs it (the driver's `--connect`). It reads
+connects it, which is how Node runs it (the driver's `--connect`); with two
+dev builds loaded, `globalThis.__lightDev` is the one that loaded last, and
+each is also `globalThis.__lightDev$KEY`, by its build's key. It reads
 the stream with `fetch`, so the same code runs in a page and in Node, and
 
 - applies a `load` with the hook protocol: the before-load functions in

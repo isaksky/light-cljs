@@ -16,14 +16,15 @@
 //!   outputs that differ in anything get different keys;
 //! - dev builds, their hot reloads and the forms the REPL sends to a page
 //!   ([`RuntimeKey::dev`]): the key is derived from the whole runtime
-//!   source, so every unit written against a running page has the key the
-//!   page loaded with.
+//!   source and the build's identity, and the dev session keeps it, so
+//!   every unit written against a running page has the key the page loaded
+//!   with, and two dev builds on one page have two keys.
 //!
 //! The runtime's `runtimeKey` unit registers `key -> hash` in the page-wide
 //! registry `globalThis[Symbol.for("light-cljs.runtime-keys")]` as it loads,
 //! and throws when the key is registered with another hash: the
 //! [`HASH_PLACEHOLDER`] it holds is written as the hash of the output (of
-//! the build's identity for a dev build).
+//! the runtime and the build's identity for a dev build).
 //!
 //! A string literal the emitter writes never holds a placeholder: it spells
 //! the `$` of one as `\u0024` (`crate::emitter`), so the substitution never
@@ -79,28 +80,32 @@ impl RuntimeKey {
         }
     }
 
-    /// The key of every dev build of this compiler: derived from the whole
-    /// runtime source, so it depends on neither a build's sources nor an
-    /// edit, and every unit, reload and REPL form written against a page
-    /// has the key the page's `runtime.js` loaded with. The page registers
-    /// the hash of `identity`, the build's identity (its build of
-    /// light-cljs.edn and its entry namespace,
-    /// `crate::dev_build::runtime_file`), so two different dev builds on
-    /// one page, which share the key, are caught as they load.
+    /// The key of the dev build whose identity is `identity` (its build of
+    /// light-cljs.edn and its entry namespace, `crate::dev_build::dev_key`):
+    /// derived from the whole runtime source and the identity, so it depends
+    /// on neither the build's sources nor an edit, and the dev session keeps
+    /// it for every unit, reload and REPL form it writes against the page
+    /// whose `runtime.js` loaded with it. Two different dev builds on one
+    /// page have two keys, so they keep their values and their dev state
+    /// apart; two copies of one build share it. The page registers the hash
+    /// of the same inputs, so two different builds whose keys match by
+    /// accident are caught as they load.
     pub fn dev(identity: &str) -> Self {
-        let mut fingerprint = Fingerprint::new("light-cljs dev build identity 1");
-        fingerprint.text(identity);
+        let mut fingerprint = Fingerprint::new("light-cljs dev runtime key 2");
+        fingerprint.digest(runtime_digest()).text(identity);
+        let digest = fingerprint.finish();
         Self {
-            key: dev_key().to_owned(),
-            hash: Some(hex(&fingerprint.finish()[..8])),
+            key: base36_key(&digest),
+            hash: Some(hex(&digest[8..16])),
         }
     }
 
-    /// The dev key ([`RuntimeKey::dev`]) for the units written against a
-    /// page that has loaded its runtime: they hold no hash placeholder.
-    pub fn dev_units() -> Self {
+    /// This key for the units written against a page that has loaded its
+    /// runtime: they hold no hash placeholder, so the substitution leaves a
+    /// string that spells it as it is.
+    pub fn units(&self) -> Self {
         Self {
-            key: dev_key().to_owned(),
+            key: self.key.clone(),
             hash: None,
         }
     }
@@ -243,13 +248,14 @@ fn name_end(rest: &str) -> bool {
         .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '_' | '$' | '\u{200c}' | '\u{200d}')))
 }
 
-/// The key of every dev build ([`RuntimeKey::dev`]).
-fn dev_key() -> &'static str {
-    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| {
-        let mut fingerprint = Fingerprint::new("light-cljs dev runtime key 1");
+/// The digest of the whole runtime source, from which every dev key is
+/// derived with the build's identity ([`RuntimeKey::dev`]).
+fn runtime_digest() -> &'static [u8; 32] {
+    static DIGEST: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    DIGEST.get_or_init(|| {
+        let mut fingerprint = Fingerprint::new("light-cljs dev runtime 1");
         fingerprint.text(crate::runtime_manifest::RUNTIME);
-        base36_key(&fingerprint.finish())
+        fingerprint.finish()
     })
 }
 
@@ -374,8 +380,12 @@ mod tests {
             assert_ne!(a.key(), other.key());
             assert_ne!(a.hash(), other.hash());
         }
-        assert_eq!(RuntimeKey::dev("a").key(), RuntimeKey::dev("b").key());
+        // A dev key is one per build identity (light-cljs-1045).
+        assert_eq!(RuntimeKey::dev("a"), RuntimeKey::dev("a"));
+        assert_ne!(RuntimeKey::dev("a").key(), RuntimeKey::dev("b").key());
         assert_ne!(RuntimeKey::dev("a").hash(), RuntimeKey::dev("b").hash());
-        assert_eq!(RuntimeKey::dev_units().key(), RuntimeKey::dev("a").key());
+        let units = RuntimeKey::dev("a").units();
+        assert_eq!(units.key(), RuntimeKey::dev("a").key());
+        assert_eq!(units.hash(), None);
     }
 }

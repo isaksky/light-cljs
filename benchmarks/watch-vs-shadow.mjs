@@ -118,7 +118,7 @@ const probeSource = {
     const path = [...ns.split("."), name].map((s) => s.replace(/-/g, "_").replace(/!/g, "_BANG_").replace(/\?/g, "_QMARK_"));
     return `${JSON.stringify(path)}.reduce((o, k) => o?.[k], globalThis)`;
   },
-  light: (def) => `globalThis.__lightApplicationRoots?.[${JSON.stringify(def)}]`,
+  light: (def) => `globalThis.__lightDev?.roots?.[${JSON.stringify(def)}]`,
 };
 
 const browser = await launch(config.npmTools);

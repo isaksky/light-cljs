@@ -47,7 +47,17 @@
 // `options.log(level, text)` replaces the console for the client's own
 // lines, and `options.onHandled(message, error)` is called after each
 // message is handled. `connect` returns `{close()}`.
-globalThis.__lightDev = (() => {
+//
+// Every global of the build ends in `$` and the build's key, which the
+// writer of client.js puts for the placeholder `$LKEY`
+// (src/dev_build.rs, `client_file`): the runtime, `__lightRuntime$LKEY`, the
+// definitions, `__lightApplicationRoots$LKEY`, this client,
+// `__lightDev$LKEY`, and index.js's `__lightDevLoaded$LKEY` and
+// `__lightDevHalted$LKEY`, so two dev builds on one page keep apart
+// (docs/value-layout.md, section 1, "Two runtimes on one page"). This
+// client is also `globalThis.__lightDev` until another dev build's client
+// loads; its `runtime` and `roots` are its build's runtime and definitions.
+globalThis.__lightDev = globalThis.__lightDev$LKEY = (() => {
   const units = Object.create(null);
   const values = Object.create(null);
 
@@ -128,7 +138,7 @@ globalThis.__lightDev = (() => {
   // print length and level. Anything else, a function, an atom, a host
   // object, a sequence cut short, comes back as a reference too.
   const finite = (value, print) => {
-    const core = globalThis.__lightRuntime.core;
+    const core = globalThis.__lightRuntime$LKEY.core;
     const length = print?.length ?? null;
     const level = print?.level ?? null;
     let budget = 100000;
@@ -157,7 +167,7 @@ globalThis.__lightDev = (() => {
   // host object's keys.
   const inspect = id => {
     const value = reference(id);
-    const core = globalThis.__lightRuntime.core;
+    const core = globalThis.__lightRuntime$LKEY.core;
     const k = name => core.keyword(name);
     const entries = [k("ref"), Number(id), k("type"),
       typeof value === "function" ? "function" : value?.constructor?.name ?? typeof value];
@@ -178,7 +188,7 @@ globalThis.__lightDev = (() => {
   const command = name => () => {
     throw new Error(`light.dev/${name} is a command of the connected REPL: evaluate it as a form of its own`);
   };
-  const roots = globalThis.__lightApplicationRoots ??= Object.create(null);
+  const roots = globalThis.__lightApplicationRoots$LKEY ??= Object.create(null);
   roots["light.dev/ref"] = reference;
   roots["light.dev/inspect"] = inspect;
   roots["light.dev/runtimes"] = command("runtimes");
@@ -197,7 +207,7 @@ globalThis.__lightDev = (() => {
     let attempts = 0;
 
     const runHook = async ({ name, async }) => {
-      const hook = globalThis.__lightApplicationRoots?.[name];
+      const hook = globalThis.__lightApplicationRoots$LKEY?.[name];
       if (typeof hook !== "function") return;
       try {
         await (async ? new Promise(done => hook(done)) : hook());
@@ -255,7 +265,7 @@ globalThis.__lightDev = (() => {
       log("info", `light-cljs: reloaded ${names} in ${Date.now() - begun} ms`);
     };
     const printed = (print, value) => {
-      const core = globalThis.__lightRuntime.core;
+      const core = globalThis.__lightRuntime$LKEY.core;
       const cells = {
         printReadably: print?.readably ?? true, printLength: print?.length ?? null,
         printLevel: print?.level ?? null, printMeta: print?.meta ?? false,
@@ -271,7 +281,7 @@ globalThis.__lightDev = (() => {
     // `*e` of its REPL `session`, which a value rotates and an error sets.
     const invoke = async message => {
       const answer = { runtime, id: message.id };
-      const rt = globalThis.__lightRuntime;
+      const rt = globalThis.__lightRuntime$LKEY;
       const core = rt.core;
       let history = null;
       if (message.session != null) {
@@ -419,16 +429,19 @@ globalThis.__lightDev = (() => {
     values,
     repl,
     overlay,
+    // The build's runtime and its definitions by `ns/name`.
+    get runtime() { return globalThis.__lightRuntime$LKEY; },
+    get roots() { return globalThis.__lightApplicationRoots$LKEY; },
     define(namespace, requires, unit) {
       // index.js requests a page's files at once; once one failed, the
       // later units it still runs are skipped until they have all settled,
       // as if they had not loaded.
-      if (globalThis.__lightDevHalted === true) return undefined;
+      if (globalThis.__lightDevHalted$LKEY === true) return undefined;
       // A unit counts as loaded once it has run to its end, so a replay
       // runs again one that threw.
       const record = { requires, unit, loaded: false };
       units[namespace] = record;
-      values[namespace] = unit(globalThis.__lightRuntime);
+      values[namespace] = unit(globalThis.__lightRuntime$LKEY);
       record.loaded = true;
       return values[namespace];
     },
@@ -440,7 +453,7 @@ globalThis.__lightDev = (() => {
   const script = typeof document === "object" && document !== null ? document.currentScript : null;
   if (typeof script?.src === "string" && /^https?:/.test(script.src) && typeof fetch === "function") {
     const events = new URL("events", script.src).href;
-    Promise.resolve(globalThis.__lightDevLoaded).catch(() => {}).then(() => connect(events));
+    Promise.resolve(globalThis.__lightDevLoaded$LKEY).catch(() => {}).then(() => connect(events));
   }
   return dev;
 })();

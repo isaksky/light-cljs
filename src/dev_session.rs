@@ -29,7 +29,8 @@ use std::{
 /// One compiled top-level form: an interactive unit, the JavaScript function
 /// expression `(__lightInteractiveRuntime) => ...` of the runtime whose
 /// definitions live in the application registry,
-/// `globalThis.__lightApplicationRoots["ns/name"]` (docs/evaluation.md).
+/// `globalThis.__lightApplicationRoots$LKEY["ns/name"]` (docs/evaluation.md),
+/// whose key placeholder a page's writer replaces with its build's key.
 #[derive(Clone, Debug)]
 pub struct Unit {
     /// The namespace the form was compiled in.
@@ -158,6 +159,9 @@ pub struct DevSession {
     registering: Cell<bool>,
     /// The file loading, if any, which [`Self::analyze_loaded`] reads ahead.
     ahead: RefCell<Option<LoadingFile>>,
+    /// The key of the dev build whose page runs the session's units
+    /// ([`Self::page_key`]).
+    page_key: RefCell<crate::runtime_key::RuntimeKey>,
 }
 
 /// The build [`DevSession::compile_entry`] starts a session from.
@@ -425,7 +429,21 @@ impl DevSession {
             registered: RefCell::default(),
             registering: Cell::new(true),
             ahead: RefCell::default(),
+            page_key: RefCell::new(crate::dev_build::dev_key(None, "")),
         })
+    }
+    /// The key of the dev build whose page runs the units the session
+    /// writes for a page (docs/value-layout.md, section 1): the units of a
+    /// watch step, the forms of a connected REPL. The session's own runtime
+    /// keeps the placeholder. A watch sets it to its build's key
+    /// ([`crate::dev_build::dev_key`]) with [`Self::set_page_key`]; until
+    /// then it is the key of a dev build of no build and no entry.
+    pub fn page_key(&self) -> crate::runtime_key::RuntimeKey {
+        self.page_key.borrow().clone()
+    }
+    /// Write the units for a page with `key` from now on ([`Self::page_key`]).
+    pub fn set_page_key(&self, key: crate::runtime_key::RuntimeKey) {
+        *self.page_key.borrow_mut() = key;
     }
     /// The current namespace.
     pub fn namespace(&self) -> String {
@@ -1494,14 +1512,16 @@ fn missing_namespace(name: &str, lazy: bool) -> String {
 }
 
 /// `actions` as a script for a running dev build ([`crate::dev_build`]),
-/// which applies them in order to its runtime, `globalThis.__lightRuntime`,
-/// as the session's heap does: a `Namespace` makes the namespace the
-/// runtime's current one (`*ns*`); each run of consecutive units of one
-/// namespace in a `Load` is one call of the client's
-/// `globalThis.__lightDev.define`, whose unit runs them in order and returns
-/// the last one's value (the session does not track a namespace's requires,
-/// so each call lists none); an `Invoke` runs its unit; an `Error` throws
-/// its message, since nothing after it was compiled. `Warnings` are left out.
+/// which applies them in order to its runtime,
+/// `globalThis.__lightRuntime$KEY`, as the session's heap does: a
+/// `Namespace` makes the namespace the runtime's current one (`*ns*`); each
+/// run of consecutive units of one namespace in a `Load` is one call of the
+/// client's `globalThis.__lightDev$KEY.define`, whose unit runs them in order
+/// and returns the last one's value (the session does not track a
+/// namespace's requires, so each call lists none); an `Invoke` runs its
+/// unit; an `Error` throws its message, since nothing after it was compiled.
+/// `Warnings` are left out. The script holds the key placeholder, for which
+/// its sender writes the build's key ([`DevSession::page_key`]).
 pub fn script(actions: &[Action]) -> String {
     let mut script = String::new();
     for action in actions {
@@ -1509,11 +1529,11 @@ pub fn script(actions: &[Action]) -> String {
             Action::Namespace(name) => {
                 script.push_str("(rt => { rt.core.currentNs = rt.core.createNs(rt.symbol(null, ");
                 json_string(&mut script, name);
-                script.push_str(")); })(globalThis.__lightRuntime);\n");
+                script.push_str(")); })(globalThis.__lightRuntime$LKEY);\n");
             }
             Action::Load(units) => {
                 for run in units.chunk_by(|a, b| a.namespace == b.namespace) {
-                    script.push_str("globalThis.__lightDev.define(");
+                    script.push_str("globalThis.__lightDev$LKEY.define(");
                     json_string(&mut script, &run[0].namespace);
                     script.push_str(", [], (__lightInteractiveRuntime) => {\n");
                     for (index, unit) in run.iter().enumerate() {
@@ -1531,7 +1551,7 @@ pub fn script(actions: &[Action]) -> String {
             Action::Invoke(unit) => {
                 script.push('(');
                 script.push_str(&unit.js);
-                script.push_str(")(globalThis.__lightRuntime);\n");
+                script.push_str(")(globalThis.__lightRuntime$LKEY);\n");
             }
             Action::Warnings(_) => {}
             Action::Error(error) => {

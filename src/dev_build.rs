@@ -2,16 +2,20 @@
 //! emitted as a directory whose namespaces a running application can replace
 //! one at a time.
 //!
-//! The directory holds
+//! Every page global of a dev build ends in `$` and the build's key
+//! ([`dev_key`], docs/value-layout.md, section 1), written `$KEY` here, so
+//! that two dev builds on one page keep their runtimes, clients and
+//! definitions apart. The directory holds
 //!
 //! - `runtime.js`, the whole runtime once:
-//!   `globalThis.__lightRuntime = (factory)();`, with the key every dev
-//!   build has ([`runtime_file`]), which each unit written for the page
-//!   has too (docs/value-layout.md, section 1);
-//! - `client.js`, the dev client ([`CLIENT`]), which defines
-//!   `globalThis.__lightDev.define`, which records each namespace's unit and
-//!   runs it against the runtime at once, keeping its value, and in a page
-//!   served by `--serve` reads the server's event stream;
+//!   `globalThis.__lightRuntime$KEY = (factory)();`, with the build's key
+//!   ([`runtime_file`]), which each unit written for the page has too;
+//! - `client.js`, the dev client ([`CLIENT`], [`client_file`]), which
+//!   defines `globalThis.__lightDev$KEY.define`, which records each
+//!   namespace's unit and runs it against the runtime at once, keeping its
+//!   value, and in a page served by `--serve` reads the server's event
+//!   stream; it is also `globalThis.__lightDev`, the client of the dev build
+//!   that loaded last;
 //! - one `<namespace>.js` per namespace ([`unit_file`]), in dependency
 //!   order: the namespace's forms as an interactive unit (the storage model
 //!   of the session, [`crate::emitter`]) inside a `define` call, with its
@@ -21,18 +25,19 @@
 //!   functions marked `^:dev/before-load` and `^:dev/after-load` (or their
 //!   `-async` variants, which take a continuation), in definition order;
 //! - `index.js`, which loads the files in that order (script elements in a
-//!   page, `require` in Node) and sets `globalThis.__lightDevLoaded` to a
-//!   promise of the entry namespace's value, the program's value, which a
-//!   file that throws while it runs rejects instead.
+//!   page, `require` in Node) and sets `globalThis.__lightDevLoaded$KEY`,
+//!   and `globalThis.__lightDevLoaded`, to a promise of the entry
+//!   namespace's value, the program's value, which a file that throws while
+//!   it runs rejects instead.
 //!
 //! Units are emitted at `none` semantics with namespace registration on,
 //! from the one whole-program [`Program`] by namespace entry, and never go
 //! through [`crate::prepare_application`]. Definitions live in
-//! `globalThis.__lightApplicationRoots["ns/name"]`, read at each use, so a
-//! unit evaluated again replaces its namespace's definitions for every caller.
-//! Each unit registers its namespace's reader context, and the first one
-//! registers every namespace of the build, as single-file output does before
-//! its first form runs.
+//! `globalThis.__lightApplicationRoots$KEY["ns/name"]`, read at each use, so
+//! a unit evaluated again replaces its namespace's definitions for every
+//! caller. Each unit registers its namespace's reader context, and the first
+//! one registers every namespace of the build, as single-file output does
+//! before its first form runs.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -66,8 +71,8 @@ pub fn emit_dev_build(program: &Program, sources: &[SourceFile<'_>]) -> Vec<DevF
 }
 
 /// [`emit_dev_build`] for `build`, the build of light-cljs.edn it is
-/// (`compile ID`, `watch ID`), if any: its `runtime.js` registers the build
-/// with the entry namespace as the build's identity ([`runtime_file`]).
+/// (`compile ID`, `watch ID`), if any: the build with the entry namespace is
+/// the build's identity, from which its key is derived ([`dev_key`]).
 pub fn emit_dev_build_of(
     program: &Program,
     sources: &[SourceFile<'_>],
@@ -87,21 +92,22 @@ pub fn emit_dev_build_of(
         "a dev build needs a program analyzed from namespace sources"
     );
     let manifest = DevManifest::new(program);
+    let page = dev_key(build, &manifest.entry);
     let mut files = vec![
         DevFile {
             name: "runtime.js".into(),
-            text: runtime_file(build, &manifest.entry),
+            text: runtime_file(&page),
         },
         DevFile {
             name: "client.js".into(),
-            text: CLIENT.into(),
+            text: client_file(&page),
         },
     ];
-    let key = RuntimeKey::dev_units();
+    let key = page.units();
     let units = crate::emitter::NamespaceUnits::new(program);
     for (index, namespace) in manifest.namespaces.iter().enumerate() {
         let map = format!("{}.map", namespace.file);
-        let mut define = String::from("globalThis.__lightDev.define(");
+        let mut define = String::from(DEFINE);
         json_string(&mut define, &namespace.name);
         define.push_str(", ");
         json_list(&mut define, &namespace.requires);
@@ -128,22 +134,43 @@ pub fn emit_dev_build_of(
     });
     files.push(DevFile {
         name: "index.js".into(),
-        text: manifest.index(),
+        text: manifest.index(&page),
     });
     files
 }
 
-/// `runtime.js` of the dev build `build` (of light-cljs.edn, if any) whose
-/// entry namespace is `entry`: the whole runtime with the dev key
-/// ([`RuntimeKey::dev`]), which registers the build and the entry as the
-/// build's identity, so that two different dev builds on one page stop as
-/// the second loads.
-pub fn runtime_file(build: Option<&str>, entry: &str) -> String {
-    let identity = format!("{}\n{entry}", build.unwrap_or(""));
-    format!(
-        "globalThis.__lightRuntime = {};\n",
-        RuntimeKey::dev(&identity).apply(crate::runtime_manifest::RUNTIME.trim())
-    )
+/// The opening of a unit's call of its build's `define`, with the key
+/// placeholder the unit's writer replaces.
+const DEFINE: &str = "globalThis.__lightDev$LKEY.define(";
+
+/// The key of the dev build `build` (of light-cljs.edn, if any) whose entry
+/// namespace is `entry` ([`RuntimeKey::dev`]): the build and the entry are
+/// its identity. `compile ID` and `watch ID` of one build give the same key,
+/// as do two copies of it; another build, or another entry, another one.
+/// The dev session keeps it for the units, steps and REPL forms it writes
+/// against a page of the build
+/// ([`crate::dev_session::DevSession::page_key`]).
+pub fn dev_key(build: Option<&str>, entry: &str) -> RuntimeKey {
+    RuntimeKey::dev(&format!("{}\n{entry}", build.unwrap_or("")))
+}
+
+/// `runtime.js` of the dev build whose key is `key` ([`dev_key`]): the
+/// whole runtime with that key, as `globalThis.__lightRuntime$KEY`, which
+/// registers the key with a hash of the build's identity, so that two
+/// different dev builds on one page whose keys match stop as the second
+/// loads.
+pub fn runtime_file(key: &RuntimeKey) -> String {
+    key.apply(&format!(
+        "globalThis.__lightRuntime{} = {};\n",
+        crate::runtime_key::KEY_PLACEHOLDER,
+        crate::runtime_manifest::RUNTIME.trim()
+    ))
+}
+
+/// `client.js` of the dev build whose key is `key` ([`dev_key`]): the dev
+/// client ([`CLIENT`]), whose globals end in the key.
+pub fn client_file(key: &RuntimeKey) -> String {
+    key.units().apply(CLIENT)
 }
 
 /// What `manifest.json` of a dev build says: the entry namespace, the
@@ -452,7 +479,7 @@ pub fn namespace_unit(
                 .and_then(|rest| rest.strip_suffix(crate::emitter::INTERACTIVE_CLOSE))
         })
         .collect::<Option<Vec<_>>>();
-    let mut head = String::from("globalThis.__lightDev.define(");
+    let mut head = String::from(DEFINE);
     json_string(&mut head, namespace);
     head.push_str(", ");
     json_list(&mut head, requires);
@@ -529,10 +556,14 @@ pub fn namespace_unit(
             text: source.text(),
         })
         .collect::<Vec<_>>();
-    // The page has the dev key (`runtime_file`); the session's own runtime
-    // keeps the placeholder.
+    // The page has the build's key, which the session keeps
+    // (`DevSession::page_key`); the session's own runtime keeps the
+    // placeholder.
     let mut mapping = text.mapping;
-    let mut unit = RuntimeKey::dev_units().apply_mapped(&text.text, &mut mapping);
+    let mut unit = session
+        .page_key()
+        .units()
+        .apply_mapped(&text.text, &mut mapping);
     let json = mapping.to_json(Some(&file), &files, false);
     writeln!(unit, "//# sourceMappingURL={map}").unwrap();
     [
@@ -559,9 +590,10 @@ pub fn unit_file(namespace: &str) -> String {
 }
 
 impl DevManifest {
-    /// `index.js`: loads the files of the build in order and sets
-    /// `globalThis.__lightDevLoaded` to a promise of the entry's value.
-    pub fn index(&self) -> String {
+    /// `index.js` of the build whose key is `key` ([`dev_key`]): loads the
+    /// files of the build in order and sets `globalThis.__lightDevLoaded$KEY`
+    /// and `globalThis.__lightDevLoaded` to a promise of the entry's value.
+    pub fn index(&self, key: &RuntimeKey) -> String {
         let files = ["runtime.js", "client.js"]
             .into_iter()
             .chain(
@@ -574,12 +606,12 @@ impl DevManifest {
         json_list(&mut list, &files);
         let mut entry = String::new();
         json_string(&mut entry, &self.entry);
-        index_text(&list, &entry)
+        key.units().apply(&index_text(&list, &entry))
     }
 }
 
 /// The text of `index.js` for the JSON array `list` of its files and the
-/// JSON string `entry`.
+/// JSON string `entry`, with the key placeholder for the build's key.
 ///
 /// In a page every file is requested at once and the files run in order:
 /// script elements with `async = false`, which a browser fetches in parallel
@@ -587,23 +619,24 @@ impl DevManifest {
 /// requesting the next cost the 3,077 files of a generated 200k-line app
 /// about 3 s of round trips (benchmarks/watch-vs-shadow.md). The first error
 /// thrown while the files run, or a file that cannot load, is the failure:
-/// from then until every file has settled, `globalThis.__lightDevHalted`
-/// makes the client's `define` skip each later unit, so, as when the files
+/// from then until every file has settled, `globalThis.__lightDevHalted$KEY`
+/// makes the build's `define` skip each later unit, so, as when the files
 /// loaded one at a time, no unit after the failure runs. The promise rejects
 /// once every file has settled and the flag is gone, so a reload the client
 /// applies afterwards defines its units.
 fn index_text(list: &str, entry: &str) -> String {
     format!(
         r#"// Loads a light-cljs dev build: the runtime, the dev client and one unit per
-// namespace, in dependency order. globalThis.__lightDevLoaded is a promise of
-// the entry namespace's value, the program's value. In a page each file is a
-// script element after this one, all requested at once and run in order
-// (`async = false`). The first error thrown while they run, or a file that
-// cannot load, rejects the promise once every file has settled, and no unit
-// after it runs: the client's `define` skips units while
-// globalThis.__lightDevHalted is set. In Node (CommonJS) each file is
+// namespace, in dependency order. globalThis.__lightDevLoaded$LKEY is a
+// promise of the entry namespace's value, the program's value, and so is
+// globalThis.__lightDevLoaded, until another dev build loads. In a page each
+// file is a script element after this one, all requested at once and run in
+// order (`async = false`). The first error thrown while they run, or a file
+// that cannot load, rejects the promise once every file has settled, and no
+// unit after it runs: the build's `define` skips units while
+// globalThis.__lightDevHalted$LKEY is set. In Node (CommonJS) each file is
 // required, which `node --enable-source-maps` maps to the sources.
-globalThis.__lightDevLoaded = (async () => {{
+globalThis.__lightDevLoaded = globalThis.__lightDevLoaded$LKEY = (async () => {{
   const files = {list};
   if (typeof document === "object" && document !== null) {{
     const base = document.currentScript?.src ?? document.baseURI;
@@ -611,7 +644,7 @@ globalThis.__lightDevLoaded = (async () => {{
     const fail = error => {{
       if (failure !== null) return;
       failure = error;
-      globalThis.__lightDevHalted = true;
+      globalThis.__lightDevHalted$LKEY = true;
     }};
     const failed = event => fail(event.error ?? new Error(event.message));
     globalThis.addEventListener("error", failed);
@@ -626,13 +659,13 @@ globalThis.__lightDevLoaded = (async () => {{
       }})));
     }} finally {{
       globalThis.removeEventListener("error", failed);
-      delete globalThis.__lightDevHalted;
+      delete globalThis.__lightDevHalted$LKEY;
     }}
     if (failure !== null) throw failure;
   }} else {{
     for (const file of files) require("./" + file);
   }}
-  return globalThis.__lightDev.values[{entry}];
+  return globalThis.__lightDev$LKEY.values[{entry}];
 }})();
 "#
     )

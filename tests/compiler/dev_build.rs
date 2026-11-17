@@ -154,18 +154,25 @@ fn example_dev_build_prints_what_the_none_build_prints() {
         fs::read_to_string(out.join("manifest.json")).unwrap(),
         EXAMPLE_MANIFEST
     );
+    // The build's globals end in its key, the key of the dev build of no
+    // light-cljs.edn whose entry is app.main (docs/value-layout.md,
+    // section 1).
+    let key = light_cljs::dev_build::dev_key(None, "app.main");
+    let key = key.key();
     let runtime = fs::read_to_string(out.join("runtime.js")).unwrap();
-    assert!(runtime.starts_with("globalThis.__lightRuntime = "));
+    assert!(runtime.starts_with(&format!("globalThis.__lightRuntime${key} = ")));
     let view = fs::read_to_string(out.join("app.view.js")).unwrap();
     assert!(
-        view.starts_with(
-            "globalThis.__lightDev.define(\"app.view\", [\"app.macros\", \"app.state\"], (__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots ??= Object.create(null); return (() => {\n"
-        ) && view.ends_with("\n; });\n//# sourceMappingURL=app.view.js.map\n"),
+        view.starts_with(&format!(
+            "globalThis.__lightDev${key}.define(\"app.view\", [\"app.macros\", \"app.state\"], (__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots${key} ??= Object.create(null); return (() => {{\n"
+        )) && view.ends_with("\n; });\n//# sourceMappingURL=app.view.js.map\n"),
         "{view}"
     );
     // Units read and write the registry; nothing is sealed in a closure.
     assert!(!view.contains("let g"), "{view}");
-    assert!(view.contains("globalThis.__lightApplicationRoots[\"app.view/render\"] = "));
+    assert!(view.contains(&format!(
+        "globalThis.__lightApplicationRoots${key}[\"app.view/render\"] = "
+    )));
     assert_eq!(run_dev(&none, true, &[]).unwrap(), EXAMPLE_RECORD);
     assert_eq!(run_dev(&out, true, &[]).unwrap(), EXAMPLE_RECORD);
     let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))

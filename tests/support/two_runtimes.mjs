@@ -4,8 +4,9 @@
 //   node tests/support/two_runtimes.mjs --light BIN [--chromium NPM_TOOLS]
 //
 // Copies tests/fixtures/two-runtimes into a temporary directory and builds
-// it there with BIN: `release app keyed flavor other` and `compile app` (the
-// dev build of app). It also writes `collide`, the release output of other
+// it there with BIN: `release app keyed flavor other` and `compile app other
+// flavor` (the dev builds of app, of other, and of flavor, a second build of
+// app's entry). It also writes `collide`, the release output of other
 // with app's runtime key written for its own: two different outputs whose
 // keys collide. Each scenario then loads its builds, in order, into one page:
 // a fresh Node process, or with --chromium a fresh headless Chromium page
@@ -165,6 +166,63 @@ const scenarios = [
     ],
   },
   {
+    // Two dev builds of two apps (light-cljs-1045): each has its own key,
+    // runtime, client and definitions, so two.shared, which both define,
+    // keeps each build's `defonce` state, and the first build's unit
+    // evaluated again after the second loaded registers in the first's
+    // runtime alone.
+    name: "two dev builds of different apps, and a reload of the first",
+    loads: [
+      { label: "dev", dev: "app-dev" },
+      { label: "other dev", dev: "other-dev" },
+      { label: "dev reload", script: "app-dev/two.app.js" },
+    ],
+    expected: [
+      "load dev: ok",
+      "load other dev: ok",
+      "load dev reload: ok",
+      `host dev: ${host("app", { loads: 2 })}`,
+      `host other dev: ${host("other", { count: "throws" })}`,
+      `host dev reload: ${host("app", { loads: 2 })}`,
+      `dev sees dev: ${recognised()}`,
+      `dev sees other dev: ${foreign}`,
+      `dev sees dev reload: ${recognised()}`,
+      `other dev sees dev: ${foreign}`,
+      `other dev sees other dev: ${recognised()}`,
+      `other dev sees dev reload: ${foreign}`,
+      `dev reload sees dev: ${recognised()}`,
+      `dev reload sees other dev: ${foreign}`,
+      `dev reload sees dev reload: ${recognised()}`,
+    ],
+  },
+  {
+    // Two dev builds of one entry, two builds of light-cljs.edn: the same
+    // namespaces, kept apart by their keys, and a reload of the second.
+    name: "two dev builds of one app, and a reload of the second",
+    loads: [
+      { label: "dev", dev: "app-dev" },
+      { label: "flavor dev", dev: "flavor-dev" },
+      { label: "flavor reload", script: "flavor-dev/two.app.js" },
+    ],
+    expected: [
+      "load dev: ok",
+      "load flavor dev: ok",
+      "load flavor reload: ok",
+      `host dev: ${host("app")}`,
+      `host flavor dev: ${host("app", { loads: 2 })}`,
+      `host flavor reload: ${host("app", { loads: 2 })}`,
+      `dev sees dev: ${recognised()}`,
+      `dev sees flavor dev: ${foreign}`,
+      `dev sees flavor reload: ${foreign}`,
+      `flavor dev sees dev: ${foreign}`,
+      `flavor dev sees flavor dev: ${recognised()}`,
+      `flavor dev sees flavor reload: ${recognised()}`,
+      `flavor reload sees dev: ${foreign}`,
+      `flavor reload sees flavor dev: ${recognised()}`,
+      `flavor reload sees flavor reload: ${recognised()}`,
+    ],
+  },
+  {
     name: "a release build and then a dev build of one app",
     loads: [{ label: "release", module: "app/two.app.js" }, { label: "dev", dev: "app-dev" }],
     expected: [
@@ -287,7 +345,7 @@ function build(light, dir) {
   const project = path.join(dir, "project");
   fs.cpSync(fixture, project, { recursive: true });
   run(light, ["release", "app", "keyed", "flavor", "other"], project);
-  run(light, ["compile", "app"], project);
+  run(light, ["compile", "app", "other", "flavor"], project);
   const out = path.join(project, "out");
   const keys = {};
   for (const [label, file] of [["app", "app/two.app.js"], ["keyed", "keyed/two.app.js"],

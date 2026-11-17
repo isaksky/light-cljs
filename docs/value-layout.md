@@ -1251,10 +1251,31 @@ dev server's `invoke` sends and the scripts of a connected REPL's forms
 (`dev_repl`), each with the one dev key; the session's own runtime keeps
 the placeholder.
 
+As light-cljs-1045 changed it, the dev key is one per build: derived from
+the whole runtime source and the build's identity (`dev_build::dev_key`,
+`RuntimeKey::dev`), so it still depends on neither the sources nor an edit,
+`compile ID` and `watch ID` of one build share it, and two different dev
+builds, two entries or two builds of light-cljs.edn of one entry, get two
+keys; the hash registered is of the same inputs. The dev session keeps its
+build's key (`DevSession::page_key`, which the watch sets when it starts)
+and writes it into every unit of a watch step, every script of a
+connected REPL's form, and `index.js`; the dev server's `invoke` takes the
+key of the mount's build. Every page global of a dev build ends in the key
+too: its runtime, `__lightRuntime$KEY`; its definitions,
+`__lightApplicationRoots$KEY` (the emitter's application registry, whose
+name ends in the placeholder, which the compile-time runtime keeps); its
+client, `__lightDev$KEY`; and `index.js`'s `__lightDevLoaded$KEY` and
+`__lightDevHalted$KEY`. The unkeyed `__lightDevLoaded` and `__lightDev`
+stay, as the promise and the client of the dev build that loaded last (the
+one build of a page with one), and the client's `runtime` and `roots` are
+its build's runtime and definitions. A restart of a watch that changes its
+build's entry changes the key, and a page then needs a full reload.
+
 ### Two runtimes on one page
 
-- **Two different builds** (including a dev and a release build of one app):
-  different keys. Neither recognises the other's values: to each, the
+- **Two different builds** (including a dev and a release build of one app,
+  and since light-cljs-1045 two dev builds): different keys. Neither
+  recognises the other's values: to each, the
   other's vector is a host object (`vector?` false, `count` throws as for
   `{}`, printing shows a host object). An `extend-type` of a host constructor
   (`js/Date`, `js/Object`) in one writes keyed names the other never reads,
@@ -1279,7 +1300,9 @@ the placeholder.
 **The guarantee, as light-cljs-1018 tested it.** `tests/support/two_runtimes.mjs`
 builds `tests/fixtures/two-runtimes` (an app, `two.app`, released as is,
 with a `:runtime-key`, with another constant and as a dev build, and a
-second app, `two.other`) and loads them into one page, in Node
+second app, `two.other`, and since light-cljs-1045 the dev builds of
+`two.other` and of `:flavor`, a second build of `two.app`) and loads them
+into one page, in Node
 (`runtime_key::runtimes_on_one_page_keep_apart_unless_they_share_a_key`)
 and in headless Chromium (`--chromium NPM_TOOLS`). Each runtime reports how
 it reads every runtime's values, one of each kind (vector, subvector, array
@@ -1289,7 +1312,8 @@ host-value answers. What two runtimes on one page share and do not share:
 
 - **Different builds never recognise each other's values**: two apps, one
   app and the same program with another `:runtime-key`, with another
-  constant (a `goog-define`), or a dev and a release build of one app. To
+  constant (a `goog-define`), a dev and a release build of one app, or two
+  dev builds (of two apps, or two builds of one app). To
   each, the other's value is a host object: every predicate (`vector?`,
   `map?`, `keyword?`, `record?`, `satisfies?`) is false, `=` is false,
   `nth`, `count`, `name` and `key` throw and `get` answers nil as for `{}`,
@@ -1338,11 +1362,27 @@ host-value answers. What two runtimes on one page share and do not share:
   unit evaluated again (a hot reload) with a release build on the page
   registers in the dev runtime, whose other namespaces keep their state.
   The release output writes no global but the key registry; a dev build
-  keeps its own in page globals (`__lightRuntime`, `__lightDev`,
-  `__lightApplicationRoots`, ...). **Two dev builds on one page** are not
-  supported: every dev build has the one dev key, so the second's
-  `runtime.js` throws at load, and their globals would collide
-  (light-cljs-1045).
+  keeps its own in page globals, each ending in its key
+  (`__lightRuntime$KEY`, `__lightDev$KEY`, `__lightApplicationRoots$KEY`,
+  ...).
+- **Two dev builds on one page** are supported since light-cljs-1045, and
+  tested in Node and headless Chromium: two dev builds of two apps, and two
+  dev builds of one entry (two builds of light-cljs.edn), each load, run
+  and hot-reload independently. Each has its own key, so neither
+  recognises the other's values, and its own runtime, client and
+  definitions, so a namespace both define (`two.shared`) keeps each
+  build's `defonce` state, and a unit of one evaluated again, whether it
+  loaded first or second, registers in its own runtime alone, the other
+  keeping its state. Each build's client is its own (`__lightDev$KEY`),
+  which reads the event stream of the dev server's mount that served it
+  (`/<id>/events`) and keeps its own REPL sessions, and every unit, step
+  and REPL form its build's session writes names its key, so it reaches
+  that build's runtime alone. The unkeyed `__lightDevLoaded`
+  and `__lightDev` are the dev build that loaded last's. Two copies of one
+  dev build (the same build of light-cljs.edn and entry, loaded twice)
+  share its key, as two copies of release output do, and with it its dev
+  globals: the second copy's `runtime.js` and `client.js` replace the
+  first's, so a page loads a dev build once and reloads its units.
 - **What they share** is the page: globals a program writes, the key
   registry with each key's identity-hash table, and the unkeyed members:
   `Object` protocol methods (`toString`), the `IFn` invoke entries and `Symbol.iterator`, which any
