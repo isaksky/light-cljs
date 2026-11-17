@@ -1626,8 +1626,10 @@ fn collection_namespace_macros_execute_typed_results_once_with_fresh_runtime_sta
         node(&isolation),
         "data\nops\nmain\ndata\nops\nmain\nisolated\n"
     );
-    // The embedded runtime, which excludes the source file's manifest headers.
-    let runtime_bytes = light_cljs::runtime_manifest::RUNTIME.len();
+    // The embedded runtime, which excludes the source file's manifest headers,
+    // as the output writer writes it: each key placeholder spelled as the key
+    // (`written_len`, as the size reports count runtime text).
+    let runtime_bytes = light_cljs::runtime_key::written_len(light_cljs::runtime_manifest::RUNTIME);
     assert!(
         outputs
             .iter()

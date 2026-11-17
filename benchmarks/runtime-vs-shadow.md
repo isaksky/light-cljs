@@ -3528,3 +3528,48 @@ master `e0168930`: about 290 bytes where a program keeps array maps
 (`map-printed` 24,598 to 24,889, `keyword-lookups` 59,298 to 59,590), 350
 for `constant-keys` and the features example; no ceiling moves. re-frame
 simple and TodoMVC were not ported in this run.
+
+## 2026-11-17: the side stores in the values' fields (light-cljs-1053)
+
+Metadata, cached hashes, a public constructor's slots, a subvector's source and a vector's root token are each value's own keyed fields. The six WeakMap stores that held them are deleted (docs/value-layout.md, "What light-cljs-1053 landed").
+
+- **Binaries:** before is master `d8a28b21` (`light-cljs-d8a28b21`). After is `light-cljs-1053-4fd7638c`. Both are V8 builds.
+- **Load:** the machine was unreserved, with other workers building. The 1-minute load average before each run is given below.
+
+**The gate** (`bb benchmarks/core-ops/run.bb`, all 64 operations, 5 runs per compiler, alternated; before load 3.3-7.9, after 3.6-7.9):
+- **No operation is slower by more than 1%.** `map-literal-3` and `destructure-map-3` are +1%.
+- **47 operations moved by less than 3%** either way.
+- **17 are 4% or more faster.** The faster ones update maps.
+  - Before, every update probed the metadata store twice, through `preserveMeta`, `meta` and `ownMeta`, and `hash` probed the hash store.
+  - Now they read one field.
+
+| op | light before (ns) | light after (ns) | change | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| assoc-small-existing | 37.5 | 24.4 | -35% | 1.21 | 0.80 |
+| assoc-small-new | 60.8 | 49.5 | -19% | 1.55 | 1.28 |
+| dissoc-small | 64.3 | 49.4 | -23% | 1.13 | 0.88 |
+| update-small | 44.4 | 29.2 | -34% | 1.01 | 0.68 |
+| assoc-hash100 | 93.3 | 79.8 | -14% | 1.19 | 1.03 |
+| dissoc-hash100 | 102.4 | 89.1 | -13% | 1.34 | 1.19 |
+| update-hash100 | 108.2 | 94.2 | -13% | 1.13 | 1.00 |
+| assoc-in-3 | 209.1 | 163.5 | -22% | 1.56 | 1.25 |
+| update-in-3 | 233.6 | 188.9 | -19% | 1.68 | 1.38 |
+| hash-fresh-map-7 | 257.8 | 137.4 | -47% | 0.48 | 0.26 |
+| swap-assoc | 57.4 | 40.6 | -29% | 1.54 | 1.11 |
+| select-keys-3 | 373.1 | 309.7 | -17% | 1.50 | 1.28 |
+| group-by-100 | 12,548 | 10,218 | -19% | 2.48 | 2.07 |
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1053 --runs 5 --runtime-only --runtime 1,10,40`; the project was rebuilt with each binary just before its run; before load 3.75-5.4, after 4.25-7.0). Wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.367 s (0.355-0.377) | 0.376 s (0.369-0.388) | 0.303 s | 0.310 s |
+| 10 | 0.808 s (0.796-0.831) | 0.847 s (0.842-0.852) | 0.542 s | 0.574 s |
+| 40 | 2.116 s (2.063-2.433) | 2.113 s (2.090-2.162) | 1.239 s | 1.216 s |
+
+- **Steady state, from 1 and 40 iterations:** light-cljs went from 44.9 to 44.5 ms per iteration (-1%); shadow-cljs measured 24.0 and 23.2. Light/shadow was 1.87, then 1.92.
+- **The 10-iteration row** moved by as much in shadow-cljs's runs as in light-cljs's (+6% and +5%), which points at the machine's load.
+
+**Size.**
+- **Advanced:** the fixture sizes are noted in tests/support/ratchet_fixtures.rs. The ceilings of `vector-only` and `closed-params` move down.
+- **re-frame apps:** the whole bundles shrink after gzip by 60 bytes (simple), 161 (TodoMVC) and 112 (flow), against the 600 to 900 bytes light-cljs-1047 expected. benchmarks/re-frame-vs-shadow.md says why.

@@ -1125,6 +1125,48 @@ What light-cljs-1046 landed: no protocol lookup probes the stores in turn.
   of a cons walks its seq with the `satisfies` hook per step (204 ns for
   two items there, 34 without extensions, as before light-cljs-1015's 40).
 
+What light-cljs-1053 landed: the side stores' entries are the values' own
+fields.
+
+- **Metadata and cached hashes.** `metadataValues` and `constructorHashes`
+  are deleted. A value's metadata is its own keyed field `meta` and its
+  cached hash its field `hash`, as a vector's and a symbol's were. Only
+  the classes that held them already, and the empty list's `hash`, write
+  them in their constructor; every other class is given them on demand
+  (`setMeta`, `holdHash`, a public constructor's `metaFields`), so a list,
+  a cons, a seq, a map or a set that never takes metadata or a hash
+  allocates no more than before. A field `setMeta` gives a value that
+  lacks one is not enumerable, so metadata stays out of `Object.keys` and
+  JSON, as it was in the store, and a var, a function with metadata, a
+  `reify` value and a host literal of the compiler form bridge need nothing
+  of their own. `ownMeta` is the field's presence. The Pants build's
+  profile swaps `meta`, `setMeta`, `heldHash` and `holdHash`, which also
+  answer its engine forms (`formMeta`, the task's hash cache) and leave a
+  value the boot sealed without a cached hash.
+- **A public constructor's slots** are its value's own field `slots`
+  (`constructorSlots`), which the operations read where they read the
+  store: the slots keep a constructor's answers (a queue's or a set's
+  count as given, a subvector's bounds, a vector's `root` token and `tail`
+  as given), so those branches stay. A list needs none: the empty list is
+  kind 13, so a list of kind 12 with count 0 is a public constructor's.
+- **Subvectors and root tokens.** A subvector's source is its field `v`
+  (`subvecSources`), a vector's canonical root token its field `token`
+  (`canonicalVectorRoots`), and a token holds the root it names in its own
+  field `vroot`, which is not enumerable (`vectorRoots`): still an opaque
+  object, never an upstream trie node.
+- **What stays.** `hashRoots` and the member side of `hashTraversals` are
+  keyed by a set's or a transient's member array or trie, which is no class
+  value; they go with the hash set's trie. A hash map keeps its own
+  traversal in its field `traversal`. The Proxy of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked
+  `slots` once more (341 and 346 times): `count` reads the field where it
+  probed the store.
+- **Size.** The re-frame apps' whole bundles shrink 60 to 161 bytes after
+  gzip, not the 600 to 900 light-cljs-1047 expected: a keyed field read
+  (`v.slots$<key>`) is longer than the minified store call it replaces
+  (`Xa.get(v)`), and the public constructors' branches stay
+  (benchmarks/re-frame-vs-shadow.md).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

@@ -1343,3 +1343,39 @@ These are in the output-speed-parity group, before light-cljs-1049, which checks
 
 - **`growth APP... --base BIN --light BIN`** prints the two tables above: the chain and the what-ifs. It throws when the chain's rows do not add up to the growth.
 - `bb benchmarks/re-frame-kit-test.bb` tests the attribution and the transforms on small hand-made outputs.
+
+## 2026-11-17: the side stores in the values' fields (light-cljs-1053)
+
+light-cljs-1053 deleted `metadataValues`, `constructorHashes`, `publicCollectionSlots`, `subvecSources`, `vectorRoots` and `canonicalVectorRoots`: what they held is each value's own keyed fields (docs/value-layout.md, "What light-cljs-1053 landed"). The previous section expected it to save 600 to 900 bytes per app.
+
+```sh
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
+```
+
+- **Binaries:** `light-cljs-f533efb1`, master `light-cljs-d8a28b21` and `light-cljs-1053-4fd7638c`, the change; all V8 builds.
+- **Ports:** porter `shadow-port-tool-983` with the `d8a28b21` binary, one port per app, built by all three binaries.
+- **Machine:** unreserved; sizes do not depend on load.
+
+The whole bundle with React, gzip -9, in bytes:
+
+| App | `f533efb1` | master `d8a28b21` | light-cljs-1053 | against master | against `f533efb1` |
+|---|---:|---:|---:|---:|---:|
+| simple | 108,631 | 115,748 | 115,688 | -60 | +7,057 |
+| TodoMVC | 138,015 | 148,293 | 148,132 | -161 | +10,117 |
+| flow | 328,664 | 347,000 | 346,888 | -112 | +18,224 |
+
+- **light-cljs's output as written**, gzip -9: simple 69,428 to 69,372 (-56), TodoMVC 100,171 to 100,099 (-72), flow 294,777 to 294,708 (-69).
+- **Raw**, the whole bundle grows 119 to 190 bytes: simple 382,779 to 382,969, TodoMVC 494,152 to 494,271, flow 1,329,154 to 1,329,304.
+
+**Why it saves a tenth of the estimate.**
+- **A field read is longer than a store call.** The minifier gives each store a short name, so `publicCollectionSlots.get(v)` ships as about `Xa.get(v)`, 9 characters. Its field, `v.slots$<key>`, ships as 17, until light-cljs-1048 shortens keyed names.
+- **The branches stay.** Most of the lines that read the stores serve a public constructor's answers, such as a queue's or a set's count as given or a subvector's bounds. Those answers need the slots, so the branches read the field instead of the store.
+- **Measured per unit**, TodoMVC's runtime at master against a first version that wrote `meta` and `hash` in every class's constructor:
+  - the initialisers cost about 1,000 raw bytes: 24 to 48 bytes in each of 25 constructors;
+  - they outweighed the removed reads. That version saved 128 bytes after gzip in TodoMVC and added 32 in flow.
+  - The fields are now given on demand.
+- **What shrank:** `hashStructural` -104 raw bytes, `collectionWithMeta` -46, `publicFields` -43, the list slots -110 (a list of kind 12 is never the empty list), `ownMeta`, `conjMeta`, `setMeta`, the constructors that wrote the stores, and the six store declarations.
+- **What grew:**
+  - the field reads in the operations, 15 to 30 bytes each in about 20 units;
+  - new units: `extraFields`, the fields a copy keeps; `metaFields`; `heldHash` and `holdHash`, which the Pants build's profile swaps;
+  - `setMeta`'s non-enumerable field.

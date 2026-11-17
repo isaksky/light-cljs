@@ -675,6 +675,24 @@
 //! 59,590, `map-only` 16,888 to 17,176, `defmulti` 19,344 to 19,635), 350
 //! for `constant-keys` (82,977 to 83,327) and the features example
 //! (`features` 124,058 to 124,408), 62 for `set-only`. No ceiling moves.
+//!
+//! The side stores in the values' fields (light-cljs-1053, 2026-11-17):
+//! metadata, cached hashes, a public constructor's slots, a subvector's
+//! source and a vector's root token are the values' own keyed fields, where
+//! `metadataValues`, `constructorHashes`, `publicCollectionSlots`,
+//! `subvecSources`, `vectorRoots` and `canonicalVectorRoots` held them.
+//! Advanced, against master `d8a28b21` (the command line's output): smaller
+//! where a program keeps vectors, maps or sets without seqs (`vector-printed`
+//! 16,455 to 16,344, `vector-only` 8,348 to 8,278, `set-only` 9,596 to
+//! 9,527, `map-only` 17,196 to 17,145, `closed-params` 19,563 to 19,490,
+//! `defmulti` 19,655 to 19,603); larger where it keeps seqs, metadata or
+//! hashing, whose keyed field reads are longer than the minified store calls
+//! they replace and whose units (`setMeta`, `metaFields`, `extraFields`,
+//! `heldHash`, `holdHash`) are new (`rest-fn` 20,572 to 20,834,
+//! `eight-records` 51,628 to 51,928, `seq-pipeline` 44,902 to 45,028,
+//! `constant-literals` 40,725 to 40,851, `callbacks` 65,114 to 65,243). The
+//! ceilings of `vector-only` (8,300) and `closed-params` (20,000) move down;
+//! no ceiling moves up.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -906,7 +924,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "vector-only",
         source: r#"(js/console.log (.join (js/Array.from [1 2 3]) " "))"#,
-        ceilings: [682_000, 682_000, 8_400],
+        ceilings: [682_000, 682_000, 8_300],
         removed: [0, 0, 0],
         printed: "1 2 3\nundefined\n",
     },
@@ -1006,7 +1024,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (if (< i 10)
                      (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
                      acc))",
-        ceilings: [685_000, 685_000, 21_000],
+        ceilings: [685_000, 685_000, 20_000],
         removed: [0, 0, 3],
         printed: "419\n",
     },

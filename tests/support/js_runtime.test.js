@@ -2089,13 +2089,13 @@ console.log('kind tables stay private to the runtime');
   const trie = ['meta$LKEY', 'cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'hash$LKEY'];
   // Vectors, subvectors, map entries and transient vectors hold their store's
   // fields, their metadata and their hash themselves (light-cljs-1026).
-  const fields = {vector: trie, entry: trie, subvec: ['meta$LKEY', 'cnt$LKEY', 'sub$LKEY', 'begin$LKEY', 'built$LKEY', 'hash$LKEY'],
+  const fields = {vector: trie, entry: trie, subvec: ['meta$LKEY', 'cnt$LKEY', 'sub$LKEY', 'begin$LKEY', 'built$LKEY', 'hash$LKEY', 'v$LKEY'],
     transientVector: ['cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'owned$LKEY', 'editable$LKEY'], indexedSeq: view, stringSeq: view, restArguments: view,
     chunkedSeq: [...view, 'vec$LKEY', 'base$LKEY'], keyword: ['ns$LKEY', 'name$LKEY', 'fqn$LKEY', 'hash$LKEY'],
     symbol: ['ns$LKEY', 'name$LKEY', 'str$LKEY', 'hash$LKEY', 'meta$LKEY'], lazySeq: ['fn$LKEY', 's$LKEY', 'hash$LKEY'],
     chunkedCons: ['chunk$LKEY', 'more$LKEY', 'hash$LKEY'], chunk: ['arr$LKEY', 'off$LKEY', 'end$LKEY', 'first$LKEY', 'step$LKEY'],
     chunkBuffer: ['buf$LKEY', 'end$LKEY'],
-    list: ['cell$LKEY', 'first$LKEY', 'rest$LKEY', 'count$LKEY'], emptyList: ['cell$LKEY', 'count$LKEY'],
+    list: ['cell$LKEY', 'first$LKEY', 'rest$LKEY', 'count$LKEY'], emptyList: ['cell$LKEY', 'count$LKEY', 'hash$LKEY'],
     cons: ['cell$LKEY', 'first$LKEY', 'rest$LKEY'],
     range: ['cell$LKEY', 'first$LKEY', 'end$LKEY', 'step$LKEY', 'integer$LKEY', 'count$LKEY'],
     floatRange: ['cell$LKEY', 'first$LKEY', 'end$LKEY', 'step$LKEY', 'integer$LKEY'],

@@ -51,8 +51,8 @@
     // `setDeclarationDemand` turns them off.
     slotFirst: true,
     // The hashes the runtime computes for engine sequences and maps
-    // (`sharedFormHashes`): the task's own cache, as the V8 profile's
-    // `constructorHashes` WeakMap is, keyed by the form.
+    // (`sharedFormHashes`): the task's own cache, keyed by the form, where
+    // the V8 profile's values hold theirs in their `hash` field.
     get formHashes() { return sharedTaskOwn(this, "formHashes", new WeakMap()); },
     // The entries arrays the task built for engine maps (`sharedMapEntries`).
     get formEntries() { return sharedTaskOwn(this, "formEntries", new WeakMap()); },
@@ -528,7 +528,7 @@
     return makeMap(PersistentArrayMapValue, entries, "array-map");
   }
   //@unit hashMapAssoc requires: constructorSlots, kindHooks, mapTraversal, meta, noBranch,
-  //@ PersistentHashMapValue, publicCollectionSlots, sharedOwnedMap, updatedMap
+  //@ PersistentHashMapValue, sharedOwnedMap, updatedMap
   // `assoc` of a runtime-owned hash map (a public constructor's or one with
   // a NaN occurrence key) builds through `updatedMap`, as before the V8
   // profile's built its class directly, so that the result is an engine map
@@ -539,7 +539,7 @@
   function hashMapAssoc(self, key, item) {
     const cnt = self.cnt$LKEY;
     if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
-    const exact = !publicCollectionSlots.has(self) && cnt === mapTraversal(self).length;
+    const exact = !self.slots$LKEY && cnt === mapTraversal(self).length;
     const trie = {root: self.root$LKEY, nil: self.nil$LKEY, length: cnt};
     kindHooks.putHashEntry(trie, key, item, null);
     if (exact) return updatedMap(self, trie);
@@ -553,11 +553,11 @@
     return hash ? makeMap(PersistentHashMapValue, entries, "hash-map") : makeMap(PersistentArrayMapValue, entries, "array-map");
   }
   //@unit sharedUpdatedMapFromEntries requires: hashTrie, mapFromEntries, PersistentArrayMapValue,
-  //@ PersistentHashMapValue, publicCollectionSlots, sharedOwnedMap
+  //@ PersistentHashMapValue, sharedOwnedMap
   // updatedMap retains public counts and slots on its result. Its allocation
   // boundary must therefore keep a wrapper, just as the public constructors do.
   function sharedUpdatedMapFromEntries(original, entries, hash) {
-    if (publicCollectionSlots.get(original)?.cnt != null)
+    if (original?.slots$LKEY?.cnt != null)
       return sharedOwnedMap(hash ? PersistentHashMapValue : PersistentArrayMapValue, hash ? hashTrie(entries) : entries, hash ? "hash-map" : "array-map");
     return mapFromEntries(entries, hash);
   }
@@ -946,12 +946,12 @@
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
     return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
-  //@unit preserveMeta requires: collectionWithMeta, meta, metadataValues, ownMeta, setMeta,
+  //@unit preserveMeta requires: collectionWithMeta, meta, ownMeta, setMeta,
   //@ sharedFormKind, sharedFormOf
   // An operation's engine result (a vector, a list) takes its input's
   // metadata as a form (`formWithMeta`; the form itself when it is the same
   // map already), since a form's metadata is given where the form is built
-  // and `metadataValues.set` on one throws; runtime-built metadata (a map
+  // and `setMeta` on one throws; runtime-built metadata (a map
   // of the verbatim `maps`, until the maps view) takes the wrapper
   // `with-meta` builds over the views' fallbacks. An input without
   // metadata gives a result without: the input may be the wrapper
@@ -965,7 +965,7 @@
       if (metadata == null) return __rt.formMeta(result) == null ? result : __rt.formWithMeta(result, null);
       return sharedFormKind(metadata) === "map" ? __rt.formWithMeta(result, sharedFormOf(metadata)) : collectionWithMeta(result, metadata);
     }
-    if (metadata != null || (ownMeta(original) ? metadata !== null : metadataValues.has(original))) setMeta(result, metadata);
+    if (metadata != null || metadata === undefined && ownMeta(original)) setMeta(result, metadata);
     return result;
   }
   //@unit varPrototype requires: ifnApply, ifnPrototype, meta, str, Var, vars
@@ -1040,48 +1040,52 @@
     get: value => sharedFormHashes.cache().get(value),
     set(value, hash) { sharedFormHashes.cache().set(value, hash); }
   };
-  //@unit constructorHashes requires: sharedFormHashes, sharedFormKind, sharedFormOf, sharedStore
-  // The hash cache: an engine collection's hash is the runtime's, cached
+  //@unit heldHash requires: sharedFormHashes, sharedFormKind, sharedFormOf
+  // A value's cached hash: an engine collection's is the runtime's, cached
   // per task (`sharedFormHashes`, keyed by the form behind an imported
-  // form's occurrence); any other engine form's is computed and
-  // cached by the engine (`formHash`), so the cache answers it from there
-  // and drops a hash given for one; a runtime-built value keeps its own.
-  const constructorHashes = (store => ({
-    has(value) {
-      const kind = sharedFormKind(value);
-      return kind === null ? store.has(value) : sharedFormHashes.is(kind) ? sharedFormHashes.has(sharedFormOf(value)) : true;
-    },
-    get(value) {
-      const kind = sharedFormKind(value);
-      return kind === null ? store.get(value) : sharedFormHashes.is(kind) ? sharedFormHashes.get(sharedFormOf(value)) : __rt.formHash(value);
-    },
-    set(value, hash) {
-      const kind = sharedFormKind(value);
-      if (kind === null) store.set(value, hash); else if (sharedFormHashes.is(kind)) sharedFormHashes.set(sharedFormOf(value), hash);
-      return this;
+  // form's occurrence); any other engine form's is computed and cached by
+  // the engine (`formHash`); a runtime-built value keeps its own in its
+  // `hash` field (light-cljs-1053), where a store held it before.
+  function heldHash(value) {
+    const kind = sharedFormKind(value);
+    return kind === null ? value.hash$LKEY : sharedFormHashes.is(kind) ? sharedFormHashes.get(sharedFormOf(value)) : __rt.formHash(value);
+  }
+  //@unit holdHash requires: sharedFormHashes, sharedFormKind, sharedFormOf
+  // Caches a hash as `heldHash` reads it, and gives it: a hash given for an
+  // engine form the engine hashes is dropped, and a value the boot sealed
+  // keeps none, so its hash is computed again.
+  function holdHash(value, hash) {
+    const kind = sharedFormKind(value);
+    if (kind === null) { if (!Object.isFrozen(value)) value.hash$LKEY = hash; }
+    else if (sharedFormHashes.is(kind)) sharedFormHashes.set(sharedFormOf(value), hash);
+    return hash;
+  }
+  //@unit meta requires: atoms, deferredVarMetadata, kindHooks, methodKeys, ownMeta, protocolHooks,
+  //@ sharedEngineVar, sharedFormOf, sharedVarMeta
+  // The V8 profile's, but an engine Var's metadata is its own
+  // (`sharedVarMeta`) and an engine form's the engine's (`formMeta`, of an
+  // imported form through its occurrence), as the `metadataValues` store
+  // answered them before light-cljs-1053.
+  function meta(value) {
+    if (value == null) return null;
+    const method = protocolHooks.programMethod?.(value, methodKeys[35], 1);
+    if (method) return method.call(value, value);
+    if (sharedEngineVar(value)) return sharedVarMeta(value);
+    if (__rt.formKind(value) !== null) return __rt.formMeta(sharedFormOf(value)) ?? null;
+    if (ownMeta(value)) {
+      if (value.cljs$lang$kind$$LKEY === 45) { const deferred = deferredVarMetadata.get(value); if (deferred) kindHooks.metaDeferred(value, deferred); }
+      return value.meta$LKEY;
     }
-  }))(sharedStore());
-  //@unit publicCollectionSlots requires: sharedStore
-  const publicCollectionSlots = sharedStore();
-  //@unit vectorRoots requires: sharedStore
-  const vectorRoots = sharedStore();
-  //@unit canonicalVectorRoots requires: sharedStore
-  const canonicalVectorRoots = sharedStore();
-  //@unit metadataValues requires: sharedEngineVar, sharedFormOf, sharedStore, sharedVarMeta
-  // Metadata is the engine's on an engine form (`formMeta`, of an imported
-  // form through its occurrence; a form's is given where the form is
-  // built, `formWithMeta`, so `set` on one throws) and the fallback's on a
-  // runtime-owned value (light-cljs-666).
-  const metadataValues = (store => ({
-    has: value => sharedEngineVar(value) || (__rt.formKind(value) !== null ? __rt.formMeta(sharedFormOf(value)) != null : store.has(value)),
-    get: value => sharedEngineVar(value) ? sharedVarMeta(value) : __rt.formKind(value) !== null ? __rt.formMeta(sharedFormOf(value)) : store.get(value),
-    set(value, metadata) {
-      if (__rt.formKind(value) !== null) throw new TypeError("shared profile: metadataValues.set on an engine form");
-      store.set(value, metadata);
-      return this;
-    },
-    delete: value => __rt.formKind(value) === null && store.delete(value)
-  }))(sharedStore());
+    return atoms.has(value) ? value.meta : null;
+  }
+  //@unit setMeta
+  // The V8 profile's, but a form's metadata is given where the form is
+  // built (`formWithMeta`), so giving an engine form metadata throws.
+  function setMeta(value, metadata) {
+    if (__rt.formKind(value) !== null) throw new TypeError("shared profile: setMeta on an engine form");
+    if ("meta$LKEY" in value) value.meta$LKEY = metadata;
+    else Object.defineProperty(value, "meta$LKEY", {value: metadata, writable: true, configurable: true});
+  }
   //@unit deferredVarMetadata requires: sharedStore
   const deferredVarMetadata = sharedStore();
   //@unit identityHashes
@@ -1444,8 +1448,6 @@
     }
     return __rt.cljCons(head, sharedSeqForm(tail));
   }
-  //@unit subvecSources requires: sharedStore
-  const subvecSources = sharedStore();
   //@unit subvec requires: count, isVector, makeVector, methodKeys, nth, protocolHooks,
   //@ vectorFromArray, vectorStore, vectorView
   // An engine vector of the items: the engine has no view kind, so the
@@ -1678,7 +1680,7 @@
   // An engine lazy seq of `thunk`, whose result crosses into the engine
   // through `sharedSeqForm` when the runtime owns it; one made with no
   // thunk holds the computed `result`, so its cell is realized to it at
-  // once. The engine caches the hash (`constructorHashes`), so `cachedHash`
+  // once. The engine caches the hash (`heldHash`), so `cachedHash`
   // is not kept.
   function LazySeq(metadata, thunk, result, cachedHash) {
     let value;

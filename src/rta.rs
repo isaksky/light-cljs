@@ -1249,7 +1249,7 @@ fn named_loadable_members(program: &Program, live: &[bool]) -> Vec<(&'static str
 ///   values could hash apart in a cache past eight entries, which a hash
 ///   map holds: where it reads a runtime type's public constructor, which
 ///   takes a cached hash (its unit requires `constructorSlots` or
-///   `constructorHashes`), other than to test `instance?`, or names the
+///   `metaFields`), other than to test `instance?`, or names the
 ///   field `__hash` or `_hash`;
 /// - where it replaces `atom`, `get-global-hierarchy`, `MultiFn` or
 ///   `-add-method`, whose calls the conditions above read.
@@ -1294,14 +1294,14 @@ fn multi_tables(program: &Program, live: &[bool], facts: &ProgramFacts) -> Optio
         })
     };
     // A runtime type's public constructor, which takes a cached hash: one
-    // that keeps it in a store, or a vector's or a subvector's, which keep it
-    // in their own field (light-cljs-1026).
+    // that gives it the value's own field (`metaFields`, light-cljs-1053), or
+    // a vector's or a subvector's, which keep it there too (light-cljs-1026).
     let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
     let chosen_hash = |op: CoreFnId| {
         matches!(op, CoreFnId::PersistentVector | CoreFnId::SubvecType)
             || op.operation().runtime_units(manifest).iter().any(|&unit| {
                 let requires = &manifest.unit(unit).requires;
-                requires.contains(&"constructorSlots") || requires.contains(&"constructorHashes")
+                requires.contains(&"constructorSlots") || requires.contains(&"metaFields")
             })
     };
     // An operation the runtime keeps the tables in atoms for itself: one of
