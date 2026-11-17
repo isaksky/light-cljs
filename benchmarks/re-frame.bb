@@ -8,6 +8,7 @@
 ;;   bb benchmarks/re-frame.bb time APP [--runs N]
 ;;   bb benchmarks/re-frame.bb inventory APP
 ;;   bb benchmarks/re-frame.bb breakdown APP
+;;   bb benchmarks/re-frame.bb growth APP [APP ...] --base BIN
 ;;   bb benchmarks/re-frame.bb bundle APP [--compiler shadow|light]
 ;;   bb benchmarks/re-frame.bb browser APP [--compiler C] [--runs N] [--no-build]
 ;;   bb benchmarks/re-frame.bb runtime todomvc [--runs N] [--todos N] [--no-build]
@@ -906,6 +907,260 @@
     (print-runtime app todos runs @results)))
 
 ;; ---------------------------------------------------------------------------
+;; growth: what grew light-cljs's output from --base BIN to --light BIN, by
+;; cause, in gzip -9 bytes of the output as written. Each build has a source
+;; map holding the runtime's text, so each runtime character belongs to its
+;; //@unit. The causes are taken out one after another, from both outputs,
+;; so the rows add up to the whole growth exactly: keyed names lose their key,
+;; kind by kind; protocol and compiler names are shortened; keyword constants
+;; lose their hash; the new units go, group by group, and the dropped ones;
+;; the rest is the units in both whose text changed, the program, and gzip's
+;; interaction. Then what-ifs on --light's output bundled with React, as
+;; `size` measures it: the gzip change of one text transform each.
+
+(defn unit-starts
+  "TreeMap of 0-based line -> //@unit name of a runtime source text."
+  [^String runtime]
+  (let [tm (java.util.TreeMap.)]
+    (.put tm (int -1) "(runtime prelude)")
+    (doseq [[i line] (map-indexed vector (str/split-lines runtime))
+            :let [[_ n] (re-find #"^\s*//@unit (\S+)" line)] :when n]
+      (.put tm (int i) n))
+    tm))
+
+(defn labelled-runs
+  "[[from to label] ...] covering TEXT: \"rt:UNIT\" for runtime text (by the
+  map M's sourcesContent), \"program\" for other mapped text, \"unmapped\"."
+  [^String text m]
+  (let [sources (get m "sources")
+        units (into {} (keep-indexed (fn [i s] (when (str/ends-with? s "js_runtime.js")
+                                                 [i (unit-starts (nth (get m "sourcesContent") i))]))
+                                     sources))
+        lines (str/split text #"\n" -1)
+        groups (str/split (get m "mappings" "") #";" -1)
+        out (java.util.ArrayList.)]
+    (loop [li 0 base 0 src 0 oline 0]
+      (when (< li (count lines))
+        (let [line (nth lines li) n (count line)
+              [cols _ src oline]
+              (reduce (fn [[cols col src oline] seg]
+                        (let [col (+ col (nth seg 0))]
+                          (if (> (count seg) 3)
+                            (let [src (+ src (nth seg 1)) oline (+ oline (nth seg 2))]
+                              [(conj cols [col (if-let [^java.util.TreeMap u (units src)]
+                                                 (str "rt:" (val (.floorEntry u (int oline))))
+                                                 "program")])
+                               col src oline])
+                            [(conj cols [col "unmapped"]) col src oline])))
+                      [[] 0 src oline]
+                      (->> (str/split (or (get groups li) "") #",") (remove str/blank?) (map vlq-decode)))]
+          (.add out [base (+ base (min n (if (seq cols) (ffirst cols) n))) "unmapped"])
+          (doseq [[[col label] end] (map vector cols (concat (map first (rest cols)) [n]))]
+            (.add out [(+ base (min col n)) (+ base (min (max col end) n)) label]))
+          (.add out [(+ base n) (min (count text) (+ base n 1)) "unmapped"])
+          (recur (inc li) (+ base n 1) src oline))))
+    (vec (remove (fn [[a b]] (>= a b)) out))))
+
+(defn runs-without
+  "TEXT without the runs whose runtime unit satisfies DROP?."
+  [^String text runs drop?]
+  (let [sb (StringBuilder.)]
+    (doseq [[a b label] runs :when (not (and (str/starts-with? label "rt:") (drop? (subs label 3))))]
+      (.append sb text (int a) (int b)))
+    (str sb)))
+
+(defn raw-by-label [runs] (reduce (fn [m [a b l]] (update m l (fnil + 0) (- b a))) {} runs))
+
+(defn runtime-key-of [text] (second (re-find #"\(\"\$([0-9a-z]{8})\",\"[0-9a-f]{16}\"\)" text)))
+(defn keyed-re [k] (re-pattern (str "(?<![A-Za-z0-9_$])([A-Za-z0-9_$]+)\\$" k "(?![0-9a-z])")))
+
+(defn keyed-kind
+  "The kind of keyed name UNKEYED is, by docs/value-layout.md section 1."
+  [unkeyed]
+  (cond (str/starts-with? unkeyed "cljs$lang$protocol_mask$") :mask
+        (= unkeyed "cljs$lang$kind$") :kind
+        (str/includes? unkeyed "$arity$") :slot
+        (str/ends-with? unkeyed "$") :marker
+        (not (str/includes? unkeyed "$")) :field
+        :else :other))
+
+(def keyed-kinds [:field :kind :slot :marker :mask :other])
+
+(defn strip-key [text k kinds]
+  (if-not k text (str/replace text (keyed-re k) (fn [[whole unkeyed]] (if (kinds (keyed-kind unkeyed)) unkeyed whole)))))
+
+(def abi-name-re #"cljs\$[A-Za-z0-9_$]*|[A-Za-z_][A-Za-z0-9_]*(?:\$[A-Za-z0-9_]+)+\$arity\$[A-Za-z0-9_]+")
+(defn shorten-abi [text]
+  (let [names (->> (re-seq abi-name-re text) frequencies (sort-by (comp - val)) (map key))
+        short (zipmap names (map #(str "Q" (Integer/toString % 36)) (range)))]
+    (str/replace text abi-name-re #(short %))))
+
+(defn- keyword-call-re [ctor hash?]
+  (re-pattern (str "(?<![A-Za-z0-9_$.])(" (java.util.regex.Pattern/quote ctor) "\\((?:null|\"[^\"]*\"),\"[^\"]*\")"
+                   (if hash? ",-?[0-9]+\\)" "\\)"))))
+(defn keyword-ctor
+  "The name the output builds keyword constants with: the most frequent
+  F(ns, name, hash) call, or nil without one."
+  [text]
+  (->> (re-seq #"(?<![A-Za-z0-9_$.])([A-Za-z_$][A-Za-z0-9_$]*)\((?:null|\"[^\"]*\"),\"[^\"]*\",-?[0-9]+\)" text)
+       (map second) frequencies (sort-by (comp - val)) ffirst))
+(defn drop-keyword-hashes [text]
+  (if-let [c (keyword-ctor text)] (str/replace text (keyword-call-re c true) "$1)") text))
+
+(defn letters [i] (loop [i i acc ""] (let [acc (str (char (+ 97 (mod i 26))) acc)] (if (< i 26) acc (recur (dec (quot i 26)) acc)))))
+(defn rename-keyed
+  "Every keyed name of key K, most frequent first, as a short name: FORM
+  :index-key (a$K), :key-index ($Ka) or :index ($a, without the key)."
+  [text k form]
+  (let [re (keyed-re k)
+        names (->> (re-seq re text) (map first) frequencies (sort-by (comp - val)) (map key))
+        short (zipmap names (map-indexed (fn [i _] (case form :index-key (str (letters i) "$" k)
+                                                          :key-index (str "$" k (letters i)) :index (str "$" (letters i))))
+                                         names))]
+    (str/replace text re #(short (first %)))))
+
+(def core-operations #{"count" "nth" "get" "seq" "first" "rest" "next" "conj" "assoc" "dissoc" "contains" "peek"
+                       "lookup" "equal" "hash" "empty" "find" "disj" "pop" "reduce" "reduceKv"})
+(defn recogniser? [u] (boolean (or (re-find #"^is[A-Z]|Of$|Cells$" u)
+                                   (#{"holdsVector" "vectorStore" "tabledKind" "kinds" "viewType" "ownMeta" "recordCells"} u))))
+
+(defn new-unit-group [u]
+  (let [[_ prefix suffix] (re-find #"^([^.]+)(?:\.(.+))?$" u)]
+    (cond (or (re-find #"^(tree|Tree)" u) (#{"ownTree" "comparatorOf"} u)) "sorted map and set as red-black trees"
+          (or (str/ends-with? u ".slots") (#{"slotFirst" "builtinSlots"} u)) "slot-first wrappers of the operations"
+          (re-find #"Site3?$" u) "call-site entries"
+          (#{"hashStructural" "structuralHash" "classEquiv" "mapEquiv" "vectorHash" "fieldComparisons" "keywordEquiv"
+             "symbolEquiv" "keywordProgramEquiv" "namedHash" "flatPairs" "traversalPairs" "mapPairs"} u) "equality and hashing by fields"
+          (and suffix (#{"type" "kind" "fields"} suffix)) "class declarations: prototype, kind, masks, markers"
+          (and (nil? suffix) (re-find #"^[A-Z]\w*Cell$" u)) "class constructors"
+          (and suffix (or (re-find #"^[A-Z]" prefix) (= "arrayChunk" prefix))) "protocol methods of the classes"
+          (or (re-find #"Copy$" u) (#{"cellFields" "prototypeCopy"} u)) "copies with another prototype"
+          (recogniser? u) "recognisers by keyed kind"
+          (#{"extendedMethod" "extendedDeclared" "protocolMethodInfo" "protocolHooks.programMethod"} u) "extend-type over slots"
+          :else "other: map, transient and seq helpers, runtimeKey")))
+
+(defn dropped-unit-group [u]
+  (cond (re-find #"\.(branches|maps|vectors|sets|queues|entries|cells|views|protocol)$" u) "kind-table branches of the operations"
+        (re-find #"^(tree|Tree)" u) "sorted map's and set's old constructors"
+        (#{"payloads" "privateStore" "kindedStore" "TypeBrand" "trieBrand" "PersistentHashMapValue.brand" "putMember.brand"
+           "recordTypes.brands"} u) "brand stores"
+        (re-find #"^(public|protocolHooks\.public|behindProtocol)" u) "protocol wrappers"
+        :else "other"))
+
+(defn growth-build
+  "BINARY's advanced build of APP's port with a source map holding its
+  sources: {:text :runs}, the text without its sourceMappingURL comment."
+  [app binary tag]
+  (let [js (light-mapped app binary (port-dir app) (fs/path (example app) "out/growth" (str tag ".js"))
+                         "--elide-asserts" "--source-map-include-sources")
+        m (json/parse-string (slurp (fs/file (str js ".map"))))
+        text (str/replace (slurp (fs/file js)) #"\n?//# sourceMappingURL=\S+\s*$" "\n")]
+    {:text text :runs (labelled-runs text m)}))
+
+(defn growth-chain
+  "Rows {:cause :gzip [:raw :units]} whose :gzip add up to gzip(NOW) - gzip(BASE)."
+  [base now]
+  (let [k (runtime-key-of (:text now))
+        units (fn [b] (set (keep #(when (str/starts-with? % "rt:") (subs % 3)) (keys (raw-by-label (:runs b))))))
+        raw-b (raw-by-label (:runs base)) raw-n (raw-by-label (:runs now))
+        ub (units base) un (units now)
+        added (group-by new-unit-group (remove ub un))
+        dropped (group-by dropped-unit-group (remove un ub))
+        names (fn [t] (drop-keyword-hashes (shorten-abi (strip-key t k (set keyed-kinds)))))
+        steps (concat (for [i (range (count keyed-kinds))]
+                        [(str "keyed names: the key on " (name (keyed-kinds i)) " names")
+                         #(strip-key % k (set (take (inc i) keyed-kinds)))])
+                      [["protocol and compiler names (cljs$..., ...$arity$N) written out" #(shorten-abi (strip-key % k (set keyed-kinds)))]
+                       ["keyword constants' hashes" names]])
+        raw-of (fn [raw us] (reduce + (map #(raw (str "rt:" %) 0) us)))
+        by-size (fn [raw groups] (sort-by #(- (raw-of raw (groups %))) (keys groups)))
+        [rows prev-n prev-b]
+        (reduce (fn [[rows pn pb] [cause f]]
+                  (let [gn (gzip-size (f (:text now))) gb (gzip-size (f (:text base)))]
+                    [(conj rows {:cause cause :gzip (- (- pn gn) (- pb gb))}) gn gb]))
+                [[] (gzip-size (:text now)) (gzip-size (:text base))] steps)
+        [rows prev-n _]
+        (reduce (fn [[rows pn gone] g]
+                  (let [gone (into gone (added g)) gn (gzip-size (names (runs-without (:text now) (:runs now) gone)))]
+                    [(conj rows {:cause (str "new units: " g) :units (count (added g)) :raw (raw-of raw-n (added g)) :gzip (- pn gn)})
+                     gn gone]))
+                [rows prev-n #{}] (by-size raw-n added))
+        [rows prev-b _]
+        (reduce (fn [[rows pb gone] g]
+                  (let [gone (into gone (dropped g)) gb (gzip-size (names (runs-without (:text base) (:runs base) gone)))]
+                    [(conj rows {:cause (str "dropped units: " g) :units (count (dropped g)) :raw (- (raw-of raw-b (dropped g))) :gzip (- gb pb)})
+                     gb gone]))
+                [rows prev-b #{}] (by-size raw-b dropped))]
+    (conj rows {:cause "the rest: units in both whose text changed, the program, gzip's interaction" :gzip (- prev-n prev-b)})))
+
+(defn growth-what-ifs
+  "gzip of NOW bundled with React after each transform, against NOW's bundle."
+  [app now]
+  (let [text (:text now) k (runtime-key-of text)
+        dir (fs/path (example app) "out/growth")
+        bundled (fn [tag t] (let [in (fs/path dir (str tag "-in.js")) out (fs/path dir (str tag "-bundle.js"))]
+                              (spit (fs/file in) t) (bundle app in out) (gzip-size (slurp (fs/file out)))))
+        whole (bundled "now" text)
+        no-branch (->> (re-seq #"if\([^;{}]{0,160}\)return ([A-Za-z_$][A-Za-z0-9_$]*);" text) (map second)
+                       (remove #{"null" "undefined" "false" "true"}) frequencies (sort-by (comp - val)) ffirst)
+        guards (re-pattern (str "if\\([^;{}]{0,160}\\)return " (java.util.regex.Pattern/quote no-branch) ";"))
+        declarations #"let (?:[A-Za-z_$][A-Za-z0-9_$]*,){50,}[A-Za-z_$][A-Za-z0-9_$]*;"
+        rows [["keyed names as a$KEY (a short index, then the key)" (rename-keyed text k :index-key)]
+              ["keyed names as $KEYa (the key, then a short index)" (rename-keyed text k :key-index)]
+              ["keyed names as $a, without the key (a lower bound only)" (rename-keyed text k :index)]
+              ["keyword constants without their hash" (drop-keyword-hashes text)]
+              ["slot guards that answer noBranch removed" (str/replace text guards "")]
+              ;; The rows below leave names undeclared or whole units out, which
+              ;; changes what esbuild renames, so they are measured on the output as written.
+              ["no up-front declaration list, let a,b,... (output as written)" (str/replace-first text declarations "") :output]
+              ["no runtime binding list (the runtime's return [...] and its destructuring; output as written)"
+               (-> text (str/replace #"return\[[A-Za-z0-9_$,]{200,}\]" "return 0")
+                   (str/replace #"\[[A-Za-z0-9_$,]{200,}\]=(?=\(\(\)=>\{\"use strict\")" "x="))
+               :output]
+              ["slot-first wrappers, operation bodies, recognisers and slot guards removed (an upper bound; output as written)"
+               (str/replace (runs-without text (:runs now) #(or (core-operations %) (str/ends-with? % ".slots") (recogniser? %))) guards "")
+               :output]]
+        output-gzip (gzip-size text)]
+    {:whole whole
+     :keywords (if-let [c (keyword-ctor text)] (count (re-seq (keyword-call-re c true) text)) 0)
+     :keyed (->> (re-seq (keyed-re k) text) (map second) (group-by keyed-kind)
+                 (map (fn [[kind xs]] [kind {:uses (count xs) :names (count (distinct xs)) :raw (reduce + (map #(+ (count %) 9) xs))}]))
+                 (into {}))
+     :rows (vec (map-indexed (fn [i [label t output?]]
+                               [label (if output? (- (gzip-size t) output-gzip) (- (bundled (str "what-if-" i) t) whole))])
+                             rows))}))
+
+(defn print-growth [results]
+  (let [apps (map :app results)
+        row (fn [label vals] (println (str "| " label " | " (str/join " | " vals) " |")))
+        fmt #(format "%+,d" %)]
+    (println "\n### gzip -9 of light-cljs's output as written, by cause\n")
+    (row "Cause" apps) (row "---" (repeat (count apps) "---:"))
+    (row "**Whole output**" (map #(format "%,d to %,d (%+,d)" (:base-gzip %) (:now-gzip %) (- (:now-gzip %) (:base-gzip %))) results))
+    (doseq [cause (distinct (mapcat #(map :cause (:chain %)) results))]
+      (row cause (for [r results :let [x (first (filter #(= cause (:cause %)) (:chain r)))]]
+                   (if x (str (fmt (:gzip x)) (when (:units x) (format " (%d units, %s raw)" (:units x) (fmt (:raw x))))) ""))))
+    (println "\n### What-ifs on the shipped bundle (with React, esbuild --minify), gzip -9\n")
+    (row "Transform" apps) (row "---" (repeat (count apps) "---:"))
+    (row "**Whole bundle**" (map #(format "%,d" (get-in % [:what-ifs :whole])) results))
+    (doseq [[i [label _]] (map-indexed vector (:rows (:what-ifs (first results))))]
+      (row label (map #(fmt (second (get-in % [:what-ifs :rows i]))) results)))
+    (println)
+    (doseq [{:keys [app what-ifs]} results]
+      (println (str app ": " (:keywords what-ifs) " keyword constants; keyed names "
+                    (str/join ", " (for [[kind {:keys [uses names raw]}] (sort-by key (:keyed what-ifs))]
+                                     (format "%s %,d uses of %d names (%,d characters)" (name kind) uses names raw))))))))
+
+(defn growth [app base-binary binary]
+  (let [base (growth-build app base-binary "base") now (growth-build app binary "now")
+        chain (growth-chain base now)
+        r {:app app :base-gzip (gzip-size (:text base)) :now-gzip (gzip-size (:text now))
+           :chain chain :what-ifs (growth-what-ifs app now)}]
+    (when-not (= (reduce + (map :gzip chain)) (- (:now-gzip r) (:base-gzip r)))
+      (throw (ex-info "the causes do not add up to the growth" {:app app})))
+    r))
+
+;; ---------------------------------------------------------------------------
 ;; Run as a script only: benchmarks/re-frame-kit-test.bb loads this file.
 
 (when (= (fs/absolutize *file*) (some-> (System/getProperty "babashka.file") fs/absolutize))
@@ -919,10 +1174,11 @@
       "inventory" (doseq [app apps] (inventory app (light-binary args)))
       "origins" (doseq [app apps] (print-origins app (origins app (light-binary args))))
       "breakdown" (doseq [app apps] (print-breakdown (breakdown app (light-binary args))))
+      "growth" (print-growth (mapv #(growth % (str (fs/absolutize (option args "--base" nil))) (light-binary args)) apps))
       "bundle" (doseq [app apps
                        c (if-let [c (option args "--compiler" nil)] [(keyword c)] compilers)]
                  (println (str (fs/relativize repo (:served (bundle-browser app c (light-binary args)))))))
       "browser" (doseq [app apps] (browser app (light-binary args) args))
       "runtime" (doseq [app apps] (runtime app (light-binary args) args))
-      (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... [--light-only] | time APP... [--runs N] | inventory APP... | breakdown APP... | bundle APP... [--compiler C] | browser APP... [--compiler C] [--runs N] [--no-build] | runtime todomvc [--runs N] [--todos N] [--no-build]  [--light BIN] [--porter DIR]")
+      (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... [--light-only] | time APP... [--runs N] | inventory APP... | breakdown APP... | growth APP... --base BIN | bundle APP... [--compiler C] | browser APP... [--compiler C] [--runs N] [--no-build] | runtime todomvc [--runs N] [--todos N] [--no-build]  [--light BIN] [--porter DIR]")
           (System/exit 1)))))

@@ -19,6 +19,7 @@ bb benchmarks/re-frame.bb time todomvc simple flow --runs 5 --light BIN
 bb benchmarks/re-frame.bb inventory todomvc simple flow --light BIN
 bb benchmarks/re-frame.bb breakdown simple todomvc --light BIN
 bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN   # light-cljs rows only
+bb benchmarks/re-frame.bb growth simple todomvc flow --base BIN --light BIN   # what grew, by cause
 ```
 
 **Run `setup` before `port`, in every fresh checkout or worktree.** The porter compiles the example with shadow-cljs first, which needs the example's `node_modules`; without them shadow-cljs stops at the first npm require (`The required JS dependency "react" is not available`). `port` now says so and names `setup`. The kit writes `node_modules`, the shadow-cljs pin and every build's `out/` into `research/re-frame/examples/APP`, so a worktree works on its own copy of `research/re-frame` (20 MB before setup) and never builds in the shared one. The ports it writes, `research/APP-port`, do not depend on the light-cljs binary (it is only used for the porter's compile check), so one port per app serves every binary measured with it.
@@ -1179,3 +1180,166 @@ Every row of every binary is in the raw results.
 
 - **`port` names `setup` when the example has no `node_modules`.** It failed before with only "port failed". light-cljs-1042 found this in a worktree without `setup`. It was a missing step, not a porter bug: shadow-cljs could not find `"react"`. A failed port now also prints the porter's cause. See the note under the commands at the top. `bb benchmarks/re-frame-kit-test.bb` tests both failure paths, with the example and the porter's process stubbed, so it builds nothing.
 - **`size --light-only` skips the two shadow-cljs builds.** Those builds do not depend on the light-cljs binary. A run of all three apps takes about 11 seconds instead of 1 minute 45, which makes a run over many binaries practical. The light-cljs rows are the same as a full run's.
+
+## 2026-11-16: what grew the bundles since f533efb1 (light-cljs-1047)
+
+The previous section measured the growth. From `f533efb1` to master `685f86dd`, each whole bundle grew after gzip:
+- simple: 6,616 bytes;
+- TodoMVC: 9,743;
+- flow: 17,916.
+
+The user wants the size back, without giving up the speed the group gained ("yea i need a size recovery", 2026-11-16). This section attributes the growth by cause. It also lists the recovery pellets filed for it, each with its expected saving.
+
+```sh
+bb benchmarks/re-frame.bb growth simple todomvc flow \
+  --base research/shadow-credibility/bin/light-cljs-f533efb1 --light research/shadow-credibility/bin/light-cljs-685f86dd
+```
+
+### Setup
+
+- **Binaries:** `light-cljs-f533efb1`, the group's start, and `light-cljs-685f86dd`, master's compiler when this was measured (master `cf3e3539` changed only benchmarks). Both are V8 builds.
+- **Ports:** made with porter `shadow-port-tool-983` and the `685f86dd` binary, one port per app, as in the previous section.
+  - simple's and TodoMVC's outputs have exactly the sizes measured there.
+  - flow's port spells some generated names differently each time it is made. With this port, flow's bundle is 346,580 bytes after gzip, against 346,561 in the previous section. Its output at `f533efb1` is 276,460, against 276,463.
+- **Machine:** the load average was 10 to 11, unreserved. Sizes do not depend on load.
+
+**Method.**
+- **Builds:** each binary builds each port at `:advanced`, with asserts elided as `release` does. The result is one ES module, with a source map that holds the sources. The output is the release output plus the map comment, which is removed before measuring.
+- **Attribution:** the map gives every character of runtime text its line in that binary's `js_runtime.js`, and so its `//@unit`. Units only the newer output has are new. Units only the older one has are dropped.
+- **The chain:** the causes are taken out one after another, from both outputs. Each row is how much more the cause costs in the newer output after gzip -9. Because every step is applied to both sides, the rows add up exactly to the growth of the output as written. The command checks this. The steps, in order:
+  1. keyed names lose their key, kind by kind;
+  2. the long protocol and compiler names are shortened to two or three characters;
+  3. keyword constants lose their hash argument;
+  4. the new units are removed group by group, then the dropped ones;
+  5. the rest is what remains: units in both whose text changed, the program, and gzip's interaction between the parts.
+- **What is compressed:** light-cljs's output alone, as written. It grew by 6,764, 9,904 and 17,864 bytes, within 1% of the whole bundles' growth.
+
+### The growth by cause
+
+These are gzip -9 bytes of light-cljs's output as written: the cost in `685f86dd`'s output less the cost in `f533efb1`'s. In brackets, the number of units, then their raw bytes.
+
+| Cause | simple | TodoMVC | flow |
+|---|---:|---:|---:|
+| **Whole output, `f533efb1` to `685f86dd`** | **62,150 to 68,914 (+6,764)** | **89,731 to 99,635 (+9,904)** | **276,460 to 294,324 (+17,864)** |
+| Keyed names: the key on field names (`cnt$<key>`) | +605 | +631 | +713 |
+| Keyed names: the key on the kind name | +28 | +17 | +18 |
+| Keyed names: the key on slot names | +81 | +102 | +155 |
+| Keyed names: the key on markers | +9 | +18 | +23 |
+| Keyed names: the key on masks | +13 | +25 | +22 |
+| Protocol and compiler names written out (`cljs$core$ICounted$_count$arity$1`, masks, markers) | +574 | +558 | +539 |
+| Keyword constants' hashes (light-cljs-1011) | +1,043 | +1,524 | +9,195 |
+| New units: protocol methods of the classes | +1,630 (124 units, 17,304 raw) | +1,685 (128, 17,563) | +1,819 (138, 18,375) |
+| New units: map, transient and seq helpers on the fields, `runtimeKey` | +1,732 (38, 7,253) | +1,649 (38, 7,260) | +1,882 (41, 7,802) |
+| New units: equality and hashing by fields (light-cljs-1014) | +987 (13, 3,918) | +1,008 (13, 3,917) | +1,042 (13, 3,918) |
+| New units: class declarations: prototype, kind, masks, markers | +585 (31, 2,718) | +673 (36, 3,196) | +734 (41, 3,377) |
+| New units: class constructors (`VectorCell` and the others) | +537 (34, 3,778) | +583 (38, 4,193) | +730 (43, 4,801) |
+| New units: recognisers by keyed kind (`isHashMap`, `viewOf`, ...) | +512 (41, 3,290) | +513 (41, 3,290) | +556 (41, 3,292) |
+| New units: slot-first wrappers of the operations (`count.slots`, ...) | +431 (16, 4,224) | +425 (16, 4,230) | +463 (16, 4,230) |
+| New units: copies with another prototype (`specify!`, metadata) | +423 (5, 1,979) | +423 (5, 1,979) | +452 (5, 1,979) |
+| New units: `extend-type` over slots (`extendedMethod`, ...) | +309 (4, 1,032) | +303 (4, 1,032) | +306 (4, 1,032) |
+| New units: call-site entries (light-cljs-1016) | +288 (14, 2,203) | +213 (10, 1,609) | none |
+| New units: sorted map and set as red-black trees (light-cljs-1035) | +42 (2, 398) | +1,844 (48, 9,634) | +1,937 (48, 9,634) |
+| Dropped units: kind-table branches of the operations | -1,115 (54, -5,351) | -1,093 (54, -5,365) | -1,162 (54, -5,366) |
+| Dropped units: brand stores (`payloads`, `trieBrand`, ...) | -527 (7, -1,585) | -555 (7, -1,585) | -571 (8, -1,638) |
+| Dropped units: protocol wrappers (`publicMethod`, ...) | -444 (7, -1,456) | -440 (6, -1,390) | -455 (6, -1,390) |
+| Dropped units: the sorted map's and set's old constructors | -557 (18, -1,883) | -86 (4, -281) | -86 (4, -281) |
+| Dropped units: other (`compareKeys`, `VectorView`, `ChunkedCell`, ...) | -1,138 (34, -3,747) | -779 (31, -2,704) | -942 (33, -2,924) |
+| The rest: units in both whose text changed, the program, interaction | +716 | +663 | +494 |
+
+**By cause, summed:**
+
+| | simple | TodoMVC | flow |
+|---|---:|---:|---:|
+| the key on keyed names | +736 | +793 | +931 |
+| protocol and compiler names written out | +574 | +558 | +539 |
+| keyword constants' hashes | +1,043 | +1,524 | +9,195 |
+| new units | +7,476 | +9,319 | +9,921 |
+| dropped units | -3,781 | -2,953 | -3,216 |
+| the rest | +716 | +663 | +494 |
+
+**The size ratchet's fixtures** at `:advanced` (`--compile --optimize advanced --text`), in bytes:
+
+| Fixture | raw at `f533efb1` | raw at `685f86dd` | change | gzip at `f533efb1` | gzip at `685f86dd` | change |
+|---|---:|---:|---:|---:|---:|---:|
+| vector-printed | 11,366 | 16,019 | +4,653 | 4,397 | 5,352 | +955 |
+| map-printed | 14,314 | 23,955 | +9,641 | 5,268 | 7,092 | +1,824 |
+| seq-pipeline | 29,787 | 44,510 | +14,723 | 9,147 | 10,950 | +1,803 |
+| keyword-case | 3,780 | 5,697 | +1,917 | 1,518 | 1,985 | +467 |
+| record-protocol | 5,234 | 5,832 | +598 | 2,240 | 2,485 | +245 |
+
+The runtime slice's floor rose with the classes: a program that prints one map grew 35% after gzip. The program of its own record and protocol grew least.
+
+### What-ifs on master's output
+
+Each transform is applied to `685f86dd`'s output alone. Most rows give the gzip change of the whole bundle with React, measured as `size` measures it. The last three rows are measured on light-cljs's output as written instead, because they leave names undeclared or whole units out, which changes what esbuild renames.
+
+| Transform | simple | TodoMVC | flow |
+|---|---:|---:|---:|
+| **Whole bundle, gzip -9** | **115,247** | **147,758** | **346,580** |
+| Keyed names as `a$<key>`: a short index, then the key | -909 | -1,027 | -1,308 |
+| Keyed names as `$<key>a`: the key, then a short index | -1,018 | -1,188 | -1,462 |
+| Keyed names as `$a`, without the key (a lower bound only: the design needs the key) | -1,688 | -1,852 | -2,262 |
+| Keyword constants without their hash | -1,070 | -1,497 | -9,356 |
+| Slot guards that answer `noBranch` removed | -250 | -213 | -247 |
+| No up-front declaration list, `let a,b,...;` (output as written) | -728 | -1,268 | -4,940 |
+| No runtime binding list: the runtime's `return[...]` and its destructuring (output as written) | -753 | -1,167 | -1,999 |
+| Slot-first wrappers, the 21 operation bodies, the recognisers and the slot guards removed: an upper bound (output as written) | -5,432 | -5,789 | -5,897 |
+
+- **Counts behind them:**
+  - simple has 180 keyword constants, TodoMVC 280 and flow 1,214.
+  - There are 1,372 keyed name uses in simple, 1,614 in TodoMVC and 2,117 in flow. Field names are 1,039, 1,267 and 1,357 of them, on about 62 names.
+  - The slot guards number 58 in simple and 62 in the others.
+- **Two more measurements outside the table**, on the output as written:
+  - **The sorted set in TodoMVC:** cljs.spec's `(extend-protocol Specize ... PersistentTreeSet ...)` makes the slice keep the set's 26 units: 4,470 raw bytes, 1,087 after gzip. TodoMVC never builds a sorted set, and at `f533efb1` the same extension kept no unit. flow keeps those units anyway, because it builds sorted sets.
+  - **The side stores:** these are `publicCollectionSlots`, `constructorHashes`, `metadataValues`, `vectorRoots`, `canonicalVectorRoots`, `subvecSources`, `hashRoots` and `hashTraversals`. The runtime lines that read them outside the operations ship 3,825, 3,895 and 4,099 characters, with a gzip marginal of 973, 904 and 966 bytes.
+
+### Findings
+
+- **New code is most of the growth.** The class layout adds 7.5 to 9.9 KB after gzip of new units, and drops 3.0 to 3.8 KB of old ones.
+  - **The speed's own code:**
+    - the classes' protocol methods, 1.6 to 1.8 KB;
+    - equality and hashing by fields, 1.0 KB;
+    - the class constructors and declarations, 1.1 to 1.5 KB;
+    - the call-site entries, 0.2 to 0.3 KB.
+  - **Migration leftovers next to the new paths:**
+    - the slot-first wrappers, 0.4 KB;
+    - the recognisers, 0.5 KB;
+    - the `noBranch` guards inside the slots;
+    - the old operation bodies, which still branch on the runtime's own classes;
+    - the side stores, which the design says the fields replace.
+- **Keyword hashes are flow's largest cause:** 9.2 KB of its 17.9 KB. They cost 1.0 to 1.5 KB in the other two apps.
+- **The keyed names cost 1.3 to 1.5 KB.**
+  - The key itself is 0.7 to 0.9 KB. Most of it is on field names, which every field read spells.
+  - The long protocol names written at every class and use are another 0.5 to 0.6 KB.
+- **TodoMVC's red-black tree costs 1.8 KB.** TodoMVC's sorted map needs part of it. The sorted set's own 26 units are there only because cljs.spec extends the set: removing them alone saves 1,087 bytes.
+- **Not caused by the group, but recoverable:** the declaration list and the runtime binding list together cost 1.5 to 6.9 KB after gzip, the most in flow.
+
+### Recovery pellets
+
+These are in the output-speed-parity group, before light-cljs-1049, which checks the sizes after them. The savings are of each whole bundle after gzip -9. "Measured" means the what-if above. An estimate says what it starts from.
+
+| Pellet | What it does | simple | TodoMVC | flow | Basis |
+|---|---|---:|---:|---:|---|
+| light-cljs-1048 (refined) | short keyed names at `:advanced`, key kept | 900 to 1,020 | 1,020 to 1,190 | 1,300 to 1,460 | measured, the two forms |
+| light-cljs-1050 | keyword hashes built by the runtime, not written | 1,070 | 1,497 | 9,356 | measured, less the runtime's hashing code |
+| light-cljs-1051 | each global and runtime root declared where it is defined | 1,000 to 1,450 | 2,000 to 2,400 | 5,500 to 6,900 | upper bounds measured, less the declarations the definitions gain |
+| light-cljs-1052 | an extended class nothing builds keeps only its prototype | 0 | 1,087 | 0 | measured on the output |
+| light-cljs-1053 | the side stores moved into the classes' fields | 600 to 900 | 600 to 900 | 600 to 900 | the reads' measured 904 to 973, less the field reads that replace them |
+| light-cljs-1054 | core operations shaped as upstream's: slot, then host values | 2,500 to 4,000 | 2,500 to 4,000 | 2,500 to 4,000 | upper bound 5,432 to 5,897, less upstream-shaped bodies of about 1,500 to 2,000 |
+| **Sum** | | **6,070 to 8,440** | **8,704 to 11,074** | **19,256 to 22,616** | |
+| **Growth since `f533efb1`** | | **6,616** | **9,743** | **17,916** | the previous section |
+
+- **Do the savings cover the growth?**
+  - flow: yes, even at the low end of every range.
+  - simple: yes, from about a quarter of the way up its range.
+  - TodoMVC: yes, from a little under half of the way up.
+  - For both, it depends mostly on how small light-cljs-1054's upstream-shaped operations come out.
+- **The savings are not exactly additive.** gzip's savings interact, and some text is counted twice: light-cljs-1054's guards and operation bodies spell keyed names that light-cljs-1048 shortens. light-cljs-1049 measures what the pellets give together.
+- **Not filed:**
+  - **The class layout's own code:** the protocol methods, equality and hashing by fields, the constructors and declarations, the call-site entries, `extend-type` over slots, and the red-black tree where an app builds sorted collections. This code carries the speed the group gained. light-cljs-1048 and light-cljs-1054 shrink its names and guards.
+  - **The copies with another prototype**, 0.4 KB, which `specify!` and metadata on runtime values need.
+
+### Kit change made for this
+
+- **`growth APP... --base BIN --light BIN`** prints the two tables above: the chain and the what-ifs. It throws when the chain's rows do not add up to the growth.
+- `bb benchmarks/re-frame-kit-test.bb` tests the attribution and the transforms on small hand-made outputs.
