@@ -1382,7 +1382,12 @@ host-value answers. What two runtimes on one page share and do not share:
   which reads the event stream of the dev server's mount that served it
   (`/<id>/events`) and keeps its own REPL sessions, and every unit, step
   and REPL form its build's session writes names its key, so it reaches
-  that build's runtime alone. The unkeyed `__lightDevLoaded`
+  that build's runtime alone: in
+  `dev_server::two_dev_builds_in_one_realm_keep_their_hooks_and_repl_state`
+  two clients of `compile app worker` run in one Node realm, each connected
+  to its own mount, a step of each runs its own build's after-load hook of
+  the same name, and each build's REPL session keeps its own references by
+  number and history. The unkeyed `__lightDevLoaded`
   and `__lightDev` are the dev build that loaded last's. Two copies of one
   dev build (the same build of light-cljs.edn and entry, loaded twice)
   share its key, as two copies of release output do, and with it its dev

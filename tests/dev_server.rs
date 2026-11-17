@@ -1850,6 +1850,193 @@ fn two_mounts_serve_their_own_builds_steps_and_repl() {
     }
 }
 
+/// The dev clients of two dev builds in one realm, a page's in Node: for
+/// each base URL after the address, it fetches the build's `runtime.js` and
+/// `client.js` and runs them as a page's scripts would, so each client
+/// connects to the `events` beside its own URL. Its console lines go to
+/// stdout.
+const REALM_CLIENTS: &str = r#"
+const [address, ...bases] = process.argv.slice(1);
+for (const base of bases) {
+  for (const file of ["runtime.js", "client.js"]) {
+    const url = `http://${address}${base}${file}`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(url + ": " + response.status);
+    globalThis.document = { currentScript: { src: url } };
+    (0, eval)(await response.text());
+  }
+}
+"#;
+
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
+/// Two dev builds of one entry, `compile app worker` of examples/dev, with
+/// two keys (docs/value-layout.md, section 1, "Two runtimes on one page";
+/// light-cljs-1045), whose clients run in one realm, each connected to its
+/// own mount: a step of each runs its own build's after-load hook of the
+/// same name, and each build's REPL session runs in its own runtime, with
+/// its own references by number and history.
+#[test]
+fn two_dev_builds_in_one_realm_keep_their_hooks_and_repl_state() {
+    let dir = TempDir::new("dev-server-one-realm");
+    copy_example(&dir.join("src"));
+    let build = |dev: &str| {
+        format!(
+            "{{:target :esm :output-dir \"out/{dev}-release\" \
+             :modules {{:main {{:entries [app.main]}}}} \
+             :build-options {{:cache-level :off}} :dev {{:output-dir \"{dev}\"}}}}"
+        )
+    };
+    fs::write(
+        dir.join("light-cljs.edn"),
+        format!(
+            "{{:source-paths [\"src\"] :builds {{:app {} :worker {}}}}}",
+            build("app"),
+            build("worker")
+        ),
+    )
+    .unwrap();
+    let compiled = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args(["compile", "app", "worker"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(compiled.status.success(), "{compiled:?}");
+    let keys = ["app", "worker"].map(|name| light_cljs::dev_build::dev_key(Some(name), "app.main"));
+    assert_ne!(keys[0].key(), keys[1].key());
+    let mount = |name: &str| Mount {
+        name: name.into(),
+        out_dir: dir.join(name),
+        build: Build::default(),
+    };
+    let server = DevServer::start_mounts(
+        "127.0.0.1",
+        0,
+        vec![mount("app"), mount("worker")],
+        &[dir.join("src")],
+    )
+    .unwrap();
+    let address = server.address().to_string();
+    let mounts = server.mounts();
+    let (app, worker) = (&mounts[0], &mounts[1]);
+    let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .args(["--input-type=module", "-e", REALM_CLIENTS])
+        .args([&address, "/app/", "/worker/"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("the dev server tests require Node");
+    let realm = PageClient {
+        lines: lines(child.stdout.take().unwrap()),
+        child,
+    };
+    for _ in 0..2 {
+        realm.until("light-cljs: connected to ");
+    }
+    assert_eq!((app.runtimes(), worker.runtimes()), (vec![1], vec![2]));
+
+    // A step that defines `app.hooks/after`, which logs `which`, in the
+    // build whose key is `key`, and runs the build's hook of that name.
+    let hook_step = |key: &light_cljs::runtime_key::RuntimeKey, which: &str| {
+        let key = key.key();
+        let hook = format!("() => console.log(\"{which} hook ran\")");
+        let js = format!(
+            "globalThis.__lightDev${key}.define(\"app.hooks\", [], (rt) => {{\n  \
+             globalThis.__lightApplicationRoots${key}[\"app.hooks/after\"] = {hook};\n  \
+             return null;\n}});\n"
+        );
+        let unit = LoadUnit {
+            namespace: "app.hooks".into(),
+            file: "app.hooks.js".into(),
+            js: js.into(),
+            requires: Vec::new(),
+        };
+        let after = light_cljs::dev_build::DevHook {
+            name: "app.hooks/after".into(),
+            asynchronous: false,
+        };
+        Step {
+            load: vec![unit],
+            build: Some(Build {
+                after_load: vec![after],
+                ..Build::default()
+            }),
+            ..Step::default()
+        }
+    };
+    worker.publish(hook_step(&keys[1], "worker"));
+    realm.until("worker hook ran");
+    realm.until("light-cljs: reloaded app.hooks in ");
+    // The worker's client loaded last, so it is `globalThis.__lightDev`:
+    // the app's step still runs the app's hook.
+    app.publish(hook_step(&keys[0], "app"));
+    let (before, _) = realm.until("app hook ran");
+    assert!(before.is_empty(), "{before:#?}");
+    realm.until("light-cljs: reloaded app.hooks in ");
+
+    // Each build's REPL session compiles with its build's key and runs in
+    // its build's runtime.
+    let receivers = [app.serve_repl("cljs.user"), worker.serve_repl("cljs.user")];
+    let compilers = keys.each_ref().map(|key| {
+        let compiler = DevSession::new(&EvalOptions::default()).unwrap();
+        light_cljs::dev_repl::declare(&compiler).unwrap();
+        compiler.set_page_key(key.clone());
+        compiler
+    });
+    let sessions = ["/app/repl", "/worker/repl"].map(|path| {
+        let (status, opened) = post_json(&address, path, "{\"op\":\"open\"}");
+        assert_eq!(status, "HTTP/1.1 200 OK", "{opened}");
+        let opened = Json::parse(&opened).unwrap();
+        opened
+            .get("session")
+            .and_then(Json::as_str)
+            .unwrap()
+            .to_owned()
+    });
+    let eval = |at: usize, code: &str| -> String {
+        let path = ["/app/repl", "/worker/repl"][at];
+        let body = format!(
+            "{{\"op\":\"eval\",\"session\":\"{}\",\"code\":\"{code}\"}}",
+            sessions[at]
+        );
+        let (done, result) = channel();
+        let posting = {
+            let address = address.clone();
+            std::thread::spawn(move || done.send(post_json(&address, path, &body)))
+        };
+        let begun = std::time::Instant::now();
+        let (status, body) = loop {
+            if let Ok(answer) = result.try_recv() {
+                break answer;
+            }
+            assert!(begun.elapsed() < TIMEOUT, "no answer to {code}");
+            if let Ok(request) = receivers[at].recv_timeout(Duration::from_millis(10)) {
+                request.answer(&compilers[at]);
+            }
+        };
+        posting.join().unwrap().unwrap();
+        assert_eq!(status, "HTTP/1.1 200 OK", "{body}");
+        let body = Json::parse(&body).unwrap();
+        let result = &body.get("results").unwrap();
+        let Json::Array(results) = result else {
+            panic!("{body:?}")
+        };
+        results[0]
+            .get("value")
+            .and_then(Json::as_str)
+            .unwrap_or_else(|| panic!("{body:?}"))
+            .to_owned()
+    };
+    // An atom is no finite data: each runtime gives its own reference 1.
+    eval(0, "(atom :app)");
+    eval(1, "(atom :worker)");
+    assert_eq!(eval(0, "@(light.dev/ref 1)"), ":app");
+    assert_eq!(eval(1, "@(light.dev/ref 1)"), ":worker");
+    assert_eq!(eval(0, "[*1 (keyword? *1)]"), "[:app true]");
+    assert_eq!(eval(1, "[*1 (keyword? *1)]"), "[:worker true]");
+}
+
 /// A mount's name is one URL path segment, and two mounts are not named
 /// alike; a server serves at least one.
 #[test]
