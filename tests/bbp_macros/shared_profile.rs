@@ -1924,6 +1924,86 @@ fn shared_profile_sorted_map_find_members_publish() {
     });
 }
 
+/// A sorted set is the V8 profile's `TreeSetCell` over a sorted map
+/// (light-cljs-1038), which the profile's `sets` tells by `treeSetOf`:
+/// `sorted-set`, `sorted-set-by` and the public constructor of a sorted map
+/// keep that map as their `.-tree-map`, and `set?`, lookup, the seq of its
+/// keys in order, `rseq`, the updates, `empty`, `with-meta` and `clone`
+/// read it (light-cljs-1039).
+#[test]
+fn shared_profile_tree_sets_keep_class_fields_and_operations() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); {}",
+            r#"
+            const core = rt.core;
+            const check = (ok, label) => { if (!ok) throw new Error(label); };
+            const metadata = core.hashMap('meta', true), other = core.hashMap('other', 1);
+            const ascending = core.sortedSet(3, 1, 2);
+            const cmp = (a, b) => core.nth(b, 0) - core.nth(a, 0);
+            const retained = core.vector(2, 'retained'), query = core.vector(2, 'query');
+            const descending = core.sortedSetBy(cmp, core.vector(1), retained, core.vector(3), query);
+            const map = core.sortedMap(2, null, 1, null);
+            const supplied = new core.PersistentTreeSet(metadata, map, 77);
+            for (const [set, label] of [[ascending, 'sorted-set'], [descending, 'sorted-set-by'], [supplied, 'constructor']]) {
+              check(core.isSet(set) && core.isSorted(set) && core.isCounted(set), label + ' set?');
+              check(__rt.formKind(set) === null && set instanceof core.PersistentTreeSet, label + ' class');
+              const tree = set.tree_map;
+              check(tree === set.tree_map && core.isMap(tree) && tree instanceof core.PersistentTreeMap, label + ' tree map');
+              check(core.count(set) === core.count(tree), label + ' count');
+              check(core.prStr(core.seq(set)) === core.prStr(core.keys(tree)), label + ' seq is the keys');
+              const copy = core.withMeta(set, other), bare = core.withMeta(set, null), cloned = core.clone(copy);
+              check(copy !== set && core.isSet(copy) && core.meta(copy) === other && copy.tree_map === tree, label + ' with-meta');
+              check(core.withMeta(copy, other) === copy, label + ' with-meta of its own metadata');
+              check(core.meta(bare) === null && bare.tree_map === tree && core.equal(bare, set), label + ' with-meta nil');
+              check(cloned !== copy && core.isSet(cloned) && core.meta(cloned) === other && cloned.tree_map === tree, label + ' clone');
+              check(core.equal(cloned, set) && core.hash(core.withMeta(cloned, null)) === core.hash(bare), label + ' clone equality');
+              const empty = core.empty(copy);
+              check(core.isSet(empty) && empty instanceof core.PersistentTreeSet && core.count(empty) === 0, label + ' empty');
+              check(core.seq(empty) === null && core.meta(empty) === other && core.count(set) > 0, label + ' empty persistence');
+            }
+            // sorted-set: lookup, ordered seqs and the updates.
+            check(core.contains(ascending, 2) && !core.contains(ascending, 4), 'contains?');
+            check(core.get(ascending, 2) === 2 && core.get(ascending, 4) === null && core.get(ascending, 4, 'nf') === 'nf', 'get');
+            const s = core.seq(ascending);
+            check(core.isSeq(s) && core.first(s) === 1 && core.prStr(core.rest(s)) === '(2 3)', 'seq steps');
+            check(core.prStr(s) === '(1 2 3)' && core.prStr(core.rseq(ascending)) === '(3 2 1)', 'seq and rseq order');
+            check(core.prStr(ascending) === '#{1 2 3}' && core.equal(ascending, core.hashSet(2, 3, 1)), 'printing and equality');
+            check(core.hash(ascending) === core.hash(core.hashSet(1, 2, 3)), 'hash');
+            const added = core.conj(ascending, 0), removed = core.disj(ascending, 2);
+            check(added instanceof core.PersistentTreeSet && core.isSet(added) && core.prStr(added) === '#{0 1 2 3}', 'conj');
+            check(removed instanceof core.PersistentTreeSet && core.isSet(removed) && core.prStr(removed) === '#{1 3}', 'disj');
+            check(added.tree_map !== ascending.tree_map && core.prStr(core.keys(removed.tree_map)) === '(1 3)', 'updated tree maps');
+            check(core.prStr(ascending) === '#{1 2 3}' && core.contains(ascending, 2) && !core.contains(ascending, 0), 'persistent original');
+            check(core.conj(ascending, 2) === ascending && core.disj(ascending, 9) === ascending, 'unchanged updates');
+            check(core.seq(core.sortedSet()) === null && core.count(core.disj(core.sortedSet(1), 1)) === 0, 'empty seq');
+            // sorted-set-by: the comparator orders, finds and keeps members.
+            check(core.count(descending) === 3 && core.get(descending, query) === retained, 'comparator retains member');
+            check(core.contains(descending, core.vector(3)) && !core.contains(descending, core.vector(0)), 'comparator contains?');
+            check(core.prStr(core.seq(descending)) === '([3] [2 "retained"] [1])', 'comparator seq order');
+            check(core.prStr(core.rseq(descending)) === '([1] [2 "retained"] [3])', 'comparator rseq order');
+            const descendingAdded = core.conj(descending, core.vector(5)), descendingRemoved = core.disj(descending, query);
+            check(core.prStr(core.seq(descendingAdded)) === '([5] [3] [2 "retained"] [1])', 'comparator conj');
+            check(core.prStr(core.seq(descendingRemoved)) === '([3] [1])', 'comparator disj');
+            check(core.prStr(core.seq(core.conj(core.empty(descending), core.vector(1), core.vector(4)))) === '([4] [1])', 'empty keeps comparator');
+            // The public constructor of a sorted map: its map, metadata and hash.
+            check(supplied.tree_map === map && core.meta(supplied) === metadata && core.hash(supplied) === 77, 'constructor slots');
+            check(core.contains(supplied, 1) && core.get(supplied, 2) === 2 && core.get(supplied, 3) === null, 'constructor lookup');
+            check(core.prStr(core.seq(supplied)) === '(1 2)' && core.prStr(core.rseq(supplied)) === '(2 1)', 'constructor seqs');
+            const suppliedAdded = core.conj(supplied, 0), suppliedRemoved = core.disj(supplied, 1);
+            check(suppliedAdded instanceof core.PersistentTreeSet && core.prStr(suppliedAdded) === '#{0 1 2}', 'constructor conj');
+            check(core.prStr(suppliedRemoved) === '#{2}' && core.meta(suppliedAdded) === metadata, 'constructor disj');
+            check(supplied.tree_map === map && core.prStr(core.keys(map)) === '(1 2)', 'constructor map untouched');
+            return 'ok';
+            "#
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(out.string().unwrap().to_string_lossy(), "ok");
+}
+
 /// An engine map is a map to the real units (the maps view, light-cljs-666):
 /// `map?`, `count`, `get`, `contains?`, `find`, `keys`, `vals`, `seq`,
 /// printing, equality and hashing with a runtime-built map of the same
