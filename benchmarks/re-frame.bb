@@ -1047,6 +1047,51 @@
         (re-find #"^(public|protocolHooks\.public|behindProtocol)" u) "protocol wrappers"
         :else "other"))
 
+(defn unit-headers
+  "//@unit name -> its header (the rest of its line and its //@ lines)."
+  [^String runtime]
+  (loop [[l & more] (str/split-lines runtime) cur nil acc {}]
+    (cond (nil? l) acc
+          :else (if-let [[_ n rest] (re-find #"^\s*//@unit (\S+)(.*)$" l)]
+                  (recur more n (assoc acc n rest))
+                  (if-let [[_ c] (when cur (re-find #"^\s*//@ (.*)$" l))]
+                    (recur more cur (update acc cur str " " c))
+                    (recur more nil acc))))))
+
+(defn units-requiring
+  "The units of RUNTIME whose header lists NAME after requires:."
+  [runtime name]
+  (let [re (re-pattern (str "(?<![A-Za-z0-9_$])" (java.util.regex.Pattern/quote name) "(?![A-Za-z0-9_$])"))]
+    (set (keep (fn [[u h]] (when (some->> (second (re-find #"requires:(.*)" h)) (re-find re)) u)) (unit-headers runtime)))))
+
+(defn no-branch-binding
+  "The name the output gives the runtime's noBranch unit, or nil."
+  [^String text runs]
+  (let [s (apply str (for [[a b l] runs :when (= l "rt:noBranch")] (subs text a b)))]
+    (second (re-find #"^(?:const |let )?([A-Za-z_$][A-Za-z0-9_$]*)=" s))))
+
+(defn rewrite-runs
+  "TEXT rebuilt from its runs, consecutive runs of one label together: a
+  runtime unit DROP? names is left out, and (REWRITE unit text) rewrites
+  every other unit's text."
+  [^String text runs drop? rewrite]
+  (let [sb (StringBuilder.)]
+    (doseq [group (partition-by #(nth % 2) runs)
+            :let [[a _ label] (first group) b (second (last group))
+                  unit (when (str/starts-with? label "rt:") (subs label 3))]
+            :when (not (and unit (drop? unit)))]
+      (.append sb (if unit (rewrite unit (subs text a b)) (subs text a b))))
+    (str sb)))
+
+(defn drop-slot-guards
+  "BUILD's text without the slots' `if (...) return noBranch;` guards, only
+  in the units that require noBranch, and with every unit DROP? names left
+  out; without a noBranch binding, guards stay."
+  ([build] (drop-slot-guards build (constantly false)))
+  ([{:keys [text runs no-branch guarded]} drop?]
+   (let [re (when no-branch (re-pattern (str "if\\([^;{}]{0,160}\\)return " (java.util.regex.Pattern/quote no-branch) ";")))]
+     (rewrite-runs text runs drop? (fn [unit s] (if (and re (guarded unit)) (str/replace s re "") s))))))
+
 (defn growth-build
   "BINARY's advanced build of APP's port with a source map holding its
   sources: {:text :runs}, the text without its sourceMappingURL comment."
@@ -1054,40 +1099,45 @@
   (let [js (light-mapped app binary (port-dir app) (fs/path (example app) "out/growth" (str tag ".js"))
                          "--elide-asserts" "--source-map-include-sources")
         m (json/parse-string (slurp (fs/file (str js ".map"))))
-        text (str/replace (slurp (fs/file js)) #"\n?//# sourceMappingURL=\S+\s*$" "\n")]
-    {:text text :runs (labelled-runs text m)}))
+        text (str/replace (slurp (fs/file js)) #"\n?//# sourceMappingURL=\S+\s*$" "\n")
+        runs (labelled-runs text m)
+        runtime (some (fn [[s c]] (when (str/ends-with? s "js_runtime.js") c))
+                      (map vector (get m "sources") (get m "sourcesContent")))]
+    {:text text :runs runs :no-branch (no-branch-binding text runs)
+     :guarded (if runtime (units-requiring runtime "noBranch") #{})}))
 
 (defn growth-chain
   "Rows {:cause :gzip [:raw :units]} whose :gzip add up to gzip(NOW) - gzip(BASE)."
   [base now]
-  (let [k (runtime-key-of (:text now))
+  (let [;; Each output strips its own key: two keyed builds have two keys.
+        kb (runtime-key-of (:text base)) kn (runtime-key-of (:text now))
         units (fn [b] (set (keep #(when (str/starts-with? % "rt:") (subs % 3)) (keys (raw-by-label (:runs b))))))
         raw-b (raw-by-label (:runs base)) raw-n (raw-by-label (:runs now))
         ub (units base) un (units now)
         added (group-by new-unit-group (remove ub un))
         dropped (group-by dropped-unit-group (remove un ub))
-        names (fn [t] (drop-keyword-hashes (shorten-abi (strip-key t k (set keyed-kinds)))))
+        names (fn [t k] (drop-keyword-hashes (shorten-abi (strip-key t k (set keyed-kinds)))))
         steps (concat (for [i (range (count keyed-kinds))]
                         [(str "keyed names: the key on " (name (keyed-kinds i)) " names")
-                         #(strip-key % k (set (take (inc i) keyed-kinds)))])
-                      [["protocol and compiler names (cljs$..., ...$arity$N) written out" #(shorten-abi (strip-key % k (set keyed-kinds)))]
+                         #(strip-key %1 %2 (set (take (inc i) keyed-kinds)))])
+                      [["protocol and compiler names (cljs$..., ...$arity$N) written out" #(shorten-abi (strip-key %1 %2 (set keyed-kinds)))]
                        ["keyword constants' hashes" names]])
         raw-of (fn [raw us] (reduce + (map #(raw (str "rt:" %) 0) us)))
         by-size (fn [raw groups] (sort-by #(- (raw-of raw (groups %))) (keys groups)))
         [rows prev-n prev-b]
         (reduce (fn [[rows pn pb] [cause f]]
-                  (let [gn (gzip-size (f (:text now))) gb (gzip-size (f (:text base)))]
+                  (let [gn (gzip-size (f (:text now) kn)) gb (gzip-size (f (:text base) kb))]
                     [(conj rows {:cause cause :gzip (- (- pn gn) (- pb gb))}) gn gb]))
                 [[] (gzip-size (:text now)) (gzip-size (:text base))] steps)
         [rows prev-n _]
         (reduce (fn [[rows pn gone] g]
-                  (let [gone (into gone (added g)) gn (gzip-size (names (runs-without (:text now) (:runs now) gone)))]
+                  (let [gone (into gone (added g)) gn (gzip-size (names (runs-without (:text now) (:runs now) gone) kn))]
                     [(conj rows {:cause (str "new units: " g) :units (count (added g)) :raw (raw-of raw-n (added g)) :gzip (- pn gn)})
                      gn gone]))
                 [rows prev-n #{}] (by-size raw-n added))
         [rows prev-b _]
         (reduce (fn [[rows pb gone] g]
-                  (let [gone (into gone (dropped g)) gb (gzip-size (names (runs-without (:text base) (:runs base) gone)))]
+                  (let [gone (into gone (dropped g)) gb (gzip-size (names (runs-without (:text base) (:runs base) gone) kb))]
                     [(conj rows {:cause (str "dropped units: " g) :units (count (dropped g)) :raw (- (raw-of raw-b (dropped g))) :gzip (- gb pb)})
                      gb gone]))
                 [rows prev-b #{}] (by-size raw-b dropped))]
@@ -1101,15 +1151,12 @@
         bundled (fn [tag t] (let [in (fs/path dir (str tag "-in.js")) out (fs/path dir (str tag "-bundle.js"))]
                               (spit (fs/file in) t) (bundle app in out) (gzip-size (slurp (fs/file out)))))
         whole (bundled "now" text)
-        no-branch (->> (re-seq #"if\([^;{}]{0,160}\)return ([A-Za-z_$][A-Za-z0-9_$]*);" text) (map second)
-                       (remove #{"null" "undefined" "false" "true"}) frequencies (sort-by (comp - val)) ffirst)
-        guards (re-pattern (str "if\\([^;{}]{0,160}\\)return " (java.util.regex.Pattern/quote no-branch) ";"))
         declarations #"let (?:[A-Za-z_$][A-Za-z0-9_$]*,){50,}[A-Za-z_$][A-Za-z0-9_$]*;"
         rows [["keyed names as a$KEY (a short index, then the key)" (rename-keyed text k :index-key)]
               ["keyed names as $KEYa (the key, then a short index)" (rename-keyed text k :key-index)]
               ["keyed names as $a, without the key (a lower bound only)" (rename-keyed text k :index)]
               ["keyword constants without their hash" (drop-keyword-hashes text)]
-              ["slot guards that answer noBranch removed" (str/replace text guards "")]
+              ["slot guards that answer noBranch removed" (drop-slot-guards now)]
               ;; The rows below leave names undeclared or whole units out, which
               ;; changes what esbuild renames, so they are measured on the output as written.
               ["no up-front declaration list, let a,b,... (output as written)" (str/replace-first text declarations "") :output]
@@ -1118,7 +1165,7 @@
                    (str/replace #"\[[A-Za-z0-9_$,]{200,}\]=(?=\(\(\)=>\{\"use strict\")" "x="))
                :output]
               ["slot-first wrappers, operation bodies, recognisers and slot guards removed (an upper bound; output as written)"
-               (str/replace (runs-without text (:runs now) #(or (core-operations %) (str/ends-with? % ".slots") (recogniser? %))) guards "")
+               (drop-slot-guards now #(or (core-operations %) (str/ends-with? % ".slots") (recogniser? %)))
                :output]]
         output-gzip (gzip-size text)]
     {:whole whole

@@ -84,4 +84,31 @@
     (is (= #{"new units: slot-first wrappers of the operations" "new units: call-site entries" "dropped units: other"}
            (set (keep #(when (:units %) (:cause %)) chain))))))
 
+(deftest growth-chain-normalizes-distinct-runtime-keys
+  ;; Two keyed builds of one program differ only in their keys: their keyed
+  ;; names cost the same, whatever gzip makes of the two keys' letters.
+  (let [build (fn [k] (let [text (str "(\"$" k "\",\"0123456789abcdef\");"
+                                      (apply str (repeat 20 (str "a.cnt$" k "+b.cljs$lang$kind$$" k "+c.cljs$core$ICounted$_count$arity$1$" k ";"))))]
+                        {:text text :runs [[0 (count text) "rt:u"]]}))
+        chain (growth-chain (build "abcd1234") (build "4321dcba"))]
+    (is (every? zero? (keep #(when (str/starts-with? (:cause %) "keyed names") (:gzip %)) chain)) (pr-str chain))
+    (is (= (- (gzip-size (:text (build "4321dcba"))) (gzip-size (:text (build "abcd1234")))) (reduce + (map :gzip chain))))))
+
+(deftest slot-guards-go-only-where-the-unit-requires-no-branch
+  (let [guarded "function(a){if(a.c===undefined&&!(\"c\"in a))return h;return a.c}"
+        other "function(b){if(arguments.length===1)return h;return b}"
+        text (str guarded other)
+        build {:text text :runs [[0 (count guarded) "rt:Vector.count"] [(count guarded) (count text) "rt:other"]]
+               :no-branch "h" :guarded #{"Vector.count"}}]
+    (is (= (str "function(a){return a.c}" other) (drop-slot-guards build)))
+    (testing "and nothing goes without a noBranch binding"
+      (is (= text (drop-slot-guards (assoc build :no-branch nil)))))
+    (testing "the units a header lists noBranch for, after requires: only"
+      (is (= #{"Vector.count" "Other.nth"}
+             (units-requiring (str "  //@unit Vector.count effect: Vector when: count requires: builtinSlot,\n"
+                                   "  //@ noBranch, Vector\n  x;\n  //@unit noBranch\n  const noBranch = 1;\n"
+                                   "  //@unit Other.nth requires: noBranch\n  //@unit count.slots when: noBranch requires: count\n")
+                              "noBranch"))))
+    (is (= "h" (no-branch-binding "h=Object.freeze({}),x" [[0 19 "rt:noBranch"] [19 21 "program"]])))))
+
 (let [{:keys [fail error]} (run-tests)] (System/exit (if (zero? (+ fail error)) 0 1)))

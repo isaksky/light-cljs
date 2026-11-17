@@ -1280,15 +1280,15 @@ Each transform is applied to `685f86dd`'s output alone. Most rows give the gzip 
 | Keyed names as `$<key>a`: the key, then a short index | -1,018 | -1,188 | -1,462 |
 | Keyed names as `$a`, without the key (a lower bound only: the design needs the key) | -1,688 | -1,852 | -2,262 |
 | Keyword constants without their hash | -1,070 | -1,497 | -9,356 |
-| Slot guards that answer `noBranch` removed | -250 | -213 | -247 |
+| Slot guards that answer `noBranch` removed | -250 | -206 | -240 |
 | No up-front declaration list, `let a,b,...;` (output as written) | -728 | -1,268 | -4,940 |
 | No runtime binding list: the runtime's `return[...]` and its destructuring (output as written) | -753 | -1,167 | -1,999 |
-| Slot-first wrappers, the 21 operation bodies, the recognisers and the slot guards removed: an upper bound (output as written) | -5,432 | -5,789 | -5,897 |
+| Slot-first wrappers, the 21 operation bodies, the recognisers and the slot guards removed: an upper bound (output as written) | -5,432 | -5,784 | -5,892 |
 
 - **Counts behind them:**
   - simple has 180 keyword constants, TodoMVC 280 and flow 1,214.
   - There are 1,372 keyed name uses in simple, 1,614 in TodoMVC and 2,117 in flow. Field names are 1,039, 1,267 and 1,357 of them, on about 62 names.
-  - The slot guards number 58 in simple and 62 in the others.
+  - The slot guards number 58 in simple and 61 in the others, in the 124 units that require `noBranch`.
 - **Two more measurements outside the table**, on the output as written:
   - **The sorted set in TodoMVC:** cljs.spec's `(extend-protocol Specize ... PersistentTreeSet ...)` makes the slice keep the set's 26 units: 4,470 raw bytes, 1,087 after gzip. TodoMVC never builds a sorted set, and at `f533efb1` the same extension kept no unit. flow keeps those units anyway, because it builds sorted sets.
   - **The side stores:** these are `publicCollectionSlots`, `constructorHashes`, `metadataValues`, `vectorRoots`, `canonicalVectorRoots`, `subvecSources`, `hashRoots` and `hashTraversals`. The runtime lines that read them outside the operations ship 3,825, 3,895 and 4,099 characters, with a gzip marginal of 973, 904 and 966 bytes.
@@ -1325,7 +1325,7 @@ These are in the output-speed-parity group, before light-cljs-1049, which checks
 | light-cljs-1051 | each global and runtime root declared where it is defined | 1,000 to 1,450 | 2,000 to 2,400 | 5,500 to 6,900 | upper bounds measured, less the declarations the definitions gain |
 | light-cljs-1052 | an extended class nothing builds keeps only its prototype | 0 | 1,087 | 0 | measured on the output |
 | light-cljs-1053 | the side stores moved into the classes' fields | 600 to 900 | 600 to 900 | 600 to 900 | the reads' measured 904 to 973, less the field reads that replace them |
-| light-cljs-1054 | core operations shaped as upstream's: slot, then host values | 2,500 to 4,000 | 2,500 to 4,000 | 2,500 to 4,000 | upper bound 5,432 to 5,897, less upstream-shaped bodies of about 1,500 to 2,000 |
+| light-cljs-1054 | core operations shaped as upstream's: slot, then host values | 2,500 to 4,000 | 2,500 to 4,000 | 2,500 to 4,000 | upper bound 5,432 to 5,892, less upstream-shaped bodies of about 1,500 to 2,000 |
 | **Sum** | | **6,070 to 8,440** | **8,704 to 11,074** | **19,256 to 22,616** | |
 | **Growth since `f533efb1`** | | **6,616** | **9,743** | **17,916** | the previous section |
 
