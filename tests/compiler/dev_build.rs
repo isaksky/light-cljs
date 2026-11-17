@@ -473,9 +473,10 @@ fn namespaces_loading_first_find_the_later_ones_as_at_none() {
 /// its fetch finishes after a delay that is longer the earlier it was
 /// appended, so later files arrive first, and the scripts run in the order
 /// they were appended as soon as each and those before it have arrived
-/// ("script F"). A script whose file is missing fires `error` and is
-/// skipped; one that throws reports the throw as the page's `error` event;
-/// each then fires `load`. The page prints how `__lightDevLoaded` settles,
+/// ("script F"), each as the document's `currentScript`. A script whose
+/// file is missing fires `error` and is skipped; one that throws reports the
+/// throw as the page's `error` event while it is the `currentScript`; each
+/// then fires `load`. The page prints how `__lightDevLoaded` settles,
 /// then defines one more unit, as a reload would, and prints whether it ran.
 const PAGE: &str = r#"
 const { existsSync, readFileSync } = require("node:fs");
@@ -494,8 +495,11 @@ const run = () => {
     const file = fileURLToPath(script.src);
     if (!existsSync(file)) { script.onerror(); continue; }
     console.log("script " + name(file));
+    const current = document.currentScript;
+    document.currentScript = script;
     try { runInThisContext(readFileSync(file, "utf8"), { filename: file }); }
     catch (error) { for (const listener of [...listeners]) listener({ error, message: String(error) }); }
+    finally { document.currentScript = current; }
     script.onload();
   }
 };

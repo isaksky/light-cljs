@@ -1373,7 +1373,12 @@ host-value answers. What two runtimes on one page share and do not share:
   definitions, so a namespace both define (`two.shared`) keeps each
   build's `defonce` state, and a unit of one evaluated again, whether it
   loaded first or second, registers in its own runtime alone, the other
-  keeping its state. Each build's client is its own (`__lightDev$KEY`),
+  keeping its state. Two dev builds loading at once keep their failures
+  apart: `index.js` counts an error the page reports as its build's only
+  while one of its own scripts is the document's `currentScript`, so a
+  unit of one that throws halts that build alone (found by the Sol review;
+  a scenario where the first of two builds fails while the second's loader
+  is pending). Each build's client is its own (`__lightDev$KEY`),
   which reads the event stream of the dev server's mount that served it
   (`/<id>/events`) and keeps its own REPL sessions, and every unit, step
   and REPL form its build's session writes names its key, so it reaches

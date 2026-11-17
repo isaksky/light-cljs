@@ -223,6 +223,21 @@ const scenarios = [
     ],
   },
   {
+    // Two dev builds loading at once, the first of whose units throws while
+    // the second's loader is pending: the failure is the first build's
+    // alone (the Sol review of light-cljs-1045). A page reports the throw
+    // as an uncaught error.
+    name: "two dev builds loading at once, the first failing",
+    loads: [{ label: "dev", together: ["broken-dev", "app-dev"] }],
+    pageErrors: ["broken dev failed"],
+    expected: [
+      "load dev broken-dev: broken dev failed",
+      "load dev app-dev: ok",
+      `host dev: ${host("app")}`,
+      `dev sees dev: ${recognised()}`,
+    ],
+  },
+  {
     name: "a release build and then a dev build of one app",
     loads: [{ label: "release", module: "app/two.app.js" }, { label: "dev", dev: "app-dev" }],
     expected: [
@@ -266,6 +281,26 @@ async function page(loads) {
   globalThis.twoRuntimesShared = {};
   for (const load of loads) {
     globalThis.twoRuntimesLoad = { label: load.label, extendBox: load.extendBox === true };
+    if (load.together) {
+      // Dev builds whose index.js all run, in order, before any of their
+      // files, as script elements with `async = false` do: each build's
+      // loader is pending while the others' units run. Each settles as its
+      // own build did; the builds register under the load's label.
+      const loaded = globalThis.twoRuntimesLoader
+        ? await globalThis.twoRuntimesLoader(load)
+        : await Promise.all(load.together.map((dir) => new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = new URL(`${dir}/index.js`, location.href).href;
+          script.async = false;
+          script.onload = () => resolve({ promise: globalThis.__lightDevLoaded });
+          script.onerror = () => reject(new Error(`cannot load ${script.src}`));
+          document.head.append(script);
+        })));
+      const settled = await Promise.allSettled(loaded.map((each) => each.promise));
+      settled.forEach((result, at) => lines.push(`load ${load.label} ${load.together[at]}: ` +
+        (result.status === "fulfilled" ? "ok" : result.reason?.message ?? result.reason)));
+      continue;
+    }
     try {
       if (globalThis.twoRuntimesLoader) {
         await globalThis.twoRuntimesLoader(load);
@@ -306,6 +341,13 @@ async function page(loads) {
 async function nodePage(out, loads) {
   const require = createRequire(path.join(out, "page.cjs"));
   globalThis.twoRuntimesLoader = async (load) => {
+    if (load.together) {
+      // Node requires each build's files as its index.js runs.
+      return load.together.map((dir) => {
+        require(path.join(out, dir, "index.js"));
+        return { promise: globalThis.__lightDevLoaded };
+      });
+    }
     if (load.dev) {
       require(path.join(out, load.dev, "index.js"));
       await globalThis.__lightDevLoaded;
@@ -356,6 +398,9 @@ function build(light, dir) {
   const other = fs.readFileSync(path.join(out, "other/two.other.js"), "utf8");
   fs.mkdirSync(path.join(out, "collide"));
   fs.writeFileSync(path.join(out, "collide/two.other.js"), other.split(`$${keys.other}`).join(`$${keys.app}`));
+  // other's dev build, whose two.other unit throws as it runs.
+  fs.cpSync(path.join(out, "other-dev"), path.join(out, "broken-dev"), { recursive: true });
+  fs.writeFileSync(path.join(out, "broken-dev/two.other.js"), 'throw new Error("broken dev failed");\n');
   fs.writeFileSync(path.join(out, "index.html"), "<!doctype html><title>two runtimes</title>\n");
   return { out, keys };
 }
@@ -369,15 +414,21 @@ async function chromiumPages(out, npmTools, scenarios) {
     for (const scenario of scenarios) {
       // A console error or an uncaught exception is a line no scenario
       // expects, but for the dev client's request for the event stream of
-      // the dev server this static server is not.
+      // the dev server this static server is not, and an error the scenario
+      // throws on purpose (`pageErrors`).
       const errors = [];
+      const expected = (text) => (scenario.pageErrors ?? []).some((error) => text.includes(error));
       const context = await browser.newContext();
       const tab = await context.newPage();
       tab.on("console", (message) => {
         const events = /\/events$/.test(message.location()?.url ?? "");
-        if (message.type() === "error" && !events) errors.push(`console: ${message.text().split("\n")[0]}`);
+        if (message.type() === "error" && !events && !expected(message.text())) {
+          errors.push(`console: ${message.text().split("\n")[0]}`);
+        }
       });
-      tab.on("pageerror", (error) => errors.push(`exception: ${error.message}`));
+      tab.on("pageerror", (error) => {
+        if (!expected(error.message)) errors.push(`exception: ${error.message}`);
+      });
       try {
         await tab.goto(`${server.url}index.html`);
         results.push([...(await tab.evaluate(page, scenario.loads)), ...errors]);

@@ -621,9 +621,13 @@ impl DevManifest {
 /// thrown while the files run, or a file that cannot load, is the failure:
 /// from then until every file has settled, `globalThis.__lightDevHalted$KEY`
 /// makes the build's `define` skip each later unit, so, as when the files
-/// loaded one at a time, no unit after the failure runs. The promise rejects
-/// once every file has settled and the flag is gone, so a reload the client
-/// applies afterwards defines its units.
+/// loaded one at a time, no unit after the failure runs. An error is the
+/// build's when one of its own script elements is the document's
+/// `currentScript` as the page reports it, as a browser has it while the
+/// script runs, so another dev build loading alongside never halts this one
+/// (the Sol review of light-cljs-1045). The promise rejects once every file
+/// has settled and the flag is gone, so a reload the client applies
+/// afterwards defines its units.
 fn index_text(list: &str, entry: &str) -> String {
     format!(
         r#"// Loads a light-cljs dev build: the runtime, the dev client and one unit per
@@ -634,8 +638,10 @@ fn index_text(list: &str, entry: &str) -> String {
 // order (`async = false`). The first error thrown while they run, or a file
 // that cannot load, rejects the promise once every file has settled, and no
 // unit after it runs: the build's `define` skips units while
-// globalThis.__lightDevHalted$LKEY is set. In Node (CommonJS) each file is
-// required, which `node --enable-source-maps` maps to the sources.
+// globalThis.__lightDevHalted$LKEY is set. An error the page reports while
+// another script runs, another dev build's say, is not this build's. In
+// Node (CommonJS) each file is required, which `node --enable-source-maps`
+// maps to the sources.
 globalThis.__lightDevLoaded = globalThis.__lightDevLoaded$LKEY = (async () => {{
   const files = {list};
   if (typeof document === "object" && document !== null) {{
@@ -646,11 +652,15 @@ globalThis.__lightDevLoaded = globalThis.__lightDevLoaded$LKEY = (async () => {{
       failure = error;
       globalThis.__lightDevHalted$LKEY = true;
     }};
-    const failed = event => fail(event.error ?? new Error(event.message));
+    const scripts = new Set();
+    const failed = event => {{
+      if (scripts.has(document.currentScript)) fail(event.error ?? new Error(event.message));
+    }};
     globalThis.addEventListener("error", failed);
     try {{
       await Promise.all(files.map(file => new Promise(resolve => {{
         const script = document.createElement("script");
+        scripts.add(script);
         script.src = new URL(file, base).href;
         script.async = false;
         script.onload = resolve;

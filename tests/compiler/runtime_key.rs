@@ -447,7 +447,7 @@ fn runtimes_on_one_page_keep_apart_unless_they_share_a_key() {
         .expect("the two-runtime pages require Node");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        output.status.success() && stdout.contains("9 of 9 scenarios as expected"),
+        output.status.success() && stdout.contains("10 of 10 scenarios as expected"),
         "{stdout}{}",
         String::from_utf8_lossy(&output.stderr)
     );
