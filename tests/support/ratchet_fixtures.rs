@@ -726,7 +726,10 @@
 //! shared chunk 90,473, `app.editor.js` 11,660, `app.reports.js` 5,004),
 //! moves down to the next 100 above its size below 10,000 and the next
 //! 1,000 above, except `vector-only` (7,803), which keeps
-//! `unkeyedJSON`'s test of a name's prefix and suffix: 7,900.
+//! `unkeyedJSON`'s test of a name's prefix and suffix: 7,900. Rebased onto
+//! light-cljs-1041 (`d8a28b21`), whose array-map paths add about 290 bytes:
+//! `constant-keys` 76,022, `keyword-lookups` 54,214 and `set-only` 9,049
+//! move to 77,000, 55,000 and 9,100.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -836,7 +839,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
                  (defn kind [k] (case k :x 1 :y 2 0))
                  (reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))",
-        ceilings: [683_000, 683_000, 54_000],
+        ceilings: [683_000, 683_000, 55_000],
         removed: [0, 0, 0],
         printed: "17\n",
     },
@@ -933,7 +936,7 @@ pub const FIXTURES: &[Fixture] = &[
                                 (range 36)))
                  (+ (get table {:id 3 :kind :row}) (get table [:pos 5 6]) (get table #{7 :tag})
                     (get table {:id 11 :kind :row} 0))",
-        ceilings: [683_000, 683_000, 76_000],
+        ceilings: [683_000, 683_000, 77_000],
         removed: [0, 0, 0],
         printed: "62\n",
     },
@@ -995,7 +998,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "set-only",
         source: r#"(js/console.log (.has #{1 2 3} 2) (.join (js/Array.from #{1 2 3}) " "))"#,
-        ceilings: [682_000, 682_000, 9_000],
+        ceilings: [682_000, 682_000, 9_100],
         removed: [0, 0, 0],
         printed: "true 1 3 2\nundefined\n",
     },
