@@ -1391,7 +1391,7 @@ bb benchmarks/re-frame.bb growth simple todomvc flow --base research/shadow-cred
 
 ### Setup
 
-- **Binaries:** `light-cljs-e0168930`, master when this was measured, and `light-cljs-1048-f5c498cd`, this pellet rebased on it. Both are V8 builds. `light-cljs-f533efb1` is the group's start.
+- **Binaries:** `light-cljs-e0168930`, master when this was measured, and `light-cljs-1048-512d6d9a`, this pellet rebased on it with the Sol review's fixes. Both are V8 builds. `light-cljs-f533efb1` is the group's start.
 - **Ports:** made with porter `shadow-port-tool-983` and master `ceede268`'s binary, one port per app. Each app's bundle at `f533efb1` is within 12 bytes of the earlier sections' (simple 108,631, TodoMVC 138,015, flow 328,657).
 - **Machine:** the load average was 7 to 12, unreserved. Sizes do not depend on load.
 
@@ -1399,17 +1399,17 @@ bb benchmarks/re-frame.bb growth simple todomvc flow --base research/shadow-cred
 
 | App | `f533efb1` | master `e0168930` | light-cljs-1048 | Against master | Against `f533efb1` |
 |---|---:|---:|---:|---:|---:|
-| re-frame simple | 108,631 | 115,639 | 114,976 | -663 (-0.57%) | +6,345 (+5.8%) |
-| TodoMVC | 138,015 | 148,184 | 147,308 | -876 (-0.59%) | +9,293 (+6.7%) |
-| flow | 328,657 | 346,963 | 345,904 | -1,059 (-0.31%) | +17,247 (+5.2%) |
+| re-frame simple | 108,631 | 115,639 | 114,974 | -665 (-0.58%) | +6,343 (+5.8%) |
+| TodoMVC | 138,015 | 148,184 | 147,298 | -886 (-0.60%) | +9,283 (+6.7%) |
+| flow | 328,657 | 346,963 | 345,891 | -1,072 (-0.31%) | +17,234 (+5.2%) |
 
-light-cljs's output as written, without React, after gzip: simple 69,322 to 68,585 (-737), TodoMVC 100,053 to 99,233 (-820), flow 294,697 to 293,708 (-989). Raw, it is 10,562, 11,582 and 26,320 bytes smaller.
+light-cljs's output as written, without React, after gzip: simple 69,322 to 68,593 (-729), TodoMVC 100,053 to 99,241 (-812), flow 294,697 to 293,716 (-981). Raw, it is 10,534, 11,554 and 26,292 bytes smaller.
 
 The browser behaviour checks pass for all three apps with light-cljs-1048's builds (`bb benchmarks/re-frame.bb browser simple todomvc flow --compiler light --runs 1`).
 
 ### Against the what-if
 
-The saving is 65%, 74% and 72% of the what-if's 1,018, 1,188 and 1,462 bytes, measured on master `685f86dd` with this form. It falls short of the pellet's target ranges: 900 to 1,020, 1,020 to 1,190 and 1,300 to 1,460.
+The saving is 65%, 75% and 73% of the what-if's 1,018, 1,188 and 1,462 bytes, measured on master `685f86dd` with this form. It falls short of the pellet's target ranges: 900 to 1,020, 1,020 to 1,190 and 1,300 to 1,460.
 
 **The cause is a table the what-if left out.** The runtime builds protocol slot and marker names from a protocol's key as the program runs, in `protocolSlot`. It uses them for the methods `defineType`, `reify`, `extend-type` and `specify!` install, for a protocol function's dispatch and for the protocol lookups. The renamed text the what-if bundled would have broken at load:
 - its slots would no longer have matched the names `protocolSlot` builds;

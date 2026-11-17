@@ -3700,5 +3700,5 @@ The pellet was then rebased onto `e0168930` (light-cljs-1046). Rebasing changed 
 - **Steady state:** 52.9 ms to 52.2 ms per iteration. shadow-cljs's is 24.3 ms in both runs, so light/shadow went from 2.18 to 2.15.
 - **Advanced size:**
   - **workload 200k:** 3,553,784 to 3,542,213 bytes raw, and 895,481 to 895,084 after gzip -9.
-  - **The re-frame apps** (benchmarks/re-frame-vs-shadow.md, "2026-11-17: short keyed names at `:advanced`"), whole bundles with React after gzip -9, against master `e0168930`: simple -663, TodoMVC -876 and flow -1,059 bytes.
-  - **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): 359 to 7,319 bytes smaller where a fixture keeps collections, and `record-protocol` and `three-records` 20 bytes larger.
+  - **The re-frame apps** (benchmarks/re-frame-vs-shadow.md, "2026-11-17: short keyed names at `:advanced`"), whole bundles with React after gzip -9, against master `e0168930`: simple -665, TodoMVC -886 and flow -1,072 bytes (`light-cljs-1048-512d6d9a`, after the Sol review's fixes).
+  - **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): 359 to 7,319 bytes smaller where a fixture keeps collections, and `record-protocol` and `three-records` 20 bytes larger. The review's fixes add 28 bytes to programs keeping `unkeyedJSON`; the timings above predate them.
