@@ -118,7 +118,7 @@
     const json = {};
     // Own data properties, as an object rest gives, so that no setter of
     // `Object.prototype` (`__proto__`) runs.
-    for (const key of Object.keys(value)) if (!key.includes("$LKEY")) Object.defineProperty(json, key, {value: value[key], writable: true, enumerable: true, configurable: true});
+    for (const key of Object.keys(value)) if (!key.startsWith("$LKEY") && !key.endsWith("$LKEY")) Object.defineProperty(json, key, {value: value[key], writable: true, enumerable: true, configurable: true});
     return json;
   }
   //@unit vectorStore

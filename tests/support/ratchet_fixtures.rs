@@ -716,16 +716,17 @@
 //! mask and field names once built by concatenation written whole), under
 //! every none and prepare ceiling (`console-log-sum` 666,937 to 667,907).
 //! Advanced, against master `e0168930` (the command line's output): 359 to
-//! 7,319 bytes smaller where a program keeps the collections
-//! (`vector-printed` 16,455 to 15,643, `map-printed` 24,598 to 23,048,
-//! `constant-keys` 82,977 to 75,658, `mapv-count` 58,748 to 53,596,
-//! `protocol-params` 71,290 to 66,608); `record-protocol` and
+//! 7,291 bytes smaller where a program keeps the collections
+//! (`vector-printed` 16,455 to 15,671, `map-printed` 24,598 to 23,076,
+//! `constant-keys` 82,977 to 75,686, `mapv-count` 58,748 to 53,624,
+//! `protocol-params` 71,290 to 66,636); `record-protocol` and
 //! `three-records` 20 bytes larger (5,832 to 5,852, 5,827 to 5,847), whose
 //! few keyed names save less than the table's lookup costs. Every advanced
 //! ceiling, and the features example's chunks (`app.main.js` 9,082, the
 //! shared chunk 90,473, `app.editor.js` 11,660, `app.reports.js` 5,004),
 //! moves down to the next 100 above its size below 10,000 and the next
-//! 1,000 above.
+//! 1,000 above, except `vector-only` (7,803), which keeps
+//! `unkeyedJSON`'s test of a name's prefix and suffix: 7,900.
 
 pub struct Fixture {
     pub name: &'static str,

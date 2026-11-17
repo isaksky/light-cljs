@@ -79,18 +79,26 @@ impl ShortNames {
     /// placeholder: by use, most first, ties in the stems' order.
     fn of<'a>(texts: impl IntoIterator<Item = &'a str>) -> Self {
         let mut uses = std::collections::HashMap::<&str, usize>::new();
+        // The end of a name a string escapes part of is no name: it, and
+        // so the name, keep the whole keyed name everywhere.
+        let mut escaped = std::collections::HashSet::new();
         for text in texts {
             for (at, _) in text.match_indices(KEY_PLACEHOLDER) {
                 if !name_end(&text[at + KEY_PLACEHOLDER.len()..]) {
                     continue;
                 }
                 let stem = &text[stem_start(text, at)..at];
-                if shortened_stem(stem) {
+                if escaped_stem(text, at) {
+                    escaped.insert(stem);
+                } else if shortened_stem(stem) {
                     *uses.entry(stem).or_default() += 1;
                 }
             }
         }
-        let mut ranked = uses.into_iter().collect::<Vec<_>>();
+        let mut ranked = uses
+            .into_iter()
+            .filter(|(stem, _)| !escaped.contains(stem))
+            .collect::<Vec<_>>();
         ranked.sort_by(|(a, m), (b, n)| n.cmp(m).then(a.cmp(b)));
         let mut codes = std::collections::HashMap::with_capacity(ranked.len());
         let mut table = String::from(" ");
@@ -108,13 +116,37 @@ impl ShortNames {
     }
 }
 
+/// Whether `raw`, a segment of a program's raw JavaScript (`js*`), spells
+/// every keyed name it spells as a member, `x.name$LKEY`, which the output
+/// writer can rename with its uses. A keyed name in a string, or one built
+/// from a stem and the placeholder, may be reached by its whole name, so an
+/// output whose program spells one keeps whole names (docs/value-layout.md,
+/// section 1, "Short names at `:advanced`").
+pub fn keyed_by_member(raw: &str) -> bool {
+    raw.match_indices(KEY_PLACEHOLDER).all(|(at, _)| {
+        let start = stem_start(raw, at);
+        !name_end(&raw[at + KEY_PLACEHOLDER.len()..])
+            || raw[..start].ends_with('.') && shortened_stem(&raw[start..at])
+    })
+}
+
+/// Whether the name the placeholder at `at` of `text` ends starts after a
+/// backslash: in a string that escapes a character of it (`π`), where
+/// the stem scanned is only the end of the name.
+fn escaped_stem(text: &str, at: usize) -> bool {
+    text[..stem_start(text, at)].ends_with('\\')
+}
+
 /// Whether the keyed name of `stem` takes a short name: a field of the
 /// runtime's classes (a stem without `$`), or the shape of a protocol slot,
 /// marker or mask, which the kind, cell and record names share
-/// (`crate::analyzer::protocol_member`). The key's own spelling (`"$LKEY"`,
-/// no stem), the page globals of dev output (`__lightDev`) and a stem a
+/// (`crate::analyzer::protocol_member`), of ASCII characters, which a string
+/// writes as they are. The key's own spelling (`"$LKEY"`, no stem), the page globals of dev output (`__lightDev`) and a stem a
 /// program builds otherwise keep their keyed names.
 fn shortened_stem(stem: &str) -> bool {
+    if !stem.is_ascii() {
+        return false;
+    }
     if stem.contains('$') {
         return crate::analyzer::protocol_member(stem);
     }

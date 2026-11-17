@@ -1518,9 +1518,9 @@ The rules of this section hold:
 with React (benchmarks/re-frame-vs-shadow.md, "What-ifs on master's
 output"). `$<key>a`, the key then a code, saved 109 to 161 bytes more after
 gzip than `a$<key>` in each re-frame app, so it is the form. Where the
-runtime tests a name by its key, it tests whether the name holds `$<key>`
-(`unkeyedJSON`, which leaves the keyed fields out of a value's JSON). That
-holds for the short names and for the whole names that dev builds keep.
+runtime tests a name by its key, it tests whether the name starts with
+`$<key>`, as short names do, or ends with it, as the whole names dev builds
+keep do (`unkeyedJSON`, which leaves the keyed fields out of a value's JSON).
 
 **What the runtime names itself.** `protocolSlot` builds the slot and
 marker names from a protocol's key and arity as the program runs. It names
@@ -1555,11 +1555,15 @@ shrinks 658 bytes after gzip in simple, 860 in TodoMVC and 856 in flow
   - a dev build's page globals (`__lightDev$<key>`);
   - any keyed name whose stem has neither a field's shape nor a protocol
     name's.
-- **Built at run time:** source that builds a keyed name, such as `js*`
-  that appends the placeholder to a stem it computes, gets the whole name,
-  which no short-named property answers, as a property built from a string
-  misses Closure Compiler's renamed ones.
-- **Spelled whole in source:** member syntax and `js*` that spell a keyed
+- **Names with other characters:** a stem with a character outside ASCII,
+  which a string escapes (`\u03c0`), keeps its whole name, so a member
+  that spells it and the name `protocolSlot` builds agree.
+- **Raw text that may reach a name by its spelling:** where the program's
+  raw JavaScript (`js*`) spells a keyed name other than as a member,
+  `x.name$LKEY` (in a string, or built from a stem and the placeholder),
+  the whole output keeps whole names (`runtime_key::keyed_by_member`), so
+  anything raw text can reach by a string it still reaches.
+- **Spelled as a member in source:** member syntax and `js*` that spell a keyed
   name whole are keyed by the compiler (above), so they are renamed with
   it.
 

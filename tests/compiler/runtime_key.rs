@@ -517,3 +517,55 @@ fn compile_time_runtime_loads_keep_their_own_brands() {
         "Node"
     );
 }
+
+/// What `source` prints at each level, with each output's key written as the
+/// placeholder.
+fn printed_at_every_level(source: &str) -> Vec<String> {
+    OptimizationLevel::ALL
+        .iter()
+        .map(|&level| {
+            let js = release(source, level);
+            key(&js).unapply(&execute(&format!("console.log({js});")))
+        })
+        .collect()
+}
+
+/// `Advanced`'s short names (light-cljs-1048) leave alone what raw text or a
+/// string can reach: a protocol name a string must escape keeps its whole
+/// name, as `protocolSlot` builds it; raw text that builds a keyed name
+/// from its stem keeps every name whole; and a value's JSON leaves out only
+/// its keyed names, not a property that holds the key elsewhere.
+#[test]
+fn short_names_leave_what_raw_text_and_strings_reach() {
+    for (source, expected) in [
+        (
+            "(defprotocol Pπ (m [x])) (deftype T [] Pπ (m [_] 7))
+             (let [t (T.)] (pr-str [(m t) (.cljs$user$Pπ$m$arity$1 t t)]))",
+            "[7 7]",
+        ),
+        (
+            "(deftype T [] ICounted (-count [_] 3))
+             (let [t (T.)]
+               (pr-str [(count t) (js* \"~{}['cljs$core$ICounted$_count$arity$1' + '$LKEY'](~{})\" t t)]))",
+            "[3 3]",
+        ),
+        (
+            "(let [v (vec [1 2])]
+               (aset v (js* \"'user' + '$LKEY' + 'extra'\") 7)
+               (.join (js/Object.keys (js/JSON.parse (js/JSON.stringify v))) \" \"))",
+            "user$LKEYextra",
+        ),
+    ] {
+        for (level, printed) in OptimizationLevel::ALL.iter().zip(printed_at_every_level(source)) {
+            assert_eq!(printed, format!("{expected}\n"), "at {level}: {source}");
+        }
+    }
+    // Raw text that spells keyed names only as members keeps short names.
+    assert!(light_cljs::runtime_key::keyed_by_member(
+        "~{}.cljs$user$P$m$arity$1$LKEY(~{})"
+    ));
+    assert!(!light_cljs::runtime_key::keyed_by_member(
+        "'cljs$user$P$m$arity$1$LKEY'"
+    ));
+    assert!(!light_cljs::runtime_key::keyed_by_member("x + '$LKEY'"));
+}

@@ -191,6 +191,11 @@ pub struct PreparedApplication {
     level: OptimizationLevel,
     /// `Advanced` without [`ApplicationOptions::pseudo_names`]: terse output.
     terse: bool,
+    /// Terse output whose program spells no keyed name in raw JavaScript
+    /// but as a member, `x.name$LKEY`: every keyed name is written short
+    /// ([`crate::runtime_key::RuntimeKey::shortened`]). Raw text that spells
+    /// one in a string or builds one may reach it by its whole name.
+    short_names: bool,
     program: Program,
     globals: Vec<bool>,
     calls: HashMap<ExprId, usize>,
@@ -267,7 +272,7 @@ impl PreparedApplication {
         );
         // At `Advanced` without pseudo-names every keyed name is short
         // (docs/value-layout.md, section 1, "Short names at `:advanced`").
-        let key = if self.terse {
+        let key = if self.short_names {
             key.shortened([code.as_str()])
         } else {
             key
@@ -276,7 +281,7 @@ impl PreparedApplication {
             Some(mapping) => key.apply_mapped(&code, mapping),
             None => key.apply(&code),
         };
-        if self.terse {
+        if self.short_names {
             crate::runtime_slice::shortened_bytes(
                 &mut runtime.bytes,
                 &mut runtime.unit_bytes,
@@ -292,7 +297,7 @@ impl PreparedApplication {
     /// Empty where the output writes whole names: below `Advanced` and with
     /// pseudo-names.
     pub fn short_names(&self) -> Vec<(String, String)> {
-        if !self.terse {
+        if !self.short_names {
             return Vec::new();
         }
         let (code, _, _) =
@@ -413,14 +418,14 @@ impl PreparedApplication {
             self.runtime_key.as_deref(),
         );
         // And one table of short names, from all of them.
-        let key = if self.terse {
+        let key = if self.short_names {
             key.shortened(emitted.iter().map(|chunk| chunk.source.as_str()))
         } else {
             key
         };
         for chunk in &mut emitted {
             chunk.source = key.apply(&chunk.source);
-            if self.terse {
+            if self.short_names {
                 let runtime = &mut chunk.runtime;
                 crate::runtime_slice::shortened_bytes(
                     &mut runtime.bytes,
@@ -549,6 +554,14 @@ pub fn prepare_owned_application(
     let mut prepared = PreparedApplication {
         level,
         terse: level.advanced() && !options.pseudo_names,
+        short_names: level.advanced()
+            && !options.pseudo_names
+            && program.exprs.iter().all(|expr| match &expr.kind {
+                crate::analyzer::ExprKind::JsTemplate { segments, .. } => segments
+                    .iter()
+                    .all(|segment| crate::runtime_key::keyed_by_member(segment)),
+                _ => true,
+            }),
         program,
         globals: vec![false; globals],
         calls: HashMap::new(),
