@@ -118,7 +118,7 @@
     const json = {};
     // Own data properties, as an object rest gives, so that no setter of
     // `Object.prototype` (`__proto__`) runs.
-    for (const key of Object.keys(value)) if (!key.endsWith("$LKEY")) Object.defineProperty(json, key, {value: value[key], writable: true, enumerable: true, configurable: true});
+    for (const key of Object.keys(value)) if (!key.includes("$LKEY")) Object.defineProperty(json, key, {value: value[key], writable: true, enumerable: true, configurable: true});
     return json;
   }
   //@unit vectorStore
@@ -919,7 +919,7 @@
   // (`runtimeKey`, docs/value-layout.md, section 1): no host object holds
   // one by accident.
   const protocolMasks = new Map(protocolMaskNames.map((name, index) => [name,
-    ["cljs$lang$protocol_mask$partition" + (index >> 5) + "$$LKEY", 1 << (index % 32)]]));
+    [index >> 5 ? "cljs$lang$protocol_mask$partition1$$LKEY" : "cljs$lang$protocol_mask$partition0$$LKEY", 1 << (index % 32)]]));
   //@unit memberMunging
   const memberMunging = {"-":"_",":":"_COLON_","+":"_PLUS_",">":"_GT_","<":"_LT_","=":"_EQ_","~":"_TILDE_","!":"_BANG_","@":"_CIRCA_","#":"_SHARP_","'":"_SINGLEQUOTE_","\"":"_DOUBLEQUOTE_","%":"_PERCENT_","^":"_CARET_","&":"_AMPERSAND_","*":"_STAR_","|":"_BAR_","{":"_LBRACE_","}":"_RBRACE_","[":"_LBRACK_","]":"_RBRACK_","/":"$","\\":"_BSLASH_","?":"_QMARK_"};
   //@unit mungeMember requires: memberMunging
@@ -927,7 +927,15 @@
   //@unit protocolSentinel requires: runtimeKey
   // One per key on the page: copies of a build share markers (docs/value-layout.md, section 1).
   const protocolSentinel = Symbol.for("light-cljs.protocol" + runtimeKey), protocolSlots = new Map();
-  //@unit protocolSlot requires: mungeMember, protocolSlots
+  //@unit protocolSlotCodes
+  // At `:advanced` the output writer writes every keyed name short, `$`, the
+  // key and a code of one or two letters (docs/value-layout.md, section 1,
+  // "Short names at `:advanced`"), and for the placeholder here the codes of
+  // the protocol slots and markers the text spells, " stem code stem code ",
+  // so that `protocolSlot` names those as the text does. Elsewhere it stays
+  // the placeholder and every name is whole.
+  const protocolSlotCodes = "$LNAMES";
+  //@unit protocolSlot requires: mungeMember, protocolSlotCodes, protocolSlots, runtimeKey
   function protocolSlot(key, arity) {
     let slots = protocolSlots.get(key);
     if (slots?.has(arity)) return slots.get(arity);
@@ -943,7 +951,9 @@
     const stem = arity === 0 ? prefix : prefix + (method === "/" ? "_SLASH_" : mungeMember(method)) + "$arity$" + arity;
     // The functions' invoke convention is not keyed (docs/value-layout.md,
     // section 1), as `installMethods` writes it and the analyzer reads it.
-    const slot = arity !== 0 && stem.startsWith("cljs$core$IFn$_invoke$arity$") ? stem : stem + "$LKEY";
+    const code = protocolSlotCodes.indexOf(" " + stem + " ") + stem.length + 2;
+    const slot = arity !== 0 && stem.startsWith("cljs$core$IFn$_invoke$arity$") ? stem
+      : code > stem.length + 1 ? runtimeKey + protocolSlotCodes.slice(code, protocolSlotCodes.indexOf(" ", code)) : stem + "$LKEY";
     slots.set(arity, slot); return slot;
   }
   //@unit methodKeys
@@ -10617,7 +10627,7 @@
   function defineType(Type, names, methods, record, currentConstructor) {
     const [name, ...fields] = names.split?.(" ") ?? names;
     decorateType(Type, fields, methods, record, name, currentConstructor)
-      .forEach((mask, i) => Type.prototype["cljs$lang$protocol_mask$partition" + i + "$$LKEY"] = mask);
+      .forEach((mask, i) => Type.prototype[i ? "cljs$lang$protocol_mask$partition1$$LKEY" : "cljs$lang$protocol_mask$partition0$$LKEY"] = mask);
     Type.cljs$lang$type = true;
     if (!record) Type.cljs$lang$ctorStr = name;
     return Type;
@@ -10661,7 +10671,7 @@
     if (masks == null) return null;
     // A mask map is a literal, built by a builder: an array map's keys and
     // values (light-cljs-1036), or the Pants build's engine map's entries.
-    const name = key => "cljs$lang$protocol_mask$partition" + key + "$$LKEY", entries = [];
+    const name = key => key == 0 ? "cljs$lang$protocol_mask$partition0$$LKEY" : key == 1 ? "cljs$lang$protocol_mask$partition1$$LKEY" : "cljs$lang$protocol_mask$partition" + key + "$$LKEY", entries = [];
     if (isArrayMap(masks)) { const arr = masks.arr$LKEY; for (let i = 0; i < arr.length; i += 2) entries.push([name(arr[i]), arr[i + 1]]); }
     else for (const entry of maps.get(masks) ?? []) entries.push([name(entry.key), entry.value]);
     return value => { for (const [key, mask] of entries) value[key] = mask; };
@@ -12321,7 +12331,7 @@
   //@unit rangeField requires: cellOf, rangeChunks
   function rangeField(value, field) {
     const c = cellOf(value);
-    if (["start", "end", "step", "cnt"].includes(field)) return c[field === "start" ? "first$LKEY" : field === "cnt" ? "count$LKEY" : field + "$LKEY"];
+    if (["start", "end", "step", "cnt"].includes(field)) return c[field === "start" ? "first$LKEY" : field === "cnt" ? "count$LKEY" : field === "end" ? "end$LKEY" : "step$LKEY"];
     return rangeChunks.has(c) ? rangeChunks.get(c)[field === "chunk" ? "chunk" : "tail"] : null;
   }
   //@unit seqMethods requires: count, equalPair, es6Iterator, nth
@@ -12409,7 +12419,7 @@
   // Writing `ns`, `name` or `fqn` makes a shadow property, as before, and
   // `_hash` sets the cache.
   for (const field of ["ns", "name", "fqn", "_hash"]) Object.defineProperty(KeywordValue.prototype, field, {
-    get() { const value = keywordOf(this); return value === undefined ? undefined : value[field === "_hash" ? "hash$LKEY" : field + "$LKEY"]; },
+    get() { const value = keywordOf(this); return value === undefined ? undefined : value[field === "_hash" ? "hash$LKEY" : field === "ns" ? "ns$LKEY" : field === "name" ? "name$LKEY" : "fqn$LKEY"]; },
     set: field === "_hash" ? function (value) {
       if (keywordOf(this) !== this) throw new Error("Expected public core value");
       this.hash$LKEY = value;

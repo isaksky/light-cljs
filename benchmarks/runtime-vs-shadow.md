@@ -3670,3 +3670,35 @@ the re-frame-shaped app.
   tests/support/ratchet_fixtures.rs), and the lookups of the reductions
   above are 28 on `51f38606` and none after. The timings above were not
   repeated on the rebased runtime.
+
+## 2026-11-17: short keyed names at `:advanced` (light-cljs-1048)
+
+At `:advanced` the output writer now writes every keyed name short: `$`, the key, and a code of one or two letters, the most used first (docs/value-layout.md, section 1, "Short names at `:advanced`"). The runtime's `protocolSlot` reads a table of the codes of the protocol slots and markers the text spells, once per key and arity. A name's length changes nothing V8 does with a dotted access, which section 1 measured, so no operation should move.
+
+**Binaries:**
+- `light-cljs-ceede268`: master before light-cljs-1046 landed.
+- `light-cljs-1048-18bc7d4f`: this pellet on that master.
+
+The pellet was then rebased onto `e0168930` (light-cljs-1046). Rebasing changed none of the renaming, so the timings were not repeated.
+
+**Machine:** Node v26.12.1, 24 CPUs. Every run is unreserved: the load average was 6.3 to 12.0 for the gate and 7.7 to 7.8 for the workload.
+
+**The gate** (`bb benchmarks/core-ops/run.bb`, all 64 operations, 5 runs per compiler, alternated, the after run with `--baseline` the before's):
+- **No operation is more than 3% slower.** The largest are `get-hash100` (19.3 to 19.9 ns, +3%, whose runs' ranges overlap, 18.9 to 19.7 and 19.4 to 20.0), `bit-and` (+2%), and `kw-small`, `count-small` and 9 others (+1%).
+- **`contains-small` is 13% faster** (13.7 to 11.9 ns). Its before run's range, 11.7 to 14.1, covers that, so it is noise.
+- **Everything else** is within 2%.
+- **Raw results:** benchmarks/core-ops/out/{before,after}.md, which are not committed.
+
+**Workload 200k** (`compare.bb PROJECT --runs 10 --runtime-only --runtime 1,10,40`; the project's light-cljs output was rebuilt with each binary just before its run; shadow-cljs's output was the same for both). Wall time is the median, with the range in brackets:
+
+| iterations | light before | light after | shadow-cljs (before / after runs) |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.396 s (0.390-0.406) | 0.391 s (0.384-0.398) | 0.324 / 0.318 s |
+| 10 | 0.942 s (0.934-0.955) | 0.950 s (0.937-0.967) | 0.596 / 0.595 s |
+| 40 | 2.458 s (2.430-2.502) | 2.428 s (2.419-2.455) | 1.270 / 1.267 s |
+
+- **Steady state:** 52.9 ms to 52.2 ms per iteration. shadow-cljs's is 24.3 ms in both runs, so light/shadow went from 2.18 to 2.15.
+- **Advanced size:**
+  - **workload 200k:** 3,553,784 to 3,542,213 bytes raw, and 895,481 to 895,084 after gzip -9.
+  - **The re-frame apps** (benchmarks/re-frame-vs-shadow.md, "2026-11-17: short keyed names at `:advanced`"), whole bundles with React after gzip -9, against master `e0168930`: simple -663, TodoMVC -876 and flow -1,059 bytes.
+  - **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): 359 to 7,319 bytes smaller where a fixture keeps collections, and `record-protocol` and `three-records` 20 bytes larger.

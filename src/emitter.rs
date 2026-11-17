@@ -10035,6 +10035,7 @@ fn quoted(text: &str) -> String {
 fn write_string(out: &mut String, units: impl Iterator<Item = u16>, values: bool) {
     const KEY: &[u8] = crate::runtime_key::KEY_PLACEHOLDER.as_bytes();
     const HASH: &[u8] = crate::runtime_key::HASH_PLACEHOLDER.as_bytes();
+    const NAMES: &[u8] = crate::runtime_key::NAMES_PLACEHOLDER.as_bytes();
     out.push('"');
     let start = out.len();
     for unit in units {
@@ -10044,10 +10045,10 @@ fn write_string(out: &mut String, units: impl Iterator<Item = u16>, values: bool
             0x20..=0x7e => out.push(char::from_u32(unit.into()).unwrap()),
             _ => write!(out, "\\u{unit:04x}").unwrap(),
         }
-        // A placeholder is complete at its last byte, `Y` or `H`.
+        // A placeholder is complete at its last byte, `Y`, `H` or `S`.
         if values
-            && matches!(unit, 0x59 | 0x48)
-            && let Some(placeholder) = [KEY, HASH]
+            && matches!(unit, 0x59 | 0x48 | 0x53)
+            && let Some(placeholder) = [KEY, HASH, NAMES]
                 .into_iter()
                 .find(|placeholder| out.as_bytes()[start..].ends_with(placeholder))
         {

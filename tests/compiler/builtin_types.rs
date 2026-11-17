@@ -3186,12 +3186,28 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
         let program = program(&source);
         for (level, reads) in OptimizationLevel::ALL.into_iter().zip(reads) {
-            let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+            let prepared = prepare_application(&program, ApplicationOptions::new(level));
+            let js = prepared.emit_js();
             // The Proxy is asked keyed names: the key, normalised
-            // (docs/value-layout.md, section 5, item 4).
-            let key = light_cljs::runtime_key::RuntimeKey::written(&js).expect("a runtime");
+            // (docs/value-layout.md, section 5, item 4), and `Advanced`'s
+            // short names written whole, in the order the whole names sort.
+            let printed = super::optimization::whole_names(
+                &prepared,
+                &js,
+                &execute(&format!("console.log({js});")),
+            );
+            let printed = printed
+                .lines()
+                .map(|line| {
+                    let mut reads = line.split(' ').collect::<Vec<_>>();
+                    if line.starts_with("get:") {
+                        reads.sort();
+                    }
+                    reads.join(" ") + "\n"
+                })
+                .collect::<String>();
             assert_eq!(
-                key.unapply(&execute(&format!("console.log({js});"))),
+                printed,
                 format!("{expected}{reads}\n"),
                 "at {level}: {extensions}"
             );
@@ -3976,7 +3992,7 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
         ] {
             let script = format!(
                 "{pollution} const r = {js}; console.log(r[0].split(', ').join('\\n')); \
-                 console.log([...new Set(r[1].split(' ').filter(t => !t.startsWith('get:cljs$')))].sort().join(' '));"
+                 console.log([...new Set(r[1].split(' ').filter(t => !t.startsWith('get:cljs$') && !t.startsWith('get:$')))].sort().join(' '));"
             );
             assert_eq!(execute(&script), expected, "at {level}: {pollution}");
         }

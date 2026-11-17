@@ -13638,7 +13638,7 @@ pub(crate) fn keyed_name(name: &str) -> bool {
 
 /// Whether the munged `member` has the shape of a protocol slot, marker or
 /// mask name ([`keyed_js_member`]).
-fn protocol_member(member: &str) -> bool {
+pub(crate) fn protocol_member(member: &str) -> bool {
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let segments = |s: &str, at_least: usize| {
         let mut count = 0;

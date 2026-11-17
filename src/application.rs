@@ -256,7 +256,7 @@ impl PreparedApplication {
         crate::runtime_slice::EmittedRuntime,
         Option<crate::source_map::SourceMapping>,
     ) {
-        let (code, runtime, mut mapping) =
+        let (code, mut runtime, mut mapping) =
             crate::emitter::emit_application(&self.program, self.application(), module, mapped);
         // The output writer: the build's key for its placeholder
         // (docs/value-layout.md, section 1).
@@ -265,11 +265,45 @@ impl PreparedApplication {
             self.level,
             self.runtime_key.as_deref(),
         );
+        // At `Advanced` without pseudo-names every keyed name is short
+        // (docs/value-layout.md, section 1, "Short names at `:advanced`").
+        let key = if self.terse {
+            key.shortened([code.as_str()])
+        } else {
+            key
+        };
         let code = match &mut mapping {
             Some(mapping) => key.apply_mapped(&code, mapping),
             None => key.apply(&code),
         };
+        if self.terse {
+            crate::runtime_slice::shortened_bytes(
+                &mut runtime.bytes,
+                &mut runtime.unit_bytes,
+                &key,
+            );
+        }
         (code, runtime, mapping)
+    }
+    /// The short names [`PreparedApplication::emit_js`]'s output writes for its
+    /// keyed names, each with the whole keyed name it stands for, both with
+    /// the output's key ([`crate::runtime_key::RuntimeKey::short_names`]):
+    /// what reads a name the program prints as the other levels print it.
+    /// Empty where the output writes whole names: below `Advanced` and with
+    /// pseudo-names.
+    pub fn short_names(&self) -> Vec<(String, String)> {
+        if !self.terse {
+            return Vec::new();
+        }
+        let (code, _, _) =
+            crate::emitter::emit_application(&self.program, self.application(), false, false);
+        crate::runtime_key::RuntimeKey::release(
+            [code.as_str()],
+            self.level,
+            self.runtime_key.as_deref(),
+        )
+        .shortened([code.as_str()])
+        .short_names()
     }
     /// What preparation decided for emission.
     fn application(&self) -> crate::emitter::Application<'_> {
@@ -378,8 +412,22 @@ impl PreparedApplication {
             self.level,
             self.runtime_key.as_deref(),
         );
+        // And one table of short names, from all of them.
+        let key = if self.terse {
+            key.shortened(emitted.iter().map(|chunk| chunk.source.as_str()))
+        } else {
+            key
+        };
         for chunk in &mut emitted {
             chunk.source = key.apply(&chunk.source);
+            if self.terse {
+                let runtime = &mut chunk.runtime;
+                crate::runtime_slice::shortened_bytes(
+                    &mut runtime.bytes,
+                    &mut runtime.unit_bytes,
+                    &key,
+                );
+            }
         }
         let report = self.level.advanced().then(|| {
             let chunks = plan

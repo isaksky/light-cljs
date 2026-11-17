@@ -3992,6 +3992,9 @@ Renaming, runtime stripping and terse syntax are implemented
 `Advanced` only. `ApplicationOptions::pseudo_names` (`--pseudo-names`) turns
 all of it off and gives the readable output of Phases 1 and 2: the
 compiler's names, the runtime with its comments and the emitter's layout.
+It also keeps the keyed names whole, which terse output writes short
+(light-cljs-1048; docs/value-layout.md, section 1, "Short names at
+`:advanced`").
 Tests that read the output's text use it (`optimization::readable` in
 `tests/compiler/`); the programs they run, and every differential suite,
 run the terse output.

@@ -477,6 +477,30 @@ pub(crate) fn written_unit_bytes(mut bytes: Vec<usize>) -> Vec<usize> {
     bytes
 }
 
+/// `runtime`'s bytes, counted with keyed names whole ([`written_unit_bytes`]),
+/// recounted as `key` writes them, which gives them short names
+/// ([`crate::runtime_key::RuntimeKey::shortened`]): what each kept terse unit
+/// and the whole factory take in the output.
+pub(crate) fn shortened_bytes(
+    whole: &mut usize,
+    unit_bytes: &mut Option<Vec<usize>>,
+    key: &crate::runtime_key::RuntimeKey,
+) {
+    let Some(bytes) = unit_bytes else {
+        return;
+    };
+    let mut total = 0isize;
+    for (unit, bytes) in crate::terse::TERSE_UNITS.iter().zip(bytes.iter_mut()) {
+        if *bytes > 0 && unit.text.contains("$L") {
+            let change =
+                key.written_growth(unit.text) - crate::runtime_key::growth(unit.text) as isize;
+            *bytes = bytes.saturating_add_signed(change);
+            total += change;
+        }
+    }
+    *whole = whole.saturating_add_signed(total);
+}
+
 /// The bytes of a readable unit's body as the output writer writes them.
 fn written_body(body: &std::ops::Range<usize>) -> usize {
     crate::runtime_key::written_len(&crate::runtime_manifest::ANNOTATED_RUNTIME[body.clone()])

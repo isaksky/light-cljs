@@ -1277,7 +1277,9 @@ maps call slots before any protocol lookup.
   data are own fields; nothing in it is frozen or held in a side table.
 - Protocol slots, protocol masks, protocol markers and the kind number are
   properties of the class prototype whose names end in `$<key>`, the
-  per-build key (section 1). The value's own fields carry the key too.
+  per-build key (section 1). The value's own fields carry the key too. At
+  `:advanced` each keyed name is written short, `$<key>` and a code (section 1,
+  "Short names at `:advanced`").
 - A core operation reads the keyed mask bit or marker and calls the keyed
   slot (section 3). `extend-type` and `specify!` overwrite slots, so no
   operation checks whether a slot was replaced.
@@ -1297,7 +1299,9 @@ maps call slots before any protocol lookup.
 ### What carries it
 
 Every property name that recognises or dispatches a value carries the key:
-the keyed name is the unkeyed one followed by `$<key>`.
+the keyed name is the unkeyed one followed by `$<key>`. At `:advanced` the
+output writes each one short, `$<key>` and a code (below, "Short names at
+`:advanced`").
 
 - protocol method slots, `cljs$core$ICounted$_count$arity$1$<key>`, for the
   runtime's classes, program types, `reify`, `extend-type`, `extend-protocol`
@@ -1389,7 +1393,8 @@ What the numbers say:
 - A computed key's text is smaller (a local name per slot, which minifies),
   13% less gzip on the emitted part. A per-build suffix adds 2% gzip there.
   Size is recorded, not decisive (group rules); light-cljs-1016 may later
-  give `:advanced` short keyed names from a per-build table.
+  give `:advanced` short keyed names from a per-build table (light-cljs-1048
+  did, under "Short names at `:advanced`").
 
 ### Choice: a per-build string, dotted
 
@@ -1487,6 +1492,86 @@ stay, as the promise and the client of the dev build that loaded last (the
 one build of a page with one), and the client's `runtime` and `roots` are
 its build's runtime and definitions. A restart of a watch that changes its
 build's entry changes the key, and a page then needs a full reload.
+
+### Short names at `:advanced`
+
+As light-cljs-1048 built it, `:advanced` output without `--pseudo-names`
+writes every keyed name short: `$`, the key, and a code of one or two
+letters (`a` to `z`, `A` to `Z`, then two of them), the most used names
+taking the shortest codes, ties in the stems' order.
+`x.cljs$core$ICounted$_count$arity$1$<key>(x)` is written `x.$<key>y(x)`
+and `v.cnt$<key>` is `v.$<key>a`. Every kind of keyed name has one: the
+runtime classes' fields, the kind, cell and record names, the masks, the
+markers and the slots, of the runtime's protocols and the program's alike.
+The rules of this section hold:
+
+- **The name carries the key.** A host object or another build never holds
+  a name that starts with `$<key>` by accident.
+- **Two copies of one build share them** ("Decisions for the user" 1). The
+  table depends on the output's text alone, as the key does
+  (`RuntimeKey::shortened`, in `src/runtime_key.rs`).
+- **Every protocol name is keyed** ("Decisions for the user" 2), short or
+  whole.
+- **Dotted property access stays.** `$<key>a` is an identifier.
+
+**The form.** light-cljs-1047 measured two forms on master's output, bundled
+with React (benchmarks/re-frame-vs-shadow.md, "What-ifs on master's
+output"). `$<key>a`, the key then a code, saved 109 to 161 bytes more after
+gzip than `a$<key>` in each re-frame app, so it is the form. Where the
+runtime tests a name by its key, it tests whether the name holds `$<key>`
+(`unkeyedJSON`, which leaves the keyed fields out of a value's JSON). That
+holds for the short names and for the whole names that dev builds keep.
+
+**What the runtime names itself.** `protocolSlot` builds the slot and
+marker names from a protocol's key and arity as the program runs. It names
+the methods `defineType`, `reify`, `extend-type` and `specify!` install, a
+protocol function's dispatch, and the protocol lookups. So the output
+writer gives it, for the `"$LNAMES"` string literal of its unit
+`protocolSlotCodes`, the codes of the protocol slots and markers the text
+spells: ` stem code stem code `. `protocolSlot` looks its stem up there
+first. A slot or marker the text never spells keeps its whole keyed name,
+which only `protocolSlot` writes and reads, so the two agree. The writer
+lists every slot and marker the text spells, whether or not the runtime
+will name it, because which keys reach `protocolSlot` is known only as the
+program runs. The mask and field names the runtime built by concatenation
+are written whole instead (`protocolMasks`, `defineType`, `typeMasks`,
+`rangeField`, the keyword's upstream fields), so that each is renamed with
+its uses.
+
+**Measured.** The table holds 32 stems in simple and TodoMVC and 38 in
+flow, about 380 bytes after gzip. The what-ifs left it out, and the runtime
+they renamed could not have loaded. With the table, each whole bundle
+shrinks 658 bytes after gzip in simple, 860 in TodoMVC and 856 in flow
+(benchmarks/re-frame-vs-shadow.md, "2026-11-17: short keyed names at
+`:advanced`"), against the what-if's 1,018, 1,188 and 1,462 for this form.
+
+**What keeps its whole name.**
+
+- **Not keyed, so not renamed:** every unkeyed name: `toJSON`, `toString`,
+  `call`, the `IFn` invoke names, `Symbol.iterator`, and a program type's
+  own fields.
+- **Keyed, but kept whole:**
+  - the key's own spelling, `"$<key>"`, which `protocolSlot` appends;
+  - a dev build's page globals (`__lightDev$<key>`);
+  - any keyed name whose stem has neither a field's shape nor a protocol
+    name's.
+- **Built at run time:** source that builds a keyed name, such as `js*`
+  that appends the placeholder to a stem it computes, gets the whole name,
+  which no short-named property answers, as a property built from a string
+  misses Closure Compiler's renamed ones.
+- **Spelled whole in source:** member syntax and `js*` that spell a keyed
+  name whole are keyed by the compiler (above), so they are renamed with
+  it.
+
+**Where names stay whole.** Dev builds, the REPL, the macro host, the
+evaluator, the Pants build, the `:none` and `:prepare` levels, and
+`--pseudo-names` keep the whole names, and `"$LNAMES"` stays the
+placeholder there.
+
+**Source maps and size reports.** A source map's segments after a
+shortened name move by what it changed. `--size-report` counts each
+runtime unit as written, short names and the table included
+(`runtime_slice::shortened_bytes`).
 
 ### Two runtimes on one page
 

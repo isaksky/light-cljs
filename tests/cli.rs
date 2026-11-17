@@ -1153,10 +1153,18 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
             ]
             .concat();
             let mapped = compiled(&args);
+            // Terse `Advanced` output calls the slot by its short name, the
+            // code its `protocolSlot` table gives the stem (light-cljs-1048).
+            let unkeyed = light_cljs::runtime_key::unkeyed(&mapped);
+            let short_call = unkeyed
+                .split(" cljs$user$Area$area$arity$3 ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .is_some_and(|code| unkeyed.contains(&format!(".$LKEY{code}(")));
             assert_eq!(
                 mapped.contains("let operand0, operand1, operand2;")
-                    || light_cljs::runtime_key::unkeyed(&mapped)
-                        .contains(".cljs$user$Area$area$arity$3$LKEY("),
+                    || unkeyed.contains(".cljs$user$Area$area$arity$3$LKEY(")
+                    || short_call,
                 level == OptimizationLevel::Advanced,
                 "{args:?}: {mapped}"
             );

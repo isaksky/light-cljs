@@ -26,9 +26,22 @@ const PROGRAM: &str = "(defprotocol P (m [x])) (deftype T [v] P (m [_] v) ICount
       (pr-str [(m t) (.cljs$user$P$m$arity$1 t t) (js* \"~{}.cljs$user$P$m$arity$1$LKEY(~{})\" t t)
                (count t) (undefined? (aget t \"cljs$user$P$m$arity$1\"))
                (undefined? (aget t \"cljs$user$P$m$arity$1$LKEY\"))
-               \"$LKEY\" \"x$LKEY\" \"$LHASH\" (keyword \"$LKEY\") '$LKEY]))";
+               \"$LKEY\" \"x$LKEY\" \"$LHASH\" \"$LNAMES\" (keyword \"$LKEY\") '$LKEY]))";
 
-const PRINTED: &str = "[7 7 7 3 true true \"$LKEY\" \"x$LKEY\" \"$LHASH\" :$LKEY $LKEY]";
+const PRINTED: &str =
+    "[7 7 7 3 true true \"$LKEY\" \"x$LKEY\" \"$LHASH\" \"$LNAMES\" :$LKEY $LKEY]";
+
+/// The code of the short name of `stem` in `js`, `Advanced` output, as the
+/// table the output writer wrote for the runtime's `protocolSlot` gives it
+/// ("stem code stem code").
+fn short_name(js: &str, stem: &str) -> Option<String> {
+    js.match_indices(stem).find_map(|(at, _)| {
+        let before = js[..at].chars().next_back()?;
+        let rest = js[at + stem.len()..].strip_prefix(' ')?;
+        let end = rest.find([' ', '"'])?;
+        matches!(before, '"' | ' ').then(|| rest[..end].to_owned())
+    })
+}
 
 /// The key the output writer wrote into `js`: eight base-36 characters.
 fn key(js: &str) -> RuntimeKey {
@@ -52,18 +65,29 @@ fn release_output_writes_its_own_key_for_the_placeholder() {
         // Only strings of the program spell a placeholder, escaped.
         assert!(!js.contains("$LKEY") && !js.contains("$LHASH"), "{level}");
         assert!(
-            js.contains("\\u0024LKEY") && js.contains("\\u0024LHASH"),
+            js.contains("\\u0024LKEY")
+                && js.contains("\\u0024LHASH")
+                && js.contains("\\u0024LNAMES"),
             "{level}"
         );
         let written = key(&js);
-        assert!(
-            js.contains(&format!("cljs$user$P$m$arity$1${}", written.key())),
-            "{level}"
-        );
-        assert!(
-            unkeyed(&js).contains("cljs$user$P$m$arity$1$LKEY"),
-            "{level}"
-        );
+        let long = format!("cljs$user$P$m$arity$1${}", written.key());
+        if level == OptimizationLevel::Advanced {
+            // `Advanced` writes keyed names short, `$`, the key and a code
+            // (light-cljs-1048), and gives `protocolSlot` the slot's code.
+            let code = short_name(&js, "cljs$user$P$m$arity$1").expect("the slot's code");
+            assert!(!js.contains(&long), "{level}");
+            assert!(
+                js.contains(&format!(".${}{code}(", written.key())),
+                "{level}"
+            );
+        } else {
+            assert!(js.contains(&long), "{level}");
+            assert!(
+                unkeyed(&js).contains("cljs$user$P$m$arity$1$LKEY"),
+                "{level}"
+            );
+        }
         assert_eq!(
             execute(&format!("console.log({js});")),
             format!("{PRINTED}\n"),

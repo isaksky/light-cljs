@@ -1439,6 +1439,25 @@ pub(crate) fn placeholder_errors(source: &str) -> Vec<(usize, String)> {
             format!("`{HASH_PLACEHOLDER}` appears again: only the `runtimeKey` unit holds it"),
         ));
     }
+    // The table of short protocol names, likewise one whole string literal
+    // of `protocolSlotCodes` (docs/value-layout.md, section 1).
+    let names = crate::runtime_key::NAMES_PLACEHOLDER;
+    let tables = source.match_indices(names).collect::<Vec<_>>();
+    for &(offset, _) in &tables {
+        let quoted = |at: usize| source.as_bytes().get(at).is_some_and(|&b| b == b'"');
+        if offset == 0 || !quoted(offset - 1) || !quoted(offset + names.len()) {
+            errors.push((
+                offset,
+                format!("`{names}` appears other than as a whole string literal"),
+            ));
+        }
+    }
+    if tables.len() > 1 {
+        errors.push((
+            tables[1].0,
+            format!("`{names}` appears again: only the `protocolSlotCodes` unit holds it"),
+        ));
+    }
     errors
 }
 

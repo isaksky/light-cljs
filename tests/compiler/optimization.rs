@@ -45,17 +45,46 @@ pub(crate) fn json_at_every_level(source: &str) -> String {
     )
     .unwrap_or_else(|error| panic!("{source}: {error}"));
     let outputs = OptimizationLevel::ALL.map(|level| {
-        let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+        let prepared = prepare_application(&program, ApplicationOptions::new(level));
+        let js = prepared.emit_js();
         let printed = execute(&format!("console.log(JSON.stringify({js}));"));
-        match light_cljs::runtime_key::RuntimeKey::written(&js) {
-            Some(key) => key.unapply(&printed),
-            None => printed,
-        }
+        whole_names(&prepared, &js, &printed)
     });
     for (level, output) in OptimizationLevel::ALL.iter().zip(&outputs).skip(1) {
         assert_eq!(output, &outputs[0], "at {level}: {source}");
     }
     outputs[0].clone()
+}
+/// `printed`, what `js`, the output of `prepared`, printed, with each short
+/// keyed name of an `Advanced` output written whole (light-cljs-1048) and the
+/// output's key as the placeholder, as every level prints them.
+pub(crate) fn whole_names(
+    prepared: &light_cljs::PreparedApplication,
+    js: &str,
+    printed: &str,
+) -> String {
+    let Some(key) = light_cljs::runtime_key::RuntimeKey::written(js) else {
+        return printed.to_owned();
+    };
+    let names = prepared
+        .short_names()
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    let prefix = format!("${}", key.key());
+    let mut whole = String::with_capacity(printed.len());
+    let mut rest = printed;
+    while let Some(at) = rest.find(&prefix) {
+        let after = &rest[at + prefix.len()..];
+        let code = after
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(after.len());
+        let short = &rest[at..at + prefix.len() + code];
+        whole.push_str(&rest[..at]);
+        whole.push_str(names.get(short).map_or(short, String::as_str));
+        rest = &rest[at + short.len()..];
+    }
+    whole.push_str(rest);
+    key.unapply(&whole)
 }
 /// Print the value of the expression `js` with `console.log`.
 fn result(js: &str) -> String {

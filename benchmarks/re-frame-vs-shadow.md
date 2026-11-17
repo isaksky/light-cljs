@@ -1379,3 +1379,68 @@ The whole bundle with React, gzip -9, in bytes:
   - the field reads in the operations, 15 to 30 bytes each in about 20 units;
   - new units: `extraFields`, the fields a copy keeps; `metaFields`; `heldHash` and `holdHash`, which the Pants build's profile swaps;
   - `setMeta`'s non-enumerable field.
+
+## 2026-11-17: short keyed names at `:advanced` (light-cljs-1048)
+
+light-cljs-1048 writes every keyed name of `:advanced` output short: `$`, the build's key, and a code of one or two letters, the most used names first (docs/value-layout.md, section 1, "Short names at `:advanced`"). This is the `$<key>a` form of the what-ifs above, which saved 109 to 161 bytes more after gzip than `a$<key>`.
+
+```sh
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
+bb benchmarks/re-frame.bb growth simple todomvc flow --base research/shadow-credibility/bin/light-cljs-f533efb1 --light BIN
+```
+
+### Setup
+
+- **Binaries:** `light-cljs-e0168930`, master when this was measured, and `light-cljs-1048-f5c498cd`, this pellet rebased on it. Both are V8 builds. `light-cljs-f533efb1` is the group's start.
+- **Ports:** made with porter `shadow-port-tool-983` and master `ceede268`'s binary, one port per app. Each app's bundle at `f533efb1` is within 12 bytes of the earlier sections' (simple 108,631, TodoMVC 138,015, flow 328,657).
+- **Machine:** the load average was 7 to 12, unreserved. Sizes do not depend on load.
+
+### The whole bundle with React, gzip -9
+
+| App | `f533efb1` | master `e0168930` | light-cljs-1048 | Against master | Against `f533efb1` |
+|---|---:|---:|---:|---:|---:|
+| re-frame simple | 108,631 | 115,639 | 114,976 | -663 (-0.57%) | +6,345 (+5.8%) |
+| TodoMVC | 138,015 | 148,184 | 147,308 | -876 (-0.59%) | +9,293 (+6.7%) |
+| flow | 328,657 | 346,963 | 345,904 | -1,059 (-0.31%) | +17,247 (+5.2%) |
+
+light-cljs's output as written, without React, after gzip: simple 69,322 to 68,585 (-737), TodoMVC 100,053 to 99,233 (-820), flow 294,697 to 293,708 (-989). Raw, it is 10,562, 11,582 and 26,320 bytes smaller.
+
+The browser behaviour checks pass for all three apps with light-cljs-1048's builds (`bb benchmarks/re-frame.bb browser simple todomvc flow --compiler light --runs 1`).
+
+### Against the what-if
+
+The saving is 65%, 74% and 72% of the what-if's 1,018, 1,188 and 1,462 bytes, measured on master `685f86dd` with this form. It falls short of the pellet's target ranges: 900 to 1,020, 1,020 to 1,190 and 1,300 to 1,460.
+
+**The cause is a table the what-if left out.** The runtime builds protocol slot and marker names from a protocol's key as the program runs, in `protocolSlot`. It uses them for the methods `defineType`, `reify`, `extend-type` and `specify!` install, for a protocol function's dispatch and for the protocol lookups. The renamed text the what-if bundled would have broken at load:
+- its slots would no longer have matched the names `protocolSlot` builds;
+- the masks were built by concatenation, so the what-if renamed the bare `$` before the key into a short name of its own.
+
+So the output now carries the codes of the protocol slots and markers its text spells, for `protocolSlot`: ` stem code stem code `.
+- **Its size:** 32 stems in simple and TodoMVC and 38 in flow, 1,319 to 1,534 raw bytes.
+- **What it costs:** about 380 bytes after gzip. Taking it out of simple's and TodoMVC's output, which then no longer runs, saves 376 and 382 bytes.
+- **Encodings tried, measured on the output as written:**
+  - stems without `cljs$core$` and `$arity$`: 36 bytes less;
+  - the protocols' keys, `ICounted/-count/1`, which the text already spells: 79 bytes less, but the runtime would have to normalise every key spelling;
+  - the stems sorted: no change.
+- **No table at all** would need the runtime never to build a name the text spells. That means passing names with every method table, protocol function and protocol lookup, which costs about as many bytes per implementation as the table does per name.
+
+### `growth`, rerun
+
+`bb benchmarks/re-frame.bb growth simple todomvc flow --base light-cljs-f533efb1 --light light-cljs-1048-f5c498cd`, gzip -9 of light-cljs's output as written. The whole output's growth since `f533efb1` is now:
+- simple: +6,435;
+- TodoMVC: +9,502;
+- flow: +17,246.
+
+The rows that changed against the section above:
+
+| Cause | simple | TodoMVC | flow |
+|---|---:|---:|---:|
+| Keyed names: the key on field, kind, slot, marker and mask names | +0 (was +736) | +0 (was +793) | +0 (was +931) |
+| Protocol and compiler names written out | +99 (was +574) | +34 (was +558) | -213 (was +539) |
+| The rest: units in both whose text changed, the program, interaction | +1,100 (was +716) | +1,045 (was +663) | +987 (was +494) |
+
+- **Why the keyed rows are 0:** no keyed name of the form `stem$<key>` is left for the chain to strip. The short names keep the key, as the design requires.
+- **Where their cost went:** the key's share is now counted in "the rest".
+- **What "names written out" holds now:** mostly the table's stems.
+- **What else moved:** the new-unit rows moved by up to 300 bytes. Most of that is light-cljs-1046's slots for sets, queues and vectors, which landed between the two runs.
+- **What-ifs:** the three keyed-name what-ifs find no names to rename and save nothing.
