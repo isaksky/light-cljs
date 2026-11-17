@@ -4,7 +4,7 @@
 ;;
 ;;   bb benchmarks/re-frame.bb setup
 ;;   bb benchmarks/re-frame.bb port APP [--porter DIR]
-;;   bb benchmarks/re-frame.bb size APP [APP ...]
+;;   bb benchmarks/re-frame.bb size APP [APP ...] [--light-only]
 ;;   bb benchmarks/re-frame.bb time APP [--runs N]
 ;;   bb benchmarks/re-frame.bb inventory APP
 ;;   bb benchmarks/re-frame.bb breakdown APP
@@ -31,7 +31,11 @@
 ;; what a user ships. React is counted by building the same package imports
 ;; alone with each toolchain (a shadow-cljs build of a namespace that only
 ;; requires them; esbuild of a module that only imports them); the app's own
-;; code is the total minus that.
+;; code is the total minus that. --light-only skips the two shadow-cljs
+;; builds, which do not depend on the light-cljs binary, to compare binaries.
+;;
+;; port needs setup's npm install in the example first: the porter compiles
+;; the example with shadow-cljs, which stops at its first npm require.
 ;;
 ;; time: clean release builds (shadow's .shadow-cljs/builds deleted, light-cljs
 ;; --no-cache), the two compilers alternated, first one first on even runs;
@@ -107,18 +111,27 @@
   (println "esbuild" esbuild-version "and playwright-core" playwright-version "in"
            (str (fs/path research "npm-tools"))))
 
-(defn port [app args]
+(defn port
+  "Port APP with the porter, which compiles the example with shadow-cljs first:
+  that needs setup's npm install in the example, or shadow-cljs stops at the
+  first npm require (\"react\" is not available)."
+  [app args]
   (let [porter (str (fs/absolutize (option args "--porter" (fs/path research "shadow-port-tool"))))
         out (str (port-dir app))
         deps (pr-str {:aliases {:light-cljs/port {:extra-deps {'light-cljs/port {:local/root porter}}}}})]
+    (when-not (fs/exists? (fs/path (example app) "node_modules"))
+      (throw (ex-info (str (example app) " has no node_modules: run `bb benchmarks/re-frame.bb setup` first") {})))
     (fs/delete-tree (fs/path (example app) ".shadow-cljs/builds"))
     (let [r (process/sh {:dir (str (example app)) :err :string :out :string}
                         "clojure" "-Sdeps" deps "-M:light-cljs/port" "-m" "shadow.cljs.devtools.cli"
                         "run" "light-cljs.port/main" ":client" out
-                        "--compile" "--light-cljs" (light-binary args))]
-      (println (str/join "\n" (filter #(str/includes? % "[light-cljs.port]")
-                                      (str/split-lines (str (:err r) (:out r))))))
-      (when-not (zero? (:exit r)) (throw (ex-info "port failed" {:exit (:exit r)}))))))
+                        "--compile" "--light-cljs" (light-binary args))
+          text (str (:err r) (:out r))]
+      (println (str/join "\n" (filter #(str/includes? % "[light-cljs.port]") (str/split-lines text))))
+      (when-not (zero? (:exit r))
+        (let [from (or (str/index-of text "Caused by:") (max 0 (- (count text) 3000)))]
+          (throw (ex-info (str "port failed:\n" (subs text from (min (count text) (+ from 3000))))
+                          {:exit (:exit r)})))))))
 
 ;; ---------------------------------------------------------------------------
 ;; builds
@@ -216,35 +229,43 @@
 
 (defn minus [a b] (merge-with - a b))
 
-(defn size [app binary]
+(defn size
+  "APP's sizes from each compiler's clean release build. LIGHT-ONLY? skips
+  shadow-cljs's two builds, whose output does not depend on the light-cljs
+  binary, for comparing several binaries."
+  [app binary light-only?]
   (let [dir (example app)
-        shadow (shadow-release app)
         light (light-release app binary)
         packages (package-imports (:file light))
         bundle-file (fs/path dir "out/light-bundle.js")
         _ (bundle app (:file light) bundle-file)
         es2015-file (fs/path dir "out/light-bundle-es2015.js")
         _ (bundle app (:file light) es2015-file "--target=es2015")
-        shadow-react (react-only-shadow app packages)
         light-react (react-only-light app packages)
-        app-npm (shadow-packages (fs/path dir "out/shadow-release/manifest.edn"))
-        react-npm (shadow-packages (fs/path dir "out/shadow-react-only/manifest.edn"))
-        rows {:shadow-total (compressed (:file shadow))
-              :shadow-react (compressed shadow-react)
-              :light-total (compressed bundle-file)
+        rows {:light-total (compressed bundle-file)
               :light-es2015 (compressed es2015-file)
               :light-react (compressed light-react)
-              :light-output (compressed (:file light))}]
-    (when (not= app-npm react-npm)
-      (throw (ex-info "the React-only shadow build includes other npm files than the app's"
-                      {:app app-npm :react-only react-npm})))
-    (assoc rows
-           :app app :packages packages :npm-files app-npm
-           :shadow-app (minus (:shadow-total rows) (:shadow-react rows))
-           :light-app (minus (:light-total rows) (:light-react rows)))))
+              :light-output (compressed (:file light))}
+        light-rows (assoc rows :app app :binary binary :packages packages
+                          :light-app (minus (:light-total rows) (:light-react rows)))]
+    (if light-only?
+      light-rows
+      (let [shadow (shadow-release app)
+            shadow-react (react-only-shadow app packages)
+            app-npm (shadow-packages (fs/path dir "out/shadow-release/manifest.edn"))
+            react-npm (shadow-packages (fs/path dir "out/shadow-react-only/manifest.edn"))
+            shadow-rows {:shadow-total (compressed (:file shadow))
+                         :shadow-react (compressed shadow-react)}]
+        (when (not= app-npm react-npm)
+          (throw (ex-info "the React-only shadow build includes other npm files than the app's"
+                          {:app app-npm :react-only react-npm})))
+        (merge light-rows shadow-rows
+               {:npm-files app-npm
+                :shadow-app (minus (:shadow-total shadow-rows) (:shadow-react shadow-rows))})))))
 
 (defn print-size [{:keys [app] :as r}]
   (println (str "\n### " app "\n"))
+  (println (str "light-cljs: " (:binary r) "\n"))
   (println "| Output | Raw bytes | gzip -9 | brotli -q 11 |")
   (println "|---|---:|---:|---:|")
   (doseq [[k label] [[:shadow-total "shadow-cljs: whole release file"]
@@ -255,10 +276,12 @@
                      [:light-app "light-cljs: app code (difference)"]
                      [:light-output "light-cljs output as written, without React"]
                      [:light-es2015 "light-cljs + esbuild --target=es2015: whole bundle"]]
+          :when (get r k)
           :let [{:keys [raw gzip brotli]} (get r k)]]
     (println (format "| %s | %,d | %,d | %,d |" label raw gzip brotli)))
   (println (str "\nPackages imported: " (str/join ", " (:packages r))
-                "; npm files in both shadow builds: " (count (:npm-files r)))))
+                (when (:npm-files r)
+                  (str "; npm files in both shadow builds: " (count (:npm-files r)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; origins: output bytes by source file, from each compiler's source map
@@ -883,21 +906,23 @@
     (print-runtime app todos runs @results)))
 
 ;; ---------------------------------------------------------------------------
+;; Run as a script only: benchmarks/re-frame-kit-test.bb loads this file.
 
-(let [[command & args] *command-line-args*
-      apps (take-while #(not (str/starts-with? % "--")) args)]
-  (case command
-    "setup" (setup)
-    "port" (doseq [app apps] (port app args))
-    "size" (doseq [app apps] (print-size (size app (light-binary args))))
-    "time" (doseq [app apps] (timing app (light-binary args) (parse-long (option args "--runs" "5"))))
-    "inventory" (doseq [app apps] (inventory app (light-binary args)))
-    "origins" (doseq [app apps] (print-origins app (origins app (light-binary args))))
-    "breakdown" (doseq [app apps] (print-breakdown (breakdown app (light-binary args))))
-    "bundle" (doseq [app apps
-                     c (if-let [c (option args "--compiler" nil)] [(keyword c)] compilers)]
-               (println (str (fs/relativize repo (:served (bundle-browser app c (light-binary args)))))))
-    "browser" (doseq [app apps] (browser app (light-binary args) args))
-    "runtime" (doseq [app apps] (runtime app (light-binary args) args))
-    (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... | time APP... [--runs N] | inventory APP... | breakdown APP... | bundle APP... [--compiler C] | browser APP... [--compiler C] [--runs N] [--no-build] | runtime todomvc [--runs N] [--todos N] [--no-build]  [--light BIN] [--porter DIR]")
-        (System/exit 1))))
+(when (= (fs/absolutize *file*) (some-> (System/getProperty "babashka.file") fs/absolutize))
+  (let [[command & args] *command-line-args*
+        apps (take-while #(not (str/starts-with? % "--")) args)]
+    (case command
+      "setup" (setup)
+      "port" (doseq [app apps] (port app args))
+      "size" (doseq [app apps] (print-size (size app (light-binary args) (some #{"--light-only"} args))))
+      "time" (doseq [app apps] (timing app (light-binary args) (parse-long (option args "--runs" "5"))))
+      "inventory" (doseq [app apps] (inventory app (light-binary args)))
+      "origins" (doseq [app apps] (print-origins app (origins app (light-binary args))))
+      "breakdown" (doseq [app apps] (print-breakdown (breakdown app (light-binary args))))
+      "bundle" (doseq [app apps
+                       c (if-let [c (option args "--compiler" nil)] [(keyword c)] compilers)]
+                 (println (str (fs/relativize repo (:served (bundle-browser app c (light-binary args)))))))
+      "browser" (doseq [app apps] (browser app (light-binary args) args))
+      "runtime" (doseq [app apps] (runtime app (light-binary args) args))
+      (do (println "usage: bb benchmarks/re-frame.bb setup | port APP... | size APP... [--light-only] | time APP... [--runs N] | inventory APP... | breakdown APP... | bundle APP... [--compiler C] | browser APP... [--compiler C] [--runs N] [--no-build] | runtime todomvc [--runs N] [--todos N] [--no-build]  [--light BIN] [--porter DIR]")
+          (System/exit 1)))))

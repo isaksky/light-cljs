@@ -18,7 +18,10 @@ bb benchmarks/re-frame.bb origins todomvc simple flow --light BIN
 bb benchmarks/re-frame.bb time todomvc simple flow --runs 5 --light BIN
 bb benchmarks/re-frame.bb inventory todomvc simple flow --light BIN
 bb benchmarks/re-frame.bb breakdown simple todomvc --light BIN
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN   # light-cljs rows only
 ```
+
+**Run `setup` before `port`, in every fresh checkout or worktree.** The porter compiles the example with shadow-cljs first, which needs the example's `node_modules`; without them shadow-cljs stops at the first npm require (`The required JS dependency "react" is not available`). `port` now says so and names `setup`. The kit writes `node_modules`, the shadow-cljs pin and every build's `out/` into `research/re-frame/examples/APP`, so a worktree works on its own copy of `research/re-frame` (20 MB before setup) and never builds in the shared one. The ports it writes, `research/APP-port`, do not depend on the light-cljs binary (it is only used for the porter's compile check), so one port per app serves every binary measured with it.
 
 ## 2026-11-13: TodoMVC, simple and flow
 
@@ -52,6 +55,8 @@ bb benchmarks/re-frame.bb breakdown simple todomvc --light BIN
 ## Release size
 
 `bb benchmarks/re-frame.bb size`: one clean release build per compiler, in bytes.
+
+The tables below are from 2026-11-14, before the output-speed-parity group. Each master commit of that group, master `685f86dd` included, is measured in "2026-11-16: release size across the output-speed-parity group" at the end.
 
 **What each row measures:**
 - **Packages.** light-cljs writes ES modules that import `"react"` and `"react-dom/client"`. esbuild bundles and minifies them with React, which is what a user ships. shadow-cljs bundles React itself, through Closure, into one file. Both builds include the same seven npm files (react, react-dom, react-dom/client, scheduler); the script checks this.
@@ -1031,3 +1036,146 @@ Same binary, same day. Bytes of the light-cljs + esbuild bundle, React included:
 - **Run time** was not measured here: the real spec works, so light-cljs-975 times the same validating program on both sides.
 
 **Rows and notes updated above by this section:** the TodoMVC and flow tables in "Release size" and their findings; the minified-size and language-level notes; the TodoMVC and flow tables and notes in "Where the bytes come from" and "What the attribution shows"; a note in "Build time" that its timings are of the stub ports; the compat reach list and the spec rows in "Port edits by cause"; the todomvc and flow parts of "Full inventory"; the browser rerun line in "Results, 3 runs each".
+
+## 2026-11-16: release size across the output-speed-parity group (light-cljs-1032, light-cljs-1042)
+
+The output-speed-parity group turns the runtime's values into classes (benchmarks/runtime-vs-shadow.md, from light-cljs-1009 on). Its rules ask every pellet to report re-frame simple's and TodoMVC's gzip sizes where they move, and most of its sections say they were not measured. Two Sol reviews flagged it, for light-cljs-1026 (light-cljs-1032) and light-cljs-1016 (light-cljs-1042). This section measures every master commit of the group that has an immutable binary, so each pellet's step shows, with flow as well.
+
+```sh
+bb benchmarks/re-frame.bb setup
+bb benchmarks/re-frame.bb port simple todomvc flow --porter research/shadow-credibility/shadow-port-tool-983 --light BIN
+bb benchmarks/re-frame.bb size simple todomvc flow --light BIN                # f533efb1 and master: both compilers
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN   # every other binary
+bb benchmarks/re-frame.bb browser todomvc simple flow --light research/shadow-credibility/bin/light-cljs-685f86dd
+```
+
+### Setup
+
+- **light-cljs:** the release binaries in `research/shadow-credibility/bin` of the 24 master commits in the tables, from `f533efb1`, the group's start, to `685f86dd`, master now (light-cljs-1015). `light-cljs-56bf7795` was built for this section. `light-cljs-685f86dd` gives the same sizes as a build of this branch, whose compiler sources equal `685f86dd`'s. All are V8 builds. Each binary is the master commit it is named after, not a pellet's work-in-progress build.
+- **shadow-cljs** 3.5.3 builds the unmodified examples. esbuild 0.25.10 bundles light-cljs's module with React (`--minify`, ES module), as in "Release size" above.
+- **Ports:** `shadow-port-tool-983`, the porter of the runtime kit (benchmarks/runtime-vs-shadow.md, "Commands"). Each app was ported once, and every binary built that port. A port does not depend on the binary, which is used only for the porter's compile check.
+  - **Porter 984** writes goog-define flags as `^:const` defs. With it, master's and `f533efb1`'s outputs have the same raw sizes in all three apps, and gzip sizes within 113 bytes.
+  - **flow's port** spells some generated names differently each time it is made. A second port with the same porter left flow's raw size unchanged and moved its gzip size by 37 bytes. Every flow row below is from one port, except `685f86dd`'s. That row is from a second port, on which `56bf7795` gives 348,003 bytes gzip instead of 347,994. Its change is against `56bf7795` on that same port.
+- **Determinism:** light-cljs's sizes are stable: master's light-cljs rows were identical in a full run and in a `--light-only` run. shadow-cljs's whole file moved by up to 92 bytes after gzip between its two clean builds (flow 358,567 and 358,659; TodoMVC 137,100 and 137,102; simple identical). Its master-run sizes are used below.
+- **Machine:** sizes do not depend on load. The 1-minute load average was 7.6 to 17.3, unreserved.
+- **Raw results:** `research/output-speed/app-sizes-1032`. It holds one `size` output per binary (`full-*` with shadow-cljs, `light-*` without) and the browser checks.
+
+### light-cljs's whole bundle per master commit, gzip -9
+
+This is the light-cljs + esbuild bundle with React, what a user ships, in bytes. The change column is against the row above. Pellets are light-cljs numbers, the ones each commit landed since the row before.
+
+| Commit | Pellets | simple | change | TodoMVC | change | flow | change |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `f533efb1` | group start | 108,631 |  | 138,015 |  | 328,645 |  |
+| `80b7a37b` | 1024 | 108,607 | -24 | 137,979 | -36 | 328,645 | 0 |
+| `cf613766` | 1027, 1009 | 109,497 | +890 | 138,883 | +904 | 329,417 | +772 |
+| `85bf5d44` | 1025 | 109,758 | +261 | 139,133 | +250 | 329,678 | +261 |
+| `f91e0e62` | 1010 | 110,313 | +555 | 139,774 | +641 | 330,337 | +659 |
+| `5a99032e` | 1011 | 111,691 | +1,378 | 141,785 | +2,011 | 340,095 | +9,758 |
+| `ef5c9df2` | 1029 | 112,321 | +630 | 142,331 | +546 | 340,990 | +895 |
+| `518edac7` | 1026 | 112,906 | +585 | 142,911 | +580 | 341,552 | +562 |
+| `bb6e8fad` | 1030 | 113,606 | +700 | 143,597 | +686 | 342,363 | +811 |
+| `1bd59e34` | 1028 | 114,215 | +609 | 144,153 | +556 | 342,979 | +616 |
+| `765a92e1` | 1012 | 115,074 | +859 | 145,067 | +914 | 343,821 | +842 |
+| `6f5beb29` | 1033 | 115,112 | +38 | 145,140 | +73 | 343,828 | +7 |
+| `87e5db4b` | 1034 | 116,051 | +939 | 146,028 | +888 | 344,934 | +1,106 |
+| `31578fd9` | 1031, 1036 | 116,898 | +847 | 146,709 | +681 | 345,775 | +841 |
+| `4b52e192` | 1013 | 117,086 | +188 | 146,984 | +275 | 346,138 | +363 |
+| `daea1afc` | 1035 | 118,292 | +1,206 | 148,198 | +1,214 | 347,464 | +1,326 |
+| `c88f22ae` | 1037 | 118,240 | -52 | 148,197 | -1 | 347,162 | -302 |
+| `5cd32c66` | 1038 | 115,488 | -2,752 | 148,034 | -163 | 346,977 | -185 |
+| `a224bc05` | 1022, 1020, 1021 | 115,463 | -25 | 148,038 | +4 | 347,107 | +130 |
+| `1bd3ac3d` | 1014 | 116,176 | +713 | 148,774 | +736 | 347,830 | +723 |
+| `15b858bf` | 1016 | 116,549 | +373 | 149,052 | +278 | 347,830 | 0 |
+| `0b473fdb` | 1040, 1018 | 116,640 | +91 | 149,378 | +326 | 347,994 | +164 |
+| `56bf7795` | 1045 | 116,640 | 0 | 149,378 | 0 | 347,994 | 0 |
+| `685f86dd` | 1015 (master now) | 115,247 | -1,393 | 147,758 | -1,620 | 346,561 | -1,442 |
+
+### The same bundle, raw bytes
+
+| Commit | Pellets | simple | change | TodoMVC | change | flow | change |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `f533efb1` | group start | 341,559 |  | 440,694 |  | 1,260,895 |  |
+| `80b7a37b` | 1024 | 341,625 | +66 | 440,760 | +66 | 1,260,961 | +66 |
+| `cf613766` | 1027, 1009 | 345,561 | +3,936 | 444,680 | +3,920 | 1,267,080 | +6,119 |
+| `85bf5d44` | 1025 | 346,229 | +668 | 445,334 | +654 | 1,269,408 | +2,328 |
+| `f91e0e62` | 1010 | 350,628 | +4,399 | 449,738 | +4,404 | 1,274,059 | +4,651 |
+| `5a99032e` | 1011 | 353,931 | +3,303 | 454,163 | +4,425 | 1,288,728 | +14,669 |
+| `ef5c9df2` | 1029 | 357,642 | +3,711 | 458,110 | +3,947 | 1,293,161 | +4,433 |
+| `518edac7` | 1026 | 361,013 | +3,371 | 461,554 | +3,444 | 1,296,663 | +3,502 |
+| `bb6e8fad` | 1030 | 367,258 | +6,245 | 468,137 | +6,583 | 1,304,310 | +7,647 |
+| `1bd59e34` | 1028 | 372,127 | +4,869 | 473,022 | +4,885 | 1,309,211 | +4,901 |
+| `765a92e1` | 1012 | 377,288 | +5,161 | 478,192 | +5,170 | 1,314,492 | +5,281 |
+| `6f5beb29` | 1033 | 377,306 | +18 | 478,210 | +18 | 1,314,510 | +18 |
+| `87e5db4b` | 1034 | 380,420 | +3,114 | 481,193 | +2,983 | 1,317,670 | +3,160 |
+| `31578fd9` | 1031, 1036 | 383,387 | +2,967 | 484,186 | +2,993 | 1,321,138 | +3,468 |
+| `4b52e192` | 1013 | 384,948 | +1,561 | 485,995 | +1,809 | 1,323,105 | +1,967 |
+| `daea1afc` | 1035 | 390,596 | +5,648 | 491,687 | +5,692 | 1,329,052 | +5,947 |
+| `c88f22ae` | 1037 | 390,768 | +172 | 491,766 | +79 | 1,328,044 | -1,008 |
+| `5cd32c66` | 1038 | 380,540 | -10,228 | 492,261 | +495 | 1,328,763 | +719 |
+| `a224bc05` | 1022, 1020, 1021 | 380,579 | +39 | 492,341 | +80 | 1,329,026 | +263 |
+| `1bd3ac3d` | 1014 | 384,252 | +3,673 | 496,262 | +3,921 | 1,333,019 | +3,993 |
+| `15b858bf` | 1016 | 386,507 | +2,255 | 497,918 | +1,656 | 1,333,019 | 0 |
+| `0b473fdb` | 1040, 1018 | 386,978 | +471 | 498,376 | +458 | 1,333,475 | +456 |
+| `56bf7795` | 1045 | 386,978 | 0 | 498,376 | 0 | 1,333,475 | 0 |
+| `685f86dd` | 1015 (master now) | 380,341 | -6,637 | 491,693 | -6,683 | 1,326,649 | -6,826 |
+
+### Against shadow-cljs: the group's start and master now
+
+The group's start is `f533efb1` and master now is `685f86dd`. light-cljs's row is the whole bundle with React. shadow-cljs's is its whole release file, which includes React.
+
+| App | Measure | light-cljs at start | light-cljs now | Change | shadow-cljs | light/shadow at start | light/shadow now |
+|---|---|---:|---:|---:|---:|---:|---:|
+| simple | raw | 341,559 | 380,341 | +38,782 (+11.4%) | 372,279 | 0.917 | 1.022 |
+| simple | gzip -9 | 108,631 | 115,247 | +6,616 (+6.1%) | 101,065 | 1.075 | 1.140 |
+| simple | brotli -q 11 | 94,673 | 99,807 | +5,134 (+5.4%) | 85,573 | 1.106 | 1.166 |
+| TodoMVC | raw | 440,694 | 491,693 | +50,999 (+11.6%) | 500,588 | 0.880 | 0.982 |
+| TodoMVC | gzip -9 | 138,015 | 147,758 | +9,743 (+7.1%) | 137,102 | 1.007 | 1.078 |
+| TodoMVC | brotli -q 11 | 119,540 | 127,488 | +7,948 (+6.6%) | 114,644 | 1.043 | 1.112 |
+| flow | raw | 1,260,895 | 1,326,649 | +65,754 (+5.2%) | 1,557,342 | 0.810 | 0.852 |
+| flow | gzip -9 | 328,645 | 346,561 | +17,916 (+5.5%) | 358,659 | 0.916 | 0.966 |
+| flow | brotli -q 11 | 270,104 | 284,601 | +14,497 (+5.4%) | 284,350 | 0.950 | 1.001 |
+
+light-cljs's output as written, without React and before esbuild, measured on the same builds:
+
+| App | Measure | At start | Now |
+|---|---|---:|---:|
+| simple | raw | 211,991 | 255,537 |
+| simple | gzip -9 | 62,150 | 68,914 |
+| TodoMVC | raw | 315,624 | 372,504 |
+| TodoMVC | gzip -9 | 89,731 | 99,635 |
+| flow | raw | 1,170,310 | 1,241,489 |
+| flow | gzip -9 | 276,463 | 294,317 |
+
+Every row of every binary is in the raw results.
+
+### Findings
+
+- **The group grew the shipped apps by 5.5 to 7.1% after gzip and 5 to 12% raw.** The growth came in steps of 500 to 1,400 bytes after gzip per conversion pellet, spread over most of them. light-cljs-1015, which removed the kind tables and protocol wrappers, gave back 1,393 to 1,620 bytes after gzip (6,637 to 6,826 raw). This is the size cost of the speed-first rule. It is recorded, not a reason to stop.
+- **Against shadow-cljs after gzip:**
+  - TodoMVC went from level (+0.7%) to 7.8% larger.
+  - simple went from 7.5% to 14.0% larger.
+  - flow went from 8.4% smaller to 3.4% smaller.
+- **Against shadow-cljs before compression:** light-cljs was smaller in all three apps at the start (8 to 19%). Now simple is 2.2% larger, TodoMVC 1.8% smaller and flow still 14.8% smaller.
+- **light-cljs-1026** (`ef5c9df2` to `518edac7`), flagged by light-cljs-1032, cost 585 bytes after gzip in simple, 580 in TodoMVC and 562 in flow (raw 3,371, 3,444 and 3,502). Each keyed field read spells its key.
+- **light-cljs-1016** (`1bd3ac3d` to `15b858bf`), flagged by light-cljs-1042, cost 373 bytes after gzip in simple and 278 in TodoMVC (raw 2,255 and 1,656), for the call-site entries.
+  - flow's output did not change at all.
+  - The entries are used only where every value that can hold a core protocol slot has one. The 1016 section of benchmarks/runtime-vs-shadow.md calls this `ProgramFacts::core_slots_runtime_only`. flow, with sci and zprint, apparently does not meet that condition, so it keeps the operations as before.
+- **The largest single step was light-cljs-1011, keywords and symbols as classes.** Every keyword constant carries its hash. That cost 1,378 bytes after gzip in simple, 2,011 in TodoMVC and 9,758 in flow, whose sci and zprint hold many keywords.
+- **light-cljs-1038 gave simple back 2,752 bytes after gzip, 10,228 raw.**
+  - simple builds no sorted collection, yet it kept the sorted map's red-black tree code from light-cljs-1035 through 1037.
+  - 1038 made a sorted set hold the tree map, and no store inventory is left. simple drops 31 functions, among them `TreeMapCell`, `treePut`, `treeRemove`, the sorted set's constructor and the store inventory `kindedStore`. This comes from comparing pseudo-named builds of 1037 and 1038.
+  - TodoMVC, whose todos are a sorted map, and flow keep the tree code. Each moved by under 200 bytes.
+- **Little or no change:** light-cljs-1045 (dev builds) leaves release output byte-for-byte the same; light-cljs-1024 (the Pants build's runtime) moves it by 66 bytes raw and at most 36 after gzip, and light-cljs-1033 by 18 bytes raw.
+
+### The apps still work
+
+`bb benchmarks/re-frame.bb browser todomvc simple flow --light BIN` ran 3 runs per compiler in headless Chromium, with `light-cljs-56bf7795` and again with `light-cljs-685f86dd` (master now). The results below hold for both.
+- Every check passed 3/3 on both builds: TodoMVC's 9 behaviours, simple's clock and colour input, and flow's flows.
+- No build had console errors or uncaught exceptions.
+- flow's page text after each step equals shadow-cljs's.
+
+### Kit changes made for this
+
+- **`port` names `setup` when the example has no `node_modules`.** It failed before with only "port failed". light-cljs-1042 found this in a worktree without `setup`. It was a missing step, not a porter bug: shadow-cljs could not find `"react"`. A failed port now also prints the porter's cause. See the note under the commands at the top. `bb benchmarks/re-frame-kit-test.bb` tests both failure paths, with the example and the porter's process stubbed, so it builds nothing.
+- **`size --light-only` skips the two shadow-cljs builds.** Those builds do not depend on the light-cljs binary. A run of all three apps takes about 11 seconds instead of 1 minute 45, which makes a run over many binaries practical. The light-cljs rows are the same as a full run's.

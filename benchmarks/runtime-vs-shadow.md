@@ -1355,7 +1355,11 @@ keyed field read spells the key, so programs with vectors grow: `vector-only`
 entries) 9,895 to 10,313, `mapv-count` 48,549 to 51,189, `constant-keys`
 63,142 to 66,159, `features` 92,705 to 96,306; programs without a vector move
 by under 100 bytes. re-frame simple and TodoMVC gzip sizes were not measured
-in this step.
+in this step. Measured afterwards (light-cljs-1032, master `ef5c9df2` to
+`518edac7`, light-cljs and esbuild bundle with React, gzip -9): simple 112,321
+to 112,906 (+585), TodoMVC 142,331 to 142,911 (+580), flow 340,990 to
+341,552 (+562); see "re-frame simple, TodoMVC and flow sizes across the
+group" below.
 
 Raw results (the core-ops EDN and Markdown of every run above, the first
 gate and the back-to-back recheck included, and both workload runs):
@@ -2861,7 +2865,11 @@ call site.
   to 328 bytes where a fixture calls the operations in its functions, 939
   for the features example; the readable runtime of `none` and `prepare`
   about 4,500 bytes. TodoMVC and re-frame simple were not ported in this
-  run.
+  run. Measured afterwards (light-cljs-1042, master `1bd3ac3d` to
+  `15b858bf`, light-cljs and esbuild bundle with React, gzip -9): simple
+  116,176 to 116,549 (+373), TodoMVC 148,774 to 149,052 (+278), flow
+  unchanged at 347,830; see "re-frame simple, TodoMVC and flow sizes
+  across the group" below.
 
 ## 2026-11-16: keywords and symbols compare by their own slots (light-cljs-1040)
 
@@ -3213,4 +3221,26 @@ which this pellet does not change.
   651,992 bytes; the size ratchet (tests/support/ratchet_fixtures.rs,
   noted there) 75 to 5,640 bytes smaller where a fixture keeps
   collections, `rest-fn` 735 larger. TodoMVC and re-frame simple were not
-  ported in this run.
+  ported in this run. Measured afterwards (light-cljs-1032, master `56bf7795`
+  to `685f86dd`, light-cljs and esbuild bundle with React, gzip -9): simple
+  116,640 to 115,247 (-1,393), TodoMVC 149,378 to 147,758 (-1,620), flow
+  348,003 to 346,561 (-1,442); see "re-frame simple, TodoMVC and flow sizes
+  across the group" below.
+## 2026-11-16: re-frame simple, TodoMVC and flow sizes across the group (light-cljs-1032, light-cljs-1042)
+
+Most sections above say re-frame simple's and TodoMVC's gzip sizes were not measured. benchmarks/re-frame-vs-shadow.md, "2026-11-16: release size across the output-speed-parity group", now measures them for all 24 master commits of the group that have a binary in research/shadow-credibility/bin, from `f533efb1` to `685f86dd`. It covers simple, TodoMVC and flow, with each commit's change, and shadow-cljs 3.5.3 beside them. Raw results are in research/output-speed/app-sizes-1032.
+
+The light-cljs and esbuild bundle with React, gzip -9, from the group's start to master now:
+
+| App | `f533efb1` | `685f86dd` | Change | shadow-cljs | light/shadow, start to now |
+|---|---:|---:|---:|---:|---:|
+| re-frame simple | 108,631 | 115,247 | +6,616 (+6.1%) | 101,065 | 1.075 to 1.140 |
+| TodoMVC | 138,015 | 147,758 | +9,743 (+7.1%) | 137,102 | 1.007 to 1.078 |
+| flow | 328,645 | 346,561 | +17,916 (+5.5%) | 358,659 | 0.916 to 0.966 |
+
+- **Raw growth** was 11.4% for simple, 11.6% for TodoMVC and 5.2% for flow.
+- **Per pellet:** most conversion pellets added 500 to 1,400 bytes after gzip.
+  - light-cljs-1011, which gives every keyword constant its hash, added 1,378, 2,011 and 9,758 bytes in simple, TodoMVC and flow.
+  - light-cljs-1038 gave simple back 2,752 bytes: simple no longer keeps the sorted map's tree code.
+  - light-cljs-1015 gave back 1,393, 1,620 and 1,442 bytes in simple, TodoMVC and flow.
+- **The browser behaviour checks** pass 3/3 on master (`56bf7795` and `685f86dd`) for TodoMVC, simple and flow, on both compilers (`bb benchmarks/re-frame.bb browser todomvc simple flow`).
