@@ -3573,3 +3573,100 @@ Metadata, cached hashes, a public constructor's slots, a subvector's source and 
 **Size.**
 - **Advanced:** the fixture sizes are noted in tests/support/ratchet_fixtures.rs. The ceilings of `vector-only` and `closed-params` move down.
 - **re-frame apps:** the whole bundles shrink after gzip by 60 bytes (simple), 161 (TodoMVC) and 112 (flow), against the 600 to 900 bytes light-cljs-1047 expected. benchmarks/re-frame-vs-shadow.md says why.
+
+## 2026-11-17: vectors and maps reduce by their own slots (light-cljs-1055)
+
+**What.** A vector, a subvector, an array map and a hash map have a
+`-reduce` slot, and a vector, a subvector and the three maps a `-kv-reduce`
+slot; `reduce` and `reduce-kv` call them before any protocol lookup
+(`reduce.slots`, 96 bytes of bytecode, and `reduceKv.slots`, 100). Where
+`extend-type` or `specify!` gave the value a `-seq`, the slot takes
+`reduce`'s own path, as `reduce` walks a program's seq.
+docs/value-layout.md, "What light-cljs-1055 landed".
+
+Binaries in research/shadow-credibility/bin: before `light-cljs-d8a28b21`
+(master), after `light-cljs-2de6cf66` (the full gate and the workloads) and
+`light-cljs-07ee60f8` (this pellet's runtime before rebasing onto light-cljs-1053, after the review's
+fixes to public constructors' maps and clones; the touched operations and
+the sizes below). Unreserved: peer workers built and tested throughout.
+Raw results: research/output-speed/reduce-slots-1055.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, every operation; before
+load 4.04-8.02, after 2.90-9.27), ns per operation, median (range), the
+reductions and every operation that moved by 5% or more:
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| reduce-vec-1000 | 5,262 (5,242-5,323) | 5,116 (4,916-5,153) | -3% | 2,511 / 2,506 | 2.10 | 2.04 |
+| reduce-map-inc-1000 | 48,964 (48,263-49,590) | 46,957 (46,305-49,318) | -4% | 39,666 / 40,352 | 1.23 | 1.16 |
+| reduce-kv-small | 50.4 (49.9-50.4) | 6.83 (6.69-7.04) | -86% | 38.0 / 37.9 | 1.33 | 0.18 |
+| reduce-entries-small | 356.7 (356.2-362.4) | 90.0 (87.9-94.8) | -75% | 77.1 / 78.5 | 4.63 | 1.15 |
+| mapv-1000 | 47,982 (47,779-48,446) | 46,518 (45,568-48,006) | -3% | 14,248 / 14,308 | 3.37 | 3.25 |
+| into-xform-1000 | 65,935 (64,751-66,722) | 66,906 (63,140-67,668) | +1% | 18,375 / 18,185 | 3.59 | 3.68 |
+| group-by-100 | 12,248 (12,214-12,445) | 11,551 (11,321-12,425) | -6% | 5,123 / 5,049 | 2.39 | 2.29 |
+| filter-count-1000 | 41,231 (40,659-41,982) | 39,555 (39,032-41,633) | -4% | 28,376 / 28,791 | 1.45 | 1.37 |
+| transient-vec-100 | 4,931 (4,843-4,985) | 4,611 (4,528-4,808) | -6% | 1,166 / 1,165 | 4.23 | 3.96 |
+
+- **No operation is slower by more than 3%** (`vec-literal-4`, +3%).
+- `reduce-kv-small` and `reduce-entries-small` reduce array maps of 7 keys:
+  the `-kv-reduce` slot walks the map's pairs (`mapKvReduce`), which V8
+  inlines with the reducing function, and the `-reduce` slot builds an
+  entry per pair without the seq of all of them, which `reduce` built
+  first.
+- **The landed runtime** (`07ee60f8`, `--ops` of the eight reductions, 5
+  runs, alternated with a master run; master load 9.66-11.31, after
+  10.48-12.88): reduce-vec-1000 5,278 to 5,201 (-1%), reduce-map-inc-1000
+  39,810 to 36,937 (-7%), filter-count-1000 34,693 to 34,548, into-xform-1000
+  67,356 to 65,690 (-2%), mapv-1000 47,783 to 47,463, reduce-kv-small 49.9 to
+  7.02, reduce-entries-small 369.0 to 94.5, group-by-100 13,055 to 13,343
+  (+2%).
+- **No call-site entry**: a reduction's cost is its steps, and the wrapper
+  costs a few nanoseconds once per reduction.
+
+**Off the gate**, in a scratch program with one `extend-type` (a record
+extended with `ICounted`, as light-cljs-1046's), `07ee60f8` against
+`d8a28b21`, 3 processes each, median of 7 rounds (load 6-11), ns per call:
+`reduce` of a 3-item vector 132 to 20.5 (arity 2: 134 to 16), of a 40-item
+vector 301 to 216, of a 5-item subvector 133 to 32, of an array map of 3
+keys 263 to 46, of a hash map of 20 keys 723 to 251; `reduce-kv` of the
+array map 62 to 16, of the hash map 164 to 116, of a 3-item vector 269 to
+19, of a sorted map of 3 keys 71 to 23. Without `extend-type`: `reduce` of
+the 3-item vector 72 to 20.5, of the array map 204 to 46, `reduce-kv` of the
+array map 32 to 16. A map entry, which has no slot, 135 to 120. In the same
+readable release output, the protocol lookups of these reductions, public
+constructors' vectors and maps included, are 28 calls on master and none
+after (`reduce_of_vectors_and_maps_takes_no_protocol_lookup`).
+
+**Workload 200k and the re-frame-shaped 200k app** (`compare.bb PROJECT
+--runs 5 --runtime-only --runtime 1,40`, the light-cljs output rebuilt with
+each binary just before its runs), wall time at 40 iterations, median
+(range), and light-cljs's steady state:
+
+| project | light before | light after (`2de6cf66`) | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k | 2.324 s (2.309-2.339) | 2.200 s (2.182-2.236) | 1.354 / 1.330 s | 49.2 to 46.1 (shadow-cljs 26.1 / 25.6) | 10.6-10.8 / 10.8-11.2 |
+| re-frame-shaped | 22.064 s (21.719-23.058) | 21.344 s (21.300-21.516) | 12.237 / 12.190 s | 511.9 to 494.2 (shadow-cljs 276.2 / 275.3) | 9.3-12.3 / 10.0-10.9 |
+
+Light/shadow steady state 1.89 to 1.80 for the workload, 1.85 to 1.80 for
+the re-frame-shaped app.
+
+**Size** (`07ee60f8` against `d8a28b21`):
+- advanced runtime slices (`--size-report`): the gate 148,808 to 152,646
+  bytes (972 to 987 units), workload 200k 182,146 to 185,986 (1,268 to
+  1,283), the re-frame-shaped app 198,867 to 203,150 (1,396 to 1,413); most
+  of it is the slots' keyed names, written out in full until
+  light-cljs-1048 shortens them;
+- the size ratchet (tests/support/ratchet_fixtures.rs, noted there): 1,158
+  to 1,937 bytes more where a program reduces vectors or maps, no ceiling
+  moves; the readable runtime about 10,100 bytes more;
+- TodoMVC (the port's light-cljs output alone, gzip -9): 85,692 to 86,377
+  bytes, +685 (+0.8% of that output, about 0.46% of the 147,758-byte bundle
+  with React of light-cljs-1032's table). Re-frame simple and flow were not
+  ported in this run.
+- **Rebased onto light-cljs-1053** (master `51f38606`, its runtime built as
+  `light-cljs-51f38606`): the public constructors' slots are a field the
+  copies keep, which the array map's slot reads; the ratchet fixtures grow
+  as before against it (1,158 to 1,908 bytes, noted in
+  tests/support/ratchet_fixtures.rs), and the lookups of the reductions
+  above are 28 on `51f38606` and none after. The timings above were not
+  repeated on the rebased runtime.

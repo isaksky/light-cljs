@@ -1167,6 +1167,55 @@ fields.
   (`Xa.get(v)`), and the public constructors' branches stay
   (benchmarks/re-frame-vs-shadow.md).
 
+What light-cljs-1055 landed: `reduce` and `reduce-kv` of the vectors and
+maps call slots before any protocol lookup.
+
+- **Slots.** A vector, a subvector, an array map and a hash map have
+  `-reduce`, one method in both arity slots that reads the arguments'
+  count (upstream's PersistentHashMap has no IReduce, but `reduceable?` of
+  a hash map was already true here); a vector, a subvector and the three
+  maps have `-kv-reduce`, as upstream's. A map entry keeps none: upstream's
+  has IReduce, but no program reduces one often enough to pay its bytes.
+  `reduce.slots` and `reduceKv.slots` call them first, outside
+  `reduce.protocol` and `reduceKv`'s own lookup, which find a program's
+  method in the same slot. `reduce.slots` calls each arity's slot through
+  a function of its own, so that it stays under the 100 bytes of
+  light-cljs-1033 (96; with both arities inline it was 166);
+  `reduceKv.slots` is 100. No call-site entry: a reduction's cost is its
+  steps, and the wrapper costs a few nanoseconds once per reduction.
+- **Complete, with the walk of an extended `-seq`.** `reduce` walks a
+  vector's or a map's seq, so an `-seq` that `extend-type` or `specify!`
+  gave it decides what is reduced. A vector's or subvector's `-reduce`
+  compares the value's `-seq` slot with its class's own, read once as the
+  slot loads (`own`), and a map's tests that it has none (no map class has
+  one): only then does it walk the store (`vectorReduce`) or the pairs
+  (`mapReduceSlot`, an entry of each pair of `mapPairs`, as the seq holds
+  them, without the seq). A public constructor's array map (its `slots`
+  field, which its copies and clones keep since light-cljs-1053) is walked
+  by its array and count, as its iterator walks it (`iteratorArrayMap`),
+  unless a program gave it `-iterator`, and its vector of more than 32
+  items in its store, as `reduce` walks them. Otherwise, and for a public
+  constructor's shorter vector (`callerTail`), a vector of up to 32 items
+  whose tail holds more than its count (whose seq walks the whole tail),
+  and where a compiler session demands declarations (`slotFirst`
+  off: `reduce`'s path demands each protocol it reads), the slot takes
+  `reduce`'s own path (`reduceOwn`, the function under `reduce.protocol`,
+  so that a slot the compile-time lookup calls does not find itself
+  again), which then takes no lookup but for a program's `-seq`. The
+  `-kv-reduce` slots read what `reduceKv` reads (the items by count, all
+  of a caller's array first; the pairs; a sorted map's tree) and never
+  take its path, whose own lookup would find the slot again.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1055): the
+  gate's `reduce-kv-small` 50 to 7 ns and `reduce-entries-small` 357 to 90
+  (light/shadow 4.63 to 1.15), no operation over 3% slower; with one
+  `extend-type`, `reduce` of a 3-item vector 132 to 20 ns and of an array
+  map of 3 keys 263 to 46; workload 200k's steady state 49.2 to 46.1 ms
+  per iteration; the runtime slices 3.8 to 4.3 KB larger, mostly the
+  slots' keyed names.
+- **What is left.** The seqs' `-reduce` (upstream's ChunkedSeq, the map
+  seqs, LazySeq and the rest), a map entry's, and a sorted map's or set's
+  `reduce` still take the lookup first in an `extend-type` program.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

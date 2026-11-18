@@ -693,6 +693,19 @@
 //! `constant-literals` 40,725 to 40,851, `callbacks` 65,114 to 65,243). The
 //! ceilings of `vector-only` (8,300) and `closed-params` (20,000) move down;
 //! no ceiling moves up.
+//!
+//! Vectors and maps reduce by their own slots (light-cljs-1055,
+//! 2026-11-17): the `-reduce` slots of vectors, subvectors and array and
+//! hash maps, the `-kv-reduce` slots of vectors, subvectors and the three
+//! maps, and the slot-first wrappers of `reduce` and `reduce-kv`. The
+//! readable runtime grows about 9,800 bytes (none 678,661 for `add`, where
+//! 668,899), under every none and prepare ceiling. Advanced, against master
+//! `51f38606` (the command line's output): 1,158 to 1,908 bytes where a
+//! program reduces vectors or maps (`keyword-lookups` 59,725 to 61,633,
+//! `eight-records` 51,748 to 52,906, `event-maps` 57,493 to 58,752,
+//! `mapv-count` 58,781 to 59,940, `callbacks` 65,243 to 66,403,
+//! `protocol-params` 71,406 to 72,567), mostly the slots' long keyed names;
+//! every other fixture is unchanged. No ceiling moves.
 
 pub struct Fixture {
     pub name: &'static str,
