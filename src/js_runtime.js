@@ -1393,14 +1393,22 @@
   // seqs, `rseq` and `subseq` of its tree (`treeMapSeq`) and no seq of
   // this type a view of an array; a cell holds no `arr`, so is no view.
   viewType(builtinType(treeMapSeqConstructor, sequencePrototype), TreeMapStackCell, 11);
-  //@unit TreeMapStackCell.type effect: TreeMapStackCell requires: emptyList, isListCell, peek,
-  //@ treeMapSeqConstructor, TreeMapStackCell, treeSeqNext
+  //@unit TreeMapStackCell.type effect: TreeMapStackCell requires: emptyList, first, isListCell,
+  //@ peek, slotFirst, treeMapSeqConstructor, TreeMapStackCell, treeSeqNext
   // A sorted map's seq is a cell of the constructor's prototype: its `first`
   // is the node atop its stack, its `rest` the seq of the stack past it
-  // (`treeSeqNext`), or the empty list.
+  // (`treeSeqNext`), or the empty list. Where a program can extend lists, a
+  // list stack without an `-peek` slot peeks its `first` through `first`'s
+  // wrappers, as `peek` of a list does after its lookup finds no method
+  // (light-cljs-1064); a compiler session demanding declarations takes
+  // `peek`.
   TreeMapStackCell.prototype = treeMapSeqConstructor.prototype;
   Object.defineProperties(treeMapSeqConstructor.prototype, {
-    first$LKEY: {configurable: true, get() { const stack = this.stack$LKEY; return isListCell(stack) ? stack.first$LKEY : peek(stack); }},
+    first$LKEY: {configurable: true, get() {
+      const stack = this.stack$LKEY;
+      if (isListCell(stack)) return stack.first$LKEY;
+      return slotFirst.on && stack != null && stack.cljs$lang$kind$$LKEY === 12 && stack.cljs$core$IStack$_peek$arity$1$LKEY === undefined ? first(stack) : peek(stack);
+    }},
     rest$LKEY: {configurable: true, get() { return treeSeqNext(this) ?? emptyList; }}
   });
   //@unit emptyList requires: EmptyListCell
@@ -2828,8 +2836,8 @@
     }
     return result;
   }
-  //@unit queueFromArray.conj effect: queueFromArray when: conj, conjSite requires: conj, kindHooks,
-  //@ makeVector, meta, PersistentQueueValue, queueFromArray, queues
+  //@unit queueFromArray.conj effect: queueFromArray when: conj, conjSite, treeMapSeqConstructor
+  //@ requires: conj, kindHooks, makeVector, meta, PersistentQueueValue, queueFromArray, queues
   kindHooks.conjQueue = (result, item) => {
     const q = result?.slots$LKEY;
     return q ? PersistentQueueValue(meta(result), q.count + 1, q.front != null ? q.front : conj(null, item), q.front != null ? conj(q.rear ?? makeVector([]), item) : makeVector([]), null)
@@ -2838,8 +2846,8 @@
   //@unit makeVector.conj effect: makeVector, mapEntry when: conj requires: kindHooks, makeVector,
   //@ vectorConj
   kindHooks.conjVector = (store, item) => makeVector(null, vectorConj(store, item));
-  //@unit SubvecValue.conj effect: SubvecValue when: conj, conjSite requires: assoc, kindHooks,
-  //@ meta, SubvecValue
+  //@unit SubvecValue.conj effect: SubvecValue when: conj, conjSite, treeMapSeqConstructor requires: assoc,
+  //@ kindHooks, meta, SubvecValue
   // A vector with slots and a source is a Subvec its public constructor built.
   kindHooks.conjSubvec = (result, item) => {
     const slots = result?.slots$LKEY;
@@ -2848,9 +2856,9 @@
   //@unit makeMap.conj effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: conj
   //@ requires: kindHooks, mapConj
   kindHooks.conjMap = mapConj;
-  //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj, conjSite requires: assoc,
-  //@ copyEntries, kindHooks, makeSet, meta, missing, PersistentHashSetValue, putMember, sets,
-  //@ treeSetOf
+  //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj, conjSite,
+  //@ treeMapSeqConstructor requires: assoc, copyEntries, kindHooks, makeSet, meta, missing,
+  //@ PersistentHashSetValue, putMember, sets, treeSetOf
   // The set `conj` builds, or `missing` where it adds nothing. A hash set's
   // trie copies one path (`putMember`); a sorted set's tree map adds the
   // member with a nil value, as upstream's (light-cljs-1038).
@@ -5084,8 +5092,9 @@
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return store.cnt$LKEY ? vectorNth(store, store.cnt$LKEY - 1, null) : null;
   });
-  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj, conjSite requires: builtinSlot,
-  //@ conjMeta, makeVector, noBranch, PersistentVectorValue, vectorConj
+  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, makeVector, noBranch,
+  //@ PersistentVectorValue, vectorConj
   PersistentVectorValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     const store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
@@ -5144,8 +5153,9 @@
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return self.cnt$LKEY ? vectorNth(self, self.cnt$LKEY - 1, null) : null;
   });
-  //@unit SubvecValue.conjSlot effect: SubvecValue when: conj, conjSite requires: builtinSlot,
-  //@ conjMeta, kindHooks, makeVector, noBranch, preserveMeta, SubvecValue, vectorConj
+  //@unit SubvecValue.conjSlot effect: SubvecValue when: conj, conjSite, treeMapSeqConstructor
+  //@ requires: builtinSlot, conjMeta, kindHooks, makeVector, noBranch, preserveMeta, SubvecValue,
+  //@ vectorConj
   SubvecValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     if (self.slots$LKEY) return preserveMeta(self, kindHooks.conjSubvec(self, item));
@@ -5222,8 +5232,8 @@
     if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
     return tail[1];
   });
-  //@unit MapEntryType.conjSlot effect: MapEntryType when: conj, conjSite requires: builtinSlot,
-  //@ conjMeta, makeVector, MapEntryType, noBranch, vectorConj
+  //@unit MapEntryType.conjSlot effect: MapEntryType when: conj, conjSite, treeMapSeqConstructor
+  //@ requires: builtinSlot, conjMeta, makeVector, MapEntryType, noBranch, vectorConj
   MapEntryType.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     return conjMeta(self, makeVector(null, vectorConj(self, item)));
@@ -5382,8 +5392,8 @@
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(contains);
   //@unit reduce.slots effect: IndexedSeqValue, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch, reduce,
-  //@ slotFirst
+  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch,
+  //@ reduce, slotFirst
   // `reduce` of a value with a `-reduce` slot (light-cljs-1055) calls it
   // before `reduce.protocol`'s lookup, which finds a program's method there
   // too. Each arity's call is a function of its own, so that the wrapper
@@ -5755,8 +5765,9 @@
     const members = self.entries$LKEY;
     return members == null ? noBranch : kindHooks.seqSet(self, members);
   });
-  //@unit PersistentHashSetValue.conjSlot effect: PersistentHashSetValue when: conj, conjSite
-  //@ requires: builtinSlot, conjMeta, kindHooks, missing, noBranch, PersistentHashSetValue
+  //@unit PersistentHashSetValue.conjSlot effect: PersistentHashSetValue when: conj, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, kindHooks, missing, noBranch,
+  //@ PersistentHashSetValue
   PersistentHashSetValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     if (self.entries$LKEY === undefined) return noBranch;
     const built = kindHooks.conjSet(self, self, item);
@@ -5790,19 +5801,20 @@
     const items = self.arr$LKEY;
     return items === undefined ? noBranch : kindHooks.seqQueue(self, items);
   });
-  //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjSite requires: builtinSlot,
-  //@ kindHooks, noBranch, PersistentQueueValue, preserveMeta
+  //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, kindHooks, noBranch, PersistentQueueValue,
+  //@ preserveMeta
   PersistentQueueValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     return self.arr$LKEY === undefined ? noBranch : preserveMeta(self, kindHooks.conjQueue(self, item));
   });
-  //@unit PersistentArrayMapValue.conjSlot effect: PersistentArrayMapValue when: conj, conjSite
-  //@ requires: builtinSlot, mapConjSlot, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.conjSlot effect: PersistentArrayMapValue when: conj, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, mapConjSlot, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
-  //@unit PersistentHashMapValue.conjSlot effect: PersistentHashMapValue when: conj, conjSite
-  //@ requires: builtinSlot, mapConjSlot, PersistentHashMapValue
+  //@unit PersistentHashMapValue.conjSlot effect: PersistentHashMapValue when: conj, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, mapConjSlot, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
-  //@unit treeMapConstructor.conjSlot effect: treeMapConstructor when: conj, conjSite requires: builtinSlot,
-  //@ mapConjSlot, treeMapConstructor
+  //@unit treeMapConstructor.conjSlot effect: treeMapConstructor when: conj, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, mapConjSlot, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
 
   // The seqs over an array or a string (`viewOf`) answer `first`, `rest`,
@@ -8037,14 +8049,16 @@
   // `-first` and `-next` of its entries' seq and `-key` of the entry, each
   // calls the slot that holds one (light-cljs-1064): the map seqs', a map
   // entry's that `extend-type` gave it, else a map entry's own `-key` and
-  // `-val`. Where none does, or a compiler session demands declarations
-  // (`slotFirst`), it takes the protocol's dispatcher, as before.
+  // `-val`. As the slot-first wrappers, it reads a seq's slots only where the
+  // seq has a keyed kind, so a host seq's member written without its
+  // protocol stays unread. Where none does, or a compiler session demands
+  // declarations (`slotFirst`), it takes the protocol's dispatcher, as before.
   KeySeqCell.prototype = Object.create(sequencePrototype);
   KeySeqCell.prototype.cljs$lang$kind$$LKEY = 26;
   Object.defineProperties(KeySeqCell.prototype, {
     first$LKEY: {configurable: true, get() {
       const entries = this.mseq$LKEY, keyed = this.cell$LKEY === "keys", on = slotFirst.on;
-      const own = on ? entries.cljs$core$ISeq$_first$arity$1$LKEY : undefined;
+      const own = on && entries.cljs$lang$kind$$LKEY !== undefined ? entries.cljs$core$ISeq$_first$arity$1$LKEY : undefined;
       let entry = own ? own.call(entries, entries) : noBranch;
       if (entry === noBranch) entry = (protocolHooks.firstProtocol ?? first)(entries);
       if (on && isEntryCell(entry)) {
@@ -8054,7 +8068,7 @@
       return keyed ? (protocolHooks.keyProtocol ?? entryKey)(entry) : (protocolHooks.valProtocol ?? entryVal)(entry);
     }},
     rest$LKEY: {configurable: true, get() {
-      const entries = this.mseq$LKEY, own = slotFirst.on ? entries.cljs$core$INext$_next$arity$1$LKEY : undefined;
+      const entries = this.mseq$LKEY, own = slotFirst.on && entries.cljs$lang$kind$$LKEY !== undefined ? entries.cljs$core$INext$_next$arity$1$LKEY : undefined;
       let following = own ? own.call(entries, entries) : noBranch;
       if (following === noBranch) following = protocolHooks.satisfies?.(methodKeys[39], entries) ? protocolHooks.nextProtocol(entries) : next(entries);
       return following == null ? emptyList : mapProjection(following, this.cell$LKEY === "keys" ? 0 : 1, true);
@@ -8411,8 +8425,8 @@
     const members = sets.get(set), comparator = comparatorOf(set), i = sortedPosition(members, key, comparator);
     return i < members.length && comparator.call(null, members[i].key, key) === 0 ? members[i].key : notFound;
   };
-  //@unit treeMapSeqConstructor requires: conj, constructorSlots, emptyList, first, ListCell, next,
-  //@ protocolHooks, treeLeft, TreeMapStackCell, treeRight, truth
+  //@unit treeMapSeqConstructor requires: conj, constructorSlots, count, emptyList, first, ListCell,
+  //@ next, ownMeta, protocolHooks, slotFirst, treeLeft, TreeMapStackCell, treeRight, truth
   // The public constructor; and the seqs a sorted map builds (light-cljs-1035),
   // of its own, which build their cells and their stacks' lists here.
   function treeMapSeqConstructor(metadata, stack, ascending, suppliedCount, cachedHash) {
@@ -8424,9 +8438,17 @@
   // protocol implementations (`extend-type`, `specify!`), every stack takes
   // `peek`, `first`, `next` and `conj`, as upstream's.
   const isListCell = stack => !protocolHooks.extend && stack != null && stack.cljs$lang$kind$$LKEY === 12 && stack.count$LKEY >= 1;
+  // Where a program can extend lists, a list stack to which no extension
+  // gave an `-conj` or `-meta` and which holds no metadata: `conj` onto it
+  // builds a list of the count `count` gives, as `conj` would after its
+  // lookups find no method (light-cljs-1064). A compiler session demanding
+  // declarations takes `conj`.
+  const unextendedListStack = stack => slotFirst.on && stack.cljs$lang$kind$$LKEY === 12 && stack.count$LKEY >= 1
+    && stack.cljs$core$ICollection$_conj$arity$2$LKEY === undefined && stack.cljs$core$IMeta$_meta$arity$1$LKEY === undefined && !ownMeta(stack);
   // Upstream's `(conj stack node)` of a sorted map seq's stack: a list cell
   // onto nil or a list, else `conj`.
-  const treeStackPush = (stack, node) => stack == null ? new ListCell(node, emptyList, 1) : isListCell(stack) ? new ListCell(node, stack, stack.count$LKEY + 1) : conj(stack, node);
+  const treeStackPush = (stack, node) => stack == null ? new ListCell(node, emptyList, 1) : isListCell(stack) ? new ListCell(node, stack, stack.count$LKEY + 1)
+    : unextendedListStack(stack) ? new ListCell(node, stack, count(stack) + 1) : conj(stack, node);
   // Upstream's `tree-map-seq-push`: `stack` with `tree` and its leftmost
   // (rightmost, descending) path pushed.
   function treeMapPush(tree, stack, ascending) {

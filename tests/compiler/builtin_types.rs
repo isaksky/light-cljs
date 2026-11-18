@@ -3152,6 +3152,24 @@ fn key_and_value_seqs_keep_the_answers_of_extended_map_seqs_and_entries() {
     }
 }
 
+/// The key and value seqs read their entries' seq's slots only where it has
+/// a keyed kind, as the slot-first wrappers do (light-cljs-1064): a host seq
+/// that `specify!` gave `ISeqable` and `ISeq`, with an `-next` member written
+/// without `INext`, projects as on master `9b0028f0`, whose `next` ignored
+/// that member, at every level.
+#[test]
+fn key_and_value_seqs_ignore_unmarked_next_slots_on_host_seqs() {
+    every_level(
+        r#"(let [s (js-obj)
+                 p (fn [f] (try (pr-str (f)) (catch :default e (str "E:" (.-message e)))))]
+             (specify! s ISeqable (-seq [this] this) ISeq (-first [_] (first {:a 1})) (-rest [_] ()))
+             (set! (.-cljs$core$INext$_next$arity$1 s) (fn [_] (list (first {:b 2}))))
+             (str [(p #(first (keys s))) (p #(next (keys s))) (p #(first (next (keys s)))) (p #(vec (keys s)))
+                   (p #(vec (vals s))) (p #(next s)) (p #(rest (vals s))) (p #(count (keys s)))]))"#,
+        r#"[":a" "nil" "nil" "[:a]" "[1]" "nil" "()" "1"]"#,
+    );
+}
+
 /// In release output of a program with `extend-type`, a walk of a map's
 /// keys or values, or of its seq, takes no protocol lookup per item
 /// (light-cljs-1064): the map seqs (`PersistentArrayMapSeq`, `NodeSeq`,
@@ -3162,12 +3180,12 @@ fn key_and_value_seqs_keep_the_answers_of_extended_map_seqs_and_entries() {
 /// `reduce_of_vectors_and_maps_takes_no_protocol_lookup` counts them) over a
 /// larger map less those over a smaller one of the same kind: an array map
 /// of 8 and 2 keys, a hash map of 13 and 9 (a `NodeSeq`) and of 100 and 20
-/// (an `ArrayNodeSeq`). A walk's own steps (`keys`, `seq` of the map, the
+/// (an `ArrayNodeSeq`) and a sorted map of 10 and 2, whose seq's stack of
+/// nodes, a list, peeks its first with no lookup where a program can extend
+/// lists (it took one per node), and a sorted set's seq (its tree map's keys)
+/// of 10 and 2 members. A walk's own steps (`keys`, `seq` of the map, the
 /// `seq` of the empty list that ends it) take the same lookups whatever its
-/// length. A sorted map's keys and values and a sorted set's seq (its tree
-/// map's keys) take the lookups of the sorted map seq's own walk, which
-/// steps through its stack with `peek`, `first` and `next` where a program
-/// can extend lists, and none of their own (the last four numbers).
+/// length.
 #[test]
 fn walks_of_map_keys_and_values_take_no_protocol_lookup_per_item() {
     let source = r#"(extend-type Atom ICounted (-count [_] 1))
@@ -3176,17 +3194,15 @@ fn walks_of_map_keys_and_values_take_no_protocol_lookup_per_item() {
               walk (fn [s] (loop [q s a 0] (if q (recur (next q) (+ a (if (nil? (first q)) 0 1))) a)))
               walk-rest (fn [s] (loop [q s a 0] (if (seq q) (recur (rest q) (+ a (if (nil? (first q)) 0 1))) a)))
               sized (fn [n] (zipmap (range n) (range n)))
-              pairs [[(array-map :a 1 :b 2) (apply array-map (range 16))] [(sized 9) (sized 13)] [(sized 20) (sized 100)]]
+              pairs [[(array-map :a 1 :b 2) (apply array-map (range 16))] [(sized 9) (sized 13)] [(sized 20) (sized 100)]
+                     [(sorted-map 1 2 3 4) (apply sorted-map (range 20))]]
               walks [#(walk (keys %)) #(walk (vals %)) #(walk-rest (keys %)) #(walk (seq %)) #(walk-rest (seq %))
                      #(reduce + (vals %)) #(reduce (fn [a k] (if (nil? k) a (inc a))) 0 (keys %)) #(count (keys %))]
               out (array)]
           (doseq [[small big] pairs w walks]
             (.push out (- (cost #(w big)) (cost #(w small)))))
-          (let [small (sorted-map 1 2 3 4) big (apply sorted-map (range 20)) set-small (sorted-set 1 3) set-big (apply sorted-set (keys big))
-                tree (- (cost #(walk (seq big))) (cost #(walk (seq small))))]
-            (doseq [w [#(walk (keys %)) #(walk (vals %)) #(walk-rest (keys %))]]
-              (.push out (- (cost #(w big)) (cost #(w small)) tree)))
-            (.push out (- (cost #(walk (seq set-big))) (cost #(walk (seq set-small))) tree)))
+          (let [small (sorted-set 1 3) big (apply sorted-set (range 10))]
+            (.push out (- (cost #(walk (seq big))) (cost #(walk (seq small))))))
           (.join out " "))"#;
     let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
     options.pseudo_names = true;
@@ -3201,7 +3217,7 @@ fn walks_of_map_keys_and_values_take_no_protocol_lookup_per_item() {
     }
     assert_eq!(
         execute(&format!("globalThis.__lookups = 0; console.log({js});")),
-        format!("{}\n", ["0"; 3 * 8 + 4].join(" "))
+        format!("{}\n", ["0"; 4 * 8 + 1].join(" "))
     );
 }
 
