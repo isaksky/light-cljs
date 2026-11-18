@@ -2498,6 +2498,12 @@
     }
     return initialized ? result : rf.call(null);
   }
+  //@unit reduceOwn requires: reduce
+  // `reduce`'s own path, under `reduce.protocol` and `reduce.slots`, which
+  // the vectors' and maps' `-reduce` slots take where they do not walk the
+  // value themselves (light-cljs-1055), so that a slot the compile-time
+  // lookup calls does not find itself again.
+  const reduceOwn = reduce;
 
   //@unit iterateNode.reduce effect: iterateNode when: reduce requires: first, isReduced, kindHooks,
   //@ reducedValue
@@ -5315,6 +5321,40 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(contains);
+  //@unit reduce.slots effect: PersistentArrayMapValue, PersistentHashMapValue,
+  //@ PersistentVectorValue, SubvecValue when: reduce requires: noBranch, reduce, slotFirst
+  // `reduce` of a value with a `-reduce` slot (light-cljs-1055) calls it
+  // before `reduce.protocol`'s lookup, which finds a program's method there
+  // too. Each arity's call is a function of its own, so that the wrapper
+  // stays under the 100 bytes of bytecode V8's Maglev inlines (96,
+  // light-cljs-1033).
+  reduce = ((operation, none, slot2, slot3) => Object.defineProperty(function (rf, init, collection) {
+    const arity = arguments.length;
+    if (slotFirst.on) {
+      const result = arity === 3 ? slot3(rf, init, collection) : arity === 2 ? slot2(rf, init) : none;
+      if (result !== none) return result;
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(reduce, noBranch, (rf, source) => {
+    const method = source != null && source.cljs$lang$kind$$LKEY !== undefined ? source.cljs$core$IReduce$_reduce$arity$2$LKEY : undefined;
+    return method ? method.call(source, source, rf) : noBranch;
+  }, (rf, init, source) => {
+    const method = source != null && source.cljs$lang$kind$$LKEY !== undefined ? source.cljs$core$IReduce$_reduce$arity$3$LKEY : undefined;
+    return method ? method.call(source, source, rf, init) : noBranch;
+  });
+  //@unit reduceKv.slots effect: PersistentArrayMapValue, PersistentHashMapValue,
+  //@ PersistentVectorValue, SubvecValue, treeMapConstructor when: reduceKv requires: noBranch,
+  //@ reduceKv, slotFirst
+  // `reduce-kv` of a value with a `-kv-reduce` slot (light-cljs-1055) calls
+  // it before `reduceKv`'s own lookup, which finds a program's method there
+  // (100 bytes of bytecode).
+  reduceKv = ((operation, none) => Object.defineProperty(function (rf, init, collection) {
+    if (slotFirst.on && collection != null && collection.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
+      const method = collection.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY;
+      if (method) { const result = method.call(collection, collection, rf, init); if (result !== none) return result; }
+    }
+    return operation.apply(null, arguments);
+  }, "name", {value: operation.name}))(reduceKv, noBranch);
 
   // A map's protocol methods are slots of its prototype too
   // (light-cljs-1012), complete for a map of the class layout (`mapOf`):
@@ -5559,6 +5599,78 @@
   //@unit treeMapConstructor.containsSlot effect: treeMapConstructor when: contains, containsSite
   //@ requires: builtinSlot, mapContains, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
+  // An array or hash map's `-reduce` and `-kv-reduce` slots, and a sorted
+  // map's `-kv-reduce` (light-cljs-1055), which `reduce.slots` and
+  // `reduceKv.slots` call before any protocol lookup.
+  //@unit mapReduceSlot requires: isReduced, mapEntry, reducedValue, reduceOwn, slotFirst
+  // `reduce` of an array or a hash map: an entry of each of its keys and
+  // values (`pairs`, as `mapPairs` gives them), as its seq holds them
+  // (`seqMap`), without the seq; of a public constructor's array map (its
+  // `slots`, which its copies keep), of its array's pairs up to its count,
+  // as its iterator gives them (`iteratorArrayMap`), where `iterable` (no
+  // `-iterator` slot). Else `reduce`'s own path: for an `-seq` that
+  // `extend-type` or `specify!` gave (`own` is false; no map class has one),
+  // a public constructor's array map with a program's `-iterator`, and
+  // where a compiler session demands declarations (`slotFirst`).
+  function mapReduceSlot(self, rf, init, arity, pairs, own, iterable) {
+    const slots = self.slots$LKEY, on = slotFirst.on;
+    let n = pairs.length, i = 0;
+    if (on && slots?.arr && iterable) { pairs = slots.arr; n = slots.cnt * 2; }
+    else if (!own || !on || slots?.arr) return arity === 3 ? reduceOwn(rf, init, self) : reduceOwn(rf, self);
+    if (arity === 2) { if (!(i < n)) return rf.call(null); init = mapEntry(pairs[0], pairs[1]); i = 2; }
+    for (; i < n; i += 2) {
+      init = rf.call(null, init, mapEntry(pairs[i], pairs[i + 1]));
+      if (isReduced(init)) return reducedValue(init);
+    }
+    return init;
+  }
+  //@unit PersistentArrayMapValue.reduceSlot effect: PersistentArrayMapValue when: reduce requires: builtinSlot,
+  //@ mapReduceSlot, noBranch, PersistentArrayMapValue
+  // One method for both arities (the arguments' count), as a vector's.
+  PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(function (self, rf, init) {
+    const arr = self.arr$LKEY;
+    return arr === undefined ? noBranch : mapReduceSlot(self, rf, init, arguments.length, arr,
+      self.cljs$core$ISeqable$_seq$arity$1$LKEY === undefined, self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined);
+  });
+  PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  //@unit PersistentHashMapValue.reduceSlot effect: PersistentHashMapValue when: reduce requires: builtinSlot,
+  //@ mapPairs, mapReduceSlot, noBranch, PersistentHashMapValue
+  PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(function (self, rf, init) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    return mapReduceSlot(self, rf, init, arguments.length, mapPairs(self), self.cljs$core$ISeqable$_seq$arity$1$LKEY === undefined, true);
+  });
+  PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  //@unit mapKvReduce requires: isReduced, reducedValue
+  // `reduce-kv` of an array or a hash map: each of its keys and values
+  // (`pairs`, as `mapPairs` gives them), as `reduceKv` gives them.
+  function mapKvReduce(pairs, rf, init) {
+    for (let i = 0; i < pairs.length; i += 2) {
+      init = rf.call(null, init, pairs[i], pairs[i + 1]);
+      if (isReduced(init)) return reducedValue(init);
+    }
+    return init;
+  }
+  //@unit PersistentArrayMapValue.kvReduceSlot effect: PersistentArrayMapValue when: reduceKv
+  //@ requires: builtinSlot, mapKvReduce, noBranch, PersistentArrayMapValue
+  PersistentArrayMapValue.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
+    const arr = self.arr$LKEY;
+    return arr === undefined ? noBranch : mapKvReduce(arr, rf, init);
+  });
+  //@unit PersistentHashMapValue.kvReduceSlot effect: PersistentHashMapValue when: reduceKv
+  //@ requires: builtinSlot, mapKvReduce, mapPairs, noBranch, PersistentHashMapValue
+  PersistentHashMapValue.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
+    return self.cnt$LKEY === undefined && !("cnt$LKEY" in self) ? noBranch : mapKvReduce(mapPairs(self), rf, init);
+  });
+  //@unit treeMapConstructor.kvReduceSlot effect: treeMapConstructor when: reduceKv requires: builtinSlot,
+  //@ isReduced, noBranch, reducedValue, treeKvReduce, treeMapConstructor
+  // A sorted map walks its tree, as `reduceKv` (light-cljs-1035).
+  treeMapConstructor.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    const tree = self.tree$LKEY;
+    if (tree == null) return init;
+    const result = treeKvReduce(tree, rf, init);
+    return isReduced(result) ? reducedValue(result) : result;
+  });
   // A hash or array set's and a queue's `-count`, `-seq` and `-conj`, and a
   // set's `-lookup`, are slots of their prototypes too (light-cljs-1046),
   // so that the operations answer them slot-first where the protocol lookup
@@ -5735,6 +5847,65 @@
     if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     return kindHooks.seqVector(self, self);
   });
+  // A vector's and a subvector's `-reduce` and `-kv-reduce` slots
+  // (upstream's IReduce and IKVReduce, light-cljs-1055), which
+  // `reduce.slots` and `reduceKv.slots` call before any protocol lookup.
+  //@unit vectorReduceSlot requires: noBranch, reduceOwn, slotFirst, vectorReduce
+  // `reduce` of a vector or a subvector: its store's items, as `reduce`
+  // walks them (a view's or a longer vector's store, a shorter vector's seq,
+  // which walks its whole tail), where its `-seq` is its class's own
+  // (`own`). Else `reduce`'s own path, which takes no protocol lookup but
+  // for a program's `-seq`: for an `-seq` that `extend-type` or `specify!`
+  // gave, a shorter vector's caller tail (`callerTail`, the public
+  // constructor's) or one longer than its count, and where a compiler
+  // session demands declarations (`slotFirst`), which `reduce` demands.
+  function vectorReduceSlot(self, rf, init, arity, own) {
+    const cnt = self.cnt$LKEY, tail = self.tail$LKEY;
+    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
+    if (own && slotFirst.on && (tail === undefined || cnt > 32 || tail.length === cnt && self.callerTail$LKEY !== true)) return vectorReduce(self, rf, init, 0, arity);
+    return arity === 3 ? reduceOwn(rf, init, self) : reduceOwn(rf, self);
+  }
+  //@unit PersistentVectorValue.reduceSlot effect: PersistentVectorValue when: reduce requires: builtinSlot,
+  //@ PersistentVectorValue, vectorReduceSlot
+  // One method for both arities (the arguments' count); `own` is the
+  // class's `-seq` slot as it loads, which `extend-type` replaces.
+  PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
+    return vectorReduceSlot(self, rf, init, arguments.length, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+  })(PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
+  PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  //@unit SubvecValue.reduceSlot effect: SubvecValue when: reduce requires: builtinSlot,
+  //@ SubvecValue, vectorReduceSlot
+  SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
+    return vectorReduceSlot(self, rf, init, arguments.length, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+  })(SubvecValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
+  SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  //@unit vectorKvReduce requires: isReduced, noBranch, reducedValue, vectorItems, vectorLeaf
+  // `reduce-kv` of a vector or a subvector: each index and item of its
+  // store, as `reduceKv` gives them; of a store that reads a caller's array
+  // (`callerTail`), whose items a call could change, all its items first,
+  // as `reduceKv` reads them.
+  function vectorKvReduce(self, rf, init) {
+    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
+    let store = self, i = 0, end = self.cnt$LKEY;
+    if (store.sub$LKEY) { i = store.begin$LKEY; end += i; store = store.sub$LKEY; }
+    if (store.callerTail$LKEY === true || self.callerTail$LKEY === true) {
+      const items = vectorItems(self);
+      for (let k = 0; k < items.length; k++) { init = rf.call(null, init, k, items[k]); if (isReduced(init)) return reducedValue(init); }
+      return init;
+    }
+    for (let leaf = vectorLeaf(store, i), begin = i; i < end;) {
+      init = rf.call(null, init, i - begin, leaf[i & 31]);
+      if (isReduced(init)) return reducedValue(init);
+      if (!(++i & 31)) leaf = vectorLeaf(store, i);
+    }
+    return init;
+  }
+  //@unit PersistentVectorValue.kvReduceSlot effect: PersistentVectorValue when: reduceKv requires: builtinSlot,
+  //@ PersistentVectorValue, vectorKvReduce
+  PersistentVectorValue.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(vectorKvReduce);
+  //@unit SubvecValue.kvReduceSlot effect: SubvecValue when: reduceKv requires: builtinSlot,
+  //@ SubvecValue, vectorKvReduce
+  SubvecValue.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(vectorKvReduce);
   // A lazy seq, a chunked cons and a chunk answer their operations from
   // slots of their prototypes too (light-cljs-1029), so that a step of a
   // lazy pipeline builds one object of its class and calls no older layer.

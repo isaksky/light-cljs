@@ -1207,8 +1207,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // wrappers of `seq`, `first`, `rest`, `next` and `count` (light-cljs-1015),
     // and the seven `-count`, `-seq`, `-conj` and `-lookup` slots of the hash
     // sets and queues and the three `-contains-key?` slots of the vectors,
-    // subvectors and map entries (light-cljs-1046).
-    assert_eq!(checked, 452);
+    // subvectors and map entries (light-cljs-1046), and the nine `-reduce` and
+    // `-kv-reduce` slot units of the vectors, subvectors and maps
+    // with the slot-first wrappers of `reduce` and `reduce-kv`
+    // (light-cljs-1055).
+    assert_eq!(checked, 463);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -2094,6 +2097,8 @@ fn units_assigning_a_binding_share_its_unit() {
             "recordMethodTable <- recordMethods.seq",
             "recordMethodTable <- recordMethods.withMeta",
             "reduce <- reduce.protocol",
+            "reduce <- reduce.slots",
+            "reduceKv <- reduceKv.slots",
             "rest <- rest.slots",
             "seq <- seq.slots",
             "setDeclaration <- declarationTransaction",

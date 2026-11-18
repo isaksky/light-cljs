@@ -2324,6 +2324,77 @@ console.log('vector_family_prototype_contract: masks, markers and slots of the v
 }
 console.log('set, queue and vector contains slots answer as their operations');
 
+// A vector's, a subvector's and an array or hash map's `-reduce` slots
+// and a vector's, a subvector's and a map's `-kv-reduce`
+// (light-cljs-1055) answer as `reduce` and `reduce-kv` do without them, for
+// every value of the class: a public constructor's, one whose tail is the
+// caller's array, one whose `-seq` is its own (as `specify!` gives it), and
+// a reduction a `reduced` value stops; a value made by reflection gets
+// `noBranch`.
+{
+  const reduce2 = 'cljs$core$IReduce$_reduce$arity$2$LKEY', reduce3 = 'cljs$core$IReduce$_reduce$arity$3$LKEY';
+  const kv = 'cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY', seq = 'cljs$core$ISeqable$_seq$arity$1$LKEY';
+  const outcome = thunk => { try { return 'ok ' + c.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
+  const pair = function (a, b) { return arguments.length === 0 ? 'none' : c.vector(a, b); };
+  const upTo2 = (a, x) => c.count(a) >= 2 ? c.reduced(c.conj(a, 'stop')) : c.conj(a, x);
+  const kvs = (a, k, x) => c.conj(c.conj(a, k), x), kvUpTo2 = (a, k, x) => c.count(a) >= 2 ? c.reduced(a) : kvs(a, k, x);
+  const ownSeq = value => { value[seq] = () => c.list('own-seq'); return value; };
+  const ownIterator = value => {
+    value.cljs$core$IIterable$_iterator$arity$1$LKEY = () => { let done = false; return {hasNext: () => !done, next: () => { done = true; return c.vector('it', 1); }}; };
+    return value;
+  };
+  const big = c.vec(c.range(70)), v40 = c.vec(c.range(40));
+  const vectors = [c.vector(), c.vector(1, 2, 3), c.vec(c.range(40)), big, c.subvec(big, 3, 67), c.subvec(c.vector(1, 2, 3), 1), c.pop(c.subvec(big, 1, 40)),
+    c.withMeta(c.vector(1), c.hashMap('m', 1)), c.PersistentVector(null, 2, 5, null, [1, 2, 3, 4], null), c.conj(c.PersistentVector(null, 2, 5, null, [1, 2, 3, 4], null), 9),
+    c.Subvec(null, c.vector(1, 2, 3, 4), 1, 3, null), c.subvec(c.PersistentVector(null, 3, 5, null, [1, 2, 3], null), 1), ownSeq(c.vector(1, 2)), ownSeq(c.vec(c.range(40))),
+    c.PersistentVector(null, 40, 5, v40.root, v40.tail, null)];
+  const maps = [c.arrayMap(), c.arrayMap('a', 1, 'b', 2), c.zipmap(c.range(20), c.range(20)), c.assoc(c.zipmap(c.range(9), c.range(9)), null, 'n'),
+    c.withMeta(c.arrayMap('a', 1), c.hashMap('m', 1)), c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null), c.PersistentArrayMap(null, 2, ['a', 1, 'b', 2], null),
+    c.PersistentHashMap(null, 2, c.arrayMap('a', 1, 'b', 2), false, null, null), c.PersistentHashMap(null, 3, c.arrayMap('a', 1, 'b', 2), true, 'n', null),
+    ownSeq(c.arrayMap('a', 1)), ownSeq(c.zipmap(c.range(20), c.range(20))), c.clone(c.PersistentArrayMap(null, 2, ['a', 1, 'b', 2], null)),
+    c.withMeta(c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null), c.hashMap('m', 1)), ownIterator(c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null))];
+  const sorted = [c.sortedMap(), c.sortedMap(2, 'b', 1, 'a', 3, 'c')];
+  const reductions = [[reduce2, [pair]], [reduce3, [pair, 'init']], [reduce3, [upTo2, c.vector()]]];
+  const kvReductions = [[kv, [kvs, c.vector()]], [kv, [kvUpTo2, c.vector()]]];
+  const operations = new Map([[reduce2, (v, rf) => c.reduce(rf, v)], [reduce3, (v, rf, init) => c.reduce(rf, init, v)], [kv, (v, rf, init) => c.reduceKv(rf, init, v)]]);
+  let checked = 0;
+  for (const [values, slots] of [[vectors, [...reductions, ...kvReductions]], [maps, [...reductions, ...kvReductions]], [sorted, kvReductions]]) {
+    for (const value of values) {
+      for (const [slot, args] of slots) {
+        const method = value[slot];
+        assert.equal(typeof method, 'function', `${slot} of ${c.prStr(value)}`);
+        const proto = Object.getPrototypeOf(value), forged = Object.create(proto), noBranch = method.call(forged, forged, ...args);
+        assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${slot} of a forged value`);
+        // The operation's own path: the slot taken off the prototype.
+        const expected = (() => {
+          delete proto[slot];
+          try { return outcome(() => operations.get(slot)(value, ...args)); } finally { proto[slot] = method; }
+        })();
+        assert.equal(outcome(() => method.call(value, value, ...args)), expected, `${slot} of ${c.prStr(value)}`);
+        assert.equal(outcome(() => operations.get(slot)(value, ...args)), expected, `the operation of ${slot} of ${c.prStr(value)}`);
+        checked++;
+      }
+    }
+  }
+  assert.equal(checked, 149);
+  // A public constructor's map and its clone, which keeps its `slots`
+  // (light-cljs-1053), read each pair of the caller's array as their
+  // iterator reaches it, which the caller can change meanwhile.
+  const shared = ['a', 1, 'b', 2], clone = c.clone(c.PersistentArrayMap(null, 2, shared, null));
+  const own = ['a', 1, 'b', 2], ownMap = c.PersistentArrayMap(null, 2, own, null);
+  assert.deepEqual([c.prStr(c.reduce((acc, e) => { shared[3] = 99; return c.conj(acc, e); }, c.vector(), clone)),
+    c.prStr(c.reduce((acc, e) => { own[3] = 99; return c.conj(acc, e); }, c.vector(), ownMap))], ['[["a" 1] ["b" 99]]', '[["a" 1] ["b" 99]]']);
+  // Their answers, as before the slots: a public constructor's vector walks
+  // the whole tail it received with an initial value and its count without,
+  // a public constructor's array map walks its count, and an own `-seq` is
+  // walked; `reduce-kv` reads the items and pairs alone.
+  assert.deepEqual([c.prStr(c.reduce(pair, 'i', c.PersistentVector(null, 2, 5, null, [1, 2, 3, 4], null))), c.prStr(c.reduce(pair, c.PersistentVector(null, 2, 5, null, [1, 2, 3, 4], null))),
+    c.prStr(c.reduce(pair, 'i', c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null))), c.prStr(c.reduce(pair, 'i', ownSeq(c.vec(c.range(40))))),
+    c.prStr(c.reduceKv(kvs, c.vector(), ownSeq(c.vector(5, 6)))), c.prStr(c.reduceKv(kvs, c.vector(), c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null)))],
+  ['[[[["i" 1] 2] 3] 4]', '[1 2]', '["i" ["a" 1]]', '["i" "own-seq"]', '[0 5 1 6]', '["a" 1 "b" 2]']);
+}
+console.log('vector and map reduce and kv-reduce slots answer as their operations');
+
 // Keywords and symbols of two copies of one build (docs/value-layout.md,
 // sections 1 and 3, light-cljs-1011): each copy interns its own, so they are
 // never identical, but equality reads the keyed kind and `fqn` (`str`), never

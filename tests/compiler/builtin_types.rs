@@ -2779,6 +2779,147 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
     }
 }
 
+/// `reduce` and `reduce-kv` of a vector, a subvector, a map entry and the
+/// maps call their `-reduce` and `-kv-reduce` slots before any protocol
+/// lookup (light-cljs-1055), and keep every answer they had: a `-seq`, an
+/// `IReduce` or an `IKVReduce` that `specify!` or `extend-type` gave the
+/// value or its class, a public constructor's vector (whose seq walks the
+/// whole tail it received) and array map (walked by its count), a reduction
+/// `reduced` stops, and the errors. Each case runs in a thunk of its own, as
+/// some throw. Expected values are master `d8a28b21`'s at every level.
+#[test]
+fn reduce_slots_keep_the_answers_of_extended_seqs_and_reductions() {
+    for (source, expected) in [
+        (
+            r#"(let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (.-message e))))))
+                   big (vec (range 40)) hm (zipmap (range 20) (range 20))
+                   sv (specify! (vector 1 2 3) ISeqable (-seq [_] (list :sv)))
+                   sbig (specify! (vec (range 40)) ISeqable (-seq [_] (list :sbig)))
+                   rv (specify! (vector 1 2 3) IReduce (-reduce ([_ f] [:r2]) ([_ f i] [:r3 i])))
+                   kvv (specify! (vector 1 2 3) IKVReduce (-kv-reduce [_ f i] [:kv i]))
+                   sm (specify! (array-map :a 1) ISeqable (-seq [_] (list :sm)))
+                   shm (specify! (zipmap (range 20) (range 20)) ISeqable (-seq [_] (list :shm)))
+                   rm (specify! (array-map :a 1) IReduce (-reduce ([_ f] [:mr2]) ([_ f i] [:mr3 i])))
+                   kvm (specify! (array-map :a 1) IKVReduce (-kv-reduce [_ f i] [:mkv i]))
+                   ssub (specify! (subvec big 2 5) ISeqable (-seq [_] (list :ssub)))
+                   sent (specify! (first (array-map :a 1)) ISeqable (-seq [_] (list :sent)))
+                   pv (PersistentVector. nil 2 5 (.-EMPTY_NODE PersistentVector) (array 1 2 3 4) nil)
+                   pam (PersistentArrayMap. nil 1 (array :a 1 :b 2) nil)
+                   kvs (fn [a k v] (conj a k v))]
+               (p #(reduce conj [] sv)) (p #(reduce conj sv)) (p #(reduce conj [] sbig)) (p #(reduce conj sbig)) (p #(reduce-kv kvs [] sv))
+               (p #(reduce conj [] rv)) (p #(reduce conj rv)) (p #(reduce-kv conj [] kvv))
+               (p #(reduce conj [] sm)) (p #(reduce conj sm)) (p #(reduce-kv kvs [] sm)) (p #(reduce conj [] shm))
+               (p #(reduce conj [] rm)) (p #(reduce conj rm)) (p #(reduce-kv conj [] kvm)) (p #(reduce conj [] ssub)) (p #(reduce conj [] sent))
+               (p #(reduce conj [] pv)) (p #(reduce + pv)) (p #(reduce conj [] (conj pv 9))) (p #(reduce-kv kvs [] pv))
+               (p #(reduce conj [] pam)) (p #(reduce-kv kvs [] pam))
+               (p #(reduce + big)) (p #(reduce + 1 (subvec big 30))) (p #(reduce conj [] (first {:a 1}))) (p #(reduce conj [] {:a 1 :b 2}))
+               (p #(reduce + (map val hm))) (p #(reduce-kv (fn [a k v] (+ a k v)) 0 hm)) (p #(reduce-kv kvs [] (sorted-map 2 :b 1 :a)))
+               (p #(reduce (fn [a x] (if (> x 5) (reduced [:stop a]) (+ a x))) 0 big))
+               (p #(reduce-kv (fn [a k v] (if (= k 1) (reduced [:r a]) (+ a v))) 0 (sorted-map 0 5 1 6 2 7)))
+               (p #(reduce (fn ([] :none) ([a b] a)) {}))
+               (.join out " "))"#,
+            "[:sv] :sv [:sbig] :sbig [0 1 1 2 2 3] [:r3 []] [:r2] [:kv []] [:sm] :sm [:a 1] [:shm] [:mr3 []] [:mr2] [:mkv []] [:ssub] [:sent] [1 2 3 4] 3 [1 2 3 4 9] [0 1 1 2] [[:a 1]] [:a 1 :b 2] 780 346 [:a 1] [[:a 1] [:b 2]] 190 380 [1 :a 2 :b] [:stop 15] [:r 5] :none",
+        ),
+        (
+            // Printing a vector walks its seq, which the extension replaces:
+            // the results print through `nth`.
+            r#"(extend-type PersistentVector ISeqable (-seq [v] (list :v (count v))))
+               (extend-type PersistentArrayMap ISeqable (-seq [m] (list :am (count m))))
+               (extend-type PersistentHashMap ISeqable (-seq [m] (list :hm (count m))))
+               (extend-type Subvec ISeqable (-seq [m] (list :sub (count m))))
+               (let [out (array)
+                     show (fn show [x] (if (vector? x) (str "[" (.join (let [a (array)] (dotimes [i (count x)] (.push a (show (nth x i)))) a) " ") "]") (pr-str x)))
+                     p (fn [f] (.push out (try (show (f)) (catch :default e (str "E:" (.-message e))))))
+                     big (vec (range 40)) hm (zipmap (range 20) (range 20)) kvs (fn [a k v] (conj a k v))]
+                 (p #(reduce conj [] [1 2 3])) (p #(reduce conj [] big)) (p #(reduce conj [] (subvec big 2 5))) (p #(reduce conj [] {:a 1}))
+                 (p #(reduce conj [] hm)) (p #(reduce-kv kvs [] [5 6])) (p #(reduce-kv kvs [] {:a 1})) (p #(reduce-kv (fn [a k v] (+ a v)) 0 hm))
+                 (p #(reduce conj [] (first {:a 1}))) (p #(mapv identity [1 2]))
+                 (.join out " "))"#,
+            "[:v 3] [:v 40] [:sub 3] [:am 1] [:hm 20] [0 5 1 6] [:a 1] 190 E::am is not ISeqable [:v 2]",
+        ),
+        (
+            r#"(extend-type PersistentVector IReduce (-reduce ([v f] [:vr2 (count v)]) ([v f i] [:vr3 i])) IKVReduce (-kv-reduce [v f i] [:vkv i]))
+               (extend-type PersistentArrayMap IReduce (-reduce ([v f] [:amr2]) ([v f i] [:amr3 i])) IKVReduce (-kv-reduce [v f i] [:amkv i]))
+               (extend-type PersistentHashMap IKVReduce (-kv-reduce [v f i] [:hmkv i]))
+               (extend-type PersistentTreeMap IKVReduce (-kv-reduce [v f i] [:tmkv i]))
+               (extend-type Subvec IReduce (-reduce ([v f] [:sr2]) ([v f i] [:sr3 i])))
+               (extend-type MapEntry IReduce (-reduce [v f i] [:er3 i]))
+               (let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (.-message e))))))
+                     big (vec (range 40)) hm (zipmap (range 20) (range 20)) kvs (fn [a k v] (conj a k v))]
+                 (p #(reduce conj [] [1 2 3])) (p #(reduce conj [1 2 3])) (p #(reduce conj [] big)) (p #(reduce conj [] (subvec big 2 5)))
+                 (p #(reduce conj [] {:a 1})) (p #(count (reduce conj [] hm))) (p #(reduce-kv kvs [] [5 6])) (p #(reduce-kv kvs [] (subvec big 2 4)))
+                 (p #(reduce-kv kvs [] {:a 1})) (p #(reduce-kv (fn [a k v] (+ a v)) 0 hm)) (p #(reduce-kv (fn [a k v] (+ a v)) 0 (sorted-map 1 2)))
+                 (p #(reduce conj [] (first {:a 1}))) (p #(reduce conj (first {:a 1})))
+                 (.join out " "))"#,
+            "[:vr3 []] [:vr2 3] [:vr3 []] [:sr3 []] [:amr3 []] 20 [:vkv []] [0 2 1 3] [:amkv []] [:hmkv 0] [:tmkv 0] [:er3 []] E:conj not supported on this type",
+        ),
+    ] {
+        every_level(source, expected);
+    }
+    // In release output with `extend-type`, `reduce` and `reduce-kv` keep
+    // their slot-first wrappers and the slots of the classes they reduce.
+    let kept = units(
+        "(extend-type PersistentVector IMeta (-meta [_] nil))
+         (pr-str [(reduce + [1 2]) (reduce + 0 (subvec [1 2 3] 1)) (reduce conj [] {:a 1}) (reduce conj [] (zipmap (range 9) (range 9)))
+                  (reduce conj [] (first {:a 1})) (reduce-kv conj [] [1]) (reduce-kv conj [] {:a 1}) (reduce-kv conj [] (sorted-map 1 2))])",
+    );
+    for unit in [
+        "reduce.protocol",
+        "reduce.slots",
+        "reduceKv.slots",
+        "PersistentVectorValue.reduceSlot",
+        "SubvecValue.reduceSlot",
+        "PersistentArrayMapValue.reduceSlot",
+        "PersistentHashMapValue.reduceSlot",
+        "PersistentVectorValue.kvReduceSlot",
+        "PersistentArrayMapValue.kvReduceSlot",
+        "treeMapConstructor.kvReduceSlot",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    let position = |unit: &str| kept.iter().position(|kept| *kept == unit).unwrap();
+    assert!(position("reduce.protocol") < position("reduce.slots"));
+}
+
+/// In release output of a program with `extend-type`, `reduce` and
+/// `reduce-kv` of a vector, a subvector, the maps and the public
+/// constructors' vectors and array maps take no protocol lookup
+/// (light-cljs-1055): the readable output's lookups (`extendedMethod`,
+/// `builtin`, `satisfies`) count their calls, which a list's `reduce`, which
+/// has no slot, still makes.
+#[test]
+fn reduce_of_vectors_and_maps_takes_no_protocol_lookup() {
+    let source = r#"(extend-type PersistentVector IMeta (-meta [_] nil))
+        (let [v40 (vec (range 40)) sub (subvec v40 2 7) hm (zipmap (range 20) (range 20)) sm (sorted-map 1 2 3 4)
+              pv40 (PersistentVector. nil 40 5 (.-root v40) (.-tail v40) nil)
+              pv3 (PersistentVector. nil 3 5 (.-EMPTY_NODE PersistentVector) (array 1 2 3) nil)
+              pam (PersistentArrayMap. nil 2 (array :a 1 :b 2) nil) am (array-map :a 1 :b 2) l (list 1 2)
+              up (fn [a _] (inc a)) kv (fn [a _ _] (inc a)) out (array) lookups #(aget js/globalThis "__lookups")
+              before (lookups)]
+          (.push out (reduce up 0 [1 2 3]) (reduce up [1 2 3]) (reduce up 0 v40) (reduce up v40) (reduce up 0 sub) (reduce up sub)
+                 (reduce up 0 pv40) (reduce up pv40) (reduce up 0 pv3) (reduce up pv3) (reduce up 0 am) (reduce up 0 hm) (reduce up 0 pam)
+                 (reduce-kv kv 0 [1 2 3]) (reduce-kv kv 0 v40) (reduce-kv kv 0 sub) (reduce-kv kv 0 am) (reduce-kv kv 0 hm)
+                 (reduce-kv kv 0 sm) (reduce-kv kv 0 pam))
+          (let [after (lookups)]
+            (.push out (- after before) (reduce up 0 l) (pos? (- (lookups) after)))
+            (.join out " ")))"#;
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program(source), options).emit_js();
+    for head in [
+        "function extendedMethod(value, key, arity, fast = false, directOnly = false) {",
+        "function builtin(value, key, arity) {",
+        "function satisfies(protocol, value) {",
+    ] {
+        assert!(js.contains(head), "{head}");
+        js = js.replace(head, &format!("{head} globalThis.__lookups++;"));
+    }
+    assert_eq!(
+        execute(&format!("globalThis.__lookups = 0; console.log({js});")),
+        "3 3 40 39 5 6 40 39 3 3 2 20 2 3 40 5 2 20 2 2 0 2 true\n"
+    );
+}
+
 /// light-cljs-998: once a program keeps `extend-type` or `specify!`, the
 /// generic predicates and operations ask the `satisfies` and `implements`
 /// hooks, which answer a value of the runtime's payload stores in one step.
