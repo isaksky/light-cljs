@@ -4468,3 +4468,35 @@ ports from `shadow-port-tool-983`), the whole bundle with React, gzip -9:
   key seqs, 797 for the features example, 24 with only indexed seqs; three
   advanced ceilings and the features shared chunk's moved; the readable
   runtime 3,643 bytes more, mostly comments.
+
+**After the review** (`light-cljs-33fb62f5`): the key and value seqs read
+their entries' seq's slots only where it has a keyed kind, and a sorted
+map seq's list stack is peeked and pushed without lookups where a program
+can extend lists (docs/value-layout.md), so sorted maps' keys and values
+walk with no lookup per item too (2.25 before). Against master `5bb838cd`
+(`light-cljs-5bb838cd-1064`, light-cljs-1044 since `9b0028f0`), the gate's
+touched operations (`--ops keys,vals,lazy-walk,seq-walk-vec,sorted-map-assoc,str-sorted-map,apply-vec,merge-small,select-keys,str-nested-map`,
+5 runs, load 5.43-11.39 before and 2.83-4.75 after):
+
+| op | light before | light after | change | shadow-cljs after | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| keys-small | 2,083 | 304.0 (288.6-315.3) | -85% | 66.7 | 4.56 |
+| vals-small | 2,232 | 300.4 (295.8-308.3) | -87% | 87.3 | 3.44 |
+| keys-hash100 | 36,347 | 3,946 (3,768-4,099) | -89% | 5,307 | 0.74 |
+| vals-hash100 | 36,967 | 4,129 (4,031-4,262) | -89% | 5,110 | 0.81 |
+| lazy-walk-1000 | 47,530 | 42,587 (41,368-43,221) | -10% | 51,268 | 0.83 |
+| seq-walk-vec-1000 | 27,136 | 20,673 (20,348-21,246) | -24% | 19,693 | 1.05 |
+| str-nested-map | 4,232 | 3,855 (3,796-3,916) | -9% | 2,323 | 1.66 |
+| apply-vec | 241.4 | 173.0 (172.2-181.3) | -28% | 70.3 | 2.46 |
+| merge-small | 2,418 | 1,994 (1,926-2,084) | -18% | 763.8 | 2.61 |
+| select-keys-3 | 362.2 | 294.5 (280.9-302.3) | -19% | 224.3 | 1.31 |
+| sorted-map-assoc-100 | 160.3 | 157.4 (151.6-161.9) | -2% | 193.9 | 0.81 |
+| str-sorted-map-20 | 32,524 | 29,378 (29,114-30,720) | -10% | 20,032 | 1.47 |
+
+The re-frame apps against `5bb838cd`, whole bundle with React, gzip -9:
+simple 114,102 to 114,343 (+241, +0.21%), TodoMVC 145,402 to 145,750
+(+348, +0.24%), flow 333,310 to 333,886 (+576, +0.17%); light-cljs's
+output as written 67,713 to 67,943, 97,183 to 97,491 and 280,529 to
+280,827. The size ratchet, noted there: the same advanced growth as
+above, the features example 1,064 bytes (its editor chunk, which keeps
+the sorted maps' seqs, 499), the readable runtime 5,045.

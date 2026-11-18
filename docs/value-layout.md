@@ -1472,8 +1472,12 @@ values takes no protocol lookup per item, where each step took 9.
   entries' seq and, for a map entry, the `-key` or `-val` slot that an
   `extend-type` gave it, else `entryKey` or `entryVal`, as upstream's
   KeySeq calls `-first` and `-next` of its `mseq` and `-key` of the entry.
-  Where the seq holds no slot (one a program's `-seq` gave), the entry is
-  no map entry, or a compiler session demands declarations (`slotFirst`),
+  They read a seq's slots only where it has a keyed kind, as the
+  slot-first wrappers do, so a host seq's `-next` member written without
+  `INext` stays unread
+  (`key_and_value_seqs_ignore_unmarked_next_slots_on_host_seqs`). Where the
+  seq holds no slot (one a program's `-seq` gave), the entry is no map
+  entry, or a compiler session demands declarations (`slotFirst`),
   they take the dispatchers (`firstProtocol`, `nextProtocol`, `keyProtocol`)
   as before, so `extend-type` of the map seqs, of a map entry's `IMapEntry`
   or `IIndexed` (which `entryKey` reads) and of a map's `-seq` answers as
@@ -1485,11 +1489,17 @@ values takes no protocol lookup per item, where each step took 9.
   `reduce` of a 7-key map's values takes 586 ns where its `first` and
   `next` walk takes 480 (scratch runs, load 9.6); a slot would save at
   most that path, which every seq without one pays, so the key seqs keep
-  it, as light-cljs-1059 left the other seqs'. A sorted map's keys walk
-  its seq, whose stack takes `peek`, `first` and `next` with their lookups
-  where a program can extend lists (light-cljs-1035's `isListCell`): the
-  key seq adds none of its own. `into` of keys conjoins each item through
-  the transient's dispatcher, as `into` of any seq does.
+  it, as light-cljs-1059 left the other seqs'. `into` of keys conjoins each
+  item through the transient's dispatcher, as `into` of any seq does.
+- **A sorted map's seq.** Where a program can extend lists, its stack took
+  `peek` and `conj` (light-cljs-1035's `isListCell`), a lookup each per
+  node. A list stack without an `-peek` slot now peeks its `first` through
+  `first`'s wrappers, as `peek` of a list does once its lookup finds no
+  method, and one without `-conj` or `-meta` slots and without metadata is
+  pushed onto as `conj` builds it, a list of the count `count` gives
+  (`unextendedListStack`); a stack any extension or `specify!` reached
+  takes `peek` and `conj` as before. So a sorted map's keys, values and
+  seq, and a sorted set's seq, walk with no lookup per item.
 - **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1064): the
   gate's new walks of a 7-key map's keys and values 2,529 and 2,532 ns to
   348 and 384 (4.6 and 4.9 times shadow-cljs's, most of it the map seq's
@@ -1498,8 +1508,10 @@ values takes no protocol lookup per item, where each step took 9.
   -9%, `seq-walk-vec-1000` -3% after them, no operation over 3% slower;
   with one `extend-type`, a walk of a 7-key map's values 3,983 to 480 ns;
   workload 200k's steady state unchanged (46.1 to 44.9 ms per iteration as
-  shadow-cljs's own moved 26.9 to 25.7); the re-frame apps' whole bundles
-  208 to 422 bytes larger after gzip (0.13 to 0.20%).
+  shadow-cljs's own moved 26.9 to 25.7); with the review's fixes, against
+  master `5bb838cd`, the walks and `lazy-walk-1000` measured as much again
+  and `seq-walk-vec-1000` -24%, and the re-frame apps' whole bundles are
+  241 to 576 bytes larger after gzip (0.17 to 0.24%).
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
