@@ -972,15 +972,15 @@ pub(crate) fn terse_program(
     }
 }
 
-/// The terse output of a single file whose runtime slice is the `kept`
-/// units (by unit index) written in the program's own function rather than
-/// as a factory (light-cljs-1051; docs/advanced-optimization.md, "Phase
-/// 3"): `(()=>{"use strict";<units><program>})()`. The program and the
-/// units' top-level bindings are named by one table ([`terse_texts`]), a
-/// program read `rt$x` and the binding `x` one name, so the program reads
-/// the bindings the units declare. `strict` writes the `"use strict"` the
-/// factory had, which an ES module needs not. The units go right after the
-/// function's `{`, before the prelude helpers, which neither reads.
+/// The terse output of an ES module whose runtime slice is the `kept` units
+/// (by unit index) written in the program's own function rather than as a
+/// factory (light-cljs-1051; docs/advanced-optimization.md, "Phase 3"):
+/// `(()=>{<units><program>})()`, strict code as all of a module is. The
+/// program and the units' top-level bindings are named by one table
+/// ([`terse_texts`]), a program read `rt$x` and the binding `x` one name,
+/// so the program reads the bindings the units declare. The units go right
+/// after the function's `{`, before the prelude helpers, which neither
+/// reads.
 ///
 /// `marks` move as [`terse_program`] moves them, and the units' lines map
 /// to `src/js_runtime.js` as a factory's do. Also returns each unit's
@@ -989,7 +989,6 @@ pub(crate) fn terse_program_units(
     source: &str,
     segments: &[Range<usize>],
     kept: &[bool],
-    strict: bool,
     marks: Option<&mut crate::source_map::Marks>,
 ) -> (String, Vec<usize>) {
     let texts = [Text {
@@ -1002,10 +1001,6 @@ pub(crate) fn terse_program_units(
     let (mut output, located) = outputs.pop().expect("one text");
     let at = output.find('{').expect("the program's function") + 1;
     let mut units = String::new();
-    if strict {
-        units.push_str("\"use strict\";");
-    }
-    let start = units.len();
     let mut unit_marks = marks.is_some().then(Vec::new);
     let unit_bytes = write_units(
         &mut units,
@@ -1020,8 +1015,8 @@ pub(crate) fn terse_program_units(
         for (offset, source, name) in unit_marks.into_iter().flatten() {
             let origin = (crate::source_map::RUNTIME, source);
             match name {
-                Some(name) => marks.named(at + start + offset, Some(origin), name),
-                None => marks.position(at + start + offset, origin.0, origin.1),
+                Some(name) => marks.named(at + offset, Some(origin), name),
+                None => marks.position(at + offset, origin.0, origin.1),
             }
         }
         // The program's own text after the units maps as it did.
@@ -1459,7 +1454,14 @@ impl<'s> Lexed<'s> {
         // `;` or the keyword is raw text.
         let (locals, mut joins) = match resolve(source, &tokens) {
             Ok(resolution) => (
-                Locals::new(source, &tokens, &in_raw, &resolution, eligible, function_table),
+                Locals::new(
+                    source,
+                    &tokens,
+                    &in_raw,
+                    &resolution,
+                    eligible,
+                    function_table,
+                ),
                 joined_declarations(source, &tokens, &resolution.statements),
             ),
             Err(_) => (Locals::none(tokens.len()), vec![Join::Keep; tokens.len()]),

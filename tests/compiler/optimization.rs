@@ -983,14 +983,22 @@ fn loop_labels_number_the_labeled_statements_around_them_per_function() {
     );
 }
 
+/// Run the ES module `esm` in Node and return what its default export's
+/// value prints with `console.log`.
+fn module_result(esm: &str) -> String {
+    execute(&format!(
+        "import(\"data:text/javascript,\" + encodeURIComponent({esm:?})).then((m) => console.log(m.default));"
+    ))
+}
+
 /// light-cljs-1051: at `Advanced` a single file declares each global where a
 /// statement of the program's function defines it, `var g3 = ...;`, rather
-/// than in a `let` list up front, and writes the runtime slice's units in
-/// that function rather than as a factory whose returned array the program
-/// destructures. A global read before its definition runs still reads
-/// `undefined`, a `defonce` keeps its first value, and the units stay strict
-/// code. Output that is no ES module keeps the factory where the program has
-/// raw text, which the strict program function would make strict too.
+/// than in a `let` list up front, and an ES module writes the runtime
+/// slice's units in that function rather than as a factory whose returned
+/// array the program destructures. A global read before its definition runs
+/// still reads `undefined`, and a `defonce` keeps its first value. Output
+/// that is no module keeps the factory, whose `"use strict"` would make the
+/// program strict too, which it can tell.
 #[test]
 fn advanced_declares_globals_and_runtime_roots_where_they_are_defined() {
     let source = r#"
@@ -1011,18 +1019,15 @@ fn advanced_declares_globals_and_runtime_roots_where_they_are_defined() {
     both(source, expected);
     let advanced = ApplicationOptions::new(OptimizationLevel::Advanced);
     let prepared = prepare_application(&program(source), advanced.clone());
-    let js = prepared.emit_js();
-    // The program's function is the runtime's: no factory of its own.
-    assert!(js.starts_with("(()=>{\"use strict\";"), "{js}");
-    assert_eq!(js.matches("use strict").count(), 1, "{js}");
-    assert!(js.contains(";var ") || js.contains("}var "), "{js}");
-    // An ES module is strict code already.
+    // The module's program function is the runtime's: no factory of its own.
     let esm = prepared.emit_esm();
     assert!(!esm.contains("use strict"), "{esm}");
-    let module = format!(
-        "import(\"data:text/javascript,\" + encodeURIComponent({esm:?})).then((m) => console.log(m.default));"
-    );
-    assert_eq!(execute(&module), expected);
+    assert!(esm.contains(";var ") || esm.contains("}var "), "{esm}");
+    assert_eq!(module_result(&esm), expected);
+    // Output that is no module keeps the factory.
+    let js = prepared.emit_js();
+    assert!(js.contains("=(()=>{\"use strict\";"), "{js}");
+    assert!(js.contains(";var ") || js.contains("}var "), "{js}");
     // Every top-level definition declares its global; the readable output
     // keeps the factory and the compiler's names.
     let readable =
@@ -1031,14 +1036,18 @@ fn advanced_declares_globals_and_runtime_roots_where_they_are_defined() {
     for declared in ["var g", "  const [rt$"] {
         assert!(readable.contains(declared), "{declared}: {readable}");
     }
-    // Raw text sees a sloppy function at every level outside a module.
+    // A sloppy program stays sloppy outside a module: raw text's `this`,
+    // and `js-arguments`, which aliases the parameters.
     let source = r#"(defn sloppy [] (js* "(function () { return this === undefined; })()"))
+                    (defn aliased [x] (aset (js-arguments) 0 9) x)
                     (def kept (atom 0))
-                    (pr-str [(sloppy) @kept])"#;
-    both(source, "[false 0]\n");
-    let js = prepare_application(&program(source), advanced).emit_js();
-    assert!(
-        js.contains("=(()=>{\"use strict\";") && js.contains("var "),
-        "{js}"
-    );
+                    (pr-str [(sloppy) (aliased 2) @kept])"#;
+    both(source, "[false 9 0]\n");
+    // A direct `eval` in raw text reads a string as code: the module keeps
+    // the factory, whose `Atom` it cannot see.
+    let source =
+        r#"(js/JSON.stringify (let [a (atom 0)] (js* "[~{}, eval(~{})]" @a "typeof Atom")))"#;
+    let esm = prepare_application(&program(source), advanced).emit_esm();
+    assert!(esm.contains("=(()=>{\"use strict\";"), "{esm}");
+    assert_eq!(module_result(&esm), "[0,\"undefined\"]\n");
 }

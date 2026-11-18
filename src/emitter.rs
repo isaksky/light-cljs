@@ -925,17 +925,15 @@ fn emit_js_mode(
         };
         // Marks of the runtime text, by offset in `runtime`.
         let mut runtime_marks = Marks::default();
-        // Terse output writes the slice's units in the program's own
-        // function (light-cljs-1051), which `"use strict"` covers unless
-        // the output is an ES module, so only where no raw `js*` text could
-        // tell a sloppy function from a strict one, and none could be
-        // captured by a binding that keeps its spelling.
-        if slice && terse && shared.is_none() {
+        // A terse ES module writes the slice's units in the program's own
+        // function (light-cljs-1051), which is strict code as a module's
+        // is, where nothing the program names could be captured by a
+        // binding that keeps its spelling. Output that is no module keeps
+        // the factory, whose `"use strict"` would make the program strict
+        // too, which it can tell (`js-arguments` aliasing its parameters,
+        // a write to a frozen object).
+        if slice && terse && module && shared.is_none() {
             let kept = crate::runtime_slice::sliced_units(&emitter.runtime);
-            let raw_js = emitter
-                .used
-                .iter()
-                .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }));
             let constants = emitter
                 .constants
                 .as_ref()
@@ -945,9 +943,7 @@ fn emit_js_mode(
                 .raw_segments
                 .iter()
                 .map(|range| &emitter.output[range.clone()]);
-            if (module || !raw_js)
-                && !spells_kept_binding(texts.into_iter(), raw, std::iter::once(kept.as_slice()))
-            {
+            if !spells_kept_binding(texts.into_iter(), raw, std::iter::once(kept.as_slice())) {
                 units_in_scope = Some(kept);
             }
         }
@@ -1144,7 +1140,6 @@ fn emit_js_mode(
             &emitter.output,
             &emitter.raw_segments,
             kept,
-            !module,
             emitter.marks.as_mut(),
         );
         // Counted as the output writer writes them, keyed.
@@ -1220,7 +1215,8 @@ fn emit_js_mode(
 /// `/[\uD800-\uDBFF]/`, names nothing. In the compiler's own `texts` (which
 /// hold the raw text too) only a name counts: the emitter reads a host
 /// global through `host("Atom")`, and its strings, such as docstrings, are
-/// data.
+/// data, unless raw text has a direct `eval` (or does not lex), which reads
+/// a string as code: then any word counts, and any `\u` escape.
 fn spells_kept_binding<'t>(
     texts: impl Iterator<Item = &'t str>,
     mut raw: impl Iterator<Item = &'t str>,
@@ -1259,15 +1255,30 @@ fn spells_kept_binding<'t>(
             && lex_section(text, 0..text.len(), false)
                 .ok()
                 .is_none_or(|tokens| {
-                    tokens.iter().any(|token| {
-                        token.kind == Kind::Name && token.text(text).contains('\\')
-                    })
+                    tokens
+                        .iter()
+                        .any(|token| token.kind == Kind::Name && token.text(text).contains('\\'))
                 })
     };
-    if raw.any(|text| spells(text) || escaped_name(text)) {
+    let raw = raw.collect::<Vec<_>>();
+    if raw.iter().any(|text| spells(text) || escaped_name(text)) {
         return true;
     }
+    // A direct `eval` in raw text reads a string as code, the compiler's
+    // strings too (a hole's value): then any word counts, and any escape,
+    // which may spell one in a string.
     let mut texts = texts;
+    let eval = raw.iter().any(|text| {
+        lex_section(text, 0..text.len(), false).map_or(true, |tokens| {
+            tokens
+                .iter()
+                .any(|token| token.kind == Kind::Name && token.text(text) == "eval")
+        })
+    });
+    if eval {
+        return raw.iter().any(|text| text.contains("\\u"))
+            || texts.any(|text| spells(text) || text.contains("\\u"));
+    }
     texts.any(|text| match lex_section(text, 0..text.len(), false) {
         Ok(tokens) => tokens
             .iter()
@@ -2286,7 +2297,8 @@ struct Emitter<'a> {
     top_statement: bool,
     /// Whether the type definition being written is such a statement, whose
     /// assignments of the type and its factories declare them
-    /// ([`Emitter::declared_product`]).
+    /// ([`Emitter::declared_product`]); `defined_type` takes it, so a type
+    /// defined in one of its methods is not.
     declaring_type: bool,
 }
 
@@ -3860,10 +3872,10 @@ impl<'a> Emitter<'a> {
 
     /// [`Emitter::product`] at the start of a statement of a type's
     /// definition that assigns it, preceded by `var` where the statement
-    /// declares it ([`Emitter::declaring_type`]), as [`Emitter::declared_def`]
-    /// declares a `def`'s global.
-    fn declared_product(&mut self, id: GlobalId) {
-        if self.declaring_type && !self.program.globals[id.0].name.contains('.') {
+    /// declares it (`declare`, [`Emitter::declaring_type`]), as
+    /// [`Emitter::declared_def`] declares a `def`'s global.
+    fn declared_product(&mut self, id: GlobalId, declare: bool) {
+        if declare && !self.program.globals[id.0].name.contains('.') {
             self.output.push_str("var ");
             self.declared_in_place
                 .as_mut()
@@ -7890,8 +7902,9 @@ impl<'a> Emitter<'a> {
         global: GlobalId,
         constructor: GlobalId,
         fields: &[String],
+        declare: bool,
     ) {
-        self.declared_product(constructor);
+        self.declared_product(constructor, declare);
         if record {
             // A record's factory passes its fields by position.
             self.output.push_str(" = (");
@@ -7936,8 +7949,8 @@ impl<'a> Emitter<'a> {
     }
 
     /// `map->R`, the map factory `map_constructor` of the record `global`.
-    fn map_factory(&mut self, global: GlobalId, map_constructor: GlobalId) {
-        self.declared_product(map_constructor);
+    fn map_factory(&mut self, global: GlobalId, map_constructor: GlobalId, declare: bool) {
+        self.declared_product(map_constructor, declare);
         self.output.push_str(" = value => ");
         self.rt(RuntimeName::export("recordFromMap"));
         self.output.push('(');
@@ -7986,7 +7999,10 @@ impl<'a> Emitter<'a> {
             unreachable!("a program type with a constructor")
         };
         let (record, global) = (*record, *global);
-        self.declared_product(global);
+        // Only this definition's own statements declare: a type defined in
+        // one of its methods is a value there.
+        let declare = std::mem::take(&mut self.declaring_type);
+        self.declared_product(global, declare);
         self.output.push_str(" = ");
         self.rt(RuntimeName::direct("defineType", None));
         if record {
@@ -8036,11 +8052,11 @@ impl<'a> Emitter<'a> {
         }
         // `crate::rta` keeps the factory only where the program reads it.
         if self.retained.is_none_or(|retained| retained[constructor.0]) {
-            self.type_factory(record, global, *constructor, fields);
+            self.type_factory(record, global, *constructor, fields, declare);
         }
         self.type_basis(global, fields);
         if let Some(map_constructor) = map_constructor {
-            self.map_factory(global, *map_constructor);
+            self.map_factory(global, *map_constructor, declare);
         }
     }
 
@@ -9094,7 +9110,7 @@ impl<'a> Emitter<'a> {
                     // `crate::rta` keeps the factory only where the program
                     // reads it.
                     if self.retained.is_none_or(|retained| retained[constructor.0]) {
-                        self.type_factory(*record, *global, *constructor, fields);
+                        self.type_factory(*record, *global, *constructor, fields, false);
                     }
                     self.type_basis(*global, fields);
                     self.product(*global);
@@ -9107,7 +9123,7 @@ impl<'a> Emitter<'a> {
                     }
                 }
                 if let Some(map_constructor) = map_constructor {
-                    self.map_factory(*global, *map_constructor);
+                    self.map_factory(*global, *map_constructor, false);
                 }
                 self.return_open();
                 if let Some(body) = body {

@@ -1198,11 +1198,9 @@ fn names_kept_spelling(written: &[Written], slices: &[ChunkSlice]) -> bool {
             .iter()
             .flat_map(|text| [text.head.as_str(), text.run.as_str()])
             .chain(fixed),
-        written.iter().flat_map(|text| {
-            text.raw
-                .iter()
-                .map(|range| &text.run[range.clone()])
-        }),
+        written
+            .iter()
+            .flat_map(|text| text.raw.iter().map(|range| &text.run[range.clone()])),
         slices.iter().map(|slice| slice.kept.as_slice()),
     )
 }

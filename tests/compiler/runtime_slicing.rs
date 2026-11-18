@@ -193,18 +193,23 @@ fn bundler_modules_embed_the_same_slice() {
             // with the placeholder.
             let js = light_cljs::runtime_key::unkeyed(&advanced.emit_js());
             let module = light_cljs::runtime_key::unkeyed(&advanced.emit_esm());
-            // Terse output that is no module writes the units in a strict
-            // program function, which a module, strict already, needs not
-            // say (light-cljs-1051).
-            let js = match js.strip_prefix("(()=>{\"use strict\";") {
-                Some(rest) => format!("(()=>{{{rest}"),
-                None => js,
-            };
-            assert_eq!(
-                module,
-                format!("export default {};\n", js.trim_end()),
-                "{source}"
-            );
+            if module.contains("=(()=>{\"use strict\";") || module.contains("  const [rt$") {
+                assert_eq!(
+                    module,
+                    format!("export default {};\n", js.trim_end()),
+                    "{source}"
+                );
+            } else {
+                // A terse module writes the slice's units in the program's
+                // function rather than as the expression's factory
+                // (light-cljs-1051), named with the program from one table,
+                // and prints what the expression prints.
+                assert!(module.starts_with("export default (()=>{"), "{module}");
+                let printed = execute(&format!(
+                    "import(\"data:text/javascript,\" + encodeURIComponent({module:?})).then((m) => console.log(m.default));"
+                ));
+                assert_eq!(printed, execute(&format!("console.log({js});")), "{source}");
+            }
         }
     }
 }

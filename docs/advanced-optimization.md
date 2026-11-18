@@ -4229,22 +4229,26 @@ run the terse output.
     `try`, with `:test` metadata or of a host path, and globals that no
     definition assigns (a `declare`d name only `typeof` reads). Chunked
     builds declare their globals at module level, as before.
-  - **Runtime roots.** The slice's units are written at the start of the
-    program's own function rather than as a factory whose returned array
-    the program destructures, `(()=>{"use strict";<units><program>})()`
+  - **Runtime roots.** In an ES module, which all of release output is,
+    the slice's units are written at the start of the program's own
+    function rather than as a factory whose returned array the program
+    destructures, `export default (()=>{<units><program>})();`
     (`terse::terse_program_units`). One table names the units' top-level
     bindings and the program's names, as a chunked build's does
     (`terse_texts`), and the program function's own declarations take the
     table's names rather than names per scope, since they share the units'
-    scope (`Locals::new`'s `function_table`). `"use strict"` still covers
-    the units; an ES module, strict already, does not write it. It makes
-    the program's code strict too, which raw `js*` text could tell, so
-    output that is no module keeps the factory where the program has raw
-    text. Every output keeps it where the program could name a binding
-    that keeps its spelling (`spells_kept_binding`, the rule chunked
-    builds use: since light-cljs-1051 only names count in the compiler's
-    own text, whose strings are data, and an escape only in a name of raw
-    text, not in a string or regular expression), and readable output
+    scope (`Locals::new`'s `function_table`). A module is strict code, as
+    the factory's `"use strict"` made the units. Output that is no module
+    (`--compile` without `--esm`, the evaluator, most tests) keeps the
+    factory: its `"use strict"` at the program function's start would make
+    the program strict too, which the program can tell (`js-arguments`
+    aliasing its parameters, a write to a frozen object, raw text). A
+    module keeps it too where the program could name a binding that keeps
+    its spelling (`spells_kept_binding`, the rule chunked builds use: since
+    light-cljs-1051 only names count in the compiler's own text, whose
+    strings are data, and an escape only in a name of raw text, not in a
+    string or regular expression, unless raw text has a direct `eval`,
+    which reads a string as code), and readable output
     (`pseudo_names`) keeps it too. Nesting the program's function inside
     the runtime's instead, so that the program's names could reuse those
     of bindings it does not read, measured 472 and 605 bytes larger after
