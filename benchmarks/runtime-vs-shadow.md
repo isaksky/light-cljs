@@ -3915,3 +3915,26 @@ included) and of the final runtime, one process each, alternated twice
 7.95 and 7.95, `get-small` 12.6 and 12.5 to 12.6 and 12.6,
 `contains-small` 11.4 and 11.3 to 11.3 and 11.4, `record-kw-field` 5.97 and
 5.95 to 5.93 and 6.04: the same as before the fix.
+
+**The landed runtime** (`light-cljs-7a2b2a5e`: the key test tests
+identity on the keyword path only, so that any other key compares by
+`equalPair` alone, which the Pants build's suite required, and reads a
+slot written by name, the Sol review's fix), against master `1df0a071`
+(with light-cljs-1048), the operations of this pellet alone, 5 runs (load
+5.34-6.38 before, 9.56-10.48 after), ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 7.94 (7.64-7.96) | 8.01 (7.78-8.03) | +1% | 9.79 / 9.92 | 0.81 | 0.81 |
+| get-small | 12.5 (12.1-12.6) | 12.7 (12.4-12.8) | +2% | 14.9 / 15.0 | 0.84 | 0.85 |
+| get-hash100 | 20.4 (20.0-20.7) | 12.9 (12.5-12.9) | -37% | 12.1 / 12.2 | 1.69 | 1.05 |
+| kw-hash100 | 24.7 (24.2-25.3) | 15.8 (14.4-16.8) | -36% | 13.3 / 13.6 | 1.86 | 1.17 |
+| assoc-hash100 | 81.1 (78.6-83.5) | 85.3 (82.2-87.1) | +5% | 79.8 / 81.1 | 1.02 | 1.05 |
+| dissoc-hash100 | 93.7 (91.5-95.3) | 94.3 (93.7-98.2) | +1% | 74.3 / 77.0 | 1.26 | 1.23 |
+| update-hash100 | 93.0 (90.1-93.7) | 93.3 (92.0-95.8) | +0% | 94.7 / 98.2 | 0.98 | 0.95 |
+| destructure-map-3 | 63.5 (61.9-64.5) | 69.9 (69.0-70.5) | +10% | 48.3 / 49.9 | 1.31 | 1.40 |
+| record-kw-field | 5.94 (5.72-5.95) | 6.02 (6.00-6.04) | +1% | 6.33 / 6.44 | 0.94 | 0.93 |
+
+`get-hash100` keeps 7.5 of the 9 ns it gained with the identity test
+first, `kw-hash100` all of it; `destructure-map-3` is `getSite`'s budget as
+above.
