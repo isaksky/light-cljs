@@ -502,7 +502,9 @@ fn shared_profile_conj_preserves_counted_list_kind() {
 /// `typeNames`) hold their keys weakly after boot, as the V8 profile's
 /// WeakMaps do: a reify discarded by the task is reclaimed while the
 /// registry stays rooted, and a named type the task keeps is still named
-/// (light-cljs-683). The boot's entries seed them.
+/// (light-cljs-683). The boot's entries seed them. Since light-cljs-1069
+/// `installMethods` records only a value given an `Object/` or
+/// `IFn/-invoke` method, so the reify has an `Object/toString`.
 #[test]
 fn shared_profile_brand_registries_release_discarded_values() {
     use big_boy_pants_js::HandleError;
@@ -512,7 +514,7 @@ fn shared_profile_brand_registries_release_discarded_values() {
         &format!(
             "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
              const cells = globalThis.__lightSharedCells; \
-             const reified = rt.makeReify([]); \
+             const reified = rt.makeReify([[\"Object/toString\", 1, function () {{ return \"r\"; }}]]); \
              const T = rt.makeType(['a'], [], false, null, 'user/T'); \
              const implementations = cells.protocolImplementations, names = cells.typeNames; \
              const report = [Object.prototype.toString.call(implementations), Object.prototype.toString.call(names), \

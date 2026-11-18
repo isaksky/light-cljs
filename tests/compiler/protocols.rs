@@ -217,16 +217,23 @@ fn protocol_functions_as_values_keep_dispatch_at_every_level() {
     let js = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_js();
     // A method of fixed signatures gets its own dispatcher; a variadic one and
     // one extendable through metadata keep the shared one. Each names its
-    // slots, as the text spells them (light-cljs-1058).
+    // slots, as the text spells them (light-cljs-1058). Nothing assigns
+    // these Vars, so the dispatcher is the function itself, which no factory
+    // makes at load, and the rest of its dispatch its `protocolMiss`, and no
+    // getter reads the Var (light-cljs-1069).
     for expected in [
-        "(m0, m1) => function (r0) { return r0 != null && r0[m1] != null ? r0[m1](r0) : m0(r0); }, [\"cljs$user$P$f$arity$1$",
-        "(m0, m1, m2) => function (r0, a1 = undefined) { if (arguments.length === 1) { if (r0 != null && r0[m1] != null) return r0[m1](r0); } else if (arguments.length === 2) { if (r0 != null && r0[m2] != null) return r0[m2](r0, a1); } return m0.apply(null, arguments); }, [\"cljs$user$P$g$arity$1$",
-        "\"cljs.user/h\", [3], false, 1, () => g3, null, [\"cljs$user$P$h$arity$3$",
-        "\"cljs.user/m\", [1], true, null, () => g5, null, [\"cljs$user$M$m$arity$1$",
+        "\"cljs.user/f\", [1], false, null, null, function (r0) { return r0 != null && r0[\"cljs$user$P$f$arity$1$",
+        "\"](r0) : g1[\"protocolMiss$",
+        "\"cljs.user/g\", [1, 2], false, null, null, function (r0, a1 = undefined) { if (arguments.length === 1) { if (r0 != null && r0[\"cljs$user$P$g$arity$1$",
+        "\"](r0, a1); } return g2[\"protocolMiss$",
+        "\"].apply(null, arguments); }, [\"cljs$user$P$g$arity$1$",
+        "\"cljs.user/h\", [3], false, 1, null, null, [\"cljs$user$P$h$arity$3$",
+        "\"cljs.user/m\", [1], true, null, null, null, [\"cljs$user$M$m$arity$1$",
     ] {
         assert!(js.contains(expected), "{expected}\n{js}");
     }
-    assert_eq!(js.matches("=> function (r0").count(), 2, "{js}");
+    assert_eq!(js.matches("=> function (r0").count(), 0, "{js}");
+    assert_eq!(js.matches("\"], true)").count(), 2, "{js}");
 }
 
 /// A dispatcher calls the slot of the call's arity that a host getter gives,

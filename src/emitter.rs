@@ -2988,6 +2988,83 @@ impl<'a> Emitter<'a> {
         self.output.push_str("return m0.apply(null, arguments); }");
     }
 
+    /// At `Advanced`, the dispatcher of a protocol method of these fixed
+    /// `arities`, as [`Emitter::protocol_fast_path`] makes it, written as
+    /// the function itself (light-cljs-1069): its slots are named in the
+    /// text, and the rest of the dispatch is its `protocolMiss`, which
+    /// `protocolMethod` defines on it, read through the method's global,
+    /// which nothing assigns ([`Emitter::unassigned_dispatcher`]). No
+    /// function is called at load, so V8 compiles none: it compiles the
+    /// dispatcher on its first call, as upstream's protocol functions are.
+    ///
+    /// ```text
+    /// function (r0, a1 = undefined) { return r0 != null && r0["ns$P$m$arity$2$LKEY"]
+    ///   != null ? r0["ns$P$m$arity$2$LKEY"](r0, a1) : g3["protocolMiss$LKEY"](r0, a1); }
+    /// ```
+    fn protocol_direct_path(&mut self, global: GlobalId, key: &str, arities: &[usize]) {
+        let widest = arities.iter().copied().max().unwrap_or(1).max(1);
+        let parameters = |arity: usize, defaulted: bool| {
+            (0..arity)
+                .map(|index| match index {
+                    0 => "r0".to_owned(),
+                    1 if defaulted => "a1 = undefined".to_owned(),
+                    _ => format!("a{index}"),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        write!(self.output, ", function ({}) {{ ", parameters(widest, true)).unwrap();
+        if let [arity] = arities {
+            let slot = crate::rta::protocol_slot(key, *arity);
+            let arguments = parameters(*arity, false);
+            self.output.push_str("return r0 != null && r0");
+            self.keyed_member(&slot);
+            self.output.push_str(" != null ? r0");
+            self.keyed_member(&slot);
+            write!(self.output, "({arguments}) : ").unwrap();
+            self.global(global);
+            self.keyed_member("protocolMiss$LKEY");
+            write!(self.output, "({arguments}); }}").unwrap();
+            return;
+        }
+        for (index, arity) in arities.iter().enumerate() {
+            if index > 0 {
+                self.output.push_str("else ");
+            }
+            let slot = crate::rta::protocol_slot(key, *arity);
+            write!(
+                self.output,
+                "if (arguments.length === {arity}) {{ if (r0 != null && r0"
+            )
+            .unwrap();
+            self.keyed_member(&slot);
+            self.output.push_str(" != null) return r0");
+            self.keyed_member(&slot);
+            write!(self.output, "({}); }} ", parameters(*arity, false)).unwrap();
+        }
+        self.output.push_str("return ");
+        self.global(global);
+        self.keyed_member("protocolMiss$LKEY");
+        self.output.push_str(".apply(null, arguments); }");
+    }
+
+    /// Whether the protocol method dispatcher `global` is a Var nothing
+    /// assigns: only its `defprotocol` defines it
+    /// ([`crate::inference::Definition::Protocol`]), read where emission
+    /// reads globals directly.
+    fn unassigned_dispatcher(&self, global: GlobalId) -> bool {
+        use crate::inference::Definition;
+        let Some(inference) = self.inference else {
+            return false;
+        };
+        !self.demand_roots
+            && !self.application_roots
+            && matches!(
+                inference.facts().definition(global),
+                Definition::Protocol(_)
+            )
+    }
+
     /// Whether `callee` reads a global that holds a function that reads no
     /// `this`, so that a call of it may be a plain call, `g3(a, 2)`, instead
     /// of `(g3).call(null, a, 2)` (light-cljs-262): at `Advanced`, a
@@ -7975,16 +8052,30 @@ impl<'a> Emitter<'a> {
         self.object_methods(methods, Some(id), EntrySlots::InPlaceOfKey);
         if record {
             self.output.push_str(", 1");
+            let (equiv, hash) = self.record_kit_parts();
+            // A program that names a protocol member or mask keeps a record's
+            // markers ([`crate::inference::ProgramFacts::protocol_members_named`]).
+            let markers = self
+                .inference
+                .is_none_or(|inference| inference.facts().protocol_members_named());
             if !self.sole_type(global) {
                 self.output.push_str(", () => ");
                 self.global(global);
+            } else if equiv || hash || markers {
+                self.output.push_str(", null");
             }
+            if equiv || hash {
+                self.output.push_str(", ");
+                self.record_kit(&name, fields);
+            } else if markers {
+                self.output.push_str(", null");
+            }
+            if markers {
+                self.output.push_str(", true");
+            }
+            self.defined_records = true;
         }
         self.output.push_str("); ");
-        if record {
-            self.defined_records = true;
-            self.record_kit(global, &name, fields);
-        }
         // `crate::rta` keeps the factory only where the program reads it.
         if self.retained.is_none_or(|retained| retained[constructor.0]) {
             self.type_factory(record, global, *constructor, fields, declare);
@@ -8008,7 +8099,7 @@ impl<'a> Emitter<'a> {
     /// same order, with the same `__hash` cache:
     ///
     /// ```text
-    /// rt$installMethods(g2.prototype, [["IEquiv/-equiv", 2, function(a0, a1)
+    /// [["IEquiv/-equiv", 2, function(a0, a1)
     ///   { return a1 != null && this.constructor === a1.constructor
     ///   && rt$equalPair(this["w"], a1["w"]) && ... && rt$equalPair(
     ///   this["__extmap"], a1["__extmap"]); }], ["IHash/-hash", 1,
@@ -8016,30 +8107,21 @@ impl<'a> Emitter<'a> {
     ///   const v0 = this["w"], ..., e = this["__extmap"], x = e == null ?
     ///   null : rt$toArray(e); let r = (k0 ^ rt$hash(v0)) + ... | 0; if (x
     ///   != null) r = rt$recordEntriesHash(x, r); return this["__hash"] =
-    ///   r ^ k; }]]);
+    ///   r ^ k; }]]
     /// ```
     ///
-    /// `installMethods` runs after `defineType` gave the type the shared
-    /// methods, which these replace, as those replace a program's own.
-    fn record_kit(&mut self, global: GlobalId, name: &str, fields: &[String]) {
-        let [equiv, hash] = self.record_kits;
-        // The keyword hashes are constants only where no program extension
-        // can replace `IHash` of a keyword, as for the constant pool's.
-        let hash = hash
-            && self
-                .inference
-                .is_some_and(|inference| inference.facts().core_protocols_intact());
-        if !equiv && !hash {
-            return;
-        }
+    /// The kit is `defineType`'s last argument, whose entries follow the
+    /// shared methods and replace them, as those replace a program's own:
+    /// one definition of the type's slots, where a call of
+    /// `installMethods` after `defineType` defined them twice
+    /// (light-cljs-1069).
+    fn record_kit(&mut self, name: &str, fields: &[String]) {
+        let (equiv, hash) = self.record_kit_parts();
         let members: Vec<String> = fields
             .iter()
             .map(|field| crate::analyzer::munge_js_member(field))
             .collect();
-        self.rt(RuntimeName::direct("installMethods", None));
-        self.output.push('(');
-        self.product(global);
-        self.output.push_str(".prototype, [");
+        self.output.push('[');
         if equiv {
             self.output.push_str(
                 "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && this.constructor === a1.constructor",
@@ -8102,7 +8184,20 @@ impl<'a> Emitter<'a> {
             let type_hash = crate::value_hash::string_hash(&units);
             write!(self.output, " = r ^ {type_hash}; }}]").unwrap();
         }
-        self.output.push_str("]); ");
+        self.output.push(']');
+    }
+
+    /// Which of a record's own `-equiv` and `-hash` [`Emitter::record_kit`]
+    /// writes: the hash only where no program extension can replace `IHash`
+    /// of a keyword, whose hashes it holds as constants, as for the constant
+    /// pool's.
+    fn record_kit_parts(&self) -> (bool, bool) {
+        let [equiv, hash] = self.record_kits;
+        let hash = hash
+            && self
+                .inference
+                .is_some_and(|inference| inference.facts().core_protocols_intact());
+        (equiv, hash)
     }
 
     /// The value of the type definition `id` that [`Emitter::defined_type`]
@@ -9292,7 +9387,7 @@ impl<'a> Emitter<'a> {
                     );
                     write!(
                         self.output,
-                        ", {:?}, {}, {}, () => ",
+                        ", {:?}, {}, {}, ",
                         method.arities,
                         via_metadata,
                         method
@@ -9300,19 +9395,32 @@ impl<'a> Emitter<'a> {
                             .map_or_else(|| "null".into(), |n| n.to_string())
                     )
                     .unwrap();
-                    self.global(method.global);
+                    // The getter reads the method's Var where the program
+                    // may assign it; else the method is its Var's value, and
+                    // no getter is compiled on an extension's first read
+                    // (light-cljs-1069).
+                    let unassigned = self.unassigned_dispatcher(method.global);
+                    if unassigned {
+                        self.output.push_str("null");
+                    } else {
+                        self.output.push_str("() => ");
+                        self.global(method.global);
+                    }
                     let fast =
                         self.inference.is_some() && !*via_metadata && method.variadic.is_none();
-                    if fast {
+                    let named = self.names_program_slots()
+                        && !method.arities.is_empty()
+                        && !method.arities.contains(&0);
+                    let direct = fast && named && unassigned;
+                    if direct {
+                        self.protocol_direct_path(method.global, &method.key, &method.arities);
+                    } else if fast {
                         self.protocol_fast_path(&method.arities);
                     }
                     // Its slots as the text names them, which the method
                     // entries naming the dispatcher reach too
                     // ([`Emitter::object_methods`]).
-                    if self.names_program_slots()
-                        && !method.arities.is_empty()
-                        && !method.arities.contains(&0)
-                    {
+                    if named {
                         self.output.push_str(if fast { ", [" } else { ", null, [" });
                         for (index, arity) in method.arities.iter().enumerate() {
                             if index > 0 {
@@ -9322,6 +9430,9 @@ impl<'a> Emitter<'a> {
                             write_string(&mut self.output, slot.encode_utf16(), false);
                         }
                         self.output.push(']');
+                    }
+                    if direct {
+                        self.output.push_str(", true");
                     }
                     self.output.push(')');
                     if !declared {

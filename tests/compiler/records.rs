@@ -600,9 +600,10 @@ fn advanced_records_compare_and_hash_with_their_own_methods() {
                            (get keys (->P 1 [2 :j]) -1) (count (into #{} [p (->P 1 [2 :k]) (->E) (->E)]))
                            (contains? #{(->E) m} (->M \"s\" nil (->P 1 2))) (= (->V 1) (->V 2))))";
     let js = advanced(source);
+    // The kit is `defineType`'s last argument (light-cljs-1069).
     for expected in [
-        "rt$installMethods(g",
-        ".prototype, [[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && \
+        "rt$defineType(function Type(",
+        ", [[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && \
          this.constructor === a1.constructor && rt$equalPair(this[\"x\"], a1[\"x\"]) && \
          rt$equalPair(this[\"y\"], a1[\"y\"]) && rt$equalPair(this[\"__extmap\"], a1[\"__extmap\"]); }], \
          [\"IHash/-hash\", 1, function() { const h = this[\"__hash\"]; if (h != null) return h; \
@@ -679,5 +680,20 @@ fn record_hash_preserves_field_snapshot_order() {
              (let [first-hash (hash target) again (hash (assoc (->R (Touch.) 1) :w 3))]
                (array (= first-hash again) (.-y target)))"),
         "[true,2]\n"
+    );
+}
+
+/// A record type at `Advanced` takes its 15 markers as their masks alone
+/// (light-cljs-1069), unless the program names a protocol member or mask:
+/// then a marker read by name, and `record?` after the program clears the
+/// mask by name, give what they gave, at every level.
+#[test]
+fn named_record_protocol_markers_remain_visible() {
+    assert_eq!(
+        run("(defrecord R [a])
+             (let [r (->R 1)]
+               (array (some? (.-cljs$core$IRecord$ r)) (record? r)
+                      (do (set! (.-cljs$lang$protocol_mask$partition0$ r) 0) (record? r))))"),
+        "[true,true,true]\n"
     );
 }

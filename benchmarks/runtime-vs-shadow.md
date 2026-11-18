@@ -4782,3 +4782,44 @@ The review of this pellet found that a name a macro builds, such as `/1/ab` with
 | re-frame-shaped | 18.362 s (18.311-18.985) | 18.181 s (18.163-19.081) | 10.774 / 10.765 s | 423.1 to 420.2 (shadow-cljs 242.8 / 242.5) | 3.4-4.4 / 2.6-3.1 |
 
 Light/shadow steady state 1.59 to 1.57 for the workload and 1.74 to 1.73 for the re-frame-shaped app; the first iteration 0.351 to 0.349 s and 1.863 to 1.792 s. Both are within their ranges of master: the lookups were already slot-first in both programs' hot paths, and this pellet takes the wrapper layer and guards off them, not a lookup.
+
+## 2026-11-18: types, protocols and hierarchies at load (light-cljs-1069)
+
+The program's definitions at load made cheaper, after light-cljs-1017's (docs/value-layout.md, "What light-cljs-1069 found and landed"): a program protocol's dispatcher is written as the function itself, which V8 compiles on its first call, where `protocolMethod` called a factory V8 compiled at load, and a method nothing assigns has no getter; `installMethods` defines each protocol entry's slot in one loop and keeps its records only for `Object/` and `IFn/-invoke` methods; a record type at `:advanced` takes its 15 markers as their masks and its kit as `defineType`'s last argument; `derive` conjoins into its sets.
+
+**Binaries:** master `light-cljs-c786677b` (light-cljs-1066 landed) and `light-cljs-1069-80a86562` (this pellet on it, before the review's fix that keeps a record's markers where a program names a protocol member or mask, which changes these programs' outputs only by `defineType`'s extra parameter, 5 bytes), V8 builds; the gate before the rebase also with `light-cljs-2af3dfcb` and `light-cljs-1069-9a191551`. shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; each table gives its 1-minute load; all unreserved.
+
+**Where load goes** (in-process: the module's compile until its first statement runs, the runtime's units, the program's top level, then one iteration; the three outputs alternated), median (range) in ms:
+
+| phase | light-cljs `c786677b` | light-cljs-1069 | shadow-cljs |
+| --- | ---: | ---: | ---: |
+| workload 200k (15 runs, load 3.1-3.2): compile | 72.6 (71.7-76.6) | 72.1 (71.1-75.3) | 80.8 (79.5-85.6) |
+| runtime units | 1.4 | 1.4 | (in its top level) |
+| program's top level | 24.2 (23.8-27.2) | 19.7 (19.4-20.2) | 13.1 (13.0-13.5) |
+| first iteration | 180.7 (177.5-191.6) | 181.9 (178.8-188.3) | 166.0 (164.4-171.4) |
+| workload 800k (9 runs, load 3.0-3.2): compile | 292.0 (289.9-301.3) | 291.3 (287.8-302.9) | 324.4 (323.5-335.9) |
+| runtime units | 2.1 | 2.1 | (in its top level) |
+| program's top level | 80.9 (79.8-82.3) | 65.2 (64.3-69.7) | 39.7 (39.1-43.7) |
+| first iteration | 641.7 (637.2-649.6) | 642.4 (638.3-648.6) | 613.3 (604.9-630.3) |
+
+The top level is 1.85 to 1.50 times shadow-cljs's at 200k and 2.04 to 1.64 at 800k: short of the 1.3 the pellet aimed for; what is left is named below. (Here shadow-cljs's compile is timed from the script's import, which reads a larger file; light-cljs-1017 timed it at 68.0 ms against light-cljs's 73.3.)
+
+**Per runtime root** (`--pseudo-names` builds of workload 800k by `2af3dfcb` and `1069-9a191551`, 7 runs alternated, load 6.6-7.1), median ms: `defineType` 32.7 to 21.7 (2,298 types, 1,904 records) and the record kits' `installMethods` 1.1 to none; `protocolMethod` 6.8 to 1.1 (981 methods), whose factory V8 compiled at load; `extendType` 10.4 to 6.9 (2,455), which called each method's getter, so V8 compiled each; `derive` 13.9 and 16.4 (1,642), `addMethodProtocol` 5.2 and 6.2 (5,410), `keyword` 6.4 and 5.8 (24,945), which this pellet does not make cheaper: `derive` rebuilt from an array, conjoining as upstream's, and hoisted all measured alike within the runs' noise (12 to 19 ms), as its cost is the operations it calls (`get`, `assoc`, `contains?`, hashing) in the interpreter, in a program that extends types.
+
+**First output** at one iteration, from starting the process to its first byte, the three outputs alternated in one session (`node run-light.mjs 42 1` against copies of the module built by each binary, and `node out/shadow.js 42 1`), median (range) in ms:
+
+| project (runs, load) | light-cljs `c786677b` | light-cljs-1069 | shadow-cljs | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: |
+| workload 200k (20, 3.0-3.1) | 327.3 (323.9-343.5) | 321.9 (319.1-331.9) | 293.1 (291.0-301.7) | 1.12, 1.10 |
+| workload 800k (12, 3.0-3.2) | 1,079.0 (1,069.1-1,104.8) | 1,047.6 (1,042.3-1,067.1) | 975.1 (968.3-985.6) | 1.11, 1.07 |
+| re-frame-shaped 200k app (10, 3.0-3.5) | 1,750.8 (1,740.9-1,884.6) | 1,760.0 (1,733.2-1,808.3) | 1,302.8 (1,276.8-1,315.5) | 1.34, 1.35 |
+
+The re-frame-shaped app does not move: its gap is the operations of its first iteration (light-cljs-1017, light-cljs-1070), not its definitions.
+
+**TodoMVC** (`bb benchmarks/re-frame.bb runtime todomvc --runs 10 --todos 50`, one session per binary, load 3.0 and 8.2 at their starts; the port rebuilt with `shadow-port-tool-983`): page load to interactive 43.55 ms (41.00-67.30) before against shadow-cljs's 33.65 in the same session, 42.65 (41.60-46.20) after against 34.80 (1.29 to 1.23); its script time 22.94 to 22.08 ms against 14.76 and 14.86; the JavaScript heap after load 3.20 MB both times against 2.74.
+
+**Steady state** (workload 200k, 40 and 1 iterations, the three alternated, 8 runs each, load 3.3-3.6): 35.2 ms per iteration before and 35.3 after, shadow-cljs 22.3. **The gate** (`bb benchmarks/core-ops/run.bb --ops protocol-on-record,record-kw-field,record-dot-field,record-assoc,multimethod,multi-arity-call`, 5 runs per compiler alternated, after with `--baseline`): on `c786677b` (load 4.2-4.7) every operation +0% but `multimethod` +1% (77.7 to 78.3 ns, its range 76.7-78.6); on `2af3dfcb` (load 13.1-13.6) every one +0% but `multimethod` -2% (88.4 to 86.9). `protocol-on-record` stays 2.33 ns, shadow-cljs's.
+
+**Size** (`bb benchmarks/re-frame.bb size todomvc simple --light-only`, on `c786677b`): the re-frame bundles with React grow 246 and 202 bytes after gzip -9 (TodoMVC 144,678 to 144,924, 0.17%; simple 113,196 to 113,398, 0.18%); flow's port does not build with either binary (its vendored zprint uses `:require-macros`, which light-cljs retired). The size ratchet's record programs are 555 bytes larger at advanced, for the one loop, the record masks and the dispatchers, which spell each slot twice as upstream's do; each extra two-method protocol 375 to 398 bytes (tests/support/ratchet_fixtures.rs, tests/compiler/size_ratchet.rs).
+
+**What is left** of the top level, profiled: the type definitions' about 46,000 non-enumerable slots at 800k, each `Object.defineProperty` about 150 ns (220 where the type's closures are its own) with as much again in their loops, where upstream's output assigns a record about 21 slots as stores; a record's 16 shared methods built as closures per type over `Type` (a shared function reading the prototype's record slot measured 3.7 ms less at 800k, at the cost of a megamorphic read in every record method); and `derive`, `addMethod` and `keyword` constants, whose cost is the operations at load, in the interpreter (shadow-cljs constructs its keyword constants with their hashes and does not intern them).

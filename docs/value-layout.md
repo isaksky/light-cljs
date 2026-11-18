@@ -1718,6 +1718,72 @@ keep theirs (light-cljs-1068).
   build.rs's scalar adapters of `get`'s and `contains?`'s keys move to
   `getPath` and `containsPath`; the small functions keep the value's.
 
+What light-cljs-1069 found and landed: the program's definitions at load
+(section 7), timed per runtime root on a `--pseudo-names` build of
+workload 800k and with `node --cpu-prof`. Load-time code runs once, mostly
+in V8's interpreter, where every step of a definition's loop counts: a
+non-enumerable slot defined with `Object.defineProperty` costs about 150
+ns (about 220 where each type's closure is its own), the steps around it
+as much again.
+
+- **A program protocol's dispatcher is the function itself.** The emitter
+  writes it with its slots named, `function (r0) { return r0 != null &&
+  r0[slot] != null ? r0[slot](r0) : g3[protocolMiss](r0); }`, where
+  `protocolMethod` called a factory arrow that V8 compiled at load; the
+  rest of the dispatch is the dispatcher's `protocolMiss`, a keyed,
+  non-enumerable slot `protocolMethod` defines, read through the method's
+  global, which nothing assigns (`Definition::Protocol`; a method the
+  program may assign keeps the factory and its getter). Such a method has
+  no getter either: `extend-type` of a host type called each one, so V8
+  compiled each at load. `protocolMethod` 6.8 to 1.1 ms (981 methods),
+  `extendType` 10.4 to 6.9 (2,455), at 800k.
+- **A record type defines its slots, not its markers.** At `:advanced`
+  (`defineType`, whose masks are its prototype's) a record's 15 markers
+  are their masks alone (`recordMarkerMasks`), as upstream's `defrecord`
+  sets no marker for its fast-path protocols: every lookup reads the mask
+  bit first, and `isCollectionValue`, the one test that read only the
+  `ICollection` marker, reads a program type's bit too
+  (`typeMaskDeclares`, `object_predicate_excludes_mask_only_records`). A
+  program that names a protocol member or mask (`(.-cljs$core$IRecord$
+  r)`, raw text spelling one; `ProgramFacts::protocol_members_named`)
+  keeps them (`named_record_protocol_markers_remain_visible`). The
+  program's own entries keep their markers
+  (`masked_lookup_getters_preserve_selected_dispatch` pins a getter that
+  clears a deftype's mask bits), and `makeType`, whose masks are its
+  instances', keeps a record's (a value made from the prototype alone
+  answers `record?`, `value_kind_predicates_answer_as_the_brand_stores_did`).
+  The record kit (light-cljs-267) is `defineType`'s last argument, where
+  an `installMethods` after it defined `-equiv` and `-hash` again.
+- **`installMethods` defines an entry's slot and nothing else.** One
+  indexed loop defines each protocol method's or marker's slot with one
+  reused descriptor; only `Object/` and `IFn/-invoke` methods, or an open
+  journal, take the Maps, the WeakMap entry and the journal record that
+  follow, which the slots never needed. The slots stay non-enumerable and
+  the prototype chain is the type's own (`supers` unchanged). A record
+  type defines about 20 slots where it defined 35; `defineType` 32.7 to
+  21.7 ms at 800k (2,298 types, 1,904 of them records).
+- **`derive` conjoins** into each ancestor and descendant set as
+  upstream's does, where it rebuilt the set from an array, and looks each
+  part's keyword up once. Measured: no change, within the noise (12 to 19
+  ms at 800k across runs, either way): its cost is the operations it
+  calls, `get`, `assoc`, `contains?` and hashing, at the interpreter's
+  speed in a program that extends types, not the sets' rebuilding.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1069): the
+  program's top level 24.2 to 19.7 ms at 200k (shadow-cljs 13.1, 1.85 to
+  1.50 times) and 80.9 to 65.2 at 800k (39.7, 2.04 to 1.64 times); steady
+  state unchanged.
+- **What is left** of the top level, at 800k: the type definitions' slots
+  (about 46,000 `defineProperty` calls, 22 ms with their loops, where
+  upstream's output assigns about 21 slots a record as stores); a record's
+  16 shared methods are closures built per type over `Type`, which a
+  shared function reading the prototype's record slot would avoid (about
+  3.7 ms at 800k, measured by reusing one type's), at the cost of a
+  megamorphic read in every record method; `derive` (13 to 19 ms), the
+  multimethods' `addMethod` (6 ms for 5,410) and `keyword` (6 ms for
+  24,945 constants), each the operations' speed at load, where
+  shadow-cljs's constants are constructed with their hashes and not
+  interned.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

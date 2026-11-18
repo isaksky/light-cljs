@@ -2466,9 +2466,19 @@
 
   //@unit isIdent requires: namedOf
   const isIdent = x => namedOf(x) !== undefined;
+  //@unit typeMaskDeclares requires: protocolMasks
+  // Whether a value of a program's type or a `reify` (kinds 64 to 66,
+  // `kinds`) declares the core protocol `name` by its mask bit: a record
+  // type at `:advanced` holds no marker of the record protocols, which have
+  // mask bits (`decorateType`, light-cljs-1069), so a test that reads the
+  // marker reads the bit too.
+  function typeMaskDeclares(value, name) {
+    const mask = protocolMasks.get(name);
+    return value != null && value.cljs$lang$kind$$LKEY >= 64 && (value[mask[0]] & mask[1]) !== 0;
+  }
   //@unit isCollectionValue requires: directMethod, holdsVector, isCell, isChunkedCons, isLazy,
-  //@ isView, maps, queues, sets
-  const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || holdsVector(x) || isCell(x) || isChunkedCons(x) || isView(x) || queues.has(x) || isLazy(x) || maps.has(x) || sets.has(x);
+  //@ isView, maps, queues, sets, typeMaskDeclares
+  const isCollectionValue = x => !!directMethod(x, "ICollection", 0) || typeMaskDeclares(x, "ICollection") || holdsVector(x) || isCell(x) || isChunkedCons(x) || isView(x) || queues.has(x) || isLazy(x) || maps.has(x) || sets.has(x);
   //@unit boolean
   // Core predicates, one unit each.
   const boolean = x => x != null && x !== false;
@@ -9598,8 +9608,8 @@
   //@unit descendants requires: hierarchyRel
   function descendants(h, tag) { return hierarchyRel("descendants", h, tag, arguments.length); }
   //@unit derive requires: assoc, conj, contains, deref, equalPair, get, getGlobalHierarchy,
-  //@ hierarchyPart, invalidArity, isIdent, keyword, mapFromArray, namespace, printHooks, reset,
-  //@ setFromArray, toArray
+  //@ invalidArity, isIdent, keyword, mapFromArray, namespace, printHooks, reset, setFromArray,
+  //@ toArray
   function derive(h, tag, parent) {
     if (arguments.length === 2) {
       parent = tag; tag = h;
@@ -9608,16 +9618,29 @@
     }
     if (arguments.length !== 3) return invalidArity(arguments.length);
     if (equalPair(tag, parent) || !(typeof tag === "function" || isIdent(tag)) || !isIdent(parent)) throw new Error("Assert failed: derive tags");
-    const p = hierarchyPart(h, "parents"), a = hierarchyPart(h, "ancestors"), d = hierarchyPart(h, "descendants");
+    // Each part's keyword is looked up once, for its read and its entry.
+    const parents = keyword(null, "parents"), ancestors = keyword(null, "ancestors"), descendants = keyword(null, "descendants");
+    const p = get(h, parents), a = get(h, ancestors), d = get(h, descendants);
     if (contains(get(p, tag), parent)) return h;
     if (contains(get(a, tag), parent)) throw new Error(printHooks.text(tag) + "already has" + printHooks.text(parent) + "as ancestor");
     if (contains(get(a, parent), tag)) throw new Error("Cyclic derivation:" + printHooks.text(parent) + "has" + printHooks.text(tag) + "as ancestor");
+    // Each of `source` and its `sources` gets `target` and its `targets`,
+    // conjoined into its set as upstream's `derive` does, where it rebuilt
+    // every set from an array (light-cljs-1069): a set that grows with
+    // each `derive` cost its size each time. The added items are read once.
     function closure(table, source, sources, target, targets) {
+      const added = toArray(get(targets, target)), keys = toArray(get(sources, source));
       let result = table;
-      for (const key of [source, ...toArray(get(sources, source))]) result = assoc(result, key, setFromArray([...toArray(get(targets, key)), target, ...toArray(get(targets, target))]));
+      for (let i = -1; i < keys.length; i++) {
+        const key = i < 0 ? source : keys[i];
+        let set = get(targets, key) ?? setFromArray([]);
+        set = conj(set, target);
+        for (let j = 0; j < added.length; j++) set = conj(set, added[j]);
+        result = assoc(result, key, set);
+      }
       return result;
     }
-    return mapFromArray([keyword(null, "parents"), assoc(p, tag, conj(get(p, tag, setFromArray([])), parent)), keyword(null, "ancestors"), closure(a, tag, d, parent, a), keyword(null, "descendants"), closure(d, parent, a, tag, d)]);
+    return mapFromArray([parents, assoc(p, tag, conj(get(p, tag, setFromArray([])), parent)), ancestors, closure(a, tag, d, parent, a), descendants, closure(d, parent, a, tag, d)]);
   }
   //@unit underive requires: assoc, contains, count, deref, derive, disj, dissoc, get,
   //@ getGlobalHierarchy, hierarchyPart, invalidArity, makeHierarchy, nth, reset, toArray
@@ -10919,7 +10942,13 @@
   //@ setDeclaration, typeHooks
   // `fast` (light-cljs-265) makes a dispatcher that calls a slot, else its first argument.
   // `names` (`:advanced`) are the slots of `arities` as the text names them.
-  function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null, fast = null, names = null) {
+  // With `direct`, `fast` is that dispatcher itself, which the emitter
+  // writes with its slots named and the rest of the dispatch in its
+  // `protocolMiss` (light-cljs-1069): no function is called, so none is
+  // compiled, at load, as upstream's protocol functions are compiled on
+  // their first call. A `getter` reads the method's Var where the program
+  // may assign it; else the method is the Var's value.
+  function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null, fast = null, names = null, direct = false) {
     const rest = variadic == null ? -1 : variadic + 2, fixed = arities ? arities.filter(n => n !== rest) : [];
     const single = rest < 0 && fixed.length === 1 ? fixed[0] : 0, slots = new Map((arities ?? []).map((n, i) => [n, protocolSlot(key, n, names?.[i])]));
     // Saved method values retain their direct slot while dynamic dispatch
@@ -10948,7 +10977,9 @@
       const direct = receiver == null ? undefined : receiver[slots.get(arity) ?? protocolSlot(key, arity)];
       return direct != null ? direct.apply(receiver, args) : external(receiver, args);
     };
-    const method = fast ? fast(function (receiver) { return single || slots.has(arguments.length) ? external(receiver, arguments) : dispatch.apply(null, arguments); }, ...fixed.map(n => slots.get(n))) : dispatch;
+    const miss = fast && function (receiver) { return single || slots.has(arguments.length) ? external(receiver, arguments) : dispatch.apply(null, arguments); };
+    const method = !fast ? dispatch : direct ? fast : fast(miss, ...fixed.map(n => slots.get(n)));
+    if (direct) Object.defineProperty(method, "protocolMiss$LKEY", {value: miss, writable: true, configurable: true});
     protocolKeys.set(method, key); setDeclaration(protocolFunctions, key, metadataName); setDeclaration(protocolVariables, metadataName, method);
     setDeclaration(protocolGetters, key, getter ?? (() => protocolVariables.get(metadataName)));
     return method;
@@ -11016,8 +11047,31 @@
   //@ protocolKeys, protocolSentinel, protocolSlot
   function installMethods(value, methods) {
     if (value != null && typeof value !== "object" && typeof value !== "function") return value;
+    const transaction = declarationJournal, descriptor = {value: null, writable: true, configurable: true};
+    // A protocol method's or marker's entry is its slot alone: at
+    // `:advanced` a program protocol's entry names its slot in place of its
+    // key (a method's holds a slash) or as its fourth item. Only the
+    // `Object/` and `IFn/-invoke` methods (`rest`) and a journal need the
+    // records below, which are left as they are without them: a definition
+    // runs once, mostly before V8 optimizes this, where every step counts
+    // (light-cljs-1069). Indexed reads rather than a destructuring
+    // `for...of`, which costs an iterator per entry there (light-cljs-1017).
+    let rest = null;
+    for (let i = 0; i < methods.length; i++) {
+      const entry = methods[i], dispatch = entry[0], arity = entry[1];
+      let slot = entry[3];
+      if (typeof slot !== "string") {
+        const key = typeof dispatch === "string" ? dispatch : protocolKeys.get(dispatch);
+        if (key === "IFn/-invoke" || key.startsWith("Object/")) { (rest ??= []).push(entry); continue; }
+        slot = arity !== 0 && !key.includes("/") ? key : protocolSlot(key, arity);
+      }
+      const method = arity === 0 ? protocolSentinel : entry[2];
+      if (transaction === null) { descriptor.value = method; Object.defineProperty(value, slot, descriptor); }
+      else patchDeclaration(value, slot, {value: method, writable: true, configurable: true});
+    }
+    if (rest === null && transaction === null) return value;
+    methods = rest ?? [];
     const oldImplementations = protocolImplementations.get(value), oldCalls = ifnValues.get(value);
-    const transaction = declarationJournal;
     // Only the `Object/` methods' entries are read back, to merge a later
     // extension's, so only they are kept and copied: an `extend-type` of a
     // record copies no Map per protocol it already has (light-cljs-1017).
@@ -11028,11 +11082,6 @@
       redo: () => { protocolImplementations.set(value, implementations); if (Object.keys(calls).length || ifnVariadics.has(calls)) ifnValues.set(value, calls); },
       snapshot: () => { const methods = protocolImplementations.get(value), functions = ifnValues.get(value); return () => { if (methods) protocolImplementations.set(value, methods); else protocolImplementations.delete(value); if (functions) ifnValues.set(value, functions); else ifnValues.delete(value); }; }
     });
-    // At `:advanced` a program protocol's entry names its slot in place of
-    // its key (a method's holds a slash) or as its fourth item.
-    // Indexed reads rather than a destructuring `for...of`: this runs once
-    // per definition, mostly before V8 optimizes it, where an iterator per
-    // entry costs (light-cljs-1017).
     for (let i = 0; i < methods.length; i++) {
       const entry = methods[i], dispatch = entry[0], arity = entry[1], method = entry[2], fourth = entry[3], variadic = entry[4];
       const key = typeof dispatch === "string" ? dispatch : protocolKeys.get(dispatch), invoke = fourth === undefined ? method : fourth;
@@ -11041,7 +11090,7 @@
         if (!entries) implementations.set(key, entries = new Map());
         if (variadic != null) objectVariadics.set(key, [variadic, method]);
         else entries.set(arity, method);
-      } else if (key !== "IFn/-invoke") patchDeclaration(value, typeof fourth === "string" ? fourth : arity !== 0 && !key.includes("/") ? key : protocolSlot(key, arity), {value: arity === 0 ? protocolSentinel : method, writable: true, configurable: true});
+      }
       if (key === "IFn/-invoke") {
         if (variadic != null) ifnVariadics.set(calls, method);
         else calls[arity - 1] = method;
@@ -11188,23 +11237,32 @@
   //@unit recordMethodTable
   // Builders of record methods, each added by a unit kept where it can run.
   const recordMethodTable = [];
-  //@unit recordMarkers
+  //@unit recordMarkers requires: protocolMasks
   // Every record protocol's marker entry, built once and shared by every
-  // record type (light-cljs-1017): no reader changes an entry.
+  // record type (light-cljs-1017): no reader changes an entry. Each of them
+  // has a mask bit, and `recordMarkerMasks` are their masks, which a record
+  // takes in their place (`decorateType`, light-cljs-1069).
   const recordMarkers = "IRecord ICloneable IHash IEquiv IMeta IWithMeta ILookup ICounted ICollection IAssociative IMap ISeqable IIterable IPrintWithWriter IKVReduce".split(" ").map(key => [key, 0, null]);
+  const recordMarkerMasks = recordMarkers.reduce((masks, entry) => {
+    const mask = protocolMasks.get(entry[0]);
+    masks[mask[0] === "cljs$lang$protocol_mask$partition0$$LKEY" ? 0 : 1] |= mask[1];
+    return masks;
+  }, [0, 0]);
   //@unit recordMethods requires: recordMarkers, recordMethodTable
-  // Every record protocol's marker, and the methods of the table.
-  function recordMethods(Type) {
-    const methods = recordMarkers.slice();
+  // Every record protocol's marker unless `markers` is false, and the
+  // methods of the table.
+  function recordMethods(Type, markers = true) {
+    const methods = markers ? recordMarkers.slice() : [];
     for (let i = 0; i < recordMethodTable.length; i++) {
       const entries = recordMethodTable[i](Type);
       for (let j = 0; j < entries.length; j++) methods.push(entries[j]);
     }
     return methods;
   }
-  //@unit recordMethods.install effect: recordMethods when: decorateType requires: recordMethods,
-  //@ typeHooks
+  //@unit recordMethods.install effect: recordMethods when: decorateType requires: recordMarkerMasks,
+  //@ recordMethods, typeHooks
   typeHooks.recordMethods = recordMethods;
+  typeHooks.recordMasks = recordMarkerMasks;
   //@unit recordMethods.clone effect: recordMethods when: clone requires: recordCopy,
   //@ recordMethodTable
   recordMethodTable.push(Type => [
@@ -11324,14 +11382,26 @@
   // Gives a type its methods and its kind, and a record's prototype its type
   // (`recordTypeOf`); returns the masks its markers declare. The methods
   // read fields under `members`, the names the constructor assigns them to,
-  // munged once per type.
-  function decorateType(Type, fields, methods, record, name, currentConstructor) {
-    const masks = [0, 0];
+  // munged once per type. A record's `kit` (its own `-equiv` and `-hash`,
+  // light-cljs-267) replaces the record methods of the same slots.
+  //
+  // Where the masks go on the prototype (`markers` false, `defineType` of
+  // a program that names no protocol member or mask), a record's 15
+  // markers are their masks alone (`typeHooks.recordMasks`), as
+  // upstream's `defrecord` sets no marker for its fast-path protocols: every
+  // lookup reads the mask bit first, and a test that reads the marker reads
+  // the bit of a program's type too (`typeMaskDeclares`). So a record type
+  // defines some 20 slots where it defined 35 (light-cljs-1069). The
+  // program's own entries keep their markers.
+  function decorateType(Type, fields, methods, record, name, currentConstructor, markers = true, kit = null) {
+    const masks = [0, 0], recordMasks = record && !markers;
     Type.fieldNames = fields;
     Type.members = fields.map(mungeMember);
     if (currentConstructor) Type.currentConstructor = currentConstructor;
     if (name) typeNames.set(Type, name);
-    const implementations = record ? methods.concat(typeHooks.recordMethods(Type)) : methods;
+    if (recordMasks) { masks[0] = typeHooks.recordMasks[0]; masks[1] = typeHooks.recordMasks[1]; }
+    let implementations = record ? methods.concat(typeHooks.recordMethods(Type, !recordMasks)) : methods;
+    if (kit) implementations = implementations.concat(kit);
     // A marker's mask bit by its name's last place in the names
     // (`protocolMasks`), found in a Map where each marker searched the
     // names (light-cljs-1017).
@@ -11348,6 +11418,8 @@
   // `init`, which the emitter (or `reify`) writes, assigns the arguments to
   // the munged fields and a record's three slots; `masks` sets a raw type's
   // masks (`typeMasks`). A construction munges no name and writes no WeakMap.
+  // Its masks are its instances', so its prototype keeps a record's
+  // markers (`decorateType`): a value made from the prototype has them.
   // Its prototype's keyed kind tells its instances (`decorateType`); the
   // compile-time runtime stamps them (`/*@brand*/`).
   function makeType(fields, methods, record, masks, name, currentConstructor, init) {
@@ -11368,10 +11440,13 @@
   // At `Advanced` the emitter writes each type's constructor, which brands
   // nothing (light-cljs-1037): its prototype's keyed kind tells its
   // instances (`decorateType`), and its masks are its prototype's. `names`
-  // is "ns/T field ...", or an array of them where one holds a space.
-  function defineType(Type, names, methods, record, currentConstructor) {
+  // is "ns/T field ...", or an array of them where one holds a space. A
+  // record's `kit` is its own `-equiv` and `-hash`; it keeps its markers
+  // only with `markers`, where the program names a protocol member or mask
+  // (`decorateType`).
+  function defineType(Type, names, methods, record, currentConstructor, kit, markers) {
     const parts = names.split?.(" ") ?? names, name = parts[0], fields = parts.slice(1);
-    const masks = decorateType(Type, fields, methods, record, name, currentConstructor);
+    const masks = decorateType(Type, fields, methods, record, name, currentConstructor, markers === true, kit);
     Type.prototype.cljs$lang$protocol_mask$partition0$$LKEY = masks[0];
     Type.prototype.cljs$lang$protocol_mask$partition1$$LKEY = masks[1];
     Type.cljs$lang$type = true;

@@ -583,9 +583,12 @@ fn a_program_type_opens_the_protocol_hooks() {
     // `maps.records` answered records as maps, and a type's keyed kind;
     // 12,016 after light-cljs-1046 (2026-11-17): the keyed kinds of the
     // stores' classes (`classKinds`, `kindTable`, `storeHolds`), by which an
-    // inventory (`storesPredicate`) tests one store where it probed each.
+    // inventory (`storesPredicate`) tests one store where it probed each;
+    // 12,182 after light-cljs-1069 (2026-11-18): `installMethods` defines a
+    // protocol entry's slot before the records only `Object/` and `IFn`
+    // methods need, and `decorateType` takes a record's masks and kit.
     let size = advanced(source).emit_js().len();
-    assert!(size < 12_100, "{size} bytes");
+    assert!(size < 12_200, "{size} bytes");
     every_level(source, "7");
     let extended = "(deftype T [] ICounted (-count [_] 7)) (extend-type T ISeqable (-seq [_] nil)) (count (T.))";
     let units = self::units(extended);
@@ -4762,5 +4765,18 @@ fn classes_compare_and_hash_as_the_generic_walk_did() {
            (js/JSON.stringify (array (hash 2) (hash \"x\") (hash [2 \"x\"]) (-equiv nan nan) (.equiv nan nan)
                                      (-equiv m m) (.equiv m m) (nth p 0) (nth p 1) (nth p 2) (nth p 3) (nth p 4))))",
         "[37,38,-1156898992,true,false,true,false,true,false,true,false,true]",
+    );
+}
+
+/// `object?` of a record whose field is named `constructor` and holds
+/// `js/Object`: a record at `Advanced` holds no `ICollection` marker
+/// (light-cljs-1069), so the collection test reads its mask bit
+/// (`typeMaskDeclares`); a plain object stays one.
+#[test]
+fn object_predicate_excludes_mask_only_records() {
+    every_level(
+        "(defrecord R [constructor])
+         (let [r (atom (->R js/Object))] (array (object? @r) (object? (js-obj \"a\" 1)) (coll? @r)))",
+        "[ false, true, true ]",
     );
 }

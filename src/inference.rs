@@ -440,6 +440,9 @@ pub struct ProgramFacts {
     /// The first expression that writes a core protocol method's keyed
     /// member by name, or raw text that spells one.
     core_method_write: Option<ExprId>,
+    /// The program reads or writes a core protocol's keyed member or a
+    /// protocol mask by name, or raw text spells one.
+    protocol_members_named: bool,
     /// Some program type implements `IEquiv`.
     equiv: bool,
     /// The program writes `IEquiv`'s method member by name, or raw text
@@ -552,6 +555,14 @@ impl ProgramFacts {
         // of its own (`core_method_write`); a marker written by name declares
         // nothing, as it is no protocol sentinel.
         let mut core_method_write = None;
+        // ... and whether any expression names a core protocol's keyed member
+        // or a protocol mask at all, to read or write it
+        // (`protocol_members_named`).
+        let mut protocol_members_named = false;
+        let protocol_member_name = |name: &str| {
+            (name.starts_with("cljs$core$") || name.starts_with("cljs$lang$protocol_mask$"))
+                && crate::analyzer::keyed_name(name)
+        };
         let core_member =
             |name: &str| name.starts_with("cljs$core$") && crate::analyzer::keyed_name(name);
         let core_slot_target = |target: &ExprId| match &program.exprs[target.0].kind {
@@ -593,6 +604,18 @@ impl ProgramFacts {
             _ => false,
         };
         for (index, expr) in program.exprs.iter().enumerate() {
+            protocol_members_named |= match &expr.kind {
+                ExprKind::Property { property, .. } => protocol_member_name(property),
+                ExprKind::JsGlobal(global) => program.js_globals[global.0]
+                    .path
+                    .iter()
+                    .any(|component| protocol_member_name(component)),
+                ExprKind::JsTemplate { segments, .. } => segments.iter().any(|segment| {
+                    (segment.contains("cljs$core$") || segment.contains("cljs$lang$protocol_mask$"))
+                        && segment.contains(crate::rta::RUNTIME_KEY)
+                }),
+                _ => false,
+            };
             let method_write = match &expr.kind {
                 ExprKind::SetGlobal { target, .. } => core_method_target(target),
                 ExprKind::Binding { bindings, .. } => bindings
@@ -837,6 +860,7 @@ impl ProgramFacts {
             core_protocols,
             core_slots_by_name,
             core_method_write,
+            protocol_members_named,
             equiv,
             equiv_by_name,
             receives_functions,
@@ -892,6 +916,15 @@ impl ProgramFacts {
     /// so an `Advanced` slice keeps `extendType` for it (light-cljs-1056).
     pub fn core_method_write(&self) -> Option<ExprId> {
         self.core_method_write
+    }
+
+    /// Whether the program reads or writes a core protocol's keyed member or
+    /// a protocol mask by name (`(.-cljs$core$IRecord$ r)`), or raw text
+    /// spells one: then a record type at `Advanced` keeps its markers, which
+    /// it otherwise takes as their masks alone (`defineType`,
+    /// light-cljs-1069), so that what the program reads is what it read.
+    pub fn protocol_members_named(&self) -> bool {
+        self.protocol_members_named
     }
 
     /// Whether a `deftype`, `defrecord`, `reify` or `extend-type` of the program
