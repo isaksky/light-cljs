@@ -932,8 +932,8 @@ fn constrained_scope<'a, F: Fn(&str) -> bool>(
     // it does not avoid. Where a local finds none, the batch keeps the
     // names in order of frequency.
     let mut batches: Vec<Vec<usize>> = Vec::new();
-    for position in 0..order.len() {
-        let length = candidates.get(chosen[position]).len();
+    for (position, &at) in chosen.iter().enumerate() {
+        let length = candidates.get(at).len();
         if batches.len() <= length {
             batches.resize_with(length + 1, Vec::new);
         }
@@ -1089,7 +1089,9 @@ pub(crate) fn terse_program(
 /// The program is named as [`terse_program`] names it, a root `rt$x` among
 /// the locals of the program's function, but it names the units' binding
 /// `x` itself, so its name also avoids the units' locals visible where they
-/// read `x`, and a binding that keeps its spelling keeps it. The units'
+/// read `x` ([`Locals::constrained_names`]). A root that keeps its spelling
+/// (`Atom`) is a local the statement's place declares instead,
+/// `const a=Atom;`, so the program never spells it. The units'
 /// other bindings, which the program never reads, are named as a factory's
 /// are, by their frequency in the units, avoiding the roots' names, the
 /// units' visible locals and every other identifier of the program (a host
