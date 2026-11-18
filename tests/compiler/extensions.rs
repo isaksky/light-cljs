@@ -6,6 +6,22 @@ fn run(source: &str) -> String {
     super::optimization::json_at_every_level(source)
 }
 
+/// A runtime type the program assigns a host type's name to still extends
+/// that host type by key (the Sol review of light-cljs-1058, whose entries
+/// name slots in place of keys only for a type nothing assigns).
+#[test]
+fn reassigned_core_constructor_keeps_native_dispatch() {
+    assert_eq!(
+        run(r#"
+      (defprotocol P (f [x]))
+      (set! cljs.core/PersistentVector "number")
+      (extend-type PersistentVector P (f [_] 42))
+      (array (apply f (list 1)) (f 2))
+    "#),
+        "[42,42]\n"
+    );
+}
+
 #[test]
 fn native_selectors_default_and_saved_dispatch() {
     assert_eq!(

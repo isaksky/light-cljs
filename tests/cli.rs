@@ -1153,14 +1153,15 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
             ]
             .concat();
             let mapped = compiled(&args);
-            // Terse `Advanced` output calls the slot by its short name, the
-            // code its `protocolSlot` table gives the stem (light-cljs-1048).
+            // Terse `Advanced` output calls the slot by its short name
+            // (light-cljs-1048), the code the record's method entry names
+            // in place of its key (light-cljs-1058).
             let unkeyed = light_cljs::runtime_key::unkeyed(&mapped);
             let short_call = unkeyed
-                .split(" cljs$user$Area$area$arity$3 ")
-                .nth(1)
-                .and_then(|rest| rest.split(' ').next())
-                .is_some_and(|code| unkeyed.contains(&format!(".$LKEY{code}(")));
+                .split("[\"$LKEY")
+                .skip(1)
+                .filter_map(|rest| rest.split_once("\",3,").map(|(code, _)| code))
+                .any(|code| unkeyed.contains(&format!(".$LKEY{code}(")));
             assert_eq!(
                 mapped.contains("let operand0, operand1, operand2;")
                     || unkeyed.contains(".cljs$user$Area$area$arity$3$LKEY(")

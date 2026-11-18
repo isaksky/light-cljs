@@ -9342,10 +9342,13 @@ impl<'a> Emitter<'a> {
                 let slots = match self.program.exprs[target.0].kind {
                     _ if *instance => EntrySlots::InPlaceOfKey,
                     ExprKind::String(_) => EntrySlots::None,
+                    // One the program never assigns (`set!`), which could
+                    // make it a host type's name.
                     ExprKind::CoreFn(core)
                         if core
                             .runtime_name()
-                            .starts_with(|c: char| c.is_ascii_uppercase()) =>
+                            .starts_with(|c: char| c.is_ascii_uppercase())
+                            && !self.replaced(core.runtime_name()) =>
                     {
                         EntrySlots::InPlaceOfKey
                     }
