@@ -3120,7 +3120,7 @@
   function bitmapNode(slots, edit, capacity, count) {
     return {kind: "bitmap", slots, edit, capacity, count};
   }
-  //@unit hashNodeAssoc requires: bitmapNode, equalPair, hash
+  //@unit hashNodeAssoc requires: bitmapNode, equalPair, hash, hashKeyTest
   function hashNodeAssoc(node, shift, keyHash, entry, edit, result, effects = true) {
     if (!node) {
       // Upstream's empty node grows to 4 pairs for an edit, 1 otherwise.
@@ -3129,7 +3129,7 @@
     }
     if (node.kind === "collision") {
       if (keyHash === node.hash) {
-        const index = node.entries.findIndex(old => effects ? equalPair(entry.key, old.key) : entry.key === old.key);
+        const index = node.entries.findIndex(old => entry.key === old.key || effects && hashKeyTest(entry.key, old.key));
         const entries = node.entries.slice();
         if (index < 0) entries.push(entry);
         else {
@@ -3177,7 +3177,7 @@
       return bitmapNode(slots, edit, capacity, n + 1);
     }
     if (slot.kind) slots[index] = hashNodeAssoc(slot, shift + 5, keyHash, entry, edit, result, effects);
-    else if (effects ? equalPair(entry.key, slot.key) : entry.key === slot.key) {
+    else if (entry.key === slot.key || effects && hashKeyTest(entry.key, slot.key)) {
       result.old = slot;
       result.entry = {key: slot.key, value: entry.value, hash: slot.hash};
       slots[index] = result.entry;
@@ -3193,15 +3193,42 @@
     }
     return owned ? node : bitmapNode(slots, edit, edit ? n + 1 : node.capacity, n);
   }
-  //@unit hashNodeFind requires: equalPair
+  //@unit hashKeyTest requires: equalPair, keywordOf, keywordProgramEquiv
+  // Whether `other`, a key of a hash map's trie that is not identical to
+  // `key`, equals it, as upstream's `key-test` compares them: a keyword by
+  // kind and `fqn` (`keyword-identical?`), as `arrayIndex` searches an array
+  // map, with no call of its `-equiv` slot; a keyword whose program gave it
+  // an `IEquiv` method (`keywordProgramEquiv`, read once per comparison, as
+  // `equalPair` read the slot) by that method; any other key by `equalPair`
+  // (light-cljs-1057). The spelling is read first, as in `arrayIndex`; a
+  // value without the field (another kind, or the Pants profile's engine
+  // keyword) is read through `keywordOf`.
+  function hashKeyTest(key, other) {
+    const keyword = keywordOf(key);
+    if (keyword === undefined) return equalPair(key, other);
+    const equiv = keywordProgramEquiv(key);
+    if (equiv) return equiv.call(key, key, other);
+    if (other == null) return false;
+    const fqn = keyword.fqn$LKEY, spelling = other.fqn$LKEY;
+    return spelling === fqn ? keywordOf(other) !== undefined : spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn;
+  }
+  //@unit hashNodeFind requires: hashKeyTest
+  // The entry of `key` in the trie under `node`, which every caller has
+  // tested, or null: the leaf on the key's path, compared by identity, then
+  // by `hashKeyTest`. A collision node is the node without `slots`, and an
+  // entry the slot without a `kind`. Where the walk tested
+  // `node.kind === "collision"`, `!slot?.kind` and `node` in the loop's
+  // condition, each cost a lookup about 2 to 3 ns (light-cljs-1057).
   function hashNodeFind(node, shift, keyHash, key) {
-    for (; node; shift += 5) {
-      if (node.kind === "collision") return node.entries.find(entry => equalPair(key, entry.key)) ?? null;
-      const slot = node.slots[(keyHash >>> shift) & 31];
-      if (!slot?.kind) return slot && equalPair(key, slot.key) ? slot : null;
+    for (;;) {
+      const slots = node.slots;
+      if (slots === undefined) return node.entries.find(entry => entry.key === key || hashKeyTest(key, entry.key)) ?? null;
+      const slot = slots[(keyHash >>> shift) & 31];
+      if (slot == null) return null;
+      if (slot.kind === undefined) return slot.key === key || hashKeyTest(key, slot.key) ? slot : null;
       node = slot;
+      shift += 5;
     }
-    return null;
   }
   //@unit hashNodeRemove requires: bitmapNode
   function hashNodeRemove(node, shift, keyHash, removed, edit) {

@@ -1260,6 +1260,48 @@ its mask bit again.
   though only `extend-type`, `specify!` or a method written by name could
   give a vector its own `IMeta` (light-cljs-1060).
 
+What light-cljs-1057 landed: a hash map's trie compares a keyword key by its
+spelling, and its walk takes about 9 ns less.
+
+- **The key test.** `hashNodeFind` and `hashNodeAssoc` compare a key with a
+  leaf's by identity, then by `hashKeyTest`, upstream's `key-test`: a
+  keyword with a keyword by kind and `fqn` (`keyword-identical?`), its
+  spelling read first as in `arrayIndex`, with no call of its `-equiv`
+  slot, where `equalPair`'s wrapper called it through a call that has seen
+  every class's slot, which V8 does not inline. The key's program `IEquiv`
+  method is read once per comparison through `keywordProgramEquiv`, as
+  `equalPair` read the slot once per comparison, and called where there is
+  one (`extend-type`, `specify!`), so the program still decides which keys
+  are equal, a getter on the slot runs as often, and a session that demands
+  declarations takes the lookup (light-cljs-1040's rule). Any other key
+  compares by `equalPair`. A collision node compares each entry so.
+- **The walk.** `hashNodeFind` tells a collision node by its missing
+  `slots` and an entry by its missing `kind`, and its loop tests no node:
+  `node.kind === "collision"`, `!slot?.kind` and `node` in the loop's
+  condition each cost a lookup 1.5 to 3.5 ns in the gate's readable build
+  (`kw-hash100` and `get-hash100` with the key test above: 20.8 and 17.5
+  ns; with the slot's tests changed, 17.4 and 14.4; the collision node's
+  too, 15.9 and 13.4; and no test in the loop's condition, 14.3 and 11.0).
+  Every caller tests the root first.
+  `hashNodeFind` is 118 bytes of bytecode (131 before), `hashKeyTest` 120;
+  TurboFan inlines both, with `keywordOf` and `keywordProgramEquiv`, into
+  the benchmark's loop. Comparing the kind first made `hashKeyTest` 80
+  bytes but `kw-hash100` 1.3 ns slower.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1057): in the
+  gate `kw-hash100` 22.2 to 15.8 ns (light/shadow 1.59 to 1.17),
+  `get-hash100` 20.0 to 11.4 (1.63 to 0.94), `update-hash100` -9%,
+  `dissoc-hash100` -4%, no operation over 1% slower; workload 200k's steady
+  state unchanged (43.6 to 43.3 ms per iteration); 279 bytes more at
+  advanced where a program keeps hash maps (`keywordProgramEquiv`).
+- **What is left.** `kw-hash100`'s remaining 2.3 ns over shadow-cljs's is
+  before the walk: in the readable build, with the walk returning at once,
+  `getSite`, the hash map's `-lookup` slot, `hashMapLookup`'s field tests
+  and `hash`'s wrapper take about 9 ns, where shadow-cljs's whole lookup
+  takes 13. A process whose `getSite` has seen array and hash maps can
+  inline differently than before (the hash map's target is about 100 bytes
+  larger): `destructure-map-3` behind the small-map and hash map
+  operations alone was 7% slower, and 4% faster in the whole gate.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

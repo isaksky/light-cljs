@@ -3753,6 +3753,56 @@ fn keyword_searches_call_a_program_equiv_of_keywords() {
 }
 
 #[test]
+fn hash_map_searches_call_a_program_equiv_of_keywords() {
+    // light-cljs-1057: a hash map's trie compares a keyword key with a
+    // leaf's by identity, then by kind and `fqn` (`hashKeyTest`), as
+    // upstream's `key-test`, but a `specify!` of a key, or an `extend-type`
+    // of `IEquiv` on `Keyword`, still decides which keys are equal, where
+    // the spelling would not: `get`, `contains?`, `find`, `assoc`, `dissoc`
+    // and a transient's lookup, `assoc!` and `dissoc!`, of a leaf the root
+    // holds (10 keys), one below it (41 keys) and one in a collision node,
+    // at every level and inside a macro, whose lookup runs at compile time.
+    let specified = r#"(let [keys (fn [n] (mapcat (fn [i] [(keyword "n" (str "k" i)) i]) (range n)))
+                             k (specify! (keyword "s" "k") IEquiv (-equiv [_ o] (= o :hit)) IHash (-hash [_] (hash :hit)))
+                             no (specify! (keyword "n" "k3") IEquiv (-equiv [_ _] false))
+                             probe (fn [m] [(get m k) (contains? m k) (find m k) (count (dissoc m k))
+                                            (get (assoc m k 2) :hit) (count (assoc m k 2))
+                                            (get m no :nf) (contains? m no) (count (dissoc m no)) (count (assoc m no 0))
+                                            (get m (keyword "n" "k3")) (get (transient m) k)
+                                            (count (persistent! (dissoc! (transient m) k)))
+                                            (get (persistent! (assoc! (transient m) k 3)) :hit)])
+                             small (apply hash-map :hit 1 (keys 9))
+                             c1 (specify! (keyword "c" "1") IHash (-hash [_] 7))
+                             c2 (specify! (keyword "c" "2") IHash (-hash [_] 7))
+                             collided (assoc small c1 :c1 c2 :c2)
+                             in-collision (specify! (keyword "s" "c") IHash (-hash [_] 7) IEquiv (-equiv [_ o] (= o (keyword "c" "2"))))
+                             fresh (specify! (keyword "c" "1") IHash (-hash [_] 7))]
+                         [(probe small) (probe (apply hash-map :hit 1 (keys 40)))
+                          [(get collided in-collision) (get collided fresh) (count (dissoc collided in-collision))
+                           (get (assoc collided fresh :x) c1) (get (transient collided) in-collision)]])"#;
+    let extended = r#"(do (extend-type Keyword IEquiv
+                            (-equiv [this other] (and (keyword? other) (= (str this) (str other)) (not= (name this) "stale"))))
+                          (let [m (apply hash-map (keyword "a" "stale") 1 (mapcat (fn [i] [(keyword "n" (str "k" i)) i]) (range 40)))
+                                stale (keyword "a" "stale")]
+                            [(get m stale :nf) (contains? m stale) (count (assoc m stale 2)) (count (dissoc m stale))
+                             (get m (keyword "n" "k5")) (get (transient m) stale :nf) (= (keyword "a" "x") (keyword "a" "x"))]))"#;
+    for (body, expected) in [
+        (
+            specified,
+            "[[1 true [:hit 1] 9 2 10 :nf false 10 11 3 1 9 3] \
+             [1 true [:hit 1] 40 2 41 :nf false 41 42 3 1 40 3] [:c2 :c1 11 :x :c2]]",
+        ),
+        (extended, "[:nf false 42 41 5 :nf true]"),
+    ] {
+        every_level(&format!("(pr-str {body})"), expected);
+        every_level(
+            &format!("(defmacro result [] (list 'quote {body})) (pr-str (result))"),
+            expected,
+        );
+    }
+}
+
+#[test]
 fn contains_of_an_array_map_searches_its_keys_where_its_lookup_is_its_own() {
     // light-cljs-1041: `contains?` of an array map searches its keys as `get`
     // does (`arrayIndex`) where the map's three-argument `-lookup` slot is

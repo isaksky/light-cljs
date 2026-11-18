@@ -3799,3 +3799,105 @@ answer the vector's own metadata at `:advanced` and the written method at
 the other levels. Such a program now keeps `extend-type`'s lookup
 (`light-cljs-4ec8334a`, whose gate output is byte for byte
 `light-cljs-b1296bca`'s).
+
+## 2026-11-17: a hash map's keyword keys compared by their spelling (light-cljs-1057)
+
+**What.** A hash map's trie compares a key with a leaf's by identity, then,
+for a keyword, by kind and `fqn` (`hashKeyTest`, upstream's `key-test`),
+where `equalPair`'s wrapper called the key's `-equiv` slot through a call
+V8 does not inline; a program's `IEquiv` method on keywords still decides
+(`keywordProgramEquiv`, read once per comparison). The walk
+(`hashNodeFind`) tells a collision node by its missing `slots` and an entry
+by its missing `kind`, and its loop tests no node, which is most of the
+gain. `assoc` (`hashNodeAssoc`) compares keys the same way.
+docs/value-layout.md, "What light-cljs-1057 landed".
+
+Binaries in research/shadow-credibility/bin: before `light-cljs-4fbc0e65`
+(master), after `light-cljs-51855d30` (this change on it; the final commit
+differs in notes and docs). Unreserved: peer workers built and tested
+throughout. Raw results: research/output-speed/kw-hash-1057.
+
+**The operations of this pellet, alone** (`--ops
+kw-small,get-small,get-hash100,kw-hash100,assoc-hash100,dissoc-hash100,update-hash100,destructure-map-3,record-kw-field`,
+5 runs; load 7.37-9.18 before, 9.98-12.19 after), ns per operation, median
+(range):
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 8.00 (7.91-8.05) | 7.92 (7.81-8.06) | -1% | 9.82 / 9.80 | 0.81 | 0.81 |
+| get-small | 12.7 (12.6-12.8) | 12.6 (12.6-12.7) | +0% | 14.9 / 14.9 | 0.85 | 0.85 |
+| get-hash100 | 20.9 (20.9-21.1) | 11.4 (11.4-11.7) | -45% | 12.0 / 12.1 | 1.74 | 0.94 |
+| kw-hash100 | 25.2 (25.0-25.5) | 16.1 (15.8-16.4) | -36% | 13.4 / 13.5 | 1.87 | 1.19 |
+| assoc-hash100 | 83.0 (81.5-84.8) | 80.5 (80.1-85.0) | -3% | 79.6 / 78.7 | 1.04 | 1.02 |
+| dissoc-hash100 | 95.9 (95.0-97.1) | 93.8 (92.6-95.2) | -2% | 75.8 / 74.7 | 1.27 | 1.26 |
+| update-hash100 | 93.5 (92.7-95.2) | 87.0 (86.0-89.6) | -7% | 97.0 / 96.5 | 0.96 | 0.90 |
+| destructure-map-3 | 64.0 (63.2-65.9) | 68.3 (67.5-69.4) | +7% | 49.3 / 49.4 | 1.30 | 1.38 |
+| record-kw-field | 5.98 (5.89-5.99) | 5.97 (5.87-6.00) | +0% | 6.39 / 6.32 | 0.94 | 0.94 |
+
+- **`destructure-map-3` +7% here is TurboFan's budget, not the lookups.**
+  Its loop makes three `getSite` calls of an array map, whose `-lookup`
+  call has also seen hash maps in this process. `--trace-turbo-inlining`
+  of the readable build: before, `getSite`'s own optimized code had 601
+  bytes of bytecode inlined (both `-lookup` targets), too much to inline
+  into the loop, which called it three times; after, it has 161 (the hash
+  map's target, with the key test inlined, is about 100 bytes larger, and
+  the two no longer fit together), so the loop inlines `getSite` at all
+  three sites, the first site's two targets take 800 of the loop's 920
+  bytes, and the other two `-lookup` calls stay calls. The same readable
+  builds give 46.7 ns alone before and after, 68 before and after behind
+  the hash map operations alone, and 64 against 70 only behind the
+  small-map operations too (this selection). In the full gate below,
+  whose process has more history, it is 4% faster.
+
+**Gate** (`bb benchmarks/core-ops/run.bb`, every operation, 5 runs; before
+load 7.07-14.87, after 3.40-9.38), ns per operation, median (range), the
+operations of this pellet and every one that moved by 5% or more:
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 8.02 (7.83-8.06) | 7.90 (7.78-8.01) | -1% | 9.92 / 9.83 | 0.81 | 0.80 |
+| get-small | 11.4 (11.1-11.4) | 11.3 (11.0-11.4) | -1% | 15.0 / 14.9 | 0.76 | 0.76 |
+| get-hash100 | 20.0 (18.1-20.3) | 11.4 (11.2-11.5) | -43% | 12.2 / 12.1 | 1.63 | 0.94 |
+| kw-hash100 | 22.2 (19.7-22.3) | 15.8 (15.8-16.1) | -29% | 14.0 / 13.5 | 1.59 | 1.17 |
+| assoc-hash100 | 81.9 (77.3-82.9) | 80.6 (79.7-82.2) | -2% | 79.8 / 76.9 | 1.03 | 1.05 |
+| dissoc-hash100 | 91.9 (86.8-92.1) | 88.6 (87.7-89.4) | -4% | 77.5 / 76.2 | 1.19 | 1.16 |
+| update-hash100 | 96.7 (91.6-97.0) | 88.4 (88.0-90.6) | -9% | 97.5 / 92.7 | 0.99 | 0.95 |
+| destructure-map-3 | 64.2 (64.0-65.9) | 62.0 (60.3-63.9) | -4% | 50.2 / 48.7 | 1.28 | 1.27 |
+| record-kw-field | 5.97 (5.93-5.98) | 5.82 (5.78-5.96) | -3% | 4.24 / 4.19 | 1.41 | 1.39 |
+| map-literal-3 | 21.3 (19.5-21.8) | 20.3 (19.4-20.6) | -5% | 10.3 / 9.78 | 2.06 | 2.08 |
+| reduce-map-inc-1000 | 49,281 (46,269-49,876) | 45,376 (44,861-46,407) | -8% | 40,601 / 39,411 | 1.21 | 1.15 |
+| filter-count-1000 | 41,516 (38,882-41,856) | 37,625 (37,522-38,973) | -9% | 28,841 / 28,105 | 1.44 | 1.34 |
+| str-sorted-map-20 | 32,979 (31,910-48,390) | 31,462 (30,402-32,047) | -5% | 20,788 / 20,203 | 1.59 | 1.56 |
+
+- **No operation is slower by more than 1%** (`select-keys-3`, +1%).
+- `get-hash100` (the map's own keys) and `kw-hash100` (`(:k42 m)`, the
+  constant keyword against keys `keyword` built) both gain the walk's 8 to
+  9 ns; `kw-hash100` also loses the `-equiv` slot's call. `update-hash100`
+  and `dissoc-hash100` find the key first.
+- `reduce-map-inc-1000`, `filter-count-1000`, `map-literal-3` and
+  `str-sorted-map-20` take no hash map; they moved with the load, which was
+  about 4 lower in the after run (shadow-cljs's own times moved by 2 to 5%).
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1057 --runs 5
+--runtime-only --runtime 1,10,40`, the project rebuilt with each binary just
+before its run; before load 5.82-6.44, after 5.04-6.16), wall time, median
+(range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.368 s (0.363-0.387) | 0.365 s (0.360-0.391) | 0.309 s | 0.308 s |
+| 10 | 0.890 s (0.819-1.008) | 0.833 s (0.812-0.846) | 0.614 s | 0.566 s |
+| 40 | 2.069 s (2.034-2.160) | 2.054 s (2.035-2.358) | 1.217 s | 1.196 s |
+
+Steady state, from 1 and 40 iterations: light-cljs 43.6 to 43.3 ms per
+iteration (-1%, within the spread), shadow-cljs 23.3 and 22.8; light/shadow
+1.87 and 1.90. The workload's maps are mostly array maps of a few keys.
+
+**Size** (advanced): workload 200k 3,559,758 to 3,560,043 bytes raw and
+896,479 to 896,551 after gzip -9 (+72, under 0.01%); the size ratchet
+(tests/support/ratchet_fixtures.rs, noted there), rebased onto master
+`1df0a071`: 279 bytes where a program keeps hash maps (`constant-keys`,
+`features`, `features-direct`), for `keywordProgramEquiv`, which the key
+test now keeps; the ceilings of `constant-keys` and `features-direct` move
+to the next 1,000. The timings above are on the runtime before
+light-cljs-1048's short keyed names, which change no access V8 makes.
