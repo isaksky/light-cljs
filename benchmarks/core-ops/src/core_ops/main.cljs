@@ -325,6 +325,16 @@
   (let [m (into (sorted-map) (map (fn [i] [i {:id i :title "t" :done false}])) (range 20))]
     (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (str m)))) acc))))
 
+;; `into` without a transducer (light-cljs-1065): a vector of a map's keys,
+;; a seq, and a set of a vector, each item conjoined onto a transient.
+(defn b-into-vec-keys-small [n s]
+  (let [ms (small-maps s)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (into [] (keys (aget ms (bit-and i 3))))))) acc))))
+
+(defn b-into-set-100 [n s]
+  (let [v (vec-n 100 s)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (into #{} v)))) acc))))
+
 ;; Two loops with no core operation, the cost of the benches' loop itself.
 (defn b-bit-and [n s]
   (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (bit-and i 3) s)) acc)))
@@ -405,6 +415,8 @@
    ["transient-map-100" b-transient-map-100 5000]
    ["sorted-map-assoc-100" b-sorted-map-assoc 200000]
    ["str-sorted-map-20" b-str-sorted-map 5000]
+   ["into-vec-keys-small" b-into-vec-keys-small 500000]
+   ["into-set-100" b-into-set-100 10000]
    ["bit-and" b-bit-and 10000000]
    ["aget-bit-and" b-js-array-index 10000000]])
 

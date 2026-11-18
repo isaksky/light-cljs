@@ -1,7 +1,7 @@
 # Core operations: light-cljs's output against shadow-cljs's
 
 This is the output-speed gate. One ClojureScript source,
-`src/core_ops/main.cljs`, times 68 core operations: map and vector access and
+`src/core_ops/main.cljs`, times 70 core operations: map and vector access and
 updates, seqs, reductions, printing, equality, records, calls and atoms. Both
 compilers build it for release, and both outputs run in Node:
 - light-cljs at `:advanced`, its release default (`light-cljs.edn`);
@@ -102,7 +102,9 @@ The source is the investigation's micro-benchmark
 (`research/output-speed/investigation-6ceeb23b`). Only `map-literal-3` changed,
 and the two loop baselines moved to the end. light-cljs-1064 added the four key
 and value walks, before `lazy-walk-1000`, so that the seq walks after them run
-with the type feedback of a program that also walks map keys.
+with the type feedback of a program that also walks map keys. light-cljs-1065
+added the two `into` operations after the printing ones, just before the loop
+baselines, so that no earlier operation's number moves.
 
 ## Operations
 
@@ -118,4 +120,5 @@ with the type feedback of a program that also walks map keys.
 | Printing | `str-nested-map`, `str-concat`, `str-sorted-map-20` |
 | Records and protocols | `protocol-on-record`, `record-kw-field`, `record-dot-field`, `record-assoc`, `multimethod` |
 | Calls and atoms | `multi-arity-call`, `variadic-call`, `apply-vec`, `unknown-fn-call`, `closure-alloc-call`, `swap-inc`, `swap-assoc` |
+| `into` without a transducer (light-cljs-1065) | `into-vec-keys-small` (a vector of the 7-key maps' keys), `into-set-100` (a set of a 100-item vector) |
 | Loop baselines | `bit-and`, `aget-bit-and` |
