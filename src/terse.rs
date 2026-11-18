@@ -1298,19 +1298,19 @@ pub(crate) fn terse_program_nested(
             (None, None) => TERSE_BINDINGS[index],
         }
     };
-    let statement_tokens = lexed.tokens[first].start
-        ..lexed
-            .tokens
-            .get(after)
-            .map_or(source.len(), |token| token.start);
+    // The statement's first token and its `;`, its last.
+    let (start, semicolon) = (lexed.tokens[first].start, lexed.tokens[after - 1].start);
+    debug_assert_eq!(&source[semicolon..semicolon + 1], ";");
     let (output, written) = lexed.rewrite(&names, &locals);
-    // The statement as written, from its first token to the next one.
     let at = |offset: usize| {
         written
             .get(written.partition_point(|(old, _)| *old < offset))
             .map_or(output.len(), |(_, new)| *new)
     };
-    let cut = at(statement_tokens.start)..at(statement_tokens.end);
+    // The statement as written, through its `;`: what follows, comments of
+    // raw text before the next token among it, stays.
+    let cut = at(start)..at(semicolon) + 1;
+    debug_assert_eq!(&output[cut.end - 1..cut.end], ";");
     // What the statement is written as: the aliases, if any.
     let mut alias = String::new();
     for &(binding, local) in &aliased {

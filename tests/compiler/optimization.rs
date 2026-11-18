@@ -1116,6 +1116,16 @@ fn advanced_modules_write_the_slice_around_the_program() {
     let undefined = vec!["\"undefined\""; letters.len()].join(",");
     assert_eq!(module_result(&esm), format!("[{undefined}][0 1 2 2]\n"));
 
+    // Comments of raw text right after where the list was stay.
+    let source =
+        r#"(js* "/*#__PURE__*/ String(1)") (js* "// a line\n0") (pr-str (deref (atom 0)))"#;
+    let esm = prepare_application(&program(source), advanced.clone()).emit_esm();
+    assert!(esm.contains("return(()=>{"), "{esm}");
+    for comment in ["/*#__PURE__*/", "// a line"] {
+        assert!(esm.contains(comment), "{comment}: {esm}");
+    }
+    assert_eq!(module_result(&esm), "0\n");
+
     // Raw text that could read `Atom`, as written, with an escape or through
     // a direct `eval`, keeps the factory.
     for raw in [

@@ -996,6 +996,12 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
         "(defn pick [v i]\n  (nth v i))\n\n(pick [1 2] 5)\n",
     )
     .unwrap();
+    std::fs::create_dir_all(root.join("pick-src/app")).unwrap();
+    std::fs::write(
+        root.join("pick-src/app/pick.cljs"),
+        "(ns app.pick)\n\n(defn pick [v i]\n  (nth v i))\n\n(pick [1 2] 5)\n",
+    )
+    .unwrap();
     std::fs::write(
         root.join("src/app/util.cljs"),
         "(ns app.util)\n\n(defn check [x]\n  (when (neg? x)\n    (throw (js/Error. (str \"negative \" x))))\n  x)\n",
@@ -1194,6 +1200,35 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
             "outOfBounds",
             &format!("{}:{bounds_line}:3", real("out/light-cljs/js_runtime.js")),
             name,
+        );
+        // As an ES module, whose `Advanced` units are written around the
+        // program's function rather than as a factory (light-cljs-1062).
+        let map = path(&format!("out/pick-{name}.mjs.map"));
+        let script = path(&format!("out/pick-{name}.mjs"));
+        let pick_root = path("pick-src");
+        let mapped = compiled(&[
+            "--compile",
+            "--optimize",
+            name,
+            "--entry",
+            "app.pick",
+            "--source-root",
+            &pick_root,
+            "--esm",
+            "--source-map",
+            &map,
+        ]);
+        assert_eq!(
+            mapped.contains("return(()=>{"),
+            level == OptimizationLevel::Advanced,
+            "{level}: {mapped:.300}"
+        );
+        std::fs::write(&script, &mapped).unwrap();
+        assert_frame(
+            &first_frame(&script),
+            "outOfBounds",
+            &format!("{}:{bounds_line}:3", real("out/light-cljs/js_runtime.js")),
+            &format!("{name} module"),
         );
 
         let map = path(&format!("out/main-{name}.mjs.map"));
