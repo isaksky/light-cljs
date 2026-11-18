@@ -2450,6 +2450,73 @@ console.log('vector and map reduce and kv-reduce slots answer as their operation
 }
 console.log('set and indexed seq reduce slots answer as their operations');
 
+// The transients' `-conj!`, `-assoc!` (but a set's) and `-persistent!` slots
+// (light-cljs-1065) answer as `conj!`, `assoc!` and `persistent!` do without
+// them, for every transient of the class: a vector's of a short vector and
+// of ones whose tail fills, an array map's whose ninth key promotes it, a
+// hash map's, an array and a hash set's, and one that is no longer
+// editable, whose slots throw as the operations do; a value made by
+// reflection gets `noBranch`. Each call takes a fresh transient, as the
+// operations change it.
+{
+  const conjBang = 'cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY', assocBang = 'cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY';
+  const persistentBang = 'cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY';
+  const persisted = make => () => { const t = make(); c.persistentBang(t); return t; };
+  const eight = () => c.arrayMap('a', 1, 'b', 2, 'c', 3, 'd', 4, 'e', 5, 'f', 6, 'g', 7, 'h', 8);
+  const vectors = [() => c.transient(c.vector(1, 2)), () => c.transient(c.vec(c.range(32))), () => c.transient(c.vec(c.range(1056))), persisted(() => c.transient(c.vector(1)))];
+  const maps = [() => c.transient(c.arrayMap('a', 1)), () => c.transient(eight()), () => c.transient(c.zipmap(c.range(20), c.range(20))),
+    persisted(() => c.transient(c.arrayMap('a', 1))), persisted(() => c.transient(c.zipmap(c.range(20), c.range(20))))];
+  const sets = [() => c.transient(c.hashSet(1)), () => c.transient(c.set(c.range(20))), persisted(() => c.transient(c.hashSet(1)))];
+  const kinds = [
+    [vectors, [[conjBang, ['x']], [assocBang, [0, 'y']], [assocBang, [2, 'z']], [assocBang, ['k', 1]], [assocBang, [99, 1]], [persistentBang, []]]],
+    [maps, [[conjBang, [c.vector('k', 2)]], [conjBang, [c.first(c.hashMap('e', 3))]], [conjBang, [c.hashMap('m', 4, 'n', 5)]], [conjBang, [c.vector('k')]],
+      [assocBang, ['k', 2]], [assocBang, ['a', 9]], [assocBang, [null, 'nil']], [persistentBang, []]]],
+    [sets, [[conjBang, ['x']], [conjBang, [1]], [conjBang, [null]], [persistentBang, []]]]
+  ];
+  const operations = new Map([[conjBang, (t, x) => c.conjBang(t, x)], [assocBang, (t, k, v) => c.assocBang(t, k, v)], [persistentBang, t => c.persistentBang(t)]]);
+  // What a call gave: `persistent!`'s collection; else whether it gave the
+  // transient itself and what its result persists to; or the message of
+  // what it threw.
+  const outcome = (make, call, slot = conjBang) => {
+    try {
+      const t = make(), result = call(t);
+      return slot === persistentBang ? 'ok ' + c.prStr(result) : 'ok ' + (result === t) + ' ' + c.prStr(c.persistentBang(result));
+    } catch (error) { return 'error ' + error.message; }
+  };
+  let checked = 0;
+  for (const [makers, slots] of kinds) {
+    const proto = Object.getPrototypeOf(makers[0]());
+    for (const slot of [conjBang, assocBang, persistentBang])
+      assert.equal(Object.prototype.hasOwnProperty.call(proto, slot), slots.some(([s]) => s === slot), `${c.prStr(makers[0]())}: own ${slot}`);
+    for (const make of makers) {
+      for (const [slot, args] of slots) {
+        const value = make(), method = value[slot];
+        assert.equal(typeof method, 'function', `${slot} of ${c.prStr(value)}`);
+        const own = Object.getPrototypeOf(value), forged = Object.create(own), noBranch = method.call(forged, forged, ...args);
+        assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${slot} of a forged value`);
+        // The operation's own path: the slot taken off the prototype.
+        const expected = (() => {
+          const kept = own[slot];
+          delete own[slot];
+          try { return outcome(make, t => operations.get(slot)(t, ...args), slot); } finally { own[slot] = kept; }
+        })();
+        assert.equal(outcome(make, t => t[slot].call(t, t, ...args), slot), expected, `${slot} ${c.prStr(args)} of ${c.prStr(make())}`);
+        assert.equal(outcome(make, t => operations.get(slot)(t, ...args), slot), expected, `the operation of ${slot} ${c.prStr(args)}`);
+        checked++;
+      }
+    }
+  }
+  assert.equal(checked, 76);
+  // Their answers, as before the slots.
+  assert.deepEqual([outcome(vectors[1], t => c.conjBang(t, 'x')), outcome(maps[1], t => c.assocBang(t, 'i', 9)), outcome(maps[0], t => c.conjBang(t, c.hashMap('m', 4))),
+    outcome(sets[0], t => c.conjBang(t, 2)), outcome(vectors[3], t => c.conjBang(t, 1)), outcome(maps[4], t => c.persistentBang(t), persistentBang),
+    outcome(vectors[0], t => c.assocBang(t, 'k', 1))],
+  ['ok true [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 "x"]',
+    'ok false {"d" 4, "f" 6, "e" 5, "a" 1, "i" 9, "b" 2, "g" 7, "h" 8, "c" 3}', 'ok true {"a" 1, "m" 4}', 'ok true #{1 2}', 'error conj! after persistent!',
+    'error persistent! called twice', 'error TransientVector\'s key for assoc! must be a number.']);
+}
+console.log('transient conj!, assoc! and persistent! slots answer as their operations');
+
 // Keywords and symbols of two copies of one build (docs/value-layout.md,
 // sections 1 and 3, light-cljs-1011): each copy interns its own, so they are
 // never identical, but equality reads the keyed kind and `fqn` (`str`), never

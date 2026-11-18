@@ -3221,6 +3221,201 @@ fn walks_of_map_keys_and_values_take_no_protocol_lookup_per_item() {
     );
 }
 
+/// In release output of a program with `extend-type`, `into` of a vector,
+/// a set or a map, `mapv`, `filterv` and `vec` of a seq, and `conj!` and
+/// `assoc!` onto transients take no protocol lookup per item
+/// (light-cljs-1065): the transient vectors, maps and sets have `-conj!`,
+/// `-assoc!` (but the sets) and `-persistent!` slots, which `conj!`,
+/// `assoc!`, `persistent!` and the reductions of `into` and `mapv` call
+/// first, and a map transient's `conj!` of a map entry reads the entry's
+/// `-key` and `-val` slots. On master `a397e0c9` each item took one lookup
+/// (of `-conj!` or `-assoc!`), `into {}` of pairs two and of map entries
+/// four. Each number is a call's lookups over 13 items less those over 3
+/// (as `walks_of_map_keys_and_values_take_no_protocol_lookup_per_item`
+/// counts them), for a map's keys, a lazy seq, a list, a vector's seq and a
+/// vector, then for a map, its seq and a lazy seq of its entries.
+#[test]
+fn into_and_transient_updates_take_no_protocol_lookup_per_item() {
+    let source = r#"(extend-type Atom ICounted (-count [_] 1))
+        (let [lookups #(aget js/globalThis "__lookups")
+              cost (fn [f] (let [before (lookups)] (f) (- (lookups) before)))
+              sized (fn [n] (zipmap (range n) (range n)))
+              per-item (fn [sources fs]
+                         (for [f fs [small big] sources] (let [s (small) b (big)] (- (cost #(f b)) (cost #(f s))))))
+              items [[#(keys (sized 3)) #(keys (sized 13))] [#(map inc (range 3)) #(map inc (range 13))]
+                     [#(list 1 2 3) #(apply list (range 13))] [#(seq [1 2 3]) #(seq (vec (range 13)))] [#(vector 1 2 3) #(vec (range 13))]]
+              entries [[#(sized 3) #(sized 13)] [#(seq (sized 3)) #(seq (sized 13))] [#(filter some? (sized 3)) #(filter some? (sized 13))]]]
+          (.join (into-array
+                   (concat
+                     (per-item items [#(into [] %) #(into #{} %) #(into [] (map identity) %) #(into #{} (map identity) %) #(mapv identity %)
+                                      #(filterv some? %) #(vec %) #(persistent! (reduce conj! (transient []) %))
+                                      #(persistent! (reduce conj! (transient #{}) %)) #(into {} (map (fn [x] [x x])) %)
+                                      #(persistent! (reduce (fn [t x] (assoc! t x x)) (transient {}) %))])
+                     (per-item entries [#(into {} %) #(persistent! (reduce conj! (transient {}) %)) #(persistent! (conj! (transient {}) %))])))
+                 " "))"#;
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program(source), options).emit_js();
+    for head in [
+        "function extendedMethod(value, key, arity, fast = false, directOnly = false) {",
+        "function builtin(value, key, arity) {",
+        "function satisfies(protocol, value) {",
+    ] {
+        assert!(js.contains(head), "{head}");
+        js = js.replace(head, &format!("{head} globalThis.__lookups++;"));
+    }
+    assert_eq!(
+        execute(&format!("globalThis.__lookups = 0; console.log({js});")),
+        format!("{}\n", ["0"; 11 * 5 + 3 * 3].join(" "))
+    );
+}
+
+/// The transients' `-conj!`, `-assoc!` and `-persistent!` slots, which
+/// `conj!`, `assoc!`, `persistent!`, `into`, `mapv` and `filterv` call
+/// before any lookup, and a map transient's `conj!` of a map entry, which
+/// reads the entry's `-key` and `-val` slots (light-cljs-1065), keep master
+/// `a397e0c9`'s answers at every level. Each program extends the transient
+/// protocols of one transient type, of `default` or of `object`, or a map
+/// entry's `IMapEntry` or `IIndexed`, and prints, for the transients it can
+/// reach, what `into`, `mapv`, `filterv`, `vec`, `conj!`, `assoc!` and
+/// `persistent!` give, their errors for a transient no longer editable and
+/// for values that are no transients, and the answers of transients
+/// `specify!` gave the protocols; a program with protocols and no
+/// `extend-type` (`installMethods` alone) prints them all.
+#[test]
+fn transient_slots_keep_the_answers_of_extended_and_specified_transients() {
+    let head = r#"(let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (.-message e)))))) big (zipmap (range 20) (range 20))]"#;
+    let part = |name: &str| match name {
+        "v" => {
+            r#"(p #(into [] (range 3))) (p #(into [1] (list 2 3))) (p #(into [] (map inc) [1 2])) (p #(mapv inc [1 2 3])) (p #(filterv odd? (range 5)))
+               (p #(vec (list 1 2))) (p #(persistent! (reduce conj! (transient []) [1 2]))) (p #(persistent! (conj! (transient [1]) 2 3)))
+               (p #(persistent! (assoc! (transient [1 2]) 0 :x 2 :y))) (p #(persistent! (conj! (transient [])))) (p #(persistent! (conj!)))
+               (p #(let [t (transient [])] (persistent! t) (conj! t 1))) (p #(let [t (transient [])] (persistent! t) (persistent! t)))
+               (p #(assoc! (transient [1]) :k 2)) (p #(assoc! (transient [1]) 5 2)) (p #(persistent! (-conj! (transient [1]) 2)))
+               (p #(conj! (specify! (transient []) ITransientCollection (-conj! [t x] [:sconj x])) 1))
+               (p #(reduce conj! (specify! (transient []) ITransientCollection (-conj! [t x] [:sconj x])) [1 2]))
+               (p #(let [s (specify! (transient [1]) ITransientCollection (-persistent! [t] :svp))] [(persistent! s) (count s)]))"#
+        }
+        "s" => {
+            r#"(p #(into #{} (range 3))) (p #(into #{9} (keys {:a 1 :b 2}))) (p #(into #{} (map inc) [1 2])) (p #(persistent! (conj! (transient #{}) 1 2)))
+               (p #(let [t (transient #{})] (persistent! t) (conj! t 1))) (p #(assoc! (transient #{}) 1 2)) (p #(-persistent! (transient #{1})))
+               (p #(let [s (specify! (transient #{}) ITransientCollection (-conj! [t x] [:ssconj x]) (-persistent! [t] :ssp))] [(conj! s 1) (persistent! s)]))"#
+        }
+        "m" => {
+            r#"(p #(into {} [[1 2] [3 4]])) (p #(into {:z 0} (seq {:a 1 :b 2}))) (p #(count (into {} big))) (p #(into {} (filter some?) {:a 1}))
+               (p #(persistent! (conj! (transient {}) [:a 1] {:b 2 :c 3}))) (p #(persistent! (assoc! (transient {}) :a 1 :b 2)))
+               (p #(let [m (persistent! (assoc! (transient big) 0 :x))] [(count m) (m 0)]))
+               (p #(count (persistent! (reduce (fn [t i] (assoc! t i i)) (transient {}) (range 12))))) (p #(persistent! (assoc! (transient {}) :a 1 :b)))
+               (p #(let [t (transient {})] (persistent! t) (assoc! t 1 2))) (p #(let [t (transient big)] (persistent! t) (conj! t [1 2])))
+               (p #(let [t (transient big)] (persistent! t) (persistent! t))) (p #(persistent! (-assoc! (transient {}) 1 2)))
+               (p #(let [s (specify! (transient {}) ITransientAssociative (-assoc! [t k v] [:sassoc k v]))] [(assoc! s 1 2) (conj! s [3 4])]))"#
+        }
+        _ => {
+            r#"(p #(conj! nil 1)) (p #(conj! [1] 2)) (p #(assoc! {} 1 2)) (p #(persistent! [1])) (p #(persistent! nil))"#
+        }
+    };
+    let no_conj = "E:No protocol method ITransientCollection/-conj! defined for this value";
+    let no_assoc = "E:No protocol method ITransientAssociative/-assoc! defined for this value";
+    let no_persistent = "E:No protocol method ITransientCollection/-persistent! defined for this value";
+    let vectors = "[0 1 2] [1 2 3] [2 3] [2 3 4] [1 3] [1 2] [1 2] [1 2 3] [:x 2 :y] [] [] E:conj! after persistent! E:persistent! called twice E:TransientVector's key for assoc! must be a number. E:Index out of bounds [1 2] [:sconj 1]";
+    let sets = "#{0 1 2} #{9 :a :b} #{2 3} #{1 2} E:conj! after persistent!";
+    let maps = "{1 2, 3 4} {:z 0, :a 1, :b 2} 20 {:a 1} {:a 1, :b 2, :c 3} {:a 1, :b 2} [20 :x] 12 {:a 1, :b nil} E:assoc! after persistent! E:conj! after persistent! E:persistent! called twice {1 2} [[:sassoc 1 2] [:sassoc 3 4]]";
+    for (extensions, parts, expected) in [
+        (
+            "(defrecord R [a] ICounted (-count [_] 1)) (count (R. 1))",
+            &["v", "s", "m", "e"][..],
+            format!(
+                "{vectors} {no_conj} [:svp 1] {sets} {no_assoc} #{{1}} [[:ssconj 1] :ssp] {maps} {no_conj} {no_conj} {no_assoc} {no_persistent} {no_persistent}"
+            ),
+        ),
+        (
+            "(def log (atom [])) (extend-type TransientVector ITransientCollection (-conj! [t x] (swap! log conj x) t))",
+            &["v"],
+            format!(
+                "[] [1] [] [] [] [] [] [1] [:x 2 :y] [] [] #object[cljs.core.TransientVector] E:persistent! called twice E:TransientVector's key for assoc! must be a number. E:Index out of bounds [1] [:sconj 1] {no_conj} [:svp 1]"
+            ),
+        ),
+        (
+            "(extend-type TransientVector ITransientCollection (-persistent! [t] [:vp (count t)]))",
+            &["v"],
+            format!(
+                "[:vp 3] [:vp 3] [:vp 2] [:vp 3] [:vp 2] [:vp 2] [:vp 2] [:vp 3] [:vp 3] [:vp 0] [:vp 0] #object[cljs.core.TransientVector] [:vp 0] E:TransientVector's key for assoc! must be a number. E:Index out of bounds [:vp 2] [:sconj 1] {no_conj} [:svp 1]"
+            ),
+        ),
+        (
+            "(extend-type TransientVector ITransientAssociative (-assoc! [t k v] (conj! t [:va k v])))",
+            &["v"],
+            format!(
+                "[0 1 2] [1 2 3] [2 3] [2 3 4] [1 3] [1 2] [1 2] [1 2 3] [1 2 [:va 0 :x] [:va 2 :y]] [] [] E:conj! after persistent! E:persistent! called twice #object[cljs.core.TransientVector] #object[cljs.core.TransientVector] [1 2] [:sconj 1] {no_conj} [:svp 1]"
+            ),
+        ),
+        (
+            "(extend-type TransientHashSet ITransientCollection (-conj! [t x] [:hsconj x]) (-persistent! [t] :hsp))",
+            &["s"],
+            format!("{no_conj} {no_conj} {no_conj} {no_conj} [:hsconj 1] {no_assoc} :hsp [[:ssconj 1] :ssp]"),
+        ),
+        (
+            "(extend-type TransientArrayMap ITransientAssociative (-assoc! [t k v] [:amassoc k v]))",
+            &["m"],
+            format!(
+                "{no_conj} {no_conj} {no_conj} {no_persistent} {no_conj} {no_assoc} [20 :x] {no_assoc} {no_assoc} [:amassoc 1 2] E:conj! after persistent! E:persistent! called twice {no_persistent} [[:sassoc 1 2] [:sassoc 3 4]]"
+            ),
+        ),
+        (
+            "(extend-type TransientArrayMap ITransientCollection (-conj! [t x] [:amconj x]))",
+            &["m"],
+            format!(
+                "{no_conj} {no_conj} {no_conj} {no_persistent} {no_conj} {{:a 1, :b 2}} [20 :x] 12 {{:a 1, :b nil}} E:assoc! after persistent! E:conj! after persistent! E:persistent! called twice {{1 2}} [[:sassoc 1 2] [:amconj [3 4]]]"
+            ),
+        ),
+        (
+            "(extend-type TransientHashMap ITransientCollection (-persistent! [t] [:hmp (count t)]) (-conj! [t x] [:hmconj x]))",
+            &["m"],
+            format!(
+                "{{1 2, 3 4}} {{:z 0, :a 1, :b 2}} {no_conj} {{:a 1}} {{:a 1, :b 2, :c 3}} {{:a 1, :b 2}} [2 :hmp] 2 {{:a 1, :b nil}} E:assoc! after persistent! [:hmconj [1 2]] [:hmp 20] {{1 2}} [[:sassoc 1 2] [:sassoc 3 4]]"
+            ),
+        ),
+        (
+            "(extend-type TransientHashMap ITransientAssociative (-assoc! [t k v] [:hmassoc k]))",
+            &["m"],
+            format!(
+                "{{1 2, 3 4}} {{:z 0, :a 1, :b 2}} {no_conj} {{:a 1}} {{:a 1, :b 2, :c 3}} {{:a 1, :b 2}} {no_persistent} {no_assoc} {{:a 1, :b nil}} E:assoc! after persistent! E:conj! after persistent! E:persistent! called twice {{1 2}} [[:sassoc 1 2] [:sassoc 3 4]]"
+            ),
+        ),
+        (
+            "(extend-type MapEntry IMapEntry (-key [e] [:key (nth e 0)]) (-val [e] [:val (nth e 1)]))",
+            &["m"],
+            "{1 2, 3 4} {:z 0, [:key :a] [:val 1], [:key :b] [:val 2]} 20 {[:key :a] [:val 1]} {:a 1, [:key :b] [:val 2], [:key :c] [:val 3]} {:a 1, :b 2} [20 :x] 12 {:a 1, :b nil} E:assoc! after persistent! E:conj! after persistent! E:persistent! called twice {1 2} [[:sassoc 1 2] [:sassoc 3 4]]".to_owned(),
+        ),
+        (
+            "(extend-type MapEntry IIndexed (-nth ([e i] [:nth i]) ([e i nf] [:nth i nf])))",
+            &["m"],
+            "{1 2, 3 4} {:z 0, [:nth 0] [:nth 1]} 1 {[:nth 0] [:nth 1]} {:a 1, [:nth 0] [:nth 1]} {:a 1, :b 2} [20 :x] 12 {:a 1, :b nil} E:assoc! after persistent! E:conj! after persistent! E:persistent! called twice {1 2} [[:sassoc 1 2] [:sassoc 3 4]]".to_owned(),
+        ),
+        (
+            "(extend-type default ITransientCollection (-conj! [t x] :dconj) (-persistent! [t] :dp))
+             (extend-type default ITransientAssociative (-assoc! [t k v] :dassoc))",
+            &["v", "s", "m", "e"],
+            format!(
+                "{vectors} :dconj [:svp 1] {sets} :dassoc #{{1}} [[:ssconj 1] :ssp] {maps} :dconj :dconj :dassoc :dp :dp"
+            ),
+        ),
+        (
+            "(extend-type object ITransientCollection (-conj! [t x] :oconj) (-persistent! [t] :op))",
+            &["v", "s", "m", "e"],
+            format!(
+                "{vectors} :oconj [:svp 1] {sets} {no_assoc} #{{1}} [[:ssconj 1] :ssp] {maps} {no_conj} :oconj {no_assoc} :op {no_persistent}"
+            ),
+        ),
+    ] {
+        let body = parts.iter().map(|name| part(name)).collect::<Vec<_>>().join(" ");
+        every_level(
+            &format!("{extensions} {head} {body} (.join out \" \"))"),
+            &expected,
+        );
+    }
+}
+
 /// light-cljs-998: once a program keeps `extend-type` or `specify!`, the
 /// generic predicates and operations ask the `satisfies` and `implements`
 /// hooks, which answer a value of the runtime's payload stores in one step.

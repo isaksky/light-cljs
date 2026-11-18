@@ -4072,8 +4072,17 @@
     if (maps.has(value)) return kindHooks.transientMap(value);
     return makeTransient("set", copyEntries(sets.get(value)), setKinds.get(value));
   }
-  //@unit persistentBang requires: persistentBangProtocol
-  function persistentBang(value) { return persistentBangProtocol(value); }
+  //@unit persistentBang requires: noBranch, persistentBangProtocol, slotFirst
+  // `persistent!` of a value with a `-persistent!` slot (light-cljs-1065)
+  // calls it before `persistentBangProtocol`'s lookup, which finds a
+  // program's method in the same slot, as `conjBangOwn` does.
+  function persistentBang(value) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY;
+      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
+    }
+    return persistentBangProtocol(value);
+  }
   //@unit persistTransient requires: editableTransient, isMapTransient, kindHooks
   function persistTransient(value) {
     const state = editableTransient(value, "persistent!");
@@ -4230,10 +4239,30 @@
     if (state === value) { kindHooks.conjTransientVector(state, member); return value; }
     return kindHooks.conjTransientSet(value, state, member);
   }
-  //@unit conjBangOwn requires: conjBangProtocol, conjTransient, isTransient, protocolHooks
-  // `conj!` onto the transient a core function's reduction holds, past the
-  // protocol dispatch where no protocol implementation can answer for it.
-  const conjBangOwn = (value, member) => !protocolHooks.builtin && isTransient(value) ? conjTransient(value, member) : conjBangProtocol(value, member);
+  //@unit conjBangOwn requires: conjBangProtocol, noBranch, slotFirst
+  // `conj!` of one item, as `conj!`, `into`'s reduction and `mapv` call it:
+  // a value of the runtime's classes with a `-conj!` slot (the transients',
+  // light-cljs-1065) calls it before `conjBangProtocol`'s lookup, which
+  // finds a program's method in the same slot, as the slot-first wrappers
+  // do (`conj.slots`). A value made by reflection, whose slot answers
+  // `noBranch`, and any other value take the lookup.
+  function conjBangOwn(value, member) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY;
+      if (method) { const result = method.call(value, value, member); if (result !== noBranch) return result; }
+    }
+    return conjBangProtocol(value, member);
+  }
+  //@unit assocBangOwn requires: assocBangProtocol, noBranch, slotFirst
+  // `assoc!` of one key, as `conjBangOwn` is `conj!` of one item: the
+  // transient's `-assoc!` slot (light-cljs-1065) before the lookup.
+  function assocBangOwn(value, key, item) {
+    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY;
+      if (method) { const result = method.call(value, value, key, item); if (result !== noBranch) return result; }
+    }
+    return assocBangProtocol(value, key, item);
+  }
   //@unit makeVector.conjTransient effect: makeVector, mapEntry when: conjTransient requires: conjVectorBang,
   //@ kindHooks
   kindHooks.conjTransientVector = conjVectorBang;
@@ -4256,19 +4285,31 @@
     if (!Array.isArray(state.entries)) state.mapKind = "hash-map";
     return value;
   };
-  //@unit makeMap.conjTransient effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods
-  //@ when: conjTransient requires: assocBangProtocol, assocTransient, first, isMapEntry, isVector,
-  //@ keyProtocol, kindHooks, next, protocolHooks, seq, truth, valProtocol
-  // Past the protocol dispatch where no protocol implementation can answer
-  // for the transient, as `conjBangOwn`.
-  kindHooks.conjTransientMap = (value, member) => {
-    const assoc = protocolHooks.builtin ? assocBangProtocol : assocTransient;
-    if (isMapEntry(member)) return assoc(value, keyProtocol(member), valProtocol(member));
-    if (isVector(member)) return assoc(value, member.call(null, 0), member.call(null, 1));
-    for (let s = seq(member); s !== null && truth(first(s)); s = next(s)) {
-      const entry = first(s);
-      value = assoc(value, keyProtocol(entry), valProtocol(entry));
+  //@unit assocEntry requires: entryKey, entryVal, isEntryCell, keyProtocol, slotFirst, valProtocol
+  // `assoc` of an entry's key and value onto a map transient, `conj!` of the
+  // entry. A map entry of the runtime's class gives them from the `-key` and
+  // `-val` slots that `extend-type` or `specify!` gave it, else from its own
+  // items (`entryKey`, `entryVal`), as a key seq reads them
+  // (light-cljs-1064), with no lookup; any other entry, or where a compiler
+  // session demands declarations (`slotFirst`), through the dispatchers.
+  function assocEntry(assoc, value, entry) {
+    if (slotFirst.on && isEntryCell(entry)) {
+      const key = entry.cljs$core$IMapEntry$_key$arity$1$LKEY, val = entry.cljs$core$IMapEntry$_val$arity$1$LKEY;
+      return assoc(value, key ? key.call(entry, entry) : entryKey(entry), val ? val.call(entry, entry) : entryVal(entry));
     }
+    return assoc(value, keyProtocol(entry), valProtocol(entry));
+  }
+  //@unit makeMap.conjTransient effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods
+  //@ when: conjTransient requires: assocBangOwn, assocEntry, assocTransient, first, isMapEntry,
+  //@ isVector, kindHooks, next, protocolHooks, seq, truth
+  // Each pair through `assoc!`, the transient's slot first (`assocBangOwn`),
+  // or past the protocol dispatch where no protocol implementation can
+  // answer for the transient.
+  kindHooks.conjTransientMap = (value, member) => {
+    const assoc = protocolHooks.builtin ? assocBangOwn : assocTransient;
+    if (isMapEntry(member)) return assocEntry(assoc, value, member);
+    if (isVector(member)) return assoc(value, member.call(null, 0), member.call(null, 1));
+    for (let s = seq(member); s !== null && truth(first(s)); s = next(s)) value = assocEntry(assoc, value, first(s));
     return value;
   };
   //@unit removeTransient requires: editableTransient, entryIndex, hashEntryIndex, hashRoots,
@@ -4321,16 +4362,20 @@
     store.cnt$LKEY--;
     return value;
   }
-  //@unit conjBang requires: conjBangProtocol, transient, vector
-  function conjBang(value, ...members) {
-    if (!arguments.length) return transient(vector());
-    for (const member of members) value = conjBangProtocol(value, member);
+  //@unit conjBang requires: conjBangOwn, transient, vector
+  // Each item through `conjBangOwn`, the transient's slot first.
+  function conjBang(value, member) {
+    const n = arguments.length;
+    if (n === 2) return conjBangOwn(value, member);
+    if (!n) return transient(vector());
+    for (let i = 1; i < n; i++) value = conjBangOwn(value, arguments[i]);
     return value;
   }
-  //@unit assocBang requires: assocBangProtocol
-  function assocBang(value, key, item, ...pairs) {
-    value = assocBangProtocol(value, key, item);
-    for (let i = 0; i < pairs.length; i += 2) value = assocBangProtocol(value, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
+  //@unit assocBang requires: assocBangOwn
+  function assocBang(value, key, item) {
+    const n = arguments.length;
+    value = assocBangOwn(value, key, item);
+    for (let i = 3; i < n; i += 2) value = assocBangOwn(value, arguments[i], i + 1 < n ? arguments[i + 1] : null);
     return value;
   }
   //@unit dissocBang requires: dissocBangProtocol
@@ -5300,6 +5345,62 @@
     if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "lookup"); }
     return typeof key === "number" ? vectorNth(self, key, notFound) : notFound;
   });
+  // The transients' `-conj!`, `-assoc!` and `-persistent!` slots
+  // (light-cljs-1065), as upstream's TransientVector, TransientArrayMap,
+  // TransientHashMap and TransientHashSet implement ITransientCollection
+  // and, but the set, ITransientAssociative. `conj!`, `assoc!` and
+  // `persistent!` call them before any protocol lookup (`conjBangOwn`,
+  // `assocBangOwn`, `persistentBang`), so that `into`, `mapv` and
+  // `filterv` take none per item. Each answers as its operation
+  // (`conjTransient`, `assocTransient`, `persistTransient`), which throws for
+  // a transient that is no longer editable; a value made by reflection, which
+  // has no state, answers `noBranch`. A transient vector's `-conj!`, which
+  // `into` and `mapv` call most, is its own: `conjVectorBang` of an
+  // editable one.
+  //@unit TransientVectorType.conjBang effect: TransientVectorType when: conjBangOwn requires: builtinSlot,
+  //@ conjVectorBang, editableTransient, noBranch, TransientVectorType
+  TransientVectorType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = builtinSlot(function (self, item) {
+    const editable = self.editable$LKEY;
+    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "conj!"); }
+    conjVectorBang(self, item);
+    return self;
+  });
+  //@unit transientConjSlot requires: builtinSlot, conjTransient, noBranch, transientState
+  const transientConjSlot = builtinSlot((self, member) => transientState(self) === undefined ? noBranch : conjTransient(self, member));
+  //@unit transientAssocSlot requires: assocTransient, builtinSlot, noBranch, transientState
+  const transientAssocSlot = builtinSlot((self, key, item) => transientState(self) === undefined ? noBranch : assocTransient(self, key, item));
+  //@unit transientPersistentSlot requires: builtinSlot, noBranch, persistTransient, transientState
+  const transientPersistentSlot = builtinSlot(self => transientState(self) === undefined ? noBranch : persistTransient(self));
+  //@unit TransientVectorType.assocBang effect: TransientVectorType when: assocBangOwn requires: transientAssocSlot,
+  //@ TransientVectorType
+  TransientVectorType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = transientAssocSlot;
+  //@unit TransientVectorType.persistentBang effect: TransientVectorType when: persistentBang
+  //@ requires: transientPersistentSlot, TransientVectorType
+  TransientVectorType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = transientPersistentSlot;
+  //@unit TransientArrayMapType.conjBang effect: TransientArrayMapType when: conjBangOwn requires: TransientArrayMapType,
+  //@ transientConjSlot
+  TransientArrayMapType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = transientConjSlot;
+  //@unit TransientArrayMapType.assocBang effect: TransientArrayMapType when: assocBangOwn requires: TransientArrayMapType,
+  //@ transientAssocSlot
+  TransientArrayMapType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = transientAssocSlot;
+  //@unit TransientArrayMapType.persistentBang effect: TransientArrayMapType when: persistentBang
+  //@ requires: TransientArrayMapType, transientPersistentSlot
+  TransientArrayMapType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = transientPersistentSlot;
+  //@unit TransientHashMapType.conjBang effect: TransientHashMapType when: conjBangOwn requires: transientConjSlot,
+  //@ TransientHashMapType
+  TransientHashMapType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = transientConjSlot;
+  //@unit TransientHashMapType.assocBang effect: TransientHashMapType when: assocBangOwn requires: transientAssocSlot,
+  //@ TransientHashMapType
+  TransientHashMapType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = transientAssocSlot;
+  //@unit TransientHashMapType.persistentBang effect: TransientHashMapType when: persistentBang
+  //@ requires: TransientHashMapType, transientPersistentSlot
+  TransientHashMapType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = transientPersistentSlot;
+  //@unit TransientHashSetType.conjBang effect: TransientHashSetType when: conjBangOwn requires: transientConjSlot,
+  //@ TransientHashSetType
+  TransientHashSetType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = transientConjSlot;
+  //@unit TransientHashSetType.persistentBang effect: TransientHashSetType when: persistentBang
+  //@ requires: TransientHashSetType, transientPersistentSlot
+  TransientHashSetType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = transientPersistentSlot;
 
   // Slot-first dispatch (docs/value-layout.md, section 3): an operation
   // given a value of a converted runtime class, which its keyed kind tells,
@@ -13041,11 +13142,11 @@
     return nth(entry, 1);
   }
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
-  //@ assoc, collectionWithMeta, compareKeys, conj, conjBangOwn, conjTransient, coreMethod, count,
-  //@ derefProtocol, disj, dissoc, equalPair, firstSeq, hash, hashStructural, iterator,
-  //@ keywordLookupEquiv, keywordProgramEquiv, metaSupported, name, namespace, notifyWatches,
-  //@ objectEquiv, peek, pop, removeWatchProtocol, restSeq, rseq, stateProtocol, vresetProtocol,
-  //@ withMetaSupported requires: builtin, protocolHooks
+  //@ assoc, collectionWithMeta, compareKeys, conj, conjTransient, coreMethod, count, derefProtocol,
+  //@ disj, dissoc, equalPair, firstSeq, hash, hashStructural, iterator, keywordLookupEquiv,
+  //@ keywordProgramEquiv, metaSupported, name, namespace, notifyWatches, objectEquiv, peek, pop,
+  //@ removeWatchProtocol, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin,
+  //@ protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,
   //@ protocolHooks

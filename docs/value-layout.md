@@ -1513,6 +1513,53 @@ values takes no protocol lookup per item, where each step took 9.
   and `seq-walk-vec-1000` -24%, and the re-frame apps' whole bundles are
   241 to 576 bytes larger after gzip (0.17 to 0.24%).
 
+What light-cljs-1065 landed: `conj!`, `assoc!` and `persistent!` of a
+transient call its slot before any protocol lookup, so `into`, `mapv`,
+`filterv` and `vec` of a seq take none per item, where each item took one.
+
+- **Slots.** As upstream's TransientVector, TransientArrayMap,
+  TransientHashMap and TransientHashSet implement ITransientCollection and,
+  but the set, ITransientAssociative, their prototypes have keyed `-conj!`
+  and `-persistent!` slots and, but the set's, `-assoc!`. A transient
+  vector's `-conj!` is its own (`conjVectorBang` of an editable one), as
+  `into` and `mapv` call it most; the others share one method per protocol
+  method (`transientConjSlot`, `transientAssocSlot`,
+  `transientPersistentSlot`), which takes the operation's own path
+  (`conjTransient`, `assocTransient`, `persistTransient`) for a value with a
+  transient's state. Each throws as the operation does for a transient no
+  longer editable; a value made by reflection, which has no state, answers
+  `noBranch`.
+- **Slot first.** `conjBangOwn` (`conj!` of one item, which `conj!`, `into`'s
+  reduction, `mapv` and `filterv` call) and `assocBangOwn` (`assoc!` of one
+  key) read the slot of a value with a keyed kind, as the slot-first
+  wrappers do, and `persistentBang` likewise; a program's method, which
+  `extend-type` writes over the slot or `specify!` puts on the value, is
+  called there, and every other value takes the dispatcher. Their bytecode
+  is 78, 90 and 66 bytes (`--trace-turbo-inlining`), under light-cljs-1033's
+  100. `conj!` with more items and `assoc!` with more keys read
+  `arguments`, where a rest array was allocated per call.
+- **A map transient's `conj!`** of a pair calls `assocBangOwn` where a
+  program has protocol implementations, and of a map entry reads the
+  entry's `-key` and `-val` slots that `extend-type` or `specify!` gave it,
+  else its own items (`entryKey`, `entryVal`), as a key seq does since
+  light-cljs-1064 (`assocEntry`), where it took `keyProtocol` and
+  `valProtocol`'s lookups. So `into {}` of a map, its seq or pairs takes no
+  lookup per item (2 and 4 before).
+- **Complete.** `transient_slots_keep_the_answers_of_extended_and_specified_transients`
+  pins master's answers at every level for programs that extend the
+  transient protocols of each transient type, of `default` or `object`, or
+  a map entry's `IMapEntry` or `IIndexed`, and for transients that
+  `specify!` gave them; `into_and_transient_updates_take_no_protocol_lookup_per_item`
+  the lookups; tests/support/js_runtime.test.js each slot against its
+  operation.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1065): the
+  gate's `transient-vec-100` 4,914 to 1,190 ns (light/shadow 4.22 to 1.05),
+  `mapv-1000` -72% (0.97), `into-xform-1000` -58%, `transient-map-100`
+  -48%, and the new `into-vec-keys-small` -27% and `into-set-100` -35%, no
+  operation over 3% slower; workload 200k's steady state 41.2 to 38.3 ms
+  per iteration; the re-frame apps' whole bundles 81 to 286 bytes larger
+  after gzip (0.02 to 0.21%).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

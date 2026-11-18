@@ -1213,8 +1213,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // (light-cljs-1055), and the `-reduce` slot units of the hash and array
     // sets and the indexed seqs (light-cljs-1059), and the 13 `-first`,
     // `-rest`, `-next`, `-seq` and `-count` slot units of the map seqs
-    // (light-cljs-1064).
-    assert_eq!(checked, 478);
+    // (light-cljs-1064), and the 11 `-conj!`, `-assoc!` and `-persistent!`
+    // slot units of the transient vectors, maps and sets (light-cljs-1065).
+    assert_eq!(checked, 489);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s

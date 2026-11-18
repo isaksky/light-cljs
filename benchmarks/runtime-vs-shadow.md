@@ -4523,3 +4523,111 @@ light-cljs-1062 writes a terse ES module's runtime units in a function around th
 The steady state does not move. **Startup is about 1.5% slower**, a loss recorded as found: the first output reads 3 and 7 ms later in the two pairs above, and a check that ran the two outputs alternately, 30 Node processes each (`node run-light.mjs 42 1` against copies of both outputs, load 6.8), timed them at 371.0 ms (364.5-515.6) before and 376.9 ms (364.1-604.9) after (+1.6%). Timed inside the process (20 alternated each, load 6.4), loading the module, which parses it and runs the units and the program's definitions, takes 120.7 ms before and 122.9 after (+1.8%), and the iteration itself 199.0 and 200.0 ms. The cause is not isolated; one candidate is that the program now reads each root from the enclosing function's scope rather than from a constant it declares, so the parser resolves every such read one scope further out. Writing the inner function as `function(){...}` rather than an arrow measured the same (122.2 ms).
 
 **Size** (advanced): workload 200k's output is 848,932 to 848,567 bytes after gzip -9 (-365) and 3,438,039 to 3,438,435 raw (+396); the re-frame bundles shrink by 747, 929 and 1,763 bytes after gzip (benchmarks/re-frame-vs-shadow.md, same date). The size ratchet's fixtures are JavaScript expressions, which keep the factory: none moves.
+
+## 2026-11-18: transients take `conj!`, `assoc!` and `persistent!` from slots (light-cljs-1065)
+
+**What.** The transient vectors, maps and sets have keyed `-conj!` and
+`-persistent!` slots, and the vectors and maps `-assoc!`, as upstream's
+TransientVector, TransientArrayMap, TransientHashMap and TransientHashSet
+implement ITransientCollection and ITransientAssociative. `conj!`, `assoc!`
+and `persistent!`, and so `into`, `mapv`, `filterv` and `vec` of a seq, call
+them before any protocol lookup, and a map transient's `conj!` of a map
+entry reads the entry's `-key` and `-val` slots. In a program with
+protocol implementations each conjoined item took one lookup (the
+`-conj!` or `-assoc!` dispatcher), `into {}` of pairs two and of map entries
+four, and takes none: `into_and_transient_updates_take_no_protocol_lookup_per_item`.
+`extend-type` and `specify!` keep master's answers at every level
+(`transient_slots_keep_the_answers_of_extended_and_specified_transients`).
+docs/value-layout.md, "What light-cljs-1065 landed". The gate gains two
+operations of `into` without a transducer, `into-vec-keys-small` and
+`into-set-100`, after the printing ones (benchmarks/core-ops/README.md).
+
+Binaries in research/shadow-credibility/bin: before `light-cljs-a397e0c9`
+(master), after `light-cljs-08a43178` (this pellet on it: a work-in-progress
+commit whose compiler sources the landed commit keeps), both V8 builds.
+Unreserved: peer workers built and tested throughout.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, every operation, the
+after run with `--baseline` the before's; load 8.25-31.37 before and
+2.77-10.10 after), ns per operation, median (range), the operations this
+touches:
+
+| op | light before | light after | change | shadow-cljs after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| transient-vec-100 | 4,914 (4,512-7,414) | 1,190 (1,130-1,225) | -76% | 1,132 | 4.22 | 1.05 |
+| transient-map-100 | 10,996 (10,018-21,737) | 5,724 (5,635-5,812) | -48% | 4,454 | 2.50 | 1.29 |
+| into-xform-1000 | 68,152 (64,371-76,254) | 28,445 (27,218-28,681) | -58% | 18,214 | 3.69 | 1.56 |
+| mapv-1000 | 47,906 (46,528-52,572) | 13,623 (13,234-13,795) | -72% | 14,025 | 3.31 | 0.97 |
+| into-vec-keys-small | 1,233 (1,169-2,166) | 903.9 (872.2-920.4) | -27% | 315.6 | 3.72 | 2.86 |
+| into-set-100 | 10,906 (10,161-20,544) | 7,046 (6,950-7,162) | -35% | 4,247 | 2.54 | 1.66 |
+| group-by-100 | 8,739 (8,161-12,740) | 8,422 (8,123-8,989) | -4% | 4,940 | 1.71 | 1.70 |
+
+- **No operation is slower by more than 3%**: the slowest move is
+  `assoc-small-existing`, +2%, inside its range; `reduce-vec-1000` and
+  `sort-by-100` +0%. Most others read 2 to 8% faster, the before run's
+  higher load.
+- **Two more passes** against that bias. The same command in the other
+  order (after first, load 3.98-7.98, then before, 4.15-11.64): the touched
+  operations as above, and `vals-hash100` +7%, `vals-small` +5% and
+  `select-keys-3` +4%, each inside the other's range, the reverse of the
+  first pass (-10%, -7%, -3%): the second binary run read faster both
+  times. Then light-cljs alone, the two outputs alternated process by
+  process, 8 each (a scratch loop over `run-light.mjs`, load 3.87-12.40):
+  `vals-hash100` -3.9%, `vals-small` -0.9%, `select-keys-3` -0.9%, every
+  untouched operation within ±2.8% but `kw-hash100`, +12% (14.4 to 16.2 ns,
+  ranges 14.3-16.5 and 14.2-17.0). It reads 14.x or 16.x in every pass with
+  either binary (16.4, 16.0 and 14.4 before; 15.6, 14.4 and 16.2 after):
+  bimodal, not this change, which no keyword lookup reaches.
+- The gate has records with protocols and no `extend-type`, so its
+  transients' `conj!` and `assoc!` took the dispatchers' shorter lookup
+  (`ownMethod`) per item. `mapv-1000` is now as fast as shadow-cljs's and
+  `transient-vec-100` within 5%. `group-by` builds persistent maps, as
+  before, and takes no transient.
+- `into-vec-keys-small` stays 2.9 times shadow-cljs's: per call, `into`
+  still takes lookups for the target's `IEditableCollection` and
+  `-as-transient`, its metadata and the key seq's reduction (with one
+  `extend-type`, 7 per call of 3 keys, where it took 8 and one per key;
+  `persistent!` is a slot now), and the 7-key map's seq builds its entries
+  first (light-cljs-1064). Those are the persistent collections' slots, left
+  for the pellets reshaping the core operations.
+
+**Off the gate**, a scratch program with one `extend-type` (`Atom` given
+`ICounted`), the same two binaries, 5 alternated runs of the median of 7
+rounds (load 6.55-10.31), ns per call: `into []` of a 7-key map's keys
+1,093 to 772 (the 1,356 light-cljs-1064 measured on its own master), `into
+#{}` of them 1,253 to 949, `into []` of a 20-item list 1,498 to 681, `into
+#{}` of it 2,574 to 1,638, `into {}` of a 13-key map's seq 4,311 to 1,915 (to
+3,095 without reading the entries' slots), `into {}` of 13 pairs 4,046 to
+2,791, `mapv` of 100 items 5,660 to 1,734, `persistent!` of `reduce conj!`
+of 100 items 5,221 to 1,362.
+
+**Workload 200k** (`compare.bb PROJECT --runs 5 --runtime-only --runtime
+1,40`, project `workload-200k-seed42-1065`, the light-cljs output rebuilt
+with each binary just before its runs), wall time at 40 iterations, median
+(range), and light-cljs's steady state:
+
+| project | light before | light after (`08a43178`) | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k | 1.988 s (1.940-2.022) | 1.858 s (1.846-1.913) | 1.225 / 1.210 s | 41.2 to 38.3 (shadow-cljs 23.2 / 23.1) | 2.84-3.47 / 3.60-3.86 |
+
+Light/shadow 1.78 before and 1.65 after.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only`,
+ports from `shadow-port-tool-983`), the whole bundle with React, gzip -9:
+
+| App | before (`a397e0c9`) | after (`08a43178`) | change |
+| --- | ---: | ---: | ---: |
+| re-frame simple | 114,343 | 114,588 | +245 (+0.21%) |
+| TodoMVC | 145,750 | 146,036 | +286 (+0.20%) |
+| flow | 333,814 | 333,895 | +81 (+0.02%) |
+
+- light-cljs's output as written, gzip -9: simple 67,943 to 68,169 (+226),
+  TodoMVC 97,491 to 97,726 (+235), flow 280,824 to 281,069 (+245).
+- At `:advanced` the slot-first `conjBangOwn`, `assocBangOwn` and
+  `persistentBang` are about 140 to 150 bytes each, the transient vector's
+  `-conj!` 133, `assocEntry` 151, and each slot assignment 27 or 28
+  (`--size-report`).
+- The size ratchet (tests/support/ratchet_fixtures.rs, noted there): 507
+  bytes more at advanced where a program conjoins onto a transient vector
+  (`mapv-count`), 1,027 for the features example; the readable runtime
+  5,262 bytes more, mostly comments.
