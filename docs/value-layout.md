@@ -1541,7 +1541,7 @@ its uses.
 **Measured.** The table holds 32 stems in simple and TodoMVC and 38 in
 flow, about 380 bytes after gzip. The what-ifs left it out, and the runtime
 they renamed could not have loaded. With the table, each whole bundle
-shrinks 665 bytes after gzip in simple, 886 in TodoMVC and 1,072 in flow
+shrinks 703 bytes after gzip in simple, 883 in TodoMVC and 1,001 in flow
 (benchmarks/re-frame-vs-shadow.md, "2026-11-17: short keyed names at
 `:advanced`"), against the what-if's 1,018, 1,188 and 1,462 for this form.
 

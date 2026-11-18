@@ -712,24 +712,20 @@
 //! letters, the most used first, and the protocol slots' and markers' codes
 //! in a table `protocolSlot` reads (docs/value-layout.md, section 1, "Short
 //! names at `:advanced`"). None and prepare keep whole names; the readable
-//! runtime grows 970 bytes (`protocolSlotCodes` and its comment, and the
-//! mask and field names once built by concatenation written whole), under
-//! every none and prepare ceiling (`console-log-sum` 666,937 to 667,907).
-//! Advanced, against master `e0168930` (the command line's output): 359 to
-//! 7,291 bytes smaller where a program keeps the collections
-//! (`vector-printed` 16,455 to 15,671, `map-printed` 24,598 to 23,076,
-//! `constant-keys` 82,977 to 75,686, `mapv-count` 58,748 to 53,624,
-//! `protocol-params` 71,290 to 66,636); `record-protocol` and
+//! runtime grows about 1,000 bytes (`protocolSlotCodes` and its comment,
+//! and the mask and field names once built by concatenation written whole),
+//! under every none and prepare ceiling (`console-log-sum` 678,821 to
+//! 679,823). Advanced, against master `4fbc0e65` (the command line's
+//! output): 359 to 7,483 bytes smaller where a program keeps the
+//! collections (`vector-printed` 16,344 to 15,549, `map-printed` 24,883 to
+//! 23,313, `constant-keys` 83,362 to 75,879, `mapv-count` 59,940 to 54,436,
+//! `protocol-params` 72,567 to 67,629); `record-protocol` and
 //! `three-records` 20 bytes larger (5,832 to 5,852, 5,827 to 5,847), whose
 //! few keyed names save less than the table's lookup costs. Every advanced
-//! ceiling, and the features example's chunks (`app.main.js` 9,082, the
-//! shared chunk 90,473, `app.editor.js` 11,660, `app.reports.js` 5,004),
-//! moves down to the next 100 above its size below 10,000 and the next
-//! 1,000 above, except `vector-only` (7,803), which keeps
-//! `unkeyedJSON`'s test of a name's prefix and suffix: 7,900. Rebased onto
-//! light-cljs-1041 (`d8a28b21`), whose array-map paths add about 290 bytes:
-//! `constant-keys` 76,022, `keyword-lookups` 54,214 and `set-only` 9,049
-//! move to 77,000, 55,000 and 9,100.
+//! ceiling, and the features example's chunks (`app.main.js` 9,079, the
+//! shared chunk 92,527, `app.editor.js` 11,595, `app.reports.js` 5,002),
+//! moves to the next 100 above its size below 10,000 and the next 1,000
+//! above.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -839,7 +835,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
                  (defn kind [k] (case k :x 1 :y 2 0))
                  (reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))",
-        ceilings: [683_000, 683_000, 55_000],
+        ceilings: [683_000, 683_000, 56_000],
         removed: [0, 0, 0],
         printed: "17\n",
     },
@@ -919,7 +915,7 @@ pub const FIXTURES: &[Fixture] = &[
                  [(->R1 1 2) (->R2 2 3) (->R3 3 4) (->R4 4 5) (->R5 5 6) (->R6 6 7) (->R7 7 8) \
                  (->R8 8 9) (T1. 9 10) (T2. 10 11) (T3. 11 12) (T4. 12 13) (T5. 13 14) \
                  (T6. 14 15) (T7. 15 16) (T8. 16 17)])",
-        ceilings: [693_000, 693_000, 49_000],
+        ceilings: [693_000, 693_000, 50_000],
         removed: [0, 0, 0],
         printed: "819\n",
     },
@@ -936,7 +932,7 @@ pub const FIXTURES: &[Fixture] = &[
                                 (range 36)))
                  (+ (get table {:id 3 :kind :row}) (get table [:pos 5 6]) (get table #{7 :tag})
                     (get table {:id 11 :kind :row} 0))",
-        ceilings: [683_000, 683_000, 77_000],
+        ceilings: [683_000, 683_000, 76_000],
         removed: [0, 0, 0],
         printed: "62\n",
     },
@@ -950,7 +946,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [683_000, 683_000, 53_000],
+        ceilings: [683_000, 683_000, 54_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -961,7 +957,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "vector-only",
         source: r#"(js/console.log (.join (js/Array.from [1 2 3]) " "))"#,
-        ceilings: [682_000, 682_000, 8_300],
+        ceilings: [682_000, 682_000, 7_800],
         removed: [0, 0, 0],
         printed: "1 2 3\nundefined\n",
     },
@@ -998,7 +994,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "set-only",
         source: r#"(js/console.log (.has #{1 2 3} 2) (.join (js/Array.from #{1 2 3}) " "))"#,
-        ceilings: [682_000, 682_000, 9_100],
+        ceilings: [682_000, 682_000, 9_000],
         removed: [0, 0, 0],
         printed: "true 1 3 2\nundefined\n",
     },
@@ -1008,7 +1004,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "mapv-count",
         source: "(js/console.log (count (mapv inc [1 2 3])))",
-        ceilings: [682_000, 682_000, 54_000],
+        ceilings: [682_000, 682_000, 55_000],
         removed: [0, 0, 0],
         printed: "3\nundefined\n",
     },
@@ -1061,7 +1057,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (if (< i 10)
                      (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
                      acc))",
-        ceilings: [685_000, 685_000, 20_000],
+        ceilings: [685_000, 685_000, 19_000],
         removed: [0, 0, 3],
         printed: "419\n",
     },
@@ -1115,7 +1111,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (+ (reduce add-cost 0 (filter heavy? items))
                       (reduce + (map (fn [item] (count (:label item))) items))
                       @counter))",
-        ceilings: [684_000, 684_000, 61_000],
+        ceilings: [684_000, 684_000, 62_000],
         removed: [0, 0, 1],
         printed: "26\n",
     },
@@ -1141,7 +1137,7 @@ pub const FIXTURES: &[Fixture] = &[
                                           (str (tag plain item true)
                                                (tag sale item (> (:qty item) 2))))
                                         items))))",
-        ceilings: [685_000, 685_000, 67_000],
+        ceilings: [685_000, 685_000, 68_000],
         removed: [0, 0, 0],
         printed: "28.5a-bbbb%cccccc%\n",
     },
@@ -1209,7 +1205,7 @@ const FEATURES_REPORTS: (&str, &str) = (
 /// features holds (`size_ratchet::FEATURES_STARTUP_SLACK`).
 pub const FEATURES_CHUNK_CEILINGS: &[(&str, usize)] = &[
     ("app.main.js", 9_100),
-    ("app.editor+app.reports.js", 91_000),
+    ("app.editor+app.reports.js", 93_000),
     ("app.editor.js", 12_000),
     ("app.reports.js", 5_100),
 ];
@@ -1232,7 +1228,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [701_000, 701_000, 115_000],
+        ceilings: [701_000, 701_000, 117_000],
         removed: [0, 0, 21],
         printed: "menu: Editor | Reports\n#function\n",
     },
@@ -1256,7 +1252,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [700_000, 700_000, 115_000],
+        ceilings: [700_000, 700_000, 116_000],
         removed: [0, 0, 20],
         printed: "menu: Editor | Reports\n#function\n",
     },
