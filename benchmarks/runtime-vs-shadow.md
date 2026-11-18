@@ -3716,8 +3716,13 @@ declares `IMeta`, and `conj` and `assoc` of a vector read its metadata with
 megamorphic read of the absent `-meta` slot) and `ownDeclared` (a
 `reifyCells` WeakMap probe) to answer nothing, where the kind test had sent
 it to `keyMarker`'s one read. `ownMethod` tests the kind before the mask bit
-again; the answers are the same both ways. docs/value-layout.md, "What
-light-cljs-1056 found".
+again, and a program that writes a core protocol method's member by name,
+the one way to put its method in a runtime class's slot without
+`extend-type` or `specify!`, keeps `extend-type`'s lookup at `:advanced`
+(the Sol review found that the kind test alone made `meta` of such a vector
+answer differently at `:advanced`, as before light-cljs-1046). The gate
+writes no member by name, so its output is the same with or without that
+second part. docs/value-layout.md, "What light-cljs-1056 found".
 
 Evidence (readable builds, `bb benchmarks/core-ops/run.bb --pseudo-names
 vec-conj-64`): `keyMethod`, `keySlot` and `ownDeclared` took 3.6%, 4.0% and

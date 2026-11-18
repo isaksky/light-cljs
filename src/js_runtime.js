@@ -10170,11 +10170,14 @@
     // section 3) declare what it implements natively, which the operation
     // answers: its slot, which `keyMethod` does not take for a program's
     // method, or none. So only a marker declares a method for its value here
-    // (light-cljs-1028). Testing the kind costs one read; taking the mask bit
-    // instead (light-cljs-1046) sent every `meta` of a vector, which `conj`
-    // and `assoc` read, through `keyMethod` and `ownDeclared` to answer
-    // nothing (light-cljs-1056). A program type's kind (64 to 66, `kinds`)
-    // is no runtime class's: its mask bits declare its methods.
+    // (light-cljs-1028): without `extend-type` or `specify!`, no program
+    // method is in a runtime class's slot, and a program that writes a core
+    // protocol's member by name keeps `extendedMethod` instead
+    // (`ProgramFacts::core_method_write`). Taking the mask bit (light-cljs-1046)
+    // sent every `meta` of a vector, which `conj` and `assoc` read, through
+    // `keyMethod` and `ownDeclared` to answer nothing (light-cljs-1056). A
+    // program type's kind (64 to 66, `kinds`) is no runtime class's: its
+    // mask bits declare its methods.
     const declared = key.bit !== 0 && value != null && (value[key.mask] & key.bit) !== 0 && !(value.cljs$lang$kind$$LKEY < 64) || keyMarker(value, key);
     return declared || meta ? ownDeclared(value, key, arity, keyMethod(value, key, arity)) : undefined;
   }

@@ -437,6 +437,9 @@ pub struct ProgramFacts {
     /// The program writes a core protocol's keyed member by name, or raw
     /// text spells one.
     core_slots_by_name: bool,
+    /// The first expression that writes a core protocol method's keyed
+    /// member by name, or raw text that spells one.
+    core_method_write: Option<ExprId>,
     /// Some program type implements `IEquiv`.
     equiv: bool,
     /// Some program type implements a core protocol whose methods receive the
@@ -541,6 +544,11 @@ impl ProgramFacts {
         // analyzer keys alike; `set!`, `binding` and a raw text's hole may
         // assign it.
         let mut core_slots_by_name = false;
+        // ... and the first such write of a protocol method's member (a name
+        // holding `$arity$`), which can give a runtime class's value a method
+        // of its own (`core_method_write`); a marker written by name declares
+        // nothing, as it is no protocol sentinel.
+        let mut core_method_write = None;
         let core_member =
             |name: &str| name.starts_with("cljs$core$") && crate::analyzer::keyed_name(name);
         let core_slot_target = |target: &ExprId| match &program.exprs[target.0].kind {
@@ -551,7 +559,36 @@ impl ProgramFacts {
                 .any(|component| core_member(component)),
             _ => false,
         };
+        let core_method_target = |target: &ExprId| match &program.exprs[target.0].kind {
+            ExprKind::Property { property, .. } => {
+                core_member(property) && property.contains("$arity$")
+            }
+            ExprKind::JsGlobal(global) => program.js_globals[global.0]
+                .path
+                .iter()
+                .any(|component| core_member(component) && component.contains("$arity$")),
+            _ => false,
+        };
+        let spelled = |segment: &String, method: bool| {
+            segment.contains("cljs$core$")
+                && segment.contains(crate::rta::RUNTIME_KEY)
+                && (!method || segment.contains("$arity$"))
+        };
         for (index, expr) in program.exprs.iter().enumerate() {
+            let method_write = match &expr.kind {
+                ExprKind::SetGlobal { target, .. } => core_method_target(target),
+                ExprKind::Binding { bindings, .. } => bindings
+                    .iter()
+                    .any(|(target, _)| core_method_target(target)),
+                ExprKind::JsTemplate { segments, args } => {
+                    args.iter().any(core_method_target)
+                        || segments.iter().any(|segment| spelled(segment, true))
+                }
+                _ => false,
+            };
+            if method_write && core_method_write.is_none() {
+                core_method_write = Some(ExprId(index));
+            }
             match &expr.kind {
                 ExprKind::SetGlobal { target, .. } => {
                     core_slots_by_name |= core_slot_target(target);
@@ -565,10 +602,7 @@ impl ProgramFacts {
                 // Raw text may assign its holes.
                 ExprKind::JsTemplate { segments, args } => {
                     core_slots_by_name |= args.iter().any(core_slot_target)
-                        || segments.iter().any(|segment| {
-                            segment.contains("cljs$core$")
-                                && segment.contains(crate::rta::RUNTIME_KEY)
-                        });
+                        || segments.iter().any(|segment| spelled(segment, false));
                     args.iter().for_each(&mut assign)
                 }
                 ExprKind::ExtendType {
@@ -769,6 +803,7 @@ impl ProgramFacts {
             replaced,
             core_protocols,
             core_slots_by_name,
+            core_method_write,
             equiv,
             receives_functions,
             globals,
@@ -813,6 +848,16 @@ impl ProgramFacts {
     /// first, without reading the value's kind (light-cljs-1016).
     pub fn core_slots_runtime_only(&self) -> bool {
         self.core_protocols && !self.core_slots_by_name
+    }
+
+    /// The first expression that writes a core protocol method's keyed
+    /// member by name (`(set! (.-cljs$core$IMeta$_meta$arity$1 v) f)`), or
+    /// raw text that spells one. Such a write can give a runtime class's
+    /// value a method of its own without `extend-type` or `specify!`, which
+    /// only the lookup that `extend-type` installs reads (`extendedMethod`),
+    /// so an `Advanced` slice keeps `extendType` for it (light-cljs-1056).
+    pub fn core_method_write(&self) -> Option<ExprId> {
+        self.core_method_write
     }
 
     /// Whether a `deftype`, `defrecord`, `reify` or `extend-type` of the program

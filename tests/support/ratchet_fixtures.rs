@@ -728,12 +728,14 @@
 //! above.
 //!
 //! `ownMethod` tests a runtime class's kind before its mask bit again
-//! (light-cljs-1056, 2026-11-17): the readable runtime grows 344 bytes
-//! (`console-log-sum` 679,823 to 680,167), mostly the comment. Advanced,
-//! against master `1df0a071`: 20 bytes more where a program keeps
+//! (light-cljs-1056, 2026-11-17), and a program that writes a core
+//! protocol method's member by name keeps `extendType`: the readable runtime
+//! grows 536 bytes (`console-log-sum` 679,823 to 680,359), the comments.
+//! Advanced, against master `1df0a071`: 20 bytes more where a program keeps
 //! `ownMethod` (`eight-records` 49,829 to 49,849, `closed-params` 18,779 to
 //! 18,799, `callbacks` 61,606 to 61,626, `protocol-params` 67,629 to
-//! 67,649); every other fixture is unchanged. No ceiling moves.
+//! 67,649); every other fixture is unchanged (none writes a core member by
+//! name). No ceiling moves.
 
 pub struct Fixture {
     pub name: &'static str,

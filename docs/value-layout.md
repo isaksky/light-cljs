@@ -1236,9 +1236,17 @@ its mask bit again.
   inlining, and no unit on the operations' own paths had changed.
 - **The fix.** `ownMethod` skips a runtime class's mask bits again (`!(kind
   < 64)`), so only a marker declares a program's method for its value, as
-  the 1028 handoff above has it. The answers do not change: without
-  `extend-type` or `specify!`, which install `extendedMethod`, no program
-  method reaches a runtime class's slot, and the runtime's own
+  the 1028 handoff above has it. Without `extend-type` or `specify!`, which
+  install `extendedMethod`, only a member the program writes by name
+  (`(set! (.-cljs$core$IMeta$_meta$arity$1 v) f)`, or raw text spelling
+  one) puts a program's method in a runtime class's slot, and such a
+  program now keeps `extendedMethod` at `:advanced`: the emitter roots
+  `extendType` at the first such write (`ProgramFacts::core_method_write`,
+  a method's name, holding `$arity$`; a marker written by name declares
+  nothing). So `meta` of that vector answers the written method at every
+  level, as light-cljs-1046 had made it, where `685f86dd`'s `:advanced`
+  answered the vector's own metadata
+  (`runtime_meta_slot_overrides_without_markers`). The runtime's own
   `installMethods` types keep their markers. `contains.own` keeps
   light-cljs-1046's reading of the mask bits, which finds the vectors'
   `-contains-key?` slot.

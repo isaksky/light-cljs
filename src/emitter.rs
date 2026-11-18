@@ -2623,6 +2623,19 @@ impl<'a> Emitter<'a> {
                 NameUse::Keep,
             );
         }
+        // A core protocol's member the program writes by name may give a
+        // runtime class's value a method that only `extend-type`'s lookup
+        // reads (`extendedMethod`), as at every other level (light-cljs-1056).
+        if let Some(site) = self
+            .inference
+            .and_then(|inference| inference.facts().core_method_write())
+        {
+            self.runtime_root(
+                RuntimeName::direct("extendType", None),
+                Some(site),
+                NameUse::Keep,
+            );
+        }
         // Multimethods keep their tables in their atoms where the program
         // could see them or fill one past eight methods.
         if let Some(site) = application.multi_tables {

@@ -705,6 +705,29 @@ fn program_types_keep_the_dispatch_of_interop() {
     );
 }
 
+/// light-cljs-1056: with a program type but no `extend-type` or `specify!`,
+/// the lookup (`ownMethod`) takes a runtime class's mask bits as native, so
+/// `meta` of a vector, which its `conj` and `assoc` read, asks no slot. A
+/// program that writes a core protocol's member by name onto a vector keeps
+/// the lookup `extend-type` installs, which reads that method, as every
+/// level answers it.
+#[test]
+fn runtime_meta_slot_overrides_without_markers() {
+    let written = "(deftype T [] ICounted (-count [_] 7))
+         (let [v [1]]
+           (set! (.-cljs$core$IMeta$_meta$arity$1 v) (fn [_] :custom))
+           (pr-str [(count (T.)) (meta v) (meta (conj v 2)) (meta (assoc v 0 5))]))";
+    every_level(written, "[7 :custom :custom :custom]");
+    assert!(units(written).contains(&"protocolHooks.programMethod"));
+    let plain = "(deftype T [] ICounted (-count [_] 7))
+         (let [v (with-meta [1] {:m 1})]
+           (pr-str [(count (T.)) (meta v) (meta (conj v 2)) (meta (assoc v 0 5))]))";
+    every_level(plain, "[7 {:m 1} {:m 1} {:m 1}]");
+    let units = units(plain);
+    assert!(units.contains(&"protocolHooks.ownMethod"), "{units:?}");
+    assert!(!units.contains(&"protocolHooks.programMethod"), "{units:?}");
+}
+
 /// light-cljs-246: a program type implementing `ISequential`, `IMap` or
 /// `ISet` compares with the runtime's collections through the generic
 /// operations: `ISequential` keeps the protocol's unit, so structural
