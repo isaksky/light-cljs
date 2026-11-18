@@ -3316,7 +3316,8 @@ fn transient_slots_keep_the_answers_of_extended_and_specified_transients() {
     };
     let no_conj = "E:No protocol method ITransientCollection/-conj! defined for this value";
     let no_assoc = "E:No protocol method ITransientAssociative/-assoc! defined for this value";
-    let no_persistent = "E:No protocol method ITransientCollection/-persistent! defined for this value";
+    let no_persistent =
+        "E:No protocol method ITransientCollection/-persistent! defined for this value";
     let vectors = "[0 1 2] [1 2 3] [2 3] [2 3 4] [1 3] [1 2] [1 2] [1 2 3] [:x 2 :y] [] [] E:conj! after persistent! E:persistent! called twice E:TransientVector's key for assoc! must be a number. E:Index out of bounds [1 2] [:sconj 1]";
     let sets = "#{0 1 2} #{9 :a :b} #{2 3} #{1 2} E:conj! after persistent!";
     let maps = "{1 2, 3 4} {:z 0, :a 1, :b 2} 20 {:a 1} {:a 1, :b 2, :c 3} {:a 1, :b 2} [20 :x] 12 {:a 1, :b nil} E:assoc! after persistent! E:conj! after persistent! E:persistent! called twice {1 2} [[:sassoc 1 2] [:sassoc 3 4]]";
@@ -3414,6 +3415,20 @@ fn transient_slots_keep_the_answers_of_extended_and_specified_transients() {
             &expected,
         );
     }
+}
+
+/// A map transient's `conj!` of a map entry calls the entry's `-key` before
+/// it reads its `-val` (light-cljs-1065, the Sol review), as `keyProtocol`'s
+/// call came before `valProtocol`'s lookup: a `-key` that `specify!`s the
+/// entry another `-val` has that one called, at every level, as on master
+/// `a397e0c9`.
+#[test]
+fn transient_map_conj_observes_value_method_changes_from_key() {
+    every_level(
+        "(let [e (specify! (first {:a 1}) IMapEntry (-key [e] (specify! e IMapEntry (-val [_] 99)) :a) (-val [_] 1))]
+           (pr-str [(into {} [e]) (persistent! (conj! (transient {}) e))]))",
+        r#"[{:a 99} {:a 99}]"#,
+    );
 }
 
 /// light-cljs-998: once a program keeps `extend-type` or `specify!`, the

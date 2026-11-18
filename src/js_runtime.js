@@ -4292,10 +4292,14 @@
   // items (`entryKey`, `entryVal`), as a key seq reads them
   // (light-cljs-1064), with no lookup; any other entry, or where a compiler
   // session demands declarations (`slotFirst`), through the dispatchers.
+  // The `-val` slot is read after `-key` ran, as `valProtocol`'s lookup
+  // followed `keyProtocol`'s call, so a `-key` that gives the entry another
+  // `-val` (`specify!`) has it called.
   function assocEntry(assoc, value, entry) {
     if (slotFirst.on && isEntryCell(entry)) {
-      const key = entry.cljs$core$IMapEntry$_key$arity$1$LKEY, val = entry.cljs$core$IMapEntry$_val$arity$1$LKEY;
-      return assoc(value, key ? key.call(entry, entry) : entryKey(entry), val ? val.call(entry, entry) : entryVal(entry));
+      const kf = entry.cljs$core$IMapEntry$_key$arity$1$LKEY, k = kf ? kf.call(entry, entry) : entryKey(entry);
+      const vf = entry.cljs$core$IMapEntry$_val$arity$1$LKEY;
+      return assoc(value, k, vf ? vf.call(entry, entry) : entryVal(entry));
     }
     return assoc(value, keyProtocol(entry), valProtocol(entry));
   }

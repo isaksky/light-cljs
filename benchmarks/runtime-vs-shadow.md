@@ -4544,7 +4544,8 @@ operations of `into` without a transducer, `into-vec-keys-small` and
 
 Binaries in research/shadow-credibility/bin: before `light-cljs-a397e0c9`
 (master), after `light-cljs-08a43178` (this pellet on it: a work-in-progress
-commit whose compiler sources the landed commit keeps), both V8 builds.
+commit whose compiler sources the landed commit keeps), both V8 builds. The
+runs' records are in research/output-speed/transient-slots-1065.
 Unreserved: peer workers built and tested throughout.
 
 **Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, every operation, the
@@ -4629,5 +4630,13 @@ ports from `shadow-port-tool-983`), the whole bundle with React, gzip -9:
   (`--size-report`).
 - The size ratchet (tests/support/ratchet_fixtures.rs, noted there): 507
   bytes more at advanced where a program conjoins onto a transient vector
-  (`mapv-count`), 1,027 for the features example; the readable runtime
-  5,262 bytes more, mostly comments.
+  (`mapv-count`), 1,031 for the features example; the readable runtime
+  5,465 bytes more, mostly comments.
+
+**After the review** (Sol): a map transient's `conj!` of a map entry read
+the entry's `-val` slot before it called `-key`, where `valProtocol`'s
+lookup followed `keyProtocol`'s call, so a `-key` that `specify!`d the
+entry a new `-val` had the old one called (`{:a 1}` where master gives
+`{:a 99}`). It now reads `-val` after `-key` returns
+(`transient_map_conj_observes_value_method_changes_from_key`): 4 bytes more
+at advanced, no change to any measured path's work.
