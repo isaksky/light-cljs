@@ -4325,3 +4325,31 @@ Steady state, from 1 and 40 iterations: light-cljs 44.2 to 43.6 ms per iteration
 - **The re-frame apps** (benchmarks/re-frame-vs-shadow.md), whole bundles with React after gzip -9: TodoMVC -337 bytes (145,681 to 145,344 on `dbf91703`); simple and flow unchanged.
 - **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): no fixture extended a runtime class, so none moves; the new `extended-classes`, cljs.spec's `specize*` pattern, is 72,416 bytes against master's 109,065.
 - **workload 200k:** unchanged.
+
+## 2026-11-18: another copy's ex-info by its keyed kind (light-cljs-1044)
+
+`ExceptionInfo`'s prototype holds kind 48, and `ex-data`, `ex-cause`, `Throwable->map` and the ex-info printer test it where they tested `instanceof`, so a copy of a build reads an ex-info the other copy threw as its own (docs/value-layout.md, "Two runtimes on one page"). `instance?` and `catch` of `ExceptionInfo` stay `instanceof`.
+
+**Binaries:** master `light-cljs-a123bd44` and `light-cljs-10cb454b`, this pellet on it, both V8 builds (research/shadow-credibility/bin; the runs below are in research/output-speed/exinfo-kind-1044).
+
+**The gate:** its source compiles byte-identical with both binaries (SHA-256 `32b50411...`, 162,634 bytes); it makes no ex-info, so no operation of it can move and none was rerun.
+
+**Workload 200k** (`compare.bb PROJECT --runs 5 --runtime-only --runtime 1,10,40`, the project's light-cljs output rebuilt with each binary just before its run, two before and after pairs in turn; unreserved, load falling from 22.4 to 7.5 across the four). Its output grows 29 bytes, 3,438,039 to 3,438,068: the kind assignment, `isExceptionInfo`, and renamed locals; nothing in its loop makes an ex-info. Steady state from the median wall times at 1 and 40 iterations:
+
+| run | load before | light-cljs | shadow-cljs | light/shadow |
+| --- | --- | ---: | ---: | ---: |
+| before 1 | 17.0-22.4 | 53.0 ms | 27.7 ms | 1.91 |
+| after 1 | 10.9-14.5 | 44.8 ms | 25.6 ms | 1.75 |
+| before 2 | 8.2-10.2 | 42.5 ms | 24.4 ms | 1.74 |
+| after 2 | 6.5-7.5 | 43.9 ms | 26.1 ms | 1.68 |
+
+Light/shadow in each run, which share its load, is 1.74-1.91 before and 1.68-1.75 after: no loss beyond the load's noise.
+
+**Size** (`bb benchmarks/re-frame.bb size todomvc simple --light-only`, each binary):
+
+| app | output as written, gzip -9 | whole bundle with React, raw | whole bundle, gzip -9 |
+| --- | ---: | ---: | ---: |
+| TodoMVC | 83,555 to 83,582 (+27) | 427,133 to 427,161 (+28) | 130,636 to 130,597 (-39) |
+| simple | 67,357 to 67,372 (+15) | 371,359 to 371,387 (+28) | 113,760 to 113,824 (+64, +0.06%) |
+
+- **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): advanced unchanged in every fixture, none of which makes an ex-info; the readable runtime grows 424 bytes, past fifteen fixtures' none or prepare ceilings, which move to the next 1,000.

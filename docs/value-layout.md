@@ -1874,7 +1874,12 @@ runtime unit as written, short names and the table included
   and both copies install the same code. A direct field read of another
   value is guarded by `instanceof` of this copy's class, never by the kind
   alone, so a copy only reaches the other's fields through the other's
-  slots.
+  slots. An ex-info is the exception (light-cljs-1044): its `message`,
+  `data` and `cause` are upstream's public fields, unkeyed, which `ex-data`,
+  `ex-cause` and `Throwable->map` read once its keyed kind (48,
+  `isExceptionInfo`) tells an ex-info, and a copy prints the other's by its
+  `toString`, the other's printer. `instance?` and `catch` of `ExceptionInfo`
+  stay `instanceof`, false for the other copy's.
 - **Compile time**: each compile-time runtime has a fixed key and a per-load
   brand (section 4); it never shares a realm with output.
 
@@ -1888,8 +1893,8 @@ into one page, in Node
 and in headless Chromium (`--chromium NPM_TOOLS`). Each runtime reports how
 it reads every runtime's values, one of each kind (vector, subvector, array
 and hash map, set, list, lazy seq, range, keyword, symbol, map entry, UUID,
-record, `deftype`, atom, `reify` of a program protocol, `ex-info`), and its
-host-value answers. What two runtimes on one page share and do not share:
+record, `deftype`, atom, `reify` of a program protocol, `ex-info` with an
+`ex-info` cause), and its host-value answers. What two runtimes on one page share and do not share:
 
 - **Different builds never recognise each other's values**: two apps, one
   app and the same program with another `:runtime-key`, with another
@@ -1901,7 +1906,9 @@ host-value answers. What two runtimes on one page share and do not share:
   and it prints as `#object[...]`. What a host object does answer, it does:
   the other's seqs are host iterables (`Symbol.iterator` is not keyed), so
   `first`, `vec` and `reduce` iterate them as any iterable, and `str` of
-  the other's UUID is its text (`toString`).
+  the other's UUID is its text (`toString`). The other's ex-info is a host
+  error: `ex-message` reads its message, `ex-data` and `ex-cause` answer
+  nil, and `Throwable->map` gives it the type `js/Error`.
 - **Host constructors**: an `extend-type js/Date` with a core protocol in
   one is invisible to the other (`count` of a date throws there,
   `satisfies?` is false), and two builds extending `js/Date` with the same
@@ -1935,10 +1942,13 @@ host-value answers. What two runtimes on one page share and do not share:
   `Symbol.for("light-cljs.protocol" + key)`). Before light-cljs-1018 it
   was one per load, so the second copy's `extend-type js/Date` made the
   first copy's `satisfies?` false, and neither copy's `satisfies?` of a
-  program protocol held for the other's `reify`. Not yet shared:
-  `ExceptionInfo` is still recognised by `instanceof`, so `ex-data` of the
-  other copy's ex-info is nil and it prints as a host error
-  (light-cljs-1044).
+  program protocol held for the other's `reify`. An ex-info of the other
+  copy is no `instance?` of this copy's `ExceptionInfo`, but `ex-message`,
+  `ex-data`, `ex-cause` (to the cause, the other copy's ex-info too),
+  `Throwable->map` (type `cljs.core/ExceptionInfo` down the cause chain) and
+  printing answer for it as for its own: they tell an ex-info by its keyed
+  kind. Before light-cljs-1044 they tested `instanceof`, so `ex-data` of the
+  other copy's ex-info was nil and it printed as a host error.
 - **A dev build next to a release build** works both ways round, and a dev
   unit evaluated again (a hot reload) with a release build on the page
   registers in the dev runtime, whose other namespaces keep their state.

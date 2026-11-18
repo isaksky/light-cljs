@@ -42,7 +42,7 @@
        :box (Box. 7)
        :atom (atom 5)
        :greeter (reify Greet (greet [_] "hi"))
-       :exInfo (ex-info "boom" {:a 1})
+       :exInfo (ex-info "boom" {:a 1} (ex-info "root" {:b 2}))
        :holder (holder)})
 
 (defn- sum-to-2
@@ -73,7 +73,8 @@
    ["box" #(satisfies? ICounted %) count nil]
    ["atom" #(satisfies? IDeref %) deref nil]
    ["greeter" #(satisfies? Greet %) greet nil]
-   ["exInfo" #(instance? ExceptionInfo %) ex-data nil]
+   ["exInfo" #(instance? ExceptionInfo %)
+    #(vector (ex-message %) (ex-data %) (ex-data (ex-cause %)) (mapv :type (:via (Throwable->map %)))) nil]
    ;; A map of this runtime keyed by the other's vector, looked up with its
    ;; own: the host object's hash must be the same in both.
    ["holder" vector? #(get (hash-map % :found) (holder)) (holder)]])

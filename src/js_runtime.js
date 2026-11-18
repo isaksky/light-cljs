@@ -108,7 +108,8 @@
   // declare its methods.
   // Light-cljs-1038's are 44 `PersistentTreeSet` (`treeSetOf`), 45 `Var`
   // (`vars`), 46 the functions with metadata (`metaFunctions`) and 47
-  // `StringBufferWriter` (`stringBufferWriters`).
+  // `StringBufferWriter` (`stringBufferWriters`); 48 is `ExceptionInfo`
+  // (`isExceptionInfo`).
   const kinds = Object.freeze({vector: 1, subvec: 2, entry: 3, transientVector: 4});
   //@unit unkeyedJSON
   // The JSON of a value of the class bases that have a `toJSON`: its own
@@ -5380,8 +5381,8 @@
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(contains);
   //@unit reduce.slots effect: IndexedSeqValue, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch,
-  //@ reduce, slotFirst
+  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch, reduce,
+  //@ slotFirst
   // `reduce` of a value with a `-reduce` slot (light-cljs-1055) calls it
   // before `reduce.protocol`'s lookup, which finds a program's method there
   // too. Each arity's call is a function of its own, so that the wrapper
@@ -11618,25 +11619,31 @@
   }
   // The printer installs `toString`.
   Object.setPrototypeOf(ExceptionInfo.prototype, Error.prototype);
+  ExceptionInfo.prototype.cljs$lang$kind$$LKEY = 48;
+  //@unit isExceptionInfo
+  // Whether a value is an ex-info (kind 48, `kinds`) of this runtime or of
+  // another copy of this build (docs/value-layout.md, section 1), whose
+  // fields are upstream's, unkeyed. `instance?` stays `instanceof`.
+  const isExceptionInfo = value => value != null && value.cljs$lang$kind$$LKEY === 48;
   //@unit exInfo requires: ExceptionInfo, invalidArity
   function exInfo(message, data, cause) {
     if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length);
     return new ExceptionInfo(message, data, arguments.length === 2 ? null : cause);
   }
-  //@unit exData requires: ExceptionInfo
-  const exData = value => value instanceof ExceptionInfo ? value.data : null;
+  //@unit exData requires: isExceptionInfo
+  const exData = value => isExceptionInfo(value) ? value.data : null;
   //@unit exMessage
   const exMessage = value => value instanceof Error ? value.message : null;
-  //@unit exCause requires: ExceptionInfo
-  const exCause = value => value instanceof ExceptionInfo ? value.cause : null;
-  //@unit throwableToMap requires: exCause, ExceptionInfo, exData, exMessage, get, keyword,
+  //@unit exCause requires: isExceptionInfo
+  const exCause = value => isExceptionInfo(value) ? value.cause : null;
+  //@unit throwableToMap requires: exCause, exData, exMessage, get, isExceptionInfo, keyword,
   //@ mapFromArray, symbol, truth, vectorFromArray
   function throwableToMap(error) {
     const k = name => keyword(null, name), via = [];
     let root = null;
     for (let current = error; truth(current); current = exCause(current)) {
       root = current;
-      const pairs = [k("type"), current instanceof ExceptionInfo ? symbol("cljs.core", "ExceptionInfo")
+      const pairs = [k("type"), isExceptionInfo(current) ? symbol("cljs.core", "ExceptionInfo")
         : current instanceof Error ? symbol("js", current.name) : null];
       const message = exMessage(current), data = exData(current);
       if (truth(message)) pairs.push(k("message"), message);
@@ -11894,8 +11901,9 @@
   // printer passes other values on, to `printHost` last.
   const printKind = (previous = printHost, test, print) => (value, writer, options) => (test(value) ? print : previous)(value, writer, options);
   //@unit ExceptionInfo.print effect: ExceptionInfo when: printWriterImpl requires: ExceptionInfo,
-  //@ kindHooks, print, printKind, truth, write
-  kindHooks.print = printKind(kindHooks.print, value => value instanceof ExceptionInfo, (value, writer) => write(writer, value.toString()));
+  //@ isExceptionInfo, kindHooks, print, printKind, truth, write
+  // Another copy's ex-info prints by its own `toString`.
+  kindHooks.print = printKind(kindHooks.print, isExceptionInfo, (value, writer) => write(writer, value.toString()));
   ExceptionInfo.prototype.toString = function () {
     return "#error {:message " + print(this.message, true)
       + (truth(this.data) ? ", :data " + print(this.data, true) : "")

@@ -39,22 +39,26 @@ const recognised = (box = 7) =>
   'keyword:true,"k",true,same symbol:true,"sym",true,same ' +
   'entry:true,:a,true,same uuid:true,"00000000-0000-0000-0000-000000000001",true,same ' +
   `record:true,1,true,same box:true,${box},-,same atom:true,5,-,same greeter:true,"hi",-,same ` +
-  "exInfo:true,{:a 1},-,same holder:true,:found,true,same";
+  'exInfo:true,["boom" {:a 1} {:b 2} [cljs.core/ExceptionInfo cljs.core/ExceptionInfo]],-,same holder:true,:found,true,same';
 
 // What a runtime of the same build loaded again answers about them: every
 // collection, keyword, symbol and uuid as its own, through the other copy's
 // methods; the program's own record and Box types and the ExceptionInfo
 // class are the other copy's classes, other types than its own (as a type
-// defined again by a reload is).
+// defined again by a reload is). An ex-info of the other copy is not
+// `instance?` of this copy's ExceptionInfo, but `ex-message`, `ex-data`,
+// `ex-cause`, `Throwable->map` and printing answer for it as for its own
+// (light-cljs-1044): it is recognised by its keyed kind.
 const copy = (box = 7) =>
   recognised(box)
     .replace("record:true,1,true,same", "record:true,1,false,same")
-    .replace("exInfo:true,{:a 1},-,same", "exInfo:false,nil,-,object");
+    .replace("exInfo:true,", "exInfo:false,");
 
 // What a runtime answers about another build's values: host objects, none
 // of its kinds, and not equal to its own. A seq is a host iterable
 // (`Symbol.iterator` is not keyed), which `first`, `vec` and `reduce`
-// iterate as they iterate any host iterable.
+// iterate as they iterate any host iterable. An ex-info is a host error,
+// whose message `ex-message` reads.
 const foreign =
   "vector:false,throws,false,object subvec:false,throws,false,object " +
   "map:false,nil,false,object hashMap:false,throws,false,object " +
@@ -63,7 +67,7 @@ const foreign =
   "keyword:false,throws,false,object symbol:false,throws,false,object " +
   'entry:false,throws,false,object uuid:false,"00000000-0000-0000-0000-000000000001",false,object ' +
   "record:false,nil,false,object box:false,throws,-,same " +
-  "atom:false,throws,-,object greeter:false,throws,-,same exInfo:false,nil,-,object " +
+  'atom:false,throws,-,object greeter:false,throws,-,same exInfo:false,["boom" nil nil [js/Error]],-,object ' +
   "holder:false,nil,false,object";
 
 const host = (greet, { count = "42", loads = 1, box = 7 } = {}) =>
