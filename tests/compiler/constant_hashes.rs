@@ -250,31 +250,55 @@ fn edge_case_constants_embed_the_runtime_hash() {
     assert!(checked > 100, "{checked}");
 }
 
-/// A keyword constant at `Advanced` carries its hash, which the compiler
-/// computes (`value_hash::keyword`, light-cljs-1011): the hash the runtime
-/// computes for a keyword it builds with the same namespace and name, and
-/// what upstream's `_hash` field reads.
+/// A keyword constant carries no hash, at `Advanced` either (light-cljs-1050,
+/// which undid light-cljs-1011's): its first `hash` computes it and caches it
+/// in the keyword's field, as upstream's `-hash` does. The hash is the one
+/// the runtime gives a keyword it builds with the same namespace and name,
+/// and the one the compiler's port computes (`value_hash::keyword`), so
+/// hash maps and sets of keywords keep their order.
 #[test]
-fn keyword_constants_carry_the_runtime_hash() {
-    let keywords = r#":a :a/b :ns.x/name-y :é/λ :日本/語 :😀 :x/😀y :- :a.b.c/d"#;
-    // `_hash` is read before the first `hash`: the constant's own at
-    // `Advanced`, none below, where each site builds its keyword.
+fn keyword_constants_are_hashed_on_first_use() {
+    let keywords = [
+        (None, "a"),
+        (Some("a"), "b"),
+        (Some("ns.x"), "name-y"),
+        (Some("é"), "λ"),
+        (Some("日本"), "語"),
+        (None, "😀"),
+        (Some("x"), "😀y"),
+        (None, "-"),
+        (Some("a.b.c"), "d"),
+    ];
+    let literals = keywords
+        .iter()
+        .map(|(namespace, name)| match namespace {
+            Some(namespace) => format!(":{namespace}/{name}"),
+            None => format!(":{name}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    // `_hash` is read before the first `hash`, then after it.
     let source = format!(
-        "(pr-str (map (fn [k] (let [h (.-_hash k)]
-                               [(= (hash k) (hash (keyword (namespace k) (name k))))
-                                (if (nil? h) :computed (= h (hash k)))]))
-                      [{keywords}]))"
+        "(pr-str (map (fn [k] (let [before (.-_hash k) h (hash k)]
+                               [before (= h (hash (keyword (namespace k) (name k))))
+                                (= h (.-_hash k)) h]))
+                      [{literals}]))"
     );
+    let expected = keywords
+        .iter()
+        .map(|(namespace, name)| {
+            let namespace: Option<Vec<u16>> = namespace.map(|n| n.encode_utf16().collect());
+            let name: Vec<u16> = name.encode_utf16().collect();
+            let hash = light_cljs::value_hash::keyword(namespace.as_deref(), &name);
+            format!("[nil true true {hash}]")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     let program = program(&source);
     for level in OptimizationLevel::ALL {
-        let cached = if level == OptimizationLevel::Advanced {
-            "true"
-        } else {
-            ":computed"
-        };
         assert_eq!(
             execute(&format!("console.log({});", emit(&program, level))),
-            format!("({})\n", vec![format!("[true {cached}]"); 9].join(" ")),
+            format!("({expected})\n"),
             "at {level}"
         );
     }
@@ -283,11 +307,16 @@ fn keyword_constants_carry_the_runtime_hash() {
         .lines()
         .filter(|line| line.contains("= rt$keyword("))
         .collect();
-    // The nine keywords and `:computed`.
-    assert_eq!(constants.len(), 10, "{constants:#?}");
+    // The nine keywords, each of a namespace (or null) and a name alone.
+    assert_eq!(constants.len(), 9, "{constants:#?}");
     for line in constants {
-        let hash = line.trim_end_matches(");").rsplit(", ").next().unwrap();
-        assert!(hash.parse::<i32>().is_ok(), "{line}");
+        let arguments = &line[line.find("rt$keyword(").unwrap()..];
+        let last = arguments
+            .trim_end_matches(");")
+            .rsplit(", ")
+            .next()
+            .unwrap();
+        assert!(last.starts_with('"') && last.ends_with('"'), "{line}");
     }
 }
 
@@ -587,12 +616,12 @@ fn hashes_are_embedded_only_at_advanced_with_intact_core_protocols() {
     assert_eq!(
         declarations,
         [
-            "  const k0 = rt$keyword(null, \"a\", -2123407586);",
+            "  const k0 = rt$keyword(null, \"a\");",
             "  const k1 = rt$hashed(rt$arraySetFromArray([2]), -2073014043);",
             "  const k2 = rt$hashed(rt$arrayMapFromArray([k0, k1]), -689938007);",
             "  const k3 = rt$hashed(rt$listFromArray([3]), -1025653387);",
             "  const k4 = rt$hashed(rt$vectorFromArray([4]), 385458271);",
-            "  const k5 = rt$keyword(null, \"m\", 1632677161);",
+            "  const k5 = rt$keyword(null, \"m\");",
             "  const k6 = rt$hashed(rt$arrayMapFromArray([k5, true]), 1882657429);",
             "  const k7 = rt$withMeta(k4, k6);",
             "  const k8 = rt$hashed(rt$vectorFromArray([1, k2, k3, k7]), 318764438);",

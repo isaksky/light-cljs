@@ -1617,18 +1617,18 @@ fn the_features_startup_declares_only_the_constants_it_reads() {
     };
     let output = prepare_application(&program, options).emit_chunks();
     let startup = &output.startup().source;
-    // A keyword constant carries its hash (light-cljs-1011).
+    // A keyword constant carries no hash (light-cljs-1050).
     for keyword in ["editor", "reports"] {
-        let declaration = format!("keyword(null, \"{keyword}\", ");
+        let declaration = format!("keyword(null, \"{keyword}\")");
         assert_eq!(files_containing(&output, &declaration), ["app.main.js"]);
     }
     for constant in [
-        "keyword(null, \"id\", ",
-        "keyword(null, \"title\", ",
-        "keyword(null, \"words\", ",
-        "keyword(null, \"tags\", ",
-        "keyword(null, \"draft\", ",
-        "keyword(null, \"guide\", ",
+        "keyword(null, \"id\")",
+        "keyword(null, \"title\")",
+        "keyword(null, \"words\")",
+        "keyword(null, \"tags\")",
+        "keyword(null, \"draft\")",
+        "keyword(null, \"guide\")",
         "\"Introduction\"",
         "\"Questions\"",
         "vectorFromArray([",

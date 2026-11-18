@@ -67,17 +67,17 @@ fn advanced_declares_each_distinct_literal_once_after_the_runtime() {
     assert_eq!(
         declarations(&advanced),
         [
-            r#"0 = rt$keyword(null, "alpha", -1574982441);"#,
-            r#"1 = rt$keyword(null, "beta", 455605892);"#,
-            r#"2 = rt$keyword(null, "other", 995793544);"#,
-            r#"3 = rt$keyword(null, "a", -2123407586);"#,
-            r#"4 = rt$keyword(null, "b", 1482224470);"#,
+            r#"0 = rt$keyword(null, "alpha");"#,
+            r#"1 = rt$keyword(null, "beta");"#,
+            r#"2 = rt$keyword(null, "other");"#,
+            r#"3 = rt$keyword(null, "a");"#,
+            r#"4 = rt$keyword(null, "b");"#,
             r#"5 = rt$symbol(null, "sym");"#,
-            r#"6 = rt$keyword("ns", "a", -2123428585);"#,
+            r#"6 = rt$keyword("ns", "a");"#,
             r#"7 = rt$hashed(rt$arrayMapFromArray([k3, 1, k4, 2, k5, 3, k6, 4]), -1458745150);"#,
-            r#"8 = rt$keyword(null, "c", -1763192079);"#,
+            r#"8 = rt$keyword(null, "c");"#,
             r#"9 = rt$symbol(null, "sym2");"#,
-            r#"10 = rt$keyword(null, "m", 1632677161);"#,
+            r#"10 = rt$keyword(null, "m");"#,
             r#"11 = rt$hashed(rt$arrayMapFromArray([k10, true]), 1882657429);"#,
             r#"12 = rt$withMeta(k9, k11);"#,
             r#"13 = rt$hashed(rt$listFromArray([k5, k3]), 7800204);"#,
@@ -99,7 +99,7 @@ fn advanced_declares_each_distinct_literal_once_after_the_runtime() {
     assert_eq!(advanced.matches("rt$listFromArray(").count(), 1);
     // Bundler output declares the same table.
     let esm = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_esm();
-    assert!(esm.contains("  const k10 = rt$keyword(null, \"m\", 1632677161);\n"));
+    assert!(esm.contains("  const k10 = rt$keyword(null, \"m\");\n"));
     // Below `Advanced` every site constructs its literal, as before.
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
         let js = emit(&program, level);

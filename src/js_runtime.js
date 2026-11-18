@@ -4489,21 +4489,21 @@
   }
 
   //@unit freshKeyword requires: makeKeyword
-  // Keywords built from data are fresh, as upstream.
-  function freshKeyword(namespace, name, hash = null) {
+  // Keywords built from data are fresh, as upstream, and hashed on first use.
+  function freshKeyword(namespace, name) {
     return makeKeyword(namespace, name,
-      namespace == null ? name : namespace + "/" + name, hash);
+      namespace == null ? name : namespace + "/" + name);
   }
 
   //@unit keyword requires: freshKeyword, internedKeywords
   // Literal construction receives separately owned namespace/name strings
-  // and is interned: one keyword per namespace and name. At `Advanced` a
-  // literal also gives its hash, which the compiler computed
-  // (`value_hash::keyword`), as upstream's constants carry it.
-  function keyword(namespace, name, hash = null) {
+  // and is interned: one keyword per namespace and name. A literal carries
+  // no hash, at `Advanced` either: its first `hash` computes it and caches
+  // it in its field, as upstream's `-hash` does (light-cljs-1050).
+  function keyword(namespace, name) {
     const key = namespace == null ? "/" + name : namespace.length + "/" + namespace + name;
     let value = internedKeywords.get(key);
-    if (!value) internedKeywords.set(key, value = freshKeyword(namespace, name, hash));
+    if (!value) internedKeywords.set(key, value = freshKeyword(namespace, name));
     return value;
   }
 
@@ -7053,8 +7053,8 @@
       return value.hash$LKEY;
     }
     if (vars.has(value)) return hash(vars.get(value).sym$LKEY);
-    // A keyword or a symbol caches its hash in its own field, which a
-    // keyword literal at `Advanced` holds from its construction.
+    // A keyword or a symbol caches its hash in its own field on its first
+    // `hash`, a literal's too (light-cljs-1050).
     const kw = keywordOf(value), named = kw ?? symbolOf(value);
     if (named !== undefined) {
       const known = named.hash$LKEY;

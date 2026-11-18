@@ -792,6 +792,24 @@
 //! The re-frame apps' bundles shrink 61 to 122 bytes after gzip
 //! (benchmarks/re-frame-vs-shadow.md). The advanced ceilings of
 //! `record-protocol` (6,000) and `pure-defs` (5,900) move to the next 100.
+//!
+//! Keyword constants without their hash (light-cljs-1050, 2026-11-17): at
+//! advanced a keyword constant is `rt$keyword(null, "a")` again, and its
+//! first `hash` computes its hash and caches it in its field, as below
+//! advanced; the runtime adds nothing to compute it. The readable runtime is
+//! 5 bytes smaller (`console-log-sum` 682,268 to 682,263). Advanced, against
+//! master `8c21c1ae` (the library's output): 9 to 161 bytes smaller where a
+//! program has keyword constants (`keyword-case` 5,373 to 5,320,
+//! `keyword-only` 5,283 to 5,253, `constant-lookups` 5,706 to 5,697,
+//! `keyword-lookups` 55,688 to 55,612, `event-maps` 53,343 to 53,259,
+//! `constant-keys` 76,142 to 76,067, `defmulti` 18,243 to 18,189,
+//! `features` 116,620 to 116,459, `features-direct` 116,230 to 116,069),
+//! and the features example's startup (9,079 to 9,039) and shared chunk
+//! (92,794 to 92,673). By the rounding rule (the next 100 above a size below
+//! 10,000, the next 1,000 above) only `constant-lookups`' ceiling moves
+//! down, to 5,700; the others already sit at their rounding. The features
+//! startup is 236 bytes over the application without its features, so its
+//! slack stays 300.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -934,7 +952,7 @@ pub const FIXTURES: &[Fixture] = &[
                        [x y] [3 4]]
                    (+ (* width height) (count title) x y (count (:modes CONFIG))
                       (allowed? (keyword (.toLowerCase \"FAST\")))))",
-        ceilings: [684_000, 684_000, 5_800],
+        ceilings: [684_000, 684_000, 5_700],
         removed: [0, 0, 1],
         printed: "307214\n",
     },

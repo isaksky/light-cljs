@@ -4124,3 +4124,44 @@ The rerun (`--ops sorted-map-assoc-100,vec-nth-1024,kw-hash100`, load 13.46 and 
 Steady state, from 1 and 40 iterations: light-cljs 46.2 to 45.0 ms per iteration (-3%, as shadow-cljs's own 26.0 to 24.7 moved with the load), light/shadow 1.78 and 1.82.
 
 **Size** (advanced): workload 200k 3,547,313 to 3,523,501 bytes raw (-23,812, -0.7%), mostly its method entries naming their slots in place of their keys. The re-frame apps' bundles shrink 61 to 122 bytes after gzip (benchmarks/re-frame-vs-shadow.md, "2026-11-18: a program protocol's slots named by the text"); the size ratchet (tests/support/ratchet_fixtures.rs, noted there) grows 53 to 128 bytes where a small program keeps the protocol machinery.
+
+## 2026-11-17: keyword constants without their hash (light-cljs-1050)
+
+At `:advanced` a keyword constant no longer carries the hash the compiler computed (light-cljs-1011): it is `p(null,"todos")` again, and its first `hash` computes the hash and caches it in the keyword's field, as below `:advanced` and as every keyword built from data already did. The runtime gains no code. The other option, hashing each constant as it is built at load, would add the hashing units to every program that builds a keyword and make startup hash every constant (1,214 in flow); with no cost measured below for hashing on first use, it was not built.
+
+**Binaries:**
+- `light-cljs-8c21c1ae`: master with light-cljs-1051.
+- `light-cljs-1050-827965c3`: this pellet on it.
+
+They were measured before light-cljs-1060 and light-cljs-1058 landed; this pellet changes none of their code.
+
+**Machine:** Node v26.12.1, 24 CPUs. Every run is unreserved: the load average was 10.1 to 25.0 for the gate, 6.3 to 13.4 for the workload runs and 11.7 to 12.9 for TodoMVC.
+
+**The gate** (`bb benchmarks/core-ops/run.bb`, all 64 operations, 5 runs per compiler, alternated, the after run with `--baseline` the before's):
+- **No operation is more than 2% slower.** `assoc-small-new` and `merge-small` read 2% slower; `vec-nth-1024` reads 5% faster, and `update-hash100`, `assoc-in-3` and `vec-literal-4` 3% faster.
+- **The keyword operations:** `kw-small` 8.02 to 8.02 ns, `get-small` 11.4 to 11.4, `get-small-miss` 15.8 to 15.9.
+- **Hash-map lookups of keyword keys:** `get-hash100` 12.7 to 12.7 ns, `kw-hash100` 14.4 to 14.5 (its literal `:k42` is now hashed on its first lookup, in the warm-up). After the first `hash` a constant's field holds its hash as before, so a lookup reads the same field.
+- **Raw results:** benchmarks/core-ops/out/{before,after}.md, which are not committed.
+
+**Workload 200k** (`compare.bb PROJECT --runs 10 --runtime-only --runtime 1,10,40`; the project's light-cljs output was rebuilt with each binary just before its run; shadow-cljs's output was the same for all). Two pairs, the second in the reverse order. Medians, with the range in brackets:
+
+| iterations | light before | light after | light before (2) | light after (2) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1, first output | 0.541 s (0.425-0.960) | 0.404 s (0.394-0.409) | 0.408 s (0.399-0.413) | 0.403 s (0.396-0.418) |
+| 10, wall | 0.905 s (0.899-0.915) | 0.920 s (0.901-0.970) | 0.884 s (0.866-0.918) | 0.913 s (0.894-0.940) |
+| 40, wall | 2.285 s (2.256-2.320) | 2.280 s (2.251-2.334) | 2.122 s (2.073-2.183) | 2.258 s (2.232-2.286) |
+| light/shadow steady state | 1.87 | 1.81 | 1.85 | 1.84 |
+
+- **Steady state:** compare.bb gave 44.5 and 43.8 ms per iteration before, 47.9 and 47.4 after, but shadow-cljs's unchanged output moved as much in the same runs (23.8 and 23.6 against 26.4 and 25.7), so light/shadow went from 1.87 and 1.85 to 1.81 and 1.84. The first pair's before median at one iteration also met a load spike (range to 0.960 s), which lowers its steady state.
+- **The two outputs alternated directly**, to settle it (`node run-light.mjs 42 N` of each output in turn, 12 rounds, one-iteration and 40-iteration runs, load 6.5 to 10.1): one iteration 0.441 s before and 0.442 after; 40 iterations 2.374 and 2.358; steady state 49.6 and 49.1 ms per iteration. Nothing is slower.
+- **Startup** (first output at one iteration): 0.408 to 0.403 s in the second pair, 0.441 to 0.442 alternated; no slower beyond the range.
+
+**TodoMVC** (`bb benchmarks/re-frame.bb runtime todomvc --runs 10`, headless Chromium, each binary's run alternated with shadow-cljs's), medians with ranges:
+- **Page load to interactive:** 48.1 ms (46.6-54.2) before, 47.3 (45.8-67.8) after; script time 25.95 to 25.20 ms.
+- **Adding 1,000 todos:** 3,411 ms (3,387-3,483) before, 3,452 (3,377-3,532) after; light/shadow 3.48 and 3.50, within the range.
+- **Toggle all, edit, clear completed:** 64.9, 63.1 and 26.7 ms before; 64.1, 61.6 and 25.6 after.
+
+**Advanced size:**
+- **workload 200k:** 3,529,299 to 3,460,653 bytes raw, and 883,581 to 853,838 after gzip -9 (-3.4%).
+- **The re-frame apps** (benchmarks/re-frame-vs-shadow.md), whole bundles with React after gzip -9: simple -1,067, TodoMVC -1,522 and flow -9,507 bytes.
+- **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): 9 to 161 bytes smaller where a program has keyword constants; `constant-lookups`' ceiling moves down to 5,700.

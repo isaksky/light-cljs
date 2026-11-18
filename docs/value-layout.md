@@ -149,8 +149,10 @@ What light-cljs-1011 landed: keywords and symbols.
   entry; it reads the key's own `IEquiv` slot once, and a program's
   implementation (`extend-type`, `specify!` of the key) takes `equalPair`
   per key as before. `hash` caches a keyword's or symbol's hash in its
-  field. At `Advanced` each keyword constant carries its hash, which the
-  compiler computes (`value_hash::keyword`): `rt$keyword(null, "a", h)`.
+  field. light-cljs-1011 had each keyword constant at `Advanced` carry its
+  hash, which the compiler computed (`value_hash::keyword`),
+  `rt$keyword(null, "a", h)`; light-cljs-1050 took it out, since its digits
+  barely compress (section 7, "Constants").
 - **Profiles.** The keyword and symbol constructors end with `/*@brand*/`,
   and the compiler form bridge and `inspect` test `stamped` first. The Pants
   profile swaps `keywordOf` and `symbolOf` for ones that read engine forms
@@ -2429,7 +2431,13 @@ makes setup cheap rather than lazy:
   keep, as today; a program without them keeps none, and what remains of
   `methodKey`'s resolution is done on the first extension, not at load.
 - **Constants.** A literal keyword is constructed once at load with its
-  namespace, name, `fqn` and its hash computed at compile time (light-cljs-1011);
+  namespace, name and `fqn`, and its first `hash` computes its hash and
+  caches it in its field, as upstream's `-hash` does. light-cljs-1011 wrote
+  the hash the compiler computed into each constant, so that startup did no
+  hashing; its digits barely compress (1.0, 1.5 and 9.2 KB of gzip in
+  re-frame simple, TodoMVC and flow, benchmarks/re-frame-vs-shadow.md), and
+  light-cljs-1050 measured no gate operation and no startup slower without
+  them, so a constant is `rt$keyword(null, "a")` again;
   literal collections are direct constructor calls (`new PersistentVector(...)`
   of the class), hoisted as today.
 - **Code V8 compiles at load.** No unit is a top-level function expression

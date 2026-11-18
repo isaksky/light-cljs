@@ -1531,3 +1531,42 @@ light-cljs-1048 saved 703, 883 and 1,001 bytes against its master. With this pel
 - **A dispatcher's arities and names as one object,** `{1:"$<key>b"}` for `[1]` and `["$<key>b"]`: 1 to 7 bytes larger after gzip, though 16 to 82 smaller raw. Not kept.
 
 The browser behaviour checks pass for all three apps with light-cljs-1058's builds (`bb benchmarks/re-frame.bb browser simple todomvc flow --compiler light --runs 1`).
+
+## 2026-11-17: keyword constants without their hash (light-cljs-1050)
+
+Since light-cljs-1011 each keyword constant at `:advanced` carried the hash the compiler computed, `p(null,"todos",630308868)`, so that startup did no hashing. light-cljs-1047 measured these digits as the largest single cause of flow's growth. light-cljs-1050 writes the constant without them, `p(null,"todos")`. The keyword's first `hash` computes its hash and caches it in the keyword's field, as it already did below `:advanced` and for every keyword built from data. The hash is the same value as before (`value_hash::keyword`, checked by `keyword_constants_are_hashed_on_first_use`), so hash maps and sets of keywords keep their order.
+
+The other option, computing each constant's hash when it is built at load, was not taken. It would add the hashing units to every program that builds a keyword and hash 1,214 keywords at flow's startup, while the gate shows no cost for hashing on first use (benchmarks/runtime-vs-shadow.md, same date). Hashing on first use adds no runtime code: `hash` already computed a keyword's hash when its field was empty.
+
+```sh
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
+bb benchmarks/re-frame.bb growth simple todomvc flow --base research/shadow-credibility/bin/light-cljs-f533efb1 --light BIN
+```
+
+### Setup
+
+- **Binaries:** `light-cljs-f533efb1`, the group's start; `light-cljs-8c21c1ae`, master with light-cljs-1051; and `light-cljs-1050-827965c3`, this pellet on it. All are V8 builds. They were measured before light-cljs-1060 and light-cljs-1058 landed; this pellet changes none of their code.
+- **Ports:** porter `shadow-port-tool-983` with the `8c21c1ae` binary, one port per app, built by every binary. simple's and TodoMVC's bundles at `f533efb1` and at master have exactly the previous section's sizes (its `f533efb1` and light-cljs-1051 columns); flow's, whose port spells some generated names differently each time it is made, are 16 and 8 bytes larger.
+- **Machine:** unreserved, load average 9 to 17. Sizes do not depend on load.
+
+### The whole bundle with React, gzip -9
+
+| App | `f533efb1` | master `8c21c1ae` | light-cljs-1050 | Against master | Against `f533efb1` |
+|---|---:|---:|---:|---:|---:|
+| re-frame simple | 108,631 | 114,985 | 113,918 | -1,067 (-0.93%) | +5,287 (+4.9%) |
+| TodoMVC | 138,015 | 147,043 | 145,521 | -1,522 (-1.04%) | +7,506 (+5.4%) |
+| flow | 328,680 | 342,641 | 333,134 | -9,507 (-2.77%) | +4,454 (+1.4%) |
+
+- **Against the pellet's expectation** (1,070, 1,497 and 9,356 bytes, less what the runtime adds to compute the hash): the runtime adds nothing, and the saving is that measure within 2%.
+- **light-cljs's output as written**, without React, after gzip: simple 68,641 to 67,591 (-1,050), TodoMVC 98,864 to 97,347 (-1,517), flow 289,646 to 280,433 (-9,213); raw 2,005, 3,089 and 13,347 bytes smaller.
+- **brotli -q 11**, the whole bundle: simple 99,938 to 99,035, TodoMVC 127,272 to 125,973, flow 281,783 to 274,409.
+- **Workload 200k** (the generated project, benchmarks/runtime-vs-shadow.md): 3,529,299 to 3,460,653 bytes raw, 883,581 to 853,838 after gzip (-3.4%).
+
+### `growth`, rerun
+
+`growth` against `f533efb1` now finds no keyword constant with a hash: its "keyword constants' hashes" row and the "keyword constants without their hash" what-if are 0 in all three apps. The whole output's growth since `f533efb1`, gzip -9 of light-cljs's output as written, is now:
+- simple: +5,441;
+- TodoMVC: +7,616;
+- flow: +3,969.
+
+The largest causes left are the classes' new units: their protocol methods (about 2,100 to 2,300 bytes per app) and the map, transient and seq helpers (about 2,500 to 2,800).

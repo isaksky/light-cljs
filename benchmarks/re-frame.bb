@@ -1194,7 +1194,7 @@
       (row label (map #(fmt (second (get-in % [:what-ifs :rows i]))) results)))
     (println)
     (doseq [{:keys [app what-ifs]} results]
-      (println (str app ": " (:keywords what-ifs) " keyword constants; keyed names "
+      (println (str app ": " (:keywords what-ifs) " keyword constants with a hash; keyed names "
                     (str/join ", " (for [[kind {:keys [uses names raw]}] (sort-by key (:keyed what-ifs))]
                                      (format "%s %,d uses of %d names (%,d characters)" (name kind) uses names raw))))))))
 

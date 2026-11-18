@@ -216,7 +216,7 @@ fn advanced_hash_conses_constants_on_their_emitted_structure() {
         declarations(&advanced),
         [
             "0 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
-            "1 = rt$keyword(null, \"k\", -2146297393);",
+            "1 = rt$keyword(null, \"k\");",
             "2 = rt$hashed(rt$arrayMapFromArray([k1, k0]), 1918603281);",
             "3 = rt$hashed(rt$vectorFromArray([k0, k2]), 1067525070);",
             "4 = rt$hashed(rt$listFromArray([1, 2]), 1185709346);",
@@ -495,25 +495,25 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     assert_eq!(
         declarations(&advanced),
         [
-            "0 = rt$keyword(null, \"id\", -1388402092);",
-            "1 = rt$keyword(null, \"tags\", 1771418977);",
-            "2 = rt$keyword(null, \"pos\", -864607220);",
-            "3 = rt$keyword(null, \"empty\", 767870958);",
-            "4 = rt$keyword(null, \"meta\", 1499536964);",
+            "0 = rt$keyword(null, \"id\");",
+            "1 = rt$keyword(null, \"tags\");",
+            "2 = rt$keyword(null, \"pos\");",
+            "3 = rt$keyword(null, \"empty\");",
+            "4 = rt$keyword(null, \"meta\");",
             "5 = rt$mapShape([k0, k1, k2, k3, k4], \
              [-1388402092, 1771418977, -864607220, 767870958, 1499536964]);",
-            "6 = rt$keyword(null, \"b\", 1482224470);",
-            "7 = rt$keyword(null, \"a\", -2123407586);",
+            "6 = rt$keyword(null, \"b\");",
+            "7 = rt$keyword(null, \"a\");",
             "8 = rt$hashed(rt$arraySetFromArray([k6, k7]), 551401264);",
             "9 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
-            "10 = rt$keyword(null, \"kind\", -717265803);",
-            "11 = rt$keyword(null, \"row\", -570139521);",
-            "12 = rt$keyword(null, \"dims\", -466522889);",
+            "10 = rt$keyword(null, \"kind\");",
+            "11 = rt$keyword(null, \"row\");",
+            "12 = rt$keyword(null, \"dims\");",
             "13 = rt$hashed(rt$arrayMapFromArray([k10, k11, k12, k9]), 1014014460);",
         ]
     );
-    // 705 bytes before light-cljs-1011, whose keyword constants carry their
-    // hashes.
+    // 705 bytes, as before light-cljs-1011: 826 while its keyword constants
+    // carried their hashes, which light-cljs-1050 took out.
     let table = pool(&program, OptimizationLevel::Advanced);
     assert_eq!(
         table,
@@ -522,7 +522,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
             composites: 3,
             functions: 0,
             lazy: 0,
-            bytes: 826
+            bytes: 705
         }
     );
     assert_eq!(
@@ -534,7 +534,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         .to_string()
         .lines()
         .nth(1),
-        Some("constant pool: 14 entries (3 composite, 0 lazy), 826 bytes")
+        Some("constant pool: 14 entries (3 composite, 0 lazy), 705 bytes")
     );
     assert_eq!(table.bytes, table_bytes(&advanced));
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {
