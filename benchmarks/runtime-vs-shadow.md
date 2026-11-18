@@ -3962,3 +3962,39 @@ No operation is slower by more than 2% (`vec-peek`, `transient-vec-100`,
 hash map, as in the first gate. Workload 200k was not re-timed on the
 landed runtime: its maps are array maps, and the first runtime left it
 unchanged.
+
+## 2026-11-17: declarations where they are defined (light-cljs-1051)
+
+At `:advanced` a single file now declares each top-level global where it defines it, `var gq=...`, rather than in a `let` list up front (docs/advanced-optimization.md, Phase 3, "Declarations where they are defined"). Nothing in the runtime changes. A hoisted `var` is a context slot like the `let` it replaces, so no operation should move.
+
+**Binaries:**
+- `light-cljs-c49a646a`: master with light-cljs-1056 and light-cljs-1057.
+- `light-cljs-1051-d05aa74d`: this pellet on it.
+
+A first version also wrote the runtime slice's units in the program's own function (`light-cljs-1051-bc8abfdf` against `light-cljs-1df0a071`); it was left out (benchmarks/re-frame-vs-shadow.md, "declarations where they are defined"), and its gate run below explains `kw-hash100`.
+
+**Machine:** Node v26.12.1, 24 CPUs. Every run is unreserved: the load average was 4.0 to 7.4 for the gate, 12.2 to 12.7 for master's workload runs and 5.2 to 8.0 for this pellet's.
+
+**The gate** (`bb benchmarks/core-ops/run.bb`, all 64 operations, 5 runs per compiler, alternated, the after run with `--baseline` the before's):
+- **57 of 64 operations are within 2%.**
+- **`kw-hash100` reads 11% slower** (14.3 to 15.8 ns), which is variance of master's own: three runs of the whole program in one process each gave master 16.2, 14.4 and 16.5 ns and this pellet 14.5, 14.5 and 14.4. Alone, three runs each gave 14.1 to 14.3 against 14.2 to 14.4, and after `get-hash100` 13.9 to 14.3 against 14.2 to 14.3.
+  - The first version, with the runtime's units in the program's function, made `kw-hash100` 18% slower right after `get-hash100` (20.9 to 24.7 ns in three runs each, equal alone), from the units alone; it was one reason to leave them out.
+- **The rest:** `protocol-on-record` 6% faster; `assoc-small-new`, `eq-map-7` and `variadic-call` 3% slower, `vec-nth-1024` and `reduce-range-1000` 3% faster.
+- **Raw results:** benchmarks/core-ops/out/{before2,after2}.md, which are not committed.
+
+**Workload 200k** (`compare.bb PROJECT --runs 10 --runtime-only --runtime 1,10,40`; the project's light-cljs output was rebuilt with each binary just before its run; shadow-cljs's output was the same for both). Medians, with the range in brackets:
+
+| iterations | light before | light after | shadow-cljs (before / after runs) |
+| ---: | ---: | ---: | ---: |
+| 1, first output | 0.400 s (0.387-0.424) | 0.359 s (0.357-0.365) | 0.334 / 0.301 s |
+| 1, wall | 0.406 s (0.392-0.430) | 0.364 s (0.362-0.369) | 0.338 / 0.305 s |
+| 10, wall | 0.909 s (0.891-0.917) | 0.832 s (0.804-0.849) | 0.627 / 0.569 s |
+| 40, wall | 2.161 s (2.104-2.244) | 2.068 s (1.991-2.222) | 1.282 / 1.205 s |
+
+- **Steady state:** 45.0 to 43.7 ms per iteration; shadow-cljs's 24.2 and 23.1 in the same runs, so light/shadow went from 1.86 to 1.89. The before runs met a load of 12, the after runs 5 to 8: shadow-cljs's own output ran 6 to 10% faster in the after runs, and so did startup, so most of light-cljs's gain is the machine. Nothing is slower.
+- **Startup** (first output at one iteration): light/shadow 1.20 before and 1.19 after.
+
+**Advanced size:**
+- **workload 200k:** 3,547,313 to 3,529,299 bytes raw, and 896,335 to 883,581 after gzip -9 (-1.42%).
+- **The re-frame apps** (benchmarks/re-frame-vs-shadow.md), whole bundles with React after gzip -9: simple -649, TodoMVC -1,085 and flow -4,013 bytes.
+- **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): up to 62 bytes smaller raw where a program defines several globals; no ceiling crosses its rounding.

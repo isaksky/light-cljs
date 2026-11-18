@@ -755,18 +755,14 @@
 //!
 //! Declarations where they are defined (light-cljs-1051, 2026-11-17): at
 //! advanced a single file declares each top-level global where it defines
-//! it, `var g3 = ...;`, rather than in a `let` list up front, and an ES
-//! module writes the runtime slice's units in the program's own function
-//! rather than as a factory whose returned array the program destructures
+//! it, `var g3 = ...;`, rather than in a `let` list up front
 //! (docs/advanced-optimization.md, "Declarations where they are defined").
-//! The ratchet's expressions are no modules, so they keep the factory and
-//! gain only the declarations: against master `1df0a071` up to 62 bytes
-//! smaller raw where a program defines several globals (`eight-records`
-//! 49,829 to 49,767, `features` 116,385 to 116,353, `callbacks` 61,606 to
-//! 61,590), 0 to 9 elsewhere. No ceiling crosses its rounding, so none
-//! moves; the re-frame apps, modules, save 1.6% to 2.0% of their gzipped
-//! bundles. None and prepare are unchanged, and so are the features
-//! example's chunks, a chunked build.
+//! Against master `1df0a071`, up to 62 bytes smaller raw where a program
+//! defines several globals (`eight-records` 49,829 to 49,767, `features`
+//! 116,385 to 116,353, `callbacks` 61,606 to 61,590), 0 to 9 elsewhere. No
+//! ceiling crosses its rounding, so none moves; the re-frame apps save 0.6%
+//! to 1.2% of their gzipped bundles. None and prepare are unchanged, and so
+//! are the features example's chunks, a chunked build.
 
 pub struct Fixture {
     pub name: &'static str,

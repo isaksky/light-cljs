@@ -1447,9 +1447,7 @@ The rows that changed against the section above:
 
 ## 2026-11-17: declarations where they are defined (light-cljs-1051)
 
-light-cljs-1047's what-ifs found two lists in a single file's `:advanced` output that only repeat names the definitions write anyway: the up-front `let gq,gr,...;` of the program's globals, and the runtime binding list, `const[b,m,...]=(()=>{"use strict";...return[Atom,iY,...]})()`. light-cljs-1051 removes both (docs/advanced-optimization.md, Phase 3, "Declarations where they are defined"):
-- **Globals:** each top-level definition declares its global where it defines it, `var gq=...`, and adjacent definitions share one `var`. A `var` is hoisted, so a read before the definition runs finds `undefined`, as the `let` up front gave.
-- **Runtime roots:** the slice's units are written at the start of the program's own function, with the program's names from one table, rather than as a factory whose returned array the program destructures.
+light-cljs-1047's what-ifs found two lists in a single file's `:advanced` output that only repeat names the definitions write anyway: the up-front `let gq,gr,...;` of the program's globals, and the runtime binding list, `const[b,m,...]=(()=>{"use strict";...return[Atom,iY,...]})()`. light-cljs-1051 removes the first (docs/advanced-optimization.md, Phase 3, "Declarations where they are defined"): each top-level definition declares its global where it defines it, `var gq=...`, and adjacent definitions share one `var`. A `var` is hoisted, so a read before the definition runs finds `undefined`, as the `let` up front gave. The second was built, measured and left out (below; light-cljs-1062).
 
 ```sh
 bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
@@ -1457,35 +1455,37 @@ bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
 
 ### Setup
 
-- **Binaries:** `light-cljs-f533efb1`, the group's start; `light-cljs-1df0a071`, master when this was measured (with light-cljs-1048's short keyed names); and `light-cljs-1051-bc8abfdf`, this pellet on that master. All are V8 builds.
-- **Ports:** porter `shadow-port-tool-983` with the `1df0a071` binary, one port per app, built by all three binaries. Each app's bundle at `f533efb1` is within 7 bytes of the earlier sections' (simple 108,631, TodoMVC 138,015, flow 328,664).
+- **Binaries:** `light-cljs-f533efb1`, the group's start; `light-cljs-c49a646a`, master with light-cljs-1056 and light-cljs-1057; and `light-cljs-1051-d05aa74d`, this pellet on it. All are V8 builds. The first measurements below used master `light-cljs-1df0a071` and `light-cljs-1051-bc8abfdf`, which also wrote the runtime's units in place.
+- **Ports:** porter `shadow-port-tool-983` with the `1df0a071` binary, one port per app, built by every binary. Each app's bundle at `f533efb1` is within 7 bytes of the earlier sections' (simple 108,631, TodoMVC 138,015, flow 328,664).
 - **Machine:** unreserved, load average 4 to 44 (other workers' test runs). Sizes do not depend on load.
 
 ### The whole bundle with React, gzip -9
 
-| App | `f533efb1` | master `1df0a071` | light-cljs-1051 | Against master | Against `f533efb1` |
+| App | `f533efb1` | master `c49a646a` | light-cljs-1051 | Against master | Against `f533efb1` |
 |---|---:|---:|---:|---:|---:|
-| re-frame simple | 108,631 | 115,599 | 113,782 | -1,817 (-1.57%) | +5,151 (+4.7%) |
-| TodoMVC | 138,015 | 148,035 | 145,399 | -2,636 (-1.78%) | +7,384 (+5.4%) |
-| flow | 328,664 | 346,526 | 339,453 | -7,073 (-2.04%) | +10,789 (+3.3%) |
+| re-frame simple | 108,631 | 115,634 | 114,985 | -649 (-0.56%) | +6,354 (+5.8%) |
+| TodoMVC | 138,015 | 148,128 | 147,043 | -1,085 (-0.73%) | +9,028 (+6.5%) |
+| flow | 328,664 | 346,646 | 342,633 | -4,013 (-1.16%) | +13,969 (+4.3%) |
 
-- **Against the pellet's expectation**, from light-cljs-1047's upper bounds less the declarations the definitions gain (simple 1,000 to 1,450, TodoMVC 2,000 to 2,400, flow 5,500 to 6,900): each app saves more than the top of its range.
-- **brotli -q 11:** simple 100,337 to 98,831, TodoMVC 127,890 to 126,017, flow 284,909 to 279,568.
-- **Raw**, the whole bundle is 2,589, 3,847 and 13,393 bytes smaller.
-- **light-cljs's output as written**, without React, after gzip: simple 69,300 to 68,220 (-1,080), TodoMVC 99,951 to 98,496 (-1,455), flow 294,402 to 287,296 (-7,106). Raw it is 118 and 192 bytes smaller in simple and TodoMVC, and 1,995 bytes larger in flow: the runtime's bindings and the program's names now share one table, so more of them take two or three characters than when each had its own; gzip and esbuild's renaming recover it.
+- **Against the pellet's expectation** for both lists together (simple 1,000 to 1,450, TodoMVC 2,000 to 2,400, flow 5,500 to 6,900): the declarations alone save less, 649, 1,085 and 4,013 bytes. The binding list, left out, was to give the rest. The user decided on 2026-11-17 that these targets are reported, not gated; light-cljs-1049 is the size gate.
+- **light-cljs's output as written**, without React, after gzip: simple 69,368 to 68,641 (-727), TodoMVC 100,027 to 98,864 (-1,163), flow 294,488 to 289,645 (-4,843); raw 1,047, 1,481 and 6,708 bytes smaller.
+- **brotli -q 11:** simple 100,410 to 99,938, TodoMVC 127,944 to 127,272, flow 284,917 to 281,809.
+- **Workload 200k** (the generated project, benchmarks/runtime-vs-shadow.md): 3,547,313 to 3,529,299 bytes raw, 896,335 to 883,581 after gzip (-1.42%).
 
-The browser behaviour checks pass for all three apps with the `1051-bc8abfdf` builds (`bb benchmarks/re-frame.bb browser simple todomvc flow --compiler light --runs 1`).
+The browser behaviour checks pass for all three apps (`bb benchmarks/re-frame.bb browser simple todomvc flow --compiler light --runs 1`, with the `1051-bc8abfdf` builds, whose declarations are these).
 
-### What each part saves
+### What was left out: the runtime binding list
 
-Measured on flow, whose runtime binding list a word in its output first kept (below):
-- **The declarations in place:** 346,526 to 342,718, -3,808 bytes. Definitions alone (`def`, `defn`, `defonce`) gave -3,424 of it; type, record and protocol definitions and definitions inside a top-level `let` the remaining -384. 48 of flow's names stay in the `let` up front: 44 `declare`d globals that no definition assigns (read only through `typeof`), and four assigned inside a function or a `binding`.
-- **The runtime's units in the program's function:** 342,718 to 339,453, -3,265 bytes.
+`light-cljs-1051-bc8abfdf` also wrote the slice's units at the start of the program's own function in ES modules, with one name table for the units and the program (as a chunked build's module-level units are), instead of the factory and its returned array. Gzip -9, against master `1df0a071` except the first row, which is the table above against `c49a646a`:
 
-### Decisions and what was tried
+| | simple | TodoMVC | flow | workload 200k |
+|---|---:|---:|---:|---:|
+| declarations alone | -649 | -1,085 | -4,013 | -12,754 |
+| declarations and units in the program's function | -1,817 | -2,636 | -7,073 | +4,676 |
+| declarations and units, the program's function nested in the runtime's | -1,345 | -2,031 | | +6,800 |
 
-- **The units share the program's function,** rather than the program's function nesting inside the runtime's, `(()=>{<units>return(()=>{<program>})()})()`, where the program's names could reuse those of runtime bindings it does not read. Nesting measured 472 bytes larger in simple's bundle and 605 in TodoMVC's after gzip, though 30 bytes smaller in simple's output as written: esbuild renames the bundle again, and one scope serves it better.
-- **Only an ES module writes the units in the program's function.** A module is strict code, as the factory's `"use strict"` made the runtime, and release output is one. Output that is no module (`--compile` without `--esm`, the evaluator, the tests) keeps the factory: a `"use strict"` at the program function's start would make the program strict too, which it can tell (`js-arguments` aliasing its parameters, a write to a frozen object, raw text; the Sol review's finding). It still declares its globals in place.
-- **A word in the output no longer keeps the factory where it cannot name a binding.** Units in the program's scope declare a constructor that keeps its spelling, such as `Atom`, under that name, so a program that could read a global `Atom` keeps the factory (chunked builds have the same rule, light-cljs-303). flow first kept it for two words that can name nothing:
-  - an escape in a regular expression of raw text, `clojure.string/reverse`'s `/([\uD800-\uDBFF])([\uDC00-\uDFFF])/g`. Now only an escape in a name counts;
-  - the words `Atom`, `Var` and `Volatile` in docstrings and printed strings of the compiler's own text, which reads a host global only through `host("Atom")`. Now only a name counts there. In raw text a string still counts, and where raw text has a direct `eval`, which reads a string as code, every word and escape of the output counts as before.
+- **Why it was left out:** at 200k lines the units in the program's scope cost 17,360 bytes (1.9%) after gzip, and 65,469 raw. The program's tens of thousands of names share the units' table, which lengthens the runtime's own names. Nesting the program's function inside the runtime's, so that its names could reuse those of bindings it does not read, cost about as much there.
+- **Speed:** with the units in place, `kw-hash100` ran 18% slower right after `get-hash100` in the same process (equal alone); the declarations alone show no change.
+- **Strictness:** outside a module the units in place need a `"use strict"` at the program function's start, which makes the program strict too; `js-arguments` aliasing its parameters and writes to frozen objects can tell (the Sol review's finding). Only modules could take them.
+- **A word that keeps the factory:** a unit binding that keeps its spelling, such as `Atom`, would capture a host global of that name, so a program that could name one keeps the factory (chunked builds' rule). flow first kept it for docstrings spelling `Atom` and an escape in `clojure.string/reverse`'s regular expression, which name nothing.
+- light-cljs-1062 holds these numbers, to find a placement that saves in both.
