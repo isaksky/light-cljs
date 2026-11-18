@@ -1570,3 +1570,35 @@ bb benchmarks/re-frame.bb growth simple todomvc flow --base research/shadow-cred
 - flow: +3,969.
 
 The largest causes left are the classes' new units: their protocol methods (about 2,100 to 2,300 bytes per app) and the map, transient and seq helpers (about 2,500 to 2,800).
+
+## 2026-11-18: a runtime class only extended keeps its prototype alone (light-cljs-1052)
+
+light-cljs-1047 found that cljs.spec's `(extend-protocol Specize ... PersistentTreeSet ...)` made TodoMVC's slice keep the sorted set's units, although TodoMVC never builds a sorted set. light-cljs-1052 reads the target of an `extend-type` or `extend-protocol` of a runtime class as an extension only (`NameUse::Extend`). Where nothing else keeps the class whole, the slice keeps its prototype, which `extendType` writes onto and whose kind it reads, and none of its slots or the helpers only they reach (docs/advanced-optimization.md, "Classes only extended"). A value of the class, however the program makes it, keeps the slots again.
+
+```sh
+bb benchmarks/re-frame.bb size todomvc simple flow --light-only --light BIN
+```
+
+### Setup
+
+- **Binaries:** `light-cljs-f533efb1`, the group's start; `light-cljs-dbf91703`, master with light-cljs-1059; and `light-cljs-1052-33fc0bab`, this pellet on it. All are V8 builds. A first measurement on master `a33f6fef` (before light-cljs-1059) gave the same changes within 1 byte: TodoMVC 145,424 to 145,086 after gzip (-338), raw -813.
+- **Ports:** porter `shadow-port-tool-983` with the `a33f6fef` binary, one port per app, built by every binary.
+- **Machine:** unreserved, load average 5 to 18. Sizes do not depend on load.
+
+### The whole bundle with React, gzip -9
+
+| App | `f533efb1` | master `dbf91703` | light-cljs-1052 | Against master | Against `f533efb1` |
+|---|---:|---:|---:|---:|---:|
+| re-frame simple | 108,631 | 114,103 | 114,103 | 0 | +5,472 (+5.0%) |
+| TodoMVC | 138,015 | 145,681 | 145,344 | -337 (-0.23%) | +7,329 (+5.3%) |
+| flow | 328,658 | 333,313 | 333,313 | 0 | +4,655 (+1.4%) |
+
+- **Raw:** TodoMVC's whole bundle is 480,856 to 480,042 bytes (-814); simple and flow are byte for byte the same, as neither extends a runtime class it does not build (simple uses no cljs.spec, and flow builds sorted sets).
+- **light-cljs's output as written**, without React, after gzip: TodoMVC 97,440 to 97,161 (-279), raw 362,337 to 361,489 (-848). brotli -q 11 of the whole bundle: 126,234 to 125,868.
+- **What TodoMVC drops:** the sorted set's 8 slot units, 847 bytes of runtime: `TreeSetCell.members`, `.seq`, `.lookup`, `.comparator` and `.count`, and `treeSetConstructor.equivSlot`, `.hashSlot` and `.fields`. Its slice goes from 1,429 to 1,421 units (on `a33f6fef`). It keeps the set's prototype: `treeSetConstructor`, its type unit and `TreeSetCell` with its type unit, 159 bytes.
+
+### Against the expectation
+
+light-cljs-1047 expected about 1,087 bytes after gzip, from the 26 units the retention report attributes to the sorted set. The saving is 337 (338 on `a33f6fef`). Of the 26, 7 are the set's slots, which go (with `treeSetConstructor.fields`, which the report gave to another root), and 4 its prototype, which stays. The other 15 are the tree seq class (`treeMapSeqConstructor` and its slots), the tree walks (`treeKey`, `treeEntryAt`, `TreeMapStackCell`), `compareKeys`, `IComparable`'s key and the tree map's entry index: the report gave them to the set because its extension, in cljs.spec, comes before TodoMVC's own `sorted-map` in `todomvc.db`, but the sorted map, which TodoMVC builds, needs every one of them. With the set's entry taken out of cljs.spec's `extend-protocol` by hand, master `a33f6fef`'s slice keeps 1,417 units, 209,436 bytes: this pellet's 1,421 less the set's prototype, the 4 units and 159 bytes the extension writes onto. Nothing else of the set is left to take out.
+
+The browser behaviour checks pass for all three apps with light-cljs-1052's builds (`bb benchmarks/re-frame.bb browser todomvc simple flow --compiler light --runs 1`).

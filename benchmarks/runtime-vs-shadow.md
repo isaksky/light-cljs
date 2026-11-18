@@ -4300,3 +4300,28 @@ In a program that writes `IEquiv`'s method by name (`(set! (.-cljs$core$IEquiv$_
 Steady state, from 1 and 40 iterations: light-cljs 44.2 to 44.9 ms per iteration, as shadow-cljs's own 23.8 to 24.6 moved in the same runs; light/shadow 1.86 and 1.83. The output was the same file both times.
 
 **Size:** unchanged where no program writes the member (the outputs above are byte-identical; the size ratchet's fixtures write none).
+
+## 2026-11-18: a runtime class only extended keeps its prototype alone (light-cljs-1052)
+
+light-cljs-1052 changes only what the `:advanced` slice keeps: where a program extends a runtime class it never builds, the class's slots and the helpers only they reach leave the slice (docs/advanced-optimization.md, "Classes only extended"). The runtime's code and every kept unit's text are unchanged, so a program that keeps a class whole runs the same JavaScript.
+
+**Binaries:** for the timings, master `light-cljs-a33f6fef` (master `08593058` since adds only a warning) and `light-cljs-1052-2afe713c`, this pellet on it; the gate's after run used `light-cljs-1052-cedb9a8c`, the same pellet before a fix that only places a chunked build's runtime units. Then, after the review's fixes and light-cljs-1059, master `light-cljs-dbf91703` and `light-cljs-1052-33fc0bab`. All are V8 builds.
+
+**Output:** the core-ops gate source and workload 200k compile byte for byte the same at `:advanced` with master's binary and this pellet's, each pair: 161,978 and 3,436,843 bytes on `a33f6fef`, 162,634 and 3,438,039 on `dbf91703`. Neither extends a runtime class it does not build, so their timings cannot move; the runs below confirm it.
+
+**The gate** (`bb benchmarks/core-ops/run.bb`, all 64 operations, 5 runs per compiler, alternated, the after run with `--baseline` the before's; load 11.87-19.97 before and 11.26-13.63 after, unreserved): one operation read more than 3% slower, `kw-hash100`, 14.4 to 16.3 ns (+13%), its after range 14.4-16.5 holding the before median. Rerun twice alternated (`--ops kw-hash100`, load 7.9-9.3) it read 14.5 to 14.3 and 14.5 to 14.4 ns (-1% both times): the identical JavaScript's two modes, which light-cljs-1058's gate also met (14.4-16.5). `assoc-hash100` and `vec-nth-1024` read 3% faster.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1052 --runs 5 --runtime-only --runtime 1,10,40`, the project rebuilt with each binary just before its run; load 7.5-8.1, unreserved), wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.383 s (0.374-0.411) | 0.379 s (0.370-0.383) | 0.319 s | 0.314 s |
+| 10 | 0.846 s (0.842-0.864) | 0.838 s (0.834-0.848) | 0.584 s | 0.586 s |
+| 40 | 2.105 s (2.066-2.216) | 2.078 s (2.056-2.082) | 1.261 s | 1.227 s |
+
+Steady state, from 1 and 40 iterations: light-cljs 44.2 to 43.6 ms per iteration, light/shadow 1.83 and 1.86 (shadow-cljs's unchanged output moved from 24.2 to 23.4). Nothing is slower.
+
+**Size** (advanced):
+- **The re-frame apps** (benchmarks/re-frame-vs-shadow.md), whole bundles with React after gzip -9: TodoMVC -337 bytes (145,681 to 145,344 on `dbf91703`); simple and flow unchanged.
+- **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): no fixture extended a runtime class, so none moves; the new `extended-classes`, cljs.spec's `specize*` pattern, is 72,416 bytes against master's 109,065.
+- **workload 200k:** unchanged.

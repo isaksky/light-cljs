@@ -619,6 +619,61 @@ loading that the manifest does not attach to the units needing it:
   it although the output does not read it, so dispatch through a dispatcher
   no kept code calls still finds the patch. The report prints such roots in
   parentheses.
+- **Classes only extended** (light-cljs-1052). An `extend-type` or
+  `extend-protocol` of a runtime class the program never assigns
+  (`cljs.core/PersistentTreeSet`) makes no value of it: `extendType` writes
+  the methods onto the class's prototype and reads its kind there. At
+  `Advanced` the target is a `NameUse::Extend` root (`RootUse::Extend`),
+  which the report prints as `rt$treeSetConstructor (extended)`, and any
+  other read of the class (a call, `new`, a member, `instance?`) makes it a
+  value root, as before.
+  - **Prototype only.** `RuntimeManifest::reached_by_uses` keeps such a unit
+    for its prototype alone: the unit, its requires and the effects that
+    build the prototype, each kept the same way. Those are the effects
+    without `when:` (the class's type units, `treeSetConstructor.type` and
+    `TreeSetCell.type`, which set the kind, masks and markers `satisfies?`,
+    `implements?` and `extendType` read), and an effect that assigns its
+    target, which defines the class (`MapEntryType.vector`, with its
+    `when: makeVector`, or `MapEntryType.lean` where no vector is built). A
+    require whose code runs while a unit loads (a call, `new` or a method
+    call outside every function body, `Unit::load_time_runs`) is kept
+    whole: `builtinType` and `viewType` run.
+  - **What goes.** No effect only values need is kept for a unit kept this
+    way: an `effect: ... when:` unit that assigns no target, the methods and
+    slots of the class's values (`TreeSetCell.members`,
+    `treeSetConstructor.hashSlot`), and an effect marked `values`, the
+    members a class's type installs for its values (the 17 `.members`
+    units, `Eduction.members` among them). With no value they never run,
+    and neither do the helpers only they reach.
+  - **Values bring the slots back.** A unit is kept whole wherever a value
+    root or a unit kept whole requires it. Every code path that makes a
+    value of a class reaches its constructor or its cell class, and each
+    cell's type unit requires the class (`TreeSetCell.type` requires
+    `treeSetConstructor`), so a core function, a constant, a reader literal
+    or a macro's code that builds a value keeps the class whole, with its
+    slots. A condition (`when:`) counts however its unit is kept. The rule
+    is the manifest's own: it names no class.
+    `runtime_slicing::every_runtime_class_extended_alone_answers_at_every_level`
+    extends each class `cljs.core` names, alone, and compares the answers
+    with the whole runtime's.
+  - **Chunks.** `RuntimeManifest::signatures` keeps, per root, which units
+    are kept whole, so each root alone keeps what `reached_by_uses` keeps
+    for it. A slot or member kept for one root's values goes also to every
+    root that keeps its class only for the prototype, so that it loads
+    before that root's `extend-type`, whose method it would otherwise
+    replace
+    (`chunks::a_class_startup_extends_and_a_feature_builds_keeps_the_extension`).
+  - **Measured** (V8 build, against master `dbf91703`): cljs.spec's
+    `specize*` pattern, which extends the hash set a program builds and the
+    sorted set it never builds (the ratchet's `extended-classes`), drops
+    from 109,065 to 72,416 bytes. TodoMVC, whose cljs.spec extends the
+    sorted set, drops the set's 8 slot units, 847 bytes of runtime: its
+    whole bundle shrinks 814 bytes raw and 337 after gzip. light-cljs-1047
+    expected 1,087 after gzip from the 26 units the retention report gave
+    the set, but 15 of them, the tree seq class and the tree walks, are the
+    sorted map's too, which TodoMVC builds (`sorted-map` in `todomvc.db`),
+    and 4 are the prototype. simple and flow, which builds sorted sets, do
+    not change.
 - **Left for later.** `namespaces.cljsUser` and `namespaces.cljsCore` stay
   effects of the namespace registry, which only the namespace registration
   and reflection reach (step 5), and so does `compilerForms`. (Since step 5

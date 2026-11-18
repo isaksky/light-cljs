@@ -2127,6 +2127,10 @@ struct Emitter<'a> {
     /// core protocol emitted, whose read does not escape
     /// ([`Emitter::escaped_dispatcher`]).
     protocol_operand: Option<ExprId>,
+    /// The target of the last `extend-type` emitted when it is a runtime
+    /// class the program never assigns (`PersistentTreeSet`), whose read
+    /// makes no value of the class ([`NameUse::Extend`]).
+    extended_class: Option<ExprId>,
     /// At `Advanced`: the program's inferred types (`crate::inference`).
     inference: Option<&'a Inference>,
     /// At `Advanced`: direct calls and method entries (`crate::call_shapes`).
@@ -2410,6 +2414,7 @@ impl<'a> Emitter<'a> {
             cell_callee: None,
             site: None,
             protocol_operand: None,
+            extended_class: None,
             inference,
             shapes,
             truth_used: false,
@@ -2775,10 +2780,12 @@ impl<'a> Emitter<'a> {
             (CORE_HUB, Some("PersistentArrayMap")) => Some("publicArrayMap"),
             _ => None,
         };
-        if let Some(public) = public {
+        if let Some(public) = public
+            && used != NameUse::Extend
+        {
             // The type's public constructor, which only a program naming the
             // type calls (light-cljs-231 for sets, light-cljs-247 for array
-            // maps).
+            // maps), and not to extend it.
             self.runtime_root(RuntimeName::direct(public, None), site, NameUse::Keep);
         }
         let resolved = match (name.binding, name.member) {
@@ -8613,7 +8620,14 @@ impl<'a> Emitter<'a> {
             | ExprKind::LiteralMap(_)
             | ExprKind::LiteralSet(_) => self.collection_value(id),
             ExprKind::CoreFn(core) => {
-                self.rt(RuntimeName::core(core.runtime_name()));
+                let used = if self.extended_class == Some(id) {
+                    NameUse::Extend
+                } else {
+                    NameUse::Value
+                };
+                let text =
+                    self.runtime_read(RuntimeName::core(core.runtime_name()), self.site, used);
+                self.output.push_str(&text);
             }
             ExprKind::Local(local) => self.local_value(*local),
             ExprKind::Global(global) => self.global(*global),
@@ -9329,27 +9343,34 @@ impl<'a> Emitter<'a> {
                         }
                     }
                 }
-                self.output.push('(');
-                self.value(*target);
-                self.output.push_str(", ");
-                // `extendType` of a host type's name (`number`, `default`)
-                // fills dispatch tables by key and installs no slot; of a
-                // value that may be a string as it runs, unlike a program
-                // type or a runtime type (`PersistentVector`), an entry
-                // keeps its key.
-                let slots = match self.program.exprs[target.0].kind {
-                    _ if *instance => EntrySlots::InPlaceOfKey,
-                    ExprKind::String(_) => EntrySlots::None,
-                    // One the program never assigns (`set!`), which could
-                    // make it a host type's name.
+                // A runtime type (`PersistentVector`) the program never
+                // assigns (`set!`), which could make it a host type's name.
+                let runtime_class = matches!(
+                    self.program.exprs[target.0].kind,
                     ExprKind::CoreFn(core)
                         if core
                             .runtime_name()
                             .starts_with(|c: char| c.is_ascii_uppercase())
-                            && !self.replaced(core.runtime_name()) =>
-                    {
-                        EntrySlots::InPlaceOfKey
-                    }
+                            && !self.replaced(core.runtime_name())
+                );
+                // Extending it makes no value of it, so where nothing else
+                // keeps it whole, the slice keeps its prototype alone
+                // (`NameUse::Extend`).
+                if runtime_class && !*instance && self.replaced_core.is_some() {
+                    self.extended_class = Some(*target);
+                }
+                self.output.push('(');
+                self.value(*target);
+                self.extended_class = None;
+                self.output.push_str(", ");
+                // `extendType` of a host type's name (`number`, `default`)
+                // fills dispatch tables by key and installs no slot; of a
+                // value that may be a string as it runs, unlike a program
+                // type or a runtime type, an entry keeps its key.
+                let slots = match self.program.exprs[target.0].kind {
+                    _ if *instance => EntrySlots::InPlaceOfKey,
+                    ExprKind::String(_) => EntrySlots::None,
+                    ExprKind::CoreFn(_) if runtime_class => EntrySlots::InPlaceOfKey,
                     ExprKind::Global(global)
                         if self.inference.is_some_and(|inference| {
                             matches!(

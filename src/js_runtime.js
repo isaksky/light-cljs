@@ -5380,8 +5380,8 @@
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(contains);
   //@unit reduce.slots effect: IndexedSeqValue, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch, reduce,
-  //@ slotFirst
+  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch,
+  //@ reduce, slotFirst
   // `reduce` of a value with a `-reduce` slot (light-cljs-1055) calls it
   // before `reduce.protocol`'s lookup, which finds a program's method there
   // too. Each arity's call is a function of its own, so that the wrapper
@@ -12484,7 +12484,7 @@
       this.meta$LKEY = value;
     }
   });
-  //@unit Cons.members effect: Cons requires: Cons, seqIndexes, seqMethods
+  //@unit Cons.members values effect: Cons requires: Cons, seqIndexes, seqMethods
   seqIndexes(Cons);
   Cons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit Reduced.fields effect: Reduced when: resetMeta, upstreamMembers requires: Reduced,
@@ -12498,13 +12498,13 @@
   //@unit ListValue.fields effect: ListValue when: resetMeta, upstreamMembers requires: cellOf,
   //@ ListValue, meta, publicFields
   publicFields(ListValue, ["meta", "first", "rest", "count", "__hash"], (value, field) => cellOf(value)[{first: "first$LKEY", rest: "rest$LKEY", count: "count$LKEY"}[field]], meta);
-  //@unit ListValue.members effect: ListValue requires: ListValue, seqIndexes, seqMethods
+  //@unit ListValue.members values effect: ListValue requires: ListValue, seqIndexes, seqMethods
   seqIndexes(ListValue);
   ListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit EmptyListValue.fields effect: EmptyListValue when: resetMeta, upstreamMembers requires: EmptyListValue,
   //@ meta, publicFields
   publicFields(EmptyListValue, ["meta"], null, meta);
-  //@unit EmptyListValue.members effect: EmptyListValue requires: EmptyListValue, seqIndexes,
+  //@unit EmptyListValue.members values effect: EmptyListValue requires: EmptyListValue, seqIndexes,
   //@ seqMethods
   seqIndexes(EmptyListValue);
   EmptyListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
@@ -12528,7 +12528,7 @@
     const c = cellOf(value);
     return field === "count" ? c.remaining$LKEY : field === "val" ? c.first$LKEY : c.next$LKEY ?? null;
   }, meta, cellStateField);
-  //@unit RepeatValue.members effect: RepeatValue requires: RepeatValue, seqIndexes
+  //@unit RepeatValue.members values effect: RepeatValue requires: RepeatValue, seqIndexes
   seqIndexes(RepeatValue);
   //@unit CycleValue.fields effect: CycleValue when: resetMeta, upstreamMembers requires: cellOf,
   //@ cellStateField, cycleCurrent, CycleValue, meta, publicFields
@@ -12575,8 +12575,8 @@
     const v = viewOf(value);
     return field === "vec" ? v.vec$LKEY : field === "node" ? v.arr$LKEY : field === "i" ? v.base$LKEY : v.i$LKEY;
   }, meta);
-  //@unit ChunkedSeqValue.members effect: ChunkedSeqValue requires: ChunkedSeqValue, seqIndexes,
-  //@ seqMethods
+  //@unit ChunkedSeqValue.members values effect: ChunkedSeqValue requires: ChunkedSeqValue,
+  //@ seqIndexes, seqMethods
   seqIndexes(ChunkedSeqValue);
   ChunkedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit PersistentQueueValue.fields effect: PersistentQueueValue when: resetMeta, upstreamMembers
@@ -12586,7 +12586,7 @@
     const slot = slotField(value, field, count);
     return slot !== missing ? slot : field === "front" ? seq(queues.get(value)) : vector();
   }, meta);
-  //@unit PersistentQueueValue.members effect: PersistentQueueValue requires: PersistentQueueValue,
+  //@unit PersistentQueueValue.members values effect: PersistentQueueValue requires: PersistentQueueValue,
   //@ seqMethods
   PersistentQueueValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit PersistentArrayMapValue.fields effect: PersistentArrayMapValue when: resetMeta,
@@ -12623,21 +12623,21 @@
     const v = viewOf(value);
     return field === "arr" ? v.arr$LKEY : v.i$LKEY;
   }, meta);
-  //@unit IndexedSeqValue.members effect: IndexedSeqValue requires: IndexedSeqValue, seqIndexes,
-  //@ seqMethods
+  //@unit IndexedSeqValue.members values effect: IndexedSeqValue requires: IndexedSeqValue,
+  //@ seqIndexes, seqMethods
   seqIndexes(IndexedSeqValue);
   IndexedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit RangeValue.fields effect: RangeValue when: resetMeta, upstreamMembers requires: cellOf,
   //@ forceRangeChunk, meta, publicFields, rangeChunkField, rangeField, RangeValue
   publicFields(RangeValue, ["meta", "start", "end", "step", "chunk", "chunk-next", "__hash"], rangeField, meta, rangeChunkField);
   RangeValue.prototype.forceChunk = function () { forceRangeChunk(cellOf(this)); return null; };
-  //@unit RangeValue.members effect: RangeValue requires: RangeValue, seqIndexes, seqMethods
+  //@unit RangeValue.members values effect: RangeValue requires: RangeValue, seqIndexes, seqMethods
   seqIndexes(RangeValue);
   RangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit IntegerRangeValue.fields effect: IntegerRangeValue when: resetMeta, upstreamMembers
   //@ requires: IntegerRangeValue, meta, publicFields, rangeField
   publicFields(IntegerRangeValue, ["meta", "start", "end", "step", "cnt", "__hash"], rangeField, meta);
-  //@unit IntegerRangeValue.members effect: IntegerRangeValue requires: IntegerRangeValue,
+  //@unit IntegerRangeValue.members values effect: IntegerRangeValue requires: IntegerRangeValue,
   //@ seqIndexes, seqMethods
   seqIndexes(IntegerRangeValue);
   IntegerRangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
@@ -12668,10 +12668,10 @@
   for (const [name, read] of [["key", node => node.tail$LKEY?.[0]], ["val", node => node.tail$LKEY?.[1]], ["left", node => node.left$LKEY], ["right", node => node.right$LKEY]])
     Object.defineProperty(MapEntryType.prototype, name, {configurable: true, get() { return read(this); },
       set(value) { Object.defineProperty(this, name, {value, writable: true, configurable: true, enumerable: true}); }});
-  //@unit treeMapSeqConstructor.members effect: treeMapSeqConstructor requires: seqMethods,
+  //@unit treeMapSeqConstructor.members values effect: treeMapSeqConstructor requires: seqMethods,
   //@ treeMapSeqConstructor
   treeMapSeqConstructor.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit Eduction.members effect: Eduction requires: completing, count, Eduction, eductions,
+  //@unit Eduction.members values effect: Eduction requires: completing, count, Eduction, eductions,
   //@ es6Iterator, installMethods, printHooks, seq, sequence, sequenceIterator, sequentialIndex,
   //@ transduce, transformedIterator
   installMethods(Eduction.prototype, [
@@ -12726,23 +12726,24 @@
   Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
     sval() { return lazyStep(lazyOf(this)); }
   }));
-  //@unit LazySeq.members effect: LazySeq requires: LazySeq, objectEquiv, seqMethods
+  //@unit LazySeq.members values effect: LazySeq requires: LazySeq, objectEquiv, seqMethods
   Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
     equiv(other) { return objectEquiv(this, other); },
     indexOf: seqMethods.indexOf,
     lastIndexOf: seqMethods.lastIndexOf,
     [Symbol.iterator]: seqMethods[Symbol.iterator]
   }));
-  //@unit NodeSeqType.members effect: NodeSeqType requires: NodeSeqType, seqMethods
+  //@unit NodeSeqType.members values effect: NodeSeqType requires: NodeSeqType, seqMethods
   NodeSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit PersistentArrayMapSeqType.members effect: PersistentArrayMapSeqType requires: PersistentArrayMapSeqType,
+  //@unit PersistentArrayMapSeqType.members values effect: PersistentArrayMapSeqType requires: PersistentArrayMapSeqType,
   //@ seqMethods
   PersistentArrayMapSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit ArrayNodeSeqType.members effect: ArrayNodeSeqType requires: ArrayNodeSeqType, seqMethods
+  //@unit ArrayNodeSeqType.members values effect: ArrayNodeSeqType requires: ArrayNodeSeqType,
+  //@ seqMethods
   ArrayNodeSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit RSeqType.members effect: RSeqType requires: RSeqType, seqMethods
+  //@unit RSeqType.members values effect: RSeqType requires: RSeqType, seqMethods
   RSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit ChunkedCons.members effect: ChunkedCons requires: ChunkedCons, seqMethods
+  //@unit ChunkedCons.members values effect: ChunkedCons requires: ChunkedCons, seqMethods
   ChunkedCons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit ChunkedCons.fields effect: ChunkedCons when: resetMeta, upstreamMembers requires: ChunkedCons,
   //@ chunkedConsOf, meta

@@ -314,6 +314,11 @@ pub enum NameUse {
     /// a core protocol method keeps its dispatcher, which `extendType` looks up
     /// in `coreDispatchers` and patches (Advanced).
     Keep,
+    /// Read only as the type an `extend-type` extends, a runtime class
+    /// (`PersistentTreeSet`), which makes no value of it (Advanced): where
+    /// nothing else keeps the class whole, the slice keeps only its prototype
+    /// ([`RootUse::Extend`]).
+    Extend,
 }
 
 impl NameUse {
@@ -325,12 +330,14 @@ impl NameUse {
 }
 
 /// How the slice treats a root's unit: only a binding the output calls and
-/// never reads otherwise is a call; a member read uses its binding as a value.
+/// never reads otherwise is a call, and only one it extends and never reads
+/// otherwise an extension; a member read uses its binding as a value.
 fn root_use(name: &RuntimeName, used: NameUse) -> RootUse {
-    if used == NameUse::Call && name.member.is_none() {
-        RootUse::Call
-    } else {
-        RootUse::Value
+    match used {
+        _ if name.member.is_some() => RootUse::Value,
+        NameUse::Call => RootUse::Call,
+        NameUse::Extend => RootUse::Extend,
+        NameUse::Value | NameUse::Keep => RootUse::Value,
     }
 }
 
@@ -739,8 +746,8 @@ pub struct RuntimeRoot {
 
 impl RuntimeRoot {
     /// The use of the root's unit for [`RuntimeManifest::reached_by_uses`]: a
-    /// call for a binding only called, else a value (a member read uses its
-    /// binding as a value).
+    /// call for a binding only called, an extension for a class only extended,
+    /// else a value (a member read uses its binding as a value).
     pub fn root_use(&self) -> RootUse {
         root_use(&self.name, self.used)
     }
@@ -752,12 +759,14 @@ impl RuntimeRoot {
     }
 
     /// The root column of the report: the emitted spelling, with `(...)` for a
-    /// name only called and in parentheses for a name kept but not read.
+    /// name only called, in parentheses for a name kept but not read and with
+    /// `(extended)` for a class only extended.
     fn label(&self) -> String {
         match self.used {
             NameUse::Value => self.name.to_string(),
             NameUse::Call => format!("{}(...)", self.name),
             NameUse::Keep => format!("({})", self.name),
+            NameUse::Extend => format!("{} (extended)", self.name),
         }
     }
 }

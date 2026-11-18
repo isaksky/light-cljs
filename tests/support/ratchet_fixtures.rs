@@ -828,6 +828,19 @@
 //! fixture is unchanged. The nine exceeded advanced ceilings and the shared
 //! chunk's move to the next 1,000 above (benchmarks/runtime-vs-shadow.md,
 //! light-cljs-1059, has the re-frame apps' gzip growth, 0.07 to 0.20%).
+//!
+//! A runtime class only extended keeps its prototype alone (light-cljs-1052,
+//! 2026-11-18): at advanced, an `extend-type` or `extend-protocol` of a
+//! runtime class reads it as `NameUse::Extend`, and where nothing else keeps
+//! the class whole the slice keeps its prototype and none of its slots
+//! (`RuntimeManifest::reached_by_uses`, "prototype only"). No fixture
+//! extended a runtime class, so every size is unchanged and no ceiling
+//! moves. The new fixture `extended-classes` pins it: cljs.spec's
+//! `specize*` pattern, which extends the hash set it builds and the sorted
+//! set it never builds, is 72,416 bytes at advanced against 109,065 at
+//! master `a33f6fef` and `dbf91703` (the command line's output); its ceilings
+//! are the next 1,000 above, 73,000, and 689,000 at none and prepare
+//! (688,175, after light-cljs-1059's comments).
 
 pub struct Fixture {
     pub name: &'static str,
@@ -1255,6 +1268,22 @@ pub const FIXTURES: &[Fixture] = &[
         ceilings: [688_000, 688_000, 19_000],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
+    },
+    // light-cljs-1052: cljs.spec's `specize*` pattern, a protocol extended to
+    // a runtime class the program builds (the hash set) and to one it never
+    // builds (the sorted set), whose slots and tree walks the slice leaves
+    // out, keeping its prototype for `extendType`.
+    Fixture {
+        name: "extended-classes",
+        source: "(defprotocol Specize (specize* [x]))
+                 (extend-protocol Specize
+                   cljs.core/PersistentHashSet (specize* [s] [:set (count s)])
+                   cljs.core/PersistentTreeSet (specize* [s] [:sorted (count s)])
+                   default (specize* [x] :other))
+                 (js/console.log (pr-str (map specize* [#{1 2} [3] (seq #{4}) (= #{5} #{5})])))",
+        ceilings: [689_000, 689_000, 73_000],
+        removed: [0, 0, 0],
+        printed: "([:set 2] :other :other :other)\nundefined\n",
     },
 ];
 

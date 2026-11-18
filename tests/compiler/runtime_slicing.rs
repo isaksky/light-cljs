@@ -543,6 +543,200 @@ fn extended_core_protocols_keep_their_dispatchers() {
     assert_eq!(same_at_every_level(source), "[[:two 5] [:two 5]]\n");
 }
 
+/// light-cljs-1052: an `extend-type` or `extend-protocol` of a runtime class
+/// makes no value of it. Where nothing else keeps the class whole, the slice
+/// keeps only its prototype, which `extendType` writes onto and whose kind it
+/// reads (its type units), and none of its slots or the helpers only they
+/// reach. A program that can make a value of the class, by a core function,
+/// a constant, a macro's constant or the reader, keeps the slots, and the
+/// extension's method applies to the value.
+#[test]
+fn a_runtime_class_only_extended_keeps_its_prototype_alone() {
+    let extension = "(defprotocol P (p [x]))
+                     (defmacro built [] (list 'sorted-set 2 1))
+                     (defmacro literal [] (sorted-set 2 1))
+                     (extend-protocol P
+                       cljs.core/PersistentTreeSet (p [s] [:tree (count s) (first s)])
+                       default (p [_] :other))";
+    // The operations that dispatch to the slots below.
+    let uses = "[(p #{2 1}) (p [1]) (count #{1 2}) (first #{3}) (contains? #{1} 1)
+                 (= #{1} #{1}) (hash #{1}) (str #{4}) (satisfies? P #{1}) (satisfies? P [1])]";
+    let slots = [
+        "TreeSetCell.members",
+        "TreeSetCell.seq",
+        "TreeSetCell.count",
+        "TreeSetCell.lookup",
+        "treeSetConstructor.equivSlot",
+        "treeSetConstructor.hashSlot",
+    ];
+    let prototype = [
+        "treeSetConstructor",
+        "treeSetConstructor.type",
+        "TreeSetCell.type",
+    ];
+    // A sorted set a macro returns is a set literal, as upstream reads it:
+    // a hash set.
+    let source = format!("{extension} (pr-str [(p (literal)) {uses}])");
+    let extended = prepared(&source, OptimizationLevel::Advanced);
+    let report = extended.retention();
+    let root = report
+        .roots
+        .iter()
+        .find(|root| root.name.binding == "treeSetConstructor")
+        .unwrap_or_else(|| panic!("{report}"));
+    assert_eq!(root.root_use(), RootUse::Extend);
+    assert!(
+        report
+            .to_string()
+            .contains("rt$treeSetConstructor (extended)")
+    );
+    let units = embedded(&extended);
+    for kept in prototype {
+        assert!(units.contains(&kept), "{kept}:\n{report}");
+    }
+    for left_out in slots {
+        assert!(!units.contains(&left_out), "{left_out}:\n{report}");
+    }
+    assert_eq!(
+        same_at_every_level(&source),
+        "[:other [:other :other 2 3 true true 1978132887 \"#{4}\" true true]]\n"
+    );
+    // A value of the class, however the program makes it, keeps them all.
+    for (built, answer) in [
+        ("(sorted-set 2 1)", "[:tree 2 1]"),
+        ("(into (sorted-set) [3 1 2])", "[:tree 3 1]"),
+        ("(disj (sorted-set-by > 1 2 3) 2)", "[:tree 2 3]"),
+        ("(built)", "[:tree 2 1]"),
+        (
+            "(cljs.core/PersistentTreeSet. nil (sorted-map 5 nil) nil)",
+            "[:tree 1 5]",
+        ),
+    ] {
+        let source = format!("{extension} (pr-str [(p {built}) {uses}])");
+        let units = embedded(&prepared(&source, OptimizationLevel::Advanced));
+        for kept in slots.iter().chain(&prototype) {
+            assert!(units.contains(kept), "{kept}: {built}");
+        }
+        assert_eq!(
+            same_at_every_level(&source),
+            format!("[{answer} [:other :other 2 3 true true 1978132887 \"#{{4}}\" true true]]\n"),
+            "{built}"
+        );
+    }
+    // So does a read of the class as a value other than to extend it.
+    let read =
+        format!("{extension} (pr-str [(some? (.-prototype cljs.core/PersistentTreeSet)) {uses}])");
+    let units = embedded(&prepared(&read, OptimizationLevel::Advanced));
+    for kept in slots {
+        assert!(units.contains(&kept), "{kept}");
+    }
+}
+
+/// light-cljs-1052, for every runtime class: extending one that the program
+/// never builds leaves the answers for the values it does build as they
+/// were, among them values of classes the class shares a prototype or a
+/// kind with, and the extension applies wherever one of its values comes
+/// from a constant, a macro or the reader.
+#[test]
+fn extending_runtime_classes_keeps_the_answers_of_every_value() {
+    let values = "(into [nil 1 :k 'k [1] {:a 1} #{1} (list 1) (seq [1 2]) (range 3) (map inc [1])
+                         (subvec [1 2] 1) (first {:a 1}) (atom 1) (sorted-map 1 2)
+                         (seq (sorted-map 1 2)) (transient []) (volatile! 1) (delay 1) (reduced 1)
+                         (ex-info \"x\" {}) (zipmap (range 20) (range 20)) (read-string \"#{3}\")
+                         (read-string \"[4]\")]
+                        (constants))";
+    for class in [
+        "PersistentTreeSet",
+        "PersistentTreeMap",
+        "PersistentHashSet",
+        "PersistentHashMap",
+        "PersistentQueue",
+        "MapEntry",
+        "Subvec",
+        "MultiFn",
+        "UUID",
+        "Keyword",
+        "Symbol",
+        "PersistentVector",
+        "ExceptionInfo",
+        "TransientVector",
+        "Delay",
+        "Atom",
+    ] {
+        let source = format!(
+            "(defprotocol P (p [x]))
+             (defmacro constants [] [:mk (list 'quote 'ms) #{{5}} (list 'quote [8])])
+             (extend-protocol P cljs.core/{class} (p [_] :extended) default (p [_] :other))
+             (let [values {values}]
+               (pr-str (map p values) (map #(satisfies? P %) values)))"
+        );
+        let printed = same_at_every_level(&source);
+        let extended = printed.matches(":extended").count();
+        let expected = match class {
+            "PersistentHashSet" | "PersistentVector" => 3,
+            "Keyword" | "Symbol" => 2,
+            "PersistentTreeMap" | "PersistentHashMap" | "MapEntry" | "Subvec" | "ExceptionInfo"
+            | "TransientVector" | "Delay" | "Atom" => 1,
+            _ => 0,
+        };
+        assert_eq!(extended, expected, "{class}: {printed}");
+    }
+}
+
+/// light-cljs-1052, from the Sol review: a class kept for its prototype
+/// keeps the effect that defines it, `MapEntryType.vector`, which waits for
+/// `makeVector` and assigns the class (without it the type unit read the
+/// prototype of an undefined class as the output loaded), and drops its
+/// members, `Eduction.members` (marked `values`), which a value brings back.
+#[test]
+fn a_class_kept_for_its_prototype_keeps_its_definition_and_drops_its_members() {
+    let source = "(defprotocol P (p [x]))
+                  (extend-protocol P cljs.core/MapEntry (p [_] 1) default (p [_] 2))
+                  (pr-str [(p [3]) (p 4)])";
+    let units = embedded(&prepared(source, OptimizationLevel::Advanced));
+    assert!(units.contains(&"MapEntryType.vector") && units.contains(&"MapEntryType.type"));
+    assert!(!units.contains(&"MapEntryType.nth"), "a slot");
+    assert_eq!(same_at_every_level(source), "[2 2]\n");
+    let extension = "(defprotocol P (p [x]))
+                     (extend-protocol P cljs.core/Eduction (p [_] :eduction) default (p [_] :other))";
+    let only = format!("{extension} (pr-str [(p 1) (p [1])])");
+    let units = embedded(&prepared(&only, OptimizationLevel::Advanced));
+    assert!(units.contains(&"Eduction.kind") && !units.contains(&"Eduction.members"));
+    assert_eq!(same_at_every_level(&only), "[:other :other]\n");
+    let built = format!(
+        "{extension} (pr-str [(p (eduction (map inc) [1])) (vec (eduction (map inc) [1]))])"
+    );
+    assert!(embedded(&prepared(&built, OptimizationLevel::Advanced)).contains(&"Eduction.members"));
+    assert_eq!(same_at_every_level(&built), "[:eduction [2]]\n");
+}
+
+/// light-cljs-1052: every runtime class `cljs.core` names, extended alone by
+/// a program that builds other values, loads and answers as below
+/// `:advanced`; a name that is no type (a protocol) fails to extend alike.
+#[test]
+fn every_runtime_class_extended_alone_answers_at_every_level() {
+    let mut names = light_cljs::CoreFnId::ALL
+        .iter()
+        .map(|core| core.operation().name)
+        .filter(|name| name.starts_with(|c: char| c.is_ascii_uppercase()))
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    assert!(names.len() > 40, "{names:?}");
+    for name in names {
+        let source = format!(
+            "(defprotocol P (p [x]))
+             (def extended
+               (try (extend-protocol P cljs.core/{name} (p [_] :extended)) :extended
+                    (catch :default _ :no-type)))
+             (extend-protocol P default (p [_] :other))
+             (pr-str [extended (p 1) (p [3]) (p {{:a 1}}) (p :k) (p (seq [1 2])) (= [1] (list 1))
+                      (count #{{1 2}}) (str (range 3)) (first {{:b 2}})])"
+        );
+        same_at_every_level(&source);
+    }
+}
+
 /// A builtin type's prototype setup, members and static fields are effects of
 /// its constructor: a program keeps those of the types it can construct.
 #[test]

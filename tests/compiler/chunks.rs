@@ -969,6 +969,34 @@ fn a_feature_rebinds_a_core_function_through_startup() {
     assert_eq!(record, printed("app.main.js", r"0 2\n"));
 }
 
+/// light-cljs-1052: startup extends a runtime class only a feature builds,
+/// so startup keeps the class for its prototype alone. The class's slots,
+/// which the feature's values need, still load with startup, before the
+/// extension writes onto the prototype: loaded with the feature, the
+/// native `-hash` slot would replace the extension's.
+#[test]
+fn a_class_startup_extends_and_a_feature_builds_keeps_the_extension() {
+    static EXTENDED: &[(&str, &str)] = &[
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             (extend-type cljs.core/PersistentTreeSet IHash (-hash [_] 42))\n\
+             (def editor (lazy/loadable app.editor/start))\n\
+             (defn start []\n\
+               (-> (lazy/load editor)\n\
+                   (.then (fn [f] (js/console.log (f) (hash [1])) nil))))\n\
+             start\n",
+        ),
+        (
+            "app/editor.cljs",
+            "(ns app.editor)\n\
+             (defn start [] (hash (sorted-set 1 2)))\n",
+        ),
+    ];
+    let (record, _) = chunk_files(&analyze(EXTENDED));
+    assert_eq!(record, printed("app.main.js", r"42 -1939225835\n"));
+}
+
 /// A feature probing a Var of a namespace without a source imports the
 /// binding from startup, which declares it.
 #[test]

@@ -377,6 +377,10 @@ pub struct Facts<'a> {
     pub references: Vec<&'a str>,
     /// The references called directly by code run at load time.
     pub load_time_calls: Vec<&'a str>,
+    /// The references whose code runs at load time: those called directly
+    /// (`name(...)`, `new name(...)`) or through a method (`name.method(...)`),
+    /// sorted and without duplicates.
+    pub load_time_runs: Vec<&'a str>,
     /// The references the body assigns (`seq = wrap(seq)`, `n += 1`, `n++`),
     /// sorted and without duplicates.
     pub assigns: Vec<&'a str>,
@@ -717,6 +721,7 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
     let declares = parser.scopes[0].names.clone();
     let mut references = Vec::new();
     let mut load_time_calls = Vec::new();
+    let mut load_time_runs = Vec::new();
     let mut assigns = Vec::new();
     let mut call_time_assigns = Vec::new();
     let mut load_time_appends = Vec::new();
@@ -773,6 +778,16 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
             if load_time && call {
                 load_time_calls.push(name);
             }
+            let method_call = || {
+                matches!(punct(Some(token + 1)), Some("." | "?."))
+                    && tokens
+                        .get(token + 2)
+                        .is_some_and(|method| method.kind == Kind::Name)
+                    && punct(Some(token + 3)) == Some("(")
+            };
+            if load_time && !shorthand && (call || method_call()) {
+                load_time_runs.push(name);
+            }
             if assigned {
                 assigns.push(name);
             }
@@ -798,6 +813,8 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
     references.dedup();
     load_time_calls.sort_unstable();
     load_time_calls.dedup();
+    load_time_runs.sort_unstable();
+    load_time_runs.dedup();
     assigns.sort_unstable();
     assigns.dedup();
     call_time_assigns.sort_unstable();
@@ -808,6 +825,7 @@ pub fn analyze<'a>(source: &'a str, tokens: &[Token]) -> Result<Facts<'a>, (usiz
         declares,
         references,
         load_time_calls,
+        load_time_runs,
         assigns,
         call_time_assigns,
         load_time_appends,

@@ -25,7 +25,7 @@
 //! # Header syntax
 //!
 //! ```text
-//! //@unit <name>[ compile-time][ mutator][ effect[: <binding>, ...[ when: <binding>, ...][ unless: <binding>, ...]] | install: <binding>, ...][ requires: <binding>, ...]
+//! //@unit <name>[ compile-time][ mutator][ values][ effect[: <binding>, ...[ when: <binding>, ...][ unless: <binding>, ...]] | install: <binding>, ...][ requires: <binding>, ...]
 //! //@ <binding>, ...                    continues the header (any list wraps)
 //! //@exports
 //! ```
@@ -83,7 +83,17 @@
 //!   A `when:` list may also name an effect unit, `when: makeMap.equiv`,
 //!   which is kept only where that effect is: a hook that the body of an
 //!   effect reads is needed where the effect is kept, not wherever one of
-//!   its own `when:` units is.
+//!   its own `when:` units is. A target kept only for a class's prototype,
+//!   a runtime class the program only extends ([`RootUse::Extend`]), keeps
+//!   no `when:` effect that leaves its targets' bindings as they are: they
+//!   are the methods of the class's values, and it has none
+//!   ([`RuntimeManifest::reached_by_uses`], "prototype only"). One that
+//!   assigns a target, `MapEntryType.vector`, defines the class, and is
+//!   kept for its prototype too.
+//! - `values` marks an effect without `when:` that only its targets'
+//!   values use, a class's members (`Eduction.members`): kept as it would
+//!   be unmarked, but only for a target kept whole, never for a class's
+//!   prototype alone.
 //! - `effect: a [when: b] unless: c, d` is kept where it would be without
 //!   `unless:` but none of the `unless:` bindings' units is kept once
 //!   everything else is: the leaner form of something those units give in
@@ -206,6 +216,11 @@ pub struct Effect<'a> {
     /// once everything else is, the full form of what the effect gives
     /// leanly. Empty for an effect kept whatever else is.
     pub unless: Vec<&'a str>,
+    /// Marked `values`: only the targets' values use what the effect
+    /// installs (a class's members), so a target kept only for a class's
+    /// prototype keeps it not ([`RuntimeManifest::reached_by_uses`],
+    /// "prototype only").
+    pub values: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -233,6 +248,10 @@ pub struct Unit<'a> {
     /// The [`Unit::references`] called directly (`name(...)`) by code run at load
     /// time, outside every function body, sorted and without duplicates.
     pub load_time_calls: Vec<&'a str>,
+    /// The [`Unit::references`] whose code runs while the unit loads: called
+    /// directly, as [`Unit::load_time_calls`], or through a method
+    /// (`recordMethodTable.push(...)`), sorted and without duplicates.
+    pub load_time_runs: Vec<&'a str>,
     /// The [`Unit::references`] the body assigns, `seq = behindProtocol(seq, ...)`:
     /// another unit's binding that this unit replaces (a wrapper effect),
     /// sorted and without duplicates.
@@ -312,6 +331,15 @@ pub struct RuntimeManifest<'a> {
     dispatchers: HashMap<&'a str, &'a str>,
     /// Per unit: the units declaring its required bindings, sorted.
     dependencies: Vec<Vec<UnitId>>,
+    /// Per unit: those of its dependencies whose code runs while it loads
+    /// ([`Unit::load_time_runs`]), sorted.
+    runs: Vec<Vec<UnitId>>,
+    /// Per unit: whether it is an effect only its targets' values need, which
+    /// a target kept only for a class's prototype keeps not: one marked
+    /// `values`, or one with `when:` that does not assign a target (a class's
+    /// definition, `MapEntryType.vector`, which assigns it, is the
+    /// prototype's).
+    for_values: Vec<bool>,
     /// Per unit: the `effect:` units targeting one of its bindings.
     attached: Vec<Vec<UnitId>>,
     /// Per unit: the `install:` units targeting one of its bindings.
@@ -344,6 +372,22 @@ pub enum RootUse {
     /// The program only calls the binding directly, `rt$add(1, 2)`, so the
     /// `install:` units targeting it are not needed.
     Call,
+    /// The program only extends the binding, a runtime class: `extend-type`
+    /// and `extend-protocol` hand it to `extendType`, which writes methods
+    /// onto its prototype and reads the kind there. The program makes no
+    /// value of the class this way, so unless another use keeps the binding
+    /// whole, the slice keeps only the class's prototype
+    /// ([`RuntimeManifest::reached_by_uses`], "prototype only").
+    Extend,
+}
+
+/// What [`RuntimeManifest::reached_by_uses`] keeps, by [`UnitId`]: the root
+/// that first kept each unit, whether its value escaped, and whether it is
+/// kept whole rather than only for a class's prototype.
+struct Reach {
+    first: Vec<Option<usize>>,
+    escaped: Vec<bool>,
+    whole: Vec<bool>,
 }
 
 /// The function whose calls register core protocol dispatchers by key
@@ -457,6 +501,7 @@ impl<'a> RuntimeManifest<'a> {
                             declares: facts.declares,
                             references: facts.references,
                             load_time_calls: facts.load_time_calls,
+                            load_time_runs: facts.load_time_runs,
                             assigns: facts.assigns,
                             call_time_assigns: facts.call_time_assigns,
                             load_time_appends: facts.load_time_appends,
@@ -529,6 +574,7 @@ impl<'a> RuntimeManifest<'a> {
             return Err(errors);
         };
         let mut dependencies = Vec::with_capacity(units.len());
+        let mut runs = Vec::with_capacity(units.len());
         let mut attached = vec![Vec::new(); units.len()];
         let mut installs = vec![Vec::new(); units.len()];
         let mut conditions = vec![Vec::new(); units.len()];
@@ -542,6 +588,17 @@ impl<'a> RuntimeManifest<'a> {
                 .collect::<Vec<_>>();
             required.sort_unstable();
             required.dedup();
+            runs.push(
+                required
+                    .iter()
+                    .copied()
+                    .filter(|&owner| {
+                        unit.load_time_runs
+                            .iter()
+                            .any(|binding| bindings.get(binding) == Some(&owner))
+                    })
+                    .collect(),
+            );
             dependencies.push(required);
             if let Some(effect) = &unit.effect {
                 for target in &effect.targets {
@@ -620,6 +677,19 @@ impl<'a> RuntimeManifest<'a> {
             .filter(|&index| !blockers[index].is_empty())
             .map(UnitId)
             .collect();
+        let for_values = units
+            .iter()
+            .map(|unit| {
+                unit.effect.as_ref().is_some_and(|effect| {
+                    effect.values
+                        || !effect.when.is_empty()
+                            && !effect
+                                .targets
+                                .iter()
+                                .any(|target| unit.assigns.contains(target))
+                })
+            })
+            .collect();
         Ok(Self {
             source,
             prologue: 0..prologue_end,
@@ -630,6 +700,8 @@ impl<'a> RuntimeManifest<'a> {
             core,
             dispatchers,
             dependencies,
+            runs,
+            for_values,
             attached,
             installs,
             conditions,
@@ -787,43 +859,62 @@ impl<'a> RuntimeManifest<'a> {
     /// anywhere. A [`RootUse::Call`] root alone keeps none. An effect with
     /// `unless:` is kept last, where it would be kept without `unless:` and
     /// none of its `unless:` units is kept, and is attributed as a target.
+    ///
+    /// **Prototype only.** A [`RootUse::Extend`] root, a runtime class the
+    /// program only extends, is kept for its prototype alone: the program
+    /// makes no value of the class through it. Such a unit is in the slice,
+    /// and so are its dependencies and the effects that build the prototype
+    /// (the class's type unit, with its kind, masks and markers, and an
+    /// effect that assigns the class, `MapEntryType.vector`, with its
+    /// conditions), each kept the same way, as is a dependency of theirs, but
+    /// a dependency whose code runs while a unit loads (a call, `new`, or a
+    /// method call outside every function body) is kept whole. No effect
+    /// only values need is kept for them: one with `when:` that assigns no
+    /// target, the methods and slots of a class's values (rapid type
+    /// analysis for the runtime's own methods), or one marked `values`, a
+    /// class's members (`Eduction.members`); with no value they never run.
+    /// A unit is kept whole
+    /// wherever a root or a unit kept whole needs it, so a class's
+    /// constructors, and every operation that returns one of its values,
+    /// which requires its constructor, keep its slots again. Conditions count
+    /// however their units are kept; a target only kept whole.
     pub fn reached_by_uses(&self, roots: &[(UnitId, RootUse)]) -> Vec<Option<usize>> {
-        let mut first = vec![None; self.units.len()];
-        let mut escaped = vec![false; self.units.len()];
+        self.reach(roots).first
+    }
+
+    /// [`Self::reached_by_uses`] with which units are kept whole.
+    fn reach(&self, roots: &[(UnitId, RootUse)]) -> Reach {
+        let count = self.units.len();
+        let mut reach = Reach {
+            first: vec![None; count],
+            escaped: vec![false; count],
+            whole: vec![false; count],
+        };
         let mut stack = Vec::new();
         for (index, &(root, root_use)) in roots.iter().enumerate() {
             // A unit an earlier root reached has its whole closure attributed.
-            stack.push((root, root_use == RootUse::Value));
-            self.close(&mut stack, index, &mut first, &mut escaped);
+            stack.push((root, root_use != RootUse::Call, root_use != RootUse::Extend));
+            self.close(&mut stack, index, &mut reach);
         }
         loop {
-            let kept = |unit: &UnitId| first[unit.0].is_some();
             let ready = self
                 .lean
                 .iter()
-                .filter(|&&effect| !kept(&effect) && self.lean_ready(effect, kept))
-                .filter_map(|&effect| {
-                    let targets = &self.units[effect.0].effect.as_ref().unwrap().targets;
-                    targets
-                        .iter()
-                        .filter_map(|target| first[self.unit_of(target)?.0])
-                        .min()
-                        .map(|index| (effect, index))
-                })
+                .filter_map(|&effect| self.lean_keep(effect, &reach))
                 .collect::<Vec<_>>();
             if ready.is_empty() {
-                return first;
+                return reach;
             }
-            for (effect, index) in ready {
+            for (effect, index, whole) in ready {
                 // One kept before it may have kept what it waits to be without.
                 if self.blockers[effect.0]
                     .iter()
-                    .any(|unit| first[unit.0].is_some())
+                    .any(|unit| reach.first[unit.0].is_some())
                 {
                     continue;
                 }
-                stack.push((effect, true));
-                self.close(&mut stack, index, &mut first, &mut escaped);
+                stack.push((effect, true, whole));
+                self.close(&mut stack, index, &mut reach);
             }
         }
     }
@@ -837,46 +928,92 @@ impl<'a> RuntimeManifest<'a> {
             && !self.blockers[effect.0].iter().any(&kept)
     }
 
-    /// Keeps the closure of the units on `stack` for [`Self::reached_by_uses`],
+    /// How [`Self::reach`] keeps an `effect: ... unless:` unit that it may keep
+    /// ([`Self::lean_ready`]) and has not kept so yet: with the first root of a
+    /// target kept whole, whole; else, where it is no effect only values need,
+    /// with the first root of a target, as a prototype's.
+    fn lean_keep(&self, effect: UnitId, reach: &Reach) -> Option<(UnitId, usize, bool)> {
+        let kept = |unit: &UnitId| reach.first[unit.0].is_some();
+        if reach.whole[effect.0] || !self.lean_ready(effect, kept) {
+            return None;
+        }
+        let targets = &self.units[effect.0].effect.as_ref().unwrap().targets;
+        let owners = targets.iter().filter_map(|target| self.unit_of(target));
+        if let Some(index) = owners
+            .clone()
+            .filter(|owner| reach.whole[owner.0])
+            .filter_map(|owner| reach.first[owner.0])
+            .min()
+        {
+            return Some((effect, index, true));
+        }
+        if kept(&effect) || self.for_values[effect.0] {
+            return None;
+        }
+        owners
+            .filter_map(|owner| reach.first[owner.0])
+            .min()
+            .map(|index| (effect, index, false))
+    }
+
+    /// Keeps the closure of the units on `stack` for [`Self::reach`], each
+    /// with whether its value escapes and whether it is kept whole,
     /// attributing new units to the root at `index`.
-    fn close(
-        &self,
-        stack: &mut Vec<(UnitId, bool)>,
-        index: usize,
-        first: &mut [Option<usize>],
-        escaped: &mut [bool],
-    ) {
-        while let Some((unit, escapes)) = stack.pop() {
-            if escapes && !std::mem::replace(&mut escaped[unit.0], true) {
-                stack.extend(self.installs[unit.0].iter().map(|&install| (install, true)));
+    fn close(&self, stack: &mut Vec<(UnitId, bool, bool)>, index: usize, reach: &mut Reach) {
+        while let Some((unit, escapes, whole)) = stack.pop() {
+            let was_kept = reach.first[unit.0].is_some();
+            let was_whole = reach.whole[unit.0];
+            let whole = whole || was_whole;
+            // Its installs follow its value, kept as it is.
+            let newly_escaped = escapes && !std::mem::replace(&mut reach.escaped[unit.0], true);
+            if newly_escaped || whole && !was_whole && reach.escaped[unit.0] {
+                stack.extend(
+                    self.installs[unit.0]
+                        .iter()
+                        .map(|&install| (install, true, whole)),
+                );
             }
-            if first[unit.0].is_some() {
+            if was_kept && (was_whole || !whole) {
                 continue;
             }
-            first[unit.0] = Some(index);
-            stack.extend(self.dependencies[unit.0].iter().map(|&unit| (unit, true)));
-            let kept = |unit: &UnitId| first[unit.0].is_some();
-            // An effect with `when:` waits for one of its conditions; one with
-            // `unless:` for everything else.
+            if !was_kept {
+                reach.first[unit.0] = Some(index);
+            }
+            reach.whole[unit.0] = whole;
+            let runs = &self.runs[unit.0];
             stack.extend(
-                self.attached[unit.0]
+                self.dependencies[unit.0]
                     .iter()
-                    .filter(|effect| {
-                        let conditions = &self.conditions[effect.0];
-                        self.blockers[effect.0].is_empty()
-                            && (conditions.is_empty() || conditions.iter().any(kept))
-                    })
-                    .map(|&unit| (unit, true)),
+                    .map(|&dependency| (dependency, true, whole || runs.contains(&dependency))),
             );
-            // ... and is kept once a condition is, if a target is.
-            for &effect in &self.conditional[unit.0] {
-                let targets = &self.units[effect.0].effect.as_ref().unwrap().targets;
-                if self.blockers[effect.0].is_empty()
-                    && targets
-                        .iter()
-                        .any(|target| self.unit_of(target).is_some_and(|owner| kept(&owner)))
+            let kept = |unit: &UnitId| reach.first[unit.0].is_some();
+            // An effect with `when:` waits for one of its conditions; one with
+            // `unless:` for everything else. A unit kept only for a class's
+            // prototype keeps none of its values' effects.
+            for &effect in &self.attached[unit.0] {
+                let conditions = &self.conditions[effect.0];
+                if !self.blockers[effect.0].is_empty()
+                    || !conditions.is_empty() && !conditions.iter().any(kept)
                 {
-                    stack.push((effect, true));
+                    continue;
+                }
+                if whole || !self.for_values[effect.0] {
+                    stack.push((effect, true, whole));
+                }
+            }
+            // ... and is kept once a condition is, if a target is, whole if a
+            // target is kept whole.
+            for &effect in &self.conditional[unit.0] {
+                if !self.blockers[effect.0].is_empty() {
+                    continue;
+                }
+                let targets = &self.units[effect.0].effect.as_ref().unwrap().targets;
+                let owners = targets.iter().filter_map(|target| self.unit_of(target));
+                if owners.clone().any(|owner| reach.whole[owner.0]) {
+                    stack.push((effect, true, true));
+                } else if !self.for_values[effect.0] && owners.into_iter().any(|owner| kept(&owner))
+                {
+                    stack.push((effect, true, false));
                 }
             }
         }
@@ -891,21 +1028,27 @@ impl<'a> RuntimeManifest<'a> {
     /// for, so a single root's demands keep exactly the units with its bit,
     /// and all demands together the units with any: requires, `effect:`
     /// units and installs follow as there, an install with the roots whose
-    /// code holds its target's value. One more rule makes the slices of
-    /// several roots add up to the slice of all of them: an `effect: ...
-    /// when:` unit is needed by every root that needs a target once a root
-    /// that needs none of its targets needs a condition, since the values a
-    /// root builds can reach code that another root loads (`makeVector.seq`
-    /// for a feature that seqs a vector another feature built). And a kept
+    /// code holds its target's value, and each unit is kept whole for the
+    /// roots that keep it whole there ("prototype only"). One more rule makes
+    /// the slices of several roots add up to the slice of all of them: an
+    /// `effect: ... when:` unit is needed by every root that needs a target
+    /// whole once a root that needs none of its targets whole needs a
+    /// condition, since the values a root builds can reach code that another
+    /// root loads (`makeVector.seq` for a feature that seqs a vector another
+    /// feature built), and where some root needs it, by every root that needs
+    /// a target only for a class's prototype, so that a slot is installed
+    /// before that root's `extend-type` writes onto the prototype. And a kept
     /// unit that shares state through another unit's binding
-    /// ([`RuntimeManifest::sharers`]) has that unit's roots, so that both are
-    /// in one chunk. Neither rule keeps a unit no single root keeps alone or
-    /// with the others.
+    /// ([`RuntimeManifest::sharers`]) has that unit's roots, as that unit has
+    /// them, so that both are in one chunk. No rule keeps a unit no single
+    /// root keeps alone or with the others.
     pub fn signatures(&self, demands: &[(UnitId, RootUse, &[u64])], words: usize) -> Vec<Vec<u64>> {
-        /// The roots that need each unit and that hold its value, and the
-        /// units whose roots grew since they were last followed.
+        /// The roots that need each unit, that need it whole and that hold
+        /// its value, and the units whose roots grew since they were last
+        /// followed.
         struct Walk {
             needed: Vec<Vec<u64>>,
+            whole: Vec<Vec<u64>>,
             escaped: Vec<Vec<u64>>,
             queued: Vec<bool>,
             queue: std::collections::VecDeque<UnitId>,
@@ -918,11 +1061,17 @@ impl<'a> RuntimeManifest<'a> {
             }
             changed
         }
+        fn both(left: &[u64], right: &[u64]) -> Vec<u64> {
+            left.iter().zip(right).map(|(a, b)| a & b).collect()
+        }
         impl Walk {
-            /// Add `roots` to those that need `unit`, and to those that hold
-            /// its value when `value`.
-            fn grow(&mut self, unit: UnitId, roots: &[u64], value: bool) {
+            /// Add `roots` to those that need `unit`, `whole` (some of them) to
+            /// those that need it whole, and `roots` to those that hold its
+            /// value when `value`.
+            fn grow(&mut self, unit: UnitId, roots: &[u64], whole: &[u64], value: bool) {
                 let mut changed = add(&mut self.needed[unit.0], roots);
+                changed |= add(&mut self.needed[unit.0], whole);
+                changed |= add(&mut self.whole[unit.0], whole);
                 if value {
                     changed |= add(&mut self.escaped[unit.0], roots);
                 }
@@ -934,82 +1083,124 @@ impl<'a> RuntimeManifest<'a> {
         let count = self.units.len();
         let mut walk = Walk {
             needed: vec![vec![0u64; words]; count],
+            whole: vec![vec![0u64; words]; count],
             escaped: vec![vec![0u64; words]; count],
             queued: vec![false; count],
             queue: std::collections::VecDeque::new(),
         };
+        let none = vec![0u64; words];
         for &(unit, root_use, roots) in demands {
             debug_assert_eq!(roots.len(), words);
-            walk.grow(unit, roots, root_use == RootUse::Value);
+            let whole = if root_use == RootUse::Extend {
+                &none[..]
+            } else {
+                roots
+            };
+            walk.grow(unit, roots, whole, root_use != RootUse::Call);
         }
-        // An `effect: ... when:` unit's roots given its targets' and
-        // conditions' (see above).
-        let conditional = |needed: &[Vec<u64>], effect: UnitId| {
-            let mut targets = vec![0u64; words];
+        // The roots of an effect with `when:` or one only values need, from
+        // all its targets' and its conditions' (see above), and those that
+        // need it whole. One only values need takes the roots that need a
+        // target whole, and where it is kept, every root that needs a target
+        // only for a class's prototype too, so that it loads before the
+        // root's `extend-type` writes onto the prototype: a slot or member it
+        // installed later would replace the extension's. Another (a class's
+        // definition) takes every root that needs a target.
+        let conditional = |walk: &Walk, effect: UnitId| {
+            let mut wholes = vec![0u64; words];
+            let mut needed = vec![0u64; words];
             for target in &self.units[effect.0].effect.as_ref().unwrap().targets {
                 if let Some(owner) = self.unit_of(target) {
-                    add(&mut targets, &needed[owner.0]);
+                    add(&mut wholes, &walk.whole[owner.0]);
+                    add(&mut needed, &walk.needed[owner.0]);
                 }
             }
-            let mut conditions = vec![0u64; words];
-            for condition in &self.conditions[effect.0] {
-                add(&mut conditions, &needed[condition.0]);
+            let values = self.for_values[effect.0];
+            let targets = if values { &wholes } else { &needed };
+            let kept = if self.conditions[effect.0].is_empty() {
+                targets.clone()
+            } else {
+                let mut conditions = vec![0u64; words];
+                for condition in &self.conditions[effect.0] {
+                    add(&mut conditions, &walk.needed[condition.0]);
+                }
+                let elsewhere = conditions
+                    .iter()
+                    .zip(targets)
+                    .any(|(condition, target)| condition & !target != 0);
+                targets
+                    .iter()
+                    .zip(&conditions)
+                    .map(|(target, condition)| {
+                        if elsewhere {
+                            *target
+                        } else {
+                            target & condition
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            if !values {
+                let whole = both(&kept, &wholes);
+                (kept, whole)
+            } else if kept.iter().any(|&word| word != 0) {
+                let roots = kept
+                    .iter()
+                    .zip(needed.iter().zip(&wholes))
+                    .map(|(kept, (needed, whole))| kept | needed & !whole)
+                    .collect();
+                (roots, kept)
+            } else {
+                (kept.clone(), kept)
             }
-            let elsewhere = conditions
-                .iter()
-                .zip(&targets)
-                .any(|(condition, target)| condition & !target != 0);
-            targets
-                .iter()
-                .zip(&conditions)
-                .map(|(target, condition)| {
-                    if elsewhere {
-                        *target
-                    } else {
-                        target & condition
-                    }
-                })
-                .collect::<Vec<_>>()
         };
         loop {
             while let Some(unit) = walk.queue.pop_front() {
                 walk.queued[unit.0] = false;
                 let roots = walk.needed[unit.0].clone();
+                let wholes = walk.whole[unit.0].clone();
                 let values = walk.escaped[unit.0].clone();
                 for &dependency in &self.dependencies[unit.0] {
-                    walk.grow(dependency, &roots, true);
+                    // Whole where its code runs while the unit loads.
+                    let whole = if self.runs[unit.0].contains(&dependency) {
+                        &roots
+                    } else {
+                        &wholes
+                    };
+                    walk.grow(dependency, &roots, whole, true);
                 }
                 for &install in &self.installs[unit.0] {
-                    walk.grow(install, &values, true);
+                    walk.grow(install, &values, &both(&values, &wholes), true);
                 }
                 for &effect in &self.attached[unit.0] {
                     if !self.blockers[effect.0].is_empty() {
                         continue;
                     }
-                    let roots = if self.conditions[effect.0].is_empty() {
-                        roots.clone()
+                    if self.conditions[effect.0].is_empty() && !self.for_values[effect.0] {
+                        walk.grow(effect, &roots, &wholes, true);
                     } else {
-                        conditional(&walk.needed, effect)
-                    };
-                    walk.grow(effect, &roots, true);
+                        let (roots, whole) = conditional(&walk, effect);
+                        walk.grow(effect, &roots, &whole, true);
+                    }
                 }
                 for &effect in &self.conditional[unit.0] {
                     if !self.blockers[effect.0].is_empty() {
                         continue;
                     }
-                    let roots = conditional(&walk.needed, effect);
-                    walk.grow(effect, &roots, true);
+                    let (roots, whole) = conditional(&walk, effect);
+                    walk.grow(effect, &roots, &whole, true);
                 }
                 // A kept unit sharing state through another's binding has its
                 // roots ([`RuntimeManifest::sharers`]).
                 for &sharer in &self.sharers[unit.0] {
                     if walk.needed[sharer.0].iter().any(|&word| word != 0) {
-                        walk.grow(sharer, &roots, true);
+                        walk.grow(sharer, &roots, &wholes, true);
                     }
                 }
                 for &owner in &self.shared[unit.0] {
                     let roots = walk.needed[owner.0].clone();
-                    walk.grow(unit, &roots, true);
+                    let wholes = walk.whole[owner.0].clone();
+                    walk.grow(unit, &roots, &wholes, true);
                 }
             }
             // An `effect: ... unless:` unit waits for everything else and is kept
@@ -1021,18 +1212,20 @@ impl<'a> RuntimeManifest<'a> {
                 if !self.lean_ready(effect, |unit| needed(&walk, unit)) {
                     continue;
                 }
-                let roots = if self.conditions[effect.0].is_empty() {
+                if self.conditions[effect.0].is_empty() && !self.for_values[effect.0] {
                     let mut targets = vec![0u64; words];
+                    let mut wholes = vec![0u64; words];
                     for target in &self.units[effect.0].effect.as_ref().unwrap().targets {
                         if let Some(owner) = self.unit_of(target) {
                             add(&mut targets, &walk.needed[owner.0]);
+                            add(&mut wholes, &walk.whole[owner.0]);
                         }
                     }
-                    targets
+                    walk.grow(effect, &targets, &wholes, true);
                 } else {
-                    conditional(&walk.needed, effect)
-                };
-                walk.grow(effect, &roots, true);
+                    let (roots, whole) = conditional(&walk, effect);
+                    walk.grow(effect, &roots, &whole, true);
+                }
             }
             if walk.queue.is_empty() {
                 return walk.needed;
@@ -1345,6 +1538,9 @@ impl<'a> RuntimeManifest<'a> {
             if unit.mutator {
                 words.push("mutator".into());
             }
+            if unit.effect.as_ref().is_some_and(|effect| effect.values) {
+                words.push("values".into());
+            }
             // A keyword, then its list's items with their commas.
             let mut list = |keyword: &str, items: &[&str]| {
                 words.push(keyword.into());
@@ -1652,6 +1848,7 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
     }
     let compile_time = words.next_if_eq(&"compile-time").is_some();
     let mutator = words.next_if_eq(&"mutator").is_some();
+    let values = words.next_if_eq(&"values").is_some();
     let mut effect = None;
     if words.next_if_eq(&"effect").is_some() {
         effect = Some(Effect {
@@ -1659,6 +1856,7 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
             install: false,
             when: Vec::new(),
             unless: Vec::new(),
+            values: false,
         });
     } else if let Some(keyword) = words.next_if(|word| matches!(*word, "effect:" | "install:")) {
         let install = keyword == "install:";
@@ -1672,7 +1870,17 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
             install,
             when: Vec::new(),
             unless: Vec::new(),
+            values,
         });
+    }
+    if values
+        && !effect
+            .as_ref()
+            .is_some_and(|effect| effect.values && !effect.install)
+    {
+        return Err(format!(
+            "unit `{name}`: `values` needs `effect:` with a target"
+        ));
     }
     for keyword in ["when:", "unless:"] {
         if words.next_if_eq(&keyword).is_none() {
@@ -1704,7 +1912,7 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
     let rest = words.collect::<Vec<_>>();
     if !rest.is_empty() {
         return Err(format!(
-            "unit `{name}`: unexpected `{}`; expected `compile-time`, `mutator`, `effect`, `install:` or `requires:`",
+            "unit `{name}`: unexpected `{}`; expected `compile-time`, `mutator`, `values`, `effect`, `install:` or `requires:`",
             rest.join(" ")
         ));
     }
@@ -2406,6 +2614,145 @@ mod tests {
             )),
             "unit `table.lean`: keeps its `unless:` binding `op` through what it requires"
         );
+    }
+
+    /// A class `Thing` whose values `Cell` builds: `Thing.type` sets its kind
+    /// through `makeType`, which it calls while loading, `Cell.type` shares
+    /// its prototype, and `Thing.count` is the slot of `op`. `build` makes a
+    /// value.
+    const CLASS: &str = "// Original bounded runtime\n(() => {\n  \"use strict\";\n\n  //@unit Cell\n  function Cell(x) { this.x = x; }\n  //@unit makeType mutator\n  function makeType(Type, kind) { Type.prototype.kind = kind; return Type; }\n  //@unit Thing requires: Cell\n  function Thing(x) { return new Cell(x); }\n  //@unit Thing.type effect: Thing requires: makeType, Thing\n  makeType(Thing, 7);\n  //@unit Cell.type effect: Cell requires: Cell, Thing\n  Cell.prototype = Thing.prototype;\n  //@unit walk\n  function walk(v) { return v.x; }\n  //@unit op\n  function op(v) { return v.count(); }\n  //@unit Thing.count effect: Thing when: op requires: Thing, walk\n  Thing.prototype.count = function () { return walk(this); };\n  //@unit makeType.op effect: makeType when: op requires: makeType, op\n  makeType.op = op;\n  //@unit build requires: Cell\n  function build(x) { return new Cell(x); }\n  //@exports\n  return Object.freeze({Thing, op, build});\n})()\n";
+
+    /// light-cljs-1052: a class only extended is kept for its prototype.
+    #[test]
+    fn a_class_only_extended_keeps_its_prototype_and_no_slot() {
+        let manifest = RuntimeManifest::parse(CLASS).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(manifest.with_computed_requires(), CLASS);
+        let unit = |name| manifest.unit_named(name).unwrap();
+        let kept = |roots: &[(UnitId, RootUse)]| {
+            let first = manifest.reached_by_uses(roots);
+            manifest
+                .units
+                .iter()
+                .zip(first)
+                .filter(|(_, first)| first.is_some())
+                .map(|(unit, _)| unit.name)
+                .collect::<Vec<_>>()
+        };
+        let extend = (unit("Thing"), RootUse::Extend);
+        let op = (unit("op"), RootUse::Value);
+        // The prototype, with what builds it; `makeType` runs as it loads,
+        // so it is kept whole, with its own effect on `op`.
+        assert_eq!(
+            kept(&[extend, op]),
+            [
+                "Cell",
+                "makeType",
+                "Thing",
+                "Thing.type",
+                "Cell.type",
+                "op",
+                "makeType.op"
+            ]
+        );
+        let whole = [
+            "Cell",
+            "makeType",
+            "Thing",
+            "Thing.type",
+            "Cell.type",
+            "walk",
+            "op",
+            "Thing.count",
+            "makeType.op",
+        ];
+        // A value read, or a unit that builds one, keeps the slot.
+        assert_eq!(kept(&[(unit("Thing"), RootUse::Value), op]), whole);
+        assert_eq!(kept(&[extend, op, (unit("Thing"), RootUse::Call)]), whole);
+        let mut built = whole.to_vec();
+        built.push("build");
+        assert_eq!(kept(&[extend, op, (unit("build"), RootUse::Value)]), built);
+        assert_eq!(kept(&[(unit("build"), RootUse::Value), op, extend]), built);
+        // Without an operation, no slot either way.
+        assert_eq!(
+            kept(&[extend]),
+            ["Cell", "makeType", "Thing", "Thing.type", "Cell.type"]
+        );
+        // `makeType` runs as `Thing.type` loads, called or through a method;
+        // `walk` only inside a function.
+        assert_eq!(
+            manifest.units[unit("Thing.type").0].load_time_runs,
+            ["makeType"]
+        );
+        assert!(
+            manifest.units[unit("Thing.count").0]
+                .load_time_runs
+                .is_empty()
+        );
+        let method = CLASS.replace("makeType(Thing, 7);", "makeType.call(null, Thing, 7);");
+        let manifest = RuntimeManifest::parse(&method).unwrap();
+        manifest.validate().unwrap();
+        let unit = |name| manifest.unit_named(name).unwrap();
+        assert_eq!(
+            manifest.units[unit("Thing.type").0].load_time_runs,
+            ["makeType"]
+        );
+        assert!(
+            manifest.units[unit("Thing.type").0]
+                .load_time_calls
+                .is_empty()
+        );
+        let roots = [
+            (unit("Thing"), RootUse::Extend),
+            (unit("op"), RootUse::Value),
+        ];
+        assert!(manifest.reached_by_uses(&roots)[unit("makeType.op").0].is_some());
+        let bit = [1u64];
+        let signatures =
+            manifest.signatures(&roots.map(|(unit, root_use)| (unit, root_use, &bit[..])), 1);
+        assert_eq!(signatures[unit("makeType.op").0][0], 1);
+        assert_eq!(signatures[unit("Thing.count").0][0], 0);
+        let manifest = RuntimeManifest::parse(CLASS).unwrap();
+        let unit = |name| manifest.unit_named(name).unwrap();
+        // Among roots, the slot goes with the root that builds a value, and
+        // with the root that extends the class, so that it is installed
+        // before the extension, which it would otherwise replace. Each root
+        // alone keeps what `reached_by_uses` keeps for it.
+        let [first, second, both] = [[1u64], [2], [3]];
+        let demands = [
+            (unit("Thing"), RootUse::Extend, &first[..]),
+            (unit("op"), RootUse::Value, &both[..]),
+            (unit("build"), RootUse::Value, &second[..]),
+        ];
+        let signatures = manifest.signatures(&demands, 1);
+        assert_eq!(
+            [
+                "Thing",
+                "Thing.type",
+                "makeType",
+                "Thing.count",
+                "walk",
+                "build"
+            ]
+            .map(|name| signatures[unit(name).0][0]),
+            [3, 3, 3, 3, 3, 2]
+        );
+        for (bit, roots) in [[0usize, 1], [1, 2]].iter().enumerate() {
+            let demands = roots
+                .iter()
+                .map(|&index| (demands[index].0, demands[index].1, &first[..]))
+                .collect::<Vec<_>>();
+            let signatures = manifest.signatures(&demands, 1);
+            let alone = manifest.reached_by_uses(
+                &demands
+                    .iter()
+                    .map(|&(unit, root_use, _)| (unit, root_use))
+                    .collect::<Vec<_>>(),
+            );
+            for (unit, kept) in alone.iter().enumerate() {
+                assert_eq!(kept.is_some(), signatures[unit][0] != 0, "{bit}: {unit}");
+            }
+        }
     }
 
     #[test]
