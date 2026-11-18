@@ -10550,6 +10550,9 @@ impl Analyzer<'_> {
     ) -> Result<Vec<(MethodDispatch, FnMethod)>, AnalysisError> {
         let mut protocol = None;
         let mut methods = Vec::new();
+        // The current protocol and the names of its methods so far, as
+        // written, for upstream's `extend-type-invalid-method-shape` warning.
+        let mut written: (String, Vec<String>) = Default::default();
         for &arg in args {
             let arg = if matches!(self.syntax.nodes[arg.0].kind, NodeKind::Metadata { .. }) {
                 self.expand_reader(arg)?
@@ -10558,6 +10561,7 @@ impl Analyzer<'_> {
             };
             if matches!(self.syntax.nodes[arg.0].kind, NodeKind::Symbol) {
                 let name = self.spelling(arg).to_owned();
+                written = (name.clone(), Vec::new());
                 let builtin = match name.split_once('/') {
                     Some((qualifier, local))
                         if matches!(qualifier, "cljs.core" | "clojure.core")
@@ -10732,6 +10736,23 @@ impl Analyzer<'_> {
                     AnalysisErrorKind::InvalidForm("a protocol must precede its methods"),
                 ));
             };
+            // `extend-type` and `specify!` take a method's arities in one form,
+            // `(m ([x] ...) ([x y] ...))`; upstream warns of a method named
+            // again under its protocol (light-cljs-1063), whose answers stay
+            // upstream's: a host type keeps the last form (`native` below),
+            // a prototype each form's arities.
+            if !strict {
+                let method = self.spelling(name).to_owned();
+                if written.1.contains(&method) {
+                    let message = format!(
+                        "Bad extend-type method shape for protocol {} method {method}, method arities must be grouped together",
+                        written.0
+                    );
+                    self.warn(id, "extend-type-invalid-method-shape", message);
+                } else {
+                    written.1.push(method);
+                }
+            }
             let (dispatch, kind, arities) = match protocol {
                 Ok(protocol) => {
                     let method = self.program.protocols[protocol]
@@ -10858,6 +10879,9 @@ impl Analyzer<'_> {
                     AnalysisErrorKind::InvalidForm("IFn extension signatures must be grouped"),
                 ));
             }
+            // A host type's table holds one function per method, as upstream's
+            // `(unchecked-set m "number" (fn ...))` of each method form: a
+            // later form of the method replaces the earlier, all its arities.
             if native {
                 methods.retain(|(key, _)| key != &dispatch);
             }

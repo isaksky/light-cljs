@@ -3140,7 +3140,11 @@ available when a later error stops compilation. Warning collection includes
 undeclared Vars, private Var access (Var literals bypass that warning),
 JavaScript local shadowing, declared/defined argument lists, function and record
 arities, non-dynamic earmuffed names, arithmetic operand types, checked array
-access, single-segment namespaces, the reserved `js` namespace alias, and
+access, single-segment namespaces, the reserved `js` namespace alias,
+`extend-type`, `extend-protocol` and `specify!` methods named again under their
+protocol (`extend-type-invalid-method-shape`, upstream's: a method's arities go
+in one form, `(m ([x] ...) ([x y] ...))`, and in forms of their own a host
+type's table keeps the last one, as upstream's does), and
 JavaScript package libspecs that bind nothing (`package-require-no-effect`, also
 collected without `warning_mode`). Type
 diagnostics use bounded inference over analyzed expressions.

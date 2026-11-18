@@ -585,3 +585,55 @@ fn record_constructor_arities_find_each_record_declared_so_far() {
         ]
     );
 }
+
+/// Upstream's `extend-type-invalid-method-shape` (light-cljs-1063):
+/// `extend-type`, `extend-protocol` and `specify!` take a method's arities in
+/// one form, so a method named again under its protocol warns, each time, of
+/// a host type and of a prototype alike. A type's and a `reify`'s methods take
+/// a form per arity, and a name may come again under another protocol.
+#[test]
+fn extend_type_warns_of_ungrouped_method_arities() {
+    let shape = |protocol: &str, method: &str| {
+        format!(
+            "Bad extend-type method shape for protocol {protocol} method {method}, method arities must be grouped together"
+        )
+    };
+    let declared =
+        "(defprotocol P (m [x] [x y] [x y z]) (n [x])) (defprotocol Q (m2 [x])) (deftype T [])";
+    for extension in [
+        "(extend-type number P (m [x] 1) (n [x] 3) (m [x y] 2))",
+        "(extend-type js/Date P (m [x] 1) (m [x y] 2))",
+        "(extend-type T P (m [x] 1) (m [x y] 2))",
+        "(extend-protocol P string (m [x] 1) (m [x y] 2))",
+        "(specify! #js {} P (m [x] 1) (m [x y] 2))",
+    ] {
+        let source = format!("(do {declared} {extension})");
+        assert_eq!(messages(&source), [shape("P", "m")], "{extension}");
+        assert_eq!(
+            warnings(&source, false)[0].kind,
+            "extend-type-invalid-method-shape"
+        );
+    }
+    assert_eq!(
+        messages(&format!(
+            "(do {declared} (extend-type number P (m [x] 1) (m [x y] 2) (m [x y z] 3)) \
+             (extend-type string cljs.core/ILookup (-lookup [x k] 1) (-lookup [x k nf] 2)))"
+        )),
+        [
+            shape("P", "m"),
+            shape("P", "m"),
+            shape("cljs.core/ILookup", "-lookup")
+        ]
+    );
+    for valid in [
+        "(extend-type number P (m ([x] 1) ([x y] 2)) (n [x] 3))",
+        "(extend-type number P (m [x] 1) Q (m2 [x] 2) P (m [x y] 2))",
+        "(deftype U [] P (m [x] 1) (m [x y] 2))",
+        "(reify P (m [x] 1) (m [x y] 2))",
+    ] {
+        assert!(
+            messages(&format!("(do {declared} {valid})")).is_empty(),
+            "{valid}"
+        );
+    }
+}

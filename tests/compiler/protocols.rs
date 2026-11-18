@@ -75,6 +75,104 @@ fn dispatchers_send_nil_receivers_to_the_nil_table_and_falsy_ones_to_their_type(
     );
 }
 
+/// Each arity of a method that `extend-type` gives in one form, `(m ([x] ...)
+/// ([x y] ...))`, is dispatched on every host type, a host constructor, a
+/// program's types, a runtime type and `specify!`, called directly and
+/// through the method's value, at every level (light-cljs-1063). A method's
+/// arities in forms of their own are a shape upstream warns of
+/// (`warnings::extend_type_warns_of_ungrouped_method_arities`), and the
+/// answers stay upstream's, as shadow-cljs 3.5.3 printed them: a host type's
+/// table keeps the last form, so a one-argument call runs the two-argument
+/// method (`##NaN`), and a prototype each form's arity.
+#[test]
+fn extend_type_dispatches_each_grouped_arity_on_host_types() {
+    let types = "(deftype T []) (defrecord R [])";
+    let targets = [
+        ("number", "4"),
+        ("string", "\"s\""),
+        ("boolean", "true"),
+        ("nil", "nil"),
+        ("array", "(array)"),
+        ("function", "inc"),
+        ("object", "#js {}"),
+        ("default", "(js/Symbol \"q\")"),
+        ("js/Date", "(js/Date. 0)"),
+        ("T", "(T.)"),
+        ("R", "(R.)"),
+        ("PersistentVector", "[1]"),
+    ];
+    let extensions = |grouped: bool| {
+        targets
+            .iter()
+            .map(|(target, _)| {
+                let tag = target.trim_start_matches("js/");
+                if grouped {
+                    format!("(extend-type {target} P (m ([x] [:{tag} 1]) ([x y] [:{tag} 2])))")
+                } else {
+                    format!("(extend-type {target} P (m [x] [:{tag} 1]) (m [x y] [:{tag} 2]))")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let values = targets
+        .iter()
+        .map(|(_, value)| *value)
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Each value's `[(m x) (m x 0) (f x) (f x 0)]` when `(m x)` answers
+    // `[:tag one]`.
+    let answers = |tags: &[&str], one: u8| {
+        tags.iter()
+            .map(|tag| format!("[[:{tag} {one}] [:{tag} 2] [:{tag} {one}] [:{tag} 2]]"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let hosts = [
+        "number", "string", "boolean", "nil", "array", "function", "object", "default",
+    ];
+    let prototypes = ["Date", "T", "R", "PersistentVector"];
+    let grouped = format!(
+        "(defprotocol P (m [x] [x y])) {types}
+         {}
+         (extend-type number ILookup (-lookup ([x k] [:lookup k]) ([x k nf] [:lookup k nf])))
+         (def xs [{values} {{}} (specify! #js {{}} P (m ([x] [:specify 1]) ([x y] [:specify 2])))])
+         (def f m)
+         (pr-str [(mapv (fn [x] [(m x) (m x 0) (f x) (f x 0)]) xs) (get 4 :a) (get 4 :a :nf)])",
+        extensions(true)
+    );
+    // A map takes the `object` table (docs/value-layout.md, section 3).
+    assert_eq!(
+        run(&grouped),
+        format!(
+            "\"[[{} {} {}] [:lookup :a] [:lookup :a :nf]]\"\n",
+            answers(&hosts, 1),
+            answers(&prototypes, 1),
+            answers(&["object", "specify"], 1)
+        )
+    );
+    let ungrouped = format!(
+        "(defprotocol P (m [x] [x y])) {types}
+         (deftype V [] P (m [x] [:V 1]) (m [x y] [:V 2]))
+         {}
+         (defprotocol Q (q [x] [x y]))
+         (extend-type number Q (q [x] (inc x)) (q [x y] (+ x y 100)))
+         (def xs [{values} (V.) (specify! #js {{}} P (m [x] [:specify 1]) (m [x y] [:specify 2]))])
+         (def f m)
+         (pr-str [(mapv (fn [x] [(m x) (m x 0) (f x) (f x 0)]) xs) [(q 4) (q 4 1)]])",
+        extensions(false)
+    );
+    assert_eq!(
+        run(&ungrouped),
+        format!(
+            "\"[[{} {} {}] [##NaN 105]]\"\n",
+            answers(&hosts, 2),
+            answers(&prototypes, 1),
+            answers(&["V", "specify"], 1)
+        )
+    );
+}
+
 /// Protocol methods called as values, whose receivers no level can type: at
 /// `Advanced` each method's dispatcher is a function of its own that calls the
 /// receiver's slot and leaves the rest to the shared path (light-cljs-265).
