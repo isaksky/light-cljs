@@ -1355,6 +1355,59 @@ metadata field without `meta`'s lookup.
   vectors no longer reach, take other feedback there. Workload 200k
   unchanged.
 
+What light-cljs-1059 landed: `reduce` of a hash or array set and of an
+indexed seq calls a slot before any protocol lookup; the other seqs, a map
+entry, a sorted map or set and a queue keep `reduce`'s path, as measured.
+
+- **Slots.** A hash or array set (`PersistentHashSetValue`) and an indexed
+  seq (`IndexedSeqValue`: rest arguments, a short vector's seq, a set's or a
+  queue's seq, a public constructor's over the caller's array or string)
+  have `-reduce`, one method in both arity slots as light-cljs-1055's,
+  which `reduce.slots` calls (its 96 bytes of bytecode unchanged). Both
+  walk their items with one function (`itemsReduce`) as `reduce` walks
+  them: a set its members' keys in traversal order, which its seq holds,
+  where `reduce` took `iterator`, a `SeqIter`, a fresh array of the keys
+  with an indexed seq over it, and the `IIterable` lookups; an indexed seq
+  its array from its offset, read as the walk reaches each item. Upstream's
+  sets have no IReduce: `reduceable?` of a set stays false, since a slot is
+  no mask bit, and the lookups (`keyMethod`) take no runtime slot for a
+  program's method.
+- **Complete.** A slot walks only where the value's `-seq` is its class's
+  own and it has no `-iterator`, which `reduce` walks for a set and a
+  queue's seq, and where the indexed seqs' `-first` and `-next`, which that
+  iterator calls, are their class's own (each read as the slot loads). A
+  set that `specify!` or `extend-type` gave one arity of `IReduce` takes
+  the lookup for the other (`noBranch`), which throws as before, since a
+  set does not implement it. Otherwise an `-seq`, an `-iterator`, an
+  `-first`, an `-next` or an `IReduce` that `extend-type` or `specify!`
+  gave, and a compiler session demanding declarations (`slotFirst`), take
+  `reduce`'s own path (`reduceOwn`) or the program's method in the slot, as
+  before; a value made by reflection answers `noBranch`. The answers are
+  pinned at every level by
+  `reduce_slots_keep_the_answers_of_extended_seqs_and_reductions`, and slot
+  against path by tests/support/js_runtime.test.js.
+- **Left out, as measured.** The other seqs (lists, conses, lazy seqs,
+  chunked conses and seqs, ranges, repeats, iterates, cycles, re-seq's
+  conses, the map and reversed seqs) were first given one shared slot
+  that took `reduceOwn`. Since light-cljs-1046 their lookup is a few kind,
+  mask and marker reads, which the slot's own call and field tests cost as
+  well: with one `extend-type`, a 3-item list 111 to 104 ns, a cons 145 to
+  129, a 3-item lazy seq 249 to 235, but a range of 10 90 to 98 and a repeat
+  of 3 57 to 67 (alternated scratch runs, load 15-18), for 76 bytes of
+  TodoMVC's gzip; without the seq slots the lists, conses and lazy seqs
+  measured as fast as with them. A sorted map's tree walk (5 lookups to
+  none, 78 bytes) and a queue's walk (13 to none) were left out as rarely
+  reduced, a map entry as light-cljs-1055 left it, and a sorted set, whose
+  seq depends on `fieldComparisons`. Their `reduce` keeps the lookup; a
+  map seq's and a key seq's walks take lookups of their own, as the map
+  seqs have no `-first` or `-next` slots.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1059):
+  `reduce` of a 3-member set with one `extend-type` 251 to 21 ns, of 3 rest
+  arguments 183 to 43, `into []` of a 3-member set 452 to 173; the gate's
+  `merge-small` (rest arguments) -11% and no operation over 3% slower;
+  workload 200k's steady state 45.3 to 44.9 ms per iteration; the re-frame
+  apps' whole bundles 233 to 257 bytes larger after gzip (0.07 to 0.20%).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

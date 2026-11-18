@@ -4165,3 +4165,102 @@ They were measured before light-cljs-1060 and light-cljs-1058 landed; this pelle
 - **workload 200k:** 3,529,299 to 3,460,653 bytes raw, and 883,581 to 853,838 after gzip -9 (-3.4%).
 - **The re-frame apps** (benchmarks/re-frame-vs-shadow.md), whole bundles with React after gzip -9: simple -1,067, TodoMVC -1,522 and flow -9,507 bytes.
 - **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): 9 to 161 bytes smaller where a program has keyword constants; `constant-lookups`' ceiling moves down to 5,700.
+
+## 2026-11-17: sets and indexed seqs reduce by their own slots (light-cljs-1059)
+
+**What.** A hash or array set and an indexed seq (rest arguments, a short
+vector's seq, a set's or a queue's seq, a public constructor's) have a
+`-reduce` slot, which `reduce.slots` calls before any protocol lookup. A
+set's walks its members' keys in traversal order, where `reduce` walked its
+iterator over a fresh indexed seq of them; an indexed seq's walks its array
+from its offset. Where `extend-type` or `specify!` gave the value an `-seq`
+or an `-iterator`, or the indexed seqs an `-first` or `-next`, the slot
+takes `reduce`'s own path. The other seqs, a map entry, a sorted map or set
+and a queue were measured with slots and left without them (below).
+docs/value-layout.md, "What light-cljs-1059 landed".
+
+Binaries in research/shadow-credibility/bin: before `light-cljs-a33f6fef`
+(master), after `light-cljs-6fe3af28` (this pellet's runtime on it, after
+the review's two fixes) and `light-cljs-2071580c` (before them: a first
+gate pass and workload run, within 2% of the second but `merge-small`,
+-7%, and `update-in-3`, -5%). Unreserved: peer workers built and tested
+throughout. Raw results: research/output-speed/reduce-slots-1059.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, every operation; before
+load 11.95-14.75, after 6.35-13.27), ns per operation, median (range), the
+operations the pellet names and every one that moved by 3% or more:
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| reduce-map-inc-1000 | 46,649 (45,677-46,943) | 46,059 (45,573-46,839) | -1% | 40,124 / 41,581 | 1.16 | 1.11 |
+| reduce-range-1000 | 4,947 (4,918-5,171) | 5,120 (4,859-5,250) | +3% | 5,472 / 5,462 | 0.90 | 0.94 |
+| lazy-walk-1000 | 43,691 (42,032-44,043) | 43,520 (43,324-43,821) | +0% | 39,399 / 38,768 | 1.11 | 1.12 |
+| group-by-100 | 8,744 (8,674-8,872) | 8,621 (8,565-8,686) | -1% | 5,138 / 5,045 | 1.70 | 1.71 |
+| merge-small | 2,682 (2,643-2,728) | 2,375 (2,346-2,437) | -11% | 898.4 / 893.7 | 2.98 | 2.66 |
+| str-nested-map | 4,052 (3,994-4,243) | 3,951 (3,918-3,964) | -3% | 2,246 / 2,215 | 1.80 | 1.78 |
+
+- **No operation is slower by more than 3%.** `reduce-range-1000`
+  reduces an integer range, which has no slot: its path is unchanged and
+  its ranges overlap (+0% in the first pass).
+- `merge-small` merges maps given as rest arguments: `merge` reduces its
+  indexed seq of them, which now takes the slot.
+- The gate holds no `extend-type`, so `reduce.protocol`'s lookup there is
+  `ownMethod`'s few reads: the slots pay where the path itself is slow (a
+  set's iterator) or long against its walk (a short indexed seq).
+
+**Off the gate**, in a scratch program with one `extend-type` (a record
+extended with `ICounted`), `6fe3af28` against `a33f6fef`, 3 processes each,
+alternated, median of 7 rounds (load 10.1-10.4), ns per call: `reduce` of
+a 3-member set 251 to 20.7, of a 20-member set 896 to 176, of `(seq [1 2
+3])` 165 to 24.6, of 3 rest arguments 183 to 43.3; `into []` of a 3-member
+set 452 to 173. Without slots, as before: a 3-item list 110 to 100, a cons
+143 to 123, a realized 3-item lazy seq 244 to 228, a range of 10 91 to 82,
+a repeat of 3 57 to 56, a sorted set of 3 626 to 596, a sorted map of 3
+245 to 244, a queue of 3 522 to 503, a map entry 132 to 135. A
+program without `extend-type` (a record implementing a program protocol)
+measured the same within 5% in an earlier pass. In the readable release
+output of `reduce_of_vectors_and_maps_takes_no_protocol_lookup`, the sets'
+and indexed seqs' reductions take 14 lookups on master `f8f1ed3f` and none
+after; the lists', lazy seqs' and sorted sets' still take theirs.
+
+**Measured and left out.** One slot shared by the other seq classes (it took
+`reduce`'s own path, as the classes' walks need) gave, with one
+`extend-type`, a 3-item list 111 to 104 ns, a cons 145 to 129, a lazy seq
+249 to 235, an indexed seq 167 to 168, a range of 10 90 to 98, a repeat of
+3 57 to 67, a chunked seq of 39 405 to 410, a chunked cons of 40 2,220 to
+2,290 (`light-cljs-6a18e208` against a runtime with those slots, load
+15-18), for 76 bytes of TodoMVC's gzip; the gains match those of the lists
+above, which have no slot. A sorted map's tree walk took its 5 lookups to
+none for 78 bytes of TodoMVC's gzip, a queue's walk its 13; both are
+rarely reduced.
+
+**Workload 200k** (`compare.bb PROJECT --runs 5 --runtime-only --runtime
+1,40`, the light-cljs output rebuilt with each binary just before its
+runs), wall time at 40 iterations, median (range), and light-cljs's steady
+state:
+
+| project | light before | light after (`6fe3af28`) | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k | 2.152 s (2.143-2.182) | 2.123 s (2.073-2.134) | 1.303 / 1.336 s | 45.3 to 44.9 (shadow-cljs 25.2 / 26.2) | 12.8-13.4 / 8.2-8.6 |
+
+The first pass (`2071580c`) gave 44.8 ms per iteration.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only`,
+ports from `shadow-port-tool-983`), the whole bundle with React, gzip -9:
+
+| App | before (`a33f6fef`) | after (`6fe3af28`) | change |
+| --- | ---: | ---: | ---: |
+| re-frame simple | 113,870 | 114,103 | +233 (+0.20%) |
+| TodoMVC | 145,424 | 145,681 | +257 (+0.18%) |
+| flow | 333,157 | 333,406 | +249 (+0.07%) |
+
+- light-cljs's output as written, gzip -9: simple 67,442 to 67,684 (+242),
+  TodoMVC 97,202 to 97,440 (+238), flow 280,245 to 280,480 (+235).
+- Every app keeps sets and indexed seqs, so each pays the two slots, the
+  walk they share (`itemsReduce`) and the keyed names of the six slot reads
+  their guards make. The review's two guards (an indexed seq's `-first` and
+  `-next`, a set's one-arity `IReduce`) cost 40 to 90 of these bytes.
+- The size ratchet (tests/support/ratchet_fixtures.rs, noted there): 653 to
+  1,197 bytes more at advanced where a program reduces a set or an indexed
+  seq, nine advanced ceilings moved; the readable runtime 4,108 bytes more,
+  mostly comments.
