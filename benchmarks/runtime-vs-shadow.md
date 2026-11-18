@@ -3896,8 +3896,18 @@ iteration (-1%, within the spread), shadow-cljs 23.3 and 22.8; light/shadow
 **Size** (advanced): workload 200k 3,559,758 to 3,560,043 bytes raw and
 896,479 to 896,551 after gzip -9 (+72, under 0.01%); the size ratchet
 (tests/support/ratchet_fixtures.rs, noted there), rebased onto master
-`1df0a071`: 279 bytes where a program keeps hash maps (`constant-keys`,
+`1df0a071`: 272 bytes where a program keeps hash maps (`constant-keys`,
 `features`, `features-direct`), for `keywordProgramEquiv`, which the key
 test now keeps; the ceilings of `constant-keys` and `features-direct` move
 to the next 1,000. The timings above are on the runtime before
 light-cljs-1048's short keyed names, which change no access V8 makes.
+
+**After the Sol review's fix** (`keywordProgramEquiv` reads the key's slot
+without the protocol lookup, 70 to 79 bytes of bytecode), the gate's
+readable builds of master `1df0a071` (light-cljs-1048's short names
+included) and of the final runtime, one process each, alternated twice
+(load 5-7), ns per operation: `kw-hash100` 25.0 and 25.3 to 16.0 and 16.5,
+`get-hash100` 20.8 and 20.8 to 11.4 and 11.3, `kw-small` 7.90 and 7.93 to
+7.95 and 7.95, `get-small` 12.6 and 12.5 to 12.6 and 12.6,
+`contains-small` 11.4 and 11.3 to 11.3 and 11.4, `record-kw-field` 5.97 and
+5.95 to 5.93 and 6.04: the same as before the fix.

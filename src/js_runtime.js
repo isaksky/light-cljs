@@ -3449,7 +3449,7 @@
   // the key at `from` on. A keyword is searched here, every other key, and a
   // keyword with a program's `IEquiv` method, by `arrayIndexOf`. That keeps
   // this function small (246 bytes of bytecode, the read of the program's
-  // method 71), so that V8 still inlines an array map's `get` whole into a
+  // method 79), so that V8 still inlines an array map's `get` whole into a
   // lookup call that also takes hash maps and records, as `getSite`'s call
   // of the `-lookup` slot, which every `(:k m)` of a program shares
   // (light-cljs-1041). At 381 and 180 bytes, 636 with `arrayMapLookup`, it
@@ -3509,22 +3509,25 @@
   //@unit keywordProgramEquiv requires: keywordEquiv, keywordLookupEquiv, protocolHooks, slotFirst
   // The `IEquiv` method a program gave the keyword `key` (`extend-type`,
   // `specify!`), else undefined, which the keyword searches read once
-  // (`arrayIndex`, `entryIndex`, `arrayMapDissoc`): the key's slot, else a
-  // host type's (`externalMethod`, which never answers a keyword), as the
-  // protocol lookup finds them. Its class's own slot (`keywordEquiv`,
-  // light-cljs-1040) is none. Where no session demands declarations
-  // (`slotFirst`), so that no demand comes before the read, the slot is read
-  // here, once, and not through the lookup, whose test of the runtime's own
-  // slots (`builtinSlots`) is a WeakSet probe in the V8 profile and a linear
-  // search in the Pants build's; a session that demands takes the lookup,
-  // which at compile time (build.rs, light-cljs-439) answers the class's own
-  // slot too. Both lookups are `keywordLookupEquiv`'s, so that a search
-  // inlines the slot's read alone (light-cljs-1041).
+  // (`arrayIndex`, `entryIndex`, `arrayMapDissoc`, `hashKeyTest`): the
+  // key's slot, else a host type's (`externalMethod`, which never answers a
+  // keyword), as the protocol lookup finds them. Its class's own slot
+  // (`keywordEquiv`, light-cljs-1040) is none. Where no session demands
+  // declarations (`slotFirst`), so that no demand comes before the read, the
+  // slot is read here, once, and not through the lookup, whose test of the
+  // runtime's own slots (`builtinSlots`) is a WeakSet probe in the V8
+  // profile and a linear search in the Pants build's; a session that demands
+  // takes the lookup, which at compile time (build.rs, light-cljs-439)
+  // answers the class's own slot too. Both lookups are
+  // `keywordLookupEquiv`'s, so that a search inlines the slot's read alone
+  // (light-cljs-1041), and need the protocol lookup (`protocolHooks.builtin`);
+  // the slot is read without it, as `equalPair`'s wrapper reads it, since a
+  // program that writes the slot by its member name keeps no lookup at
+  // `Advanced` (light-cljs-1057).
   function keywordProgramEquiv(key) {
-    if (!protocolHooks.builtin) return undefined;
-    if (!slotFirst.on) return keywordLookupEquiv(key, false);
+    if (!slotFirst.on) return protocolHooks.builtin && keywordLookupEquiv(key, false);
     const equiv = key.cljs$core$IEquiv$_equiv$arity$2$LKEY;
-    return equiv === keywordEquiv ? undefined : equiv ?? keywordLookupEquiv(key, true);
+    return equiv === keywordEquiv ? undefined : equiv ?? (protocolHooks.builtin && keywordLookupEquiv(key, true));
   }
   //@unit keywordLookupEquiv requires: keywordEquiv, methodKeys, protocolHooks
   // `keywordProgramEquiv`'s lookups: a host type's method (`externalMethod`)

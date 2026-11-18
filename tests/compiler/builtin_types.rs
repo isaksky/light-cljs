@@ -3803,6 +3803,25 @@ fn hash_map_searches_call_a_program_equiv_of_keywords() {
 }
 
 #[test]
+fn keyword_searches_call_an_equiv_slot_a_program_wrote_by_name() {
+    // light-cljs-1057 (Sol review): a program that writes a keyword's
+    // `-equiv` slot by its member name, and has no `extend-type`, `specify!`
+    // or `reify`, keeps no protocol lookup at `Advanced`; the keyword
+    // searches of hash and array maps still call that slot, as `equalPair`'s
+    // wrapper calls it. (The array maps' search had answered by the spelling
+    // there since light-cljs-1040; `=` with a keyword constant is compiled
+    // to an identity and spelling test at `Advanced`, so it is left out.)
+    every_level(
+        r#"(let [k (keyword "k") m (hash-map :k (js/parseInt "1") :a 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8 :h 9)
+                 small (array-map :k (js/parseInt "1"))]
+             (set! (.-cljs$core$IEquiv$_equiv$arity$2 k) (fn [_ _] false))
+             (pr-str [(get m k "nf") (contains? m k) (count (dissoc m k)) (get small k "nf") (contains? small k)
+                      (count (dissoc small k))]))"#,
+        "[\"nf\" false 9 \"nf\" false 1]",
+    );
+}
+
+#[test]
 fn contains_of_an_array_map_searches_its_keys_where_its_lookup_is_its_own() {
     // light-cljs-1041: `contains?` of an array map searches its keys as `get`
     // does (`arrayIndex`) where the map's three-argument `-lookup` slot is

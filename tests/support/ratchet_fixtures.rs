@@ -740,13 +740,16 @@
 //! A hash map's keyword keys compared by their spelling (light-cljs-1057,
 //! 2026-11-17): the trie's key test (`hashKeyTest`) reads a keyword key's
 //! program `IEquiv` method through `keywordProgramEquiv`, which a program
-//! keeping hash maps now keeps too. The readable runtime grows 1,647 bytes
-//! (none 681,310 for `add`, where 679,663), under every none and prepare
-//! ceiling. Advanced, against master `1df0a071`: 279 bytes where a program
-//! keeps hash maps (`constant-keys` 75,879 to 76,158, `features` 116,385 to
-//! 116,664, `features-direct` 115,995 to 116,274); every other fixture is
-//! unchanged. The ceilings of `constant-keys` (77,000) and `features-direct`
-//! (117,000) move to the next 1,000 above.
+//! keeping hash maps now keeps too, and which reads the key's slot without
+//! the protocol lookup. The readable runtime grows 1,909 bytes (none
+//! 681,572 for `add`, where 679,663), under every none and prepare ceiling.
+//! Advanced, against master `1df0a071`: 272 bytes where a program keeps
+//! hash maps (`constant-keys` 75,879 to 76,151, `features` 116,385 to
+//! 116,657, `features-direct` 115,995 to 116,267), 7 smaller where it keeps
+//! the keyword searches of array maps (`map-printed`, `keyword-lookups`,
+//! `event-maps`, `map-only`, `set-only`, `defmulti`); every other fixture
+//! is unchanged. The ceilings of `constant-keys` (77,000) and
+//! `features-direct` (117,000) move to the next 1,000 above.
 
 pub struct Fixture {
     pub name: &'static str,

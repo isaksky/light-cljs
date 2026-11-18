@@ -1275,6 +1275,15 @@ spelling, and its walk takes about 9 ns less.
   are equal, a getter on the slot runs as often, and a session that demands
   declarations takes the lookup (light-cljs-1040's rule). Any other key
   compares by `equalPair`. A collision node compares each entry so.
+- **A slot written by name.** `keywordProgramEquiv` reads the key's slot
+  without the protocol lookup (`protocolHooks.builtin`), which only its
+  lookups need, as `equalPair`'s wrapper reads it: a program that writes a
+  keyword's `-equiv` slot by its member name (`(set!
+  (.-cljs$core$IEquiv$_equiv$arity$2 k) f)`) keeps no lookup at
+  `Advanced`, where an array map's keyword search had compared the
+  spelling since light-cljs-1040 (the Sol review of light-cljs-1057).
+  `=` with a keyword constant is compiled at `Advanced` to an identity and
+  spelling test (`keywordFqn`), which reads no slot, as before.
 - **The walk.** `hashNodeFind` tells a collision node by its missing
   `slots` and an entry by its missing `kind`, and its loop tests no node:
   `node.kind === "collision"`, `!slot?.kind` and `node` in the loop's
@@ -1291,7 +1300,7 @@ spelling, and its walk takes about 9 ns less.
   gate `kw-hash100` 22.2 to 15.8 ns (light/shadow 1.59 to 1.17),
   `get-hash100` 20.0 to 11.4 (1.63 to 0.94), `update-hash100` -9%,
   `dissoc-hash100` -4%, no operation over 1% slower; workload 200k's steady
-  state unchanged (43.6 to 43.3 ms per iteration); 279 bytes more at
+  state unchanged (43.6 to 43.3 ms per iteration); 272 bytes more at
   advanced where a program keeps hash maps (`keywordProgramEquiv`).
 - **What is left.** `kw-hash100`'s remaining 2.3 ns over shadow-cljs's is
   before the walk: in the readable build, with the walk returning at once,
