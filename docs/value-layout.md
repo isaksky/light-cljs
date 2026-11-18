@@ -1298,7 +1298,7 @@ spelling, and its walk takes about 9 ns less.
   condition, 14.3 and 11.0; with the identity test in the key test's
   keyword path only, as landed, 14.4 and 13.0). Every caller tests the
   root first.
-  `hashNodeFind` is 118 bytes of bytecode (131 before), `hashKeyTest` 120;
+  `hashNodeFind` is 105 bytes of bytecode (131 before), `hashKeyTest` 130;
   TurboFan inlines both, with `keywordOf` and `keywordProgramEquiv`, into
   the benchmark's loop. Comparing the kind first made `hashKeyTest` 80
   bytes but `kw-hash100` 1.3 ns slower.
