@@ -4353,3 +4353,118 @@ Light/shadow in each run, which share its load, is 1.74-1.91 before and 1.68-1.7
 | simple | 67,357 to 67,372 (+15) | 371,359 to 371,387 (+28) | 113,760 to 113,824 (+64, +0.06%) |
 
 - **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): advanced unchanged in every fixture, none of which makes an ex-info; the readable runtime grows 424 bytes, past fifteen fixtures' none or prepare ceilings, which move to the next 1,000.
+
+## 2026-11-18: map key and value seqs step through slots (light-cljs-1064)
+
+**What.** The map seqs (`PersistentArrayMapSeq`, `NodeSeq`, `ArrayNodeSeq`)
+answer `first`, `rest`, `next`, `seq` and, the array map's, `count` from
+slots, as upstream's types implement ISeq, INext, ISeqable and ICounted. The
+key and value seqs' own slots (light-cljs-1030), which sat on a prototype
+their type unit replaced, now reach them, and their steps call the slots of
+their map seq and of the entry, where they called the protocols'
+dispatchers. In a program with `extend-type` a walk of a map's keys or
+values took 9 protocol lookups per item and takes none, nor a walk of a
+map's seq (2 before): `walks_of_map_keys_and_values_take_no_protocol_lookup_per_item`.
+A key seq's `-reduce` was measured and left out. docs/value-layout.md,
+"What light-cljs-1064 landed".
+
+Binaries in research/shadow-credibility/bin: before `light-cljs-9b0028f0-1064`
+(master `9b0028f0`, built for this run), after `light-cljs-a45ad1e6` (this
+pellet on it). Unreserved: peer workers built and tested throughout.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, every operation, the four
+new key and value walks included; the after run with `--baseline` the
+before's; load 6.07-21.12 before, 10.30-21.39 after), ns per operation,
+median (range), the new operations and every one that moved by 3% or more:
+
+| op | light before | light after | change | shadow-cljs after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| keys-small | 2,529 | 348.0 (342.0-349.2) | -86% | 76.0 | 33.13 | 4.58 |
+| vals-small | 2,532 | 384.2 (363.2-389.1) | -85% | 79.2 | 31.89 | 4.85 |
+| keys-hash100 | 39,118 | 4,305 (3,812-4,380) | -89% | 5,041 | 7.68 | 0.85 |
+| vals-hash100 | 39,232 | 4,358 (3,935-4,544) | -89% | 5,034 | 7.76 | 0.87 |
+| lazy-walk-1000 | 49,984 | 45,460 (45,411-46,130) | -9% | 50,872 | 0.98 | 0.89 |
+| seq-walk-vec-1000 | 27,329 | 26,442 (26,245-26,781) | -3% | 19,832 | 1.39 | 1.33 |
+| reduce-range-1000 | 5,150 | 4,938 (4,789-4,965) | -4% | 5,467 | 0.94 | 0.90 |
+| destructure-map-3 | 66.1 | 62.0 (48.8-66.2) | -6% | 49.8 | 1.33 | 1.24 |
+| assoc-in-3 | 169.9 | 165.2 (162.4-168.2) | -3% | 134.5 | 1.25 | 1.23 |
+| str-nested-map | 4,252 | 4,011 (3,963-4,023) | -6% | 2,359 | 1.80 | 1.70 |
+| apply-vec | 248.7 | 200.1 (198.8-202.6) | -20% | 92.4 | 2.68 | 2.16 |
+| merge-small | 2,599 | 2,286 (2,212-2,335) | -12% | 907.0 | 2.92 | 2.52 |
+| select-keys-3 | 395.3 | 346.8 (342.1-351.5) | -12% | 254.8 | 1.57 | 1.36 |
+| transient-map-100 | 10,927 | 10,631 (10,440-10,687) | -3% | 4,590 | 2.38 | 2.32 |
+| str-sorted-map-20 | 32,834 | 30,763 (30,720-31,019) | -6% | 20,636 | 1.58 | 1.49 |
+
+- **No operation is slower by more than 3%**: the slowest moves are
+  `dissoc-hash100` and `into-xform-1000`, +2% each, inside their ranges.
+- The gate holds no `extend-type`, so its key seqs called the dispatchers'
+  shorter lookup (`ownMethod`) per step, and still 2,529 ns for 7 keys.
+  `keys-hash100` and `vals-hash100` are now faster than shadow-cljs's;
+  `keys-small` and `vals-small` stay 4.6 to 4.9 times, most of it the map's
+  seq, which builds a frozen array of fresh entries for its 7 entries
+  before the first step (`kindHooks.seqMap`, 15% of `--pseudo-names
+  keys-small`'s profile with the first pass, and the garbage collector 10%),
+  where upstream's builds an entry per `-first`.
+- The walks go before `lazy-walk-1000` in the gate (benchmarks/core-ops/README.md),
+  so the seq walks after them take their type feedback: with master the key
+  seqs' steps reached the map seqs through the dispatchers and the
+  operations, and now they call the map seqs' slots from their own getters,
+  and no new class reaches the shared wrappers' slot calls from a key walk.
+  `lazy-walk-1000` (-9%) and `seq-walk-vec-1000` (-3%) gained; timed alone
+  with `--ops keys,vals,lazy-walk,seq-walk-vec` (3 runs, load 13.4-29.6,
+  against `light-cljs-dbf91703` and `light-cljs-4f35ece1`, this pellet's
+  first pass, whose map seqs had slot methods of their own) they read -13%
+  and -20%.
+- `apply-vec`, `merge-small` and `select-keys-3`, which walk indexed seqs
+  after the key and value walks, gained 12 to 20%. Their code is the same
+  but for the indexed seqs' first, seq and count methods, which the map seqs
+  now share; the gain was not profiled and may be type feedback the key
+  walks no longer leave, as `swap-assoc`'s moves were in light-cljs-1060.
+
+**Off the gate**, a scratch program with one `extend-type` (`Atom` given
+`ICounted`), `light-cljs-4f35ece1` against `light-cljs-dbf91703`, median of
+7 rounds (load 9.6), ns per call: a `first` and `next` walk of a 7-key map's
+values 3,983 to 480, of a 100-key map's 67,705 to 4,482; `reduce` of the
+7-key map's values 4,403 to 586, of its keys counted 6,104 to 569, of the
+100-key map's values 65,569 to 5,097; `into []` of its keys 5,798 to 1,356;
+a walk of the 7-key map's seq 1,720 to 538.
+
+**Measured and left out: a key seq's `-reduce`.** `reduce` of the 7-key
+map's values (586 ns above) costs 106 ns more than the walk of its `first`
+and `next` (480): `reduce`'s lookup and kind tests, which a slot would skip.
+For the 100-key map the gap is 615 ns, 6 per item, `reduce`'s generic loop.
+A slot needs guards for the key seq's own `-first`, `-next` and `-seq`, the
+map seq's and the entry's, so the key seqs keep `reduce`'s path, as
+light-cljs-1059 left the other seqs'.
+
+**Workload 200k** (`compare.bb PROJECT --runs 5 --runtime-only --runtime
+1,40`, project `workload-200k-seed42-1064`, the light-cljs output rebuilt
+with each binary just before its runs), wall time at 40 iterations, median
+(range), and light-cljs's steady state:
+
+| project | light before | light after (`a45ad1e6`) | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k | 2.202 s (2.171-2.292) | 2.154 s (2.121-2.284) | 1.390 / 1.342 s | 46.1 to 44.9 (shadow-cljs 26.9 / 25.7) | 13.1-13.6 / 13.7-14.4 |
+
+Unchanged: light/shadow 1.72 before and 1.75 after, as shadow-cljs's own
+output moved as much.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only`,
+ports from `shadow-port-tool-983`), the whole bundle with React, gzip -9:
+
+| App | before (`9b0028f0`) | after (`a45ad1e6`) | change |
+| --- | ---: | ---: | ---: |
+| re-frame simple | 114,103 | 114,311 | +208 (+0.18%) |
+| TodoMVC | 145,344 | 145,640 | +296 (+0.20%) |
+| flow | 333,264 | 333,686 | +422 (+0.13%) |
+
+- light-cljs's output as written, gzip -9: simple 67,684 to 67,909 (+225),
+  TodoMVC 97,161 to 97,386 (+225), flow 280,486 to 280,735 (+249).
+- The first pass, with map seq methods of their own, was 764 bytes larger
+  raw than master in a program with an array map's seq; sharing the indexed
+  seqs' first, seq and count methods made it 358.
+- The size ratchet (tests/support/ratchet_fixtures.rs, noted there): 357 to
+  361 bytes more at advanced where a program keeps a map seq, 576 with the
+  key seqs, 797 for the features example, 24 with only indexed seqs; three
+  advanced ceilings and the features shared chunk's moved; the readable
+  runtime 3,643 bytes more, mostly comments.

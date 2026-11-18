@@ -1,7 +1,7 @@
 # Core operations: light-cljs's output against shadow-cljs's
 
 This is the output-speed gate. One ClojureScript source,
-`src/core_ops/main.cljs`, times 64 core operations: map and vector access and
+`src/core_ops/main.cljs`, times 68 core operations: map and vector access and
 updates, seqs, reductions, printing, equality, records, calls and atoms. Both
 compilers build it for release, and both outputs run in Node:
 - light-cljs at `:advanced`, its release default (`light-cljs.edn`);
@@ -100,7 +100,9 @@ gate's.
 
 The source is the investigation's micro-benchmark
 (`research/output-speed/investigation-6ceeb23b`). Only `map-literal-3` changed,
-and the two loop baselines moved to the end.
+and the two loop baselines moved to the end. light-cljs-1064 added the four key
+and value walks, before `lazy-walk-1000`, so that the seq walks after them run
+with the type feedback of a program that also walks map keys.
 
 ## Operations
 
@@ -110,6 +112,7 @@ and the two loop baselines moved to the end.
 | Hash maps (100 keys) | `get-hash100`, `kw-hash100`, `assoc-hash100`, `dissoc-hash100`, `update-hash100`, `transient-map-100` |
 | Nested maps | `get-in-3`, `assoc-in-3`, `update-in-3` |
 | Vectors | `vec-conj-64`, `vec-literal-4`, `vec-nth-1024`, `vec-invoke-1024`, `vec-peek`, `vec-assoc-1024`, `destructure-vec-3`, `eq-vec-10`, `hash-fresh-vec-4`, `transient-vec-100` |
+| Key and value walks (light-cljs-1064) | `keys-small`, `vals-small` (the 7-key maps), `keys-hash100`, `vals-hash100` |
 | Seqs and reductions over 1,000 | `reduce-vec-1000`, `reduce-map-inc-1000`, `filter-count-1000`, `into-xform-1000`, `mapv-1000`, `lazy-walk-1000`, `seq-walk-vec-1000`, `reduce-range-1000` |
 | Collection functions | `group-by-100`, `sort-by-100`, `sorted-map-assoc-100` |
 | Printing | `str-nested-map`, `str-concat`, `str-sorted-map-20` |

@@ -171,6 +171,27 @@
   (let [v (vec-n 1000 s)]
     (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (mapv inc v)))) acc))))
 
+;; A walk of a map's keys or values, as views over maps walk them
+;; (light-cljs-1064): `next` and `first` of the key or value seq.
+(defn walk-keys [ks] (loop [q ks a 0] (if q (recur (next q) (+ a (if (identical? :a (first q)) 7 1))) a)))
+(defn walk-vals [vs] (loop [q vs a 0] (if q (recur (next q) (+ a (first q))) a)))
+
+(defn b-keys-small [n s]
+  (let [ms (small-maps s)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (walk-keys (keys (aget ms (bit-and i 3)))))) acc))))
+
+(defn b-vals-small [n s]
+  (let [ms (small-maps s)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (walk-vals (vals (aget ms (bit-and i 3)))))) acc))))
+
+(defn b-keys-hash [n s]
+  (let [ks (hash-keys) m (big-map ks s)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (walk-keys (keys m)))) acc))))
+
+(defn b-vals-hash [n s]
+  (let [ks (hash-keys) m (big-map ks s)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (walk-vals (vals m)))) acc))))
+
 (defn b-lazy-walk-1000 [n s]
   (let [v (vec-n 1000 s)]
     (loop [i 0 acc 0]
@@ -349,6 +370,10 @@
    ["filter-count-1000" b-filter-count-1000 2000]
    ["into-xform-1000" b-into-xform-1000 2000]
    ["mapv-1000" b-mapv-1000 2000]
+   ["keys-small" b-keys-small 1000000]
+   ["vals-small" b-vals-small 1000000]
+   ["keys-hash100" b-keys-hash 50000]
+   ["vals-hash100" b-vals-hash 50000]
    ["lazy-walk-1000" b-lazy-walk-1000 2000]
    ["seq-walk-vec-1000" b-seq-walk-vec-1000 5000]
    ["reduce-range-1000" b-reduce-range-1000 5000]

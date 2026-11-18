@@ -1449,6 +1449,58 @@ method that a program wrote by name, at `:advanced` as at the other levels.
   gate's keyword operations and workload 200k's steady state unchanged, as
   their outputs are.
 
+What light-cljs-1064 landed: the map seqs answer `first`, `rest`, `next`,
+`seq` and (an array map's) `count` from slots, and a walk of a map's keys or
+values takes no protocol lookup per item, where each step took 9.
+
+- **The map seqs.** `PersistentArrayMapSeq`, `NodeSeq` and `ArrayNodeSeq`,
+  views over an array of a map's entries, have keyed `-first`, `-rest`,
+  `-next` and `-seq` slots, and the array map's seq `-count`, as upstream's
+  types implement ISeq, INext, ISeqable and ICounted. Their `-first`, `-seq`
+  and `-count` are an indexed seq's own methods, which read only a view's
+  fields and are now named (`viewFirstSlot`, `viewSeqSlot`,
+  `viewCountSlot`); the three classes share a `-next` (`mapSeqNextSlot`),
+  which steps to a view of the seq's own class as `next` did, and a `-rest`,
+  that or the empty list. The slot-first wrappers of `first`, `rest`,
+  `next`, `seq` and `count` name the classes. A value made by reflection
+  holds no array and answers `noBranch`.
+- **The key and value seqs.** `KeySeqCell`'s four slots (light-cljs-1030)
+  were set on the constructor's first prototype, which its type unit then
+  replaced with one of `sequencePrototype`: no key seq had them, so every
+  step took the operations' paths. They now follow the type unit. Its
+  `first` and `rest` getters call the `-first` and `-next` slots of its
+  entries' seq and, for a map entry, the `-key` or `-val` slot that an
+  `extend-type` gave it, else `entryKey` or `entryVal`, as upstream's
+  KeySeq calls `-first` and `-next` of its `mseq` and `-key` of the entry.
+  Where the seq holds no slot (one a program's `-seq` gave), the entry is
+  no map entry, or a compiler session demands declarations (`slotFirst`),
+  they take the dispatchers (`firstProtocol`, `nextProtocol`, `keyProtocol`)
+  as before, so `extend-type` of the map seqs, of a map entry's `IMapEntry`
+  or `IIndexed` (which `entryKey` reads) and of a map's `-seq` answers as
+  before: `key_and_value_seqs_keep_the_answers_of_extended_map_seqs_and_entries`
+  pins master's answers at every level, and
+  `walks_of_map_keys_and_values_take_no_protocol_lookup_per_item` the
+  lookups.
+- **Left out, as measured.** A key seq's `-reduce`: with one `extend-type`,
+  `reduce` of a 7-key map's values takes 586 ns where its `first` and
+  `next` walk takes 480 (scratch runs, load 9.6); a slot would save at
+  most that path, which every seq without one pays, so the key seqs keep
+  it, as light-cljs-1059 left the other seqs'. A sorted map's keys walk
+  its seq, whose stack takes `peek`, `first` and `next` with their lookups
+  where a program can extend lists (light-cljs-1035's `isListCell`): the
+  key seq adds none of its own. `into` of keys conjoins each item through
+  the transient's dispatcher, as `into` of any seq does.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1064): the
+  gate's new walks of a 7-key map's keys and values 2,529 and 2,532 ns to
+  348 and 384 (4.6 and 4.9 times shadow-cljs's, most of it the map seq's
+  array of fresh entries, built before the first step), of a 100-key map's
+  39,118 and 39,232 to 4,305 and 4,358 (0.85 and 0.87); `lazy-walk-1000`
+  -9%, `seq-walk-vec-1000` -3% after them, no operation over 3% slower;
+  with one `extend-type`, a walk of a 7-key map's values 3,983 to 480 ns;
+  workload 200k's steady state unchanged (46.1 to 44.9 ms per iteration as
+  shadow-cljs's own moved 26.9 to 25.7); the re-frame apps' whole bundles
+  208 to 422 bytes larger after gzip (0.13 to 0.20%).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

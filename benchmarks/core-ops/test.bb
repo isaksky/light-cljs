@@ -11,8 +11,8 @@
 (deftest selection-follows-the-harness
   (testing "all operations by default, in the harness's order, the loops last"
     (let [ops (selected-ops {})]
-      (is (= 64 (count ops)))
-      (is (= ["kw-small" "bit-and" "aget-bit-and"] [(first ops) (nth ops 62) (nth ops 63)]))))
+      (is (= 68 (count ops)))
+      (is (= ["kw-small" "bit-and" "aget-bit-and"] [(first ops) (nth ops 66) (nth ops 67)]))))
   (testing "a name, or the operations it starts up to a hyphen"
     (is (= ["kw-small" "assoc-small-existing" "assoc-small-new" "vec-conj-64"]
            (selected-ops {:ops ["vec-conj" "assoc-small" "kw-small"]})))
