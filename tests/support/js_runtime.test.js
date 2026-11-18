@@ -2643,6 +2643,21 @@ console.log('lazy seq and chunked cons fields keep undefined');
 }
 console.log('runtime_key_registry: keys register page-wide and collisions throw');
 
+// Literal keywords are interned by keys that no two keywords share
+// (light-cljs-1017): a name without a namespace that starts with a slash, as
+// a macro can build one, never finds a namespaced keyword, in either order.
+{
+  for (const [first, second] of [[[null, "/1/ab"], ["a", "b"]], [["c", "d"], [null, "/1/cd"]], [[null, "/"], ["", "/"]], [[null, "//x"], [null, "/x"]]]) {
+    const one = runtime.keyword(...first), two = runtime.keyword(...second);
+    assert.notEqual(one, two, JSON.stringify([first, second]));
+    for (const [[namespace, name], value] of [[first, one], [second, two]]) {
+      assert.deepEqual(runtime.inspect(value), {kind: "keyword", namespace, name, spelling: namespace == null ? name : namespace + "/" + name});
+      assert.equal(runtime.keyword(namespace, name), value);
+    }
+  }
+}
+console.log('keyword_intern_keys: unqualified and qualified literals never share a key');
+
 // Map transients' own fields and the readers of the maps' fields
 // (light-cljs-1036), at the public constructors' edges.
 {

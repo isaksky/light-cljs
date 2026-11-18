@@ -470,9 +470,16 @@ fn runtime_key_placeholders_end_keyed_names() {
             .map(|error| error.message)
             .collect::<Vec<_>>()
     };
-    let unit = "  //@unit mungeMember requires: memberMunging\n  function mungeMember(name) { return Array.from(name, c => memberMunging[c] ?? c).join(\"\"); }\n";
+    let unit = "  function mungeMember(name) { return name.replace(/[-:+><=~!@#'\"%^&*|{}[\\]\\/\\\\?]/g, c => memberMunging[c]); }\n";
     assert!(ANNOTATED_RUNTIME.contains(unit));
-    let with = |text: &str| ANNOTATED_RUNTIME.replace(unit, &unit.replace("join(\"\")", text));
+    // Each text is a member call on the unit's result (light-cljs-1017).
+    let with = |text: &str| {
+        let changed = unit.replace(
+            "memberMunging[c]); }",
+            &format!("memberMunging[c]).{text}; }}"),
+        );
+        ANNOTATED_RUNTIME.replace(unit, &changed)
+    };
     let misplaced = "`$LKEY` appears other than as a keyed name's suffix";
     for text in [
         "join(\"\") + \" $LKEY\"",
@@ -1899,10 +1906,14 @@ fn protocol_roots_are_the_protocols_effects_wait_for() {
     targeted.sort_unstable();
     targeted.dedup();
     assert_eq!(targeted, PROTOCOL_ROOTS);
-    let record = &ANNOTATED_RUNTIME[manifest.units
-        [manifest.unit_named("recordMethods").unwrap().0]
-        .body_range
-        .clone()];
+    // The record protocols' markers are a unit of their own (light-cljs-1017).
+    let record = ["recordMarkers", "recordMethods"]
+        .map(|name| {
+            &ANNOTATED_RUNTIME[manifest.units[manifest.unit_named(name).unwrap().0]
+                .body_range
+                .clone()]
+        })
+        .concat();
     let unit = |name: &str| manifest.unit_named(name).unwrap();
     let implements = |protocol: &str| {
         record

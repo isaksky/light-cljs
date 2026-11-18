@@ -1618,6 +1618,52 @@ and the reductions keep theirs (light-cljs-1066).
   `firstSeq`; programs of the size ratchet that walk seqs 1,460 to 2,503
   bytes smaller raw.
 
+What light-cljs-1017 found and landed: startup (section 7), measured by
+phase. Loading a module is its compile (parse and bytecode), the runtime's
+units and the program's own top level; first output adds one iteration.
+
+- **Where the time went** (workload 200k, master `9c9479b3`, in-process
+  timings, 15 alternated runs): compile 73.3 ms against shadow-cljs's 68.0,
+  the runtime's units 1.4 ms, the program's top level 42.5 ms against
+  shadow-cljs's 13.2 (shadow-cljs's runs its runtime and program alike),
+  and the first iteration 183 ms against 169. The units no longer build
+  stores, method keys or kind tables of note (section 7 holds): the gap was
+  the program's definitions, which call `defineType`, `extendType`,
+  `installMethods`, `protocolMethod`, `keyword`, `derive` and the
+  multimethods' `addMethod` (timed per root on a `--pseudo-names` build:
+  15.4, 10.9, 3.8, 3.9, 3.4, 6.1 and 2.7 ms at 200k; 47, 21, 14, 7.7, 10.8,
+  13.4 and 5.2 ms at 800k).
+- **Cheaper definitions.** A record type cost about 25 µs and an
+  `extend-type` of one 10 µs: `installMethods` copied a Map per protocol the
+  value already had, `decorateType` searched the mask names once per
+  marker, and every record rebuilt its markers' entries. `installMethods`
+  now keeps and copies only the `Object/` methods' entries, the only ones
+  read back, and reads its entries by index (load-time code runs mostly
+  before V8 optimizes it, where a destructuring `for...of` costs an
+  iterator per entry); `decorateType` finds a marker's bit in
+  `protocolMasks`; the record markers' entries are one unit
+  (`recordMarkers`); `mungeMember` replaces by a pattern; `keyword` finds
+  a literal without a namespace by its name, whose hash the string literal
+  already has, where it built and hashed a key; and a host type's
+  `extend-type` implementation calls its method without a rest array and a
+  spread. A record type costs about 14 µs and an `extend-type` of one
+  4.4 µs (`types-bench`, 570 of each); the program's top level is 42.5 to
+  24.6 ms at 200k and 132.8 to 85.4 ms at 800k.
+- **Compile per byte.** The parse is the same per byte as shadow-cljs's
+  (V8's trace: 20.5 and 21.3 ms of `ParseProgram` per MB); light-cljs's
+  output compiles about 2,100 more functions at once, the parenthesized
+  function expressions V8 compiles eagerly (methods and constructors passed
+  to the runtime), which it would compile on their first call otherwise:
+  writing them without parentheses moved 6 ms from the compile to the
+  first iteration and gained nothing.
+- **What is left** (benchmarks/runtime-vs-shadow.md, light-cljs-1017): a
+  record type's ~30 non-enumerable slots and per-type method closures, a
+  program protocol's dispatcher factory that V8 compiles at load, and
+  `derive` rebuilding sets that upstream's conjoins into; then the
+  operations themselves, which are most of the first iteration's gap and
+  of the re-frame-shaped app's, where predicates, `count` and `meta` take
+  the extended lookup (`extendedMethod`) in a program that extends types.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

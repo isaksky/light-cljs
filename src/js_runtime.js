@@ -951,7 +951,10 @@
   //@unit memberMunging
   const memberMunging = {"-":"_",":":"_COLON_","+":"_PLUS_",">":"_GT_","<":"_LT_","=":"_EQ_","~":"_TILDE_","!":"_BANG_","@":"_CIRCA_","#":"_SHARP_","'":"_SINGLEQUOTE_","\"":"_DOUBLEQUOTE_","%":"_PERCENT_","^":"_CARET_","&":"_AMPERSAND_","*":"_STAR_","|":"_BAR_","{":"_LBRACE_","}":"_RBRACE_","[":"_LBRACK_","]":"_RBRACK_","/":"$","\\":"_BSLASH_","?":"_QMARK_"};
   //@unit mungeMember requires: memberMunging
-  function mungeMember(name) { return Array.from(name, c => memberMunging[c] ?? c).join(""); }
+  // Each character `memberMunging` names is replaced; a name without one,
+  // most fields', is given back as it is, with no array built
+  // (light-cljs-1017).
+  function mungeMember(name) { return name.replace(/[-:+><=~!@#'"%^&*|{}[\]\/\\?]/g, c => memberMunging[c]); }
   //@unit protocolSentinel requires: runtimeKey
   // One per key on the page: copies of a build share markers (docs/value-layout.md, section 1).
   const protocolSentinel = Symbol.for("light-cljs.protocol" + runtimeKey), protocolSlots = new Map();
@@ -4720,8 +4723,14 @@
   // and is interned: one keyword per namespace and name. A literal carries
   // no hash, at `Advanced` either: its first `hash` computes it and caches
   // it in its field, as upstream's `-hash` does (light-cljs-1050).
+  // A keyword without a namespace is found by its name itself, whose hash
+  // a literal string has computed, rather than by a key built and hashed
+  // for each (light-cljs-1017); one with a namespace by a key that starts
+  // with a slash and a digit, the namespace's length. A name that starts
+  // with a slash, which a macro can build, takes another slash, so that no
+  // two keywords share a key.
   function keyword(namespace, name) {
-    const key = namespace == null ? "/" + name : namespace.length + "/" + namespace + name;
+    const key = namespace == null ? (name?.[0] === "/" ? "/" + name : name) : "/" + namespace.length + "/" + namespace + name;
     let value = internedKeywords.get(key);
     if (!value) internedKeywords.set(key, value = freshKeyword(namespace, name));
     return value;
@@ -10667,7 +10676,8 @@
     let result = null;
     if (typeof target === "string") {
       const grouped = new Map();
-      for (const [key, arity, method] of methods) {
+      for (let i = 0; i < methods.length; i++) {
+        const entry = methods[i], key = entry[0], arity = entry[1], method = entry[2];
         if (arity === 0) {
           const value = protocolValues.get(key) ?? coreProtocolsByName.get(key);
           if (value) { patchDeclaration(value, target, {value: true, writable: true, configurable: true, enumerable: true}); result = true; }
@@ -10678,9 +10688,12 @@
       for (const [key, implementations] of grouped) {
         if (implementations.has(0)) continue;
         const dispatch = protocolGetters.get(key)?.() ?? coreDispatchers.get(key)?.dispatcher;
-        const implementation = function (...args) {
-          const method = implementations.size === 1 ? implementations.values().next().value : implementations.get(args.length);
-          return method ? method.call(null, ...args) : invalidArity(args.length);
+        // No rest array, spread or iterator per call: a host type's
+        // implementation is called on every dispatch to it (light-cljs-1017).
+        const only = implementations.size === 1 ? implementations.values().next().value : undefined;
+        const implementation = only ? function () { return only.apply(null, arguments); } : function () {
+          const method = implementations.get(arguments.length);
+          return method ? method.apply(null, arguments) : invalidArity(arguments.length);
         };
         result = implementation;
         if (dispatch) patchDeclaration(dispatch, target, {value: implementation, writable: true, configurable: true, enumerable: true});
@@ -10720,7 +10733,11 @@
     if (value != null && typeof value !== "object" && typeof value !== "function") return value;
     const oldImplementations = protocolImplementations.get(value), oldCalls = ifnValues.get(value);
     const transaction = declarationJournal;
-    const implementations = new Map(Array.from(oldImplementations ?? [], ([key, entries]) => [key, new Map(entries)])), calls = {}, invokes = {}, objectVariadics = new Map();
+    // Only the `Object/` methods' entries are read back, to merge a later
+    // extension's, so only they are kept and copied: an `extend-type` of a
+    // record copies no Map per protocol it already has (light-cljs-1017).
+    const implementations = new Map(), calls = {}, invokes = {}, objectVariadics = new Map();
+    if (oldImplementations) for (const [key, entries] of oldImplementations) if (key.startsWith("Object/")) implementations.set(key, new Map(entries));
     if (transaction) transaction.push({
       undo: () => { if (oldImplementations) protocolImplementations.set(value, oldImplementations); else protocolImplementations.delete(value); if (oldCalls) ifnValues.set(value, oldCalls); else ifnValues.delete(value); },
       redo: () => { protocolImplementations.set(value, implementations); if (Object.keys(calls).length || ifnVariadics.has(calls)) ifnValues.set(value, calls); },
@@ -10728,12 +10745,18 @@
     });
     // At `:advanced` a program protocol's entry names its slot in place of
     // its key (a method's holds a slash) or as its fourth item.
-    for (const [dispatch, arity, method, fourth, variadic] of methods) {
+    // Indexed reads rather than a destructuring `for...of`: this runs once
+    // per definition, mostly before V8 optimizes it, where an iterator per
+    // entry costs (light-cljs-1017).
+    for (let i = 0; i < methods.length; i++) {
+      const entry = methods[i], dispatch = entry[0], arity = entry[1], method = entry[2], fourth = entry[3], variadic = entry[4];
       const key = typeof dispatch === "string" ? dispatch : protocolKeys.get(dispatch), invoke = fourth === undefined ? method : fourth;
-      if (!implementations.has(key)) implementations.set(key, new Map());
-      if (variadic != null && key.startsWith("Object/")) objectVariadics.set(key, [variadic, method]);
-      else implementations.get(key).set(arity, method);
-      if (!key.startsWith("Object/") && key !== "IFn/-invoke") patchDeclaration(value, typeof fourth === "string" ? fourth : arity !== 0 && !key.includes("/") ? key : protocolSlot(key, arity), {value: arity === 0 ? protocolSentinel : method, writable: true, configurable: true});
+      if (key.startsWith("Object/")) {
+        let entries = implementations.get(key);
+        if (!entries) implementations.set(key, entries = new Map());
+        if (variadic != null) objectVariadics.set(key, [variadic, method]);
+        else entries.set(arity, method);
+      } else if (key !== "IFn/-invoke") patchDeclaration(value, typeof fourth === "string" ? fourth : arity !== 0 && !key.includes("/") ? key : protocolSlot(key, arity), {value: arity === 0 ? protocolSentinel : method, writable: true, configurable: true});
       if (key === "IFn/-invoke") {
         if (variadic != null) ifnVariadics.set(calls, method);
         else calls[arity - 1] = method;
@@ -10880,11 +10903,19 @@
   //@unit recordMethodTable
   // Builders of record methods, each added by a unit kept where it can run.
   const recordMethodTable = [];
-  //@unit recordMethods requires: recordMethodTable
+  //@unit recordMarkers
+  // Every record protocol's marker entry, built once and shared by every
+  // record type (light-cljs-1017): no reader changes an entry.
+  const recordMarkers = "IRecord ICloneable IHash IEquiv IMeta IWithMeta ILookup ICounted ICollection IAssociative IMap ISeqable IIterable IPrintWithWriter IKVReduce".split(" ").map(key => [key, 0, null]);
+  //@unit recordMethods requires: recordMarkers, recordMethodTable
   // Every record protocol's marker, and the methods of the table.
   function recordMethods(Type) {
-    const protocols = "ICloneable IHash IEquiv IMeta IWithMeta ILookup ICounted ICollection IAssociative IMap ISeqable IIterable IPrintWithWriter IKVReduce".split(" ");
-    return [["IRecord", 0, null], ...protocols.map(key => [key, 0, null]), ...recordMethodTable.flatMap(methods => methods(Type))];
+    const methods = recordMarkers.slice();
+    for (let i = 0; i < recordMethodTable.length; i++) {
+      const entries = recordMethodTable[i](Type);
+      for (let j = 0; j < entries.length; j++) methods.push(entries[j]);
+    }
+    return methods;
   }
   //@unit recordMethods.install effect: recordMethods when: decorateType requires: recordMethods,
   //@ typeHooks
@@ -11004,8 +11035,7 @@
     // The brand of `value`, or `undefined` for a value without one.
     static type(value) { if (Object(value) === value && #t in value) return value.#t; }
   };
-  //@unit decorateType requires: installMethods, mungeMember, protocolMaskNames, typeHooks,
-  //@ typeNames
+  //@unit decorateType requires: installMethods, mungeMember, protocolMasks, typeHooks, typeNames
   // Gives a type its methods and its kind, and a record's prototype its type
   // (`recordTypeOf`); returns the masks its markers declare. The methods
   // read fields under `members`, the names the constructor assigns them to,
@@ -11016,10 +11046,13 @@
     Type.members = fields.map(mungeMember);
     if (currentConstructor) Type.currentConstructor = currentConstructor;
     if (name) typeNames.set(Type, name);
-    const implementations = record ? [...methods, ...typeHooks.recordMethods(Type)] : methods;
-    for (const [key, arity] of implementations) {
-      const index = arity === 0 ? protocolMaskNames.lastIndexOf(key) : -1;
-      if (index >= 0) masks[index >> 5] |= 1 << (index % 32);
+    const implementations = record ? methods.concat(typeHooks.recordMethods(Type)) : methods;
+    // A marker's mask bit by its name's last place in the names
+    // (`protocolMasks`), found in a Map where each marker searched the
+    // names (light-cljs-1017).
+    for (let i = 0; i < implementations.length; i++) {
+      const entry = implementations[i], mask = entry[1] === 0 ? protocolMasks.get(entry[0]) : undefined;
+      if (mask !== undefined) masks[mask[0] === "cljs$lang$protocol_mask$partition0$$LKEY" ? 0 : 1] |= mask[1];
     }
     installMethods(Type.prototype, implementations);
     Type.prototype.cljs$lang$kind$$LKEY = record ? 65 : 64;
@@ -11052,9 +11085,10 @@
   // instances (`decorateType`), and its masks are its prototype's. `names`
   // is "ns/T field ...", or an array of them where one holds a space.
   function defineType(Type, names, methods, record, currentConstructor) {
-    const [name, ...fields] = names.split?.(" ") ?? names;
-    decorateType(Type, fields, methods, record, name, currentConstructor)
-      .forEach((mask, i) => Type.prototype[i ? "cljs$lang$protocol_mask$partition1$$LKEY" : "cljs$lang$protocol_mask$partition0$$LKEY"] = mask);
+    const parts = names.split?.(" ") ?? names, name = parts[0], fields = parts.slice(1);
+    const masks = decorateType(Type, fields, methods, record, name, currentConstructor);
+    Type.prototype.cljs$lang$protocol_mask$partition0$$LKEY = masks[0];
+    Type.prototype.cljs$lang$protocol_mask$partition1$$LKEY = masks[1];
     Type.cljs$lang$type = true;
     if (!record) Type.cljs$lang$ctorStr = name;
     return Type;
@@ -13269,10 +13303,10 @@
   }
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
   //@ assoc, collectionWithMeta, compareKeys, conj, conjTransient, coreMethod, count, derefProtocol,
-  //@ disj, dissoc, equalPair, firstOf, firstSeq, hash, hashStructural, iterator, keywordLookupEquiv,
-  //@ keywordProgramEquiv, metaSupported, name, namespace, notifyWatches, objectEquiv, peek, pop,
-  //@ removeWatchProtocol, restOf, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported
-  //@ requires: builtin, protocolHooks
+  //@ disj, dissoc, equalPair, firstOf, firstSeq, hash, hashStructural, iterator,
+  //@ keywordLookupEquiv, keywordProgramEquiv, metaSupported, name, namespace, notifyWatches,
+  //@ objectEquiv, peek, pop, removeWatchProtocol, restOf, restSeq, rseq, stateProtocol,
+  //@ vresetProtocol, withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,
   //@ protocolHooks

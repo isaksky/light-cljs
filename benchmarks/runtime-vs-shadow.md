@@ -4685,3 +4685,47 @@ at advanced, no change to any measured path's work.
 | re-frame-shaped | 21.145 s (19.449-21.424) | 19.405 s (18.878-20.689) | 12.165 / 11.388 s | 491.0 to 446.4 (shadow-cljs 274.9 / 252.8) | 12.5 / 6.9-10.0 |
 
 Light/shadow steady state 1.74 to 1.66 for the workload. The re-frame-shaped app's runs moved with the machine's load (shadow-cljs's own steady state 8% faster in the second pair of runs): light/shadow 1.79 to 1.77.
+
+## 2026-11-18: startup's type and keyword setup (light-cljs-1017)
+
+Startup measured by phase, and the program's definitions made cheaper at load (docs/value-layout.md, "What light-cljs-1017 found and landed"): `installMethods` keeps and copies only the `Object/` methods' entries and reads its entries by index, `decorateType` finds a marker's mask bit in `protocolMasks`, the record markers' entries are built once (`recordMarkers`), `mungeMember` replaces by a pattern, `keyword` finds a literal without a namespace by its name, and a host type's `extend-type` implementation calls its method without a rest array.
+
+**Binaries:** master `light-cljs-9c9479b3` and `light-cljs-1017-7dc8274c` (this pellet on it), V8 builds. shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine: a peer's test suite and builds ran throughout, and each table gives its 1-minute load; all unreserved.
+
+**Where load goes** (workload 200k, in-process: the module's compile until its first statement runs, the runtime's units, the program's top level, then one iteration; 15 runs of each output alternated, load 3.5-3.7), median (range) in ms:
+
+| phase | light-cljs `9c9479b3` | light-cljs-1017 | shadow-cljs |
+| --- | ---: | ---: | ---: |
+| compile | 73.3 (72.1-77.9) | 72.9 (72.0-77.6) | 68.0 (67.2-69.8) |
+| runtime units | 1.4 | 1.4 | (in its top level) |
+| program's top level | 42.5 (41.5-46.9) | 24.6 (24.3-27.1) | 13.2 (13.0-14.1) |
+| first iteration | 183.1 (179.6-189.2) | 184.1 (182.3-196.2) | 168.6 (166.5-171.2) |
+| total | 311.4 (307.7-326.8) | 293.9 (290.9-306.1) | 261.0 (258.8-266.0) |
+
+Workload 800k (9 runs, load 3.3-3.4): compile 301.2, 297.9 and 288.6 ms; top level 132.8 (129.8-142.0), 85.4 (82.1-90.0) and 41.1 (39.8-42.4); first iteration 647.6, 656.1 and 627.3; total 1,098, 1,050 and 971.
+
+- **Compile** is the same per byte of parse as shadow-cljs's (V8's trace: 20.5 and 21.3 ms of `ParseProgram` per MB at 200k). light-cljs's is longer because V8 compiles about 2,100 parenthesized function expressions of the program at once (methods and type constructors passed to the runtime) where shadow-cljs's output has 13; writing them without parentheses moved 6 ms from the compile to the first iteration and gained nothing.
+- **The runtime's units** take 1.4 ms (2.2 at 800k): no store, method key or kind table of note is built at load any more.
+- **The program's top level** was the gap: its definitions, timed per runtime root on a `--pseudo-names` build of 800k before and after, `defineType` 47.0 to 26.5 ms (2,298 types), `extendType` 20.8 to 12.1 (2,455), `installMethods` (the record kits) 13.6 to 1.1 (1,904), `keyword` 10.8 to 6.6 (24,945 constants), `protocolMethod` 7.7 to 6.8 (981); `derive` (13.4 to 17.1, 1,642) and the multimethods' `addMethod` (5.2 to 7.4, 5,410) are operations this pellet does not change and moved with the machine.
+- **The first iteration** is the operations' speed: steady state is unchanged (below).
+
+**First output** at one iteration, from starting the process to its first byte, the three outputs alternated in one session (a Node script spawning `node run-light.mjs 42 1` against copies of the module built by each binary and `node out/shadow.js 42 1`), median (range) in ms:
+
+| project (runs, load) | light-cljs `9c9479b3` | light-cljs-1017 | shadow-cljs | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: |
+| workload 200k (20, 4.9-5.7) | 343.0 (338.5-357.2) | 330.9 (326.1-343.0) | 295.5 (292.0-322.8) | 1.16, 1.12 |
+| workload 200k (8, 7.6-8.1) | 380.9 (373.9-386.8) | 363.5 (361.1-368.6) | 323.3 (320.3-330.8) | 1.18, 1.12 |
+| workload 800k (12, 4.6-5.1) | 1,165.1 (1,110.1-1,289.8) | 1,120.1 (1,072.8-1,199.1) | 1,032.0 (972.2-1,095.3) | 1.13, 1.09 |
+| re-frame-shaped 200k app (10, 4.2-4.8) | 1,839.8 (1,779.7-1,989.4) | 1,817.7 (1,779.3-1,936.8) | 1,319.7 (1,284.4-1,501.6) | 1.39, 1.38 |
+
+`compare.bb workload-200k-seed42-1017 --runs 10 --runtime-only --runtime 1`, one session per binary, two pairs: light-cljs 0.352 and 0.360 s before (shadow-cljs 0.300 and 0.311 in the same sessions, light/shadow 1.17 and 1.16), 0.455 (load 3.2-5.5, ranges 0.327-0.529) and 0.358 s after (shadow-cljs 0.395 and 0.319, 1.15 and 1.12); the sessions drift with the machine more than the change, which the alternated runs above separate.
+
+**TodoMVC** (`bb benchmarks/re-frame.bb runtime todomvc --runs 10 --todos 50`, one session per binary, load 4.9-5.1): page load to interactive 41.95 ms (40.60-43.90) before against shadow-cljs's 31.90, 41.40 (39.90-43.20) after against 31.85 (1.32 to 1.30); its script time 22.36 to 21.71 ms against 13.57 and 13.41; the JavaScript heap after load 3.25 to 3.22 MB against 2.74. A Chrome DevTools Protocol profile of a `--pseudo-names` bundle puts the gap in the module's top level (17.0 against 11.0 ms with React's initialization in both), which is the program's own work at load, re-frame's `dispatch-sync` and registrations through the operations, and in React's first render (9.0 against 8.2 ms); type definitions are under 1 ms of it.
+
+**Steady state** (workload 200k, 40 and 1 iterations, the three alternated, 8 runs each, load 5.8-8.1): 39.0 ms per iteration before and 39.0 after, shadow-cljs 25.2. **The gate** (`bb benchmarks/core-ops/run.bb`, the record, protocol, multimethod and keyword operations and the maps' `=`, hash, `str` and `merge`, 5 runs per compiler alternated, after with `--baseline`, load 3.3-9.2): no operation is more than 2% slower (`multimethod` 113.0 to 115.8 ns, its range 113.0-175.5; `kw-hash100` 16.1 to 16.5; the others +0 to +2%).
+
+**Size:** workload 200k's output is 312 bytes larger raw and 105 after gzip -9 (848,858 to 848,963); the re-frame bundles with React grow 40, 12 and 126 bytes after gzip (simple 113,685 to 113,725, TodoMVC 144,845 to 144,857, flow 332,043 to 332,169; 0.01 to 0.04%). The size ratchet's record programs are 213 to 265 bytes larger at advanced and its keyword programs 21 (tests/support/ratchet_fixtures.rs).
+
+The review of this pellet found that a name a macro builds, such as `/1/ab` without a namespace, could share `keyword`'s key with a namespaced literal (`a/b`); a name that starts with a slash now takes another (`keyword_intern_keys` in tests/support/js_runtime.test.js). That one test of the name's first character is not in the measured binary `7dc8274c`; it adds 21 bytes to a program with keyword constants.
+
+**What is left**, profiled and filed: the program's top level is still 1.9 to 2.1 times shadow-cljs's (a record type's about 30 non-enumerable slots and per-type closures, a program protocol's dispatcher factory compiled at load, `derive` rebuilding sets; light-cljs-1069); the first iteration is the operations', most of it in the re-frame-shaped app the extended lookup that predicates, `count` and `meta` take in a program that extends types (219 of its 1,260 ms; light-cljs-1070); light-cljs-1066 and light-cljs-1068 reshape the other operations.
