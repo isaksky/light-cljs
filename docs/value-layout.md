@@ -1691,13 +1691,14 @@ markers (`runtime_key::slot_stem`):
   arities as its last argument, `names`, and `protocolSlot` answers them
   for the key from then on (its `spelled`), so a method entry that names
   the dispatcher (`[g1, 2, function ...]`) reaches the same slot;
-- a method entry of a type, a record, `reify` or `specify!` names its slot
-  in place of its key (`["$<key>c", 2, function ...]`), which
-  `installMethods` tells by the key's missing slash; an `extend-type` of a
-  value that may be a host type's name as it runs (`js/Date`, a local)
-  keeps the key, which `extendType` reads there, and names the slot as the
-  entry's fourth item; one of a host type's name (`number`) installs no
-  slot.
+- a method entry of a type, a record, `reify`, `specify!` and an
+  `extend-type` of a program type or a runtime type the program never
+  assigns names its slot in place of its key (`["$<key>c", 2, function
+  ...]`), which `installMethods` tells by the key's missing slash; an
+  `extend-type` of a value that may be a host type's name as it runs
+  (`js/Date`, a local, an assigned `PersistentVector`) keeps the key, which
+  `extendType` reads there, and names the slot as the entry's fourth item;
+  one of a host type's name (`number`) installs no slot.
 
 Where `protocolSlot` still builds a name from a key, the table stays:
 
