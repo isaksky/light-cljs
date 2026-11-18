@@ -2933,16 +2933,13 @@ fn the_features_runtime_splits_by_signature() {
     let lower = prepare_application(&lower, ApplicationOptions::new(OptimizationLevel::Advanced))
         .retention();
     let manifest = light_cljs::runtime_manifest::RuntimeManifest::embedded();
-    // The wrappers of `lookup` and of structural equality (light-cljs-247),
+    // The wrappers of structural equality (light-cljs-247; of `lookup` too,
+    // which `get` no longer reaches since light-cljs-1066),
     // which assign the binding startup declares, `get`'s slot-first wrapper
-    // (light-cljs-1009),
+    // (light-cljs-1009, none since light-cljs-1066, where `get` is one),
     // and `=`'s slot-first wrapper (light-cljs-1014).
     let wrappers = [
         ("equalPair", "equalPair.slots"),
-        ("get", "get.slots"),
-        ("lookup", "lookup.sets"),
-        ("lookup", "lookup.transients"),
-        ("lookup", "lookup.tree"),
         ("structuralEqualPair", "structuralEqualPair.symbols"),
     ]
     .map(|(binding, name)| {

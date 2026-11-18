@@ -753,6 +753,14 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "dissocSite",
     "containsSite",
     "mapEntry.equiv",
+    // The lookups' own paths where a program writes a core protocol
+    // method's member by name (light-cljs-1066).
+    "slotWrites",
+    "slotWrites.count",
+    "slotWrites.nth",
+    "slotWrites.get",
+    "slotWrites.contains",
+    "slotWrites.peek",
     "multiTables",
     "addMethodDirect",
     "mapEntry.lean",
@@ -1225,8 +1233,14 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // less the slot-first wrappers of `seq`, `first`, `rest` and `next`, and
     // the `-seq` slots of the three maps and the sorted set, the queue's and
     // a chunk's `-first`, the iterator seq's and RSeq's slots, and the hooks
-    // of `firstSeq` and `restSeq` for `extend-type` (light-cljs-1054).
-    assert_eq!(checked, 495);
+    // of `firstSeq` and `restSeq` for `extend-type` (light-cljs-1054), and the
+    // 21 `-count`, `-nth`, `-lookup` and `-peek` slot units light-cljs-1066 gave
+    // the views, the sorted map seq and set, chunk buffers, transients, integer
+    // ranges, lists and queues, less the five slot-first wrappers of `count`,
+    // `nth`, `get`, `contains?` and `peek`, and the five `slotWrites`
+    // effects that set their own paths where a program writes a core
+    // protocol method's member by name.
+    assert_eq!(checked, 516);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1849,7 +1863,7 @@ fn kind_hooks_skip_records() {
             "mapPrototype",
             "setPrototype",
             "lookup",
-            "get",
+            "getPath",
             "makeSet.equiv"
         ]
     );
@@ -1858,13 +1872,13 @@ fn kind_hooks_skip_records() {
         "protocolHooks.ownMethod",
         "protocolHooks.programMethod",
     ] {
-        waits_for(effect, "get");
+        waits_for(effect, "getOf");
     }
     assert!(
         body("installMethods.ILookupLookupKey")
             .contains("methodKeys[30] = methodKey(\"ILookup/-lookup\");")
     );
-    assert!(body("get").contains("protocolHooks.programMethod?.(value, methodKeys[30]"));
+    assert!(body("getOf").contains("protocolHooks.programMethod?.(value, methodKeys[30]"));
 }
 
 /// `PROTOCOL_ROOTS` are exactly the core protocols that conditional effects
@@ -1945,11 +1959,14 @@ fn protocol_roots_are_the_protocols_effects_wait_for() {
         assert_eq!(effects, ["count.seqs"]);
         for effect in ["count.seqs", "recordMethods.count"] {
             assert!(
-                manifest.conditions(unit(effect)).contains(&unit("count")),
-                "`{effect}` waits for `count`"
+                manifest.conditions(unit(effect)).contains(&unit("countOf")),
+                "`{effect}` waits for `countOf`"
             );
         }
-        assert_eq!(manifest.conditions(unit("count.seqs")), [unit("count")]);
+        assert_eq!(
+            manifest.conditions(unit("count.seqs")),
+            [unit("countOf"), unit("countPath")]
+        );
         assert!(implements("ICounted"));
     }
 }
@@ -2034,8 +2051,9 @@ fn conditional_effects_wait_for_a_condition() {
 /// definitions of `mapEntry` and `MapEntryType` (light-cljs-247). The hash
 /// tries' and `Loadable`'s wrappers install hooks instead since
 /// light-cljs-302, so that they go with the values they handle; the seven
-/// protocol wrappers stay (light-cljs-355). A new one moves no unit out of
-/// its binding's chunk.
+/// protocol wrappers stay (light-cljs-355), and the five `slotWrites`
+/// wrappers of the lookups' upstream-shaped paths join them (light-cljs-1066).
+/// A new one moves no unit out of its binding's chunk.
 #[test]
 fn units_assigning_a_binding_share_its_unit() {
     let manifest = manifest();
@@ -2053,9 +2071,9 @@ fn units_assigning_a_binding_share_its_unit() {
             "MapEntryType <- MapEntryType.vector",
             "assoc <- assoc.slots",
             "conj <- conj.slots",
-            "contains <- contains.own",
-            "contains <- contains.slots",
-            "count <- count.slots",
+            "containsOf <- slotWrites.contains",
+            "containsPath <- contains.own",
+            "countOf <- slotWrites.count",
             "declarationJournal <- MultiFn.tables",
             "declarationJournal <- declarationTransaction",
             "declarationJournal <- installMethods",
@@ -2080,8 +2098,8 @@ fn units_assigning_a_binding_share_its_unit() {
             "dissoc <- dissoc.slots",
             "equalPair <- equalPair.slots",
             "gensymCounter <- gensym",
-            "get <- get.own",
-            "get <- get.slots",
+            "getOf <- slotWrites.get",
+            "getPath <- get.own",
             "globalHierarchy <- getGlobalHierarchy",
             "hash <- hash.slots",
             "identityCounter <- hashStructural",
@@ -2092,12 +2110,12 @@ fn units_assigning_a_binding_share_its_unit() {
             "macroexpandServices <- setMacroexpandServices",
             "mapEntry <- mapEntry.lean",
             "mapEntry <- mapEntry.vector",
-            "nth <- nth.protocol",
-            "nth <- nth.slots",
+            "nthOf <- slotWrites.nth",
+            "nthPath <- nth.protocol",
             "patchDeclaration <- declarationTransaction",
             "patchDeclaration <- extendType",
             "patchDeclaration <- installMethods",
-            "peek <- peek.slots",
+            "peekOf <- slotWrites.peek",
             "recordMethodTable <- recordMethods.assoc",
             "recordMethodTable <- recordMethods.clone",
             "recordMethodTable <- recordMethods.conj",
@@ -2219,12 +2237,12 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
         [
             unit("ListValue.type"),
             unit("count.seqs"),
-            unit("count.slots"),
             unit("ListValue.firstSlot"),
             unit("ListValue.restSlot"),
             unit("ListValue.nextSlot"),
             unit("ListValue.seqSlot"),
             unit("ListValue.countSlot"),
+            unit("ListValue.peekSlot"),
             unit("equalPair.slots"),
             unit("cons.equiv"),
             unit("cons.compared"),

@@ -230,13 +230,21 @@
     get on() { const cells = globalThis.__lightSharedCells; return cells.slotFirst; },
     off() { const cells = globalThis.__lightSharedCells; cells.slotFirst = false; }
   };
-  //@unit operationPaths requires: firstPath, nextPath, restPath, seqPath
+  //@unit operationPaths requires: containsPath, countPath, firstPath, getPath, nextPath, nthPath,
+  //@ peekPath, restPath, seqPath
   // The V8 profile's switch to the operations' own paths, which every
   // task takes for a value without the operation's slot: the engine forms
   // (vectors, map entries, maps, sets and list cells) hold no slots, and
   // the own paths answer them through this profile's units, as before
-  // light-cljs-1054.
-  const operationPaths = {seq: seqPath, first: firstPath, rest: restPath, next: nextPath};
+  // light-cljs-1054 (the seq walk) and light-cljs-1066 (the lookups).
+  // `nth.protocol`, `get.own` and `contains.own` rewrap `nthPath`,
+  // `getPath` and `containsPath` after this unit loads, so those three
+  // entries read the binding when called, with the caller's arguments.
+  const operationPaths = {seq: seqPath, first: firstPath, rest: restPath, next: nextPath,
+    count: countPath, peek: peekPath,
+    nth: function () { return nthPath.apply(null, arguments); },
+    get: function () { return getPath.apply(null, arguments); },
+    contains: function () { return containsPath.apply(null, arguments); }};
   //@unit ownSeqs
   // The V8 profile's switch for `first` and `rest` of a collection whose
   // seq a program extended: this profile takes the own paths

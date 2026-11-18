@@ -2724,6 +2724,14 @@ impl<'a> Emitter<'a> {
                 Some(site),
                 NameUse::Keep,
             );
+            // ... or set a runtime class's prototype slot to nil or false,
+            // which the lookups then answer by their own paths, by the
+            // class (`slotWrites`, light-cljs-1066).
+            self.runtime_root(
+                RuntimeName::direct("slotWrites", None),
+                Some(site),
+                NameUse::Keep,
+            );
         }
         // Multimethods keep their tables in their atoms where the program
         // could see them or fill one past eight methods.

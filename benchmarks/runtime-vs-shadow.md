@@ -4729,3 +4729,56 @@ Workload 800k (9 runs, load 3.3-3.4): compile 301.2, 297.9 and 288.6 ms; top lev
 The review of this pellet found that a name a macro builds, such as `/1/ab` without a namespace, could share `keyword`'s key with a namespaced literal (`a/b`); a name that starts with a slash now takes another (`keyword_intern_keys` in tests/support/js_runtime.test.js). That one test of the name's first character is not in the measured binary `7dc8274c`; it adds 21 bytes to a program with keyword constants.
 
 **What is left**, profiled and filed: the program's top level is still 1.9 to 2.1 times shadow-cljs's (a record type's about 30 non-enumerable slots and per-type closures, a program protocol's dispatcher factory compiled at load, `derive` rebuilding sets; light-cljs-1069); the first iteration is the operations', most of it in the re-frame-shaped app the extended lookup that predicates, `count` and `meta` take in a program that extends types (219 of its 1,260 ms; light-cljs-1070); light-cljs-1066 and light-cljs-1068 reshape the other operations.
+
+## 2026-11-18: the lookups shaped as upstream's (light-cljs-1066)
+
+`count`, `nth`, `get`, `contains?` and `peek` call a value's keyed slot, then upstream's path for nil and host values (`countOf` and the others), without the slot-first wrappers and the lookup slots' `noBranch` guards; `nth` and `get` are one function per arity, each under light-cljs-1033's 100 bytes of bytecode (docs/value-layout.md, "What light-cljs-1066 landed"). A lookup's slot that a program sets to nil, false or undefined on a runtime class's prototype, or on its value over an `extend-type` method, still answers by the class: only a program that writes a core protocol method's member by name keeps the wrappers that do it (`slotWrites`), so the measured programs, which write none, have none. The updates, `=`, `hash` and the reductions keep their wrappers (light-cljs-1068).
+
+**Binaries** in research/shadow-credibility/bin: before `light-cljs-9c9479b3` (master), after `light-cljs-1066-23cfd103` (this pellet on it; the landed commit rebases it onto light-cljs-1017 and changes only the `slotWrites` wrappers, which no measured program keeps), V8 builds. Records in research/output-speed/lookups-1066. No run waited for the machine; all results are unreserved (peer workers built and tested throughout).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, all 72 operations, the after run with `--baseline` the before's; load 8.74-12.45 before and 6.98-8.67 after), light-cljs ns per operation, median (range), the operations that read through a lookup:
+
+| op | light before | light after | change | shadow-cljs after | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 7.98 (7.90-8.06) | 7.71 (7.50-7.74) | -3% | 9.89 | 0.78 |
+| get-small | 11.4 (11.2-11.4) | 11.1 (10.8-11.2) | -3% | 15.0 | 0.74 |
+| get-small-miss | 15.8 (15.8-15.9) | 15.6 (15.3-15.6) | -2% | 19.4 | 0.80 |
+| contains-small | 10.1 (10.0-10.2) | 9.40 (9.33-9.41) | -7% | 12.2 | 0.77 |
+| count-small | 1.99 (1.97-2.01) | 2.12 (2.04-2.13) | +7% | 2.13 | 1.00 |
+| get-hash100 | 12.7 (12.3-12.8) | 12.5 (12.0-12.7) | -2% | 12.2 | 1.02 |
+| kw-hash100 | 14.4 (13.8-16.0) | 14.3 (14.2-14.9) | +0% | 13.6 | 1.05 |
+| get-in-3 | 64.2 (63.7-64.6) | 63.5 (62.9-63.7) | -1% | 57.8 | 1.10 |
+| update-in-3 | 188.8 (187.5-189.7) | 173.4 (171.2-175.1) | -8% | 137.9 | 1.26 |
+| vec-nth-1024 | 5.05 (4.68-5.11) | 4.55 (4.25-4.71) | -10% | 5.15 | 0.88 |
+| vec-invoke-1024 | 5.05 (5.00-5.08) | 5.08 (4.82-5.18) | +1% | 4.82 | 1.05 |
+| vec-peek | 3.74 (3.70-3.74) | 3.64 (3.60-3.65) | -3% | 3.45 | 1.06 |
+| destructure-vec-3 | 7.34 (7.30-7.41) | 5.47 (5.20-5.48) | -25% | 9.84 | 0.56 |
+| destructure-map-3 | 63.2 (62.4-65.6) | 62.3 (61.2-62.7) | -1% | 49.8 | 1.25 |
+| select-keys-3 | 340.4 (337.6-345.3) | 338.1 (326.4-339.9) | -1% | 247.1 | 1.37 |
+| filter-count-1000 | 38,948 (38,801-39,654) | 37,024 (36,701-37,505) | -5% | 28,158 | 1.31 |
+| variadic-call | 13.9 (13.6-14.1) | 14.7 (14.6-14.8) | +6% | 14.1 | 1.05 |
+
+- **Two operations are more than 5% slower, both `count`:** `count-small` (`count` of a 7-key array map) and `variadic-call`, whose function counts its rest arguments' indexed seq. A second pair with only these two (`--ops count-small,variadic-call`, load 4.95-5.52) repeats it: 1.94 to 2.06 ns (+6%) and 9.91 to 10.6 ns (+7%). The call is the same in both binaries (`countSite`, which reads the `-count` slot and calls it), and what runs after it is less: no `noBranch` comparison in `countSite`, no field test in the array map's and the indexed seq's `-count` slots. Alone, the same loop over four array maps (20 million `count`s in a program of its own, two runs each) is faster after: 2.71-2.74 ns before and 2.28-2.46 after. So the 0.12 ns (under half a cycle) is the benchmark process's type feedback from the operations around it, not the work `count` does; `count-small` stays at parity with shadow-cljs (1.00).
+- **What gains:** `destructure-vec-3` (`nth` of a vector through `nthSite` no longer compares against `noBranch`), `vec-nth-1024`, `update-in-3` and `contains-small`; outside the table `reduce-entries-small` (-12%), `reduce-map-inc-1000` (-11%) and `merge-small` (-7%): destructuring a map entry calls its `-nth` slot without the guard, `merge` counts, and `map inc` over a vector counts its chunks and chunk buffers, which have `-count` slots now; no other operation of the 72 moves more than 5%.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the `9c9479b3` binary, built by every binary), the whole bundle with React, gzip -9:
+
+| App | `f533efb1` | master `9c9479b3` | light-cljs-1066 | against master | against `f533efb1` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| re-frame simple | 108,631 | 113,685 | 113,364 | -321 (-0.28%) | +4,733 |
+| TodoMVC | 138,015 | 144,845 | 144,573 | -272 (-0.19%) | +6,558 |
+| flow | 328,644 | 331,982 | 331,665 | -317 (-0.10%) | +3,021 |
+
+- **Raw:** 372,517 to 370,395 (-2,122), 479,878 to 477,755 (-2,123), 1,283,954 to 1,282,339 (-1,615); light-cljs's output as written, gzip, 67,572 to 67,239, 96,810 to 96,543, 279,672 to 279,514.
+- **Against the expectation** (light-cljs-1047's 2,500 to 4,000 bytes per app for the whole of light-cljs-1066 as filed): this is the lookups alone, and the apps stay larger than at `f533efb1`. The recognisers the old bodies called stay for the updates', `=`'s and `hash`'s bodies and the reductions', which light-cljs-1068 reshapes. Per-pellet size targets are reported, not gated (the user, 2026-11-17).
+- The browser behaviour checks pass for all three apps with this pellet's builds (`bb benchmarks/re-frame.bb browser todomvc simple flow --compiler light --runs 1`: 16 of 16).
+- **On master `2af3dfcb`** (with light-cljs-1017), the landed commit's release binary against master's (`light-cljs-2af3dfcb`), same ports: simple 113,731 to 113,539 (-192), TodoMVC 144,894 to 144,678 (-216), flow 332,098 to 331,847 (-251); none of the three apps writes a core protocol method's member by name, so none keeps `slotWrites` (`--size-report`).
+
+**Workload 200k and the re-frame-shaped 200k app** (`compare.bb PROJECT --runs 5 --runtime-only --runtime 1,40`, projects `workload-200k-seed42-1066` and `re-frame-200k-seed42-1066`, the light-cljs output rebuilt with each binary just before its runs), wall time at 40 iterations, median (range), and light-cljs's steady state:
+
+| project | light before | light after (`23cfd103`) | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k | 1.753 s (1.734-1.772) | 1.725 s (1.713-1.758) | 1.185 / 1.173 s | 35.9 to 35.3 (shadow-cljs 22.6 / 22.4) | 5.6-6.8 / 4.9-5.6 |
+| re-frame-shaped | 18.362 s (18.311-18.985) | 18.181 s (18.163-19.081) | 10.774 / 10.765 s | 423.1 to 420.2 (shadow-cljs 242.8 / 242.5) | 3.4-4.4 / 2.6-3.1 |
+
+Light/shadow steady state 1.59 to 1.57 for the workload and 1.74 to 1.73 for the re-frame-shaped app; the first iteration 0.351 to 0.349 s and 1.863 to 1.792 s. Both are within their ranges of master: the lookups were already slot-first in both programs' hot paths, and this pellet takes the wrapper layer and guards off them, not a lookup.

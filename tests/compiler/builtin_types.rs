@@ -359,6 +359,26 @@ fn masked_lookup_getters_preserve_selected_dispatch() {
         ),
         &expected,
     );
+    // A getter that answers undefined and clears the bit and the marker only
+    // on its second read, after the slot-first call's read: the upstream-shaped
+    // paths still finish the selected dispatch (light-cljs-1066's review).
+    every_level(
+        r#"(deftype U [] ILookup (-lookup [_ _] :two) (-lookup [_ _ _] :three) IAssociative (-contains-key? [_ _] true) (-assoc [v _ _] v))
+           (let [value (U.)]
+             (doseq [[slot marker] [[(js* "'cljs$core$ILookup$_lookup$arity$3$LKEY'") (js* "'cljs$core$ILookup$$LKEY'")]
+                                    [(js* "'cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY'") (js* "'cljs$core$IAssociative$$LKEY'")]]]
+               (let [reads (atom 0)]
+                 (js/Object.defineProperty value slot
+                   #js {:get (fn []
+                               (when (= 2 (swap! reads inc))
+                                 (set! (.-cljs$lang$protocol_mask$partition0$ value) 0)
+                                 (js-delete value marker))
+                               js/undefined)})))
+             (set! (.-cljs$lang$protocol_mask$partition0$ value) (bit-or 256 512))
+             (pr-str [(try (get value :key :fallback) (catch :default error (.-message error)))
+                      (try (contains? value :key) (catch :default error (.-message error)))]))"#,
+        missing,
+    );
 }
 
 /// The runtime units an `Advanced` program embeds.
@@ -1132,7 +1152,10 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     let units = units(
         "(let [s (seq (sorted-map 1 2 3 4))] (count (PersistentTreeMapSeq. nil (.-stack s) true -1 nil)))",
     );
-    assert!(units.contains(&"treeMapSeqConstructor.count"), "{units:?}");
+    assert!(
+        units.contains(&"treeMapSeqConstructor.countSlot"),
+        "{units:?}"
+    );
     // Each core dispatcher and its `protocolHooks` install is a unit of its
     // own (light-cljs-254), so a walk keeps `countProtocol` without the
     // dispatchers the unit `seqProtocol` declared with it, nor the `get`,
@@ -1510,6 +1533,60 @@ fn vector_slot_first_preserves_missing_slot_fallbacks() {
             ),
             "[[:k :none 2 1 [:k 1 3] [:a 1] 1 :none (:k 1)] [2 :none 2 3 [2 3 3] [:a 3] 3 :none (2 3)] \
              [2 :none 2 3 [2 3 3] [:a 3] 3 :none (2 3)] [1 :none 2 2 :none] :persisted :none :persisted :persisted]",
+        );
+    }
+    // Likewise a runtime class's prototype slots of the lookups (`-lookup`,
+    // `-nth`, `-count`, `-peek`, `-contains-key?`) that a program sets to nil,
+    // false or undefined: the class answers, by the lookups' own paths, which
+    // such a program keeps (`slotWrites`, light-cljs-1066).
+    for missing in ["nil", "false", "js/undefined"] {
+        every_level(
+            &format!(
+                "(let [v [1 2] m {{:a 1}} s #{{:x}} q (conj cljs.core/PersistentQueue.EMPTY 7)]
+                   (set! (.. PersistentVector -prototype -cljs$core$ILookup$_lookup$arity$2) {missing})
+                   (set! (.. PersistentVector -prototype -cljs$core$ILookup$_lookup$arity$3) {missing})
+                   (set! (.. PersistentVector -prototype -cljs$core$IIndexed$_nth$arity$2) {missing})
+                   (set! (.. PersistentVector -prototype -cljs$core$IIndexed$_nth$arity$3) {missing})
+                   (set! (.. PersistentVector -prototype -cljs$core$ICounted$_count$arity$1) {missing})
+                   (set! (.. PersistentVector -prototype -cljs$core$IStack$_peek$arity$1) {missing})
+                   (set! (.. PersistentVector -prototype -cljs$core$IAssociative$_contains_key_QMARK_$arity$2) {missing})
+                   (set! (.. PersistentArrayMap -prototype -cljs$core$ILookup$_lookup$arity$2) {missing})
+                   (set! (.. PersistentArrayMap -prototype -cljs$core$ICounted$_count$arity$1) {missing})
+                   (set! (.. PersistentHashSet -prototype -cljs$core$IAssociative$_contains_key_QMARK_$arity$2) {missing})
+                   (set! (.. PersistentHashSet -prototype -cljs$core$ILookup$_lookup$arity$3) {missing})
+                   (set! (.. PersistentQueue -prototype -cljs$core$IStack$_peek$arity$1) {missing})
+                   (set! (.. PersistentQueue -prototype -cljs$core$ICounted$_count$arity$1) {missing})
+                   (pr-str [(get v 0) (get v 0 :missing) (get v 7) (get v 7 :none) (nth v 1) (nth v 5 :none)
+                            (count v) (peek v) (contains? v 1) (contains? v 2) (get m :a) (count m)
+                            (contains? s :x) (get s :x :none) (get s :y :none) (peek q) (count q)]))"
+            ),
+            "[1 1 nil :none 2 :none 2 2 true false 1 1 true :x :none 7 1]",
+        );
+    }
+    // ... and a value's own slots set to nil or false over the methods
+    // `extend-type` gave its class: the value answers by its class, not by
+    // the extension its own slots hide.
+    for missing in ["nil", "false"] {
+        every_level(
+            &format!(
+                "(extend-type PersistentVector
+                   ICounted (-count [_] 42)
+                   IIndexed (-nth ([_ _] :ext) ([_ _ _] :ext))
+                   ILookup (-lookup ([_ _] :ext) ([_ _ _] :ext))
+                   IAssociative (-contains-key? [_ _] :ext)
+                   IStack (-peek [_] :ext))
+                 (let [v (vector 1 2) w (vector 3)]
+                   (set! (.-cljs$core$ICounted$_count$arity$1 v) {missing})
+                   (set! (.-cljs$core$IIndexed$_nth$arity$2 v) {missing})
+                   (set! (.-cljs$core$IIndexed$_nth$arity$3 v) {missing})
+                   (set! (.-cljs$core$ILookup$_lookup$arity$2 v) {missing})
+                   (set! (.-cljs$core$ILookup$_lookup$arity$3 v) {missing})
+                   (set! (.-cljs$core$IAssociative$_contains_key_QMARK_$arity$2 v) {missing})
+                   (set! (.-cljs$core$IStack$_peek$arity$1 v) {missing})
+                   (pr-str [(count v) (nth v 1) (nth v 5 :none) (get v 0) (get v 7 :none) (contains? v 1)
+                            (peek v) (count w) (nth w 0) (get w 0) (contains? w 0) (peek w)]))"
+            ),
+            "[2 2 :none 1 :none true 2 42 :ext :ext :ext :ext]",
         );
     }
 }
@@ -1933,10 +2010,10 @@ fn entry_only_and_transient_only_slices_keep_and_call_their_slots() {
         "MapEntryType.lookup",
         "MapEntryType.peek",
         "MapEntryType.seq",
-        "count.slots",
-        "nth.slots",
-        "get.slots",
-        "peek.slots",
+        "count",
+        "nth",
+        "get",
+        "peek",
         "seq",
     ] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
@@ -1966,9 +2043,9 @@ fn entry_only_and_transient_only_slices_keep_and_call_their_slots() {
         "TransientVectorType.count",
         "TransientVectorType.nth",
         "TransientVectorType.lookup",
-        "count.slots",
-        "nth.slots",
-        "get.slots",
+        "count",
+        "nth",
+        "get",
     ] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
@@ -3491,6 +3568,10 @@ fn transient_map_conj_observes_value_method_changes_from_key() {
 /// (`ownedProtocolValue` of `satisfies`, `seqableValue` and the other native
 /// tests) read a value's keyed kind once and test its class's store
 /// (`kindTable`), where they asked every store in turn, each reading it.
+/// Since light-cljs-1066 twice more below `Advanced`, and at `Advanced` in
+/// the set that writes slots by name: `count` and `get` of the Proxy read
+/// its keyed kind for the wrappers that answer a runtime class's value
+/// whose prototype slot a program cleared (`slotWrites`).
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -3574,16 +3655,16 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000000e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-list 000010000000000000000 :error :error 2\n",
-                "forged-map 00001000000000000e000 :error :error :error\n",
-                "forged-range 000010000000000000000 :error :error 2\n",
+                "forged-list 000010000000000000000 nil :error 2\n",
+                "forged-map 00001000000000000e000 nil :error :error\n",
+                "forged-range 000010000000000000000 nil :none 2\n",
                 "forged-seq 00001000000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 110011111001010110000 5 1 2\n",
-                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:slots$LKEY get:toString proto\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [323, 323, 323],
+            [306, 306, 304],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -3635,16 +3716,16 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 110000110100000000001 42 :error :error\n",
                 "type 110000110100000000000 42 :error :error\n",
                 "proxy 110000110100000000000 42 :error :error\n",
-                "forged-list 110010110100000000000 42 :error 43\n",
-                "forged-map 110010110100000000000 42 :error :error\n",
-                "forged-range 110010110100000000000 42 :error 43\n",
-                "forged-seq 110010110100000000000 42 :error :error\n",
+                "forged-list 110010110100000000000 nil :error 43\n",
+                "forged-map 110010110100000000000 nil :error :error\n",
+                "forged-range 110010110100000000000 nil :none 43\n",
+                "forged-seq 110010110100000000000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
-                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:slots$LKEY get:toString proto\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [337, 337, 337],
+            [320, 320, 318],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -3702,16 +3783,16 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000001e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-list 100010000000000000000 :error :error 2\n",
-                "forged-map 00001000000000000e100 :error :error :error\n",
-                "forged-range 000010000000000000000 :error :error 2\n",
+                "forged-list 100010000000000000000 nil :error 2\n",
+                "forged-map 00001000000000000e100 nil :error :error\n",
+                "forged-range 000010000000000000000 nil :none 2\n",
                 "forged-seq 00001000000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :queue 2\n",
                 "specified-map 001011111100010010100 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
-                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:slots$LKEY get:toString proto\n",
+                "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [323, 323, 323],
+            [306, 306, 306],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");

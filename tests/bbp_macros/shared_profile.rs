@@ -166,11 +166,17 @@ fn shared_profile_task_cells_are_writable() {
              const cv = core.withMeta(__rt.formWithMeta(core.vector(1, 2), __rt.formMap(tag, true)), null); \
              Object.defineProperty(cv, slot, {{get() {{ log.push('slot'); return Object.getPrototypeOf(cv)[slot]; }}}}); \
              const probe = () => {{ log.length = 0; const item = core.nth(cv, 1); return item + ':' + log.join(','); }}; \
-             const slotFirst = [cells.slotFirst, cv instanceof core.PersistentVector, probe()].join(' '); \
-             rt.setDeclarationDemand(key => {{ if (key.includes('IIndexed')) log.push('demand'); }}); \
-             const demanded = [cells.slotFirst, probe()].join(' '); \
+             const own = core.withMeta(__rt.formWithMeta(core.vector(1, 2), __rt.formMap(tag, true)), null); \
+             const method = (name, answer) => ({{get() {{ log.push(name); return () => answer; }}}}); \
+             Object.defineProperty(own, slot, method('nth', 99)); \
+             Object.defineProperty(own, 'cljs$core$ILookup$_lookup$arity$2$LKEY', method('get', 98)); \
+             Object.defineProperty(own, 'cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY', method('contains', 'c')); \
+             const owned = () => {{ log.length = 0; const items = [core.nth(own, 1), core.get(own, 0), core.contains(own, 5)]; return items.join(',') + ':' + log.join(','); }}; \
+             const slotFirst = [cells.slotFirst, cv instanceof core.PersistentVector, probe(), owned()].join(' '); \
+             rt.setDeclarationDemand(key => {{ if (/IIndexed|ILookup|IAssociative/.test(key)) log.push('demand'); }}); \
+             const demanded = [cells.slotFirst, probe(), owned()].join(' '); \
              const other = core.sharedTaskCells(); globalThis.__lightSharedCells = other; \
-             const elsewhere = [other.slotFirst, probe()].join(' '); globalThis.__lightSharedCells = cells; \
+             const elsewhere = [other.slotFirst, probe(), owned()].join(' '); globalThis.__lightSharedCells = cells; \
              return [cells.macroexpandServices.macroexpand === expand, a !== b, cells.gensymCounter, \
                before, plain, core.prStr('a'), Object.isFrozen(core), typeof core.sharedTaskCells().gensymCounter, \
                '|', slotFirst, '|', demanded, '|', elsewhere].join(' ');"
@@ -184,9 +190,16 @@ fn shared_profile_task_cells_are_writable() {
     // declares IIndexed by its mask bit, which the older layer's protocol
     // lookup reads before it would demand the protocol to read the marker,
     // as for a program type); a task with cells of its own keeps slot-first.
+    // A vector whose own `-nth`, `-lookup` and `-contains-key?` slots answer
+    // other than its items answers from them in every task, and after the
+    // demand each protocol is demanded before its slot is read: the
+    // profile's own paths are the bindings `nth.protocol`, `get.own` and
+    // `contains.own` rewrapped, not the bodies they wrap, which read the
+    // vector's items (light-cljs-1066).
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "true true 2 \"a\" a \"a\" true number | true true 2:slot | false 2:demand,slot | true 2:slot"
+        "true true 2 \"a\" a \"a\" true number | true true 2:slot 99,98,c:nth,get,contains | \
+         false 2:demand,slot 99,98,c:demand,nth,demand,get,demand,contains | true 2:slot 99,98,c:nth,get,contains"
     );
 }
 

@@ -1029,8 +1029,8 @@
   //@unit installMethods.IAssociativeAssocKey effect: installMethods when: assoc requires: methodKey,
   //@ methodKeys
   methodKeys[1] = methodKey("IAssociative/-assoc");
-  //@unit installMethods.IAssociativeContainsKeyKey effect: installMethods when: contains requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.IAssociativeContainsKeyKey effect: installMethods when: containsOf,
+  //@ containsPath requires: methodKey, methodKeys
   methodKeys[2] = methodKey("IAssociative/-contains-key?");
   //@unit installMethods.IAssociativeKey effect: installMethods when: isAssociative requires: methodKey,
   //@ methodKeys
@@ -1053,7 +1053,7 @@
   //@unit installMethods.IComparableCompareKey effect: installMethods when: compareKeys requires: methodKey,
   //@ methodKeys
   methodKeys[9] = methodKey("IComparable/-compare");
-  //@unit installMethods.ICountedCountKey effect: installMethods when: count requires: methodKey,
+  //@unit installMethods.ICountedCountKey effect: installMethods when: countOf, countPath requires: methodKey,
   //@ methodKeys
   methodKeys[10] = methodKey("ICounted/-count");
   //@unit installMethods.ICountedKey effect: installMethods when: accumulatingCount, boundedCount,
@@ -1092,11 +1092,11 @@
   methodKeys[22] = methodKey("IHash/-hash");
   //@unit installMethods.IHashKey effect: installMethods when: hash requires: methodKey, methodKeys
   methodKeys[23] = methodKey("IHash");
-  //@unit installMethods.IIndexedKey effect: installMethods when: isIndexed, nth requires: methodKey,
-  //@ methodKeys
-  methodKeys[24] = methodKey("IIndexed");
-  //@unit installMethods.IIndexedNthKey effect: installMethods when: nth, subvec, SubvecValue
+  //@unit installMethods.IIndexedKey effect: installMethods when: isIndexed, nthOf, nthPath
   //@ requires: methodKey, methodKeys
+  methodKeys[24] = methodKey("IIndexed");
+  //@unit installMethods.IIndexedNthKey effect: installMethods when: SubvecValue, nthOf, nthPath,
+  //@ subvec requires: methodKey, methodKeys
   methodKeys[25] = methodKey("IIndexed/-nth");
   //@unit installMethods.IIterableIteratorKey effect: installMethods when: iterator requires: methodKey,
   //@ methodKeys
@@ -1110,7 +1110,7 @@
   //@unit installMethods.IListKey effect: installMethods when: isList requires: methodKey,
   //@ methodKeys
   methodKeys[29] = methodKey("IList");
-  //@unit installMethods.ILookupLookupKey effect: installMethods when: get requires: methodKey,
+  //@unit installMethods.ILookupLookupKey effect: installMethods when: getOf, getPath requires: methodKey,
   //@ methodKeys
   methodKeys[30] = methodKey("ILookup/-lookup");
   //@unit installMethods.IMapDissocKey effect: installMethods when: dissoc requires: methodKey,
@@ -1167,19 +1167,19 @@
   //@unit installMethods.ISeqFirstKey effect: installMethods when: firstOf, firstPath, firstSeq
   //@ requires: methodKey, methodKeys
   methodKeys[48] = methodKey("ISeq/-first");
-  //@unit installMethods.ISeqKey effect: installMethods when: cons, isSeq, nth requires: methodKey,
+  //@unit installMethods.ISeqKey effect: installMethods when: cons, isSeq, nthOf, nthPath requires: methodKey,
   //@ methodKeys
   methodKeys[49] = methodKey("ISeq");
   //@unit installMethods.ISeqRestKey effect: installMethods when: restOf, restPath, restSeq
   //@ requires: methodKey, methodKeys
   methodKeys[50] = methodKey("ISeq/-rest");
-  //@unit installMethods.ISeqableKey effect: installMethods when: count, isSeqable requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.ISeqableKey effect: installMethods when: countOf, countPath, isSeqable
+  //@ requires: methodKey, methodKeys
   methodKeys[51] = methodKey("ISeqable");
   //@unit installMethods.ISeqableSeqKey effect: installMethods when: reduce, rseq, seqOf, seqPath
   //@ requires: methodKey, methodKeys
   methodKeys[52] = methodKey("ISeqable/-seq");
-  //@unit installMethods.ISequentialKey effect: installMethods when: isSequential, nth,
+  //@unit installMethods.ISequentialKey effect: installMethods when: isSequential, nthOf, nthPath,
   //@ structuralEqualPair requires: methodKey, methodKeys
   methodKeys[53] = methodKey("ISequential");
   //@unit installMethods.ISetDisjoinKey effect: installMethods when: disj requires: methodKey,
@@ -1191,7 +1191,7 @@
   //@unit installMethods.ISortedKey effect: installMethods when: isSorted requires: methodKey,
   //@ methodKeys
   methodKeys[56] = methodKey("ISorted");
-  //@unit installMethods.IStackPeekKey effect: installMethods when: peek requires: methodKey,
+  //@unit installMethods.IStackPeekKey effect: installMethods when: peekOf, peekPath requires: methodKey,
   //@ methodKeys
   methodKeys[57] = methodKey("IStack/-peek");
   //@unit installMethods.IStackPopKey effect: installMethods when: pop requires: methodKey,
@@ -5018,9 +5018,51 @@
     throw new Error("Doesn't support namespace on this type");
   }
 
-  //@unit count requires: cellOf, chunkBufferOf, chunkOf, isLazy, isTransient, kindHooks, maps,
-  //@ methodKeys, protocolHooks, queues, seqableValue, sets, vectorStore, viewOf
+  // The lookups, `count`, `nth`, `get`, `contains?` and `peek`, are
+  // upstream's too (light-cljs-1066), as the seq walk's (light-cljs-1054): a
+  // value with a keyed kind calls its keyed slot, read and called once;
+  // every other value, and one whose slot holds no method, takes the
+  // operation's own path (`countOf` and the others), upstream's for nil,
+  // a host value's program method, arrays and strings, and the seq walk of
+  // a collection without the protocol. The runtime's classes that the old
+  // paths answered by recognising them have slots (chunked, node and
+  // reversed seqs, a sorted map's seq and set, chunk buffers, transients,
+  // integer ranges, lists and queues). The old paths (`countPath` and the
+  // others) serve the compile-time runtime and the shared-heap profile
+  // (`operationPaths`).
+  //@unit count requires: countOf, slotFirst
   function count(value) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    return countOf(value);
+  }
+  //@unit countOf requires: kindHooks, methodKeys, operationPaths, protocolHooks, seqableValue
+  // Upstream's `count`: a value of a runtime class whose instance slot
+  // holds nil or false takes its class's slot, as the old path answered by
+  // the class; a seqable value without `-count` (a cons, a lazy seq, a
+  // program's type) counts its seq.
+  function countOf(value) {
+    const path = operationPaths.count;
+    if (path !== undefined) return path(value);
+    if (value == null) return 0;
+    if (value.cljs$lang$kind$$LKEY < 64) {
+      const method = Object.getPrototypeOf(value)?.cljs$core$ICounted$_count$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    const own = protocolHooks.programMethod?.(value, methodKeys[10], 1, true, true);
+    if (own) return own.call(value, value);
+    if (Array.isArray(value) || typeof value === "string") return value.length;
+    if (protocolHooks.implements?.(methodKeys[51], value) ?? seqableValue(value)) return kindHooks.countSeq(value);
+    const nativeCount = protocolHooks.builtin?.(value, methodKeys[10], 1);
+    if (nativeCount) return nativeCount.call(value, value);
+    throw new Error("count not supported on this type");
+  }
+  //@unit countPath requires: cellOf, chunkBufferOf, chunkOf, count, isLazy, isTransient, kindHooks,
+  //@ maps, methodKeys, protocolHooks, queues, seqableValue, sets, vectorStore, viewOf
+  // `count`'s own path over the runtime's classes (`operationPaths`).
+  function countPath(value) {
     // As `seq`'s.
     const own = value == null ? undefined : protocolHooks.programMethod?.(value, methodKeys[10], 1, true, true);
     if (own) return own.call(value, value);
@@ -5088,11 +5130,11 @@
   //@unit count.seqs effect: ChunkedCons, compilerFormBridge, cons, listFromArray, Cons, cycleNode,
   //@ emptyList, EmptyListValue, Eduction, extendInstance, extendType, iterateNode, iteration,
   //@ iteratorSeq, ISeqable, LazySeq, ListValue, mapProjection, rangeNode, RepeatValue, reSeq,
-  //@ treeMapSeqConstructor when: count requires: accumulatingCount, kindHooks
+  //@ treeMapSeqConstructor when: countOf, countPath requires: accumulatingCount, kindHooks
   // Only these units, and a program type implementing `ISeqable`
   // (`PROTOCOL_ROOTS` in src/runtime_slice.rs), build values `count` walks.
   kindHooks.countSeq = accumulatingCount;
-  //@unit treeMapSeqConstructor.count effect: treeMapSeqConstructor when: count requires: count,
+  //@unit treeMapSeqConstructor.count effect: treeMapSeqConstructor when: countPath requires: count,
   //@ kindHooks, next
   // A sorted map's seq without a count counts its tail's.
   kindHooks.countTreeSeq = value => 1 + count(next(value));
@@ -5114,10 +5156,89 @@
     return notFound;
   }
 
-  //@unit nth requires: cellOf, chunkOf, first, indexedValue, invalidArity, isEntryCell,
-  //@ isTransient, kindHooks, methodKeys, missing, next, outOfBounds, protocolHooks, seq,
-  //@ sequential, seqValue, vectorNth, vectorStore, viewOf
+  //@unit nth requires: nthOf, slotFirst
+  // One function per arity, each under the 100 bytes of bytecode that V8's
+  // Maglev inlines (light-cljs-1033): `nth` 52, `nth2` 80 and `nth3` 92.
   function nth(value, index, notFound) {
+    return arguments.length === 2 ? nth2(value, index) : nth3(value, index, notFound, arguments.length);
+  }
+  function nth2(value, index) {
+    if (value != null && slotFirst.on && typeof index === "number" && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IIndexed$_nth$arity$2$LKEY;
+      if (method) return method.call(value, value, index);
+    }
+    return nthOf(value, index, undefined, 2);
+  }
+  function nth3(value, index, notFound, arity) {
+    if (arity === 3 && value != null && slotFirst.on && typeof index === "number" && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IIndexed$_nth$arity$3$LKEY;
+      if (method) return method.call(value, value, index, notFound);
+    }
+    return nthOf(value, index, notFound, arity);
+  }
+  //@unit nthOf requires: first, indexedValue, invalidArity, methodKeys, missing, next, nth,
+  //@ operationPaths, outOfBounds, protocolHooks, seq, sequential, seqValue, viewOf
+  // Upstream's `nth` of `arity` arguments: nil, a host value's program
+  // method, arrays and strings, the seq walk of a sequential value without
+  // `-nth` (a list, a cons, a lazy seq, a seq of a vector, read by its
+  // offset), a value of a runtime class whose instance slot holds nil or
+  // false by its class's slot.
+  function nthOf(value, index, notFound, arity) {
+    const path = operationPaths.nth;
+    if (path !== undefined) return arity === 2 ? path(value, index) : arity === 3 ? path(value, index, notFound) : invalidArity(arity);
+    if (arity !== 2 && arity !== 3) return invalidArity(arity);
+    if (typeof index !== "number") throw new Error("Index argument to nth must be a number");
+    if (value == null) return arity === 2 ? value : notFound;
+    if (value.cljs$lang$kind$$LKEY < 64) {
+      const proto = Object.getPrototypeOf(value);
+      if (arity === 2) { const method = proto?.cljs$core$IIndexed$_nth$arity$2$LKEY; if (method) return method.call(value, value, index); }
+      else { const method = proto?.cljs$core$IIndexed$_nth$arity$3$LKEY; if (method) return method.call(value, value, index, notFound); }
+    }
+    const own = protocolHooks.programMethod?.(value, methodKeys[25], arity, true, true);
+    if (own) return arity === 2 ? own.call(value, value, index) : own.call(value, value, index, notFound);
+    const fallback = arity === 2 ? missing : notFound;
+    if (Array.isArray(value)) return index > -1 && index < value.length ? value[Math.trunc(index)] : fallback === missing ? outOfBounds() : fallback;
+    if (typeof value === "string") {
+      if (index > -1 && index < value.length) return value.charAt(index | 0);
+      if (fallback === missing) return outOfBounds();
+      return fallback;
+    }
+    const implementing = protocolHooks.implements;
+    if ((implementing?.(methodKeys[49], value) || implementing?.(methodKeys[53], value)) ?? (seqValue(value) || sequential(value))) {
+      // As `nthPath`'s walk.
+      let current = value, remaining = index;
+      if (!viewOf(current)?.indexed$LKEY && remaining < 0)
+        return fallback === missing ? outOfBounds() : fallback;
+      while (current !== null) {
+        const slice = viewOf(current);
+        if (slice?.indexed$LKEY) {
+          const absolute = slice.i$LKEY + remaining;
+          if (absolute >= 0 && absolute < slice.arr$LKEY.length) return slice.arr$LKEY[absolute];
+          break;
+        }
+        if (remaining === 0) {
+          if (seq(current) != null) return first(current);
+          break;
+        }
+        if (protocolHooks.satisfies?.(methodKeys[24], current) ?? indexedValue(current)) {
+          const indexed = protocolHooks.nthProtocol ?? nth;
+          return fallback === missing ? indexed(current, remaining) : indexed(current, remaining, fallback);
+        }
+        if (seq(current) == null) break;
+        current = next(current);
+        remaining--;
+      }
+      return fallback === missing ? outOfBounds() : fallback;
+    }
+    const nativeNth = protocolHooks.programMethod?.(value, methodKeys[25], arity);
+    if (nativeNth) return arity === 2 ? nativeNth.call(value, value, index) : nativeNth.call(value, value, index, notFound);
+    throw new Error("nth not supported on this type");
+  }
+  //@unit nthPath requires: cellOf, chunkOf, first, indexedValue, invalidArity, isEntryCell,
+  //@ isTransient, kindHooks, methodKeys, missing, next, nth, outOfBounds, protocolHooks, seq,
+  //@ sequential, seqValue, vectorNth, vectorStore, viewOf
+  // `nth`'s own path over the runtime's classes (`operationPaths`).
+  function nthPath(value, index, notFound) {
     const arity = arguments.length;
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
     if (typeof index !== "number") throw new Error("Index argument to nth must be a number");
@@ -5170,12 +5291,13 @@
     throw new Error("nth not supported on this type");
   }
 
-  //@unit nth.protocol effect: installMethods when: nth requires: methodKeys, nth, protocolHooks
-  nth = (operation => Object.defineProperty(function (value, index, notFound) {
+  //@unit nth.protocol effect: installMethods when: nthPath requires: methodKeys, nthPath,
+  //@ protocolHooks
+  nthPath = (operation => Object.defineProperty(function (value, index, notFound) {
     const arity = arguments.length;
     const method = value == null || typeof index !== "number" || arity !== 2 && arity !== 3 ? null : protocolHooks.programMethod?.(value, methodKeys[25], arity, true, true);
     return method ? method.call(value, ...arguments) : operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(nth);
+  }, "name", {value: operation.name}))(nthPath);
 
   //@unit lookup requires: isEntryCell, kindHooks, maps, vectorStore
   // The map, vector and string branches; the other kinds' wrap it.
@@ -5209,8 +5331,54 @@
   // A record, no map here, has its own `-lookup` (`recordMethods.lookup`).
   kindHooks.entryIndex = collectionEntryIndex;
 
-  //@unit get requires: invalidArity, lookup, methodKeys, protocolHooks
+  //@unit get requires: getOf, slotFirst
+  // As `nth`'s, one function per arity: `get` 52, `get2` 74 and `get3` 86
+  // bytes of bytecode.
   function get(value, key, notFound) {
+    return arguments.length === 2 ? get2(value, key) : get3(value, key, notFound, arguments.length);
+  }
+  function get2(value, key) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ILookup$_lookup$arity$2$LKEY;
+      if (method) return method.call(value, value, key);
+    }
+    return getOf(value, key, undefined, 2);
+  }
+  function get3(value, key, notFound, arity) {
+    if (arity === 3 && value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ILookup$_lookup$arity$3$LKEY;
+      if (method) return method.call(value, value, key, notFound);
+    }
+    return getOf(value, key, notFound, arity);
+  }
+  //@unit getOf requires: invalidArity, methodKeys, operationPaths, protocolHooks
+  // Upstream's `get` of `arity` arguments: nil, a host value's program
+  // method, arrays and strings, else `notFound`. A value of a runtime
+  // class whose instance slot holds nil or false takes its class's slot; one
+  // of a program's type whose slot holds nil or false finishes as the
+  // protocol lookup would (`protocolHooks.declaredMethod`), from the slot
+  // as read, as `get.own` answered it (light-cljs-358).
+  function getOf(value, key, notFound, arity) {
+    const path = operationPaths.get;
+    if (path !== undefined) return arity === 2 ? path(value, key) : arity === 3 ? path(value, key, notFound) : invalidArity(arity);
+    if (arity !== 2 && arity !== 3) return invalidArity(arity);
+    if (value == null) return arity === 2 ? null : notFound;
+    const kind = value.cljs$lang$kind$$LKEY;
+    if (kind !== undefined) {
+      const holder = kind < 64 ? Object.getPrototypeOf(value) : value;
+      const slot = arity === 2 ? holder?.cljs$core$ILookup$_lookup$arity$2$LKEY : holder?.cljs$core$ILookup$_lookup$arity$3$LKEY;
+      const method = slot || kind < 64 || slot === undefined ? slot : protocolHooks.declaredMethod?.(value, methodKeys[30], arity, slot);
+      if (method) return arity === 2 ? method.call(value, value, key) : method.call(value, value, key, notFound);
+    }
+    const own = protocolHooks.programMethod?.(value, methodKeys[30], arity, true);
+    if (own) return arity === 2 ? own.call(value, value, key) : own.call(value, value, key, notFound);
+    if (arity === 2) notFound = null;
+    if (Array.isArray(value)) return key != null && key < value.length && (arity === 2 || key > -1) ? value[key | 0] : notFound;
+    return typeof value === "string" && key != null && key > -1 && key < value.length ? value.charAt(key | 0) : notFound;
+  }
+  //@unit getPath requires: invalidArity, lookup, methodKeys, protocolHooks
+  // `get`'s own path over the runtime's classes (`operationPaths`).
+  function getPath(value, key, notFound) {
     const method = value == null ? null : protocolHooks.programMethod?.(value, methodKeys[30], arguments.length, true);
     if (method) return method.call(value, ...arguments);
     if (Array.isArray(value)) {
@@ -5224,8 +5392,8 @@
     }
   }
 
-  //@unit get.own effect: installMethods when: get requires: demandKey, get, keySlot, methodKeys,
-  //@ noBranch, protocolHooks
+  //@unit get.own effect: installMethods when: getPath requires: demandKey, getPath, keySlot,
+  //@ methodKeys, noBranch, protocolHooks
   // `get` of a value whose type declares `ILookup` by its mask bit, as the
   // program's types and records do: the method its slot holds, read here, so
   // that the engine's feedback for the read is this operation's own, not that
@@ -5235,7 +5403,7 @@
   // could have produced after changing the value; any other value takes the
   // operation, and so does a runtime class's value whose slot answers
   // `noBranch` (`get.slots`).
-  get = (operation => Object.defineProperty(function (value, key, notFound) {
+  getPath = (operation => Object.defineProperty(function (value, key, notFound) {
     const resolved = methodKeys[30], arity = arguments.length;
     if (value != null && (arity === 2 || arity === 3) && (value[resolved.mask] & resolved.bit) !== 0) {
       demandKey(resolved, arity, value);
@@ -5246,7 +5414,7 @@
       }
     }
     return arity === 2 ? operation(value, key) : arity === 3 ? operation(value, key, notFound) : operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(get);
+  }, "name", {value: operation.name}))(getPath);
 
   //@unit builtinSlots
   // The runtime's own slot methods (`PersistentVectorValue.nth` and the
@@ -5264,30 +5432,26 @@
   // next call runs the program's method. A value with the prototype but no
   // store of its own (one made by reflection) answers `noBranch`, and the
   // slot-first wrapper then takes the operation, which answers it as before.
-  //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: nth, nthSite, nthSite3
-  //@ requires: builtinSlot, missing, noBranch, PersistentVectorValue, vectorNth
+  //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: nth, nthOf, nthSite,
+  //@ nthSite3 requires: builtinSlot, missing, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const store = self;
-    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return vectorNth(store, index, missing);
   });
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
     const store = self;
-    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return vectorNth(store, index, notFound);
   });
-  //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count, countSite requires: builtinSlot,
-  //@ noBranch, PersistentVectorValue
+  //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count, countOf, countSite
+  //@ requires: builtinSlot, PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const store = self;
-    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return store.cnt$LKEY;
   });
-  //@unit PersistentVectorValue.peek effect: PersistentVectorValue when: peek, peekSite requires: builtinSlot,
-  //@ noBranch, PersistentVectorValue, vectorNth
+  //@unit PersistentVectorValue.peek effect: PersistentVectorValue when: peek, peekOf, peekSite
+  //@ requires: builtinSlot, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
     const store = self;
-    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return store.cnt$LKEY ? vectorNth(store, store.cnt$LKEY - 1, null) : null;
   });
   //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj, conjSite,
@@ -5310,15 +5474,13 @@
     return conjMeta(self, makeVector(null, store));
   });
   //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: arrayMapContains, get,
-  //@ getSite, getSite3 requires: builtinSlot, noBranch, PersistentVectorValue, vectorNth
+  //@ getOf, getSite, getSite3 requires: builtinSlot, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
     const store = self;
-    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return typeof key === "number" && key >= 0 && key < store.cnt$LKEY ? vectorNth(store, key, null) : null;
   });
   PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
     const store = self;
-    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return typeof key === "number" && key >= 0 && key < store.cnt$LKEY ? vectorNth(store, key, notFound) : notFound;
   });
   // A subvector's slots (light-cljs-1028) are a vector's, over the view it
@@ -5328,27 +5490,23 @@
   // operations give it (`SubvecValue.conj`, `SubvecValue.assoc`). Each slot
   // is complete for a subvector: the compile-time runtime's protocol lookup
   // finds a slot and calls it.
-  //@unit SubvecValue.nth effect: SubvecValue when: nth, nthSite, nthSite3 requires: builtinSlot,
-  //@ missing, noBranch, SubvecValue, vectorNth
+  //@unit SubvecValue.nth effect: SubvecValue when: nth, nthOf, nthSite, nthSite3 requires: builtinSlot,
+  //@ missing, SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return vectorNth(self, index, missing);
   });
   SubvecValue.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return vectorNth(self, index, notFound);
   });
-  //@unit SubvecValue.count effect: SubvecValue when: count, countSite requires: builtinSlot,
-  //@ noBranch, SubvecValue
+  //@unit SubvecValue.count effect: SubvecValue when: count, countOf, countSite requires: builtinSlot,
+  //@ SubvecValue
   SubvecValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     const slots = self.slots$LKEY;
     return slots ? slots.end - slots.start : self.cnt$LKEY;
   });
-  //@unit SubvecValue.peek effect: SubvecValue when: peek, peekSite requires: builtinSlot, noBranch,
+  //@unit SubvecValue.peek effect: SubvecValue when: peek, peekOf, peekSite requires: builtinSlot,
   //@ SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return self.cnt$LKEY ? vectorNth(self, self.cnt$LKEY - 1, null) : null;
   });
   //@unit SubvecValue.conjSlot effect: SubvecValue when: conj, conjSite, treeMapSeqConstructor
@@ -5371,14 +5529,12 @@
     else outOfBounds();
     return conjMeta(self, makeVector(null, store));
   });
-  //@unit SubvecValue.lookup effect: SubvecValue when: arrayMapContains, get, getSite, getSite3
-  //@ requires: builtinSlot, noBranch, SubvecValue, vectorNth
+  //@unit SubvecValue.lookup effect: SubvecValue when: arrayMapContains, get, getOf, getSite,
+  //@ getSite3 requires: builtinSlot, SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return typeof key === "number" && key >= 0 && key < self.cnt$LKEY ? vectorNth(self, key, null) : null;
   });
   SubvecValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return typeof key === "number" && key >= 0 && key < self.cnt$LKEY ? vectorNth(self, key, notFound) : notFound;
   });
   // A map entry's slots (light-cljs-1028): its two items, which its tail
@@ -5386,48 +5542,43 @@
   // vector's `conj`, `assoc` and `peek`, which give what a vector of its
   // items gives. A value of the entries' prototype that is not an entry of
   // two items in a tail, as only reflection makes, takes the operation.
-  //@unit MapEntryType.nth effect: MapEntryType when: nth, nthSite, nthSite3 requires: builtinSlot,
-  //@ MapEntryType, noBranch, outOfBounds
+  //@unit MapEntryType.nth effect: MapEntryType when: nth, nthOf, nthSite, nthSite3 requires: builtinSlot,
+  //@ MapEntryType, outOfBounds
   MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const tail = self.tail$LKEY;
-    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
     return index === 0 || index === 1 ? tail[index] : outOfBounds();
   });
   MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
     const tail = self.tail$LKEY;
-    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
     return index === 0 || index === 1 ? tail[index] : notFound;
   });
-  //@unit MapEntryType.count effect: MapEntryType when: count, countSite requires: builtinSlot,
-  //@ MapEntryType, noBranch
+  //@unit MapEntryType.count effect: MapEntryType when: count, countOf, countSite requires: builtinSlot,
+  //@ MapEntryType
   MapEntryType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     return 2;
   });
-  //@unit vectorContains requires: noBranch
+  //@unit vectorContains
   // `contains?` of a vector, a subvector or a map entry: whether the key is
   // an index of its store, as `contains` answers it (light-cljs-1046), so
   // that `contains.own`, which their `IAssociative` mask bit sends here,
   // finds the slot.
   function vectorContains(self, key) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     return Number.isInteger(key) && key >= 0 && key < cnt;
   }
   //@unit PersistentVectorValue.containsSlot effect: PersistentVectorValue when: contains,
-  //@ containsSite requires: builtinSlot, PersistentVectorValue, vectorContains
+  //@ containsOf, containsSite requires: builtinSlot, PersistentVectorValue, vectorContains
   PersistentVectorValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(vectorContains);
-  //@unit SubvecValue.containsSlot effect: SubvecValue when: contains, containsSite requires: builtinSlot,
-  //@ SubvecValue, vectorContains
+  //@unit SubvecValue.containsSlot effect: SubvecValue when: contains, containsOf, containsSite
+  //@ requires: builtinSlot, SubvecValue, vectorContains
   SubvecValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(vectorContains);
-  //@unit MapEntryType.containsSlot effect: MapEntryType when: contains, containsSite requires: builtinSlot,
-  //@ MapEntryType, vectorContains
+  //@unit MapEntryType.containsSlot effect: MapEntryType when: contains, containsOf, containsSite
+  //@ requires: builtinSlot, MapEntryType, vectorContains
   MapEntryType.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(vectorContains);
-  //@unit MapEntryType.peek effect: MapEntryType when: peek, peekSite requires: builtinSlot,
-  //@ MapEntryType, noBranch
+  //@unit MapEntryType.peek effect: MapEntryType when: peek, peekOf, peekSite requires: builtinSlot,
+  //@ MapEntryType
   MapEntryType.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
     const tail = self.tail$LKEY;
-    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
     return tail[1];
   });
   //@unit MapEntryType.conjSlot effect: MapEntryType when: conj, conjSite, treeMapSeqConstructor
@@ -5447,16 +5598,14 @@
     else outOfBounds();
     return conjMeta(self, makeVector(null, store));
   });
-  //@unit MapEntryType.lookup effect: MapEntryType when: arrayMapContains, get, getSite, getSite3
-  //@ requires: builtinSlot, MapEntryType, noBranch
+  //@unit MapEntryType.lookup effect: MapEntryType when: arrayMapContains, get, getOf, getSite,
+  //@ getSite3 requires: builtinSlot, MapEntryType
   MapEntryType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
     const tail = self.tail$LKEY;
-    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
     return key === 0 || key === 1 ? tail[key] : null;
   });
   MapEntryType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
     const tail = self.tail$LKEY;
-    if (self.cnt$LKEY !== 2 || tail === undefined) return noBranch;
     return key === 0 || key === 1 ? tail[key] : notFound;
   });
   // A transient vector's slots (light-cljs-1028). One that is no longer
@@ -5464,38 +5613,37 @@
   // `editableTransient`: it throws, but the three-argument `nth` gives its
   // item for an index out of bounds. Each slot is complete for a transient
   // vector, as the compile-time runtime's protocol lookup finds and calls it.
-  //@unit TransientVectorType.nth effect: TransientVectorType when: nth, nthSite, nthSite3 requires: builtinSlot,
-  //@ missing, noBranch, transientNth, TransientVectorType, vectorNth
+  //@unit TransientVectorType.nth effect: TransientVectorType when: nth, nthOf, nthSite, nthSite3
+  //@ requires: builtinSlot, missing, transientNth, TransientVectorType, vectorNth
   TransientVectorType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const editable = self.editable$LKEY;
     if (editable === true) return vectorNth(self, index, missing);
-    return editable === undefined ? noBranch : transientNth(self, index, missing);
+    return transientNth(self, index, missing);
   });
   TransientVectorType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
     const editable = self.editable$LKEY;
     if (editable === true) return vectorNth(self, index, notFound);
-    return editable === undefined ? noBranch : transientNth(self, index, notFound);
+    return transientNth(self, index, notFound);
   });
-  //@unit TransientVectorType.count effect: TransientVectorType when: count, countSite requires: builtinSlot,
-  //@ editableTransient, noBranch, TransientVectorType
+  //@unit TransientVectorType.count effect: TransientVectorType when: count, countOf, countSite
+  //@ requires: builtinSlot, editableTransient, TransientVectorType
   TransientVectorType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const editable = self.editable$LKEY;
-    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "count"); }
+    if (editable !== true) editableTransient(self, "count");
     return self.cnt$LKEY;
   });
-  //@unit TransientVectorType.lookup effect: TransientVectorType when: arrayMapContains, get,
-  //@ getSite, getSite3 requires: builtinSlot, editableTransient, noBranch, TransientVectorType,
-  //@ vectorNth
+  //@unit TransientVectorType.lookup effect: TransientVectorType when: arrayMapContains, get, getOf,
+  //@ getSite, getSite3 requires: builtinSlot, editableTransient, TransientVectorType, vectorNth
   // A key that is no number is no index; a number is `nth` with the item
   // for a missing key, as `transientLookup` takes it.
   TransientVectorType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
     const editable = self.editable$LKEY;
-    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "lookup"); }
+    if (editable !== true) editableTransient(self, "lookup");
     return typeof key === "number" ? vectorNth(self, key, null) : null;
   });
   TransientVectorType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
     const editable = self.editable$LKEY;
-    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "lookup"); }
+    if (editable !== true) editableTransient(self, "lookup");
     return typeof key === "number" ? vectorNth(self, key, notFound) : notFound;
   });
   // The transients' `-conj!`, `-assoc!` and `-persistent!` slots
@@ -5554,6 +5702,56 @@
   //@unit TransientHashSetType.persistentBang effect: TransientHashSetType when: persistentBang
   //@ requires: TransientHashSetType, transientPersistentSlot
   TransientHashSetType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = transientPersistentSlot;
+  // A map's or a set's transient's `-count`, `-nth` and `-lookup`
+  // (light-cljs-1066), which `count`, `nth` and `get` answered by
+  // recognising a transient before: each answers as the operation's old path
+  // (`kindHooks.countTransient`, `transientNth`, `transientLookup`), which
+  // throws for a transient no longer editable (but a hash map's or a set's
+  // lookup), and gives `nth` of a map's or a set's transient what it gave.
+  //@unit transientCountSlot requires: builtinSlot, editableTransient
+  const transientCountSlot = builtinSlot(function (self) {
+    const state = editableTransient(self, "count");
+    return state === self ? self.cljs$lang$kind$$LKEY === 31 ? self.arr$LKEY.length >> 1 : state.cnt$LKEY : state.entries.cnt ?? state.entries.length;
+  });
+  //@unit transientNthSlots requires: builtinSlot, missing, transientNth
+  const transientNthSlots = [builtinSlot(function (self, index) { return transientNth(self, index, missing); }),
+    builtinSlot(function (self, index, notFound) { return transientNth(self, index, notFound); })];
+  //@unit transientLookupSlots requires: builtinSlot, transientLookup
+  const transientLookupSlots = [builtinSlot(function (self, key) { return transientLookup(self, key, null); }),
+    builtinSlot(function (self, key, notFound) { return transientLookup(self, key, notFound); })];
+  //@unit TransientArrayMapType.count effect: TransientArrayMapType when: count, countOf, countSite
+  //@ requires: TransientArrayMapType, transientCountSlot
+  TransientArrayMapType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = transientCountSlot;
+  //@unit TransientHashMapType.count effect: TransientHashMapType when: count, countOf, countSite
+  //@ requires: transientCountSlot, TransientHashMapType
+  TransientHashMapType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = transientCountSlot;
+  //@unit TransientHashSetType.count effect: TransientHashSetType when: count, countOf, countSite
+  //@ requires: transientCountSlot, TransientHashSetType
+  TransientHashSetType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = transientCountSlot;
+  //@unit TransientArrayMapType.nth effect: TransientArrayMapType when: nth, nthOf, nthSite,
+  //@ nthSite3 requires: TransientArrayMapType, transientNthSlots
+  TransientArrayMapType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
+  TransientArrayMapType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
+  //@unit TransientHashMapType.nth effect: TransientHashMapType when: nth, nthOf, nthSite, nthSite3
+  //@ requires: TransientHashMapType, transientNthSlots
+  TransientHashMapType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
+  TransientHashMapType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
+  //@unit TransientHashSetType.nth effect: TransientHashSetType when: nth, nthOf, nthSite, nthSite3
+  //@ requires: TransientHashSetType, transientNthSlots
+  TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
+  TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
+  //@unit TransientArrayMapType.lookup effect: TransientArrayMapType when: arrayMapContains, get,
+  //@ getOf, getSite, getSite3 requires: TransientArrayMapType, transientLookupSlots
+  TransientArrayMapType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = transientLookupSlots[0];
+  TransientArrayMapType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = transientLookupSlots[1];
+  //@unit TransientHashMapType.lookup effect: TransientHashMapType when: arrayMapContains, get,
+  //@ getOf, getSite, getSite3 requires: TransientHashMapType, transientLookupSlots
+  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = transientLookupSlots[0];
+  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = transientLookupSlots[1];
+  //@unit TransientHashSetType.lookup effect: TransientHashSetType when: arrayMapContains, get,
+  //@ getOf, getSite, getSite3 requires: TransientHashSetType, transientLookupSlots
+  TransientHashSetType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = transientLookupSlots[0];
+  TransientHashSetType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = transientLookupSlots[1];
 
   // Slot-first dispatch (docs/value-layout.md, section 3): an operation
   // given a value of a converted runtime class, which its keyed kind tells,
@@ -5563,37 +5761,6 @@
   // operation as before. Each wrapper is the operation's outermost, so it follows the
   // operation's other wrappers here. Program types keep their path until
   // their recognition moves to the keyed kind (light-cljs-1013).
-  //@unit nth.slots effect: arrayChunk, MapEntryType, PersistentVectorValue, SubvecValue,
-  //@ TransientVectorType when: nth requires: noBranch, nth, slotFirst
-  nth = (operation => Object.defineProperty(function (value, index, notFound) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && typeof index === "number") {
-      const arity = arguments.length;
-      if (arity === 2) { const method = value.cljs$core$IIndexed$_nth$arity$2$LKEY; if (method) { const result = method.call(value, value, index); if (result !== noBranch) return result; } }
-      else if (arity === 3) { const method = value.cljs$core$IIndexed$_nth$arity$3$LKEY; if (method) { const result = method.call(value, value, index, notFound); if (result !== noBranch) return result; } }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(nth);
-  //@unit count.slots effect: arrayChunk, EmptyListValue, PersistentArrayMapSeqType,
-  //@ IndexedSeqValue, IntegerRangeValue, ListValue, MapEntryType, PersistentArrayMapValue,
-  //@ PersistentHashMapValue, PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue,
-  //@ SubvecValue, TransientVectorType, treeMapConstructor when: count requires: count, noBranch,
-  //@ slotFirst
-  count = (operation => Object.defineProperty(function (value) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
-      const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
-      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(count);
-  //@unit peek.slots effect: MapEntryType, PersistentVectorValue, SubvecValue when: peek requires: noBranch,
-  //@ peek, slotFirst
-  peek = (operation => Object.defineProperty(function (value) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
-      const method = value.cljs$core$IStack$_peek$arity$1$LKEY;
-      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(peek);
   //@unit conj.slots effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
   //@ PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue, SubvecValue,
   //@ treeMapConstructor when: conj requires: conj, noBranch, slotFirst
@@ -5614,18 +5781,6 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(assoc);
-  //@unit get.slots effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue, TransientVectorType,
-  //@ treeMapConstructor when: get requires: get, noBranch, slotFirst
-  get = (operation => Object.defineProperty(function (value, key, notFound) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined) {
-      const arity = arguments.length;
-      if (arity === 2) { const method = value.cljs$core$ILookup$_lookup$arity$2$LKEY; if (method) { const result = method.call(value, value, key); if (result !== noBranch) return result; } }
-      else if (arity === 3) { const method = value.cljs$core$ILookup$_lookup$arity$3$LKEY; if (method) { const result = method.call(value, value, key, notFound); if (result !== noBranch) return result; } }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(get);
-
   //@unit dissoc.slots effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
   //@ when: dissoc requires: dissoc, noBranch, slotFirst
   dissoc = (operation => Object.defineProperty(function (value, key) {
@@ -5635,16 +5790,6 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(dissoc);
-  //@unit contains.slots effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentVectorValue, SubvecValue, treeMapConstructor when: contains requires: contains,
-  //@ noBranch, slotFirst
-  contains = (operation => Object.defineProperty(function (value, key) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
-      const method = value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY;
-      if (method) { const result = method.call(value, value, key); if (result !== noBranch) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(contains);
   //@unit reduce.slots effect: IndexedSeqValue, PersistentArrayMapValue, PersistentHashMapValue,
   //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch,
   //@ reduce, slotFirst
@@ -5688,55 +5833,52 @@
   // made by reflection, which has no `entries`, answer `noBranch` where the
   // operation would answer otherwise, and take the operation. The three map
   // types share the methods below, each slot a unit of its type.
-  //@unit arrayMapLookup requires: arrayIndex, noBranch
+  //@unit arrayMapLookup requires: arrayIndex
   // `get` of an array map: its keys searched as `arrayIndex` searches
   // them, as `lookup` does.
   function arrayMapLookup(self, key, notFound) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     const index = arrayIndex(arr, key);
     return index < 0 ? notFound : arr[index + 1];
   }
-  //@unit hashMapLookup requires: hash, hashNodeFind, noBranch
+  //@unit hashMapLookup requires: hash, hashNodeFind
   // `get` of a hash map: the entry of its fields' trie, as `trieEntry`
   // finds it: its `nil` entry, or the key's in its `root`.
   function hashMapLookup(self, key, notFound) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     let entry;
     if (key == null) entry = self.nil$LKEY;
     else { const root = self.root$LKEY; entry = root ? hashNodeFind(root, 0, hash(key), key) : null; }
     return entry ? entry.value : notFound;
   }
-  //@unit hashMapCount requires: noBranch
+  //@unit hashMapCount
   // `count` of a hash map: its `cnt`, a public constructor's count too
   // (light-cljs-1036).
   function hashMapCount(self) {
     const cnt = self.cnt$LKEY;
-    return cnt === undefined && !("cnt$LKEY" in self) ? noBranch : cnt;
+    return cnt;
   }
-  //@unit treeMapLookup requires: noBranch, treeEntryAt, treeVal
+  //@unit treeMapLookup requires: treeEntryAt, treeVal
   // `get` of a sorted map: the value of the node that holds the key
   // (`treeEntryAt`), as upstream's.
   function treeMapLookup(self, key, notFound) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     const node = treeEntryAt(self, key);
     return node === null ? notFound : node.red$LKEY !== undefined ? node.tail$LKEY[1] : treeVal(node);
   }
-  //@unit treeMapCount requires: noBranch
+  //@unit treeMapCount
   // `count` of a sorted map: its `cnt`, a public constructor's count too
   // (light-cljs-1035). Each map slot is complete for every map of its
   // class, as the compile-time protocol lookup calls it (light-cljs-1028);
   // only a value made by reflection answers `noBranch`.
   function treeMapCount(self) {
     const cnt = self.cnt$LKEY;
-    return cnt === undefined && !("cnt$LKEY" in self) ? noBranch : cnt;
+    return cnt;
   }
-  //@unit arrayMapCount requires: noBranch
+  //@unit arrayMapCount
   // `count` of an array map: its `cnt`, a public constructor's count too.
   function arrayMapCount(self) {
     const cnt = self.cnt$LKEY;
-    return self.arr$LKEY === undefined ? noBranch : cnt;
+    return cnt;
   }
   //@unit mapAssocEntries requires: arrayMapEntries, copyEntries, isArrayMap, kindHooks, maps,
   //@ missing, noBranch, putCollectionEntry, updatedMap
@@ -5832,12 +5974,12 @@
     return preserveMeta(self, key == null ? new HashMapCell(cnt - 1, root, null, null)
       : new HashMapCell(cnt - 1, hashNodeRemove(root, 0, entry.hash, entry, null), nil, null));
   }
-  //@unit mapContains requires: get, mapOf, missing, noBranch
+  //@unit mapContains requires: get, missing
   // `contains?` of a map of the class layout: `get` of the key, through the
   // operation's slot-first wrapper, so that an `extend-type` of `ILookup`
   // answers as before.
   function mapContains(self, key) {
-    return mapOf(self) === undefined ? noBranch : get(self, key, missing) !== missing;
+    return get(self, key, missing) !== missing;
   }
   //@unit mapConjSlot requires: mapConj, mapOf, noBranch, preserveMeta
   // `conj` of a map of the class layout, as `conj.maps` builds it.
@@ -5848,7 +5990,7 @@
   // An array map's three-argument `-lookup` slot, which `contains?` of an
   // array map looks for (`arrayMapContains`).
   const arrayMapGet = builtinSlot(function (self, key, notFound) { return arrayMapLookup(self, key, notFound); });
-  //@unit arrayMapContains requires: arrayIndex, arrayMapGet, get, missing, noBranch, slotFirst
+  //@unit arrayMapContains requires: arrayIndex, arrayMapGet, get, missing, slotFirst
   // `contains?` of an array map: whether its keys hold the key, as
   // `arrayIndex` finds it, and its value is not `missing` (which a
   // program's `-lookup` can keep from its `notFound`), as `get` of the key
@@ -5861,33 +6003,32 @@
   // (light-cljs-1041).
   function arrayMapContains(self, key) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     let index;
     return slotFirst.on && self.cljs$core$ILookup$_lookup$arity$3$LKEY === arrayMapGet
       ? (index = arrayIndex(arr, key)) >= 0 && arr[index + 1] !== missing
       : get(self, key, missing) !== missing;
   }
   //@unit PersistentArrayMapValue.lookup effect: PersistentArrayMapValue when: arrayMapContains,
-  //@ get, getSite, getSite3 requires: arrayMapGet, arrayMapLookup, builtinSlot,
+  //@ get, getOf, getSite, getSite3 requires: arrayMapGet, arrayMapLookup, builtinSlot,
   //@ PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return arrayMapLookup(self, key, null); });
   PersistentArrayMapValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = arrayMapGet;
   //@unit PersistentHashMapValue.lookup effect: PersistentHashMapValue when: arrayMapContains, get,
-  //@ getSite, getSite3 requires: builtinSlot, hashMapLookup, PersistentHashMapValue
+  //@ getOf, getSite, getSite3 requires: builtinSlot, hashMapLookup, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return hashMapLookup(self, key, null); });
   PersistentHashMapValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return hashMapLookup(self, key, notFound); });
   //@unit treeMapConstructor.lookupSlot effect: treeMapConstructor when: arrayMapContains, get,
-  //@ getSite, getSite3 requires: builtinSlot, treeMapConstructor, treeMapLookup
+  //@ getOf, getSite, getSite3 requires: builtinSlot, treeMapConstructor, treeMapLookup
   treeMapConstructor.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return treeMapLookup(self, key, null); });
   treeMapConstructor.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return treeMapLookup(self, key, notFound); });
-  //@unit PersistentArrayMapValue.count effect: PersistentArrayMapValue when: count, countSite
-  //@ requires: arrayMapCount, builtinSlot, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.count effect: PersistentArrayMapValue when: count, countOf,
+  //@ countSite requires: arrayMapCount, builtinSlot, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return arrayMapCount(self); });
-  //@unit PersistentHashMapValue.count effect: PersistentHashMapValue when: count, countSite
-  //@ requires: builtinSlot, hashMapCount, PersistentHashMapValue
+  //@unit PersistentHashMapValue.count effect: PersistentHashMapValue when: count, countOf,
+  //@ countSite requires: builtinSlot, hashMapCount, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return hashMapCount(self); });
-  //@unit treeMapConstructor.countSlot effect: treeMapConstructor when: count, countSite requires: builtinSlot,
-  //@ treeMapConstructor, treeMapCount
+  //@unit treeMapConstructor.countSlot effect: treeMapConstructor when: count, countOf, countSite
+  //@ requires: builtinSlot, treeMapConstructor, treeMapCount
   treeMapConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return treeMapCount(self); });
   //@unit PersistentArrayMapValue.assocSlot effect: PersistentArrayMapValue when: assoc, assocSite
   //@ requires: arrayMapAssoc, builtinSlot, kindHooks, PersistentArrayMapValue
@@ -5916,13 +6057,13 @@
   treeMapConstructor.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return treeMapDissoc(self, key); });
   kindHooks.dissocTreeMap = treeMapDissoc;
   //@unit PersistentArrayMapValue.containsSlot effect: PersistentArrayMapValue when: contains,
-  //@ containsSite requires: arrayMapContains, builtinSlot, PersistentArrayMapValue
+  //@ containsOf, containsSite requires: arrayMapContains, builtinSlot, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return arrayMapContains(self, key); });
   //@unit PersistentHashMapValue.containsSlot effect: PersistentHashMapValue when: contains,
-  //@ containsSite requires: builtinSlot, mapContains, PersistentHashMapValue
+  //@ containsOf, containsSite requires: builtinSlot, mapContains, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
-  //@unit treeMapConstructor.containsSlot effect: treeMapConstructor when: contains, containsSite
-  //@ requires: builtinSlot, mapContains, treeMapConstructor
+  //@unit treeMapConstructor.containsSlot effect: treeMapConstructor when: contains, containsOf,
+  //@ containsSite requires: builtinSlot, mapContains, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
   // A map's `-seq` (upstream's ISeqable), which `seq` called through
   // `seqMap` before light-cljs-1054 gave the maps the slot: an array or a
@@ -6019,11 +6160,10 @@
   // included, whose count is its slots' as a subvector's; a value made by
   // reflection, which has no `entries` (`arr`), answers `noBranch` and
   // takes the operation.
-  //@unit PersistentHashSetValue.countSlot effect: PersistentHashSetValue when: count, countSite
-  //@ requires: builtinSlot, count, noBranch, PersistentHashSetValue
+  //@unit PersistentHashSetValue.countSlot effect: PersistentHashSetValue when: count, countOf,
+  //@ countSite requires: builtinSlot, count, PersistentHashSetValue
   PersistentHashSetValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const members = self.entries$LKEY;
-    if (members == null) return noBranch;
     const slots = self.slots$LKEY;
     return slots === undefined ? members.length : count(slots["hash-map"]);
   });
@@ -6041,6 +6181,16 @@
   treeSetConstructor.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return fieldComparisons.on ? setSeqs.seq(self, self) : kindHooks.seqSet(self, sets.get(self));
   });
+  // A sorted set's `-count` and `-lookup` (light-cljs-1066), upstream's
+  // PersistentTreeSet's: its tree map's count, and the member its tree map
+  // holds, which `count` and `get` answered by its kind before.
+  //@unit treeSetConstructor.countSlot effect: treeSetConstructor when: count, countOf, countSite
+  //@ requires: builtinSlot, count, treeSetConstructor
+  treeSetConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return count(self.treeMap$LKEY); });
+  //@unit treeSetConstructor.lookupSlot effect: treeSetConstructor when: arrayMapContains, get,
+  //@ getOf, getSite, getSite3 requires: builtinSlot, treeSetConstructor, treeSetMember
+  treeSetConstructor.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return treeSetMember(self, key, null); });
+  treeSetConstructor.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return treeSetMember(self, key, notFound); });
   //@unit PersistentHashSetValue.conjSlot effect: PersistentHashSetValue when: conj, conjSite,
   //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, kindHooks, missing, noBranch,
   //@ PersistentHashSetValue
@@ -6049,25 +6199,23 @@
     const built = kindHooks.conjSet(self, self, item);
     return built === missing ? self : conjMeta(self, built);
   });
-  //@unit setLookup requires: kindHooks, noBranch
+  //@unit setLookup requires: kindHooks
   // `get` of a hash or array set: its members' trie, or the entry its
   // members' array holds, as `lookup` reads them (`lookup.sets`).
   function setLookup(self, key, notFound) {
     const members = self.entries$LKEY;
-    if (!members) return noBranch;
     if (!Array.isArray(members)) return kindHooks.trieMember(members, key, notFound);
     const index = kindHooks.entryIndex(self, members, key);
     return index < 0 ? notFound : members[index].key;
   }
   //@unit PersistentHashSetValue.lookupSlot effect: PersistentHashSetValue when: arrayMapContains,
-  //@ get, getSite, getSite3 requires: builtinSlot, PersistentHashSetValue, setLookup
+  //@ get, getOf, getSite, getSite3 requires: builtinSlot, PersistentHashSetValue, setLookup
   PersistentHashSetValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return setLookup(self, key, null); });
   PersistentHashSetValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return setLookup(self, key, notFound); });
-  //@unit PersistentQueueValue.countSlot effect: PersistentQueueValue when: count, countSite
-  //@ requires: builtinSlot, noBranch, PersistentQueueValue
+  //@unit PersistentQueueValue.countSlot effect: PersistentQueueValue when: count, countOf,
+  //@ countSite requires: builtinSlot, PersistentQueueValue
   PersistentQueueValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const items = self.arr$LKEY;
-    if (items === undefined) return noBranch;
     const slots = self.slots$LKEY;
     return slots === undefined ? items.length : "cnt" in slots ? slots.cnt : "count" in slots ? slots.count : items.length;
   });
@@ -6090,6 +6238,14 @@
     if (method !== own) return method ? first(method.call(self, self)) : firstOf(self);
     return items.length ? items[0] : null;
   })(PersistentQueueValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
+  //@unit PersistentQueueValue.peekSlot effect: PersistentQueueValue when: peek, peekOf, peekSite
+  //@ requires: builtinSlot, first, PersistentQueueValue
+  // Its `first`, a public constructor's queue its front's, as upstream's
+  // PersistentQueue's `-peek` and as `peek` gave it before light-cljs-1066.
+  PersistentQueueValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
+    const q = self.slots$LKEY;
+    return first(q !== undefined ? q.front : self);
+  });
   //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjSite,
   //@ treeMapSeqConstructor requires: builtinSlot, kindHooks, noBranch, PersistentQueueValue,
   //@ preserveMeta
@@ -6128,10 +6284,9 @@
     const arr = self.arr$LKEY;
     return self.i$LKEY < arr.length ? self : null;
   });
-  //@unit viewCountSlot requires: builtinSlot, noBranch
+  //@unit viewCountSlot requires: builtinSlot
   const viewCountSlot = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     return Math.max(0, arr.length - self.i$LKEY);
   });
   //@unit IndexedSeqValue.first effect: IndexedSeqValue when: first, firstOf, firstSite requires: IndexedSeqValue,
@@ -6159,7 +6314,7 @@
   //@unit IndexedSeqValue.seq effect: IndexedSeqValue when: seq, seqOf, seqSite requires: IndexedSeqValue,
   //@ viewSeqSlot
   IndexedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
-  //@unit IndexedSeqValue.count effect: IndexedSeqValue when: count, countSite requires: IndexedSeqValue,
+  //@unit IndexedSeqValue.count effect: IndexedSeqValue when: count, countOf, countSite requires: IndexedSeqValue,
   //@ viewCountSlot
   IndexedSeqValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
   //@unit ChunkedSeqValue.first effect: ChunkedSeqValue when: first, firstOf, firstSite requires: builtinSlot,
@@ -6219,7 +6374,7 @@
   //@ seqSite requires: PersistentArrayMapSeqType, viewSeqSlot
   PersistentArrayMapSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
   //@unit PersistentArrayMapSeqType.countSlot effect: PersistentArrayMapSeqType when: count,
-  //@ countSite requires: PersistentArrayMapSeqType, viewCountSlot
+  //@ countOf, countSite requires: PersistentArrayMapSeqType, viewCountSlot
   // Its entries from its offset, as `count` counts them.
   PersistentArrayMapSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
   //@unit NodeSeqType.firstSlot effect: NodeSeqType when: first, firstOf, firstSite requires: NodeSeqType,
@@ -6257,6 +6412,26 @@
   RSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) { return restSeq(self); });
   RSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) { return seq(rest(self)); });
   RSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
+  // The other views count their items from their offset as an indexed seq
+  // does, which `count` read from their fields before light-cljs-1066 gave
+  // them the slot; a vector's chunked seq counts its vector's items past its
+  // own (upstream's RSeq is counted, its NodeSeq and ChunkedSeq walk to the
+  // same count).
+  //@unit NodeSeqType.countSlot effect: NodeSeqType when: count, countOf, countSite requires: NodeSeqType,
+  //@ viewCountSlot
+  NodeSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
+  //@unit ArrayNodeSeqType.countSlot effect: ArrayNodeSeqType when: count, countOf, countSite
+  //@ requires: ArrayNodeSeqType, viewCountSlot
+  ArrayNodeSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
+  //@unit RSeqType.countSlot effect: RSeqType when: count, countOf, countSite requires: RSeqType,
+  //@ viewCountSlot
+  RSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
+  //@unit ChunkedSeqValue.countSlot effect: ChunkedSeqValue when: count, countOf, countSite
+  //@ requires: builtinSlot, ChunkedSeqValue, count
+  ChunkedSeqValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    const vec = self.vec$LKEY;
+    return vec ? count(vec) - self.base$LKEY - self.i$LKEY : Math.max(0, self.arr$LKEY.length - self.i$LKEY);
+  });
   //@unit PersistentVectorValue.seq effect: PersistentVectorValue when: seq, seqOf, seqSite
   //@ requires: builtinSlot, kindHooks, PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
@@ -6415,10 +6590,10 @@
   ChunkedSeqValue.prototype.cljs$core$IChunkedNext$_chunked_next$arity$1$LKEY = builtinSlot(function (self) {
     return self.arr$LKEY === undefined ? noBranch : seq(ownedChunkRest(self));
   });
-  //@unit arrayChunk.countSlot effect: arrayChunk when: count, countSite requires: arrayChunk,
-  //@ builtinSlot, noBranch
+  //@unit arrayChunk.countSlot effect: arrayChunk when: count, countOf, countSite requires: arrayChunk,
+  //@ builtinSlot
   arrayChunk.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
-    return !("arr$LKEY" in self) ? noBranch : self.end$LKEY - self.off$LKEY;
+    return self.end$LKEY - self.off$LKEY;
   });
   //@unit arrayChunk.firstSlot effect: arrayChunk when: first, firstOf, firstSite requires: arrayChunk,
   //@ builtinSlot, firstOf
@@ -6428,14 +6603,19 @@
   arrayChunk.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     return self.step$LKEY !== null ? self.first$LKEY : firstOf(self);
   });
-  //@unit arrayChunk.nthSlot effect: arrayChunk when: nth, nthSite, nthSite3 requires: arrayChunk,
-  //@ builtinSlot, chunkNth, missing, noBranch
+  //@unit arrayChunk.nthSlot effect: arrayChunk when: nth, nthOf, nthSite, nthSite3 requires: arrayChunk,
+  //@ builtinSlot, chunkNth, missing
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
-    return !("arr$LKEY" in self) ? noBranch : chunkNth(self, index, missing);
+    return chunkNth(self, index, missing);
   });
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
-    return !("arr$LKEY" in self) ? noBranch : chunkNth(self, index, notFound);
+    return chunkNth(self, index, notFound);
   });
+  //@unit ChunkBuffer.countSlot effect: ChunkBuffer when: count, countOf, countSite requires: builtinSlot,
+  //@ ChunkBuffer
+  // A chunk buffer counts the items appended, as upstream's ChunkBuffer and
+  // as `count` read its field before light-cljs-1066.
+  ChunkBuffer.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return self.end$LKEY; });
   //@unit arrayChunk.dropFirstSlot effect: arrayChunk when: chunkDropFirst requires: arrayChunk,
   //@ builtinSlot, dropFirstChunk, noBranch
   arrayChunk.prototype.cljs$core$IChunk$_drop_first$arity$1$LKEY = builtinSlot(function (self) {
@@ -6503,10 +6683,10 @@
   ListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return self;
   });
-  //@unit ListValue.countSlot effect: ListValue when: count, countSite requires: builtinSlot,
-  //@ ListValue, noBranch
+  //@unit ListValue.countSlot effect: ListValue when: count, countOf, countSite requires: builtinSlot,
+  //@ ListValue
   ListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : self.count$LKEY;
+    return self.count$LKEY;
   });
   //@unit EmptyListValue.firstSlot effect: EmptyListValue when: first, firstOf, firstSite requires: builtinSlot,
   //@ EmptyListValue
@@ -6528,15 +6708,35 @@
   EmptyListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return null;
   });
-  //@unit EmptyListValue.countSlot effect: EmptyListValue when: count, countSite requires: builtinSlot,
-  //@ EmptyListValue, noBranch
+  //@unit EmptyListValue.countSlot effect: EmptyListValue when: count, countOf, countSite requires: builtinSlot,
+  //@ EmptyListValue
   EmptyListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : 0;
+    return 0;
   });
-  //@unit IntegerRangeValue.countSlot effect: IntegerRangeValue when: count, countSite requires: builtinSlot,
-  //@ IntegerRangeValue, noBranch
+  // A list's `-peek` (light-cljs-1066) is its `first`, through `first`'s
+  // slot, as upstream's List and EmptyList and as `peek` gave it before.
+  //@unit listPeekSlot requires: builtinSlot, first
+  const listPeekSlot = builtinSlot(function (self) { return first(self); });
+  //@unit ListValue.peekSlot effect: ListValue when: peek, peekOf, peekSite requires: listPeekSlot,
+  //@ ListValue
+  ListValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = listPeekSlot;
+  //@unit EmptyListValue.peekSlot effect: EmptyListValue when: peek, peekOf, peekSite requires: EmptyListValue,
+  //@ listPeekSlot
+  EmptyListValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = listPeekSlot;
+  //@unit IntegerRangeValue.countSlot effect: IntegerRangeValue when: count, countOf, countSite
+  //@ requires: builtinSlot, IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : self.count$LKEY;
+    return self.count$LKEY;
+  });
+  //@unit IntegerRangeValue.nthSlot effect: IntegerRangeValue when: nth, nthOf, nthSite, nthSite3
+  //@ requires: builtinSlot, IntegerRangeValue, outOfBounds
+  // Its item at an index below its count, computed, as upstream's Range's
+  // `-nth` and as `nth` read its fields before light-cljs-1066.
+  IntegerRangeValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
+    return index >= 0 && index < self.count$LKEY ? self.first$LKEY + Math.floor(index) * self.step$LKEY : outOfBounds();
+  });
+  IntegerRangeValue.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
+    return index >= 0 && index < self.count$LKEY ? self.first$LKEY + Math.floor(index) * self.step$LKEY : notFound;
   });
   //@unit RepeatValue.nextSlot effect: RepeatValue when: next, nextSite requires: builtinSlot,
   //@ RepeatValue
@@ -6638,6 +6838,15 @@
   treeMapSeqConstructor.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return self;
   });
+  //@unit treeMapSeqConstructor.countSlot effect: treeMapSeqConstructor when: count, countOf,
+  //@ countSite requires: builtinSlot, count, next, treeMapSeqConstructor
+  // Its count, or, below 0, one more than its next's, as upstream's
+  // (light-cljs-1035), which `count` read from its fields before
+  // light-cljs-1066.
+  treeMapSeqConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    const cnt = self.cnt$LKEY;
+    return cnt < 0 ? 1 + count(next(self)) : cnt;
+  });
   //@unit IteratorSeqCell.slots effect: IteratorSeqCell when: first, firstOf, firstSite, rest,
   //@ restOf, restSite, seq, seqOf, seqSite requires: builtinSlot, iteratorSeq, IteratorSeqCell
   // Its `-first`, `-rest` and `-seq` (upstream's ES6IteratorSeq: ISeq and
@@ -6700,38 +6909,21 @@
   // `noBranch` and the empty list are parameters, read with no check for an
   // uninitialized `const`. `seqSite` sends the empty list to the operation,
   // as `seq.slots` does.
-  //@unit countSite requires: count, noBranch
-  const countSite = (none => value => {
-    let result;
-    return value != null && value.cljs$core$ICounted$_count$arity$1$LKEY
-      && (result = value.cljs$core$ICounted$_count$arity$1$LKEY(value)) !== none ? result : count(value);
-  })(noBranch);
-  //@unit nthSite requires: noBranch, nth
-  const nthSite = (none => (value, index) => {
-    let result;
-    return value != null && typeof index === "number" && value.cljs$core$IIndexed$_nth$arity$2$LKEY
-      && (result = value.cljs$core$IIndexed$_nth$arity$2$LKEY(value, index)) !== none ? result : nth(value, index);
-  })(noBranch);
-  //@unit nthSite3 requires: noBranch, nth
-  const nthSite3 = (none => (value, index, notFound) => {
-    let result;
-    return value != null && typeof index === "number" && value.cljs$core$IIndexed$_nth$arity$3$LKEY
-      && (result = value.cljs$core$IIndexed$_nth$arity$3$LKEY(value, index, notFound)) !== none ? result
-      : nth(value, index, notFound);
-  })(noBranch);
-  //@unit getSite requires: get, noBranch
-  const getSite = (none => (value, key) => {
-    let result;
-    return value != null && value.cljs$core$ILookup$_lookup$arity$2$LKEY
-      && (result = value.cljs$core$ILookup$_lookup$arity$2$LKEY(value, key)) !== none ? result : get(value, key);
-  })(noBranch);
-  //@unit getSite3 requires: get, noBranch
-  const getSite3 = (none => (value, key, notFound) => {
-    let result;
-    return value != null && value.cljs$core$ILookup$_lookup$arity$3$LKEY
-      && (result = value.cljs$core$ILookup$_lookup$arity$3$LKEY(value, key, notFound)) !== none ? result
-      : get(value, key, notFound);
-  })(noBranch);
+  //@unit countSite requires: count
+  const countSite = value => value != null && value.cljs$core$ICounted$_count$arity$1$LKEY
+    ? value.cljs$core$ICounted$_count$arity$1$LKEY(value) : count(value);
+  //@unit nthSite requires: nth
+  const nthSite = (value, index) => value != null && typeof index === "number" && value.cljs$core$IIndexed$_nth$arity$2$LKEY
+    ? value.cljs$core$IIndexed$_nth$arity$2$LKEY(value, index) : nth(value, index);
+  //@unit nthSite3 requires: nth
+  const nthSite3 = (value, index, notFound) => value != null && typeof index === "number" && value.cljs$core$IIndexed$_nth$arity$3$LKEY
+    ? value.cljs$core$IIndexed$_nth$arity$3$LKEY(value, index, notFound) : nth(value, index, notFound);
+  //@unit getSite requires: get
+  const getSite = (value, key) => value != null && value.cljs$core$ILookup$_lookup$arity$2$LKEY
+    ? value.cljs$core$ILookup$_lookup$arity$2$LKEY(value, key) : get(value, key);
+  //@unit getSite3 requires: get
+  const getSite3 = (value, key, notFound) => value != null && value.cljs$core$ILookup$_lookup$arity$3$LKEY
+    ? value.cljs$core$ILookup$_lookup$arity$3$LKEY(value, key, notFound) : get(value, key, notFound);
   //@unit firstSite requires: first
   const firstSite = value => value != null && value.cljs$core$ISeq$_first$arity$1$LKEY
     ? value.cljs$core$ISeq$_first$arity$1$LKEY(value) : first(value);
@@ -6744,12 +6936,9 @@
   //@unit seqSite requires: emptyList, seq
   const seqSite = (empty => value => value != null && value !== empty && value.cljs$core$ISeqable$_seq$arity$1$LKEY
     ? value.cljs$core$ISeqable$_seq$arity$1$LKEY(value) : seq(value))(emptyList);
-  //@unit peekSite requires: noBranch, peek
-  const peekSite = (none => value => {
-    let result;
-    return value != null && value.cljs$core$IStack$_peek$arity$1$LKEY
-      && (result = value.cljs$core$IStack$_peek$arity$1$LKEY(value)) !== none ? result : peek(value);
-  })(noBranch);
+  //@unit peekSite requires: peek
+  const peekSite = value => value != null && value.cljs$core$IStack$_peek$arity$1$LKEY
+    ? value.cljs$core$IStack$_peek$arity$1$LKEY(value) : peek(value);
   //@unit conjSite requires: conj, noBranch
   const conjSite = (none => (coll, item) => {
     let result;
@@ -6769,28 +6958,52 @@
     return value != null && value.cljs$core$IMap$_dissoc$arity$2$LKEY
       && (result = value.cljs$core$IMap$_dissoc$arity$2$LKEY(value, key)) !== none ? result : dissoc(value, key);
   })(noBranch);
-  //@unit containsSite requires: contains, noBranch
-  const containsSite = (none => (value, key) => {
-    let result;
-    return value != null && value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY
-      && (result = value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY(value, key)) !== none ? result
-      : contains(value, key);
-  })(noBranch);
-  //@unit contains requires: get, methodKeys, missing, protocolHooks, vectorStore
+  //@unit containsSite requires: contains
+  const containsSite = (value, key) => value != null && value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY
+    ? value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY(value, key) : contains(value, key);
+  //@unit contains requires: containsOf, slotFirst
   function contains(value, key) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY;
+      if (method) return method.call(value, value, key);
+    }
+    return containsOf(value, key);
+  }
+  //@unit containsOf requires: get, methodKeys, missing, operationPaths, protocolHooks
+  // Upstream's `contains?`: a value's `-contains-key?`, else whether `get`
+  // finds the key. A value of a runtime class whose instance slot holds nil
+  // or false takes its class's slot; one of a program's type finishes as the
+  // protocol lookup would, from the slot as read, as `contains.own`
+  // answered it (light-cljs-358).
+  function containsOf(value, key) {
+    const path = operationPaths.contains;
+    if (path !== undefined) return path(value, key);
+    const kind = value?.cljs$lang$kind$$LKEY;
+    if (kind !== undefined) {
+      const slot = (kind < 64 ? Object.getPrototypeOf(value) : value)?.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY;
+      const method = slot || kind < 64 || slot === undefined ? slot : protocolHooks.declaredMethod?.(value, methodKeys[2], 2, slot);
+      if (method) return method.call(value, value, key);
+    }
+    const own = protocolHooks.programMethod?.(value, methodKeys[2], 2);
+    if (own) return own.call(value, value, key);
+    return get(value, key, missing) !== missing;
+  }
+  //@unit containsPath requires: get, methodKeys, missing, protocolHooks, vectorStore
+  // `contains?`'s own path over the runtime's classes (`operationPaths`).
+  function containsPath(value, key) {
     const method = protocolHooks.programMethod?.(value, methodKeys[2], 2);
     if (method) return method.call(value, value, key);
     const store = vectorStore(value);
     if (store) return Number.isInteger(key) && key >= 0 && key < store.cnt$LKEY;
     return get(value, key, missing) !== missing;
   }
-  //@unit contains.own effect: installMethods when: contains requires: contains, demandKey, keySlot,
-  //@ methodKeys, noBranch, protocolHooks
+  //@unit contains.own effect: installMethods when: containsPath requires: containsPath, demandKey,
+  //@ keySlot, methodKeys, noBranch, protocolHooks
   // As `get.own`: a vector's, a subvector's and a map entry's mask bit find
   // their `-contains-key?` slot (`vectorContains`, light-cljs-1046, where
   // until then this skipped every runtime class's value), and a value made
   // by reflection, whose slot answers `noBranch`, takes the operation.
-  contains = (operation => Object.defineProperty(function (value, key) {
+  containsPath = (operation => Object.defineProperty(function (value, key) {
     const resolved = methodKeys[2];
     if (value != null && (value[resolved.mask] & resolved.bit) !== 0) {
       demandKey(resolved, 2, value);
@@ -6798,7 +7011,7 @@
       if (own) { const result = own.call(value, value, key); if (result !== noBranch) return result; }
     }
     return operation(value, key);
-  }, "name", {value: operation.name}))(contains);
+  }, "name", {value: operation.name}))(containsPath);
   //@unit contains.host effect: contains, extendType, extendInstance when: setPrototype requires: contains,
   //@ hostHooks
   hostHooks.has = contains;
@@ -8213,9 +8426,33 @@
       return cellOf(value)?.cell$LKEY === "list" || viewOf(value)?.view$LKEY === "queue" || isLazy(value) ? collectionWithMeta(emptyList, meta(value)) : emptyList;
     return null;
   }
-  //@unit peek requires: cellOf, first, holdsVector, methodKeys, protocolHooks, queues, vectorNth,
-  //@ vectorStore
+  //@unit peek requires: peekOf, slotFirst
   function peek(value) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IStack$_peek$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    return peekOf(value);
+  }
+  //@unit peekOf requires: methodKeys, operationPaths, protocolHooks
+  // Upstream's `peek`: nil, else the value's `-peek`; a value of a runtime
+  // class whose instance slot holds nil or false takes its class's slot.
+  function peekOf(value) {
+    const path = operationPaths.peek;
+    if (path !== undefined) return path(value);
+    if (value == null) return null;
+    if (value.cljs$lang$kind$$LKEY < 64) {
+      const method = Object.getPrototypeOf(value)?.cljs$core$IStack$_peek$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    const own = protocolHooks.builtin?.(value, methodKeys[57], 1);
+    if (own) return own.call(value, value);
+    throw new Error("No protocol method IStack.-peek defined for this value");
+  }
+  //@unit peekPath requires: cellOf, first, holdsVector, methodKeys, protocolHooks, queues,
+  //@ vectorNth, vectorStore
+  // `peek`'s own path over the runtime's classes (`operationPaths`).
+  function peekPath(value) {
     const method = value == null ? null : protocolHooks.builtin?.(value, methodKeys[57], 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
@@ -8645,18 +8882,20 @@
   // `count` of a sorted set: its tree map's `count` (upstream's), which a
   // protocol implementation of the map's may answer.
   kindHooks.treeSetCount = set => count(set.treeMap$LKEY);
-  //@unit TreeSetCell.lookup effect: TreeSetCell when: lookup requires: comparatorOf, isTreeMap,
-  //@ kindHooks, sets, sortedPosition, treeEntryAt, treeKey
+  //@unit treeSetMember requires: comparatorOf, isTreeMap, sets, sortedPosition, treeEntryAt,
+  //@ treeKey
   // The member of a sorted set equal to `key`, else `notFound`: the key of
   // the node of its tree map that holds it (`treeEntryAt`), as upstream's;
   // a search of its members where a public constructor gave it no sorted
-  // map.
-  kindHooks.treeSetLookup = (set, key, notFound) => {
+  // map. A sorted set's `-lookup` (light-cljs-1066) and `lookup`'s branch.
+  function treeSetMember(set, key, notFound) {
     const map = set.treeMap$LKEY;
     if (isTreeMap(map)) { const node = treeEntryAt(map, key); return node === null ? notFound : treeKey(node); }
     const members = sets.get(set), comparator = comparatorOf(set), i = sortedPosition(members, key, comparator);
     return i < members.length && comparator.call(null, members[i].key, key) === 0 ? members[i].key : notFound;
-  };
+  }
+  //@unit TreeSetCell.lookup effect: TreeSetCell when: lookup requires: kindHooks, treeSetMember
+  kindHooks.treeSetLookup = treeSetMember;
   //@unit treeMapSeqConstructor requires: conj, constructorSlots, count, emptyList, first, ListCell,
   //@ next, ownMeta, protocolHooks, slotFirst, treeLeft, TreeMapStackCell, treeRight, truth
   // The public constructor; and the seqs a sorted map builds (light-cljs-1035),
@@ -8871,14 +9110,18 @@
   //@unit demandProtocol
   // No-ops until setDeclarationDemand installs a compiler session's demand.
   let demandProtocol = () => {}, demandMethod = () => {}, demandMulti = () => {};
-  //@unit setDeclarationDemand compile-time requires: demandMethod, demandMulti, demandProtocol,
-  //@ firstPath, nextPath, operationPaths, print, restPath, seqPath, slotFirst, typeNames
+  //@unit setDeclarationDemand compile-time requires: containsPath, countPath, demandMethod,
+  //@ demandMulti, demandProtocol, firstPath, getPath, nextPath, nthPath, operationPaths, peekPath,
+  //@ print, restPath, seqPath, slotFirst, typeNames
   function setDeclarationDemand(demand) {
     // A session that demands declarations reads no slot before its demand
     // (`slotFirst`), and takes the operations' own paths, whose lookups
     // demand (`operationPaths`; the shared-heap profile's, sealed, holds them).
     slotFirst.off();
-    if (operationPaths.seq === undefined) { operationPaths.seq = seqPath; operationPaths.first = firstPath; operationPaths.rest = restPath; operationPaths.next = nextPath; }
+    if (operationPaths.seq === undefined) {
+      operationPaths.seq = seqPath; operationPaths.first = firstPath; operationPaths.rest = restPath; operationPaths.next = nextPath;
+      operationPaths.count = countPath; operationPaths.nth = nthPath; operationPaths.get = getPath; operationPaths.contains = containsPath; operationPaths.peek = peekPath;
+    }
     const methodProtocols = new Map();
     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
     demandMethod = (key, arity, value) => {
@@ -8892,6 +9135,48 @@
     };
     demandMulti = mf => { if (demand) demand("multifn:" + print(mf.name, false), mf); };
   }
+  //@unit slotWrites requires: protocolSentinel, runtimeKind
+  // A program that writes a core protocol method's member by name
+  // (`ProgramFacts::core_method_write`, the root an `Advanced` slice keeps
+  // for it) can set a lookup's slot to nil, false or undefined on a runtime
+  // class's prototype, or on its value over a method `extend-type` gave the
+  // class, which the slot-first calls then pass over: its effects wrap the
+  // lookups' upstream-shaped paths (`countOf` and the others) so that a value
+  // of a runtime class, its class's store holding it (`runtimeKind`) or its
+  // class declaring the lookup's protocol by its mask bit or marker,
+  // takes the lookup's own path (`countPath` and the others), which answers
+  // it by its class, as before light-cljs-1066. A value made by reflection
+  // from a prototype whose class does not declare the protocol takes the
+  // upstream-shaped path at every level.
+  const slotWrites = (value, key) => value?.cljs$lang$kind$$LKEY < 64 && (runtimeKind(value) !== 0
+    || (value[key.mask] & key.bit) !== 0 || value[key.marker] === protocolSentinel);
+  //@unit slotWrites.count effect: slotWrites when: countOf requires: countOf, countPath,
+  //@ methodKeys, slotWrites
+  countOf = (operation => function (value) {
+    return slotWrites(value, methodKeys[10]) ? countPath(value) : operation(value);
+  })(countOf);
+  //@unit slotWrites.nth effect: slotWrites when: nthOf requires: methodKeys, nthOf, nthPath,
+  //@ slotWrites
+  nthOf = (operation => function (value, index, notFound, arity) {
+    if ((arity !== 2 && arity !== 3) || !slotWrites(value, methodKeys[25])) return operation(value, index, notFound, arity);
+    return arity === 2 ? nthPath(value, index) : nthPath(value, index, notFound);
+  })(nthOf);
+  //@unit slotWrites.get effect: slotWrites when: getOf requires: getOf, getPath, methodKeys,
+  //@ slotWrites
+  getOf = (operation => function (value, key, notFound, arity) {
+    if ((arity !== 2 && arity !== 3) || !slotWrites(value, methodKeys[30])) return operation(value, key, notFound, arity);
+    return arity === 2 ? getPath(value, key) : getPath(value, key, notFound);
+  })(getOf);
+  //@unit slotWrites.contains effect: slotWrites when: containsOf requires: containsOf,
+  //@ containsPath, methodKeys, slotWrites
+  containsOf = (operation => function (value, key) {
+    return slotWrites(value, methodKeys[2]) ? containsPath(value, key) : operation(value, key);
+  })(containsOf);
+  //@unit slotWrites.peek effect: slotWrites when: peekOf requires: methodKeys, peekOf, peekPath,
+  //@ slotWrites
+  peekOf = (operation => function (value) {
+    return slotWrites(value, methodKeys[57]) ? peekPath(value) : operation(value);
+  })(peekOf);
   //@unit declarationReceiver compile-time requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
   //@unit patchDeclaration mutator
@@ -10951,7 +11236,7 @@
   //@ requires: recordCopy, recordMethodTable
   recordMethodTable.push(Type => [
     ["IWithMeta/-with-meta", 2, function (_self, metadata) { return recordCopy(this, Type, metadata, this.__extmap, this.__hash); }]]);
-  //@unit recordMethods.lookup effect: recordMethods when: get, lookupProtocol requires: get,
+  //@unit recordMethods.lookup effect: recordMethods when: getOf, getPath, lookupProtocol requires: get,
   //@ protocolSlot, recordKeywordFieldIndex, recordMethodTable
   // `(-lookup r k)` calls the three-argument method `r` has, as `get` would.
   recordMethodTable.push((Type, slot = protocolSlot("ILookup/-lookup", 3)) => [
@@ -10959,8 +11244,8 @@
     ["ILookup/-lookup", 3, function (_self, key, fallback) {
       const index = recordKeywordFieldIndex(Type, key); return index < 0 ? get(this.__extmap, key, fallback) : this[Type.members[index]];
     }]]);
-  //@unit recordMethods.count effect: recordMethods when: count, countProtocol requires: count,
-  //@ recordMethodTable
+  //@unit recordMethods.count effect: recordMethods when: countOf, countPath, countProtocol
+  //@ requires: count, recordMethodTable
   recordMethodTable.push(Type => [
     ["ICounted/-count", 1, function () { return Type.fieldNames.length + count(this.__extmap); }]]);
   //@unit recordMethods.conj effect: recordMethods when: conj, conjProtocol requires: assoc, conj,
@@ -10970,8 +11255,8 @@
       if (isVector(entry)) return assoc(this, nth(entry, 0), nth(entry, 1));
       return reduce((result, pair) => conj(result, pair), this, entry);
     }]]);
-  //@unit recordMethods.contains effect: recordMethods when: contains, containsProtocol requires: contains,
-  //@ protocolHooks, recordKeywordFieldIndex, recordMethodTable
+  //@unit recordMethods.contains effect: recordMethods when: containsOf, containsPath,
+  //@ containsProtocol requires: contains, protocolHooks, recordKeywordFieldIndex, recordMethodTable
   // `contains?` of a missing extmap is false unless `extend-type` could have
   // given nil `-contains-key?` (`protocolHooks.extend`).
   recordMethodTable.push(Type => [
@@ -11250,12 +11535,12 @@
     // ArrayChunk's two-argument -nth reads the backing array directly.
     return state.arr$LKEY?.[state.off$LKEY + i];
   }
-  //@unit arrayChunk.nth effect: arrayChunk, ownedChunkFirst, dropFirstChunk when: nth requires: chunkNth,
+  //@unit arrayChunk.nth effect: arrayChunk, ownedChunkFirst, dropFirstChunk when: nthPath requires: chunkNth,
   //@ kindHooks
   kindHooks.nthChunk = chunkNth;
-  //@unit makeTransient.nth effect: makeTransient when: nth requires: kindHooks, transientNth
+  //@unit makeTransient.nth effect: makeTransient when: nthPath requires: kindHooks, transientNth
   kindHooks.nthTransient = transientNth;
-  //@unit makeTransient.count effect: makeTransient when: count requires: editableTransient,
+  //@unit makeTransient.count effect: makeTransient when: countPath, persistentBang requires: editableTransient,
   //@ kindHooks
   // A transient vector's entries are its store; a map's or set's an array.
   kindHooks.countTransient = value => {
@@ -13302,10 +13587,10 @@
     return nth(entry, 1);
   }
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
-  //@ assoc, collectionWithMeta, compareKeys, conj, conjTransient, coreMethod, count, derefProtocol,
-  //@ disj, dissoc, equalPair, firstOf, firstSeq, hash, hashStructural, iterator,
+  //@ assoc, collectionWithMeta, compareKeys, conj, conjTransient, coreMethod, countOf, countPath,
+  //@ derefProtocol, disj, dissoc, equalPair, firstOf, firstSeq, hash, hashStructural, iterator,
   //@ keywordLookupEquiv, keywordProgramEquiv, metaSupported, name, namespace, notifyWatches,
-  //@ objectEquiv, peek, pop, removeWatchProtocol, restOf, restSeq, rseq, stateProtocol,
+  //@ objectEquiv, peekOf, peekPath, pop, removeWatchProtocol, restOf, restSeq, rseq, stateProtocol,
   //@ vresetProtocol, withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,
@@ -13317,48 +13602,51 @@
   //@ extendedDeclared requires: externalMethod, protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
-  //@unit protocolHooks.extend effect: extendType, extendInstance when: conjMeta, contains,
-  //@ containsProtocol, entryPrototype, ownMap, ownSet, resetMeta, treeMapSeqConstructor,
-  //@ upstreamMembers, vectorIndexOf, vectorPrototype requires: protocolHooks
+  //@unit protocolHooks.extend effect: extendType, extendInstance when: conjMeta, containsOf,
+  //@ containsPath, containsProtocol, entryPrototype, ownMap, ownSet, resetMeta,
+  //@ treeMapSeqConstructor, upstreamMembers, vectorIndexOf, vectorPrototype requires: protocolHooks
   // Only `extend-type` and `specify!` can give the runtime's own values
   // protocol implementations, which their host-facing methods and fields then
   // answer through the generic operations (`hostHooks`).
   protocolHooks.extend = true;
-  //@unit protocolHooks.ownMethod effect: installMethods when: SubvecValue, chunkStore, contains,
-  //@ count, dropFirstChunk, empty, find, firstOf, firstPath, get, meta, nextOf, nextPath, nth,
-  //@ printSequential, printValues, printWriterImpl, reduce, reduceKv, restOf, restPath, rseq,
-  //@ seqOf, seqPath, subvec requires: ownDeclared, ownMethod, protocolHooks
+  //@unit protocolHooks.ownMethod effect: installMethods when: SubvecValue, chunkStore, containsOf,
+  //@ containsPath, countOf, countPath, dropFirstChunk, empty, find, firstOf, firstPath, getOf,
+  //@ getPath, meta, nextOf, nextPath, nthOf, nthPath, printSequential, printValues,
+  //@ printWriterImpl, reduce, reduceKv, restOf, restPath, rseq, seqOf, seqPath, subvec requires: ownDeclared,
+  //@ ownMethod, protocolHooks
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.programMethod = ownMethod;
   protocolHooks.declaredMethod = ownDeclared;
   //@unit protocolHooks.programMethod effect: extendType, extendInstance when: SubvecValue,
-  //@ chunkStore, contains, count, dropFirstChunk, empty, find, firstOf, firstPath, get, meta,
-  //@ nextOf, nextPath, nth, printSequential, printValues, printWriterImpl, reduce, reduceKv,
-  //@ restOf, restPath, rseq, seqOf, seqPath, subvec requires: extendedDeclared, extendedMethod,
-  //@ protocolHooks
+  //@ chunkStore, containsOf, containsPath, countOf, countPath, dropFirstChunk, empty, find,
+  //@ firstOf, firstPath, getOf, getPath, meta, nextOf, nextPath, nthOf, nthPath, printSequential,
+  //@ printValues, printWriterImpl, reduce, reduceKv, restOf, restPath, rseq, seqOf, seqPath, subvec
+  //@ requires: extendedDeclared, extendedMethod, protocolHooks
   // ... and only `extend-type` and `specify!` give the runtime's values and
   // host values implementations, which `extendedMethod` finds.
   protocolHooks.programMethod = extendedMethod;
   protocolHooks.declaredMethod = extendedDeclared;
-  //@unit protocolHooks.ownSatisfies effect: installMethods when: accumulatingCount, boundedCount,
-  //@ cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isEmpty, isFn, isIFind,
-  //@ isIFn, isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable, isReversible,
-  //@ isSeq, isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs, makeMap.equiv,
-  //@ makeSet.equiv, mapConj, KeySeqCell, nth, reduce, sequenceIterator requires: ownProtocol,
+  //@unit protocolHooks.ownSatisfies effect: installMethods when: KeySeqCell, accumulatingCount,
+  //@ boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isEmpty,
+  //@ isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable,
+  //@ isReversible, isSeq, isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs,
+  //@ makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reduce, sequenceIterator requires: ownProtocol,
   //@ protocolHooks
   // The generic operations test core protocols by name: without `extend-type`
   // or `specify!` the protocols a value declares, then their native tests ...
   protocolHooks.satisfies = ownProtocol;
   //@unit protocolHooks.ownImplements effect: installMethods when: chunkNext, concatMany, concatTwo,
-  //@ cons, count, drop, filter, hash, indexedSequence, into, isChunkedSeq, isMapEntry, isUuid,
-  //@ mapSeq, name, namespace, nth, printsMeta requires: ownProtocol, protocolHooks
+  //@ cons, countOf, countPath, drop, filter, hash, indexedSequence, into, isChunkedSeq, isMapEntry,
+  //@ isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta requires: ownProtocol,
+  //@ protocolHooks
   protocolHooks.implements = ownProtocol;
-  //@unit protocolHooks.satisfies effect: extendType, extendInstance when: accumulatingCount,
-  //@ boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isEmpty,
-  //@ isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable,
-  //@ isReversible, isSeq, isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs,
-  //@ makeMap.equiv, makeSet.equiv, mapConj, KeySeqCell, nth, reduce, sequenceIterator requires: protocolHooks,
-  //@ protocolMethodInfo, runtimeKind, satisfies, storeProtocol
+  //@unit protocolHooks.satisfies effect: extendType, extendInstance when: KeySeqCell,
+  //@ accumulatingCount, boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl,
+  //@ isCounted, isEmpty, isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap,
+  //@ isRecord, isReduceable, isReversible, isSeq, isSeqable, isSequential, isSet, isSorted,
+  //@ isVector, jsToClj, keyToJs, makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reduce,
+  //@ sequenceIterator requires: protocolHooks, protocolMethodInfo, runtimeKind, satisfies,
+  //@ storeProtocol
   // ... and with them also what those give the runtime's and host values.
   // Each reads the protocol of a resolved key (`methodKey`) from its `info`.
   // A value of the runtime's classes (`runtimeKind`) takes one step.
@@ -13367,9 +13655,9 @@
     return kind ? storeProtocol(info, value, kind, true) : satisfies(info.protocol, value);
   };
   //@unit protocolHooks.implements effect: extendType, extendInstance when: chunkNext, concatMany,
-  //@ concatTwo, cons, count, drop, filter, hash, indexedSequence, into, isChunkedSeq, isMapEntry,
-  //@ isUuid, mapSeq, name, namespace, nth, printsMeta requires: implementsProtocol, protocolHooks,
-  //@ protocolMethodInfo, runtimeKind, storeProtocol
+  //@ concatTwo, cons, countOf, countPath, drop, filter, hash, indexedSequence, into, isChunkedSeq,
+  //@ isMapEntry, isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta requires: implementsProtocol,
+  //@ protocolHooks, protocolMethodInfo, runtimeKind, storeProtocol
   protocolHooks.implements = (key, value) => {
     const info = key.info || (key.info = protocolMethodInfo(key.key)), kind = info.name ? runtimeKind(value) : 0;
     return kind ? storeProtocol(info, value, kind, false) : implementsProtocol(info.protocol, value);
@@ -13378,7 +13666,7 @@
   //@ protocolHooks
   // One install per core dispatcher the generic operations call.
   protocolHooks.countProtocol = countProtocol;
-  //@unit protocolHooks.nthProtocol effect: installMethods when: mapConj, nth requires: nthProtocol,
+  //@unit protocolHooks.nthProtocol effect: installMethods when: mapConj, nthOf, nthPath requires: nthProtocol,
   //@ protocolHooks
   protocolHooks.nthProtocol = nthProtocol;
   //@unit protocolHooks.firstProtocol effect: installMethods when: KeySeqCell requires: firstProtocol,

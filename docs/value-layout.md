@@ -1664,6 +1664,60 @@ units and the program's own top level; first output adds one iteration.
   of the re-frame-shaped app's, where predicates, `count` and `meta` take
   the extended lookup (`extendedMethod`) in a program that extends types.
 
+What light-cljs-1066 landed: the lookups, `count`, `nth`, `get`,
+`contains?` and `peek`, are upstream's shape as the seq walk is, without
+their slot-first wrappers and their slots' `noBranch` guards. The updates
+(`conj`, `assoc`, `dissoc`, `disj`, `pop`), `=`, `hash` and the reductions
+keep theirs (light-cljs-1068).
+
+- **One function each.** `count`, `contains?` and `peek` read the value's
+  keyed kind and call its slot (51, 63 and 51 bytes of bytecode, where the
+  wrappers were 90 to 101); `nth` and `get` are one function per arity,
+  `nth2` and `nth3`, `get2` and `get3` (74 to 92 bytes, where the wrappers
+  were 159 to 166), so that each stays under light-cljs-1033's 100. Any
+  other value takes upstream's path (`countOf`, `nthOf`, `getOf`,
+  `containsOf`, `peekOf`): nil, a host value's program method, arrays and
+  strings, the seq walk of a seqable or sequential value without the
+  protocol (a cons, a lazy seq, a program's type), `get` of the key for
+  `contains?`. The call-site entries call the slot, then the operation,
+  without the `noBranch` test.
+- **Slots for every class the old paths recognised.** `-count` of the node,
+  array node and reversed seqs and a vector's chunked seq (from their
+  offsets), a sorted map's seq (its count, or one more than its next's),
+  a sorted set (its tree map's), a chunk buffer and the map and set
+  transients; `-nth` of an integer range and of the map and set transients
+  (`transientNth`, which gives what `nth` gave them); `-lookup` of a sorted
+  set (`treeSetMember`) and the map and set transients; `-peek` of a list,
+  the empty list and a queue (its `first`, a public constructor's its
+  front's). Upstream's `NodeSeq` and `ChunkedSeq` walk to the same count.
+- **No guards.** The vectors', subvectors', map entries', maps', sets',
+  queues', chunks', lists', ranges' and transient vectors' lookup slots no
+  longer test their value's fields (section 5, items 27 to 29).
+- **Answers kept.** Where a runtime class's instance slot holds nil or
+  false, the fallbacks take its class's slot, as the old paths answered by
+  the class; a program type's (kind 64 and above) takes the protocol
+  lookup, which throws as before, and for `get` and `contains?` finishes
+  from the slot as read (`protocolHooks.declaredMethod`), as `get.own` and
+  `contains.own` did (`masked_lookup_getters_preserve_selected_dispatch`).
+  Where a program sets a lookup's slot to nil, false or undefined on a
+  runtime class's prototype, or on its value over a method `extend-type`
+  gave the class, the class still answers, as it did through the old
+  bodies: a program that writes a core protocol method's member by name
+  keeps `slotWrites` (the root `extendType` gets for it, light-cljs-1056),
+  whose effects wrap `countOf` and the others so that a runtime class's
+  value (its class's store holds it, or its class declares the protocol by
+  mask bit or marker) takes the old path; builds below `Advanced` always
+  have them, and other `Advanced` programs, which cannot write a slot
+  without naming it, pay nothing.
+- **Profiles.** The old bodies are `countPath`, `nthPath`, `getPath`,
+  `containsPath` and `peekPath`, with `nth.protocol`, `get.own` and
+  `contains.own` wrapping them, set in `operationPaths` by
+  `setDeclarationDemand` and held by the shared-heap profile from its boot,
+  whose `nth`, `get` and `contains` entries read the bindings when called,
+  as its `operationPaths` unit loads before the three wrappers.
+  build.rs's scalar adapters of `get`'s and `contains?`'s keys move to
+  `getPath` and `containsPath`; the small functions keep the value's.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -2604,6 +2658,38 @@ a value made by `Object.create` of a runtime prototype:
     queues' slot contracts: a forged value's `-seq` is no longer
     `noBranch`, and a set's or queue's `-seq` is checked against the items a
     reduction gives, as `seq` has no other path for them in release.
+
+Rescoped by light-cljs-1066, whose lookup slots (`-count`, `-nth`,
+`-lookup`, `-contains-key?`, `-peek`) no longer guard against a value made
+by `Object.create` of a runtime prototype:
+
+27. tests/support/js_runtime.test.js, the forged candidates of "seq
+    payloads are private fields", the fresh runtime's built values, the
+    `lightCljsWeakMapStores` runtime and "No runtime prototype holds a kind
+    table's number": `count` of a forged value of a class with a `-count`
+    slot answers from the slot (or throws its `TypeError`) where it threw
+    "count not supported"; a class without one (a cons, a lazy seq) still
+    throws it.
+28. tests/support/js_runtime.test.js, the vector classes' slot contract: a
+    forged value's `-nth`, `-lookup`, `-count` and `-peek` are no longer
+    `noBranch` (its `-conj` and `-assoc` still are).
+29. tests/support/js_runtime.test.js, the sets', queues' and vectors' slot
+    contract: a forged value's `-count`, `-lookup` and `-contains-key?` are
+    no longer `noBranch`, and those slots are checked against the old paths
+    of a fresh runtime that demands declarations, as `count` and `get` have
+    no other path for them in release.
+30. `protocol_hooks_answer_runtime_values_as_the_full_lookup`, the
+    `forged-list`, `forged-map` and `forged-range` rows of each extension
+    set: `count` of one answers nil from its class's `-count` slot, which
+    reads fields the forged value lacks, where it threw (or, in the set that
+    extends `object` and `default`, answered `default`'s 42), and `nth` of a
+    forged range answers `:none` from its slot; in that set `count` of the
+    forged seq, whose class has no `-count`, walks it as the seq its
+    prototype declares and throws, where `default`'s answered 42. The Proxy
+    is asked 304, 318 and 304 times at `Advanced`, where 323, 337 and 323
+    (no old path reads its `slots`), and twice more below `Advanced` and in
+    the set that writes slots by name, where the `slotWrites` wrappers read
+    its keyed kind.
 
 ### Documentation rules that change
 

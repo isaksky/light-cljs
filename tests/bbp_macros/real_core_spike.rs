@@ -89,10 +89,6 @@ const SWAPS: &[(&str, &str)] = &[
         r#"  const kindHooks = {seqVector: value => __rt.cljSeq(value)};"#,
     ),
     ("emptyList", "  const emptyList = __rt.formList();"),
-    // The slot-first wrapper serves the V8 profile's class values, which this
-    // slice of engine forms never builds; it captures the operation it
-    // wraps, which the seal below, walking properties only, cannot reach.
-    ("count.slots", ""),
     // The seq walk's own paths, which answer the engine forms, as the
     // shared-heap profile's `operationPaths` holds them (light-cljs-1054);
     // the slice keeps them as roots ([`SLICE_ROOTS`]).

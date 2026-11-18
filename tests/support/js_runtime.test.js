@@ -1619,7 +1619,10 @@ console.log('public constructor fields preserve canonical payload brands');
       assert.equal(c.isSeq(candidate), false);
       assert.equal(c.isChunkedSeq(candidate), false);
       assert.equal(runtime.inspect(candidate), null);
-      assert.throws(() => c.count(candidate), /count not supported/);
+      // `count` calls the class's `-count` slot, which no longer guards
+      // against a value made by reflection since light-cljs-1066 (rescoped,
+      // docs/value-layout.md section 5); a class without one still throws.
+      if (!Object.getPrototypeOf(candidate).cljs$core$ICounted$_count$arity$1$LKEY) assert.throws(() => c.count(candidate), /count not supported/);
     }
   }
   // A chunked cons's and a range's cell define their fields, as a literal
@@ -1699,7 +1702,8 @@ console.log('seq payloads are private fields that host objects cannot copy');
       for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
         if (!declares) for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
         assert.equal(fresh.inspect(candidate), null);
-        if (!declares) assert.throws(() => f.count(candidate), /count not supported/);
+        // A class with a `-count` slot answers from it (light-cljs-1066, rescoped).
+        if (!declares && !Object.getPrototypeOf(candidate).cljs$core$ICounted$_count$arity$1$LKEY) assert.throws(() => f.count(candidate), /count not supported/);
         assert.throws(() => f.persistentBang(candidate));
       }
     }
@@ -1776,7 +1780,7 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
     for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
       if (!declares) for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isChunkedSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
       assert.equal(fresh.inspect(candidate), null);
-      if (!declares) assert.throws(() => f.count(candidate), /count not supported/);
+      if (!declares && !Object.getPrototypeOf(candidate).cljs$core$ICounted$_count$arity$1$LKEY) assert.throws(() => f.count(candidate), /count not supported/);
     }
   }
 }
@@ -1829,8 +1833,10 @@ console.log('public find preserves one search and direct receiver dispatch');
   // `seq`, `first`, `rest` and `next` of one call its class's slots since
   // light-cljs-1054, which no longer guard against a value made by
   // reflection (rescoped, docs/value-layout.md section 5).
+  // `count` likewise calls a class's `-count` slot since light-cljs-1066
+  // (rescoped); a class without one (a cons, a lazy seq) still throws.
   for (const forged of values.map(value => Object.create(Object.getPrototypeOf(value)))) {
-    assert.throws(() => c.count(forged), /count not supported on this type/);
+    if (!Object.getPrototypeOf(forged).cljs$core$ICounted$_count$arity$1$LKEY) assert.throws(() => c.count(forged), /count not supported on this type/);
   }
 }
 {
@@ -2269,9 +2275,10 @@ console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is
         // What a slot gives a value with the prototype and no fields, as
         // only reflection makes, is the private answer by which the
         // operation's older path takes the value (`noBranch`); the seq
-        // walk's slots no longer guard since light-cljs-1054 (rescoped,
+        // walk's slots no longer guard since light-cljs-1054, nor the lookups'
+        // (`-nth`, `-lookup`, `-count`, `-peek`) since light-cljs-1066 (rescoped,
         // docs/value-layout.md section 5).
-        if (slot !== seq) {
+        if (slot === conj || slot === assoc) {
           const forged = Object.create(proto), noBranch = proto[slot].call(forged, forged, ...args);
           assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${kind}: ${slot} of a forged value`);
         }
@@ -2292,7 +2299,12 @@ console.log('vector_family_prototype_contract: masks, markers and slots of the v
   const conj = 'cljs$core$ICollection$_conj$arity$2$LKEY', lookup = ['cljs$core$ILookup$_lookup$arity$2$LKEY', 'cljs$core$ILookup$_lookup$arity$3$LKEY'];
   const contains = 'cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY';
   const outcome = thunk => { try { return 'ok ' + c.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
-  const kinds = [
+  // The old paths, which a compiler session demanding declarations takes
+  // (`operationPaths`), of a fresh runtime: the oracle for the slots whose
+  // operations have no path of their own in release since light-cljs-1066.
+  const oracle = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  oracle.setDeclarationDemand(null);
+  const kindsOf = c => [
     ['set', [c.hashSet(), c.hashSet(1, 2), c.set(c.range(40)), c.withMeta(c.hashSet(3), c.hashMap('m', 1)), c.PersistentHashSet(null, null, null),
       c.PersistentHashSet(null, c.arrayMap('a', null, 'b', null), null), c.PersistentHashSet(null, c.PersistentArrayMap(null, 5, ['a', null], null), null),
       c.PersistentHashSet(null, c.into(c.hashMap(), c.mapSeq(x => c.vector(x, null), c.range(20))), null)],
@@ -2303,10 +2315,13 @@ console.log('vector_family_prototype_contract: masks, markers and slots of the v
     ['vector', [c.vector(), c.vector(1, 2), c.vec(c.range(40)), c.subvec(c.vector(1, 2, 3), 1), c.first(c.hashMap('k', 'v')), c.PersistentVector(null, 2, 5, null, [1, 2], null)],
       [[contains, [0]], [contains, [1]], [contains, [2]], [contains, [-1]], [contains, [0.5]], [contains, ['a']], [contains, [null]]]]
   ];
+  const kinds = kindsOf(c), oracleKinds = kindsOf(oracle.core), o = oracle.core;
   const operations = new Map([[count, v => c.count(v)], [seq, v => c.seq(v)], [conj, (v, x) => c.conj(v, x)], [lookup[0], (v, k) => c.get(v, k)],
     [lookup[1], (v, k, nf) => c.get(v, k, nf)], [contains, (v, k) => c.contains(v, k)]]);
-  for (const [kind, values, slots] of kinds) {
-    for (const value of values) {
+  const oracleOperations = new Map([[count, v => o.count(v)], [lookup[0], (v, k) => o.get(v, k)], [lookup[1], (v, k, nf) => o.get(v, k, nf)], [contains, (v, k) => o.contains(v, k)]]);
+  const oracleOutcome = thunk => { try { return 'ok ' + o.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
+  for (const [k, [kind, values, slots]] of kinds.entries()) {
+    for (const [i, value] of values.entries()) {
       for (const [slot, args] of slots) {
         const method = value[slot];
         assert.equal(typeof method, 'function', `${kind}: ${slot}`);
@@ -2316,6 +2331,15 @@ console.log('vector_family_prototype_contract: masks, markers and slots of the v
         // holds the items a reduction gives, in their order.
         if (slot === seq) {
           assert.equal(outcome(() => method.call(value, value)), outcome(() => c.seq(c.into(c.vector(), value))), `${kind}: ${slot} of ${c.prStr(value)}`);
+          continue;
+        }
+        // The lookups' slots no longer guard against a value made by
+        // reflection since light-cljs-1066 (rescoped, docs/value-layout.md
+        // section 5); each answers as the old path of a fresh runtime that
+        // demands declarations.
+        if (slot !== conj) {
+          const old = oracleKinds[k][1][i];
+          assert.equal(outcome(() => method.call(value, value, ...args)), oracleOutcome(() => oracleOperations.get(slot)(old, ...args)), `${kind}: ${slot} of ${c.prStr(value)}`);
           continue;
         }
         const forged = Object.create(Object.getPrototypeOf(value)), noBranch = method.call(forged, forged, ...args);
