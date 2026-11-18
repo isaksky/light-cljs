@@ -4823,3 +4823,54 @@ The re-frame-shaped app does not move: its gap is the operations of its first it
 **Size** (`bb benchmarks/re-frame.bb size todomvc simple --light-only`, on `c786677b`): the re-frame bundles with React grow 246 and 202 bytes after gzip -9 (TodoMVC 144,678 to 144,924, 0.17%; simple 113,196 to 113,398, 0.18%); flow's port does not build with either binary (its vendored zprint uses `:require-macros`, which light-cljs retired). The size ratchet's record programs are 555 bytes larger at advanced, for the one loop, the record masks and the dispatchers, which spell each slot twice as upstream's do; each extra two-method protocol 375 to 398 bytes (tests/support/ratchet_fixtures.rs, tests/compiler/size_ratchet.rs).
 
 **What is left** of the top level, profiled: the type definitions' about 46,000 non-enumerable slots at 800k, each `Object.defineProperty` about 150 ns (220 where the type's closures are its own) with as much again in their loops, where upstream's output assigns a record about 21 slots as stores; a record's 16 shared methods built as closures per type over `Type` (a shared function reading the prototype's record slot measured 3.7 ms less at 800k, at the cost of a megamorphic read in every record method); and `derive`, `addMethod` and `keyword` constants, whose cost is the operations at load, in the interpreter (shadow-cljs constructs its keyword constants with their hashes and does not intern them).
+
+## 2026-11-18: the updates shaped as upstream's (light-cljs-1068)
+
+`conj`, `assoc`, `dissoc`, `disj` and `pop` call a value's keyed slot, then upstream's path for nil, host values and the other arities (`conjOf` and the others), without the slot-first wrappers, the update slots' `noBranch` guards and the call-site entries' `noBranch` tests; the variadic ones send the arity with a slot to a function of its own (`conj2`, `assoc3`, `dissoc2`, `disj2`), each under light-cljs-1033's 100 bytes of bytecode (docs/value-layout.md, "What light-cljs-1068 landed"). The lists, the sets, the vectors, a map entry and the queue gained the `-conj`, `-disjoin` and `-pop` slots their old paths gave. `=`, `hash` and the reductions keep their wrappers (light-cljs-1072).
+
+**Binaries** in research/shadow-credibility/bin: before `light-cljs-c786677b` (master), after `light-cljs-1068-361997ef` (this pellet on it; the landed commit rebases it onto light-cljs-1069 and changes no update path), V8 builds. Records in research/output-speed/updates-1068. No run waited for the machine; all results are unreserved (a peer worker built and tested throughout).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, all 70 operations, the after run with `--baseline` the before's; load 6.58-7.77 before and 6.60-11.40 after), light-cljs ns per operation, median (range), the operations that update:
+
+| op | light before | light after | change | shadow-cljs after | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| assoc-small-existing | 24.2 | 22.2 (21.4-22.3) | -8% | 30.8 | 0.72 |
+| assoc-small-new | 49.5 | 48.4 (47.2-48.9) | -2% | 39.4 | 1.23 |
+| dissoc-small | 50.1 | 50.8 (50.5-52.4) | +1% | 57.5 | 0.88 |
+| update-small | 29.0 | 28.3 (28.1-28.9) | -2% | 43.6 | 0.65 |
+| assoc-hash100 | 82.7 | 83.3 (82.7-83.9) | +1% | 78.8 | 1.06 |
+| dissoc-hash100 | 88.6 | 88.2 (85.7-88.3) | -1% | 76.6 | 1.15 |
+| update-hash100 | 91.6 | 91.8 (90.8-92.1) | +0% | 96.1 | 0.96 |
+| assoc-in-3 | 154.3 | 160.1 (157.9-164.0) | +4% | 130.0 | 1.23 |
+| update-in-3 | 176.5 | 178.3 (176.5-179.2) | +1% | 137.7 | 1.29 |
+| vec-conj-64 | 1,332 | 1,326 (1,317-1,572) | -1% | 1,303 | 1.02 |
+| vec-assoc-1024 | 53.7 | 53.9 (53.7-54.2) | +0% | 74.1 | 0.73 |
+| swap-assoc | 47.3 | 43.6 (42.7-44.2) | -8% | 38.0 | 1.15 |
+| merge-small | 2,056 | 2,171 (2,090-2,229) | +6% | 879.8 | 2.47 |
+| select-keys-3 | 337.9 | 326.0 (324.0-327.9) | -4% | 250.0 | 1.30 |
+| group-by-100 | 8,839 | 8,548 (8,501-8,628) | -3% | 5,061 | 1.69 |
+| sorted-map-assoc-100 | 190.0 | 191.8 (191.1-199.5) | +1% | 206.4 | 0.93 |
+| into-set-100 | 7,078 | 7,157 (6,910-7,971) | +1% | 4,270 | 1.68 |
+
+- **One operation is more than 5% slower in the full pass, `merge-small` (+6%), and it is noise:** two more alternated pairs of only `merge-small`, `assoc-in-3` and `str-concat` (`--ops`, 5 runs each, load 8.03-12.53) give `merge-small` 1,767 to 1,875 ns (+6%) and 1,705 to 1,623 (-5%), `assoc-in-3` +0% and -1%, `str-concat` +0% and -1%. Its per-process spread (1,623 to 2,229 ns over the four binaries' runs) is wider than the change; `merge` conjoins each map onto the first, through the map's `-conj` slot as before, now without the `noBranch` comparison and the map slot's field test.
+- **What gains:** `assoc-small-existing` and `swap-assoc` (-8%: `assoc` of an array map reaches its slot through `assoc3`, no `noBranch` comparison and no `arr` test), `select-keys-3` (-4%) and `group-by-100` (-3%); no other operation of the 70 moves more than 3%.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the `c786677b` binary, built by each binary), the whole bundle with React, gzip -9:
+
+| App | master `c786677b` | light-cljs-1068 | against master |
+| --- | ---: | ---: | ---: |
+| re-frame simple | 113,539 | 113,031 | -508 (-0.45%) |
+| TodoMVC | 144,678 | 144,126 | -552 (-0.38%) |
+| flow | 331,794 | 331,428 | -366 (-0.11%) |
+
+- **Raw:** 370,667 to 369,649 (-1,018), 478,024 to 476,934 (-1,090), 1,282,686 to 1,281,762 (-924). The old bodies (`conjPath` and the others) and the recognisers only they call (`kindHooks.conjVector`, `conjMap`, `assocVector`) leave release slices that write no slot by name; none of the three apps does.
+- **Size ratchet:** no advanced size grows; four advanced ceilings move down (`constant-keys` 74,000 to 73,000, `mapv-count` 53,000 to 52,000, `features` 117,000 to 116,000, `features-direct` 117,000 to 115,000), and the features example's chunks are 1,502 bytes smaller together (its shared chunk 93,836 to 91,732, `app.reports.js` 4,830 to 5,458 as the hash map's statics move into it).
+
+**Workload 200k and the re-frame-shaped 200k app** (`compare.bb PROJECT --runs 5 --runtime-only --runtime 1,40`, projects `workload-200k-seed42-1068` and `re-frame-200k-seed42-1068`, the light-cljs output rebuilt with each binary just before its runs), wall time at 40 iterations, median (range), and light-cljs's steady state:
+
+| project | light before | light after | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k | 1.785 s (1.728-1.834) | 1.743 s (1.737-1.787) | 1.230 / 1.246 s | 36.1 to 35.8 (shadow-cljs 23.2 / 23.9) | 5.7-6.5 / 5.0-5.3 |
+| re-frame-shaped | 20.473 s (18.565-31.607) | 18.312 s (17.543-23.069) | 11.832 / 11.800 s | 477.3 to 422.2 (shadow-cljs 268.3 / 266.9) | 4.5-15.2 / 6.0-14.5 |
+
+The workload's steady state is within its range of master (light/shadow 1.56 to 1.50). The re-frame-shaped app's before runs met a load spike (one 40-iteration run 31.6 s, load up to 15.2), so its 477.3 is not master's level: light-cljs-1066 measured 420.2 for the same program, and this pellet's 422.2 is that, not a gain of 11%.

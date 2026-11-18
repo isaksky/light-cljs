@@ -230,13 +230,14 @@
     get on() { const cells = globalThis.__lightSharedCells; return cells.slotFirst; },
     off() { const cells = globalThis.__lightSharedCells; cells.slotFirst = false; }
   };
-  //@unit operationPaths requires: containsPath, countPath, firstPath, getPath, nextPath, nthPath,
-  //@ peekPath, restPath, seqPath
+  //@unit operationPaths requires: assocPath, conjPath, containsPath, countPath, disjPath,
+  //@ dissocPath, firstPath, getPath, nextPath, nthPath, peekPath, popPath, restPath, seqPath
   // The V8 profile's switch to the operations' own paths, which every
   // task takes for a value without the operation's slot: the engine forms
   // (vectors, map entries, maps, sets and list cells) hold no slots, and
   // the own paths answer them through this profile's units, as before
-  // light-cljs-1054 (the seq walk) and light-cljs-1066 (the lookups).
+  // light-cljs-1054 (the seq walk), light-cljs-1066 (the lookups) and
+  // light-cljs-1068 (the updates).
   // `nth.protocol`, `get.own` and `contains.own` rewrap `nthPath`,
   // `getPath` and `containsPath` after this unit loads, so those three
   // entries read the binding when called, with the caller's arguments.
@@ -244,7 +245,8 @@
     count: countPath, peek: peekPath,
     nth: function () { return nthPath.apply(null, arguments); },
     get: function () { return getPath.apply(null, arguments); },
-    contains: function () { return containsPath.apply(null, arguments); }};
+    contains: function () { return containsPath.apply(null, arguments); },
+    conj: conjPath, assoc: assocPath, dissoc: dissocPath, disj: disjPath, pop: popPath};
   //@unit ownSeqs
   // The V8 profile's switch for `first` and `rest` of a collection whose
   // seq a program extended: this profile takes the own paths
@@ -549,7 +551,7 @@
     for (let i = 0; i < keys.length; i++) entries.push(new ArrayMapEntry(keys[i], values[i], hashes[i]));
     return makeMap(PersistentArrayMapValue, entries, "array-map");
   }
-  //@unit hashMapAssoc requires: constructorSlots, kindHooks, mapTraversal, meta, noBranch,
+  //@unit hashMapAssoc requires: constructorSlots, kindHooks, mapTraversal, meta,
   //@ PersistentHashMapValue, sharedOwnedMap, updatedMap
   // `assoc` of a runtime-owned hash map (a public constructor's or one with
   // a NaN occurrence key) builds through `updatedMap`, as before the V8
@@ -560,7 +562,6 @@
   // as `updatedMap` gave it before.
   function hashMapAssoc(self, key, item) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     const exact = !self.slots$LKEY && cnt === mapTraversal(self).length;
     const trie = {root: self.root$LKEY, nil: self.nil$LKEY, length: cnt};
     kindHooks.putHashEntry(trie, key, item, null);

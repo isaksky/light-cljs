@@ -957,11 +957,11 @@ fn shared_persistent_updates(base: &str) -> String {
         let header = &base[unit.header];
         let body = &base[unit.body];
         let leaf = match unit.name.as_str() {
-            "assoc" => Some((
+            "assocPath" => Some((
                 "    const mapSlots = value?.slots$LKEY;",
                 "    if (sharedUpdates.accepts(value, [key], \"map\", true)) return sharedUpdates.assoc(value, key, item, pairs);\n",
             )),
-            "dissoc" => Some((
+            "dissocPath" => Some((
                 "    const original = maps.get(value);",
                 "    if (sharedUpdates.accepts(value, keys, \"map\")) return sharedUpdates.dissoc(value, keys);\n",
             )),
@@ -969,7 +969,7 @@ fn shared_persistent_updates(base: &str) -> String {
                 "    if (result.slots$LKEY) {",
                 "    if (sharedUpdates.accepts(result, [item], \"set\", true)) return sharedUpdates.conj(result, item);\n",
             )),
-            "disj" => Some((
+            "disjPath" => Some((
                 "    const original = sets.get(value);",
                 "    if (sharedUpdates.accepts(value, keys, \"set\")) return sharedUpdates.disj(value, keys);\n",
             )),

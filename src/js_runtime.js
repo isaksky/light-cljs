@@ -1026,8 +1026,8 @@
   protocolHooks.methodKey = methodKey;
   //@unit installMethods.FnKey effect: installMethods when: isFn requires: methodKey, methodKeys
   methodKeys[0] = methodKey("Fn");
-  //@unit installMethods.IAssociativeAssocKey effect: installMethods when: assoc requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.IAssociativeAssocKey effect: installMethods when: assocOf, assocPath
+  //@ requires: methodKey, methodKeys
   methodKeys[1] = methodKey("IAssociative/-assoc");
   //@unit installMethods.IAssociativeContainsKeyKey effect: installMethods when: containsOf,
   //@ containsPath requires: methodKey, methodKeys
@@ -1044,7 +1044,7 @@
   //@unit installMethods.ICloneableKey effect: installMethods when: isCloneable requires: methodKey,
   //@ methodKeys
   methodKeys[6] = methodKey("ICloneable");
-  //@unit installMethods.ICollectionConjKey effect: installMethods when: conj requires: methodKey,
+  //@unit installMethods.ICollectionConjKey effect: installMethods when: conjOf, conjPath requires: methodKey,
   //@ methodKeys
   methodKeys[7] = methodKey("ICollection/-conj");
   //@unit installMethods.ICollectionKey effect: installMethods when: isColl requires: methodKey,
@@ -1113,7 +1113,7 @@
   //@unit installMethods.ILookupLookupKey effect: installMethods when: getOf, getPath requires: methodKey,
   //@ methodKeys
   methodKeys[30] = methodKey("ILookup/-lookup");
-  //@unit installMethods.IMapDissocKey effect: installMethods when: dissoc requires: methodKey,
+  //@unit installMethods.IMapDissocKey effect: installMethods when: dissocOf, dissocPath requires: methodKey,
   //@ methodKeys
   methodKeys[31] = methodKey("IMap/-dissoc");
   //@unit installMethods.IMapEntryKey effect: installMethods when: isMapEntry requires: methodKey,
@@ -1182,7 +1182,7 @@
   //@unit installMethods.ISequentialKey effect: installMethods when: isSequential, nthOf, nthPath,
   //@ structuralEqualPair requires: methodKey, methodKeys
   methodKeys[53] = methodKey("ISequential");
-  //@unit installMethods.ISetDisjoinKey effect: installMethods when: disj requires: methodKey,
+  //@unit installMethods.ISetDisjoinKey effect: installMethods when: disjOf, disjPath requires: methodKey,
   //@ methodKeys
   methodKeys[54] = methodKey("ISet/-disjoin");
   //@unit installMethods.ISetKey effect: installMethods when: isSet, structuralEqualPair requires: methodKey,
@@ -1194,7 +1194,7 @@
   //@unit installMethods.IStackPeekKey effect: installMethods when: peekOf, peekPath requires: methodKey,
   //@ methodKeys
   methodKeys[57] = methodKey("IStack/-peek");
-  //@unit installMethods.IStackPopKey effect: installMethods when: pop requires: methodKey,
+  //@unit installMethods.IStackPopKey effect: installMethods when: popOf, popPath requires: methodKey,
   //@ methodKeys
   methodKeys[58] = methodKey("IStack/-pop");
   //@unit installMethods.ISwapSwapKey effect: installMethods when: swapProtocol, swapState requires: methodKey,
@@ -2953,10 +2953,65 @@
     return n === count(other);
   }
 
-  //@unit conj requires: cellOf, cons, emptyList, holdsVector, isCell, isChunkedCons, isLazy,
+  // The updates, `conj`, `assoc`, `dissoc`, `disj` and `pop`, are
+  // upstream's too (light-cljs-1068), as the lookups (light-cljs-1066): a
+  // value with a keyed kind calls its keyed slot, read and called once, at
+  // the fixed arity that has one; every other value, every other arity and a
+  // value whose slot holds no method take the operation's own path
+  // (`conjOf` and the others), upstream's: the items one at a time, nil, a
+  // host value's program method, and for `conj` the cons onto a seq without
+  // `-conj`. The runtime's classes that the old paths answered by
+  // recognising them have slots (the lists' `-conj` and `-pop`, the sorted
+  // set's `-conj`, the sets' `-disjoin`, the vectors' and the queue's
+  // `-pop`). The old paths (`conjPath` and the others) serve the
+  // compile-time runtime and the shared-heap profile (`operationPaths`).
+  // The arity with a slot is a function of its own, so that each stays
+  // under the 100 bytes of bytecode that V8's Maglev inlines
+  // (light-cljs-1033): `conj` 42 and `conj2` 61, `assoc` 51 and `assoc3` 73,
+  // `dissoc` and `disj` 46 and their two-argument functions 63, `pop` 51.
+  //@unit conj requires: conjOf, slotFirst
+  function conj(coll, item) {
+    return arguments.length === 2 ? conj2(coll, item) : conjOf.apply(null, arguments);
+  }
+  function conj2(coll, item) {
+    if (coll != null && slotFirst.on && coll.cljs$lang$kind$$LKEY !== undefined) {
+      const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
+      if (method) return method.call(coll, coll, item);
+    }
+    return conjOf(coll, item);
+  }
+  //@unit conjOf requires: conj, cons, emptyList, isCell, isChunkedCons, isLazy, isView, makeVector,
+  //@ methodKeys, operationPaths, protocolHooks
+  // Upstream's `conj`: none or one argument, each item in turn, nil the
+  // list of the item; a value of a runtime class whose instance slot holds
+  // nil or false takes its class's slot, as the old path answered by the
+  // class; a seq without `-conj` (a cons, a lazy seq, a seq over an array
+  // or a map) is consed onto, as the old path did.
+  function conjOf(coll, item) {
+    const path = operationPaths.conj;
+    if (path !== undefined) return path.apply(null, arguments);
+    const arity = arguments.length;
+    if (arity !== 2) {
+      if (arity === 0) return makeVector([]);
+      let result = coll;
+      for (let i = 1; i < arity; i++) result = conj(result, arguments[i]);
+      return result;
+    }
+    if (coll == null) return cons(item, emptyList, "list");
+    if (coll.cljs$lang$kind$$LKEY < 64) {
+      const method = Object.getPrototypeOf(coll)?.cljs$core$ICollection$_conj$arity$2$LKEY;
+      if (method) return method.call(coll, coll, item);
+    }
+    const own = protocolHooks.builtin?.(coll, methodKeys[7], 2);
+    if (own) return own.call(coll, coll, item);
+    if (isCell(coll) || isChunkedCons(coll) || isView(coll) || isLazy(coll)) return cons(item, coll, "cons");
+    throw new Error("conj not supported on this type");
+  }
+  //@unit conjPath requires: cellOf, cons, emptyList, holdsVector, isCell, isChunkedCons, isLazy,
   //@ isView, kindHooks, makeVector, maps, methodKeys, missing, ownMeta, preserveMeta,
   //@ protocolHooks, queues, setMeta, sets, vectorStore
-  function conj(coll, item) {
+  // `conj`'s own path over the runtime's classes (`operationPaths`).
+  function conjPath(coll, item) {
     // One item onto a vector, where no protocol implementation or public
     // constructor can intervene: the hot path of building one.
     const store = arguments.length === 2 && !protocolHooks.builtin ? vectorStore(coll) : undefined;
@@ -2996,29 +3051,30 @@
     }
     return result;
   }
-  //@unit queueFromArray.conj effect: queueFromArray when: conj, conjSite, treeMapSeqConstructor
-  //@ requires: conj, kindHooks, makeVector, meta, PersistentQueueValue, queueFromArray, queues
+  //@unit queueFromArray.conj effect: queueFromArray when: conj, conjOf, conjPath, conjSite,
+  //@ treeMapSeqConstructor requires: conj, kindHooks, makeVector, meta, PersistentQueueValue,
+  //@ queueFromArray, queues
   kindHooks.conjQueue = (result, item) => {
     const q = result?.slots$LKEY;
     return q ? PersistentQueueValue(meta(result), q.count + 1, q.front != null ? q.front : conj(null, item), q.front != null ? conj(q.rear ?? makeVector([]), item) : makeVector([]), null)
       : queueFromArray([...queues.get(result), item]);
   };
-  //@unit makeVector.conj effect: makeVector, mapEntry when: conj requires: kindHooks, makeVector,
-  //@ vectorConj
+  //@unit makeVector.conj effect: makeVector, mapEntry when: conjPath requires: kindHooks,
+  //@ makeVector, vectorConj
   kindHooks.conjVector = (store, item) => makeVector(null, vectorConj(store, item));
-  //@unit SubvecValue.conj effect: SubvecValue when: conj, conjSite, treeMapSeqConstructor requires: assoc,
-  //@ kindHooks, meta, SubvecValue
+  //@unit SubvecValue.conj effect: SubvecValue when: conj, conjOf, conjPath, conjSite,
+  //@ treeMapSeqConstructor requires: assoc, kindHooks, meta, SubvecValue
   // A vector with slots and a source is a Subvec its public constructor built.
   kindHooks.conjSubvec = (result, item) => {
     const slots = result?.slots$LKEY;
     return SubvecValue(meta(result), assoc(result.v$LKEY, slots.end, item), slots.start, slots.end + 1, null);
   };
-  //@unit makeMap.conj effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: conj
+  //@unit makeMap.conj effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: conjPath
   //@ requires: kindHooks, mapConj
   kindHooks.conjMap = mapConj;
-  //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conj, conjSite,
-  //@ treeMapSeqConstructor requires: assoc, copyEntries, kindHooks, makeSet, meta, missing,
-  //@ PersistentHashSetValue, putMember, sets, treeSetOf
+  //@unit makeSet.conj effect: makeSet, treeSetConstructor when: conjPath, setConjSlot requires: assoc,
+  //@ copyEntries, kindHooks, makeSet, meta, missing, PersistentHashSetValue, putMember, sets,
+  //@ treeSetOf
   // The set `conj` builds, or `missing` where it adds nothing. A hash set's
   // trie copies one path (`putMember`); a sorted set's tree map adds the
   // member with a nil value, as upstream's (light-cljs-1038).
@@ -3046,9 +3102,45 @@
     if (ownMeta(coll) && coll.meta$LKEY !== null) setMeta(built, coll.meta$LKEY);
     return built;
   }
-  //@unit assoc requires: copyEntries, holdsVector, isArrayMap, isHashMap, isTreeMap, kindHooks,
-  //@ maps, methodKeys, missing, protocolHooks, putCollectionEntry, updatedMap, vectorStore
-  function assoc(value, key, item, ...pairs) {
+  //@unit assoc requires: assocOf, slotFirst
+  function assoc(value, key, item) {
+    return arguments.length === 3 ? assoc3(value, key, item) : assocOf.apply(null, arguments);
+  }
+  function assoc3(value, key, item) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IAssociative$_assoc$arity$3$LKEY;
+      if (method) return method.call(value, value, key, item);
+    }
+    return assocOf(value, key, item);
+  }
+  //@unit assocOf requires: ArrayMapCell, assoc, methodKeys, operationPaths, protocolHooks
+  // Upstream's `assoc`: each further key and value in turn (a trailing key
+  // gets nil, as upstream's takes `(second kvs)`), nil an array map of the
+  // key; a value of a runtime class whose instance slot holds nil or false
+  // takes its class's slot, as the old path answered by the class.
+  function assocOf(value, key, item) {
+    const path = operationPaths.assoc;
+    if (path !== undefined) return path.apply(null, arguments);
+    const arity = arguments.length;
+    if (arity > 3) {
+      let result = assoc(value, key, item);
+      for (let i = 3; i < arity; i += 2) result = assoc(result, arguments[i], i + 1 < arity ? arguments[i + 1] : null);
+      return result;
+    }
+    if (value == null) return new ArrayMapCell(1, [key, item]);
+    if (value.cljs$lang$kind$$LKEY < 64) {
+      const method = Object.getPrototypeOf(value)?.cljs$core$IAssociative$_assoc$arity$3$LKEY;
+      if (method) return method.call(value, value, key, item);
+    }
+    const own = protocolHooks.builtin?.(value, methodKeys[1], 3);
+    if (own) return own.call(value, value, key, item);
+    throw new Error("assoc not supported on this type");
+  }
+  //@unit assocPath requires: assoc, copyEntries, holdsVector, isArrayMap, isHashMap, isTreeMap,
+  //@ kindHooks, maps, methodKeys, missing, protocolHooks, putCollectionEntry, updatedMap,
+  //@ vectorStore
+  // `assoc`'s own path over the runtime's classes (`operationPaths`).
+  function assocPath(value, key, item, ...pairs) {
     const method = value == null ? null : protocolHooks.builtin?.(value, methodKeys[1], 3);
     if (method) {
       // A trailing key without its value gets nil, as upstream's `assoc`
@@ -3086,8 +3178,8 @@
     if (!original) throw new Error("assoc not supported on this type");
     return kindHooks.assocVector(value, original, key, item, pairs);
   }
-  //@unit SubvecValue.assoc effect: SubvecValue when: assoc, assocSite requires: assoc, kindHooks,
-  //@ meta, outOfBounds, SubvecValue
+  //@unit SubvecValue.assoc effect: SubvecValue when: assoc, assocOf, assocPath, assocSite requires: assoc,
+  //@ kindHooks, meta, outOfBounds, SubvecValue
   // See `SubvecValue.conj`.
   kindHooks.assocSubvec = (value, key, item, pairs) => {
     const slots = value?.slots$LKEY;
@@ -3095,8 +3187,9 @@
     let result = SubvecValue(meta(value), assoc(value.v$LKEY, slots.start + key, item), slots.start, Math.max(slots.end, slots.start + key + 1), null);
     return pairs.length ? assoc(result, ...pairs) : result;
   };
-  //@unit PersistentArrayMapValue.assoc effect: PersistentArrayMapValue when: assoc, mapAssocEntries
-  //@ requires: assoc, collectionWithMeta, contains, kindHooks, mapFromArray, meta, missing
+  //@unit PersistentArrayMapValue.assoc effect: PersistentArrayMapValue when: assocPath,
+  //@ mapAssocEntries requires: assoc, collectionWithMeta, contains, kindHooks, mapFromArray, meta,
+  //@ missing
   // A map with an `arr` slot is an array map its public constructor built, or
   // one updated from it; it becomes a hash map at its ninth key, or else
   // gives `missing`.
@@ -3105,8 +3198,8 @@
     const normalized = mapFromArray(Array.from({length: mapSlots.cnt * 2}, (_, i) => mapSlots.arr[i]), "hash-map");
     return collectionWithMeta(assoc(normalized, key, item, ...pairs), meta(value));
   };
-  //@unit makeVector.assoc effect: makeVector, mapEntry when: assoc requires: kindHooks, makeVector,
-  //@ outOfBounds, preserveMeta, vectorAssoc, vectorConj
+  //@unit makeVector.assoc effect: makeVector, mapEntry when: assocPath requires: kindHooks,
+  //@ makeVector, outOfBounds, preserveMeta, vectorAssoc, vectorConj
   kindHooks.assocVector = (value, store, key, item, pairs) => {
     const assign = (index, value) => {
       if (typeof index !== "number") throw new Error("Vector key must be a number");
@@ -3608,7 +3701,8 @@
     for (const key of keys) trie = trieDissoc(trie, key);
     return updatedMap(value, trie);
   };
-  //@unit putMember.disj effect: publicHashSet, putMember when: disj requires: kindHooks, trieDissoc
+  //@unit putMember.disj effect: publicHashSet, putMember when: setDisjoin requires: kindHooks,
+  //@ trieDissoc
   // The members a hash set keeps without `keys`, or the same trie where it
   // has none of them.
   kindHooks.disjTrie = (members, keys) => {
@@ -3928,9 +4022,44 @@
     return publicHashSet(null, constantMapFromArray(pairs), null);
   }
 
-  //@unit dissoc requires: dissocEntries, isArrayMap, isHashMap, isTreeMap, kindHooks, maps,
-  //@ methodKeys, protocolHooks
-  function dissoc(value, ...keys) {
+  //@unit dissoc requires: dissocOf, slotFirst
+  function dissoc(value, key) {
+    return arguments.length === 2 ? dissoc2(value, key) : dissocOf.apply(null, arguments);
+  }
+  function dissoc2(value, key) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IMap$_dissoc$arity$2$LKEY;
+      if (method) return method.call(value, value, key);
+    }
+    return dissocOf(value, key);
+  }
+  //@unit dissocOf requires: dissoc, methodKeys, operationPaths, protocolHooks
+  // Upstream's `dissoc`: none or one argument, each key in turn, nil
+  // itself; a value of a runtime class whose instance slot holds nil or
+  // false takes its class's slot, as the old path answered by the class.
+  function dissocOf(value, key) {
+    const path = operationPaths.dissoc;
+    if (path !== undefined) return path.apply(null, arguments);
+    const arity = arguments.length;
+    if (arity !== 2) {
+      if (arity === 0) return null;
+      let result = value;
+      for (let i = 1; i < arity; i++) result = dissoc(result, arguments[i]);
+      return result;
+    }
+    if (value == null) return value;
+    if (value.cljs$lang$kind$$LKEY < 64) {
+      const method = Object.getPrototypeOf(value)?.cljs$core$IMap$_dissoc$arity$2$LKEY;
+      if (method) return method.call(value, value, key);
+    }
+    const own = protocolHooks.builtin?.(value, methodKeys[31], 2);
+    if (own) return own.call(value, value, key);
+    throw new Error("dissoc not supported on this type");
+  }
+  //@unit dissocPath requires: dissoc, dissocEntries, isArrayMap, isHashMap, isTreeMap, kindHooks,
+  //@ maps, methodKeys, protocolHooks
+  // `dissoc`'s own path over the runtime's classes (`operationPaths`).
+  function dissocPath(value, ...keys) {
     if (value != null && protocolHooks.builtin?.(value, methodKeys[31], 2)) return keys.reduce((result, key) => {
       const method = result == null ? null : protocolHooks.builtin?.(result, methodKeys[31], 2);
       return method ? method.call(result, result, key) : dissoc(result, key);
@@ -4122,10 +4251,44 @@
   //@unit hashSet requires: setFromArray
   function hashSet(...items) { return setFromArray(items); }
 
-  //@unit disj requires: collectionEntryIndex, copyEntries, dissoc, hashRoots, kindHooks, makeSet,
-  //@ meta, methodKeys, PersistentHashSetValue, preserveMeta, protocolHooks, removeHashEntry,
-  //@ setKinds, sets, treeSetOf
-  function disj(value, ...keys) {
+  //@unit disj requires: disjOf, slotFirst
+  function disj(value, key) {
+    return arguments.length === 2 ? disj2(value, key) : disjOf.apply(null, arguments);
+  }
+  function disj2(value, key) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ISet$_disjoin$arity$2$LKEY;
+      if (method) return method.call(value, value, key);
+    }
+    return disjOf(value, key);
+  }
+  //@unit disjOf requires: disj, methodKeys, operationPaths, protocolHooks
+  // Upstream's `disj`: none or one argument, each key in turn, nil nil; a
+  // value of a runtime class whose instance slot holds nil or false takes
+  // its class's slot, as the old path answered by the class.
+  function disjOf(value, key) {
+    const path = operationPaths.disj;
+    if (path !== undefined) return path.apply(null, arguments);
+    const arity = arguments.length;
+    if (arity !== 2) {
+      if (arity === 0) return null;
+      let result = value;
+      for (let i = 1; i < arity; i++) result = disj(result, arguments[i]);
+      return result;
+    }
+    if (value == null) return null;
+    if (value.cljs$lang$kind$$LKEY < 64) {
+      const method = Object.getPrototypeOf(value)?.cljs$core$ISet$_disjoin$arity$2$LKEY;
+      if (method) return method.call(value, value, key);
+    }
+    const own = protocolHooks.builtin?.(value, methodKeys[54], 2);
+    if (own) return own.call(value, value, key);
+    throw new Error("disj not supported on this type");
+  }
+  //@unit disjPath requires: dissoc, methodKeys, preserveMeta, protocolHooks, setDisjoin, sets,
+  //@ treeSetOf
+  // `disj`'s own path over the runtime's classes (`operationPaths`).
+  function disjPath(value, ...keys) {
     if (value != null && protocolHooks.builtin?.(value, methodKeys[54], 2)) return keys.reduce((result, key) => protocolHooks.builtin?.(result, methodKeys[54], 2).call(result, result, key), value);
     if (arguments.length === 0) return null;
     if (keys.length === 0) return value;
@@ -4138,6 +4301,13 @@
     }
     const original = sets.get(value);
     if (!original) throw new Error("disj not supported on this type");
+    return setDisjoin(value, original, keys);
+  }
+  //@unit setDisjoin requires: collectionEntryIndex, copyEntries, dissoc, hashRoots, kindHooks,
+  //@ makeSet, meta, PersistentHashSetValue, preserveMeta, removeHashEntry, setKinds
+  // `disj` of `keys` from a hash or array set whose members are `original`:
+  // `disjPath`'s, and a hash set's `-disjoin` (light-cljs-1068).
+  function setDisjoin(value, original, keys) {
     const hashMap = value?.slots$LKEY?.["hash-map"];
     if (hashMap) return PersistentHashSetValue(meta(value), dissoc(hashMap, ...keys), null);
     // A hash set removes each member from its trie in O(log32 n).
@@ -5464,25 +5634,35 @@
     const store = self;
     return store.cnt$LKEY ? vectorNth(store, store.cnt$LKEY - 1, null) : null;
   });
-  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj, conjSite,
-  //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, makeVector, noBranch,
-  //@ PersistentVectorValue, vectorConj
+  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj, conjOf, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, makeVector, PersistentVectorValue,
+  //@ vectorConj
   PersistentVectorValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     const store = self;
-    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     return conjMeta(self, makeVector(null, vectorConj(store, item)));
   });
-  //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc, assocSite requires: builtinSlot,
-  //@ conjMeta, makeVector, noBranch, outOfBounds, PersistentVectorValue, vectorAssoc, vectorConj
+  //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc, assocOf, assocSite
+  //@ requires: builtinSlot, conjMeta, makeVector, outOfBounds, PersistentVectorValue, vectorAssoc,
+  //@ vectorConj
   PersistentVectorValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
     let store = self;
-    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
     if (typeof key !== "number") throw new Error("Vector key must be a number");
     if (key >= 0 && key < store.cnt$LKEY) store = vectorAssoc(store, key, item);
     else if (key === store.cnt$LKEY) store = vectorConj(store, item);
     else outOfBounds();
     return conjMeta(self, makeVector(null, store));
   });
+  // A vector's and a map entry's `-pop` (light-cljs-1068), upstream's: the
+  // vector of all but its last item with its metadata, as `pop` gave it
+  // before.
+  //@unit vectorPopSlot requires: builtinSlot, conjMeta, makeVector, vectorPop
+  const vectorPopSlot = builtinSlot(function (self) {
+    if (!self.cnt$LKEY) throw new Error("Can't pop empty vector");
+    return conjMeta(self, makeVector(null, vectorPop(self)));
+  });
+  //@unit PersistentVectorValue.popSlot effect: PersistentVectorValue when: pop, popOf requires: PersistentVectorValue,
+  //@ vectorPopSlot
+  PersistentVectorValue.prototype.cljs$core$IStack$_pop$arity$1$LKEY = vectorPopSlot;
   //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: arrayMapContains, get,
   //@ getOf, getSite, getSite3 requires: builtinSlot, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
@@ -5519,18 +5699,27 @@
   SubvecValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
     return self.cnt$LKEY ? vectorNth(self, self.cnt$LKEY - 1, null) : null;
   });
-  //@unit SubvecValue.conjSlot effect: SubvecValue when: conj, conjSite, treeMapSeqConstructor
-  //@ requires: builtinSlot, conjMeta, kindHooks, makeVector, noBranch, preserveMeta, SubvecValue,
-  //@ vectorConj
+  //@unit SubvecValue.conjSlot effect: SubvecValue when: conj, conjOf, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, kindHooks, makeVector, preserveMeta,
+  //@ SubvecValue, vectorConj
   SubvecValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     if (self.slots$LKEY) return preserveMeta(self, kindHooks.conjSubvec(self, item));
     return conjMeta(self, makeVector(null, vectorConj(self, item)));
   });
-  //@unit SubvecValue.assocSlot effect: SubvecValue when: assoc, assocSite requires: builtinSlot,
-  //@ conjMeta, kindHooks, makeVector, noBranch, outOfBounds, SubvecValue, vectorAssoc, vectorConj
+  //@unit SubvecValue.popSlot effect: SubvecValue when: pop, popOf requires: builtinSlot, conjMeta,
+  //@ makeVector, meta, SubvecValue, vectorPop
+  // Its `-pop` (light-cljs-1068), upstream's Subvec's: a public
+  // constructor's subvector one shorter over the same vector, else the
+  // vector of all but its last item, as `pop` gave it before.
+  SubvecValue.prototype.cljs$core$IStack$_pop$arity$1$LKEY = builtinSlot(function (self) {
+    if (!self.cnt$LKEY) throw new Error("Can't pop empty vector");
+    const slots = self.slots$LKEY;
+    if (slots && self.v$LKEY !== undefined) return SubvecValue(meta(self), self.v$LKEY, slots.start, slots.end - 1, null);
+    return conjMeta(self, makeVector(null, vectorPop(self)));
+  });
+  //@unit SubvecValue.assocSlot effect: SubvecValue when: assoc, assocOf, assocSite requires: builtinSlot,
+  //@ conjMeta, kindHooks, makeVector, outOfBounds, SubvecValue, vectorAssoc, vectorConj
   SubvecValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     if (self.slots$LKEY) return kindHooks.assocSubvec(self, key, item, []);
     if (typeof key !== "number") throw new Error("Vector key must be a number");
     let store = self;
@@ -5591,16 +5780,17 @@
     const tail = self.tail$LKEY;
     return tail[1];
   });
-  //@unit MapEntryType.conjSlot effect: MapEntryType when: conj, conjSite, treeMapSeqConstructor
-  //@ requires: builtinSlot, conjMeta, makeVector, MapEntryType, noBranch, vectorConj
+  //@unit MapEntryType.conjSlot effect: MapEntryType when: conj, conjOf, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, makeVector, MapEntryType, vectorConj
   MapEntryType.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
-    if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     return conjMeta(self, makeVector(null, vectorConj(self, item)));
   });
-  //@unit MapEntryType.assocSlot effect: MapEntryType when: assoc, assocSite requires: builtinSlot,
-  //@ conjMeta, makeVector, MapEntryType, noBranch, outOfBounds, vectorAssoc, vectorConj
+  //@unit MapEntryType.popSlot effect: MapEntryType when: pop, popOf requires: MapEntryType,
+  //@ vectorPopSlot
+  MapEntryType.prototype.cljs$core$IStack$_pop$arity$1$LKEY = vectorPopSlot;
+  //@unit MapEntryType.assocSlot effect: MapEntryType when: assoc, assocOf, assocSite requires: builtinSlot,
+  //@ conjMeta, makeVector, MapEntryType, outOfBounds, vectorAssoc, vectorConj
   MapEntryType.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
-    if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     if (typeof key !== "number") throw new Error("Vector key must be a number");
     let store = self;
     if (key >= 0 && key < 2) store = vectorAssoc(store, key, item);
@@ -5771,35 +5961,6 @@
   // operation as before. Each wrapper is the operation's outermost, so it follows the
   // operation's other wrappers here. Program types keep their path until
   // their recognition moves to the keyed kind (light-cljs-1013).
-  //@unit conj.slots effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue, SubvecValue,
-  //@ treeMapConstructor when: conj requires: conj, noBranch, slotFirst
-  conj = (operation => Object.defineProperty(function (coll, item) {
-    if (slotFirst.on && coll != null && coll.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
-      const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
-      if (method) { const result = method.call(coll, coll, item); if (result !== noBranch) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(conj);
-  //@unit assoc.slots effect: MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentVectorValue, SubvecValue, treeMapConstructor when: assoc requires: assoc, noBranch,
-  //@ slotFirst
-  assoc = (operation => Object.defineProperty(function (value, key, item) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
-      const method = value.cljs$core$IAssociative$_assoc$arity$3$LKEY;
-      if (method) { const result = method.call(value, value, key, item); if (result !== noBranch) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(assoc);
-  //@unit dissoc.slots effect: PersistentArrayMapValue, PersistentHashMapValue, treeMapConstructor
-  //@ when: dissoc requires: dissoc, noBranch, slotFirst
-  dissoc = (operation => Object.defineProperty(function (value, key) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 2) {
-      const method = value.cljs$core$IMap$_dissoc$arity$2$LKEY;
-      if (method) { const result = method.call(value, value, key); if (result !== noBranch) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(dissoc);
   //@unit reduce.slots effect: IndexedSeqValue, PersistentArrayMapValue, PersistentHashMapValue,
   //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch,
   //@ reduce, slotFirst
@@ -5891,7 +6052,7 @@
     return cnt;
   }
   //@unit mapAssocEntries requires: arrayMapEntries, copyEntries, isArrayMap, kindHooks, maps,
-  //@ missing, noBranch, putCollectionEntry, updatedMap
+  //@ missing, putCollectionEntry, updatedMap
   // `assoc` of a sorted map, or of an array map that a public constructor
   // built or that a ninth key promotes, as `assoc` builds it: a public
   // constructor's array map of eight or more keys promoted to a hash map
@@ -5899,7 +6060,6 @@
   // its pairs, `arrayMapEntries`), `putCollectionEntry` and `updatedMap`.
   function mapAssocEntries(self, key, item) {
     const entries = isArrayMap(self) ? arrayMapEntries(self.arr$LKEY) : maps.get(self);
-    if (entries === undefined) return noBranch;
     const slots = self.slots$LKEY;
     if (slots?.arr && slots.cnt >= 8) {
       const promoted = kindHooks.assocArrayMapSlots(self, slots, key, item, []);
@@ -5909,13 +6069,12 @@
     putCollectionEntry(self, updated, key, item);
     return updatedMap(self, updated);
   }
-  //@unit arrayMapAssoc requires: arrayIndex, ArrayMapCell, mapAssocEntries, noBranch, preserveMeta
+  //@unit arrayMapAssoc requires: arrayIndex, ArrayMapCell, mapAssocEntries, preserveMeta
   // `assoc` of an array map that stays one (a key it has, or fewer than
   // eight): one copy of its keys and values, the key it has kept, as
   // `mapAssocEntries` would build it; a ninth key promotes it there.
   function arrayMapAssoc(self, key, item) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     if (self.slots$LKEY) return mapAssocEntries(self, key, item);
     const index = arrayIndex(arr, key), n = arr.length;
     if (index < 0 && n >= 16) return mapAssocEntries(self, key, item);
@@ -5923,14 +6082,13 @@
     if (index >= 0) copy[index + 1] = item; else copy.push(key, item);
     return preserveMeta(self, new ArrayMapCell(copy.length >> 1, copy));
   }
-  //@unit hashMapAssoc requires: hash, HashMapCell, hashNodeAssoc, noBranch, preserveMeta
+  //@unit hashMapAssoc requires: hash, HashMapCell, hashNodeAssoc, preserveMeta
   // `assoc` of a hash map: a hash map of its fields with the new entry along
   // one path of its trie, as `putHashEntry` and `updatedMap` would build it;
   // a public constructor's map too, whose count is its `cnt`
   // (light-cljs-1036).
   function hashMapAssoc(self, key, item) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     let root = self.root$LKEY, nil = self.nil$LKEY, n = cnt;
     if (key == null) { n += !nil; nil = {key: nil ? nil.key : key, value: item, hash: 0}; }
     else {
@@ -5941,7 +6099,7 @@
     return preserveMeta(self, new HashMapCell(n, root, nil, null));
   }
   //@unit arrayMapDissoc requires: arrayIndex, ArrayMapCell, arrayMapEntries, dissocEntries,
-  //@ equalPair, keywordOf, keywordProgramEquiv, noBranch, preserveMeta
+  //@ equalPair, keywordOf, keywordProgramEquiv, preserveMeta
   // `dissoc` of one key from an array map, as `dissoc` removes it: the
   // pairs but those whose key equals it, as upstream's copy loop compares
   // each key with `=`, where a positional array keeps room for the removed
@@ -5951,7 +6109,6 @@
   // key (light-cljs-1034).
   function arrayMapDissoc(self, key) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     if (self.slots$LKEY) return dissocEntries(self, arrayMapEntries(arr), [key]);
     const n = arr.length;
     let index = arrayIndex(arr, key), retained;
@@ -5970,14 +6127,12 @@
     }
     return preserveMeta(self, new ArrayMapCell(retained.length >> 1, retained));
   }
-  //@unit hashMapDissoc requires: hash, HashMapCell, hashNodeFind, hashNodeRemove, noBranch,
-  //@ preserveMeta
+  //@unit hashMapDissoc requires: hash, HashMapCell, hashNodeFind, hashNodeRemove, preserveMeta
   // `dissoc` of one key from a hash map: a hash map of its fields without
   // the key, as `trieDissoc` removes it; a public constructor's map too,
   // whose count is its `cnt` (light-cljs-1036).
   function hashMapDissoc(self, key) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     const root = self.root$LKEY, nil = self.nil$LKEY;
     const entry = key == null ? nil : root ? hashNodeFind(root, 0, hash(key), key) : null;
     if (!entry) return preserveMeta(self, new HashMapCell(cnt, root, nil, self.lit$LKEY));
@@ -5991,10 +6146,10 @@
   function mapContains(self, key) {
     return get(self, key, missing) !== missing;
   }
-  //@unit mapConjSlot requires: mapConj, mapOf, noBranch, preserveMeta
+  //@unit mapConjSlot requires: mapConj, preserveMeta
   // `conj` of a map of the class layout, as `conj.maps` builds it.
   function mapConjSlot(self, item) {
-    return mapOf(self) === undefined ? noBranch : preserveMeta(self, mapConj(self, item));
+    return preserveMeta(self, mapConj(self, item));
   }
   //@unit arrayMapGet requires: arrayMapLookup, builtinSlot
   // An array map's three-argument `-lookup` slot, which `contains?` of an
@@ -6040,30 +6195,30 @@
   //@unit treeMapConstructor.countSlot effect: treeMapConstructor when: count, countOf, countSite
   //@ requires: builtinSlot, treeMapConstructor, treeMapCount
   treeMapConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return treeMapCount(self); });
-  //@unit PersistentArrayMapValue.assocSlot effect: PersistentArrayMapValue when: assoc, assocSite
-  //@ requires: arrayMapAssoc, builtinSlot, kindHooks, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.assocSlot effect: PersistentArrayMapValue when: assoc, assocOf,
+  //@ assocSite requires: arrayMapAssoc, builtinSlot, kindHooks, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return arrayMapAssoc(self, key, item); });
   // The operation's own path of an array map (`assoc`, light-cljs-1036).
   kindHooks.assocArrayMap = arrayMapAssoc;
-  //@unit PersistentHashMapValue.assocSlot effect: PersistentHashMapValue when: assoc, assocSite
-  //@ requires: builtinSlot, hashMapAssoc, kindHooks, PersistentHashMapValue
+  //@unit PersistentHashMapValue.assocSlot effect: PersistentHashMapValue when: assoc, assocOf,
+  //@ assocSite requires: builtinSlot, hashMapAssoc, kindHooks, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return hashMapAssoc(self, key, item); });
   kindHooks.assocHashMap = hashMapAssoc;
-  //@unit treeMapConstructor.assocSlot effect: treeMapConstructor when: assoc, assocSite requires: builtinSlot,
-  //@ kindHooks, treeMapAssoc, treeMapConstructor
+  //@unit treeMapConstructor.assocSlot effect: treeMapConstructor when: assoc, assocOf, assocSite
+  //@ requires: builtinSlot, kindHooks, treeMapAssoc, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return treeMapAssoc(self, key, item); });
   kindHooks.assocTreeMap = treeMapAssoc;
-  //@unit PersistentArrayMapValue.dissocSlot effect: PersistentArrayMapValue when: dissoc,
+  //@unit PersistentArrayMapValue.dissocSlot effect: PersistentArrayMapValue when: dissoc, dissocOf,
   //@ dissocSite requires: arrayMapDissoc, builtinSlot, kindHooks, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return arrayMapDissoc(self, key); });
   // The operation's own path of an array map (`dissoc`, light-cljs-1036).
   kindHooks.dissocArrayMap = arrayMapDissoc;
-  //@unit PersistentHashMapValue.dissocSlot effect: PersistentHashMapValue when: dissoc, dissocSite
-  //@ requires: builtinSlot, hashMapDissoc, kindHooks, PersistentHashMapValue
+  //@unit PersistentHashMapValue.dissocSlot effect: PersistentHashMapValue when: dissoc, dissocOf,
+  //@ dissocSite requires: builtinSlot, hashMapDissoc, kindHooks, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return hashMapDissoc(self, key); });
   kindHooks.dissocHashMap = hashMapDissoc;
-  //@unit treeMapConstructor.dissocSlot effect: treeMapConstructor when: dissoc, dissocSite
-  //@ requires: builtinSlot, kindHooks, treeMapConstructor, treeMapDissoc
+  //@unit treeMapConstructor.dissocSlot effect: treeMapConstructor when: dissoc, dissocOf,
+  //@ dissocSite requires: builtinSlot, kindHooks, treeMapConstructor, treeMapDissoc
   treeMapConstructor.prototype.cljs$core$IMap$_dissoc$arity$2$LKEY = builtinSlot(function (self, key) { return treeMapDissoc(self, key); });
   kindHooks.dissocTreeMap = treeMapDissoc;
   //@unit PersistentArrayMapValue.containsSlot effect: PersistentArrayMapValue when: contains,
@@ -6201,13 +6356,34 @@
   //@ getOf, getSite, getSite3 requires: builtinSlot, treeSetConstructor, treeSetMember
   treeSetConstructor.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return treeSetMember(self, key, null); });
   treeSetConstructor.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return treeSetMember(self, key, notFound); });
-  //@unit PersistentHashSetValue.conjSlot effect: PersistentHashSetValue when: conj, conjSite,
-  //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, kindHooks, missing, noBranch,
-  //@ PersistentHashSetValue
-  PersistentHashSetValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
-    if (self.entries$LKEY === undefined) return noBranch;
+  // A set's `-conj`, the sorted set's too (light-cljs-1068): itself where
+  // it holds the item, else the set with it and its metadata, as `conj`
+  // gave them before.
+  //@unit setConjSlot requires: builtinSlot, conjMeta, kindHooks, missing
+  const setConjSlot = builtinSlot(function (self, item) {
     const built = kindHooks.conjSet(self, self, item);
     return built === missing ? self : conjMeta(self, built);
+  });
+  //@unit PersistentHashSetValue.conjSlot effect: PersistentHashSetValue when: conj, conjOf,
+  //@ conjSite, treeMapSeqConstructor requires: PersistentHashSetValue, setConjSlot
+  PersistentHashSetValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = setConjSlot;
+  //@unit treeSetConstructor.conjSlot effect: treeSetConstructor when: conj, conjOf, conjSite,
+  //@ treeMapSeqConstructor requires: setConjSlot, treeSetConstructor
+  treeSetConstructor.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = setConjSlot;
+  // A set's `-disjoin` (light-cljs-1068), upstream's: a hash set's removes
+  // the key from its members (`setDisjoin`), a sorted set's from its tree
+  // map, each itself where it does not hold the key, as `disj` gave them
+  // before.
+  //@unit PersistentHashSetValue.disjoinSlot effect: PersistentHashSetValue when: disj, disjOf
+  //@ requires: builtinSlot, PersistentHashSetValue, setDisjoin
+  PersistentHashSetValue.prototype.cljs$core$ISet$_disjoin$arity$2$LKEY = builtinSlot(function (self, key) {
+    return setDisjoin(self, self.entries$LKEY, [key]);
+  });
+  //@unit treeSetConstructor.disjoinSlot effect: treeSetConstructor when: disj, disjOf requires: builtinSlot,
+  //@ conjMeta, dissoc, treeSetConstructor
+  treeSetConstructor.prototype.cljs$core$ISet$_disjoin$arity$2$LKEY = builtinSlot(function (self, key) {
+    const map = self.treeMap$LKEY, updated = dissoc(map, key);
+    return updated === map ? self : conjMeta(self, new self.cljs$lang$cell$$LKEY(updated));
   });
   //@unit setLookup requires: kindHooks
   // `get` of a hash or array set: its members' trie, or the entry its
@@ -6256,19 +6432,32 @@
     const q = self.slots$LKEY;
     return first(q !== undefined ? q.front : self);
   });
-  //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjSite,
-  //@ treeMapSeqConstructor requires: builtinSlot, kindHooks, noBranch, PersistentQueueValue,
-  //@ preserveMeta
+  //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjOf, conjSite,
+  //@ treeMapSeqConstructor requires: builtinSlot, kindHooks, PersistentQueueValue, preserveMeta
   PersistentQueueValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
-    return self.arr$LKEY === undefined ? noBranch : preserveMeta(self, kindHooks.conjQueue(self, item));
+    return preserveMeta(self, kindHooks.conjQueue(self, item));
   });
-  //@unit PersistentArrayMapValue.conjSlot effect: PersistentArrayMapValue when: conj, conjSite,
-  //@ treeMapSeqConstructor requires: builtinSlot, mapConjSlot, PersistentArrayMapValue
+  //@unit PersistentQueueValue.popSlot effect: PersistentQueueValue when: pop, popOf requires: builtinSlot,
+  //@ meta, next, PersistentQueueValue, preserveMeta, queueFromArray, seq, vector
+  // Its `-pop` (light-cljs-1068), upstream's PersistentQueue's: a public
+  // constructor's queue without its front's first, else the queue of all
+  // but its first item, as `pop` gave it before.
+  PersistentQueueValue.prototype.cljs$core$IStack$_pop$arity$1$LKEY = builtinSlot(function (self) {
+    const q = self.slots$LKEY;
+    if (q) {
+      if (q.front == null) return self;
+      const front = next(q.front);
+      return PersistentQueueValue(meta(self), q.count - 1, front ?? seq(q.rear), front == null ? vector() : q.rear, null);
+    }
+    return preserveMeta(self, queueFromArray(self.arr$LKEY.slice(1)));
+  });
+  //@unit PersistentArrayMapValue.conjSlot effect: PersistentArrayMapValue when: conj, conjOf,
+  //@ conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
-  //@unit PersistentHashMapValue.conjSlot effect: PersistentHashMapValue when: conj, conjSite,
-  //@ treeMapSeqConstructor requires: builtinSlot, mapConjSlot, PersistentHashMapValue
+  //@unit PersistentHashMapValue.conjSlot effect: PersistentHashMapValue when: conj, conjOf,
+  //@ conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
-  //@unit treeMapConstructor.conjSlot effect: treeMapConstructor when: conj, conjSite,
+  //@unit treeMapConstructor.conjSlot effect: treeMapConstructor when: conj, conjOf, conjSite,
   //@ treeMapSeqConstructor requires: builtinSlot, mapConjSlot, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
 
@@ -6733,6 +6922,28 @@
   //@unit EmptyListValue.peekSlot effect: EmptyListValue when: peek, peekOf, peekSite requires: EmptyListValue,
   //@ listPeekSlot
   EmptyListValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = listPeekSlot;
+  // A list's `-conj` and `-pop` (light-cljs-1068), upstream's List's and
+  // EmptyList's: the list of the item onto it, with its metadata, and its
+  // rest, which an empty list's count refuses, as `conj` and `pop` gave
+  // them before.
+  //@unit listConjSlot requires: builtinSlot, conjMeta, cons
+  const listConjSlot = builtinSlot(function (self, item) { return conjMeta(self, cons(item, self, "list")); });
+  //@unit ListValue.conjSlot effect: ListValue when: conj, conjOf, conjSite, treeMapSeqConstructor
+  //@ requires: listConjSlot, ListValue
+  ListValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = listConjSlot;
+  //@unit EmptyListValue.conjSlot effect: EmptyListValue when: conj, conjOf, conjSite,
+  //@ treeMapSeqConstructor requires: EmptyListValue, listConjSlot
+  EmptyListValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = listConjSlot;
+  //@unit listPopSlot requires: builtinSlot, count, rest
+  const listPopSlot = builtinSlot(function (self) {
+    if (!count(self)) throw new Error("Can't pop empty list");
+    return rest(self);
+  });
+  //@unit ListValue.popSlot effect: ListValue when: pop, popOf requires: listPopSlot, ListValue
+  ListValue.prototype.cljs$core$IStack$_pop$arity$1$LKEY = listPopSlot;
+  //@unit EmptyListValue.popSlot effect: EmptyListValue when: pop, popOf requires: EmptyListValue,
+  //@ listPopSlot
+  EmptyListValue.prototype.cljs$core$IStack$_pop$arity$1$LKEY = listPopSlot;
   //@unit IntegerRangeValue.countSlot effect: IntegerRangeValue when: count, countOf, countSite
   //@ requires: builtinSlot, IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
@@ -6909,16 +7120,15 @@
   // where only the runtime's classes, the program's types and `reify`
   // values can hold a core protocol's keyed slot, all of them values with a
   // keyed kind (`ProgramFacts::core_slots_runtime_only`). Each is that
-  // operation's slot-first wrapper for its arity: the receiver's keyed slot
-  // where it holds a method, else, or where the slot answers `noBranch` (a
-  // value made by reflection), the operation through its wrappers, which
-  // keeps the operation's order for nil, strings, arrays and host tables.
-  // With no kind read (which cost 1.3 ns of `count-small`'s 2), no
-  // `arguments` and no `.call`, each is 47 to 75 bytes of bytecode, which
-  // V8 inlines into its call site (the wrappers' 100, light-cljs-1033);
-  // `noBranch` and the empty list are parameters, read with no check for an
-  // uninitialized `const`. `seqSite` sends the empty list to the operation,
-  // as `seq.slots` does.
+  // operation's slot-first call for its arity: the receiver's keyed slot
+  // where it holds a method, else the operation, which keeps its order for
+  // nil, strings, arrays and host tables. With no kind read (which cost
+  // 1.3 ns of `count-small`'s 2), no `arguments` and no `.call`, each is 47
+  // to 75 bytes of bytecode, which V8 inlines into its call site (the
+  // wrappers' 100, light-cljs-1033); the empty list is a parameter, read
+  // with no check for an uninitialized `const`. `seqSite` sends the empty
+  // list to the operation, as `seq` does. No slot answers `noBranch` since
+  // light-cljs-1066 and light-cljs-1068.
   //@unit countSite requires: count
   const countSite = value => value != null && value.cljs$core$ICounted$_count$arity$1$LKEY
     ? value.cljs$core$ICounted$_count$arity$1$LKEY(value) : count(value);
@@ -6949,25 +7159,15 @@
   //@unit peekSite requires: peek
   const peekSite = value => value != null && value.cljs$core$IStack$_peek$arity$1$LKEY
     ? value.cljs$core$IStack$_peek$arity$1$LKEY(value) : peek(value);
-  //@unit conjSite requires: conj, noBranch
-  const conjSite = (none => (coll, item) => {
-    let result;
-    return coll != null && coll.cljs$core$ICollection$_conj$arity$2$LKEY
-      && (result = coll.cljs$core$ICollection$_conj$arity$2$LKEY(coll, item)) !== none ? result : conj(coll, item);
-  })(noBranch);
-  //@unit assocSite requires: assoc, noBranch
-  const assocSite = (none => (value, key, item) => {
-    let result;
-    return value != null && value.cljs$core$IAssociative$_assoc$arity$3$LKEY
-      && (result = value.cljs$core$IAssociative$_assoc$arity$3$LKEY(value, key, item)) !== none ? result
-      : assoc(value, key, item);
-  })(noBranch);
-  //@unit dissocSite requires: dissoc, noBranch
-  const dissocSite = (none => (value, key) => {
-    let result;
-    return value != null && value.cljs$core$IMap$_dissoc$arity$2$LKEY
-      && (result = value.cljs$core$IMap$_dissoc$arity$2$LKEY(value, key)) !== none ? result : dissoc(value, key);
-  })(noBranch);
+  //@unit conjSite requires: conj
+  const conjSite = (coll, item) => coll != null && coll.cljs$core$ICollection$_conj$arity$2$LKEY
+    ? coll.cljs$core$ICollection$_conj$arity$2$LKEY(coll, item) : conj(coll, item);
+  //@unit assocSite requires: assoc
+  const assocSite = (value, key, item) => value != null && value.cljs$core$IAssociative$_assoc$arity$3$LKEY
+    ? value.cljs$core$IAssociative$_assoc$arity$3$LKEY(value, key, item) : assoc(value, key, item);
+  //@unit dissocSite requires: dissoc
+  const dissocSite = (value, key) => value != null && value.cljs$core$IMap$_dissoc$arity$2$LKEY
+    ? value.cljs$core$IMap$_dissoc$arity$2$LKEY(value, key) : dissoc(value, key);
   //@unit containsSite requires: contains
   const containsSite = (value, key) => value != null && value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY
     ? value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY(value, key) : contains(value, key);
@@ -8471,10 +8671,34 @@
     if (queues.has(value) || cellOf(value)?.cell$LKEY === "list") return first(value);
     throw new Error("No protocol method IStack.-peek defined for this value");
   }
-  //@unit pop requires: cellOf, count, holdsVector, makeVector, meta, methodKeys, next,
+  //@unit pop requires: popOf, slotFirst
+  function pop(value) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IStack$_pop$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    return popOf(value);
+  }
+  //@unit popOf requires: methodKeys, operationPaths, protocolHooks
+  // Upstream's `pop`: nil, else the value's `-pop`; a value of a runtime
+  // class whose instance slot holds nil or false takes its class's slot.
+  function popOf(value) {
+    const path = operationPaths.pop;
+    if (path !== undefined) return path(value);
+    if (value == null) return null;
+    if (value.cljs$lang$kind$$LKEY < 64) {
+      const method = Object.getPrototypeOf(value)?.cljs$core$IStack$_pop$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    const own = protocolHooks.builtin?.(value, methodKeys[58], 1);
+    if (own) return own.call(value, value);
+    throw new Error("No protocol method IStack.-pop defined for this value");
+  }
+  //@unit popPath requires: cellOf, count, holdsVector, makeVector, meta, methodKeys, next,
   //@ PersistentQueueValue, preserveMeta, protocolHooks, queueFromArray, queues, rest, seq,
   //@ SubvecValue, vector, vectorPop, vectorStore
-  function pop(value) {
+  // `pop`'s own path over the runtime's classes (`operationPaths`).
+  function popPath(value) {
     const method = value == null ? null : protocolHooks.builtin?.(value, methodKeys[58], 1);
     if (method) return method.call(value, value);
     if (value == null) return null;
@@ -8788,23 +9012,20 @@
       ? new TreeNodeCell(app.tail$LKEY, new TreeNodeCell(left.tail$LKEY, left.left$LKEY, app.left$LKEY, false), new TreeNodeCell(right.tail$LKEY, app.right$LKEY, right.right$LKEY, false), true)
       : treeBalanceLeftDel(left.tail$LKEY, left.left$LKEY, new TreeNodeCell(right.tail$LKEY, app, right.right$LKEY, false));
   }
-  //@unit treeMapAssoc requires: noBranch, ownTree, preserveMeta, treeBlacken, TreeMapCell, treePut
+  //@unit treeMapAssoc requires: ownTree, preserveMeta, treeBlacken, TreeMapCell, treePut
   // `assoc` of a sorted map, upstream's: the map itself where it holds the
   // key with an equal value, else a map of the new tree, one more in its
   // count (a public constructor's too) where the key is new.
   function treeMapAssoc(self, key, item) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     const tree = ownTree(self), comp = self.comp$LKEY, state = {added: false}, result = treePut(comp, tree, key, item, state);
     if (result === tree) return self;
     return preserveMeta(self, state.added ? new TreeMapCell(comp, treeBlacken(result), cnt + 1) : new TreeMapCell(comp, result, cnt));
   }
-  //@unit treeMapDissoc requires: noBranch, ownTree, preserveMeta, treeBlacken, TreeMapCell,
-  //@ treeRemove
+  //@unit treeMapDissoc requires: ownTree, preserveMeta, treeBlacken, TreeMapCell, treeRemove
   // `dissoc` of a sorted map, upstream's: the map itself without the key.
   function treeMapDissoc(self, key) {
     const cnt = self.cnt$LKEY;
-    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
     const found = [null], comp = self.comp$LKEY, result = treeRemove(comp, ownTree(self), key, found);
     if (found[0] === null) return self;
     return preserveMeta(self, result === null ? new TreeMapCell(comp, null, 0) : new TreeMapCell(comp, treeBlacken(result), cnt - 1));
@@ -8907,7 +9128,8 @@
   //@unit TreeSetCell.lookup effect: TreeSetCell when: lookup requires: kindHooks, treeSetMember
   kindHooks.treeSetLookup = treeSetMember;
   //@unit treeMapSeqConstructor requires: conj, constructorSlots, count, emptyList, first, ListCell,
-  //@ next, ownMeta, protocolHooks, slotFirst, treeLeft, TreeMapStackCell, treeRight, truth
+  //@ listConjSlot, next, ownMeta, protocolHooks, slotFirst, treeLeft, TreeMapStackCell, treeRight,
+  //@ truth
   // The public constructor; and the seqs a sorted map builds (light-cljs-1035),
   // of its own, which build their cells and their stacks' lists here.
   function treeMapSeqConstructor(metadata, stack, ascending, suppliedCount, cachedHash) {
@@ -8920,12 +9142,13 @@
   // `peek`, `first`, `next` and `conj`, as upstream's.
   const isListCell = stack => !protocolHooks.extend && stack != null && stack.cljs$lang$kind$$LKEY === 12 && stack.count$LKEY >= 1;
   // Where a program can extend lists, a list stack to which no extension
-  // gave an `-conj` or `-meta` and which holds no metadata: `conj` onto it
+  // gave an `-conj` (its own is `listConjSlot`, light-cljs-1068) or `-meta`
+  // and which holds no metadata: `conj` onto it
   // builds a list of the count `count` gives, as `conj` would after its
   // lookups find no method (light-cljs-1064). A compiler session demanding
   // declarations takes `conj`.
   const unextendedListStack = stack => slotFirst.on && stack.cljs$lang$kind$$LKEY === 12 && stack.count$LKEY >= 1
-    && stack.cljs$core$ICollection$_conj$arity$2$LKEY === undefined && stack.cljs$core$IMeta$_meta$arity$1$LKEY === undefined && !ownMeta(stack);
+    && (stack.cljs$core$ICollection$_conj$arity$2$LKEY ?? listConjSlot) === listConjSlot && stack.cljs$core$IMeta$_meta$arity$1$LKEY === undefined && !ownMeta(stack);
   // Upstream's `(conj stack node)` of a sorted map seq's stack: a list cell
   // onto nil or a list, else `conj`.
   const treeStackPush = (stack, node) => stack == null ? new ListCell(node, emptyList, 1) : isListCell(stack) ? new ListCell(node, stack, stack.count$LKEY + 1)
@@ -9120,9 +9343,9 @@
   //@unit demandProtocol
   // No-ops until setDeclarationDemand installs a compiler session's demand.
   let demandProtocol = () => {}, demandMethod = () => {}, demandMulti = () => {};
-  //@unit setDeclarationDemand compile-time requires: containsPath, countPath, demandMethod,
-  //@ demandMulti, demandProtocol, firstPath, getPath, nextPath, nthPath, operationPaths, peekPath,
-  //@ print, restPath, seqPath, slotFirst, typeNames
+  //@unit setDeclarationDemand compile-time requires: assocPath, conjPath, containsPath, countPath,
+  //@ demandMethod, demandMulti, demandProtocol, disjPath, dissocPath, firstPath, getPath, nextPath,
+  //@ nthPath, operationPaths, peekPath, popPath, print, restPath, seqPath, slotFirst, typeNames
   function setDeclarationDemand(demand) {
     // A session that demands declarations reads no slot before its demand
     // (`slotFirst`), and takes the operations' own paths, whose lookups
@@ -9131,6 +9354,7 @@
     if (operationPaths.seq === undefined) {
       operationPaths.seq = seqPath; operationPaths.first = firstPath; operationPaths.rest = restPath; operationPaths.next = nextPath;
       operationPaths.count = countPath; operationPaths.nth = nthPath; operationPaths.get = getPath; operationPaths.contains = containsPath; operationPaths.peek = peekPath;
+      operationPaths.conj = conjPath; operationPaths.assoc = assocPath; operationPaths.dissoc = dissocPath; operationPaths.disj = disjPath; operationPaths.pop = popPath;
     }
     const methodProtocols = new Map();
     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
@@ -9148,15 +9372,16 @@
   //@unit slotWrites requires: protocolSentinel, runtimeKind
   // A program that writes a core protocol method's member by name
   // (`ProgramFacts::core_method_write`, the root an `Advanced` slice keeps
-  // for it) can set a lookup's slot to nil, false or undefined on a runtime
-  // class's prototype, or on its value over a method `extend-type` gave the
-  // class, which the slot-first calls then pass over: its effects wrap the
-  // lookups' upstream-shaped paths (`countOf` and the others) so that a value
-  // of a runtime class, its class's store holding it (`runtimeKind`) or its
-  // class declaring the lookup's protocol by its mask bit or marker,
-  // takes the lookup's own path (`countPath` and the others), which answers
-  // it by its class, as before light-cljs-1066. A value made by reflection
-  // from a prototype whose class does not declare the protocol takes the
+  // for it) can set a lookup's or an update's slot to nil, false or
+  // undefined on a runtime class's prototype, or on its value over a method
+  // `extend-type` gave the class, which the slot-first calls then pass over:
+  // its effects wrap the upstream-shaped paths (`countOf`, `conjOf` and the
+  // others) so that a value of a runtime class, its class's store holding it
+  // (`runtimeKind`) or its class declaring the operation's protocol by its
+  // mask bit or marker, takes the operation's own path (`countPath`,
+  // `conjPath` and the others), which answers it by its class, as before
+  // light-cljs-1066 and light-cljs-1068. A value made by reflection from a
+  // prototype whose class does not declare the protocol takes the
   // upstream-shaped path at every level.
   const slotWrites = (value, key) => value?.cljs$lang$kind$$LKEY < 64 && (runtimeKind(value) !== 0
     || (value[key.mask] & key.bit) !== 0 || value[key.marker] === protocolSentinel);
@@ -9187,6 +9412,33 @@
   peekOf = (operation => function (value) {
     return slotWrites(value, methodKeys[57]) ? peekPath(value) : operation(value);
   })(peekOf);
+  // The updates' (light-cljs-1068), at the arity whose slot the operation
+  // reads.
+  //@unit slotWrites.conj effect: slotWrites when: conjOf requires: conjOf, conjPath, methodKeys,
+  //@ slotWrites
+  conjOf = (operation => function (coll, item) {
+    return arguments.length === 2 && slotWrites(coll, methodKeys[7]) ? conjPath(coll, item) : operation.apply(null, arguments);
+  })(conjOf);
+  //@unit slotWrites.assoc effect: slotWrites when: assocOf requires: assocOf, assocPath,
+  //@ methodKeys, slotWrites
+  assocOf = (operation => function (value, key, item) {
+    return arguments.length === 3 && slotWrites(value, methodKeys[1]) ? assocPath(value, key, item) : operation.apply(null, arguments);
+  })(assocOf);
+  //@unit slotWrites.dissoc effect: slotWrites when: dissocOf requires: dissocOf, dissocPath,
+  //@ methodKeys, slotWrites
+  dissocOf = (operation => function (value, key) {
+    return arguments.length === 2 && slotWrites(value, methodKeys[31]) ? dissocPath(value, key) : operation.apply(null, arguments);
+  })(dissocOf);
+  //@unit slotWrites.disj effect: slotWrites when: disjOf requires: disjOf, disjPath, methodKeys,
+  //@ slotWrites
+  disjOf = (operation => function (value, key) {
+    return arguments.length === 2 && slotWrites(value, methodKeys[54]) ? disjPath(value, key) : operation.apply(null, arguments);
+  })(disjOf);
+  //@unit slotWrites.pop effect: slotWrites when: popOf requires: methodKeys, popOf, popPath,
+  //@ slotWrites
+  popOf = (operation => function (value) {
+    return slotWrites(value, methodKeys[58]) ? popPath(value) : operation(value);
+  })(popOf);
   //@unit declarationReceiver compile-time requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
   //@unit patchDeclaration mutator
@@ -11306,8 +11558,8 @@
   //@ requires: count, recordMethodTable
   recordMethodTable.push(Type => [
     ["ICounted/-count", 1, function () { return Type.fieldNames.length + count(this.__extmap); }]]);
-  //@unit recordMethods.conj effect: recordMethods when: conj, conjProtocol requires: assoc, conj,
-  //@ isVector, nth, recordMethodTable, reduce
+  //@unit recordMethods.conj effect: recordMethods when: conjOf, conjPath, conjProtocol requires: assoc,
+  //@ conj, isVector, nth, recordMethodTable, reduce
   recordMethodTable.push(() => [
     ["ICollection/-conj", 2, function (_self, entry) {
       if (isVector(entry)) return assoc(this, nth(entry, 0), nth(entry, 1));
@@ -11323,8 +11575,8 @@
       const extmap = this.__extmap;
       return !(extmap == null && !protocolHooks.extend) && contains(extmap, key);
     }]]);
-  //@unit recordMethods.assoc effect: recordMethods when: assoc, assocProtocol requires: assoc,
-  //@ recordCopy, recordKeywordFieldIndex, recordMethodTable
+  //@unit recordMethods.assoc effect: recordMethods when: assocOf, assocPath, assocProtocol
+  //@ requires: assoc, recordCopy, recordKeywordFieldIndex, recordMethodTable
   recordMethodTable.push(Type => [
     ["IAssociative/-assoc", 3, function (_self, key, value) {
       const index = recordKeywordFieldIndex(Type, key);
@@ -11332,8 +11584,9 @@
       const Constructor = Type.currentConstructor?.() ?? Type;
       return new Constructor(...Type.members.map((member, i) => i === index ? value : this[member]), this.__meta, this.__extmap, null);
     }]]);
-  //@unit recordMethods.dissoc effect: recordMethods when: dissoc, dissocProtocol requires: collectionWithMeta,
-  //@ dissoc, into, mapFromArray, recordCopy, recordFieldIndex, recordMethodTable, seq
+  //@unit recordMethods.dissoc effect: recordMethods when: dissocOf, dissocPath, dissocProtocol
+  //@ requires: collectionWithMeta, dissoc, into, mapFromArray, recordCopy, recordFieldIndex,
+  //@ recordMethodTable, seq
   recordMethodTable.push(Type => [
     ["IMap/-dissoc", 2, function (_self, key) {
       if (recordFieldIndex(Type, key) >= 0) return dissoc(collectionWithMeta(into(mapFromArray([]), this), this.__meta), key);
@@ -13662,10 +13915,11 @@
     return nth(entry, 1);
   }
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
-  //@ assoc, collectionWithMeta, compareKeys, conj, conjTransient, coreMethod, countOf, countPath,
-  //@ derefProtocol, disj, dissoc, equalPair, firstOf, firstSeq, hash, hashStructural, iterator,
-  //@ keywordLookupEquiv, keywordProgramEquiv, metaSupported, name, namespace, notifyWatches,
-  //@ objectEquiv, peekOf, peekPath, pop, removeWatchProtocol, restOf, restSeq, rseq, stateProtocol,
+  //@ assocOf, assocPath, collectionWithMeta, compareKeys, conjOf, conjPath, conjTransient,
+  //@ coreMethod, countOf, countPath, derefProtocol, disjOf, disjPath, dissocOf, dissocPath,
+  //@ equalPair, firstOf, firstSeq, hash, hashStructural, iterator, keywordLookupEquiv,
+  //@ keywordProgramEquiv, metaSupported, name, namespace, notifyWatches, objectEquiv, peekOf,
+  //@ peekPath, popOf, popPath, removeWatchProtocol, restOf, restSeq, rseq, stateProtocol,
   //@ vresetProtocol, withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,

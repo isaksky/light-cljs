@@ -1784,6 +1784,58 @@ as much again.
   shadow-cljs's constants are constructed with their hashes and not
   interned.
 
+What light-cljs-1068 landed: the updates, `conj`, `assoc`, `dissoc`,
+`disj` and `pop`, are upstream's shape as the lookups are, without their
+slot-first wrappers, their slots' `noBranch` guards and the call-site
+entries' `noBranch` tests. `=`, `hash` and the reductions keep theirs
+(light-cljs-1072).
+
+- **One function each, per arity.** `pop` reads the value's keyed kind and
+  calls its `-pop` slot (51 bytes of bytecode); `conj`, `assoc`, `dissoc`
+  and `disj` are variadic, so each is an entry that sends the arity with a
+  slot to a function of its own (`conj2`, `assoc3`, `dissoc2`, `disj2`)
+  and every other arity to its upstream path (42 to 51 bytes, and 61 to 73
+  for the arity functions, where the wrappers were 107 to 119 once written
+  as one function). Any other value takes upstream's path (`conjOf`,
+  `assocOf`, `dissocOf`, `disjOf`, `popOf`): the items or keys one at a
+  time, nil (`(conj nil x)` a list, `(assoc nil k v)` an array map), a host
+  value's program method, and for `conj` the cons of the item onto a seq
+  without `-conj` (a cons, a lazy seq, a seq over an array or a map,
+  read by the recognisers `cons` keeps anyway). `conjSite`, `assocSite`
+  and `dissocSite` call the slot, then the operation, without the
+  `noBranch` test.
+- **Slots for every class the old paths recognised.** `-conj` of the
+  lists (`listConjSlot`, a list with the list's metadata) and the sorted
+  set (the hash set's, now `setConjSlot`); `-disjoin` of the hash set
+  (`setDisjoin`, the old path's member removal) and the sorted set (its
+  tree map's `dissoc`); `-pop` of the vectors and a map entry
+  (`vectorPopSlot`), the subvector (a public constructor's one shorter
+  over the same vector), the lists (`listPopSlot`, its rest, which an
+  empty list refuses) and the queue. A sorted map seq's stack, a list,
+  takes its own push where the list's `-conj` is `listConjSlot`, as where
+  it had none.
+- **No guards.** The vectors', subvectors', map entries', maps', sets' and
+  queue's `-conj`, `-assoc` and `-dissoc` slots and the map helpers they
+  call (`arrayMapAssoc`, `hashMapAssoc`, `treeMapAssoc`, `mapAssocEntries`,
+  `arrayMapDissoc`, `hashMapDissoc`, `treeMapDissoc`, `mapConjSlot`), the
+  shared-heap profile's `hashMapAssoc` too, no longer test their value's
+  fields (section 5, items 31 and 32).
+- **Answers kept.** As the lookups': a runtime class's value whose instance
+  slot holds nil or false takes its class's slot; a program type's takes
+  the protocol lookup (`protocolHooks.builtin`), as the old paths did; a
+  program that writes a core protocol method's member by name keeps the
+  `slotWrites` wrappers of `conjOf`, `assocOf`, `dissocOf`, `disjOf` and
+  `popOf`, which send a runtime class's value to the old path. The slots
+  carry metadata with `conjMeta` (light-cljs-1060), as `conj` and `assoc`
+  of a vector did.
+- **Profiles.** The old bodies are `conjPath`, `assocPath`, `dissocPath`,
+  `disjPath` (the hash set's member removal is `setDisjoin`) and
+  `popPath`, set in `operationPaths` by `setDeclarationDemand` and held by
+  the shared-heap profile from its boot. build.rs's persistent-update
+  leaves of `assoc`, `dissoc` and `disj` move with the bodies; the kind
+  hooks that only the old bodies call (`conjVector`, `conjMap`,
+  `assocVector`) wait for them, so release slices drop them.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -2756,6 +2808,19 @@ by `Object.create` of a runtime prototype:
     (no old path reads its `slots`), and twice more below `Advanced` and in
     the set that writes slots by name, where the `slotWrites` wrappers read
     its keyed kind.
+
+Rescoped by light-cljs-1068, whose update slots (`-conj`, `-assoc`,
+`-dissoc`) no longer guard against a value made by `Object.create` of a
+runtime prototype:
+
+31. tests/support/js_runtime.test.js, the vector classes' slot contract: a
+    forged value's `-conj` and `-assoc` are no longer `noBranch`; each slot
+    still answers as its operation for every value of the class.
+32. tests/support/js_runtime.test.js, the sets' and queues' slot contract:
+    a forged value's `-conj` is no longer `noBranch`, and `-conj` (with
+    the metadata it gives) is checked against the old path of a fresh
+    runtime that demands declarations, as `conj` has no other path for
+    them in release.
 
 ### Documentation rules that change
 

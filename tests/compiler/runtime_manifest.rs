@@ -761,6 +761,11 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "slotWrites.get",
     "slotWrites.contains",
     "slotWrites.peek",
+    "slotWrites.conj",
+    "slotWrites.assoc",
+    "slotWrites.dissoc",
+    "slotWrites.disj",
+    "slotWrites.pop",
     "multiTables",
     "addMethodDirect",
     "mapEntry.lean",
@@ -1239,8 +1244,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // ranges, lists and queues, less the five slot-first wrappers of `count`,
     // `nth`, `get`, `contains?` and `peek`, and the five `slotWrites`
     // effects that set their own paths where a program writes a core
-    // protocol method's member by name.
-    assert_eq!(checked, 516);
+    // protocol method's member by name; and the 11 `-conj`, `-disjoin` and
+    // `-pop` slot units light-cljs-1068 gave the lists, the sets, the
+    // vectors, a map entry and the queue, less the three slot-first wrappers
+    // of `conj`, `assoc` and `dissoc`, and its five `slotWrites` effects.
+    assert_eq!(checked, 529);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -2052,7 +2060,8 @@ fn conditional_effects_wait_for_a_condition() {
 /// tries' and `Loadable`'s wrappers install hooks instead since
 /// light-cljs-302, so that they go with the values they handle; the seven
 /// protocol wrappers stay (light-cljs-355), and the five `slotWrites`
-/// wrappers of the lookups' upstream-shaped paths join them (light-cljs-1066).
+/// wrappers of the lookups' upstream-shaped paths join them (light-cljs-1066), and
+/// the updates' five (light-cljs-1068).
 /// A new one moves no unit out of its binding's chunk.
 #[test]
 fn units_assigning_a_binding_share_its_unit() {
@@ -2069,8 +2078,8 @@ fn units_assigning_a_binding_share_its_unit() {
         [
             "MapEntryType <- MapEntryType.lean",
             "MapEntryType <- MapEntryType.vector",
-            "assoc <- assoc.slots",
-            "conj <- conj.slots",
+            "assocOf <- slotWrites.assoc",
+            "conjOf <- slotWrites.conj",
             "containsOf <- slotWrites.contains",
             "containsPath <- contains.own",
             "countOf <- slotWrites.count",
@@ -2095,7 +2104,8 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- satisfies",
             "demandProtocol <- setDeclarationDemand",
             "demandProtocol <- storeProtocol",
-            "dissoc <- dissoc.slots",
+            "disjOf <- slotWrites.disj",
+            "dissocOf <- slotWrites.dissoc",
             "equalPair <- equalPair.slots",
             "gensymCounter <- gensym",
             "getOf <- slotWrites.get",
@@ -2116,6 +2126,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "patchDeclaration <- extendType",
             "patchDeclaration <- installMethods",
             "peekOf <- slotWrites.peek",
+            "popOf <- slotWrites.pop",
             "recordMethodTable <- recordMethods.assoc",
             "recordMethodTable <- recordMethods.clone",
             "recordMethodTable <- recordMethods.conj",
@@ -2243,6 +2254,8 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("ListValue.seqSlot"),
             unit("ListValue.countSlot"),
             unit("ListValue.peekSlot"),
+            unit("ListValue.conjSlot"),
+            unit("ListValue.popSlot"),
             unit("equalPair.slots"),
             unit("cons.equiv"),
             unit("cons.compared"),

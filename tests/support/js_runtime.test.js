@@ -2272,16 +2272,12 @@ console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is
       const outcome = thunk => { try { const result = thunk(); return 'ok ' + c.prStr(result); } catch (error) { return 'error ' + error.message; } };
       for (const [slot, args, operation] of answers) {
         if (!slots.includes(slot)) continue;
-        // What a slot gives a value with the prototype and no fields, as
-        // only reflection makes, is the private answer by which the
-        // operation's older path takes the value (`noBranch`); the seq
-        // walk's slots no longer guard since light-cljs-1054, nor the lookups'
-        // (`-nth`, `-lookup`, `-count`, `-peek`) since light-cljs-1066 (rescoped,
-        // docs/value-layout.md section 5).
-        if (slot === conj || slot === assoc) {
-          const forged = Object.create(proto), noBranch = proto[slot].call(forged, forged, ...args);
-          assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${kind}: ${slot} of a forged value`);
-        }
+        // A slot no longer guards against a value with the prototype and no
+        // fields, as only reflection makes: the seq walk's since
+        // light-cljs-1054, the lookups' (`-nth`, `-lookup`, `-count`,
+        // `-peek`) since light-cljs-1066, and the updates' (`-conj`,
+        // `-assoc`) since light-cljs-1068 (rescoped, docs/value-layout.md
+        // section 5).
         assert.equal(outcome(() => proto[slot].call(value, value, ...args)), outcome(operation), `${kind}: ${slot} of ${c.prStr(value)}`);
       }
     }
@@ -2318,7 +2314,7 @@ console.log('vector_family_prototype_contract: masks, markers and slots of the v
   const kinds = kindsOf(c), oracleKinds = kindsOf(oracle.core), o = oracle.core;
   const operations = new Map([[count, v => c.count(v)], [seq, v => c.seq(v)], [conj, (v, x) => c.conj(v, x)], [lookup[0], (v, k) => c.get(v, k)],
     [lookup[1], (v, k, nf) => c.get(v, k, nf)], [contains, (v, k) => c.contains(v, k)]]);
-  const oracleOperations = new Map([[count, v => o.count(v)], [lookup[0], (v, k) => o.get(v, k)], [lookup[1], (v, k, nf) => o.get(v, k, nf)], [contains, (v, k) => o.contains(v, k)]]);
+  const oracleOperations = new Map([[count, v => o.count(v)], [conj, (v, x) => o.conj(v, x)], [lookup[0], (v, k) => o.get(v, k)], [lookup[1], (v, k, nf) => o.get(v, k, nf)], [contains, (v, k) => o.contains(v, k)]]);
   const oracleOutcome = thunk => { try { return 'ok ' + o.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
   for (const [k, [kind, values, slots]] of kinds.entries()) {
     for (const [i, value] of values.entries()) {
@@ -2334,25 +2330,13 @@ console.log('vector_family_prototype_contract: masks, markers and slots of the v
           continue;
         }
         // The lookups' slots no longer guard against a value made by
-        // reflection since light-cljs-1066 (rescoped, docs/value-layout.md
-        // section 5); each answers as the old path of a fresh runtime that
-        // demands declarations.
-        if (slot !== conj) {
-          const old = oracleKinds[k][1][i];
-          assert.equal(outcome(() => method.call(value, value, ...args)), oracleOutcome(() => oracleOperations.get(slot)(old, ...args)), `${kind}: ${slot} of ${c.prStr(value)}`);
-          continue;
-        }
-        const forged = Object.create(Object.getPrototypeOf(value)), noBranch = method.call(forged, forged, ...args);
-        assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${kind}: ${slot} of a forged value`);
-        // The operation's own path: the slot taken off the prototype.
-        const proto = Object.getPrototypeOf(value), own = () => {
-          delete proto[slot];
-          try { return [outcome(() => operations.get(slot)(value, ...args)), outcome(() => c.meta(operations.get(slot)(value, ...args)))]; }
-          finally { proto[slot] = method; }
-        };
-        const [expected, expectedMeta] = own();
-        assert.equal(outcome(() => method.call(value, value, ...args)), expected, `${kind}: ${slot} of ${c.prStr(value)}`);
-        if (slot === conj) assert.equal(outcome(() => c.meta(method.call(value, value, ...args))), expectedMeta, `${kind}: meta of conj`);
+        // reflection since light-cljs-1066, nor `-conj` since
+        // light-cljs-1068 (rescoped, docs/value-layout.md section 5); each
+        // answers as the old path of a fresh runtime that demands
+        // declarations, `-conj` with the old path's metadata.
+        const old = oracleKinds[k][1][i];
+        assert.equal(outcome(() => method.call(value, value, ...args)), oracleOutcome(() => oracleOperations.get(slot)(old, ...args)), `${kind}: ${slot} of ${c.prStr(value)}`);
+        if (slot === conj) assert.equal(outcome(() => c.meta(method.call(value, value, ...args))), oracleOutcome(() => o.meta(o.conj(old, ...args))), `${kind}: meta of conj`);
       }
     }
   }
