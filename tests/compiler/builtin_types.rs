@@ -3965,8 +3965,10 @@ fn keyword_searches_call_an_equiv_slot_a_program_wrote_by_name() {
     // or `reify`, keeps no protocol lookup at `Advanced`; the keyword
     // searches of hash and array maps still call that slot, as `equalPair`'s
     // wrapper calls it. (The array maps' search had answered by the spelling
-    // there since light-cljs-1040; `=` with a keyword constant is compiled
-    // to an identity and spelling test at `Advanced`, so it is left out.)
+    // there since light-cljs-1040. `=` with a keyword constant, which
+    // `Advanced` compiled to an identity and spelling test before
+    // light-cljs-1061, is pinned in type_inference.rs,
+    // `equality_with_a_keyword_constant_calls_a_program_equiv_at_every_level`.)
     every_level(
         r#"(let [k (keyword "k") m (hash-map :k (js/parseInt "1") :a 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8 :h 9)
                  small (array-map :k (js/parseInt "1"))]

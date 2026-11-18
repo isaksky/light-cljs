@@ -1067,7 +1067,8 @@ and `Prepare` output does not change.
     are, `dispatch` and `invoke` calls are `any`;
   - sole definitions;
   - `ILookup` implementations per program type;
-  - whether any program type implements `IEquiv`;
+  - whether any program type implements `IEquiv`, and whether the program
+    writes `IEquiv`'s method by name (`equiv_by_name`, light-cljs-1061);
   - the implementations of each program protocol.
 - **Lowerings.** At `Advanced` the emitter:
   - tests a value directly instead of with `truth` when its type allows it.
@@ -1098,7 +1099,11 @@ and `Prepare` output does not change.
     decides it. For a keyword literal it uses 208's lowering, `x === k<n> ||
     rt$keywordFqn(x) === "k"`, or only the spelling test when `x` cannot be
     read twice. The literal may come second only when `a` is no program type
-    or no program type implements `IEquiv`;
+    or no program type implements `IEquiv`. A program that writes `IEquiv`'s
+    method by name (`(set! (.-cljs$core$IEquiv$_equiv$arity$2 k) f)`, or raw
+    text spelling it) may have given any operand one, a keyword constant
+    too, which upstream's `=` calls: its `=` and `not=` are the runtime's,
+    and `=` of constants does not fold (light-cljs-1061);
   - writes `==` on numbers as `===`;
   - writes `(count x)` as `.length` of a string or array, or of a flat
     vector's payload;
@@ -3915,7 +3920,8 @@ runs in its rounds.
   keywords is a `switch` on `rt$keywordFqn(x)`, one `case` per member before
   the branch (`Emitter::membership`). An array set compares the value with
   each member by `equalPair` without hashing it, and with core protocols
-  intact and no program `IEquiv` (whose instance may be `=` to a keyword) a
+  intact and no program `IEquiv` (whose instance may be `=` to a keyword;
+  nor a method written by name, which a keyword may hold, light-cljs-1061) a
   value is `=` to a keyword exactly when it is one of the same spelling; a
   sequential or map value checks the keyword's kind before walking itself,
   so nothing realizes. `Folder::member_set` replaces a local or `^:const`

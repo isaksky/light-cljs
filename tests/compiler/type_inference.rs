@@ -601,6 +601,104 @@ fn equality_lowers_to_identity_for_primitives_and_spelling_for_keyword_literals(
 }
 
 #[test]
+fn equality_with_a_keyword_constant_calls_a_program_equiv_at_every_level() {
+    // light-cljs-1061: `(= k :a)` and `(= :a k)` call the `-equiv` method a
+    // program gave the operand `=` dispatches on, at every level, as
+    // upstream's `=` does after its identity test: shadow-cljs 3.5.3's
+    // release builds of these programs print the same answers, but for the
+    // sets' searches (below). `extend-type` of `IEquiv` on `Keyword` and
+    // `specify!` keep core protocols from being intact, which keeps
+    // `Advanced`'s lowering off. A method written by name, with `set!` or in
+    // raw text, did not: `Advanced` compared by identity and spelling, which
+    // read no method, and folded `=` of two constants. A program without
+    // such a method keeps the lowering.
+    let locals = r#"x (js/String "x") k (keyword x "a") j (keyword (js/String "a"))"#;
+    let tests = "(= k :a) (= :a k) (not= k :a) (not= :a k) (= j :a) (= :a j) (= k :b) (= :b k) \
+                 (if (= k :a) :then :else)";
+    let js = every_level(
+        &format!("(let [{locals}] (pr-str [{tests}]))"),
+        "[false false true true true true false false :else]",
+    );
+    assert!(js.contains(" || rt$keywordFqn(l"), "{js}");
+    assert!(
+        !js.contains("rt$equal(") && !js.contains("rt$notEqual("),
+        "{js}"
+    );
+    // Keywords equal by name, whatever their namespaces.
+    let js = every_level(
+        &format!(
+            "(extend-type Keyword IEquiv (-equiv [this other] (and (keyword? other) (= (name this) (name other)))))
+             (let [{locals}] (pr-str [{tests} (= :x/a :a)]))"
+        ),
+        "[true true false false true true false false :then true]",
+    );
+    assert!(!js.contains(" || rt$keywordFqn(l"), "{js}");
+    // `k`'s own method answers every keyword, so `=` is true where `k` is
+    // first and compares spellings where the constant is. Each way of
+    // writing the member that `ProgramFacts` recognises: a property, a `js/`
+    // path, a raw text's spelling and a raw text's hole, and `binding` of a
+    // `js/` path.
+    let own = "(fn [this other] (keyword? other))";
+    let by_name = "[true false false true true true true false :then]";
+    let global = "(set! (.-kw1061 js/globalThis) k)";
+    let path = "js/globalThis.kw1061.cljs$core$IEquiv$_equiv$arity$2";
+    for (give, body) in [
+        (
+            "(specify! k IEquiv (-equiv [this other] (keyword? other)))".to_owned(),
+            format!("[{tests}]"),
+        ),
+        (
+            format!("(set! (.-cljs$core$IEquiv$_equiv$arity$2 k) {own})"),
+            format!("[{tests}]"),
+        ),
+        (
+            format!("{global} (set! {path} {own})"),
+            format!("[{tests}]"),
+        ),
+        (
+            format!("(js* \"~{{}}.cljs$core$IEquiv$_equiv$arity$2$LKEY = ~{{}}\" k {own})"),
+            format!("[{tests}]"),
+        ),
+        (
+            format!("(js* \"~{{}} = ~{{}}\" (.-cljs$core$IEquiv$_equiv$arity$2 k) {own})"),
+            format!("[{tests}]"),
+        ),
+        (
+            global.to_owned(),
+            format!("(binding [{path} {own}] [{tests}])"),
+        ),
+    ] {
+        let js = every_level(&format!("(let [{locals}] {give} (pr-str {body}))"), by_name);
+        assert!(!js.contains(" || rt$keywordFqn(l"), "{give}: {js}");
+    }
+    // A method written by name on a keyword constant and on a host object,
+    // which a primitive or keyword operand second compared by identity. An
+    // array set's search calls a keyword's method too, as `get` of an array
+    // map does since light-cljs-1040, where upstream's compares spellings
+    // (`array-index-of-keyword?`: nil, false, nil); keyword `case` compares
+    // spellings at every level, as upstream's does.
+    let js = every_level(
+        r#"(let [x (js/String "x") q (keyword x "q") o (js-obj) k (keyword x "a") m {:a 1}]
+             (set! (.-cljs$core$IEquiv$_equiv$arity$2 :c) (fn [this other] true))
+             (set! (.-cljs$core$IEquiv$_equiv$arity$2 o) (fn [this other] true))
+             (set! (.-cljs$core$IEquiv$_equiv$arity$2 k) (fn [this other] (keyword? other)))
+             (set! (.-cljs$core$IEquiv$_equiv$arity$2 m) (fn [this other] true))
+             (pr-str [(= :c q) (= q :c) (= :c 1) (not= :c :d) (= :c (keyword x "z"))
+                      (= o :a) (= o "s") (= o 1) (not= o :a) (= o nil) (= o true)
+                      (#{:a :b} k) (contains? #{:a :b} k) (case k :a 1 2) (= k :a :a) (= m :z)]))"#,
+        "[true false true false true true true true false true true :b true 2 true true]",
+    );
+    assert!(js.contains("rt$equal("), "{js}");
+    // On a runtime class's prototype: `=` of a map constant does not fold.
+    let js = every_level(
+        r#"(set! (.-cljs$core$IEquiv$_equiv$arity$2 (.-prototype (type {:a 1}))) (fn [this other] true))
+           (let [m {:a (js/parseInt "1")}] (pr-str [(= m :z) (= {:b 2} :z)]))"#,
+        "[true true]",
+    );
+    assert_eq!(js.matches("rt$equal(").count(), 2, "{js}");
+}
+
+#[test]
 fn count_reads_the_length_of_strings_arrays_and_flat_vectors() {
     let js = every_level(
         r#"(defn size [x] (if (string? x) (count x) -1))

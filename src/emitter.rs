@@ -4973,10 +4973,13 @@ impl<'a> Emitter<'a> {
     /// (or only the spelling test when `x` cannot be read twice). Both need the
     /// core protocols intact, since `=` dispatches `IEquiv` on its first
     /// operand; with the primitive or literal second, the first must not be an
-    /// instance of a program type when the program implements `IEquiv`.
+    /// instance of a program type when the program implements `IEquiv`. A
+    /// program that writes `IEquiv`'s method by name may have given any
+    /// operand a method, a keyword constant too, so its `=` is the runtime's,
+    /// which calls it as at every other level (light-cljs-1061).
     fn equality(&mut self, inference: &Inference, left: ExprId, right: ExprId, not: bool) -> bool {
         let facts = inference.facts();
-        if !facts.core_protocols_intact() {
+        if !facts.core_protocols_intact() || facts.equiv_by_name() {
             return false;
         }
         let primitive = Type::BOOLEAN.union(Type::NUMBER).union(Type::STRING);

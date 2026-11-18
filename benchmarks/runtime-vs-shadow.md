@@ -4264,3 +4264,39 @@ ports from `shadow-port-tool-983`), the whole bundle with React, gzip -9:
   1,197 bytes more at advanced where a program reduces a set or an indexed
   seq, nine advanced ceilings moved; the readable runtime 4,108 bytes more,
   mostly comments.
+
+## 2026-11-17: `=` against a keyword constant calls a method written by name (light-cljs-1061)
+
+In a program that writes `IEquiv`'s method by name (`(set! (.-cljs$core$IEquiv$_equiv$arity$2 k) f)`, or raw text spelling it), `:advanced` no longer lowers `=` and `not=` (a keyword constant's identity and spelling test, a primitive's `===`), folds `=` of constants or compares a keyword set literal's members by spelling, so `=` calls that method as the other levels and shadow-cljs's release output do (docs/value-layout.md, "What light-cljs-1061 landed"). `extend-type` of `IEquiv` on `Keyword` and `specify!` already turned the lowering off. A program without such a write compiles as before.
+
+**Binaries:** master `light-cljs-1061-base-08593058` and `light-cljs-1061-4c7719f0`, this pellet on it, both V8 builds. The landed commit adds the same guard to a second folding path and is rebased onto light-cljs-1059; against master there (`light-cljs-dbf91703`), its binary (`light-cljs-1061-8c860cb2`) also compiles the gate and workload 200k byte-identical.
+
+**Output:** the gate's source (161,978 bytes) and workload 200k (3,436,843 bytes, SHA-256 `d5042b74...` from both) compile byte-identical at `:advanced` with both binaries, so their timings cannot move; the runs below are the check. Neither the gate, workload 200k nor the re-frame apps' sources write the member.
+
+**The gate's keyword operations** (`bb benchmarks/core-ops/run.bb --ops kw-small,get-small,get-small-miss,contains-small,get-hash100,kw-hash100,destructure-map-3,record-kw-field,multimethod`, 5 runs per compiler alternated, two before and after pairs; load 7.3 to 9.1, unreserved), light-cljs ns per operation, medians:
+
+| op | before | after | change | before (2) | after (2) | change (2) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `kw-small` | 8.00 | 8.00 | +0% | 8.01 | 8.02 | +0% |
+| `get-small` | 12.7 | 12.7 | +0% | 12.7 | 12.7 | +0% |
+| `get-small-miss` | 17.1 | 17.1 | +0% | 17.2 | 17.2 | +0% |
+| `contains-small` | 11.5 | 11.4 | +0% | 11.4 | 11.4 | +0% |
+| `get-hash100` | 12.8 | 12.8 | +0% | 12.8 | 12.8 | +0% |
+| `kw-hash100` | 16.3 | 14.4 | -12% | 16.3 | 16.3 | +0% |
+| `destructure-map-3` | 64.4 | 65.8 | +2% | 64.1 | 63.8 | +0% |
+| `record-kw-field` | 6.00 | 5.98 | +0% | 6.01 | 6.02 | +0% |
+| `multimethod` | 83.7 | 83.1 | -1% | 83.9 | 83.2 | -1% |
+
+`kw-hash100` runs at about 14.4 or 16.3 ns from one process to the next (its ranges, 13.9-16.6, hold both), and `destructure-map-3`'s first after range, 57.4-70.2, holds the before median; the second pair, from the same bytes, has no operation slower.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1061 --runs 5 --runtime-only --runtime 1,10,40`, the project's light-cljs output rebuilt with each binary just before its run; before load 6.7-7.5, after 5.8-6.4, unreserved), wall time, median (range):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.372 s (0.368-0.376) | 0.367 s (0.361-0.375) | 0.314 s | 0.301 s |
+| 10 | 0.836 s (0.832-0.862) | 0.901 s (0.821-0.922) | 0.580 s | 0.584 s |
+| 40 | 2.094 s (2.071-2.107) | 2.118 s (2.074-2.835) | 1.242 s | 1.260 s |
+
+Steady state, from 1 and 40 iterations: light-cljs 44.2 to 44.9 ms per iteration, as shadow-cljs's own 23.8 to 24.6 moved in the same runs; light/shadow 1.86 and 1.83. The output was the same file both times.
+
+**Size:** unchanged where no program writes the member (the outputs above are byte-identical; the size ratchet's fixtures write none).

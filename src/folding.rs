@@ -1744,10 +1744,21 @@ impl Folder<'_> {
             .map(|constant| constant.ty(self.program))
             .collect();
         let call = core.operation().call(&types);
-        if call.purity != Purity::Pure || !self.facts.trusted(core, call.calls) {
+        if call.purity != Purity::Pure
+            || !self.facts.trusted(core, call.calls)
+            || self.equiv_written(core)
+        {
             return None;
         }
         evaluate(self.program, core, &constants)
+    }
+
+    /// Whether `core` is `=` or `not=` in a program that writes `IEquiv`'s
+    /// method by name, which may have given a constant, a keyword literal
+    /// too, a method that `=` calls at every level (light-cljs-1061): no
+    /// fold reads it.
+    fn equiv_written(&self, core: CoreFnId) -> bool {
+        matches!(core, CoreFnId::Equal | CoreFnId::NotEqual) && self.facts.equiv_by_name()
     }
 
     /// In a test of membership in a set, a call `(s x)`, `(contains? s x)` or
@@ -2048,7 +2059,10 @@ impl Folder<'_> {
             .map(|constant| constant.ty(self.program))
             .collect();
         let call = core.operation().call(&types);
-        if call.purity != Purity::Pure || !self.facts.trusted(core, call.calls) {
+        if call.purity != Purity::Pure
+            || !self.facts.trusted(core, call.calls)
+            || self.equiv_written(core)
+        {
             return None;
         }
         evaluate(self.program, core, &constants)

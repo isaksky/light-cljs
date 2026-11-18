@@ -1289,7 +1289,8 @@ spelling, and its walk takes about 9 ns less.
   `Advanced`, where an array map's keyword search had compared the
   spelling since light-cljs-1040 (the Sol review of light-cljs-1057).
   `=` with a keyword constant is compiled at `Advanced` to an identity and
-  spelling test (`keywordFqn`), which reads no slot, as before.
+  spelling test (`keywordFqn`), which reads no slot, as before (until
+  light-cljs-1061, below).
 - **The walk.** `hashNodeFind` tells a collision node by its missing
   `slots` and an entry by its missing `kind`, and its loop tests no node:
   `node.kind === "collision"`, `!slot?.kind` and `node` in the loop's
@@ -1407,6 +1408,46 @@ entry, a sorted map or set and a queue keep `reduce`'s path, as measured.
   `merge-small` (rest arguments) -11% and no operation over 3% slower;
   workload 200k's steady state 45.3 to 44.9 ms per iteration; the re-frame
   apps' whole bundles 233 to 257 bytes larger after gzip (0.07 to 0.20%).
+
+What light-cljs-1061 landed: `=` against a keyword constant calls a `-equiv`
+method that a program wrote by name, at `:advanced` as at the other levels.
+
+- **What upstream answers.** `cljs.core/=` is `(or (identical? x y) (-equiv
+  x y))`, and neither ClojureScript nor shadow-cljs rewrites `=` of a keyword
+  constant (no `keyword-identical?` rewrite in either analyzer). shadow-cljs
+  3.5.3's release build calls the program's method: with an `extend-type` of
+  `IEquiv` on `Keyword` that ignores namespaces, `(= :x/a :a)` is true; with
+  a method written on a keyword `k` by name, `(= k :a)` is that method's
+  answer and `(= :a k)` the class's.
+- **What differed.** An `extend-type` of a core protocol onto a runtime type,
+  and any `specify!`, keep core protocols from being intact
+  (`ProgramFacts::core_protocols_intact`), which turns `=`'s lowering off,
+  so `:advanced` already answered as upstream. A method written by name
+  (`(set! (.-cljs$core$IEquiv$_equiv$arity$2 k) f)`, or raw text spelling
+  it) left them intact: `=` and `not=` with a keyword constant compiled to an
+  identity and spelling test (`k === k0 || rt$keywordFqn(k) === "a"`), with
+  a primitive second to `===`, `=` of two constants folded, and a keyword
+  set literal's membership test compared spellings. None read the method.
+- **The change.** `ProgramFacts::equiv_by_name` records a write of
+  `IEquiv`'s method by name; a write of another protocol's method leaves
+  `=` lowered. Where it holds, the emitter lowers no `=` or `not=`
+  (`Emitter::equality`), the folder folds none, and `implements_equiv`
+  holds, which turns the membership tests off (`Emitter::membership`,
+  `Folder::member_set`). Those calls go to the runtime's `=` and the set's
+  search, which call the method at every level (`equalPair`'s wrapper,
+  `keywordProgramEquiv`). A program without such a write compiles to the
+  same bytes as before: the gate's source and workload 200k are
+  byte-identical at `:advanced`.
+- **Sets.** An array set's search calls a keyword's method (light-cljs-1040),
+  where upstream's `array-index-of-keyword?` compares spellings. `:advanced`'s
+  membership test had given upstream's answer and the other levels
+  light-cljs's; every level now gives light-cljs's.
+- **Tests:** type_inference.rs,
+  `equality_with_a_keyword_constant_calls_a_program_equiv_at_every_level`,
+  with shadow-cljs's answers.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1061): the
+  gate's keyword operations and workload 200k's steady state unchanged, as
+  their outputs are.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,

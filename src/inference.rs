@@ -442,6 +442,9 @@ pub struct ProgramFacts {
     core_method_write: Option<ExprId>,
     /// Some program type implements `IEquiv`.
     equiv: bool,
+    /// The program writes `IEquiv`'s method member by name, or raw text
+    /// spells it.
+    equiv_by_name: bool,
     /// Some program type implements a core protocol whose methods receive the
     /// function an operation is given: `IReduce`, `IKVReduce` or `ISwap`.
     receives_functions: bool,
@@ -574,6 +577,21 @@ impl ProgramFacts {
                 && segment.contains(crate::rta::RUNTIME_KEY)
                 && (!method || segment.contains("$arity$"))
         };
+        // ... and whether one of those writes is `IEquiv`'s method, which can
+        // give any value, a keyword constant or a string's prototype too, a
+        // `-equiv` method of its own that `=` calls (`equiv_by_name`).
+        let mut equiv_by_name = false;
+        let equiv_member = |name: &str| {
+            name.strip_suffix(crate::rta::RUNTIME_KEY) == Some("cljs$core$IEquiv$_equiv$arity$2")
+        };
+        let equiv_target = |target: &ExprId| match &program.exprs[target.0].kind {
+            ExprKind::Property { property, .. } => equiv_member(property),
+            ExprKind::JsGlobal(global) => program.js_globals[global.0]
+                .path
+                .iter()
+                .any(|component| equiv_member(component)),
+            _ => false,
+        };
         for (index, expr) in program.exprs.iter().enumerate() {
             let method_write = match &expr.kind {
                 ExprKind::SetGlobal { target, .. } => core_method_target(target),
@@ -589,6 +607,21 @@ impl ProgramFacts {
             if method_write && core_method_write.is_none() {
                 core_method_write = Some(ExprId(index));
             }
+            equiv_by_name |= method_write
+                && match &expr.kind {
+                    ExprKind::SetGlobal { target, .. } => equiv_target(target),
+                    ExprKind::Binding { bindings, .. } => {
+                        bindings.iter().any(|(target, _)| equiv_target(target))
+                    }
+                    ExprKind::JsTemplate { segments, args } => {
+                        args.iter().any(equiv_target)
+                            || segments.iter().any(|segment| {
+                                segment.contains("cljs$core$IEquiv$_equiv$")
+                                    && segment.contains(crate::rta::RUNTIME_KEY)
+                            })
+                    }
+                    _ => false,
+                };
             match &expr.kind {
                 ExprKind::SetGlobal { target, .. } => {
                     core_slots_by_name |= core_slot_target(target);
@@ -805,6 +838,7 @@ impl ProgramFacts {
             core_slots_by_name,
             core_method_write,
             equiv,
+            equiv_by_name,
             receives_functions,
             globals,
             lookups,
@@ -861,11 +895,24 @@ impl ProgramFacts {
     }
 
     /// Whether a `deftype`, `defrecord`, `reify` or `extend-type` of the program
-    /// implements `IEquiv`. Otherwise `=` runs only the runtime's
-    /// implementations (while core protocols are intact), and a record's
-    /// compares only with records of its type.
+    /// implements `IEquiv`, or the program writes its method by name
+    /// ([`ProgramFacts::equiv_by_name`]). Otherwise `=` runs only the
+    /// runtime's implementations (while core protocols are intact), and a
+    /// record's compares only with records of its type.
     pub fn implements_equiv(&self) -> bool {
-        self.equiv
+        self.equiv || self.equiv_by_name
+    }
+
+    /// Whether the program writes `IEquiv`'s method member by name (`(set!
+    /// (.-cljs$core$IEquiv$_equiv$arity$2 k) f)`), or raw text spells it.
+    /// Such a write can give any value a `-equiv` method of its own without
+    /// `extend-type` or `specify!`, which keep core protocols from being
+    /// intact: a keyword, a keyword constant, a host object, or a string's
+    /// prototype. `=` calls it at every level, as upstream's `=` calls a
+    /// value's `-equiv` (light-cljs-1061), so no comparison may be decided
+    /// from the operands' types or spellings.
+    pub fn equiv_by_name(&self) -> bool {
+        self.equiv_by_name
     }
 
     /// Whether a `deftype`, `defrecord`, `reify` or `extend-type` of the program
