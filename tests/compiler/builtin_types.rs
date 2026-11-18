@@ -728,6 +728,68 @@ fn runtime_meta_slot_overrides_without_markers() {
     assert!(!units.contains(&"protocolHooks.programMethod"), "{units:?}");
 }
 
+/// light-cljs-1060: without `extend-type` or `specify!`, and with no core
+/// method written by name, nothing but a vector's or a set's own field can
+/// answer its metadata, so `conj` and `assoc` of a vector, a subvector and a
+/// map entry, and `conj` of a set, copy the field, as upstream's `-conj` and
+/// `-assoc` do, in a program that implements protocols: the readable
+/// output's `meta` and its lookup (`ownMethod`) count no call. Where
+/// `specify!` or a method written by name gives one value its own `IMeta`,
+/// they still read the metadata with `meta`, so the result holds what that
+/// method answers, as every level gave before.
+#[test]
+fn vector_and_set_updates_copy_metadata_without_the_lookup() {
+    let source = r#"(deftype T [] ICounted (-count [_] 7))
+        (let [m {:m 1} v (with-meta [1 2] m) sub (with-meta (subvec [1 2 3] 1) m) e (first {:a 1})
+              s (with-meta #{1} m) none (with-meta [] nil) calls #(aget js/globalThis "__calls") before (calls)
+              results [(conj v 3) (assoc v 0 5) (assoc v 2 3) (conj sub 4) (assoc sub 0 5) (assoc sub 2 6) (conj e 3)
+                       (assoc e 1 2) (conj s 2) (conj [1] 2) (assoc [1] 0 2) (conj #{} 1) (conj none 1)]
+              after (calls)]
+          (pr-str [(count (T.)) (- after before) results (mapv meta results)]))"#;
+    let expected = "[7 0 [[1 2 3] [5 2] [1 2 3] [2 3 4] [5 3] [2 3 6] [:a 1 3] [:a 2] #{1 2} [1 2] [2] #{1} [1]] \
+         [{:m 1} {:m 1} {:m 1} {:m 1} {:m 1} {:m 1} nil nil {:m 1} nil nil nil nil]]";
+    every_level(
+        &format!("(set! (.-__calls js/globalThis) 0) {source}"),
+        expected,
+    );
+    let kept = units(source);
+    assert!(kept.contains(&"protocolHooks.ownMethod"), "{kept:?}");
+    assert!(!kept.contains(&"protocolHooks.extend"), "{kept:?}");
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program(source), options).emit_js();
+    for head in [
+        "function meta(value) {",
+        "function ownMethod(value, key, arity) {",
+    ] {
+        assert!(js.contains(head), "{head}");
+        js = js.replace(head, &format!("{head} globalThis.__calls++;"));
+    }
+    assert_eq!(
+        execute(&format!("globalThis.__calls = 0; console.log({js});")),
+        format!("{expected}\n")
+    );
+    // One value's own `IMeta`, by `specify!` or by a method written by name,
+    // answers the metadata its updates hold.
+    every_level(
+        "(deftype T [] ICounted (-count [_] 7))
+         (let [v (specify! [1 2] IMeta (-meta [_] :v)) sub (specify! (subvec [1 2 3] 1) IMeta (-meta [_] :sub))
+               e (specify! (first {:a 1}) IMeta (-meta [_] :e)) s (specify! #{1} IMeta (-meta [_] :s))]
+           (pr-str [(count (T.)) (mapv meta [(conj v 3) (assoc v 0 5) (conj sub 4) (assoc sub 0 5) (conj e 3) (assoc e 0 2)
+                                             (conj s 2) (conj [1] 2)])]))",
+        "[7 [:v :v :sub :sub :e :e :s nil]]",
+    );
+    let written = "(deftype T [] ICounted (-count [_] 7))
+         (let [sub (subvec [1 2 3] 1) e (first {:a 1}) s #{1}]
+           (doseq [x [sub e s]] (set! (.-cljs$core$IMeta$_meta$arity$1 x) (fn [_] :written)))
+           (pr-str [(count (T.)) (mapv meta [(conj sub 4) (assoc sub 0 5) (conj e 3) (assoc e 0 2) (conj s 2) (conj [1] 2)])]))";
+    every_level(
+        written,
+        "[7 [:written :written :written :written :written nil]]",
+    );
+    assert!(units(written).contains(&"protocolHooks.extend"));
+}
+
 /// light-cljs-246: a program type implementing `ISequential`, `IMap` or
 /// `ISet` compares with the runtime's collections through the generic
 /// operations: `ISequential` keeps the protocol's unit, so structural

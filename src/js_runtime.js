@@ -2850,11 +2850,11 @@
     return makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   };
   //@unit conjMeta requires: ownMeta, preserveMeta, protocolHooks, setMeta
-  // What `conj` of a vector or a set gives `built` from `coll`: its metadata,
-  // which its fast path copies and its other path reads with `meta`, which
-  // protocol implementations can answer.
+  // What `conj` and `assoc` of a vector, or `conj` of a set, give `built`
+  // from `coll`: its metadata, read with `meta` where `extend-type` or
+  // `specify!` can answer it, else its field (light-cljs-1060).
   function conjMeta(coll, built) {
-    if (protocolHooks.builtin) return preserveMeta(coll, built);
+    if (protocolHooks.extend) return preserveMeta(coll, built);
     if (ownMeta(coll) && coll.meta$LKEY !== null) setMeta(built, coll.meta$LKEY);
     return built;
   }
@@ -5072,8 +5072,7 @@
     return conjMeta(self, makeVector(null, vectorConj(store, item)));
   });
   //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc, assocSite requires: builtinSlot,
-  //@ makeVector, noBranch, outOfBounds, PersistentVectorValue, preserveMeta, vectorAssoc,
-  //@ vectorConj
+  //@ conjMeta, makeVector, noBranch, outOfBounds, PersistentVectorValue, vectorAssoc, vectorConj
   PersistentVectorValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
     let store = self;
     if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
@@ -5081,7 +5080,7 @@
     if (key >= 0 && key < store.cnt$LKEY) store = vectorAssoc(store, key, item);
     else if (key === store.cnt$LKEY) store = vectorConj(store, item);
     else outOfBounds();
-    return preserveMeta(self, makeVector(null, store));
+    return conjMeta(self, makeVector(null, store));
   });
   //@unit PersistentVectorValue.lookup effect: PersistentVectorValue when: arrayMapContains, get,
   //@ getSite, getSite3 requires: builtinSlot, noBranch, PersistentVectorValue, vectorNth
@@ -5133,8 +5132,7 @@
     return conjMeta(self, makeVector(null, vectorConj(self, item)));
   });
   //@unit SubvecValue.assocSlot effect: SubvecValue when: assoc, assocSite requires: builtinSlot,
-  //@ kindHooks, makeVector, noBranch, outOfBounds, preserveMeta, SubvecValue, vectorAssoc,
-  //@ vectorConj
+  //@ conjMeta, kindHooks, makeVector, noBranch, outOfBounds, SubvecValue, vectorAssoc, vectorConj
   SubvecValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     if (self.slots$LKEY) return kindHooks.assocSubvec(self, key, item, []);
@@ -5143,7 +5141,7 @@
     if (key >= 0 && key < store.cnt$LKEY) store = vectorAssoc(store, key, item);
     else if (key === store.cnt$LKEY) store = vectorConj(store, item);
     else outOfBounds();
-    return preserveMeta(self, makeVector(null, store));
+    return conjMeta(self, makeVector(null, store));
   });
   //@unit SubvecValue.lookup effect: SubvecValue when: arrayMapContains, get, getSite, getSite3
   //@ requires: builtinSlot, noBranch, SubvecValue, vectorNth
@@ -5211,7 +5209,7 @@
     return conjMeta(self, makeVector(null, vectorConj(self, item)));
   });
   //@unit MapEntryType.assocSlot effect: MapEntryType when: assoc, assocSite requires: builtinSlot,
-  //@ makeVector, MapEntryType, noBranch, outOfBounds, preserveMeta, vectorAssoc, vectorConj
+  //@ conjMeta, makeVector, MapEntryType, noBranch, outOfBounds, vectorAssoc, vectorConj
   MapEntryType.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
     if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     if (typeof key !== "number") throw new Error("Vector key must be a number");
@@ -5219,7 +5217,7 @@
     if (key >= 0 && key < 2) store = vectorAssoc(store, key, item);
     else if (key === 2) store = vectorConj(store, item);
     else outOfBounds();
-    return preserveMeta(self, makeVector(null, store));
+    return conjMeta(self, makeVector(null, store));
   });
   //@unit MapEntryType.lookup effect: MapEntryType when: arrayMapContains, get, getSite, getSite3
   //@ requires: builtinSlot, MapEntryType, noBranch
@@ -5736,11 +5734,11 @@
     return members == null ? noBranch : kindHooks.seqSet(self, members);
   });
   //@unit PersistentHashSetValue.conjSlot effect: PersistentHashSetValue when: conj, conjSite
-  //@ requires: builtinSlot, kindHooks, missing, noBranch, PersistentHashSetValue, preserveMeta
+  //@ requires: builtinSlot, conjMeta, kindHooks, missing, noBranch, PersistentHashSetValue
   PersistentHashSetValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     if (self.entries$LKEY === undefined) return noBranch;
     const built = kindHooks.conjSet(self, self, item);
-    return built === missing ? self : preserveMeta(self, built);
+    return built === missing ? self : conjMeta(self, built);
   });
   //@unit setLookup requires: kindHooks, noBranch
   // `get` of a hash or array set: its members' trie, or the entry its
@@ -12871,11 +12869,11 @@
     return nth(entry, 1);
   }
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
-  //@ assoc, collectionWithMeta, compareKeys, conj, conjBangOwn, conjMeta, conjTransient,
-  //@ coreMethod, count, derefProtocol, disj, dissoc, equalPair, firstSeq, hash, hashStructural,
-  //@ iterator, keywordLookupEquiv, keywordProgramEquiv, metaSupported, name, namespace,
-  //@ notifyWatches, objectEquiv, peek, pop, removeWatchProtocol, restSeq, rseq, stateProtocol,
-  //@ vresetProtocol, withMetaSupported requires: builtin, protocolHooks
+  //@ assoc, collectionWithMeta, compareKeys, conj, conjBangOwn, conjTransient, coreMethod, count,
+  //@ derefProtocol, disj, dissoc, equalPair, firstSeq, hash, hashStructural, iterator,
+  //@ keywordLookupEquiv, keywordProgramEquiv, metaSupported, name, namespace, notifyWatches,
+  //@ objectEquiv, peek, pop, removeWatchProtocol, restSeq, rseq, stateProtocol, vresetProtocol,
+  //@ withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,
   //@ protocolHooks
@@ -12886,9 +12884,9 @@
   //@ extendedDeclared requires: externalMethod, protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
-  //@unit protocolHooks.extend effect: extendType, extendInstance when: contains, containsProtocol,
-  //@ entryPrototype, ownMap, ownSet, resetMeta, treeMapSeqConstructor, upstreamMembers,
-  //@ vectorIndexOf, vectorPrototype requires: protocolHooks
+  //@unit protocolHooks.extend effect: extendType, extendInstance when: conjMeta, contains,
+  //@ containsProtocol, entryPrototype, ownMap, ownSet, resetMeta, treeMapSeqConstructor,
+  //@ upstreamMembers, vectorIndexOf, vectorPrototype requires: protocolHooks
   // Only `extend-type` and `specify!` can give the runtime's own values
   // protocol implementations, which their host-facing methods and fields then
   // answer through the generic operations (`hostHooks`).

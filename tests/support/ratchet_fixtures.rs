@@ -763,6 +763,15 @@
 //! ceiling crosses its rounding, so none moves; the re-frame apps save 0.6%
 //! to 1.2% of their gzipped bundles. None and prepare are unchanged, and so
 //! are the features example's chunks, a chunked build.
+//!
+//! `conj` and `assoc` of a vector, a subvector and a map entry, and `conj`
+//! of a set, copy the metadata field without `meta`'s lookup where no
+//! `extend-type` or `specify!` is kept (`conjMeta`, light-cljs-1060): the
+//! readable runtime is 2 bytes smaller (`console-log-sum` 682,268 to
+//! 682,266). Advanced, against master `c49a646a`: `constant-keys` 76,146 to
+//! 76,248, which now keeps `conjMeta` (102 bytes) for its vectors' `assoc`
+//! and its sets' `conj` slots, and `mapv-count` 54,436 to 54,435; every
+//! other fixture is unchanged. No ceiling moves.
 
 pub struct Fixture {
     pub name: &'static str,

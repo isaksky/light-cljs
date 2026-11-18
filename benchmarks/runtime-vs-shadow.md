@@ -3998,3 +3998,101 @@ A first version also wrote the runtime slice's units in the program's own functi
 - **workload 200k:** 3,547,313 to 3,529,299 bytes raw, and 896,335 to 883,581 after gzip -9 (-1.42%).
 - **The re-frame apps** (benchmarks/re-frame-vs-shadow.md), whole bundles with React after gzip -9: simple -649, TodoMVC -1,085 and flow -4,013 bytes.
 - **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): up to 62 bytes smaller raw where a program defines several globals; no ceiling crosses its rounding.
+
+## 2026-11-17: `conj` and `assoc` of a vector copy its metadata without the lookup (light-cljs-1060)
+
+**What.** `conj` and `assoc` of a vector read the vector's metadata with
+`meta` (`conjMeta`, the `-assoc` slots' `preserveMeta`) in every program that
+implements a protocol, so each took `meta`'s lookup (`ownMethod`: the mask,
+kind and marker reads) before the vector's own field. Without `extend-type`
+or `specify!`, and with no core method written by name (which keeps
+`extend-type`'s machinery, light-cljs-1056), nothing but the field can
+answer it, so `conjMeta` now tests `protocolHooks.extend` instead of
+`protocolHooks.builtin` and copies the field otherwise, as upstream's
+`-conj` and `-assoc` copy `meta`. The `-assoc` slots of a vector, a
+subvector and a map entry and a set's `-conj` slot call it too. Where
+`extend-type`, `specify!` or a member written by name is kept, the result
+holds what `meta` answers, as before, at every level. docs/value-layout.md,
+"What light-cljs-1060 landed".
+
+Evidence (readable builds, `bb benchmarks/core-ops/run.bb --pseudo-names
+vec-conj-64`): `conjMeta`, `ownMethod`, `keyMarker`, `preserveMeta`, `meta`
+and `ownMeta` took 14.8%, 6.0%, 3.4%, 2.0%, 1.8% and 0.9% of the light-cljs
+samples on master `1ffb4d00` (3,404 ns per operation under the profiler);
+with the change only `ownMeta` (1.4%) is left, and `vectorConj` holds 69% of
+the samples (1,533 ns). `node --trace-turbo-inlining` shows `conjMeta`,
+`ownMeta`, `makeVector` and `vectorConj` inlined into the benchmark's loop.
+
+Binaries in research/shadow-credibility/bin: master `light-cljs-1ffb4d00`
+and the change on it `light-cljs-eb39513f` (first pass); after rebasing onto
+light-cljs-1057, master `light-cljs-c49a646a` and the change
+`light-cljs-f2bb68c6` (second pass, recheck and workload; its runtime's
+comment was shortened afterwards, which no advanced output keeps).
+Unreserved: peer workers built and tested throughout. Raw results:
+research/output-speed/conj-meta-1060.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, every operation, two
+passes in opposite orders: pass 1 before then after, load 4.26-18.43 and
+3.44-4.85; pass 2 after then before, load 3.42-4.48 and 4.00-7.78), ns per
+operation, median (range), the touched operations and every one that moved
+by 5% or more in both passes:
+
+| op | pass | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| vec-conj-64 | 1 | 2,012 (1,973-2,051) | 1,322 (1,297-1,337) | -34% | 1,320 / 1,289 | 1.52 | 1.03 |
+| vec-conj-64 | 2 | 2,036 (1,992-2,098) | 1,313 (1,297-1,318) | -36% | 1,294 / 1,273 | 1.57 | 1.03 |
+| vec-assoc-1024 | 1 | 63.4 (62.9-64.6) | 53.9 (52.4-53.9) | -15% | 72.1 / 73.4 | 0.88 | 0.73 |
+| vec-assoc-1024 | 2 | 65.3 (64.9-70.4) | 53.5 (52.4-53.6) | -18% | 73.5 / 72.5 | 0.89 | 0.74 |
+| group-by-100 | 1 | 9,451 (9,371-9,915) | 8,793 (8,590-8,837) | -7% | 5,033 / 4,976 | 1.88 | 1.77 |
+| group-by-100 | 2 | 9,764 (9,676-9,942) | 8,434 (8,330-8,598) | -14% | 5,060 / 5,015 | 1.93 | 1.68 |
+| transient-vec-100 | 1 | 4,602 (4,510-4,724) | 4,745 (4,619-4,861) | +3% | 1,157 / 1,144 | 3.98 | 4.15 |
+| transient-vec-100 | 2 | 4,818 (4,606-4,979) | 4,643 (4,582-4,828) | -4% | 1,147 / 1,144 | 4.20 | 4.06 |
+| swap-assoc | 1 | 38.9 (38.4-41.1) | 45.3 (44.1-45.8) | +16% | 37.4 / 36.6 | 1.04 | 1.24 |
+| swap-assoc | 2 | 40.6 (39.5-40.9) | 47.0 (46.7-47.5) | +16% | 37.0 / 37.9 | 1.10 | 1.24 |
+| select-keys-3 | 1 | 306.3 (299.0-321.8) | 337.0 (323.4-341.3) | +10% | 244.0 / 241.5 | 1.26 | 1.40 |
+| select-keys-3 | 2 | 320.0 (310.8-325.4) | 344.6 (335.4-348.3) | +8% | 250.4 / 245.3 | 1.28 | 1.40 |
+
+- `transient-vec-100` builds its vector with `conj!` and `persistent!`,
+  which take no metadata; it is unchanged within the passes' ranges.
+- **`swap-assoc` and `select-keys-3` are slower in the whole gate's process
+  only.** Their path (`assoc` of an array map: `arrayMapAssoc`,
+  `preserveMeta`, `meta`, `ownMethod`; `select-keys` also `meta` of the
+  map) is the same code before and after. What changed is that vectors no
+  longer reach `preserveMeta`, `meta` and `ownMethod`, so V8 optimizes those
+  shared functions on the feedback the gate's earlier map, seq and printing
+  operations leave. Run without the whole gate before them, both are faster
+  with the change: in the alternated recheck below `swap-assoc` 39.6 to 37.3
+  and 38.9 to 37.2 ns, `select-keys-3` 299.8 to 292.5 and 300.0 to 295.7.
+  Outside `run.bb`, six processes of the whole gate's order, alternated
+  (load 10-11), gave `swap-assoc` 45.6 before and 48.0 after (medians, +5%)
+  and `select-keys-3` 339.8 and 350.1 (+3%): the order-dependent loss is
+  real but smaller than the two gate passes show. It is recorded as found.
+- `multi-arity-call` (+10% in pass 1, -1% in pass 2), `merge-small` (+7%,
+  +1%), `hash-fresh-map-7` (+6%, +2%), `str-sorted-map-20` (+6%, -1%) and
+  `str-nested-map` (+5%, -1%) moved by 5% or more in one pass only, when
+  the loop baselines `bit-and` and `aget-bit-and` moved +4% and +5% (0% and
+  -3% in pass 2); every other operation moved by less than 5% in both.
+
+**Recheck** (`--ops vec-conj-64,vec-assoc-1024,group-by-100,transient-vec-100,multi-arity-call,swap-assoc,merge-small,select-keys-3
+--runs 5`, `c49a646a` and `f2bb68c6` alternated, two passes in opposite
+orders, load 2.87-4.12), light-cljs ns per operation, medians of pass 1 /
+pass 2: `vec-conj-64` 2,119 / 2,094 to 1,422 / 1,427 (-33%, -32%),
+`vec-assoc-1024` 64.8 / 64.3 to 52.7 / 52.5 (-19%, -18%), `group-by-100`
+10,155 / 10,240 to 8,415 / 8,498 (-17%, -17%), `transient-vec-100` 4,663 /
+4,628 to 4,549 / 4,620 (-2%, -0%), `multi-arity-call` 2.01 / 1.97 to 1.94 /
+1.97, `merge-small` 2,375 / 2,327 to 2,287 / 2,310.
+
+**Workload 200k** (`compare.bb PROJECT --runs 5 --runtime-only --runtime
+1,40`, the light-cljs output rebuilt with each binary just before its runs,
+the shadow-cljs output the project's, two passes in opposite orders: master,
+change, change, master; load 8.88-11.66), light-cljs's steady state in ms
+per iteration, with shadow-cljs's in the same run: master 40.5 (22.4) and
+46.2 (25.5), change 46.2 (25.9) and 45.5 (25.2); light/shadow 1.80 and 1.81
+for master, 1.79 and 1.80 with the change. Unchanged: the steady state
+followed the machine's load, as shadow-cljs's did.
+
+**Size.** The gate's advanced output 162,287 to 162,288 bytes (42,744 to
+42,746 after gzip -9). The size ratchet (tests/support/ratchet_fixtures.rs,
+noted there): `constant-keys` 102 bytes larger, which keeps `conjMeta` for
+its vectors' `assoc` and its sets' `conj`; `mapv-count` 1 byte smaller; no
+other fixture moves, no ceiling moves.

@@ -1317,6 +1317,42 @@ spelling, and its walk takes about 9 ns less.
   larger): `destructure-map-3` behind the small-map and hash map
   operations alone was 7% slower, and 4% faster in the whole gate.
 
+What light-cljs-1060 landed: `conj` and `assoc` of a vector copy its
+metadata field without `meta`'s lookup.
+
+- **Why nothing else can answer.** Without `extend-type` or `specify!`,
+  `meta`'s lookup is `ownMethod` (or none, without protocol
+  implementations), which answers a value of a runtime class (a kind below
+  64) only with a method in its `-meta` slot, beside its marker. Only
+  `installMethods` through `extendType` or `extendInstance`, or a member the
+  program writes by name, which keeps `extendType`
+  (`ProgramFacts::core_method_write`), puts one there; reflection that
+  computes a keyed name is the forgery the group gave up. So where
+  `protocolHooks.extend` is absent, `meta` of a vector, a subvector, a map
+  entry or a set is its own field.
+- **The change.** `conjMeta` tests `protocolHooks.extend`, where it tested
+  `protocolHooks.builtin`: with it, the metadata is read with `meta`
+  (`preserveMeta`), as before; without, copied from the field, as upstream's
+  `-conj` and `-assoc` copy `meta`. The `-assoc` slots of a vector, a
+  subvector and a map entry and a set's `-conj` slot call it where they
+  called `preserveMeta`; the vectors' `-conj` slots already did. Its unit is
+  among `protocolHooks.extend`'s `when:` units, so a program that keeps
+  `extendType` keeps the flag. Dev builds, the macro host, the REPL, the
+  evaluator, the QuickJS reference and the Pants build's profile keep every
+  unit, so they take `meta` as before. A value that `specify!` or a method
+  written by name gives its own `IMeta` hands what that method answers to
+  its `conj` and `assoc` at every level, as before
+  (`vector_and_set_updates_copy_metadata_without_the_lookup`).
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1060): the
+  lookup is gone from `vec-conj-64`'s readable profile; in two gate passes
+  `vec-conj-64` 2,012 and 2,036 to 1,322 and 1,313 ns (light/shadow 1.52
+  and 1.57 to 1.03), `vec-assoc-1024` -15% and -18%, `group-by-100` -7% and
+  -14%. `swap-assoc` (+16%) and `select-keys-3` (+8 to 10%), whose code is
+  the same, are slower in the whole gate's process and faster without the
+  operations before them: `preserveMeta`, `meta` and `ownMethod`, which
+  vectors no longer reach, take other feedback there. Workload 200k
+  unchanged.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
