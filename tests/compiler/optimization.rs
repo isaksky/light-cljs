@@ -993,14 +993,12 @@ fn module_result(esm: &str) -> String {
 
 /// light-cljs-1051: at `Advanced` a single file declares each global where a
 /// statement of the program's function defines it, `var g3 = ...;`, rather
-/// than in a `let` list up front, and an ES module writes the runtime
-/// slice's units in that function rather than as a factory whose returned
-/// array the program destructures. A global read before its definition runs
-/// still reads `undefined`, and a `defonce` keeps its first value. Output
-/// that is no module keeps the factory, whose `"use strict"` would make the
-/// program strict too, which it can tell.
+/// than in a `let` list up front. A global read before its definition runs
+/// still reads `undefined`, and a `defonce` keeps its first value. The
+/// runtime stays a factory, whose `"use strict"` covers it alone: the
+/// program outside a module stays sloppy code.
 #[test]
-fn advanced_declares_globals_and_runtime_roots_where_they_are_defined() {
+fn advanced_declares_globals_where_they_are_defined() {
     let source = r#"
         (declare later)
         (defn early [] (if (undefined? later) :unset later))
@@ -1017,19 +1015,16 @@ fn advanced_declares_globals_and_runtime_roots_where_they_are_defined() {
                  in-let (early)])"#;
     let expected = "[:unset 1 3 4 0 1 3 11 5]\n";
     both(source, expected);
-    let advanced = ApplicationOptions::new(OptimizationLevel::Advanced);
-    let prepared = prepare_application(&program(source), advanced.clone());
-    // The module's program function is the runtime's: no factory of its own.
-    let esm = prepared.emit_esm();
-    assert!(!esm.contains("use strict"), "{esm}");
-    assert!(esm.contains(";var ") || esm.contains("}var "), "{esm}");
-    assert_eq!(module_result(&esm), expected);
-    // Output that is no module keeps the factory.
-    let js = prepared.emit_js();
-    assert!(js.contains("=(()=>{\"use strict\";"), "{js}");
-    assert!(js.contains(";var ") || js.contains("}var "), "{js}");
-    // Every top-level definition declares its global; the readable output
-    // keeps the factory and the compiler's names.
+    let prepared = prepare_application(
+        &program(source),
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+    for js in [prepared.emit_js(), prepared.emit_esm()] {
+        assert!(js.contains("=(()=>{\"use strict\";"), "{js}");
+        assert!(js.contains(";var ") || js.contains("}var "), "{js}");
+    }
+    assert_eq!(module_result(&prepared.emit_esm()), expected);
+    // Every top-level definition declares its global.
     let readable =
         prepare_application(&program(source), readable(OptimizationLevel::Advanced)).emit_js();
     assert!(!readable.contains("\n  let g"), "{readable}");
@@ -1043,11 +1038,4 @@ fn advanced_declares_globals_and_runtime_roots_where_they_are_defined() {
                     (def kept (atom 0))
                     (pr-str [(sloppy) (aliased 2) @kept])"#;
     both(source, "[false 9 0]\n");
-    // A direct `eval` in raw text reads a string as code: the module keeps
-    // the factory, whose `Atom` it cannot see.
-    let source =
-        r#"(js/JSON.stringify (let [a (atom 0)] (js* "[~{}, eval(~{})]" @a "typeof Atom")))"#;
-    let esm = prepare_application(&program(source), advanced).emit_esm();
-    assert!(esm.contains("=(()=>{\"use strict\";"), "{esm}");
-    assert_eq!(module_result(&esm), "[0,\"undefined\"]\n");
 }

@@ -901,8 +901,6 @@ fn emit_js_mode(
     // The runtime's statement, which declares no compiler name.
     let mut runtime_statement = 0..0;
     let mut unit_bytes = None;
-    // The units of a slice written in the program's function, by unit index.
-    let mut units_in_scope: Option<Vec<bool>> = None;
     if embed {
         if slice {
             // A runtime registers its key as it loads (`runtimeKey`).
@@ -925,34 +923,8 @@ fn emit_js_mode(
         };
         // Marks of the runtime text, by offset in `runtime`.
         let mut runtime_marks = Marks::default();
-        // A terse ES module writes the slice's units in the program's own
-        // function (light-cljs-1051), which is strict code as a module's
-        // is, where nothing the program names could be captured by a
-        // binding that keeps its spelling. Output that is no module keeps
-        // the factory, whose `"use strict"` would make the program strict
-        // too, which it can tell (`js-arguments` aliasing its parameters,
-        // a write to a frozen object).
-        if slice && terse && module && shared.is_none() {
-            let kept = crate::runtime_slice::sliced_units(&emitter.runtime);
-            let constants = emitter
-                .constants
-                .as_ref()
-                .map_or("", |constants| constants.declarations.as_str());
-            let texts = [emitter.output.as_str(), registration.as_str(), constants];
-            let raw = emitter
-                .raw_segments
-                .iter()
-                .map(|range| &emitter.output[range.clone()]);
-            if !spells_kept_binding(texts.into_iter(), raw, std::iter::once(kept.as_slice())) {
-                units_in_scope = Some(kept);
-            }
-        }
         let mut runtime = if let Some(parameter) = shared {
             format!("  const rt = {parameter};\n")
-        } else if slice && units_in_scope.is_some() {
-            // Written with the program's names (`terse_program_units`).
-            embedding = RuntimeEmbedding::Slice;
-            String::new()
         } else if slice {
             // `const [rt$add, rt$symbol] = (() => { ...; return [add, symbol]; })();`
             embedding = RuntimeEmbedding::Slice;
@@ -1048,7 +1020,7 @@ fn emit_js_mode(
                 range.end += runtime.len();
             }
         }
-        if shared.is_none() && units_in_scope.is_none() {
+        if shared.is_none() {
             let segment = prelude_end + factory..prelude_end + source_length - 2;
             runtime_segment = Some(segment.clone());
             emitter.raw_segments.push(segment);
@@ -1135,19 +1107,7 @@ fn emit_js_mode(
         }
         emitter.output.insert_str(0, &open);
     }
-    let output = if let Some(kept) = &units_in_scope {
-        let (output, bytes) = crate::terse::terse_program_units(
-            &emitter.output,
-            &emitter.raw_segments,
-            kept,
-            emitter.marks.as_mut(),
-        );
-        // Counted as the output writer writes them, keyed.
-        let bytes = crate::runtime_slice::written_unit_bytes(bytes);
-        runtime_bytes = bytes.iter().sum();
-        unit_bytes = Some(bytes);
-        output
-    } else if terse {
+    let output = if terse {
         crate::terse::terse_program(
             &emitter.output,
             &emitter.raw_segments,
@@ -1201,90 +1161,6 @@ fn emit_js_mode(
         constants,
     };
     (output, runtime, mapping)
-}
-
-/// Whether the output could name a runtime binding of the `kept` units
-/// (each by unit index) that keeps its spelling
-/// (`crate::terse::keeps_spelling`): a constructor such as `Atom`, which
-/// units written in the program's scope declare under that name, so it
-/// would capture a global of that name that the program reads (`typeof
-/// Atom` in raw `js*` text). In `raw` text any such word counts, in strings
-/// too (which a direct `eval` reads as code), and so does a name spelled
-/// with a `\u` escape, which may spell one (`\u{41}tom`), or text that does
-/// not lex alone; an escape in a string or a regular expression,
-/// `/[\uD800-\uDBFF]/`, names nothing. In the compiler's own `texts` (which
-/// hold the raw text too) only a name counts: the emitter reads a host
-/// global through `host("Atom")`, and its strings, such as docstrings, are
-/// data, unless raw text has a direct `eval` (or does not lex), which reads
-/// a string as code: then any word counts, and any `\u` escape.
-fn spells_kept_binding<'t>(
-    texts: impl Iterator<Item = &'t str>,
-    mut raw: impl Iterator<Item = &'t str>,
-    kept: impl Iterator<Item = &'t [bool]>,
-) -> bool {
-    use crate::js_syntax::{Kind, lex_section};
-    let manifest = RuntimeManifest::embedded();
-    let spelled = kept
-        .flat_map(|kept| {
-            manifest
-                .units
-                .iter()
-                .zip(kept)
-                .filter(|(_, kept)| **kept)
-                .flat_map(|(unit, _)| unit.declares.iter().copied())
-        })
-        .filter(|binding| crate::terse::keeps_spelling(binding))
-        .collect::<std::collections::BTreeSet<_>>();
-    if spelled.is_empty() {
-        return false;
-    }
-    let identifier = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$');
-    let spells = |text: &str| {
-        let bytes = text.as_bytes();
-        spelled.iter().any(|word| {
-            text.match_indices(word).any(|(at, _)| {
-                !(at > 0 && identifier(bytes[at - 1]))
-                    && !bytes
-                        .get(at + word.len())
-                        .is_some_and(|&byte| identifier(byte))
-            })
-        })
-    };
-    let escaped_name = |text: &str| {
-        text.contains("\\u")
-            && lex_section(text, 0..text.len(), false)
-                .ok()
-                .is_none_or(|tokens| {
-                    tokens
-                        .iter()
-                        .any(|token| token.kind == Kind::Name && token.text(text).contains('\\'))
-                })
-    };
-    let raw = raw.collect::<Vec<_>>();
-    if raw.iter().any(|text| spells(text) || escaped_name(text)) {
-        return true;
-    }
-    // A direct `eval` in raw text reads a string as code, the compiler's
-    // strings too (a hole's value): then any word counts, and any escape,
-    // which may spell one in a string.
-    let mut texts = texts;
-    let eval = raw.iter().any(|text| {
-        lex_section(text, 0..text.len(), false).map_or(true, |tokens| {
-            tokens
-                .iter()
-                .any(|token| token.kind == Kind::Name && token.text(text) == "eval")
-        })
-    });
-    if eval {
-        return raw.iter().any(|text| text.contains("\\u"))
-            || texts.any(|text| spells(text) || text.contains("\\u"));
-    }
-    texts.any(|text| match lex_section(text, 0..text.len(), false) {
-        Ok(tokens) => tokens
-            .iter()
-            .any(|token| token.kind == Kind::Name && spelled.contains(token.text(text))),
-        Err(_) => spells(text),
-    })
 }
 
 /// The declarations of the output's helpers: `host`, which reads a host
