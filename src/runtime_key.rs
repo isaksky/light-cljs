@@ -156,11 +156,19 @@ fn shortened_stem(stem: &str) -> bool {
         && !stem.starts_with("__light")
 }
 
-/// Whether `protocolSlot` can name the keyed name of `stem`: a protocol
-/// slot or marker, which it names from a protocol's key; the masks and the
-/// kind, cell and record names (`cljs$lang$`) it never names.
+/// Whether `protocolSlot` can name the keyed name of `stem` from a
+/// protocol's key without the text naming it: a protocol marker, or a slot
+/// of a core protocol (`cljs$core$`), which the runtime's own lookups name
+/// from their keys. The masks and the kind, cell and record names
+/// (`cljs$lang$`) it never names, and a program protocol's slots `Advanced`
+/// output names where the runtime needs them: its `protocolMethod`'s
+/// `names` and its method entries' slots (`crate::emitter`'s
+/// `object_methods`), so the runtime never builds them.
 fn slot_stem(stem: &str) -> bool {
-    stem.contains('$') && !stem.starts_with("cljs$lang$") && crate::analyzer::protocol_member(stem)
+    stem.contains('$')
+        && !stem.starts_with("cljs$lang$")
+        && crate::analyzer::protocol_member(stem)
+        && (stem.ends_with('$') || stem.starts_with("cljs$core$"))
 }
 
 /// The code of the short name ranked `index`: one of [`CODE_DIGITS`], then
@@ -606,6 +614,29 @@ mod tests {
             whole
                 .apply(text)
                 .ends_with("\"$LNAMES\"; \"0123456789abcdef\"")
+        );
+    }
+
+    #[test]
+    fn the_table_leaves_out_program_protocol_slots() {
+        // A core protocol's slot and marker and a program protocol's
+        // marker, which `protocolSlot` names from their keys, and a program
+        // protocol's slots, which the text names where the runtime needs
+        // them (light-cljs-1058).
+        let text = "a.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY; \
+                    c.cljs$core$ICounted$$LKEY; d.my$ns$P$$LKEY; e.my$ns$P$m_x$arity$3$LKEY; \
+                    f.my$ns$P$arity$arity$1$LKEY; \"$LNAMES\"";
+        let key = RuntimeKey {
+            key: "q7kx0abc".into(),
+            hash: None,
+            names: None,
+        }
+        .shortened([text]);
+        assert_eq!(
+            key.apply(text),
+            "a.$q7kx0abca; c.$q7kx0abcb; d.$q7kx0abcc; e.$q7kx0abce; f.$q7kx0abcd; \
+             \" cljs$core$IAssociative$_contains_key_QMARK_$arity$2 a cljs$core$ICounted$ b \
+             my$ns$P$ c \""
         );
     }
 

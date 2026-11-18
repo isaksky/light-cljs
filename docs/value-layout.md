@@ -1682,6 +1682,47 @@ shrinks 703 bytes after gzip in simple, 883 in TodoMVC and 1,001 in flow
 (benchmarks/re-frame-vs-shadow.md, "2026-11-17: short keyed names at
 `:advanced`"), against the what-if's 1,018, 1,188 and 1,462 for this form.
 
+**A program protocol's slots from the text.** As light-cljs-1058 changed
+it, `Advanced` output names a program protocol's slots where the runtime
+needs them, and the table holds only the core protocols' slots and the
+markers (`runtime_key::slot_stem`):
+
+- a protocol function's dispatch: `protocolMethod` takes the slots of its
+  arities as its last argument, `names`, and `protocolSlot` answers them
+  for the key from then on (its `spelled`), so a method entry that names
+  the dispatcher (`[g1, 2, function ...]`) reaches the same slot;
+- a method entry of a type, a record, `reify` or `specify!` names its slot
+  in place of its key (`["$<key>c", 2, function ...]`), which
+  `installMethods` tells by the key's missing slash; an `extend-type` of a
+  value that may be a host type's name as it runs (`js/Date`, a local)
+  keeps the key, which `extendType` reads there, and names the slot as the
+  entry's fourth item; one of a host type's name (`number`) installs no
+  slot.
+
+Where `protocolSlot` still builds a name from a key, the table stays:
+
+- **Core protocols' slots.** The runtime's own lookups (`methodKey` and
+  `keySlot`, `coreMethod`, `ownMethod`, `extendedMethod`), its record
+  methods (`recordMethods`) and the core entries of a program's types name
+  them from the keys the runtime text spells, at the arity of each call. A
+  name passed costs about 3 bytes after gzip (flow's 41 dispatchers' names
+  cost 135), and these sites (each resolved key, each record method entry,
+  each core entry of a program's type) outnumber the 25 stems, about 10
+  bytes each in the table; a missed site would name in full a slot the
+  text spells short.
+- **Markers.** `directMethod` (`satisfies?`, `implements?`), `methodKey`
+  and `protocolMethodInfo` name them from any protocol a program passes;
+  two to four are spelled in an app.
+
+Spelling the table's stems as the keys the text holds (`ICounted/-count/1`)
+saved 30 to 44 bytes after gzip in the re-frame apps' output, but its
+rewriting in `protocolSlot` cost about 170 bytes raw in every program that
+keeps it, so the stems stay as they are. Measured in
+benchmarks/re-frame-vs-shadow.md, "2026-11-18: a program protocol's slots
+named by the text": the table falls to 25 stems in simple and TodoMVC and 26
+in flow, about 265 bytes after gzip, and the whole bundles shrink a further
+61, 122 and 108 bytes after gzip (the output as written 161, 129 and 200).
+
 **What keeps its whole name.**
 
 - **Not keyed, so not renamed:** every unkeyed name: `toJSON`, `toString`,

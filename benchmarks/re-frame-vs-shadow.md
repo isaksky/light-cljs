@@ -1489,3 +1489,45 @@ The browser behaviour checks pass for all three apps (`bb benchmarks/re-frame.bb
 - **Strictness:** outside a module the units in place need a `"use strict"` at the program function's start, which makes the program strict too; `js-arguments` aliasing its parameters and writes to frozen objects can tell (the Sol review's finding). Only modules could take them.
 - **A word that keeps the factory:** a unit binding that keeps its spelling, such as `Atom`, would capture a host global of that name, so a program that could name one keeps the factory (chunked builds' rule). flow first kept it for docstrings spelling `Atom` and an escape in `clojure.string/reverse`'s regular expression, which name nothing.
 - light-cljs-1062 holds these numbers, to find a placement that saves in both.
+
+## 2026-11-18: a program protocol's slots named by the text (light-cljs-1058)
+
+light-cljs-1048's table of slot codes for the runtime's `protocolSlot` held every protocol slot and marker the output spells. light-cljs-1058 takes a program protocol's slots out of it: `Advanced` output names them where the runtime needs them, in each protocol function's `protocolMethod` and in each method entry that does not name its dispatcher (docs/value-layout.md, section 1, "A program protocol's slots from the text"). The core protocols' slots and the markers stay in the table, which the runtime's own lookups read.
+
+```sh
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
+```
+
+### Setup
+
+- **Binaries:** `light-cljs-1051-d05aa74d`, whose code is master `8c21c1ae`'s (light-cljs-1051's declarations), and `light-cljs-1058-d4fa8e7d`, this pellet rebased on it. Both are V8 builds. The first measurement, before light-cljs-1051 landed, used master `light-cljs-c49a646a` and `light-cljs-1058-7e6d4545`.
+- **Ports:** made with porter `shadow-port-tool-983` and master `1ffb4d00`'s binary, one port per app.
+- **Machine:** the load average was 10 to 18, unreserved. Sizes do not depend on load.
+
+### The whole bundle with React, gzip -9
+
+| App | master `8c21c1ae` | light-cljs-1058 | Change | Before light-cljs-1051 (`c49a646a`) |
+|---|---:|---:|---:|---:|
+| re-frame simple | 114,985 | 114,924 | -61 (-0.05%) | 115,634 to 115,555 (-79) |
+| TodoMVC | 147,043 | 146,921 | -122 (-0.08%) | 148,128 to 148,010 (-118) |
+| flow | 342,664 | 342,556 | -108 (-0.03%) | 346,665 to 346,368 (-297) |
+
+light-cljs's output as written, without React, after gzip: simple 68,641 to 68,480 (-161), TodoMVC 98,864 to 98,735 (-129), flow 289,637 to 289,437 (-200); before light-cljs-1051 -154, -126 and -173. Raw, the whole bundles are 760, 1,491 and 2,609 bytes smaller both times. The bundles' gzip change moves more between the two masters than the output's does: esbuild's minified bundle changes around the names. After brotli -q 11 the bundles move by -60, +8 and -238 bytes, and the output as written by +17, -43 and +7.
+
+### Against the what-if
+
+light-cljs-1048 saved 703, 883 and 1,001 bytes against its master. With this pellet's 61, 122 and 108 that is about 764, 1,005 and 1,109 bytes, 75%, 85% and 76% of the what-if's 1,018, 1,188 and 1,462 (from 69%, 74% and 68%; with the first measurement's 79, 118 and 297, 77%, 84% and 89%). The savings are against different masters, so the sums are approximate.
+
+**Where the bytes went**, measured on the output as written by taking each part out of the text (which then no longer runs):
+- **The table:** 36 stems in simple and TodoMVC and 42 in flow cost 414 to 480 bytes after gzip, the 11 to 16 program protocols' slots 151 to 215 of them. Now it holds 25, 25 and 26 stems, all core slots and markers, which cost 261 to 273.
+- **The names that replace them:** each dispatcher's `names`, 8, 14 and 41 of them, cost 25, 57 and 135 bytes; the entries that name their slot after the function, where an `extend-type`'s target may be a host type's name as it runs, 0 to 4. A method entry that names its slot in place of its key costs nothing: the slot's name is shorter than the key.
+
+**Why the core slots stay in the table:** the runtime names them from the keys its own text spells, at each call's arity (`methodKey` and `keySlot`, `coreMethod`, the record methods, and each core entry of a program's type). Passing their names costs about 3 bytes after gzip at each of those sites, which outnumber the 25 stems, and the table costs about 10 bytes a stem.
+
+**Encodings tried**, each against master `1ffb4d00`'s bundles (115,578, 147,978 and 346,543 bytes after gzip):
+- **Every entry keeps its key and names its slot after its function:** simple -14, TodoMVC +100, flow +97. The names cost more than the table's program slots did.
+- **The slot in place of the key, where `installMethods` alone reads the entry** (a type's, a `reify`'s, a `specify!`'s): simple -104, TodoMVC -114, flow -152; with an `extend-type` of a program or runtime type taking that form too, -104, -122 and -202. This is the form kept.
+- **The table's stems spelled as the keys the text holds,** `ICounted/-count/1` for `cljs$core$ICounted$_count$arity$1`, so that gzip finds them in the text: a further 4, 15 and 44 bytes off the bundles (34 to 44 off the output as written). Not kept: the rewriting in `protocolSlot` costs about 170 bytes raw, 80 after gzip, in every program that keeps it, more than a small program's table.
+- **A dispatcher's arities and names as one object,** `{1:"$<key>b"}` for `[1]` and `["$<key>b"]`: 1 to 7 bytes larger after gzip, though 16 to 82 smaller raw. Not kept.
+
+The browser behaviour checks pass for all three apps with light-cljs-1058's builds (`bb benchmarks/re-frame.bb browser simple todomvc flow --compiler light --runs 1`).

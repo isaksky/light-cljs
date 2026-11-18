@@ -118,12 +118,13 @@ fn protocol_functions_as_values_keep_dispatch_at_every_level() {
     let program = analyze(source, &parse(source).unwrap()).unwrap();
     let js = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_js();
     // A method of fixed signatures gets its own dispatcher; a variadic one and
-    // one extendable through metadata keep the shared one.
+    // one extendable through metadata keep the shared one. Each names its
+    // slots, as the text spells them (light-cljs-1058).
     for expected in [
-        "(m0, m1) => function (r0) { return r0 != null && r0[m1] != null ? r0[m1](r0) : m0(r0); })",
-        "(m0, m1, m2) => function (r0, a1 = undefined) { if (arguments.length === 1) { if (r0 != null && r0[m1] != null) return r0[m1](r0); } else if (arguments.length === 2) { if (r0 != null && r0[m2] != null) return r0[m2](r0, a1); } return m0.apply(null, arguments); })",
-        "\"cljs.user/h\", [3], false, 1, () => ",
-        "\"cljs.user/m\", [1], true, null, () => ",
+        "(m0, m1) => function (r0) { return r0 != null && r0[m1] != null ? r0[m1](r0) : m0(r0); }, [\"cljs$user$P$f$arity$1$",
+        "(m0, m1, m2) => function (r0, a1 = undefined) { if (arguments.length === 1) { if (r0 != null && r0[m1] != null) return r0[m1](r0); } else if (arguments.length === 2) { if (r0 != null && r0[m2] != null) return r0[m2](r0, a1); } return m0.apply(null, arguments); }, [\"cljs$user$P$g$arity$1$",
+        "\"cljs.user/h\", [3], false, 1, () => g3, null, [\"cljs$user$P$h$arity$3$",
+        "\"cljs.user/m\", [1], true, null, () => g5, null, [\"cljs$user$M$m$arity$1$",
     ] {
         assert!(js.contains(expected), "{expected}\n{js}");
     }

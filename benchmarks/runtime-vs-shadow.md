@@ -4096,3 +4096,31 @@ followed the machine's load, as shadow-cljs's did.
 noted there): `constant-keys` 102 bytes larger, which keeps `conjMeta` for
 its vectors' `assoc` and its sets' `conj`; `mapv-count` 1 byte smaller; no
 other fixture moves, no ceiling moves.
+
+## 2026-11-18: a program protocol's slots named by the text (light-cljs-1058)
+
+light-cljs-1058 names a program protocol's slots in `:advanced` output where the runtime needs them, in each `protocolMethod` (its last argument, `names`) and in each method entry that does not name its dispatcher, so that the slot-code table `protocolSlot` reads holds only the core protocols' slots and the markers (docs/value-layout.md, section 1, "A program protocol's slots from the text"). It changes what the runtime does as a protocol function, a type, a `reify` or an extension is made, not any call: the slots and the lookups are the same properties as before.
+
+**Binaries:** master `light-cljs-c49a646a` and `light-cljs-1058-7e6d4545`, this pellet on it, both V8 builds. The pellet was then rebased onto light-cljs-1051's declarations (`light-cljs-1058-d4fa8e7d`), which changes no access V8 makes; the timings are on the first pair.
+
+**The gate** (`bb benchmarks/core-ops/run.bb`, all 64 operations, 5 runs per compiler alternated; before load 10.39-15.50, after 13.24-16.01, unreserved): no operation is more than 5% slower. Three moved by more than 3%:
+
+| op | light before | light after | change | light range after | rerun before | rerun after | rerun change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `sorted-map-assoc-100` | 182.5 | 194.9 | +7% | 174.7-196.5 | 168.2 | 166.9 | -1% |
+| `vec-nth-1024` | 4.92 | 5.12 | +4% | 5.07-5.17 | 4.88 | 5.02 | +3% |
+| `kw-hash100` | 16.2 | 15.6 | -4% | 14.4-16.5 | 14.6 | 14.5 | -1% |
+
+The rerun (`--ops sorted-map-assoc-100,vec-nth-1024,kw-hash100`, load 13.46 and 13.99-14.25) puts `sorted-map-assoc-100` at -1%: the first after run's range, 174.7-196.5, held the before run's. None of the three reaches a protocol function, a type's methods or `protocolSlot` per call. The operations on protocols and records did not move: `protocol-on-record` 2.55 to 2.54 ns, `record-kw-field` 5.98 to 6.00, `record-assoc` 54.2 to 54.2, `multimethod` 118.4 to 118.5.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1058 --runs 5 --runtime-only --runtime 1,10,40`, the project rebuilt with each binary just before its run), wall time, median (range). A first pair of runs met a load of 24 during the before binary's 40 iterations (3.94 to 8.98 s) and was run again; these are the second (before load 13.6-15.8, after 13.6-14.0):
+
+| iterations | light before | light after | shadow-cljs (before run) | shadow-cljs (after run) |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.405 s (0.397-0.412) | 0.391 s (0.387-0.392) | 0.330 s | 0.330 s |
+| 10 | 0.897 s (0.894-0.903) | 0.879 s (0.862-0.900) | 0.619 s | 0.606 s |
+| 40 | 2.207 s (2.193-2.296) | 2.146 s (2.136-2.173) | 1.342 s | 1.294 s |
+
+Steady state, from 1 and 40 iterations: light-cljs 46.2 to 45.0 ms per iteration (-3%, as shadow-cljs's own 26.0 to 24.7 moved with the load), light/shadow 1.78 and 1.82.
+
+**Size** (advanced): workload 200k 3,547,313 to 3,523,501 bytes raw (-23,812, -0.7%), mostly its method entries naming their slots in place of their keys. The re-frame apps' bundles shrink 61 to 122 bytes after gzip (benchmarks/re-frame-vs-shadow.md, "2026-11-18: a program protocol's slots named by the text"); the size ratchet (tests/support/ratchet_fixtures.rs, noted there) grows 53 to 128 bytes where a small program keeps the protocol machinery.

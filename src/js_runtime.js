@@ -931,15 +931,19 @@
   // At `:advanced` the output writer writes every keyed name short, `$`, the
   // key and a code of one or two letters (docs/value-layout.md, section 1,
   // "Short names at `:advanced`"), and for the placeholder here the codes of
-  // the protocol slots and markers the text spells, " stem code stem code ",
-  // so that `protocolSlot` names those as the text does. Elsewhere it stays
-  // the placeholder and every name is whole.
+  // the core protocols' slots and the markers the text spells, " stem code
+  // stem code ", so that `protocolSlot` names those as the text does; a
+  // program protocol's slots the text names where they are needed
+  // (`protocolMethod`, `installMethods`). Elsewhere it stays the
+  // placeholder and every name is whole.
   const protocolSlotCodes = "$LNAMES";
   //@unit protocolSlot requires: mungeMember, protocolSlotCodes, protocolSlots, runtimeKey
-  function protocolSlot(key, arity) {
+  // `spelled`, the slot as the text names it, is the answer from then on.
+  function protocolSlot(key, arity, spelled) {
     let slots = protocolSlots.get(key);
-    if (slots?.has(arity)) return slots.get(arity);
     if (!slots) { slots = new Map(); protocolSlots.set(key, slots); }
+    if (spelled) { slots.set(arity, spelled); return spelled; }
+    if (slots.has(arity)) return slots.get(arity);
     const slash = key.indexOf("/");
     const qualified = arity === 0 ? slash >= 0 : key.indexOf("/", slash + 1) >= 0;
     const namespace = qualified ? key.slice(0, slash) : "cljs.core";
@@ -10238,9 +10242,10 @@
   //@ protocolFunctions, protocolGetters, protocolKeys, protocolSlot, protocolVariables,
   //@ setDeclaration, typeHooks
   // `fast` (light-cljs-265) makes a dispatcher that calls a slot, else its first argument.
-  function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null, fast = null) {
+  // `names` (`:advanced`) are the slots of `arities` as the text names them.
+  function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null, fast = null, names = null) {
     const rest = variadic == null ? -1 : variadic + 2, fixed = arities ? arities.filter(n => n !== rest) : [];
-    const single = rest < 0 && fixed.length === 1 ? fixed[0] : 0, slots = new Map((arities ?? []).map(n => [n, protocolSlot(key, n)]));
+    const single = rest < 0 && fixed.length === 1 ? fixed[0] : 0, slots = new Map((arities ?? []).map((n, i) => [n, protocolSlot(key, n, names?.[i])]));
     // Saved method values retain their direct slot while dynamic dispatch
     // observes the current method Var, as the CLJS macro expansion does.
     const external = (receiver, args) => {
@@ -10337,12 +10342,14 @@
       redo: () => { protocolImplementations.set(value, implementations); if (Object.keys(calls).length || ifnVariadics.has(calls)) ifnValues.set(value, calls); },
       snapshot: () => { const methods = protocolImplementations.get(value), functions = ifnValues.get(value); return () => { if (methods) protocolImplementations.set(value, methods); else protocolImplementations.delete(value); if (functions) ifnValues.set(value, functions); else ifnValues.delete(value); }; }
     });
-    for (const [dispatch, arity, method, invoke = method, variadic] of methods) {
-      const key = typeof dispatch === "string" ? dispatch : protocolKeys.get(dispatch);
+    // At `:advanced` a program protocol's entry names its slot in place of
+    // its key (a method's holds a slash) or as its fourth item.
+    for (const [dispatch, arity, method, fourth, variadic] of methods) {
+      const key = typeof dispatch === "string" ? dispatch : protocolKeys.get(dispatch), invoke = fourth === undefined ? method : fourth;
       if (!implementations.has(key)) implementations.set(key, new Map());
       if (variadic != null && key.startsWith("Object/")) objectVariadics.set(key, [variadic, method]);
       else implementations.get(key).set(arity, method);
-      if (!key.startsWith("Object/") && key !== "IFn/-invoke") patchDeclaration(value, protocolSlot(key, arity), {value: arity === 0 ? protocolSentinel : method, writable: true, configurable: true});
+      if (!key.startsWith("Object/") && key !== "IFn/-invoke") patchDeclaration(value, typeof fourth === "string" ? fourth : arity !== 0 && !key.includes("/") ? key : protocolSlot(key, arity), {value: arity === 0 ? protocolSentinel : method, writable: true, configurable: true});
       if (key === "IFn/-invoke") {
         if (variadic != null) ifnVariadics.set(calls, method);
         else calls[arity - 1] = method;

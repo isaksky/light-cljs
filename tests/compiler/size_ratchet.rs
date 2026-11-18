@@ -291,10 +291,12 @@ fn protocols_program(protocols: usize) -> String {
 }
 
 /// light-cljs-265: at `Advanced` each protocol of two methods past the first
-/// adds at most 350 bytes (upstream `:advanced` adds 488 for the same
+/// adds at most 375 bytes (upstream `:advanced` adds 488 for the same
 /// program; benchmarks/compiler.md, "Per-method protocol dispatchers"), of
 /// which each method's own dispatcher is about 60 (53 before light-cljs-1022
-/// tested its receiver as `r0 != null`).
+/// tested its receiver as `r0 != null`), and since light-cljs-1058 its
+/// slot's name, about 15, which the slot-code table no longer holds (350
+/// before).
 #[test]
 fn each_two_method_protocol_costs_at_most_its_budget() {
     let size = |protocols| {
@@ -311,7 +313,7 @@ fn each_two_method_protocol_costs_at_most_its_budget() {
     let sizes: Vec<usize> = (1..=4).map(size).collect();
     let added: Vec<usize> = sizes.windows(2).map(|pair| pair[1] - pair[0]).collect();
     println!("bytes per extra two-method protocol: {added:?}");
-    assert!(added.iter().all(|&bytes| bytes <= 350), "{added:?}");
+    assert!(added.iter().all(|&bytes| bytes <= 375), "{added:?}");
 }
 
 /// The chunked build of `program` at `Advanced` and its size report.

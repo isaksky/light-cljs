@@ -2000,6 +2000,21 @@ struct Operands {
     lift: Option<Lift>,
 }
 
+/// Where a method entry of a program protocol's method names its slot at
+/// `Advanced` (`Emitter::object_methods`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EntrySlots {
+    /// In place of the key: a type's, a `reify`'s or a `specify!`'s, whose
+    /// entries `installMethods` alone reads.
+    InPlaceOfKey,
+    /// As the entry's fourth item: an `extend-type` whose target may be a
+    /// host type's name as it runs, where `extendType` reads the keys.
+    AfterFunction,
+    /// Nowhere: an `extend-type` of a host type's name, which installs no
+    /// slot.
+    None,
+}
+
 struct Emitter<'a> {
     native_forms: bool,
     /// Native units bind their immutable core functions once per factory call.
@@ -7647,7 +7662,7 @@ impl<'a> Emitter<'a> {
         self.output.push('(');
         self.type_field_names(fields);
         self.output.push_str(", ");
-        self.object_methods(methods, None);
+        self.object_methods(methods, None, EntrySlots::InPlaceOfKey);
         write!(self.output, ", {record}, ").unwrap();
         self.type_name(global);
         // The constructor of a mutable type's instances, and of the
@@ -7913,7 +7928,7 @@ impl<'a> Emitter<'a> {
             self.string_units(&names.encode_utf16().collect::<Vec<_>>());
         }
         self.output.push_str(", ");
-        self.object_methods(methods, Some(id));
+        self.object_methods(methods, Some(id), EntrySlots::InPlaceOfKey);
         if record {
             self.output.push_str(", 1");
             if !self.sole_type(global) {
@@ -8136,22 +8151,77 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Whether emission names a program protocol's slots where the runtime
+    /// needs them ([`Emitter::object_methods`], `protocolMethod`'s `names`),
+    /// so that the output writer's table of slot codes for `protocolSlot`
+    /// leaves them out (docs/value-layout.md, section 1, "Short names at
+    /// `:advanced`"): at `Advanced`.
+    fn names_program_slots(&self) -> bool {
+        self.replaced_core.is_some() && !self.native_forms
+    }
+
+    /// Whether the protocol method whose dispatcher is `dispatcher`
+    /// ([`Emitter::defined_dispatcher`]) declares `arity`, so that its
+    /// `protocolMethod` names the slot ([`Emitter::names_program_slots`]).
+    fn declared_arity(&self, dispatcher: GlobalId, arity: usize) -> bool {
+        let Some(crate::inference::Definition::Protocol(protocol)) = self
+            .inference
+            .map(|inference| inference.facts().definition(dispatcher))
+        else {
+            return false;
+        };
+        let ExprKind::DefProtocol { methods, .. } = &self.program.exprs[protocol.0].kind else {
+            return false;
+        };
+        methods.iter().any(|method| {
+            method.global == dispatcher
+                && method.arities.contains(&arity)
+                && !method.arities.contains(&0)
+        })
+    }
+
     /// `[["ns/P/m", 1, function(l5) {...}], ...]`, the method entries of a
     /// type, `reify` or extension. Those of the type definition `owner` name
     /// a protocol method by its dispatcher where they can
-    /// ([`Emitter::defined_dispatcher`]).
-    fn object_methods(&mut self, methods: &[(MethodDispatch, FnMethod)], owner: Option<ExprId>) {
+    /// ([`Emitter::defined_dispatcher`]), whose `protocolMethod` names its
+    /// slots. At `Advanced` ([`Emitter::names_program_slots`]) another
+    /// entry of a program protocol's method names its slot as `slots`
+    /// says, which `installMethods` takes: in place of the key,
+    /// `["ns$P$m$arity$1$LKEY", 1, function(l5) {...}]`, or as its fourth
+    /// item, `["ns/P/m", 1, function(l5) {...}, "ns$P$m$arity$1$LKEY"]`.
+    fn object_methods(
+        &mut self,
+        methods: &[(MethodDispatch, FnMethod)],
+        owner: Option<ExprId>,
+        slots: EntrySlots,
+    ) {
         self.output.push('[');
         for (index, (dispatch, method)) in methods.iter().enumerate() {
             if index > 0 {
                 self.output.push_str(", ");
             }
             self.output.push('[');
+            let arity = method.params.len() + if method.rest.is_some() { 2 } else { 0 };
+            let mut slot = None;
             let ifn = match dispatch {
                 MethodDispatch::Protocol(key) => {
-                    match owner.and_then(|owner| self.defined_dispatcher(key, owner)) {
+                    let names =
+                        slots != EntrySlots::None && self.names_program_slots() && arity > 0;
+                    match owner
+                        .and_then(|owner| self.defined_dispatcher(key, owner))
+                        .filter(|&dispatcher| !names || self.declared_arity(dispatcher, arity))
+                    {
                         Some(dispatcher) => self.global(dispatcher),
-                        None => self.string_units(&key.encode_utf16().collect::<Vec<_>>()),
+                        None if names && slots == EntrySlots::InPlaceOfKey => {
+                            let slot = crate::rta::protocol_slot(key, arity);
+                            write_string(&mut self.output, slot.encode_utf16(), false);
+                        }
+                        None => {
+                            self.string_units(&key.encode_utf16().collect::<Vec<_>>());
+                            if names {
+                                slot = Some(crate::rta::protocol_slot(key, arity));
+                            }
+                        }
                     }
                     false
                 }
@@ -8169,12 +8239,7 @@ impl<'a> Emitter<'a> {
                     name == "IFn/-invoke"
                 }
             };
-            write!(
-                self.output,
-                ", {}, ",
-                method.params.len() + if method.rest.is_some() { 2 } else { 0 }
-            )
-            .unwrap();
+            write!(self.output, ", {arity}, ").unwrap();
             // Callable adapters supply the receiver as the first argument;
             // their rest binding still needs the ordinary fn dispatcher.
             let direct = self.native_forms
@@ -8189,6 +8254,10 @@ impl<'a> Emitter<'a> {
             }
             self.entry_function(method, ifn);
             self.native_protocol_target = enclosing_target;
+            if let Some(slot) = slot {
+                self.output.push_str(", ");
+                write_string(&mut self.output, slot.encode_utf16(), false);
+            }
             if ifn {
                 self.output.push_str(", ");
                 self.entry_function(method, false);
@@ -8885,7 +8954,11 @@ impl<'a> Emitter<'a> {
                     self.reify_receivers.push(method.1.target);
                     let enclosing_resets = self.captures.clone();
                     self.captures.retain(|(local, _)| !captures.contains(local));
-                    self.object_methods(std::slice::from_ref(method), None);
+                    self.object_methods(
+                        std::slice::from_ref(method),
+                        None,
+                        EntrySlots::InPlaceOfKey,
+                    );
                     self.captures = enclosing_resets;
                     self.reify_captures.truncate(old_captures);
                     self.reify_receivers.truncate(old_receivers);
@@ -8946,7 +9019,7 @@ impl<'a> Emitter<'a> {
                 self.output.push('(');
                 self.type_field_names(fields);
                 self.output.push_str(", ");
-                self.object_methods(methods, None);
+                self.object_methods(methods, None, EntrySlots::InPlaceOfKey);
                 self.output.push_str(if *record {
                     if constructor.is_some() {
                         ", true"
@@ -9177,8 +9250,27 @@ impl<'a> Emitter<'a> {
                     )
                     .unwrap();
                     self.global(method.global);
-                    if self.inference.is_some() && !*via_metadata && method.variadic.is_none() {
+                    let fast =
+                        self.inference.is_some() && !*via_metadata && method.variadic.is_none();
+                    if fast {
                         self.protocol_fast_path(&method.arities);
+                    }
+                    // Its slots as the text names them, which the method
+                    // entries naming the dispatcher reach too
+                    // ([`Emitter::object_methods`]).
+                    if self.names_program_slots()
+                        && !method.arities.is_empty()
+                        && !method.arities.contains(&0)
+                    {
+                        self.output.push_str(if fast { ", [" } else { ", null, [" });
+                        for (index, arity) in method.arities.iter().enumerate() {
+                            if index > 0 {
+                                self.output.push_str(", ");
+                            }
+                            let slot = crate::rta::protocol_slot(&method.key, *arity);
+                            write_string(&mut self.output, slot.encode_utf16(), false);
+                        }
+                        self.output.push(']');
                     }
                     self.output.push(')');
                     if !declared {
@@ -9242,7 +9334,37 @@ impl<'a> Emitter<'a> {
                 self.output.push('(');
                 self.value(*target);
                 self.output.push_str(", ");
-                self.object_methods(methods, None);
+                // `extendType` of a host type's name (`number`, `default`)
+                // fills dispatch tables by key and installs no slot; of a
+                // value that may be a string as it runs, unlike a program
+                // type or a runtime type (`PersistentVector`), an entry
+                // keeps its key.
+                let slots = match self.program.exprs[target.0].kind {
+                    _ if *instance => EntrySlots::InPlaceOfKey,
+                    ExprKind::String(_) => EntrySlots::None,
+                    ExprKind::CoreFn(core)
+                        if core
+                            .runtime_name()
+                            .starts_with(|c: char| c.is_ascii_uppercase()) =>
+                    {
+                        EntrySlots::InPlaceOfKey
+                    }
+                    ExprKind::Global(global)
+                        if self.inference.is_some_and(|inference| {
+                            matches!(
+                                inference.facts().definition(global),
+                                crate::inference::Definition::Type {
+                                    role: crate::inference::TypeRole::Constructor,
+                                    ..
+                                }
+                            )
+                        }) =>
+                    {
+                        EntrySlots::InPlaceOfKey
+                    }
+                    _ => EntrySlots::AfterFunction,
+                };
+                self.object_methods(methods, None, slots);
                 if *instance {
                     write!(self.output, ", {return_target}").unwrap();
                 }

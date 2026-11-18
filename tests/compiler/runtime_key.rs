@@ -74,8 +74,23 @@ fn release_output_writes_its_own_key_for_the_placeholder() {
         let long = format!("cljs$user$P$m$arity$1${}", written.key());
         if level == OptimizationLevel::Advanced {
             // `Advanced` writes keyed names short, `$`, the key and a code
-            // (light-cljs-1048), and gives `protocolSlot` the slot's code.
-            let code = short_name(&js, "cljs$user$P$m$arity$1").expect("the slot's code");
+            // (light-cljs-1048), and gives `protocolSlot` the core slot's
+            // code. The program protocol's slot is not in that table: the
+            // text names it where the runtime needs it, its dispatcher's
+            // `names` here (light-cljs-1058).
+            let count =
+                short_name(&js, "cljs$core$ICounted$_count$arity$1").expect("the core slot's code");
+            assert!(
+                js.contains(&format!(".${}{count}(", written.key())),
+                "{level}"
+            );
+            assert!(
+                short_name(&js, "cljs$user$P$m$arity$1").is_none(),
+                "{level}"
+            );
+            let named = format!("[\"${}", written.key());
+            let at = js.find(&named).expect("the dispatcher's names") + named.len();
+            let code = &js[at..at + js[at..].find('"').unwrap()];
             assert!(!js.contains(&long), "{level}");
             assert!(
                 js.contains(&format!(".${}{code}(", written.key())),
@@ -568,4 +583,58 @@ fn short_names_leave_what_raw_text_and_strings_reach() {
         "'cljs$user$P$m$arity$1$LKEY'"
     ));
     assert!(!light_cljs::runtime_key::keyed_by_member("x + '$LKEY'"));
+}
+
+/// At `Advanced` a program protocol's slots are named where the runtime
+/// needs them (light-cljs-1058): each dispatcher's `names`, and each method
+/// entry that does not name its dispatcher, in place of its key or, for an
+/// `extend-type` of a value that may be a host type's name, after its
+/// function. The slot-code table `protocolSlot` reads holds none of them,
+/// and every level answers alike: types with a dispatcher's entries and one
+/// whose protocol's dispatcher only direct calls replace (`Q`), records,
+/// `reify`, `specify!`, `extend-type` of a host constructor, a host type's
+/// name and a runtime type, a variadic and a metadata-extended method,
+/// `satisfies?`, `implements?` and a slot named by member.
+#[test]
+fn program_protocol_slots_are_named_by_the_text() {
+    let source = "(defprotocol P (m [x] [x y]) (v [x & ys]))
+        (defprotocol M :extend-via-metadata true (mm [x]))
+        (defprotocol Q (q [x]))
+        (deftype T [n] P (m [_] n) (m [_ y] (+ n y)) (v [_ a b] [a b]) Q (q [_] :t) ICounted (-count [_] n))
+        (defrecord R [n] P (m [_] (* 2 n)) (m [_ y] (* y n)))
+        (extend-type js/Date P (m [_] :date) (m [_ y] y))
+        (extend-type number P (m [x y] (+ x y)))
+        (extend-type PersistentVector P (m [x] (count x)) (m [x y] (conj x y)))
+        (def r (reify P (m [_] :reify) (m [_ y] [:reify y]) M (mm [_] :mm)))
+        (def s (specify! #js {} P (m [_] :specify) (m [_ y] y)))
+        (def t (T. 3))
+        (pr-str [(m t) (m t 1) (v t 1 2 3) (q t) (count t) (m (->R 2)) (m (->R 2) 5) (m (js/Date. 0))
+                 (m 4 5) (m [1 2]) (m [1] 2) (m r) (m r 1) (mm r) (m s) (m s 9) (satisfies? P t)
+                 (satisfies? P (js/Date. 0)) (satisfies? Q r) (implements? P t)
+                 (.cljs$user$P$m$arity$2 t t 10) (mm (with-meta [] {`mm (fn [_] :meta)}))])";
+    let expected = "[3 4 [nil (1 2 3)] :t 3 4 10 :date 9 2 [1 2] :reify [:reify 1] :mm :specify 9 \
+                    true true false true 13 :meta]\n";
+    for (level, printed) in OptimizationLevel::ALL
+        .iter()
+        .zip(printed_at_every_level(source))
+    {
+        assert_eq!(printed, expected, "at {level}");
+    }
+    let js = release(source, OptimizationLevel::Advanced);
+    assert!(
+        short_name(&js, "cljs$core$ICounted$_count$arity$1").is_some(),
+        "{js}"
+    );
+    for method in [
+        "P$m$arity$1",
+        "P$m$arity$2",
+        "P$v$arity$3",
+        "Q$q$arity$1",
+        "M$mm$arity$1",
+    ] {
+        assert!(
+            short_name(&js, &format!("cljs$user${method}")).is_none(),
+            "{method}: {js}"
+        );
+    }
 }
