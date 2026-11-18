@@ -1118,7 +1118,8 @@ What light-cljs-1046 landed: no protocol lookup probes the stores in turn.
   class's mask bits: `contains.own` finds the vectors' slot, and
   `ownMethod` leaves a natively implemented protocol without a slot to
   `ownDeclared`'s kind test, as before. `extendedMethod` keeps its guard,
-  where the kind's step answers.
+  where the kind's step answers. (light-cljs-1056 gave `ownMethod` its
+  guard back: see below.)
 - **What is left.** `reduce` of a vector or a map still takes the lookup
   before its own path in an `extend-type` program (their `-reduce` slots
   must keep the walk of an extended `-seq`, light-cljs-1055), and `count`
@@ -1215,6 +1216,41 @@ maps call slots before any protocol lookup.
 - **What is left.** The seqs' `-reduce` (upstream's ChunkedSeq, the map
   seqs, LazySeq and the rest), a map entry's, and a sorted map's or set's
   `reduce` still take the lookup first in an `extend-type` program.
+
+What light-cljs-1056 found: `ownMethod` tests a runtime class's kind before
+its mask bit again.
+
+- **The cause.** light-cljs-1046 let `ownMethod` (the lookup of a program
+  that implements protocols without `extend-type` or `specify!`) take a
+  runtime class's mask bit as a declaration. A vector's mask declares
+  `IMeta`, and `conj` and `assoc` of a vector read its metadata with
+  `meta` wherever `installMethods` is kept (`conjMeta`, and the `-assoc`
+  slot's `preserveMeta`). So each `conj` and `assoc` went on to
+  `keyMethod` (`keySlot` and a megamorphic read of the absent `-meta`
+  slot) and `ownDeclared` (a `reifyCells` WeakMap probe) to answer
+  nothing, where the kind test had sent it to `keyMarker`'s one read. In
+  readable profiles of the gate's `vec-conj-64`, `keyMethod`, `keySlot` and
+  `ownDeclared` took 11% of the samples on master and none before
+  light-cljs-1046 or after this fix. V8 inlined the path both ways
+  (`--trace-turbo-inlining`): the loss was the extra work, not a lost
+  inlining, and no unit on the operations' own paths had changed.
+- **The fix.** `ownMethod` skips a runtime class's mask bits again (`!(kind
+  < 64)`), so only a marker declares a program's method for its value, as
+  the 1028 handoff above has it. The answers do not change: without
+  `extend-type` or `specify!`, which install `extendedMethod`, no program
+  method reaches a runtime class's slot, and the runtime's own
+  `installMethods` types keep their markers. `contains.own` keeps
+  light-cljs-1046's reading of the mask bits, which finds the vectors'
+  `-contains-key?` slot.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1056): the
+  gate's `vec-conj-64` 2,404 to 2,051 ns, `vec-assoc-1024` 71.3 to 66.1 and
+  `group-by-100` 10,204 to 9,868, all three below `685f86dd` (before
+  light-cljs-1046) in an alternated recheck; no operation over 2% slower.
+- **What is left.** `conj` and `assoc` of a vector still read its metadata
+  through `meta`'s lookup (the mask, kind and marker reads, about a tenth
+  of `vec-conj-64`'s samples) in every program that implements a protocol,
+  though only `extend-type` or `specify!` could give a vector its own
+  `IMeta`.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,

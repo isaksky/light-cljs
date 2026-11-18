@@ -3702,3 +3702,88 @@ The pellet was then rebased onto `e0168930` (light-cljs-1046). Rebasing changed 
   - **workload 200k:** 3,553,784 to 3,542,213 bytes raw, and 895,481 to 895,084 after gzip -9.
   - **The re-frame apps** (benchmarks/re-frame-vs-shadow.md, "2026-11-17: short keyed names at `:advanced`"), whole bundles with React after gzip -9, against master `4fbc0e65` (with light-cljs-1053 and light-cljs-1055): simple -703, TodoMVC -883 and flow -1,001 bytes (`light-cljs-1048-74d8d955`, after the Sol review's fixes).
   - **The size ratchet** (tests/support/ratchet_fixtures.rs, noted there): 359 to 7,319 bytes smaller where a fixture keeps collections, and `record-protocol` and `three-records` 20 bytes larger. The review's fixes add 28 bytes to programs keeping `unkeyedJSON`; the timings above predate them.
+
+## 2026-11-17: `conj` and `assoc` of a vector lose light-cljs-1046's lookup steps (light-cljs-1056)
+
+**What.** After light-cljs-1046, `vec-conj-64`, `vec-assoc-1024` and
+`group-by-100` ran 5-14% slower although no unit on their own paths had
+changed. The cause: 1046 let `ownMethod`, the protocol lookup of a program
+that implements protocols without `extend-type` or `specify!` (the gate's
+records), take a runtime class's mask bit as a declaration. A vector's mask
+declares `IMeta`, and `conj` and `assoc` of a vector read its metadata with
+`meta` wherever `installMethods` is kept (`conjMeta`, the `-assoc` slot's
+`preserveMeta`), so each went on to `keyMethod` (`keySlot`, then a
+megamorphic read of the absent `-meta` slot) and `ownDeclared` (a
+`reifyCells` WeakMap probe) to answer nothing, where the kind test had sent
+it to `keyMarker`'s one read. `ownMethod` tests the kind before the mask bit
+again; the answers are the same both ways. docs/value-layout.md, "What
+light-cljs-1056 found".
+
+Evidence (readable builds, `bb benchmarks/core-ops/run.bb --pseudo-names
+vec-conj-64`): `keyMethod`, `keySlot` and `ownDeclared` took 3.6%, 4.0% and
+3.7% of the light-cljs samples on master `4fbc0e65` and none on
+`685f86dd` (before 1046) or with the fix; the code of `conjSite`, the
+vector's `-conj` and `-assoc` slots, `conjMeta`, `vectorConj` and
+`VectorCell` was the same in all three. `node --trace-turbo-inlining`
+shows `meta`, `ownMethod`, `keyMarker` and `ownMeta` inlined into
+`preserveMeta` and the slots with the fix, so the loss was the extra work,
+not a lost inlining.
+
+Binaries in research/shadow-credibility/bin: `light-cljs-685f86dd` (before
+light-cljs-1046), master `light-cljs-4fbc0e65` and the fix on it
+`light-cljs-e6362ee1` (the full gate and workload 200k); after rebasing
+onto light-cljs-1048, master `light-cljs-1048-74d8d955` (the runtime of
+`1df0a071`) and the fix `light-cljs-b1296bca` (the recheck). Unreserved:
+peer workers built and tested throughout. Raw results:
+research/output-speed/vec-slowdown-1056.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, every operation; load
+before a run 7.82-17.97 before, 11.89-14.99 after), ns per operation,
+median (range), the touched operations and every one that moved 5% or
+more:
+
+| op | light before (`4fbc0e65`) | light after (`e6362ee1`) | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| vec-conj-64 | 2,404 (2,392-2,447) | 2,051 (2,042-2,068) | -15% | 1,357 / 1,295 | 1.77 | 1.58 |
+| vec-assoc-1024 | 71.3 (70.3-71.9) | 66.1 (65.6-66.4) | -7% | 73.8 / 74.4 | 0.97 | 0.89 |
+| group-by-100 | 10,204 (10,142-10,284) | 9,868 (9,780-9,947) | -3% | 5,131 / 5,098 | 1.99 | 1.94 |
+| kw-hash100 | 22.2 (22.0-22.2) | 20.9 (19.7-22.1) | -6% | 13.6 / 13.7 | 1.64 | 1.53 |
+
+- **No operation is slower by more than 2%** (`map-literal-3`, +2%, ranges
+  overlapping). `kw-hash100`'s ranges overlap too.
+
+**Recheck against `685f86dd`** (the five operations of light-cljs-1046's
+recheck, `--ops vec-conj-64,group-by-100,vec-assoc-1024,reduce-range-1000,hash-fresh-map-7
+--runs 5`, the binaries alternated, two passes, load 4.64-7.70), light-cljs
+ns per operation, medians of pass 1 / pass 2:
+
+| op | `685f86dd` | master `74d8d955` | fix `b1296bca` | fix against `685f86dd` |
+| --- | ---: | ---: | ---: | ---: |
+| vec-conj-64 | 2,427 / 2,367 | 2,477 / 2,478 | 2,127 / 2,204 | -12% / -7% |
+| vec-assoc-1024 | 66.2 / 64.4 | 70.5 / 69.4 | 64.3 / 65.5 | -3% / +2% |
+| group-by-100 | 11,217 / 10,700 | 9,981 / 9,820 | 9,315 / 9,445 | -17% / -12% |
+
+- All three are within 2% of `685f86dd` or faster. `group-by-100` had
+  already recovered on master: light-cljs-1055's `-reduce` slots took
+  more from it than the lookup added. On `4fbc0e65`, before rebasing, the
+  same recheck gave `vec-conj-64` 2,555 / 2,498 against `685f86dd`'s
+  2,286 / 2,324, and the fix 2,160 / 2,171 against 2,446 / 2,309.
+
+**Workload 200k** (`compare.bb PROJECT --runs 5 --runtime-only --runtime
+1,40`, the light-cljs output rebuilt with each binary just before its runs,
+two passes in opposite orders), light-cljs's steady state in ms per
+iteration, with shadow-cljs's in the same run: before 42.2 (22.7) and 44.5
+(23.7), after 46.8 (27.2) and 45.8 (24.7); light/shadow 1.86 and 1.87
+before, 1.72 and 1.86 after. Unchanged within the machine's noise (load
+5.5-12.2; shadow-cljs's own steady state moved 20% between runs).
+
+**Size.** The gate's advanced output 162,000 to 162,020 bytes (42,654 to
+42,658 after gzip -9). The size ratchet (tests/support/ratchet_fixtures.rs,
+noted there): 20 bytes more where a program keeps `ownMethod`, no ceiling
+moves.
+
+**What is left.** `conj` and `assoc` of a vector still read the vector's
+metadata through `meta`'s lookup (the mask, kind and marker reads, about a
+tenth of `vec-conj-64`'s samples with the fix) in every program that
+implements a protocol, though only `extend-type` or `specify!` could give a
+vector its own `IMeta`.

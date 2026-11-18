@@ -726,6 +726,14 @@
 //! shared chunk 92,527, `app.editor.js` 11,595, `app.reports.js` 5,002),
 //! moves to the next 100 above its size below 10,000 and the next 1,000
 //! above.
+//!
+//! `ownMethod` tests a runtime class's kind before its mask bit again
+//! (light-cljs-1056, 2026-11-17): the readable runtime grows 344 bytes
+//! (`console-log-sum` 679,823 to 680,167), mostly the comment. Advanced,
+//! against master `1df0a071`: 20 bytes more where a program keeps
+//! `ownMethod` (`eight-records` 49,829 to 49,849, `closed-params` 18,779 to
+//! 18,799, `callbacks` 61,606 to 61,626, `protocol-params` 67,629 to
+//! 67,649); every other fixture is unchanged. No ceiling moves.
 
 pub struct Fixture {
     pub name: &'static str,
