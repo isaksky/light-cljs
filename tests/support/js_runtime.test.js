@@ -2395,6 +2395,61 @@ console.log('set, queue and vector contains slots answer as their operations');
 }
 console.log('vector and map reduce and kv-reduce slots answer as their operations');
 
+// The hash and array sets' and the indexed seqs' `-reduce` slots
+// (light-cljs-1059) answer as `reduce` does without them, for every value
+// of the class: a public constructor's (an indexed seq over the caller's
+// array or a string), one whose `-seq` or `-iterator` is its own, an empty
+// one, a set's or a queue's seq, and a reduction a `reduced` value stops; a
+// value made by reflection gets `noBranch`.
+{
+  const reduce2 = 'cljs$core$IReduce$_reduce$arity$2$LKEY', reduce3 = 'cljs$core$IReduce$_reduce$arity$3$LKEY', seq = 'cljs$core$ISeqable$_seq$arity$1$LKEY';
+  const outcome = thunk => { try { return 'ok ' + c.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
+  const pair = function (a, b) { return arguments.length === 0 ? 'none' : c.vector(a, b); };
+  const upTo2 = (a, x) => c.count(a) >= 2 ? c.reduced(c.conj(a, 'stop')) : c.conj(a, x);
+  const ownSeq = value => { value[seq] = () => c.list('own-seq'); return value; };
+  const ownIterator = value => {
+    value.cljs$core$IIterable$_iterator$arity$1$LKEY = () => { let done = false; return {hasNext: () => !done, next: () => { done = true; return 'it'; }}; };
+    return value;
+  };
+  const queueSeq = () => c.seq(c.conj(runtime.queueFromArray([1]), 2));
+  const sets = [c.hashSet(), c.hashSet(1, 2, 3), c.set(c.range(20)), c.disj(c.set(c.range(20)), 3), c.conj(c.set(c.range(9)), null),
+    c.withMeta(c.hashSet(1), c.hashMap('m', 1)), c.PersistentHashSet(null, c.PersistentArrayMap(null, 2, ['a', null, 'b', null], null), null),
+    ownSeq(c.hashSet(1, 2)), ownIterator(c.hashSet(1, 2))];
+  const indexed = [c.seq(c.vector(1, 2, 3)), c.rest(c.vector(1, 2, 3)), c.IndexedSeq([1, 2, 3], 1, null), c.IndexedSeq([1, 2], 2, null), c.IndexedSeq('abc', 0, null),
+    c.seq(c.hashSet(1, 2, 3)), queueSeq(), c.withMeta(c.seq(c.vector(1, 2)), c.hashMap('m', 1)),
+    ownSeq(c.seq(c.vector(1, 2))), ownIterator(c.seq(c.vector(1, 2))), ownIterator(queueSeq())];
+  const reductions = [[reduce2, [pair]], [reduce3, [pair, 'init']], [reduce3, [upTo2, c.vector()]]];
+  const operations = new Map([[reduce2, (v, rf) => c.reduce(rf, v)], [reduce3, (v, rf, init) => c.reduce(rf, init, v)]]);
+  let checked = 0;
+  for (const value of [...sets, ...indexed]) {
+    for (const [slot, args] of reductions) {
+      const method = value[slot];
+      assert.equal(typeof method, 'function', `${slot} of ${c.prStr(value)}`);
+      const proto = Object.getPrototypeOf(value), forged = Object.create(proto), noBranch = method.call(forged, forged, ...args);
+      assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${slot} of a forged value`);
+      // The operation's own path: the slot taken off the prototype.
+      const expected = (() => {
+        delete proto[slot];
+        try { return outcome(() => operations.get(slot)(value, ...args)); } finally { proto[slot] = method; }
+      })();
+      assert.equal(outcome(() => method.call(value, value, ...args)), expected, `${slot} of ${c.prStr(value)}`);
+      assert.equal(outcome(() => operations.get(slot)(value, ...args)), expected, `the operation of ${slot} of ${c.prStr(value)}`);
+      checked++;
+    }
+  }
+  assert.equal(checked, 60);
+  // Their answers, as before the slots: a set's members, an own `-seq` or
+  // `-iterator` walked, a public constructor's set of its map's keys, an
+  // indexed seq of a string's characters, and one over the caller's array,
+  // read as the walk reaches each item.
+  const shared = [1, 2, 3];
+  assert.deepEqual([c.prStr(c.reduce(c.conj, c.vector(), c.hashSet(1, 2, 3))), c.prStr(c.reduce(pair, 'i', ownSeq(c.hashSet(1, 2)))),
+    c.prStr(c.reduce(pair, 'i', ownIterator(c.hashSet(1, 2)))), c.prStr(c.reduce(c.conj, c.vector(), sets[6])), c.prStr(c.reduce(c.conj, c.vector(), indexed[4])),
+    c.prStr(c.reduce((a, x) => { shared[2] = 9; return c.conj(a, x); }, c.vector(), c.IndexedSeq(shared, 0, null))), c.prStr(c.reduce(pair, 'i', ownIterator(queueSeq())))],
+  ['[1 2 3]', '["i" "own-seq"]', '["i" "it"]', '["a" "b"]', '["a" "b" "c"]', '[1 2 9]', '["i" "it"]']);
+}
+console.log('set and indexed seq reduce slots answer as their operations');
+
 // Keywords and symbols of two copies of one build (docs/value-layout.md,
 // sections 1 and 3, light-cljs-1011): each copy interns its own, so they are
 // never identical, but equality reads the keyed kind and `fqn` (`str`), never

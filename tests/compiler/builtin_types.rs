@@ -2871,7 +2871,14 @@ fn sequence_protocol_extensions_to_runtime_types_still_win() {
 /// value or its class, a public constructor's vector (whose seq walks the
 /// whole tail it received) and array map (walked by its count), a reduction
 /// `reduced` stops, and the errors. Each case runs in a thunk of its own, as
-/// some throw. Expected values are master `d8a28b21`'s at every level.
+/// some throw. Expected values are master `d8a28b21`'s at every level. The
+/// last two cases do the same for the `-reduce` slots of the hash and array
+/// sets and the indexed seqs (light-cljs-1059), and the seqs beside them
+/// that keep `reduce`'s path: a set's `-seq` and `-iterator`, a seq's `-seq`
+/// and `IReduce`, public constructors' indexed seq, list and set, empty ones
+/// and endless ones `reduced` stops; their expected values are master
+/// `6a18e208`'s. Each `specify!` takes a value built at run time, as a
+/// literal may be one constant that two of them would share.
 #[test]
 fn reduce_slots_keep_the_answers_of_extended_seqs_and_reductions() {
     for (source, expected) in [
@@ -2938,6 +2945,82 @@ fn reduce_slots_keep_the_answers_of_extended_seqs_and_reductions() {
                  (.join out " "))"#,
             "[:vr3 []] [:vr2 3] [:vr3 []] [:sr3 []] [:amr3 []] 20 [:vkv []] [0 2 1 3] [:amkv []] [:hmkv 0] [:tmkv 0] [:er3 []] E:conj not supported on this type",
         ),
+        (
+            // The sets' and indexed seqs' `-reduce` slots (light-cljs-1059),
+            // beside the seqs that keep `reduce`'s path.
+            r#"(let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (.-message e))))))
+                   hs (set (range 20))
+                   ss (specify! (hash-set 1 2 3) ISeqable (-seq [_] (list :ss)))
+                   si (specify! (set [4 5 6]) IIterable (-iterator [_] (-iterator [:i1 :i2])))
+                   sr (specify! (hash-set 7 8) IReduce (-reduce ([_ f] [:sr2]) ([_ f i] [:sr3 i])))
+                   sl (specify! (list 1 2) ISeqable (-seq [_] (list :sl)))
+                   rl (specify! (list 3 4) IReduce (-reduce ([_ f] [:lr2]) ([_ f i] [:lr3 i])))
+                   slz (specify! (map inc [1 2]) ISeqable (-seq [_] (list :slz)))
+                   sc (specify! (cons 0 (list 1)) ISeqable (-seq [_] (list :sc)))
+                   sir (specify! (range 3) ISeqable (-seq [_] (list :sir)))
+                   sis (specify! (seq [1 2 3]) ISeqable (-seq [_] (list :sis)))
+                   scs (specify! (rest (vec (range 40))) ISeqable (-seq [_] (list :scs)))
+                   pis (IndexedSeq. (array 1 2 3) 1 nil) pl (List. nil 1 nil 0 nil)
+                   phs (PersistentHashSet. nil (array-map :a nil :b nil) nil)
+                   upto (fn [a x] (if (> a 10) (reduced [:stop a]) (+ a x)))]
+               (p #(reduce conj [] hs)) (p #(reduce + hs)) (p #(reduce conj [] ss)) (p #(reduce conj ss)) (p #(reduce conj [] si)) (p #(reduce conj si))
+               (p #(reduce conj [] sr)) (p #(reduce conj sr)) (p #(reduce conj [] sl)) (p #(reduce conj sl)) (p #(reduce conj [] rl)) (p #(reduce conj rl))
+               (p #(reduce conj [] slz)) (p #(reduce conj [] sc)) (p #(reduce conj [] sir)) (p #(reduce + sir)) (p #(reduce conj [] sis)) (p #(reduce conj [] scs))
+               (p #(reduce conj [] pis)) (p #(reduce conj [] pl)) (p #(reduce conj pl)) (p #(reduce conj [] phs)) (p #(reduce conj #{1}))
+               (p #(reduce conj [] #{})) (p #(reduce (fn ([] :none) ([a b] a)) #{})) (p #(reduce (fn ([] :none) ([a b] a)) (list)))
+               (p #(reduce (fn ([] :none) ([a b] a)) (lazy-seq nil))) (p #(reduce (fn [a x] (if (> (count a) 1) (reduced [:stop a]) (conj a x))) [] hs))
+               (p #(reduce upto 0 (iterate inc 0))) (p #(reduce upto (cycle [1 2]))) (p #(reduce upto (repeat 4))) (p #(reduce conj [] (repeat 3 :x)))
+               (p #(reduce conj [] (re-seq #"a." "abacad"))) (p #(reduce conj (map inc (range 5)))) (p #(reduce + 1 (range 2 20 3)))
+               (p #(reduce conj [] ((fn [& xs] xs) 1 2 3))) (p #(reduce conj [] (seq (map inc (vec (range 40)))))) (p #(reduce + (rest (vec (range 40)))))
+               (.join out " "))"#,
+            r#"[0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19] 190 [:ss] :ss [:i1 :i2] E:conj not supported on this type [:sr3 []] [:sr2] [:sl] :sl [:lr3 []] [:lr2] [:slz] [:sc] [0 1 2] 3 [:sis] [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39] [2 3] [1] 1 [:a :b] 1 [] :none :none :none [:stop [0 1]] [:stop 15] [:stop 12] [:stop 12] [:x :x :x] ["ab" "ac" "ad"] E:conj not supported on this type 58 [1 2 3] [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40] 780"#,
+        ),
+        (
+            r#"(extend-type PersistentHashSet ISeqable (-seq [s] (list :hs (count s))))
+               (extend-type List IReduce (-reduce ([l f] [:lr2 (count l)]) ([l f i] [:lr3 i])))
+               (extend-type Cons ISeqable (-seq [c] (list :cons)))
+               (extend-type IntegerRange IReduce (-reduce ([r f] [:ir2]) ([r f i] [:ir3 i])))
+               (extend-type ChunkedCons IReduce (-reduce ([c f] [:cc2]) ([c f i] [:cc3 i])))
+               (extend-type LazySeq IReduce (-reduce ([c f] [:lz2]) ([c f i] [:lz3 i])))
+               (let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (.-message e))))))
+                     v40 (let [a (array)] (dotimes [i 40] (.push a i)) (vec a))]
+                 (p #(reduce conj [] #{1 2})) (p #(reduce conj #{1 2})) (p #(reduce conj [] (list 1 2))) (p #(reduce conj (list 1 2)))
+                 (p #(reduce conj [] (cons 0 (list 1)))) (p #(reduce conj [] (range 4))) (p #(reduce conj (range 4))) (p #(reduce conj [] (seq [1 2 3])))
+                 (p #(reduce conj [] (seq (map inc v40)))) (p #(reduce conj [] (map inc [1 2]))) (p #(reduce conj [] (repeat 2 :x)))
+                 (p #(reduce conj [] (sorted-set 2 1))) (p #(into [] #{3})) (p #(reduce + (rest v40)))
+                 (.join out " "))"#,
+            "[:hs 2] E:conj not supported on this type [:lr3 []] [:lr2 2] [:cons] [:ir3 []] [:ir2] [1 2 3] [:cc3 []] [:lz3 []] [:x :x] [1 2] [:hs 1] 780",
+        ),
+        (
+            // `reduce` of a set or a queue's seq walks an iterator that calls
+            // the indexed seqs' `-first` and `-next`, which an extension
+            // replaces.
+            r#"(extend-type IndexedSeq ISeq (-first [_] 10) (-rest [_] ()))
+               (let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (.-message e))))))
+                     q (conj cljs.core/PersistentQueue.EMPTY 1 2 3)]
+                 (p #(reduce + 0 (hash-set 1 2 3))) (p #(reduce + (hash-set 1 2 3))) (p #(reduce + 0 (seq q))) (p #(reduce + (seq q)))
+                 (p #(reduce + 0 ((fn [& xs] xs) 1 2 3))) (p #(reduce + 0 (IndexedSeq. (array 1 2 3) 0 nil)))
+                 (.join out " "))"#,
+            "30 30 10 10 6 6",
+        ),
+        (
+            // A set given one arity of `IReduce` takes the lookup for the
+            // other, which it does not implement.
+            r#"(extend-type PersistentHashSet IReduce (-reduce [_ f] :two))
+               (let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (.-message e))))))
+                     s3 (specify! (hash-set 4 5) IReduce (-reduce [_ f init] [:three init]))]
+                 (p #(reduce + (hash-set 1 2))) (p #(reduce + 0 (hash-set 1 2))) (p #(reduce + s3)) (p #(reduce + 0 s3))
+                 (.join out " "))"#,
+            ":two E:No protocol method IReduce/-reduce defined for this value :two [:three 0]",
+        ),
+        (
+            r#"(let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (.-message e))))))
+                     s3 (specify! (hash-set 1 2) IReduce (-reduce [_ f init] [:three init]))
+                     s2 (specify! (hash-set 3 4) IReduce (-reduce [_ f] :two))]
+                 (p #(reduce + s3)) (p #(reduce + 0 s3)) (p #(reduce + s2)) (p #(reduce + 0 s2)) (p #(reduce + 0 (hash-set 5 6)))
+                 (.join out " "))"#,
+            "E:No protocol method IReduce/-reduce defined for this value [:three 0] :two E:No protocol method IReduce/-reduce defined for this value 11",
+        ),
     ] {
         every_level(source, expected);
     }
@@ -2946,7 +3029,8 @@ fn reduce_slots_keep_the_answers_of_extended_seqs_and_reductions() {
     let kept = units(
         "(extend-type PersistentVector IMeta (-meta [_] nil))
          (pr-str [(reduce + [1 2]) (reduce + 0 (subvec [1 2 3] 1)) (reduce conj [] {:a 1}) (reduce conj [] (zipmap (range 9) (range 9)))
-                  (reduce conj [] (first {:a 1})) (reduce-kv conj [] [1]) (reduce-kv conj [] {:a 1}) (reduce-kv conj [] (sorted-map 1 2))])",
+                  (reduce conj [] (first {:a 1})) (reduce-kv conj [] [1]) (reduce-kv conj [] {:a 1}) (reduce-kv conj [] (sorted-map 1 2))
+                  (reduce + #{1 2}) (reduce + (seq [1 2]))])",
     );
     for unit in [
         "reduce.protocol",
@@ -2959,6 +3043,8 @@ fn reduce_slots_keep_the_answers_of_extended_seqs_and_reductions() {
         "PersistentVectorValue.kvReduceSlot",
         "PersistentArrayMapValue.kvReduceSlot",
         "treeMapConstructor.kvReduceSlot",
+        "PersistentHashSetValue.reduceSlot",
+        "IndexedSeqValue.reduceSlot",
     ] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
@@ -2969,9 +3055,12 @@ fn reduce_slots_keep_the_answers_of_extended_seqs_and_reductions() {
 /// In release output of a program with `extend-type`, `reduce` and
 /// `reduce-kv` of a vector, a subvector, the maps and the public
 /// constructors' vectors and array maps take no protocol lookup
-/// (light-cljs-1055): the readable output's lookups (`extendedMethod`,
-/// `builtin`, `satisfies`) count their calls, which a list's `reduce`, which
-/// has no slot, still makes.
+/// (light-cljs-1055), nor `reduce` of a hash or array set and of an indexed
+/// seq (rest arguments, a short vector's seq, a public constructor's over an
+/// array or a string; light-cljs-1059): the readable output's lookups
+/// (`extendedMethod`, `builtin`, `satisfies`) count their calls (the sets'
+/// and indexed seqs' 14 on master `f8f1ed3f`). A list's, a lazy seq's
+/// and a sorted set's `reduce`, which have no slot, still take them.
 #[test]
 fn reduce_of_vectors_and_maps_takes_no_protocol_lookup() {
     let source = r#"(extend-type PersistentVector IMeta (-meta [_] nil))
@@ -2979,6 +3068,8 @@ fn reduce_of_vectors_and_maps_takes_no_protocol_lookup() {
               pv40 (PersistentVector. nil 40 5 (.-root v40) (.-tail v40) nil)
               pv3 (PersistentVector. nil 3 5 (.-EMPTY_NODE PersistentVector) (array 1 2 3) nil)
               pam (PersistentArrayMap. nil 2 (array :a 1 :b 2) nil) am (array-map :a 1 :b 2) l (list 1 2)
+              hs (set (range 20)) as #{1 2 3} lz (doall (map inc [1 2 3])) ss (sorted-set 1 2)
+              is (seq [1 2 3]) pis (IndexedSeq. (array 1 2 3) 1 nil) sis (IndexedSeq. "abc" 0 nil) rest-args ((fn [& xs] xs) 1 2 3)
               up (fn [a _] (inc a)) kv (fn [a _ _] (inc a)) out (array) lookups #(aget js/globalThis "__lookups")
               before (lookups)]
           (.push out (reduce up 0 [1 2 3]) (reduce up [1 2 3]) (reduce up 0 v40) (reduce up v40) (reduce up 0 sub) (reduce up sub)
@@ -2986,8 +3077,11 @@ fn reduce_of_vectors_and_maps_takes_no_protocol_lookup() {
                  (reduce-kv kv 0 [1 2 3]) (reduce-kv kv 0 v40) (reduce-kv kv 0 sub) (reduce-kv kv 0 am) (reduce-kv kv 0 hm)
                  (reduce-kv kv 0 sm) (reduce-kv kv 0 pam))
           (let [after (lookups)]
-            (.push out (- after before) (reduce up 0 l) (pos? (- (lookups) after)))
-            (.join out " ")))"#;
+            (.push out (- after before) (reduce up 0 hs) (reduce up hs) (reduce up 0 as) (reduce up 0 is) (reduce up is)
+                   (reduce up 0 pis) (reduce up 0 sis) (reduce up 0 rest-args))
+            (let [slotted (lookups)]
+              (.push out (- slotted after) (reduce up 0 l) (reduce up 0 lz) (reduce up 0 ss) (pos? (- (lookups) slotted)))
+              (.join out " "))))"#;
     let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
     options.pseudo_names = true;
     let mut js = prepare_application(&program(source), options).emit_js();
@@ -3001,7 +3095,7 @@ fn reduce_of_vectors_and_maps_takes_no_protocol_lookup() {
     }
     assert_eq!(
         execute(&format!("globalThis.__lookups = 0; console.log({js});")),
-        "3 3 40 39 5 6 40 39 3 3 2 20 2 3 40 5 2 20 2 2 0 2 true\n"
+        "3 3 40 39 5 6 40 39 3 3 2 20 2 3 40 5 2 20 2 2 0 20 19 3 3 3 2 3 3 0 2 3 2 true\n"
     );
 }
 

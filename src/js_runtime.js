@@ -2518,6 +2518,21 @@
   // value themselves (light-cljs-1055), so that a slot the compile-time
   // lookup calls does not find itself again.
   const reduceOwn = reduce;
+  //@unit itemsReduce requires: isReduced, reducedValue, reduceOwn, slotFirst
+  // The walk of a hash or array set's and an indexed seq's `-reduce` slots
+  // (light-cljs-1059), whose call's argument count is `arity` (2 without an
+  // initial value): `items` from index `i` on (each entry's `key` where
+  // `keyed`), as `reduce` walks the seq over them, where the value is `own`
+  // (its `-seq` its class's, no `-iterator`). Else, for an `-seq` or
+  // `-iterator` that `extend-type` or `specify!` gave it, and where a
+  // compiler session demands declarations (`slotFirst`), `reduce`'s own
+  // path (`reduceOwn`).
+  function itemsReduce(self, own, items, i, keyed, rf, init, arity) {
+    if (!own || !slotFirst.on) return arity === 3 ? reduceOwn(rf, init, self) : reduceOwn(rf, self);
+    if (arity === 2) { if (!(i < items.length)) return rf.call(null); init = keyed ? items[i++].key : items[i++]; }
+    for (; i < items.length; i++) { init = rf.call(null, init, keyed ? items[i].key : items[i]); if (isReduced(init)) return reducedValue(init); }
+    return init;
+  }
 
   //@unit iterateNode.reduce effect: iterateNode when: reduce requires: first, isReduced, kindHooks,
   //@ reducedValue
@@ -5364,8 +5379,9 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(contains);
-  //@unit reduce.slots effect: PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentVectorValue, SubvecValue when: reduce requires: noBranch, reduce, slotFirst
+  //@unit reduce.slots effect: IndexedSeqValue, PersistentArrayMapValue, PersistentHashMapValue,
+  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch, reduce,
+  //@ slotFirst
   // `reduce` of a value with a `-reduce` slot (light-cljs-1055) calls it
   // before `reduce.protocol`'s lookup, which finds a program's method there
   // too. Each arity's call is a function of its own, so that the wrapper
@@ -6321,6 +6337,42 @@
     }
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(seq, emptyList, noBranch);
+  // A hash or array set's and an indexed seq's `-reduce` slots
+  // (light-cljs-1059), which `reduce.slots` calls before any protocol
+  // lookup: one method for both arities each, as a vector's. `reduce` walks
+  // a set's iterator, a `SeqIter` over the indexed seq of its members' keys
+  // (upstream's sets have no IReduce), and an indexed seq (rest arguments,
+  // a short vector's seq, a set's or a queue's seq, a public constructor's
+  // over the caller's array or string) from its offset, a queue's through
+  // its iterator. So a slot walks the items (`itemsReduce`) only where the
+  // value's `-seq` is its class's own and it has no `-iterator`, and the
+  // indexed seqs' `-first` and `-next`, which the iterator calls, are their
+  // class's own (each read as the slot loads).
+  //@unit PersistentHashSetValue.reduceSlot effect: PersistentHashSetValue when: reduce requires: builtinSlot,
+  //@ collectionTraversal, IndexedSeqValue, itemsReduce, noBranch, PersistentHashSetValue, setKinds
+  // Its members' keys in traversal order, as its seq holds them. A set that
+  // `specify!` or `extend-type` gave one arity of `IReduce` takes the
+  // lookup for the other (`noBranch`), which the set does not implement.
+  PersistentHashSetValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(((own, first, next) => function (self, rf, init) {
+    const members = self.entries$LKEY;
+    if (members == null || self.cljs$core$IReduce$_reduce$arity$2$LKEY !== self.cljs$core$IReduce$_reduce$arity$3$LKEY) return noBranch;
+    return itemsReduce(self, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own && self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined
+      && IndexedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY === first && IndexedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY === next,
+    collectionTraversal(members, setKinds.get(self)), 0, true, rf, init, arguments.length);
+  })(PersistentHashSetValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY, IndexedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY,
+    IndexedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY));
+  PersistentHashSetValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentHashSetValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  //@unit IndexedSeqValue.reduceSlot effect: IndexedSeqValue when: reduce requires: builtinSlot,
+  //@ IndexedSeqValue, itemsReduce, noBranch
+  // The items of its array (or string) from its offset `i` on, read as the
+  // walk reaches each.
+  IndexedSeqValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(((own, first, next) => function (self, rf, init) {
+    const arr = self.arr$LKEY;
+    return arr === undefined ? noBranch : itemsReduce(self, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own && self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined
+      && self.cljs$core$ISeq$_first$arity$1$LKEY === first && self.cljs$core$INext$_next$arity$1$LKEY === next, arr, self.i$LKEY, false, rf, init, arguments.length);
+  })(IndexedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY, IndexedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY,
+    IndexedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY));
+  IndexedSeqValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = IndexedSeqValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
 
   // Call-site entries (light-cljs-1016, docs/value-layout.md section 3):
   // what `:advanced` output calls for a core operation of a fixed arity
