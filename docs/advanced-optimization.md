@@ -4307,7 +4307,41 @@ run the terse output.
     function inside the runtime's cost about as much there. Outside a
     module it would also need the program to become strict code, which
     `js-arguments` aliasing and writes to frozen objects can tell. A
-    follow-up pellet holds these numbers.
+    follow-up pellet holds these numbers; light-cljs-1062 below removes the
+    list in ES modules.
+- **The slice's roots without the binding list. As built (light-cljs-1062).**
+  A single file's terse ES module writes its slice's units in a function
+  around the program's own, `(()=>{<units>return(()=>{<program>})()})()`
+  (`terse::terse_program_nested`), rather than the factory whose returned
+  array the program destructures. The program's names are those
+  `terse_program` gives it, a root `rt$x` one of the locals of the
+  program's function as the destructured constant was, but that name is
+  the units' binding `x` itself: the root's name also avoids the units'
+  locals visible where they read `x` (the `avoid` lists of `build.rs`), so
+  `Locals::constrained_names` names a constrained local by frequency and
+  then gives each length's names in order of first occurrence, a
+  constrained local the first it does not avoid. A root that keeps its
+  spelling (`Atom`) is read by a short local declared where the list was,
+  `const a=Atom;`, so the program never spells it. The units' other
+  bindings are named by their frequency in the units, as a factory's, and
+  avoid the roots' names and every other identifier of the program: a host
+  global the program reads resolves through the units' scope. The
+  program's own names may be theirs, since its function shadows them; that
+  is what one table for both (light-cljs-1051) could not do.
+  - **Kept the factory:** output that is no module (its `"use strict"`
+    would make the program strict); raw `js*` text with a direct `eval`, a
+    name spelled with an escape, text that does not lex alone, or any word
+    that a binding keeping its spelling has; a program whose other
+    identifiers include one; and a program that does not lex.
+  - **Measured** (benchmarks/re-frame-vs-shadow.md, "The slice's roots
+    without the binding list"): the re-frame bundles shrink by 747, 929 and
+    1,763 bytes after gzip, 99%, 80% and 88% of light-cljs-1047's upper
+    bounds for the list, and the 200k workload's output by 365 (it is 396
+    bytes larger raw: the roots take short names the units' other bindings
+    had). Counting the units' reads of a root toward its name measured
+    larger after gzip. No operation of the core-ops gate is more than 3%
+    slower and the 200k workload's steady state does not move; its startup
+    measured about 1.5% slower (benchmarks/runtime-vs-shadow.md).
 - **Not done.**
   - ABI property mangling: no property is mangled. The arity ABI
     (`cljs$core$IFn$_invoke$arity$N`, `$variadic`,

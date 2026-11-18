@@ -901,6 +901,10 @@ fn emit_js_mode(
     // The runtime's statement, which declares no compiler name.
     let mut runtime_statement = 0..0;
     let mut unit_bytes = None;
+    // A terse ES module's slice, which may be written around the program's
+    // function instead of as a factory (`crate::terse::terse_program_nested`):
+    // its units by unit index and the bindings the factory returns.
+    let mut around: Option<(Vec<bool>, Vec<&'static str>)> = None;
     if embed {
         if slice {
             // A runtime registers its key as it loads (`runtimeKey`).
@@ -930,6 +934,10 @@ fn emit_js_mode(
             embedding = RuntimeEmbedding::Slice;
             let (factory, bindings, bytes) =
                 crate::runtime_slice::sliced_runtime(&emitter.runtime, terse);
+            if terse && module {
+                let kept = crate::runtime_slice::sliced_units(&emitter.runtime);
+                around = Some((kept, bindings.clone()));
+            }
             // Counted as the output writer writes them, keyed.
             unit_bytes = bytes.map(crate::runtime_slice::written_unit_bytes);
             runtime_bytes = crate::runtime_key::written_len(factory.trim());
@@ -1070,7 +1078,7 @@ fn emit_js_mode(
     // Each compiler name of a local or definition names its token.
     if let Some(marks) = &mut emitter.marks {
         let mut skipped = emitter.raw_segments.clone();
-        skipped.push(runtime_statement);
+        skipped.push(runtime_statement.clone());
         for (range, word) in crate::terse::scanned_names(&emitter.output, &skipped) {
             if let Some(name) = original_name(program, word) {
                 marks.named(range.start, None, name);
@@ -1107,7 +1115,30 @@ fn emit_js_mode(
         }
         emitter.output.insert_str(0, &open);
     }
-    let output = if terse {
+    // A terse ES module, strict code throughout, writes its slice's units in
+    // a function around the program's own rather than a factory whose
+    // bindings the program destructures (light-cljs-1062), unless the
+    // program could read a name they declare.
+    let nested = around
+        .zip(runtime_segment.clone())
+        .and_then(|((kept, bindings), factory)| {
+            crate::terse::terse_program_nested(
+                &emitter.output,
+                &emitter.raw_segments,
+                runtime_statement.clone(),
+                factory,
+                &kept,
+                &bindings,
+                emitter.marks.as_mut(),
+            )
+        });
+    let output = if let Some((output, bytes)) = nested {
+        // Counted as the output writer writes them, keyed.
+        let bytes = crate::runtime_slice::written_unit_bytes(bytes);
+        runtime_bytes = bytes.iter().sum();
+        unit_bytes = Some(bytes);
+        output
+    } else if terse {
         crate::terse::terse_program(
             &emitter.output,
             &emitter.raw_segments,

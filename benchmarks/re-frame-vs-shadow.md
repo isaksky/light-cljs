@@ -1602,3 +1602,47 @@ bb benchmarks/re-frame.bb size todomvc simple flow --light-only --light BIN
 light-cljs-1047 expected about 1,087 bytes after gzip, from the 26 units the retention report attributes to the sorted set. The saving is 337 (338 on `a33f6fef`). Of the 26, 7 are the set's slots, which go (with `treeSetConstructor.fields`, which the report gave to another root), and 4 its prototype, which stays. The other 15 are the tree seq class (`treeMapSeqConstructor` and its slots), the tree walks (`treeKey`, `treeEntryAt`, `TreeMapStackCell`), `compareKeys`, `IComparable`'s key and the tree map's entry index: the report gave them to the set because its extension, in cljs.spec, comes before TodoMVC's own `sorted-map` in `todomvc.db`, but the sorted map, which TodoMVC builds, needs every one of them. With the set's entry taken out of cljs.spec's `extend-protocol` by hand, master `a33f6fef`'s slice keeps 1,417 units, 209,436 bytes: this pellet's 1,421 less the set's prototype, the 4 units and 159 bytes the extension writes onto. Nothing else of the set is left to take out.
 
 The browser behaviour checks pass for all three apps with light-cljs-1052's builds (`bb benchmarks/re-frame.bb browser todomvc simple flow --compiler light --runs 1`).
+
+## 2026-11-18: the slice's roots without the binding list (light-cljs-1062)
+
+light-cljs-1051 left the runtime binding list in a single file's `:advanced` output: the slice's factory returned its roots as an array the program destructured, `const[b,m,...]=(()=>{"use strict";...return[Atom,iY,...]})()`. light-cljs-1062 removes it in ES modules, which is what the re-frame apps and the generated workload build: the units are written in a function around the program's own, `(()=>{<units>return(()=>{<program>})()})()`, and each root is named as the program names it (docs/advanced-optimization.md, "The slice's roots without the binding list"). The units' other bindings keep a table of their own, which the program's names may reuse because its function shadows them; light-cljs-1051's one table for both is what lengthened the runtime's names at 200k lines.
+
+```sh
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
+```
+
+### Setup
+
+- **Binaries:** master `light-cljs-9b0028f0` (with light-cljs-1052) and `light-cljs-1062-879e09d0`, this pellet on it. Both are V8 builds.
+- **Ports:** porter `shadow-port-tool-983` with the `9b0028f0` binary, one port per app, built by both binaries.
+- **Machine:** unreserved, load average 8 to 13. Sizes do not depend on load.
+
+### The whole bundle with React, gzip -9
+
+| App | master `9b0028f0` | light-cljs-1062 | Change | light-cljs-1047's upper bound for the list |
+|---|---:|---:|---:|---:|
+| re-frame simple | 114,103 | 113,356 | -747 (-0.65%) | 753 |
+| TodoMVC | 145,344 | 144,415 | -929 (-0.64%) | 1,167 |
+| flow | 333,273 | 331,510 | -1,763 (-0.53%) | 1,999 |
+
+- **Raw:** the whole bundles are 605, 1,023 and 2,526 bytes smaller; brotli -q 11 of them 552, 320 and 886.
+- **light-cljs's output as written**, without React, after gzip: simple 67,684 to 67,242 (-442), TodoMVC 97,161 to 96,365 (-796), flow 280,496 to 279,159 (-1,337). Raw, simple's is 115 bytes larger and TodoMVC's and flow's 498 and 1,175 smaller: the roots take short names that the units' other bindings had, which lengthens those (the next point).
+- **Workload 200k** (the generated project, benchmarks/runtime-vs-shadow.md): gzip -9 848,932 to 848,567 (-365), brotli 596,753 to 596,388 (-365), raw 3,438,039 to 3,438,435 (+396). The checksum equals the oracle's.
+- **Against the upper bounds:** 99%, 80% and 88% of what light-cljs-1047 measured by taking the list out of the text.
+
+The browser behaviour checks pass for all three apps (`bb benchmarks/re-frame.bb browser simple todomvc flow --compiler light --runs 1`, with `light-cljs-1062-879e09d0`).
+
+### Forms measured on workload 200k
+
+Gzip -9 of the output against master's 848,932 (each simple, TodoMVC and flow bundle shrank in every form that reached the apps):
+
+| Form | gzip -9 | raw |
+|---|---:|---:|
+| light-cljs-1051: the units in the program's function, one table | +17,360 | +65,469 |
+| around the program, roots named from the program's table of free names, `Atom` spelled where the program reads it | +9,108 | +62,871 |
+| roots as locals of the program's function, `Atom` read by an alias; a constrained root kept out of the same-length batches | +1,967 | +396 |
+| the same, each length's names given in order of first occurrence to every local, a constrained one the first it does not avoid (kept) | -365 | +396 |
+| the kept form, a root's count including the units' reads of it | -234 | +398 |
+
+- A root is a local of the program's function, as its destructured constant was, so its name joins the same-length batches in order of first occurrence. Naming the roots first from the table of free names gave them the shortest names ahead of the program's globals; spelling `Atom`, `PersistentArrayMapValue` and the other kept names at each read cost about 60,000 bytes raw.
+- Leaving out of the batches the roots whose name must avoid a unit's local cost 2,332 bytes after gzip against naming them without the constraint (output that could capture a unit's local, measured only); the kept form has that size exactly.

@@ -571,11 +571,7 @@ pub(crate) fn sliced_runtime(
         "Advanced output reads every runtime name directly"
     );
     let manifest = RuntimeManifest::embedded();
-    let kept = manifest
-        .reached_by_uses(&roots.units(manifest))
-        .iter()
-        .map(Option::is_some)
-        .collect::<Vec<_>>();
+    let kept = sliced_units(roots);
     let bindings = roots.direct_bindings();
     if terse {
         let (text, bytes) = crate::terse::terse_slice(&kept, &bindings);
@@ -587,6 +583,17 @@ pub(crate) fn sliced_runtime(
             None,
         )
     }
+}
+
+/// The units of `roots`' `Advanced` slice, by [`UnitId`]: those
+/// [`sliced_runtime`] writes.
+pub(crate) fn sliced_units(roots: &RuntimeRoots) -> Vec<bool> {
+    let manifest = RuntimeManifest::embedded();
+    manifest
+        .reached_by_uses(&roots.units(manifest))
+        .iter()
+        .map(Option::is_some)
+        .collect()
 }
 
 /// The roots of a chunked build that need each runtime unit

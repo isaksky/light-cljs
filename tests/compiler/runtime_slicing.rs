@@ -193,11 +193,28 @@ fn bundler_modules_embed_the_same_slice() {
             // with the placeholder.
             let js = light_cljs::runtime_key::unkeyed(&advanced.emit_js());
             let module = light_cljs::runtime_key::unkeyed(&advanced.emit_esm());
-            assert_eq!(
-                module,
-                format!("export default {};\n", js.trim_end()),
-                "{source}"
-            );
+            if !js.contains("=(()=>{\"use strict\";") {
+                assert_eq!(
+                    module,
+                    format!("export default {};\n", js.trim_end()),
+                    "{source}"
+                );
+            } else {
+                // A terse module writes the slice's units in a function
+                // around the program's own rather than the expression's
+                // factory and its binding list (light-cljs-1062), and prints
+                // what the expression prints.
+                assert!(
+                    module.starts_with("export default (()=>{")
+                        && module.contains("return(()=>{")
+                        && !module.contains("\"use strict\""),
+                    "{module}"
+                );
+                let printed = execute(&format!(
+                    "import(\"data:text/javascript,\" + encodeURIComponent({module:?})).then((m) => console.log(m.default));"
+                ));
+                assert_eq!(printed, execute(&format!("console.log({js});")), "{source}");
+            }
         }
     }
 }

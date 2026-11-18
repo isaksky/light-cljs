@@ -826,6 +826,20 @@ impl<'s> Locals<'s> {
         words: &HashMap<&str, String>,
         candidates: &mut Candidates<F>,
     ) -> Vec<String> {
+        self.constrained_names(words, candidates, &HashMap::new())
+    }
+
+    /// [`Locals::names`] where some locals have constraints: a local of
+    /// `avoid` takes the first candidate that no more frequent local of its
+    /// scope has and that is none of its avoided names, and the same-length
+    /// batches reorder only the names of the scope's other locals, as
+    /// [`constrained_short_names`] does for the table.
+    fn constrained_names<F: Fn(&str) -> bool>(
+        &self,
+        words: &HashMap<&str, String>,
+        candidates: &mut Candidates<F>,
+        avoid: &HashMap<u32, &HashSet<&str>>,
+    ) -> Vec<String> {
         let mut names = vec![String::new(); self.count.len()];
         let mut order = Vec::new();
         let mut chosen = Vec::new();
@@ -840,6 +854,19 @@ impl<'s> Locals<'s> {
                     _ => words[self.words[(key & !WORD) as usize]].as_str(),
                 })
                 .collect::<HashSet<_>>();
+            if !avoid.is_empty()
+                && order
+                    .iter()
+                    .any(|&local| avoid.contains_key(&(local as u32)))
+            {
+                let assigned = constrained_scope(&order, &avoided, candidates, |local| {
+                    (avoid.get(&(local as u32)).copied(), self.first[local])
+                });
+                for (local, name) in assigned {
+                    names[local] = name;
+                }
+                continue;
+            }
             chosen.clear();
             let mut at = 0;
             for _ in &order {
@@ -864,6 +891,89 @@ impl<'s> Locals<'s> {
         }
         names
     }
+}
+
+/// The names of one scope's locals in `order`, the most frequent first,
+/// where some have avoided names of their own ([`Locals::constrained_names`]):
+/// each takes the first of `candidates` that no local before it took, that
+/// the scope avoids and that it avoids itself. The locals then take the
+/// names of each length in order of first occurrence, each the first that
+/// it does not avoid. `of` gives a local's constraint and first occurrence.
+fn constrained_scope<'a, F: Fn(&str) -> bool>(
+    order: &[usize],
+    avoided: &HashSet<&str>,
+    candidates: &mut Candidates<F>,
+    of: impl Fn(usize) -> (Option<&'a HashSet<&'a str>>, u32),
+) -> Vec<(usize, String)> {
+    let mut taken: Vec<bool> = Vec::new();
+    let mut free = 0;
+    let mut chosen = Vec::with_capacity(order.len());
+    for &local in order {
+        let (own, _) = of(local);
+        while taken.get(free) == Some(&true) {
+            free += 1;
+        }
+        let mut at = free;
+        loop {
+            if taken.len() <= at {
+                taken.resize(at + 1, false);
+            }
+            let name = candidates.get(at);
+            if !taken[at] && !avoided.contains(name) && !own.is_some_and(|own| own.contains(name)) {
+                break;
+            }
+            at += 1;
+        }
+        taken[at] = true;
+        chosen.push(at);
+    }
+    // By name length, every local: in order of first occurrence, each takes
+    // the first of the batch's names that no local before it took and that
+    // it does not avoid. Where a local finds none, the batch keeps the
+    // names in order of frequency.
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    for position in 0..order.len() {
+        let length = candidates.get(chosen[position]).len();
+        if batches.len() <= length {
+            batches.resize_with(length + 1, Vec::new);
+        }
+        batches[length].push(position);
+    }
+    for batch in batches {
+        let mut slots = batch
+            .iter()
+            .map(|&position| chosen[position])
+            .collect::<Vec<_>>();
+        slots.sort_unstable();
+        let mut positions = batch;
+        positions.sort_by_key(|&position| of(order[position]).1);
+        let mut used = vec![false; slots.len()];
+        let mut first_unused = 0;
+        let mut assigned = Vec::with_capacity(positions.len());
+        for &position in &positions {
+            let (own, _) = of(order[position]);
+            while used.get(first_unused) == Some(&true) {
+                first_unused += 1;
+            }
+            let found = (first_unused..slots.len()).find(|&index| {
+                !used[index] && !own.is_some_and(|own| own.contains(candidates.get(slots[index])))
+            });
+            let Some(index) = found else {
+                assigned.clear();
+                break;
+            };
+            used[index] = true;
+            assigned.push((position, slots[index]));
+        }
+        for (position, slot) in assigned {
+            chosen[position] = slot;
+        }
+    }
+    order
+        .iter()
+        .zip(chosen)
+        .map(|(&local, at)| (local, candidates.get(at).to_owned()))
+        .collect()
 }
 
 /// The [`NameGenerator`] sequence without `excluded` names, generated as far
@@ -964,6 +1074,326 @@ pub(crate) fn terse_program(
             source.to_owned()
         }
     }
+}
+
+/// The terse output of an ES module whose runtime slice is the `kept` units
+/// (by unit index) written in a function around the program's own
+/// (light-cljs-1062; docs/advanced-optimization.md, "Phase 3"):
+/// `(()=>{<units>return(()=>{<program>})()})()`, strict code as all of a
+/// module is. `source` is the program as the emitter wrote it for
+/// [`terse_program`], with the slice's binding list, the `statement`
+/// `const [rt$a, ...] = <factory>;` (`roots` are its bindings, in order),
+/// which this form leaves out; `segments` are its raw `js*` ranges, the
+/// factory's, `factory`, among them.
+///
+/// The program is named as [`terse_program`] names it, a root `rt$x` among
+/// the locals of the program's function, but it names the units' binding
+/// `x` itself, so its name also avoids the units' locals visible where they
+/// read `x`, and a binding that keeps its spelling keeps it. The units'
+/// other bindings, which the program never reads, are named as a factory's
+/// are, by their frequency in the units, avoiding the roots' names, the
+/// units' visible locals and every other identifier of the program (a host
+/// global that it reads resolves through the units' scope). The program's
+/// own names may be theirs: its function's scope shadows them.
+///
+/// `marks` move as [`terse_program`] moves them, those of the statement
+/// going, and the units' lines map to `src/js_runtime.js` as a factory's
+/// do. Also returns each unit's bytes, by unit index. `None` where the
+/// program does not lex or the units could capture a name it reads
+/// ([`captured_by_units`]); the caller then writes the factory.
+pub(crate) fn terse_program_nested(
+    source: &str,
+    segments: &[Range<usize>],
+    statement: Range<usize>,
+    factory: Range<usize>,
+    kept: &[bool],
+    roots: &[&str],
+    marks: Option<&mut crate::source_map::Marks>,
+) -> Option<(String, Vec<usize>)> {
+    debug_assert_eq!(kept.len(), TERSE_UNITS.len());
+    debug_assert!(statement.start <= factory.start && factory.end <= statement.end);
+    let mut raw = segments
+        .iter()
+        .filter(|segment| **segment != factory && !segment.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    raw.sort_by_key(|range| range.start);
+    let units = TERSE_UNITS
+        .iter()
+        .zip(kept)
+        .filter_map(|(unit, kept)| kept.then_some(unit))
+        .collect::<Vec<_>>();
+    // The bindings that keep their spelling, which the units declare under
+    // it in the program's enclosing scope.
+    let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
+    let spelled = manifest
+        .units
+        .iter()
+        .zip(kept)
+        .filter(|(_, kept)| **kept)
+        .flat_map(|(unit, _)| unit.declares.iter().copied())
+        .filter(|binding| keeps_name(binding))
+        .collect::<HashSet<_>>();
+    if raw
+        .iter()
+        .any(|range| captured_by_units(&source[range.clone()], &spelled))
+    {
+        return None;
+    }
+    let mut is_root = vec![false; TERSE_BINDINGS.len()];
+    for root in roots {
+        is_root[binding_index(root)] = true;
+    }
+    // A root's name avoids the units' locals visible where they read it.
+    let mut avoid: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+    for unit in &units {
+        for &(binding, names) in unit.avoid {
+            avoid
+                .entry(runtime_read(binding))
+                .or_default()
+                .extend(names.split(' '));
+        }
+    }
+    let mut lexed = Lexed::new(source, Some(factory.clone()), &raw, |_| true)?;
+    let mut words: Vec<&str> = Vec::new();
+    let mut excluded = HashSet::new();
+    lexed.words(&mut words, &mut excluded);
+    // Every other identifier of the program, raw text's among them, could
+    // be a host global it reads: one that a unit declares would capture it.
+    if spelled.iter().any(|binding| excluded.contains(binding)) {
+        return None;
+    }
+    // The statement's tokens, which no declaration around joins.
+    let first = lexed
+        .tokens
+        .partition_point(|token| token.start < statement.start);
+    let after = lexed
+        .tokens
+        .partition_point(|token| token.start < statement.end);
+    for join in &mut lexed.joins[first..=after.min(lexed.tokens.len() - 1)] {
+        *join = Join::Keep;
+    }
+    if first > 0 && lexed.joins[first - 1] == Join::Comma {
+        lexed.joins[first - 1] = Join::Keep;
+    }
+    // The roots declared in the statement, by local. Each is named by its
+    // reads in the program, as a factory's roots are: counting the units'
+    // reads too measured larger after gzip (light-cljs-1062).
+    let mut root_locals: Vec<(usize, u32)> = Vec::new();
+    // The roots that keep their spelling, which the program's function
+    // reads by short names it declares where the statement was:
+    // `const a=Atom,b=LazySeq;`.
+    let mut aliased: Vec<(usize, u32)> = Vec::new();
+    for (index, token) in lexed.tokens[first..after].iter().enumerate() {
+        let word = token.text(source);
+        if token.kind == Kind::Name
+            && let Some(binding) = word.strip_prefix("rt$")
+        {
+            let local = lexed.locals.of_token[first + index];
+            let binding = binding_index(binding);
+            if keeps_name(TERSE_BINDINGS[binding]) {
+                if local == NO_LOCAL {
+                    return None;
+                }
+                aliased.push((binding, local));
+            } else if local != NO_LOCAL {
+                root_locals.push((binding, local));
+            }
+        }
+    }
+    let local_avoid = root_locals
+        .iter()
+        .filter_map(|&(binding, local)| Some((local, avoid.get(runtime_read(binding))?)))
+        .collect::<HashMap<_, _>>();
+    let unavailable = |name: &str| excluded.contains(name) || keeps_name(name);
+    let names = constrained_short_names(words, unavailable, &avoid, |_| None);
+    let locals =
+        lexed
+            .locals
+            .constrained_names(&names, &mut Candidates::new(unavailable), &local_avoid);
+    // Each other root's name, by binding index: its local's, or the table's.
+    let mut named: Vec<Option<&str>> = vec![None; TERSE_BINDINGS.len()];
+    for &(binding, local) in &root_locals {
+        named[binding] = Some(locals[local as usize].as_str());
+    }
+    for (index, slot) in named.iter_mut().enumerate() {
+        if is_root[index] && slot.is_none() && !keeps_name(TERSE_BINDINGS[index]) {
+            *slot = names.get(runtime_read(index)).map(String::as_str);
+        }
+    }
+    debug_assert!(named.iter().enumerate().all(|(index, name)| {
+        name.is_none_or(|name| {
+            avoid
+                .get(runtime_read(index))
+                .is_none_or(|avoided| !avoided.contains(name))
+        })
+    }));
+    // The units' other bindings avoid every name the program's function
+    // could read through their scope.
+    let rooted = named
+        .iter()
+        .flatten()
+        .copied()
+        .chain(names.values().map(String::as_str))
+        .collect::<HashSet<_>>();
+    let mut count = vec![0usize; TERSE_BINDINGS.len()];
+    let mut seen_at = vec![usize::MAX; TERSE_BINDINGS.len()];
+    let mut seen = 0;
+    let mut internal_avoid: HashMap<usize, HashSet<&str>> = HashMap::new();
+    for unit in &units {
+        for (_, index) in placeholders(unit.text) {
+            count[index] += 1;
+            if seen_at[index] == usize::MAX {
+                seen_at[index] = seen;
+                seen += 1;
+            }
+        }
+        for &(binding, names) in unit.avoid {
+            internal_avoid
+                .entry(binding)
+                .or_default()
+                .extend(names.split(' '));
+        }
+    }
+    let mut internal = (0..TERSE_BINDINGS.len())
+        .filter(|&index| {
+            count[index] > 0 && named[index].is_none() && !keeps_name(TERSE_BINDINGS[index])
+        })
+        .collect::<Vec<_>>();
+    internal.sort_by_key(|&index| (std::cmp::Reverse(count[index]), seen_at[index]));
+    let mut candidates = NameGenerator::default().filter(|name| {
+        !unavailable(name)
+            && !rooted.contains(name.as_str())
+            && TERSE_GLOBALS.binary_search(&name.as_str()).is_err()
+    });
+    let mut generated: Vec<String> = Vec::new();
+    let mut taken: Vec<bool> = Vec::new();
+    let mut free = 0;
+    let mut chosen: Vec<Option<usize>> = vec![None; TERSE_BINDINGS.len()];
+    for &binding in &internal {
+        let avoided = internal_avoid.get(&binding);
+        while taken.get(free) == Some(&true) {
+            free += 1;
+        }
+        let mut at = free;
+        loop {
+            if at == generated.len() {
+                generated.push(candidates.next().expect("names never run out"));
+                taken.push(false);
+            }
+            if !taken[at]
+                && !avoided.is_some_and(|avoided| avoided.contains(generated[at].as_str()))
+            {
+                break;
+            }
+            at += 1;
+        }
+        taken[at] = true;
+        chosen[binding] = Some(at);
+    }
+    let name = |index: usize| -> &str {
+        match (named[index], chosen[index]) {
+            (Some(name), _) => name,
+            (None, Some(at)) => generated[at].as_str(),
+            (None, None) => TERSE_BINDINGS[index],
+        }
+    };
+    let statement_tokens = lexed.tokens[first].start
+        ..lexed
+            .tokens
+            .get(after)
+            .map_or(source.len(), |token| token.start);
+    let (output, written) = lexed.rewrite(&names, &locals);
+    // The statement as written, from its first token to the next one.
+    let at = |offset: usize| {
+        written
+            .get(written.partition_point(|(old, _)| *old < offset))
+            .map_or(output.len(), |(_, new)| *new)
+    };
+    let cut = at(statement_tokens.start)..at(statement_tokens.end);
+    // What the statement is written as: the aliases, if any.
+    let mut alias = String::new();
+    for &(binding, local) in &aliased {
+        alias.push_str(if alias.is_empty() { "const " } else { "," });
+        alias.push_str(&locals[local as usize]);
+        alias.push('=');
+        alias.push_str(TERSE_BINDINGS[binding]);
+    }
+    if !alias.is_empty() {
+        alias.push(';');
+    }
+    const OPEN: &str = "(()=>{";
+    let mut text = String::from(OPEN);
+    let mut unit_marks = marks.is_some().then(Vec::new);
+    if let Some(marks) = unit_marks.as_mut() {
+        // The function's opening is the runtime's, as a factory's is.
+        let prologue = &crate::runtime_manifest::ANNOTATED_RUNTIME[manifest.prologue.clone()];
+        marks.push((0, prologue.find("(() =>").unwrap_or_default(), None));
+    }
+    let unit_bytes = write_units(&mut text, kept, name, unit_marks.as_mut());
+    let units_end = text.len();
+    text.push_str("return");
+    let program_at = text.len();
+    text.push_str(&output[..cut.start]);
+    // The aliases continue a `const` statement that follows.
+    let mut rest = cut.end;
+    if !alias.is_empty() && output[rest..].starts_with("const ") {
+        alias.pop();
+        alias.push(',');
+        rest += "const ".len();
+    }
+    text.push_str(&alias);
+    text.push_str(output[rest..].trim_end());
+    text.push_str("})()\n");
+    if let Some(marks) = marks {
+        marks.relocate(|offset| {
+            if statement.start <= offset && offset < statement.end {
+                return None;
+            }
+            let new = at(offset);
+            Some(if new >= cut.end {
+                program_at + cut.start + alias.len() + new.saturating_sub(rest)
+            } else {
+                program_at + new
+            })
+        });
+        // Offsets in `text`, which the units' marks are.
+        for (offset, source, name) in unit_marks.into_iter().flatten() {
+            let origin = (crate::source_map::RUNTIME, source);
+            match name {
+                Some(name) => marks.named(offset, Some(origin), name),
+                None => marks.position(offset, origin.0, origin.1),
+            }
+        }
+        // `return` and the aliases are the compiler's; the program's own
+        // text maps as before.
+        marks.unmapped(units_end);
+        marks.unmapped(program_at + cut.start);
+    }
+    Some((text, unit_bytes))
+}
+
+/// Whether the raw `js*` text `text` could read a name that units written
+/// around the program's function declare ([`terse_program_nested`]), other
+/// than through its identifiers, which the units' names avoid: a direct
+/// `eval`, which reads a string as code in the program's scope; a name
+/// spelled with a `\u` escape (`\u{41}tom`), or text that does not lex
+/// alone; or any word of it, in a string too, that is one of `spelled`, the
+/// bindings that keep their spelling (`Atom`).
+fn captured_by_units(text: &str, spelled: &HashSet<&str>) -> bool {
+    let Ok(tokens) = lex_section(text, 0..text.len(), false) else {
+        return true;
+    };
+    if tokens.iter().any(|token| {
+        token.kind == Kind::Name && {
+            let word = token.text(text);
+            word == "eval" || word.contains('\\')
+        }
+    }) {
+        return true;
+    }
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+        .any(|word| spelled.contains(word))
 }
 
 /// One text of a chunked build for [`terse_texts`]: the source as the
@@ -2010,6 +2440,19 @@ mod tests {
     use super::*;
     use crate::js_syntax::{Occurrence, Resolution, lex, resolve};
     use crate::runtime_manifest::RuntimeManifest;
+
+    /// Units written around the program's function (`terse_program_nested`)
+    /// read their globals in the scope where a root takes the program's name
+    /// for it, which the [`NameGenerator`] never makes one of them.
+    #[test]
+    fn no_generated_name_is_a_global_the_units_read() {
+        for global in TERSE_GLOBALS {
+            assert!(
+                crate::js_syntax::unavailable(global),
+                "`{global}` could be a root's name"
+            );
+        }
+    }
 
     /// What an identifier occurrence names, comparable across two texts.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

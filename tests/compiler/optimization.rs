@@ -1019,8 +1019,11 @@ fn advanced_declares_globals_where_they_are_defined() {
         &program(source),
         ApplicationOptions::new(OptimizationLevel::Advanced),
     );
-    for js in [prepared.emit_js(), prepared.emit_esm()] {
-        assert!(js.contains("=(()=>{\"use strict\";"), "{js}");
+    // An ES module writes the slice around the program's function instead
+    // (light-cljs-1062).
+    let js = prepared.emit_js();
+    assert!(js.contains("=(()=>{\"use strict\";"), "{js}");
+    for js in [js, prepared.emit_esm()] {
         assert!(js.contains(";var ") || js.contains("}var "), "{js}");
     }
     assert_eq!(module_result(&prepared.emit_esm()), expected);
@@ -1038,4 +1041,92 @@ fn advanced_declares_globals_where_they_are_defined() {
                     (def kept (atom 0))
                     (pr-str [(sloppy) (aliased 2) @kept])"#;
     both(source, "[false 9 0]\n");
+}
+
+/// light-cljs-1062: a terse ES module writes the runtime slice's units in a
+/// function around the program's own, `(()=>{<units>return(()=>{...})()})()`,
+/// where a root is named as the program names it, rather than a factory
+/// whose returned array the program destructures. A root that keeps its
+/// spelling, `Atom`, is read by a short alias. The units' names capture no
+/// host global that raw text reads, and raw text that could read one the
+/// units declare under its spelling (`typeof Atom`, a direct `eval`) keeps
+/// the factory, whose bindings it cannot see.
+#[test]
+fn advanced_modules_write_the_slice_around_the_program() {
+    let source = r#"
+        (def a (atom {:n 1}))
+        (swap! a update :n inc)
+        (defrecord R [x])
+        (pr-str [@a (map inc [1 2 3]) (->R (keyword "k")) (into #{} (range 3))
+                 (.toUpperCase "probe")])"#;
+    let expected = "[{:n 2} (2 3 4) #cljs.user.R{:x :k} #{0 1 2} \"PROBE\"]\n";
+    both(source, expected);
+    let advanced = ApplicationOptions::new(OptimizationLevel::Advanced);
+    let prepared = prepare_application(&program(source), advanced.clone());
+    let esm = prepared.emit_esm();
+    assert!(
+        esm.starts_with("export default (()=>{") && esm.contains("return(()=>{"),
+        "{esm}"
+    );
+    assert!(
+        !esm.contains("use strict") && !esm.contains("]=(()=>{"),
+        "{esm}"
+    );
+    // The program reads `Atom` through a short alias, which continues the
+    // `const` statement after it.
+    let program_text = &esm[esm.find("return(()=>{").unwrap()..];
+    assert!(program_text.contains("=Atom,"), "{program_text}");
+    assert_eq!(program_text.matches("Atom").count(), 1, "{program_text}");
+    assert_eq!(module_result(&esm), expected);
+    // Its source map places the program's text where the source has it.
+    let (mapped, mapping) = prepared.emit_esm_mapped();
+    assert_eq!(mapped, esm);
+    let at = esm.find("\"probe\"").expect("the literal");
+    let line = esm[..at].matches('\n').count() as u32;
+    let column = (at - esm[..at].rfind('\n').map_or(0, |newline| newline + 1)) as u32;
+    let (_, byte) = mapping.original(line, column).expect("a program position");
+    assert!(
+        source[byte..].starts_with("\"probe\""),
+        "{}",
+        &source[byte..]
+    );
+    // Output that is no module, and readable output, keep the factory.
+    assert!(prepared.emit_js().contains("=(()=>{\"use strict\";"));
+    let readable = prepare_application(&program(source), readable(OptimizationLevel::Advanced));
+    assert!(readable.emit_esm().contains("  const [rt$"));
+
+    // Every one-letter name, which the units' bindings would otherwise take
+    // first, read as a host global by raw text.
+    let letters = ('a'..='z')
+        .chain('A'..='Z')
+        .chain(['$'])
+        .collect::<Vec<_>>();
+    let reads = letters
+        .iter()
+        .map(|letter| format!("typeof {letter}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let source = format!(
+        r#"(let [v (atom (vec (range 3)))]
+             (swap! v conj (count (str (keyword "x"))))
+             (str (js/JSON.stringify (js* "[{reads}]")) @v))"#
+    );
+    let esm = prepare_application(&program(&source), advanced.clone()).emit_esm();
+    assert!(esm.contains("return(()=>{"), "{esm}");
+    let undefined = vec!["\"undefined\""; letters.len()].join(",");
+    assert_eq!(module_result(&esm), format!("[{undefined}][0 1 2 2]\n"));
+
+    // Raw text that could read `Atom`, as written, with an escape or through
+    // a direct `eval`, keeps the factory.
+    for raw in [
+        "typeof Atom",
+        r"typeof \\u0041tom",
+        r#"eval(\"typeof At\" + \"om\")"#,
+    ] {
+        let source = format!(r#"(let [a (atom 0)] (swap! a inc) (str @a (js* "{raw}")))"#);
+        let esm = prepare_application(&program(&source), advanced.clone()).emit_esm();
+        // An escape keeps the hygienic layout, `] = (()=>{`.
+        assert!(esm.contains("(()=>{\"use strict\";"), "{raw}: {esm}");
+        assert_eq!(module_result(&esm), "1undefined\n", "{raw}");
+    }
 }

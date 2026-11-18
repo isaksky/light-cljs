@@ -4500,3 +4500,26 @@ output as written 67,713 to 67,943, 97,183 to 97,491 and 280,529 to
 280,827. The size ratchet, noted there: the same advanced growth as
 above, the features example 1,064 bytes (its editor chunk, which keeps
 the sorted maps' seqs, 499), the readable runtime 5,045.
+
+## 2026-11-18: the slice's roots without the binding list (light-cljs-1062)
+
+light-cljs-1062 writes a terse ES module's runtime units in a function around the program's own instead of a factory whose returned array the program destructures (docs/advanced-optimization.md, "The slice's roots without the binding list"). The units' text is unchanged; the program now reads a root from the enclosing function's scope rather than from a constant of its own, and the runtime's top-level bindings are that function's rather than the factory's. light-cljs-1051, which wrote the units in the program's own function, had measured `kw-hash100` 18% slower right after `get-hash100` in one process; that operation's two modes, about 14.4 and 16.3 ns, are noted in the sections above.
+
+**Binaries:** master `light-cljs-9b0028f0` and `light-cljs-1062-879e09d0`, this pellet on it, both V8 builds. The gate's output and workload 200k are ES modules, so both change.
+
+**The gate** (`bb benchmarks/core-ops/run.bb`, all 64 operations, 5 runs per compiler, alternated, the after run with `--baseline` the before's; load 2.63-18.24 before and 11.17-14.01 after, unreserved): no operation is more than 3% slower. The largest changes are `mapv-1000` +3% (48,262 to 49,524 ns, its after range 47,517-63,702 holding the before median), `str-concat`, `vec-literal-4`, `hash-fresh-vec-4` and `reduce-entries-small` +2%, and `map-literal-3` -6%, `reduce-kv-small`, `swap-inc` and `merge-small` -3%. `get-hash100` read 12.9 to 12.8 ns and `kw-hash100` 16.2 to 15.9.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1062 --runs 5 --runtime-only --runtime 1,10,40`, the project rebuilt with each binary just before its run, two before and after pairs; load 10.7-12.4, unreserved), light-cljs, median (range):
+
+| | before | after | before (2) | after (2) |
+| --- | ---: | ---: | ---: | ---: |
+| first output, 1 iteration | 0.391 s | 0.394 s | 0.381 s | 0.388 s |
+| wall, 1 iteration | 0.397 s (0.390-0.411) | 0.400 s (0.389-0.408) | 0.386 s (0.383-0.394) | 0.394 s (0.390-0.394) |
+| wall, 10 iterations | 0.866 s (0.854-0.897) | 0.867 s (0.862-0.895) | 0.864 s (0.853-0.871) | 0.874 s (0.862-0.913) |
+| wall, 40 iterations | 2.123 s (2.104-2.128) | 2.093 s (2.066-2.149) | 2.117 s (2.076-2.125) | 2.119 s (2.105-2.136) |
+| steady state, ms per iteration | 44.3 | 43.4 | 44.4 | 44.2 |
+| light/shadow, steady state | 1.78 | 1.75 | 1.80 | 1.75 |
+
+The steady state does not move. **Startup is about 1.5% slower**, a loss recorded as found: the first output reads 3 and 7 ms later in the two pairs above, and a check that ran the two outputs alternately, 30 Node processes each (`node run-light.mjs 42 1` against copies of both outputs, load 6.8), timed them at 371.0 ms (364.5-515.6) before and 376.9 ms (364.1-604.9) after (+1.6%). Timed inside the process (20 alternated each, load 6.4), loading the module, which parses it and runs the units and the program's definitions, takes 120.7 ms before and 122.9 after (+1.8%), and the iteration itself 199.0 and 200.0 ms. The cause is not isolated; one candidate is that the program now reads each root from the enclosing function's scope rather than from a constant it declares, so the parser resolves every such read one scope further out. Writing the inner function as `function(){...}` rather than an arrow measured the same (122.2 ms).
+
+**Size** (advanced): workload 200k's output is 848,932 to 848,567 bytes after gzip -9 (-365) and 3,438,039 to 3,438,435 raw (+396); the re-frame bundles shrink by 747, 929 and 1,763 bytes after gzip (benchmarks/re-frame-vs-shadow.md, same date). The size ratchet's fixtures are JavaScript expressions, which keep the factory: none moves.
