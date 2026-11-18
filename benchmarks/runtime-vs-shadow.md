@@ -4640,3 +4640,48 @@ entry a new `-val` had the old one called (`{:a 1}` where master gives
 `{:a 99}`). It now reads `-val` after `-key` returns
 (`transient_map_conj_observes_value_method_changes_from_key`): 4 bytes more
 at advanced, no change to any measured path's work.
+
+## 2026-11-18: the seq walk shaped as upstream's (light-cljs-1054)
+
+`seq`, `first`, `rest` and `next` call a value's keyed slot, then upstream's path for nil and host values, without the slot-first wrappers and the slots' `noBranch` guards (docs/value-layout.md, "What light-cljs-1054 landed"). The lookups, updates, `=` and `hash` keep theirs (light-cljs-1066).
+
+**Binaries:** `light-cljs-a397e0c9` (master before) and `light-cljs-1054-28b22fc0` (this pellet on it), V8 builds. No run waited for the machine; the loads are given with each table, all unreserved.
+
+**The gate** (`bb benchmarks/core-ops/run.bb --light BIN`, all 68 operations, 5 runs per compiler alternated, then the same with the other binary and `--baseline`, twice: pairs a and b, loads 2.8-8.1 and 4.4-13.1), the operations the seq walk touches, light-cljs ns per operation:
+
+| operation | before a | after a | change | before b | after b | change | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| lazy-walk-1000 | 45,346 | 39,122 | -14% | 45,469 | 38,469 | -15% | 0.77-0.79 |
+| seq-walk-vec-1000 | 25,869 | 24,962 | -4% | 26,474 | 25,086 | -5% | 1.28-1.30 |
+| keys-small | 340.4 | 264.4 | -22% | 344.5 | 267.1 | -22% | 3.49-3.59 |
+| vals-small | 360.4 | 285.5 | -21% | 381.8 | 291.3 | -24% | 3.65-3.74 |
+| keys-hash100 | 3,767 | 3,509 | -7% | 4,245 | 3,533 | -17% | 0.71-0.72 |
+| vals-hash100 | 3,947 | 3,739 | -5% | 4,363 | 3,710 | -15% | 0.75 |
+| merge-small | 2,129 | 2,039 | -4% | 2,264 | 2,108 | -7% | 2.28-2.37 |
+| str-concat | 165.4 | 157.5 | -5% | 167.4 | 158.3 | -5% | 10.7-10.8 |
+| filter-count-1000 | 38,992 | 38,405 | -2% | 38,719 | 38,801 | +0% | 1.36-1.38 |
+| into-xform-1000 | 65,952 | 65,227 | -1% | 68,450 | 66,996 | -2% | 3.55-3.68 |
+
+- **No operation is more than 2% slower in pair b.** In pair a one is 5% slower, `vec-nth-1024` (4.88 to 5.11 ns), which this pellet does not touch (`nth` of a vector calls its slot through `nthSite`, unchanged), and which pair b has 2% faster (4.99 to 4.91): noise of a 5 ns operation.
+- **Why the walks gain:** a lazy seq's step called `first`'s and `seq`'s wrappers, 90 to 94 bytes of bytecode with the `noBranch` test, and each slot tested its fields first; the operations are now 49 to 58 bytes and the slots read only what they answer. The key and value seqs' getters call the map seqs' slots, which no longer guard.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the `a397e0c9` binary, built by every binary), the whole bundle with React, gzip -9:
+
+| App | `f533efb1` | master `a397e0c9` | light-cljs-1054 | against master | against `f533efb1` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| re-frame simple | 108,631 | 114,343 | 114,103 | -240 (-0.21%) | +5,472 |
+| TodoMVC | 138,015 | 145,750 | 145,604 | -146 (-0.10%) | +7,589 |
+| flow | 328,641 | 333,715 | 333,497 | -218 (-0.07%) | +4,856 |
+
+- **Raw:** 373,438 to 371,955 (-1,483), 481,187 to 479,727 (-1,460), 1,286,309 to 1,285,226 (-1,083); light-cljs's output as written, gzip, 67,943 to 67,775, 97,491 to 97,350, 280,826 to 280,735.
+- **Against the expectation** (2,500 to 4,000 bytes per app for the whole pellet, light-cljs-1047): this is the seq walk alone. The recognisers its old bodies called stay for the other operations' bodies, and all three apps keep `extend-type` (`extendType`), so they keep `firstSeq` for `ownSeqs`; the size ratchet's programs that walk seqs, without those, are 1,460 to 2,503 bytes smaller raw (tests/support/ratchet_fixtures.rs). The user decided on 2026-11-17 that per-pellet targets are reported, not gated; light-cljs-1066 does the other operations.
+- The browser behaviour checks pass for all three apps with this pellet's builds (`bb benchmarks/re-frame.bb browser todomvc simple flow --compiler light --runs 1`: 16 of 16).
+
+**Workload 200k and the re-frame-shaped 200k app** (`compare.bb PROJECT --runs 5 --runtime-only --runtime 1,40`, projects `workload-200k-seed42-1054` and `re-frame-200k-seed42-1054`, the light-cljs output rebuilt with each binary just before its runs), wall time at 40 iterations, median (range), and light-cljs's steady state:
+
+| project | light before | light after (`28b22fc0`) | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| workload 200k | 2.165 s (2.136-2.215) | 2.055 s (2.047-2.063) | 1.346 / 1.325 s | 45.4 to 42.8 (shadow-cljs 26.1 / 25.8) | 11.9-12.6 / 12.1-12.6 |
+| re-frame-shaped | 21.145 s (19.449-21.424) | 19.405 s (18.878-20.689) | 12.165 / 11.388 s | 491.0 to 446.4 (shadow-cljs 274.9 / 252.8) | 12.5 / 6.9-10.0 |
+
+Light/shadow steady state 1.74 to 1.66 for the workload. The re-frame-shaped app's runs moved with the machine's load (shadow-cljs's own steady state 8% faster in the second pair of runs): light/shadow 1.79 to 1.77.

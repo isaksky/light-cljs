@@ -190,7 +190,7 @@ pub const RECORD_METHODS: &[(&str, &[usize], &str)] = &[
     ("IAssociative/-contains-key?", &[2], "contains"),
     ("IAssociative/-assoc", &[3], "assoc"),
     ("IMap/-dissoc", &[2], "dissoc"),
-    ("ISeqable/-seq", &[1], "seq"),
+    ("ISeqable/-seq", &[1], "seqOf"),
     ("IIterable/-iterator", &[1], "iterator"),
     ("IPrintWithWriter/-pr-writer", &[3], "printWriterImpl"),
     ("IKVReduce/-kv-reduce", &[3], "reduceKv"),

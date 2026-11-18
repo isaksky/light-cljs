@@ -89,14 +89,17 @@ const SWAPS: &[(&str, &str)] = &[
         r#"  const kindHooks = {seqVector: value => __rt.cljSeq(value)};"#,
     ),
     ("emptyList", "  const emptyList = __rt.formList();"),
-    // The slot-first wrappers serve the V8 profile's class values, which this
-    // slice of engine forms never builds; each captures the operation it
+    // The slot-first wrapper serves the V8 profile's class values, which this
+    // slice of engine forms never builds; it captures the operation it
     // wraps, which the seal below, walking properties only, cannot reach.
     ("count.slots", ""),
-    ("first.slots", ""),
-    ("rest.slots", ""),
-    ("next.slots", ""),
-    ("seq.slots", ""),
+    // The seq walk's own paths, which answer the engine forms, as the
+    // shared-heap profile's `operationPaths` holds them (light-cljs-1054);
+    // the slice keeps them as roots ([`SLICE_ROOTS`]).
+    (
+        "operationPaths",
+        "  const operationPaths = {seq: seqPath, first: firstPath, rest: restPath, next: nextPath};",
+    ),
     // The seqs' slots that `map` reaches mark themselves while the slice
     // loads (light-cljs-1010): an array, as the shared-heap profile's
     // `builtinSlots`, where the V8 profile's WeakSet never publishes.
@@ -146,6 +149,10 @@ const SWAPS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The units the swapped slice keeps: those `mapSeq` reaches and the seq
+/// walk's own paths, which only its swapped `operationPaths` names.
+const SLICE_ROOTS: &[&str] = &["mapSeq", "seqPath", "firstPath", "restPath", "nextPath"];
+
 /// `mapSeq(f, [1 2 3])` over an engine vector, walked twice with the
 /// engine's own `seq`/`first`/`next`, as `kind items... calls n`.
 fn map_twice(rt: &Runtime, text: &str) -> Result<Rooted, String> {
@@ -184,7 +191,7 @@ fn real_core_map_over_an_engine_vector_in_one_task() {
         failed.contains("cannot convert object to primitive value"),
         "{failed}"
     );
-    let swapped = assemble(&["mapSeq"], SWAPS, "mapSeq");
+    let swapped = assemble(SLICE_ROOTS, SWAPS, "mapSeq");
     let out = map_twice(&rt, &swapped).unwrap();
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
@@ -314,7 +321,11 @@ fn real_core_publication_walk() {
 #[ignore = "run by benchmarks/real-core-seam.bb"]
 fn real_core_map_slice_publication_walk() {
     let m = RuntimeManifest::embedded();
-    let kept = m.reached_by_uses(&[(m.unit_of("mapSeq").unwrap(), RootUse::Call)]);
+    let roots = SLICE_ROOTS
+        .iter()
+        .map(|name| (m.unit_of(name).unwrap(), RootUse::Call))
+        .collect::<Vec<_>>();
+    let kept = m.reached_by_uses(&roots);
     let bindings = m
         .units
         .iter()
@@ -322,7 +333,7 @@ fn real_core_map_slice_publication_walk() {
         .filter(|(_, k)| k.is_some())
         .flat_map(|(u, _)| u.declares.iter().copied())
         .collect::<Vec<_>>();
-    let factory = assemble(&["mapSeq"], SWAPS, &format!("{{{}}}", bindings.join(", ")));
+    let factory = assemble(SLICE_ROOTS, SWAPS, &format!("{{{}}}", bindings.join(", ")));
     let (shareable, causes) =
         publication_walk(&factory, "__rt.sealBindings(rt);", "Object.entries(rt)");
     print_walk("map-slice", shareable, &causes);
@@ -499,7 +510,11 @@ fn closures_over_forward_or_reassigned_bindings_publish_once_fixed_or_sealed() {
 /// Throwaway profile code: light-cljs-647 assembles the real profile.
 fn shared_map_slice() -> String {
     let m = RuntimeManifest::embedded();
-    let kept = m.reached_by_uses(&[(m.unit_of("mapSeq").unwrap(), RootUse::Call)]);
+    let roots = SLICE_ROOTS
+        .iter()
+        .map(|name| (m.unit_of(name).unwrap(), RootUse::Call))
+        .collect::<Vec<_>>();
+    let kept = m.reached_by_uses(&roots);
     let bindings = m
         .units
         .iter()
@@ -526,7 +541,7 @@ fn shared_map_slice() -> String {
     // symbols, metadata, map entries, ...) never hold an engine value on
     // the path of `map` over a vector; they become one sealed, empty,
     // read-only store.
-    let text = assemble(&["mapSeq"], SWAPS, &seal);
+    let text = assemble(SLICE_ROOTS, SWAPS, &seal);
     let prologue = m.source()[m.prologue.clone()].len();
     format!(
         "{}  const sharedEmptyStore = __rt.seal({{has: () => false, get: () => undefined, \

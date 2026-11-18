@@ -1214,8 +1214,12 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // sets and the indexed seqs (light-cljs-1059), and the 13 `-first`,
     // `-rest`, `-next`, `-seq` and `-count` slot units of the map seqs
     // (light-cljs-1064), and the 11 `-conj!`, `-assoc!` and `-persistent!`
-    // slot units of the transient vectors, maps and sets (light-cljs-1065).
-    assert_eq!(checked, 489);
+    // slot units of the transient vectors, maps and sets (light-cljs-1065),
+    // less the slot-first wrappers of `seq`, `first`, `rest` and `next`, and
+    // the `-seq` slots of the three maps and the sorted set, the queue's and
+    // a chunk's `-first`, the iterator seq's and RSeq's slots, and the hooks
+    // of `firstSeq` and `restSeq` for `extend-type` (light-cljs-1054).
+    assert_eq!(checked, 495);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -2064,7 +2068,6 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- storeProtocol",
             "dissoc <- dissoc.slots",
             "equalPair <- equalPair.slots",
-            "first <- first.slots",
             "gensymCounter <- gensym",
             "get <- get.own",
             "get <- get.slots",
@@ -2078,7 +2081,6 @@ fn units_assigning_a_binding_share_its_unit() {
             "macroexpandServices <- setMacroexpandServices",
             "mapEntry <- mapEntry.lean",
             "mapEntry <- mapEntry.vector",
-            "next <- next.slots",
             "nth <- nth.protocol",
             "nth <- nth.slots",
             "patchDeclaration <- declarationTransaction",
@@ -2103,8 +2105,6 @@ fn units_assigning_a_binding_share_its_unit() {
             "reduce <- reduce.protocol",
             "reduce <- reduce.slots",
             "reduceKv <- reduceKv.slots",
-            "rest <- rest.slots",
-            "seq <- seq.slots",
             "setDeclaration <- declarationTransaction",
             "setDeclaration <- extendType",
             "setDeclaration <- protocol",
@@ -2214,10 +2214,6 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("ListValue.nextSlot"),
             unit("ListValue.seqSlot"),
             unit("ListValue.countSlot"),
-            unit("first.slots"),
-            unit("rest.slots"),
-            unit("next.slots"),
-            unit("seq.slots"),
             unit("equalPair.slots"),
             unit("cons.equiv"),
             unit("cons.compared"),

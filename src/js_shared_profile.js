@@ -230,6 +230,20 @@
     get on() { const cells = globalThis.__lightSharedCells; return cells.slotFirst; },
     off() { const cells = globalThis.__lightSharedCells; cells.slotFirst = false; }
   };
+  //@unit operationPaths requires: firstPath, nextPath, restPath, seqPath
+  // The V8 profile's switch to the operations' own paths, which every
+  // task takes for a value without the operation's slot: the engine forms
+  // (vectors, map entries, maps, sets and list cells) hold no slots, and
+  // the own paths answer them through this profile's units, as before
+  // light-cljs-1054.
+  const operationPaths = {seq: seqPath, first: firstPath, rest: restPath, next: nextPath};
+  //@unit ownSeqs
+  // The V8 profile's switch for `first` and `rest` of a collection whose
+  // seq a program extended: this profile takes the own paths
+  // (`operationPaths`), which read the seq's fields, so its writes, by
+  // `extend-type` and `specify!`, which the boot's seal would refuse, do
+  // nothing.
+  const ownSeqs = {get on() { return false; }, set on(value) {}};
   //@unit sharedMethodKeys
   // The resolved keys `coreMethod` makes for the core protocol dispatchers,
   // which only their dispatchers hold: `sharedProfileBoot` fills their memos

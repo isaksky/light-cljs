@@ -893,6 +893,24 @@
   // operation gives and no method receives, so that every other answer,
   // `missing` among them, is the slot's (light-cljs-387).
   const noBranch = Object.freeze({});
+  //@unit slotFirst
+  // Whether the operations call a value's keyed slot first: `off` where a
+  // compiler session demands declarations (`setDeclarationDemand`), as there
+  // the operations' own paths demand each protocol before they read a slot.
+  // A method, not an assignment, so that the shared-heap profile, which
+  // seals this object, keeps the switch on the task's cells. Declared before
+  // the operations, which read it.
+  const slotFirst = {on: true, off() { slotFirst.on = false; }};
+  //@unit operationPaths
+  // The operations' own paths over the runtime's classes (`seqPath`,
+  // `firstPath`, `restPath`, `nextPath`), which a value without the
+  // operation's slot takes where they are set: a compiler session that
+  // demands declarations (`setDeclarationDemand`), whose `slotFirst` is off,
+  // and the shared-heap profile, whose engine forms hold no slots. Release
+  // and dev builds set none: there a runtime class's value answers from its
+  // slot, and the operation's own path is upstream's, for nil and host
+  // values (light-cljs-1054).
+  const operationPaths = {};
   //@unit fieldComparisons
   // Whether the classes' comparisons and hashes by their fields hold
   // (`classEquiv`, `vectorHash`, `mapEquiv`, light-cljs-1014), and a sorted
@@ -903,6 +921,15 @@
   // from the fields (`tabledKind`). The shared-heap profile seals it, so
   // such an extension throws there, as before.
   const fieldComparisons = {on: true};
+  //@unit ownSeqs
+  // Whether `extend-type` gave a runtime class, or `specify!` a value of
+  // one, a protocol method: then `first` and `rest` of a collection
+  // without `-first` or `-rest` read the first and the rest of its seq by
+  // the seq's own fields (`firstSeq`, `restSeq`), as they did before
+  // light-cljs-1054, where the seq's slot could now hold a program's
+  // method. The shared-heap profile, which takes the old paths, has its
+  // own (src/js_shared_profile.js).
+  const ownSeqs = {on: false};
   //@unit tabledKind
   // Whether a keyed kind is one whose type had a kind table number until
   // light-cljs-1015 removed the tables: vectors, subvectors and map entries
@@ -1110,7 +1137,7 @@
   //@unit installMethods.INextKey effect: installMethods when: KeySeqCell requires: methodKey,
   //@ methodKeys
   methodKeys[39] = methodKey("INext");
-  //@unit installMethods.INextNextKey effect: installMethods when: next requires: methodKey,
+  //@unit installMethods.INextNextKey effect: installMethods when: nextOf, nextPath requires: methodKey,
   //@ methodKeys
   methodKeys[40] = methodKey("INext/-next");
   //@unit installMethods.IPrintWithWriterPrWriterKey effect: installMethods when: printWriterImpl
@@ -1134,20 +1161,20 @@
   //@unit installMethods.IReversibleRseqKey effect: installMethods when: rseq requires: methodKey,
   //@ methodKeys
   methodKeys[47] = methodKey("IReversible/-rseq");
-  //@unit installMethods.ISeqFirstKey effect: installMethods when: first, firstSeq requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.ISeqFirstKey effect: installMethods when: firstOf, firstPath, firstSeq
+  //@ requires: methodKey, methodKeys
   methodKeys[48] = methodKey("ISeq/-first");
   //@unit installMethods.ISeqKey effect: installMethods when: cons, isSeq, nth requires: methodKey,
   //@ methodKeys
   methodKeys[49] = methodKey("ISeq");
-  //@unit installMethods.ISeqRestKey effect: installMethods when: rest, restSeq requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.ISeqRestKey effect: installMethods when: restOf, restPath, restSeq
+  //@ requires: methodKey, methodKeys
   methodKeys[50] = methodKey("ISeq/-rest");
   //@unit installMethods.ISeqableKey effect: installMethods when: count, isSeqable requires: methodKey,
   //@ methodKeys
   methodKeys[51] = methodKey("ISeqable");
-  //@unit installMethods.ISeqableSeqKey effect: installMethods when: reduce, rseq, seq requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.ISeqableSeqKey effect: installMethods when: reduce, rseq, seqOf, seqPath
+  //@ requires: methodKey, methodKeys
   methodKeys[52] = methodKey("ISeqable/-seq");
   //@unit installMethods.ISequentialKey effect: installMethods when: isSequential, nth,
   //@ structuralEqualPair requires: methodKey, methodKeys
@@ -1781,10 +1808,52 @@
       : new Cell(slice.arr$LKEY, offset, slice.indexed$LKEY, slice.view$LKEY);
   }
 
-  //@unit seq requires: cellOf, fieldComparisons, IndexedSeqCell, isChunkedCons, iteratorSeq,
+  // The seq walk's operations, `seq`, `first`, `rest` and `next`, are
+  // upstream's (docs/value-layout.md, section 3; light-cljs-1054): a value
+  // with a keyed kind, of a runtime class or a program's type, calls its
+  // keyed slot, read and called once; every other value, and one whose slot
+  // holds no method, takes the operation's own path (`seqOf` and the
+  // others), upstream's for nil, a host value's program method (`extend-type`
+  // of `object`, `default` or a host type), arrays, strings and iterables,
+  // and of the seq of a collection without the protocol. A value of a
+  // runtime class made by reflection, which the user gave up (section 5),
+  // takes its slot as any other, whatever it answers. Each operation is
+  // small enough for V8 to inline (the 100 bytes of bytecode of
+  // light-cljs-1033).
+  //@unit seq requires: seqOf, slotFirst
+  // The empty list, kind 13, takes `seqOf`, which reads its slot: every walk
+  // ends with its `seq`, and its slot made the read and call here
+  // megamorphic (light-cljs-1033).
+  function seq(value) {
+    if (value != null && slotFirst.on) {
+      const kind = value.cljs$lang$kind$$LKEY;
+      if (kind !== undefined && kind !== 13) {
+        const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY;
+        if (method) return method.call(value, value);
+      }
+    }
+    return seqOf(value);
+  }
+  //@unit seqOf requires: IndexedSeqCell, iteratorSeq, methodKeys, operationPaths, protocolHooks
+  function seqOf(value) {
+    const path = operationPaths.seq;
+    if (path !== undefined) return path(value);
+    if (value == null) return null;
+    if (value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY || Object.getPrototypeOf(value)?.cljs$core$ISeqable$_seq$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    const own = protocolHooks.programMethod?.(value, methodKeys[52], 1, true);
+    if (own) return own.call(value, value);
+    if (Array.isArray(value) || typeof value === "string") return value.length ? new IndexedSeqCell(value, 0, true, "indexed") : null;
+    if (value[Symbol.iterator] != null) return iteratorSeq(value[Symbol.iterator]());
+    throw new Error(String(value) + " is not ISeqable");
+  }
+  //@unit seqPath requires: cellOf, fieldComparisons, IndexedSeqCell, isChunkedCons, iteratorSeq,
   //@ iteratorSeqs, kindHooks, lazyOf, maps, methodKeys, protocolHooks, queues, sets, setSeqs,
   //@ vectorStore, viewOf
-  function seq(value) {
+  // `seq`'s own path over the runtime's classes (`operationPaths`).
+  function seqPath(value) {
     if (value == null) return null;
     // A program's implementation first, where `installMethods` is kept
     // (`protocolHooks`), as every operation of one value takes it.
@@ -1822,7 +1891,7 @@
     if (cell === undefined) return isChunkedCons(value) ? value : noBranch;
     return cell.cell$LKEY === "list" && cell.count$LKEY === 0 ? noBranch : value;
   }
-  //@unit LazySeq.seq effect: LazySeq when: seq requires: cellSeq, kindHooks, lazyRealized,
+  //@unit LazySeq.seq effect: LazySeq when: seqPath requires: cellSeq, kindHooks, lazyRealized,
   //@ noBranch, protocolHooks, seq
   // The seq of what a lazy seq realizes: a cell is its own, which `seq`,
   // looking for an `ISeqable` implementation that JavaScript gave it, also
@@ -1847,20 +1916,21 @@
     }
     return lazy.s$LKEY = current;
   }
-  //@unit queueFromArray.seq effect: queueFromArray when: seq, seqSite requires: concat,
+  //@unit queueFromArray.seq effect: queueFromArray when: seq, seqOf, seqPath, seqSite requires: concat,
   //@ IndexedSeqValue, kindHooks, seq, view
   kindHooks.seqQueue = (value, queue) => {
     const q = value?.slots$LKEY;
     if (q !== undefined) return seq(concat(q.front, q.rear));
     return queue.length ? view(IndexedSeqValue, queue, 0, false, "queue") : null;
   };
-  //@unit makeVector.seq effect: makeVector, mapEntry when: seq, seqSite requires: ChunkedSeqCell,
+  //@unit makeVector.seq effect: makeVector, mapEntry when: seq, seqOf, seqPath, seqSite requires: ChunkedSeqCell,
   //@ IndexedSeqCell, kindHooks, vectorChunk
   // A vector of at most 32 items walks its tail; a longer one is upstream's
   // chunked seq over its trie's leaves.
   kindHooks.seqVector = (value, store) => !store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), 0, true, "indexed")
     : new ChunkedSeqCell(vectorChunk(value, 0), 0, value, 0);
-  //@unit makeMap.seq effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: seq
+  //@unit makeMap.seq effect: ArrayMapCell, makeMap, PersistentArrayMapValue,
+  //@ PersistentHashMapValue, treeMapConstructor, recordMethods when: seq, seqOf, seqPath, seqSite
   //@ requires: IndexedSeqValue, isTreeMap, kindHooks, mapEntry, mapKinds, mapPairs,
   //@ PersistentArrayMapSeqType, view
   kindHooks.seqMap = value => {
@@ -1874,13 +1944,13 @@
       : kind === "array-map" ? PersistentArrayMapSeqType : IndexedSeqValue,
       Object.freeze(items), 0, false, kind);
   };
-  //@unit treeMapConstructor.seq effect: treeMapConstructor when: rseq, seq requires: kindHooks,
-  //@ treeMapSeq
+  //@unit treeMapConstructor.seq effect: treeMapConstructor when: rseq, seq, seqOf, seqPath, seqSite
+  //@ requires: kindHooks, treeMapSeq
   // Only the sorted-map operations, which keep its constructor, build a map
   // of that kind.
   kindHooks.seqTree = treeMapSeq;
-  //@unit makeSet.seq effect: makeSet, treeSetConstructor when: seq, seqSite, setSeqs requires: collectionTraversal,
-  //@ IndexedSeqValue, kindHooks, setKinds, view
+  //@unit makeSet.seq effect: makeSet, treeSetConstructor when: seq, seqOf, seqPath, seqSite,
+  //@ setSeqs requires: collectionTraversal, IndexedSeqValue, kindHooks, setKinds, view
   // The members it is given, which a sorted set builds of its tree map on
   // each `sets.get` (light-cljs-1038), in their traversal order.
   kindHooks.seqSet = (value, members) => members.length
@@ -1896,9 +1966,34 @@
     if (item.done) return null;
     return new IteratorSeqCell(item.value, iterator);
   }
-  //@unit first requires: chunkOf, firstSeq, isCell, isChunkedCons, isView, iteratorSeqs, lazyOf,
-  //@ methodKeys, protocolHooks, queues, seq
+  //@unit first requires: firstOf, slotFirst
   function first(value) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ISeq$_first$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    return firstOf(value);
+  }
+  //@unit firstOf requires: methodKeys, operationPaths, ownSeqs, protocolHooks, seq
+  // The first item of a collection without `-first` is its seq's, read
+  // from the seq's slot (upstream's `(-first (seq coll))`).
+  function firstOf(value) {
+    const path = operationPaths.first;
+    if (path !== undefined) return path(value);
+    if (value == null) return null;
+    const own = protocolHooks.programMethod?.(value, methodKeys[48], 1, false, true);
+    if (own) return own.call(value, value);
+    const s = seq(value);
+    if (s == null) return null;
+    if (ownSeqs.on) return protocolHooks.firstSeq(s);
+    const method = s.cljs$core$ISeq$_first$arity$1$LKEY || Object.getPrototypeOf(s)?.cljs$core$ISeq$_first$arity$1$LKEY || protocolHooks.builtin?.(s, methodKeys[48], 1);
+    if (method) return method.call(s, s);
+    throw new Error("ISeq.-first not supported on this type");
+  }
+  //@unit firstPath requires: chunkOf, first, firstSeq, isCell, isChunkedCons, isView, iteratorSeqs,
+  //@ lazyOf, methodKeys, protocolHooks, queues, seq
+  // `first`'s own path over the runtime's classes (`operationPaths`).
+  function firstPath(value) {
     if (value == null) return null;
     // As `seq`'s.
     const own = protocolHooks.programMethod?.(value, methodKeys[48], 1, false, true);
@@ -1930,9 +2025,37 @@
     throw new Error("ISeq.-first not supported on this type");
   }
 
-  //@unit rest requires: emptyList, isCell, isChunkedCons, isView, iteratorSeqs, lazyOf, methodKeys,
-  //@ protocolHooks, restSeq, seq
+  //@unit firstSeq.own effect: extendType, extendInstance when: firstOf requires: firstSeq,
+  //@ protocolHooks
+  // `firstSeq` where `extend-type` or `specify!` can change a runtime seq's
+  // `-first` (`ownSeqs`).
+  protocolHooks.firstSeq = firstSeq;
+  //@unit rest requires: restOf, slotFirst
   function rest(value) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$ISeq$_rest$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    return restOf(value);
+  }
+  //@unit restOf requires: emptyList, methodKeys, operationPaths, ownSeqs, protocolHooks, seq
+  function restOf(value) {
+    const path = operationPaths.rest;
+    if (path !== undefined) return path(value);
+    if (value == null) return emptyList;
+    const own = protocolHooks.programMethod?.(value, methodKeys[50], 1, false, true);
+    if (own) return own.call(value, value);
+    const s = seq(value);
+    if (s == null) return emptyList;
+    if (ownSeqs.on) return protocolHooks.restSeq(s);
+    const method = s.cljs$core$ISeq$_rest$arity$1$LKEY || Object.getPrototypeOf(s)?.cljs$core$ISeq$_rest$arity$1$LKEY || protocolHooks.builtin?.(s, methodKeys[50], 1);
+    if (method) return method.call(s, s);
+    throw new Error("ISeq.-rest not supported on this type");
+  }
+  //@unit restPath requires: emptyList, isCell, isChunkedCons, isView, iteratorSeqs, lazyOf,
+  //@ methodKeys, protocolHooks, rest, restSeq, seq
+  // `rest`'s own path over the runtime's classes (`operationPaths`).
+  function restPath(value) {
     if (value == null) return emptyList;
     // As `seq`'s.
     const own = protocolHooks.programMethod?.(value, methodKeys[50], 1, false, true);
@@ -1972,8 +2095,32 @@
   //@ kindHooks, meta
   kindHooks.restQueue = (tail, current) => collectionWithMeta(tail, meta(current));
 
-  //@unit next requires: cellOf, lazyOf, methodKeys, protocolHooks, rest, seq, viewAt, viewOf
+  //@unit restSeq.own effect: extendType, extendInstance when: restOf requires: protocolHooks,
+  //@ restSeq
+  // `restSeq` where `extend-type` or `specify!` can change a runtime seq's
+  // `-rest` (`ownSeqs`).
+  protocolHooks.restSeq = restSeq;
+  //@unit next requires: nextOf, slotFirst
   function next(value) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$INext$_next$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    return nextOf(value);
+  }
+  //@unit nextOf requires: methodKeys, operationPaths, protocolHooks, rest, seq
+  function nextOf(value) {
+    const path = operationPaths.next;
+    if (path !== undefined) return path(value);
+    if (value == null) return null;
+    const own = protocolHooks.programMethod?.(value, methodKeys[40], 1, false, true);
+    if (own) return own.call(value, value);
+    return seq(rest(value));
+  }
+  //@unit nextPath requires: cellOf, lazyOf, methodKeys, next, protocolHooks, rest, seq, viewAt,
+  //@ viewOf
+  // `next`'s own path over the runtime's classes (`operationPaths`).
+  function nextPath(value) {
     if (value == null) return null;
     // As `seq`'s.
     const own = protocolHooks.programMethod?.(value, methodKeys[40], 1, false, true);
@@ -3385,7 +3532,7 @@
     return ordered;
   };
   //@unit PersistentHashMapValue.seqType effect: PersistentHashMapValue, publicHashSet, putMember
-  //@ when: seq requires: ArrayNodeSeqType, kindHooks, maps, NodeSeqType
+  //@ when: seq, seqOf, seqPath, seqSite requires: ArrayNodeSeqType, kindHooks, maps, NodeSeqType
   // As upstream's: an ArrayNodeSeq where the trie's root is an array node (17+
   // slots). Positional entries (an engine map's) are not hashed again: NodeSeq.
   kindHooks.hashMapSeqType = value => {
@@ -5092,13 +5239,6 @@
     return arity === 2 ? operation(value, key) : arity === 3 ? operation(value, key, notFound) : operation.apply(null, arguments);
   }, "name", {value: operation.name}))(get);
 
-  //@unit slotFirst
-  // Whether the slot-first wrappers run: `off` where a compiler session
-  // demands declarations (`setDeclarationDemand`), as there the operations'
-  // older layers demand each protocol before they read a slot. A method, not
-  // an assignment, so that the shared-heap profile, which seals this object,
-  // keeps the switch on the task's cells.
-  const slotFirst = {on: true, off() { slotFirst.on = false; }};
   //@unit builtinSlots
   // The runtime's own slot methods (`PersistentVectorValue.nth` and the
   // rest), which `builtinSlot` marks: the protocol lookups of the
@@ -5775,6 +5915,19 @@
   //@unit treeMapConstructor.containsSlot effect: treeMapConstructor when: contains, containsSite
   //@ requires: builtinSlot, mapContains, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY = builtinSlot(function (self, key) { return mapContains(self, key); });
+  // A map's `-seq` (upstream's ISeqable), which `seq` called through
+  // `seqMap` before light-cljs-1054 gave the maps the slot: an array or a
+  // hash map's seq of its entries, a sorted map's of its tree. Each comes
+  // before the map's `-reduce`, which reads it as its class's own.
+  //@unit PersistentArrayMapValue.seqSlot effect: PersistentArrayMapValue when: seq, seqOf, seqSite
+  //@ requires: builtinSlot, kindHooks, PersistentArrayMapValue
+  PersistentArrayMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return kindHooks.seqMap(self); });
+  //@unit PersistentHashMapValue.seqSlot effect: PersistentHashMapValue when: seq, seqOf, seqSite
+  //@ requires: builtinSlot, kindHooks, PersistentHashMapValue
+  PersistentHashMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return kindHooks.seqMap(self); });
+  //@unit treeMapConstructor.seqSlot effect: treeMapConstructor when: seq, seqOf, seqSite requires: builtinSlot,
+  //@ kindHooks, treeMapConstructor
+  treeMapConstructor.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return kindHooks.seqTree(self, true); });
   // An array or hash map's `-reduce` and `-kv-reduce` slots, and a sorted
   // map's `-kv-reduce` (light-cljs-1055), which `reduce.slots` and
   // `reduceKv.slots` call before any protocol lookup.
@@ -5785,7 +5938,8 @@
   // `slots`, which its copies keep), of its array's pairs up to its count,
   // as its iterator gives them (`iteratorArrayMap`), where `iterable` (no
   // `-iterator` slot). Else `reduce`'s own path: for an `-seq` that
-  // `extend-type` or `specify!` gave (`own` is false; no map class has one),
+  // `extend-type` or `specify!` gave (`own` is false: the map's `-seq` is not
+  // its class's own),
   // a public constructor's array map with a program's `-iterator`, and
   // where a compiler session demands declarations (`slotFirst`).
   function mapReduceSlot(self, rf, init, arity, pairs, own, iterable) {
@@ -5803,18 +5957,18 @@
   //@unit PersistentArrayMapValue.reduceSlot effect: PersistentArrayMapValue when: reduce requires: builtinSlot,
   //@ mapReduceSlot, noBranch, PersistentArrayMapValue
   // One method for both arities (the arguments' count), as a vector's.
-  PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(function (self, rf, init) {
+  PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
     const arr = self.arr$LKEY;
     return arr === undefined ? noBranch : mapReduceSlot(self, rf, init, arguments.length, arr,
-      self.cljs$core$ISeqable$_seq$arity$1$LKEY === undefined, self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined);
-  });
+      self.cljs$core$ISeqable$_seq$arity$1$LKEY === own, self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined);
+  })(PersistentArrayMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
   //@unit PersistentHashMapValue.reduceSlot effect: PersistentHashMapValue when: reduce requires: builtinSlot,
   //@ mapPairs, mapReduceSlot, noBranch, PersistentHashMapValue
-  PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(function (self, rf, init) {
+  PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
     if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
-    return mapReduceSlot(self, rf, init, arguments.length, mapPairs(self), self.cljs$core$ISeqable$_seq$arity$1$LKEY === undefined, true);
-  });
+    return mapReduceSlot(self, rf, init, arguments.length, mapPairs(self), self.cljs$core$ISeqable$_seq$arity$1$LKEY === own, true);
+  })(PersistentHashMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
   //@unit mapKvReduce requires: isReduced, reducedValue
   // `reduce-kv` of an array or a hash map: each of its keys and values
@@ -5864,11 +6018,19 @@
     const slots = self.slots$LKEY;
     return slots === undefined ? members.length : count(slots["hash-map"]);
   });
-  //@unit PersistentHashSetValue.seqSlot effect: PersistentHashSetValue when: seq, seqSite requires: builtinSlot,
-  //@ kindHooks, noBranch, PersistentHashSetValue
+  //@unit PersistentHashSetValue.seqSlot effect: PersistentHashSetValue when: seq, seqOf, seqSite
+  //@ requires: builtinSlot, kindHooks, noBranch, PersistentHashSetValue
   PersistentHashSetValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     const members = self.entries$LKEY;
     return members == null ? noBranch : kindHooks.seqSet(self, members);
+  });
+  //@unit treeSetConstructor.seqSlot effect: treeSetConstructor when: seq, seqOf, seqSite requires: builtinSlot,
+  //@ fieldComparisons, kindHooks, sets, setSeqs, treeSetConstructor
+  // A sorted set's seq is its tree map's keys (`setSeqs`, light-cljs-1038),
+  // the seq of its members once an extension emptied the kind tables
+  // (`fieldComparisons`), as `seq` gave them before light-cljs-1054.
+  treeSetConstructor.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    return fieldComparisons.on ? setSeqs.seq(self, self) : kindHooks.seqSet(self, sets.get(self));
   });
   //@unit PersistentHashSetValue.conjSlot effect: PersistentHashSetValue when: conj, conjSite,
   //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, kindHooks, missing, noBranch,
@@ -5900,12 +6062,25 @@
     const slots = self.slots$LKEY;
     return slots === undefined ? items.length : "cnt" in slots ? slots.cnt : "count" in slots ? slots.count : items.length;
   });
-  //@unit PersistentQueueValue.seqSlot effect: PersistentQueueValue when: seq, seqSite requires: builtinSlot,
-  //@ kindHooks, noBranch, PersistentQueueValue
+  //@unit PersistentQueueValue.seqSlot effect: PersistentQueueValue when: seq, seqOf, seqSite
+  //@ requires: builtinSlot, kindHooks, PersistentQueueValue
   PersistentQueueValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    const items = self.arr$LKEY;
-    return items === undefined ? noBranch : kindHooks.seqQueue(self, items);
+    return kindHooks.seqQueue(self, self.arr$LKEY);
   });
+  //@unit PersistentQueueValue.firstSlot effect: PersistentQueueValue when: first, firstOf,
+  //@ firstSite requires: builtinSlot, first, firstOf, PersistentQueueValue
+  // Its first item, a public constructor's queue its front's first, as
+  // upstream's PersistentQueue's `-first` and as `first` read them before
+  // light-cljs-1054; the first of its seq where `specify!` or
+  // `extend-type` gave it an `-seq`, which `first` took (`own`, its class's
+  // `-seq` as the slot loads), read once.
+  PersistentQueueValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot((own => function (self) {
+    const q = self.slots$LKEY, items = self.arr$LKEY;
+    if (q !== undefined) return first(q.front);
+    const method = self.cljs$core$ISeqable$_seq$arity$1$LKEY;
+    if (method !== own) return method ? first(method.call(self, self)) : firstOf(self);
+    return items.length ? items[0] : null;
+  })(PersistentQueueValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjSite,
   //@ treeMapSeqConstructor requires: builtinSlot, kindHooks, noBranch, PersistentQueueValue,
   //@ preserveMeta
@@ -5931,19 +6106,17 @@
   // `next` takes of a chunked seq), the slot takes it too, through the
   // operation's wrappers, so that a program's `extend-type` of that
   // operation's protocol answers as before.
-  //@unit viewFirstSlot requires: builtinSlot, noBranch
+  //@unit viewFirstSlot requires: builtinSlot
   // The `-first`, `-seq` and `-count` of an indexed seq, which the map seqs
   // share (light-cljs-1064): they read only a view's own fields.
   const viewFirstSlot = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     const i = self.i$LKEY;
     return i < arr.length ? arr[i] : null;
   });
-  //@unit viewSeqSlot requires: builtinSlot, noBranch
+  //@unit viewSeqSlot requires: builtinSlot
   const viewSeqSlot = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     return self.i$LKEY < arr.length ? self : null;
   });
   //@unit viewCountSlot requires: builtinSlot, noBranch
@@ -5952,66 +6125,60 @@
     if (arr === undefined) return noBranch;
     return Math.max(0, arr.length - self.i$LKEY);
   });
-  //@unit IndexedSeqValue.first effect: IndexedSeqValue when: first, firstSite requires: IndexedSeqValue,
+  //@unit IndexedSeqValue.first effect: IndexedSeqValue when: first, firstOf, firstSite requires: IndexedSeqValue,
   //@ viewFirstSlot
   IndexedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = viewFirstSlot;
-  //@unit IndexedSeqValue.rest effect: IndexedSeqValue when: rest, restSite requires: builtinSlot,
-  //@ emptyList, IndexedSeqCell, IndexedSeqValue, noBranch, restSeq
+  //@unit IndexedSeqValue.rest effect: IndexedSeqValue when: rest, restOf, restSite requires: builtinSlot,
+  //@ emptyList, IndexedSeqCell, IndexedSeqValue, restSeq
   IndexedSeqValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     if (self.view$LKEY !== "indexed") return restSeq(self);
     const i = self.i$LKEY + 1;
     return i < arr.length ? new IndexedSeqCell(arr, i, self.indexed$LKEY, "indexed") : emptyList;
   });
   //@unit IndexedSeqValue.next effect: IndexedSeqValue when: next, nextSite requires: builtinSlot,
-  //@ IndexedSeqCell, IndexedSeqValue, noBranch, rest, seq
+  //@ IndexedSeqCell, IndexedSeqValue, rest, seq
   // The flat kinds advance directly, as `next` advances them; the seqs of
   // queues and sorted maps take the seq of their rest.
   IndexedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     const kind = self.view$LKEY;
     if (kind !== "indexed" && kind !== "set" && kind !== "hash-map" && kind !== "array-map") return seq(rest(self));
     const i = self.i$LKEY + 1;
     return i < arr.length ? new IndexedSeqCell(arr, i, self.indexed$LKEY, kind) : null;
   });
-  //@unit IndexedSeqValue.seq effect: IndexedSeqValue when: seq, seqSite requires: IndexedSeqValue,
+  //@unit IndexedSeqValue.seq effect: IndexedSeqValue when: seq, seqOf, seqSite requires: IndexedSeqValue,
   //@ viewSeqSlot
   IndexedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
   //@unit IndexedSeqValue.count effect: IndexedSeqValue when: count, countSite requires: IndexedSeqValue,
   //@ viewCountSlot
   IndexedSeqValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
-  //@unit ChunkedSeqValue.first effect: ChunkedSeqValue when: first, firstSite requires: builtinSlot,
-  //@ ChunkedSeqValue, noBranch
+  //@unit ChunkedSeqValue.first effect: ChunkedSeqValue when: first, firstOf, firstSite requires: builtinSlot,
+  //@ ChunkedSeqValue
   ChunkedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     const i = self.i$LKEY;
     return i < arr.length ? arr[i] : null;
   });
-  //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest, restSite requires: builtinSlot,
-  //@ ChunkedSeqCell, ChunkedSeqValue, chunkedVectorRest, emptyList, noBranch, restSeq
+  //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest, restOf, restSite requires: builtinSlot,
+  //@ ChunkedSeqCell, ChunkedSeqValue, chunkedVectorRest, emptyList, restSeq
   ChunkedSeqValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     const vec = self.vec$LKEY, i = self.i$LKEY + 1;
     if (!vec) return restSeq(self);
     if (i > arr.length) return emptyList;
     return i < arr.length ? new ChunkedSeqCell(arr, i, vec, self.base$LKEY) : chunkedVectorRest(self);
   });
   //@unit ChunkedSeqValue.next effect: ChunkedSeqValue when: next, nextSite requires: builtinSlot,
-  //@ ChunkedSeqValue, noBranch, rest, seq
+  //@ ChunkedSeqValue, rest, seq
   // The seq of its rest, as `next` takes it.
   ChunkedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.arr$LKEY === undefined) return noBranch;
     return seq(rest(self));
   });
-  //@unit ChunkedSeqValue.seq effect: ChunkedSeqValue when: seq, seqSite requires: builtinSlot,
-  //@ ChunkedSeqValue, noBranch
+  //@unit ChunkedSeqValue.seq effect: ChunkedSeqValue when: seq, seqOf, seqSite requires: builtinSlot,
+  //@ ChunkedSeqValue
   ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     return self.i$LKEY < arr.length ? self : null;
   });
   // The map seqs (`PersistentArrayMapSeq`, `NodeSeq`, `ArrayNodeSeq`), views
@@ -6022,72 +6189,78 @@
   // indexed seq's; the three classes share a `-next`, which steps to a view of
   // the seq's own class, as `next` does (`viewAt`), and a `-rest`, which is
   // that or the empty list. The key and value seqs call them.
-  //@unit mapSeqNextSlot requires: builtinSlot, noBranch
+  //@unit mapSeqNextSlot requires: builtinSlot
   const mapSeqNextSlot = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
-    if (arr === undefined) return noBranch;
     const i = self.i$LKEY + 1;
     return i < arr.length ? new self.cljs$lang$cell$$LKEY(arr, i, self.indexed$LKEY, self.view$LKEY) : null;
   });
   //@unit mapSeqRestSlot requires: builtinSlot, emptyList, mapSeqNextSlot
   const mapSeqRestSlot = builtinSlot(function (self) { return mapSeqNextSlot(self) ?? emptyList; });
   //@unit PersistentArrayMapSeqType.firstSlot effect: PersistentArrayMapSeqType when: first,
-  //@ firstSite requires: PersistentArrayMapSeqType, viewFirstSlot
+  //@ firstOf, firstSite requires: PersistentArrayMapSeqType, viewFirstSlot
   PersistentArrayMapSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = viewFirstSlot;
-  //@unit PersistentArrayMapSeqType.restSlot effect: PersistentArrayMapSeqType when: rest, restSite
-  //@ requires: mapSeqRestSlot, PersistentArrayMapSeqType
+  //@unit PersistentArrayMapSeqType.restSlot effect: PersistentArrayMapSeqType when: rest, restOf,
+  //@ restSite requires: mapSeqRestSlot, PersistentArrayMapSeqType
   PersistentArrayMapSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = mapSeqRestSlot;
   //@unit PersistentArrayMapSeqType.nextSlot effect: PersistentArrayMapSeqType when: next, nextSite
   //@ requires: mapSeqNextSlot, PersistentArrayMapSeqType
   PersistentArrayMapSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = mapSeqNextSlot;
-  //@unit PersistentArrayMapSeqType.seqSlot effect: PersistentArrayMapSeqType when: seq, seqSite
-  //@ requires: PersistentArrayMapSeqType, viewSeqSlot
+  //@unit PersistentArrayMapSeqType.seqSlot effect: PersistentArrayMapSeqType when: seq, seqOf,
+  //@ seqSite requires: PersistentArrayMapSeqType, viewSeqSlot
   PersistentArrayMapSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
   //@unit PersistentArrayMapSeqType.countSlot effect: PersistentArrayMapSeqType when: count,
   //@ countSite requires: PersistentArrayMapSeqType, viewCountSlot
   // Its entries from its offset, as `count` counts them.
   PersistentArrayMapSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
-  //@unit NodeSeqType.firstSlot effect: NodeSeqType when: first, firstSite requires: NodeSeqType,
+  //@unit NodeSeqType.firstSlot effect: NodeSeqType when: first, firstOf, firstSite requires: NodeSeqType,
   //@ viewFirstSlot
   NodeSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = viewFirstSlot;
-  //@unit NodeSeqType.restSlot effect: NodeSeqType when: rest, restSite requires: mapSeqRestSlot,
+  //@unit NodeSeqType.restSlot effect: NodeSeqType when: rest, restOf, restSite requires: mapSeqRestSlot,
   //@ NodeSeqType
   NodeSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = mapSeqRestSlot;
   //@unit NodeSeqType.nextSlot effect: NodeSeqType when: next, nextSite requires: mapSeqNextSlot,
   //@ NodeSeqType
   NodeSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = mapSeqNextSlot;
-  //@unit NodeSeqType.seqSlot effect: NodeSeqType when: seq, seqSite requires: NodeSeqType,
+  //@unit NodeSeqType.seqSlot effect: NodeSeqType when: seq, seqOf, seqSite requires: NodeSeqType,
   //@ viewSeqSlot
   NodeSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
-  //@unit ArrayNodeSeqType.firstSlot effect: ArrayNodeSeqType when: first, firstSite requires: ArrayNodeSeqType,
-  //@ viewFirstSlot
+  //@unit ArrayNodeSeqType.firstSlot effect: ArrayNodeSeqType when: first, firstOf, firstSite
+  //@ requires: ArrayNodeSeqType, viewFirstSlot
   ArrayNodeSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = viewFirstSlot;
-  //@unit ArrayNodeSeqType.restSlot effect: ArrayNodeSeqType when: rest, restSite requires: ArrayNodeSeqType,
+  //@unit ArrayNodeSeqType.restSlot effect: ArrayNodeSeqType when: rest, restOf, restSite requires: ArrayNodeSeqType,
   //@ mapSeqRestSlot
   ArrayNodeSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = mapSeqRestSlot;
   //@unit ArrayNodeSeqType.nextSlot effect: ArrayNodeSeqType when: next, nextSite requires: ArrayNodeSeqType,
   //@ mapSeqNextSlot
   ArrayNodeSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = mapSeqNextSlot;
-  //@unit ArrayNodeSeqType.seqSlot effect: ArrayNodeSeqType when: seq, seqSite requires: ArrayNodeSeqType,
+  //@unit ArrayNodeSeqType.seqSlot effect: ArrayNodeSeqType when: seq, seqOf, seqSite requires: ArrayNodeSeqType,
   //@ viewSeqSlot
   ArrayNodeSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
-  //@unit PersistentVectorValue.seq effect: PersistentVectorValue when: seq, seqSite requires: builtinSlot,
-  //@ kindHooks, noBranch, PersistentVectorValue
+  // A reversed seq (`rseq` of a vector or a map, upstream's RSeq) answers
+  // the seq walk from slots too (light-cljs-1054), as the operations read
+  // it before: an indexed seq's `-first` and `-seq`, and a `-rest` and
+  // `-next` that step through `rest`'s path of a view.
+  //@unit RSeqType.slots effect: RSeqType when: first, firstOf, firstSite, next, nextSite, rest,
+  //@ restOf, restSite, seq, seqOf, seqSite requires: builtinSlot, rest, restSeq, RSeqType, seq,
+  //@ viewFirstSlot, viewSeqSlot
+  RSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = viewFirstSlot;
+  RSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) { return restSeq(self); });
+  RSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) { return seq(rest(self)); });
+  RSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
+  //@unit PersistentVectorValue.seq effect: PersistentVectorValue when: seq, seqOf, seqSite
+  //@ requires: builtinSlot, kindHooks, PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    const store = self;
-    if (store.cnt$LKEY === undefined && !("cnt$LKEY" in store)) return noBranch;
-    return kindHooks.seqVector(self, store);
-  });
-  //@unit SubvecValue.seq effect: SubvecValue when: seq, seqSite requires: builtinSlot, kindHooks,
-  //@ noBranch, SubvecValue
-  SubvecValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return kindHooks.seqVector(self, self);
   });
-  //@unit MapEntryType.seq effect: MapEntryType when: seq, seqSite requires: builtinSlot, kindHooks,
-  //@ MapEntryType, noBranch
+  //@unit SubvecValue.seq effect: SubvecValue when: seq, seqOf, seqSite requires: builtinSlot,
+  //@ kindHooks, SubvecValue
+  SubvecValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
+    return kindHooks.seqVector(self, self);
+  });
+  //@unit MapEntryType.seq effect: MapEntryType when: seq, seqOf, seqSite requires: builtinSlot,
+  //@ kindHooks, MapEntryType
   MapEntryType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cnt$LKEY !== 2 || self.tail$LKEY === undefined) return noBranch;
     return kindHooks.seqVector(self, self);
   });
   // A vector's and a subvector's `-reduce` and `-kv-reduce` slots
@@ -6158,55 +6331,48 @@
   // `first` and `rest` read its chunk through `nth`, `count` and
   // `-drop-first` where protocol implementations exist, through their
   // wrappers.
-  //@unit LazySeq.seqSlot effect: LazySeq when: seq, seqSite requires: builtinSlot, lazyRealized,
-  //@ LazySeq, noBranch, seq
+  //@unit LazySeq.seqSlot effect: LazySeq when: seq, seqOf, seqSite requires: builtinSlot,
+  //@ lazyRealized, LazySeq, seq
   LazySeq.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    if (!("fn$LKEY" in self)) return noBranch;
     return seq(lazyRealized(self));
   });
-  //@unit LazySeq.firstSlot effect: LazySeq when: first, firstSite requires: builtinSlot, first,
-  //@ LazySeq, noBranch, seq
+  //@unit LazySeq.firstSlot effect: LazySeq when: first, firstOf, firstSite requires: builtinSlot,
+  //@ first, LazySeq, seq
   LazySeq.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    if (!("fn$LKEY" in self)) return noBranch;
     seq(self);
     return first(self.s$LKEY);
   });
-  //@unit LazySeq.restSlot effect: LazySeq when: rest, restSite requires: builtinSlot, LazySeq,
-  //@ noBranch, rest, seq
+  //@unit LazySeq.restSlot effect: LazySeq when: rest, restOf, restSite requires: builtinSlot,
+  //@ LazySeq, rest, seq
   LazySeq.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
-    if (!("fn$LKEY" in self)) return noBranch;
     seq(self);
     return rest(self.s$LKEY);
   });
   //@unit LazySeq.nextSlot effect: LazySeq when: next, nextSite requires: builtinSlot, LazySeq,
-  //@ next, noBranch, seq
+  //@ next, seq
   LazySeq.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    if (!("fn$LKEY" in self)) return noBranch;
     seq(self);
     return next(self.s$LKEY);
   });
-  //@unit ChunkedCons.first effect: ChunkedCons when: first, firstSite requires: builtinSlot,
-  //@ ChunkedCons, chunkedConsFirst, noBranch
+  //@unit ChunkedCons.first effect: ChunkedCons when: first, firstOf, firstSite requires: builtinSlot,
+  //@ ChunkedCons, chunkedConsFirst
   ChunkedCons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    if (!("chunk$LKEY" in self)) return noBranch;
     return chunkedConsFirst(self);
   });
-  //@unit ChunkedCons.rest effect: ChunkedCons when: rest, restSite requires: builtinSlot,
-  //@ ChunkedCons, chunkedConsRest, noBranch
+  //@unit ChunkedCons.rest effect: ChunkedCons when: rest, restOf, restSite requires: builtinSlot,
+  //@ ChunkedCons, chunkedConsRest
   ChunkedCons.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
-    if (!("chunk$LKEY" in self)) return noBranch;
     return chunkedConsRest(self);
   });
   //@unit ChunkedCons.next effect: ChunkedCons when: next, nextSite requires: builtinSlot,
-  //@ ChunkedCons, noBranch, rest, seq
+  //@ ChunkedCons, rest, seq
   ChunkedCons.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    if (!("chunk$LKEY" in self)) return noBranch;
     return seq(rest(self));
   });
-  //@unit ChunkedCons.seq effect: ChunkedCons when: seq, seqSite requires: builtinSlot, ChunkedCons,
-  //@ noBranch
+  //@unit ChunkedCons.seq effect: ChunkedCons when: seq, seqOf, seqSite requires: builtinSlot,
+  //@ ChunkedCons
   ChunkedCons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return !("chunk$LKEY" in self) ? noBranch : self;
+    return self;
   });
   //@unit ChunkedCons.chunkedFirst effect: ChunkedCons when: chunkFirst requires: builtinSlot,
   //@ ChunkedCons, noBranch
@@ -6245,6 +6411,14 @@
   arrayChunk.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return !("arr$LKEY" in self) ? noBranch : self.end$LKEY - self.off$LKEY;
   });
+  //@unit arrayChunk.firstSlot effect: arrayChunk when: first, firstOf, firstSite requires: arrayChunk,
+  //@ builtinSlot, firstOf
+  // A range's chunk (an integer chunk) is a seq of its items, whose first
+  // `first` gave before light-cljs-1054; an array chunk takes `first`'s
+  // own path, as before.
+  arrayChunk.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
+    return self.step$LKEY !== null ? self.first$LKEY : firstOf(self);
+  });
   //@unit arrayChunk.nthSlot effect: arrayChunk when: nth, nthSite, nthSite3 requires: arrayChunk,
   //@ builtinSlot, chunkNth, missing, noBranch
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
@@ -6271,59 +6445,53 @@
   // map's seq shares its prototype with its views (`viewOf`), so its slots
   // answer both, as the operations do: a core dispatcher calls a slot for
   // either.
-  //@unit cellFirstSlot requires: builtinSlot, noBranch
-  const cellFirstSlot = builtinSlot(function (self) { return self.cell$LKEY === undefined ? noBranch : self.first$LKEY; });
-  //@unit cellRestSlot requires: builtinSlot, emptyList, noBranch
-  const cellRestSlot = builtinSlot(function (self) { return self.cell$LKEY === undefined ? noBranch : self.rest$LKEY ?? emptyList; });
-  //@unit cellNextSlot requires: builtinSlot, noBranch, rest, seq
-  const cellNextSlot = builtinSlot(function (self) { return self.cell$LKEY === undefined ? noBranch : seq(rest(self)); });
-  //@unit cellSeqSlot requires: builtinSlot, noBranch
-  const cellSeqSlot = builtinSlot(function (self) { return self.cell$LKEY === undefined ? noBranch : self; });
-  //@unit Cons.firstSlot effect: Cons when: first, firstSite requires: builtinSlot, Cons, noBranch
+  //@unit cellFirstSlot requires: builtinSlot
+  const cellFirstSlot = builtinSlot(function (self) { return self.first$LKEY; });
+  //@unit cellRestSlot requires: builtinSlot, emptyList
+  const cellRestSlot = builtinSlot(function (self) { return self.rest$LKEY ?? emptyList; });
+  //@unit cellNextSlot requires: builtinSlot, rest, seq
+  const cellNextSlot = builtinSlot(function (self) { return seq(rest(self)); });
+  //@unit cellSeqSlot requires: builtinSlot
+  const cellSeqSlot = builtinSlot(function (self) { return self; });
+  //@unit Cons.firstSlot effect: Cons when: first, firstOf, firstSite requires: builtinSlot, Cons
   // A cons's slots of its own, which only conses reach.
   Cons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : self.first$LKEY;
+    return self.first$LKEY;
   });
-  //@unit Cons.restSlot effect: Cons when: rest, restSite requires: builtinSlot, Cons, emptyList,
-  //@ noBranch
+  //@unit Cons.restSlot effect: Cons when: rest, restOf, restSite requires: builtinSlot, Cons,
+  //@ emptyList
   Cons.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : self.rest$LKEY ?? emptyList;
+    return self.rest$LKEY ?? emptyList;
   });
-  //@unit Cons.nextSlot effect: Cons when: next, nextSite requires: builtinSlot, Cons, noBranch,
-  //@ rest, seq
+  //@unit Cons.nextSlot effect: Cons when: next, nextSite requires: builtinSlot, Cons, rest, seq
   Cons.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : seq(rest(self));
+    return seq(rest(self));
   });
-  //@unit Cons.seqSlot effect: Cons when: seq, seqSite requires: builtinSlot, Cons, noBranch
+  //@unit Cons.seqSlot effect: Cons when: seq, seqOf, seqSite requires: builtinSlot, Cons
   Cons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : self;
+    return self;
   });
-  //@unit ListValue.firstSlot effect: ListValue when: first, firstSite requires: builtinSlot,
-  //@ ListValue, noBranch
+  //@unit ListValue.firstSlot effect: ListValue when: first, firstOf, firstSite requires: builtinSlot,
+  //@ ListValue
   // A list of count 0 is empty unless a public constructor gave it the
   // count (`(List. nil 1 nil 0 nil)`), as the operations read it.
   ListValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cell$LKEY === undefined) return noBranch;
     return self.first$LKEY;
   });
-  //@unit ListValue.restSlot effect: ListValue when: rest, restSite requires: builtinSlot,
-  //@ emptyList, ListValue, noBranch
+  //@unit ListValue.restSlot effect: ListValue when: rest, restOf, restSite requires: builtinSlot,
+  //@ emptyList, ListValue
   ListValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cell$LKEY === undefined) return noBranch;
     const count = self.count$LKEY;
     return count === 1 ? emptyList : self.rest$LKEY;
   });
-  //@unit ListValue.nextSlot effect: ListValue when: next, nextSite requires: builtinSlot,
-  //@ ListValue, noBranch
+  //@unit ListValue.nextSlot effect: ListValue when: next, nextSite requires: builtinSlot, ListValue
   ListValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cell$LKEY === undefined) return noBranch;
     const count = self.count$LKEY;
     return count === 1 ? null : self.rest$LKEY;
   });
-  //@unit ListValue.seqSlot effect: ListValue when: seq, seqSite requires: builtinSlot, ListValue,
-  //@ noBranch
+  //@unit ListValue.seqSlot effect: ListValue when: seq, seqOf, seqSite requires: builtinSlot,
+  //@ ListValue
   ListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cell$LKEY === undefined) return noBranch;
     return self;
   });
   //@unit ListValue.countSlot effect: ListValue when: count, countSite requires: builtinSlot,
@@ -6331,25 +6499,25 @@
   ListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return self.cell$LKEY === undefined ? noBranch : self.count$LKEY;
   });
-  //@unit EmptyListValue.firstSlot effect: EmptyListValue when: first, firstSite requires: builtinSlot,
-  //@ EmptyListValue, noBranch
+  //@unit EmptyListValue.firstSlot effect: EmptyListValue when: first, firstOf, firstSite requires: builtinSlot,
+  //@ EmptyListValue
   EmptyListValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : null;
+    return null;
   });
-  //@unit EmptyListValue.restSlot effect: EmptyListValue when: rest, restSite requires: builtinSlot,
-  //@ emptyList, EmptyListValue, noBranch
+  //@unit EmptyListValue.restSlot effect: EmptyListValue when: rest, restOf, restSite requires: builtinSlot,
+  //@ emptyList, EmptyListValue
   EmptyListValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : emptyList;
+    return emptyList;
   });
   //@unit EmptyListValue.nextSlot effect: EmptyListValue when: next, nextSite requires: builtinSlot,
-  //@ EmptyListValue, noBranch
+  //@ EmptyListValue
   EmptyListValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : null;
+    return null;
   });
-  //@unit EmptyListValue.seqSlot effect: EmptyListValue when: seq, seqSite requires: builtinSlot,
-  //@ EmptyListValue, noBranch
+  //@unit EmptyListValue.seqSlot effect: EmptyListValue when: seq, seqOf, seqSite requires: builtinSlot,
+  //@ EmptyListValue
   EmptyListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : null;
+    return null;
   });
   //@unit EmptyListValue.countSlot effect: EmptyListValue when: count, countSite requires: builtinSlot,
   //@ EmptyListValue, noBranch
@@ -6362,154 +6530,115 @@
     return self.cell$LKEY === undefined ? noBranch : self.count$LKEY;
   });
   //@unit RepeatValue.nextSlot effect: RepeatValue when: next, nextSite requires: builtinSlot,
-  //@ noBranch, RepeatValue
+  //@ RepeatValue
   // A repeat's next is its next step; one without end is its own.
   RepeatValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    if (self.cell$LKEY === undefined) return noBranch;
     const remaining = self.remaining$LKEY;
     return self.next$LKEY ?? (remaining === -1 ? self : remaining > 1 ? self.rest$LKEY : null);
   });
-  //@unit IntegerRangeValue.firstSlot effect: IntegerRangeValue when: first, firstSite requires: cellFirstSlot,
-  //@ IntegerRangeValue
+  //@unit IntegerRangeValue.firstSlot effect: IntegerRangeValue when: first, firstOf, firstSite
+  //@ requires: cellFirstSlot, IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit IntegerRangeValue.restSlot effect: IntegerRangeValue when: rest, restSite requires: cellRestSlot,
-  //@ IntegerRangeValue
+  //@unit IntegerRangeValue.restSlot effect: IntegerRangeValue when: rest, restOf, restSite
+  //@ requires: cellRestSlot, IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
   //@unit IntegerRangeValue.nextSlot effect: IntegerRangeValue when: next, nextSite requires: cellNextSlot,
   //@ IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit IntegerRangeValue.seqSlot effect: IntegerRangeValue when: seq, seqSite requires: cellSeqSlot,
+  //@unit IntegerRangeValue.seqSlot effect: IntegerRangeValue when: seq, seqOf, seqSite requires: cellSeqSlot,
   //@ IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit RangeValue.firstSlot effect: RangeValue when: first, firstSite requires: cellFirstSlot,
+  //@unit RangeValue.firstSlot effect: RangeValue when: first, firstOf, firstSite requires: cellFirstSlot,
   //@ RangeValue
   RangeValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit RangeValue.restSlot effect: RangeValue when: rest, restSite requires: cellRestSlot,
+  //@unit RangeValue.restSlot effect: RangeValue when: rest, restOf, restSite requires: cellRestSlot,
   //@ RangeValue
   RangeValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
   //@unit RangeValue.nextSlot effect: RangeValue when: next, nextSite requires: cellNextSlot,
   //@ RangeValue
   RangeValue.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit RangeValue.seqSlot effect: RangeValue when: seq, seqSite requires: cellSeqSlot, RangeValue
+  //@unit RangeValue.seqSlot effect: RangeValue when: seq, seqOf, seqSite requires: cellSeqSlot,
+  //@ RangeValue
   RangeValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit IterateValue.firstSlot effect: IterateValue when: first, firstSite requires: cellFirstSlot,
+  //@unit IterateValue.firstSlot effect: IterateValue when: first, firstOf, firstSite requires: cellFirstSlot,
   //@ IterateValue
   IterateValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit IterateValue.restSlot effect: IterateValue when: rest, restSite requires: cellRestSlot,
+  //@unit IterateValue.restSlot effect: IterateValue when: rest, restOf, restSite requires: cellRestSlot,
   //@ IterateValue
   IterateValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
   //@unit IterateValue.nextSlot effect: IterateValue when: next, nextSite requires: cellNextSlot,
   //@ IterateValue
   IterateValue.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit IterateValue.seqSlot effect: IterateValue when: seq, seqSite requires: cellSeqSlot,
+  //@unit IterateValue.seqSlot effect: IterateValue when: seq, seqOf, seqSite requires: cellSeqSlot,
   //@ IterateValue
   IterateValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit CycleValue.firstSlot effect: CycleValue when: first, firstSite requires: cellFirstSlot,
+  //@unit CycleValue.firstSlot effect: CycleValue when: first, firstOf, firstSite requires: cellFirstSlot,
   //@ CycleValue
   CycleValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit CycleValue.restSlot effect: CycleValue when: rest, restSite requires: cellRestSlot,
+  //@unit CycleValue.restSlot effect: CycleValue when: rest, restOf, restSite requires: cellRestSlot,
   //@ CycleValue
   CycleValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
   //@unit CycleValue.nextSlot effect: CycleValue when: next, nextSite requires: cellNextSlot,
   //@ CycleValue
   CycleValue.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit CycleValue.seqSlot effect: CycleValue when: seq, seqSite requires: cellSeqSlot, CycleValue
+  //@unit CycleValue.seqSlot effect: CycleValue when: seq, seqOf, seqSite requires: cellSeqSlot,
+  //@ CycleValue
   CycleValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit RepeatValue.firstSlot effect: RepeatValue when: first, firstSite requires: cellFirstSlot,
+  //@unit RepeatValue.firstSlot effect: RepeatValue when: first, firstOf, firstSite requires: cellFirstSlot,
   //@ RepeatValue
   RepeatValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit RepeatValue.restSlot effect: RepeatValue when: rest, restSite requires: cellRestSlot,
+  //@unit RepeatValue.restSlot effect: RepeatValue when: rest, restOf, restSite requires: cellRestSlot,
   //@ RepeatValue
   RepeatValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
-  //@unit RepeatValue.seqSlot effect: RepeatValue when: seq, seqSite requires: cellSeqSlot,
+  //@unit RepeatValue.seqSlot effect: RepeatValue when: seq, seqOf, seqSite requires: cellSeqSlot,
   //@ RepeatValue
   RepeatValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit ReSeqCell.firstSlot effect: ReSeqCell when: first, firstSite requires: cellFirstSlot,
+  //@unit ReSeqCell.firstSlot effect: ReSeqCell when: first, firstOf, firstSite requires: cellFirstSlot,
   //@ ReSeqCell
   ReSeqCell.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit ReSeqCell.restSlot effect: ReSeqCell when: rest, restSite requires: cellRestSlot,
+  //@unit ReSeqCell.restSlot effect: ReSeqCell when: rest, restOf, restSite requires: cellRestSlot,
   //@ ReSeqCell
   ReSeqCell.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
   //@unit ReSeqCell.nextSlot effect: ReSeqCell when: next, nextSite requires: cellNextSlot,
   //@ ReSeqCell
   ReSeqCell.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit ReSeqCell.seqSlot effect: ReSeqCell when: seq, seqSite requires: cellSeqSlot, ReSeqCell
+  //@unit ReSeqCell.seqSlot effect: ReSeqCell when: seq, seqOf, seqSite requires: cellSeqSlot,
+  //@ ReSeqCell
   ReSeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit treeMapSeqConstructor.firstSlot effect: treeMapSeqConstructor when: first, firstSite
-  //@ requires: builtinSlot, noBranch, treeMapSeqConstructor
+  //@unit treeMapSeqConstructor.firstSlot effect: treeMapSeqConstructor when: first, firstOf,
+  //@ firstSite requires: builtinSlot, treeMapSeqConstructor
   // A sorted map's seq is a cell of its stack of nodes (light-cljs-1035),
   // whatever builds it; a value made by reflection, with no `cell` field,
   // takes the operation.
   treeMapSeqConstructor.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : self.first$LKEY;
+    return self.first$LKEY;
   });
-  //@unit treeMapSeqConstructor.restSlot effect: treeMapSeqConstructor when: rest, restSite
-  //@ requires: builtinSlot, emptyList, noBranch, treeMapSeqConstructor
+  //@unit treeMapSeqConstructor.restSlot effect: treeMapSeqConstructor when: rest, restOf, restSite
+  //@ requires: builtinSlot, emptyList, treeMapSeqConstructor
   treeMapSeqConstructor.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : self.rest$LKEY ?? emptyList;
+    return self.rest$LKEY ?? emptyList;
   });
   //@unit treeMapSeqConstructor.nextSlot effect: treeMapSeqConstructor when: next, nextSite
-  //@ requires: builtinSlot, noBranch, rest, seq, treeMapSeqConstructor
+  //@ requires: builtinSlot, rest, seq, treeMapSeqConstructor
   // The seq of its rest, through the wrappers.
   treeMapSeqConstructor.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : seq(rest(self));
+    return seq(rest(self));
   });
-  //@unit treeMapSeqConstructor.seqSlot effect: treeMapSeqConstructor when: seq, seqSite requires: builtinSlot,
-  //@ noBranch, treeMapSeqConstructor
+  //@unit treeMapSeqConstructor.seqSlot effect: treeMapSeqConstructor when: seq, seqOf, seqSite
+  //@ requires: builtinSlot, treeMapSeqConstructor
   treeMapSeqConstructor.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return self.cell$LKEY === undefined ? noBranch : self;
+    return self;
   });
-  //@unit first.slots effect: ArrayNodeSeqType, ChunkedCons, ChunkedSeqValue, IndexedSeqValue,
-  //@ LazySeq, Cons, CycleValue, EmptyListValue, IntegerRangeValue, IterateValue, KeySeqCell,
-  //@ ListValue, NodeSeqType, PersistentArrayMapSeqType, RangeValue, RepeatValue, ReSeqCell,
-  //@ treeMapSeqConstructor when: first requires: first, noBranch, slotFirst
-  first = (operation => Object.defineProperty(function (value) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
-      const method = value.cljs$core$ISeq$_first$arity$1$LKEY;
-      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(first);
-  //@unit rest.slots effect: ArrayNodeSeqType, ChunkedCons, ChunkedSeqValue, IndexedSeqValue,
-  //@ LazySeq, Cons, CycleValue, EmptyListValue, IntegerRangeValue, IterateValue, KeySeqCell,
-  //@ ListValue, NodeSeqType, PersistentArrayMapSeqType, RangeValue, RepeatValue, ReSeqCell,
-  //@ treeMapSeqConstructor when: rest requires: noBranch, rest, slotFirst
-  rest = (operation => Object.defineProperty(function (value) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
-      const method = value.cljs$core$ISeq$_rest$arity$1$LKEY;
-      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(rest);
-  //@unit next.slots effect: ArrayNodeSeqType, ChunkedCons, ChunkedSeqValue, IndexedSeqValue,
-  //@ LazySeq, Cons, CycleValue, EmptyListValue, IntegerRangeValue, IterateValue, KeySeqCell,
-  //@ ListValue, NodeSeqType, PersistentArrayMapSeqType, RangeValue, RepeatValue, ReSeqCell,
-  //@ treeMapSeqConstructor when: next requires: next, noBranch, slotFirst
-  next = (operation => Object.defineProperty(function (value) {
-    if (slotFirst.on && value != null && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
-      const method = value.cljs$core$INext$_next$arity$1$LKEY;
-      if (method) { const result = method.call(value, value); if (result !== noBranch) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(next);
-  //@unit seq.slots effect: ArrayNodeSeqType, ChunkedCons, ChunkedSeqValue, IndexedSeqValue,
-  //@ LazySeq, MapEntryType, PersistentHashSetValue, PersistentQueueValue, PersistentVectorValue,
-  //@ SubvecValue, Cons, CycleValue, EmptyListValue, IntegerRangeValue, IterateValue, KeySeqCell,
-  //@ ListValue, NodeSeqType, PersistentArrayMapSeqType, RangeValue, RepeatValue, ReSeqCell,
-  //@ treeMapSeqConstructor when: seq requires: emptyList, noBranch, seq, slotFirst
-  // The empty list takes the operation, as before it had slots: every walk
-  // ends with its `seq`, and its slot made the read and call each step takes
-  // megamorphic (light-cljs-1033, docs/value-layout.md). The empty list and
-  // `noBranch` are parameters, read with no check for an uninitialized
-  // `const`, so the wrapper keeps under the 100 bytes of bytecode that V8's
-  // Maglev tier inlines (94).
-  seq = ((operation, empty, none) => Object.defineProperty(function (value) {
-    if (slotFirst.on && value != null && value !== empty && value.cljs$lang$kind$$LKEY !== undefined && arguments.length === 1) {
-      const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY;
-      if (method) { const result = method.call(value, value); if (result !== none) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(seq, emptyList, noBranch);
+  //@unit IteratorSeqCell.slots effect: IteratorSeqCell when: first, firstOf, firstSite, rest,
+  //@ restOf, restSite, seq, seqOf, seqSite requires: builtinSlot, iteratorSeq, IteratorSeqCell
+  // Its `-first`, `-rest` and `-seq` (upstream's ES6IteratorSeq: ISeq and
+  // ISeqable), which `first`, `rest` and `seq` read from its fields before
+  // light-cljs-1054: its first item, the memoized seq of the rest (null at
+  // the end, as `rest` gave it), itself. Not enumerable, as its kind.
+  IteratorSeqCell.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) { return self.first$LKEY; });
+  IteratorSeqCell.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) { return self.tail$LKEY ?? (self.tail$LKEY = iteratorSeq(self.iter$LKEY)); });
+  IteratorSeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return self; });
+  for (const key of Object.keys(IteratorSeqCell.prototype)) Object.defineProperty(IteratorSeqCell.prototype, key, {enumerable: false});
   // A hash or array set's and an indexed seq's `-reduce` slots
   // (light-cljs-1059), which `reduce.slots` calls before any protocol
   // lookup: one method for both arities each, as a vector's. `reduce` walks
@@ -6594,30 +6723,18 @@
       && (result = value.cljs$core$ILookup$_lookup$arity$3$LKEY(value, key, notFound)) !== none ? result
       : get(value, key, notFound);
   })(noBranch);
-  //@unit firstSite requires: first, noBranch
-  const firstSite = (none => value => {
-    let result;
-    return value != null && value.cljs$core$ISeq$_first$arity$1$LKEY
-      && (result = value.cljs$core$ISeq$_first$arity$1$LKEY(value)) !== none ? result : first(value);
-  })(noBranch);
-  //@unit restSite requires: noBranch, rest
-  const restSite = (none => value => {
-    let result;
-    return value != null && value.cljs$core$ISeq$_rest$arity$1$LKEY
-      && (result = value.cljs$core$ISeq$_rest$arity$1$LKEY(value)) !== none ? result : rest(value);
-  })(noBranch);
-  //@unit nextSite requires: next, noBranch
-  const nextSite = (none => value => {
-    let result;
-    return value != null && value.cljs$core$INext$_next$arity$1$LKEY
-      && (result = value.cljs$core$INext$_next$arity$1$LKEY(value)) !== none ? result : next(value);
-  })(noBranch);
-  //@unit seqSite requires: emptyList, noBranch, seq
-  const seqSite = ((empty, none) => value => {
-    let result;
-    return value != null && value !== empty && value.cljs$core$ISeqable$_seq$arity$1$LKEY
-      && (result = value.cljs$core$ISeqable$_seq$arity$1$LKEY(value)) !== none ? result : seq(value);
-  })(emptyList, noBranch);
+  //@unit firstSite requires: first
+  const firstSite = value => value != null && value.cljs$core$ISeq$_first$arity$1$LKEY
+    ? value.cljs$core$ISeq$_first$arity$1$LKEY(value) : first(value);
+  //@unit restSite requires: rest
+  const restSite = value => value != null && value.cljs$core$ISeq$_rest$arity$1$LKEY
+    ? value.cljs$core$ISeq$_rest$arity$1$LKEY(value) : rest(value);
+  //@unit nextSite requires: next
+  const nextSite = value => value != null && value.cljs$core$INext$_next$arity$1$LKEY
+    ? value.cljs$core$INext$_next$arity$1$LKEY(value) : next(value);
+  //@unit seqSite requires: emptyList, seq
+  const seqSite = (empty => value => value != null && value !== empty && value.cljs$core$ISeqable$_seq$arity$1$LKEY
+    ? value.cljs$core$ISeqable$_seq$arity$1$LKEY(value) : seq(value))(emptyList);
   //@unit peekSite requires: noBranch, peek
   const peekSite = (none => value => {
     let result;
@@ -8181,16 +8298,17 @@
   });
   // A key or value seq's slots, on the prototype its type sets above,
   // which a slot set before it would miss (light-cljs-1064).
-  //@unit KeySeqCell.firstSlot effect: KeySeqCell when: first, firstSite requires: cellFirstSlot,
+  //@unit KeySeqCell.firstSlot effect: KeySeqCell when: first, firstOf, firstSite requires: cellFirstSlot,
   //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit KeySeqCell.restSlot effect: KeySeqCell when: rest, restSite requires: cellRestSlot,
+  //@unit KeySeqCell.restSlot effect: KeySeqCell when: rest, restOf, restSite requires: cellRestSlot,
   //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
   //@unit KeySeqCell.nextSlot effect: KeySeqCell when: next, nextSite requires: cellNextSlot,
   //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
-  //@unit KeySeqCell.seqSlot effect: KeySeqCell when: seq, seqSite requires: cellSeqSlot, KeySeqCell
+  //@unit KeySeqCell.seqSlot effect: KeySeqCell when: seq, seqOf, seqSite requires: cellSeqSlot,
+  //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
   //@unit keys requires: mapProjection
   function keys(value) { return mapProjection(value, 0); }
@@ -8745,11 +8863,13 @@
   // No-ops until setDeclarationDemand installs a compiler session's demand.
   let demandProtocol = () => {}, demandMethod = () => {}, demandMulti = () => {};
   //@unit setDeclarationDemand compile-time requires: demandMethod, demandMulti, demandProtocol,
-  //@ print, slotFirst, typeNames
+  //@ firstPath, nextPath, operationPaths, print, restPath, seqPath, slotFirst, typeNames
   function setDeclarationDemand(demand) {
     // A session that demands declarations reads no slot before its demand
-    // (`slotFirst`).
+    // (`slotFirst`), and takes the operations' own paths, whose lookups
+    // demand (`operationPaths`; the shared-heap profile's, sealed, holds them).
     slotFirst.off();
+    if (operationPaths.seq === undefined) { operationPaths.seq = seqPath; operationPaths.first = firstPath; operationPaths.rest = restPath; operationPaths.next = nextPath; }
     const methodProtocols = new Map();
     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
     demandMethod = (key, arity, value) => {
@@ -10540,7 +10660,7 @@
     return method;
   }
   //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, dispatchCell,
-  //@ fieldComparisons, installMethods, invalidArity, nativeMethods, patchDeclaration,
+  //@ fieldComparisons, installMethods, invalidArity, nativeMethods, ownSeqs, patchDeclaration,
   //@ protocolFunctions, protocolGetters, protocolSentinel, protocolValues, setDeclaration,
   //@ tabledKind
   function extendType(target, methods) {
@@ -10580,15 +10700,17 @@
       // A type that had a kind table number, or `Object`, which every type inherits from.
       if (target === Object || tabledKind(target.prototype.cljs$lang$kind$$LKEY)) fieldComparisons.on = false;
       installMethods(target.prototype, methods);
+      if (target.prototype.cljs$lang$kind$$LKEY < 64) ownSeqs.on = true;
       result = methods.length ? (methods.at(-1)[1] === 0 ? protocolSentinel : methods.at(-1)[2]) : null;
     }
     return result;
   }
-  //@unit extendInstance mutator requires: fieldComparisons, installMethods, protocolSentinel,
-  //@ tabledKind
+  //@unit extendInstance mutator requires: fieldComparisons, installMethods, ownSeqs,
+  //@ protocolSentinel, tabledKind
   function extendInstance(target, methods, returnTarget) {
     if (target != null && tabledKind(target.cljs$lang$kind$$LKEY)) fieldComparisons.on = false;
     installMethods(target, methods);
+    if (target != null && target.cljs$lang$kind$$LKEY < 64) ownSeqs.on = true;
     return returnTarget ? target : methods.length ? (methods.at(-1)[1] === 0 ? protocolSentinel : methods.at(-1)[2]) : null;
   }
   //@unit installMethods mutator requires: declarationJournal, ifnInvokeEntry, ifnPrototype,
@@ -10844,8 +10966,8 @@
       const extmap = dissoc(this.__extmap, key);
       return recordCopy(this, Type, this.__meta, seq(extmap) === null ? null : extmap, null);
     }]]);
-  //@unit recordMethods.seq effect: recordMethods when: reduce, rseq, seq, seqProtocol requires: recordEntries,
-  //@ recordMethodTable, seq, vectorFromArray
+  //@unit recordMethods.seq effect: recordMethods when: reduce, rseq, seqOf, seqPath, seqProtocol
+  //@ requires: recordEntries, recordMethodTable, seq, vectorFromArray
   recordMethodTable.push(Type => [
     ["ISeqable/-seq", 1, function () { return seq(vectorFromArray(recordEntries(this, Type))); }]]);
   //@unit recordMethods.iterator effect: recordMethods when: iterator, iteratorProtocol requires: iteratorInit,
@@ -13147,10 +13269,10 @@
   }
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
   //@ assoc, collectionWithMeta, compareKeys, conj, conjTransient, coreMethod, count, derefProtocol,
-  //@ disj, dissoc, equalPair, firstSeq, hash, hashStructural, iterator, keywordLookupEquiv,
+  //@ disj, dissoc, equalPair, firstOf, firstSeq, hash, hashStructural, iterator, keywordLookupEquiv,
   //@ keywordProgramEquiv, metaSupported, name, namespace, notifyWatches, objectEquiv, peek, pop,
-  //@ removeWatchProtocol, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin,
-  //@ protocolHooks
+  //@ removeWatchProtocol, restOf, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported
+  //@ requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,
   //@ protocolHooks
@@ -13169,16 +13291,17 @@
   // answer through the generic operations (`hostHooks`).
   protocolHooks.extend = true;
   //@unit protocolHooks.ownMethod effect: installMethods when: SubvecValue, chunkStore, contains,
-  //@ count, dropFirstChunk, empty, find, first, get, meta, next, nth, printSequential, printValues,
-  //@ printWriterImpl, reduce, reduceKv, rest, rseq, seq, subvec requires: ownDeclared, ownMethod,
-  //@ protocolHooks
+  //@ count, dropFirstChunk, empty, find, firstOf, firstPath, get, meta, nextOf, nextPath, nth,
+  //@ printSequential, printValues, printWriterImpl, reduce, reduceKv, restOf, restPath, rseq,
+  //@ seqOf, seqPath, subvec requires: ownDeclared, ownMethod, protocolHooks
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.programMethod = ownMethod;
   protocolHooks.declaredMethod = ownDeclared;
   //@unit protocolHooks.programMethod effect: extendType, extendInstance when: SubvecValue,
-  //@ chunkStore, contains, count, dropFirstChunk, empty, find, first, get, meta, next, nth,
-  //@ printSequential, printValues, printWriterImpl, reduce, reduceKv, rest, rseq, seq, subvec
-  //@ requires: extendedDeclared, extendedMethod, protocolHooks
+  //@ chunkStore, contains, count, dropFirstChunk, empty, find, firstOf, firstPath, get, meta,
+  //@ nextOf, nextPath, nth, printSequential, printValues, printWriterImpl, reduce, reduceKv,
+  //@ restOf, restPath, rseq, seqOf, seqPath, subvec requires: extendedDeclared, extendedMethod,
+  //@ protocolHooks
   // ... and only `extend-type` and `specify!` give the runtime's values and
   // host values implementations, which `extendedMethod` finds.
   protocolHooks.programMethod = extendedMethod;

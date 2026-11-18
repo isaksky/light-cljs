@@ -1937,7 +1937,7 @@ fn entry_only_and_transient_only_slices_keep_and_call_their_slots() {
         "nth.slots",
         "get.slots",
         "peek.slots",
-        "seq.slots",
+        "seq",
     ] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
@@ -2739,6 +2739,26 @@ fn extensions_reaching_the_kind_tables_empty_them() {
     ] {
         every_level(source, expected);
     }
+}
+
+#[test]
+fn seq_walk_fallbacks_keep_the_answers_of_specified_and_null_prototype_seqs() {
+    // light-cljs-1054 (the Sol review): `first` and `rest` of a collection
+    // read its seq by the seq's fields where `specify!` gave that seq its
+    // own `ISeq`, as before; and a host seq with no prototype, which a
+    // program's `-seq` gives, reaches the `object` table's methods.
+    every_level(
+        "(let [s (specify! (list 1 2) ISeq (-first [_] :custom) (-rest [_] ()))
+               v (specify! (vector 0) ISeqable (-seq [_] s))]
+           (pr-str [(first v) (rest v) (first s) (rest s)]))",
+        "[1 (2) :custom ()]",
+    );
+    every_level(
+        "(extend-type object ISeq (-first [_] :obj-first) (-rest [_] (list :obj-rest)))
+         (deftype T [] ISeqable (-seq [_] (js/Object.create nil)))
+         (pr-str [(first (T.)) (rest (T.))])",
+        "[:obj-first (:obj-rest)]",
+    );
 }
 
 /// The generic operations' protocol lookup on a value of the runtime's own
@@ -3554,16 +3574,16 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000000e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-list 00001000000000000e000 :error :error :error\n",
+                "forged-list 000010000000000000000 :error :error 2\n",
                 "forged-map 00001000000000000e000 :error :error :error\n",
-                "forged-range 00001000000000000e000 :error :error :error\n",
+                "forged-range 000010000000000000000 :error :error 2\n",
                 "forged-seq 00001000000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:slots$LKEY get:toString proto\n",
             ),
-            [341, 341, 341],
+            [323, 323, 323],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -3615,16 +3635,16 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 110000110100000000001 42 :error :error\n",
                 "type 110000110100000000000 42 :error :error\n",
                 "proxy 110000110100000000000 42 :error :error\n",
-                "forged-list 110010110100000000000 42 :error :error\n",
+                "forged-list 110010110100000000000 42 :error 43\n",
                 "forged-map 110010110100000000000 42 :error :error\n",
-                "forged-range 110010110100000000000 42 :error :error\n",
+                "forged-range 110010110100000000000 42 :error 43\n",
                 "forged-seq 110010110100000000000 42 :error :error\n",
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:slots$LKEY get:toString proto\n",
             ),
-            [346, 346, 346],
+            [337, 337, 337],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -3682,16 +3702,16 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000001e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-list 10001000000000000e000 :error :error :error\n",
+                "forged-list 100010000000000000000 :error :error 2\n",
                 "forged-map 00001000000000000e100 :error :error :error\n",
-                "forged-range 00001000000000000e000 :error :error :error\n",
+                "forged-range 000010000000000000000 :error :error 2\n",
                 "forged-seq 00001000000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :queue 2\n",
                 "specified-map 001011111100010010100 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:slots$LKEY get:toString proto\n",
             ),
-            [341, 341, 341],
+            [323, 323, 323],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");

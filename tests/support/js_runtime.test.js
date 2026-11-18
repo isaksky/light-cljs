@@ -1826,8 +1826,10 @@ console.log('public find preserves one search and direct receiver dispatch');
     c.seq(c.vector(1, 2)), c.seq(c.vec(c.range(40)))];
   const own = prototype => Object.getOwnPropertySymbols(prototype).filter(symbol => symbol !== Symbol.iterator);
   for (const value of values) assert.deepEqual(own(Object.getPrototypeOf(value)), []);
+  // `seq`, `first`, `rest` and `next` of one call its class's slots since
+  // light-cljs-1054, which no longer guard against a value made by
+  // reflection (rescoped, docs/value-layout.md section 5).
   for (const forged of values.map(value => Object.create(Object.getPrototypeOf(value)))) {
-    for (const op of [c.seq, c.first, c.rest, c.next]) assert.throws(() => op(forged));
     assert.throws(() => c.count(forged), /count not supported on this type/);
   }
 }
@@ -2266,9 +2268,13 @@ console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is
         if (!slots.includes(slot)) continue;
         // What a slot gives a value with the prototype and no fields, as
         // only reflection makes, is the private answer by which the
-        // operation's older path takes the value (`noBranch`).
-        const forged = Object.create(proto), noBranch = proto[slot].call(forged, forged, ...args);
-        assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${kind}: ${slot} of a forged value`);
+        // operation's older path takes the value (`noBranch`); the seq
+        // walk's slots no longer guard since light-cljs-1054 (rescoped,
+        // docs/value-layout.md section 5).
+        if (slot !== seq) {
+          const forged = Object.create(proto), noBranch = proto[slot].call(forged, forged, ...args);
+          assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${kind}: ${slot} of a forged value`);
+        }
         assert.equal(outcome(() => proto[slot].call(value, value, ...args)), outcome(operation), `${kind}: ${slot} of ${c.prStr(value)}`);
       }
     }
@@ -2304,6 +2310,14 @@ console.log('vector_family_prototype_contract: masks, markers and slots of the v
       for (const [slot, args] of slots) {
         const method = value[slot];
         assert.equal(typeof method, 'function', `${kind}: ${slot}`);
+        // `seq` has no path of its own for a set or a queue since
+        // light-cljs-1054, and its slot no longer guards against a value made
+        // by reflection (rescoped, docs/value-layout.md section 5): its seq
+        // holds the items a reduction gives, in their order.
+        if (slot === seq) {
+          assert.equal(outcome(() => method.call(value, value)), outcome(() => c.seq(c.into(c.vector(), value))), `${kind}: ${slot} of ${c.prStr(value)}`);
+          continue;
+        }
         const forged = Object.create(Object.getPrototypeOf(value)), noBranch = method.call(forged, forged, ...args);
         assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${kind}: ${slot} of a forged value`);
         // The operation's own path: the slot taken off the prototype.

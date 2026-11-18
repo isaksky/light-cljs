@@ -1560,6 +1560,64 @@ transient call its slot before any protocol lookup, so `into`, `mapv`,
   per iteration; the re-frame apps' whole bundles 81 to 286 bytes larger
   after gzip (0.02 to 0.21%).
 
+What light-cljs-1054 landed: the seq walk's operations, `seq`, `first`,
+`rest` and `next`, are upstream's shape (section 3), without the slot-first
+wrappers and the `noBranch` guards. The lookups, the updates, `=`, `hash`
+and the reductions keep theirs (light-cljs-1066).
+
+- **One function each.** `first` reads the value's keyed kind and calls its
+  `-first` slot where it holds a method; any other value takes `firstOf`,
+  upstream's path: nil, a host value's program method (`extend-type` of
+  `object`, `default` or a host type), then the first of its seq, read from
+  the seq's slot. `seq`, `rest` and `next` are the same (`seqOf`: the empty
+  list's slot, which `seq` itself leaves out as its wrapper did
+  (light-cljs-1033), then arrays, strings and iterables; `restOf`;
+  `nextOf`, the seq of the rest). Each operation is 49 to 58 bytes of
+  bytecode, where the wrappers were 90 to 94. The call-site entries call
+  the slot, then the operation, without the `noBranch` test.
+- **No guards.** The seq walk's slots of the lists, conses, ranges, lazy
+  seqs, chunked conses and seqs, indexed and map seqs, vectors, subvectors,
+  map entries and queues no longer test their value's fields: a value made
+  by reflection from a prototype takes the slot as any other and answers
+  what it answers, or throws (section 5, items 24 to 26).
+- **Slots for every class the old paths branched on.** The array, hash and
+  sorted maps and the sorted set have `-seq` (the map's seq, the tree's,
+  the set's tree map's keys or, once `fieldComparisons` is off, its
+  members), a reversed seq (`RSeq`) the four, an iterator seq `-first`,
+  `-rest` and `-seq` (not enumerable, as its fields), a queue `-first` (a
+  public constructor's front's first, as upstream's, and the first of a
+  program's `-seq`, read once) and a chunk `-first` (a range's chunk's first
+  item). The maps' `-reduce` compare the map's `-seq` with its class's own,
+  as the vectors' do.
+- **Answers kept.** Where an instance's slot holds nil or false (a member
+  written by name), the fallbacks take the class's slot from its prototype,
+  as the old paths answered by the class (`vector_slot_first_preserves_missing_slot_fallbacks`).
+  `first` and `rest` of a collection read its seq's first and rest by the
+  seq's fields where `extend-type` has extended a runtime class or
+  `specify!` a value of one (`ownSeqs`, which `extendType` and
+  `extendInstance` set; `protocolHooks.firstSeq` and
+  `restSeq` exist only where it is kept), as the old paths read them
+  whatever a program gave the seq's class
+  (`sequence_protocol_extensions_to_runtime_types_still_win`: `(first [7])`
+  is 7 with `IndexedSeq`'s `-first` extended, where upstream's is the
+  program's).
+- **Profiles.** The old bodies are `seqPath`, `firstPath`, `restPath` and
+  `nextPath`, which no release slice keeps: `setDeclarationDemand` sets them
+  in `operationPaths`, so a compiler session that demands declarations takes
+  them as before, and the shared-heap profile's `operationPaths` holds them
+  from its boot, for its engine forms. Dev builds, the REPL and the
+  evaluator without a demand take the release paths.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1054): in two
+  gate passes `lazy-walk-1000` -14% and -15%, `seq-walk-vec-1000` -4% and
+  -5%, `keys-small` and `vals-small` -21% to -24%, `keys-hash100` -7% and
+  -17%, no operation over 2% slower in the second pass (one untouched
+  5 ns operation 5% slower in the first and 2% faster in the second);
+  workload 200k's steady state 45.4 to 42.8 ms per iteration; the re-frame
+  apps' whole bundles 146 to 240 bytes smaller after gzip, where the
+  recognisers stay for the other operations and `extend-type` keeps
+  `firstSeq`; programs of the size ratchet that walk seqs 1,460 to 2,503
+  bytes smaller raw.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -2482,6 +2540,24 @@ One more row is rescoped as a deliberate write to the runtime's prototypes:
     other mask tests change, as writing a program type's prototype mask does
     since light-cljs-264. The marker and slot writes of that set keep their
     answers.
+
+Rescoped by light-cljs-1054, whose seq walk slots no longer guard against
+a value made by `Object.create` of a runtime prototype:
+
+24. `protocol_hooks_answer_runtime_values_as_the_full_lookup`, the
+    `forged-list` and `forged-range` rows of each extension set: `empty?` of
+    one answers false from its class's `-seq`, where it threw, and `count`
+    of a cons onto one counts it, where it threw; the Proxy is asked 323,
+    337 and 323 times, where 341, 346 and 341 (`first` and `rest` of a
+    collection read its seq's slot, not its kind four times).
+25. tests/support/js_runtime.test.js, "No runtime prototype holds a kind
+    table's number": `seq`, `first`, `rest` and `next` of a forged list,
+    cons, lazy seq, range or vector seq no longer throw; their `count`
+    still does.
+26. tests/support/js_runtime.test.js, the vector classes' and the sets' and
+    queues' slot contracts: a forged value's `-seq` is no longer
+    `noBranch`, and a set's or queue's `-seq` is checked against the items a
+    reduction gives, as `seq` has no other path for them in release.
 
 ### Documentation rules that change
 
