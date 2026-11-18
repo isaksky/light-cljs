@@ -1264,8 +1264,8 @@ What light-cljs-1057 landed: a hash map's trie compares a keyword key by its
 spelling, and its walk takes about 9 ns less.
 
 - **The key test.** `hashNodeFind` and `hashNodeAssoc` compare a key with a
-  leaf's by identity, then by `hashKeyTest`, upstream's `key-test`: a
-  keyword with a keyword by kind and `fqn` (`keyword-identical?`), its
+  leaf's by `hashKeyTest`, upstream's `key-test`: a keyword by identity,
+  then with a keyword by kind and `fqn` (`keyword-identical?`), its
   spelling read first as in `arrayIndex`, with no call of its `-equiv`
   slot, where `equalPair`'s wrapper called it through a call that has seen
   every class's slot, which V8 does not inline. The key's program `IEquiv`
@@ -1274,7 +1274,11 @@ spelling, and its walk takes about 9 ns less.
   one (`extend-type`, `specify!`), so the program still decides which keys
   are equal, a getter on the slot runs as often, and a session that demands
   declarations takes the lookup (light-cljs-1040's rule). Any other key
-  compares by `equalPair`. A collision node compares each entry so.
+  compares by `equalPair` alone: the Pants build's profile makes its
+  identity test after reading a boxed scalar, so that an occurrence of NaN
+  equals nothing, itself included, which an identity test before it broke
+  (`shared_profile_nan_occurrence_keys_use_canonical_equality`). A
+  collision node compares each entry so.
 - **A slot written by name.** `keywordProgramEquiv` reads the key's slot
   without the protocol lookup (`protocolHooks.builtin`), which only its
   lookups need, as `equalPair`'s wrapper reads it: a program that writes a
@@ -1288,10 +1292,12 @@ spelling, and its walk takes about 9 ns less.
   `slots` and an entry by its missing `kind`, and its loop tests no node:
   `node.kind === "collision"`, `!slot?.kind` and `node` in the loop's
   condition each cost a lookup 1.5 to 3.5 ns in the gate's readable build
-  (`kw-hash100` and `get-hash100` with the key test above: 20.8 and 17.5
-  ns; with the slot's tests changed, 17.4 and 14.4; the collision node's
-  too, 15.9 and 13.4; and no test in the loop's condition, 14.3 and 11.0).
-  Every caller tests the root first.
+  (`kw-hash100` and `get-hash100` with an identity test before the key
+  test: 20.8 and 17.5 ns; with the slot's tests changed, 17.4 and 14.4;
+  the collision node's too, 15.9 and 13.4; and no test in the loop's
+  condition, 14.3 and 11.0; with the identity test in the key test's
+  keyword path only, as landed, 14.4 and 13.0). Every caller tests the
+  root first.
   `hashNodeFind` is 118 bytes of bytecode (131 before), `hashKeyTest` 120;
   TurboFan inlines both, with `keywordOf` and `keywordProgramEquiv`, into
   the benchmark's loop. Comparing the kind first made `hashKeyTest` 80

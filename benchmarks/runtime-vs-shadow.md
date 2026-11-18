@@ -3802,20 +3802,24 @@ the other levels. Such a program now keeps `extend-type`'s lookup
 
 ## 2026-11-17: a hash map's keyword keys compared by their spelling (light-cljs-1057)
 
-**What.** A hash map's trie compares a key with a leaf's by identity, then,
-for a keyword, by kind and `fqn` (`hashKeyTest`, upstream's `key-test`),
+**What.** A hash map's trie compares a keyword key with a leaf's by
+identity, then by kind and `fqn` (`hashKeyTest`, upstream's `key-test`),
 where `equalPair`'s wrapper called the key's `-equiv` slot through a call
 V8 does not inline; a program's `IEquiv` method on keywords still decides
-(`keywordProgramEquiv`, read once per comparison). The walk
-(`hashNodeFind`) tells a collision node by its missing `slots` and an entry
-by its missing `kind`, and its loop tests no node, which is most of the
-gain. `assoc` (`hashNodeAssoc`) compares keys the same way.
+(`keywordProgramEquiv`, read once per comparison), and any other key
+compares by `equalPair` as before. The walk (`hashNodeFind`) tells a
+collision node by its missing `slots` and an entry by its missing `kind`,
+and its loop tests no node, which is most of the gain. `assoc`
+(`hashNodeAssoc`) compares keys the same way.
 docs/value-layout.md, "What light-cljs-1057 landed".
 
 Binaries in research/shadow-credibility/bin: before `light-cljs-4fbc0e65`
-(master), after `light-cljs-51855d30` (this change on it; the final commit
-differs in notes and docs). Unreserved: peer workers built and tested
-throughout. Raw results: research/output-speed/kw-hash-1057.
+(master), after `light-cljs-51855d30` (this change on it, with an identity
+test before the key test, which the Pants build's suite later refused for
+an occurrence of NaN); then, rebased onto light-cljs-1048, before
+`light-cljs-1df0a071` (master) and after `light-cljs-7a2b2a5e` (the landed
+runtime; "The landed runtime" below). Unreserved: peer workers built and
+tested throughout. Raw results: research/output-speed/kw-hash-1057.
 
 **The operations of this pellet, alone** (`--ops
 kw-small,get-small,get-hash100,kw-hash100,assoc-hash100,dissoc-hash100,update-hash100,destructure-map-3,record-kw-field`,
