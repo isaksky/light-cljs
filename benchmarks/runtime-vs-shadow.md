@@ -3900,7 +3900,7 @@ iteration (-1%, within the spread), shadow-cljs 23.3 and 22.8; light/shadow
 **Size** (advanced): workload 200k 3,559,758 to 3,560,043 bytes raw and
 896,479 to 896,551 after gzip -9 (+72, under 0.01%); the size ratchet
 (tests/support/ratchet_fixtures.rs, noted there), rebased onto master
-`1df0a071`: 272 bytes where a program keeps hash maps (`constant-keys`,
+`1df0a071`: 267 bytes where a program keeps hash maps (`constant-keys`,
 `features`, `features-direct`), for `keywordProgramEquiv`, which the key
 test now keeps; the ceilings of `constant-keys` and `features-direct` move
 to the next 1,000. The timings above are on the runtime before

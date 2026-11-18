@@ -1306,7 +1306,7 @@ spelling, and its walk takes about 9 ns less.
   gate `kw-hash100` 22.2 to 15.8 ns (light/shadow 1.59 to 1.17),
   `get-hash100` 20.0 to 11.4 (1.63 to 0.94), `update-hash100` -9%,
   `dissoc-hash100` -4%, no operation over 1% slower; workload 200k's steady
-  state unchanged (43.6 to 43.3 ms per iteration); 272 bytes more at
+  state unchanged (43.6 to 43.3 ms per iteration); 267 bytes more at
   advanced where a program keeps hash maps (`keywordProgramEquiv`).
 - **What is left.** `kw-hash100`'s remaining 2.3 ns over shadow-cljs's is
   before the walk: in the readable build, with the walk returning at once,

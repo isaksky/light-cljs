@@ -3219,9 +3219,7 @@
   // The entry of `key` in the trie under `node`, which every caller has
   // tested, or null: the leaf on the key's path, compared by `hashKeyTest`.
   // A collision node is the node without `slots`, and an entry the slot
-  // without a `kind`. Where the walk tested `node.kind === "collision"`,
-  // `!slot?.kind` and `node` in the loop's condition, each cost a lookup
-  // about 2 to 3 ns (light-cljs-1057).
+  // without a `kind`, tests 2 to 3 ns cheaper each (light-cljs-1057).
   function hashNodeFind(node, shift, keyHash, key) {
     for (;;) {
       const slots = node.slots;
