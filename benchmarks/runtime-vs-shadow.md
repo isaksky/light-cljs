@@ -3938,3 +3938,27 @@ slot written by name, the Sol review's fix), against master `1df0a071`
 `get-hash100` keeps 7.5 of the 9 ns it gained with the identity test
 first, `kw-hash100` all of it; `destructure-map-3` is `getSite`'s budget as
 above.
+
+**The landed runtime's gate** (every operation, 5 runs; `1df0a071` load
+6.82-18.04, `7a2b2a5e` 8.91-18.26), the operations of this pellet and every
+one that moved by 5% or more:
+
+| op | light before | light after | change | shadow-cljs before / after | light/shadow before | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| kw-small | 8.05 (7.94-8.26) | 7.99 (7.88-8.03) | -1% | 9.88 / 9.91 | 0.81 | 0.81 |
+| get-small | 11.4 (11.3-11.6) | 11.4 (11.2-11.4) | +0% | 15.1 / 15.0 | 0.76 | 0.76 |
+| get-hash100 | 20.2 (18.0-20.6) | 12.7 (12.5-12.8) | -37% | 12.1 / 12.0 | 1.67 | 1.06 |
+| kw-hash100 | 22.2 (19.8-24.9) | 15.5 (14.3-16.5) | -30% | 13.8 / 13.8 | 1.61 | 1.13 |
+| assoc-hash100 | 82.8 (79.9-85.2) | 83.5 (82.1-95.2) | +1% | 78.9 / 80.0 | 1.05 | 1.04 |
+| dissoc-hash100 | 93.0 (91.0-93.7) | 89.6 (87.8-110.7) | -4% | 76.7 / 77.7 | 1.21 | 1.15 |
+| update-hash100 | 97.9 (94.8-101.1) | 93.1 (91.8-124.0) | -5% | 96.2 / 99.1 | 1.02 | 0.94 |
+| destructure-map-3 | 64.5 (61.6-66.4) | 65.0 (61.6-68.2) | +1% | 49.9 / 49.8 | 1.29 | 1.31 |
+| record-kw-field | 5.97 (5.95-5.98) | 6.01 (6.00-6.13) | +1% | 4.23 / 4.23 | 1.41 | 1.42 |
+| reduce-map-inc-1000 | 49,894 (46,489-50,896) | 47,174 (46,006-58,752) | -5% | 40,494 / 40,169 | 1.23 | 1.17 |
+| filter-count-1000 | 42,098 (39,859-43,795) | 39,407 (38,457-41,141) | -6% | 28,330 / 28,917 | 1.49 | 1.36 |
+
+No operation is slower by more than 2% (`vec-peek`, `transient-vec-100`,
+`into-xform-1000`); `reduce-map-inc-1000` and `filter-count-1000` take no
+hash map, as in the first gate. Workload 200k was not re-timed on the
+landed runtime: its maps are array maps, and the first runtime left it
+unchanged.
