@@ -1257,8 +1257,8 @@ its mask bit again.
 - **What is left.** `conj` and `assoc` of a vector still read its metadata
   through `meta`'s lookup (the mask, kind and marker reads, about a tenth
   of `vec-conj-64`'s samples) in every program that implements a protocol,
-  though only `extend-type` or `specify!` could give a vector its own
-  `IMeta`.
+  though only `extend-type`, `specify!` or a method written by name could
+  give a vector its own `IMeta` (light-cljs-1060).
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,

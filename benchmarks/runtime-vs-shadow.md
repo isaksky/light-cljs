@@ -3790,5 +3790,12 @@ moves.
 **What is left.** `conj` and `assoc` of a vector still read the vector's
 metadata through `meta`'s lookup (the mask, kind and marker reads, about a
 tenth of `vec-conj-64`'s samples with the fix) in every program that
-implements a protocol, though only `extend-type` or `specify!` could give a
-vector its own `IMeta`.
+implements a protocol, though only `extend-type`, `specify!` or a method
+written by name could give a vector its own `IMeta` (light-cljs-1060).
+
+**Review.** The Sol review's one finding (a blocker, fixed): the kind test
+alone made `meta` of a vector whose `-meta` member a program wrote by name
+answer the vector's own metadata at `:advanced` and the written method at
+the other levels. Such a program now keeps `extend-type`'s lookup
+(`light-cljs-4ec8334a`, whose gate output is byte for byte
+`light-cljs-b1296bca`'s).
