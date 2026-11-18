@@ -649,18 +649,24 @@ impl<'s> Locals<'s> {
         }
     }
 
+    /// The locals of `resolution` named per scope: the declarations below
+    /// the top level of compiler names that `eligible` admits, and with
+    /// `function_table` not those of a function at the top level, which
+    /// are the table's.
     fn new(
         source: &'s str,
         tokens: &[Token],
         in_raw: &[bool],
         resolution: &Resolution,
         eligible: impl Fn(&str) -> bool,
+        function_table: bool,
     ) -> Self {
         let declarations = &resolution.declarations;
         let mut named = declarations
             .iter()
             .map(|declaration| {
                 declaration.scope != 0
+                    && !(function_table && resolution.parents[declaration.scope] == 0)
                     && declaration.token.is_some()
                     && compiler_name(declaration.name)
                     && eligible(declaration.name)
@@ -966,6 +972,64 @@ pub(crate) fn terse_program(
     }
 }
 
+/// The terse output of a single file whose runtime slice is the `kept`
+/// units (by unit index) written in the program's own function rather than
+/// as a factory (light-cljs-1051; docs/advanced-optimization.md, "Phase
+/// 3"): `(()=>{"use strict";<units><program>})()`. The program and the
+/// units' top-level bindings are named by one table ([`terse_texts`]), a
+/// program read `rt$x` and the binding `x` one name, so the program reads
+/// the bindings the units declare. `strict` writes the `"use strict"` the
+/// factory had, which an ES module needs not. The units go right after the
+/// function's `{`, before the prelude helpers, which neither reads.
+///
+/// `marks` move as [`terse_program`] moves them, and the units' lines map
+/// to `src/js_runtime.js` as a factory's do. Also returns each unit's
+/// bytes, by unit index.
+pub(crate) fn terse_program_units(
+    source: &str,
+    segments: &[Range<usize>],
+    kept: &[bool],
+    strict: bool,
+    marks: Option<&mut crate::source_map::Marks>,
+) -> (String, Vec<usize>) {
+    let texts = [Text {
+        source,
+        raw: segments.to_vec(),
+        runtime: None,
+        units: Some(kept),
+    }];
+    let (mut outputs, names) = terse_texts_located(&texts, true);
+    let (mut output, located) = outputs.pop().expect("one text");
+    let at = output.find('{').expect("the program's function") + 1;
+    let mut units = String::new();
+    if strict {
+        units.push_str("\"use strict\";");
+    }
+    let start = units.len();
+    let mut unit_marks = marks.is_some().then(Vec::new);
+    let unit_bytes = write_units(
+        &mut units,
+        kept,
+        |index| names[runtime_read(index)].as_str(),
+        unit_marks.as_mut(),
+    );
+    output.insert_str(at, &units);
+    if let Some(marks) = marks {
+        located.relocate(marks);
+        marks.shift(at, units.len() as isize);
+        for (offset, source, name) in unit_marks.into_iter().flatten() {
+            let origin = (crate::source_map::RUNTIME, source);
+            match name {
+                Some(name) => marks.named(at + start + offset, Some(origin), name),
+                None => marks.position(at + start + offset, origin.0, origin.1),
+            }
+        }
+        // The program's own text after the units maps as it did.
+        marks.unmapped(at + units.len());
+    }
+    (output, unit_bytes)
+}
+
 /// One text of a chunked build for [`terse_texts`]: the source as the
 /// emitter wrote it, its raw `js*` ranges, and the embedded runtime factory
 /// in it, if any; or, `units`, the runtime units (by unit index) written at
@@ -1045,6 +1109,47 @@ fn kept_read(word: &str) -> Option<&'static str> {
 /// global the units read ([`TERSE_GLOBALS`]). The units' text itself is
 /// written afterwards from the table ([`terse_module_units`]).
 pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s str, String>) {
+    let (outputs, names) = terse_texts_located(texts, false);
+    let outputs = outputs.into_iter().map(|(output, _)| output).collect();
+    (outputs, names)
+}
+
+/// Where the text of a source is in its output ([`terse_texts_located`]).
+enum Located {
+    /// The start of each written token in the source and in the output
+    /// ([`rewritten`]).
+    Tokens(Vec<(usize, usize)>),
+    /// The anchors of [`renamed_offset`], where the text kept its layout.
+    Anchors(Vec<(usize, usize)>),
+}
+
+impl Located {
+    /// Move `marks`, positions in the source, to the output: a mark before
+    /// a token to where that token is written (the next written one, for a
+    /// token the rewrite drops).
+    fn relocate(&self, marks: &mut crate::source_map::Marks) {
+        match self {
+            Located::Tokens(written) => marks.relocate(|offset| {
+                written
+                    .get(written.partition_point(|(old, _)| *old < offset))
+                    .map(|(_, new)| *new)
+            }),
+            Located::Anchors(anchors) => {
+                marks.relocate(|offset| Some(renamed_offset(anchors, offset)));
+            }
+        }
+    }
+}
+
+/// [`terse_texts`], with where each source's text is in its output. With
+/// `function_table` the declarations of a text's outermost function are
+/// the table's rather than named per scope ([`Locals::new`]): a single
+/// file's program function, whose scope the units' bindings share
+/// ([`terse_program_units`]).
+fn terse_texts_located<'s>(
+    texts: &[Text<'s>],
+    function_table: bool,
+) -> (Vec<(String, Located)>, HashMap<&'s str, String>) {
     let module = texts.iter().any(|text| text.units.is_some());
     let fixed = |word: &str| if module { kept_read(word) } else { None };
     let module_level =
@@ -1069,7 +1174,15 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
     let lexed = texts
         .iter()
         .zip(&raws)
-        .map(|(text, raw)| Lexed::new(text.source, text.runtime.clone(), raw, eligible))
+        .map(|(text, raw)| {
+            Lexed::new(
+                text.source,
+                text.runtime.clone(),
+                raw,
+                eligible,
+                function_table,
+            )
+        })
         .collect::<Option<Vec<_>>>();
     if let Some(lexed) = lexed {
         let mut words: Vec<&'s str> = Vec::new();
@@ -1096,7 +1209,10 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
         let outputs = lexed
             .into_iter()
             .zip(&locals)
-            .map(|(text, locals)| text.rewrite(&names, locals).0)
+            .map(|(text, locals)| {
+                let (output, written) = text.rewrite(&names, locals);
+                (output, Located::Tokens(written))
+            })
             .collect();
         return (outputs, names);
     }
@@ -1143,7 +1259,9 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
         .iter()
         .zip(&skipped)
         .map(|(text, skipped)| {
-            rename_compiler_names(text.source, skipped, |word| names[word].clone()).0
+            let (output, anchors) =
+                rename_compiler_names(text.source, skipped, |word| names[word].clone());
+            (output, Located::Anchors(anchors))
         })
         .collect();
     (outputs, names)
@@ -1282,7 +1400,7 @@ fn rewritten(
     runtime: Option<Range<usize>>,
     raw: &[Range<usize>],
 ) -> Option<(String, Vec<(usize, usize)>)> {
-    let lexed = Lexed::new(source, runtime, raw, |_| true)?;
+    let lexed = Lexed::new(source, runtime, raw, |_| true, false)?;
     let mut words = Vec::new();
     let mut excluded = HashSet::new();
     lexed.words(&mut words, &mut excluded);
@@ -1310,12 +1428,14 @@ struct Lexed<'s> {
 impl<'s> Lexed<'s> {
     /// `source` lexed, with its `runtime` factory one token; `None` where
     /// [`rewritten`] cannot follow it. The locals that `eligible` admits are
-    /// named per scope ([`Locals`]), unless the text does not parse.
+    /// named per scope ([`Locals`]), unless the text does not parse; with
+    /// `function_table`, not those of the outermost function.
     fn new(
         source: &'s str,
         runtime: Option<Range<usize>>,
         raw: &[Range<usize>],
         eligible: impl Fn(&str) -> bool,
+        function_table: bool,
     ) -> Option<Self> {
         // The runtime factory is one token, an atom like a template literal.
         let mut tokens = Vec::new();
@@ -1339,7 +1459,7 @@ impl<'s> Lexed<'s> {
         // `;` or the keyword is raw text.
         let (locals, mut joins) = match resolve(source, &tokens) {
             Ok(resolution) => (
-                Locals::new(source, &tokens, &in_raw, &resolution, eligible),
+                Locals::new(source, &tokens, &in_raw, &resolution, eligible, function_table),
                 joined_declarations(source, &tokens, &resolution.statements),
             ),
             Err(_) => (Locals::none(tokens.len()), vec![Join::Keep; tokens.len()]),

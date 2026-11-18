@@ -760,6 +760,25 @@ fn emit_js_mode(
             emitter.output.push_str(PRELUDE_TRUTH);
         }
         let mut prelude_end = emitter.output.len();
+        // At `Advanced` a single file's top-level definitions declare their
+        // globals where they define them (light-cljs-1051), and the
+        // declarations up front, written once the body is, list the rest.
+        if direct.is_some() && shared.is_none() && !application_roots && !demand_roots {
+            emitter.declared_in_place = Some(HashSet::new());
+            emitter.top_statement = true;
+        }
+        emitter.operand_scope(false, |emitter| emitter.emit(root, ExprContext::Return));
+        emitter.top_statement = false;
+        let mut declarations = String::new();
+        let mut declare = |name: String| {
+            if !emitter
+                .declared_in_place
+                .as_ref()
+                .is_some_and(|declared| declared.contains(&name))
+            {
+                writeln!(declarations, "  let {name};").unwrap();
+            }
+        };
         for global in 0..program.globals.len() {
             if application_roots || demand_roots {
                 break;
@@ -776,7 +795,7 @@ fn emit_js_mode(
             }) = shapes.map(|shapes| shapes.function(GlobalId(global)))
             {
                 if dispatcher {
-                    writeln!(emitter.output, "  let g{global};").unwrap();
+                    declare(format!("g{global}"));
                 }
                 let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind else {
                     unreachable!("method entries of a fn")
@@ -784,14 +803,14 @@ fn emit_js_mode(
                 let shapes = shapes.expect("entries come from call shapes");
                 for index in 0..methods.len() {
                     if shapes.entry_used(GlobalId(global), index) {
-                        writeln!(emitter.output, "  let g{global}_{index};").unwrap();
+                        declare(format!("g{global}_{index}"));
                     }
                 }
                 continue;
             }
-            writeln!(emitter.output, "  let g{global};").unwrap();
+            declare(format!("g{global}"));
         }
-        emitter.operand_scope(false, |emitter| emitter.emit(root, ExprContext::Return));
+        emitter.insert((prelude_end, 0, 0), &declarations);
         emitter.record_application_roots(application);
         emitter.allow_js_local_assignment();
         // `Advanced` output that tests no value with `truth` does not declare it.
@@ -882,6 +901,8 @@ fn emit_js_mode(
     // The runtime's statement, which declares no compiler name.
     let mut runtime_statement = 0..0;
     let mut unit_bytes = None;
+    // The units of a slice written in the program's function, by unit index.
+    let mut units_in_scope: Option<Vec<bool>> = None;
     if embed {
         if slice {
             // A runtime registers its key as it loads (`runtimeKey`).
@@ -904,8 +925,38 @@ fn emit_js_mode(
         };
         // Marks of the runtime text, by offset in `runtime`.
         let mut runtime_marks = Marks::default();
+        // Terse output writes the slice's units in the program's own
+        // function (light-cljs-1051), which `"use strict"` covers unless
+        // the output is an ES module, so only where no raw `js*` text could
+        // tell a sloppy function from a strict one, and none could be
+        // captured by a binding that keeps its spelling.
+        if slice && terse && shared.is_none() {
+            let kept = crate::runtime_slice::sliced_units(&emitter.runtime);
+            let raw_js = emitter
+                .used
+                .iter()
+                .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }));
+            let constants = emitter
+                .constants
+                .as_ref()
+                .map_or("", |constants| constants.declarations.as_str());
+            let texts = [emitter.output.as_str(), registration.as_str(), constants];
+            let raw = emitter
+                .raw_segments
+                .iter()
+                .map(|range| &emitter.output[range.clone()]);
+            if (module || !raw_js)
+                && !spells_kept_binding(texts.into_iter(), raw, std::iter::once(kept.as_slice()))
+            {
+                units_in_scope = Some(kept);
+            }
+        }
         let mut runtime = if let Some(parameter) = shared {
             format!("  const rt = {parameter};\n")
+        } else if slice && units_in_scope.is_some() {
+            // Written with the program's names (`terse_program_units`).
+            embedding = RuntimeEmbedding::Slice;
+            String::new()
         } else if slice {
             // `const [rt$add, rt$symbol] = (() => { ...; return [add, symbol]; })();`
             embedding = RuntimeEmbedding::Slice;
@@ -1001,7 +1052,7 @@ fn emit_js_mode(
                 range.end += runtime.len();
             }
         }
-        if shared.is_none() {
+        if shared.is_none() && units_in_scope.is_none() {
             let segment = prelude_end + factory..prelude_end + source_length - 2;
             runtime_segment = Some(segment.clone());
             emitter.raw_segments.push(segment);
@@ -1088,7 +1139,20 @@ fn emit_js_mode(
         }
         emitter.output.insert_str(0, &open);
     }
-    let output = if terse {
+    let output = if let Some(kept) = &units_in_scope {
+        let (output, bytes) = crate::terse::terse_program_units(
+            &emitter.output,
+            &emitter.raw_segments,
+            kept,
+            !module,
+            emitter.marks.as_mut(),
+        );
+        // Counted as the output writer writes them, keyed.
+        let bytes = crate::runtime_slice::written_unit_bytes(bytes);
+        runtime_bytes = bytes.iter().sum();
+        unit_bytes = Some(bytes);
+        output
+    } else if terse {
         crate::terse::terse_program(
             &emitter.output,
             &emitter.raw_segments,
@@ -1142,6 +1206,74 @@ fn emit_js_mode(
         constants,
     };
     (output, runtime, mapping)
+}
+
+/// Whether the output could name a runtime binding of the `kept` units
+/// (each by unit index) that keeps its spelling
+/// (`crate::terse::keeps_spelling`): a constructor such as `Atom`, which
+/// units written in the program's scope declare under that name, so it
+/// would capture a global of that name that the program reads (`typeof
+/// Atom` in raw `js*` text). In `raw` text any such word counts, in strings
+/// too (which a direct `eval` reads as code), and so does a name spelled
+/// with a `\u` escape, which may spell one (`\u{41}tom`), or text that does
+/// not lex alone; an escape in a string or a regular expression,
+/// `/[\uD800-\uDBFF]/`, names nothing. In the compiler's own `texts` (which
+/// hold the raw text too) only a name counts: the emitter reads a host
+/// global through `host("Atom")`, and its strings, such as docstrings, are
+/// data.
+fn spells_kept_binding<'t>(
+    texts: impl Iterator<Item = &'t str>,
+    mut raw: impl Iterator<Item = &'t str>,
+    kept: impl Iterator<Item = &'t [bool]>,
+) -> bool {
+    use crate::js_syntax::{Kind, lex_section};
+    let manifest = RuntimeManifest::embedded();
+    let spelled = kept
+        .flat_map(|kept| {
+            manifest
+                .units
+                .iter()
+                .zip(kept)
+                .filter(|(_, kept)| **kept)
+                .flat_map(|(unit, _)| unit.declares.iter().copied())
+        })
+        .filter(|binding| crate::terse::keeps_spelling(binding))
+        .collect::<std::collections::BTreeSet<_>>();
+    if spelled.is_empty() {
+        return false;
+    }
+    let identifier = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$');
+    let spells = |text: &str| {
+        let bytes = text.as_bytes();
+        spelled.iter().any(|word| {
+            text.match_indices(word).any(|(at, _)| {
+                !(at > 0 && identifier(bytes[at - 1]))
+                    && !bytes
+                        .get(at + word.len())
+                        .is_some_and(|&byte| identifier(byte))
+            })
+        })
+    };
+    let escaped_name = |text: &str| {
+        text.contains("\\u")
+            && lex_section(text, 0..text.len(), false)
+                .ok()
+                .is_none_or(|tokens| {
+                    tokens.iter().any(|token| {
+                        token.kind == Kind::Name && token.text(text).contains('\\')
+                    })
+                })
+    };
+    if raw.any(|text| spells(text) || escaped_name(text)) {
+        return true;
+    }
+    let mut texts = texts;
+    texts.any(|text| match lex_section(text, 0..text.len(), false) {
+        Ok(tokens) => tokens
+            .iter()
+            .any(|token| token.kind == Kind::Name && spelled.contains(token.text(text))),
+        Err(_) => spells(text),
+    })
 }
 
 /// The declarations of the output's helpers: `host`, which reads a host
@@ -2141,6 +2273,21 @@ struct Emitter<'a> {
     /// local once bound ([`Emitter::stable_local`]), built on first use by
     /// an application's emission.
     assignable_locals: Vec<bool>,
+    /// At `Advanced` in a single file: the compiler names of the globals
+    /// (and method entries, `g3_1`) that a statement of the program's own
+    /// function declares where it defines them, `var g3 = ...;`, so that
+    /// the declarations up front leave them out ([`Emitter::declared_def`]);
+    /// `None` where every global is declared up front.
+    declared_in_place: Option<HashSet<String>>,
+    /// Whether the statement about to be written is one of the program's
+    /// own function: a form of the program's `do`, or of a `let` block
+    /// there, outside any function, loop or `try` the emitter writes around
+    /// it, where a `var` declares a global for the whole program.
+    top_statement: bool,
+    /// Whether the type definition being written is such a statement, whose
+    /// assignments of the type and its factories declare them
+    /// ([`Emitter::declared_product`]).
+    declaring_type: bool,
 }
 
 /// What a fresh [`Emitter`] writes for ([`Emitter::new`]).
@@ -2348,6 +2495,9 @@ impl<'a> Emitter<'a> {
             substitute: None,
             substituted: false,
             assignable_locals: Vec::new(),
+            declared_in_place: None,
+            top_statement: false,
+            declaring_type: false,
 
             self_aliases: Vec::new(),
             receivers: Vec::new(),
@@ -3706,6 +3856,21 @@ impl<'a> Emitter<'a> {
         } else {
             write!(self.output, "g{}", id.0).unwrap();
         }
+    }
+
+    /// [`Emitter::product`] at the start of a statement of a type's
+    /// definition that assigns it, preceded by `var` where the statement
+    /// declares it ([`Emitter::declaring_type`]), as [`Emitter::declared_def`]
+    /// declares a `def`'s global.
+    fn declared_product(&mut self, id: GlobalId) {
+        if self.declaring_type && !self.program.globals[id.0].name.contains('.') {
+            self.output.push_str("var ");
+            self.declared_in_place
+                .as_mut()
+                .expect("declarations in place")
+                .insert(format!("g{}", id.0));
+        }
+        self.product(id);
     }
 
     // Declaration products may be linked while the bundle is initializing.
@@ -5390,6 +5555,9 @@ impl<'a> Emitter<'a> {
 
     fn emit_expr(&mut self, id: ExprId, context: ExprContext) {
         self.used.insert(id);
+        // Only this statement, and the forms of a `do` that it is, are the
+        // program function's own statements.
+        let top = std::mem::take(&mut self.top_statement);
         if context == ExprContext::Value {
             self.value(id);
             return;
@@ -5850,6 +6018,7 @@ impl<'a> Emitter<'a> {
                     self.output.push_str(";\n");
                 }
                 for (index, &expr) in exprs.iter().enumerate() {
+                    self.top_statement = top;
                     self.emit(
                         expr,
                         if index + 1 == exprs.len() {
@@ -5859,6 +6028,7 @@ impl<'a> Emitter<'a> {
                         },
                     );
                 }
+                self.top_statement = false;
             }
             ExprKind::ThisAs { binding, body } => {
                 self.indentation();
@@ -5898,6 +6068,8 @@ impl<'a> Emitter<'a> {
                     self.output.push_str(";\n");
                     self.head_written(head);
                 }
+                // A `var` in the block declares a global for the program.
+                self.top_statement = top;
                 self.emit(*body, context);
                 self.indent -= 1;
                 self.indentation();
@@ -5932,6 +6104,7 @@ impl<'a> Emitter<'a> {
                     self.value(init);
                     self.output.push_str(";\n");
                 }
+                self.top_statement = top;
                 self.emit(*body, context);
                 self.indent -= 1;
                 self.indentation();
@@ -5945,11 +6118,25 @@ impl<'a> Emitter<'a> {
                     ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Number(_) | ExprKind::String(_)
                 )
                 && self.constant_nodes(id).is_some() => {}
+            ExprKind::Def { .. }
+                if top && context == ExprContext::Discard && self.declares_in_place(id) =>
+            {
+                self.declared_def(id);
+            }
+            ExprKind::DefProtocol { .. }
+                if top && context == ExprContext::Discard && self.declares_protocol(id) =>
+            {
+                self.indentation();
+                self.protocol_form(id, true);
+            }
             // At `Advanced` a type's definition is statements of the function
-            // it is in (light-cljs-264).
+            // it is in (light-cljs-264); one of the program's function
+            // declares the globals it defines.
             ExprKind::DefType { .. } if self.defines_constructor(id) => {
                 self.indentation();
+                self.declaring_type = top && self.declared_in_place.is_some();
                 self.defined_type(id);
+                self.declaring_type = false;
                 if context == ExprContext::Return {
                     self.return_open();
                     self.defined_type_value(id);
@@ -6655,12 +6842,16 @@ impl<'a> Emitter<'a> {
     /// its arity properties, and the value of the definition. The dispatcher
     /// reads the entries' bindings, or with `Some(true)` (a definition that
     /// may run again, which rebinds them) holds this evaluation's entries.
+    /// `declared` writes it as the statement that declares what it binds
+    /// ([`Emitter::declared_def`]), `var g3_0 = ..., g3 = ...;`, with the
+    /// dispatcher's arity properties as statements after it.
     fn method_entries(
         &mut self,
         global: GlobalId,
         init: ExprId,
         function: ExprId,
         dispatcher: Option<bool>,
+        declared: bool,
     ) {
         let program = self.program;
         let mut wrapper = init;
@@ -6679,7 +6870,7 @@ impl<'a> Emitter<'a> {
         let entries: Vec<String> = (0..methods.len())
             .map(|index| format!("g{}_{index}", global.0))
             .collect();
-        self.output.push('(');
+        self.output.push_str(if declared { "var " } else { "(" });
         // Without a dispatcher, only the methods a direct call selects
         // (light-cljs-421).
         let shapes = self.shapes.expect("entries come from call shapes");
@@ -6693,12 +6884,36 @@ impl<'a> Emitter<'a> {
             }
             bound += 1;
             write!(self.output, "{entry} = ").unwrap();
+            if declared {
+                self.declared_in_place
+                    .as_mut()
+                    .expect("declarations in place")
+                    .insert(entry.clone());
+            }
             self.method_with_ifn_captures(None, method, false);
         }
-        if bound == 0 {
+        if bound == 0 && !declared {
             self.output.push_str("null");
         }
+        let separator = if bound == 0 { "" } else { ", " };
+        if declared && dispatcher.is_some() {
+            self.declared_in_place
+                .as_mut()
+                .expect("declarations in place")
+                .insert(format!("g{}", global.0));
+        }
         match dispatcher {
+            // Declared in place, `var g3_0 = ..., g3 = ...;`, and then the
+            // arity properties as statements of their own.
+            Some(false) if declared => {
+                let name = format!("g{}", global.0);
+                write!(self.output, "{separator}{name} = ").unwrap();
+                self.dispatcher(&entries, methods, false);
+                self.output.push_str(";\n");
+                self.arity_properties(&name, &entries, methods, false, true);
+                self.site = site;
+                return;
+            }
             Some(false) => {
                 let name = format!("g{}", global.0);
                 write!(self.output, ", {name} = ").unwrap();
@@ -6709,7 +6924,8 @@ impl<'a> Emitter<'a> {
             // `g3 = (() => { const m0 = g3_0; ...; return f; })()`.
             Some(true) => {
                 let name = format!("g{}", global.0);
-                writeln!(self.output, ", {name} = (() => {{").unwrap();
+                let separator = if declared { separator } else { ", " };
+                writeln!(self.output, "{separator}{name} = (() => {{").unwrap();
                 self.indent += 1;
                 let held: Vec<String> = (0..methods.len())
                     .map(|index| format!("m{index}"))
@@ -6727,11 +6943,14 @@ impl<'a> Emitter<'a> {
                 self.output.push_str("return f;\n");
                 self.indent -= 1;
                 self.indentation();
-                write!(self.output, "}})(), {name}").unwrap();
+                self.output.push_str("})()");
+                if !declared {
+                    write!(self.output, ", {name}").unwrap();
+                }
             }
             None => (),
         }
-        self.output.push(')');
+        self.output.push_str(if declared { ";\n" } else { ")" });
         self.site = site;
     }
 
@@ -7672,7 +7891,7 @@ impl<'a> Emitter<'a> {
         constructor: GlobalId,
         fields: &[String],
     ) {
-        self.product(constructor);
+        self.declared_product(constructor);
         if record {
             // A record's factory passes its fields by position.
             self.output.push_str(" = (");
@@ -7718,7 +7937,7 @@ impl<'a> Emitter<'a> {
 
     /// `map->R`, the map factory `map_constructor` of the record `global`.
     fn map_factory(&mut self, global: GlobalId, map_constructor: GlobalId) {
-        self.product(map_constructor);
+        self.declared_product(map_constructor);
         self.output.push_str(" = value => ");
         self.rt(RuntimeName::export("recordFromMap"));
         self.output.push('(');
@@ -7767,7 +7986,7 @@ impl<'a> Emitter<'a> {
             unreachable!("a program type with a constructor")
         };
         let (record, global) = (*record, *global);
-        self.product(global);
+        self.declared_product(global);
         self.output.push_str(" = ");
         self.rt(RuntimeName::direct("defineType", None));
         if record {
@@ -8957,8 +9176,31 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Whether the protocol definition `id`, a discarded statement of the
+    /// program's own function, declares the globals it defines there,
+    /// `var g3 = ..., g4 = ...;` ([`Emitter::protocol_form_value`]): at
+    /// `Advanced` in a single file, where it defines any.
+    fn declares_protocol(&self, id: ExprId) -> bool {
+        let ExprKind::DefProtocol {
+            global, methods, ..
+        } = &self.program.exprs[id.0].kind
+        else {
+            return false;
+        };
+        self.declared_in_place.is_some()
+            && self.shapes.is_some()
+            && (!methods.is_empty() || self.retained.is_none_or(|retained| retained[global.0]))
+    }
+
     /// [`Self::value_expr`] of a protocol definition, predicate or extension.
     fn protocol_form_value(&mut self, id: ExprId) {
+        self.protocol_form(id, false);
+    }
+
+    /// [`Emitter::protocol_form_value`], or with `declared` the statement
+    /// of a protocol definition that declares the globals it defines
+    /// ([`Emitter::declares_protocol`]).
+    fn protocol_form(&mut self, id: ExprId, declared: bool) {
         match &self.program.exprs[id.0].kind {
             ExprKind::DefProtocol {
                 global,
@@ -8969,11 +9211,32 @@ impl<'a> Emitter<'a> {
                 // (light-cljs-420); they read no function scope.
                 let comma = self.shapes.is_some();
                 let separator = if comma { ", " } else { "; " };
-                self.output.push_str(if comma { "(" } else { "(() => { " });
+                self.output.push_str(if declared {
+                    "var "
+                } else if comma {
+                    "("
+                } else {
+                    "(() => { "
+                });
+                let declare = |emitter: &mut Self, global: GlobalId, first: bool| {
+                    if declared {
+                        if !first {
+                            emitter.output.push_str(separator);
+                        }
+                        emitter
+                            .declared_in_place
+                            .as_mut()
+                            .expect("declarations in place")
+                            .insert(format!("g{}", global.0));
+                    }
+                };
+                let mut first = true;
                 // At `Advanced` the protocol value exists only when something
                 // reads it (`crate::rta`), and so do the dispatchers, which
                 // rapid type analysis leaves in `methods`.
                 if self.retained.is_none_or(|retained| retained[global.0]) {
+                    declare(self, *global, first);
+                    first = false;
                     self.product(*global);
                     self.output.push_str(" = ");
                     self.rt(RuntimeName::export("protocol"));
@@ -8985,9 +9248,13 @@ impl<'a> Emitter<'a> {
                             .collect::<Vec<_>>(),
                     );
                     self.output.push(')');
-                    self.output.push_str(separator);
+                    if !declared {
+                        self.output.push_str(separator);
+                    }
                 }
                 for method in methods {
+                    declare(self, method.global, first);
+                    first = false;
                     self.product(method.global);
                     self.output.push_str(" = ");
                     self.rt(RuntimeName::export("protocolMethod"));
@@ -9022,9 +9289,13 @@ impl<'a> Emitter<'a> {
                         self.protocol_fast_path(&method.arities);
                     }
                     self.output.push(')');
-                    self.output.push_str(separator);
+                    if !declared {
+                        self.output.push_str(separator);
+                    }
                 }
-                self.output.push_str(if comma {
+                self.output.push_str(if declared {
+                    ";\n"
+                } else if comma {
                     "undefined)"
                 } else {
                     "return undefined; })()"
@@ -9461,6 +9732,92 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Whether the discarded `def` `id`, a statement of the program's own
+    /// function, declares its global there ([`Emitter::declared_def`]): at
+    /// `Advanced` in a single file, for a definition with a value and no
+    /// test of a global the output binds (not a host path), unless it binds
+    /// nothing, as a function with method entries none of which a call
+    /// selects and without a dispatcher does.
+    fn declares_in_place(&self, id: ExprId) -> bool {
+        if self.declared_in_place.is_none() {
+            return false;
+        }
+        let ExprKind::Def {
+            global,
+            init: Some(_),
+            test: None,
+            ..
+        } = &self.program.exprs[id.0].kind
+        else {
+            return false;
+        };
+        if self.program.globals[global.0].name.contains('.') {
+            return false;
+        }
+        match self.shapes.map(|shapes| shapes.function(*global)) {
+            Some(FunctionShape::Entries {
+                function,
+                dispatcher,
+                ..
+            }) => {
+                let ExprKind::Fn { methods, .. } = &self.program.exprs[function.0].kind else {
+                    unreachable!("method entries of a fn")
+                };
+                let shapes = self.shapes.expect("entries come from call shapes");
+                dispatcher || (0..methods.len()).any(|index| shapes.entry_used(*global, index))
+            }
+            _ => true,
+        }
+    }
+
+    /// The discarded `def` `id` as the statement that declares its global,
+    /// where [`Emitter::declares_in_place`]: `var g3 = ...;`, and a
+    /// `defonce`'s `var g3 = typeof g3 === "undefined" ? ... : g3;`. A
+    /// `var` anywhere in the program's function is hoisted to its start, so
+    /// a read before the definition runs, such as the `defonce`'s test, a
+    /// `declare`d global's or one in a function called earlier, finds
+    /// `undefined`, as it did with the global declared up front by `let`.
+    fn declared_def(&mut self, id: ExprId) {
+        let ExprKind::Def {
+            global,
+            init: Some(init),
+            once,
+            ..
+        } = &self.program.exprs[id.0].kind
+        else {
+            unreachable!("a declared def has a value")
+        };
+        let (global, init, once) = (*global, *init, *once);
+        self.indentation();
+        if let Some(FunctionShape::Entries {
+            function,
+            dispatcher,
+            rerun,
+        }) = self.shapes.map(|shapes| shapes.function(global))
+        {
+            self.method_entries(global, init, function, dispatcher.then_some(rerun), true);
+            return;
+        }
+        self.declared_in_place
+            .as_mut()
+            .expect("declarations in place")
+            .insert(format!("g{}", global.0));
+        self.output.push_str("var ");
+        self.global(global);
+        self.output.push_str(" = ");
+        if once {
+            self.output.push_str("typeof ");
+            self.global(global);
+            self.output.push_str(" === \"undefined\" ? ");
+            self.definition_value(init);
+            self.output.push_str(" : ");
+            self.global(global);
+        } else {
+            self.definition_value(init);
+        }
+        self.output.push_str(";\n");
+    }
+
     /// [`Self::value_expr`] of a `def` in value position.
     fn def_value(&mut self, id: ExprId) {
         match &self.program.exprs[id.0].kind {
@@ -9538,7 +9895,13 @@ impl<'a> Emitter<'a> {
                         rerun,
                     }) = self.shapes.map(|shapes| shapes.function(*global))
                 {
-                    self.method_entries(*global, *init, function, dispatcher.then_some(rerun));
+                    self.method_entries(
+                        *global,
+                        *init,
+                        function,
+                        dispatcher.then_some(rerun),
+                        false,
+                    );
                     return;
                 }
                 self.output.push('(');

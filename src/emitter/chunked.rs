@@ -1191,49 +1191,20 @@ pub(crate) fn emit_chunked(
 /// chunks then keep their factories. Any such word counts, in strings too,
 /// and so does any raw text with a `\u` escape.
 fn names_kept_spelling(written: &[Written], slices: &[ChunkSlice]) -> bool {
-    let manifest = RuntimeManifest::embedded();
-    let spelled = slices
-        .iter()
-        .flat_map(|slice| {
-            manifest
-                .units
-                .iter()
-                .zip(&slice.kept)
-                .filter(|(_, kept)| **kept)
-                .flat_map(|(unit, _)| unit.declares.iter().copied())
-        })
-        .filter(|binding| crate::terse::keeps_spelling(binding))
-        .collect::<BTreeSet<_>>();
-    if spelled.is_empty() {
-        return false;
-    }
-    // Raw text may spell an identifier with escapes, `Atom` or
-    // `\u{41}tom`, which only the emitter's own text never has.
-    if written.iter().any(|text| {
-        text.raw
-            .iter()
-            .any(|range| text.run[range.clone()].contains("\\u"))
-    }) {
-        return true;
-    }
-    let identifier = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$');
     let helpers = helpers(true, true);
     let fixed = [PRELUDE_TRUTH, LAZY, helpers.as_str()];
-    written
-        .iter()
-        .flat_map(|text| [text.head.as_str(), text.run.as_str()])
-        .chain(fixed)
-        .any(|text| {
-            let bytes = text.as_bytes();
-            spelled.iter().any(|word| {
-                text.match_indices(word).any(|(at, _)| {
-                    !(at > 0 && identifier(bytes[at - 1]))
-                        && !bytes
-                            .get(at + word.len())
-                            .is_some_and(|&byte| identifier(byte))
-                })
-            })
-        })
+    spells_kept_binding(
+        written
+            .iter()
+            .flat_map(|text| [text.head.as_str(), text.run.as_str()])
+            .chain(fixed),
+        written.iter().flat_map(|text| {
+            text.raw
+                .iter()
+                .map(|range| &text.run[range.clone()])
+        }),
+        slices.iter().map(|slice| slice.kept.as_slice()),
+    )
 }
 
 /// The order of declared global names: by global, then method entry.

@@ -408,9 +408,13 @@ fn lookups_in_maps_with_constant_keys_read_their_entries() {
         source,
         r#"[[1 2 2 nil :n :s 2 :zero :q nil :d :d nil 8 true false false true 1 2 :nil 9 nil 1 2 1 2] [nil [1] 1 nil :n :s 1 :zero :q nil :d :d nil 8 true false false true nil 1 :nil 9 nil nil [1] nil 1] [[0 1] [1 2] [2 3]] [2 3 3] [2 3 3] [2 2 1 2 :d [1] [1] nil [1] :d]]"#,
     );
+    // Each definition declares its global, `var g2 = (function(...) {...});`,
+    // a statement of the program's function (light-cljs-1051).
     let function = |name: &str| {
-        let start = text.find(&format!("{name} = (function(")).unwrap();
-        &text[start..start + text[start..].find("})));").unwrap()]
+        let start = text
+            .find(&format!("var {name} = (function("))
+            .unwrap_or_else(|| panic!("{name}: {text}"));
+        &text[start..start + text[start..].find("\n  });\n").unwrap()]
     };
     let read_map = function("g2");
     for call in [

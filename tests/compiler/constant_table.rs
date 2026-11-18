@@ -88,7 +88,7 @@ fn advanced_declares_each_distinct_literal_once_after_the_runtime() {
     // namespace registration (which would follow the table).
     let table = advanced.find("  const k0 = ").unwrap();
     assert!(advanced.find("  const [rt$").unwrap() < table);
-    assert!(table < advanced.find("  let g").unwrap());
+    assert!(table < advanced.find("  var g").unwrap());
     assert!(!advanced.contains("registerReaderNamespace"));
     assert_eq!(advanced.matches("rt$keyword(").count(), 8);
     assert_eq!(advanced.matches("rt$symbol(").count(), 2);

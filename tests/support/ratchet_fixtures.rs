@@ -752,6 +752,22 @@
 //! `event-maps`, `map-only`, `set-only`, `defmulti`); every other fixture
 //! is unchanged. The ceilings of `constant-keys` (77,000) and
 //! `features-direct` (117,000) move to the next 1,000 above.
+//! Declarations where they are defined (light-cljs-1051, 2026-11-17): at
+//! advanced a single file declares each top-level global where it defines
+//! it, `var g3 = ...;`, rather than in a `let` list up front, and writes the
+//! runtime slice's units in the program's own function rather than as a
+//! factory whose returned array the program destructures
+//! (docs/advanced-optimization.md, "Declarations where they are defined").
+//! None and prepare are unchanged. Advanced, against master `1df0a071`:
+//! every fixture with a runtime is 23 to 71 bytes smaller raw (`println-hi`
+//! 5,512 to 5,479, `vector-printed` 15,549 to 15,516, `seq-pipeline` 41,221
+//! to 41,164, `callbacks` 61,606 to 61,535, `features` 116,385 to 116,353),
+//! since the program's and the units' names now share one table, which
+//! gives fewer of them one character; the saving is mostly after gzip,
+//! where the two lists' short distinct names compressed badly. The features
+//! example's chunks, a chunked build, are unchanged. The ceilings that its
+//! size crosses move down: `println-hi` to 5,500, `constant-lookups` (5,710
+//! to 5,673) to 5,700 and `vector-only` (7,724 to 7,697) to 7,700.
 
 pub struct Fixture {
     pub name: &'static str,

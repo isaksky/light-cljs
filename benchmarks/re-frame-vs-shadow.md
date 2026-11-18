@@ -1444,3 +1444,48 @@ The rows that changed against the section above:
 - **What "names written out" holds now:** mostly the table's stems.
 - **What else moved:** the new-unit rows moved by up to 300 bytes. Most of that is light-cljs-1046's slots for sets, queues and vectors, which landed between the two runs.
 - **What-ifs:** the three keyed-name what-ifs find no names to rename and save nothing.
+
+## 2026-11-17: declarations where they are defined (light-cljs-1051)
+
+light-cljs-1047's what-ifs found two lists in a single file's `:advanced` output that only repeat names the definitions write anyway: the up-front `let gq,gr,...;` of the program's globals, and the runtime binding list, `const[b,m,...]=(()=>{"use strict";...return[Atom,iY,...]})()`. light-cljs-1051 removes both (docs/advanced-optimization.md, Phase 3, "Declarations where they are defined"):
+- **Globals:** each top-level definition declares its global where it defines it, `var gq=...`, and adjacent definitions share one `var`. A `var` is hoisted, so a read before the definition runs finds `undefined`, as the `let` up front gave.
+- **Runtime roots:** the slice's units are written at the start of the program's own function, with the program's names from one table, rather than as a factory whose returned array the program destructures.
+
+```sh
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
+```
+
+### Setup
+
+- **Binaries:** `light-cljs-f533efb1`, the group's start; `light-cljs-1df0a071`, master when this was measured (with light-cljs-1048's short keyed names); and `light-cljs-1051-bc8abfdf`, this pellet on that master. All are V8 builds.
+- **Ports:** porter `shadow-port-tool-983` with the `1df0a071` binary, one port per app, built by all three binaries. Each app's bundle at `f533efb1` is within 7 bytes of the earlier sections' (simple 108,631, TodoMVC 138,015, flow 328,664).
+- **Machine:** unreserved, load average 4 to 44 (other workers' test runs). Sizes do not depend on load.
+
+### The whole bundle with React, gzip -9
+
+| App | `f533efb1` | master `1df0a071` | light-cljs-1051 | Against master | Against `f533efb1` |
+|---|---:|---:|---:|---:|---:|
+| re-frame simple | 108,631 | 115,599 | 113,782 | -1,817 (-1.57%) | +5,151 (+4.7%) |
+| TodoMVC | 138,015 | 148,035 | 145,399 | -2,636 (-1.78%) | +7,384 (+5.4%) |
+| flow | 328,664 | 346,526 | 339,453 | -7,073 (-2.04%) | +10,789 (+3.3%) |
+
+- **Against the pellet's expectation**, from light-cljs-1047's upper bounds less the declarations the definitions gain (simple 1,000 to 1,450, TodoMVC 2,000 to 2,400, flow 5,500 to 6,900): each app saves more than the top of its range.
+- **brotli -q 11:** simple 100,337 to 98,831, TodoMVC 127,890 to 126,017, flow 284,909 to 279,568.
+- **Raw**, the whole bundle is 2,589, 3,847 and 13,393 bytes smaller.
+- **light-cljs's output as written**, without React, after gzip: simple 69,300 to 68,220 (-1,080), TodoMVC 99,951 to 98,496 (-1,455), flow 294,402 to 287,296 (-7,106). Raw it is 118 and 192 bytes smaller in simple and TodoMVC, and 1,995 bytes larger in flow: the runtime's bindings and the program's names now share one table, so more of them take two or three characters than when each had its own; gzip and esbuild's renaming recover it.
+
+The browser behaviour checks pass for all three apps with the `1051-bc8abfdf` builds (`bb benchmarks/re-frame.bb browser simple todomvc flow --compiler light --runs 1`).
+
+### What each part saves
+
+Measured on flow, whose runtime binding list a word in its output first kept (below):
+- **The declarations in place:** 346,526 to 342,718, -3,808 bytes. Definitions alone (`def`, `defn`, `defonce`) gave -3,424 of it; type, record and protocol definitions and definitions inside a top-level `let` the remaining -384. 48 of flow's names stay in the `let` up front: 44 `declare`d globals that no definition assigns (read only through `typeof`), and four assigned inside a function or a `binding`.
+- **The runtime's units in the program's function:** 342,718 to 339,453, -3,265 bytes.
+
+### Decisions and what was tried
+
+- **The units share the program's function,** rather than the program's function nesting inside the runtime's, `(()=>{<units>return(()=>{<program>})()})()`, where the program's names could reuse those of runtime bindings it does not read. Nesting measured 472 bytes larger in simple's bundle and 605 in TodoMVC's after gzip, though 30 bytes smaller in simple's output as written: esbuild renames the bundle again, and one scope serves it better.
+- **`"use strict"` still covers the runtime.** A module is strict already, so release output, which is one, writes none. Output that is no module (`--compile` without `--esm`, the evaluator, the tests) writes it at the program function's start, which makes the program's code strict too. Every program already runs as strict code in a module, so the compiler's own code means the same there, but raw `js*` text could tell: output that is no module keeps the factory where the program has raw text.
+- **A word in the output no longer keeps the factory where it cannot name a binding.** Units in the program's scope declare a constructor that keeps its spelling, such as `Atom`, under that name, so a program that could read a global `Atom` keeps the factory (chunked builds have the same rule, light-cljs-303). flow first kept it for two words that can name nothing:
+  - an escape in a regular expression of raw text, `clojure.string/reverse`'s `/([\uD800-\uDBFF])([\uDC00-\uDFFF])/g`. Now only an escape in a name counts;
+  - the words `Atom`, `Var` and `Volatile` in docstrings and printed strings of the compiler's own text, which reads a host global only through `host("Atom")`. Now only a name counts there. In raw text a string still counts, which a direct `eval` reads as code.

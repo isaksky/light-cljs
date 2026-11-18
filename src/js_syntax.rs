@@ -1775,11 +1775,15 @@ pub enum Join {
     Drop,
 }
 
-/// Joins each `let` or `const` statement with the one right after it of the
-/// same kind: `const a = 1; const b = 2;` is `const a = 1, b = 2;`, which
-/// declares, initializes and leaves the bindings in their temporal dead
-/// zones in the same order. (Two declaration statements that touch are in
-/// one statement list; neither can be a statement's body.)
+/// Joins each `var`, `let` or `const` statement with the one right after it
+/// of the same kind: `const a = 1; const b = 2;` is `const a = 1, b = 2;`,
+/// which declares, initializes and leaves the bindings in their temporal
+/// dead zones in the same order, and `var a = 1; var b = 2;` is `var a = 1,
+/// b = 2;`, which hoists both as before and assigns them in the same order.
+/// (Two declaration statements that touch are in one statement list, except
+/// a `var` that is a statement's body, `if (x) var a = 1;`, which joins
+/// nothing: only a `var` after the start, a `;`, a `{` or a `}` joins the
+/// next. A `let` or `const` can be no statement's body.)
 pub fn joined_declarations(
     source: &str,
     tokens: &[Token],
@@ -1788,10 +1792,18 @@ pub fn joined_declarations(
     let mut joins = vec![Join::Keep; tokens.len()];
     let mut statements = statements.to_vec();
     statements.sort_unstable();
+    let listed = |keyword: usize| {
+        keyword == 0
+            || (tokens[keyword - 1].kind == Kind::Punct
+                && matches!(tokens[keyword - 1].text(source), ";" | "{" | "}"))
+    };
     for pair in statements.windows(2) {
         let [(first, semicolon), (second, _)] = [pair[0], pair[1]];
         let keyword = tokens[first].text(source);
-        if second == semicolon + 1 && keyword != "var" && tokens[second].text(source) == keyword {
+        if second == semicolon + 1
+            && tokens[second].text(source) == keyword
+            && (keyword != "var" || listed(first))
+        {
             joins[semicolon] = Join::Comma;
             joins[second] = Join::Drop;
         }
@@ -2494,7 +2506,8 @@ mod tests {
 
     #[test]
     fn adjacent_declarations_join() {
-        let text = "const a = 1; const b = () => { let c; let d = 2; return c; }; let e; var f; var g; const h = 3;";
+        // A `var` that is a statement's body joins nothing (light-cljs-1051).
+        let text = "const a = 1; const b = () => { let c; let d = 2; return c; }; let e; var f; var g = 1; const h = 3; if (h) var i = 2; var j; for (;;) var k; var l; label: var m; var n; { var o; } var p;";
         let tokens = lex(text, 0..text.len()).unwrap();
         let resolution = resolve(text, &tokens).unwrap();
         let joins = joined_declarations(text, &tokens, &resolution.statements);
@@ -2515,7 +2528,7 @@ mod tests {
         }
         assert_eq!(
             writer.out,
-            "const a=1,b=()=>{let c,d=2;return c;};let e;var f;var g;const h=3;"
+            "const a=1,b=()=>{let c,d=2;return c;};let e;var f,g=1;const h=3;if(h)var i=2;var j;for(;;)var k;var l;label:var m;var n;{var o;}var p;"
         );
     }
 

@@ -982,3 +982,63 @@ fn loop_labels_number_the_labeled_statements_around_them_per_function() {
         "{body}"
     );
 }
+
+/// light-cljs-1051: at `Advanced` a single file declares each global where a
+/// statement of the program's function defines it, `var g3 = ...;`, rather
+/// than in a `let` list up front, and writes the runtime slice's units in
+/// that function rather than as a factory whose returned array the program
+/// destructures. A global read before its definition runs still reads
+/// `undefined`, a `defonce` keeps its first value, and the units stay strict
+/// code. Output that is no ES module keeps the factory where the program has
+/// raw text, which the strict program function would make strict too.
+#[test]
+fn advanced_declares_globals_and_runtime_roots_where_they_are_defined() {
+    let source = r#"
+        (declare later)
+        (defn early [] (if (undefined? later) :unset later))
+        (def before (early))
+        (defonce once (atom 1))
+        (defonce once (atom 2))
+        (defprotocol P (p [this]))
+        (deftype T [x] P (p [_] x))
+        (defrecord R [y])
+        (defn multi ([] 0) ([a] a) ([a b] (+ a b)))
+        (let [k 10] (def in-let (+ k 1)))
+        (def later 5)
+        (pr-str [before @once (p (->T 3)) (:y (map->R {:y 4})) (multi) (multi 1) (multi 1 2)
+                 in-let (early)])"#;
+    let expected = "[:unset 1 3 4 0 1 3 11 5]\n";
+    both(source, expected);
+    let advanced = ApplicationOptions::new(OptimizationLevel::Advanced);
+    let prepared = prepare_application(&program(source), advanced.clone());
+    let js = prepared.emit_js();
+    // The program's function is the runtime's: no factory of its own.
+    assert!(js.starts_with("(()=>{\"use strict\";"), "{js}");
+    assert_eq!(js.matches("use strict").count(), 1, "{js}");
+    assert!(js.contains(";var ") || js.contains("}var "), "{js}");
+    // An ES module is strict code already.
+    let esm = prepared.emit_esm();
+    assert!(!esm.contains("use strict"), "{esm}");
+    let module = format!(
+        "import(\"data:text/javascript,\" + encodeURIComponent({esm:?})).then((m) => console.log(m.default));"
+    );
+    assert_eq!(execute(&module), expected);
+    // Every top-level definition declares its global; the readable output
+    // keeps the factory and the compiler's names.
+    let readable =
+        prepare_application(&program(source), readable(OptimizationLevel::Advanced)).emit_js();
+    assert!(!readable.contains("\n  let g"), "{readable}");
+    for declared in ["var g", "  const [rt$"] {
+        assert!(readable.contains(declared), "{declared}: {readable}");
+    }
+    // Raw text sees a sloppy function at every level outside a module.
+    let source = r#"(defn sloppy [] (js* "(function () { return this === undefined; })()"))
+                    (def kept (atom 0))
+                    (pr-str [(sloppy) @kept])"#;
+    both(source, "[false 0]\n");
+    let js = prepare_application(&program(source), advanced).emit_js();
+    assert!(
+        js.contains("=(()=>{\"use strict\";") && js.contains("var "),
+        "{js}"
+    );
+}

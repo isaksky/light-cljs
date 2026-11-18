@@ -139,10 +139,13 @@ fn known_functions_are_called_through_the_selected_method() {
     ] {
         assert!(text.contains(&call), "{call}: {text}");
     }
-    // The entries are bound once, at the definition; the global is not.
-    assert!(text.contains(&format!("let {multi}_3;")), "{text}");
-    assert!(!text.contains(&format!("let {multi};")), "{text}");
-    assert!(text.contains(&format!("({multi}_0 = ")), "{text}");
+    // The entries are bound once, at the definition, which declares them
+    // there (light-cljs-1051); the global is not.
+    assert!(text.contains(&format!("var {multi}_0 = ")), "{text}");
+    assert!(text.contains(&format!(", {multi}_3 = ")), "{text}");
+    for unbound in [format!("let {multi};"), format!(" {multi} = ")] {
+        assert!(!text.contains(&unbound), "{unbound}: {text}");
+    }
     assert_eq!(stats.dispatchers_removed, 2, "{stats:?}");
     assert!(stats.direct_calls >= 14, "{stats:?}");
 }
@@ -439,7 +442,7 @@ fn value_position_do_is_a_comma_expression() {
     let (text, _) = source_at_every_level(source, "[1 2 0 true [\"a\" \"b\"]]");
     assert!(text.contains("[\"push\"](\"a\"), ("), "{text}");
     // A literal `(do 2)` would fold into its read (light-cljs-984).
-    assert!(text.contains("g1 = (\"ab\")[\"length\"]));"), "{text}");
+    assert!(text.contains("g1 = (\"ab\")[\"length\"];"), "{text}");
     assert_eq!(text.matches("(function () {").count(), 2, "{text}");
 }
 
@@ -544,7 +547,7 @@ fn unselected_methods_and_unread_aliases_leave_no_entries() {
     for kept in ["READ-ALIAS", "EARLY-ALIAS"] {
         assert!(text.contains(kept), "{kept}: {text}");
     }
-    assert!(text.contains(&format!("let {unused_arity}_1;")), "{text}");
+    assert!(text.contains(&format!(", {unused_arity}_1 = ")), "{text}");
     assert_eq!(stats.dispatchers_removed, 2, "{stats:?}");
 }
 
@@ -843,7 +846,7 @@ fn named_functions_call_their_entries_through_the_name() {
     for shape in [
         format!("return {named}_1(l"),
         format!("{named}_0(4)"),
-        format!("({escaping}_0 = "),
+        format!("var {escaping}_0 = "),
         format!("+ {escaping}_0())"),
         format!(", {escaping} = function("),
         format!("({self_value}).call(null, 2)"),

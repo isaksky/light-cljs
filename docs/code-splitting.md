@@ -339,7 +339,11 @@ and the grouping runs over definitions and runtime units, not files.
   (`src/runtime_slice.rs:283`) keeps the units reachable from the roots the
   emitter recorded, and the output destructures the bindings it reads from
   the factory expression: `const [rt$keyword, rt$assoc, ...] = (() => {...;
-  return [keyword, assoc, ...]})()`. Roots are recorded per emitted site
+  return [keyword, assoc, ...]})()`. (Since light-cljs-1051 a single
+  file's terse `Advanced` output writes the units in the program's own
+  function instead, and declares each top-level global where it defines
+  it: docs/advanced-optimization.md, "Declarations where they are
+  defined".) Roots are recorded per emitted site
   (`RuntimeRoots`, with the demanding expression), so what each top-level
   form demands is known.
 - **Constants are a table.** `Advanced` output declares each distinct keyword,

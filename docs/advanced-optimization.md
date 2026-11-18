@@ -4206,6 +4206,53 @@ run the terse output.
   863,496 the wrappers gave (`53cdb94`); raw grows 0.6%, since less
   frequent operand locals get two-character table names ("Names that
   repeat across functions" in `benchmarks/compiler.md`).
+- **Declarations where they are defined. As built (light-cljs-1051).** A
+  single file's `Advanced` output no longer writes two lists of names that
+  only repeat the definitions, short distinct names that compress badly:
+  - **Globals.** A `def` that is a statement of the program's own function
+    (a form of its `do`, or of a `let` or `letfn` block there:
+    `Emitter::top_statement`) declares its global where it defines it,
+    `var g3 = ...;` (`Emitter::declared_def`), and adjacent ones share one
+    statement: `joined_declarations` joins `var` statements too, except
+    after a token other than `;`, `{` or `}`, where a `var` may be a
+    statement's body (`if (x) var a = 1;`). A `var` is hoisted to the start
+    of the program's function, so a read before the definition runs (a
+    `defonce`'s test, a `declare`d global, a function called earlier) finds
+    `undefined`, as the `let g3;` up front gave; a `let` or `const` there
+    would throw instead. A `defonce` is `var g3 = typeof g3 ===
+    "undefined" ? init : g3;`, a function with method entries `var g3_0 =
+    ..., g3 = ...;` (its arity properties follow as statements), a
+    `defprotocol` one `var` of its protocol and dispatchers, and a type
+    definition's statements declare the type, its factory and its map
+    factory (`Emitter::declared_product`). The `let` up front, written once
+    the body is, lists the rest: definitions inside a function, a loop or a
+    `try`, with `:test` metadata or of a host path, and globals that no
+    definition assigns (a `declare`d name only `typeof` reads). Chunked
+    builds declare their globals at module level, as before.
+  - **Runtime roots.** The slice's units are written at the start of the
+    program's own function rather than as a factory whose returned array
+    the program destructures, `(()=>{"use strict";<units><program>})()`
+    (`terse::terse_program_units`). One table names the units' top-level
+    bindings and the program's names, as a chunked build's does
+    (`terse_texts`), and the program function's own declarations take the
+    table's names rather than names per scope, since they share the units'
+    scope (`Locals::new`'s `function_table`). `"use strict"` still covers
+    the units; an ES module, strict already, does not write it. It makes
+    the program's code strict too, which raw `js*` text could tell, so
+    output that is no module keeps the factory where the program has raw
+    text. Every output keeps it where the program could name a binding
+    that keeps its spelling (`spells_kept_binding`, the rule chunked
+    builds use: since light-cljs-1051 only names count in the compiler's
+    own text, whose strings are data, and an escape only in a name of raw
+    text, not in a string or regular expression), and readable output
+    (`pseudo_names`) keeps it too. Nesting the program's function inside
+    the runtime's instead, so that the program's names could reuse those
+    of bindings it does not read, measured 472 and 605 bytes larger after
+    gzip in re-frame simple's and TodoMVC's bundles.
+  - **Measured** in re-frame's apps, whole bundle with React after gzip -9
+    (`benchmarks/re-frame-vs-shadow.md`, "Declarations where they are
+    defined"): simple 115,599 to 113,782 bytes, TodoMVC 148,035 to 145,399,
+    flow 346,526 to 339,453.
 - **Not done.**
   - ABI property mangling: no property is mangled. The arity ABI
     (`cljs$core$IFn$_invoke$arity$N`, `$variadic`,

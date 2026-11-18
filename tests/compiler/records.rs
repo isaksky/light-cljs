@@ -413,7 +413,7 @@ fn advanced_types_define_their_own_constructors() {
         " = rt$defineType(function Type(a0, a1, a2, a3, a4) { this[\"w\"] = a0; this[\"h\"] = a1; \
          this[\"__meta\"] = a2; this[\"__extmap\"] = a3; this[\"__hash\"] = a4; }, \
          \"cljs.user/Rect w h\", [[g",
-        ", 1, function() {\n    return (this[\"w\"] * this[\"h\"]);\n  }]], 1); g",
+        ", 1, function() {\n    return (this[\"w\"] * this[\"h\"]);\n  }]], 1); var g",
         " = rt$defineType(function Type(a0) { this[\"a\"] = a0; }, \"cljs.user/T a\", [[g",
         ", 1, function() {\n    return this[\"a\"];\n  }]]); ",
         " = (a0, a1) => new g",
