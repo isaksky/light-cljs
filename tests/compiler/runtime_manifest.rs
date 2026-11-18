@@ -1211,8 +1211,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // `-kv-reduce` slot units of the vectors, subvectors and maps
     // with the slot-first wrappers of `reduce` and `reduce-kv`
     // (light-cljs-1055), and the `-reduce` slot units of the hash and array
-    // sets and the indexed seqs (light-cljs-1059).
-    assert_eq!(checked, 465);
+    // sets and the indexed seqs (light-cljs-1059), and the 13 `-first`,
+    // `-rest`, `-next`, `-seq` and `-count` slot units of the map seqs
+    // (light-cljs-1064).
+    assert_eq!(checked, 478);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s

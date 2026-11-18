@@ -3099,6 +3099,112 @@ fn reduce_of_vectors_and_maps_takes_no_protocol_lookup() {
     );
 }
 
+/// The key and value seqs call their map seq's `-first` and `-next` and the
+/// entry's `-key` and `-val` slots (light-cljs-1064), so each program
+/// extends one of them, or the maps' `-seq`, or the entries' `-nth`, which
+/// `-key` and `-val` read, and prints what `keys` and `vals` give at every
+/// level; a program with protocols and no `extend-type` (`installMethods`
+/// alone), and the projections of seqs that are not maps', print theirs
+/// too. The expected values are master `dbf91703`'s.
+#[test]
+fn key_and_value_seqs_keep_the_answers_of_extended_map_seqs_and_entries() {
+    let walks = r#"(let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (re-find #"\S+/\S+" (.-message e)))))))
+                        sized (fn [n] (zipmap (range n) (range n)))
+                        am (array-map :a 1 :b 2 :c 3) m10 (sized 10) m20 (sized 20) sm (sorted-map 3 :c 1 :a 2 :b)]
+                    (doseq [m [am m10 m20 sm]]
+                      (p #(vec (take 3 (keys m)))) (p #(vec (take 3 (vals m)))) (p #(first (keys m))) (p #(last (keys m)))
+                      (p #(last (vals m))) (p #(take 2 (rest (vals m)))) (p #(take 2 (next (keys m))))
+                      (p #(reduce (fn [a x] (if (number? x) (+ a x) (inc a))) 0 (vals m))) (p #(count (into [] (keys m))))
+                      (p #(count (keys m))) (p #(= (keys m) (map key m))) (p #(vec (take 2 (seq m)))) (p #(take 2 (rest (seq m)))))
+                    (p #(vec (seq (sorted-set 3 1 2)))) (p #(keys nil)) (p #(vals {})) (p #(keys (seq {:a 1 :b 2})))
+                    (p #(vals (list (first {:a 1}) (first {:b 2})))) (p #(keys [[1 2]])) (p #(vals (js/Map. (clj->js [[1 2]]))))
+                    (.join out " "))"#;
+    // Without an extension of these, or with one of `Atom`.
+    let plain = "[:a :b :c] [1 2 3] :a :c 3 (2 3) (:b :c) 6 3 3 true [[:a 1] [:b 2]] ([:b 2] [:c 3]) [0 1 2] [0 1 2] 0 9 9 (1 2) (1 2) 45 10 10 true [[0 0] [1 1]] ([1 1] [2 2]) [0 1 2] [0 1 2] 0 19 19 (1 2) (1 2) 190 20 20 true [[0 0] [1 1]] ([1 1] [2 2]) [1 2 3] [:a :b :c] 1 3 :c (:b :c) (2 3) 3 3 3 true [[1 :a] [2 :b]] ([2 :b] [3 :c]) [1 2 3] nil nil (:a :b) (1 2) E:IMapEntry/-key E:IMapEntry/-val";
+    for (extensions, expected) in [
+        (
+            "(defrecord R [a] ICounted (-count [_] 1)) (count (R. 1))",
+            plain,
+        ),
+        ("(extend-type Atom ICounted (-count [_] 1))", plain),
+        (
+            "(extend-type PersistentArrayMapSeq ISeq (-first [_] (first {:x 1})) (-rest [_] ()))
+             (extend-type NodeSeq INext (-next [_] nil))
+             (extend-type ArrayNodeSeq ISeq (-first [_] (first {:y 2})))",
+            "[:x :x :x] [1 1 1] :x :x 1 (1 1) (:x :x) 3 3 3 false [[:x 1]] () [0] [0] 0 0 0 () () 0 1 1 false [[0 0] [1 1]] ([1 1] [2 2]) [:y :y :y] [2 2 2] :y :y 2 (2 2) (:y :y) 40 20 20 true [[:y 2] [:y 2]] ([:y 2] [:y 2]) [1 2 3] [:a :b :c] 1 3 :c (:b :c) (2 3) 3 3 3 true [[1 :a] [2 :b]] ([2 :b] [3 :c]) [1 2 3] nil nil (:x :x) (1 2) E:IMapEntry/-key E:IMapEntry/-val",
+        ),
+        (
+            "(extend-type MapEntry IMapEntry (-key [e] [:key (nth e 0)]) (-val [e] [:val (nth e 1)]))",
+            "[[:key :a] [:key :b] [:key :c]] [[:val 1] [:val 2] [:val 3]] [:key :a] [:key :c] [:val 3] ([:val 2] [:val 3]) ([:key :b] [:key :c]) 3 3 3 true [[:a 1] [:b 2]] ([:b 2] [:c 3]) [[:key 0] [:key 1] [:key 2]] [[:val 0] [:val 1] [:val 2]] [:key 0] [:key 9] [:val 9] ([:val 1] [:val 2]) ([:key 1] [:key 2]) 10 10 10 true [[0 0] [1 1]] ([1 1] [2 2]) [[:key 0] [:key 1] [:key 2]] [[:val 0] [:val 1] [:val 2]] [:key 0] [:key 19] [:val 19] ([:val 1] [:val 2]) ([:key 1] [:key 2]) 20 20 20 true [[0 0] [1 1]] ([1 1] [2 2]) [[:key 1] [:key 2] [:key 3]] [[:val :a] [:val :b] [:val :c]] [:key 1] [:key 3] [:val :c] ([:val :b] [:val :c]) ([:key 2] [:key 3]) 3 3 3 true [[1 :a] [2 :b]] ([2 :b] [3 :c]) [1 2 3] nil nil ([:key :a] [:key :b]) ([:val 1] [:val 2]) E:IMapEntry/-key E:IMapEntry/-val",
+        ),
+        (
+            "(extend-type MapEntry IIndexed (-nth ([e i] [:nth i]) ([e i nf] [:nth i nf])))",
+            "[[:nth 0] [:nth 0] [:nth 0]] [[:nth 1] [:nth 1] [:nth 1]] [:nth 0] [:nth 0] [:nth 1] ([:nth 1] [:nth 1]) ([:nth 0] [:nth 0]) 3 3 3 true [[:a 1] [:b 2]] ([:b 2] [:c 3]) [[:nth 0] [:nth 0] [:nth 0]] [[:nth 1] [:nth 1] [:nth 1]] [:nth 0] [:nth 0] [:nth 1] ([:nth 1] [:nth 1]) ([:nth 0] [:nth 0]) 10 10 10 true [[0 0] [1 1]] ([1 1] [2 2]) [[:nth 0] [:nth 0] [:nth 0]] [[:nth 1] [:nth 1] [:nth 1]] [:nth 0] [:nth 0] [:nth 1] ([:nth 1] [:nth 1]) ([:nth 0] [:nth 0]) 20 20 20 true [[0 0] [1 1]] ([1 1] [2 2]) [[:nth 0] [:nth 0] [:nth 0]] [[:nth 1] [:nth 1] [:nth 1]] [:nth 0] [:nth 0] [:nth 1] ([:nth 1] [:nth 1]) ([:nth 0] [:nth 0]) 3 3 3 true [[1 :a] [2 :b]] ([2 :b] [3 :c]) [1 2 3] nil nil ([:nth 0] [:nth 0]) ([:nth 1] [:nth 1]) E:IMapEntry/-key E:IMapEntry/-val",
+        ),
+        (
+            "(extend-type PersistentHashMap ISeqable (-seq [_] (list (first {:z 3}))))
+             (extend-type PersistentArrayMap ISeqable (-seq [_] (list [1 2])))
+             (extend-type PersistentTreeMapSeq INext (-next [_] nil))",
+            "E:IMapEntry/-key E:IMapEntry/-val E:IMapEntry/-key E:IMapEntry/-key E:IMapEntry/-val () () E:IMapEntry/-val E:IMapEntry/-key 1 E:IMapEntry/-key [[1 2]] () E:IMapEntry/-key E:IMapEntry/-val E:IMapEntry/-key E:IMapEntry/-key E:IMapEntry/-val () () E:IMapEntry/-val E:IMapEntry/-key 1 E:IMapEntry/-key [[1 2]] () E:IMapEntry/-key E:IMapEntry/-val E:IMapEntry/-key E:IMapEntry/-key E:IMapEntry/-val () () E:IMapEntry/-val E:IMapEntry/-key 1 E:IMapEntry/-key [[1 2]] () [1] [:a] 1 1 :a () () 1 1 1 false [[1 :a] [2 :b]] ([2 :b] [3 :c]) [1 2 3] nil E:IMapEntry/-val E:IMapEntry/-key E:IMapEntry/-val E:IMapEntry/-key E:IMapEntry/-val",
+        ),
+    ] {
+        every_level(&format!("{extensions} {walks}"), expected);
+    }
+}
+
+/// In release output of a program with `extend-type`, a walk of a map's
+/// keys or values, or of its seq, takes no protocol lookup per item
+/// (light-cljs-1064): the map seqs (`PersistentArrayMapSeq`, `NodeSeq`,
+/// `ArrayNodeSeq`) have `-first`, `-rest`, `-next` and `-seq` slots, the key
+/// and value seqs' slots are on their prototype, and their steps call their
+/// map seq's and entry's slots, where each step took 9 lookups on master
+/// `dbf91703`. Each number is a walk's lookups (as
+/// `reduce_of_vectors_and_maps_takes_no_protocol_lookup` counts them) over a
+/// larger map less those over a smaller one of the same kind: an array map
+/// of 8 and 2 keys, a hash map of 13 and 9 (a `NodeSeq`) and of 100 and 20
+/// (an `ArrayNodeSeq`). A walk's own steps (`keys`, `seq` of the map, the
+/// `seq` of the empty list that ends it) take the same lookups whatever its
+/// length. A sorted map's keys and values and a sorted set's seq (its tree
+/// map's keys) take the lookups of the sorted map seq's own walk, which
+/// steps through its stack with `peek`, `first` and `next` where a program
+/// can extend lists, and none of their own (the last four numbers).
+#[test]
+fn walks_of_map_keys_and_values_take_no_protocol_lookup_per_item() {
+    let source = r#"(extend-type Atom ICounted (-count [_] 1))
+        (let [lookups #(aget js/globalThis "__lookups")
+              cost (fn [f] (let [before (lookups)] (f) (- (lookups) before)))
+              walk (fn [s] (loop [q s a 0] (if q (recur (next q) (+ a (if (nil? (first q)) 0 1))) a)))
+              walk-rest (fn [s] (loop [q s a 0] (if (seq q) (recur (rest q) (+ a (if (nil? (first q)) 0 1))) a)))
+              sized (fn [n] (zipmap (range n) (range n)))
+              pairs [[(array-map :a 1 :b 2) (apply array-map (range 16))] [(sized 9) (sized 13)] [(sized 20) (sized 100)]]
+              walks [#(walk (keys %)) #(walk (vals %)) #(walk-rest (keys %)) #(walk (seq %)) #(walk-rest (seq %))
+                     #(reduce + (vals %)) #(reduce (fn [a k] (if (nil? k) a (inc a))) 0 (keys %)) #(count (keys %))]
+              out (array)]
+          (doseq [[small big] pairs w walks]
+            (.push out (- (cost #(w big)) (cost #(w small)))))
+          (let [small (sorted-map 1 2 3 4) big (apply sorted-map (range 20)) set-small (sorted-set 1 3) set-big (apply sorted-set (keys big))
+                tree (- (cost #(walk (seq big))) (cost #(walk (seq small))))]
+            (doseq [w [#(walk (keys %)) #(walk (vals %)) #(walk-rest (keys %))]]
+              (.push out (- (cost #(w big)) (cost #(w small)) tree)))
+            (.push out (- (cost #(walk (seq set-big))) (cost #(walk (seq set-small))) tree)))
+          (.join out " "))"#;
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program(source), options).emit_js();
+    for head in [
+        "function extendedMethod(value, key, arity, fast = false, directOnly = false) {",
+        "function builtin(value, key, arity) {",
+        "function satisfies(protocol, value) {",
+    ] {
+        assert!(js.contains(head), "{head}");
+        js = js.replace(head, &format!("{head} globalThis.__lookups++;"));
+    }
+    assert_eq!(
+        execute(&format!("globalThis.__lookups = 0; console.log({js});")),
+        format!("{}\n", ["0"; 3 * 8 + 4].join(" "))
+    );
+}
+
 /// light-cljs-998: once a program keeps `extend-type` or `specify!`, the
 /// generic predicates and operations ask the `satisfies` and `implements`
 /// hooks, which answer a value of the runtime's payload stores in one step.
