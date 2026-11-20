@@ -1182,8 +1182,8 @@
   //@unit installMethods.ISequentialKey effect: installMethods when: isSequential, nthOf, nthPath,
   //@ structuralEqualPair requires: methodKey, methodKeys
   methodKeys[53] = methodKey("ISequential");
-  //@unit installMethods.ISetDisjoinKey effect: installMethods when: disjOf, disjPath requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.ISetDisjoinKey effect: installMethods when: disj, disjOf, disjPath
+  //@ requires: methodKey, methodKeys
   methodKeys[54] = methodKey("ISet/-disjoin");
   //@unit installMethods.ISetKey effect: installMethods when: isSet, structuralEqualPair requires: methodKey,
   //@ methodKeys
@@ -1194,7 +1194,7 @@
   //@unit installMethods.IStackPeekKey effect: installMethods when: peekOf, peekPath requires: methodKey,
   //@ methodKeys
   methodKeys[57] = methodKey("IStack/-peek");
-  //@unit installMethods.IStackPopKey effect: installMethods when: popOf, popPath requires: methodKey,
+  //@unit installMethods.IStackPopKey effect: installMethods when: pop, popOf, popPath requires: methodKey,
   //@ methodKeys
   methodKeys[58] = methodKey("IStack/-pop");
   //@unit installMethods.ISwapSwapKey effect: installMethods when: swapProtocol, swapState requires: methodKey,
@@ -3113,16 +3113,22 @@
     }
     return assocOf(value, key, item);
   }
-  //@unit assocOf requires: ArrayMapCell, assoc, methodKeys, operationPaths, protocolHooks
+  //@unit assocOf requires: ArrayMapCell, assoc, kindHooks, methodKeys, operationPaths,
+  //@ protocolHooks
   // Upstream's `assoc`: each further key and value in turn (a trailing key
   // gets nil, as upstream's takes `(second kvs)`), nil an array map of the
   // key; a value of a runtime class whose instance slot holds nil or false
-  // takes its class's slot, as the old path answered by the class.
+  // takes its class's slot, as the old path answered by the class. A vector
+  // without a program's `-assoc` takes every pair at once and its metadata
+  // once (`kindHooks.assocVector`), as the old path did, so that an
+  // `extend-type` of `IMeta` is asked as often as before.
   function assocOf(value, key, item) {
     const path = operationPaths.assoc;
     if (path !== undefined) return path.apply(null, arguments);
     const arity = arguments.length;
     if (arity > 3) {
+      if (value?.cljs$lang$kind$$LKEY <= 3 && !(value.v$LKEY !== undefined && value.slots$LKEY) && !protocolHooks.builtin?.(value, methodKeys[1], 3))
+        return kindHooks.assocVector(value, value, key, item, Array.prototype.slice.call(arguments, 3));
       let result = assoc(value, key, item);
       for (let i = 3; i < arity; i += 2) result = assoc(result, arguments[i], i + 1 < arity ? arguments[i + 1] : null);
       return result;
@@ -3198,7 +3204,7 @@
     const normalized = mapFromArray(Array.from({length: mapSlots.cnt * 2}, (_, i) => mapSlots.arr[i]), "hash-map");
     return collectionWithMeta(assoc(normalized, key, item, ...pairs), meta(value));
   };
-  //@unit makeVector.assoc effect: makeVector, mapEntry when: assocPath requires: kindHooks,
+  //@unit makeVector.assoc effect: makeVector, mapEntry when: assocOf, assocPath requires: kindHooks,
   //@ makeVector, outOfBounds, preserveMeta, vectorAssoc, vectorConj
   kindHooks.assocVector = (value, store, key, item, pairs) => {
     const assign = (index, value) => {
@@ -4251,7 +4257,7 @@
   //@unit hashSet requires: setFromArray
   function hashSet(...items) { return setFromArray(items); }
 
-  //@unit disj requires: disjOf, slotFirst
+  //@unit disj requires: disjOf, methodKeys, protocolHooks, slotFirst
   function disj(value, key) {
     return arguments.length === 2 ? disj2(value, key) : disjOf.apply(null, arguments);
   }
@@ -4259,19 +4265,38 @@
     if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
       const method = value.cljs$core$ISet$_disjoin$arity$2$LKEY;
       if (method) return method.call(value, value, key);
+      if (value.cljs$lang$kind$$LKEY >= 64) return programDisj(value, key, method);
     }
     return disjOf(value, key);
   }
-  //@unit disjOf requires: disj, methodKeys, operationPaths, protocolHooks
+  // A program type's `disj` whose slot held no method: finished from the
+  // slot as read, as the old path's one lookup (`protocolHooks.builtin`)
+  // finished it, without reading the slot again.
+  function programDisj(value, key, read) {
+    const own = protocolHooks.builtin && (read != null ? read : protocolHooks.externalMethod?.(value, methodKeys[54], 2));
+    if (own) return own.call(value, value, key);
+    throw new Error("disj not supported on this type");
+  }
+  //@unit disjOf requires: conjMeta, disj, dissoc, methodKeys, operationPaths, protocolHooks,
+  //@ setDisjoin
   // Upstream's `disj`: none or one argument, each key in turn, nil nil; a
   // value of a runtime class whose instance slot holds nil or false takes
-  // its class's slot, as the old path answered by the class.
+  // its class's slot, as the old path answered by the class. A set without a
+  // program's `-disjoin` removes every key at once, its metadata read once,
+  // as the old path did.
   function disjOf(value, key) {
     const path = operationPaths.disj;
     if (path !== undefined) return path.apply(null, arguments);
     const arity = arguments.length;
     if (arity !== 2) {
       if (arity === 0) return null;
+      const kind = value?.cljs$lang$kind$$LKEY;
+      if ((kind === 33 || kind === 44) && arity > 2 && !protocolHooks.builtin?.(value, methodKeys[54], 2)) {
+        const keys = Array.prototype.slice.call(arguments, 1);
+        if (kind === 33) return setDisjoin(value, value.entries$LKEY, keys);
+        const map = value.treeMap$LKEY, updated = dissoc(map, ...keys);
+        return updated === map ? value : conjMeta(value, new value.cljs$lang$cell$$LKEY(updated));
+      }
       let result = value;
       for (let i = 1; i < arity; i++) result = disj(result, arguments[i]);
       return result;
@@ -8671,13 +8696,20 @@
     if (queues.has(value) || cellOf(value)?.cell$LKEY === "list") return first(value);
     throw new Error("No protocol method IStack.-peek defined for this value");
   }
-  //@unit pop requires: popOf, slotFirst
+  //@unit pop requires: methodKeys, popOf, protocolHooks, slotFirst
   function pop(value) {
     if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
       const method = value.cljs$core$IStack$_pop$arity$1$LKEY;
       if (method) return method.call(value, value);
+      if (value.cljs$lang$kind$$LKEY >= 64) return programPop(value, method);
     }
     return popOf(value);
+  }
+  // As `programDisj`.
+  function programPop(value, read) {
+    const own = protocolHooks.builtin && (read != null ? read : protocolHooks.externalMethod?.(value, methodKeys[58], 1));
+    if (own) return own.call(value, value);
+    throw new Error("No protocol method IStack.-pop defined for this value");
   }
   //@unit popOf requires: methodKeys, operationPaths, protocolHooks
   // Upstream's `pop`: nil, else the value's `-pop`; a value of a runtime
@@ -13916,10 +13948,10 @@
   }
   //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
   //@ assocOf, assocPath, collectionWithMeta, compareKeys, conjOf, conjPath, conjTransient,
-  //@ coreMethod, countOf, countPath, derefProtocol, disjOf, disjPath, dissocOf, dissocPath,
+  //@ coreMethod, countOf, countPath, derefProtocol, disj, disjOf, disjPath, dissocOf, dissocPath,
   //@ equalPair, firstOf, firstSeq, hash, hashStructural, iterator, keywordLookupEquiv,
   //@ keywordProgramEquiv, metaSupported, name, namespace, notifyWatches, objectEquiv, peekOf,
-  //@ peekPath, popOf, popPath, removeWatchProtocol, restOf, restSeq, rseq, stateProtocol,
+  //@ peekPath, pop, popOf, popPath, removeWatchProtocol, restOf, restSeq, rseq, stateProtocol,
   //@ vresetProtocol, withMetaSupported requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,
@@ -13927,7 +13959,7 @@
   // `builtin`'s first half, which the keyword searches read a keyword key's
   // slot with (light-cljs-989, `keywordProgramEquiv`).
   protocolHooks.keyMethod = keyMethod;
-  //@unit protocolHooks.external effect: extendType when: builtin, keywordLookupEquiv,
+  //@unit protocolHooks.external effect: extendType when: builtin, disj, keywordLookupEquiv, pop,
   //@ extendedDeclared requires: externalMethod, protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;

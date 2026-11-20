@@ -4780,3 +4780,52 @@ fn object_predicate_excludes_mask_only_records() {
         "[ false, true, true ]",
     );
 }
+
+/// The updates shaped as upstream's (light-cljs-1068) keep the old paths'
+/// answers where a program changes what they read: a vector's variadic
+/// `assoc` and a set's variadic `disj` take every key at once and the
+/// value's metadata once, so an `extend-type` of `IMeta` is asked as often
+/// as before; `disj` and `pop` of a program type whose slot a getter
+/// answers false finish from that read, as the old paths' one lookup did,
+/// without reading the slot again; and the update slots a program clears by
+/// name answer by the class (`slotWrites`), lists, sets and maps included.
+#[test]
+fn update_fallbacks_keep_metadata_reads_and_selected_dispatch() {
+    every_level(
+        r#"(def reads (atom 0))
+           (extend-type PersistentVector IMeta (-meta [_] (swap! reads inc) nil))
+           (extend-type PersistentHashSet IMeta (-meta [_] (swap! reads inc) nil))
+           (extend-type PersistentTreeSet IMeta (-meta [_] (swap! reads inc) nil))
+           (let [counted (fn [f] (reset! reads 0) (let [result (f) n @reads] [(pr-str result) n]))]
+             (pr-str [(counted #(assoc [0 0] 0 1 1 2)) (counted #(assoc [0 0] 0 1))
+                      (counted #(disj (hash-set 1 2 3) 1 2)) (counted #(disj (sorted-set 1 2 3) 1 2))]))"#,
+        r##"[["[1 2]" 1] ["[1 0]" 1] ["#{3}" 1] ["#{3}" 1]]"##,
+    );
+    every_level(
+        r#"(deftype S [] ISet (-disjoin [_ _] :disjoined) IStack (-peek [_] nil) (-pop [_] :popped))
+           (let [answer (fn [slot f]
+                          (let [value (S.) reads (atom 0)]
+                            (js/Object.defineProperty value slot
+                              #js {:get (fn [] (if (= 1 (swap! reads inc)) false (fn [& _] :unexpected)))})
+                            (try (f value) (catch :default error (.-message error)))))]
+             (pr-str [(answer (js* "'cljs$core$ISet$_disjoin$arity$2$LKEY'") #(disj % :k))
+                      (answer (js* "'cljs$core$IStack$_pop$arity$1$LKEY'") pop)
+                      (disj (S.) :k) (pop (S.))]))"#,
+        r#"["disj not supported on this type" "No protocol method IStack.-pop defined for this value" :disjoined :popped]"#,
+    );
+    for missing in ["nil", "false"] {
+        every_level(
+            &format!(
+                "(let [v [1 2 3] s #{{1 2}} m {{:a 1 :b 2}} l (list 1 2)]
+                   (set! (.-cljs$core$IStack$_pop$arity$1 v) {missing})
+                   (set! (.-cljs$core$ISet$_disjoin$arity$2 s) {missing})
+                   (set! (.-cljs$core$IMap$_dissoc$arity$2 m) {missing})
+                   (set! (.-cljs$core$IStack$_pop$arity$1 l) {missing})
+                   (set! (.-cljs$core$ICollection$_conj$arity$2 l) {missing})
+                   (pr-str [(pop v) (disj s 1) (dissoc m :a) (pop l) (conj l 0) (disj s 1 2)
+                            (conj nil 1) (assoc nil :k 1) (dissoc nil :k) (disj nil 1) (pop nil)]))"
+            ),
+            "[[1 2] #{2} {:b 2} (2) (0 1 2) #{} (1) {:k 1} nil nil nil]",
+        );
+    }
+}
