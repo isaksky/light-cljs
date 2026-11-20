@@ -1885,7 +1885,7 @@ entries' `noBranch` tests. `=`, `hash` and the reductions keep theirs
 What light-cljs-1072 landed: the reductions, `reduce` and `reduce-kv`, are
 upstream's shape as the updates are, without their slot-first wrappers
 (`reduce.slots`, `reduceKv.slots`) and their slots' `noBranch` guards. `=`
-and `hash` keep theirs (light-cljs-1072's follow-up).
+and `hash` keep theirs (light-cljs-1074).
 
 - **One function per arity.** `reduce` sends two arguments to `reduce2`
   and three to `reduce3`, each of which reads the value's keyed kind and
@@ -1937,6 +1937,14 @@ and `hash` keep theirs (light-cljs-1072's follow-up).
   compile-time lookup finds does not find itself again. The kind hooks
   `reduceIterate` and `reduceCycle` wait for `reducePath`; a record's
   `-kv-reduce` waits for `reduceKvOf` (`RECORD_METHODS`).
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1072; binaries
+  `light-cljs-76061c5c` and `light-cljs-1072-f80a11ab`, unreserved): no
+  gate operation of the 70 over 5% slower (`reduce-vec-1000` +3%,
+  `reduce-entries-small` +4%), `into-vec-keys-small` -11%,
+  `filter-count-1000` -8%, `reduce-kv-small` -5%; workload 200k's steady
+  state unchanged within its spread (39.5 to 38.7 and 43.0 to 44.0 ms per
+  iteration in two alternated rounds at load 21 to 29); the re-frame apps'
+  whole bundles 135 to 355 bytes smaller after gzip and 149 to 245 raw.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,

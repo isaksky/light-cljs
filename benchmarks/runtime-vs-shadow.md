@@ -4934,3 +4934,51 @@ bb benchmarks/core-ops/run.bb --light $BIN/light-cljs-76061c5c --ops $OPS --out 
   - The cause: the call now passes its `arguments` through `disj` to `disjOf` (by `apply`), copies them (`slice`), and reaches `setDisjoin`. That is two more calls than master's one rest-parameter `disj`.
   - The profiles show the work moving out of master's single function. Under `--pseudo-names disj-variadic-set-7`, master's `disj` had 44% of self time, inlining the entry search (`collectionEntryIndex` 1.4%). Now `setDisjoin` has 38%, `disjOf` 13.9% and `collectionEntryIndex` 6.5% (124.4 to 150.1 ns per operation under the profiler).
 - **The variadic `assoc` of a vector is unchanged** (+1%, -1%) and at parity (1.01-1.02).
+
+## 2026-11-19: the reductions shaped as upstream's (light-cljs-1072)
+
+`reduce` and `reduce-kv` call a value's keyed slot, then upstream's path (`reduceOf`, `reduceKvOf`), without their slot-first wrappers and their slots' `noBranch` guards; `reduce` sends each arity to a function of its own (`reduce2`, `reduce3`), each under light-cljs-1033's 100 bytes of bytecode (docs/value-layout.md, "What light-cljs-1072 landed"). A vector's chunked seq, the integer range, repeat, iterate, cycle, an array chunk, a lazy seq and a key or value seq gained the `-reduce` slots for the walks the old path gave them; every other runtime class takes, from `reduceOf`, the walk the old path gave it, told by its keyed kind. `=` and `hash` keep their wrappers (light-cljs-1074).
+
+**Binaries** in research/shadow-credibility/bin: before `light-cljs-76061c5c` (master), after `light-cljs-1072-f80a11ab` (this pellet's main commit `66aa4e68` on it; the review's fix `74386487` changes only the walk of a value without a `-reduce` slot that a program gave an `IIterable` iterator, which no measured program has), V8 builds. Records in research/output-speed/reductions-1072. No run waited for the machine; all results are unreserved (a peer worker built and tested throughout, and this pellet's full test suite ran during the after pass).
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, all 70 operations, the after run with `--baseline` the before's; load 12.6-14.6 before and 13.2-29.1 after), light-cljs ns per operation, median (range), the operations that reduce:
+
+| op | light before | light after | change | shadow-cljs after | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| reduce-vec-1000 | 5,096 | 5,231 (5,169-5,326) | +3% | 2,518 | 2.08 |
+| reduce-map-inc-1000 | 39,425 | 39,867 (39,388-40,575) | +1% | 40,945 | 0.97 |
+| reduce-range-1000 | 4,931 | 4,919 (4,686-7,888) | +0% | 5,551 | 0.89 |
+| reduce-kv-small | 6.90 | 6.53 (6.47-14.3) | -5% | 38.2 | 0.17 |
+| reduce-entries-small | 83.7 | 87.1 (82.2-127.9) | +4% | 81.8 | 1.06 |
+| into-xform-1000 | 30,418 | 30,354 (30,274-30,574) | +0% | 19,066 | 1.59 |
+| mapv-1000 | 14,249 | 14,310 (14,162-14,398) | +0% | 14,393 | 0.99 |
+| transient-vec-100 | 1,189 | 1,210 (1,191-1,736) | +2% | 1,210 | 1.00 |
+| into-vec-keys-small | 928.1 | 830.2 (817.1-1,471) | -11% | 334.9 | 2.48 |
+| into-set-100 | 7,239 | 7,385 (6,988-10,866) | +2% | 4,352 | 1.70 |
+| group-by-100 | 8,586 | 8,723 (8,625-11,529) | +2% | 5,227 | 1.67 |
+| merge-small | 2,234 | 2,302 (2,249-3,910) | +3% | 914.0 | 2.52 |
+| select-keys-3 | 330.4 | 316.0 (311.2-459.7) | -4% | 251.1 | 1.26 |
+| filter-count-1000 | 38,084 | 35,122 (34,623-35,353) | -8% | 29,425 | 1.19 |
+
+- **No operation of the 70 is more than 5% slower.** The reductions over a vector, a map's entries and through `merge` are 3-4% slower within ranges that the after pass's load widened (its upper ends 1.5 to 1.7 times its medians); their slot call is as before, now through `reduce3` and without the wrapper's `noBranch` comparison.
+- **What gains:** `into-vec-keys-small` (-11%: `into` of a map's key seq reaches its new `-reduce` slot, where it took the protocol lookup and the old body's recognisers), `filter-count-1000` (-8%) and `reduce-kv-small` (-5%: `reduce-kv` reads the slot without the wrapper's `noBranch` comparison); two operations that do not reduce, `multimethod` (-11%) and `swap-assoc` (-9%), moved as much, which is the passes' noise.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the `76061c5c` binary, built by each binary; the after binary is the main commit's code), the whole bundle with React, gzip -9:
+
+| App | master `76061c5c` | light-cljs-1072 (`f80a11ab`) | change |
+| --- | ---: | ---: | ---: |
+| re-frame simple | 113,552 | 113,417 | -135 (-0.12%) |
+| TodoMVC | 144,779 | 144,560 | -219 (-0.15%) |
+| flow | 332,454 | 332,099 | -355 (-0.11%) |
+
+- **Raw:** 371,478 to 371,240 (-238), 478,915 to 478,670 (-245), 1,284,175 to 1,284,026 (-149). The old bodies (`reducePath`, `reduceKvPath`), the wrappers and `reduce.protocol` leave release slices that write no slot by name; the walks the old body held stay as functions the slots share (`reduceWalk`, `seqReduce`, `rangeReduce`, ...). A first version with a `-reduce` slot for every class the old path recognised (21 slot units) changed the apps by -59 to +9 bytes after gzip and grew them 775 to 1,235 bytes raw: the plain seq and view walks are a keyed-kind test in `reduceOf` instead, and the slots are made by one factory (`reduceSlot`).
+- **Size ratchet:** `eight-records` moves down (48,000 to 47,000). Programs that keep the recognisers for their other operations pay the upstream-shaped dispatch: `mapv-count` 51,926 to 52,032 (ceiling 52,000 to 53,000) and the features example as one module 117,689 to 117,902 (its ceiling holds); the readable runtime grows about 9,300 bytes (none and prepare ceilings up), as the old paths stay for the compile-time runtime and the shared-heap profile.
+
+**Workload 200k** (`compare.bb PROJECT --runs 3 --runtime-only --runtime 1,40`, two copies of `workload-200k-seed42`, `-1072b` built by the before binary and `-1072` by the after, the two run in turn twice: before, after, before, after), wall time at 40 iterations, median (range), and light-cljs's steady state:
+
+| round | light before | light after | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.954 s (1.928-1.973) | 1.876 s (1.853-1.901) | 1.398 / 1.376 s | 39.5 to 38.7 (shadow-cljs 26.6 / 26.1) | 28.9 / 26.0 |
+| 2 | 2.044 s (2.019-2.160) | 2.096 s (1.975-2.314) | 1.529 / 1.441 s | 43.0 to 44.0 (shadow-cljs 30.2 / 28.0) | 22.9 / 21.2 |
+
+The steady state is unchanged within the rounds' spread (one round 2% faster, the other 2% slower; light/shadow 1.49 and 1.43 before, 1.48 and 1.57 after), at a load four times light-cljs-1068's runs (35.8 ms there at load 5-6), where this pellet's own test suite and a peer's ran.
