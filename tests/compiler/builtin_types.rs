@@ -1594,6 +1594,144 @@ fn vector_slot_first_preserves_missing_slot_fallbacks() {
     }
 }
 
+/// The seq walk's slots (`-seq`, `-first`, `-rest`, `-next`) that a program
+/// sets to nil, false or undefined on a runtime class's prototype, or on its
+/// value over a method `extend-type` gave the class, answer as master
+/// f533efb1 did, by the operations' own paths, which such a program keeps
+/// (`slotWrites`, light-cljs-1071): `seq`, `first`, `rest` and `next` of the
+/// classes' values, and `first` and `rest` of host values and program types
+/// whose seqs are such values, and which a seq without the slot's protocol
+/// (a program type's `-seq` giving a vector) does not reach. The answers are
+/// master's at every level, but where master threw for a program type whose
+/// `-seq` gives a lazy seq in every program: its `first`, `rest` and `next`
+/// answer as upstream's since light-cljs-1054, and throw as master's where
+/// the lazy seq's slot they read is cleared.
+#[test]
+fn seq_walk_slots_a_program_clears_answer_as_master() {
+    let program = r#"
+        (let [b (chunk-buffer 2)
+              _ (do (chunk-append b 1) (chunk-append b 2))
+              values [[1 2 3] (subvec [1 2 3] 1) (first {:k 1}) {:a 1 :b 2} (zipmap (range 10) (range 10))
+                      (sorted-map :a 1 :b 2) #{1 2} (sorted-set 1 2) (conj cljs.core/PersistentQueue.EMPTY 1 2)
+                      (list 1 2 3) () (cons 1 (list 2 3)) (lazy-seq [1 2 3]) (range 3) (range 0.5 3)
+                      (seq (array 1 2 3)) (seq [1 2 3]) (seq (vec (range 40))) (chunk-cons (chunk b) (list 3))
+                      (seq (zipmap (range 10) (range 10))) (seq {:a 1 :b 2}) (rseq [1 2 3]) (iterate inc 0)
+                      (repeat 3 :x) (cycle [1 2]) (array 1 2 3) "abc" (js/Set. #js [1 2 3])
+                      (reify ISeqable (-seq [_] (list 1 2 3))) (reify ISeqable (-seq [_] [1 2 3]))
+                      (reify ISeqable (-seq [_] (map inc [1 2 3])))]
+              labels (array "vector" "subvec" "entry" "array-map" "hash-map" "sorted-map" "set" "sorted-set" "queue"
+                            "list" "empty-list" "cons" "lazy-seq" "range" "float-range" "array-seq" "vector-seq"
+                            "chunked-seq" "chunked-cons" "node-seq" "map-seq" "rseq" "iterate" "repeat" "cycle"
+                            "array" "string" "iterable" "type" "vector-type" "lazy-type")
+              attempt (fn [f] (try (pr-str (f)) (catch :default e "E")))]
+          (doseq [slot [(.. PersistentVector -prototype) (.. Subvec -prototype) (.. MapEntry -prototype)
+                        (.. PersistentArrayMap -prototype) (.. PersistentHashMap -prototype) (.. PersistentTreeMap -prototype)
+                        (.. PersistentHashSet -prototype) (.. PersistentTreeSet -prototype) (.. PersistentQueue -prototype)
+                        (.. List -prototype) (.. EmptyList -prototype) (.. Cons -prototype) (.. LazySeq -prototype)
+                        (.. Range -prototype) (.. IndexedSeq -prototype) (.. ChunkedSeq -prototype) (.. ChunkedCons -prototype)
+                        (.. NodeSeq -prototype) (.. PersistentArrayMapSeq -prototype) (.. RSeq -prototype)
+                        (.. Iterate -prototype) (.. Repeat -prototype) (.. Cycle -prototype)]]
+            SETS)
+          (.join (into-array (map (fn [l v]
+                                    (str l " " (attempt #(vec (take 4 (seq v)))) " " (attempt #(first v))
+                                         " " (attempt #(vec (take 3 (rest v)))) " " (attempt #(vec (take 3 (next v))))
+                                         " " (attempt #(empty? v)) " " (attempt #(counted? (seq v)))))
+                                  labels values))
+                 "\n"))"#;
+    let seq = "(set! (.-cljs$core$ISeqable$_seq$arity$1 slot) MISSING)";
+    let first = "(set! (.-cljs$core$ISeq$_first$arity$1 slot) MISSING)";
+    let rest = "(set! (.-cljs$core$ISeq$_rest$arity$1 slot) MISSING)";
+    let next = "(set! (.-cljs$core$INext$_next$arity$1 slot) MISSING)";
+    let all = [seq, first, rest, next].join("\n");
+    // Master answered alike for each slot alone and for all four.
+    let common = concat!(
+        "vector [1 2 3] 1 [2 3] [2 3] false true\n",
+        "subvec [2 3] 2 [3] [3] false true\n",
+        "entry [:k 1] :k [1] [1] false true\n",
+        "array-map [[:a 1] [:b 2]] [:a 1] [[:b 2]] [[:b 2]] false true\n",
+        "hash-map [[0 0] [1 1] [2 2] [3 3]] [0 0] [[1 1] [2 2] [3 3]] [[1 1] [2 2] [3 3]] false false\n",
+        "sorted-map [[:a 1] [:b 2]] [:a 1] [[:b 2]] [[:b 2]] false true\n",
+        "set [1 2] 1 [2] [2] false false\n",
+        "sorted-set [1 2] 1 [2] [2] false false\n",
+        "queue [1 2] 1 [2] [2] false false\n",
+        "list [1 2 3] 1 [2 3] [2 3] false true\n",
+        "empty-list [] nil [] [] true true\n",
+        "cons [1 2 3] 1 [2 3] [2 3] false false\n",
+        "lazy-seq [1 2 3] 1 [2 3] [2 3] false true\n",
+        "range [0 1 2] 0 [1 2] [1 2] false true\n",
+        "float-range [0.5 1.5 2.5] 0.5 [1.5 2.5] [1.5 2.5] false false\n",
+        "array-seq [1 2 3] 1 [2 3] [2 3] false true\n",
+        "vector-seq [1 2 3] 1 [2 3] [2 3] false true\n",
+        "chunked-seq [0 1 2 3] 0 [1 2 3] [1 2 3] false true\n",
+        "chunked-cons [1 2 3] 1 [2 3] [2 3] false false\n",
+        "node-seq [[0 0] [1 1] [2 2] [3 3]] [0 0] [[1 1] [2 2] [3 3]] [[1 1] [2 2] [3 3]] false false\n",
+        "map-seq [[:a 1] [:b 2]] [:a 1] [[:b 2]] [[:b 2]] false true\n",
+        "rseq [3 2 1] 3 [2 1] [2 1] false false\n",
+        "iterate [0 1 2 3] 0 [1 2 3] [1 2 3] false false\n",
+        "repeat [:x :x :x] :x [:x :x] [:x :x] false false\n",
+        "cycle [1 2 1 2] 1 [2 1 2] [2 1 2] false false\n",
+        "array [1 2 3] 1 [2 3] [2 3] false true\n",
+        "string [\"a\" \"b\" \"c\"] \"a\" [\"b\" \"c\"] [\"b\" \"c\"] false true\n",
+        "iterable [1 2 3] 1 [2 3] [2 3] false false\n",
+        "type [1 2 3] 1 [2 3] [2 3] false true\n",
+        "vector-type [1 2 3] E E E false true\n",
+    );
+    // Master's lazy-type row is "[2 3 4] E E E false false" in each.
+    for (sets, missing, lazy) in [
+        (all.as_str(), "nil", "E E E"),
+        (&all, "false", "E E E"),
+        (&all, "js/undefined", "E E E"),
+        (seq, "nil", "2 [3 4] [3 4]"),
+        (first, "false", "E [3 4] [3 4]"),
+        (rest, "js/undefined", "2 E E"),
+        (next, "nil", "2 [3 4] [3 4]"),
+    ] {
+        every_level(
+            &program
+                .replace("SETS", &sets.replace("MISSING", missing))
+                .replace("MISSING", missing),
+            &format!("{common}lazy-type [2 3 4] {lazy} false false"),
+        );
+    }
+    // A value's own slots set to nil or false over the methods `extend-type`
+    // gave its class, as on master: a vector's or a set's `seq` answers by
+    // its class, and its `first`, `rest` and `next` by the protocol lookup of
+    // `ISeq` and `INext`, which its class declares only through the
+    // extension, and which throws; a lazy seq's take the extension, as
+    // another value of each class does.
+    for missing in ["nil", "false"] {
+        every_level(
+            &format!(
+                "(extend-type PersistentVector ISeqable (-seq [_] (cons :ext nil)) ISeq (-first [_] :ext) (-rest [_] (cons :ext nil)) INext (-next [_] (cons :ext nil)))
+                 (extend-type PersistentHashSet ISeqable (-seq [_] (cons :ext nil)) ISeq (-first [_] :ext) (-rest [_] (cons :ext nil)) INext (-next [_] (cons :ext nil)))
+                 (extend-type LazySeq ISeqable (-seq [_] (cons :ext nil)) ISeq (-first [_] :ext) (-rest [_] (cons :ext nil)) INext (-next [_] (cons :ext nil)))
+                 (let [values (array (vector 1 2 3) (hash-set 1 2) (lazy-seq [1 2 3]))
+                       others (array (vector 1 2 3) (hash-set 1 2) (lazy-seq [1 2 3]))
+                       labels (array \"vector\" \"set\" \"lazy-seq\")
+                       attempt (fn [f] (try (pr-str (f)) (catch :default e \"E\")))
+                       out (array)]
+                   (dotimes [i 3]
+                     (let [v (aget values i)]
+                       (set! (.-cljs$core$ISeqable$_seq$arity$1 v) {missing})
+                       (set! (.-cljs$core$ISeq$_first$arity$1 v) {missing})
+                       (set! (.-cljs$core$ISeq$_rest$arity$1 v) {missing})
+                       (set! (.-cljs$core$INext$_next$arity$1 v) {missing})))
+                   (dotimes [i 3]
+                     (let [v (aget values i) w (aget others i)]
+                       (.push out (str (aget labels i) \" \" (attempt #(seq v)) \" \" (attempt #(first v))
+                                       \" \" (attempt #(rest v)) \" \" (attempt #(next v)) \" \" (attempt #(seq w))
+                                       \" \" (attempt #(first w)) \" \" (attempt #(rest w)) \" \" (attempt #(next w))))))
+                   (.join out \"\\n\"))"
+            ),
+            concat!(
+                "vector (1 2 3) E E E (:ext) :ext (:ext) (:ext)\n",
+                "set (1 2) E E E (:ext) :ext (:ext) (:ext)\n",
+                "lazy-seq (:ext) :ext (:ext) (:ext) (:ext) :ext (:ext) (:ext)",
+            ),
+        );
+    }
+}
+
 /// A vector reading a caller's array reads each item as it is printed or
 /// iterated (light-cljs-234): printing within `*print-length*` stops before
 /// an item that throws, and an iterator reads the tail as it is when it gets
@@ -3574,7 +3712,9 @@ fn transient_map_conj_observes_value_method_changes_from_key() {
 /// Since light-cljs-1066 twice more below `Advanced`, and at `Advanced` in
 /// the set that writes slots by name: `count` and `get` of the Proxy read
 /// its keyed kind for the wrappers that answer a runtime class's value
-/// whose prototype slot a program cleared (`slotWrites`).
+/// whose prototype slot a program cleared (`slotWrites`). Since
+/// light-cljs-1071 once or twice more again there: the seq walk's wrappers
+/// read it too, for the Proxy's `seq` and `first` (or `rest`).
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -3667,7 +3807,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [306, 306, 304],
+            [308, 308, 304],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -3728,7 +3868,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [320, 320, 318],
+            [321, 321, 318],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -3795,7 +3935,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [306, 306, 306],
+            [308, 308, 308],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");

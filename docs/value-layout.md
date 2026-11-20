@@ -1718,6 +1718,44 @@ keep theirs (light-cljs-1068).
   build.rs's scalar adapters of `get`'s and `contains?`'s keys move to
   `getPath` and `containsPath`; the small functions keep the value's.
 
+What light-cljs-1071 landed: the seq walk's slots that a program clears
+answer as master f533efb1 did, as the lookups' do since light-cljs-1066.
+
+- **Where they differed.** A program that sets a runtime class's `-seq`,
+  `-first`, `-rest` or `-next` slot to nil, false or undefined on its
+  prototype, or on a value over a method `extend-type` gave the class, made
+  `seq`, `first`, `rest` and `next` pass the slot over to their
+  upstream-shaped paths (`seqOf` and the others), which read the class's
+  slot again or took the value for an iterable: `seq` of a vector, a map,
+  a set, a list or a lazy seq overflowed the stack, `first` of a list, a
+  cons or a chunked cons threw "ISeq.-first not supported", and `first` and
+  `rest` of an array, a string, a host iterable or a program type threw
+  where their seq was such a value (printing a program's values too, whose
+  arguments are an array).
+- **`slotWrites` again.** Four more effects of the `slotWrites` root
+  (`slotWrites.seq`, `.first`, `.rest`, `.next`) wrap `seqOf`, `firstOf`,
+  `restOf` and `nextOf` as light-cljs-1066's wrap the lookups': a runtime
+  class's value (its class's store holds it, or its class declares the
+  protocol) takes the old path (`seqPath` and the others), which answers it
+  by its class. `first` and `rest` of any other value take their upstream
+  steps, and read a seq whose slot holds no method by its fields
+  (`firstSeq`, `restSeq`), as the old paths read every seq, so a seq without
+  the protocol (a program's `-seq` giving a vector) still throws. The root
+  is `ProgramFacts::core_method_write`, as before; builds
+  below `Advanced` always have the wrappers, and other `Advanced` programs
+  pay nothing: the gate's and workload 200k's output is byte-identical.
+- **Answers.** `seq_walk_slots_a_program_clears_answer_as_master` pins
+  master's answers at every level for 30 kinds of values with the slots
+  cleared on 23 classes' prototypes, one slot at a time and all four, and for
+  values whose own slots hide `extend-type`'s methods. Where master threw
+  for every program, `first`, `rest` and `next` of a program type whose
+  `-seq` gives a lazy seq, they answer upstream's since light-cljs-1054 and
+  throw as master's only where the lazy seq's slot they read is cleared.
+  No answer falls under
+  section 5's rescopes; the Proxy of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked once or
+  twice more where the wrappers are (section 5, item 30).
+
 What light-cljs-1069 found and landed: the program's definitions at load
 (section 7), timed per runtime root on a `--pseudo-names` build of
 workload 800k and with `node --cpu-prof`. Load-time code runs once, mostly
@@ -2815,7 +2853,8 @@ by `Object.create` of a runtime prototype:
     is asked 304, 318 and 304 times at `Advanced`, where 323, 337 and 323
     (no old path reads its `slots`), and twice more below `Advanced` and in
     the set that writes slots by name, where the `slotWrites` wrappers read
-    its keyed kind.
+    its keyed kind. Since light-cljs-1071, whose seq walk wrappers read it
+    too, there 308, 321 and 308 times, where 306, 320 and 306.
 
 Rescoped by light-cljs-1068, whose update slots (`-conj`, `-assoc`,
 `-dissoc`) no longer guard against a value made by `Object.create` of a

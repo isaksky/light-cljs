@@ -9471,6 +9471,50 @@
   popOf = (operation => function (value) {
     return slotWrites(value, methodKeys[58]) ? popPath(value) : operation(value);
   })(popOf);
+  // And the seq walk's slots (`-seq`, `-first`, `-rest`, `-next`),
+  // which `seq`, `first`, `rest` and `next` call first since
+  // light-cljs-1054: a runtime class's value they pass over takes the
+  // operation's own path (`seqPath` and the others), as before it
+  // (light-cljs-1071). `first` and `rest` of any other value (a host
+  // value, a program type's) read its seq's slot (`firstOf`'s steps, as
+  // they are), and a seq whose slot holds no method its first or rest by
+  // the seq's fields (`firstSeq`, `restSeq`), as the old paths read it.
+  //@unit slotWrites.seq effect: slotWrites when: seqOf requires: methodKeys, seqOf, seqPath,
+  //@ slotWrites
+  seqOf = (operation => function (value) {
+    return slotWrites(value, methodKeys[52]) ? seqPath(value) : operation(value);
+  })(seqOf);
+  //@unit slotWrites.first effect: slotWrites when: firstOf requires: firstOf, firstPath, firstSeq,
+  //@ methodKeys, operationPaths, ownSeqs, protocolHooks, seq, slotWrites
+  firstOf = (operation => function (value) {
+    if (value?.cljs$lang$kind$$LKEY < 64) return slotWrites(value, methodKeys[48]) ? firstPath(value) : operation(value);
+    if (value == null || ownSeqs.on || operationPaths.first !== undefined) return operation(value);
+    const own = protocolHooks.programMethod?.(value, methodKeys[48], 1, false, true);
+    if (own) return own.call(value, value);
+    const s = seq(value);
+    if (s == null) return null;
+    const method = s.cljs$core$ISeq$_first$arity$1$LKEY || Object.getPrototypeOf(s)?.cljs$core$ISeq$_first$arity$1$LKEY || protocolHooks.builtin?.(s, methodKeys[48], 1);
+    if (method) return method.call(s, s);
+    return firstSeq(s);
+  })(firstOf);
+  //@unit slotWrites.rest effect: slotWrites when: restOf requires: emptyList, methodKeys,
+  //@ operationPaths, ownSeqs, protocolHooks, restOf, restPath, restSeq, seq, slotWrites
+  restOf = (operation => function (value) {
+    if (value?.cljs$lang$kind$$LKEY < 64) return slotWrites(value, methodKeys[50]) ? restPath(value) : operation(value);
+    if (value == null || ownSeqs.on || operationPaths.rest !== undefined) return operation(value);
+    const own = protocolHooks.programMethod?.(value, methodKeys[50], 1, false, true);
+    if (own) return own.call(value, value);
+    const s = seq(value);
+    if (s == null) return emptyList;
+    const method = s.cljs$core$ISeq$_rest$arity$1$LKEY || Object.getPrototypeOf(s)?.cljs$core$ISeq$_rest$arity$1$LKEY || protocolHooks.builtin?.(s, methodKeys[50], 1);
+    if (method) return method.call(s, s);
+    return restSeq(s);
+  })(restOf);
+  //@unit slotWrites.next effect: slotWrites when: nextOf requires: methodKeys, nextOf, nextPath,
+  //@ slotWrites
+  nextOf = (operation => function (value) {
+    return slotWrites(value, methodKeys[40]) ? nextPath(value) : operation(value);
+  })(nextOf);
   //@unit declarationReceiver compile-time requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
   //@unit patchDeclaration mutator

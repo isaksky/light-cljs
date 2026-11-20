@@ -4874,3 +4874,9 @@ The re-frame-shaped app does not move: its gap is the operations of its first it
 | re-frame-shaped | 20.473 s (18.565-31.607) | 18.312 s (17.543-23.069) | 11.832 / 11.800 s | 477.3 to 422.2 (shadow-cljs 268.3 / 266.9) | 4.5-15.2 / 6.0-14.5 |
 
 The workload's steady state is within its range of master (light/shadow 1.56 to 1.50). The re-frame-shaped app's before runs met a load spike (one 40-iteration run 31.6 s, load up to 15.2), so its 477.3 is not master's level: light-cljs-1066 measured 420.2 for the same program, and this pellet's 422.2 is that, not a gain of 11%.
+
+## 2026-11-19: the seq walk's cleared slots answer as master's (light-cljs-1071)
+
+light-cljs-1071 adds four `slotWrites` wrappers (`seqOf`, `firstOf`, `restOf`, `nextOf`) that only a program writing a core protocol method's member by name keeps at `:advanced` (docs/value-layout.md, "What light-cljs-1071 landed"). Every other program's release output is unchanged, so no timing was run: built with the release binaries of master `76061c5c` and of this change, the gate's output (`light-cljs release bench` in benchmarks/core-ops), workload 200k's and the re-frame-shaped app's (`workload-200k-seed42`, `re-frame-200k-seed42`, `release bench`) are byte-identical (`diff -r`). The gate's times, steady state and advanced sizes are therefore those of the light-cljs-1068 section above.
+
+**Size.** The size ratchet's advanced sizes do not move; the readable runtime of `none` and `prepare` builds grows 2,271 bytes. A program that clears the four slots on 23 classes' prototypes (the test `seq_walk_slots_a_program_clears_answer_as_master`) grows 2,989 bytes at advanced (150,202 to 153,191; 40,469 to 41,083 after gzip -9), the wrappers and the old paths they call.
