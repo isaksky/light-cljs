@@ -1827,14 +1827,22 @@ entries' `noBranch` tests. `=`, `hash` and the reductions keep theirs
   `slotWrites` wrappers of `conjOf`, `assocOf`, `dissocOf`, `disjOf` and
   `popOf`, which send a runtime class's value to the old path. The slots
   carry metadata with `conjMeta` (light-cljs-1060), as `conj` and `assoc`
-  of a vector did.
+  of a vector did. A vector's variadic `assoc` and a set's variadic `disj`
+  take every key at once and the value's metadata once
+  (`kindHooks.assocVector`, `setDisjoin`), so an `extend-type` of `IMeta`
+  is asked as often as before; `disj` and `pop` of a program type whose
+  slot held no method finish from the slot as read (`programDisj`,
+  `programPop`), as the old paths' one lookup did, where `conj`, `assoc`
+  and `dissoc` read it twice as their wrappers and old bodies did
+  (`update_fallbacks_keep_metadata_reads_and_selected_dispatch`).
 - **Profiles.** The old bodies are `conjPath`, `assocPath`, `dissocPath`,
   `disjPath` (the hash set's member removal is `setDisjoin`) and
   `popPath`, set in `operationPaths` by `setDeclarationDemand` and held by
   the shared-heap profile from its boot. build.rs's persistent-update
   leaves of `assoc`, `dissoc` and `disj` move with the bodies; the kind
   hooks that only the old bodies call (`conjVector`, `conjMap`,
-  `assocVector`) wait for them, so release slices drop them.
+  `assocVector`, which a vector's variadic `assoc` also calls) wait for them,
+  so release slices drop the first two.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,

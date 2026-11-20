@@ -4828,7 +4828,7 @@ The re-frame-shaped app does not move: its gap is the operations of its first it
 
 `conj`, `assoc`, `dissoc`, `disj` and `pop` call a value's keyed slot, then upstream's path for nil, host values and the other arities (`conjOf` and the others), without the slot-first wrappers, the update slots' `noBranch` guards and the call-site entries' `noBranch` tests; the variadic ones send the arity with a slot to a function of its own (`conj2`, `assoc3`, `dissoc2`, `disj2`), each under light-cljs-1033's 100 bytes of bytecode (docs/value-layout.md, "What light-cljs-1068 landed"). The lists, the sets, the vectors, a map entry and the queue gained the `-conj`, `-disjoin` and `-pop` slots their old paths gave. `=`, `hash` and the reductions keep their wrappers (light-cljs-1072).
 
-**Binaries** in research/shadow-credibility/bin: before `light-cljs-c786677b` (master), after `light-cljs-1068-361997ef` (this pellet on it; the landed commit rebases it onto light-cljs-1069 and changes no update path), V8 builds. Records in research/output-speed/updates-1068. No run waited for the machine; all results are unreserved (a peer worker built and tested throughout).
+**Binaries** in research/shadow-credibility/bin: before `light-cljs-c786677b` (master), after `light-cljs-1068-361997ef` (this pellet on it), V8 builds; sizes also with `light-cljs-f9d52a2c` (master with light-cljs-1069) and `light-cljs-1068-4d5410e5` (the landed commits, which add the Sol review's fix for variadic `assoc` and `disj` and the program types' `disj` and `pop`, which changes no single-key update; the timings were not repeated for it). Records in research/output-speed/updates-1068. No run waited for the machine; all results are unreserved (a peer worker built and tested throughout).
 
 **Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, all 70 operations, the after run with `--baseline` the before's; load 6.58-7.77 before and 6.60-11.40 after), light-cljs ns per operation, median (range), the operations that update:
 
@@ -4857,14 +4857,14 @@ The re-frame-shaped app does not move: its gap is the operations of its first it
 
 **Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the `c786677b` binary, built by each binary), the whole bundle with React, gzip -9:
 
-| App | master `c786677b` | light-cljs-1068 | against master |
-| --- | ---: | ---: | ---: |
-| re-frame simple | 113,539 | 113,031 | -508 (-0.45%) |
-| TodoMVC | 144,678 | 144,126 | -552 (-0.38%) |
-| flow | 331,794 | 331,428 | -366 (-0.11%) |
+| App | master `c786677b` | light-cljs-1068 on it (`361997ef`) | master `f9d52a2c` (light-cljs-1069) | landed (`4d5410e5`) | against `f9d52a2c` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| re-frame simple | 113,539 | 113,031 (-508) | 113,757 | 113,552 | -205 (-0.18%) |
+| TodoMVC | 144,678 | 144,126 (-552) | 144,912 | 144,779 | -133 (-0.09%) |
+| flow | 331,794 | 331,428 (-366) | 332,368 | 332,286 | -82 (-0.02%) |
 
-- **Raw:** 370,667 to 369,649 (-1,018), 478,024 to 476,934 (-1,090), 1,282,686 to 1,281,762 (-924). The old bodies (`conjPath` and the others) and the recognisers only they call (`kindHooks.conjVector`, `conjMap`, `assocVector`) leave release slices that write no slot by name; none of the three apps does.
-- **Size ratchet:** no advanced size grows; four advanced ceilings move down (`constant-keys` 74,000 to 73,000, `mapv-count` 53,000 to 52,000, `features` 117,000 to 116,000, `features-direct` 117,000 to 115,000), and the features example's chunks are 1,502 bytes smaller together (its shared chunk 93,836 to 91,732, `app.reports.js` 4,830 to 5,458 as the hash map's statics move into it).
+- **Raw:** on `c786677b` 370,667 to 369,649 (-1,018), 478,024 to 476,934 (-1,090), 1,282,686 to 1,281,762 (-924); on `f9d52a2c` 371,458 to 371,478 (+20), 478,967 to 478,915 (-52), 1,284,136 to 1,284,296 (+160). The old bodies (`conjPath` and the others) and the hooks only they call (`kindHooks.conjVector`, `conjMap`) leave release slices that write no slot by name; none of the three apps does. The landed commit gives back about 300 bytes after gzip of the first measurement: the Sol review's fix keeps a vector's variadic `assoc` and a set's variadic `disj` to one metadata read, as the old paths, which keeps `kindHooks.assocVector` where a program keeps `assoc` and vectors.
+- **Size ratchet:** no advanced size grows against master; four advanced ceilings move down (`constant-keys` 74,000 to 73,000, `mapv-count` 53,000 to 52,000, `features` and `features-direct` 117,000 to 116,000), and the features example's chunks are about 1,050 bytes smaller together (its shared chunk 93,836 to 92,179, `app.reports.js` 4,830 to 5,458 as the hash map's statics move into it).
 
 **Workload 200k and the re-frame-shaped 200k app** (`compare.bb PROJECT --runs 5 --runtime-only --runtime 1,40`, projects `workload-200k-seed42-1068` and `re-frame-200k-seed42-1068`, the light-cljs output rebuilt with each binary just before its runs), wall time at 40 iterations, median (range), and light-cljs's steady state:
 
