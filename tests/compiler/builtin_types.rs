@@ -3263,7 +3263,8 @@ fn reduce_slots_keep_the_answers_of_extended_seqs_and_reductions() {
         every_level(source, expected);
     }
     // In release output with `extend-type`, `reduce` and `reduce-kv` keep
-    // their slot-first wrappers and the slots of the classes they reduce.
+    // the slots of the classes they reduce, and not their old paths
+    // (light-cljs-1072).
     let kept = units(
         "(extend-type PersistentVector IMeta (-meta [_] nil))
          (pr-str [(reduce + [1 2]) (reduce + 0 (subvec [1 2 3] 1)) (reduce conj [] {:a 1}) (reduce conj [] (zipmap (range 9) (range 9)))
@@ -3271,9 +3272,8 @@ fn reduce_slots_keep_the_answers_of_extended_seqs_and_reductions() {
                   (reduce + #{1 2}) (reduce + (seq [1 2]))])",
     );
     for unit in [
-        "reduce.protocol",
-        "reduce.slots",
-        "reduceKv.slots",
+        "reduceOf",
+        "reduceKvOf",
         "PersistentVectorValue.reduceSlot",
         "SubvecValue.reduceSlot",
         "PersistentArrayMapValue.reduceSlot",
@@ -3286,8 +3286,9 @@ fn reduce_slots_keep_the_answers_of_extended_seqs_and_reductions() {
     ] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
-    let position = |unit: &str| kept.iter().position(|kept| *kept == unit).unwrap();
-    assert!(position("reduce.protocol") < position("reduce.slots"));
+    for unit in ["reducePath", "reduceKvPath", "reduce.protocol"] {
+        assert!(!kept.contains(&unit), "{unit}: {kept:?}");
+    }
 }
 
 /// In release output of a program with `extend-type`, `reduce` and

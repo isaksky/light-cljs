@@ -2348,52 +2348,56 @@ console.log('set, queue and vector contains slots answer as their operations');
 
 // A vector's, a subvector's and an array or hash map's `-reduce` slots
 // and a vector's, a subvector's and a map's `-kv-reduce`
-// (light-cljs-1055) answer as `reduce` and `reduce-kv` do without them, for
-// every value of the class: a public constructor's, one whose tail is the
-// caller's array, one whose `-seq` is its own (as `specify!` gives it), and
-// a reduction a `reduced` value stops; a value made by reflection gets
-// `noBranch`.
+// (light-cljs-1055) answer as `reduce` and `reduce-kv` did without them,
+// for every value of the class: a public constructor's, one whose tail is
+// the caller's array, one whose `-seq` is its own (as `specify!` gives it),
+// and a reduction a `reduced` value stops. Since light-cljs-1072 the
+// operations have no path of their own for them in release and the slots
+// no longer guard against a value made by reflection (rescoped,
+// docs/value-layout.md section 5): each slot answers as the old path of a
+// fresh runtime that demands declarations.
 {
   const reduce2 = 'cljs$core$IReduce$_reduce$arity$2$LKEY', reduce3 = 'cljs$core$IReduce$_reduce$arity$3$LKEY';
   const kv = 'cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY', seq = 'cljs$core$ISeqable$_seq$arity$1$LKEY';
-  const outcome = thunk => { try { return 'ok ' + c.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
-  const pair = function (a, b) { return arguments.length === 0 ? 'none' : c.vector(a, b); };
-  const upTo2 = (a, x) => c.count(a) >= 2 ? c.reduced(c.conj(a, 'stop')) : c.conj(a, x);
-  const kvs = (a, k, x) => c.conj(c.conj(a, k), x), kvUpTo2 = (a, k, x) => c.count(a) >= 2 ? c.reduced(a) : kvs(a, k, x);
-  const ownSeq = value => { value[seq] = () => c.list('own-seq'); return value; };
-  const ownIterator = value => {
-    value.cljs$core$IIterable$_iterator$arity$1$LKEY = () => { let done = false; return {hasNext: () => !done, next: () => { done = true; return c.vector('it', 1); }}; };
-    return value;
+  const oracle = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  oracle.setDeclarationDemand(null);
+  const outcome = (r, thunk) => { try { return 'ok ' + r.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
+  const kit = c => {
+    const pair = function (a, b) { return arguments.length === 0 ? 'none' : c.vector(a, b); };
+    const upTo2 = (a, x) => c.count(a) >= 2 ? c.reduced(c.conj(a, 'stop')) : c.conj(a, x);
+    const kvs = (a, k, x) => c.conj(c.conj(a, k), x), kvUpTo2 = (a, k, x) => c.count(a) >= 2 ? c.reduced(a) : kvs(a, k, x);
+    const ownSeq = value => { value[seq] = () => c.list('own-seq'); return value; };
+    const ownIterator = value => {
+      value.cljs$core$IIterable$_iterator$arity$1$LKEY = () => { let done = false; return {hasNext: () => !done, next: () => { done = true; return c.vector('it', 1); }}; };
+      return value;
+    };
+    const big = c.vec(c.range(70)), v40 = c.vec(c.range(40));
+    const vectors = [c.vector(), c.vector(1, 2, 3), c.vec(c.range(40)), big, c.subvec(big, 3, 67), c.subvec(c.vector(1, 2, 3), 1), c.pop(c.subvec(big, 1, 40)),
+      c.withMeta(c.vector(1), c.hashMap('m', 1)), c.PersistentVector(null, 2, 5, null, [1, 2, 3, 4], null), c.conj(c.PersistentVector(null, 2, 5, null, [1, 2, 3, 4], null), 9),
+      c.Subvec(null, c.vector(1, 2, 3, 4), 1, 3, null), c.subvec(c.PersistentVector(null, 3, 5, null, [1, 2, 3], null), 1), ownSeq(c.vector(1, 2)), ownSeq(c.vec(c.range(40))),
+      c.PersistentVector(null, 40, 5, v40.root, v40.tail, null)];
+    const maps = [c.arrayMap(), c.arrayMap('a', 1, 'b', 2), c.zipmap(c.range(20), c.range(20)), c.assoc(c.zipmap(c.range(9), c.range(9)), null, 'n'),
+      c.withMeta(c.arrayMap('a', 1), c.hashMap('m', 1)), c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null), c.PersistentArrayMap(null, 2, ['a', 1, 'b', 2], null),
+      c.PersistentHashMap(null, 2, c.arrayMap('a', 1, 'b', 2), false, null, null), c.PersistentHashMap(null, 3, c.arrayMap('a', 1, 'b', 2), true, 'n', null),
+      ownSeq(c.arrayMap('a', 1)), ownSeq(c.zipmap(c.range(20), c.range(20))), c.clone(c.PersistentArrayMap(null, 2, ['a', 1, 'b', 2], null)),
+      c.withMeta(c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null), c.hashMap('m', 1)), ownIterator(c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null))];
+    const sorted = [c.sortedMap(), c.sortedMap(2, 'b', 1, 'a', 3, 'c')];
+    const reductions = [[reduce2, [pair]], [reduce3, [pair, 'init']], [reduce3, [upTo2, c.vector()]]];
+    const kvReductions = [[kv, [kvs, c.vector()]], [kv, [kvUpTo2, c.vector()]]];
+    const operations = new Map([[reduce2, (v, rf) => c.reduce(rf, v)], [reduce3, (v, rf, init) => c.reduce(rf, init, v)], [kv, (v, rf, init) => c.reduceKv(rf, init, v)]]);
+    return {pair, kvs, ownSeq, operations, groups: [[vectors, [...reductions, ...kvReductions]], [maps, [...reductions, ...kvReductions]], [sorted, kvReductions]]};
   };
-  const big = c.vec(c.range(70)), v40 = c.vec(c.range(40));
-  const vectors = [c.vector(), c.vector(1, 2, 3), c.vec(c.range(40)), big, c.subvec(big, 3, 67), c.subvec(c.vector(1, 2, 3), 1), c.pop(c.subvec(big, 1, 40)),
-    c.withMeta(c.vector(1), c.hashMap('m', 1)), c.PersistentVector(null, 2, 5, null, [1, 2, 3, 4], null), c.conj(c.PersistentVector(null, 2, 5, null, [1, 2, 3, 4], null), 9),
-    c.Subvec(null, c.vector(1, 2, 3, 4), 1, 3, null), c.subvec(c.PersistentVector(null, 3, 5, null, [1, 2, 3], null), 1), ownSeq(c.vector(1, 2)), ownSeq(c.vec(c.range(40))),
-    c.PersistentVector(null, 40, 5, v40.root, v40.tail, null)];
-  const maps = [c.arrayMap(), c.arrayMap('a', 1, 'b', 2), c.zipmap(c.range(20), c.range(20)), c.assoc(c.zipmap(c.range(9), c.range(9)), null, 'n'),
-    c.withMeta(c.arrayMap('a', 1), c.hashMap('m', 1)), c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null), c.PersistentArrayMap(null, 2, ['a', 1, 'b', 2], null),
-    c.PersistentHashMap(null, 2, c.arrayMap('a', 1, 'b', 2), false, null, null), c.PersistentHashMap(null, 3, c.arrayMap('a', 1, 'b', 2), true, 'n', null),
-    ownSeq(c.arrayMap('a', 1)), ownSeq(c.zipmap(c.range(20), c.range(20))), c.clone(c.PersistentArrayMap(null, 2, ['a', 1, 'b', 2], null)),
-    c.withMeta(c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null), c.hashMap('m', 1)), ownIterator(c.PersistentArrayMap(null, 1, ['a', 1, 'b', 2], null))];
-  const sorted = [c.sortedMap(), c.sortedMap(2, 'b', 1, 'a', 3, 'c')];
-  const reductions = [[reduce2, [pair]], [reduce3, [pair, 'init']], [reduce3, [upTo2, c.vector()]]];
-  const kvReductions = [[kv, [kvs, c.vector()]], [kv, [kvUpTo2, c.vector()]]];
-  const operations = new Map([[reduce2, (v, rf) => c.reduce(rf, v)], [reduce3, (v, rf, init) => c.reduce(rf, init, v)], [kv, (v, rf, init) => c.reduceKv(rf, init, v)]]);
+  const mine = kit(c), old = kit(oracle.core), {pair, kvs, ownSeq} = mine;
   let checked = 0;
-  for (const [values, slots] of [[vectors, [...reductions, ...kvReductions]], [maps, [...reductions, ...kvReductions]], [sorted, kvReductions]]) {
-    for (const value of values) {
-      for (const [slot, args] of slots) {
+  for (const [g, [values, slots]] of mine.groups.entries()) {
+    for (const [i, value] of values.entries()) {
+      for (const [s, [slot, args]] of slots.entries()) {
         const method = value[slot];
         assert.equal(typeof method, 'function', `${slot} of ${c.prStr(value)}`);
-        const proto = Object.getPrototypeOf(value), forged = Object.create(proto), noBranch = method.call(forged, forged, ...args);
-        assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${slot} of a forged value`);
-        // The operation's own path: the slot taken off the prototype.
-        const expected = (() => {
-          delete proto[slot];
-          try { return outcome(() => operations.get(slot)(value, ...args)); } finally { proto[slot] = method; }
-        })();
-        assert.equal(outcome(() => method.call(value, value, ...args)), expected, `${slot} of ${c.prStr(value)}`);
-        assert.equal(outcome(() => operations.get(slot)(value, ...args)), expected, `the operation of ${slot} of ${c.prStr(value)}`);
+        const [oldValues, oldSlots] = old.groups[g];
+        const expected = outcome(oracle.core, () => old.operations.get(slot)(oldValues[i], ...oldSlots[s][1]));
+        assert.equal(outcome(c, () => method.call(value, value, ...args)), expected, `${slot} of ${c.prStr(value)}`);
+        assert.equal(outcome(c, () => mine.operations.get(slot)(value, ...args)), expected, `the operation of ${slot} of ${c.prStr(value)}`);
         checked++;
       }
     }
@@ -2418,44 +2422,46 @@ console.log('set, queue and vector contains slots answer as their operations');
 console.log('vector and map reduce and kv-reduce slots answer as their operations');
 
 // The hash and array sets' and the indexed seqs' `-reduce` slots
-// (light-cljs-1059) answer as `reduce` does without them, for every value
+// (light-cljs-1059) answer as `reduce` did without them, for every value
 // of the class: a public constructor's (an indexed seq over the caller's
 // array or a string), one whose `-seq` or `-iterator` is its own, an empty
-// one, a set's or a queue's seq, and a reduction a `reduced` value stops; a
-// value made by reflection gets `noBranch`.
+// one, a set's or a queue's seq, and a reduction a `reduced` value stops.
+// Since light-cljs-1072 they no longer guard against a value made by
+// reflection (rescoped, docs/value-layout.md section 5), and each answers
+// as the old path of a fresh runtime that demands declarations.
 {
   const reduce2 = 'cljs$core$IReduce$_reduce$arity$2$LKEY', reduce3 = 'cljs$core$IReduce$_reduce$arity$3$LKEY', seq = 'cljs$core$ISeqable$_seq$arity$1$LKEY';
-  const outcome = thunk => { try { return 'ok ' + c.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
-  const pair = function (a, b) { return arguments.length === 0 ? 'none' : c.vector(a, b); };
-  const upTo2 = (a, x) => c.count(a) >= 2 ? c.reduced(c.conj(a, 'stop')) : c.conj(a, x);
-  const ownSeq = value => { value[seq] = () => c.list('own-seq'); return value; };
-  const ownIterator = value => {
-    value.cljs$core$IIterable$_iterator$arity$1$LKEY = () => { let done = false; return {hasNext: () => !done, next: () => { done = true; return 'it'; }}; };
-    return value;
+  const oracle = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  oracle.setDeclarationDemand(null);
+  const outcome = (r, thunk) => { try { return 'ok ' + r.prStr(thunk()); } catch (error) { return 'error ' + error.message; } };
+  const kit = (c, runtime) => {
+    const pair = function (a, b) { return arguments.length === 0 ? 'none' : c.vector(a, b); };
+    const upTo2 = (a, x) => c.count(a) >= 2 ? c.reduced(c.conj(a, 'stop')) : c.conj(a, x);
+    const ownSeq = value => { value[seq] = () => c.list('own-seq'); return value; };
+    const ownIterator = value => {
+      value.cljs$core$IIterable$_iterator$arity$1$LKEY = () => { let done = false; return {hasNext: () => !done, next: () => { done = true; return 'it'; }}; };
+      return value;
+    };
+    const queueSeq = () => c.seq(c.conj(runtime.queueFromArray([1]), 2));
+    const sets = [c.hashSet(), c.hashSet(1, 2, 3), c.set(c.range(20)), c.disj(c.set(c.range(20)), 3), c.conj(c.set(c.range(9)), null),
+      c.withMeta(c.hashSet(1), c.hashMap('m', 1)), c.PersistentHashSet(null, c.PersistentArrayMap(null, 2, ['a', null, 'b', null], null), null),
+      ownSeq(c.hashSet(1, 2)), ownIterator(c.hashSet(1, 2))];
+    const indexed = [c.seq(c.vector(1, 2, 3)), c.rest(c.vector(1, 2, 3)), c.IndexedSeq([1, 2, 3], 1, null), c.IndexedSeq([1, 2], 2, null), c.IndexedSeq('abc', 0, null),
+      c.seq(c.hashSet(1, 2, 3)), queueSeq(), c.withMeta(c.seq(c.vector(1, 2)), c.hashMap('m', 1)),
+      ownSeq(c.seq(c.vector(1, 2))), ownIterator(c.seq(c.vector(1, 2))), ownIterator(queueSeq())];
+    const reductions = [[reduce2, [pair]], [reduce3, [pair, 'init']], [reduce3, [upTo2, c.vector()]]];
+    const operations = new Map([[reduce2, (v, rf) => c.reduce(rf, v)], [reduce3, (v, rf, init) => c.reduce(rf, init, v)]]);
+    return {pair, ownSeq, ownIterator, queueSeq, sets, indexed, values: [...sets, ...indexed], reductions, operations};
   };
-  const queueSeq = () => c.seq(c.conj(runtime.queueFromArray([1]), 2));
-  const sets = [c.hashSet(), c.hashSet(1, 2, 3), c.set(c.range(20)), c.disj(c.set(c.range(20)), 3), c.conj(c.set(c.range(9)), null),
-    c.withMeta(c.hashSet(1), c.hashMap('m', 1)), c.PersistentHashSet(null, c.PersistentArrayMap(null, 2, ['a', null, 'b', null], null), null),
-    ownSeq(c.hashSet(1, 2)), ownIterator(c.hashSet(1, 2))];
-  const indexed = [c.seq(c.vector(1, 2, 3)), c.rest(c.vector(1, 2, 3)), c.IndexedSeq([1, 2, 3], 1, null), c.IndexedSeq([1, 2], 2, null), c.IndexedSeq('abc', 0, null),
-    c.seq(c.hashSet(1, 2, 3)), queueSeq(), c.withMeta(c.seq(c.vector(1, 2)), c.hashMap('m', 1)),
-    ownSeq(c.seq(c.vector(1, 2))), ownIterator(c.seq(c.vector(1, 2))), ownIterator(queueSeq())];
-  const reductions = [[reduce2, [pair]], [reduce3, [pair, 'init']], [reduce3, [upTo2, c.vector()]]];
-  const operations = new Map([[reduce2, (v, rf) => c.reduce(rf, v)], [reduce3, (v, rf, init) => c.reduce(rf, init, v)]]);
+  const mine = kit(c, runtime), old = kit(oracle.core, oracle), {pair, ownSeq, ownIterator, queueSeq, sets, indexed} = mine;
   let checked = 0;
-  for (const value of [...sets, ...indexed]) {
-    for (const [slot, args] of reductions) {
+  for (const [i, value] of mine.values.entries()) {
+    for (const [s, [slot, args]] of mine.reductions.entries()) {
       const method = value[slot];
       assert.equal(typeof method, 'function', `${slot} of ${c.prStr(value)}`);
-      const proto = Object.getPrototypeOf(value), forged = Object.create(proto), noBranch = method.call(forged, forged, ...args);
-      assert.ok(noBranch !== null && typeof noBranch === 'object' && Object.isFrozen(noBranch), `${slot} of a forged value`);
-      // The operation's own path: the slot taken off the prototype.
-      const expected = (() => {
-        delete proto[slot];
-        try { return outcome(() => operations.get(slot)(value, ...args)); } finally { proto[slot] = method; }
-      })();
-      assert.equal(outcome(() => method.call(value, value, ...args)), expected, `${slot} of ${c.prStr(value)}`);
-      assert.equal(outcome(() => operations.get(slot)(value, ...args)), expected, `the operation of ${slot} of ${c.prStr(value)}`);
+      const expected = outcome(oracle.core, () => old.operations.get(slot)(old.values[i], ...old.reductions[s][1]));
+      assert.equal(outcome(c, () => method.call(value, value, ...args)), expected, `${slot} of ${c.prStr(value)}`);
+      assert.equal(outcome(c, () => mine.operations.get(slot)(value, ...args)), expected, `the operation of ${slot} of ${c.prStr(value)}`);
       checked++;
     }
   }

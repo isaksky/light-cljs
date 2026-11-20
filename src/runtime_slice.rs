@@ -193,7 +193,7 @@ pub const RECORD_METHODS: &[(&str, &[usize], &str)] = &[
     ("ISeqable/-seq", &[1], "seqOf"),
     ("IIterable/-iterator", &[1], "iterator"),
     ("IPrintWithWriter/-pr-writer", &[3], "printWriterImpl"),
-    ("IKVReduce/-kv-reduce", &[3], "reduceKv"),
+    ("IKVReduce/-kv-reduce", &[3], "reduceKvOf"),
 ];
 
 /// What a program can read by name on light.lazy's `Loadable`, the type the

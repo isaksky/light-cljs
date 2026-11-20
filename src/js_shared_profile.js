@@ -231,22 +231,27 @@
     off() { const cells = globalThis.__lightSharedCells; cells.slotFirst = false; }
   };
   //@unit operationPaths requires: assocPath, conjPath, containsPath, countPath, disjPath,
-  //@ dissocPath, firstPath, getPath, nextPath, nthPath, peekPath, popPath, restPath, seqPath
+  //@ dissocPath, firstPath, getPath, nextPath, nthPath, peekPath, popPath, reduceKvPath, reduceOwn,
+  //@ reducePath, restPath, seqPath
   // The V8 profile's switch to the operations' own paths, which every
   // task takes for a value without the operation's slot: the engine forms
   // (vectors, map entries, maps, sets and list cells) hold no slots, and
   // the own paths answer them through this profile's units, as before
-  // light-cljs-1054 (the seq walk), light-cljs-1066 (the lookups) and
-  // light-cljs-1068 (the updates).
-  // `nth.protocol`, `get.own` and `contains.own` rewrap `nthPath`,
-  // `getPath` and `containsPath` after this unit loads, so those three
-  // entries read the binding when called, with the caller's arguments.
+  // light-cljs-1054 (the seq walk), light-cljs-1066 (the lookups),
+  // light-cljs-1068 (the updates) and light-cljs-1072 (the reductions).
+  // `nth.protocol`, `get.own`, `contains.own` and `reduce.protocol`
+  // rewrap `nthPath`, `getPath`, `containsPath` and `reducePath` after this
+  // unit loads, so those entries read the binding when called, with the
+  // caller's arguments; `reduceOwn`, the unwrapped `reducePath`, is a
+  // binding declared after it.
   const operationPaths = {seq: seqPath, first: firstPath, rest: restPath, next: nextPath,
     count: countPath, peek: peekPath,
     nth: function () { return nthPath.apply(null, arguments); },
     get: function () { return getPath.apply(null, arguments); },
     contains: function () { return containsPath.apply(null, arguments); },
-    conj: conjPath, assoc: assocPath, dissoc: dissocPath, disj: disjPath, pop: popPath};
+    conj: conjPath, assoc: assocPath, dissoc: dissocPath, disj: disjPath, pop: popPath,
+    reduce: function () { return reducePath.apply(null, arguments); },
+    reduceOwn: function () { return reduceOwn.apply(null, arguments); }, reduceKv: reduceKvPath};
   //@unit ownSeqs
   // The V8 profile's switch for `first` and `rest` of a collection whose
   // seq a program extended: this profile takes the own paths

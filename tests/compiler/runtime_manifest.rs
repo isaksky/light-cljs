@@ -771,6 +771,8 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "slotWrites.first",
     "slotWrites.rest",
     "slotWrites.next",
+    "slotWrites.reduce",
+    "slotWrites.reduceKv",
     "multiTables",
     "addMethodDirect",
     "mapEntry.lean",
@@ -1252,10 +1254,13 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // protocol method's member by name; and the 11 `-conj`, `-disjoin` and
     // `-pop` slot units light-cljs-1068 gave the lists, the sets, the
     // vectors, a map entry and the queue, less the three slot-first wrappers
-    // of `conj`, `assoc` and `dissoc`, and its five `slotWrites` effects; and
-    // the four `slotWrites` effects that set `seq`'s, `first`'s, `rest`'s and
-    // `next`'s (light-cljs-1071).
-    assert_eq!(checked, 533);
+    // of `conj`, `assoc` and `dissoc`, and its five `slotWrites` effects; the
+    // four `slotWrites` effects that set `seq`'s, `first`'s, `rest`'s and
+    // `next`'s (light-cljs-1071); and the eight `-reduce` slot units
+    // light-cljs-1072 gave the classes the old path walked with walks of their
+    // own and its two `slotWrites` effects, less the slot-first wrappers of
+    // `reduce` and `reduce-kv`.
+    assert_eq!(checked, 541);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -2151,9 +2156,9 @@ fn units_assigning_a_binding_share_its_unit() {
             "recordMethodTable <- recordMethods.print",
             "recordMethodTable <- recordMethods.seq",
             "recordMethodTable <- recordMethods.withMeta",
-            "reduce <- reduce.protocol",
-            "reduce <- reduce.slots",
-            "reduceKv <- reduceKv.slots",
+            "reduceKvOf <- slotWrites.reduceKv",
+            "reduceOf <- slotWrites.reduce",
+            "reducePath <- reduce.protocol",
             "restOf <- slotWrites.rest",
             "seqOf <- slotWrites.seq",
             "setDeclaration <- declarationTransaction",

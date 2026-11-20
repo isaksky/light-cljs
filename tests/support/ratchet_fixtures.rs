@@ -1004,6 +1004,25 @@
 //! runtime grows 2,271 bytes (`console-log-sum` 740,315 at none, on master
 //! `76061c5c`), past every none and prepare ceiling, which moves to the next
 //! 1,000 above. No advanced size moves.
+//!
+//! The reductions shaped as upstream's (light-cljs-1072, 2026-11-19): `reduce`
+//! and `reduce-kv` call a value's slot, then upstream's path (`reduceOf`,
+//! `reduceKvOf`), without their slot-first wrappers and their slots'
+//! `noBranch` guards; a vector's chunked seq, the integer range, repeat,
+//! iterate, cycle, an array chunk, a lazy seq and a key or value seq gained
+//! the `-reduce` slots their old path's walks gave. The old paths stay for
+//! the compile-time runtime and the shared-heap profile, so the readable
+//! runtime grows about 9,300 bytes (`console-log-sum` 747,314 at none),
+//! past every none and prepare ceiling, which moves to the next 1,000 above
+//! the larger size. Advanced: the upstream-shaped dispatch (`reduce2`,
+//! `reduce3`, `reduceOf`, the slot factory `reduceSlot`) costs about 110 to
+//! 210 bytes in programs that keep the recognisers for their other
+//! operations anyway: `mapv-count` 51,926 on master `76061c5c` to 52,032,
+//! past its 52,000 ceiling, which moves to 53,000, and the features example
+//! built as one module 117,689 to 117,902 (its ceiling of 116,000 holds,
+//! 115,959). `eight-records` moves to 47,000. The re-frame apps' whole
+//! bundles shrink 135 to 355 bytes after gzip (benchmarks/runtime-vs-shadow.md,
+//! light-cljs-1072).
 
 pub struct Fixture {
     pub name: &'static str,

@@ -1098,14 +1098,14 @@
   //@unit installMethods.IIndexedNthKey effect: installMethods when: SubvecValue, nthOf, nthPath,
   //@ subvec requires: methodKey, methodKeys
   methodKeys[25] = methodKey("IIndexed/-nth");
-  //@unit installMethods.IIterableIteratorKey effect: installMethods when: iterator requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.IIterableIteratorKey effect: installMethods when: iterator, reduceOf
+  //@ requires: methodKey, methodKeys
   methodKeys[26] = methodKey("IIterable/-iterator");
-  //@unit installMethods.IIterableKey effect: installMethods when: isIterable, reduce,
+  //@unit installMethods.IIterableKey effect: installMethods when: isIterable, reducePath,
   //@ sequenceIterator requires: methodKey, methodKeys
   methodKeys[27] = methodKey("IIterable");
-  //@unit installMethods.IKVReduceKvReduceKey effect: installMethods when: reduceKv requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.IKVReduceKvReduceKey effect: installMethods when: reduceKvOf, reduceKvPath
+  //@ requires: methodKey, methodKeys
   methodKeys[28] = methodKey("IKVReduce/-kv-reduce");
   //@unit installMethods.IListKey effect: installMethods when: isList requires: methodKey,
   //@ methodKeys
@@ -1152,8 +1152,8 @@
   //@unit installMethods.IReduceKey effect: installMethods when: isReduceable requires: methodKey,
   //@ methodKeys
   methodKeys[43] = methodKey("IReduce");
-  //@unit installMethods.IReduceReduceKey effect: installMethods when: reduce requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.IReduceReduceKey effect: installMethods when: PersistentHashSetValue.reduceSlot,
+  //@ reduceOf, reducePath requires: methodKey, methodKeys
   methodKeys[44] = methodKey("IReduce/-reduce");
   //@unit installMethods.IResetResetKey effect: installMethods when: resetProtocol requires: methodKey,
   //@ methodKeys
@@ -1176,8 +1176,8 @@
   //@unit installMethods.ISeqableKey effect: installMethods when: countOf, countPath, isSeqable
   //@ requires: methodKey, methodKeys
   methodKeys[51] = methodKey("ISeqable");
-  //@unit installMethods.ISeqableSeqKey effect: installMethods when: reduce, rseq, seqOf, seqPath
-  //@ requires: methodKey, methodKeys
+  //@unit installMethods.ISeqableSeqKey effect: installMethods when: reducePath, rseq, seqOf,
+  //@ seqPath, vectorReduceSlot requires: methodKey, methodKeys
   methodKeys[52] = methodKey("ISeqable/-seq");
   //@unit installMethods.ISequentialKey effect: installMethods when: isSequential, nthOf, nthPath,
   //@ structuralEqualPair requires: methodKey, methodKeys
@@ -2574,85 +2574,105 @@
   //@unit isEmpty requires: countedValue, countProtocol, methodKeys, protocolHooks, seq
   const isEmpty = x => x == null || ((protocolHooks.satisfies?.(methodKeys[11], x) ?? countedValue(x)) ? countProtocol(x) === 0 : seq(x) === null);
 
-  //@unit reduce requires: cellOf, chunkOf, first, invalidArity, isCell, isChunkedCons, isLazy,
-  //@ isReduced, iterableValue, iterator, iteratorProtocol, kindHooks, methodKeys, next,
-  //@ protocolHooks, reducedValue, reduceValue, seq, vectorReduce, vectorStore, viewOf
+  // `reduce` is upstream's too (light-cljs-1072), as the updates
+  // (light-cljs-1068): a value with a keyed kind calls its keyed `-reduce`
+  // slot of the arity given, read and called once; every other value, and
+  // a value whose slot holds no method, takes the operation's own path
+  // (`reduceOf`), upstream's: a program's method, arrays and strings, a
+  // program's iterator, else the walk of the value's seq. The runtime's
+  // classes that the old path answered with a walk of their own have slots
+  // (the vector's chunked seq, the integer range, repeat, iterate and cycle
+  // walk their fields, a chunk its items, a lazy seq and a key or value seq
+  // their seq); the others take the walk the old path gave their class from
+  // `reduceOf`, by their keyed kind. The old path
+  // (`reducePath`) serves the compile-time runtime and the shared-heap
+  // profile (`operationPaths`). Each arity with a slot is a function of its
+  // own, so that each stays under the 100 bytes of bytecode that V8's
+  // Maglev inlines (light-cljs-1033).
+  //@unit reduce requires: invalidArity, reduceOf, slotFirst
   function reduce(rf, init, collection) {
     const arity = arguments.length;
-    if (arity !== 2 && arity !== 3) return invalidArity(arity);
-    const source = arity === 3 ? collection : init;
-    if (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string" && (protocolHooks.satisfies?.(methodKeys[27], source) ?? iterableValue(source))) {
-      const iter = iteratorProtocol(source);
-      if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
-      while (iter.hasNext()) {
-        init = rf.call(null, init, iter.next());
-        if (isReduced(init)) return reducedValue(init);
-      }
-      return init;
+    return arity === 3 ? reduce3(rf, init, collection) : arity === 2 ? reduce2(rf, init) : invalidArity(arity);
+  }
+  function reduce2(rf, collection) {
+    if (collection != null && slotFirst.on && collection.cljs$lang$kind$$LKEY !== undefined) {
+      const method = collection.cljs$core$IReduce$_reduce$arity$2$LKEY;
+      if (method) return method.call(collection, collection, rf);
     }
-    const chunkedSlots = source?.slots$LKEY, chunked = viewOf(source)?.vec$LKEY ? source : undefined;
-    if (chunkedSlots?.arr) {
-      const iter = iterator(source);
-      if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
-      while (iter.hasNext()) { init = rf.call(null, init, iter.next()); if (isReduced(init)) return reducedValue(init); }
-      return init;
+    return reduceOf(rf, collection);
+  }
+  function reduce3(rf, init, collection) {
+    if (collection != null && slotFirst.on && collection.cljs$lang$kind$$LKEY !== undefined) {
+      const method = collection.cljs$core$IReduce$_reduce$arity$3$LKEY;
+      if (method) return method.call(collection, collection, rf, init);
     }
-    // A vector longer than its tail or a view (`subvec`) whose seq no
-    // protocol implementation replaces, one the public constructor built
-    // without `init` (with one, as upstream, its seq walks the whole tail it
-    // received), and a public ChunkedSeq over one, walk its store.
-    const store = vectorStore(chunked ? chunked.vec$LKEY : source);
-    if (store && (chunked || chunkedSlots?.cnt != null && arity === 2
-      || (store.cnt$LKEY > 32 || store.sub$LKEY) && !protocolHooks.programMethod?.(source, methodKeys[52], 1, true)))
-      return vectorReduce(store, rf, init, chunked ? chunked.base$LKEY + chunked.i$LKEY : 0, arity);
-    const producer = cellOf(source);
-    if (producer?.integer$LKEY && arity === 2) {
-      if (producer.count$LKEY === 0) return rf.call(null);
-      init = producer.first$LKEY;
-      for (let i = 1; i < producer.count$LKEY; i++) {
-        init = rf.call(null, init, producer.first$LKEY + i * producer.step$LKEY);
-        if (isReduced(init)) return reducedValue(init);
-      }
-      return init;
+    return reduceOf(rf, init, collection);
+  }
+  //@unit reduceOf requires: iterator, iterReduce, methodKeys, operationPaths, protocolHooks,
+  //@ reduceWalk, seqReduce
+  // Upstream's `reduce` of a value without a `-reduce` slot holding a
+  // method: a value of a runtime class whose instance slot holds nil or
+  // false takes its class's slot, as the old path answered by the class; a
+  // program's method (`extend-type`, `specify!`, a program's type, which
+  // `reduce.protocol` looked up); an array's or a string's items, read as
+  // the walk reaches each, as the old path's last walk (`reduceWalk`) read
+  // them. A runtime class's value (a keyed kind below 64) takes the walk
+  // the old path gave its class: a map entry, a sorted map, a map's seq or
+  // another view the last walk, a sorted set and a queue their iterators,
+  // every other seq (a list, a cons, a range, a chunked cons, a sorted
+  // map's seq) the walk of its seq (`seqReduce`), which never takes a
+  // program's iterator, as the old path did not. Any other value takes a
+  // program's iterator (`IIterable`, as the old path's `iteratorProtocol`
+  // found it), else the walk of its seq.
+  function reduceOf(rf, init, collection) {
+    const path = operationPaths.reduce;
+    if (path !== undefined) return path.apply(null, arguments);
+    const arity = arguments.length, source = arity === 3 ? collection : init, kind = source?.cljs$lang$kind$$LKEY;
+    if (arity === 2) init = undefined;
+    if (kind < 64) {
+      const prototype = Object.getPrototypeOf(source);
+      const method = arity === 3 ? prototype?.cljs$core$IReduce$_reduce$arity$3$LKEY : prototype?.cljs$core$IReduce$_reduce$arity$2$LKEY;
+      if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
     }
-    // With an initial value, as upstream's IntegerRange: from start to end.
-    if (producer?.integer$LKEY) {
-      for (let i = producer.first$LKEY; producer.step$LKEY > 0 ? i < producer.end$LKEY : i > producer.end$LKEY; i += producer.step$LKEY) {
-        init = rf.call(null, init, i);
-        if (isReduced(init)) return reducedValue(init);
-      }
-      return init;
+    const own = protocolHooks.programMethod?.(source, methodKeys[44], arity, true);
+    if (own) return arity === 3 ? own.call(source, source, rf, init) : own.call(source, source, rf);
+    if (Array.isArray(source) || typeof source === "string") return reduceWalk(source, rf, init, arity);
+    if (kind < 64) {
+      // The vectors, maps and views (kinds 1 to 3, 5 to 10, 28 to 30), the
+      // sets and the queue (33, 36, 44).
+      if (kind < 32 ? (1879050222 >>> kind & 1) === 1 : (4114 >>> kind - 32 & 1) === 1)
+        return kind < 32 ? reduceWalk(source, rf, init, arity) : iterReduce(iterator(source), rf, init, arity);
+      return seqReduce(source, rf, init, arity);
     }
-    if (producer?.cell$LKEY === "repeat") {
-      const n = producer.remaining$LKEY, item = producer.first$LKEY;
-      let i = arity === 2 ? 1 : 0;
-      if (arity === 2) init = item;
-      while (n === -1 || i++ < n) { init = rf.call(null, init, item); if (isReduced(init)) return reducedValue(init); }
-      return init;
+    const iterable = protocolHooks.programMethod?.(source, methodKeys[26], 1);
+    return iterable ? iterReduce(iterable.call(source, source), rf, init, arity) : seqReduce(source, rf, init, arity);
+  }
+  //@unit iterReduce requires: isReduced, reducedValue
+  // `reduce` of an iterator's items: from `init` where `arity` is 3, else
+  // from the first of them.
+  function iterReduce(iter, rf, init, arity) {
+    if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
+    while (iter.hasNext()) { init = rf.call(null, init, iter.next()); if (isReduced(init)) return reducedValue(init); }
+    return init;
+  }
+  //@unit seqReduce requires: first, isReduced, next, reduce, reducedValue, seq
+  // Upstream's `seq-reduce`: the walk of a value's seq with `first` and
+  // `next`; without `init`, its first item and the `reduce` of its next.
+  function seqReduce(source, rf, init, arity) {
+    if (arity === 2) { const current = seq(source); return current == null ? rf.call(null) : reduce(rf, first(current), next(current)); }
+    for (let current = seq(source); current != null; current = next(current)) {
+      init = rf.call(null, init, first(current));
+      if (isReduced(init)) return reducedValue(init);
     }
-    if (producer?.cell$LKEY === "iterate") return kindHooks.reduceIterate(rf, init, source, producer, arity);
-    if (producer?.cell$LKEY === "cycle") return kindHooks.reduceCycle(rf, init, producer, arity);
-    const chunk = chunkOf(source);
-    if (chunk !== undefined && chunk.step$LKEY === null) {
-      let i = chunk.off$LKEY;
-      if (arity === 2) init = chunk.arr$LKEY[i++];
-      for (; i < chunk.arr$LKEY.length; i++) { init = rf.call(null, init, chunk.arr$LKEY[i]); if (isReduced(init)) return reducedValue(init); }
-      return init;
-    }
-    const sequenceReduction = isCell(source) || isChunkedCons(source) || isLazy(source) || (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string");
-    if (arity === 2 && sequenceReduction) {
-      const current = seq(source);
-      return current == null ? rf.call(null) : reduce(rf, first(current), next(current));
-    }
-    if (sequenceReduction) {
-      for (let current = seq(source); current != null; current = next(current)) {
-        init = rf.call(null, init, first(current));
-        if (isReduced(init)) return reducedValue(init);
-      }
-      return init;
-    }
+    return init;
+  }
+  //@unit reduceWalk requires: cellOf, first, isReduced, next, reducedValue, seq, viewOf
+  // The old path's last walk, of a vector, a map, a map seq or another
+  // view: the value's seq, a cell's and a view's items read from their
+  // fields, any other step's with `first` and `next`.
+  function reduceWalk(source, rf, init, arity) {
     let initialized = arity === 3, result = init;
-    let current = seq(initialized ? collection : init);
+    let current = seq(source);
     // A chunked seq over a vector's leaf continues past its storage.
     const walked = value => { const slice = viewOf(value); return slice?.vec$LKEY ? undefined : slice; };
     let slice = walked(current), offset = slice?.i$LKEY;
@@ -2681,50 +2701,141 @@
     }
     return initialized ? result : rf.call(null);
   }
-  //@unit reduceOwn requires: reduce
-  // `reduce`'s own path, under `reduce.protocol` and `reduce.slots`, which
-  // the vectors' and maps' `-reduce` slots take where they do not walk the
-  // value themselves (light-cljs-1055), so that a slot the compile-time
+  //@unit rangeReduce requires: isReduced, reducedValue
+  // An integer range's items: without `init`, its `count` items from its
+  // first; with one, as upstream's IntegerRange, from start to end.
+  function rangeReduce(range, rf, init, arity) {
+    if (arity === 2) {
+      if (range.count$LKEY === 0) return rf.call(null);
+      init = range.first$LKEY;
+      for (let i = 1; i < range.count$LKEY; i++) {
+        init = rf.call(null, init, range.first$LKEY + i * range.step$LKEY);
+        if (isReduced(init)) return reducedValue(init);
+      }
+      return init;
+    }
+    for (let i = range.first$LKEY; range.step$LKEY > 0 ? i < range.end$LKEY : i > range.end$LKEY; i += range.step$LKEY) {
+      init = rf.call(null, init, i);
+      if (isReduced(init)) return reducedValue(init);
+    }
+    return init;
+  }
+  //@unit repeatReduce requires: isReduced, reducedValue
+  // A repeat's item, `remaining` times (without end where -1).
+  function repeatReduce(repeat, rf, init, arity) {
+    const n = repeat.remaining$LKEY, item = repeat.first$LKEY;
+    let i = arity === 2 ? 1 : 0;
+    if (arity === 2) init = item;
+    while (n === -1 || i++ < n) { init = rf.call(null, init, item); if (isReduced(init)) return reducedValue(init); }
+    return init;
+  }
+  //@unit chunkReduce requires: isReduced, reducedValue, seqReduce
+  // An array chunk's items from its offset; a range's chunk, whose `step`
+  // is a number, has no items of its own: the walk of its seq, as the old
+  // path.
+  function chunkReduce(chunk, rf, init, arity) {
+    if (chunk.step$LKEY !== null) return seqReduce(chunk, rf, init, arity);
+    let i = chunk.off$LKEY;
+    if (arity === 2) init = chunk.arr$LKEY[i++];
+    for (; i < chunk.arr$LKEY.length; i++) { init = rf.call(null, init, chunk.arr$LKEY[i]); if (isReduced(init)) return reducedValue(init); }
+    return init;
+  }
+  //@unit iterateReduce requires: first, isReduced, reducedValue
+  // An iterate's items, without end: its first, then `f` of each.
+  function iterateReduce(source, rf, init, arity) {
+    let value = first(source);
+    if (arity === 2) { init = value; value = source.f$LKEY.call(null, value); }
+    while (true) { init = rf.call(null, init, value); if (isReduced(init)) return reducedValue(init); value = source.f$LKEY.call(null, value); }
+  }
+  //@unit cycleReduce requires: cycleCurrent, first, isReduced, next, reducedValue
+  // A cycle's items, without end: its current seq's, then its whole seq's
+  // again.
+  function cycleReduce(producer, rf, init, arity) {
+    let current = cycleCurrent(producer);
+    if (arity === 2) { init = first(current); current = next(current) ?? producer.all$LKEY; }
+    while (true) { init = rf.call(null, init, first(current)); if (isReduced(init)) return reducedValue(init); current = next(current) ?? producer.all$LKEY; }
+  }
+  //@unit reducePath requires: cellOf, chunkOf, chunkReduce, invalidArity, isCell, isChunkedCons,
+  //@ isLazy, iterableValue, iterator, iteratorProtocol, iterReduce, kindHooks, methodKeys,
+  //@ protocolHooks, rangeReduce, reduceValue, reduceWalk, repeatReduce, seqReduce, vectorReduce,
+  //@ vectorStore, viewOf
+  // `reduce`'s own path over the runtime's classes (`operationPaths`).
+  function reducePath(rf, init, collection) {
+    const arity = arguments.length;
+    if (arity !== 2 && arity !== 3) return invalidArity(arity);
+    const source = arity === 3 ? collection : init;
+    if (arity === 2) init = undefined;
+    if (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string" && (protocolHooks.satisfies?.(methodKeys[27], source) ?? iterableValue(source)))
+      return iterReduce(iteratorProtocol(source), rf, init, arity);
+    const chunkedSlots = source?.slots$LKEY, chunked = viewOf(source)?.vec$LKEY ? source : undefined;
+    if (chunkedSlots?.arr) return iterReduce(iterator(source), rf, init, arity);
+    // A vector longer than its tail or a view (`subvec`) whose seq no
+    // protocol implementation replaces, one the public constructor built
+    // without `init` (with one, as upstream, its seq walks the whole tail it
+    // received), and a public ChunkedSeq over one, walk its store.
+    const store = vectorStore(chunked ? chunked.vec$LKEY : source);
+    if (store && (chunked || chunkedSlots?.cnt != null && arity === 2
+      || (store.cnt$LKEY > 32 || store.sub$LKEY) && !protocolHooks.programMethod?.(source, methodKeys[52], 1, true)))
+      return vectorReduce(store, rf, init, chunked ? chunked.base$LKEY + chunked.i$LKEY : 0, arity);
+    const producer = cellOf(source);
+    if (producer?.integer$LKEY) return rangeReduce(producer, rf, init, arity);
+    if (producer?.cell$LKEY === "repeat") return repeatReduce(producer, rf, init, arity);
+    if (producer?.cell$LKEY === "iterate") return kindHooks.reduceIterate(producer, rf, init, arity);
+    if (producer?.cell$LKEY === "cycle") return kindHooks.reduceCycle(producer, rf, init, arity);
+    const chunk = chunkOf(source);
+    if (chunk !== undefined && chunk.step$LKEY === null) return chunkReduce(chunk, rf, init, arity);
+    if (isCell(source) || isChunkedCons(source) || isLazy(source) || (!reduceValue(source) && !Array.isArray(source) && typeof source !== "string"))
+      return seqReduce(source, rf, init, arity);
+    return reduceWalk(source, rf, init, arity);
+  }
+  //@unit reduceOwn requires: reducePath
+  // `reduce`'s own path, under `reduce.protocol`, which the runtime's
+  // `-reduce` slots take where a compiler session demands declarations
+  // (`reduceOwnPath`, light-cljs-1055), so that a slot the compile-time
   // lookup calls does not find itself again.
-  const reduceOwn = reduce;
-  //@unit itemsReduce requires: isReduced, reducedValue, reduceOwn, slotFirst
+  const reduceOwn = reducePath;
+  //@unit reduceOwnPath requires: operationPaths
+  // What a `-reduce` slot gives where a compiler session demands
+  // declarations (`slotFirst` is off), or the shared-heap profile's tasks
+  // take the old paths: `reduce`'s own path (`reduceOwn`), whose
+  // operations demand.
+  function reduceOwnPath(self, rf, init, arity) {
+    const own = operationPaths.reduceOwn;
+    return arity === 3 ? own(rf, init, self) : own(rf, self);
+  }
+  //@unit itemsReduce requires: isReduced, iterator, iterReduce, reducedValue, reduceOwnPath,
+  //@ reduceWalk, slotFirst
   // The walk of a hash or array set's and an indexed seq's `-reduce` slots
   // (light-cljs-1059), whose call's argument count is `arity` (2 without an
   // initial value): `items` from index `i` on (each entry's `key` where
   // `keyed`), as `reduce` walks the seq over them, where the value is `own`
   // (its `-seq` its class's, no `-iterator`). Else, for an `-seq` or
-  // `-iterator` that `extend-type` or `specify!` gave it, and where a
-  // compiler session demands declarations (`slotFirst`), `reduce`'s own
-  // path (`reduceOwn`).
+  // `-iterator` that `extend-type` or `specify!` gave it, as the old path
+  // walked them: a set and a queue's seq through their iterator (a
+  // program's, else the `SeqIter` of their seq), another indexed seq
+  // through `reduceWalk`; and
+  // where a compiler session demands declarations (`slotFirst`), `reduce`'s
+  // own path.
   function itemsReduce(self, own, items, i, keyed, rf, init, arity) {
-    if (!own || !slotFirst.on) return arity === 3 ? reduceOwn(rf, init, self) : reduceOwn(rf, self);
+    if (!slotFirst.on) return reduceOwnPath(self, rf, init, arity);
+    if (!own) return keyed || self.view$LKEY === "queue" ? iterReduce(iterator(self), rf, init, arity) : reduceWalk(self, rf, init, arity);
     if (arity === 2) { if (!(i < items.length)) return rf.call(null); init = keyed ? items[i++].key : items[i++]; }
     for (; i < items.length; i++) { init = rf.call(null, init, keyed ? items[i].key : items[i]); if (isReduced(init)) return reducedValue(init); }
     return init;
   }
 
-  //@unit iterateNode.reduce effect: iterateNode when: reduce requires: first, isReduced, kindHooks,
-  //@ reducedValue
-  kindHooks.reduceIterate = (rf, init, source, producer, arity) => {
-    let value = first(source);
-    if (arity === 2) { init = value; value = producer.f$LKEY.call(null, value); }
-    while (true) { init = rf.call(null, init, value); if (isReduced(init)) return reducedValue(init); value = producer.f$LKEY.call(null, value); }
-  };
-  //@unit cycleNode.reduce effect: cycleNode when: reduce requires: cycleCurrent, first, isReduced,
-  //@ kindHooks, next, reducedValue
-  kindHooks.reduceCycle = (rf, init, producer, arity) => {
-    let current = cycleCurrent(producer);
-    if (arity === 2) { init = first(current); current = next(current) ?? producer.all$LKEY; }
-    while (true) { init = rf.call(null, init, first(current)); if (isReduced(init)) return reducedValue(init); current = next(current) ?? producer.all$LKEY; }
-  };
-  //@unit reduce.protocol effect: installMethods when: reduce requires: methodKeys, protocolHooks,
-  //@ reduce
-  reduce = (operation => Object.defineProperty(function (rf, init, collection) {
+  //@unit iterateNode.reduce effect: iterateNode when: reducePath requires: iterateReduce, kindHooks
+  kindHooks.reduceIterate = iterateReduce;
+  //@unit cycleNode.reduce effect: cycleNode when: reducePath requires: cycleReduce, kindHooks
+  kindHooks.reduceCycle = cycleReduce;
+  //@unit reduce.protocol effect: installMethods when: reducePath requires: methodKeys,
+  //@ protocolHooks, reducePath
+  reducePath = (operation => Object.defineProperty(function (rf, init, collection) {
     const arity = arguments.length, source = arity === 3 ? collection : init;
     const method = arity === 2 || arity === 3 ? protocolHooks.programMethod?.(source, methodKeys[44], arity, true) : null;
     if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
     return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(reduce);
+  }, "name", {value: operation.name}))(reducePath);
   //@unit reducingFunction requires: invalidArity
   // Reducers and transforms use the same .call ABI as emitted functions and
   // custom IFn values. State is allocated when a transform receives its reducer.
@@ -2834,9 +2945,44 @@
     return invalidArity(arguments.length);
   }
 
-  //@unit reduceKv requires: holdsVector, isEntryCell, isReduced, isTreeMap, keyProtocol, kindHooks,
-  //@ mapPairs, methodKeys, protocolHooks, reduce, reducedValue, valProtocol, vectorItems
+  // `reduce-kv` is upstream's too (light-cljs-1072): a value with a keyed
+  // kind calls its keyed `-kv-reduce` slot, read and called once; every
+  // other value, and a value whose slot holds no method, takes the
+  // operation's own path (`reduceKvOf`). The old path (`reduceKvPath`)
+  // serves the compile-time runtime and the shared-heap profile
+  // (`operationPaths`).
+  //@unit reduceKv requires: reduceKvOf, slotFirst
   function reduceKv(rf, init, collection) {
+    if (collection != null && slotFirst.on && collection.cljs$lang$kind$$LKEY !== undefined) {
+      const method = collection.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY;
+      if (method) return method.call(collection, collection, rf, init);
+    }
+    return reduceKvOf(rf, init, collection);
+  }
+  //@unit reduceKvOf requires: keyProtocol, methodKeys, operationPaths, protocolHooks, reduce,
+  //@ valProtocol
+  // Upstream's `reduce-kv` of a value without a `-kv-reduce` slot holding a
+  // method: a value of a runtime class whose instance slot holds nil or
+  // false takes its class's slot, as the old path answered by the class; a
+  // program's method; nil gives `init`; any other value, a map entry
+  // included, the `reduce` of its items' keys and values, as the old path
+  // gave them.
+  function reduceKvOf(rf, init, collection) {
+    const path = operationPaths.reduceKv;
+    if (path !== undefined) return path(rf, init, collection);
+    if (collection?.cljs$lang$kind$$LKEY < 64) {
+      const method = Object.getPrototypeOf(collection)?.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY;
+      if (method) return method.call(collection, collection, rf, init);
+    }
+    const own = protocolHooks.programMethod?.(collection, methodKeys[28], 3);
+    if (own) return own.call(collection, collection, rf, init);
+    if (collection == null) return init;
+    return reduce((result, entry) => rf.call(null, result, keyProtocol(entry), valProtocol(entry)), init, collection);
+  }
+  //@unit reduceKvPath requires: holdsVector, isEntryCell, isReduced, isTreeMap, keyProtocol,
+  //@ kindHooks, mapPairs, methodKeys, protocolHooks, reduce, reducedValue, valProtocol, vectorItems
+  // `reduce-kv`'s own path over the runtime's classes (`operationPaths`).
+  function reduceKvPath(rf, init, collection) {
     const method = protocolHooks.programMethod?.(collection, methodKeys[28], 3);
     if (method) return method.call(collection, collection, rf, init);
     if (collection == null) return init;
@@ -3325,7 +3471,8 @@
   };
   //@unit TreeMapCell.find effect: TreeMapCell when: find requires: kindHooks, treeEntryAt
   kindHooks.treeEntryAt = treeEntryAt;
-  //@unit TreeMapCell.kvReduce effect: TreeMapCell when: reduceKv requires: kindHooks, treeKvReduce
+  //@unit TreeMapCell.kvReduce effect: TreeMapCell when: reduceKvPath requires: kindHooks,
+  //@ treeKvReduce
   kindHooks.treeKvReduce = treeKvReduce;
   //@unit PersistentArrayMapValue.kind effect: PersistentArrayMapValue requires: mapTypes,
   //@ PersistentArrayMapValue
@@ -5978,50 +6125,6 @@
   TransientHashSetType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = transientLookupSlots[0];
   TransientHashSetType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = transientLookupSlots[1];
 
-  // Slot-first dispatch (docs/value-layout.md, section 3): an operation
-  // given a value of a converted runtime class, which its keyed kind tells,
-  // calls the value's keyed slot before any layer of its own; any other
-  // value, and a converted value whose slot is gone or holds nil or false
-  // (which the older layers' lookups take for no method), takes the
-  // operation as before. Each wrapper is the operation's outermost, so it follows the
-  // operation's other wrappers here. Program types keep their path until
-  // their recognition moves to the keyed kind (light-cljs-1013).
-  //@unit reduce.slots effect: IndexedSeqValue, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue when: reduce requires: noBranch,
-  //@ reduce, slotFirst
-  // `reduce` of a value with a `-reduce` slot (light-cljs-1055) calls it
-  // before `reduce.protocol`'s lookup, which finds a program's method there
-  // too. Each arity's call is a function of its own, so that the wrapper
-  // stays under the 100 bytes of bytecode V8's Maglev inlines (96,
-  // light-cljs-1033).
-  reduce = ((operation, none, slot2, slot3) => Object.defineProperty(function (rf, init, collection) {
-    const arity = arguments.length;
-    if (slotFirst.on) {
-      const result = arity === 3 ? slot3(rf, init, collection) : arity === 2 ? slot2(rf, init) : none;
-      if (result !== none) return result;
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(reduce, noBranch, (rf, source) => {
-    const method = source != null && source.cljs$lang$kind$$LKEY !== undefined ? source.cljs$core$IReduce$_reduce$arity$2$LKEY : undefined;
-    return method ? method.call(source, source, rf) : noBranch;
-  }, (rf, init, source) => {
-    const method = source != null && source.cljs$lang$kind$$LKEY !== undefined ? source.cljs$core$IReduce$_reduce$arity$3$LKEY : undefined;
-    return method ? method.call(source, source, rf, init) : noBranch;
-  });
-  //@unit reduceKv.slots effect: PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentVectorValue, SubvecValue, treeMapConstructor when: reduceKv requires: noBranch,
-  //@ reduceKv, slotFirst
-  // `reduce-kv` of a value with a `-kv-reduce` slot (light-cljs-1055) calls
-  // it before `reduceKv`'s own lookup, which finds a program's method there
-  // (100 bytes of bytecode).
-  reduceKv = ((operation, none) => Object.defineProperty(function (rf, init, collection) {
-    if (slotFirst.on && collection != null && collection.cljs$lang$kind$$LKEY !== undefined && arguments.length === 3) {
-      const method = collection.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY;
-      if (method) { const result = method.call(collection, collection, rf, init); if (result !== none) return result; }
-    }
-    return operation.apply(null, arguments);
-  }, "name", {value: operation.name}))(reduceKv, noBranch);
-
   // A map's protocol methods are slots of its prototype too
   // (light-cljs-1012), complete for a map of the class layout (`mapOf`):
   // each reads the map's own fields. A map a public constructor built,
@@ -6268,25 +6371,48 @@
   //@unit treeMapConstructor.seqSlot effect: treeMapConstructor when: seq, seqOf, seqSite requires: builtinSlot,
   //@ kindHooks, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return kindHooks.seqTree(self, true); });
+  //@unit reduceSlot requires: builtinSlot, operationPaths, slotFirst
+  // A `-reduce` slot of both arities (the arguments' count) that walks its
+  // value with `walk(self, rf, init, arity)` (light-cljs-1072); where a
+  // compiler session demands declarations (`slotFirst`), `reduce`'s own
+  // path (`reduceOwn`), whose operations demand, so that a slot the
+  // compile-time lookup finds does not find itself again.
+  function reduceSlot(walk) {
+    return builtinSlot(function (self, rf, init) {
+      const arity = arguments.length;
+      if (slotFirst.on) return walk(self, rf, init, arity);
+      const own = operationPaths.reduceOwn;
+      return arity === 3 ? own(rf, init, self) : own(rf, self);
+    });
+  }
+  //@unit seqReduceSlot requires: reduceSlot, seqReduce
+  // The `-reduce` of a lazy seq and a key or value seq (light-cljs-1072):
+  // the walk of its seq with `first` and `next` (`seqReduce`), as the old
+  // path walked them, upstream's `seq-reduce`.
+  const seqReduceSlot = reduceSlot(seqReduce);
   // An array or hash map's `-reduce` and `-kv-reduce` slots, and a sorted
-  // map's `-kv-reduce` (light-cljs-1055), which `reduce.slots` and
-  // `reduceKv.slots` call before any protocol lookup.
-  //@unit mapReduceSlot requires: isReduced, mapEntry, reducedValue, reduceOwn, slotFirst
+  // map's (light-cljs-1055, light-cljs-1072), which `reduce` and
+  // `reduce-kv` call before any protocol lookup.
+  //@unit mapReduceSlot requires: isReduced, iterator, iterReduce, mapEntry, reducedValue,
+  //@ reduceOwnPath, reduceWalk, slotFirst
   // `reduce` of an array or a hash map: an entry of each of its keys and
   // values (`pairs`, as `mapPairs` gives them), as its seq holds them
   // (`seqMap`), without the seq; of a public constructor's array map (its
   // `slots`, which its copies keep), of its array's pairs up to its count,
   // as its iterator gives them (`iteratorArrayMap`), where `iterable` (no
-  // `-iterator` slot). Else `reduce`'s own path: for an `-seq` that
-  // `extend-type` or `specify!` gave (`own` is false: the map's `-seq` is not
-  // its class's own),
-  // a public constructor's array map with a program's `-iterator`, and
-  // where a compiler session demands declarations (`slotFirst`).
+  // `-iterator` slot), else its iterator's items. For an `-seq` that
+  // `extend-type` or `specify!` gave (`own` is false: the map's `-seq` is
+  // not its class's own), the walk of that seq (`reduceWalk`), as the old
+  // path's; where a compiler session demands declarations (`slotFirst`),
+  // `reduce`'s own path.
   function mapReduceSlot(self, rf, init, arity, pairs, own, iterable) {
-    const slots = self.slots$LKEY, on = slotFirst.on;
+    if (!slotFirst.on) return reduceOwnPath(self, rf, init, arity);
+    const slots = self.slots$LKEY;
     let n = pairs.length, i = 0;
-    if (on && slots?.arr && iterable) { pairs = slots.arr; n = slots.cnt * 2; }
-    else if (!own || !on || slots?.arr) return arity === 3 ? reduceOwn(rf, init, self) : reduceOwn(rf, self);
+    if (slots?.arr) {
+      if (!iterable) return iterReduce(iterator(self), rf, init, arity);
+      pairs = slots.arr; n = slots.cnt * 2;
+    } else if (!own) return reduceWalk(self, rf, init, arity);
     if (arity === 2) { if (!(i < n)) return rf.call(null); init = mapEntry(pairs[0], pairs[1]); i = 2; }
     for (; i < n; i += 2) {
       init = rf.call(null, init, mapEntry(pairs[i], pairs[i + 1]));
@@ -6294,19 +6420,17 @@
     }
     return init;
   }
-  //@unit PersistentArrayMapValue.reduceSlot effect: PersistentArrayMapValue when: reduce requires: builtinSlot,
-  //@ mapReduceSlot, noBranch, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.reduceSlot effect: PersistentArrayMapValue when: reduce, reduceOf
+  //@ requires: builtinSlot, mapReduceSlot, PersistentArrayMapValue
   // One method for both arities (the arguments' count), as a vector's.
   PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
-    const arr = self.arr$LKEY;
-    return arr === undefined ? noBranch : mapReduceSlot(self, rf, init, arguments.length, arr,
+    return mapReduceSlot(self, rf, init, arguments.length, self.arr$LKEY,
       self.cljs$core$ISeqable$_seq$arity$1$LKEY === own, self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined);
   })(PersistentArrayMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
-  //@unit PersistentHashMapValue.reduceSlot effect: PersistentHashMapValue when: reduce requires: builtinSlot,
-  //@ mapPairs, mapReduceSlot, noBranch, PersistentHashMapValue
+  //@unit PersistentHashMapValue.reduceSlot effect: PersistentHashMapValue when: reduce, reduceOf
+  //@ requires: builtinSlot, mapPairs, mapReduceSlot, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     return mapReduceSlot(self, rf, init, arguments.length, mapPairs(self), self.cljs$core$ISeqable$_seq$arity$1$LKEY === own, true);
   })(PersistentHashMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
@@ -6320,22 +6444,20 @@
     }
     return init;
   }
-  //@unit PersistentArrayMapValue.kvReduceSlot effect: PersistentArrayMapValue when: reduceKv
-  //@ requires: builtinSlot, mapKvReduce, noBranch, PersistentArrayMapValue
+  //@unit PersistentArrayMapValue.kvReduceSlot effect: PersistentArrayMapValue when: reduceKv,
+  //@ reduceKvOf requires: builtinSlot, mapKvReduce, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
-    const arr = self.arr$LKEY;
-    return arr === undefined ? noBranch : mapKvReduce(arr, rf, init);
+    return mapKvReduce(self.arr$LKEY, rf, init);
   });
-  //@unit PersistentHashMapValue.kvReduceSlot effect: PersistentHashMapValue when: reduceKv
-  //@ requires: builtinSlot, mapKvReduce, mapPairs, noBranch, PersistentHashMapValue
+  //@unit PersistentHashMapValue.kvReduceSlot effect: PersistentHashMapValue when: reduceKv,
+  //@ reduceKvOf requires: builtinSlot, mapKvReduce, mapPairs, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
-    return self.cnt$LKEY === undefined && !("cnt$LKEY" in self) ? noBranch : mapKvReduce(mapPairs(self), rf, init);
+    return mapKvReduce(mapPairs(self), rf, init);
   });
-  //@unit treeMapConstructor.kvReduceSlot effect: treeMapConstructor when: reduceKv requires: builtinSlot,
-  //@ isReduced, noBranch, reducedValue, treeKvReduce, treeMapConstructor
+  //@unit treeMapConstructor.kvReduceSlot effect: treeMapConstructor when: reduceKv, reduceKvOf
+  //@ requires: builtinSlot, isReduced, reducedValue, treeKvReduce, treeMapConstructor
   // A sorted map walks its tree, as `reduceKv` (light-cljs-1035).
   treeMapConstructor.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     const tree = self.tree$LKEY;
     if (tree == null) return init;
     const result = treeKvReduce(tree, rf, init);
@@ -6671,45 +6793,49 @@
   MapEntryType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return kindHooks.seqVector(self, self);
   });
-  // A vector's and a subvector's `-reduce` and `-kv-reduce` slots
-  // (upstream's IReduce and IKVReduce, light-cljs-1055), which
-  // `reduce.slots` and `reduceKv.slots` call before any protocol lookup.
-  //@unit vectorReduceSlot requires: noBranch, reduceOwn, slotFirst, vectorReduce
-  // `reduce` of a vector or a subvector: its store's items, as `reduce`
-  // walks them (a view's or a longer vector's store, a shorter vector's seq,
-  // which walks its whole tail), where its `-seq` is its class's own
-  // (`own`). Else `reduce`'s own path, which takes no protocol lookup but
-  // for a program's `-seq`: for an `-seq` that `extend-type` or `specify!`
-  // gave, a shorter vector's caller tail (`callerTail`, the public
-  // constructor's) or one longer than its count, and where a compiler
-  // session demands declarations (`slotFirst`), which `reduce` demands.
+  // A vector's and a subvector's `-reduce` slots, and their `-kv-reduce` (upstream's IReduce and IKVReduce,
+  // light-cljs-1055), which `reduce` and `reduce-kv` call before any
+  // protocol lookup.
+  //@unit vectorReduceSlot requires: methodKeys, protocolHooks, reduceOwnPath, reduceWalk,
+  //@ slotFirst, vectorReduce
+  // `reduce` of a vector or a subvector: its store's items, as
+  // `reduce` walks them (a view's or a longer vector's store, a shorter
+  // vector's seq, which walks its whole tail), where its `-seq` is its
+  // class's own (`own`). Else as the old path: the store's items for a
+  // public constructor's vector without `init` and for a view or a longer
+  // vector whose seq no program's method gives, the walk of its seq
+  // (`reduceWalk`) for an `-seq` that `extend-type` or `specify!` gave or a
+  // shorter vector's caller tail (`callerTail`, the public constructor's) or
+  // one longer than its count; where a compiler session demands
+  // declarations (`slotFirst`), `reduce`'s own path, which demands.
   function vectorReduceSlot(self, rf, init, arity, own) {
+    if (!slotFirst.on) return reduceOwnPath(self, rf, init, arity);
     const cnt = self.cnt$LKEY, tail = self.tail$LKEY;
-    if (cnt === undefined && !("cnt$LKEY" in self)) return noBranch;
-    if (own && slotFirst.on && (tail === undefined || cnt > 32 || tail.length === cnt && self.callerTail$LKEY !== true)) return vectorReduce(self, rf, init, 0, arity);
-    return arity === 3 ? reduceOwn(rf, init, self) : reduceOwn(rf, self);
+    if (own && (tail === undefined || cnt > 32 || tail.length === cnt && self.callerTail$LKEY !== true)
+      || arity === 2 && self.slots$LKEY?.cnt != null
+      || (cnt > 32 || self.sub$LKEY) && !protocolHooks.programMethod?.(self, methodKeys[52], 1, true)) return vectorReduce(self, rf, init, 0, arity);
+    return reduceWalk(self, rf, init, arity);
   }
-  //@unit PersistentVectorValue.reduceSlot effect: PersistentVectorValue when: reduce requires: builtinSlot,
-  //@ PersistentVectorValue, vectorReduceSlot
+  //@unit PersistentVectorValue.reduceSlot effect: PersistentVectorValue when: reduce, reduceOf
+  //@ requires: builtinSlot, PersistentVectorValue, vectorReduceSlot
   // One method for both arities (the arguments' count); `own` is the
   // class's `-seq` slot as it loads, which `extend-type` replaces.
   PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
     return vectorReduceSlot(self, rf, init, arguments.length, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
   })(PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
-  //@unit SubvecValue.reduceSlot effect: SubvecValue when: reduce requires: builtinSlot,
+  //@unit SubvecValue.reduceSlot effect: SubvecValue when: reduce, reduceOf requires: builtinSlot,
   //@ SubvecValue, vectorReduceSlot
   SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
     return vectorReduceSlot(self, rf, init, arguments.length, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
   })(SubvecValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
-  //@unit vectorKvReduce requires: isReduced, noBranch, reducedValue, vectorItems, vectorLeaf
+  //@unit vectorKvReduce requires: isReduced, reducedValue, vectorItems, vectorLeaf
   // `reduce-kv` of a vector or a subvector: each index and item of its
   // store, as `reduceKv` gives them; of a store that reads a caller's array
   // (`callerTail`), whose items a call could change, all its items first,
   // as `reduceKv` reads them.
   function vectorKvReduce(self, rf, init) {
-    if (self.cnt$LKEY === undefined && !("cnt$LKEY" in self)) return noBranch;
     let store = self, i = 0, end = self.cnt$LKEY;
     if (store.sub$LKEY) { i = store.begin$LKEY; end += i; store = store.sub$LKEY; }
     if (store.callerTail$LKEY === true || self.callerTail$LKEY === true) {
@@ -6724,10 +6850,10 @@
     }
     return init;
   }
-  //@unit PersistentVectorValue.kvReduceSlot effect: PersistentVectorValue when: reduceKv requires: builtinSlot,
-  //@ PersistentVectorValue, vectorKvReduce
+  //@unit PersistentVectorValue.kvReduceSlot effect: PersistentVectorValue when: reduceKv,
+  //@ reduceKvOf requires: builtinSlot, PersistentVectorValue, vectorKvReduce
   PersistentVectorValue.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(vectorKvReduce);
-  //@unit SubvecValue.kvReduceSlot effect: SubvecValue when: reduceKv requires: builtinSlot,
+  //@unit SubvecValue.kvReduceSlot effect: SubvecValue when: reduceKv, reduceKvOf requires: builtinSlot,
   //@ SubvecValue, vectorKvReduce
   SubvecValue.prototype.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY = builtinSlot(vectorKvReduce);
   // A lazy seq, a chunked cons and a chunk answer their operations from
@@ -7104,9 +7230,9 @@
   IteratorSeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return self; });
   for (const key of Object.keys(IteratorSeqCell.prototype)) Object.defineProperty(IteratorSeqCell.prototype, key, {enumerable: false});
   // A hash or array set's and an indexed seq's `-reduce` slots
-  // (light-cljs-1059), which `reduce.slots` calls before any protocol
-  // lookup: one method for both arities each, as a vector's. `reduce` walks
-  // a set's iterator, a `SeqIter` over the indexed seq of its members' keys
+  // (light-cljs-1059), which `reduce` calls before any protocol lookup: one
+  // method for both arities each, as a vector's. The old path walked a
+  // set's iterator, a `SeqIter` over the indexed seq of its members' keys
   // (upstream's sets have no IReduce), and an indexed seq (rest arguments,
   // a short vector's seq, a set's or a queue's seq, a public constructor's
   // over the caller's array or string) from its offset, a queue's through
@@ -7114,31 +7240,66 @@
   // value's `-seq` is its class's own and it has no `-iterator`, and the
   // indexed seqs' `-first` and `-next`, which the iterator calls, are their
   // class's own (each read as the slot loads).
-  //@unit PersistentHashSetValue.reduceSlot effect: PersistentHashSetValue when: reduce requires: builtinSlot,
-  //@ collectionTraversal, IndexedSeqValue, itemsReduce, noBranch, PersistentHashSetValue, setKinds
+  //@unit PersistentHashSetValue.reduceSlot effect: PersistentHashSetValue when: reduce, reduceOf
+  //@ requires: builtinSlot, collectionTraversal, IndexedSeqValue, itemsReduce, iterator, iterReduce,
+  //@ methodKeys, PersistentHashSetValue, protocolHooks, setKinds, slotFirst
   // Its members' keys in traversal order, as its seq holds them. A set that
   // `specify!` or `extend-type` gave one arity of `IReduce` takes the
-  // lookup for the other (`noBranch`), which the set does not implement.
+  // protocol lookup for the other, which throws as the set does not
+  // implement it, as the old path's lookup did.
   PersistentHashSetValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(((own, first, next) => function (self, rf, init) {
-    const members = self.entries$LKEY;
-    if (members == null || self.cljs$core$IReduce$_reduce$arity$2$LKEY !== self.cljs$core$IReduce$_reduce$arity$3$LKEY) return noBranch;
+    const arity = arguments.length;
+    if (slotFirst.on && self.cljs$core$IReduce$_reduce$arity$2$LKEY !== self.cljs$core$IReduce$_reduce$arity$3$LKEY) {
+      const method = protocolHooks.programMethod?.(self, methodKeys[44], arity, true);
+      if (method) return arity === 3 ? method.call(self, self, rf, init) : method.call(self, self, rf);
+      return iterReduce(iterator(self), rf, init, arity);
+    }
     return itemsReduce(self, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own && self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined
       && IndexedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY === first && IndexedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY === next,
-    collectionTraversal(members, setKinds.get(self)), 0, true, rf, init, arguments.length);
+    collectionTraversal(self.entries$LKEY, setKinds.get(self)), 0, true, rf, init, arity);
   })(PersistentHashSetValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY, IndexedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY,
     IndexedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY));
   PersistentHashSetValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentHashSetValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
-  //@unit IndexedSeqValue.reduceSlot effect: IndexedSeqValue when: reduce requires: builtinSlot,
-  //@ IndexedSeqValue, itemsReduce, noBranch
+  //@unit IndexedSeqValue.reduceSlot effect: IndexedSeqValue when: reduce, reduceOf requires: builtinSlot,
+  //@ IndexedSeqValue, itemsReduce
   // The items of its array (or string) from its offset `i` on, read as the
   // walk reaches each.
   IndexedSeqValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(((own, first, next) => function (self, rf, init) {
-    const arr = self.arr$LKEY;
-    return arr === undefined ? noBranch : itemsReduce(self, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own && self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined
-      && self.cljs$core$ISeq$_first$arity$1$LKEY === first && self.cljs$core$INext$_next$arity$1$LKEY === next, arr, self.i$LKEY, false, rf, init, arguments.length);
+    return itemsReduce(self, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own && self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined
+      && self.cljs$core$ISeq$_first$arity$1$LKEY === first && self.cljs$core$INext$_next$arity$1$LKEY === next, self.arr$LKEY, self.i$LKEY, false, rf, init, arguments.length);
   })(IndexedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY, IndexedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY,
     IndexedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY));
   IndexedSeqValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = IndexedSeqValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  // The `-reduce` slots of the classes the old path recognised with a walk
+  // of their own (light-cljs-1072): a vector's chunked seq walks the vector
+  // from its offset, an integer range, a repeat, an iterate and a cycle
+  // their fields, an array chunk its items, and a lazy seq and a key or
+  // value seq, which pipelines reduce most, their seq (`seqReduceSlot`).
+  // Each takes `reduce`'s own path where a compiler session demands
+  // declarations (`slotFirst`). The other classes take `reduceOf`'s walks.
+  //@unit ChunkedSeqValue.reduceSlot effect: ChunkedSeqValue when: reduce, reduceOf requires: ChunkedSeqValue,
+  //@ reduceSlot, reduceWalk, vectorReduce, vectorStore
+  ChunkedSeqValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = ChunkedSeqValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot((self, rf, init, arity) => {
+    const store = vectorStore(self.vec$LKEY);
+    return store ? vectorReduce(store, rf, init, self.base$LKEY + self.i$LKEY, arity) : reduceWalk(self, rf, init, arity);
+  });
+  //@unit IntegerRangeValue.reduceSlot effect: IntegerRangeValue when: reduce, reduceOf requires: IntegerRangeValue,
+  //@ rangeReduce, reduceSlot
+  IntegerRangeValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = IntegerRangeValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(rangeReduce);
+  //@unit RepeatValue.reduceSlot effect: RepeatValue when: reduce, reduceOf requires: reduceSlot, repeatReduce,
+  //@ RepeatValue
+  RepeatValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = RepeatValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(repeatReduce);
+  //@unit IterateValue.reduceSlot effect: IterateValue when: reduce, reduceOf requires: iterateReduce, IterateValue,
+  //@ reduceSlot
+  IterateValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = IterateValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(iterateReduce);
+  //@unit CycleValue.reduceSlot effect: CycleValue when: reduce, reduceOf requires: cycleReduce, CycleValue,
+  //@ reduceSlot
+  CycleValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = CycleValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(cycleReduce);
+  //@unit arrayChunk.reduceSlot effect: arrayChunk when: reduce, reduceOf requires: arrayChunk, chunkReduce,
+  //@ reduceSlot
+  arrayChunk.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = arrayChunk.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(chunkReduce);
+  //@unit LazySeq.reduceSlot effect: LazySeq when: reduce, reduceOf requires: LazySeq, seqReduceSlot
+  LazySeq.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = LazySeq.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = seqReduceSlot;
 
   // Call-site entries (light-cljs-1016, docs/value-layout.md section 3):
   // what `:advanced` output calls for a core operation of a fixed arity
@@ -8822,6 +8983,9 @@
   //@unit KeySeqCell.seqSlot effect: KeySeqCell when: seq, seqOf, seqSite requires: cellSeqSlot,
   //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
+  //@unit KeySeqCell.reduceSlot effect: KeySeqCell when: reduce, reduceOf requires: KeySeqCell,
+  //@ seqReduceSlot
+  KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = seqReduceSlot;
   //@unit keys requires: mapProjection
   function keys(value) { return mapProjection(value, 0); }
   //@unit vals requires: mapProjection
@@ -9377,7 +9541,8 @@
   let demandProtocol = () => {}, demandMethod = () => {}, demandMulti = () => {};
   //@unit setDeclarationDemand compile-time requires: assocPath, conjPath, containsPath, countPath,
   //@ demandMethod, demandMulti, demandProtocol, disjPath, dissocPath, firstPath, getPath, nextPath,
-  //@ nthPath, operationPaths, peekPath, popPath, print, restPath, seqPath, slotFirst, typeNames
+  //@ nthPath, operationPaths, peekPath, popPath, print, reduceKvPath, reduceOwn, reducePath,
+  //@ restPath, seqPath, slotFirst, typeNames
   function setDeclarationDemand(demand) {
     // A session that demands declarations reads no slot before its demand
     // (`slotFirst`), and takes the operations' own paths, whose lookups
@@ -9387,6 +9552,7 @@
       operationPaths.seq = seqPath; operationPaths.first = firstPath; operationPaths.rest = restPath; operationPaths.next = nextPath;
       operationPaths.count = countPath; operationPaths.nth = nthPath; operationPaths.get = getPath; operationPaths.contains = containsPath; operationPaths.peek = peekPath;
       operationPaths.conj = conjPath; operationPaths.assoc = assocPath; operationPaths.dissoc = dissocPath; operationPaths.disj = disjPath; operationPaths.pop = popPath;
+      operationPaths.reduce = reducePath; operationPaths.reduceOwn = reduceOwn; operationPaths.reduceKv = reduceKvPath;
     }
     const methodProtocols = new Map();
     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
@@ -9515,6 +9681,17 @@
   nextOf = (operation => function (value) {
     return slotWrites(value, methodKeys[40]) ? nextPath(value) : operation(value);
   })(nextOf);
+  // The reductions' (light-cljs-1072).
+  //@unit slotWrites.reduce effect: slotWrites when: reduceOf requires: methodKeys, reduceOf,
+  //@ reducePath, slotWrites
+  reduceOf = (operation => function (rf, init, collection) {
+    return slotWrites(arguments.length === 3 ? collection : init, methodKeys[44]) ? reducePath.apply(null, arguments) : operation.apply(null, arguments);
+  })(reduceOf);
+  //@unit slotWrites.reduceKv effect: slotWrites when: reduceKvOf requires: methodKeys, reduceKvOf,
+  //@ reduceKvPath, slotWrites
+  reduceKvOf = (operation => function (rf, init, collection) {
+    return slotWrites(collection, methodKeys[28]) ? reduceKvPath(rf, init, collection) : operation(rf, init, collection);
+  })(reduceKvOf);
   //@unit declarationReceiver compile-time requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
   //@unit patchDeclaration mutator
@@ -11669,12 +11846,12 @@
       const extmap = dissoc(this.__extmap, key);
       return recordCopy(this, Type, this.__meta, seq(extmap) === null ? null : extmap, null);
     }]]);
-  //@unit recordMethods.seq effect: recordMethods when: reduce, rseq, seqOf, seqPath, seqProtocol
-  //@ requires: recordEntries, recordMethodTable, seq, vectorFromArray
+  //@unit recordMethods.seq effect: recordMethods when: reducePath, rseq, seqOf, seqPath,
+  //@ seqProtocol, vectorReduceSlot requires: recordEntries, recordMethodTable, seq, vectorFromArray
   recordMethodTable.push(Type => [
     ["ISeqable/-seq", 1, function () { return seq(vectorFromArray(recordEntries(this, Type))); }]]);
-  //@unit recordMethods.iterator effect: recordMethods when: iterator, iteratorProtocol requires: iteratorInit,
-  //@ recordMethodTable, SeqIter
+  //@unit recordMethods.iterator effect: recordMethods when: iterator, iteratorProtocol, reduceOf
+  //@ requires: iteratorInit, recordMethodTable, SeqIter
   recordMethodTable.push(() => [
     ["IIterable/-iterator", 1, function () { return new SeqIter(iteratorInit, this); }]]);
   //@unit recordMethods.print effect: recordMethods when: printWriterImpl, prWriter requires: printHooks,
@@ -11685,8 +11862,8 @@
       return sequentialWriter(writer, (entry, target, opts) => sequentialWriter(target, printOne, "", " ", "", opts, entry),
         "#" + (typeNames.get(Type) ?? "").replaceAll("/", ".") + "{", ", ", "}", options, recordEntries(this, Type));
     }]]);
-  //@unit recordMethods.kvReduce effect: recordMethods when: kvReduceProtocol, reduceKv requires: nth,
-  //@ recordMethodTable, reduce
+  //@unit recordMethods.kvReduce effect: recordMethods when: kvReduceProtocol, reduceKvOf,
+  //@ reduceKvPath requires: nth, recordMethodTable, reduce
   recordMethodTable.push(() => [
     ["IKVReduce/-kv-reduce", 3, function (_self, fn, init) {
       return reduce((result, entry) => fn.call(null, result, nth(entry, 0), nth(entry, 1)), init, this);
@@ -14017,16 +14194,18 @@
   //@unit protocolHooks.ownMethod effect: installMethods when: SubvecValue, chunkStore, containsOf,
   //@ containsPath, countOf, countPath, dropFirstChunk, empty, find, firstOf, firstPath, getOf,
   //@ getPath, meta, nextOf, nextPath, nthOf, nthPath, printSequential, printValues,
-  //@ printWriterImpl, reduce, reduceKv, restOf, restPath, rseq, seqOf, seqPath, subvec requires: ownDeclared,
-  //@ ownMethod, protocolHooks
+  //@ printWriterImpl, reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath, restOf,
+  //@ restPath, rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: ownDeclared, ownMethod,
+  //@ protocolHooks
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.programMethod = ownMethod;
   protocolHooks.declaredMethod = ownDeclared;
   //@unit protocolHooks.programMethod effect: extendType, extendInstance when: SubvecValue,
   //@ chunkStore, containsOf, containsPath, countOf, countPath, dropFirstChunk, empty, find,
   //@ firstOf, firstPath, getOf, getPath, meta, nextOf, nextPath, nthOf, nthPath, printSequential,
-  //@ printValues, printWriterImpl, reduce, reduceKv, restOf, restPath, rseq, seqOf, seqPath, subvec
-  //@ requires: extendedDeclared, extendedMethod, protocolHooks
+  //@ printValues, printWriterImpl, reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath,
+  //@ restOf, restPath, rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: extendedDeclared,
+  //@ extendedMethod, protocolHooks
   // ... and only `extend-type` and `specify!` give the runtime's values and
   // host values implementations, which `extendedMethod` finds.
   protocolHooks.programMethod = extendedMethod;
@@ -14035,7 +14214,7 @@
   //@ boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isEmpty,
   //@ isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable,
   //@ isReversible, isSeq, isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs,
-  //@ makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reduce, sequenceIterator requires: ownProtocol,
+  //@ makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reducePath, sequenceIterator requires: ownProtocol,
   //@ protocolHooks
   // The generic operations test core protocols by name: without `extend-type`
   // or `specify!` the protocols a value declares, then their native tests ...
@@ -14049,7 +14228,7 @@
   //@ accumulatingCount, boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl,
   //@ isCounted, isEmpty, isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap,
   //@ isRecord, isReduceable, isReversible, isSeq, isSeqable, isSequential, isSet, isSorted,
-  //@ isVector, jsToClj, keyToJs, makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reduce,
+  //@ isVector, jsToClj, keyToJs, makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reducePath,
   //@ sequenceIterator requires: protocolHooks, protocolMethodInfo, runtimeKind, satisfies,
   //@ storeProtocol
   // ... and with them also what those give the runtime's and host values.

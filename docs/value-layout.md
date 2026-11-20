@@ -1882,6 +1882,60 @@ entries' `noBranch` tests. `=`, `hash` and the reductions keep theirs
   `assocVector`, which a vector's variadic `assoc` also calls) wait for them,
   so release slices drop the first two.
 
+What light-cljs-1072 landed: the reductions, `reduce` and `reduce-kv`, are
+upstream's shape as the updates are, without their slot-first wrappers
+(`reduce.slots`, `reduceKv.slots`) and their slots' `noBranch` guards. `=`
+and `hash` keep theirs (light-cljs-1072's follow-up).
+
+- **One function per arity.** `reduce` sends two arguments to `reduce2`
+  and three to `reduce3`, each of which reads the value's keyed kind and
+  calls its `-reduce` slot of that arity, read once (89, 61 and 73 bytes of
+  bytecode, where the wrapper was 96); `reduce-kv` reads its `-kv-reduce`
+  slot (73, where 100). Any other value takes upstream's path (`reduceOf`,
+  `reduceKvOf`): a runtime class's prototype slot where its instance slot
+  holds nil or false, a program's method (as `reduce.protocol` looked it
+  up), an array's or a string's items, then for a host value or a
+  program's type a program's iterator (`IIterable`), else the walk of the
+  seq (`seqReduce`, upstream's `seq-reduce`). `reduce-kv` of nil gives `init`, of any other value the
+  reduction of its items' keys and values, as before.
+- **Slots where the old path walked a class its own way.** `-reduce` of a
+  vector's chunked seq (the vector's items from its offset), an integer
+  range, a repeat, an iterate and a cycle (their fields: `rangeReduce`,
+  `repeatReduce`, `iterateReduce`, `cycleReduce`), an array chunk (its
+  items) and a lazy seq and a key or value seq (`seqReduceSlot`, the seq
+  walk the old path gave them, which pipelines reduce most), each made by
+  one factory (`reduceSlot`) whose slot takes `reduce`'s own path where
+  `slotFirst` is off. Every other runtime class takes, from `reduceOf`,
+  the walk the old path gave it,
+  told by its keyed kind (one test of two constant masks, as `tabledKind`):
+  a map entry, a sorted map, a map's seq and the other views the old
+  path's last walk (`reduceWalk`, which reads a view's items from its
+  fields), a sorted set and a queue their iterators, every other seq (a
+  list, a cons, a range, a chunked cons, a sorted map's seq) the walk of
+  its seq, which never takes a program's iterator, as the old path did
+  not. Slots for those classes too measured larger (13 more slot units,
+  70 to 90 bytes after gzip per re-frame app) for no answer of their own.
+- **No guards.** The vectors', maps', sets' and indexed seqs' `-reduce`
+  and the vectors' and maps' `-kv-reduce` no longer test their value's
+  fields (section 5, item 33).
+- **Answers kept.** Where a slot's value has an `-seq` or `-iterator` that
+  `extend-type` or `specify!` gave it, the slot walks as the old path did:
+  a vector, a map and an indexed seq with the last walk, a set and a
+  queue's seq with their iterator, a public constructor's array map with its
+  iterator; a set that a program gave one arity of `IReduce` takes the
+  protocol lookup for the other, which throws, as before. A program that
+  writes a core protocol method's member by name keeps `slotWrites.reduce`
+  and `slotWrites.reduceKv`, which send a runtime class's value to the old
+  paths.
+- **Profiles.** The old bodies are `reducePath`, which `reduce.protocol`
+  wraps, and `reduceKvPath`, set in `operationPaths` by
+  `setDeclarationDemand` and held by the shared-heap profile from its boot,
+  with `reduceOwn`, the unwrapped `reducePath`, which every `-reduce` slot
+  takes where `slotFirst` is off (`reduceOwnPath`), so that a slot the
+  compile-time lookup finds does not find itself again. The kind hooks
+  `reduceIterate` and `reduceCycle` wait for `reducePath`; a record's
+  `-kv-reduce` waits for `reduceKvOf` (`RECORD_METHODS`).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -2868,6 +2922,17 @@ runtime prototype:
     the metadata it gives) is checked against the old path of a fresh
     runtime that demands declarations, as `conj` has no other path for
     them in release.
+
+Rescoped by light-cljs-1072, whose reduction slots (`-reduce`,
+`-kv-reduce`) no longer guard against a value made by `Object.create` of a
+runtime prototype:
+
+33. tests/support/js_runtime.test.js, the vectors' and maps' `-reduce` and
+    `-kv-reduce` slot contract and the sets' and indexed seqs' `-reduce`
+    slot contract: a forged value's slot is no longer `noBranch`, and each
+    slot is checked against the old path of a fresh runtime that demands
+    declarations, as `reduce` and `reduce-kv` have no other path for them
+    in release.
 
 ### Documentation rules that change
 
