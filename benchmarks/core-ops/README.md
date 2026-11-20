@@ -1,8 +1,8 @@
 # Core operations: light-cljs's output against shadow-cljs's
 
 This is the output-speed gate. One ClojureScript source,
-`src/core_ops/main.cljs`, times 70 core operations: map and vector access and
-updates, seqs, reductions, printing, equality, records, calls and atoms. Both
+`src/core_ops/main.cljs`, times 76 core operations: map, vector, list and set
+access and updates, seqs, reductions, printing, equality, records, calls and atoms. Both
 compilers build it for release, and both outputs run in Node:
 - light-cljs at `:advanced`, its release default (`light-cljs.edn`);
 - shadow-cljs 3.5.3 with `:target :node-script` and Closure Compiler's advanced
@@ -104,7 +104,9 @@ and the two loop baselines moved to the end. light-cljs-1064 added the four key
 and value walks, before `lazy-walk-1000`, so that the seq walks after them run
 with the type feedback of a program that also walks map keys. light-cljs-1065
 added the two `into` operations after the printing ones, just before the loop
-baselines, so that no earlier operation's number moves.
+baselines, so that no earlier operation's number moves. light-cljs-1073 added
+the six `pop`, `disj` and variadic-update operations after them, before the
+loop baselines, for the same reason.
 
 ## Operations
 
@@ -121,4 +123,5 @@ baselines, so that no earlier operation's number moves.
 | Records and protocols | `protocol-on-record`, `record-kw-field`, `record-dot-field`, `record-assoc`, `multimethod` |
 | Calls and atoms | `multi-arity-call`, `variadic-call`, `apply-vec`, `unknown-fn-call`, `closure-alloc-call`, `swap-inc`, `swap-assoc` |
 | `into` without a transducer (light-cljs-1065) | `into-vec-keys-small` (a vector of the 7-key maps' keys), `into-set-100` (a set of a 100-item vector) |
+| `pop`, `disj` and the variadic updates (light-cljs-1073) | `vec-pop` (vectors of 3, 10, 33 and 100 items; the 33-item one takes its tail from the tree), `list-pop` (lists of 2 to 10 items), `disj-set-7` (one item from 7-item hash sets), `disj-sorted-set-100` (one item from a 100-item sorted set), `disj-variadic-set-7` (two items from the 7-item sets), `vec-assoc-variadic-1024` (two indexes of a 1,024-item vector) |
 | Loop baselines | `bit-and`, `aget-bit-and` |
