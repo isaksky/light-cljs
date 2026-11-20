@@ -997,7 +997,6 @@
 //! 5,500), as the hash map's statics (`EMPTY`, `fromArray`), which its `#{}`
 //! keeps, are placed in it rather than in the shared chunk.
 
-
 pub struct Fixture {
     pub name: &'static str,
     pub source: &'static str,
