@@ -4982,3 +4982,74 @@ fn update_fallbacks_keep_metadata_reads_and_selected_dispatch() {
         "[[1 2] #{2} {:b 2} (0 1 2) (2) true]",
     );
 }
+
+/// `reduce` of a runtime value that `extend-type` or `specify!` gave an
+/// `IIterable` iterator walks the iterator where the old path did: an atom,
+/// a queue and a chunked cons, both arities; a list keeps the walk of its
+/// seq, which the old path gave it (light-cljs-1072).
+#[test]
+fn reduce_honors_iterable_extensions_on_runtime_values() {
+    every_level(
+        r#"(extend-type Atom IIterable (-iterator [a] (-iterator [@a 10])))
+           (let [p (fn [f] (try (pr-str (f)) (catch :default e (str "E:" (.-message e)))))
+                 a1 (specify! (atom 0) IIterable (-iterator [_] (-iterator [1 2 3])))
+                 q (specify! (conj cljs.core/PersistentQueue.EMPTY 1) IIterable (-iterator [_] (-iterator [7 8])))
+                 l (specify! (list 1 2) IIterable (-iterator [_] (-iterator [100])))
+                 cc (specify! (seq (map inc (range 40))) IIterable (-iterator [_] (-iterator [100])))]
+             (pr-str [(p #(reduce + 0 a1)) (p #(reduce + a1)) (p #(reduce + (atom 5))) (p #(reduce + 1 (atom 5)))
+                      (p #(reduce + q)) (p #(reduce + 0 q)) (p #(reduce + l)) (p #(reduce + 0 l)) (p #(reduce + cc))
+                      (p #(reduce + (hash-set 1 2)))]))"#,
+        r#"["6" "6" "15" "16" "15" "15" "3" "3" "100" "3"]"#,
+    );
+}
+
+/// A reduction slot that a program clears by name, on a value or on its
+/// class's prototype, still answers by the class, as the old paths did: a
+/// program that writes a core protocol method's member keeps the
+/// `slotWrites` effects of `reduceOf` and `reduceKvOf` (light-cljs-1072).
+#[test]
+fn reduction_fallbacks_keep_cleared_slots() {
+    for missing in ["nil", "false"] {
+        every_level(
+            &format!(
+                "(let [v [1 2 3] m {{:a 1 :b 2}} lz (map inc [1 2]) r (range 4) s (hash-set 1 2)]
+                   (set! (.-cljs$core$IReduce$_reduce$arity$2 v) {missing})
+                   (set! (.-cljs$core$IReduce$_reduce$arity$3 v) {missing})
+                   (set! (.-cljs$core$IKVReduce$_kv_reduce$arity$3 v) {missing})
+                   (set! (.-cljs$core$IReduce$_reduce$arity$3 m) {missing})
+                   (set! (.-cljs$core$IKVReduce$_kv_reduce$arity$3 m) {missing})
+                   (set! (.-cljs$core$IReduce$_reduce$arity$3 lz) {missing})
+                   (set! (.-cljs$core$IReduce$_reduce$arity$2 r) {missing})
+                   (set! (.-cljs$core$IReduce$_reduce$arity$3 s) {missing})
+                   (pr-str [(reduce + v) (reduce + 10 v) (reduce-kv (fn [a k x] (+ a k x)) 0 v) (reduce (fn [a [_ x]] (+ a x)) 0 m)
+                            (reduce-kv (fn [a _ x] (+ a x)) 0 m) (reduce + 0 lz) (reduce + r) (reduce + 0 s) (reduce + nil)
+                            (reduce + 5 nil) (reduce-kv + 7 nil)]))"
+            ),
+            "[6 16 9 3 3 5 6 3 0 5 7]",
+        );
+    }
+    // ... and cleared on the class's prototype, and on a value over a method
+    // `extend-type` gave its class, which throws for the arity the set does
+    // not implement, as before.
+    let cleared = r#"(extend-type PersistentHashSet IReduce (-reduce ([_ f] :ext2) ([_ f i] :ext3)))
+        (set! (.. PersistentVector -prototype -cljs$core$IReduce$_reduce$arity$3) nil)
+        (set! (.. PersistentVector -prototype -cljs$core$IKVReduce$_kv_reduce$arity$3) false)
+        (set! (.. PersistentArrayMap -prototype -cljs$core$IReduce$_reduce$arity$2) nil)
+        (set! (.. LazySeq -prototype -cljs$core$IReduce$_reduce$arity$3) nil)
+        (set! (.. IntegerRange -prototype -cljs$core$IReduce$_reduce$arity$3) false)
+        (let [p (fn [f] (try (pr-str (f)) (catch :default e (str "E:" (.-message e)))))
+              s (hash-set 1 2 3)]
+          (set! (.-cljs$core$IReduce$_reduce$arity$3 s) nil)
+          (pr-str [(p #(reduce + 0 [1 2 3])) (p #(reduce + [1 2 3])) (p #(reduce-kv (fn [a k x] (+ a k x)) 0 [1 2 3]))
+                   (p #(reduce (fn [a e] (+ (if (number? a) a (val a)) (val e))) {:a 1 :b 2})) (p #(reduce + 0 (map inc [1 2])))
+                   (p #(reduce + 0 (range 4))) (p #(reduce + (range 4))) (p #(reduce + 0 s)) (p #(reduce + s))
+                   (p #(reduce + (hash-set 4)))]))"#;
+    every_level(
+        cleared,
+        r#"["6" "6" "9" "3" "5" "6" "6" "E:No protocol method IReduce/-reduce defined for this value" ":ext2" ":ext2"]"#,
+    );
+    let kept = units(cleared);
+    for unit in ["slotWrites.reduce", "slotWrites.reduceKv"] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+}

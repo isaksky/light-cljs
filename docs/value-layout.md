@@ -1910,10 +1910,12 @@ and `hash` keep theirs (light-cljs-1072's follow-up).
   told by its keyed kind (one test of two constant masks, as `tabledKind`):
   a map entry, a sorted map, a map's seq and the other views the old
   path's last walk (`reduceWalk`, which reads a view's items from its
-  fields), a sorted set and a queue their iterators, every other seq (a
-  list, a cons, a range, a chunked cons, a sorted map's seq) the walk of
-  its seq, which never takes a program's iterator, as the old path did
-  not. Slots for those classes too measured larger (13 more slot units,
+  fields), a list, a cons, a range and a sorted map's seq the walk of its
+  seq, neither taking a program's iterator, as the old path did not; any
+  other value (a set, a queue, a chunked cons, an atom, a host value, a
+  program's type) first a program's `IIterable` iterator, as the old path
+  did, then a set's and a queue's own iterator, else its seq
+  (`reduce_honors_iterable_extensions_on_runtime_values`). Slots for those classes too measured larger (13 more slot units,
   70 to 90 bytes after gzip per re-frame app) for no answer of their own.
 - **No guards.** The vectors', maps', sets' and indexed seqs' `-reduce`
   and the vectors' and maps' `-kv-reduce` no longer test their value's

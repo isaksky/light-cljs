@@ -2616,14 +2616,15 @@
   // program's method (`extend-type`, `specify!`, a program's type, which
   // `reduce.protocol` looked up); an array's or a string's items, read as
   // the walk reaches each, as the old path's last walk (`reduceWalk`) read
-  // them. A runtime class's value (a keyed kind below 64) takes the walk
-  // the old path gave its class: a map entry, a sorted map, a map's seq or
-  // another view the last walk, a sorted set and a queue their iterators,
-  // every other seq (a list, a cons, a range, a chunked cons, a sorted
-  // map's seq) the walk of its seq (`seqReduce`), which never takes a
-  // program's iterator, as the old path did not. Any other value takes a
-  // program's iterator (`IIterable`, as the old path's `iteratorProtocol`
-  // found it), else the walk of its seq.
+  // them. A value of a class the old path reduced natively, by its keyed
+  // kind, takes the walk the old path gave it, without a program's
+  // iterator: a map entry, a sorted map, a map's seq or another view the
+  // last walk, a list, a cons, a range or a sorted map's seq the walk of
+  // its seq (`seqReduce`). Any other value takes a program's iterator
+  // (`IIterable`, `extend-type` or `specify!` of a set, a queue, an atom or
+  // a host value, a program's type; as the old path's `iteratorProtocol`
+  // found it), else a set's and the queue's own iterator, else the walk of
+  // its seq.
   function reduceOf(rf, init, collection) {
     const path = operationPaths.reduce;
     if (path !== undefined) return path.apply(null, arguments);
@@ -2637,15 +2638,19 @@
     const own = protocolHooks.programMethod?.(source, methodKeys[44], arity, true);
     if (own) return arity === 3 ? own.call(source, source, rf, init) : own.call(source, source, rf);
     if (Array.isArray(source) || typeof source === "string") return reduceWalk(source, rf, init, arity);
-    if (kind < 64) {
-      // The vectors, maps and views (kinds 1 to 3, 5 to 10, 28 to 30), the
-      // sets and the queue (33, 36, 44).
-      if (kind < 32 ? (1879050222 >>> kind & 1) === 1 : (4114 >>> kind - 32 & 1) === 1)
-        return kind < 32 ? reduceWalk(source, rf, init, arity) : iterReduce(iterator(source), rf, init, arity);
-      return seqReduce(source, rf, init, arity);
+    if (kind < 32) {
+      // The vectors, maps and views (kinds 1 to 3, 5 to 10, 28 to 30) take
+      // the last walk; the lists, conses, ranges and lazy seqs (11 to 16,
+      // 22 to 27) the walk of their seq, which never took a program's
+      // iterator either.
+      if ((1879050222 >>> kind & 1) === 1) return reduceWalk(source, rf, init, arity);
+      if ((264370176 >>> kind & 1) === 1) return seqReduce(source, rf, init, arity);
     }
     const iterable = protocolHooks.programMethod?.(source, methodKeys[26], 1);
-    return iterable ? iterReduce(iterable.call(source, source), rf, init, arity) : seqReduce(source, rf, init, arity);
+    if (iterable) return iterReduce(iterable.call(source, source), rf, init, arity);
+    // A set and the queue (kinds 33, 36, 44) walk their iterator, the
+    // `SeqIter` of their seq.
+    return kind >= 32 && kind < 64 && (4114 >>> kind - 32 & 1) === 1 ? iterReduce(iterator(source), rf, init, arity) : seqReduce(source, rf, init, arity);
   }
   //@unit iterReduce requires: isReduced, reducedValue
   // `reduce` of an iterator's items: from `init` where `arity` is 3, else
