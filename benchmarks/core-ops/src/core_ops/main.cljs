@@ -335,6 +335,40 @@
   (let [v (vec-n 100 s)]
     (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (into #{} v)))) acc))))
 
+;; `pop`, `disj` and the variadic updates (light-cljs-1073). A vector of 33
+;; items has one in its tail, so its pop takes the tail from the tree; the
+;; other vectors' pops shorten their tails. The small sets hold s+j to s+j+6
+;; for j from 0 to 3, so each holds s+3 to s+6, the items the disjs remove.
+(defn b-vec-pop [n s]
+  (let [vs (array (vec-n 10 s) (vec-n 33 s) (vec-n 100 s) (vec-n 3 s))]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (pop (aget vs (bit-and i 3)))))) acc))))
+
+(defn b-list-pop [n s]
+  (let [ls (array (apply list (vec-n 3 s)) (apply list (vec-n 10 s)) (apply list (vec-n 2 s)) (apply list (vec-n 5 s)))]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (pop (aget ls (bit-and i 3)))))) acc))))
+
+(defn small-sets [s]
+  (let [arr (array)]
+    (dotimes [j 4] (.push arr (set (vec-n 7 (+ s j)))))
+    arr))
+
+(defn b-disj-set [n s]
+  (let [ss (small-sets s) k (+ s 3)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (disj (aget ss (bit-and i 3)) k)))) acc))))
+
+(defn b-disj-sorted-set [n s]
+  (let [st (into (sorted-set) (vec-n 100 s))]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (disj st (+ s (mod i 100)))))) acc))))
+
+(defn b-disj-variadic-set [n s]
+  (let [ss (small-sets s) k (+ s 3) k2 (+ s 6)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (disj (aget ss (bit-and i 3)) k k2)))) acc))))
+
+(defn b-vec-assoc-variadic [n s]
+  (let [v (vec-n 1024 s)]
+    (loop [i 0 acc 0]
+      (if (< i n) (recur (inc i) (+ acc (count (assoc v (bit-and i 1023) i (bit-and (+ i 512) 1023) s)))) acc))))
+
 ;; Two loops with no core operation, the cost of the benches' loop itself.
 (defn b-bit-and [n s]
   (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (bit-and i 3) s)) acc)))
@@ -417,6 +451,12 @@
    ["str-sorted-map-20" b-str-sorted-map 5000]
    ["into-vec-keys-small" b-into-vec-keys-small 500000]
    ["into-set-100" b-into-set-100 10000]
+   ["vec-pop" b-vec-pop 2000000]
+   ["list-pop" b-list-pop 5000000]
+   ["disj-set-7" b-disj-set 1000000]
+   ["disj-sorted-set-100" b-disj-sorted-set 200000]
+   ["disj-variadic-set-7" b-disj-variadic-set 500000]
+   ["vec-assoc-variadic-1024" b-vec-assoc-variadic 500000]
    ["bit-and" b-bit-and 10000000]
    ["aget-bit-and" b-js-array-index 10000000]])
 

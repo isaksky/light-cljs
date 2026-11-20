@@ -11,12 +11,13 @@
 (deftest selection-follows-the-harness
   (testing "all operations by default, in the harness's order, the loops last"
     (let [ops (selected-ops {})]
-      (is (= 70 (count ops)))
-      (is (= ["kw-small" "bit-and" "aget-bit-and"] [(first ops) (nth ops 68) (nth ops 69)]))))
+      (is (= 76 (count ops)))
+      (is (= ["kw-small" "bit-and" "aget-bit-and"] [(first ops) (nth ops 74) (nth ops 75)]))))
   (testing "a name, or the operations it starts up to a hyphen"
     (is (= ["kw-small" "assoc-small-existing" "assoc-small-new" "vec-conj-64"]
            (selected-ops {:ops ["vec-conj" "assoc-small" "kw-small"]})))
-    (is (= ["seq-walk-vec-1000"] (selected-ops {:pseudo-names "seq-walk-vec"})))))
+    (is (= ["seq-walk-vec-1000"] (selected-ops {:pseudo-names "seq-walk-vec"})))
+    (is (= ["disj-set-7" "disj-sorted-set-100" "disj-variadic-set-7"] (selected-ops {:ops ["disj"]})))))
 
 (deftest selection-rejects-what-it-cannot-measure
   (is (re-find #"Unknown operations nope" (rejected {:ops ["kw-small" "nope"]})))
