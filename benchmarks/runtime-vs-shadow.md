@@ -4880,3 +4880,57 @@ The workload's steady state is within its range of master (light/shadow 1.56 to 
 light-cljs-1071 adds four `slotWrites` wrappers (`seqOf`, `firstOf`, `restOf`, `nextOf`) that only a program writing a core protocol method's member by name keeps at `:advanced` (docs/value-layout.md, "What light-cljs-1071 landed"). Every other program's release output is unchanged, so no timing was run: built with the release binaries of master `76061c5c` and of this change, the gate's output (`light-cljs release bench` in benchmarks/core-ops), workload 200k's and the re-frame-shaped app's (`workload-200k-seed42`, `re-frame-200k-seed42`, `release bench`) are byte-identical (`diff -r`). The gate's times, steady state and advanced sizes are therefore those of the light-cljs-1068 section above.
 
 **Size.** The size ratchet's advanced sizes do not move; the readable runtime of `none` and `prepare` builds grows 2,271 bytes. A program that clears the four slots on 23 classes' prototypes (the test `seq_walk_slots_a_program_clears_answer_as_master`) grows 2,989 bytes at advanced (150,202 to 153,191; 40,469 to 41,083 after gzip -9), the wrappers and the old paths they call.
+
+## 2026-11-19: `pop`, `disj` and the variadic updates in the gate (light-cljs-1073)
+
+light-cljs-1068 reshaped `pop`, `disj` and the variadic updates, but the gate timed none of them, so its section above has no number for them. The gate now has six more operations, after `into-set-100` and before the loop baselines, so no earlier operation's number moves (benchmarks/core-ops/README.md):
+- `vec-pop`: vectors of 3, 10, 33 and 100 items. Popping the 33-item one takes the tail from the tree.
+- `list-pop`: lists of 2 to 10 items.
+- `disj-set-7`: one item from 7-item hash sets.
+- `disj-sorted-set-100`: one item from a 100-item sorted set.
+- `disj-variadic-set-7`: two items from the 7-item sets.
+- `vec-assoc-variadic-1024`: two indexes of a 1,024-item vector.
+
+This pellet changes no runtime or emitter code, so it has no workload or size run.
+
+**Binaries** in research/shadow-credibility/bin, V8 builds:
+- before: `light-cljs-f9d52a2c`, master just before light-cljs-1068 landed;
+- after: `light-cljs-76061c5c`, master with light-cljs-1068.
+
+Master `f5164c11` adds only light-cljs-1071. A program keeps its wrappers only when it writes a core protocol method's member by name, and the gate never does. Records are in research/output-speed/pop-disj-1073. No run waited for the machine, and all results are unreserved: a peer worker built and tested throughout.
+
+**Commands:** two alternated passes, each a before run then an after run. Each run has 5 Node processes per compiler.
+
+```sh
+BIN=research/shadow-credibility/bin R=research/output-speed/pop-disj-1073
+OPS=vec-pop,list-pop,disj,vec-assoc-variadic-1024   # N is the pass, 1 or 2
+bb benchmarks/core-ops/run.bb --light $BIN/light-cljs-f9d52a2c --ops $OPS --out $R/before-N
+bb benchmarks/core-ops/run.bb --light $BIN/light-cljs-76061c5c --ops $OPS --out $R/after-N --baseline $R/before-N.edn
+```
+
+**Load averages** before each run:
+
+| pass | before | after |
+| --- | ---: | ---: |
+| 1 | 17.90-18.62 | 18.38-19.30 |
+| 2 | 16.90-18.80 | 15.55-17.99 |
+
+**Results:** light-cljs's ns per operation, median (range), from pass 1. The last column gives pass 2's change and light/shadow after.
+
+| op | light before | light after | change | shadow-cljs after | light/shadow before / after | pass 2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| vec-pop | 46.3 (45.2-47.4) | 19.1 (18.6-19.2) | -59% | 19.4 | 2.37 / 0.98 | -60%, 0.94 |
+| list-pop | 26.1 (26.0-27.1) | 5.87 (5.84-5.89) | -78% | 5.40 | 4.84 / 1.09 | -77%, 1.08 |
+| disj-set-7 | 83.7 (82.1-85.1) | 71.6 (70.5-73.6) | -14% | 112.4 | 0.74 / 0.64 | -15%, 0.62 |
+| disj-sorted-set-100 | 234.1 (230.0-261.2) | 185.3 (179.6-192.0) | -21% | 271.7 | 0.88 / 0.68 | -22%, 0.69 |
+| disj-variadic-set-7 | 131.6 (129.2-132.7) | 153.0 (148.0-159.1) | +16% | 234.0 | 0.54 / 0.65 | +17%, 0.67 |
+| vec-assoc-variadic-1024 | 188.4 (182.1-189.7) | 189.8 (184.6-191.5) | +1% | 185.8 | 1.00 / 1.02 | -1%, 1.01 |
+
+- **No operation is over 1.2x shadow-cljs's after light-cljs-1068.** The highest is `list-pop` at 1.08-1.09. Before it, `vec-pop` was at 2.37x and `list-pop` at 4.84x.
+  - In master's `pop`, every call first asked `protocolHooks.builtin` whether a program had given the value a `-pop`, then probed the kinds (`holdsVector`, `vectorStore`).
+  - The `-pop` slots of light-cljs-1068 answer from the vector or list itself.
+  - Single-key `disj` gains 14% and 21% the same way, through the sets' `-disjoin` slots.
+- **One loss: `disj-variadic-set-7` is 16% and 17% slower.** It is still 0.65-0.67x shadow-cljs's, so no pellet is filed.
+  - The cause: the call now passes its `arguments` through `disj` to `disjOf` (by `apply`), copies them (`slice`), and reaches `setDisjoin`. That is two more calls than master's one rest-parameter `disj`.
+  - The profiles show the work moving out of master's single function. Under `--pseudo-names disj-variadic-set-7`, master's `disj` had 44% of self time, inlining the entry search (`collectionEntryIndex` 1.4%). Now `setDisjoin` has 38%, `disjOf` 13.9% and `collectionEntryIndex` 6.5% (124.4 to 150.1 ns per operation under the profiler).
+- **The variadic `assoc` of a vector is unchanged** (+1%, -1%) and at parity (1.01-1.02).
