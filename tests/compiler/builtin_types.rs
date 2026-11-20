@@ -755,7 +755,8 @@ fn runtime_meta_slot_overrides_without_markers() {
 /// an array, `meta` of the runtime's collections and seqs, and a predicate of
 /// a value whose class declares the protocol by its mask bit or marker take
 /// no protocol lookup: the readable output's `extendedMethod`, `runtimeKind`,
-/// `coreProtocolImplementation` and `satisfies` count no call, as upstream's `count`,
+/// `coreProtocolImplementation` and `satisfies` count no call, nor `builtin`
+/// for `deref` of an atom, as upstream's `count`,
 /// `meta` and `satisfies?` read the mask bit, the marker or the class's
 /// slot. `extend-type` and `specify!` keep their answers.
 #[test]
@@ -771,13 +772,14 @@ fn extended_programs_answer_count_meta_and_predicates_without_the_lookup() {
               before (calls)
               results [(count "abc") (count (array 1 2)) (mapv meta colls) (mapv meta seqs)
                        [(vector? (colls 0))] (mapv map? (mapv colls [1 5 9 13])) (mapv set? (mapv colls [3 10 11]))
-                       (mapv coll? colls) (mapv seq? seqs) (mapv sequential? seqs) (chunked-seq? (range 3))]
+                       (mapv coll? colls) (mapv seq? seqs) (mapv sequential? seqs) (chunked-seq? (range 3))
+                       [@(atom 1) @(atom nil)]]
               after (calls)]
           (pr-str [(count (T.)) (meta (T.)) (- after before) results]))"#;
     let expected = "[7 :t 0 [3 2 [{:m 1} {:m 1} {:m 1} {:m 1} {:m 1} {:m 1} {:m 1} nil nil {:m 1} {:m 1} {:m 1} nil nil] \
          [nil nil nil nil nil] [true] [true true true true] [true true true] \
          [true true true true true true true true true true true true true true] [true true true true true] \
-         [true true true true true] true]]";
+         [true true true true true] true [1 nil]]]";
     let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
     options.pseudo_names = true;
     let mut js = prepare_application(&program(source), options).emit_js();
@@ -798,6 +800,20 @@ fn extended_programs_answer_count_meta_and_predicates_without_the_lookup() {
     every_level(
         &format!("(set! (.-__calls js/globalThis) 0) {source}"),
         expected,
+    );
+    let deref_source = r#"(deftype T [] ICounted (-count [_] 7))
+        (extend-type T IMeta (-meta [_] :t))
+        (let [a (atom 1) b (atom nil) calls #(aget js/globalThis "__calls") before (calls) results [@a @b @a] after (calls)]
+          (pr-str [(count (T.)) (- after before) results]))"#;
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let head = "function builtin(value, key, arity) {";
+    let js = prepare_application(&program(deref_source), options).emit_js();
+    assert!(js.contains(head), "{head}");
+    let js = js.replace(head, &format!("{head} globalThis.__calls++;"));
+    assert_eq!(
+        execute(&format!("globalThis.__calls = 0; console.log({js});")),
+        "[7 0 [1 nil 1]]\n"
     );
 }
 
@@ -853,6 +869,65 @@ fn inherited_object_meta_extensions_keep_runtime_answers() {
                   (meta (specify! [2] IMeta (-meta [_] :own))) (meta (range 3)) (meta (lazy-seq [1]))
                   (vec (keys (into (sorted-map) [[1 1] [2 2] [3 3]]))) (meta (rseq (into (sorted-map) [[1 1] [2 2]])))])",
         "[:custom :custom :custom :custom :custom :custom :custom :own :custom :custom [1 2 3] :custom]",
+    );
+}
+
+/// light-cljs-1070: the answers master's lookup gave, at every level, where
+/// the `satisfies` hook skips the native test of nil, a primitive or a
+/// program type's value and reads a mask-less protocol (`Fn`) of a class
+/// with masks as false, `counted?` reads a seq view's kind first, and
+/// `deref` of an atom calls its own `-deref` or reads its state: host
+/// tables `extend-type` gave `nil`, `string`, `number`, `boolean` and
+/// `default` (`Fn` among them), program types with and without masks and a
+/// record, and an atom's `-deref` from `specify!`, `extend-type` of `Atom`
+/// and of `js/Object`.
+#[test]
+fn extended_programs_keep_host_predicate_and_deref_answers() {
+    every_level(
+        "(extend-type nil ISequential)
+         (extend-type string IMap)
+         (extend-type number ICollection)
+         (extend-type default ISet)
+         (extend-type boolean IVector)
+         (deftype T [])
+         (deftype U [] ISeqable (-seq [_] nil))
+         (defrecord R [x])
+         (pr-str [(sequential? nil) (sequential? \"s\") (map? \"s\") (map? 1) (coll? 1) (coll? \"s\") (set? nil) (set? 1) (set? \"s\")
+                  (set? (T.)) (set? (U.)) (set? (->R 1)) (set? [1]) (set? (js-obj)) (vector? true) (vector? false) (vector? nil)
+                  (map? (->R 1)) (coll? (->R 1)) (map? (T.)) (coll? (U.)) (sequential? (T.)) (seq? (U.)) (seqable? (U.))
+                  (seqable? (->R 1)) (seq? (T.)) (seq? \"s\") (fn? [1]) (fn? {:a 1}) (fn? :k) (fn? (T.)) (fn? nil) (fn? \"s\")
+                  (counted? (seq [1 2])) (counted? (seq (array 1 2))) (counted? (rseq [1 2])) (counted? (seq #{1}))
+                  (counted? (seq {:a 1})) (counted? (lazy-seq [1])) (counted? (list 1)) (counted? (cons 1 nil))
+                  (bounded-count 2 (seq (array 1 2 3))) (bounded-count 2 (lazy-seq [1 2 3])) (apply + 1 2 [3 4])
+                  (apply str (seq \"abc\"))])",
+        "[true false true false true false false true true true false false false true true true false true true false \
+         false false false true true false false false false false false false false true true false false true false \
+         true true 3 2 10 \"abc\"]",
+    );
+    every_level(
+        "(extend-type default Fn)
+         (deftype T [])
+         (pr-str [(fn? [1]) (fn? {:a 1}) (fn? :k) (fn? 'k) (fn? (T.)) (fn? nil) (fn? \"s\") (fn? 1) (fn? (js-obj)) (fn? (atom 1))
+                  (fn? (list 1)) (fn? #{1}) (fn? (seq [1])) (fn? (with-meta inc {:m 1})) (fn? inc) (ifn? [1]) (ifn? nil)])",
+        "[false false false false true true true true true false false false false true true true true]",
+    );
+    every_level(
+        "(deftype D [] IDeref (-deref [_] :d))
+         (extend-type D IMeta (-meta [_] :dm))
+         (let [a (atom 1) s (specify! (atom 2) IDeref (-deref [_] :s)) v (volatile! 3)]
+           (pr-str [@a @s @v @(D.) @(delay 4) (deref (reduced 5)) (swap! a inc) @a (reset! s 7) @s
+                    (deref (atom nil)) (deref (atom false))]))",
+        "[1 :s 3 :d 4 5 2 2 7 :s nil false]",
+    );
+    every_level(
+        "(extend-type Atom IDeref (-deref [_] :ext))
+         (pr-str [@(atom 1) @(volatile! 2) @(specify! (atom 3) IDeref (-deref [_] :own)) (swap! (atom 1) inc)])",
+        "[:ext 2 :own 2]",
+    );
+    every_level(
+        "(extend-type js/Object IDeref (-deref [_] :obj))
+         (pr-str [@(atom 1) @(volatile! 2) @(js-obj) @(specify! (atom 3) IDeref (-deref [_] :own)) @(delay 4)])",
+        "[:obj :obj :obj :own :obj]",
     );
 }
 
