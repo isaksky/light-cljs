@@ -7,6 +7,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const runtime = (0, eval)(fs.readFileSync(path.join(__dirname, "../../src/js_runtime.js"), "utf8"));
 const c = runtime.core;
+// Whether a value's (or its prototype's) keyed masks hold a core protocol's
+// bit, the last of a duplicated name in `protocolMaskNames`.
+const maskNames = /const protocolMaskNames = "([^"]+)"/.exec(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'))[1].split(' ');
+const declares = (value, protocol) => { const index = maskNames.lastIndexOf(protocol); return (value['cljs$lang$protocol_mask$partition' + (index >> 5) + '$$LKEY'] & (1 << (index % 32))) !== 0; };
 const throwsError = thunk => assert.throws(thunk, error => error.constructor === Error);
 const v = runtime.vector(10, 20, 30);
 const kw = runtime.keyword("demo", "x");
@@ -1612,17 +1616,25 @@ console.log('public constructor fields preserve canonical payload brands');
   // checked; so are a cons and a list (light-cljs-1030).
   const classValue = c.seq([1, 2, 3]), consValue = c.cons(0, lazy), listValue = c.list(1, 2);
   const classValues = [lazy, chunked, chunk, classValue, consValue, listValue];
+  // A class's mask bits (light-cljs-1070) answer `seq?` and `chunked-seq?`
+  // of a value made from its prototype, as upstream's (rescoped,
+  // docs/value-layout.md section 5); a chunk has none.
   for (const value of classValues) {
     const forged = Object.create(Object.getPrototypeOf(value));
     const copied = Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value));
     for (const candidate of classValues.includes(value) ? [forged] : [forged, copied]) {
-      assert.equal(c.isSeq(candidate), false);
-      assert.equal(c.isChunkedSeq(candidate), false);
+      assert.equal(c.isSeq(candidate), declares(candidate, 'ISeq'));
+      assert.equal(c.isChunkedSeq(candidate), declares(candidate, 'IChunkedSeq'));
       assert.equal(runtime.inspect(candidate), null);
       // `count` calls the class's `-count` slot, which no longer guards
       // against a value made by reflection since light-cljs-1066 (rescoped,
-      // docs/value-layout.md section 5); a class without one still throws.
-      if (!Object.getPrototypeOf(candidate).cljs$core$ICounted$_count$arity$1$LKEY) assert.throws(() => c.count(candidate), /count not supported/);
+      // docs/value-layout.md section 5); a class without one walks its seq
+      // where its mask declares `ISeqable` (light-cljs-1070, rescoped too),
+      // else still throws.
+      if (!Object.getPrototypeOf(candidate).cljs$core$ICounted$_count$arity$1$LKEY) {
+        if (!declares(candidate, 'ISeqable')) assert.throws(() => c.count(candidate), /count not supported/);
+        else { let steps = 0; for (let s = c.seq(candidate); s != null; s = c.next(s)) steps++; assert.equal(c.count(candidate), steps); }
+      }
     }
   }
   // A chunked cons's and a range's cell define their fields, as a literal
@@ -1698,12 +1710,18 @@ console.log('seq payloads are private fields that host objects cannot copy');
       // (light-cljs-1028): what the protocol tests say of `Object.create` of
       // it is deliberate reflection (docs/value-layout.md, section 5); it
       // holds no state, so it is still no value to `inspect` or `persistent!`.
-      const declares = name === 'transientVector';
+      // So do the other classes' since light-cljs-1070 (rescoped): the
+      // protocol tests answer such a value's bits, and `count` walks its seq
+      // where they declare `ISeqable`.
+      const predicates = [[f.isReduced, null], [f.isMap, 'IMap'], [f.isSet, 'ISet'], [f.isSeq, 'ISeq'], [f.isCounted, 'ICounted'], [f.isColl, 'ICollection']];
       for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
-        if (!declares) for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
+        if (name !== 'transientVector') for (const [predicate, protocol] of predicates) assert.equal(predicate(candidate), protocol !== null && declares(candidate, protocol), `${name}: ${protocol}`);
         assert.equal(fresh.inspect(candidate), null);
         // A class with a `-count` slot answers from it (light-cljs-1066, rescoped).
-        if (!declares && !Object.getPrototypeOf(candidate).cljs$core$ICounted$_count$arity$1$LKEY) assert.throws(() => f.count(candidate), /count not supported/);
+        if (name !== 'transientVector' && !Object.getPrototypeOf(candidate).cljs$core$ICounted$_count$arity$1$LKEY) {
+          if (!declares(candidate, 'ISeqable')) assert.throws(() => f.count(candidate), /count not supported/);
+          else { let steps = 0; for (let s = f.seq(candidate); s != null; s = f.next(s)) steps++; assert.equal(f.count(candidate), steps); }
+        }
         assert.throws(() => f.persistentBang(candidate));
       }
     }
@@ -1775,12 +1793,15 @@ console.log('reduced markers, transients, queues and array maps and sets are pri
     // (light-cljs-1013).
     const copies = ['transientVector', 'view', 'lazy', 'chunked', 'chunk', 'cons', 'list', 'repeat', 'transientMap', 'arrayMap', 'assoc', 'persisted', 'transientSet', 'set', 'conj', 'reduced', 'queue', 'iteratorSeq'].includes(name) ? [] : [Object.defineProperties(Object.create(Object.getPrototypeOf(value)), Object.getOwnPropertyDescriptors(value))];
     // As above, a transient vector's prototype declares its protocols
-    // (light-cljs-1028).
-    const declares = name === 'transientVector';
+    // (light-cljs-1028), and the other classes' since light-cljs-1070.
+    const predicates = [[f.isReduced, null], [f.isMap, 'IMap'], [f.isSet, 'ISet'], [f.isSeq, 'ISeq'], [f.isChunkedSeq, 'IChunkedSeq'], [f.isCounted, 'ICounted'], [f.isColl, 'ICollection']];
     for (const candidate of [Object.create(Object.getPrototypeOf(value)), ...copies]) {
-      if (!declares) for (const predicate of [f.isReduced, f.isMap, f.isSet, f.isSeq, f.isChunkedSeq, f.isCounted, f.isColl]) assert.equal(predicate(candidate), false);
+      if (name !== 'transientVector') for (const [predicate, protocol] of predicates) assert.equal(predicate(candidate), protocol !== null && declares(candidate, protocol), `${name}: ${protocol}`);
       assert.equal(fresh.inspect(candidate), null);
-      if (!declares && !Object.getPrototypeOf(candidate).cljs$core$ICounted$_count$arity$1$LKEY) assert.throws(() => f.count(candidate), /count not supported/);
+      if (name !== 'transientVector' && !Object.getPrototypeOf(candidate).cljs$core$ICounted$_count$arity$1$LKEY) {
+        if (!declares(candidate, 'ISeqable')) assert.throws(() => f.count(candidate), /count not supported/);
+        else { let steps = 0; for (let s = f.seq(candidate); s != null; s = f.next(s)) steps++; assert.equal(f.count(candidate), steps); }
+      }
     }
   }
 }
@@ -1834,9 +1855,14 @@ console.log('public find preserves one search and direct receiver dispatch');
   // light-cljs-1054, which no longer guard against a value made by
   // reflection (rescoped, docs/value-layout.md section 5).
   // `count` likewise calls a class's `-count` slot since light-cljs-1066
-  // (rescoped); a class without one (a cons, a lazy seq) still throws.
+  // (rescoped); a class without one (a cons, a lazy seq) walks its seq,
+  // as its mask declares `ISeqable` since light-cljs-1070 (rescoped).
   for (const forged of values.map(value => Object.create(Object.getPrototypeOf(value)))) {
-    if (!Object.getPrototypeOf(forged).cljs$core$ICounted$_count$arity$1$LKEY) assert.throws(() => c.count(forged), /count not supported on this type/);
+    if (!Object.getPrototypeOf(forged).cljs$core$ICounted$_count$arity$1$LKEY) {
+      assert.equal(declares(forged, 'ISeqable'), true);
+      let steps = 0; for (let s = c.seq(forged); s != null; s = c.next(s)) steps++;
+      assert.equal(c.count(forged), steps);
+    }
   }
 }
 {
@@ -2215,7 +2241,6 @@ console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is
 // these kinds, its prototype's or another constructor's, the same answers.
 {
   const source = fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8');
-  const maskNames = /const protocolMaskNames = "([^"]+)"/.exec(source)[1].split(' ');
   const masks = new Map(maskNames.map((name, index) => [name, [index >> 5, 1 << (index % 32)]]));
   const protocols = Object.keys(c).filter(name => /^I[A-Z]|^ASeq$|^Fn$|^Inst$/.test(name) && typeof c[name] === 'function');
   const vectorLike = 'IFn ICounted IEmptyableCollection ICollection IIndexed ILookup IAssociative IStack IVector IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IReversible IPrintWithWriter IComparable IIterable IDrop IFind';
@@ -2284,6 +2309,87 @@ console.log('runtime_value_enumeration_contract: keyed fields enumerate, JSON is
   }
 }
 console.log('vector_family_prototype_contract: masks, markers and slots of the vector classes');
+
+// class_protocol_masks (light-cljs-1070; docs/value-layout.md, "What
+// light-cljs-1070 landed"): the prototypes of the other runtime classes hold
+// the bits of every protocol their values' native tests answer, the same for
+// each value (an indexed seq's that differ with its `view` excepted, which
+// have no bit), and `implements?` of every value gives what the bits say.
+{
+  const big = c.zipmap(c.range(100), c.range(100)), mid = c.zipmap(c.range(20), c.range(20));
+  const classes = [
+    ['indexed seq', () => [c.seq([1, 2, 3]), c.seq(c.hashSet(1, 2)), c.IndexedSeq([1, 2], 0, null), c.seq('abc'), c.rest(c.seq([1, 2, 3])), c.seq(c.conj(c.PersistentQueue.EMPTY, 1))],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IEquiv IHash ISeqable ISequential IPrintWithWriter IIterable', 'ICounted IIndexed ASeq IReduce IReversible ICloneable IDrop'],
+    ['chunked seq', () => [c.seq(c.vec(c.range(40)))],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter ICounted ASeq IChunkedSeq IChunkedNext IIterable IDrop', ''],
+    ['array node seq', () => [c.seq(mid), c.seq(big)],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter ASeq IIterable', ''],
+    ['node seq', () => [c.seq(c.hashMap(1, 2)), c.seq(c.hashMap('a', 1))],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter ASeq IIterable', ''],
+    ['array map seq', () => [c.seq(c.arrayMap(1, 2, 3, 4))],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter ICounted IIterable IDrop', ''],
+    ['reversed seq', () => [c.rseq(c.vector(1, 2)), c.rseq(c.vec(c.range(40)))],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter ICloneable IIterable', ''],
+    ['sorted map seq', () => [c.seq(c.sortedMap(1, 2, 3, 4)), c.rseq(c.sortedMap(1, 2))],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter ICounted IIterable', ''],
+    ['list', () => [c.list(1, 2), c.list(1)],
+      'ICounted IEmptyableCollection ICollection ASeq ISeq INext IStack IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IList IPrintWithWriter ICloneable IIterable', ''],
+    ['empty list', () => [c.list()],
+      'ICounted IEmptyableCollection ICollection ISeq INext IStack IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IList IPrintWithWriter ICloneable IIterable', ''],
+    ['cons', () => [c.cons(1, c.list(2)), c.cons(1, c.vector(2))],
+      'IEmptyableCollection ICollection ASeq ISeq INext IStack IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IList IPrintWithWriter ICloneable IIterable', ''],
+    ['integer range', () => [c.range(3), c.range(0, 10, 2)],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter ICounted IIndexed IChunkedSeq IChunkedNext ICloneable IIterable IDrop', ''],
+    ['range', () => [c.range(0.5, 3), c.range()],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter IChunkedSeq IChunkedNext ICloneable IIterable', ''],
+    ['repeat', () => [c.repeat(3, 1), c.repeat(1)],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter IPending IDrop', ''],
+    ['iterate', () => [c.iterate(c.inc, 0)],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce ISeqable ISequential IPrintWithWriter IPending', ''],
+    ['cycle', () => [c.cycle(c.vector(1, 2))],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce ISeqable ISequential IPrintWithWriter IPending', ''],
+    ['key seq', () => [c.keys(c.hashMap(1, 2)), c.vals(c.hashMap(1, 2)), c.keys(mid)],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter IStack IIterable', ''],
+    ['re-seq cons', () => [c.reSeq(/a/g, 'aa')],
+      'IEmptyableCollection ICollection ASeq ISeq INext IStack IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IList IPrintWithWriter ICloneable IIterable', ''],
+    ['lazy seq', () => [c.LazySeq(null, () => c.list(1), null, null), c.mapSeq(c.inc, c.list(1, 2))],
+      'IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter IPending IIterable', ''],
+    ['chunked cons', () => [c.seq(c.mapSeq(c.inc, c.vec(c.range(40))))],
+      'IEmptyableCollection ICollection ASeq ISeq INext IMeta IWithMeta IEquiv IHash ISeqable ISequential IPrintWithWriter IChunkedSeq IChunkedNext', ''],
+    ['keyword', () => [c.keyword('a'), c.keyword('n', 'a')],
+      'IFn IEquiv IHash IPrintWithWriter IComparable INamed', ''],
+    ['symbol', () => [c.symbol('s'), c.symbol('n', 's')],
+      'IFn IMeta IWithMeta IEquiv IHash IPrintWithWriter IComparable INamed', ''],
+    ['array map', () => [c.arrayMap(1, 2), c.arrayMap()],
+      'IFn ICounted IEmptyableCollection ICollection ILookup IAssociative IMap IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable IPrintWithWriter ICloneable IIterable IEditableCollection IDrop', ''],
+    ['hash map', () => [c.hashMap(1, 2), mid, big],
+      'IFn ICounted IEmptyableCollection ICollection ILookup IAssociative IMap IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable IPrintWithWriter ICloneable IIterable IEditableCollection', ''],
+    ['sorted map', () => [c.sortedMap(1, 2), c.sortedMap()],
+      'IFn ICounted IEmptyableCollection ICollection ILookup IAssociative IMap IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable IPrintWithWriter ICloneable IIterable IReversible ISorted', ''],
+    ['transient array map', () => [c.transient(c.arrayMap(1, 2))],
+      'IFn ICounted ILookup ITransientCollection ITransientAssociative ITransientMap', ''],
+    ['transient hash map', () => [c.transient(big)],
+      'IFn ICounted ILookup ITransientCollection ITransientAssociative ITransientMap', ''],
+    ['hash set', () => [c.hashSet(1, 2), c.into(c.hashSet(), c.range(40)), c.hashSet()],
+      'IFn ICounted IEmptyableCollection ICollection ILookup ISet IMeta IWithMeta IEquiv IHash ISeqable IPrintWithWriter ICloneable IIterable IEditableCollection', ''],
+    ['transient set', () => [c.transient(c.hashSet(1))],
+      'IFn ICounted ILookup ITransientCollection ITransientSet', ''],
+    ['queue', () => [c.conj(c.PersistentQueue.EMPTY, 1), c.PersistentQueue.EMPTY],
+      'ICounted IEmptyableCollection ICollection ISeq INext IStack IMeta IWithMeta IEquiv IHash ISeqable ISequential IPrintWithWriter ICloneable IIterable', ''],
+    ['sorted set', () => [c.sortedSet(1)],
+      'IFn ICounted IEmptyableCollection ICollection ILookup ISet IMeta IWithMeta IEquiv IHash ISeqable IPrintWithWriter ICloneable IIterable IReversible ISorted', '']
+  ];
+  for (const [label, make, declared, varying] of classes) {
+    const values = make(), proto = Object.getPrototypeOf(values[0]), names = declared.split(' '), varies = varying.split(' ');
+    for (const value of values) assert.equal(Object.getPrototypeOf(value), proto, `${label}: one prototype`);
+    for (const name of new Set(maskNames)) {
+      assert.equal(declares(proto, name), names.includes(name), `${label}: bit ${name}`);
+      if (varies.includes(name) || typeof c[name] !== 'function') continue;
+      for (const value of values) assert.equal(c.implements(c[name], value), names.includes(name), `${label}: implements? ${name}`);
+    }
+  }
+}
+console.log('class_protocol_masks: masks of the other runtime classes');
 
 // A hash or array set's and a queue's `-count`, `-seq` and `-conj`, a set's
 // `-lookup` and a vector's, a subvector's and a map entry's

@@ -24,6 +24,24 @@ fn run(js: &str) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
+/// Runs `script` with Node from its standard input: a script that embeds the
+/// whole runtime (about 1 MB) overflows Node's stack as a `-e` argument.
+fn node_script(script: &str) -> std::process::Output {
+    let mut child = Command::new("node")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
 fn check(source: &str, expected: &str) {
     let js = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
     // The Pants build embeds no QuickJS; Node still runs the program below.
@@ -697,7 +715,7 @@ fn runtime_reader_profiles_missing_alias_locations_and_nested_tag_reads() {
         include_str!("../../src/js_runtime.js"),
         checks
     );
-    let output = Command::new("node").args(["-e", &script]).output().unwrap();
+    let output = node_script(&script);
     assert!(
         output.status.success(),
         "{}",

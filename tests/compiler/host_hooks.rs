@@ -11,6 +11,26 @@ use std::{
     rc::Rc,
 };
 
+/// Runs `script` with Node from its standard input: a script that embeds the
+/// whole runtime (about 1 MB) overflows Node's stack as a `-e` argument.
+fn node_script(script: &str) -> std::process::Output {
+    use std::io::Write;
+    let mut child = Command::new("node")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
 fn printed(session: &mut EvalSession, source: &str) -> String {
     let value = session.eval_string(source).unwrap().value;
     let result = session.print(value).unwrap();
@@ -99,7 +119,7 @@ fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
     let script = format!(
         "const assert = require('node:assert/strict'), rt = {runtime}, c = rt.core; {checks}"
     );
-    let output = Command::new("node").args(["-e", &script]).output().unwrap();
+    let output = node_script(&script);
     assert!(
         output.status.success(),
         "{}",

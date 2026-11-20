@@ -212,7 +212,7 @@
   }
   //@unit storeNativeProtocols requires: sharedWords
   // None: the boot seals each resolved key's `info`, so `extendedMethod` and
-  // `storeProtocol` could not fill its per-kind memo (`kinds`,
+  // the `satisfies` hooks could not fill its per-kind memo (`kinds`,
   // light-cljs-988) afterwards; here the native test answers every call.
   const storeNativeProtocols = sharedWords([]);
   //@unit builtinSlots

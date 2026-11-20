@@ -1125,7 +1125,7 @@
   //@unit installMethods.IMetaKey effect: installMethods when: printsMeta requires: methodKey,
   //@ methodKeys
   methodKeys[34] = methodKey("IMeta");
-  //@unit installMethods.IMetaMetaKey effect: installMethods when: meta, metaSupported requires: methodKey,
+  //@unit installMethods.IMetaMetaKey effect: installMethods when: metaOf, metaSupported requires: methodKey,
   //@ methodKeys
   methodKeys[35] = methodKey("IMeta/-meta");
   //@unit installMethods.INamedKey effect: installMethods when: name, namespace requires: methodKey,
@@ -5395,11 +5395,15 @@
     }
     return countOf(value);
   }
-  //@unit countOf requires: kindHooks, methodKeys, operationPaths, protocolHooks, seqableValue
+  //@unit countOf requires: kindHooks, methodKeys, operationPaths, protocolHooks, protocolSentinel,
+  //@ seqableValue
   // Upstream's `count`: a value of a runtime class whose instance slot
   // holds nil or false takes its class's slot, as the old path answered by
-  // the class; a seqable value without `-count` (a cons, a lazy seq, a
-  // program's type) counts its seq.
+  // the class; a string or an array that does not declare `ICounted` (its
+  // mask bit or marker, which `specify!` of an array writes) is its
+  // length, which the lookup's native test, asked first, never changed
+  // (light-cljs-1070); a seqable value without `-count` (a cons, a lazy
+  // seq, a program's type) counts its seq.
   function countOf(value) {
     const path = operationPaths.count;
     if (path !== undefined) return path(value);
@@ -5407,6 +5411,10 @@
     if (value.cljs$lang$kind$$LKEY < 64) {
       const method = Object.getPrototypeOf(value)?.cljs$core$ICounted$_count$arity$1$LKEY;
       if (method) return method.call(value, value);
+    }
+    if (typeof value === "string" || Array.isArray(value)) {
+      const key = methodKeys[10];
+      if (key === undefined || !(value.cljs$lang$protocol_mask$partition0$$LKEY & key.bit) && value.cljs$core$ICounted$$LKEY !== protocolSentinel) return value.length;
     }
     const own = protocolHooks.programMethod?.(value, methodKeys[10], 1, true, true);
     if (own) return own.call(value, value);
@@ -7246,8 +7254,8 @@
   // indexed seqs' `-first` and `-next`, which the iterator calls, are their
   // class's own (each read as the slot loads).
   //@unit PersistentHashSetValue.reduceSlot effect: PersistentHashSetValue when: reduce, reduceOf
-  //@ requires: builtinSlot, collectionTraversal, IndexedSeqValue, itemsReduce, iterator, iterReduce,
-  //@ methodKeys, PersistentHashSetValue, protocolHooks, setKinds, slotFirst
+  //@ requires: builtinSlot, collectionTraversal, IndexedSeqValue, itemsReduce, iterator,
+  //@ iterReduce, methodKeys, PersistentHashSetValue, protocolHooks, setKinds, slotFirst
   // Its members' keys in traversal order, as its seq holds them. A set that
   // `specify!` or `extend-type` gave one arity of `IReduce` takes the
   // protocol lookup for the other, which throws as the set does not
@@ -7291,17 +7299,17 @@
   //@unit IntegerRangeValue.reduceSlot effect: IntegerRangeValue when: reduce, reduceOf requires: IntegerRangeValue,
   //@ rangeReduce, reduceSlot
   IntegerRangeValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = IntegerRangeValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(rangeReduce);
-  //@unit RepeatValue.reduceSlot effect: RepeatValue when: reduce, reduceOf requires: reduceSlot, repeatReduce,
-  //@ RepeatValue
+  //@unit RepeatValue.reduceSlot effect: RepeatValue when: reduce, reduceOf requires: reduceSlot,
+  //@ repeatReduce, RepeatValue
   RepeatValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = RepeatValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(repeatReduce);
-  //@unit IterateValue.reduceSlot effect: IterateValue when: reduce, reduceOf requires: iterateReduce, IterateValue,
-  //@ reduceSlot
+  //@unit IterateValue.reduceSlot effect: IterateValue when: reduce, reduceOf requires: iterateReduce,
+  //@ IterateValue, reduceSlot
   IterateValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = IterateValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(iterateReduce);
-  //@unit CycleValue.reduceSlot effect: CycleValue when: reduce, reduceOf requires: cycleReduce, CycleValue,
-  //@ reduceSlot
+  //@unit CycleValue.reduceSlot effect: CycleValue when: reduce, reduceOf requires: cycleReduce,
+  //@ CycleValue, reduceSlot
   CycleValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = CycleValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(cycleReduce);
-  //@unit arrayChunk.reduceSlot effect: arrayChunk when: reduce, reduceOf requires: arrayChunk, chunkReduce,
-  //@ reduceSlot
+  //@unit arrayChunk.reduceSlot effect: arrayChunk when: reduce, reduceOf requires: arrayChunk,
+  //@ chunkReduce, reduceSlot
   arrayChunk.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = arrayChunk.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(chunkReduce);
   //@unit LazySeq.reduceSlot effect: LazySeq when: reduce, reduceOf requires: LazySeq, seqReduceSlot
   LazySeq.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = LazySeq.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = seqReduceSlot;
@@ -8786,11 +8794,39 @@
   IHash._ = true;
   //@unit IEquiv.defaults effect: IEquiv requires: IEquiv
   IEquiv._ = true;
-  //@unit meta requires: atoms, deferredVarMetadata, kindHooks, methodKeys, ownMeta, protocolHooks
+  //@unit meta requires: metaOf, slotFirst
   // Metadata belongs to values, never structural equality or hash payloads.
-  // A runtime value's is its own `meta` field (`ownMeta`); a var's deferred
-  // `:test` (kind 45) joins it when first read.
+  // Upstream's `meta`: a value with a keyed kind calls its `-meta` slot, a
+  // program's (`extend-type`, `specify!`, a record's) or its class's
+  // (`metaSlot`, light-cljs-1070), read and called once; every other value,
+  // and one whose slot holds no method, takes `metaOf`.
   function meta(value) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IMeta$_meta$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    return metaOf(value);
+  }
+  //@unit metaSlot requires: builtinSlot
+  // The `-meta` slot of the runtime's collections and seqs, each of a class
+  // whose values are in `metaValue`'s stores (not a var's, an atom's or a
+  // function's): its own `meta` field, as `metaOf` reads it (`ownMeta`),
+  // else nil. One function for every class, so that `meta` calls one target.
+  // A method on `Object.prototype` (`extend-type` of `js/Object`), which the
+  // slot shadows, answers first, as the lookup found it through the chain.
+  const metaSlot = builtinSlot(function (self) {
+    const inherited = Object.prototype.cljs$core$IMeta$_meta$arity$1$LKEY;
+    if (inherited) return inherited.call(self, self);
+    const metadata = self.meta$LKEY;
+    return metadata !== undefined || "meta$LKEY" in self ? metadata : null;
+  });
+  //@unit metaOf requires: atoms, deferredVarMetadata, kindHooks, methodKeys, ownMeta, protocolHooks
+  // `meta`'s own path: a program's method that the lookup finds (a host
+  // value's, or one in a slot a program cleared, which the class's
+  // field then answers as before), else the value's own `meta` field
+  // (`ownMeta`), where a var's deferred `:test` (kind 45) joins it when
+  // first read, else an atom's.
+  function metaOf(value) {
     const method = value == null ? null : protocolHooks.programMethod?.(value, methodKeys[35], 1);
     if (method) return method.call(value, value);
     if (ownMeta(value)) {
@@ -8799,8 +8835,8 @@
     }
     return atoms.has(value) ? value.meta : null;
   }
-  //@unit definitionVar.meta effect: definitionVar when: meta requires: assoc, deferredVarMetadata,
-  //@ keyword, kindHooks
+  //@unit definitionVar.meta effect: definitionVar when: metaOf requires: assoc,
+  //@ deferredVarMetadata, keyword, kindHooks
   // A Var's deferred :test metadata; only `definitionVar` defers it.
   kindHooks.metaDeferred = (value, deferred) => {
     value.meta$LKEY = assoc(value.meta$LKEY, keyword(null, "test"), deferred());
@@ -8991,6 +9027,235 @@
   //@unit KeySeqCell.reduceSlot effect: KeySeqCell when: reduce, reduceOf requires: KeySeqCell,
   //@ seqReduceSlot
   KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = seqReduceSlot;
+  //@unit classMasks
+  // Gives a class's prototype its keyed masks, partition 0 and 1.
+  function classMasks(Type, partition0, partition1) {
+    Type.prototype.cljs$lang$protocol_mask$partition0$$LKEY = partition0;
+    Type.prototype.cljs$lang$protocol_mask$partition1$$LKEY = partition1;
+  }
+  // The keyed masks (`protocolMasks`' bits, as literals) of the runtime's
+  // other classes, as the vectors' (`PersistentVectorValue.type`,
+  // light-cljs-1028): each bit of a protocol that the native tests
+  // (`builtinCoreImplementation`) answer for every value of the class
+  // (light-cljs-1070), so `implements?` and `satisfies?` give the same
+  // answers and the `satisfies` hooks answer from the bit. The class of a
+  // mask declares every such protocol: where its bit is clear, the native
+  // test of a protocol that `kinds` holds by kind is false.
+  //@unit IndexedSeqValue.masks effect: IndexedSeqValue requires: classMasks, IndexedSeqValue
+  // Partition 0 and 1: IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IEquiv IHash
+  // ISeqable ISequential IPrintWithWriter IIterable (its ICounted, IIndexed, ASeq, IReduce,
+  // IReversible, ICloneable and IDrop differ with its `view`, a queue's seq among them, so the
+  // native tests answer them).
+  classMasks(IndexedSeqValue, -2115632948, 131072);
+  //@unit ChunkedSeqValue.masks effect: ChunkedSeqValue requires: ChunkedSeqValue, classMasks
+  // Partition 0 and 1: ICounted IEmptyableCollection ICollection ASeq ISeq INext IMeta IWithMeta
+  // IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter IChunkedSeq IChunkedNext IIterable
+  // IDrop.
+  classMasks(ChunkedSeqValue, -2115108626, 394752);
+  //@unit NodeSeqType.masks effect: NodeSeqType requires: classMasks, NodeSeqType
+  // Partition 0 and 1: IEmptyableCollection ICollection ASeq ISeq INext IMeta IWithMeta IReduce
+  // IEquiv IHash ISeqable ISequential IPrintWithWriter IIterable.
+  classMasks(NodeSeqType, -2115108628, 131072);
+  //@unit ArrayNodeSeqType.masks effect: ArrayNodeSeqType requires: ArrayNodeSeqType, classMasks
+  // Partition 0 and 1: as `NodeSeqType`.
+  classMasks(ArrayNodeSeqType, -2115108628, 131072);
+  //@unit PersistentArrayMapSeqType.masks effect: PersistentArrayMapSeqType requires: classMasks,
+  //@ PersistentArrayMapSeqType
+  // Partition 0 and 1: ICounted IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce
+  // IEquiv IHash ISeqable ISequential IPrintWithWriter IIterable IDrop.
+  classMasks(PersistentArrayMapSeqType, -2115108658, 393216);
+  //@unit RSeqType.masks effect: RSeqType requires: classMasks, RSeqType
+  // Partition 0 and 1: IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv
+  // IHash ISeqable ISequential IPrintWithWriter ICloneable IIterable.
+  classMasks(RSeqType, -2115108660, 139264);
+  //@unit treeMapSeqConstructor.masks effect: treeMapSeqConstructor requires: classMasks,
+  //@ treeMapSeqConstructor
+  // Partition 0 and 1: ICounted IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce
+  // IEquiv IHash ISeqable ISequential IPrintWithWriter IIterable.
+  classMasks(treeMapSeqConstructor, -2115108658, 131072);
+  //@unit ListValue.masks effect: ListValue requires: classMasks, ListValue
+  // Partition 0 and 1: ICounted IEmptyableCollection ICollection ASeq ISeq INext IStack IMeta
+  // IWithMeta IReduce IEquiv IHash ISeqable ISequential IList IPrintWithWriter ICloneable
+  // IIterable.
+  classMasks(ListValue, -2081546002, 139264);
+  //@unit EmptyListValue.masks effect: EmptyListValue requires: classMasks, EmptyListValue
+  // Partition 0 and 1: a list's but ASeq.
+  classMasks(EmptyListValue, -2081546034, 139264);
+  //@unit Cons.masks effect: Cons requires: classMasks, Cons
+  // Partition 0 and 1: a list's but ICounted.
+  classMasks(Cons, -2081546004, 139264);
+  //@unit IntegerRangeValue.masks effect: IntegerRangeValue requires: classMasks, IntegerRangeValue
+  // Partition 0 and 1: ICounted IEmptyableCollection ICollection IIndexed ISeq INext IMeta
+  // IWithMeta IReduce IEquiv IHash ISeqable ISequential IPrintWithWriter IChunkedSeq IChunkedNext
+  // ICloneable IIterable IDrop.
+  classMasks(IntegerRangeValue, -2115108642, 402944);
+  //@unit LazySeq.masks effect: LazySeq requires: classMasks, LazySeq
+  // Partition 0 and 1: IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv
+  // IHash ISeqable ISequential IPrintWithWriter IPending IIterable.
+  classMasks(LazySeq, -2115108660, 131073);
+  //@unit ChunkedCons.masks effect: ChunkedCons requires: ChunkedCons, classMasks
+  // Partition 0 and 1: IEmptyableCollection ICollection ASeq ISeq INext IMeta IWithMeta IEquiv
+  // IHash ISeqable ISequential IPrintWithWriter IChunkedSeq IChunkedNext.
+  classMasks(ChunkedCons, -2115632916, 1536);
+  //@unit KeywordValue.masks effect: KeywordValue requires: classMasks, KeywordValue
+  // Partition 0 and 1: IFn IEquiv IHash IPrintWithWriter IComparable INamed.
+  classMasks(KeywordValue, -2141192191, 6144);
+  //@unit SymbolValue.masks effect: SymbolValue requires: classMasks, SymbolValue
+  // Partition 0 and 1: a keyword's and IMeta IWithMeta.
+  classMasks(SymbolValue, -2140798975, 6144);
+  //@unit RangeValue.masks effect: RangeValue requires: classMasks, RangeValue
+  // Partition 0 and 1: IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv
+  // IHash ISeqable ISequential IPrintWithWriter IChunkedSeq IChunkedNext ICloneable IIterable.
+  classMasks(RangeValue, -2115108660, 140800);
+  //@unit RepeatValue.masks effect: RepeatValue requires: classMasks, RepeatValue
+  // Partition 0 and 1: IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce IEquiv
+  // IHash ISeqable ISequential IPrintWithWriter IPending IDrop.
+  classMasks(RepeatValue, -2115108660, 262145);
+  //@unit IterateValue.masks effect: IterateValue requires: classMasks, IterateValue
+  // Partition 0 and 1: IEmptyableCollection ICollection ISeq INext IMeta IWithMeta IReduce ISeqable
+  // ISequential IPrintWithWriter IPending.
+  classMasks(IterateValue, -2121400116, 1);
+  //@unit CycleValue.masks effect: CycleValue requires: classMasks, CycleValue
+  // Partition 0 and 1: as `IterateValue`.
+  classMasks(CycleValue, -2121400116, 1);
+  //@unit KeySeqCell.masks effect: KeySeqCell requires: classMasks, KeySeqCell
+  // Partition 0 and 1: IEmptyableCollection ICollection ISeq INext IStack IMeta IWithMeta IReduce
+  // IEquiv IHash ISeqable ISequential IPrintWithWriter IIterable.
+  classMasks(KeySeqCell, -2115100468, 131072);
+  //@unit ReSeqCell.masks effect: ReSeqCell requires: classMasks, ReSeqCell
+  // Partition 0 and 1: a cons's.
+  classMasks(ReSeqCell, -2081546004, 139264);
+  //@unit PersistentArrayMapValue.masks effect: PersistentArrayMapValue requires: classMasks,
+  //@ PersistentArrayMapValue
+  // Partition 0 and 1: IFn ICounted IEmptyableCollection ICollection ILookup IAssociative IMap
+  // IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable IPrintWithWriter IEditableCollection
+  // ICloneable IIterable IDrop.
+  classMasks(PersistentArrayMapValue, -2130835697, 401412);
+  //@unit PersistentHashMapValue.masks effect: PersistentHashMapValue requires: classMasks,
+  //@ PersistentHashMapValue
+  // Partition 0 and 1: an array map's but IDrop.
+  classMasks(PersistentHashMapValue, -2130835697, 139268);
+  //@unit treeMapConstructor.masks effect: treeMapConstructor requires: classMasks,
+  //@ treeMapConstructor
+  // Partition 0 and 1: an array map's but IEditableCollection and IDrop, and IReversible ISorted.
+  classMasks(treeMapConstructor, -1728182513, 139264);
+  //@unit TransientArrayMapType.masks effect: TransientArrayMapType requires: classMasks,
+  //@ TransientArrayMapType
+  // Partition 0 and 1: IFn ICounted ILookup ITransientCollection ITransientAssociative
+  // ITransientMap.
+  classMasks(TransientArrayMapType, 259, 56);
+  //@unit TransientHashMapType.masks effect: TransientHashMapType requires: classMasks,
+  //@ TransientHashMapType
+  // Partition 0 and 1: as `TransientArrayMapType`.
+  classMasks(TransientHashMapType, 259, 56);
+  //@unit PersistentHashSetValue.masks effect: PersistentHashSetValue requires: classMasks,
+  //@ PersistentHashSetValue
+  // Partition 0 and 1: IFn ICounted IEmptyableCollection ICollection ILookup ISet IMeta IWithMeta
+  // IEquiv IHash ISeqable IPrintWithWriter IEditableCollection ICloneable IIterable.
+  classMasks(PersistentHashSetValue, -2132406001, 139268);
+  //@unit TransientHashSetType.masks effect: TransientHashSetType requires: classMasks,
+  //@ TransientHashSetType
+  // Partition 0 and 1: IFn ICounted ILookup ITransientCollection ITransientSet.
+  classMasks(TransientHashSetType, 259, 136);
+  //@unit PersistentQueueValue.masks effect: PersistentQueueValue requires: classMasks,
+  //@ PersistentQueueValue
+  // Partition 0 and 1: ICounted IEmptyableCollection ICollection ISeq INext IStack IMeta IWithMeta
+  // IEquiv IHash ISeqable ISequential IPrintWithWriter ICloneable IIterable.
+  classMasks(PersistentQueueValue, -2115624754, 139264);
+  //@unit treeSetConstructor.masks effect: treeSetConstructor requires: classMasks,
+  //@ treeSetConstructor
+  // Partition 0 and 1: a hash set's but IEditableCollection, and IReversible ISorted.
+  classMasks(treeSetConstructor, -1729752817, 139264);
+  // The `-meta` slot (`metaSlot`) of each runtime class whose values are in
+  // `metaValue`'s stores but the vars, atoms and functions with metadata
+  // (light-cljs-1070), set where every prototype here is the class's last.
+  //@unit PersistentVectorValue.metaSlot effect: PersistentVectorValue when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: metaSlot, PersistentVectorValue
+  PersistentVectorValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit SubvecValue.metaSlot effect: SubvecValue when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: metaSlot, SubvecValue
+  SubvecValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit MapEntryType.metaSlot effect: MapEntryType when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: MapEntryType, metaSlot
+  MapEntryType.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit IndexedSeqValue.metaSlot effect: IndexedSeqValue when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: IndexedSeqValue, metaSlot
+  IndexedSeqValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit ChunkedSeqValue.metaSlot effect: ChunkedSeqValue when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: ChunkedSeqValue, metaSlot
+  ChunkedSeqValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit NodeSeqType.metaSlot effect: NodeSeqType when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: metaSlot, NodeSeqType
+  NodeSeqType.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit ArrayNodeSeqType.metaSlot effect: ArrayNodeSeqType when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: ArrayNodeSeqType, metaSlot
+  ArrayNodeSeqType.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit PersistentArrayMapSeqType.metaSlot effect: PersistentArrayMapSeqType when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: metaSlot, PersistentArrayMapSeqType
+  PersistentArrayMapSeqType.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit RSeqType.metaSlot effect: RSeqType when: meta, metaSlot, treeMapSeqConstructor requires: metaSlot,
+  //@ RSeqType
+  RSeqType.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit treeMapSeqConstructor.metaSlot effect: treeMapSeqConstructor when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: metaSlot, treeMapSeqConstructor
+  treeMapSeqConstructor.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit ListValue.metaSlot effect: ListValue when: meta, metaSlot, treeMapSeqConstructor requires: ListValue,
+  //@ metaSlot
+  ListValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit EmptyListValue.metaSlot effect: EmptyListValue when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: EmptyListValue, metaSlot
+  EmptyListValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit Cons.metaSlot effect: Cons when: meta, metaSlot, treeMapSeqConstructor requires: Cons,
+  //@ metaSlot
+  Cons.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit IntegerRangeValue.metaSlot effect: IntegerRangeValue when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: IntegerRangeValue, metaSlot
+  IntegerRangeValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit RangeValue.metaSlot effect: RangeValue when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: metaSlot, RangeValue
+  RangeValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit RepeatValue.metaSlot effect: RepeatValue when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: metaSlot, RepeatValue
+  RepeatValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit IterateValue.metaSlot effect: IterateValue when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: IterateValue, metaSlot
+  IterateValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit CycleValue.metaSlot effect: CycleValue when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: CycleValue, metaSlot
+  CycleValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit KeySeqCell.metaSlot effect: KeySeqCell when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: KeySeqCell, metaSlot
+  KeySeqCell.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit ReSeqCell.metaSlot effect: ReSeqCell when: meta, metaSlot, treeMapSeqConstructor requires: metaSlot,
+  //@ ReSeqCell
+  ReSeqCell.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit LazySeq.metaSlot effect: LazySeq when: meta, metaSlot, treeMapSeqConstructor requires: LazySeq,
+  //@ metaSlot
+  LazySeq.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit ChunkedCons.metaSlot effect: ChunkedCons when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: ChunkedCons, metaSlot
+  ChunkedCons.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit SymbolValue.metaSlot effect: SymbolValue when: meta, metaSlot, treeMapSeqConstructor
+  //@ requires: metaSlot, SymbolValue
+  SymbolValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit PersistentArrayMapValue.metaSlot effect: PersistentArrayMapValue when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: metaSlot, PersistentArrayMapValue
+  PersistentArrayMapValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit PersistentHashMapValue.metaSlot effect: PersistentHashMapValue when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: metaSlot, PersistentHashMapValue
+  PersistentHashMapValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit treeMapConstructor.metaSlot effect: treeMapConstructor when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: metaSlot, treeMapConstructor
+  treeMapConstructor.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit PersistentHashSetValue.metaSlot effect: PersistentHashSetValue when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: metaSlot, PersistentHashSetValue
+  PersistentHashSetValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit treeSetConstructor.metaSlot effect: treeSetConstructor when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: metaSlot, treeSetConstructor
+  treeSetConstructor.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  //@unit PersistentQueueValue.metaSlot effect: PersistentQueueValue when: meta, metaSlot,
+  //@ treeMapSeqConstructor requires: metaSlot, PersistentQueueValue
+  PersistentQueueValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
   //@unit keys requires: mapProjection
   function keys(value) { return mapProjection(value, 0); }
   //@unit vals requires: mapProjection
@@ -9329,8 +9594,8 @@
   //@unit TreeSetCell.lookup effect: TreeSetCell when: lookup requires: kindHooks, treeSetMember
   kindHooks.treeSetLookup = treeSetMember;
   //@unit treeMapSeqConstructor requires: conj, constructorSlots, count, emptyList, first, ListCell,
-  //@ listConjSlot, next, ownMeta, protocolHooks, slotFirst, treeLeft, TreeMapStackCell, treeRight,
-  //@ truth
+  //@ listConjSlot, metaSlot, next, ownMeta, protocolHooks, slotFirst, treeLeft, TreeMapStackCell,
+  //@ treeRight, truth
   // The public constructor; and the seqs a sorted map builds (light-cljs-1035),
   // of its own, which build their cells and their stacks' lists here.
   function treeMapSeqConstructor(metadata, stack, ascending, suppliedCount, cachedHash) {
@@ -9344,12 +9609,13 @@
   const isListCell = stack => !protocolHooks.extend && stack != null && stack.cljs$lang$kind$$LKEY === 12 && stack.count$LKEY >= 1;
   // Where a program can extend lists, a list stack to which no extension
   // gave an `-conj` (its own is `listConjSlot`, light-cljs-1068) or `-meta`
-  // and which holds no metadata: `conj` onto it
+  // (its own is `metaSlot`, light-cljs-1070) and which holds no metadata: `conj` onto it
   // builds a list of the count `count` gives, as `conj` would after its
   // lookups find no method (light-cljs-1064). A compiler session demanding
   // declarations takes `conj`.
   const unextendedListStack = stack => slotFirst.on && stack.cljs$lang$kind$$LKEY === 12 && stack.count$LKEY >= 1
-    && (stack.cljs$core$ICollection$_conj$arity$2$LKEY ?? listConjSlot) === listConjSlot && stack.cljs$core$IMeta$_meta$arity$1$LKEY === undefined && !ownMeta(stack);
+    && (stack.cljs$core$ICollection$_conj$arity$2$LKEY ?? listConjSlot) === listConjSlot && (stack.cljs$core$IMeta$_meta$arity$1$LKEY ?? metaSlot) === metaSlot && !Object.prototype.cljs$core$IMeta$_meta$arity$1$LKEY
+    && !ownMeta(stack);
   // Upstream's `(conj stack node)` of a sorted map seq's stack: a list cell
   // onto nil or a list, else `conj`.
   const treeStackPush = (stack, node) => stack == null ? new ListCell(node, emptyList, 1) : isListCell(stack) ? new ListCell(node, stack, stack.count$LKEY + 1)
@@ -11304,7 +11570,8 @@
   };
   //@unit storeNativeProtocols
   // The core protocols of `protocolMethodInfo`'s `kinds`.
-  const storeNativeProtocols = new Set(["ISeqable", "ISeq", "INext", "IMeta", "ILookup"]);
+  const storeNativeProtocols = new Set(["ISeqable", "ISeq", "INext", "IMeta", "ILookup", "ISequential", "IVector", "IMap", "ISet",
+    "Fn", "ICollection", "IList", "IChunkedSeq"]);
   //@unit protocolMethodInfo requires: coreProtocolNames, coreProtocolsByName,
   //@ nativeImplementations, protocolMasks, protocolSlot, storeNativeProtocols
   // The protocol of a key's text, which a resolved key (`methodKey`) keeps as its
@@ -11312,11 +11579,16 @@
   // extensions and receiver properties must still be observed on every call.
   function protocolMethodInfo(key) {
     const protocol = coreProtocolsByName.get(key.split("/")[0]), name = coreProtocolNames.get(protocol);
-    // `kinds` (`extendedMethod`, `storeProtocol`) only for the protocols
+    // `kinds` (`extendedMethod`, the `satisfies` hooks) only for the protocols
     // whose native test is the same for every value of a runtime class
     // (`runtimeKind`), so that one answer serves the kind: `seqableValue`,
     // `seqValue`, `nextValue`, `metaValue` and `lookupValue` read no field
-    // but the stores' own (light-cljs-988, by kind since light-cljs-1046).
+    // but the stores' own (light-cljs-988, by kind since light-cljs-1046);
+    // nor do `sequential`, `vectorValue`, `mapValue`, `setValue`, `fnValue`
+    // and `collectionValue`, and `listValue` and `chunkedSeqValue` read a
+    // seq's `cell` or `view`, which every value of its class holds alike
+    // (light-cljs-1070). Not `countedValue`, `indexedValue` and the others
+    // that read an indexed seq's `view`, which differs within its class.
     const kinds = storeNativeProtocols.has(name) ? Array(64).fill(undefined) : null;
     return {protocol, name, mask: protocolMasks.get(name), marker: name && protocolSlot(name, 0), native: nativeImplementations.get(protocol), kinds};
   }
@@ -11359,20 +11631,6 @@
     if (!direct && (directOnly || (fast && (Array.isArray(value) || typeof value === "string")))) return undefined;
     if (!direct && !satisfies(protocol, value)) return undefined;
     return extendedDeclared(value, key, arity, keyMethod(value, key, arity));
-  }
-  //@unit storeProtocol requires: demandMethod, demandProtocol, protocolSentinel
-  // What `satisfies` (`satisfying`) or `implementsProtocol` gives a value of
-  // the runtime's classes of `kind` (`runtimeKind`), with the same reads and
-  // demands: mask bit, then marker, else the native test, as the value is
-  // the runtime's own (`ownedProtocolValue`), which `extend-type` of host
-  // types, `object` or `default` cannot reach (light-cljs-998).
-  function storeProtocol(info, value, kind, satisfying) {
-    const name = info.name, mask = info.mask, kinds = info.kinds;
-    if (satisfying) demandProtocol(name, value);
-    if (mask && (value[mask[0]] & mask[1])) return true;
-    demandMethod(name, 0, value);
-    if (value[info.marker] === protocolSentinel) return true;
-    return kinds ? kinds[kind] ?? (kinds[kind] = !!info.native(value)) : !!info.native?.(value);
   }
   //@unit extendedDeclared requires: IMeta, protocolHooks, protocolMethodInfo
   // The rest of `extendedMethod` once the value is in the key's protocol, given
@@ -11797,7 +12055,7 @@
       return other != null && this.constructor === other.constructor &&
         Type.members.every(member => equalPair(this[member], other[member])) && equalPair(this.__extmap, other.__extmap);
     }]]);
-  //@unit recordMethods.meta effect: recordMethods when: meta, metaSupported requires: recordMethodTable
+  //@unit recordMethods.meta effect: recordMethods when: metaOf, metaSupported requires: recordMethodTable
   recordMethodTable.push(() => [
     ["IMeta/-meta", 1, function () { return this.__meta; }]]);
   //@unit recordMethods.withMeta effect: recordMethods when: collectionWithMeta, withMetaSupported
@@ -14198,18 +14456,17 @@
   protocolHooks.extend = true;
   //@unit protocolHooks.ownMethod effect: installMethods when: SubvecValue, chunkStore, containsOf,
   //@ containsPath, countOf, countPath, dropFirstChunk, empty, find, firstOf, firstPath, getOf,
-  //@ getPath, meta, nextOf, nextPath, nthOf, nthPath, printSequential, printValues,
-  //@ printWriterImpl, reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath, restOf,
-  //@ restPath, rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: ownDeclared, ownMethod,
-  //@ protocolHooks
+  //@ getPath, metaOf, nextOf, nextPath, nthOf, nthPath, printSequential, printValues,
+  //@ printWriterImpl, reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath, restOf, restPath,
+  //@ rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: ownDeclared, ownMethod, protocolHooks
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.programMethod = ownMethod;
   protocolHooks.declaredMethod = ownDeclared;
   //@unit protocolHooks.programMethod effect: extendType, extendInstance when: SubvecValue,
   //@ chunkStore, containsOf, containsPath, countOf, countPath, dropFirstChunk, empty, find,
-  //@ firstOf, firstPath, getOf, getPath, meta, nextOf, nextPath, nthOf, nthPath, printSequential,
-  //@ printValues, printWriterImpl, reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath,
-  //@ restOf, restPath, rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: extendedDeclared,
+  //@ firstOf, firstPath, getOf, getPath, metaOf, nextOf, nextPath, nthOf, nthPath, printSequential,
+  //@ printValues, printWriterImpl, reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath, restOf,
+  //@ restPath, rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: extendedDeclared,
   //@ extendedMethod, protocolHooks
   // ... and only `extend-type` and `specify!` give the runtime's values and
   // host values implementations, which `extendedMethod` finds.
@@ -14234,22 +14491,64 @@
   //@ isCounted, isEmpty, isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap,
   //@ isRecord, isReduceable, isReversible, isSeq, isSeqable, isSequential, isSet, isSorted,
   //@ isVector, jsToClj, keyToJs, makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reducePath,
-  //@ sequenceIterator requires: protocolHooks, protocolMethodInfo, runtimeKind, satisfies,
-  //@ storeProtocol
+  //@ sequenceIterator requires: demandMethod, demandProtocol, nativeMethods, nativeType, ownedKind,
+  //@ ownedProtocolValue, protocolHooks, protocolMethodInfo, protocolSentinel, satisfies
   // ... and with them also what those give the runtime's and host values.
   // Each reads the protocol of a resolved key (`methodKey`) from its `info`.
-  // A value of the runtime's classes (`runtimeKind`) takes one step.
+  // A core protocol's mask bit, then its marker, answer first, as
+  // upstream's `satisfies?` reads them (light-cljs-1070), where a value of
+  // the runtime's classes (`runtimeKind`) and any other value (`satisfies`)
+  // read them after their kind's store test, each after the same demands.
+  // A runtime class's value (a keyed kind below 64) whose class has a mask
+  // in the protocol's partition is not in a protocol that `kinds` holds by
+  // kind where its bit is clear (`IndexedSeqValue.masks`): the native test
+  // of such a protocol, the same for every value of the class, is false,
+  // and a value made by reflection from the prototype, which no store
+  // holds, answered false at the mask as well. Else a value of the
+  // runtime's classes (its class's store holds it, `ownedKind`) is in the
+  // protocol where its native test answers, by kind where `kinds` holds it,
+  // as the value is the runtime's own (`ownedProtocolValue`), which
+  // `extend-type` of host types, `object` or `default` cannot reach
+  // (light-cljs-998); any other value takes `satisfies`'s native test and
+  // host tables, without reading the mask bit or the marker again.
   protocolHooks.satisfies = (key, value) => {
-    const info = key.info || (key.info = protocolMethodInfo(key.key)), kind = info.name ? runtimeKind(value) : 0;
-    return kind ? storeProtocol(info, value, kind, true) : satisfies(info.protocol, value);
+    const info = key.info || (key.info = protocolMethodInfo(key.key)), name = info.name;
+    if (!name) return satisfies(info.protocol, value);
+    const mask = info.mask, native = info.native, kinds = info.kinds;
+    demandProtocol(name, value);
+    if (mask && (value?.[mask[0]] & mask[1])) return true;
+    demandMethod(name, 0, value);
+    if (value != null) {
+      if (value[info.marker] === protocolSentinel) return true;
+      const kind = value.cljs$lang$kind$$LKEY;
+      if (kind < 64 && kinds && mask && value[mask[0]]) return false;
+      if (kind < 64 && ownedKind(value, kind)) return kinds ? kinds[kind] ?? (kinds[kind] = !!native(value)) : !!native?.(value);
+    }
+    if (native?.(value)) return true;
+    if (ownedProtocolValue(value) || mask && value?.[mask[0]]) return false;
+    const protocol = info.protocol, type = nativeType(value);
+    return !!(protocol[type] || protocol._ || nativeMethods.get(name)?.get(type) || nativeMethods.get(name)?.get("_"));
   };
   //@unit protocolHooks.implements effect: extendType, extendInstance when: chunkNext, concatMany,
   //@ concatTwo, cons, countOf, countPath, drop, filter, hash, indexedSequence, into, isChunkedSeq,
-  //@ isMapEntry, isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta requires: implementsProtocol,
-  //@ protocolHooks, protocolMethodInfo, runtimeKind, storeProtocol
+  //@ isMapEntry, isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta requires: demandMethod,
+  //@ implementsProtocol, ownedKind, protocolHooks, protocolMethodInfo, protocolSentinel
+  // `implements?`: the mask bit, then the marker, as the hook above, else
+  // the native test (`coreProtocolImplementation`'s order, without
+  // `satisfies`'s demand).
   protocolHooks.implements = (key, value) => {
-    const info = key.info || (key.info = protocolMethodInfo(key.key)), kind = info.name ? runtimeKind(value) : 0;
-    return kind ? storeProtocol(info, value, kind, false) : implementsProtocol(info.protocol, value);
+    const info = key.info || (key.info = protocolMethodInfo(key.key)), name = info.name;
+    if (!name) return implementsProtocol(info.protocol, value);
+    const mask = info.mask, native = info.native, kinds = info.kinds;
+    if (mask && (value?.[mask[0]] & mask[1])) return true;
+    demandMethod(name, 0, value);
+    if (value != null) {
+      if (value[info.marker] === protocolSentinel) return true;
+      const kind = value.cljs$lang$kind$$LKEY;
+      if (kind < 64 && kinds && mask && value[mask[0]]) return false;
+      if (kinds && kind < 64 && ownedKind(value, kind)) return kinds[kind] ?? (kinds[kind] = !!native(value));
+    }
+    return !!native?.(value);
   };
   //@unit protocolHooks.countProtocol effect: installMethods when: accumulatingCount requires: countProtocol,
   //@ protocolHooks

@@ -1256,11 +1256,12 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // vectors, a map entry and the queue, less the three slot-first wrappers
     // of `conj`, `assoc` and `dissoc`, and its five `slotWrites` effects; the
     // four `slotWrites` effects that set `seq`'s, `first`'s, `rest`'s and
-    // `next`'s (light-cljs-1071); and the eight `-reduce` slot units
+    // `next`'s (light-cljs-1071); the eight `-reduce` slot units
     // light-cljs-1072 gave the classes the old path walked with walks of their
     // own and its two `slotWrites` effects, less the slot-first wrappers of
-    // `reduce` and `reduce-kv`.
-    assert_eq!(checked, 541);
+    // `reduce` and `reduce-kv`; and the 29 `-meta` slot units of the
+    // collections and seqs (light-cljs-1070).
+    assert_eq!(checked, 570);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -2109,13 +2110,14 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- methods",
             "demandProtocol <- preferMethod",
             "demandProtocol <- prefers",
+            "demandProtocol <- protocolHooks.implements",
+            "demandProtocol <- protocolHooks.satisfies",
             "demandProtocol <- protocolMethod",
             "demandProtocol <- protocolPredicate",
             "demandProtocol <- removeMethod",
             "demandProtocol <- resetMulti",
             "demandProtocol <- satisfies",
             "demandProtocol <- setDeclarationDemand",
-            "demandProtocol <- storeProtocol",
             "disjOf <- slotWrites.disj",
             "dissocOf <- slotWrites.dissoc",
             "equalPair <- equalPair.slots",
@@ -2279,6 +2281,8 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("makeVector.hash"),
             unit("ListValue.equivSlot"),
             unit("ListValue.hashSlot"),
+            unit("ListValue.masks"),
+            unit("ListValue.metaSlot"),
             unit("printsMeta.print"),
             unit("cons.print"),
             unit("printSequential.seq"),

@@ -1946,6 +1946,70 @@ and `hash` keep theirs (light-cljs-1074).
   iteration in two alternated rounds at load 21 to 29); the re-frame apps'
   whole bundles 135 to 355 bytes smaller after gzip and 149 to 245 raw.
 
+What light-cljs-1070 landed: in a program that extends types, `count` of a
+string or an array, `meta` of the runtime's collections and seqs, and the
+predicates answer without the extended lookup (`extendedMethod`, the
+`satisfies` hooks' store test), as upstream's read the mask bit, the
+marker or the class's slot.
+
+- **Where the time was.** The pellet's 219 ms (light-cljs-1017) is the
+  re-frame-shaped app's whole run to its first output, its load and its
+  first iteration: on master `4e76d385`, 227 and 233 ms of `--pseudo-names`
+  profiles are in those layers, 41 and 45 of them in the iteration. At load
+  `count` of a string took the lookup and its native test (`countedValue`,
+  405,270 calls), `meta` of maps, vectors, queues and lists the lookup's
+  store test and slot read (about 650,000), and the predicates the store
+  test and the native test of a class that declared nothing: only the
+  vectors had mask bits (light-cljs-1028).
+- **`count`.** A string or an array that does not declare `ICounted` (its
+  mask bit or marker, which `specify!` of an array writes) is its length
+  before the lookup, which never answered it otherwise: a host type's
+  `extend-type` cannot reach it, as upstream's `count` reads the length
+  after `implements?`.
+- **`meta` slot-first.** `meta` is upstream's shape, as `count` is: a value
+  with a keyed kind calls its `-meta` slot; every other value, and one
+  whose slot holds no method, takes `metaOf`, the old body. The 29
+  collection and seq classes whose values are in `metaValue`'s stores (not
+  vars, atoms or functions with metadata, which the shared-heap profile
+  answers otherwise) share one slot, `metaSlot`, their own `meta` field,
+  each a unit that waits for `meta` (and `treeMapSeqConstructor`, whose
+  list stacks compare it as they compare `listConjSlot`). `extend-type`
+  overwrites it and `specify!` shadows it; where a program clears it,
+  `metaOf` answers the field as the class did.
+- **Masks for the other classes.** The indexed, chunked, node, array-node,
+  array-map and reversed seqs, a sorted map's seq, the lists, conses and
+  ranges, repeats, iterates and cycles, key and value seqs, `re-seq`'s
+  conses, lazy seqs and chunked conses, keywords and symbols, the three
+  maps and their transients, the hash and sorted sets and the set
+  transient, and the queue hold keyed masks as literals (`.masks` units):
+  the bits of every protocol whose native test answers true for every value
+  of the class (an indexed seq's `ICounted`, `IIndexed`, `ASeq`, `IReduce`,
+  `IReversible`, `ICloneable` and `IDrop` differ with its `view`, a queue's
+  seq among them, so they have none). Real values answer as before; `class_protocol_masks` in
+  tests/support/js_runtime.test.js pins them. `Reduced`, atoms, volatiles,
+  delays, multimethods, vars and functions with metadata keep none.
+- **The hooks.** `protocolHooks.satisfies` and `implements` read the mask
+  bit and the marker first, with the demands and reads of the store step
+  and `satisfies` they replace (`storeProtocol` is deleted), then: a value
+  with a keyed kind below 64 whose class has a mask in the protocol's
+  partition answers false for a protocol that `kinds` holds by kind, where
+  the native test of every value of the class is false and a value made by
+  reflection answered false at the mask; then the store test and the native
+  test, by kind for the five protocols of light-cljs-988 and now
+  `ISequential`, `IVector`, `IMap`, `ISet`, `Fn`, `ICollection`, `IList` and
+  `IChunkedSeq`, whose tests read only a class's store or its seqs' `cell`
+  and `view`; then a host value's tables. The Proxy of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked as
+  often as before (308, 321 and 308 times).
+- **Answers kept.** `extended_programs_keep_count_meta_and_predicate_answers`
+  pins master's answers at every level for `extend-type` of `IMeta` on
+  vectors and of `object`, `specify!` of `IMeta` and of an array's
+  `ICounted`, a marker protocol making maps vectors and the predicates'
+  misses; `extended_programs_answer_count_meta_and_predicates_without_the_lookup`
+  counts no call of the lookup for the hits, where master made 238. Values
+  made by reflection, and a runtime class's masks written by name, answer
+  from the prototype's bits, as upstream's do (section 5, items 34 to 36).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -2943,6 +3007,31 @@ runtime prototype:
     slot is checked against the old path of a fresh runtime that demands
     declarations, as `reduce` and `reduce-kv` have no other path for them
     in release.
+
+Rescoped by light-cljs-1070, whose runtime classes declare their protocols
+by mask bits, which a value made by `Object.create` of a prototype reads as
+its class's:
+
+34. tests/support/js_runtime.test.js, the forged candidates of "lazy seqs,
+    cells, views and chunks", of the fresh runtime's built values, of the
+    `lightCljsWeakMapStores` runtime and of "No runtime prototype holds a
+    kind table's number": `seq?`, `chunked-seq?`, `map?`, `set?`,
+    `counted?` and `coll?` of one answer its prototype's bits, where they
+    answered false, and `count` of one whose class has no `-count` slot (a
+    cons, a lazy seq) walks its seq where its bits declare `ISeqable`, where
+    it threw "count not supported".
+35. `protocol_hooks_answer_runtime_values_as_the_full_lookup`: the
+    `forged-list`, `forged-map`, `forged-range` and `forged-seq` rows of each
+    extension set answer the predicates from the bits, and `nth`, `empty?`
+    and `count` of a cons of one as their steps do; in the set that writes
+    keyed names, the sorted map, whose prototype's
+    `cljs$lang$protocol_mask$partition0$` the program writes by name (64,
+    `ISeq` alone), is no longer `map?` or `coll?`: the written mask replaces
+    the bits its class declares, as upstream's would. The Proxy is asked as
+    often as before.
+36. `value_kind_predicates_answer_as_the_brand_stores_did`: the
+    `forged-map`, `forged-list`, `forged-set`, `forged-lazy-seq`,
+    `forged-range` and `forged-seq` rows answer as their classes' rows.
 
 ### Documentation rules that change
 

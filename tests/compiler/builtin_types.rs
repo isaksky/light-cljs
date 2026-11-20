@@ -751,6 +751,111 @@ fn runtime_meta_slot_overrides_without_markers() {
     assert!(!units.contains(&"protocolHooks.programMethod"), "{units:?}");
 }
 
+/// light-cljs-1070: in a program that extends types, `count` of a string or
+/// an array, `meta` of the runtime's collections and seqs, and a predicate of
+/// a value whose class declares the protocol by its mask bit or marker take
+/// no protocol lookup: the readable output's `extendedMethod`, `runtimeKind`,
+/// `coreProtocolImplementation` and `satisfies` count no call, as upstream's `count`,
+/// `meta` and `satisfies?` read the mask bit, the marker or the class's
+/// slot. `extend-type` and `specify!` keep their answers.
+#[test]
+fn extended_programs_answer_count_meta_and_predicates_without_the_lookup() {
+    let source = r#"(deftype T [] ICounted (-count [_] 7))
+        (extend-type T IMeta (-meta [_] :t))
+        (let [m {:m 1} calls #(aget js/globalThis "__calls")
+              colls [(with-meta [1 2] m) (with-meta {:a 1} m) (with-meta (list 1) m) (with-meta #{1} m)
+                     (with-meta (conj cljs.core/PersistentQueue.EMPTY 1) m) (with-meta (zipmap (range 20) (range 20)) m)
+                     (with-meta (subvec [1 2 3] 1) m) (first {:a 1}) () (with-meta (sorted-map :a 1) m)
+                     (with-meta (sorted-set 1) m) (with-meta (into #{} (range 20)) m) [] {}]
+              seqs [(seq [1 2]) (seq {:a 1}) (rest (list 1 2)) (cons 0 (list 1)) (range 3)]
+              before (calls)
+              results [(count "abc") (count (array 1 2)) (mapv meta colls) (mapv meta seqs)
+                       [(vector? (colls 0))] (mapv map? (mapv colls [1 5 9 13])) (mapv set? (mapv colls [3 10 11]))
+                       (mapv coll? colls) (mapv seq? seqs) (mapv sequential? seqs) (chunked-seq? (range 3))]
+              after (calls)]
+          (pr-str [(count (T.)) (meta (T.)) (- after before) results]))"#;
+    let expected = "[7 :t 0 [3 2 [{:m 1} {:m 1} {:m 1} {:m 1} {:m 1} {:m 1} {:m 1} nil nil {:m 1} {:m 1} {:m 1} nil nil] \
+         [nil nil nil nil nil] [true] [true true true true] [true true true] \
+         [true true true true true true true true true true true true true true] [true true true true true] \
+         [true true true true true] true]]";
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program(source), options).emit_js();
+    for head in [
+        "function extendedMethod(value, key, arity, fast = false, directOnly = false) {",
+        "const runtimeKind = value => {",
+        "function coreProtocolImplementation(protocol, value) {",
+        "function satisfies(protocol, value) {",
+    ] {
+        assert!(js.contains(head), "{head}");
+        js = js.replace(head, &format!("{head} globalThis.__calls++;"));
+    }
+    assert_eq!(
+        execute(&format!("globalThis.__calls = 0; console.log({js});")),
+        format!("{expected}\n")
+    );
+    // Unpatched, every level counts nothing.
+    every_level(
+        &format!("(set! (.-__calls js/globalThis) 0) {source}"),
+        expected,
+    );
+}
+
+/// light-cljs-1070: the answers the lookup gave `count`, `meta` and the
+/// predicates in a program that extends types, at every level: a program's
+/// `IMeta` of a runtime class (`extend-type`) or of one value (`specify!`),
+/// `ICounted` of an array by `specify!` (and of `string` by `extend-type`,
+/// which `count` of a string does not ask, as upstream's), a marker protocol
+/// that makes a map a vector, and the misses of each predicate.
+#[test]
+fn extended_programs_keep_count_meta_and_predicate_answers() {
+    every_level(
+        "(extend-type PersistentVector IMeta (-meta [_] :vm))
+         (extend-type PersistentArrayMap IVector)
+         (extend-type string ICounted (-count [_] -1))
+         (extend-type object IMeta (-meta [_] :om))
+         (deftype T [])
+         (let [a (specify! (array 1 2 3) ICounted (-count [_] 9))
+               l (specify! (list 1) IMeta (-meta [_] :lm))
+               h (zipmap (range 20) (range 20))]
+           (pr-str [(meta [1]) (meta (with-meta [1] {:v 1})) (meta (with-meta {:a 1} {:x 1})) (meta l) (meta (list 2))
+                    (meta (with-meta (conj cljs.core/PersistentQueue.EMPTY 1) {:q 1})) (meta (seq [1 2])) (meta (js-obj))
+                    (meta (T.)) (meta inc) (meta nil) (meta :k) (meta (transient []))
+                    (count \"abc\") (count a) (count (array 1)) (count nil) (count [1 2]) (count {:a 1}) (count (list 1 2))
+                    (vector? {:a 1}) (vector? h) (vector? [1]) (vector? nil) (vector? \"s\") (vector? (T.))
+                    (map? [1]) (map? nil) (map? (T.)) (map? h) (set? []) (set? nil) (set? (array 1))
+                    (sequential? {:a 1}) (sequential? [1]) (sequential? (T.)) (sequential? :k) (sequential? (lazy-seq [1]))
+                    (coll? \"s\") (coll? (T.)) (seq? {:a 1}) (seq? nil) (seq? (list 1)) (fn? [1]) (fn? \"s\") (fn? inc)
+                    (empty? (conj cljs.core/PersistentQueue.EMPTY 1)) (empty? nil) (empty? (lazy-seq nil))
+                    (chunked-seq? (seq [1 2])) (chunked-seq? (list 1)) (chunked-seq? (range 3))]))",
+        "[:vm :vm {:x 1} :lm nil {:q 1} nil :om :om nil nil nil nil \
+         3 9 1 0 2 1 2 \
+         true false true false false false \
+         false false false true false false false \
+         false true false false true \
+         false false false false true false false true \
+         false true true \
+         false false true]",
+    );
+}
+
+/// light-cljs-1070: `extend-type` of `js/Object` writes `IMeta` on
+/// `Object.prototype`, which the classes' own `-meta` slot (`metaSlot`) would
+/// shadow: `meta` of every runtime value answers it, as the lookup found it
+/// through the prototype chain, but a class's or a value's own method; and a
+/// sorted map's seq, whose stack conjoins its lists, still builds them.
+#[test]
+fn inherited_object_meta_extensions_keep_runtime_answers() {
+    every_level(
+        "(extend-type js/Object IMeta (-meta [_] :custom))
+         (pr-str [(meta [1]) (meta (with-meta [1] {:v 1})) (meta (with-meta {:a 1} {:x 1})) (meta (list 1))
+                  (meta (conj cljs.core/PersistentQueue.EMPTY 1)) (meta (seq [1 2])) (meta #{1})
+                  (meta (specify! [2] IMeta (-meta [_] :own))) (meta (range 3)) (meta (lazy-seq [1]))
+                  (vec (keys (into (sorted-map) [[1 1] [2 2] [3 3]]))) (meta (rseq (into (sorted-map) [[1 1] [2 2]])))])",
+        "[:custom :custom :custom :custom :custom :custom :custom :own :custom :custom [1 2 3] :custom]",
+    );
+}
+
 /// light-cljs-1060: without `extend-type` or `specify!`, and with no core
 /// method written by name, nothing but a vector's or a set's own field can
 /// answer its metadata, so `conj` and `assoc` of a vector, a subvector and a
@@ -3715,7 +3820,11 @@ fn transient_map_conj_observes_value_method_changes_from_key() {
 /// its keyed kind for the wrappers that answer a runtime class's value
 /// whose prototype slot a program cleared (`slotWrites`). Since
 /// light-cljs-1071 once or twice more again there: the seq walk's wrappers
-/// read it too, for the Proxy's `seq` and `first` (or `rest`).
+/// read it too, for the Proxy's `seq` and `first` (or `rest`). Since
+/// light-cljs-1070 the forged rows answer the predicates from the bits their
+/// prototypes declare, and the sorted map of the set that writes keyed names,
+/// whose mask the program writes by name, answers the written mask
+/// (docs/value-layout.md, section 5, item 35); the Proxy is asked as often.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -3799,10 +3908,10 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000000e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-list 000010000000000000000 nil :error 2\n",
-                "forged-map 00001000000000000e000 nil :error :error\n",
-                "forged-range 000010000000000000000 nil :none 2\n",
-                "forged-seq 00001000000000000e000 :error :error :error\n",
+                "forged-list 01001111010000001e000 nil nil :error\n",
+                "forged-map 00101101100001001e000 nil :error :error\n",
+                "forged-range 01001111000000011e010 nil :none :error\n",
+                "forged-seq 01001110000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 110011111001010110000 5 1 2\n",
@@ -3860,10 +3969,10 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 110000110100000000001 42 :error :error\n",
                 "type 110000110100000000000 42 :error :error\n",
                 "proxy 110000110100000000000 42 :error :error\n",
-                "forged-list 110010110100000000000 nil :error 43\n",
-                "forged-map 110010110100000000000 nil :error :error\n",
-                "forged-range 110010110100000000000 nil :none 43\n",
-                "forged-seq 110010110100000000000 :error :error :error\n",
+                "forged-list 010011110100000010000 nil nil 43\n",
+                "forged-map 001011011000010010000 nil :error :error\n",
+                "forged-range 010011110000000110010 nil :none 43\n",
+                "forged-seq 01001110000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
@@ -3898,7 +4007,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 // prototype (light-cljs-1028), and `nth` walks its seq: a
                 // write to a runtime prototype (docs/value-layout.md, section
                 // 5, item 23).
-                "sorted-map 011011011011010010000 1 [:a 1] 2\n",
+                "sorted-map 010010011011010010000 1 [:a 1] 2\n",
                 "set 000111010000010000000 :unmarked :error 2\n",
                 "hash-set 000111010000010000000 :unmarked :error 21\n",
                 "sorted-set 000111010011010000000 1 :error 2\n",
@@ -3927,10 +4036,10 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000001e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-list 100010000000000000000 nil :error 2\n",
-                "forged-map 00001000000000000e100 nil :error :error\n",
-                "forged-range 000010000000000000000 nil :none 2\n",
-                "forged-seq 00001000000000000e000 :error :error :error\n",
+                "forged-list 11001111010000001e000 nil nil :error\n",
+                "forged-map 00101101100001001e100 nil :error :error\n",
+                "forged-range 01001111000000011e010 nil :none :error\n",
+                "forged-seq 01001110000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :queue 2\n",
                 "specified-map 001011111100010010100 1 [:s 1] 2\n",
                 "specified-vector 100011111001010110000 5 1 2\n",
@@ -4717,7 +4826,9 @@ row_tests!(corpus;
 /// the rows forged from a vector's, a map entry's and a transient vector's
 /// prototypes (docs/value-layout.md, section 5, item 1): those prototypes
 /// declare their protocols, so such a value, deliberate reflection,
-/// type-tests as its kind.
+/// type-tests as its kind. Since light-cljs-1070 the other classes declare
+/// theirs, and the remaining forged rows type-test as their kinds too
+/// (item 36).
 #[test]
 fn value_kind_predicates_answer_as_the_brand_stores_did() {
     let source = r#"
@@ -4791,18 +4902,18 @@ fn value_kind_predicates_answer_as_the_brand_stores_did() {
         "object 0000000000000000000000000000010000\n",
         "fn 0000000000000010000001000000010000\n",
         "proxy 0000000000000000000000000000010000\n",
-        "forged-map 0000010000000000000000000000010000\n",
+        "forged-map 0010011011000010001111101111111000\n",
         // A map's own fields copied onto its prototype make one by deliberate
         // reflection (light-cljs-1012, docs/value-layout.md section 5).
         "copied-map 0010011011000010001111101111111000\n",
-        "forged-list 0000010000000000000000000000010000\n",
+        "forged-list 0100011110100000001111100110011111\n",
         // A list's own fields copied onto its prototype make one by deliberate
         // reflection (light-cljs-1030, docs/value-layout.md section 5).
         "copied-list 0100011110100000001111100110011111\n",
-        "forged-set 0000010000000000000000000000010000\n",
-        "forged-lazy-seq 0000010000000000000000000000010000\n",
-        "forged-range 0000010000000000000000000000010000\n",
-        "forged-seq 0000010000000000000000000000010000\n",
+        "forged-set 0000111010000010000111101110111000\n",
+        "forged-lazy-seq 0100011100000000001111100110010110\n",
+        "forged-range 0100011110000001011111100110011110\n",
+        "forged-seq 0100011100000000000111100110010110\n",
         "forged-record 0010011011000100000111101101011000\n",
         "get:Symbol(Symbol.iterator) proto\n",
     );
