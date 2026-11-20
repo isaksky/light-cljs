@@ -4788,7 +4788,8 @@ fn object_predicate_excludes_mask_only_records() {
 /// as before; `disj` and `pop` of a program type whose slot a getter
 /// answers false finish from that read, as the old paths' one lookup did,
 /// without reading the slot again; and the update slots a program clears by
-/// name answer by the class (`slotWrites`), lists, sets and maps included.
+/// name, on the value or its class's prototype, answer by the class
+/// (`slotWrites`), lists, sets and maps included.
 #[test]
 fn update_fallbacks_keep_metadata_reads_and_selected_dispatch() {
     every_level(
@@ -4828,4 +4829,15 @@ fn update_fallbacks_keep_metadata_reads_and_selected_dispatch() {
             "[[1 2] #{2} {:b 2} (2) (0 1 2) #{} (1) {:k 1} nil nil nil]",
         );
     }
+    // ... and cleared on the class's prototype.
+    every_level(
+        "(set! (.. PersistentVector -prototype -cljs$core$IStack$_pop$arity$1) nil)
+         (set! (.. PersistentHashSet -prototype -cljs$core$ISet$_disjoin$arity$2) nil)
+         (set! (.. PersistentArrayMap -prototype -cljs$core$IMap$_dissoc$arity$2) false)
+         (set! (.. List -prototype -cljs$core$ICollection$_conj$arity$2) nil)
+         (set! (.. List -prototype -cljs$core$IStack$_pop$arity$1) false)
+         (pr-str [(pop [1 2 3]) (disj (hash-set 1 2) 1) (dissoc {:a 1 :b 2} :a) (conj (list 1 2) 0)
+                  (pop (list 1 2)) (list? (conj (list 1 2) 0))])",
+        "[[1 2] #{2} {:b 2} (0 1 2) (2) true]",
+    );
 }
