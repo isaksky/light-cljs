@@ -4355,8 +4355,8 @@
     return updatedMap(value, entries);
   }
 
-  //@unit mapConj requires: assoc, first, holdsVector, indexedNth, indexedValue, methodKeys, next,
-  //@ nth, protocolHooks, seq, slotFirst
+  //@unit mapConj requires: assoc, builtinSlots, first, holdsVector, indexedNth, indexedValue,
+  //@ methodKeys, next, nth, protocolHooks, seq, slotFirst
   function mapConj(value, member) {
     if (member == null) return value;
     // A vector's `-nth` is `nth`'s own (see `protocolHooks`), which is
@@ -4393,7 +4393,7 @@
   // undefined takes a host type's, `object`'s or `default`'s method, then
   // the runtime's own `-nth` (`indexedNth`), else the dispatcher's error.
   function entryNthRead(entry, index, read) {
-    const own = protocolHooks.builtin && (read != null ? read : protocolHooks.externalMethod?.(entry, methodKeys[25], 2));
+    const own = protocolHooks.builtin && (read != null && !builtinSlots.has(read) ? read : protocolHooks.externalMethod?.(entry, methodKeys[25], 2));
     if (own != null) return own.call(entry, entry, index);
     if (indexedValue(entry)) return indexedNth(entry, index);
     throw new Error("No protocol method IIndexed/-nth defined for this value");
@@ -10237,6 +10237,29 @@
   conjOf = (operation => function (coll, item) {
     return arguments.length === 2 && slotWrites(coll, methodKeys[7]) ? conjPath(coll, item) : operation.apply(null, arguments);
   })(conjOf);
+  // `into`'s `-conj` (`conjOwn`) and a map's `-nth` of an entry
+  // (`entryNth`, light-cljs-1076) call a runtime class's value's slot
+  // first; a runtime class's method that a program lent by name to a value
+  // whose class does not implement the protocol (an atom) is passed over,
+  // as the dispatchers' lookups pass over `builtinSlots`, and the value
+  // finishes from the slot as read (the third Sol review).
+  //@unit slotWrites.conjOwn effect: slotWrites when: conjOwn requires: builtinSlots,
+  //@ collectionValue, conjOwn, conjProtocol, conjRead, slotFirst
+  conjOwn = (operation => function (coll, item) {
+    if (coll == null || !slotFirst.on) return operation(coll, item);
+    const kind = coll.cljs$lang$kind$$LKEY;
+    if (kind === undefined) return conjProtocol(coll, item);
+    const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
+    return method && kind < 64 && (!builtinSlots.has(method) || collectionValue(coll)) ? method.call(coll, coll, item) : conjRead(coll, item, method);
+  })(conjOwn);
+  //@unit slotWrites.entryNth effect: slotWrites when: mapConj requires: builtinSlots, entryNth,
+  //@ entryNthRead, indexedValue, protocolHooks, slotFirst
+  entryNth = (operation => function (entry, index) {
+    if (entry == null || !slotFirst.on) return operation(entry, index);
+    if (!(entry.cljs$lang$kind$$LKEY < 64)) return protocolHooks.nthProtocol(entry, index);
+    const method = entry.cljs$core$IIndexed$_nth$arity$2$LKEY;
+    return method && (!builtinSlots.has(method) || indexedValue(entry)) ? method.call(entry, entry, index) : entryNthRead(entry, index, method);
+  })(entryNth);
   //@unit slotWrites.assoc effect: slotWrites when: assocOf requires: assocOf, assocPath,
   //@ methodKeys, slotWrites
   assocOf = (operation => function (value, key, item) {

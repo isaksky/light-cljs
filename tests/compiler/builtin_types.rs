@@ -4194,10 +4194,27 @@ fn map_conj_preserves_nil_vector_extensions() {
     );
 }
 
+/// A map's `-conj` of a value that `extend-type` makes a vector and whose
+/// `-nth` member holds a runtime class's method (a map entry's,
+/// `builtinSlots`) answers as `-nth`'s dispatcher, which passes over such a
+/// method (the third Sol review of light-cljs-1076): an atom's error, and a
+/// vector's own answer through the method its class lent another vector.
+#[test]
+fn map_conj_preserves_borrowed_builtin_nth_slots() {
+    every_level(
+        "(extend-type Atom IVector)
+         (let [p (fn [f] (try (pr-str (f)) (catch :default e (str \"E:\" (.-message e)))))
+               lend (fn [value] (set! (.-cljs$core$IIndexed$_nth$arity$2 value) (.-cljs$core$IIndexed$_nth$arity$2 (first {:k :v}))) value)]
+           (pr-str [(p #(conj {} (lend (atom 1)))) (p #(conj (sorted-map) (lend (atom 1)))) (p #(conj {} (lend (vector :a 1))))
+                    (p #(into (sorted-map) [(lend (vector :b 2))]))]))",
+        r#"["E:No protocol method IIndexed/-nth defined for this value" "E:No protocol method IIndexed/-nth defined for this value" "{:a 1}" "{:b 2}"]"#,
+    );
+}
+
 /// `into` onto a program type's value whose `-conj` member holds a runtime
 /// class's method (a list's, `builtinSlots`) answers as `-conj`'s
 /// dispatcher, which passes over such a method (the second Sol review of
-/// light-cljs-1076, as `empty_preserves_borrowed_builtin_count_slots` for
+/// light-cljs-1076, and the third for an atom, as `empty_preserves_borrowed_builtin_count_slots` for
 /// `-count`): the dispatcher's error for a program type, `object`'s method
 /// where a program extends `object`, and the class's path for a record and
 /// for a runtime class's value that holds another class's method, as
@@ -4209,14 +4226,14 @@ fn into_preserves_borrowed_builtin_conj_slots() {
          (let [p (fn [f] (try (pr-str (f)) (catch :default e (str \"E:\" (.-message e)))))
                lend (fn [value] (set! (.-cljs$core$ICollection$_conj$arity$2 value) (.-cljs$core$ICollection$_conj$arity$2 ())) value)]
            (pr-str [(p #(into (lend (T.)) [1])) (p #(into (lend (->R 1)) [[:b 2]])) (p #(into (lend (sorted-set 1)) [2]))
-                    (p #(into (lend (T.)) [])) (p #(count (into (->R 1) [[:b 2]])))]))";
+                    (p #(into (lend (T.)) [])) (p #(count (into (->R 1) [[:b 2]]))) (p #(into (lend (atom nil)) [1]))]))";
     every_level(
         body,
-        r##"["E:No protocol method ICollection/-conj defined for this value" "([:b 2] [:a 1])" "(2 1)" "#object[cljs.user.T [object Object]]" "2"]"##,
+        r##"["E:No protocol method ICollection/-conj defined for this value" "([:b 2] [:a 1])" "(2 1)" "#object[cljs.user.T [object Object]]" "2" "E:No protocol method ICollection/-conj defined for this value"]"##,
     );
     every_level(
         &format!("(extend-type object ICollection (-conj [o x] [:object x])) {body}"),
-        r##"["[:object 1]" "([:b 2] [:a 1])" "(2 1)" "#object[cljs.user.T [object Object]]" "2"]"##,
+        r##"["[:object 1]" "([:b 2] [:a 1])" "(2 1)" "#object[cljs.user.T [object Object]]" "2" "[:object 1]"]"##,
     );
 }
 

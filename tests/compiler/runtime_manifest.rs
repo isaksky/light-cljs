@@ -761,6 +761,8 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "slotWrites.contains",
     "slotWrites.peek",
     "slotWrites.conj",
+    "slotWrites.conjOwn",
+    "slotWrites.entryNth",
     "slotWrites.assoc",
     "slotWrites.dissoc",
     "slotWrites.disj",
@@ -1268,8 +1270,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // the UUIDs and vars (`uuidValue.hash`) and its three `slotWrites`
     // effects, less the slot-first wrappers of `=` and `hash`; and the four
     // `-as-transient` and four `-with-meta` slot units of the editable
-    // collections (light-cljs-1067).
-    assert_eq!(checked, 580);
+    // collections (light-cljs-1067); and the two `slotWrites` effects of
+    // `into`'s `-conj` and a map entry's `-nth` (light-cljs-1076).
+    assert_eq!(checked, 582);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -2108,6 +2111,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "MapEntryType <- MapEntryType.vector",
             "assocOf <- slotWrites.assoc",
             "conjOf <- slotWrites.conj",
+            "conjOwn <- slotWrites.conjOwn",
             "containsOf <- slotWrites.contains",
             "containsPath <- contains.own",
             "countOf <- slotWrites.count",
@@ -2149,6 +2153,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "lookup <- lookup.tree",
             "macroexpandServices <- expansionService",
             "macroexpandServices <- setMacroexpandServices",
+            "mapConj <- slotWrites.entryNth",
             "mapEntry <- mapEntry.lean",
             "mapEntry <- mapEntry.vector",
             "nextOf <- slotWrites.next",
