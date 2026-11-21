@@ -6081,7 +6081,7 @@
   const transientAssocSlot = builtinSlot((self, key, item) => transientState(self) === undefined ? noBranch : assocTransient(self, key, item));
   //@unit transientPersistentSlot requires: builtinSlot, noBranch, persistTransient, transientState
   const transientPersistentSlot = builtinSlot(self => transientState(self) === undefined ? noBranch : persistTransient(self));
-  //@unit asTransientSlot requires: asTransient, builtinSlot
+  //@unit asTransientSlot requires: asTransient
   // The `-as-transient` slot of the editable collections, a vector, an array
   // or hash map and a hash set (light-cljs-1067), as upstream's
   // PersistentVector, PersistentArrayMap, PersistentHashMap and
@@ -6089,11 +6089,15 @@
   // `asTransient` makes of each. One function for every class, so that
   // `transient` calls one target. A method on `Object.prototype`
   // (`extend-type` of `js/Object`), which the slot shadows, answers first,
-  // as the lookup found it through the chain (`metaSlot`).
-  const asTransientSlot = builtinSlot(function (self) {
+  // as the lookup found it through the chain (`metaSlot`). Not one of
+  // `builtinSlots`: the lookup (`builtin`, which `-as-transient`'s
+  // dispatcher takes) finds it as the value's own method, which answers as
+  // the lookup's own path did, a method on `Object.prototype` first; it
+  // calls no lookup of its key, so none finds it again.
+  const asTransientSlot = function (self) {
     const inherited = Object.prototype.cljs$core$IEditableCollection$_as_transient$arity$1$LKEY;
     return inherited ? inherited.call(self, self) : asTransient(self);
-  });
+  };
   //@unit TransientVectorType.assocBang effect: TransientVectorType when: assocBangOwn requires: transientAssocSlot,
   //@ TransientVectorType
   TransientVectorType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = transientAssocSlot;
@@ -9012,18 +9016,20 @@
     const metadata = self.meta$LKEY;
     return metadata !== undefined || "meta$LKEY" in self ? metadata : null;
   });
-  //@unit withMetaSlot requires: builtinSlot, copyWithMeta, meta
+  //@unit withMetaSlot requires: copyWithMeta, meta
   // The `-with-meta` slot of the editable collections, whose values `into`
   // gives its target's metadata (light-cljs-1067), as `-as-transient`'s
   // (`asTransientSlot`): the value itself where `meta` answers `metadata`,
-  // else its copy with it, as `collectionWithMeta` answers where no program
-  // gave the value a method, which the slot is not. A method on
-  // `Object.prototype`, which the slot shadows, answers first (`metaSlot`).
-  const withMetaSlot = builtinSlot(function (self, metadata) {
+  // else its copy with it, as `collectionWithMeta` answers past its lookup.
+  // A method on `Object.prototype`, which the slot shadows, answers first
+  // (`metaSlot`). Not one of `builtinSlots`, as `asTransientSlot`: the
+  // lookup of `with-meta` and the others (`collectionWithMeta`) and of
+  // their support test (`withMetaSupported`) finds it, and answers as before.
+  const withMetaSlot = function (self, metadata) {
     const inherited = Object.prototype.cljs$core$IWithMeta$_with_meta$arity$2$LKEY;
     if (inherited) return inherited.call(self, self, metadata);
     return meta(self) === metadata ? self : copyWithMeta(self, metadata);
-  });
+  };
   //@unit metaOf requires: atoms, deferredVarMetadata, kindHooks, methodKeys, ownMeta, protocolHooks
   // `meta`'s own path: a program's method that the lookup finds (a host
   // value's, or one in a slot a program cleared, which the class's

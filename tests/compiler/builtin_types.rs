@@ -3746,6 +3746,68 @@ fn into_of_small_collections_takes_no_protocol_lookup_per_call() {
     );
 }
 
+/// The editable collections' `-as-transient` and `-with-meta` slots, which
+/// `transient`, `-with-meta` and `into` call before any lookup
+/// (light-cljs-1067), keep master `8903e693`'s answers at every level: for
+/// `extend-type` of the protocols on a vector and a hash set and of `IMeta`
+/// on an array map, `specify!` of them on values, `extend-type` of
+/// `js/Object`, whose methods the slots shadow, and members a program
+/// writes by name on a class's prototype (nil, false or a method) or on a
+/// value; for targets that are no editable collection (nil, a list, sorted
+/// collections, a subvector, a map entry); and for programs with protocol
+/// implementations and none.
+#[test]
+fn transient_and_with_meta_slots_keep_extended_answers() {
+    let head = r#"(let [out (array) p (fn [f] (.push out (try (pr-str (f)) (catch :default e (str "E:" (.-message e))))))
+                       hm (zipmap (range 9) (range 9))]"#;
+    let common = r#"(p #(into nil [1 2])) (p #(into () [1 2])) (p #(into (sorted-set) [3 1])) (p #(into (sorted-map) {:b 1 :a 2}))
+                    (p #(into (subvec [1 2 3] 1) [4])) (p #(into (first {:a 1}) [3])) (p #(meta (into (with-meta [] {:mv 1}) [1])))
+                    (p #(meta (into (with-meta #{} {:ms 1}) (map inc) [1]))) (p #(meta (into (with-meta hm {:mh 1}) {:a 1})))
+                    (p #(meta (-with-meta [1] {:x 1}))) (p #(meta (-with-meta (fn [] 1) {:f 1}))) (p #(-with-meta (transient []) nil))
+                    (p #(-with-meta (atom 1) nil)) (p #(-with-meta nil nil)) (p #(count (into hm {:a 1})))
+                    (.join out " "))"#;
+    let programs = [
+        (r#"(extend-type PersistentVector IEditableCollection (-as-transient [v] (conj! (transient #{}) [:ext (count v)])))
+           (extend-type PersistentHashSet IWithMeta (-with-meta [s m] [:wm (count s) m]))
+           (extend-type PersistentArrayMap IMeta (-meta [m] {:am (count m)}))"#,
+         r#"(p #(into [] [1 2])) (p #(into [0] (map inc) [1 2])) (p #(persistent! (transient [1]))) (p #(into #{} [1 2]))
+           (p #(into #{} (map inc) [1 2])) (p #(into {} {:a 1})) (p #(meta (into {} {:a 1}))) (p #(into {:b 2} (map identity) {:a 1}))
+           (p #(meta (into {:b 2} (map identity) {:a 1}))) (p #(-with-meta #{1} {:x 1})) (p #(-with-meta {:a 1} {:x 1}))"#),
+        ("", r#"(let [v (specify! [1 2] IEditableCollection (-as-transient [_] (transient [:sv])))
+                 s (specify! #{1} IWithMeta (-with-meta [_ m] [:sw m]))
+                 m (specify! {:a 1} IMeta (-meta [_] {:sm 1}))]
+             (p #(into v [3])) (p #(into v (map inc) [3])) (p #(persistent! (transient v))) (p #(into s [2])) (p #(-with-meta s {:k 1}))
+             (p #(into m {:b 2})) (p #(meta (into m {:b 2}))) (p #(meta (into m (map identity) {:b 2}))) (p #(into [] s)))"#),
+        (r#"(extend-type js/Object IWithMeta (-with-meta [o m] [:obj m]))"#,
+         r#"(p #(into [] [1])) (p #(into {} {:a 1})) (p #(into #{} (map inc) [1])) (p #(-with-meta [1] {:a 1}))
+           (p #(-with-meta (list 1) {:a 1})) (p #(with-meta [1] {:a 1})) (p #(into (with-meta [] {:a 1}) [2]))"#),
+        (r#"(extend-type js/Object IEditableCollection (-as-transient [o] :objt))"#,
+         r#"(p #(transient [1])) (p #(transient {:a 1})) (p #(transient #{})) (p #(into [] [1])) (p #(into #{} []))
+           (p #(into {} (map identity) {}))"#),
+        ("", r#"(let [w [5]]
+             (set! (.. PersistentVector -prototype -cljs$core$IEditableCollection$_as_transient$arity$1) nil)
+             (set! (.. PersistentHashSet -prototype -cljs$core$IWithMeta$_with_meta$arity$2) false)
+             (set! (.. PersistentHashMap -prototype -cljs$core$IEditableCollection$_as_transient$arity$1) (fn [_] (transient {:hm 0})))
+             (set! (.-cljs$core$IWithMeta$_with_meta$arity$2 w) (fn [_ m] [:byname m]))
+             (p #(into [] [1 2])) (p #(into (with-meta [] {:a 1}) [1])) (p #(into #{} [1])) (p #(meta (into (with-meta #{} {:s 1}) [1])))
+             (p #(-with-meta w {:q 1})) (p #(into w [2])) (p #(persistent! (transient hm))) (p #(count (into hm {:a 1}))))"#),
+        ("(deftype T [] ICounted (-count [_] 7))", r#"(p #(count (T.))) (p #(into [] [1 2])) (p #(into {} {:a 1})) (p #(into #{} (map inc) [1]))"#),
+        ("", r#"(p #(into [] [1 2])) (p #(into {} {:a 1})) (p #(into #{} (map inc) [1]))"#),
+    ];
+    let expected = [
+        r#"[:wm 3 nil] [:wm 3 nil] #{[:ext 1]} [:wm 2 nil] [:wm 2 nil] {:a 1} {:am 1} {:b 2, :a 1} {:am 2} [:wm 1 {:x 1}] {:a 1} (2 1) (2 1) #{1 3} {:a 2, :b 1} [2 3 4] [:a 1 3] nil nil {:mh 1} {:x 1} E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value 10"#,
+        r#"[:sv 3] [:sv 4] [:sv] #{1 2} [:sw {:k 1}] {:a 1, :b 2} {:sm 1} {:sm 1} [1] (2 1) (2 1) #{1 3} {:a 2, :b 1} [2 3 4] [:a 1 3] {:mv 1} {:ms 1} {:mh 1} {:x 1} E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value 10"#,
+        r#"[:obj nil] [:obj nil] [:obj nil] [:obj {:a 1}] [:obj {:a 1}] [:obj {:a 1}] [:obj nil] (2 1) (2 1) #{1 3} {:a 2, :b 1} [2 3 4] [:a 1 3] nil nil nil nil {:f 1} [:obj nil] [:obj nil] E:No protocol method IWithMeta.-with-meta defined for this value 2"#,
+        r#":objt :objt :objt E:No protocol method ITransientCollection/-conj! defined for this value E:No protocol method ITransientCollection/-persistent! defined for this value E:No protocol method ITransientCollection/-persistent! defined for this value (2 1) E:No protocol method ITransientCollection/-conj! defined for this value E:No protocol method ITransientCollection/-conj! defined for this value E:No protocol method ITransientCollection/-conj! defined for this value E:No protocol method ITransientCollection/-conj! defined for this value E:No protocol method ITransientCollection/-conj! defined for this value E:No protocol method ITransientCollection/-conj! defined for this value E:No protocol method ITransientCollection/-conj! defined for this value E:No protocol method ITransientCollection/-conj! defined for this value {:x 1} E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method ITransientCollection/-conj! defined for this value"#,
+        r#"[1 2] [1] #{1} {:s 1} [:byname {:q 1}] [5 2] {:hm 0} 2 (2 1) (2 1) #{1 3} {:a 2, :b 1} [2 3 4] [:a 1 3] {:mv 1} {:ms 1} {:mh 1} {:x 1} E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value 2"#,
+        r#"7 [1 2] {:a 1} #{2} (2 1) (2 1) #{1 3} {:a 2, :b 1} [2 3 4] [:a 1 3] {:mv 1} {:ms 1} {:mh 1} {:x 1} E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value 10"#,
+        r#"[1 2] {:a 1} #{2} (2 1) (2 1) #{1 3} {:a 2, :b 1} [2 3 4] [:a 1 3] {:mv 1} {:ms 1} {:mh 1} {:x 1} E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value E:No protocol method IWithMeta.-with-meta defined for this value 10"#,
+    ];
+    for ((extensions, body), expected) in programs.iter().zip(expected) {
+        every_level(&format!("{extensions} {head} {body} {common}"), expected);
+    }
+}
+
 /// The transients' `-conj!`, `-assoc!` and `-persistent!` slots, which
 /// `conj!`, `assoc!`, `persistent!`, `into`, `mapv` and `filterv` call
 /// before any lookup, and a map transient's `conj!` of a map entry, which
