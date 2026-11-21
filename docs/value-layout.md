@@ -2009,6 +2009,38 @@ marker or the class's slot.
   counts no call of the lookup for the hits, where master made 238. Values
   made by reflection, and a runtime class's masks written by name, answer
   from the prototype's bits, as upstream's do (section 5, items 34 to 36).
+- **What the first pass left.** Its profile still put about 85 ms of the
+  run in the layers (80 and 81 against master's 216 and 221 at load 7.7),
+  most of it predicates of values that are not runtime classes, `deref` of
+  atoms and `counted?` of `apply`'s arguments. Three of the steps
+  light-cljs-1075 names were taken for them; its host values' `seq`,
+  `first` and `nth` and `metaOf` of functions stay there.
+- **Predicates of nil, primitives and program types.** For the 13
+  protocols of `kinds`, whose native tests read only the stores, the
+  `satisfies` hook asks no native test of nil or a primitive (no store
+  holds one) and asks it once per program type's keyed kind (64 to 127),
+  which decides it (`recordCells` holds a record by its kind), before the
+  store test and the host tables (`hostSatisfies`) as before. `Fn`, which
+  has no mask bit, is not in a class that declares its protocols by masks:
+  no such class is a var's or a function's (`fnValue`). Where no compiler
+  session demands declarations (`slotFirst`), the hooks take these steps
+  without the demands and read each property once (`satisfiesByKind`,
+  `implementsByKind`): the Proxy of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked 302,
+  315 and 302 times at none, where it was asked the mask twice. A value made
+  by reflection from a class with masks is not `fn?` under `extend-type`
+  of `default` or `object` `Fn`, where it was.
+- **`deref` of an atom** calls the `-deref` it holds, of its own
+  (`specify!`), its class's (`extend-type`) or `Object.prototype`'s, else
+  reads its `state`, before the lookup, which found nothing else: a host
+  type's, `object`'s or `default`'s implementation never reaches the
+  runtime's own values (`externalMethod`). The shared-heap profile answers
+  its engine atoms before this.
+- **`counted?` of a seq view** (`apply`'s arguments) reads its `view`
+  first (`countedValue`), where it tested every store before.
+- `extended_programs_keep_host_predicate_and_deref_answers` pins master's
+  answers for these at every level, and the counting test counts no
+  `builtin` call for `deref` of an atom.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
