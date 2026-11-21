@@ -13,6 +13,12 @@
   let catalogCursor = 0;
   const nameSynced = new Map(), extSynced = new Map(), bundleByOrder = new Map();
   const extendedProtocols = new Set();
+  // Temporary per-namespace overlay window on a worker isolate (Stage C):
+  // when active, lookups see registrations up to `overlayCursor` without
+  // polluting persistent `catalogCursor` / `nameSynced` / `extSynced`.
+  let overlayMode = false, overlayPrefix = 0, overlayPrefixBundles = 0, overlayCursor = 0, overlayBundles = 0;
+  let overlaySavedFrontier = null;
+  const overlayNameSynced = new Map(), overlayExtSynced = new Map(), overlayAddedProtocols = [];
   let demandInstalled = false;
   let frontier = Infinity, declarationFrontier = Infinity;
   // light.build records a read on every deferred unit whose initializer is
@@ -83,7 +89,7 @@
     return index < readyExtensions.length && readyExtensions[index].order <= high;
   }
   function snapshotExtensions() {
-    const saved = [], limit = bundleCount;
+    const saved = [], limit = overlayMode ? overlayBundles : bundleCount;
     for (let order = 0;;) {
       const bundle = readyExtensions[readyAfter(order)];
       if (!bundle || bundle.order > limit) break;
@@ -117,19 +123,38 @@
     if (unit !== null) units.set(unit, slot);
   }
 
+  function currentNameSynced(name) {
+    if (overlayMode) {
+      const ov = overlayNameSynced.get(name);
+      if (ov !== undefined) return ov;
+      return Math.min(nameSynced.get(name) ?? 0, overlayPrefix);
+    }
+    return nameSynced.get(name) ?? 0;
+  }
+
   function advanceNameSynced(name, pos) {
-    if (pos > (nameSynced.get(name) ?? 0)) nameSynced.set(name, pos);
+    if (overlayMode) {
+      if (pos > (overlayNameSynced.get(name) ?? 0)) overlayNameSynced.set(name, pos);
+      const clamped = Math.min(pos, overlayPrefix);
+      if (clamped > (nameSynced.get(name) ?? 0)) nameSynced.set(name, clamped);
+    } else if (pos > (nameSynced.get(name) ?? 0)) {
+      nameSynced.set(name, pos);
+    }
   }
 
   function materializeBundle(pos, order, unit, names, indices, location, once, group) {
-    const existing = bundleByOrder.get(order);
-    if (existing !== undefined) return existing;
+    const isOverlayLocal = overlayMode && pos >= overlayPrefix;
+    if (!isOverlayLocal) {
+      const existing = bundleByOrder.get(order);
+      if (existing !== undefined) return existing;
+    }
     // Bring every product to its exact state strictly before `pos` so
     // `previous` links and `once` checks match eager registration order.
     for (const n of names) ensureName(n, pos);
     const bundle = {
       unit,
       group,
+      overlay: isOverlayLocal,
       previous: new Map(names.map(n => [n, slots.get(n)])),
       order,
       names,
@@ -142,7 +167,7 @@
       skipped: false,
       extRegistered: null
     };
-    bundleByOrder.set(order, bundle);
+    if (!isOverlayLocal) bundleByOrder.set(order, bundle);
     if (once && names.length && names.every(n => slots.has(n) && slots.get(n).unit !== null)) {
       bundle.skipped = true;
     } else {
@@ -154,28 +179,29 @@
 
   function ensureName(name, limit = -1) {
     if (rootService === null) return;
-    const prev = nameSynced.get(name) ?? 0;
+    const curCursor = overlayMode ? overlayCursor : catalogCursor;
+    const prev = currentNameSynced(name);
     if (limit >= 0) {
       if (prev >= limit) return;
-    } else if (slots.has(name) && prev >= catalogCursor) {
+    } else if (slots.has(name) && prev >= curCursor) {
       return;
     }
     const raw = rootService('n\u0000' + name + '\u0000' + prev + '\u0000' + limit);
     if (!raw) {
       if (limit >= 0) advanceNameSynced(name, limit);
-      else advanceNameSynced(name, catalogCursor);
+      else advanceNameSynced(name, curCursor);
       return;
     }
     const payload = JSON.parse(raw);
     const toPos = payload[0], entries = payload[1];
     for (const entry of entries) {
       const pos = entry[1];
-      if ((nameSynced.get(name) ?? 0) > pos) continue;
+      if (currentNameSynced(name) > pos) continue;
       if (entry[0] === 0) {
-        nameSynced.set(name, pos + 1);
+        advanceNameSynced(name, pos + 1);
         applyRoot(name, entry[2], entry[4], entry[5], entry[3], entry[6]);
       } else {
-        nameSynced.set(name, pos);
+        advanceNameSynced(name, pos);
         materializeBundle(pos, entry[2], entry[3], entry[4], entry[5], entry[6], entry[7], entry[8]);
       }
     }
@@ -184,10 +210,18 @@
 
   function ensureProtocol(protocol) {
     if (rootService === null) return;
-    const prev = extSynced.get(protocol) ?? 0;
-    if (prev >= catalogCursor) return;
-    const raw = rootService('p\u0000' + protocol + '\u0000' + prev + '\u0000' + catalogCursor);
-    extSynced.set(protocol, catalogCursor);
+    const curCursor = overlayMode ? overlayCursor : catalogCursor;
+    const prev = overlayMode
+      ? (overlayExtSynced.get(protocol) ?? Math.min(extSynced.get(protocol) ?? 0, overlayPrefix))
+      : (extSynced.get(protocol) ?? 0);
+    if (prev >= curCursor) return;
+    const raw = rootService('p\u0000' + protocol + '\u0000' + prev + '\u0000' + curCursor);
+    if (overlayMode) {
+      overlayExtSynced.set(protocol, curCursor);
+      if (overlayPrefix > (extSynced.get(protocol) ?? 0)) extSynced.set(protocol, overlayPrefix);
+    } else {
+      extSynced.set(protocol, curCursor);
+    }
     if (!raw) return;
     const list = JSON.parse(raw);
     for (const entry of list) {
@@ -227,7 +261,9 @@
           .sort((left, right) => left.bundle.order - right.bundle.order)
       : extensions.get(protocol) ?? [];
     for (const {bundle, selector, superseded} of entries) {
-      if (bundle.order > frontier || superseded && frontier >= superseded) continue;
+      if (overlayMode && !bundle.overlay && bundle.order > overlayPrefixBundles) continue;
+      const effSuperseded = superseded && !(overlayMode && superseded > overlayPrefixBundles) ? superseded : 0;
+      if (bundle.order > frontier || effSuperseded && frontier >= effSuperseded) continue;
       if (selector === null || selector === '_' || selector === native || selector === '@' + typeName) forceBundle(bundle);
     }
     if (epoch === demandEpoch) {
@@ -250,6 +286,54 @@
   }
 
   globalThis.__lightSyncCatalog = (nextCursor, nextBundles, newProtocols) => {
+    if (newProtocols && newProtocols.length) {
+      const tag = newProtocols[0];
+      if (tag === '\u0000clear') {
+        overlayMode = false;
+        overlayNameSynced.clear();
+        overlayExtSynced.clear();
+        for (const p of overlayAddedProtocols) extendedProtocols.delete(p);
+        overlayAddedProtocols.length = 0;
+        if (overlaySavedFrontier !== null) {
+          const {previous, saved} = overlaySavedFrontier;
+          overlaySavedFrontier = null;
+          selectFrontier(previous);
+          if (saved) __lightRuntimeForCompiler.restoreDeclarationPatches(saved);
+        }
+        invalidateDemands();
+        return;
+      }
+      if (tag === '\u0000overlay') {
+        const nextPrefix = newProtocols.length > 1 ? Number(newProtocols[1]) : catalogCursor;
+        const nextPrefixBundles = newProtocols.length > 2 ? Number(newProtocols[2]) : bundleCount;
+        if (!overlayMode) {
+          const changesView = changesFrontier(nextPrefixBundles);
+          const saved = changesView ? snapshotExtensions() : null;
+          overlaySavedFrontier = {previous: frontier, saved};
+          selectFrontier(nextPrefixBundles);
+        }
+        overlayPrefix = nextPrefix;
+        overlayPrefixBundles = nextPrefixBundles;
+        overlayMode = true;
+        overlayCursor = nextCursor;
+        overlayBundles = nextBundles;
+        if (nextBundles > frontier && frontiers.length === 0) {
+          frontier = nextBundles;
+        }
+        let added = false;
+        for (let i = 3; i < newProtocols.length; i++) {
+          const p = newProtocols[i];
+          if (!extendedProtocols.has(p)) {
+            extendedProtocols.add(p);
+            overlayAddedProtocols.push(p);
+            added = true;
+          }
+        }
+        if (added) ensureDemandInstalled();
+        invalidateDemands();
+        return;
+      }
+    }
     if (nextCursor > catalogCursor) catalogCursor = nextCursor;
     if (nextBundles > bundleCount) {
       bundleCount = nextBundles;
@@ -413,7 +497,9 @@
       const bundle = readyExtensions[readyAfter(order)];
       if (!bundle) break;
       order = bundle.order;
-      if (bundle.order <= frontier) __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, true);
+      if (bundle.order <= frontier && !(overlayMode && !bundle.overlay && bundle.order > overlayPrefixBundles)) {
+        __lightRuntimeForCompiler.applyDeclarationPatches(bundle.patches, true);
+      }
     }
   }
   globalThis.__lightEnterCompilerFrontier = next => {

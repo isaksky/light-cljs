@@ -517,6 +517,13 @@ impl<V: Clone> QualifiedNames<V> {
     pub(crate) fn keys(&self) -> impl Iterator<Item = &String> {
         self.0.keys().map(|key| &key.0)
     }
+    pub(crate) fn changed_keys<'a>(&'a self, before: &'a Self) -> Vec<&'a String> {
+        self.0
+            .changed_keys(&before.0)
+            .into_iter()
+            .map(|key| &key.0)
+            .collect()
+    }
 }
 
 impl<V: Clone, Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for QualifiedNames<V> {

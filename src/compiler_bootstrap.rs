@@ -1064,6 +1064,9 @@ impl MacroHost {
     /// first expansion of the core macro `name` that needs it does.
     fn ensure_bootstrap(&mut self, name: &str) -> Result<(), String> {
         if self.engine.bootstrap.is_none() {
+            if self.engine.forbid_engine_boot.get() {
+                return Err(crate::macro_host::NEEDS_ENGINE_SENTINEL.into());
+            }
             if self.tables.bootstrap_seed && self.session_handle().is_none() {
                 return Err(format!("bootstrap primitive seed cannot expand {name}"));
             }
@@ -1825,6 +1828,9 @@ impl MacroHost {
             return Err(format!(
                 "{key} is private; macros can only be imported from public bindings"
             ));
+        }
+        if self.engine.bootstrap.is_none() && self.engine.forbid_engine_boot.get() {
+            return Err(crate::macro_host::NEEDS_ENGINE_SENTINEL.into());
         }
         // A macro installed from an artifact may be the compilation's first:
         // its session starts as declaring one would have started it.

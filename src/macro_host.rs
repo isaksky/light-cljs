@@ -752,9 +752,20 @@ pub(crate) struct EngineBinding {
     /// A worker's view, through which a definition's `:test` unit is
     /// analyzed there ([`crate::compilation_session::analyze_definition_test`]).
     pub(crate) worker: Option<std::rc::Weak<crate::compilation_session::WorkerView>>,
+    /// Set on engine-less namespace workers so any unexpected engine boot
+    /// fails immediately with [`NEEDS_ENGINE_SENTINEL`] for re-dispatch.
+    pub(crate) forbid_engine_boot: std::cell::Cell<bool>,
+    /// Set when any JavaScript macro or engine evaluation runs in this frame.
+    pub(crate) entered_engine: std::rc::Rc<std::cell::Cell<bool>>,
+    /// External namespaces reflected via `ns-publics`/`ns-interns`/`ns-imports`/`ns-refers`.
+    pub(crate) reflected_namespaces: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     /// Keeps the binding on its thread whatever its fields become.
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
+
+/// Sentinel error returned when a pure-Rust engine-less namespace worker hits
+/// a form that requires a compile-time JS engine.
+pub(crate) const NEEDS_ENGINE_SENTINEL: &str = "__light_cljs_namespace_needs_engine__";
 
 // A worker receives a `MacroEnvironment`; an `EngineBinding` never moves
 // (docs/compiler-concurrency.md, "Thread safety today"). Both hold in every
@@ -811,6 +822,9 @@ impl EngineBinding {
             foreign_macros: self.foreign_macros.clone(),
             catalog: self.catalog.clone(),
             worker: self.worker.clone(),
+            forbid_engine_boot: std::cell::Cell::new(self.forbid_engine_boot.get()),
+            entered_engine: self.entered_engine.clone(),
+            reflected_namespaces: self.reflected_namespaces.clone(),
             _thread: std::marker::PhantomData,
         }
     }
@@ -861,6 +875,12 @@ pub(crate) struct NamespaceMetadata {
     bindings: Vec<(String, SourceBindingKind)>,
     runtime_vars: Vec<(String, bool)>,
     macros: Vec<(String, crate::compiler_bootstrap::CompiledMacro)>,
+}
+
+impl NamespaceMetadata {
+    pub(crate) fn defines_macros(&self) -> bool {
+        !self.macros.is_empty()
+    }
 }
 
 /// A name's namespace and name as text, for a cache key.
@@ -969,6 +989,12 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
+        if self.engine.forbid_engine_boot.get() {
+            return Err(crate::evaluator::EvalError(
+                NEEDS_ENGINE_SENTINEL.to_owned(),
+            ));
+        }
+        self.engine.entered_engine.set(true);
         #[cfg(feature = "bbp-macros")]
         if self.native_macro_backend() {
             let evaluator = match self.session_handle() {
@@ -1115,6 +1141,7 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
+        self.engine.entered_engine.set(true);
         let native_before = evaluator.native_bridge_stats();
         if self.engine.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
@@ -1359,6 +1386,12 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
+        if self.engine.forbid_engine_boot.get() {
+            return Err(crate::evaluator::EvalError(
+                NEEDS_ENGINE_SENTINEL.to_owned(),
+            ));
+        }
+        self.engine.entered_engine.set(true);
         #[cfg(feature = "bbp-macros")]
         if self.native_macro_backend() {
             // Share the build's budget, with a private reader task and no
@@ -1810,7 +1843,7 @@ impl MacroHost {
             doc: self.tables.namespace_docs.get(namespace),
         }
     }
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(any(test, feature = "bbp-macros")), allow(dead_code))]
     pub(crate) fn namespace_metadata(&self, namespace: &str) -> NamespaceMetadata {
         let declarations = self.namespace_declarations(namespace);
         let prefix = format!("{namespace}/");
@@ -1849,11 +1882,116 @@ impl MacroHost {
             macros,
         }
     }
+    /// O(own_bindings) incremental variant of [`Self::namespace_metadata`]:
+    /// extracts only the entries added or updated since `before` (the wave
+    /// snapshot environment) and reports whether any key outside `namespace/`
+    /// was mutated in `source_bindings`, `runtime_vars`, or `javascript_macros`.
+    pub(crate) fn namespace_metadata_since(
+        &self,
+        namespace: &str,
+        before: &MacroEnvironment,
+    ) -> (NamespaceMetadata, bool) {
+        let declarations = self.namespace_declarations(namespace);
+        let prefix = format!("{namespace}/");
+        let mut mutated_foreign = false;
+
+        let mut bindings = Vec::new();
+        let mut seen_bindings = std::collections::HashSet::new();
+        for key in self
+            .tables
+            .source_bindings
+            .changed_keys(&before.tables.source_bindings)
+        {
+            if !seen_bindings.insert(key.as_str()) {
+                continue;
+            }
+            let current = self.tables.source_bindings.get(key);
+            if current == before.tables.source_bindings.get(key) {
+                continue;
+            }
+            if let Some(member) = key.strip_prefix(&prefix) {
+                if let Some(&kind) = current {
+                    bindings.push((member.to_owned(), kind));
+                }
+            } else {
+                mutated_foreign = true;
+            }
+        }
+        bindings.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut runtime_vars = Vec::new();
+        let mut seen_vars = std::collections::HashSet::new();
+        for key in self
+            .tables
+            .runtime_vars
+            .changed_keys(&before.tables.runtime_vars)
+        {
+            if !seen_vars.insert(key.as_str()) {
+                continue;
+            }
+            let current = self.tables.runtime_vars.get(key);
+            if current == before.tables.runtime_vars.get(key) {
+                continue;
+            }
+            if let Some(member) = key.strip_prefix(&prefix) {
+                if let Some(&private) = current {
+                    runtime_vars.push((member.to_owned(), private));
+                }
+            } else {
+                mutated_foreign = true;
+            }
+        }
+        runtime_vars.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut macros = Vec::new();
+        let mut seen_macros = std::collections::HashSet::new();
+        for key in self
+            .tables
+            .javascript_macros
+            .changed_keys(&before.tables.javascript_macros)
+        {
+            if !seen_macros.insert(key.as_str()) {
+                continue;
+            }
+            let current = self.tables.javascript_macros.get(key);
+            let prev = before.tables.javascript_macros.get(key);
+            let same = match (current, prev) {
+                (Some(a), Some(b)) => a.generation() == b.generation(),
+                (None, None) => true,
+                _ => false,
+            };
+            if same {
+                continue;
+            }
+            if let Some(member) = key.strip_prefix(&prefix) {
+                if let Some(declaration) = current {
+                    macros.push((member.to_owned(), declaration.published()));
+                }
+            } else {
+                mutated_foreign = true;
+            }
+        }
+        macros.sort_by(|a, b| a.0.cmp(&b.0));
+
+        (
+            NamespaceMetadata {
+                namespace: namespace.to_owned(),
+                imports: declarations.imports.to_vec(),
+                renames: declarations.renames.to_vec(),
+                namespace_imports: declarations.namespace_imports.to_vec(),
+                symbol: self.namespace_symbol(namespace).cloned(),
+                doc: declarations.doc.cloned(),
+                bindings,
+                runtime_vars,
+                macros,
+            },
+            mutated_foreign,
+        )
+    }
     /// Publish only this namespace's tables, retaining all other namespaces
     /// and the receiving host's engine, configuration and analysis counters.
     /// Published macro code binds lazily to the receiver's evaluator; no
     /// callable handle from the declaring thread is installed here.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_namespace_metadata(
         &mut self,
         metadata: &NamespaceMetadata,
@@ -1937,6 +2075,9 @@ impl MacroHost {
     /// whether it is private.
     pub(crate) fn runtime_var(&self, key: &str) -> Option<bool> {
         self.tables.runtime_vars.get(key).copied()
+    }
+    pub(crate) fn data_reader_count(&self) -> usize {
+        self.tables.data_readers.units.len()
     }
     pub(crate) fn set_renames(&mut self, caller: &str, renames: Vec<(String, String, String)>) {
         self.tables.renames.insert(caller.to_owned(), renames);
@@ -2584,6 +2725,10 @@ impl MacroHost {
                 return Ok(Form::from_expansion(c.map(&[])?, form, name.clone()));
             }
             if !matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
+                self.engine
+                    .reflected_namespaces
+                    .borrow_mut()
+                    .push(namespace.clone());
                 self.observe(|log| {
                     log.named(&namespace, crate::dependency_manifest::EdgeKinds::OBSERVED)
                 });
@@ -2828,7 +2973,7 @@ impl MacroHost {
             .copied()
             .unwrap_or((0, 0));
         let mut names = Vec::new();
-        if position <= shared {
+        if position <= shared && count <= visible {
             names = namespace_globals
                 .range(count..visible)
                 .map(|id| globals[id.0].name.clone())

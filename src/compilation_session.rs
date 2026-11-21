@@ -142,11 +142,13 @@ pub(crate) struct UnitCharges {
     trace: Option<Box<crate::compile_trace::WorkerRows>>,
 }
 impl UnitCharges {
-    #[cfg(feature = "bbp-macros")]
     pub(crate) fn namespace(
         recorded: crate::macro_host::RecordedUnit,
         host: &MacroHost,
         name: &str,
+        gensyms: Vec<Vec<u16>>,
+        namespaces: Vec<crate::namespace_artifact::RegistryEntry>,
+        trace: Option<Box<crate::compile_trace::WorkerRows>>,
     ) -> Self {
         Self {
             events: recorded.events,
@@ -156,9 +158,9 @@ impl UnitCharges {
             depth_limit: host.limits.expansion_depth.min(64),
             location: name.to_owned(),
             observations: recorded.observations,
-            gensyms: Vec::new(),
-            namespaces: Vec::new(),
-            trace: None,
+            gensyms,
+            namespaces,
+            trace,
         }
     }
     /// Add the charges to `binding`'s counters and marks, and spend the
@@ -277,7 +279,13 @@ enum AnalysisState {
     Unstarted,
     /// Being analyzed by the thread with this slot in [`Catalog::threads`].
     Analyzing(usize),
-    Analyzed(Arc<Program>, Vec<AnalysisWarning>),
+    /// Analyzed IR and warnings, plus optional worker-prepared compile-time JS
+    /// so coordinator `release_application_ir` avoids serial JS emission.
+    Analyzed(
+        Arc<Program>,
+        Vec<AnalysisWarning>,
+        Option<Arc<crate::emitter::DeferredUnit>>,
+    ),
     /// Released to its application owner, which holds the analyzed program
     /// while it copies it; the compile-time JavaScript stays.
     Prepared(
@@ -802,6 +810,41 @@ impl RootIndex {
             bundle_count: self.bundles.len(),
             ext_protocol_count: self.extended_protocols.len(),
         }
+    }
+    /// Whether registrations in `limit..installed` do not redefine any root or
+    /// bundle product already registered `< limit`. Protocol extensions in
+    /// `limit..installed` are isolated dynamically by `compiler_roots.js`'s
+    /// `overlayMode` frontier window (`overlayPrefixBundles`), so they do not
+    /// block overlay reuse.
+    fn is_isolated_suffix(
+        &self,
+        limit: usize,
+        installed: usize,
+        registrations: &crate::arena::Arena<Registration>,
+    ) -> bool {
+        for reg in registrations.range(limit..installed) {
+            match reg {
+                Registration::Root(name, ..) => {
+                    if self
+                        .name_positions
+                        .get(name)
+                        .is_some_and(|positions| positions.first().is_some_and(|&p| p < limit))
+                    {
+                        return false;
+                    }
+                }
+                Registration::Bundle(bundle) => {
+                    if bundle.products.iter().any(|name| {
+                        self.name_positions
+                            .get(name)
+                            .is_some_and(|positions| positions.first().is_some_and(|&p| p < limit))
+                    }) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
     /// The unit of the root `name` names to the journal's registrations
     /// before `position`, matching `__lightRegisterUnit` / `__lightRegisterBundle`.
@@ -1761,36 +1804,59 @@ impl SharedCatalog {
         let failed = self.failed_job.load(std::sync::atomic::Ordering::Relaxed);
         failed == 0 || catalog.order(id) <= catalog.order(failed - 1)
     }
+    /// Wake any coordinator or worker waiting on `self.settled` without risking
+    /// a lost wakeup between predicate check and `Condvar::wait`.
+    pub(crate) fn notify_settled(&self) {
+        let _guard = self.lock();
+        self.settled.notify_all();
+    }
+    /// Snapshot `(journal_len, bundle_count, environment_bundles)` under one
+    /// catalog lock before launching a parallel top-level namespace wave.
+    pub(crate) fn overlay_snapshot_marks(&self) -> (usize, usize, usize) {
+        let c = self.lock();
+        (
+            c.journal.registrations.len(),
+            c.journal.bundle_count,
+            c.journal.environment_bundles,
+        )
+    }
+    /// Read a `defmulti` target from the shared journal (used by a parallel
+    /// namespace overlay when the target wasn't defined locally).
+    fn multifn_target(&self, name: &str) -> Option<String> {
+        self.lock().journal.multifn_targets.get(name).cloned()
+    }
     /// Wake the threads waiting for a pool job that will not start
     /// ([`Self::admits`]), which [`Self::claim`] then fails.
     fn skipped(&self) {
         let _c = self.lock();
         self.settled.notify_all();
     }
-    /// The pool jobs of `units`: with `mixed`, in a pool whose workers
-    /// past the first ones have no engine, a unit not found macro-free
-    /// is for the ones with an engine only ([`ENGINE_PHASE`]).
-    fn unit_jobs(&self, units: Vec<usize>, mixed: bool) -> Vec<UnitJob> {
-        if let Some(&first) = units.first() {
+    /// The pool jobs of `(id, macro_free)` pairs: with `mixed`, in a pool whose
+    /// workers past the first ones have no engine, a unit not found macro-free
+    /// is for the ones with an engine only ([`UNIT_ENGINE_PHASE`]); macro-free
+    /// units take [`UNIT_PLAIN_PHASE`]. In an unmixed pool all units take phase
+    /// [`UNMIXED_UNIT_PHASE`] (below top-level namespace phase 0).
+    fn unit_jobs(&self, units: Vec<(usize, bool)>, mixed: bool) -> Vec<UnitJob> {
+        if let Some(&(first, _)) = units.first() {
             crate::wait_timeline::instant(
                 crate::wait_timeline::Kind::Submit,
                 first as u64,
                 units.len() as u64,
             );
         }
-        let catalog = self.lock();
-        (units.into_iter())
-            .map(|id| {
-                let macro_free = catalog.units[id].macro_free;
-                UnitJob::Analyze(
-                    id,
-                    if mixed && !macro_free {
-                        ENGINE_PHASE
+        units
+            .into_iter()
+            .map(|(id, macro_free)| {
+                let phase = if mixed {
+                    if macro_free {
+                        UNIT_PLAIN_PHASE
                     } else {
-                        0
-                    },
-                    macro_free,
-                )
+                        UNIT_ENGINE_PHASE
+                    }
+                } else {
+                    UNMIXED_UNIT_PHASE
+                };
+                UnitJob::Analyze(id, phase, macro_free)
             })
             .collect()
     }
@@ -1824,7 +1890,7 @@ impl SharedCatalog {
         self.recording.get().copied().unwrap_or_default()
     }
     /// The expansions and generated nodes the coordinator has charged.
-    fn charged(&self) -> (usize, usize) {
+    pub(crate) fn charged(&self) -> (usize, usize) {
         use std::sync::atomic::Ordering::Relaxed;
         (self.charged[0].load(Relaxed), self.charged[1].load(Relaxed))
     }
@@ -2006,7 +2072,7 @@ impl SharedCatalog {
                 }
             }
             match &c.units[id].state {
-                AnalysisState::Analyzed(program, warnings) => {
+                AnalysisState::Analyzed(program, warnings, _) => {
                     return Ok(Claim::Reuse(program.clone(), warnings.clone()));
                 }
                 AnalysisState::Prepared(program, warnings, _) => {
@@ -2054,11 +2120,18 @@ impl SharedCatalog {
         Claim::Analyze(inputs, depth, name, macro_free)
     }
     /// End the analysis of unit `id` that the thread in slot `thread` claimed
-    /// with `state`, or as interrupted, and wake the threads waiting for it;
-    /// `held` is the analyzed IR's estimated bytes when
-    /// [`Self::measuring_ir`], or 0.
-    fn settle(&self, thread: usize, id: usize, state: Option<AnalysisState>, held: usize) {
-        let (previous, waiting) = {
+    /// with `state`, or as interrupted, recording optional `charges` and
+    /// updating `failed_job` in the same lock acquisition before waking waiters.
+    fn settle(
+        &self,
+        thread: usize,
+        id: usize,
+        state: Option<AnalysisState>,
+        held: usize,
+        charges: Option<(UnitCharges, std::time::Duration)>,
+        note_failed: bool,
+    ) {
+        let (previous, waiting, failed) = {
             let mut c = self.lock();
             let c = &mut *c;
             if held > 0 && matches!(state, Some(AnalysisState::Analyzed(..))) {
@@ -2067,26 +2140,32 @@ impl SharedCatalog {
             let popped = c.threads[thread].stack.pop();
             debug_assert_eq!(popped, Some(id));
             let unit = &mut c.units[id];
-            let previous = matches!(unit.state, AnalysisState::Analyzing(_)).then(|| {
-                std::mem::replace(
-                    &mut unit.state,
-                    state.unwrap_or_else(|| {
-                        AnalysisState::Failed("analysis interrupted".into(), None)
-                    }),
-                )
+            if let Some((charges, time)) = charges {
+                unit.charges = Some(Box::new(charges));
+                unit.time = time;
+            }
+            let next_state = state.unwrap_or_else(|| {
+                AnalysisState::Failed("analysis interrupted".into(), None)
             });
-            (previous, c.waiting > 0)
+            let next_failed = matches!(next_state, AnalysisState::Failed(..));
+            let previous = matches!(unit.state, AnalysisState::Analyzing(_))
+                .then(|| std::mem::replace(&mut unit.state, next_state));
+            let failed = previous.is_some() && next_failed;
+            if failed && note_failed {
+                use std::sync::atomic::Ordering::Relaxed;
+                let prev_failed = self.failed_job.load(Relaxed);
+                if prev_failed == 0 || c.order(id) < c.order(prev_failed - 1) {
+                    self.failed_job.store(id + 1, Relaxed);
+                }
+            }
+            (previous, c.waiting > 0, failed)
         };
         crate::wait_timeline::instant(crate::wait_timeline::Kind::Settle, id as u64, 0);
-        let failed = previous.is_some() && self.unit_failed_now(id);
         drop(previous);
         self.lanes.finish(id, failed);
         if waiting {
             self.settled.notify_all();
         }
-    }
-    fn unit_failed_now(&self, id: usize) -> bool {
-        matches!(self.lock().units[id].state, AnalysisState::Failed(..))
     }
     /// Serve `light.build` request `text` of a worker whose analyses are
     /// of the sources `analysis` on the coordinator, which alone has the
@@ -2299,6 +2378,7 @@ impl SharedCatalog {
     fn set_emitted(&self, id: usize) {
         self.lock().units[id].emitted = true;
     }
+    #[allow(dead_code)]
     fn record_charges(&self, id: usize, charges: UnitCharges, time: std::time::Duration) {
         let mut c = self.lock();
         c.units[id].charges = Some(Box::new(charges));
@@ -2335,6 +2415,42 @@ impl SharedCatalog {
             .get(id)
             .is_some_and(|unit| unit.dispatched)
     }
+    /// Single-lock fast path for draining an already-analyzed, worker-prepared
+    /// unit: clears `held`, takes `charges`, reads `stack.len()` and `dispatch`,
+    /// and transitions `Analyzed` -> `Prepared` while returning `Arc<Program>`.
+    #[allow(clippy::type_complexity)]
+    fn drain_ready(
+        &self,
+        id: usize,
+        thread: usize,
+    ) -> Option<(
+        Arc<Program>,
+        Vec<AnalysisWarning>,
+        Option<Box<UnitCharges>>,
+        usize,
+        crate::namespace_artifact::UnitDispatch,
+    )> {
+        let mut c = self.lock();
+        let unit = c.units.get_mut(id)?;
+        if !matches!(unit.state, AnalysisState::Analyzed(_, _, Some(_))) {
+            return None;
+        }
+        unit.held = false;
+        let charges = unit.charges.take();
+        let dispatch = unit.dispatch;
+        let AnalysisState::Analyzed(program, warnings, Some(prepared)) =
+            std::mem::replace(&mut unit.state, AnalysisState::Unstarted)
+        else {
+            unreachable!()
+        };
+        unit.state =
+            AnalysisState::Prepared(Arc::downgrade(&program), warnings.clone(), prepared);
+        if unit.waiters > 0 {
+            unit.retained = Some(program.clone());
+        }
+        let depth = c.threads[thread].stack.len();
+        Some((program, warnings, charges, depth, dispatch))
+    }
     fn release_hold(&self, id: usize) {
         if let Some(unit) = self.lock().units.get_mut(id) {
             unit.held = false;
@@ -2349,6 +2465,7 @@ impl SharedCatalog {
         drop(previous);
         self.lanes.finish(id, true);
     }
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     fn unit_name(&self, id: usize) -> String {
         self.lock().units[id].name.clone()
     }
@@ -2466,6 +2583,14 @@ pub(crate) struct CompilationSession {
     drained_through: Cell<Option<crate::effect_lanes::UnitOrder>>,
     /// No top-level pass remains; a drain may help later namespaces too.
     tail_ready: Cell<bool>,
+    /// Private local overlay used while analyzing a namespace's top-level pass
+    /// on a pool worker thread (Stage C, light-cljs-1090). `None` on the
+    /// coordinator.
+    local_overlay: RefCell<Option<NamespaceOverlay>>,
+    /// Namespaces whose top-level pass entered a compile-time JS engine on a
+    /// parallel worker; materialized lazily into the coordinator's JS namespace
+    /// registry only if `find-ns` / `all-ns` actually reflects on it.
+    deferred_engine_namespaces: RefCell<Vec<String>>,
     // The manual namespace probe owns a local IR prefix but runs on a
     // compilation-wide lane. Production source indexes remain unchanged.
     #[cfg(test)]
@@ -2479,6 +2604,84 @@ pub(crate) struct CompilationSession {
     #[cfg(feature = "bbp-macros")]
     namespace_seed: Option<crate::bbp_evaluator::CatalogSeed>,
 }
+/// Base ID for units registered inside a worker's private [`NamespaceOverlay`]
+/// before canonical unit IDs are assigned at publication time.
+pub(crate) const LOCAL_UNIT_BASE: usize = 1 << 30;
+
+/// Immutable pool sizing policy copied into a parallel namespace worker so
+/// `pools()` and `pools_bundle()` produce the exact same classification as on
+/// the coordinator.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PoolPolicy {
+    pub(crate) engines: PoolEngines,
+    pub(crate) workers: usize,
+    pub(crate) engine_workers: usize,
+}
+
+/// A deferred unit registered inside a parallel namespace worker's private
+/// overlay before being relocated to a canonical `SharedCatalog` unit ID.
+pub(crate) struct LocalUnit {
+    raw_name: RegistrationName,
+    source: u32,
+    inputs: Option<Box<UnitInputs>>,
+    state: AnalysisState,
+    analyses: usize,
+    emitted: bool,
+    macro_free: bool,
+    pooled: bool,
+    dispatch: crate::namespace_artifact::UnitDispatch,
+    view_globals: usize,
+    /// Number of bundles registered earlier in THIS namespace before this unit.
+    local_bundle_offset: usize,
+}
+
+/// Private namespace-local registration buffer layered over
+/// `(shared, prefix_cursor)` during a parallel top-level namespace pass.
+struct NamespaceOverlay {
+    prefix_cursor: usize,
+    prefix_bundles: usize,
+    prefix_env_bundles: usize,
+    units: Vec<LocalUnit>,
+    registrations: Vec<Registration>,
+    roots: RootIndex,
+    multifn_targets: HashMap<String, String>,
+    local_env_bundles: usize,
+    local_redefined: bool,
+    pool_policy: PoolPolicy,
+    capturing: bool,
+    captured_macros: Vec<CapturedMacro>,
+    /// Set whenever V8/QuickJS actually observed a local root/bundle/unit,
+    /// telling the worker to retire its isolate after this namespace pass.
+    touched_local_in_engine: bool,
+    /// Set whenever V8/QuickJS reflected on the compile-time namespace registry
+    /// (`find-ns` / `the-ns` / `all-ns`) during this overlay pass, signaling an
+    /// immediate fallback to the coordinator's canonical namespace registry.
+    reflected_in_engine: bool,
+    /// Namespaces created via `createNs` (outside `registerReaderNamespace`)
+    /// during this overlay pass, in exact creation order, so the coordinator
+    /// can materialize them lazily before any later `createNs`/`findNs`/`allNs`.
+    created_namespaces: Vec<String>,
+    /// Whether this overlay synced a temporary overlay window into V8/QuickJS
+    /// (`"\0overlay"`) that must be cleared via `"\0clear"` when reusing the
+    /// isolate.
+    overlay_synced: bool,
+    /// Number of local `extended_protocols` already delivered to the worker's
+    /// engine overlay window.
+    synced_local_ext: usize,
+    synced_local_cursor: usize,
+}
+
+/// Output extracted from a completed worker [`NamespaceOverlay`] for canonical
+/// publication into the coordinator's [`SharedCatalog`].
+pub(crate) struct NamespaceOverlayOutput {
+    units: Vec<LocalUnit>,
+    registrations: Vec<Registration>,
+    captured_macros: Vec<CapturedMacro>,
+    pub(crate) touched_local_in_engine: bool,
+    pub(crate) reflected_in_engine: bool,
+    created_namespaces: Vec<String>,
+}
+
 #[cfg(feature = "bbp-macros")]
 struct NamespaceJournal {
     prefix: usize,
@@ -2591,6 +2794,8 @@ impl Default for CompilationSession {
             pool: Default::default(),
             drained_through: Default::default(),
             tail_ready: Default::default(),
+            local_overlay: RefCell::new(None),
+            deferred_engine_namespaces: Default::default(),
             #[cfg(test)]
             probe_source: Default::default(),
             #[cfg(feature = "bbp-macros")]
@@ -2627,6 +2832,9 @@ impl CompilationSession {
         });
     }
     pub fn capturing(&self) -> bool {
+        if let Some(overlay) = self.local_overlay.borrow().as_ref() {
+            return overlay.capturing;
+        }
         self.capture.borrow().is_some()
     }
     /// How many units, registrations and bundles the catalog holds.
@@ -2645,6 +2853,17 @@ impl CompilationSession {
         view_globals: usize,
         reader_context: Option<crate::analyzer::RuntimeReaderNamespace>,
     ) {
+        if let Some(overlay) = self.local_overlay.borrow_mut().as_mut() {
+            if overlay.capturing {
+                overlay.captured_macros.push(CapturedMacro {
+                    key,
+                    code,
+                    view_globals,
+                    reader_context,
+                });
+            }
+            return;
+        }
         if let Some(capture) = self.capture.borrow_mut().as_mut() {
             capture.macros.push(CapturedMacro {
                 key,
@@ -2729,7 +2948,7 @@ impl CompilationSession {
                 continue;
             }
             let program = match &c.units.get(unit)?.state {
-                AnalysisState::Analyzed(program, _) => program.clone(),
+                AnalysisState::Analyzed(program, ..) => program.clone(),
                 AnalysisState::Prepared(program, ..) => program.upgrade()?,
                 _ => return None,
             };
@@ -2837,6 +3056,9 @@ impl CompilationSession {
     }
     /// The ID the next registered unit gets.
     pub fn next_unit(&self) -> usize {
+        if let Some(overlay) = self.local_overlay.borrow().as_ref() {
+            return LOCAL_UNIT_BASE + overlay.units.len();
+        }
         self.shared.lock().units.len()
     }
     /// Register again, in order, the units and registrations of a namespace
@@ -2956,6 +3178,59 @@ impl CompilationSession {
     /// without replaying individual registrations. Lock-free when nothing new
     /// was registered or no new protocol was extended.
     pub(crate) fn sync_catalog(&self, active: Option<&dyn MacroEvaluator>) -> Result<(), String> {
+        if self.local_overlay.borrow().is_some() {
+            let sync = {
+                let mut overlay_ref = self.local_overlay.borrow_mut();
+                let overlay = overlay_ref.as_mut().unwrap();
+                if overlay.registrations.is_empty() {
+                    None
+                } else {
+                    let total = overlay.prefix_cursor + overlay.registrations.len();
+                    let bundles = overlay.prefix_bundles + overlay.roots.bundles.len();
+                    let ext_total = overlay.roots.extended_protocols.len();
+                    if overlay.overlay_synced
+                        && total <= overlay.synced_local_cursor
+                        && ext_total <= overlay.synced_local_ext
+                    {
+                        None
+                    } else {
+                        let (new_ext, new_protocols) = overlay.roots.new_extended_protocols(
+                            overlay.synced_local_ext,
+                            overlay.registrations.len(),
+                        );
+                        overlay.synced_local_ext = new_ext;
+                        overlay.synced_local_cursor = total;
+                        overlay.overlay_synced = true;
+                        let mut tagged = Vec::with_capacity(new_protocols.len() + 3);
+                        tagged.push("\0overlay".to_owned());
+                        tagged.push(overlay.prefix_cursor.to_string());
+                        tagged.push(overlay.prefix_bundles.to_string());
+                        tagged.extend(new_protocols);
+                        Some((total, bundles, tagged))
+                    }
+                }
+            };
+            if let Some((total, bundles, tagged)) = sync {
+                let bootstrap_hold = active.is_none().then(|| self.bootstrap()).flatten();
+                let native = match &bootstrap_hold {
+                    Some(bootstrap) => bootstrap.evaluator.native_forms(),
+                    None => self
+                        .bootstrap()
+                        .is_some_and(|b| b.evaluator.native_forms()),
+                };
+                let evaluator = match (active, &bootstrap_hold) {
+                    (Some(engine), _) => engine,
+                    (None, Some(bootstrap)) => bootstrap.evaluator.as_ref(),
+                    (None, None) => return Ok(()),
+                };
+                if !native {
+                    evaluator
+                        .sync_catalog(total, bundles, &tagged)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            return Ok(());
+        }
         use std::sync::atomic::Ordering::Acquire;
         let total = self.shared.journal_len.load(Acquire);
         let bundles = self.shared.bundle_count.load(Acquire);
@@ -3195,6 +3470,11 @@ impl CompilationSession {
         }
         Ok(())
     }
+    pub(crate) fn take_gensyms_from_engine(
+        engine: &dyn MacroEvaluator,
+    ) -> Result<(u64, Vec<Vec<u16>>), String> {
+        Self::take_gensyms_from(engine)
+    }
     fn take_gensyms_from(engine: &dyn MacroEvaluator) -> Result<(u64, Vec<Vec<u16>>), String> {
         let value = engine
             .evaluate_unit("rt => rt.compilerForms.takeGensyms()")
@@ -3425,6 +3705,12 @@ impl CompilationSession {
     /// What the registry gained, logged as `r` and the name for a namespace
     /// a registration added, `c` and the name for any other; then the log
     /// starts again, of a unit a pool may place with `pooled` (build.rs).
+    pub(crate) fn take_namespaces_from_engine(
+        engine: &dyn MacroEvaluator,
+        pooled: bool,
+    ) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
+        Self::take_namespaces_from(engine, pooled)
+    }
     fn take_namespaces_from(
         engine: &dyn MacroEvaluator,
         pooled: bool,
@@ -3478,6 +3764,737 @@ impl CompilationSession {
                 })
                 .collect(),
             _ => Err("registered namespaces are not a vector".into()),
+        }
+    }
+    /// Whether this session is a parallel namespace worker's private overlay
+    /// (Stage C, light-cljs-1090).
+    pub(crate) fn is_local_overlay(&self) -> bool {
+        self.local_overlay.borrow().is_some()
+    }
+    /// Create a worker-thread session with a private [`NamespaceOverlay`] layered
+    /// strictly over `(shared, prefix_cursor)`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_namespace_overlay(
+        shared: Arc<SharedCatalog>,
+        thread: usize,
+        bootstrap: Option<Bootstrap>,
+        prefix_cursor: usize,
+        prefix_bundles: usize,
+        prefix_env_bundles: usize,
+        pool_policy: PoolPolicy,
+        capturing: bool,
+        overlay_synced: bool,
+    ) -> Rc<Self> {
+        let engine = RefCell::new(InstalledRegistrations {
+            bootstrap,
+            installed: prefix_cursor,
+            synced_bundles: prefix_bundles,
+            synced_ext_protocols: 0,
+        });
+        Rc::new(Self {
+            shared,
+            thread,
+            engine,
+            unit_bindings: Default::default(),
+            capture: Default::default(),
+            gensyms_pending: Default::default(),
+            gensym_floor: Default::default(),
+            gensyms_logged: Default::default(),
+            gensym_buffer: Default::default(),
+            gensyms_seen: Default::default(),
+            namespaces_pending: Default::default(),
+            namespaces_logged: Default::default(),
+            namespaces_ensured: Default::default(),
+            namespaces_absorbed: Default::default(),
+            namespaces_seen: Default::default(),
+            pool: Default::default(),
+            drained_through: Default::default(),
+            tail_ready: Default::default(),
+            deferred_engine_namespaces: Default::default(),
+            local_overlay: RefCell::new(Some(NamespaceOverlay {
+                prefix_cursor,
+                prefix_bundles,
+                prefix_env_bundles,
+                units: Vec::new(),
+                registrations: Vec::new(),
+                roots: RootIndex::default(),
+                multifn_targets: HashMap::new(),
+                local_env_bundles: 0,
+                local_redefined: false,
+                pool_policy,
+                capturing,
+                captured_macros: Vec::new(),
+                touched_local_in_engine: false,
+                reflected_in_engine: false,
+                created_namespaces: Vec::new(),
+                overlay_synced,
+                synced_local_ext: 0,
+                synced_local_cursor: prefix_cursor,
+            })),
+            #[cfg(test)]
+            probe_source: Default::default(),
+            #[cfg(feature = "bbp-macros")]
+            namespace_pass: Default::default(),
+            #[cfg(feature = "bbp-macros")]
+            namespace_journal: Default::default(),
+            #[cfg(feature = "bbp-macros")]
+            owns_namespace_journal: Cell::new(false),
+            #[cfg(feature = "bbp-macros")]
+            namespace_seed: None,
+        })
+    }
+    /// Clear any temporary V8/QuickJS overlay window installed during a parallel
+    /// top-level pass so the persistent worker isolate remains pristine for
+    /// reuse whenever no local root/bundle was actually materialized in V8.
+    pub(crate) fn clear_engine_overlay(&self) -> Result<(), String> {
+        let should_clear = self
+            .local_overlay
+            .borrow()
+            .as_ref()
+            .is_some_and(|o| o.overlay_synced && !o.touched_local_in_engine);
+        if !should_clear {
+            return Ok(());
+        }
+        if let Some(bootstrap) = self.bootstrap()
+            && !bootstrap.evaluator.native_forms()
+        {
+            let tag = ["\0clear".to_owned()];
+            bootstrap
+                .evaluator
+                .sync_catalog(0, 0, &tag)
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(overlay) = self.local_overlay.borrow_mut().as_mut() {
+            overlay.overlay_synced = false;
+        }
+        Ok(())
+    }
+    /// Exact analysis diagnostic recorded when a local overlay unit failed.
+    pub(crate) fn local_diagnostic(&self, id: usize) -> Option<crate::AnalysisError> {
+        let local_idx = id.checked_sub(LOCAL_UNIT_BASE)?;
+        let overlay = self.local_overlay.borrow();
+        match &overlay.as_ref()?.units.get(local_idx)?.state {
+            AnalysisState::Failed(_, diagnostic) => diagnostic.clone(),
+            _ => None,
+        }
+    }
+    /// Extract the completed overlay for canonical publication on the coordinator.
+    pub(crate) fn take_namespace_overlay(&self) -> NamespaceOverlayOutput {
+        let overlay = self
+            .local_overlay
+            .borrow_mut()
+            .take()
+            .expect("namespace overlay session");
+        NamespaceOverlayOutput {
+            units: overlay.units,
+            registrations: overlay.registrations,
+            captured_macros: overlay.captured_macros,
+            touched_local_in_engine: overlay.touched_local_in_engine,
+            reflected_in_engine: overlay.reflected_in_engine,
+            created_namespaces: overlay.created_namespaces,
+        }
+    }
+    /// Answer a `__lightRootService` lookup against `(shared < prefix_cursor)`
+    /// concatenated with this worker's private overlay registrations.
+    fn serve_overlay_root_request(&self, request: &str) -> String {
+        use std::fmt::Write;
+        let mut parts = request.split('\0');
+        let Some(kind) = parts.next() else {
+            return String::new();
+        };
+        let mut overlay_ref = self.local_overlay.borrow_mut();
+        let Some(overlay) = overlay_ref.as_mut() else {
+            return String::new();
+        };
+        let prefix_cursor = overlay.prefix_cursor;
+        let prefix_bundles = overlay.prefix_bundles;
+        let total_pos = prefix_cursor + overlay.registrations.len();
+        match kind {
+            "n" => {
+                let (Some(name), Some(from), Some(limit)) =
+                    (parts.next(), parts.next(), parts.next())
+                else {
+                    return String::new();
+                };
+                let (Ok(from), Ok(limit)) = (from.parse::<usize>(), limit.parse::<isize>()) else {
+                    return String::new();
+                };
+                let to_pos = if limit < 0 {
+                    total_pos
+                } else {
+                    (limit as usize).min(total_pos)
+                };
+                if from >= to_pos {
+                    return String::new();
+                }
+                let mut entries_buf = String::new();
+                let mut count = 0usize;
+                if from < prefix_cursor {
+                    let shared_to = to_pos.min(prefix_cursor);
+                    let c = self.shared.lock();
+                    if let Some(positions) = c.roots.name_positions.get(name) {
+                        let start = positions.partition_point(|&pos| pos < from);
+                        let end = positions.partition_point(|&pos| pos < shared_to);
+                        for &pos in &positions[start..end] {
+                            if count > 0 {
+                                entries_buf.push(',');
+                            }
+                            count += 1;
+                            let decl_frontier = c.roots.bundle_count_at[pos];
+                            match &c.journal.registrations[pos] {
+                                Registration::Root(_, unit, test, once, location) => {
+                                    let _ = write!(entries_buf, "[0,{pos},");
+                                    write_opt_usize(&mut entries_buf, *unit);
+                                    entries_buf.push(',');
+                                    write_opt_usize(&mut entries_buf, *test);
+                                    let _ = write!(entries_buf, ",{once},");
+                                    crate::source_map::json_string(&mut entries_buf, location);
+                                    let _ = write!(entries_buf, ",{decl_frontier}]");
+                                }
+                                Registration::Bundle(bundle) => {
+                                    entries_buf.push_str("[1,");
+                                    write_bundle_fields(
+                                        &mut entries_buf,
+                                        pos,
+                                        decl_frontier + 1,
+                                        bundle,
+                                    );
+                                    entries_buf.push(']');
+                                }
+                            }
+                        }
+                    }
+                }
+                if to_pos > prefix_cursor {
+                    let local_from = from.saturating_sub(prefix_cursor);
+                    let local_to = to_pos - prefix_cursor;
+                    if let Some(positions) = overlay.roots.name_positions.get(name) {
+                        let start = positions.partition_point(|&pos| pos < local_from);
+                        let end = positions.partition_point(|&pos| pos < local_to);
+                        if start < end {
+                            overlay.touched_local_in_engine = true;
+                        }
+                        for &local_pos in &positions[start..end] {
+                            if count > 0 {
+                                entries_buf.push(',');
+                            }
+                            count += 1;
+                            let pos = prefix_cursor + local_pos;
+                            let decl_frontier =
+                                prefix_bundles + overlay.roots.bundle_count_at[local_pos];
+                            match &overlay.registrations[local_pos] {
+                                Registration::Root(_, unit, test, once, location) => {
+                                    let _ = write!(entries_buf, "[0,{pos},");
+                                    write_opt_usize(&mut entries_buf, *unit);
+                                    entries_buf.push(',');
+                                    write_opt_usize(&mut entries_buf, *test);
+                                    let _ = write!(entries_buf, ",{once},");
+                                    crate::source_map::json_string(&mut entries_buf, location);
+                                    let _ = write!(entries_buf, ",{decl_frontier}]");
+                                }
+                                Registration::Bundle(bundle) => {
+                                    entries_buf.push_str("[1,");
+                                    write_bundle_fields(
+                                        &mut entries_buf,
+                                        pos,
+                                        decl_frontier + 1,
+                                        bundle,
+                                    );
+                                    entries_buf.push(']');
+                                }
+                            }
+                        }
+                    }
+                }
+                if count == 0 {
+                    return String::new();
+                }
+                format!("[{to_pos},[{entries_buf}]]")
+            }
+            "p" => {
+                let (Some(protocol), Some(from), Some(to)) =
+                    (parts.next(), parts.next(), parts.next())
+                else {
+                    return String::new();
+                };
+                let (Ok(from), Ok(to)) = (from.parse::<usize>(), to.parse::<usize>()) else {
+                    return String::new();
+                };
+                let to_pos = to.min(total_pos);
+                if from >= to_pos {
+                    return String::new();
+                }
+                let mut entries_buf = String::new();
+                let mut count = 0usize;
+                if from < prefix_cursor {
+                    let shared_to = to_pos.min(prefix_cursor);
+                    let c = self.shared.lock();
+                    if let Some(orders) = c.roots.protocol_bundles.get(protocol) {
+                        let start =
+                            orders.partition_point(|&order| c.roots.bundles[order - 1].0 < from);
+                        let end = orders
+                            .partition_point(|&order| c.roots.bundles[order - 1].0 < shared_to);
+                        for &order in &orders[start..end] {
+                            if count > 0 {
+                                entries_buf.push(',');
+                            }
+                            count += 1;
+                            let (pos, bundle) = &c.roots.bundles[order - 1];
+                            entries_buf.push('[');
+                            write_bundle_fields(&mut entries_buf, *pos, order, bundle);
+                            entries_buf.push(']');
+                        }
+                    }
+                }
+                if to_pos > prefix_cursor {
+                    let local_from = from.saturating_sub(prefix_cursor);
+                    let local_to = to_pos - prefix_cursor;
+                    if let Some(orders) = overlay.roots.protocol_bundles.get(protocol) {
+                        let start = orders.partition_point(|&order| {
+                            overlay.roots.bundles[order - 1].0 < local_from
+                        });
+                        let end = orders.partition_point(|&order| {
+                            overlay.roots.bundles[order - 1].0 < local_to
+                        });
+                        if start < end {
+                            overlay.touched_local_in_engine = true;
+                        }
+                        for &local_order in &orders[start..end] {
+                            if count > 0 {
+                                entries_buf.push(',');
+                            }
+                            count += 1;
+                            let (local_pos, bundle) = &overlay.roots.bundles[local_order - 1];
+                            entries_buf.push('[');
+                            write_bundle_fields(
+                                &mut entries_buf,
+                                prefix_cursor + *local_pos,
+                                prefix_bundles + local_order,
+                                bundle,
+                            );
+                            entries_buf.push(']');
+                        }
+                    }
+                }
+                if count == 0 {
+                    return String::new();
+                }
+                format!("[{entries_buf}]")
+            }
+            "t" => {
+                let Some(unit) = parts.next().and_then(|s| s.parse::<usize>().ok()) else {
+                    return String::new();
+                };
+                if unit >= LOCAL_UNIT_BASE {
+                    let Some(&local_pos) = overlay.roots.unit_positions.get(&unit) else {
+                        return String::new();
+                    };
+                    overlay.touched_local_in_engine = true;
+                    if let Registration::Root(name, ..) = &overlay.registrations[local_pos] {
+                        let mut out = String::new();
+                        let _ = write!(out, "[{},", prefix_cursor + local_pos);
+                        crate::source_map::json_string(&mut out, name);
+                        out.push(']');
+                        return out;
+                    }
+                    String::new()
+                } else {
+                    drop(overlay_ref);
+                    self.shared.serve_root_request(request, Some(prefix_cursor))
+                }
+            }
+            "r" => {
+                overlay.reflected_in_engine = true;
+                String::new()
+            }
+            "c" => {
+                if let Some(ns) = parts.next()
+                    && !overlay.created_namespaces.iter().any(|existing| existing == ns)
+                {
+                    overlay.created_namespaces.push(ns.to_owned());
+                }
+                String::new()
+            }
+            _ => String::new(),
+        }
+    }
+    /// Analyze a local unit registered in this worker's private overlay
+    /// (used for `warning_mode` form-by-form draining and rare intra-namespace
+    /// compile-time demands). Prepares compile-time JS right on the worker.
+    pub(crate) fn analyze_local(
+        &self,
+        id: usize,
+        engine: Option<&dyn MacroEvaluator>,
+        worker_frame: &EngineBinding,
+    ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+        let local_idx = id - LOCAL_UNIT_BASE;
+        let inputs = {
+            let mut overlay_ref = self.local_overlay.borrow_mut();
+            let overlay = overlay_ref.as_mut().expect("namespace overlay");
+            let unit = &mut overlay.units[local_idx];
+            match &unit.state {
+                AnalysisState::Analyzed(program, warnings, _) => {
+                    return Ok((program.clone(), warnings.clone()));
+                }
+                AnalysisState::Prepared(program, warnings, _) => {
+                    return program
+                        .upgrade()
+                        .map(|p| (p, warnings.clone()))
+                        .ok_or_else(|| "application IR was already transferred".to_owned());
+                }
+                AnalysisState::Failed(error, _) => return Err(error.clone()),
+                AnalysisState::Analyzing(_) => {
+                    return Err(format!(
+                        "compile dependency cycle: {}",
+                        unit.raw_name.clone().resolve(id)
+                    ));
+                }
+                AnalysisState::Unstarted => {
+                    unit.state = AnalysisState::Analyzing(self.thread);
+                    unit.analyses += 1;
+                    unit.inputs.take().expect("unstarted local unit inputs")
+                }
+            }
+        };
+        let UnitInputs {
+            form,
+            snapshot,
+            environment,
+        } = *inputs;
+        let mut host = MacroHost::from_parts(environment, worker_frame.frame()).macro_analysis_frame();
+        if host.engine.bootstrap.is_none() {
+            host.engine.bootstrap = self.bootstrap();
+        }
+        let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
+        let active_engine = engine.or_else(|| {
+            evaluator
+                .as_ref()
+                .map(|e| e.as_ref() as &dyn MacroEvaluator)
+        });
+        let scope_engine = if self
+            .local_overlay
+            .borrow()
+            .as_ref()
+            .is_some_and(|o| o.units[local_idx].macro_free)
+        {
+            None
+        } else {
+            active_engine
+        };
+        let _frontier = if let Some(engine) = scope_engine {
+            engine
+                .compiler_frontier(Some(snapshot.extension_frontier))
+                .map_err(|e| e.to_string())?;
+            Some(FrontierGuard { engine })
+        } else {
+            None
+        };
+        let _gensyms = crate::generated_names::RestoreGensymScope(scope_engine);
+        let analysis =
+            crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, active_engine);
+        let diagnostic = analysis.as_ref().err().cloned();
+        let result = analysis
+            .map(|(mut p, w)| {
+                p.shrink_to_fit();
+                (Arc::new(p), w)
+            })
+            .map_err(|e| {
+                let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
+                let name = self
+                    .local_overlay
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .units[local_idx]
+                    .raw_name
+                    .clone()
+                    .resolve(id);
+                format!("{}:{}:{}: {name}: {e}", loc.source, loc.line, loc.column)
+            });
+        let prepared = match &result {
+            Ok((p, _)) => Some(Arc::new(crate::emitter::DeferredUnit::prepare(p))),
+            Err(_) => None,
+        };
+        let mut overlay_ref = self.local_overlay.borrow_mut();
+        let unit = &mut overlay_ref.as_mut().unwrap().units[local_idx];
+        unit.state = match (&result, prepared) {
+            (Ok((p, w)), Some(prepared)) => {
+                AnalysisState::Prepared(Arc::downgrade(p), w.clone(), prepared)
+            }
+            (Ok((p, w)), None) => AnalysisState::Analyzed(p.clone(), w.clone(), None),
+            (Err(e), _) => AnalysisState::Failed(e.clone(), diagnostic),
+        };
+        result
+    }
+    /// Compile a local unit (`id >= LOCAL_UNIT_BASE`) demanded by a macro running
+    /// inside this worker's namespace top-level pass.
+    fn compile_local_unit(
+        &self,
+        active: &dyn MacroEvaluator,
+        id: usize,
+        worker_frame: &EngineBinding,
+    ) -> Result<String, String> {
+        let local_idx = id - LOCAL_UNIT_BASE;
+        if let Some(overlay) = self.local_overlay.borrow_mut().as_mut() {
+            overlay.touched_local_in_engine = true;
+        }
+        let prepared = {
+            let overlay_ref = self.local_overlay.borrow();
+            let unit = &overlay_ref.as_ref().unwrap().units[local_idx];
+            match &unit.state {
+                AnalysisState::Prepared(_, _, p) | AnalysisState::Analyzed(_, _, Some(p)) => {
+                    Some(p.clone())
+                }
+                _ => None,
+            }
+        };
+        let register = |tables: &crate::reader_registration::ReaderTables| {
+            crate::reader_registration::register(active, tables).map_err(|e| e.to_string())
+        };
+        crate::reader_registration::in_callback(active, || {
+            if let Some(prepared) = prepared {
+                self.local_overlay.borrow_mut().as_mut().unwrap().units[local_idx].emitted = true;
+                register(prepared.tables())?;
+                return Ok(prepared.code().to_owned());
+            }
+            let (program, _) = self.analyze_local(id, Some(active), worker_frame)?;
+            let code = crate::emitter::emit_deferred_unit(&program);
+            self.local_overlay.borrow_mut().as_mut().unwrap().units[local_idx].emitted = true;
+            register(&crate::reader_registration::ReaderTables::of(&program))?;
+            Ok(code)
+        })
+    }
+    /// Commit a worker's [`NamespaceOverlayOutput`] into this coordinator session
+    /// in canonical order under a single catalog lock, relocating all local unit
+    /// IDs (`>= LOCAL_UNIT_BASE`) to canonical IDs `base .. base + units.len()`.
+    /// Returns `(base_unit_id, pooled_pairs)` ready for pool submission.
+    pub(crate) fn publish_overlay(
+        &self,
+        output: NamespaceOverlayOutput,
+        host: &MacroHost,
+        dispatched_local_ids: &[usize],
+        forced_lanes: bool,
+        can_pool: bool,
+    ) -> Result<(usize, Vec<(usize, bool)>), String> {
+        let relocate = |id: usize, base: usize| -> usize {
+            if id >= LOCAL_UNIT_BASE {
+                base + (id - LOCAL_UNIT_BASE)
+            } else {
+                id
+            }
+        };
+        let (base, pooled_pairs, all_dispatched, needs_sync, unit_count) = {
+            use std::sync::atomic::Ordering::Release;
+            let mut c = self.shared.lock();
+            let c = &mut *c;
+            let base = c.units.len();
+            let publish_bundles = c.journal.bundle_count;
+            let unit_count = output.units.len();
+            let mut capture_units = self.capture.borrow_mut();
+            let mut resolved_names = Vec::with_capacity(unit_count);
+            for (offset, mut local) in output.units.into_iter().enumerate() {
+                let id = base + offset;
+                let name = local.raw_name.resolve(id);
+                resolved_names.push(name.clone());
+                let next_var = VarId(c.bindings.len());
+                let binding = c.bindings.entry(name.clone()).or_insert((next_var, 0));
+                binding.1 += 1;
+                let request = UnitRequest {
+                    var: binding.0,
+                    generation: binding.1,
+                };
+                let canonical_frontier = publish_bundles + local.local_bundle_offset;
+                if let Some(inputs) = local.inputs.as_mut() {
+                    inputs.snapshot.extension_frontier = canonical_frontier;
+                    if let Some(test_id) = inputs.snapshot.definition_test_unit.as_mut() {
+                        *test_id = relocate(*test_id, base);
+                    }
+                }
+                if let Some(capture) = capture_units.as_mut() {
+                    capture.units.push(UnitCapture {
+                        view_globals: local.view_globals,
+                        extension_frontier: canonical_frontier,
+                        added: Vec::new(),
+                    });
+                }
+                let source = self.lane_source(local.source as usize);
+                let order = self.shared.lanes.register_unit(id, source);
+                c.push_unit(
+                    Unit {
+                        request,
+                        name,
+                        source: source as u32,
+                        inputs: local.inputs,
+                        state: local.state,
+                        analyses: local.analyses,
+                        emitted: local.emitted,
+                        waiters: 0,
+                        retained: None,
+                        macro_free: local.macro_free,
+                        pooled: local.pooled,
+                        dispatch: local.dispatch,
+                        held: false,
+                        dispatched: false,
+                        charges: None,
+                        time: Default::default(),
+                    },
+                    order,
+                );
+            }
+            drop(capture_units);
+            let mut needs_sync = false;
+            for reg in output.registrations {
+                let canonical_reg = match reg {
+                    Registration::Root(name, unit, test, once, location) => {
+                        let unit = unit.map(|u| relocate(u, base));
+                        let test = test.map(|t| relocate(t, base));
+                        // Preserve synthetic unit names resolved at canonical IDs.
+                        let canonical_name = match unit {
+                            Some(u) if u >= base && u < base + unit_count => {
+                                resolved_names[u - base].clone()
+                            }
+                            _ => name,
+                        };
+                        Registration::Root(canonical_name, unit, test, once, location)
+                    }
+                    Registration::Bundle(bundle) => {
+                        let canonical_bundle = Arc::new(BundleRecord {
+                            products: bundle.products.clone(),
+                            unit: relocate(bundle.unit, base),
+                            extensions: bundle.extensions.clone(),
+                            location: bundle.location.clone(),
+                            once: bundle.once,
+                            group: bundle.group,
+                        });
+                        Registration::Bundle(canonical_bundle)
+                    }
+                };
+                let position = c.journal.registrations.len();
+                let effect = c.roots.record(position, &canonical_reg);
+                c.journal.push(canonical_reg);
+                self.shared.journal_len.store(effect.journal_len, Release);
+                self.shared.bundle_count.store(effect.bundle_count, Release);
+                self.shared
+                    .ext_protocol_count
+                    .store(effect.ext_protocol_count, Release);
+                if effect.redefined || effect.has_extensions {
+                    needs_sync = true;
+                }
+            }
+            let mut all_dispatched = Vec::with_capacity(dispatched_local_ids.len());
+            let mut pooled_pairs = Vec::new();
+            for &local_id in dispatched_local_ids {
+                let id = relocate(local_id, base);
+                all_dispatched.push(id);
+                if let Some(unit) = c.units.get_mut(id) {
+                    unit.held = true;
+                    unit.dispatched = true;
+                    if can_pool && unit.pooled && matches!(unit.state, AnalysisState::Unstarted) {
+                        pooled_pairs.push((id, unit.macro_free));
+                    }
+                }
+            }
+            (base, pooled_pairs, all_dispatched, needs_sync, unit_count)
+        };
+        if !all_dispatched.is_empty() {
+            self.shared.schedule_lanes(&all_dispatched, forced_lanes);
+        }
+        if unit_count > 0 {
+            let mut bindings = self.unit_bindings.borrow_mut();
+            if bindings.len() < base + unit_count {
+                bindings.resize_with(base + unit_count, || None);
+            }
+            for id in base..(base + unit_count) {
+                bindings[id] = Some(Box::new(host.engine.frame()));
+            }
+        }
+        if !output.created_namespaces.is_empty() {
+            self.deferred_engine_namespaces
+                .borrow_mut()
+                .extend(output.created_namespaces);
+        }
+        if !output.captured_macros.is_empty()
+            && let Some(capture) = self.capture.borrow_mut().as_mut()
+        {
+            capture.macros.extend(output.captured_macros);
+        }
+        if needs_sync {
+            self.sync_catalog(None)?;
+        }
+        Ok((base, pooled_pairs))
+    }
+    /// Submit a parallel namespace top-level task to the build's unit pool.
+    pub(crate) fn submit_namespace(
+        &self,
+        source_index: usize,
+        needs_engine: bool,
+        run: Box<dyn FnOnce(Option<&NamespaceWorkerContext<'_>>) -> bool + Send>,
+    ) -> bool {
+        match &*self.pool.borrow() {
+            Some(pool) => {
+                pool.submit_namespace(source_index, needs_engine, run);
+                true
+            }
+            None => false,
+        }
+    }
+    /// Block the coordinator on `shared.settled` until `ready()` returns true,
+    /// servicing any forwarded `light.build` requests from workers along the
+    /// way so workers never deadlock waiting on the coordinator.
+    pub(crate) fn wait_for_namespace_ready(
+        &self,
+        host: &MacroHost,
+        mut ready: impl FnMut() -> bool,
+    ) -> Result<(), String> {
+        loop {
+            if ready() {
+                return Ok(());
+            }
+            // Service any pending worker `light.build` requests first.
+            let request = {
+                let mut c = self.shared.lock();
+                if let Some(abandoned) = &c.abandoned {
+                    return Err(abandoned.clone());
+                }
+                c.requests.pop_front()
+            };
+            if let Some(request) = request {
+                let log = host.engine.dependency_log.borrow().as_ref().map(|log| {
+                    crate::dependency_manifest::ObservationLog {
+                        window: request.analysis.first().copied().unwrap_or(log.window),
+                        ..Default::default()
+                    }
+                });
+                let log = Rc::new(RefCell::new(log));
+                let reply = crate::build_services::serve_request(
+                    &host.engine.build,
+                    &log,
+                    &request.text,
+                    |unit| self.shared.unit_source(unit),
+                    request.analysis,
+                );
+                self.shared
+                    .lock()
+                    .replies
+                    .push((request.ticket, reply, log.take().map(Box::new)));
+                self.shared.settled.notify_all();
+                continue;
+            }
+            let guard = self.shared.lock();
+            if ready() {
+                return Ok(());
+            }
+            if let Some(abandoned) = &guard.abandoned {
+                return Err(abandoned.clone());
+            }
+            if !guard.requests.is_empty() {
+                continue;
+            }
+            let _ = self
+                .shared
+                .settled
+                .wait_timeout(guard, std::time::Duration::from_millis(5))
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
     pub fn new() -> Rc<Self> {
@@ -3783,19 +4800,40 @@ impl CompilationSession {
         counts
     }
     pub fn extension_frontier(&self) -> usize {
+        if let Some(overlay) = self.local_overlay.borrow().as_ref() {
+            return overlay.prefix_bundles + overlay.roots.bundles.len();
+        }
         self.with_journal(|journal| journal.bundle_count)
     }
     /// How many registered bundles [`reaches_environment_data`].
     pub fn environment_bundles(&self) -> usize {
+        if let Some(overlay) = self.local_overlay.borrow().as_ref() {
+            return overlay.prefix_env_bundles + overlay.local_env_bundles;
+        }
         self.with_journal(|journal| journal.environment_bundles)
     }
     pub fn multifn_target(&self, name: &str) -> Option<String> {
+        if let Some(overlay) = self.local_overlay.borrow().as_ref() {
+            if let Some(target) = overlay.multifn_targets.get(name) {
+                return Some(target.clone());
+            }
+            return self.shared.multifn_target(name);
+        }
         self.with_journal(|journal| journal.multifn_targets.get(name).cloned())
     }
     pub fn register_bundle(
         &self,
         program: &Program,
         registration: BundleRegistration<'_>,
+    ) -> Result<usize, String> {
+        self.register_bundle_with_flags(program, registration, false, false)
+    }
+    pub(crate) fn register_bundle_with_flags(
+        &self,
+        program: &Program,
+        registration: BundleRegistration<'_>,
+        macro_free: bool,
+        pooled: bool,
     ) -> Result<usize, String> {
         let BundleRegistration {
             products,
@@ -3822,15 +4860,78 @@ impl CompilationSession {
                 host,
                 false,
                 location.clone(),
+                macro_free,
+                pooled,
             )?
             .unwrap();
         let group = analyzed.is_some();
+        if self.local_overlay.borrow().is_some() {
+            let local_idx = unit - LOCAL_UNIT_BASE;
+            if let Some(mut program) = analyzed {
+                program.shrink_to_fit();
+                let prepared = Arc::new({
+                    #[cfg(feature = "bbp-macros")]
+                    if self
+                        .shared
+                        .native_units
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        crate::emitter::DeferredUnit::prepare_native(
+                            &program,
+                            &self.shared.native_replaced_core(),
+                        )
+                    } else {
+                        crate::emitter::DeferredUnit::prepare(&program)
+                    }
+                    #[cfg(not(feature = "bbp-macros"))]
+                    crate::emitter::DeferredUnit::prepare(&program)
+                });
+                let mut overlay_ref = self.local_overlay.borrow_mut();
+                let entry = &mut overlay_ref.as_mut().unwrap().units[local_idx];
+                entry.state =
+                    AnalysisState::Prepared(std::sync::Weak::new(), Vec::new(), prepared);
+                entry.analyses = 1;
+                entry.inputs = None;
+            }
+            let bundle = Arc::new(BundleRecord {
+                products: names,
+                unit,
+                extensions: extensions.to_vec(),
+                location,
+                once,
+                group,
+            });
+            let mut overlay_ref = self.local_overlay.borrow_mut();
+            let overlay = overlay_ref.as_mut().unwrap();
+            let local_pos = overlay.registrations.len();
+            if reaches_environment_data(&bundle.extensions) {
+                overlay.local_env_bundles += 1;
+            }
+            if let Some((target, _)) = bundle
+                .extensions
+                .iter()
+                .find_map(|(protocol, _, _)| protocol.strip_prefix("multifn:").map(|t| (t, ())))
+                && target != "*"
+                && bundle.products.len() == 1
+            {
+                overlay
+                    .multifn_targets
+                    .insert(bundle.products[0].clone(), target.to_owned());
+            }
+            let registration = Registration::Bundle(bundle);
+            let effect = overlay.roots.record(local_pos, &registration);
+            if effect.redefined {
+                overlay.local_redefined = true;
+            }
+            overlay.registrations.push(registration);
+            return Ok(unit);
+        }
         if let Some(mut program) = analyzed {
             program.shrink_to_fit();
             let inputs = {
                 let mut c = self.shared.lock();
                 let entry = &mut c.units[unit];
-                entry.state = AnalysisState::Analyzed(Arc::new(program), Vec::new());
+                entry.state = AnalysisState::Analyzed(Arc::new(program), Vec::new(), None);
                 entry.analyses = 1;
                 entry.inputs.take()
             };
@@ -3869,6 +4970,7 @@ impl CompilationSession {
         }
         Ok(unit)
     }
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn register(
         &self,
         name: String,
@@ -3885,8 +4987,34 @@ impl CompilationSession {
             host,
             once,
             location,
+            false,
+            false,
         )
     }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn register_with_flags(
+        &self,
+        name: String,
+        form: Option<Form>,
+        snapshot: DefinitionSnapshot,
+        host: MacroHost,
+        once: bool,
+        location: String,
+        macro_free: bool,
+        pooled: bool,
+    ) -> Result<Option<usize>, String> {
+        self.register_named(
+            RegistrationName::Var(name),
+            form,
+            snapshot,
+            host,
+            once,
+            location,
+            macro_free,
+            pooled,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
     fn register_named(
         &self,
         name: RegistrationName,
@@ -3895,6 +5023,8 @@ impl CompilationSession {
         host: MacroHost,
         once: bool,
         location: String,
+        macro_free: bool,
+        pooled: bool,
     ) -> Result<Option<usize>, String> {
         // Executable metadata has its own source-site unit and root state.
         // Reflecting it cannot analyze or execute the ordinary initializer.
@@ -3907,6 +5037,8 @@ impl CompilationSession {
                 host.macro_analysis_frame(),
                 false,
                 location.clone(),
+                false,
+                false,
             )?;
         }
         let test = snapshot.definition_test_unit;
@@ -3922,6 +5054,46 @@ impl CompilationSession {
         #[cfg(test)]
         if let Some(form) = &form {
             worker_tests::retain(self.next_unit(), form, &snapshot, &host);
+        }
+        if self.local_overlay.borrow().is_some() {
+            let (environment, _binding) = host.into_parts();
+            let mut overlay_ref = self.local_overlay.borrow_mut();
+            let overlay = overlay_ref.as_mut().unwrap();
+            let local_idx = overlay.units.len();
+            let local_unit_id = LOCAL_UNIT_BASE + local_idx;
+            let resolved_name = name.clone().resolve(local_unit_id);
+            let id = form.map(|form| {
+                let view_globals = snapshot.resolution_program.globals.len();
+                let local_bundle_offset =
+                    snapshot.extension_frontier.saturating_sub(overlay.prefix_bundles);
+                let source = snapshot.source_index as u32;
+                overlay.units.push(LocalUnit {
+                    raw_name: name.clone(),
+                    source,
+                    inputs: Some(Box::new(UnitInputs {
+                        form,
+                        snapshot,
+                        environment,
+                    })),
+                    state: AnalysisState::Unstarted,
+                    analyses: 0,
+                    emitted: false,
+                    macro_free,
+                    pooled,
+                    dispatch,
+                    view_globals,
+                    local_bundle_offset,
+                });
+                local_unit_id
+            });
+            let local_pos = overlay.registrations.len();
+            let registration = Registration::Root(resolved_name, id, test, once, location);
+            let effect = overlay.roots.record(local_pos, &registration);
+            if effect.redefined {
+                overlay.local_redefined = true;
+            }
+            overlay.registrations.push(registration);
+            return Ok(id);
         }
         let (environment, binding) = host.into_parts();
         let (id, end, effect) = {
@@ -3978,8 +5150,8 @@ impl CompilationSession {
                         emitted: false,
                         waiters: 0,
                         retained: None,
-                        macro_free: false,
-                        pooled: false,
+                        macro_free,
+                        pooled,
                         dispatch,
                         held: false,
                         dispatched: false,
@@ -4018,23 +5190,72 @@ impl CompilationSession {
     /// compile-time engine, so a pool worker may analyze it, and every
     /// analysis of it panics if it does reach one
     /// ([`crate::macro_host::MacroFreeUnit`]).
+    #[allow(dead_code)]
     pub fn set_macro_free(&self, id: usize) {
+        if id >= LOCAL_UNIT_BASE
+            && let Some(overlay) = self.local_overlay.borrow_mut().as_mut()
+        {
+            overlay.units[id - LOCAL_UNIT_BASE].macro_free = true;
+            return;
+        }
         self.shared.lock().units[id].macro_free = true;
     }
     /// Let the build's unit pool analyze unit `id` ([`Self::submit_units`]).
+    #[allow(dead_code)]
     pub(crate) fn set_pooled(&self, id: usize) {
+        if id >= LOCAL_UNIT_BASE
+            && let Some(overlay) = self.local_overlay.borrow_mut().as_mut()
+        {
+            overlay.units[id - LOCAL_UNIT_BASE].pooled = true;
+            return;
+        }
         self.shared.lock().units[id].pooled = true;
     }
-    /// Of `units`, those for the pool that no thread has started, in order.
-    pub(crate) fn poolable(&self, units: impl Iterator<Item = usize>) -> Vec<usize> {
+    /// Of `units`, those for the pool that no thread has started, in order,
+    /// paired with their `macro_free` flag so pool submission needs no lock.
+    pub(crate) fn poolable(&self, units: impl Iterator<Item = usize>) -> Vec<(usize, bool)> {
         let c = self.shared.lock();
         units
-            .filter(|&id| {
+            .filter_map(|id| {
                 c.units
                     .get(id)
-                    .is_some_and(|u| u.pooled && matches!(u.state, AnalysisState::Unstarted))
+                    .filter(|u| u.pooled && matches!(u.state, AnalysisState::Unstarted))
+                    .map(|u| (id, u.macro_free))
             })
             .collect()
+    }
+    /// Mark `units` held/dispatched and return the poolable `(id, macro_free)`
+    /// subset in a single catalog lock acquisition.
+    pub(crate) fn hold_and_poolable(
+        &self,
+        units: impl Iterator<Item = usize>,
+        forced: bool,
+        can_pool: bool,
+    ) -> Vec<(usize, bool)> {
+        let units: Vec<usize> = units.collect();
+        let pooled = {
+            let mut c = self.shared.lock();
+            let mut pooled = if can_pool {
+                Vec::with_capacity(units.len())
+            } else {
+                Vec::new()
+            };
+            for &id in &units {
+                if let Some(unit) = c.units.get_mut(id) {
+                    unit.held = true;
+                    unit.dispatched = true;
+                    if can_pool
+                        && unit.pooled
+                        && matches!(unit.state, AnalysisState::Unstarted)
+                    {
+                        pooled.push((id, unit.macro_free));
+                    }
+                }
+            }
+            pooled
+        };
+        self.shared.schedule_lanes(&units, forced);
+        pooled
     }
     /// Perturb this build's unit pool and analyses, for a stress test.
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
@@ -4067,12 +5288,25 @@ impl CompilationSession {
         *self.pool.borrow_mut() = Some(pool);
         Ok(())
     }
+    pub(crate) fn pool_policy(&self) -> Option<PoolPolicy> {
+        self.pool.borrow().as_ref().map(|pool| PoolPolicy {
+            engines: pool.engines,
+            workers: pool.workers,
+            engine_workers: pool.engine_workers,
+        })
+    }
     /// Whether the build's unit pool takes a unit: with `macro_free`, one
     /// found macro-free; with `test`, one of a definition with `:test`
     /// metadata, analyzed with its definition through this session. Its
     /// workers without engines take only macro-free units. A cache
     /// blocker's consumer never asks (`NamespaceAnalysis::main_isolate`).
     pub(crate) fn pools(&self, macro_free: bool, test: bool) -> bool {
+        if let Some(overlay) = self.local_overlay.borrow().as_ref() {
+            return match overlay.pool_policy.engines {
+                PoolEngines::None => macro_free,
+                _ => macro_free || !test,
+            };
+        }
         match &*self.pool.borrow() {
             None => false,
             Some(pool) if pool.engines == PoolEngines::None => macro_free,
@@ -4089,20 +5323,27 @@ impl CompilationSession {
     /// points (200k generated project at `--jobs 8` with one worker
     /// isolate: 8.79 s against 6.62 s).
     pub(crate) fn pools_bundle(&self, macro_free: bool) -> bool {
-        self.pools(macro_free, false)
-            && self
-                .pool
-                .borrow()
-                .as_ref()
-                .is_some_and(|pool| match macro_free {
-                    true => pool.workers > 1,
-                    false => pool.engine_workers > 1,
-                })
+        if !self.pools(macro_free, false) {
+            return false;
+        }
+        if let Some(overlay) = self.local_overlay.borrow().as_ref() {
+            return match macro_free {
+                true => overlay.pool_policy.workers > 1,
+                false => overlay.pool_policy.engine_workers > 1,
+            };
+        }
+        self.pool
+            .borrow()
+            .as_ref()
+            .is_some_and(|pool| match macro_free {
+                true => pool.workers > 1,
+                false => pool.engine_workers > 1,
+            })
     }
     /// Give `units` to the build's pool: whether it has one.
     /// The compilation has charged `charged` expansions and generated
     /// nodes before them ([`SharedCatalog::raise_charged`]).
-    pub(crate) fn submit_units(&self, units: Vec<usize>, charged: (usize, usize)) -> bool {
+    pub(crate) fn submit_units(&self, units: Vec<(usize, bool)>, charged: (usize, usize)) -> bool {
         match &*self.pool.borrow() {
             Some(pool) => {
                 self.shared.raise_charged(charged.0, charged.1);
@@ -4190,9 +5431,10 @@ impl CompilationSession {
     /// cancelled (docs/compiler-concurrency.md, "As built (light-cljs-341)").
     pub(crate) fn cancel_pool(&self) {
         if let Some(pool) = &*self.pool.borrow() {
+            pool.submitter.cancel();
             let mut inbox = pool.inbox.lock();
-            inbox.batches.clear();
             inbox.closed = true;
+            inbox.cancelled = true;
             drop(inbox);
             pool.inbox.ready.notify_all();
         }
@@ -4237,9 +5479,29 @@ impl CompilationSession {
 impl SharedCatalog {
     /// [`CompilationSession::release_application_ir`] on any thread.
     fn release_application_ir(&self, id: usize) {
-        let program = match &self.lock().units[id].state {
-            AnalysisState::Analyzed(program, _) => program.clone(),
-            _ => return,
+        let program = {
+            let mut c = self.lock();
+            let state = &mut c.units[id].state;
+            match state {
+                AnalysisState::Analyzed(_, _, Some(_)) => {
+                    let AnalysisState::Analyzed(program, warnings, Some(prepared)) =
+                        std::mem::replace(state, AnalysisState::Unstarted)
+                    else {
+                        unreachable!()
+                    };
+                    *state = AnalysisState::Prepared(Arc::downgrade(&program), warnings, prepared);
+                    let unit = &mut c.units[id];
+                    if unit.waiters > 0 {
+                        unit.retained = Some(program);
+                        return;
+                    }
+                    drop(c);
+                    drop(program);
+                    return;
+                }
+                AnalysisState::Analyzed(program, _, None) => program.clone(),
+                _ => return,
+            }
         };
         // Prepared outside the lock; the analyzed program is dropped by its
         // last holder, outside it too.
@@ -4257,7 +5519,7 @@ impl SharedCatalog {
             let mut c = self.lock();
             let state = &mut c.units[id].state;
             match std::mem::replace(state, AnalysisState::Unstarted) {
-                AnalysisState::Analyzed(program, warnings) => {
+                AnalysisState::Analyzed(program, warnings, _) => {
                     *state = AnalysisState::Prepared(Arc::downgrade(&program), warnings, prepared);
                     // Threads waiting for the analysis have not taken it yet.
                     let unit = &mut c.units[id];
@@ -4308,7 +5570,9 @@ impl CompilationSession {
         let _root = self.shared.lanes.enter_root();
         let analysis = self.analyze_in(id, engine, false, Take::Hold).map(drop);
         // No pool job after it in unit order starts, as after a worker's.
-        self.shared.note_job(id);
+        if analysis.is_err() {
+            self.shared.note_job(id);
+        }
         analysis
     }
     /// Unit `id`'s analysis, which the drain gave to the unit pool: a
@@ -4323,16 +5587,33 @@ impl CompilationSession {
     }
     /// Unit `id`'s analysis at its namespace's drain point, which charges
     /// what it recorded ([`UnitCharges`]): a worker's if the pool was given
-    /// it (`queued`), waiting for it, or this thread's.
+    /// it (`queued`), waiting for it, or this thread's. Returns whether the
+    /// unit's application IR was already transitioned to `Prepared` under the
+    /// same catalog lock (avoiding a separate `release_application_ir` lock).
     pub(crate) fn analyze_drained(
         &self,
         id: usize,
         queued: bool,
-    ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+    ) -> Result<(Arc<Program>, Vec<AnalysisWarning>, bool), String> {
+        // Single-lock fast path for a unit a worker already analyzed and
+        // prepared: releases hold, swaps Analyzed -> Prepared, takes charges,
+        // and reads stack depth & dispatch in one lock acquisition.
+        if !crate::macro_host::MacroFreeUnit::active()
+            && let Some((program, warnings, charges, depth, dispatch)) =
+                self.shared.drain_ready(id, self.thread)
+        {
+            self.note_drained(id);
+            let counters = self.take_unit_binding(id).map(|b| *b);
+            if let (Some(binding), Some(charges)) = (counters, charges) {
+                self.apply_drained_charges(id, binding, charges, depth, dispatch, None, Take::Drain)?;
+            }
+            return Ok((program, warnings, true));
+        }
         if queued {
             self.analyze_queued(Some(id));
         }
         self.analyze_in(id, None, queued, Take::Drain)
+            .map(|(program, warnings)| (program, warnings, false))
     }
 
     /// Completed namespace-worker units keep their recorded charges in the
@@ -4370,10 +5651,9 @@ impl CompilationSession {
         Ok(())
     }
 
-    #[cfg(feature = "bbp-macros")]
     pub(crate) fn charge_namespace(
         &self,
-        charges: UnitCharges,
+        mut charges: UnitCharges,
         host: &MacroHost,
     ) -> Result<(), crate::AnalysisError> {
         let binding = &host.engine;
@@ -4386,9 +5666,43 @@ impl CompilationSession {
             self.start_main_engine(binding)
                 .map(|b| b.map(|b| b.evaluator.control()))
         };
+        if let Some(rows) = charges.trace.take() {
+            crate::compile_trace::replay(*rows, 0);
+        }
+        let before = (binding.expansions.get(), binding.generated_nodes.get());
         charges
             .charge(binding, None, control, &start, self)
             .map_err(|(_, diagnostic)| diagnostic)?;
+        crate::compile_trace::charged(
+            &binding.expansions,
+            binding.expansions.get().saturating_sub(before.0),
+            binding.generated_nodes.get().saturating_sub(before.1),
+        );
+        let UnitCharges {
+            observations,
+            gensyms,
+            namespaces,
+            ..
+        } = charges;
+        if let (Some(observations), Some(log)) =
+            (observations, binding.dependency_log.borrow_mut().as_mut())
+        {
+            log.absorb(*observations);
+        }
+        self.absorb_gensyms(gensyms).map_err(|error| crate::AnalysisError {
+            span: 0..0,
+            kind: crate::analyzer::AnalysisErrorKind::MacroExpansion(error),
+        })?;
+        if !namespaces.is_empty() {
+            self.absorb_namespaces(
+                namespaces,
+                crate::namespace_artifact::UnitDispatch::Coordinator,
+            )
+            .map_err(|error| crate::AnalysisError {
+                span: 0..0,
+                kind: crate::analyzer::AnalysisErrorKind::MacroExpansion(error),
+            })?;
+        }
         self.shared
             .raise_charged(binding.expansions.get(), binding.generated_nodes.get());
         Ok(())
@@ -4484,6 +5798,7 @@ impl CompilationSession {
     /// Note that the dispatch of their namespace keeps `units` for its
     /// drain point, which charges them; until then a demand of one takes
     /// its analysis and leaves its charges (light-cljs-394).
+    #[allow(dead_code)]
     pub(crate) fn hold_units(&self, units: impl Iterator<Item = usize>, forced: bool) {
         let units: Vec<usize> = units.collect();
         {
@@ -4668,89 +5983,107 @@ impl CompilationSession {
             crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
         }
         if let Some(binding) = counters
-            && let Some(mut charges) = self.shared.take_charges(id)
+            && let Some(charges) = self.shared.take_charges(id)
         {
-            let depth = self.shared.lock().threads[self.thread].stack.len();
-            // What its analysis here would have polled ([`analyze_unit`]).
-            let control = engine.map(|engine| engine.control()).or_else(|| {
-                binding
-                    .bootstrap
-                    .as_ref()
-                    .or(self.bootstrap().as_ref())
-                    .map(|b| b.evaluator.control())
-            });
-            // A demand this deep fails before the unit is analyzed, as
-            // its claim would have failed it with one slot.
-            if depth >= charges.depth_limit {
-                crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
-                self.shared.fail(id, DEPTH_LIMIT.to_owned(), None);
-                return Err(DEPTH_LIMIT.to_owned());
-            }
-            // A worker's trace rows go where the serial build would have
-            // recorded them, as the charges do (light-cljs-369).
-            if let Some(rows) = charges.trace.take() {
-                crate::compile_trace::replay(*rows, depth);
-            }
-            let before = (binding.expansions.get(), binding.generated_nodes.get());
-            // A worker's unit that expanded a JavaScript macro would have
-            // started the coordinator's engine with one slot, at that
-            // expansion; it starts it there, so later polls are spent.
-            let start = || {
-                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
-                if let Some(delay) = self
-                    .shared
-                    .perturbation
-                    .get()
-                    .and_then(|p| p.main_engine_delay)
-                    && self.bootstrap().is_none()
-                {
-                    std::thread::sleep(delay);
-                }
-                self.start_main_engine(&binding)
-                    .map(|b| b.map(|b| b.evaluator.control()))
+            let (depth, dispatch) = {
+                let c = self.shared.lock();
+                (c.threads[self.thread].stack.len(), c.units[id].dispatch)
             };
-            if let Err((message, diagnostic)) =
-                charges.charge(&binding, Some(depth), control, &start, self)
-            {
-                self.shared.fail(id, message.clone(), Some(diagnostic));
-                return Err(message);
-            }
-            // The unit's trace frame counted these; the frame it is
-            // charged in does not count them as its own.
-            crate::compile_trace::charged(
-                &binding.expansions,
-                binding.expansions.get().saturating_sub(before.0),
-                binding.generated_nodes.get().saturating_sub(before.1),
-            );
-            let UnitCharges {
-                observations,
-                gensyms,
-                namespaces,
-                events,
-                ..
-            } = *charges;
-            // What the drain point charged, for its namespace's artifact,
-            // whose installation charges it there again.
-            if take == Take::Drain {
-                self.capture_charges(id, events);
-            }
-            if let (Some(observations), Some(log)) =
-                (observations, binding.dependency_log.borrow_mut().as_mut())
-            {
-                log.absorb(*observations);
-            }
-            if let Err(error) = self.absorb_gensyms(gensyms) {
-                self.shared.fail(id, error.clone(), None);
-                return Err(error);
-            }
-            let dispatch = self.shared.lock().units[id].dispatch;
-            if let Err(error) = self.absorb_namespaces(namespaces, dispatch) {
-                self.shared.fail(id, error.clone(), None);
-                return Err(error);
-            }
-            (self.shared).raise_charged(binding.expansions.get(), binding.generated_nodes.get());
+            self.apply_drained_charges(id, binding, charges, depth, dispatch, engine, take)?;
         }
         analysis
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn apply_drained_charges(
+        &self,
+        id: usize,
+        binding: EngineBinding,
+        mut charges: Box<UnitCharges>,
+        depth: usize,
+        dispatch: crate::namespace_artifact::UnitDispatch,
+        engine: Option<&dyn MacroEvaluator>,
+        take: Take,
+    ) -> Result<(), String> {
+        // What its analysis here would have polled ([`analyze_unit`]).
+        let control = engine.map(|engine| engine.control()).or_else(|| {
+            binding
+                .bootstrap
+                .as_ref()
+                .or(self.bootstrap().as_ref())
+                .map(|b| b.evaluator.control())
+        });
+        // A demand this deep fails before the unit is analyzed, as
+        // its claim would have failed it with one slot.
+        if depth >= charges.depth_limit {
+            crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
+            self.shared.fail(id, DEPTH_LIMIT.to_owned(), None);
+            return Err(DEPTH_LIMIT.to_owned());
+        }
+        // A worker's trace rows go where the serial build would have
+        // recorded them, as the charges do (light-cljs-369).
+        if let Some(rows) = charges.trace.take() {
+            crate::compile_trace::replay(*rows, depth);
+        }
+        let before = (binding.expansions.get(), binding.generated_nodes.get());
+        // A worker's unit that expanded a JavaScript macro would have
+        // started the coordinator's engine with one slot, at that
+        // expansion; it starts it there, so later polls are spent.
+        let start = || {
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            if let Some(delay) = self
+                .shared
+                .perturbation
+                .get()
+                .and_then(|p| p.main_engine_delay)
+                && self.bootstrap().is_none()
+            {
+                std::thread::sleep(delay);
+            }
+            self.start_main_engine(&binding)
+                .map(|b| b.map(|b| b.evaluator.control()))
+        };
+        if let Err((message, diagnostic)) =
+            charges.charge(&binding, Some(depth), control, &start, self)
+        {
+            self.shared.fail(id, message.clone(), Some(diagnostic));
+            return Err(message);
+        }
+        // The unit's trace frame counted these; the frame it is
+        // charged in does not count them as its own.
+        crate::compile_trace::charged(
+            &binding.expansions,
+            binding.expansions.get().saturating_sub(before.0),
+            binding.generated_nodes.get().saturating_sub(before.1),
+        );
+        let UnitCharges {
+            observations,
+            gensyms,
+            namespaces,
+            events,
+            ..
+        } = *charges;
+        // What the drain point charged, for its namespace's artifact,
+        // whose installation charges it there again.
+        if take == Take::Drain {
+            self.capture_charges(id, events);
+        }
+        if let (Some(observations), Some(log)) =
+            (observations, binding.dependency_log.borrow_mut().as_mut())
+        {
+            log.absorb(*observations);
+        }
+        if let Err(error) = self.absorb_gensyms(gensyms) {
+            self.shared.fail(id, error.clone(), None);
+            return Err(error);
+        }
+        if !namespaces.is_empty()
+            && let Err(error) = self.absorb_namespaces(namespaces, dispatch)
+        {
+            self.shared.fail(id, error.clone(), None);
+            return Err(error);
+        }
+        (self.shared).raise_charged(binding.expansions.get(), binding.generated_nodes.get());
+        Ok(())
     }
 }
 /// The rank of a placement, for the compile-time registry's log: the
@@ -4837,6 +6170,8 @@ fn analyze_unit(
         id,
         state: None,
         held: 0,
+        charges: None,
+        note_failed: on_worker || held,
     };
     #[cfg(test)]
     let on_claim = shared
@@ -4890,11 +6225,12 @@ fn analyze_unit(
     let (analysis, charges) = {
         // Declared before the frontier guard, so the frontier's transitions
         // count in the unit's frame (`--stats`, [`crate::compile_trace`]).
+        let trace_source = snapshot.source_index as u32;
         let _traced = crate::compile_trace::enter_unit(
             || crate::compile_trace::UnitInfo {
                 id,
-                source: shared.unit_source(id).unwrap_or_default(),
-                name: shared.unit_name(id),
+                source: trace_source,
+                name: name.clone(),
                 span: form.span(),
                 depth: depth + HELP_DEPTH.get(),
             },
@@ -4978,7 +6314,7 @@ fn analyze_unit(
             // Coordinator help records polls for the drain just as a
             // worker does; ordinary dispatch-held work polls as it runs.
             let free = crate::macro_host::MacroFreeUnit::enter(
-                name,
+                name.clone(),
                 macro_free,
                 recording,
                 !held || pooled_help,
@@ -5043,7 +6379,7 @@ fn analyze_unit(
         } else if !nested {
             charges.trace = crate::compile_trace::take_worker_rows();
         }
-        shared.record_charges(id, charges, time);
+        guard.charges = Some((charges, time));
     }
     let diagnostic = analysis.as_ref().err().cloned();
     let result = analysis
@@ -5053,13 +6389,7 @@ fn analyze_unit(
         })
         .map_err(|e| {
             let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
-            format!(
-                "{}:{}:{}: {}: {e}",
-                loc.source,
-                loc.line,
-                loc.column,
-                shared.unit_name(id)
-            )
+            format!("{}:{}:{}: {name}: {e}", loc.source, loc.line, loc.column)
         });
     if let Ok((p, _)) = &result
         && shared.measuring_ir()
@@ -5067,8 +6397,29 @@ fn analyze_unit(
         guard.held = crate::program_fragment::SharedPrefix::same(&snapshot.resolution_program)
             .added_bytes(p);
     }
+    // Prepare compile-time JS on the pool worker outside the catalog lock so
+    // coordinator drain/release avoids serial DeferredUnit::prepare work.
+    let prepared = if on_worker
+        && let Ok((p, _)) = &result
+    {
+        Some(Arc::new({
+            #[cfg(feature = "bbp-macros")]
+            if shared
+                .native_units
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                crate::emitter::DeferredUnit::prepare_native(p, &shared.native_replaced_core())
+            } else {
+                crate::emitter::DeferredUnit::prepare(p)
+            }
+            #[cfg(not(feature = "bbp-macros"))]
+            crate::emitter::DeferredUnit::prepare(p)
+        }))
+    } else {
+        None
+    };
     guard.state = Some(match &result {
-        Ok((p, w)) => AnalysisState::Analyzed(p.clone(), w.clone()),
+        Ok((p, w)) => AnalysisState::Analyzed(p.clone(), w.clone(), prepared),
         Err(e) => AnalysisState::Failed(e.clone(), diagnostic),
     });
     drop(guard);
@@ -5365,6 +6716,21 @@ impl CatalogView for CompilationSession {
         true
     }
     fn root_service(&self, request: &str) -> String {
+        if request.starts_with("r\0") || request.starts_with("c\0") {
+            let pending = std::mem::take(&mut *self.deferred_engine_namespaces.borrow_mut());
+            if pending.is_empty() {
+                return String::new();
+            }
+            let mut out = String::from("[");
+            for (i, ns) in pending.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                crate::source_map::json_string(&mut out, ns);
+            }
+            out.push(']');
+            return out;
+        }
         self.shared.serve_root_request(request, None)
     }
 }
@@ -5393,6 +6759,24 @@ pub(crate) struct WorkerView {
     /// Whether its `light.build` requests go to the coordinator: a pool
     /// worker's ([`SharedCatalog::forward_build`]).
     forwards: Cell<bool>,
+    /// Active parallel namespace overlay while this worker executes a
+    /// top-level namespace pass (Stage C, light-cljs-1090).
+    active_namespace: RefCell<Option<(Rc<CompilationSession>, u32)>>,
+}
+
+/// Guard restoring [`WorkerView::active_namespace`] on drop (including unwind).
+pub(crate) struct NamespaceViewGuard<'a>(&'a WorkerView);
+impl Drop for NamespaceViewGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.active_namespace.borrow_mut() = None;
+    }
+}
+
+/// Execution context handed to a `UnitJob::Namespace` closure on a pool worker.
+pub(crate) struct NamespaceWorkerContext<'a> {
+    pub(crate) shared: &'a Arc<SharedCatalog>,
+    pub(crate) view: &'a Rc<WorkerView>,
+    pub(crate) has_engine: bool,
 }
 #[cfg_attr(not(test), allow(dead_code))]
 impl WorkerView {
@@ -5421,6 +6805,7 @@ impl WorkerView {
                 synced_bundles: Cell::new(0),
                 synced_ext_protocols: Cell::new(0),
                 forwards: Cell::new(false),
+                active_namespace: RefCell::new(None),
             }
         });
         if let Some(bootstrap) = &view.host.engine.bootstrap {
@@ -5428,6 +6813,83 @@ impl WorkerView {
             prepare_engine(&bootstrap.evaluator, weak, &view.host.engine)?;
         }
         Ok(view)
+    }
+    /// Bind a parallel namespace overlay session to this worker view so
+    /// `__lightRootService`, `__lightCompileUnit` and `light.build` route to it
+    /// while the top-level pass runs.
+    pub(crate) fn enter_namespace(
+        &self,
+        session: Rc<CompilationSession>,
+        source_index: u32,
+    ) -> NamespaceViewGuard<'_> {
+        *self.active_namespace.borrow_mut() = Some((session, source_index));
+        NamespaceViewGuard(self)
+    }
+    /// The worker view's engine binding frame (shared bootstrap, foreign macro
+    /// cache, reader declarations, catalog and worker weak ref).
+    pub(crate) fn engine_frame(&self) -> EngineBinding {
+        self.host.engine.frame()
+    }
+    /// The worker view's catalog thread slot.
+    pub(crate) fn thread_id(&self) -> usize {
+        self.thread
+    }
+    /// Sync this worker view's V8/QuickJS engine up to `limit` (exact
+    /// `prefix_cursor`) without advancing past `limit`. Returns `Ok(Some(overlay_active))`
+    /// when ready to run an overlay rooted at `limit` (including when the
+    /// isolate is already at `installed > limit` and `limit..installed` is
+    /// completely isolated from `< limit`, in which case `overlay_active` is
+    /// `true`), or `Ok(None)` if `limit..installed` mutated prefix state.
+    pub(crate) fn install_up_to(
+        &self,
+        limit: usize,
+        prefix_bundles: usize,
+    ) -> Result<Option<bool>, String> {
+        let Some(bootstrap) = &self.host.engine.bootstrap else {
+            return Ok(Some(false));
+        };
+        if bootstrap.evaluator.native_forms() {
+            return Ok(None);
+        }
+        let installed = self.installed.get();
+        if installed > limit {
+            let isolated = {
+                let c = self.shared.lock();
+                c.roots
+                    .is_isolated_suffix(limit, installed, &c.journal.registrations)
+            };
+            if !isolated {
+                return Ok(None);
+            }
+            let tag = [
+                "\0overlay".to_owned(),
+                limit.to_string(),
+                prefix_bundles.to_string(),
+            ];
+            bootstrap
+                .evaluator
+                .sync_catalog(limit, prefix_bundles, &tag)
+                .map_err(|e| e.to_string())?;
+            return Ok(Some(true));
+        }
+        if installed == limit {
+            return Ok(Some(false));
+        }
+        let prev_ext = self.synced_ext_protocols.get();
+        let (bundles, new_protocols) = {
+            let c = self.shared.lock();
+            let bundles = c.roots.bundles_before(limit);
+            let (new_synced, protocols) = c.roots.new_extended_protocols(prev_ext, limit);
+            self.synced_ext_protocols.set(new_synced);
+            (bundles, protocols)
+        };
+        self.installed.set(limit);
+        self.synced_bundles.set(bundles);
+        bootstrap
+            .evaluator
+            .sync_catalog(limit, bundles, &new_protocols)
+            .map_err(|e| e.to_string())?;
+        Ok(Some(false))
     }
     /// Advance this thread's engine to the catalog's current registration
     /// frontier. On V8/QuickJS, updates the lightweight catalog cursor and
@@ -5599,24 +7061,44 @@ impl WorkerView {
         )
     }
 }
-/// A deferred unit for a pool worker to analyze, in its phase: 0 for one
-/// any worker takes, 1 for one only the workers with an engine take, in a
-/// pool that has workers of both kinds ([`ENGINE_PHASE`]).
+/// A job for a pool worker: either a deferred unit analysis or a parallel
+/// top-level namespace pass (Stage C, light-cljs-1090).
 enum UnitJob {
     Analyze(usize, usize, bool),
+    Namespace {
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        source_index: usize,
+        phase: usize,
+        needs_engine: bool,
+        run: Box<dyn FnOnce(Option<&NamespaceWorkerContext<'_>>) -> bool + Send>,
+    },
     #[cfg(feature = "bbp-macros")]
     Native(
         crate::bbp_evaluator::NativeStep,
         std::sync::mpsc::SyncSender<Result<big_boy_pants_js::RunOutcome, String>>,
     ),
 }
-/// The phase of a unit that may enter a compile-time engine, in a pool
-/// whose first workers have engines and the rest none (light-cljs-437).
-const ENGINE_PHASE: usize = 1;
+/// Phase layout for mixed pools (`0 < engine_workers < workers`):
+/// 0: deferred units needing an engine (engine workers only)
+/// 1: macro-free deferred units (any worker)
+/// 2: top-level namespaces needing an engine (engine workers only)
+/// 3: pure-Rust top-level namespaces (any worker)
+/// Prioritizing deferred units over lookahead top-level namespaces keeps
+/// `drain_front!` from stalling behind distant lookahead work (especially at
+/// `--jobs 2`) while idle workers immediately run lookahead top-level passes.
+const UNIT_ENGINE_PHASE: usize = 0;
+const UNIT_PLAIN_PHASE: usize = 1;
+const TOP_ENGINE_PHASE: usize = 2;
+const TOP_PLAIN_PHASE: usize = 3;
+/// Phase layout for unmixed pools (all workers equal):
+/// 0: deferred units, 1: top-level namespaces.
+const UNMIXED_UNIT_PHASE: usize = 0;
+const UNMIXED_TOP_PHASE: usize = 1;
 impl crate::scheduler::Job for UnitJob {
     fn phase(&self) -> usize {
         match self {
             Self::Analyze(_, phase, _) => *phase,
+            Self::Namespace { phase, .. } => *phase,
             #[cfg(feature = "bbp-macros")]
             Self::Native(..) => 0,
         }
@@ -5629,6 +7111,7 @@ impl crate::scheduler::Job for UnitJob {
             // MacroFreeUnit enforces it during analysis. Ordinary application
             // Var reads resolve from the snapshot and never demand an initializer.
             Self::Analyze(_, _, macro_free) => *macro_free,
+            Self::Namespace { needs_engine, .. } => !*needs_engine,
             #[cfg(feature = "bbp-macros")]
             Self::Native(..) => true,
         }
@@ -5637,6 +7120,7 @@ impl crate::scheduler::Job for UnitJob {
     fn key(&self) -> u64 {
         match self {
             Self::Analyze(id, _, _) => *id as u64,
+            Self::Namespace { source_index, .. } => (1u64 << 60) | (*source_index as u64),
             #[cfg(feature = "bbp-macros")]
             Self::Native(..) => u64::MAX,
         }
@@ -5676,6 +7160,8 @@ pub(crate) enum PoolEngines {
 /// coordinator waits for its units in the catalog ([`SharedCatalog::claim`]).
 pub(crate) struct UnitPool {
     inbox: Arc<Inbox>,
+    submitter: crate::scheduler::Submitter<UnitJob, ()>,
+    mixed: bool,
     shared: Arc<SharedCatalog>,
     thread: Option<std::thread::JoinHandle<Result<(), String>>>,
     pub(crate) engines: PoolEngines,
@@ -5696,22 +7182,37 @@ struct Inbox {
 }
 #[derive(Default)]
 struct InboxState {
-    batches: std::collections::VecDeque<Vec<usize>>,
+    submissions: u64,
     closed: bool,
+    cancelled: bool,
 }
 impl Inbox {
     fn lock(&self) -> MutexGuard<'_, InboxState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
-    /// The next batch, waiting for one; None once the pool closes.
-    fn next(&self) -> Option<Vec<usize>> {
+    fn submissions(&self) -> u64 {
+        self.lock().submissions
+    }
+    fn note_submitted(&self) {
+        let mut state = self.lock();
+        state.submissions += 1;
+        drop(state);
+        self.ready.notify_one();
+    }
+    /// Wait while the pool is quiescent until either more work was submitted
+    /// (`true`) or the pool closed with no remaining submissions (`false`).
+    fn wait_for_more(&self, seen: &mut u64) -> bool {
         let mut state = self.lock();
         loop {
-            if let Some(batch) = state.batches.pop_front() {
-                return Some(batch);
+            if state.cancelled {
+                return false;
+            }
+            if state.submissions > *seen {
+                *seen = state.submissions;
+                return true;
             }
             if state.closed {
-                return None;
+                return false;
             }
             state = self
                 .ready
@@ -5719,11 +7220,8 @@ impl Inbox {
                 .unwrap_or_else(PoisonError::into_inner);
         }
     }
-    fn try_next(&self) -> Option<Vec<usize>> {
-        self.lock().batches.pop_front()
-    }
-    fn closed(&self) -> bool {
-        self.lock().closed
+    fn cancelled(&self) -> bool {
+        self.lock().cancelled
     }
 }
 /// The analysis of the `:test` unit `unit` of a definition that `host`'s
@@ -5735,6 +7233,9 @@ pub(crate) fn analyze_definition_test(
     engine: Option<&dyn MacroEvaluator>,
 ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
     if let Some(session) = host.session_handle() {
+        if unit >= LOCAL_UNIT_BASE && session.local_overlay.borrow().is_some() {
+            return session.analyze_local(unit, engine, &host.engine);
+        }
         return session.analyze(unit, engine);
     }
     let worker = host.engine.worker.as_ref().and_then(std::rc::Weak::upgrade);
@@ -5744,6 +7245,9 @@ pub(crate) fn analyze_definition_test(
 /// appended, to its application owner
 /// ([`CompilationSession::release_application_ir`]) from either thread.
 pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
+    if unit >= LOCAL_UNIT_BASE {
+        return;
+    }
     match (host.session_handle(), &host.engine.catalog) {
         (Some(session), _) => {
             session.merged_ir(unit);
@@ -5914,7 +7418,9 @@ impl UnitPool {
             0 => PoolEngines::None,
             _ => engines,
         };
+        let mixed = engine_workers > 0 && engine_workers < slots.workers();
         let inbox = Arc::new(Inbox::default());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
         // Started on the coordinator: its workers record their units'
         // traces while it records its own.
         let traced = crate::compile_trace::recording();
@@ -5926,12 +7432,17 @@ impl UnitPool {
                 .name("light-cljs-units".into())
                 .spawn(move || {
                     let engines = (engines, engine_workers);
-                    serve_pool(&inbox, &shared, slots, engines, &environment, traced)
+                    serve_pool(&inbox, tx, &shared, slots, engines, &environment, traced)
                 })
                 .map_err(|e| format!("cannot start the compiler's unit pool: {e}"))?
         };
+        let submitter = rx
+            .recv()
+            .map_err(|_| "compiler unit pool failed before ready".to_owned())?;
         Ok(Self {
             inbox,
+            submitter,
+            mixed,
             shared,
             thread: Some(thread),
             engines,
@@ -5942,18 +7453,47 @@ impl UnitPool {
     }
     /// Give the pool `units`, one namespace's, in unit order: one batch,
     /// which the scheduler's workers claim and steal in that order.
-    pub(crate) fn submit(&self, units: Vec<usize>) {
+    pub(crate) fn submit(&self, units: Vec<(usize, bool)>) {
         if units.is_empty() {
             return;
         }
         (self.shared.counters.pooled).fetch_add(units.len(), std::sync::atomic::Ordering::Relaxed);
         if crate::wait_timeline::on() {
-            for &unit in &units {
+            for &(unit, _) in &units {
                 crate::wait_timeline::instant(crate::wait_timeline::Kind::Dispatch, unit as u64, 0);
             }
         }
-        self.inbox.lock().batches.push_back(units);
-        self.inbox.ready.notify_one();
+        let jobs = self.shared.unit_jobs(units, self.mixed);
+        self.submitter.submit_batch(jobs);
+        self.inbox.note_submitted();
+    }
+    /// Submit a parallel top-level namespace job directly into the scheduler,
+    /// prioritized ahead of deferred unit work.
+    pub(crate) fn submit_namespace(
+        &self,
+        source_index: usize,
+        needs_engine: bool,
+        run: Box<dyn FnOnce(Option<&NamespaceWorkerContext<'_>>) -> bool + Send>,
+    ) {
+        let phase = if self.mixed {
+            if needs_engine {
+                TOP_ENGINE_PHASE
+            } else {
+                TOP_PLAIN_PHASE
+            }
+        } else {
+            UNMIXED_TOP_PHASE
+        };
+        #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
+        let _ = source_index;
+        self.submitter.submit_batch(std::iter::once(UnitJob::Namespace {
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            source_index,
+            phase,
+            needs_engine,
+            run,
+        }));
+        self.inbox.note_submitted();
     }
     /// Stop the pool once its jobs have run and join its threads, which
     /// destroy their engines. A worker's panic panics the build here, as
@@ -6143,6 +7683,55 @@ fn execute_pool_job(
     let _depth = HelpDepth(HELP_DEPTH.replace(worker.help_depth()));
     let (id, macro_free) = match job {
         UnitJob::Analyze(id, _, macro_free) => (id, macro_free),
+        UnitJob::Namespace {
+            needs_engine,
+            run,
+            ..
+        } => {
+            let use_plain = !needs_engine && slot.engines != PoolEngines::None;
+            #[cfg_attr(not(feature = "bbp-macros"), allow(unused_mut))]
+            let (mut kept, engines) = if use_plain {
+                (slot.plain.take(), PoolEngines::None)
+            } else {
+                (slot.view.take(), slot.engines)
+            };
+            #[cfg(feature = "bbp-macros")]
+            if kept.as_ref().is_some_and(|view| !view.adopt_context()) {
+                kept = None;
+            }
+            let view = match kept {
+                Some(view) => view,
+                None => match worker_view(shared, engines, environment) {
+                    Ok(view) => view,
+                    Err(_) => {
+                        run(None);
+                        return;
+                    }
+                },
+            };
+            if engines != PoolEngines::None {
+                shared.counters.note_engine_participant(worker.slot());
+            }
+            let has_engine = view.host.engine.bootstrap.is_some();
+            let ctx = NamespaceWorkerContext {
+                shared,
+                view: &view,
+                has_engine,
+            };
+            let retire = run(Some(&ctx));
+            if use_plain {
+                slot.plain = Some(view);
+            } else if !retire
+                && slot.engines != PoolEngines::Fresh
+                && !view.terminal()
+                && !view.holds_excess_headroom()
+            {
+                #[cfg(feature = "bbp-macros")]
+                view.park_context();
+                slot.view = Some(view);
+            }
+            return;
+        }
         #[cfg(feature = "bbp-macros")]
         UnitJob::Native(step, reply) => {
             let _job = crate::wait_timeline::begin(
@@ -6295,8 +7884,8 @@ fn execute_pool_job(
     let reusable = !view.host.native_macro_backend() || analysis.is_ok();
     if let Err(error) = analysis {
         shared.fail_unstarted(id, error);
+        shared.note_job(id);
     }
-    shared.note_job(id);
     PoolCounters::add(&shared.counters.unit_ns, started);
     if slot.engines == PoolEngines::None || plain {
         shared
@@ -6405,6 +7994,7 @@ fn rescue_unit(
 }
 fn serve_pool(
     inbox: &Inbox,
+    submitter_tx: std::sync::mpsc::SyncSender<crate::scheduler::Submitter<UnitJob, ()>>,
     shared: &Arc<SharedCatalog>,
     slots: crate::scheduler::Slots,
     (engines, engine_workers): (PoolEngines, usize),
@@ -6431,13 +8021,18 @@ fn serve_pool(
     let relaxed = std::sync::atomic::Ordering::Relaxed;
     (counters.workers).store(slots.workers(), relaxed);
     (counters.engine_workers).store(engine_workers, relaxed);
-    // With workers of both kinds, the units that may enter an engine are a
-    // phase of their own, which only the first workers, those with an
-    // engine, serve; any worker serves the macro-free ones.
+    // With workers of both kinds, engine-requiring phases are served only by
+    // the first `engine_workers` threads while pure-Rust phases are served by
+    // every worker, and top-level phases take priority over deferred units.
     let mixed = engine_workers > 0 && engine_workers < slots.workers();
-    let mut config = Config::new(slots, if mixed { 2 } else { 1 });
+    let mut config = Config::new(slots, if mixed { 4 } else { 2 });
     if mixed {
-        config.servers = vec![slots.workers(), engine_workers];
+        config.servers = vec![
+            engine_workers,
+            slots.workers(),
+            engine_workers,
+            slots.workers(),
+        ];
     }
     // A worker analyzes as deep as the coordinator, whose main thread has
     // 8 MiB; V8's stack limit is set from where each engine entry starts.
@@ -6463,21 +8058,21 @@ fn serve_pool(
         },
         |slot, job, worker| execute_pool_job(slot, job, worker, shared, environment),
         |pool| -> Result<(), String> {
+            let _ = submitter_tx.send(pool.submitter());
             let served = loop {
+                let mut seen_submissions = inbox.submissions();
                 match pool.next_outcome() {
                     Ok(Next::Outcome(())) => {
                         // The build ended early: what is queued is not needed.
-                        if inbox.closed() {
+                        if inbox.cancelled() {
                             pool.cancel();
                         }
-                        if let Some(batch) = inbox.try_next() {
-                            pool.submit_batch(shared.unit_jobs(batch, mixed));
+                    }
+                    Ok(Next::Quiescent) => {
+                        if !inbox.wait_for_more(&mut seen_submissions) {
+                            break Ok(());
                         }
                     }
-                    Ok(Next::Quiescent) => match inbox.next() {
-                        Some(batch) => pool.submit_batch(shared.unit_jobs(batch, mixed)),
-                        None => break Ok(()),
-                    },
                     Ok(Next::Stalled { .. }) => unreachable!("unit jobs hold no demands"),
                     Err(panic) => {
                         let message = panic.to_string();
@@ -6530,21 +8125,68 @@ impl CatalogView for WorkerView {
         self.submit.borrow().clone()
     }
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
+        let active_ns = self.active_namespace.borrow().clone();
+        if let Some((ns_session, _)) = active_ns {
+            if id >= LOCAL_UNIT_BASE {
+                (self.shared.counters.initializations)
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return ns_session.compile_local_unit(active, id, &self.host.engine);
+            }
+            // Demand of a prefix shared unit (< prefix_cursor): do NOT advance
+            // this isolate's cursor past prefix_cursor.
+            (self.shared.counters.initializations)
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return compile_unit_in(&self.shared, active, id, || {
+                let help = || self.help();
+                analyze_unit(
+                    &self.shared,
+                    self.thread,
+                    id,
+                    Some(active),
+                    Demand {
+                        help: self
+                            .host
+                            .native_macro_backend()
+                            .then_some(&help as &dyn Fn() -> Result<bool, String>),
+                        queued: false,
+                        on_worker: true,
+                        held: false,
+                        server: None,
+                    },
+                    None,
+                    || (self.host.engine.frame(), None),
+                )
+            });
+        }
         self.install(Some(active))?;
         (self.shared.counters.initializations).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))
     }
     fn unit_source(&self, id: usize) -> Option<u32> {
+        if id >= LOCAL_UNIT_BASE
+            && let Some((ns_session, _)) = self.active_namespace.borrow().as_ref()
+        {
+            return ns_session
+                .local_overlay
+                .borrow()
+                .as_ref()
+                .and_then(|o| o.units.get(id - LOCAL_UNIT_BASE))
+                .map(|u| u.source);
+        }
         self.shared.unit_source(id)
     }
     fn analysis_sources(&self) -> Vec<u32> {
-        self.shared.analysis_sources(self.thread)
+        let mut sources = self.shared.analysis_sources(self.thread);
+        if let Some((_, source_index)) = *self.active_namespace.borrow() {
+            sources.insert(0, source_index);
+        }
+        sources
     }
     fn forward_build(&self, request: &str) -> Option<String> {
         self.forwards.get().then(|| {
             let (reply, log) = self
                 .shared
-                .forward_build(request, self.shared.analysis_sources(self.thread));
+                .forward_build(request, self.analysis_sources());
             // What it recorded is the unit's this worker records.
             if let Some(log) = log {
                 crate::macro_host::record_observations(*log);
@@ -6556,6 +8198,9 @@ impl CatalogView for WorkerView {
         true
     }
     fn root_service(&self, request: &str) -> String {
+        if let Some((ns_session, _)) = self.active_namespace.borrow().as_ref() {
+            return ns_session.serve_overlay_root_request(request);
+        }
         self.shared
             .serve_root_request(request, Some(self.installed.get()))
     }
@@ -6705,11 +8350,19 @@ struct AnalysisGuard<'a> {
     state: Option<AnalysisState>,
     /// The analyzed IR's estimated bytes, when measured.
     held: usize,
+    charges: Option<(UnitCharges, std::time::Duration)>,
+    note_failed: bool,
 }
 impl Drop for AnalysisGuard<'_> {
     fn drop(&mut self) {
-        self.shared
-            .settle(self.thread, self.id, self.state.take(), self.held);
+        self.shared.settle(
+            self.thread,
+            self.id,
+            self.state.take(),
+            self.held,
+            self.charges.take(),
+            self.note_failed,
+        );
     }
 }
 
@@ -6926,7 +8579,7 @@ mod worker_tests {
         let state = session.shared.lock().units[id].state.clone();
         match state {
             AnalysisState::Prepared(_, _, prepared) => prepared.code().to_owned(),
-            AnalysisState::Analyzed(program, _) => prepare(&program),
+            AnalysisState::Analyzed(program, ..) => prepare(&program),
             AnalysisState::Unstarted => {
                 let (program, _) = session.analyze(id, None).unwrap();
                 prepare(&program)
@@ -8848,7 +10501,14 @@ mod worker_tests {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             std::thread::sleep(blocked);
-            shared.settle(second, a, Some(AnalysisState::Failed("x".into(), None)), 0);
+            shared.settle(
+                second,
+                a,
+                Some(AnalysisState::Failed("x".into(), None)),
+                0,
+                None,
+                false,
+            );
             waiter.join().unwrap()
         });
         let wait = trace.stage(Stage::Wait).time;
@@ -8892,11 +10552,20 @@ mod worker_tests {
                 a,
                 Some(AnalysisState::Failed(error.clone(), None)),
                 0,
+                None,
+                false,
             );
             assert_eq!(waiter.join().unwrap().unwrap_err(), error);
             error
         });
-        shared.settle(first, c, Some(AnalysisState::Failed(error, None)), 0);
+        shared.settle(
+            first,
+            c,
+            Some(AnalysisState::Failed(error, None)),
+            0,
+            None,
+            false,
+        );
         let c = shared.lock();
         assert!(
             c.threads

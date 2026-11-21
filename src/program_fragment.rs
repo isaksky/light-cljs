@@ -298,9 +298,6 @@ pub(crate) struct Publication {
     js: PublishedIds,
 }
 impl Publication {
-    // No caller yet: the published-append path that 0041cda4 added for
-    // experimental Pants namespace builds.
-    #[allow(dead_code)]
     pub(crate) fn expr(&self, id: ExprId) -> ExprId {
         ExprId(self.exprs.map(id.0))
     }
@@ -337,9 +334,6 @@ pub(crate) fn append(
     )
 }
 
-// No caller yet: the published-append path that 0041cda4 added for
-// experimental Pants namespace builds.
-#[allow(dead_code)]
 pub(crate) fn append_published(
     target: &mut Program,
     fragment: &Program,
@@ -436,10 +430,17 @@ fn append_impl(
         }
     }
     match own_namespace {
-        // The fragment has only its snapshot's reader contexts, which the
-        // target has too, so only the owned one can change: the others are
-        // not visited (each append would otherwise cost every namespace).
-        Some(own) if fragment.reader_contexts.len() == shared.reader_contexts => {
+        // The fragment has only its snapshot's reader contexts (plus at most
+        // `own` itself when publishing a newly analyzed namespace), so only
+        // `own` can have changed: the others are not visited (each append would
+        // otherwise cost every namespace on compaction).
+        Some(own)
+            if fragment.reader_contexts.len() == shared.reader_contexts
+                || (shared.reader_contexts < usize::MAX
+                    && fragment.reader_contexts.len() == shared.reader_contexts + 1
+                    && fragment.reader_contexts.contains_key(own)
+                    && !shared.tables.reader_contexts.contains_key(own)) =>
+        {
             if let Some(context) = fragment.reader_contexts.get(own)
                 && target.reader_contexts.get(own) != Some(context)
             {
