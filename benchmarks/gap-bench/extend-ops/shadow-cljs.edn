@@ -1,0 +1,9 @@
+;; shadow-cljs release build of the extend-type-active microbenchmark.
+{:deps {:aliases [:shadow]}
+ :builds
+ {:bench
+  {:target :node-script
+   :output-to "out/shadow.js"
+   :output-dir "out/shadow-dev"
+   :main extend-ops.main/main
+   :compiler-options {:source-map false :warnings {:invalid-arithmetic false}}}}}

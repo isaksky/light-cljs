@@ -16,6 +16,12 @@ save to the output written, the reload message and the new code running in
 headless Chromium, with startup and peak memory
 (`bb benchmarks/watch-vs-shadow.bb`).
 
+[The unified gap benchmark](gap-bench/README.md) combines compiler performance,
+cold/warm cache behavior, scaling canary, watch/hot-reload, output size,
+startup phase breakdown, Node/Chromium runtime & memory, `core-ops`, and
+`extend-type`-active `extend-ops` into one ≤ 8 minute head-to-head scorecard
+with ranked remaining gaps and `--baseline` diffing (`bb benchmarks/gap-bench/run.bb`).
+
 ## The shadow-cljs head-to-head
 
 `generated-project/compare.bb` is the one kit for light-cljs against shadow-cljs.

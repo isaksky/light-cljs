@@ -1,0 +1,8 @@
+;; light-cljs release build of the extend-type-active microbenchmark.
+{:source-paths ["src"]
+ :builds
+ {:bench
+  {:target :esm
+   :output-dir "out/light"
+   :modules {:main {:entries [extend-ops.main]}}
+   :build-options {:cache-level :off}}}}

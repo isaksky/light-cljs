@@ -1,0 +1,6 @@
+work/
+out/
+extend-ops/out/
+extend-ops/.shadow-cljs/
+extend-ops/.light-cljs/
+extend-ops/.cpcache/
