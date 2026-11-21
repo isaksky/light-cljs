@@ -734,6 +734,12 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// `Advanced` output reads (light-cljs-221, light-cljs-1034).
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "stamp",
+    "hostExtEscaped",
+    "hostExtEscaped.on",
+    "hostExtSeqEscaped",
+    "hostExtSeqEscaped.on",
+    "hostExtPrintEscaped",
+    "hostExtPrintEscaped.on",
     "mapValueAt",
     "entryPrototype",
     "MapEntryType.lean",
@@ -776,6 +782,8 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "slotWrites.equalPair",
     "slotWrites.hash",
     "slotWrites.objectEquiv",
+    "slotWrites.hostExt",
+    "protocolFallback",
     "multiTables",
     "addMethodDirect",
     "mapEntry.lean",
@@ -1265,8 +1273,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // `reduce` and `reduce-kv`; the 29 `-meta` slot units of the
     // collections and seqs (light-cljs-1070); and light-cljs-1074's hash of
     // the UUIDs and vars (`uuidValue.hash`) and its three `slotWrites`
-    // effects, less the slot-first wrappers of `=` and `hash`.
-    assert_eq!(checked, 572);
+    // effects, less the slot-first wrappers of `=` and `hash`; plus the five
+    // `hostExt` effects (`hostExt.core`, `hostExtEscaped.on`, `hostExtSeqEscaped.on`,
+    // `hostExtPrintEscaped.on`, `slotWrites.hostExt`) and the two printer hook units
+    // (`printSeq.hook`, `printWriter.hook`).
+    assert_eq!(checked, 581);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s

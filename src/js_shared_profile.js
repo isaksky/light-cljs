@@ -216,11 +216,10 @@
   // light-cljs-988) afterwards; here the native test answers every call.
   const storeNativeProtocols = sharedWords([]);
   //@unit builtinSlots
-  // The runtime's own slot methods, a WeakSet in the V8 profile, which never
-  // publishes: membership over the array of the methods `builtinSlot`
-  // marks while the runtime loads, which the boot's walk seals.
-  const builtinSlots = {members: [], has(method) { return this.members.includes(method); }};
-  function builtinSlot(method) { builtinSlots.members.push(method); return method; }
+  // The runtime's own slot methods, marked with a non-enumerable keyed flag
+  // while the runtime loads, before the boot's walk seals it.
+  const builtinSlots = {has: method => method != null && method.builtin$LKEY !== undefined};
+  function builtinSlot(method, tag = true) { Object.defineProperty(method, "builtin$LKEY", {value: tag}); return method; }
   //@unit slotFirst
   // The V8 profile's switch, whose object the boot seals, so that no
   // assignment reaches it: `on` reads the task's cells
@@ -283,6 +282,10 @@
   // `extend-type` and `specify!`, which the boot's seal would refuse, do
   // nothing.
   const ownSeqs = {get on() { return false; }, set on(value) {}};
+  //@unit hostExt
+  // In the shared-heap profile `slotFirst.on` is always false and top-level
+  // objects are sealed on boot; report all bits set and ignore writes.
+  const hostExt = {get p0() { return -1; }, set p0(_) {}, get p1() { return -1; }, set p1(_) {}, get fn() { return true; }, set fn(_) {}, get seq() { return true; }, set seq(_) {}};
   //@unit sharedMethodKeys
   // The resolved keys `coreMethod` makes for the core protocol dispatchers,
   // which only their dispatchers hold: `sharedProfileBoot` fills their memos

@@ -1083,6 +1083,19 @@
 //! (ceiling 94,100 to 94,200): it keeps `=` and `hash` with the classes the
 //! two features share, whose upstream-shaped fallbacks (`equalPairOf`,
 //! `hashOf`) are larger than the recognisers it dropped there.
+//!
+//! Gap-closing runtime & terse optimizations (t3/gap-benchmark, 2026-11-20):
+//! adds inline `hostExt` fast paths for `extend-type`-active predicates and
+//! protocol dispatch, unified `Atom.deref` slot + slim `deref`, fast printing
+//! (`writeText`, `stringEscapes`, `kindHooks.byKind`), `str1`, keyed
+//! `builtinSlots` flag, and fast `vectorFromArray`/`vectorTrie` for small
+//! vectors, while unparenthesizing unambiguous function expressions in
+//! `terse.rs` (shrinking `re-frame-200k` by 42 KB and cutting V8 parse from
+//! 217 ms to 158 ms; TodoMVC add-1000 drops 2.32x -> 0.88x, `extend-ops`
+//! 2.18x -> ~1.0x, `core-ops` 1.06x -> 0.96x). Readable runtime grows ~18 KB
+//! (`console-log-sum` at none 792,879); none/prepare ceilings and affected
+//! advanced/chunk ceilings move to the next rounding step, while
+//! `app.main.js` lowers 9,100 -> 8,000.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -1102,28 +1115,28 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "console-log-sum",
         source: "(js/console.log (+ 1 2))",
-        ceilings: [775_000, 775_000, 200],
+        ceilings: [793_000, 793_000, 200],
         removed: [0, 0, 0],
         printed: "3\nundefined\n",
     },
     Fixture {
         name: "println-hi",
         source: r#"(enable-console-print!) (println "hi")"#,
-        ceilings: [775_000, 775_000, 5_600],
+        ceilings: [793_000, 793_000, 6_200],
         removed: [0, 0, 0],
         printed: "hi\nnull\n",
     },
     Fixture {
         name: "vector-printed",
         source: "(enable-console-print!) (println [1 2 3])",
-        ceilings: [775_000, 775_000, 16_000],
+        ceilings: [793_000, 793_000, 17_000],
         removed: [0, 0, 0],
         printed: "[1 2 3]\nnull\n",
     },
     Fixture {
         name: "map-printed",
         source: "(enable-console-print!) (println {})",
-        ceilings: [775_000, 775_000, 24_000],
+        ceilings: [793_000, 793_000, 25_000],
         removed: [0, 0, 0],
         printed: "{}\nnull\n",
     },
@@ -1131,21 +1144,21 @@ pub const FIXTURES: &[Fixture] = &[
         name: "seq-pipeline",
         source: "(js/console.log (->> (map inc (range 10)) (filter even?) (partition 2) \
                  (drop 1) (mapcat identity) into-array))",
-        ceilings: [776_000, 776_000, 39_000],
+        ceilings: [794_000, 794_000, 41_000],
         removed: [0, 0, 0],
         printed: "[ 6, 8 ]\nundefined\n",
     },
     Fixture {
         name: "add",
         source: "(+ 1 2)",
-        ceilings: [775_000, 775_000, 100],
+        ceilings: [793_000, 793_000, 100],
         removed: [0, 0, 0],
         printed: "3\n",
     },
     Fixture {
         name: "rest-fn",
         source: "(fn [& xs] xs)",
-        ceilings: [776_000, 776_000, 17_000],
+        ceilings: [794_000, 794_000, 18_000],
         removed: [0, 0, 0],
         printed: "#function\n",
     },
@@ -1156,7 +1169,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [776_000, 776_000, 4_300],
+        ceilings: [794_000, 794_000, 4_400],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -1165,7 +1178,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defprotocol Area (area [shape]))
                  (defrecord Rect [w h] Area (area [_] (* w h)))
                  (area (->Rect 3 4))",
-        ceilings: [776_000, 776_000, 6_800],
+        ceilings: [794_000, 794_000, 7_100],
         removed: [0, 0, 0],
         printed: "12\n",
     },
@@ -1181,7 +1194,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (def lookup (let [k :a] (get {:a 1} k)))
                  (def literal [1 2 3])
                  (:x (->Point 1 2))"#,
-        ceilings: [777_000, 777_000, 6_700],
+        ceilings: [795_000, 795_000, 7_000],
         removed: [0, 1, 6],
         printed: "1\n",
     },
@@ -1192,7 +1205,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
                  (defn kind [k] (case k :x 1 :y 2 0))
                  (reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))",
-        ceilings: [776_000, 776_000, 54_000],
+        ceilings: [794_000, 794_000, 56_000],
         removed: [0, 0, 0],
         printed: "17\n",
     },
@@ -1209,7 +1222,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (reduce + (map (fn [i] (let [r (row i)]
                                           (+ (count (:pos r)) (count (get-in r [:meta :dims])))))
                                 (range 10)))",
-        ceilings: [776_000, 776_000, 35_000],
+        ceilings: [794_000, 794_000, 37_000],
         removed: [0, 0, 1],
         printed: "50\n",
     },
@@ -1225,7 +1238,7 @@ pub const FIXTURES: &[Fixture] = &[
                        [x y] [3 4]]
                    (+ (* width height) (count title) x y (count (:modes CONFIG))
                       (allowed? (keyword (.toLowerCase \"FAST\")))))",
-        ceilings: [776_000, 776_000, 4_800],
+        ceilings: [794_000, 794_000, 4_900],
         removed: [0, 0, 1],
         printed: "307214\n",
     },
@@ -1240,7 +1253,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defrecord Circle [r] Shape (area [_] (* 3 r r)) (perimeter [_] (* 6 r)))
                  (defrecord Tri [a b c] Shape (area [_] (* a b)) (perimeter [_] (+ a b c)))
                  (area (->Square 3))",
-        ceilings: [778_000, 778_000, 6_800],
+        ceilings: [796_000, 796_000, 7_100],
         removed: [0, 0, 0],
         printed: "9\n",
     },
@@ -1272,7 +1285,7 @@ pub const FIXTURES: &[Fixture] = &[
                  [(->R1 1 2) (->R2 2 3) (->R3 3 4) (->R4 4 5) (->R5 5 6) (->R6 6 7) (->R7 7 8) \
                  (->R8 8 9) (T1. 9 10) (T2. 10 11) (T3. 11 12) (T4. 12 13) (T5. 13 14) \
                  (T6. 14 15) (T7. 15 16) (T8. 16 17)])",
-        ceilings: [786_000, 786_000, 47_400],
+        ceilings: [804_000, 804_000, 49_000],
         removed: [0, 0, 0],
         printed: "819\n",
     },
@@ -1289,7 +1302,7 @@ pub const FIXTURES: &[Fixture] = &[
                                 (range 36)))
                  (+ (get table {:id 3 :kind :row}) (get table [:pos 5 6]) (get table #{7 :tag})
                     (get table {:id 11 :kind :row} 0))",
-        ceilings: [776_000, 776_000, 74_500],
+        ceilings: [794_000, 794_000, 76_000],
         removed: [0, 0, 0],
         printed: "62\n",
     },
@@ -1303,7 +1316,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [776_000, 776_000, 52_000],
+        ceilings: [794_000, 794_000, 54_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -1314,14 +1327,14 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "vector-only",
         source: r#"(js/console.log (.join (js/Array.from [1 2 3]) " "))"#,
-        ceilings: [775_000, 775_000, 6_800],
+        ceilings: [793_000, 793_000, 7_000],
         removed: [0, 0, 0],
         printed: "1 2 3\nundefined\n",
     },
     Fixture {
         name: "keyword-only",
         source: "(js/console.log (.toString :a))",
-        ceilings: [775_000, 775_000, 4_300],
+        ceilings: [793_000, 793_000, 4_400],
         removed: [0, 0, 0],
         printed: ":a\nundefined\n",
     },
@@ -1332,14 +1345,14 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "map-only",
         source: "(js/console.log (.get {:a 1} :a))",
-        ceilings: [775_000, 775_000, 16_200],
+        ceilings: [793_000, 793_000, 16_200],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
     },
     Fixture {
         name: "atom-str",
         source: "(js/console.log (str @(atom 1) 2))",
-        ceilings: [775_000, 775_000, 4_800],
+        ceilings: [793_000, 793_000, 5_300],
         removed: [0, 0, 0],
         printed: "12\nundefined\n",
     },
@@ -1351,7 +1364,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "set-only",
         source: r#"(js/console.log (.has #{1 2 3} 2) (.join (js/Array.from #{1 2 3}) " "))"#,
-        ceilings: [775_000, 775_000, 9_100],
+        ceilings: [793_000, 793_000, 9_100],
         removed: [0, 0, 0],
         printed: "true 1 3 2\nundefined\n",
     },
@@ -1361,7 +1374,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "mapv-count",
         source: "(js/console.log (count (mapv inc [1 2 3])))",
-        ceilings: [775_000, 775_000, 53_300],
+        ceilings: [793_000, 793_000, 56_000],
         removed: [0, 0, 0],
         printed: "3\nundefined\n",
     },
@@ -1373,7 +1386,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn add ([x] x) ([x y] (+ x y)))
                  (js* "void 0")
                  (add 1 2)"#,
-        ceilings: [776_000, 776_000, 100],
+        ceilings: [794_000, 794_000, 100],
         removed: [0, 0, 2],
         printed: "3\n",
     },
@@ -1390,7 +1403,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn area ([w] (area w w)) ([w h] (* w h)))
                  (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
                  (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
-        ceilings: [778_000, 778_000, 400],
+        ceilings: [796_000, 796_000, 400],
         removed: [0, 0, 2],
         printed: "84\n",
     },
@@ -1414,7 +1427,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (if (< i 10)
                      (recur (inc i) (score acc [1 2 3] i (if (even? i) \"\" \"word\") (if (odd? i) :heavy :light)))
                      acc))",
-        ceilings: [778_000, 778_000, 19_000],
+        ceilings: [796_000, 796_000, 19_000],
         removed: [0, 0, 3],
         printed: "419\n",
     },
@@ -1430,7 +1443,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn area [w h] (debug-log "area" w h {:w w :h h}) (* w h))
                  (when DEBUG (debug-log "startup" {:debug true}))
                  (area (.-length "abc") 4)"#,
-        ceilings: [776_000, 776_000, 100],
+        ceilings: [794_000, 794_000, 100],
         removed: [0, 0, 3],
         printed: "12\n",
     },
@@ -1446,7 +1459,7 @@ pub const FIXTURES: &[Fixture] = &[
                                    ([i acc] (if (< i n) (recur (inc i) (+ acc (clamp i) (area i 2))) acc)))]
                        (+ (walk -3) (area 3)))))
                  (score 12 0 10)",
-        ceilings: [778_000, 778_000, 500],
+        ceilings: [796_000, 796_000, 500],
         removed: [0, 0, 0],
         printed: "194\n",
     },
@@ -1468,7 +1481,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (+ (reduce add-cost 0 (filter heavy? items))
                       (reduce + (map (fn [item] (count (:label item))) items))
                       @counter))",
-        ceilings: [777_000, 777_000, 59_300],
+        ceilings: [795_000, 795_000, 62_000],
         removed: [0, 0, 1],
         printed: "26\n",
     },
@@ -1494,7 +1507,7 @@ pub const FIXTURES: &[Fixture] = &[
                                           (str (tag plain item true)
                                                (tag sale item (> (:qty item) 2))))
                                         items))))",
-        ceilings: [778_000, 778_000, 66_000],
+        ceilings: [796_000, 796_000, 70_000],
         removed: [0, 0, 0],
         printed: "28.5a-bbbb%cccccc%\n",
     },
@@ -1507,7 +1520,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "defmulti",
         source: "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))",
-        ceilings: [776_000, 776_000, 19_000],
+        ceilings: [794_000, 794_000, 19_000],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
     },
@@ -1523,7 +1536,7 @@ pub const FIXTURES: &[Fixture] = &[
                    cljs.core/PersistentTreeSet (specize* [s] [:sorted (count s)])
                    default (specize* [x] :other))
                  (js/console.log (pr-str (map specize* [#{1 2} [3] (seq #{4}) (= #{5} #{5})])))",
-        ceilings: [777_000, 777_000, 71_700],
+        ceilings: [795_000, 795_000, 76_000],
         removed: [0, 0, 0],
         printed: "([:set 2] :other :other :other)\nundefined\n",
     },
@@ -1577,10 +1590,10 @@ const FEATURES_REPORTS: (&str, &str) = (
 /// and the 612-byte chunk loader beside what the application without its
 /// features holds (`size_ratchet::FEATURES_STARTUP_SLACK`).
 pub const FEATURES_CHUNK_CEILINGS: &[(&str, usize)] = &[
-    ("app.main.js", 9_100),
-    ("app.editor+app.reports.js", 94_200),
-    ("app.editor.js", 13_000),
-    ("app.reports.js", 5_500),
+    ("app.main.js", 8_000),
+    ("app.editor+app.reports.js", 98_000),
+    ("app.editor.js", 13_200),
+    ("app.reports.js", 5_700),
 ];
 
 /// The code-splitting example and the same example calling its features
@@ -1601,7 +1614,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [794_000, 794_000, 118_000],
+        ceilings: [812_000, 812_000, 123_000],
         removed: [0, 0, 21],
         printed: "menu: Editor | Reports\n#function\n",
     },
@@ -1625,7 +1638,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [793_000, 793_000, 117_700],
+        ceilings: [811_000, 811_000, 122_000],
         removed: [0, 0, 20],
         printed: "menu: Editor | Reports\n#function\n",
     },
@@ -1642,7 +1655,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [776_000, 776_000, 1_000],
+        ceilings: [794_000, 794_000, 1_000],
         removed: [0, 1, 2],
         printed: "null\nhello lazy\n",
     },
@@ -1661,7 +1674,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [776_000, 776_000, 300],
+        ceilings: [794_000, 794_000, 300],
         removed: [0, 0, 0],
         printed: "null\nhello lazy\n",
     },

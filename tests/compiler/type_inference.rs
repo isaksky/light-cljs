@@ -253,7 +253,7 @@ fn truth_tests_drop_truth_when_javascript_truthiness_agrees() {
     for test in ["rt$seqSite(l", "rt$keywordCore(l"] {
         assert!(js.contains(&format!("if ({test}")), "{test}: {js}");
     }
-    for kept in ["truth(rt$countSite(l", "truth(rt$str(l", "truth(l"] {
+    for kept in ["truth(rt$countSite(l", "truth((\"\" + (l", "truth(l"] {
         assert!(js.contains(kept), "{kept}: {js}");
     }
     // A program that tests only booleans declares no `truth`.

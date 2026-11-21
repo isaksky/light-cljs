@@ -930,6 +930,35 @@
   // method. The shared-heap profile, which takes the old paths, has its
   // own (src/js_shared_profile.js).
   const ownSeqs = {on: false};
+  //@unit hostExt
+  // Bitmasks of core protocols (`protocolMasks`) extended by `extend-type` to
+  // host types (`string`, `number`, `boolean`, `array`, `object`, `function`,
+  // `null`, `default`) or primitive wrapper constructors, plus `fn` for
+  // mask-less `Fn` and `seq` for any extension of `ISeqable`, `ISeq` or `INext`.
+  // Updated via `patchDeclaration` so declaration transactions undo/redo cleanly.
+  const hostExt = {p0: 0, p1: 0, fn: false, seq: false};
+  //@unit hostExt.core effect: core when: hostExt requires: hostExt
+  // Non-sliced builds expose the `core` protocol objects directly, so code may
+  // assign host properties onto them without `extend-type` (light-cljs-251).
+  hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true;
+  //@unit hostExtEscaped
+  // Marker unit kept at `:advanced` when a `hostExt`-tracked core protocol
+  // escapes as a value (`escaped_dispatcher` in src/emitter.rs).
+  const hostExtEscaped = null;
+  //@unit hostExtEscaped.on effect: hostExtEscaped when: hostExt requires: hostExt
+  hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true;
+  //@unit hostExtSeqEscaped
+  // Marker unit kept at `:advanced` when a sequence or reduce core dispatcher
+  // escapes as a value (`escaped_dispatcher` in src/emitter.rs).
+  const hostExtSeqEscaped = null;
+  //@unit hostExtSeqEscaped.on effect: hostExtSeqEscaped when: hostExt requires: hostExt
+  hostExt.seq = true;
+  //@unit hostExtPrintEscaped
+  // Marker unit kept at `:advanced` when `prWriter` escapes as a value
+  // (`escaped_dispatcher` in src/emitter.rs).
+  const hostExtPrintEscaped = null;
+  //@unit hostExtPrintEscaped.on effect: hostExtPrintEscaped when: hostExt requires: hostExt
+  hostExt.p0 = hostExt.p0 | -2147483648;
   //@unit tabledKind
   // Whether a keyed kind is one whose type had a kind table number until
   // light-cljs-1015 removed the tables: vectors, subvectors and map entries
@@ -958,6 +987,10 @@
   //@unit protocolSentinel requires: runtimeKey
   // One per key on the page: copies of a build share markers (docs/value-layout.md, section 1).
   const protocolSentinel = Symbol.for("light-cljs.protocol" + runtimeKey), protocolSlots = new Map();
+  //@unit hostExt.hook effect: extendType, extendInstance when: isChunkedSeq, isColl, isCounted,
+  //@ isFn, isList, isMap, isMapEntry, isRecord, isSeq, isSequential, isSet, isVector
+  //@ requires: hostExt, protocolHooks, protocolSentinel, slotFirst
+  protocolHooks.pred = {ext: hostExt, slot: slotFirst, sentinel: protocolSentinel};
   //@unit protocolSlotCodes
   // At `:advanced` the output writer writes every keyed name short, `$`, the
   // key and a code of one or two letters (docs/value-layout.md, section 1,
@@ -1056,9 +1089,8 @@
   //@unit installMethods.ICountedCountKey effect: installMethods when: countOf, countPath requires: methodKey,
   //@ methodKeys
   methodKeys[10] = methodKey("ICounted/-count");
-  //@unit installMethods.ICountedKey effect: installMethods when: accumulatingCount, boundedCount,
-  //@ classEquiv, equalPairOf, isCounted, isEmpty, objectEquiv, structuralEqualPair requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.ICountedKey effect: installMethods when: accumulatingCount, classEquiv,
+  //@ equalPairOf, isCounted, objectEquiv, structuralEqualPair requires: methodKey, methodKeys
   methodKeys[11] = methodKey("ICounted");
   //@unit installMethods.IDerefDerefKey effect: installMethods when: derefProtocol,
   //@ Loadable.dispatch requires: methodKey, methodKeys
@@ -1769,11 +1801,15 @@
   //@unit macroexpand1 requires: expansionService
   const macroexpand1 = expansionService("macroexpand1", "macroexpand-1");
 
-  //@unit cons requires: ConsCell, count, ListCell, methodKeys, protocolHooks, seq, seqValue
+  //@unit cons requires: ConsCell, count, ListCell, methodKeys, protocolHooks, protocolSentinel,
+  //@ seq, seqValue, slotFirst
   function cons(head, tail, kind = "cons") {
     if (kind === "cons") {
       if (tail == null) kind = "list";
-      else if (!(protocolHooks.implements?.(methodKeys[49], tail) ?? seqValue(tail))) tail = seq(tail);
+      else if (slotFirst.on && protocolHooks.implements) {
+        if (!((tail.cljs$lang$protocol_mask$partition0$$LKEY & 64) || tail.cljs$core$ISeq$$LKEY === protocolSentinel
+          || ((tail.cljs$lang$kind$$LKEY === 37 || tail.cljs$lang$kind$$LKEY === 18) && seqValue(tail)))) tail = seq(tail);
+      } else if (!(protocolHooks.implements?.(methodKeys[49], tail) ?? seqValue(tail))) tail = seq(tail);
     }
     return kind === "list" ? new ListCell(head, tail, count(tail) + 1) : new ConsCell(head, tail);
   }
@@ -1839,7 +1875,8 @@
     }
     return seqOf(value);
   }
-  //@unit seqOf requires: IndexedSeqCell, iteratorSeq, methodKeys, operationPaths, protocolHooks
+  //@unit seqOf requires: IndexedSeqCell, iteratorSeq, methodKeys, operationPaths, protocolHooks,
+  //@ protocolSentinel, slotFirst
   function seqOf(value) {
     const path = operationPaths.seq;
     if (path !== undefined) return path(value);
@@ -1847,6 +1884,10 @@
     if (value.cljs$lang$kind$$LKEY !== undefined) {
       const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY || Object.getPrototypeOf(value)?.cljs$core$ISeqable$_seq$arity$1$LKEY;
       if (method) return method.call(value, value);
+    }
+    if (slotFirst.on && (Array.isArray(value) || typeof value === "string")
+      && !(value.cljs$lang$protocol_mask$partition0$$LKEY & 8388608) && value.cljs$core$ISeqable$$LKEY !== protocolSentinel) {
+      return value.length ? new IndexedSeqCell(value, 0, true, "indexed") : null;
     }
     const own = protocolHooks.programMethod?.(value, methodKeys[52], 1, true);
     if (own) return own.call(value, value);
@@ -1979,13 +2020,21 @@
     }
     return firstOf(value);
   }
-  //@unit firstOf requires: methodKeys, operationPaths, ownSeqs, protocolHooks, seq
+  //@unit firstOf requires: hostExt, methodKeys, operationPaths, ownSeqs, protocolHooks,
+  //@ protocolSentinel, seq, slotFirst
   // The first item of a collection without `-first` is its seq's, read
   // from the seq's slot (upstream's `(-first (seq coll))`).
   function firstOf(value) {
     const path = operationPaths.first;
     if (path !== undefined) return path(value);
     if (value == null) return null;
+    if (slotFirst.on && (Array.isArray(value) || typeof value === "string")
+      && !(value.cljs$lang$protocol_mask$partition0$$LKEY & 8388672)
+      && value.cljs$core$ISeq$$LKEY !== protocolSentinel
+      && value.cljs$core$ISeqable$$LKEY !== protocolSentinel
+      && !ownSeqs.on && !hostExt.seq) {
+      return value.length ? value[0] : null;
+    }
     const own = protocolHooks.programMethod?.(value, methodKeys[48], 1, false, true);
     if (own) return own.call(value, value);
     const s = seq(value);
@@ -2165,25 +2214,28 @@
   // The value of a `reduced`, as `deref` gives it: only a protocol
   // implementation (`protocolHooks.deref`) can give another.
   function reducedValue(value) { return protocolHooks.deref ? protocolHooks.deref(value) : reducedValues.get(value); }
-  //@unit deref requires: derefProtocol
-  function deref(value) { return derefProtocol(value); }
-  //@unit derefProtocol requires: atoms, builtinSlots, deferredValue, delays, isAtomCell, isReduced,
-  //@ kindHooks, methodKeys, protocolHooks, reducedValues, slotFirst, vars, volatiles
-  // An atom of this runtime calls the `-deref` it holds, but a runtime
-  // class's slot written there (`builtinSlots`, which `keyMethod` passes
-  // over), or reads its `state`, as the lookup answered it: only the value, its class or
-  // `Object.prototype` can hold that method, as `extend-type` of a host
-  // type, `object` or `default` never reaches the runtime's own values
-  // (`externalMethod`, light-cljs-1070). A compiler session demanding
-  // declarations takes the lookup, which demands.
+  //@unit deref requires: derefProtocol, kindHooks, slotFirst
+  function deref(value) {
+    if (slotFirst.on && value != null && !kindHooks.isLoadable && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IDeref$_deref$arity$1$LKEY;
+      if (method && method.builtin$LKEY !== true) return value.cljs$core$IDeref$_deref$arity$1$LKEY(value);
+    }
+    return derefProtocol(value);
+  }
+  //@unit derefProtocol requires: atoms, deferredValue, delays, isAtomCell, isReduced, kindHooks,
+  //@ methodKeys, protocolHooks, reducedValues, vars, volatiles
+  // Fallback for values without an inline `-deref` slot, `Loadable` values,
+  // `slotFirst.on === false` (compile-time demand sessions), or when a runtime
+  // class's `builtinSlot` (tagged `true`) was copied onto a value's `-deref`.
   function derefProtocol(value) {
     if (kindHooks.isLoadable?.(value)) return value.deref();
-    if (slotFirst.on && isAtomCell(value)) {
-      const method = value.cljs$core$IDeref$_deref$arity$1$LKEY;
-      return method && !builtinSlots.has(method) ? method.call(value, value) : value.state;
-    }
     const method = protocolHooks.builtin?.(value, methodKeys[12], 1);
     if (method) return method.call(value, value);
+    if (isAtomCell(value)) {
+      const obj = Object.prototype.cljs$core$IDeref$_deref$arity$1$LKEY;
+      if (obj && obj.builtin$LKEY === undefined) return obj.call(value, value);
+      return value.state;
+    }
     if (delays.has(value)) return deferredValue(delays.get(value));
     if (vars.has(value)) return vars.get(value).val$LKEY.call(null);
     if (atoms.has(value) || volatiles.has(value)) return value.state;
@@ -2202,7 +2254,7 @@
     }
     load() { return Promise.resolve().then(() => this.deref()); }
   };
-  //@unit Loadable.deref effect: Loadable when: derefProtocol requires: kindHooks, Loadable
+  //@unit Loadable.deref effect: Loadable when: deref, derefProtocol requires: kindHooks, Loadable
   // `deref` and `-deref` of a loadable, with or without protocol dispatch.
   kindHooks.isLoadable = value => value instanceof Loadable;
   //@unit Loadable.name effect: Loadable when: printHost, typeNames requires: Loadable, typeNames
@@ -2541,7 +2593,17 @@
   const symbolIdentical = (x, y) => x === y || (symbolOf(x) !== undefined && symbolOf(y) !== undefined && equalPair(x, y));
   //@unit isFn requires: fnValue, methodKeys, protocolHooks
   // Native answers (`countedValue`) unless protocol implementations exist.
-  const isFn = x => typeof x === "function" || (protocolHooks.satisfies?.(methodKeys[0], x) ?? fnValue(x));
+  const isFn = x => {
+    if (typeof x === "function") return true;
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !p.ext.fn) {
+      if (x == null || typeof x !== "object") return false;
+      if (x.cljs$core$Fn$$LKEY === p.sentinel) return true;
+      const k = x.cljs$lang$kind$$LKEY;
+      return (k === 45 || k === 46) && fnValue(x);
+    }
+    return protocolHooks.satisfies?.(methodKeys[0], x) ?? fnValue(x);
+  };
   //@unit isIFn requires: ifnValue, isFn, methodKeys, protocolHooks
   const isIFn = x => isFn(x) || (protocolHooks.satisfies?.(methodKeys[21], x) ?? ifnValue(x));
   //@unit isArray
@@ -2549,27 +2611,80 @@
   //@unit isObject requires: isCollectionValue, isIdent, reducedValues, uuids, vars
   const isObject = x => x != null && !isCollectionValue(x) && !isIdent(x) && !uuids.has(x) && !vars.has(x) && !reducedValues.has(x) && x.constructor === Object;
   //@unit isColl requires: collectionValue, methodKeys, protocolHooks
-  const isColl = x => x != null && (protocolHooks.satisfies?.(methodKeys[8], x) ?? collectionValue(x));
+  const isColl = x => {
+    if (x == null) return false;
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !(p.ext.p0 & 8))
+      return (typeof x === "object" || typeof x === "function") && ((x.cljs$lang$protocol_mask$partition0$$LKEY & 8) !== 0 || x.cljs$core$ICollection$$LKEY === p.sentinel);
+    return protocolHooks.satisfies?.(methodKeys[8], x) ?? collectionValue(x);
+  };
   //@unit isSeq requires: methodKeys, protocolHooks, seqValue
-  const isSeq = x => x != null && (protocolHooks.satisfies?.(methodKeys[49], x) ?? seqValue(x));
+  const isSeq = x => {
+    if (x == null) return false;
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !(p.ext.p0 & 64)) {
+      if (typeof x !== "object" && typeof x !== "function") return false;
+      if ((x.cljs$lang$protocol_mask$partition0$$LKEY & 64) !== 0 || x.cljs$core$ISeq$$LKEY === p.sentinel) return true;
+      const k = x.cljs$lang$kind$$LKEY;
+      return (k === 18 || k === 37) && seqValue(x);
+    }
+    return protocolHooks.satisfies?.(methodKeys[49], x) ?? seqValue(x);
+  };
   //@unit isList requires: listValue, methodKeys, protocolHooks
-  const isList = x => protocolHooks.satisfies?.(methodKeys[29], x) ?? listValue(x);
+  const isList = x => {
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !(p.ext.p0 & 33554432))
+      return x != null && (typeof x === "object" || typeof x === "function") && ((x.cljs$lang$protocol_mask$partition0$$LKEY & 33554432) !== 0 || x.cljs$core$IList$$LKEY === p.sentinel);
+    return protocolHooks.satisfies?.(methodKeys[29], x) ?? listValue(x);
+  };
   //@unit isSeqable requires: methodKeys, protocolHooks, seqableValue
   const isSeqable = x => x == null || (protocolHooks.satisfies?.(methodKeys[51], x) ?? seqableValue(x)) || Array.isArray(x) || typeof x === "string" || x[Symbol.iterator] != null;
   //@unit isSequential requires: methodKeys, protocolHooks, sequential
-  const isSequential = x => protocolHooks.satisfies?.(methodKeys[53], x) ?? sequential(x);
+  const isSequential = x => {
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !(p.ext.p0 & 16777216))
+      return x != null && (typeof x === "object" || typeof x === "function") && ((x.cljs$lang$protocol_mask$partition0$$LKEY & 16777216) !== 0 || x.cljs$core$ISequential$$LKEY === p.sentinel);
+    return protocolHooks.satisfies?.(methodKeys[53], x) ?? sequential(x);
+  };
   //@unit isVector requires: holdsVector, methodKeys, protocolHooks
-  const isVector = x => protocolHooks.satisfies?.(methodKeys[61], x) ?? holdsVector(x);
+  const isVector = x => {
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !(p.ext.p0 & 16384))
+      return x != null && (typeof x === "object" || typeof x === "function") && ((x.cljs$lang$protocol_mask$partition0$$LKEY & 16384) !== 0 || x.cljs$core$IVector$$LKEY === p.sentinel);
+    return protocolHooks.satisfies?.(methodKeys[61], x) ?? holdsVector(x);
+  };
   //@unit isMap requires: maps, methodKeys, protocolHooks
-  const isMap = x => x != null && (protocolHooks.satisfies?.(methodKeys[33], x) ?? maps.has(x));
+  const isMap = x => {
+    if (x == null) return false;
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !(p.ext.p0 & 1024))
+      return (typeof x === "object" || typeof x === "function") && ((x.cljs$lang$protocol_mask$partition0$$LKEY & 1024) !== 0 || x.cljs$core$IMap$$LKEY === p.sentinel);
+    return protocolHooks.satisfies?.(methodKeys[33], x) ?? maps.has(x);
+  };
   //@unit isSet requires: methodKeys, protocolHooks, sets
-  const isSet = x => x != null && (protocolHooks.satisfies?.(methodKeys[55], x) ?? sets.has(x));
+  const isSet = x => {
+    if (x == null) return false;
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !(p.ext.p0 & 4096))
+      return (typeof x === "object" || typeof x === "function") && ((x.cljs$lang$protocol_mask$partition0$$LKEY & 4096) !== 0 || x.cljs$core$ISet$$LKEY === p.sentinel);
+    return protocolHooks.satisfies?.(methodKeys[55], x) ?? sets.has(x);
+  };
   //@unit isAssociative requires: associativeValue, methodKeys, protocolHooks
   const isAssociative = x => protocolHooks.satisfies?.(methodKeys[3], x) ?? associativeValue(x);
   //@unit isIFind requires: findValue, methodKeys, protocolHooks
   const isIFind = x => protocolHooks.satisfies?.(methodKeys[20], x) ?? findValue(x);
   //@unit isCounted requires: countedValue, methodKeys, protocolHooks
-  const isCounted = x => protocolHooks.satisfies?.(methodKeys[11], x) ?? (x == null || countedValue(x));
+  const isCounted = x => {
+    if (x == null) return true;
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !(p.ext.p0 & 2)) {
+      if (typeof x !== "object" && typeof x !== "function") return false;
+      if ((x.cljs$lang$protocol_mask$partition0$$LKEY & 2) !== 0 || x.cljs$core$ICounted$$LKEY === p.sentinel) return true;
+      const k = x.cljs$lang$kind$$LKEY;
+      return (k === 5 || k === 18 || k === 19) && countedValue(x);
+    }
+    return protocolHooks.satisfies?.(methodKeys[11], x) ?? countedValue(x);
+  };
   //@unit isIndexed requires: indexedValue, methodKeys, protocolHooks
   const isIndexed = x => protocolHooks.satisfies?.(methodKeys[24], x) ?? indexedValue(x);
   //@unit isReduceable requires: methodKeys, protocolHooks, reduceValue
@@ -2579,13 +2694,26 @@
   //@unit isSorted requires: methodKeys, protocolHooks, sortedValue
   const isSorted = x => protocolHooks.satisfies?.(methodKeys[56], x) ?? sortedValue(x);
   //@unit isRecord requires: methodKeys, protocolHooks
-  const isRecord = x => protocolHooks.satisfies?.(methodKeys[42], x) ?? false;
+  const isRecord = x => {
+    const p = protocolHooks.pred;
+    if (p && p.slot.on && !(p.ext.p0 & 67108864))
+      return x != null && (typeof x === "object" || typeof x === "function") && ((x.cljs$lang$protocol_mask$partition0$$LKEY & 67108864) !== 0 || x.cljs$core$IRecord$$LKEY === p.sentinel);
+    return protocolHooks.satisfies?.(methodKeys[42], x) ?? false;
+  };
   //@unit isMapEntry requires: mapEntryValue, methodKeys, protocolHooks
-  const isMapEntry = x => protocolHooks.implements?.(methodKeys[32], x) ?? mapEntryValue(x);
+  const isMapEntry = x => {
+    const p = protocolHooks.pred;
+    if (p && p.slot.on) return x != null && ((x.cljs$lang$protocol_mask$partition0$$LKEY & 2048) !== 0 || x.cljs$core$IMapEntry$$LKEY === p.sentinel);
+    return protocolHooks.implements?.(methodKeys[32], x) ?? mapEntryValue(x);
+  };
   //@unit isChunkedSeq requires: chunkedSeqValue, methodKeys, protocolHooks
-  const isChunkedSeq = x => protocolHooks.implements?.(methodKeys[5], x) ?? chunkedSeqValue(x);
-  //@unit isEmpty requires: countedValue, countProtocol, methodKeys, protocolHooks, seq
-  const isEmpty = x => x == null || ((protocolHooks.satisfies?.(methodKeys[11], x) ?? countedValue(x)) ? countProtocol(x) === 0 : seq(x) === null);
+  const isChunkedSeq = x => {
+    const p = protocolHooks.pred;
+    if (p && p.slot.on) return x != null && ((x.cljs$lang$protocol_mask$partition1$$LKEY & 512) !== 0 || x.cljs$core$IChunkedSeq$$LKEY === p.sentinel);
+    return protocolHooks.implements?.(methodKeys[5], x) ?? chunkedSeqValue(x);
+  };
+  //@unit isEmpty requires: countProtocol, isCounted, seq
+  const isEmpty = x => x == null || (isCounted(x) ? countProtocol(x) === 0 : seq(x) === null);
 
   // `reduce` is upstream's too (light-cljs-1072), as the updates
   // (light-cljs-1068): a value with a keyed kind calls its keyed `-reduce`
@@ -2621,8 +2749,8 @@
     }
     return reduceOf(rf, init, collection);
   }
-  //@unit reduceOf requires: iterator, iterReduce, methodKeys, operationPaths, protocolHooks,
-  //@ reduceWalk, seqReduce
+  //@unit reduceOf requires: hostExt, isReduced, iterator, iterReduce, methodKeys, operationPaths,
+  //@ ownSeqs, protocolHooks, protocolSentinel, reducedValue, reduceWalk, seqReduce, slotFirst
   // Upstream's `reduce` of a value without a `-reduce` slot holding a
   // method: a value of a runtime class whose instance slot holds nil or
   // false takes its class's slot, as the old path answered by the class; a
@@ -2647,6 +2775,19 @@
       const prototype = Object.getPrototypeOf(source);
       const method = arity === 3 ? prototype?.cljs$core$IReduce$_reduce$arity$3$LKEY : prototype?.cljs$core$IReduce$_reduce$arity$2$LKEY;
       if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
+    }
+    if (slotFirst.on && (Array.isArray(source) || typeof source === "string")
+      && !(source.cljs$lang$protocol_mask$partition0$$LKEY & 8912896)
+      && source.cljs$core$IReduce$$LKEY !== protocolSentinel
+      && source.cljs$core$ISeqable$$LKEY !== protocolSentinel
+      && !ownSeqs.on && !hostExt.seq && !(hostExt.p0 & 524288)) {
+      let i = 0;
+      if (arity === 2) { if (source.length === 0) return rf.call(null); init = source[0]; i = 1; }
+      for (; i < source.length; i++) {
+        init = rf.call(null, init, source[i]);
+        if (isReduced(init)) return reducedValue(init);
+      }
+      return init;
     }
     const own = protocolHooks.programMethod?.(source, methodKeys[44], arity, true);
     if (own) return arity === 3 ? own.call(source, source, rf, init) : own.call(source, source, rf);
@@ -4585,6 +4726,18 @@
   }
   //@unit transient requires: asTransientProtocol
   function transient(value) { return asTransientProtocol(value); }
+  //@unit asTransientOwn requires: asTransient, asTransientProtocol, builtinSlots, holdsVector,
+  //@ maps, sets, slotFirst
+  // `transient` of a runtime collection (`into`), reading its `-as-transient`
+  // slot before the protocol dispatcher, as `conjBangOwn` does.
+  function asTransientOwn(value) {
+    if (slotFirst.on && value != null && (value.cljs$lang$protocol_mask$partition1$$LKEY & 4) !== 0 && value.cljs$lang$kind$$LKEY < 64) {
+      const method = value.cljs$core$IEditableCollection$_as_transient$arity$1$LKEY;
+      if (method && !builtinSlots.has(method)) return method.call(value, value);
+      if (holdsVector(value) || maps.has(value) || sets.has(value)) return asTransient(value);
+    }
+    return asTransientProtocol(value);
+  }
   //@unit asTransient requires: copyEntries, holdsVector, kindHooks, makeTransient, maps, setKinds,
   //@ sets, vectorStore
   function asTransient(value) {
@@ -5134,8 +5287,11 @@
   //@unit vectorTrie requires: VectorCell, vectorTailOffset
   // A vector of the new array `items`, which it keeps as its tail where it
   // can; `slice` gives the items of each leaf and of a shorter tail.
-  function vectorTrie(items, slice = (from, to) => items.slice(from, to)) {
-    const cnt = items.length, end = vectorTailOffset(cnt);
+  function vectorTrie(items, slice) {
+    const cnt = items.length;
+    if (cnt <= 32) return new VectorCell(null, cnt, 5, [], items, null);
+    if (slice === undefined) slice = (from, to) => items.slice(from, to);
+    const end = vectorTailOffset(cnt);
     // The frozen leaves, then each level of their parents up to the root.
     let nodes = [], shift = 5;
     for (let i = 0; i < end; i += 32) nodes.push(Object.freeze(slice(i, i + 32)));
@@ -5325,7 +5481,7 @@
   // Literal emission uses an array to avoid the host's argument-count limit.
   // Copy even when a test/host caller supplies its own array.
   function vectorFromArray(items) {
-    return makeVector(Array.from(items));
+    return makeVector(Array.isArray(items) ? items.slice() : Array.from(items));
   }
 
   //@unit keywordCore requires: freshKeyword, invalidArity, keywordOf, makeKeyword, namedOf,
@@ -5555,7 +5711,8 @@
     return nthOf(value, index, notFound, arity);
   }
   //@unit nthOf requires: first, indexedValue, invalidArity, methodKeys, missing, next, nth,
-  //@ operationPaths, outOfBounds, protocolHooks, seq, sequential, seqValue, viewOf
+  //@ operationPaths, outOfBounds, protocolHooks, protocolSentinel, seq, sequential, seqValue,
+  //@ slotFirst, viewOf
   // Upstream's `nth` of `arity` arguments: nil, a host value's program
   // method, arrays and strings, the seq walk of a sequential value without
   // `-nth` (a list, a cons, a lazy seq, a seq of a vector, read by its
@@ -5571,6 +5728,12 @@
       const proto = Object.getPrototypeOf(value);
       if (arity === 2) { const method = proto?.cljs$core$IIndexed$_nth$arity$2$LKEY; if (method) return method.call(value, value, index); }
       else { const method = proto?.cljs$core$IIndexed$_nth$arity$3$LKEY; if (method) return method.call(value, value, index, notFound); }
+    }
+    if (slotFirst.on && (Array.isArray(value) || typeof value === "string")
+      && !(value.cljs$lang$protocol_mask$partition0$$LKEY & 16)
+      && value.cljs$core$IIndexed$$LKEY !== protocolSentinel) {
+      if (Array.isArray(value)) return index > -1 && index < value.length ? value[Math.trunc(index)] : arity === 2 ? outOfBounds() : notFound;
+      return index > -1 && index < value.length ? value.charAt(index | 0) : arity === 2 ? outOfBounds() : notFound;
     }
     const own = protocolHooks.programMethod?.(value, methodKeys[25], arity, true, true);
     if (own) return arity === 2 ? own.call(value, value, index) : own.call(value, value, index, notFound);
@@ -5796,12 +5959,12 @@
 
   //@unit builtinSlots
   // The runtime's own slot methods (`PersistentVectorValue.nth` and the
-  // rest), which `builtinSlot` marks: the protocol lookups of the
-  // operations' older layers (`keyMethod`, `directMethod`) do not take them
-  // for a program's implementation, so those layers answer as before and
-  // never call a slot that serves them.
-  const builtinSlots = new WeakSet();
-  function builtinSlot(method) { builtinSlots.add(method); return method; }
+  // rest), which `builtinSlot` marks with a non-enumerable keyed property:
+  // the protocol lookups of the operations' older layers (`keyMethod`,
+  // `directMethod`) do not take them for a program's implementation, so those
+  // layers answer as before and never call a slot that serves them.
+  const builtinSlots = {has: method => method != null && method.builtin$LKEY !== undefined};
+  function builtinSlot(method, tag = true) { Object.defineProperty(method, "builtin$LKEY", {value: tag}); return method; }
   // A persistent vector's protocol methods are slots of its prototype
   // (docs/value-layout.md, section 3), each a unit kept with the operation
   // that reads it. A slot is complete for every value with the prototype: it
@@ -9192,9 +9355,34 @@
   //@unit KeySeqCell.seqSlot effect: KeySeqCell when: seq, seqOf, seqSite requires: cellSeqSlot,
   //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
+  //@unit keySeqReduce requires: entryKey, entryVal, hostExt, isEntryCell, isReduced, protocolHooks,
+  //@ reducedValue, seqReduce, slotFirst, viewOf
+  function keySeqReduce(ks, rf, init, arity) {
+    if (!slotFirst.on || hostExt.seq) return seqReduce(ks, rf, init, arity);
+    const entries = ks.mseq$LKEY, slice = viewOf(entries);
+    if (slice && !slice.vec$LKEY) {
+      const arr = slice.arr$LKEY, keyed = ks.cell$LKEY === "keys", len = arr.length;
+      let i = slice.i$LKEY;
+      if (arity === 2) {
+        if (i >= len) return rf.call(null);
+        const e = arr[i++];
+        const m = isEntryCell(e) ? (keyed ? e.cljs$core$IMapEntry$_key$arity$1$LKEY : e.cljs$core$IMapEntry$_val$arity$1$LKEY) : null;
+        init = m ? m.call(e, e) : isEntryCell(e) ? (keyed ? entryKey(e) : entryVal(e)) : keyed ? (protocolHooks.keyProtocol ?? entryKey)(e) : (protocolHooks.valProtocol ?? entryVal)(e);
+      }
+      for (; i < len; i++) {
+        const e = arr[i];
+        const m = isEntryCell(e) ? (keyed ? e.cljs$core$IMapEntry$_key$arity$1$LKEY : e.cljs$core$IMapEntry$_val$arity$1$LKEY) : null;
+        const item = m ? m.call(e, e) : isEntryCell(e) ? (keyed ? entryKey(e) : entryVal(e)) : keyed ? (protocolHooks.keyProtocol ?? entryKey)(e) : (protocolHooks.valProtocol ?? entryVal)(e);
+        init = rf.call(null, init, item);
+        if (isReduced(init)) return reducedValue(init);
+      }
+      return init;
+    }
+    return seqReduce(ks, rf, init, arity);
+  }
   //@unit KeySeqCell.reduceSlot effect: KeySeqCell when: reduce, reduceOf requires: KeySeqCell,
-  //@ seqReduceSlot
-  KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = seqReduceSlot;
+  //@ keySeqReduce, reduceSlot
+  KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(keySeqReduce);
   //@unit classMasks
   // Gives a class's prototype its keyed masks, partition 0 and 1.
   function classMasks(Type, partition0, partition1) {
@@ -10155,6 +10343,10 @@
     return value === other && !value?.cljs$core$IEquiv$_equiv$arity$2$LKEY && slotWrites(value, methodKeys[18])
       && (maps.has(value) || sets.has(value) || namedOf(value) !== undefined || comparedSequential(value)) ? structuralEqualPair(value, other) : operation(value, other);
   })(objectEquiv);
+  //@unit slotWrites.hostExt effect: slotWrites when: hostExt requires: hostExt
+  // A program that writes a core protocol member by name may also overwrite
+  // seq/print/predicate slots directly without going through `extend-type`.
+  hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true;
   //@unit declarationReceiver compile-time requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
   //@unit patchDeclaration mutator
@@ -10192,8 +10384,19 @@
   function snapshotDeclarationPatches(patches) { return patches.map(patch => patch.snapshot()); }
   //@unit restoreDeclarationPatches compile-time
   function restoreDeclarationPatches(saved) { for (let i = saved.length - 1; i >= 0; i--) saved[i](); }
-  //@unit protocolPredicate requires: demandProtocol, directMethod, nativeType
+  //@unit protocolFallback requires: nativeType
+  function protocolFallback(protocol, value) { return !!(protocol._ || protocol[nativeType(value)]); }
+  //@unit protocolPredicate requires: demandProtocol, directMethod, nativeType, protocolSentinel,
+  //@ protocolSlot, slotFirst
   function protocolPredicate(protocol, key, value, direct) {
+    if (slotFirst.on) {
+      if (value != null) {
+        const slot = protocol ? (protocol.slot$LKEY ?? (protocol.slot$LKEY = protocolSlot(key, 0))) : protocolSlot(key, 0);
+        if (value[slot] === protocolSentinel) return true;
+      }
+      if (direct) return false;
+      return !!(protocol._ || protocol[nativeType(value)]);
+    }
     demandProtocol(key, value);
     if (directMethod(value, key, 0)) return true;
     if (direct) return false;
@@ -10420,8 +10623,18 @@
     if (!metaSupported(value)) throw new Error("No protocol method IMeta.-meta defined for this value");
     return meta(value);
   }
-  //@unit withMetaProtocol requires: collectionWithMeta, kindHooks, protocolHooks, withMetaSupported
+  //@unit withMetaProtocol requires: builtinSlots, collectionWithMeta, kindHooks, meta,
+  //@ protocolHooks, slotFirst, withMetaSupported
   function withMetaProtocol(value, metadata) {
+    if (slotFirst.on && value != null && typeof value !== "function") {
+      const k = value.cljs$lang$kind$$LKEY;
+      if (k < 64 && k !== 3 && (value.cljs$lang$protocol_mask$partition0$$LKEY & 262144) !== 0) {
+        const method = value.cljs$core$IWithMeta$_with_meta$arity$2$LKEY;
+        if (method && !builtinSlots.has(method)) return method.call(value, value, metadata);
+        if (meta(value) === metadata) return value;
+        return collectionWithMeta(value, metadata);
+      }
+    }
     if (!withMetaSupported(value)) throw new Error("No protocol method IWithMeta.-with-meta defined for this value");
     // A function here has metadata, or a protocol implementation.
     return typeof value === "function" ? (protocolHooks.fnWithMeta ?? kindHooks.withMetaFn)(value, metadata) : collectionWithMeta(value, metadata);
@@ -10462,6 +10675,17 @@
   //@unit Atom.kind effect: Atom requires: Atom
   // An atom is a class of the class layout, kind 38 (`atoms`, light-cljs-1013).
   Atom.prototype.cljs$lang$kind$$LKEY = 38;
+  //@unit Atom.deref effect: Atom when: deref, derefProtocol requires: Atom, builtinSlot,
+  //@ derefProtocol
+  // An atom's `-deref` slot, tagged `2` (`builtinSlot`) so `deref` calls it on
+  // the same slot-first path as `deftype` `IDeref` values while still passing
+  // over other classes' `builtinSlot`s (tagged `true`). Checks `Object.prototype`
+  // so `(extend-type js/Object IDeref ...)` still overrides atoms.
+  Atom.prototype.cljs$core$IDeref$_deref$arity$1$LKEY = builtinSlot(function (self) {
+    const obj = Object.prototype.cljs$core$IDeref$_deref$arity$1$LKEY;
+    if (obj && obj.builtin$LKEY === undefined) return obj.call(self, self);
+    return self.state !== undefined || "state" in self ? self.state : derefProtocol(self);
+  }, 2);
   //@unit Volatile
   class Volatile {
     constructor(state) { this.state = state; /*@brand*/ }
@@ -10906,11 +11130,15 @@
     return stateProtocol(value, "IVolatile/-vreset!", methodKeys[62], [state]);
   }
   //@unit update requires: apply, assoc, fnRest, get
-  function update(value, key, fn, ...args) {
+  function update(value, key, fn, x, y, z) {
     const old = get(value, key);
-    return assoc(value, key, arguments.length >= 3 && arguments.length <= 6
-      ? fn.call(null, old, ...args)
-      : apply(fn, old, args[0], args[1], args[2], fnRest(args, 3)));
+    switch (arguments.length) {
+      case 3: return assoc(value, key, fn.call(null, old));
+      case 4: return assoc(value, key, fn.call(null, old, x));
+      case 5: return assoc(value, key, fn.call(null, old, x, y));
+      case 6: return assoc(value, key, fn.call(null, old, x, y, z));
+      default: return assoc(value, key, apply(fn, old, x, y, z, fnRest(arguments, 6)));
+    }
   }
   //@unit updatedMap requires: comparatorOf, constructorSlots, isArrayMap, isHashMap, makeMap,
   //@ mapFromEntries, mapKinds, mapTypes, meta, preserveMeta, priorLength
@@ -10961,19 +11189,25 @@
     setMeta(result, metadata);
     return result;
   }
-  //@unit collectionWithMeta requires: cellCopy, cellOf, chunkedConsCells, extraFields, holdsVector,
-  //@ ifnValues, isCell, isChunkedCons, isEntryCell, isLazy, isView, kindHooks, lazyCells,
-  //@ mapCellCopy, maps, meta, metaFunctions, methodKeys, protocolHooks, protocolImplementations,
-  //@ prototypeCopy, queues, recordCells, reifyCells, seqCells, setMeta, setQueueCopy, sets,
-  //@ symbolCells, vars, vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
+  //@unit collectionWithMeta requires: builtinSlots, cellCopy, cellOf, chunkedConsCells,
+  //@ extraFields, holdsVector, ifnValues, isCell, isChunkedCons, isEntryCell, isLazy, isView,
+  //@ kindHooks, lazyCells, mapCellCopy, maps, meta, metaFunctions, methodKeys, protocolHooks,
+  //@ protocolImplementations, prototypeCopy, queues, recordCells, reifyCells, seqCells, setMeta,
+  //@ setQueueCopy, sets, slotFirst, symbolCells, vars, vectorCellCopy, vectorCells, viewAt,
+  //@ viewCells, viewOf
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
     if (value == null) return null;
-    const method = protocolHooks.builtin?.(value, methodKeys[66], 2);
-    if (method) return method.call(value, value, metadata);
+    if (slotFirst.on && value.cljs$lang$kind$$LKEY < 64) {
+      const m = value.cljs$core$IWithMeta$_with_meta$arity$2$LKEY;
+      if (m && !builtinSlots.has(m)) return m.call(value, value, metadata);
+    } else {
+      const method = protocolHooks.builtin?.(value, methodKeys[66], 2);
+      if (method) return method.call(value, value, metadata);
+    }
     if (!isEntryCell(value) &&
-        [vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells].some(store => store.has(value)) && meta(value) === metadata) return value;
+        (vectorCells.has(value) || maps.has(value) || sets.has(value) || seqCells.has(value) || chunkedConsCells.has(value) || viewCells.has(value) || queues.has(value) || lazyCells.has(value)) && meta(value) === metadata) return value;
     let result;
     if (isEntryCell(value)) return collectionWithMeta(kindHooks.entryVector(value), metadata);
     const kind = cellOf(value)?.cell$LKEY;
@@ -11948,19 +12182,39 @@
     setDeclaration(protocolGetters, key, getter ?? (() => protocolVariables.get(metadataName)));
     return method;
   }
+  //@unit markSeqSlot requires: hostExt, ownSeqs
+  // Tracks whether `extend-type` or `specify!` installed an `ISeq`, `ISeqable`
+  // or `INext` slot, without pulling those slot names into `installMethods`.
+  function markSeqSlot(slot, ownedRuntime) {
+    if (slot === "cljs$core$ISeq$_first$arity$1$LKEY" || slot === "cljs$core$ISeq$_rest$arity$1$LKEY" || slot === "cljs$core$ISeq$$LKEY") {
+      hostExt.seq = true;
+      if (ownedRuntime) ownSeqs.on = true;
+    } else if (slot === "cljs$core$ISeqable$_seq$arity$1$LKEY" || slot === "cljs$core$ISeqable$$LKEY" || slot === "cljs$core$INext$_next$arity$1$LKEY" || slot === "cljs$core$INext$$LKEY") {
+      hostExt.seq = true;
+    }
+  }
   //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, dispatchCell,
-  //@ fieldComparisons, installMethods, invalidArity, nativeMethods, ownSeqs, patchDeclaration,
-  //@ protocolFunctions, protocolGetters, protocolSentinel, protocolValues, setDeclaration,
-  //@ tabledKind
+  //@ fieldComparisons, hostExt, installMethods, invalidArity, markSeqSlot, nativeMethods,
+  //@ patchDeclaration, protocolFunctions, protocolGetters, protocolMasks, protocolSentinel,
+  //@ protocolValues, setDeclaration, tabledKind
   function extendType(target, methods) {
     let result = null;
+    const desc = value => ({value, writable: true, configurable: true, enumerable: true});
     if (typeof target === "string") {
       const grouped = new Map();
       for (let i = 0; i < methods.length; i++) {
         const entry = methods[i], key = entry[0], arity = entry[1], method = entry[2];
+        const slash = key.indexOf("/"), proto = slash >= 0 ? key.slice(0, slash) : key;
+        if (proto === "Fn") patchDeclaration(hostExt, "fn", desc(true));
+        if (proto === "ISeq" || proto === "ISeqable" || proto === "INext") patchDeclaration(hostExt, "seq", desc(true));
+        const mask = protocolMasks.get(proto);
+        if (mask) {
+          const p = mask[0] === "cljs$lang$protocol_mask$partition0$$LKEY" ? "p0" : "p1";
+          if ((hostExt[p] & mask[1]) === 0) patchDeclaration(hostExt, p, desc(hostExt[p] | mask[1]));
+        }
         if (arity === 0) {
           const value = protocolValues.get(key) ?? coreProtocolsByName.get(key);
-          if (value) { patchDeclaration(value, target, {value: true, writable: true, configurable: true, enumerable: true}); result = true; }
+          if (value) { patchDeclaration(value, target, desc(true)); result = true; }
         }
         if (!grouped.has(key)) grouped.set(key, new Map());
         grouped.get(key).set(arity, method);
@@ -11976,14 +12230,14 @@
           return method ? method.apply(null, arguments) : invalidArity(arguments.length);
         };
         result = implementation;
-        if (dispatch) patchDeclaration(dispatch, target, {value: implementation, writable: true, configurable: true, enumerable: true});
+        if (dispatch) patchDeclaration(dispatch, target, desc(implementation));
         if (!protocolFunctions.has(key)) {
           // A key's implementations go in its entry and its dispatch cell
           // alike, each through the journal (`dispatchCell`).
           if (!nativeMethods.has(key)) {
             const natives = new Map();
             setDeclaration(nativeMethods, key, natives);
-            patchDeclaration(dispatchCell(key), "natives", {value: natives, writable: true, configurable: true, enumerable: true});
+            patchDeclaration(dispatchCell(key), "natives", desc(natives));
           }
           setDeclaration(nativeMethods.get(key), target, implementations);
         }
@@ -11992,24 +12246,30 @@
       if (typeof target !== "function" || target.prototype == null) throw new TypeError("extend-type requires a type constructor");
       // A type that had a kind table number, or `Object`, which every type inherits from.
       if (target === Object || tabledKind(target.prototype.cljs$lang$kind$$LKEY)) fieldComparisons.on = false;
-      installMethods(target.prototype, methods);
-      if (target.prototype.cljs$lang$kind$$LKEY < 64) ownSeqs.on = true;
+      if (target === Object || target === String || target === Number || target === Boolean || target === Symbol || target === BigInt) {
+        patchDeclaration(hostExt, "p0", desc(-1));
+        patchDeclaration(hostExt, "p1", desc(-1));
+        patchDeclaration(hostExt, "fn", desc(true));
+        patchDeclaration(hostExt, "seq", desc(true));
+      }
+      const owned = target === Object || target.prototype.cljs$lang$kind$$LKEY < 64;
+      installMethods(target.prototype, methods, slot => markSeqSlot(slot, owned));
       result = methods.length ? (methods.at(-1)[1] === 0 ? protocolSentinel : methods.at(-1)[2]) : null;
     }
     return result;
   }
-  //@unit extendInstance mutator requires: fieldComparisons, installMethods, ownSeqs,
+  //@unit extendInstance mutator requires: fieldComparisons, installMethods, markSeqSlot,
   //@ protocolSentinel, tabledKind
   function extendInstance(target, methods, returnTarget) {
     if (target != null && tabledKind(target.cljs$lang$kind$$LKEY)) fieldComparisons.on = false;
-    installMethods(target, methods);
-    if (target != null && target.cljs$lang$kind$$LKEY < 64) ownSeqs.on = true;
+    const owned = target != null && target.cljs$lang$kind$$LKEY < 64;
+    installMethods(target, methods, slot => markSeqSlot(slot, owned));
     return returnTarget ? target : methods.length ? (methods.at(-1)[1] === 0 ? protocolSentinel : methods.at(-1)[2]) : null;
   }
   //@unit installMethods mutator requires: declarationJournal, ifnInvokeEntry, ifnPrototype,
   //@ ifnValues, ifnVariadics, invalidArity, mungeMember, patchDeclaration, protocolImplementations,
   //@ protocolKeys, protocolSentinel, protocolSlot
-  function installMethods(value, methods) {
+  function installMethods(value, methods, onSlot) {
     if (value != null && typeof value !== "object" && typeof value !== "function") return value;
     const transaction = declarationJournal, descriptor = {value: null, writable: true, configurable: true};
     // A protocol method's or marker's entry is its slot alone: at
@@ -12029,6 +12289,7 @@
         if (key === "IFn/-invoke" || key.startsWith("Object/")) { (rest ??= []).push(entry); continue; }
         slot = arity !== 0 && !key.includes("/") ? key : protocolSlot(key, arity);
       }
+      if (onSlot) onSlot(slot);
       const method = arity === 0 ? protocolSentinel : entry[2];
       if (transaction === null) { descriptor.value = method; Object.defineProperty(value, slot, descriptor); }
       else patchDeclaration(value, slot, {value: method, writable: true, configurable: true});
@@ -12062,15 +12323,26 @@
       }
     }
     for (const [key, entries] of implementations) if (key.startsWith("Object/")) {
-      patchDeclaration(value, mungeMember(key.slice(7)), {value: function (...args) {
-        const rest = objectVariadics.get(key);
-        const method = !rest && entries.size === 1 ? entries.values().next().value : entries.get(args.length + 1) ?? rest?.[1];
+      const variadic = objectVariadics.get(key);
+      const single = !variadic && entries.size === 1 ? entries.values().next().value : null;
+      const fn = single ? function (a, b, c, d) {
+        switch (arguments.length) {
+          case 0: return single.call(this, this);
+          case 1: return single.call(this, this, a);
+          case 2: return single.call(this, this, a, b);
+          case 3: return single.call(this, this, a, b, c);
+          case 4: return single.call(this, this, a, b, c, d);
+          default: return single.call(this, this, ...arguments);
+        }
+      } : function (...args) {
+        const method = entries.get(args.length + 1) ?? variadic?.[1];
         if (!method) return invalidArity(args.length);
         // The pinned CLJS multi-arity Object dispatcher calls the variadic
         // entry as a property of its delegate function, losing the instance.
-        const receiver = rest && entries.size && !entries.has(args.length + 1) ? method : this;
+        const receiver = variadic && entries.size && !entries.has(args.length + 1) ? method : this;
         return method.call(receiver, receiver, ...args);
-      }, writable: true, configurable: true});
+      };
+      patchDeclaration(value, mungeMember(key.slice(7)), {value: fn, writable: true, configurable: true});
     }
     if (Object.keys(calls).length || ifnVariadics.has(calls)) {
       ifnValues.set(value, calls);
@@ -12503,9 +12775,9 @@
     const values = Array.from(args);
     return value.call(null, ...values.slice(0, 20), ...(values.length > 20 ? [values.slice(20)] : []));
   }
-  //@unit boundedCount requires: count, countedValue, methodKeys, next, protocolHooks, seq
+  //@unit boundedCount requires: count, isCounted, next, seq
   function boundedCount(n, value) {
-    if (protocolHooks.satisfies?.(methodKeys[11], value) ?? (value == null || countedValue(value))) return count(value);
+    if (isCounted(value)) return count(value);
     let total = 0;
     for (let current = seq(value); n > 0 && current !== null; n--, current = next(current)) total++;
     return total;
@@ -13113,9 +13385,18 @@
   // Construct the same fixed/variadic split as an emitted CLJS function. This
   // lets combinators hand an unbounded tail to a variadic target unchanged.
   function callable(fixed, methods, variadic) {
-    const fn = function (...args) {
-      const method = methods[args.length];
-      return method ? method(...args) : variadic(...Array.from({length: fixed}, (_, i) => args[i]), fnRest(args, fixed));
+    const m0 = methods[0], m1 = methods[1], m2 = methods[2], m3 = methods[3];
+    const fn = function (a, b, c, d) {
+      const n = arguments.length;
+      if (n === 1 && m1) return m1(a);
+      if (n === 2 && m2) return m2(a, b);
+      if (n === 0 && m0) return m0();
+      if (n === 3 && m3) return m3(a, b, c);
+      const method = methods[n];
+      if (method) return method.apply(null, arguments);
+      const prefix = Array(fixed);
+      for (let i = 0; i < fixed; i++) prefix[i] = arguments[i];
+      return variadic(...prefix, fnRest(arguments, fixed));
     };
     for (const [arity, method] of Object.entries(methods)) fn["cljs$core$IFn$_invoke$arity$" + arity] = method;
     fn.cljs$lang$maxFixedArity = fixed;
@@ -13266,26 +13547,31 @@
     if (defaults.length === 1) methods[1] = x => run(x);
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
-  //@unit into requires: conj, conjBangOwn, conjProtocol, editableValue, invalidArity, meta,
-  //@ methodKeys, persistentBang, protocolHooks, reduce, transduce, transient, vector,
-  //@ withMetaProtocol
+  //@unit into requires: asTransientOwn, conj, conjBangOwn, conjProtocol, editableValue,
+  //@ invalidArity, meta, methodKeys, persistentBang, protocolHooks, protocolSentinel, reduce,
+  //@ slotFirst, transduce, vector, withMetaProtocol
   function into(to, from, source) {
     switch (arguments.length) {
       case 0: return vector();
       case 1: return to;
       case 2: {
-        if (protocolHooks.implements?.(methodKeys[14], to) ?? editableValue(to))
-          return withMetaProtocol(persistentBang(reduce(conjBangOwn, transient(to), from)), meta(to));
+        const editable = protocolHooks.implements
+          ? (slotFirst.on ? to != null && ((to.cljs$lang$protocol_mask$partition1$$LKEY & 4) !== 0 || to.cljs$core$IEditableCollection$$LKEY === protocolSentinel) : protocolHooks.implements(methodKeys[14], to))
+          : editableValue(to);
+        if (editable)
+          return withMetaProtocol(persistentBang(reduce(conjBangOwn, asTransientOwn(to), from)), meta(to));
         return reduce(to == null ? conj : conjProtocol, to, from);
       }
       case 3: {
-        const editable = protocolHooks.implements?.(methodKeys[14], to) ?? editableValue(to), metadata = editable ? meta(to) : null;
+        const editable = protocolHooks.implements
+          ? (slotFirst.on ? to != null && ((to.cljs$lang$protocol_mask$partition1$$LKEY & 4) !== 0 || to.cljs$core$IEditableCollection$$LKEY === protocolSentinel) : protocolHooks.implements(methodKeys[14], to))
+          : editableValue(to), metadata = editable ? meta(to) : null;
         const rf = !editable ? conj : function (result, input) {
           if (arguments.length === 2) return conjBangOwn(result, input);
           if (arguments.length === 1) return withMetaProtocol(persistentBang(result), metadata);
           return invalidArity(arguments.length);
         };
-        return transduce(from, rf, editable ? transient(to) : to, source);
+        return transduce(from, rf, editable ? asTransientOwn(to) : to, source);
       }
       default: return invalidArity(arguments.length);
     }
@@ -13449,7 +13735,29 @@
     if (arguments.length !== 7) return invalidArity(arguments.length);
     return printSequential(writer, printOne, begin, separator, end, options, coll);
   }
-  //@unit printSequential requires: coreCells, printHooks, printOption, protocolHooks, truth, write
+  //@unit printSeq.hook effect: installMethods when: makeMap.print, makeVector.print,
+  //@ printMapEntries, printSequential, printValues, writeText requires: hostExt, protocolHooks,
+  //@ slotFirst
+  protocolHooks.noSeqExt = () => slotFirst.on && !hostExt.seq;
+  protocolHooks.slotFirst = slotFirst;
+  //@unit printWriter.hook effect: installMethods when: printWriterImpl requires: hostExt,
+  //@ protocolHooks, protocolSentinel, slotFirst
+  protocolHooks.printWriter = (value, key) => {
+    if (slotFirst.on && !(hostExt.p0 & -2147483648)) {
+      if (typeof value !== "object" && typeof value !== "function") return undefined;
+      const m = value.cljs$core$IPrintWithWriter$_pr_writer$arity$3$LKEY;
+      if (m && !m.builtin$LKEY) return m;
+      const mask = value.cljs$lang$protocol_mask$partition0$$LKEY;
+      if (!(value.cljs$lang$kind$$LKEY < 64)
+        ? ((mask & -2147483648) !== 0 || value.cljs$core$IPrintWithWriter$$LKEY === protocolSentinel)
+        : (!(mask & -2147483648) && value.cljs$core$IPrintWithWriter$$LKEY === protocolSentinel))
+        return protocolHooks.programMethod(value, key, 3);
+      return undefined;
+    }
+    return protocolHooks.programMethod(value, key, 3);
+  };
+  //@unit printSequential requires: coreCells, printHooks, printOption, protocolHooks, truth,
+  //@ writeText
   // The printer's own entries pass on the options they receive (see
   // `printOptions`). Without protocol implementations, which could see the
   // seq of an array, an array is walked by index, other collections through
@@ -13460,25 +13768,26 @@
     const saved = coreCells.printLevel;
     coreCells.printLevel = saved == null ? null : saved - 1;
     try {
-      if (coreCells.printLevel != null && coreCells.printLevel < 0) return write(writer, "#");
-      write(writer, begin);
-      const items = Array.isArray(coll) && !protocolHooks.programMethod;
+      if (coreCells.printLevel != null && coreCells.printLevel < 0) return writeText(writer, "#");
+      writeText(writer, begin);
+      const items = Array.isArray(coll) && (!protocolHooks.programMethod || protocolHooks.noSeqExt());
       let current = items ? coll.length ? 0 : null : printHooks.seq(coll), remaining = printOption(options, "print-length", "printLength"), printed = false;
       while (current != null && (remaining == null || remaining !== 0)) {
-        if (printed) write(writer, separator);
+        if (printed) writeText(writer, separator);
         if (step === 2) printOne.call(null, coll[current], writer, options, coll[current + 1]);
         else printOne.call(null, items ? coll[current] : printHooks.first(current), writer, options);
         printed = true;
         current = items ? current + step < coll.length ? current + step : null : printHooks.next(current); if (remaining != null) remaining--;
       }
       if (current != null) {
-        if (printed) write(writer, separator);
-        const marker = options == null ? null : printHooks.option(options, "more-marker"); write(writer, truth(marker) ? marker : "...");
+        if (printed) writeText(writer, separator);
+        const marker = options == null ? null : printHooks.option(options, "more-marker"); writeText(writer, truth(marker) ? marker : "...");
       }
-      return write(writer, end);
+      return writeText(writer, end);
     } finally { coreCells.printLevel = saved; }
   }
-  //@unit printMapEntries requires: kindHooks, printSequential, printWriter, write
+  //@unit printMapEntries requires: coreCells, kindHooks, printSequential, printWriter,
+  //@ printWriterImpl, protocolHooks, writeText
   // Only keys of the kinds that keyword and symbol builders print lift a
   // namespace (`kindHooks.namespaceOf`).
   // `entries` may be a map's keys and values, flat (`pairs`, light-cljs-1036),
@@ -13487,13 +13796,23 @@
   function printMapEntries(entries, writer, options, prefix = "", printKey = printWriter, pairs = false) {
     const ns = !prefix && kindHooks.namespaceOf?.(entries, pairs);
     // JavaScript object tags precede the map printer's depth suppression.
-    if (prefix) write(writer, prefix);
+    if (prefix) writeText(writer, prefix);
+    if (pairs && !ns && options == null && coreCells.printLevel == null && coreCells.printLength == null && (!protocolHooks.programMethod || protocolHooks.noSeqExt())) {
+      writeText(writer, "{");
+      for (let i = 0; i < entries.length; i += 2) {
+        if (i) writeText(writer, ", ");
+        printKey(entries[i], writer, null);
+        writeText(writer, " ");
+        printWriterImpl(entries[i + 1], writer, null);
+      }
+      return writeText(writer, "}");
+    }
     const begin = (ns ? "#:" + ns : "") + "{";
     if (pairs) return printSequential(writer, (key, target, opts, value) => {
-      printKey(ns ? kindHooks.unqualified(key) : key, target, opts); write(target, " "); return printWriter(value, target, opts);
+      printKey(ns ? kindHooks.unqualified(key) : key, target, opts); writeText(target, " "); return printWriter(value, target, opts);
     }, begin, ", ", "}", options, entries, 2);
     return printSequential(writer, (entry, target, opts) => {
-      printKey(ns ? kindHooks.unqualified(entry.key) : entry.key, target, opts); write(target, " "); return printWriter(entry.value, target, opts);
+      printKey(ns ? kindHooks.unqualified(entry.key) : entry.key, target, opts); writeText(target, " "); return printWriter(entry.value, target, opts);
     }, begin, ", ", "}", options, entries);
   }
   //@unit makeKeyword.namespaceOf effect: makeKeyword, SymbolValue, symbol when: printMapEntries
@@ -13542,25 +13861,31 @@
   //@ prSeqWriter, prStrWithOpts, prWriter, prWriterFn when: printJsKey requires: freshKeyword,
   //@ printHooks
   printHooks.jsKeyword = key => freshKeyword(null, key);
+  //@unit stringEscapes
+  const stringEscapes = {'"': '\\"', '\\': '\\\\', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t'}, stringEscapeTest = /[\\"\b\f\n\r\t]/;
   //@unit printWriterImpl requires: coreCells, kindHooks, methodKeys, printHost, printNumber,
-  //@ printOption, protocolHooks, truth, typeNames, write
+  //@ printOption, protocolHooks, stringEscapes, stringEscapeTest, truth, typeNames, writeText
   // The printer is polymorphic over the kinds the program builds: the units
   // building a kind of value add its printer to `kindHooks.print`, which
   // falls back to the host values' `printHost`.
   function printWriterImpl(value, writer, options, skipMetadata = false) {
-    if (value == null) return write(writer, "nil");
-    if (!skipMetadata) kindHooks.printMetadata?.(value, writer, options);
-    const writerMethod = protocolHooks.programMethod?.(value, methodKeys[41], 3);
+    if (value == null) return writeText(writer, "nil");
+    if (!skipMetadata && (options != null || truth(coreCells.printMeta))) kindHooks.printMetadata?.(value, writer, options);
+    const writerMethod = protocolHooks.printWriter?.(value, methodKeys[41]);
     if (writerMethod) return writerMethod.call(value, value, writer, options);
-    const readable = truth(printOption(options, "readably", "printReadably"));
-    if (typeof value === "string") {
-      // CLJS escapes its seven named characters and preserves other UTF-16 units.
-      const escapes = {'"': '\\"', '\\': '\\\\', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t'};
-      return write(writer, readable ? '"' + value.replace(/[\\"\b\f\n\r\t]/g, ch => escapes[ch]) + '"' : value);
+    const t = typeof value;
+    if (t === "string") {
+      const readable = truth(printOption(options, "readably", "printReadably"));
+      return writeText(writer, readable ? '"' + (stringEscapeTest.test(value) ? value.replace(/[\\"\b\f\n\r\t]/g, ch => stringEscapes[ch]) : value) + '"' : value);
     }
-    if (typeof value === "number") return write(writer, printNumber(value));
-    if (typeof value === "boolean") return write(writer, String(value));
-    if (typeof value === "function") return write(writer, value.cljs$lang$type && typeNames.has(value) ? typeNames.get(value) : "#object[" + (value.name || "Function") + (truth(coreCells.printFnBodies) ? ' "' + String(value) + '"' : "") + "]");
+    if (t === "number") return writeText(writer, printNumber(value));
+    if (t === "boolean") return writeText(writer, value ? "true" : "false");
+    if (t === "function") return writeText(writer, value.cljs$lang$type && typeNames.has(value) ? typeNames.get(value) : "#object[" + (value.name || "Function") + (truth(coreCells.printFnBodies) ? ' "' + String(value) + '"' : "") + "]");
+    const kind = value.cljs$lang$kind$$LKEY;
+    if (kind < 64) {
+      const fast = kindHooks.byKind?.[kind];
+      if (fast) return fast(value, writer, options);
+    }
     return (kindHooks.print ?? printHost)(value, writer, options);
   }
   //@unit printHost requires: printJsKey, printMapEntries, printSequential, printWriter, write
@@ -13587,14 +13912,22 @@
   kindHooks.printMetadata = (value, writer, options) => {
     if (printsMeta(options, value)) { write(writer, "^"); printWriter(meta(value), writer, options); write(writer, " "); }
   };
-  //@unit printKind requires: printHost
+  //@unit printKind requires: kindHooks, printHost
   // The kind printer chain with `print` for the values `test` takes: each kind's
-  // printer passes other values on, to `printHost` last.
-  const printKind = (previous = printHost, test, print) => (value, writer, options) => (test(value) ? print : previous)(value, writer, options);
+  // printer passes other values on, to `printHost` last. Runtime classes with
+  // fixed kind numbers also register in `kindHooks.byKind` for O(1) dispatch.
+  const printKind = (previous = printHost, test, print, ks) => {
+    const fn = (value, writer, options) => (test(value) ? print : previous)(value, writer, options);
+    if (ks) {
+      const table = kindHooks.byKind || (kindHooks.byKind = Array(64));
+      for (let i = 0; i < ks.length; i++) table[ks[i]] = fn;
+    }
+    return fn;
+  };
   //@unit ExceptionInfo.print effect: ExceptionInfo when: printWriterImpl requires: ExceptionInfo,
   //@ isExceptionInfo, kindHooks, print, printKind, truth, write
   // Another copy's ex-info prints by its own `toString`.
-  kindHooks.print = printKind(kindHooks.print, isExceptionInfo, (value, writer) => write(writer, value.toString()));
+  kindHooks.print = printKind(kindHooks.print, isExceptionInfo, (value, writer) => write(writer, value.toString()), [48]);
   ExceptionInfo.prototype.toString = function () {
     return "#error {:message " + print(this.message, true)
       + (truth(this.data) ? ", :data " + print(this.data, true) : "")
@@ -13605,52 +13938,53 @@
   kindHooks.print = printKind(kindHooks.print, value => isTransient(value), (value, writer) => {
     const state = transientState(value), kind = value.cljs$lang$kind$$LKEY;
     return write(writer, "#object[cljs.core." + (kind === 31 ? "TransientArrayMap" : kind === 32 ? "TransientHashMap" : state === value ? "TransientVector" : "TransientHashSet") + "]");
-  });
+  }, [4, 31, 32, 34]);
   //@unit Atom.print effect: Atom, Volatile when: printWriterImpl requires: atoms, kindHooks,
   //@ printKind, printWriter, volatiles, write
   kindHooks.print = printKind(kindHooks.print, value => atoms.has(value) || volatiles.has(value), (value, writer, options) => {
     write(writer, "#object[cljs.core." + (atoms.has(value) ? "Atom" : "Volatile") + " {:val "); printWriter(value.state, writer, options); return write(writer, "}]");
-  });
+  }, [38, 39]);
   //@unit Delay.print effect: Delay when: printWriterImpl requires: delays, kindHooks, printKind,
   //@ printWriter, write
   kindHooks.print = printKind(kindHooks.print, value => delays.has(value), (value, writer, options) => {
     const state = delays.get(value);
     write(writer, "#object[cljs.core.Delay {:status " + (state.thunk == null ? ":ready" : ":pending") + ", :val "); printWriter(state.value, writer, options); return write(writer, "}]");
-  });
+  }, [40]);
   //@unit makeKeyword.print effect: makeKeyword, makeVar, SymbolValue, symbol when: printWriterImpl
-  //@ requires: kindHooks, namedOf, printKind, vars, write
-  kindHooks.print = printKind(kindHooks.print, value => namedOf(value) !== undefined || vars.has(value), (value, writer) => write(writer, String(value)));
+  //@ requires: kindHooks, namedOf, printKind, vars, writeText
+  kindHooks.print = printKind(kindHooks.print, value => namedOf(value) !== undefined || vars.has(value), (value, writer) => writeText(writer, String(value)), [20, 21, 45]);
   //@unit uuidValue.print effect: uuidValue when: printWriterImpl requires: kindHooks, printKind,
   //@ uuids, write
-  kindHooks.print = printKind(kindHooks.print, value => uuids.has(value), (value, writer) => write(writer, '#uuid "' + uuids.get(value) + '"'));
+  kindHooks.print = printKind(kindHooks.print, value => uuids.has(value), (value, writer) => write(writer, '#uuid "' + uuids.get(value) + '"'), [42]);
   //@unit makeVector.print effect: makeVector, mapEntry when: printWriterImpl requires: holdsVector,
   //@ kindHooks, printKind, printSequential, printWriter, protocolHooks, vectorStorage
   // A vector prints the items `seq` walks, through `seq` where protocol
   // implementations could see it.
   kindHooks.print = printKind(kindHooks.print, value => holdsVector(value), (value, writer, options) => {
-    if (protocolHooks.programMethod) return printSequential(writer, printWriter, "[", " ", "]", options, value);
+    if (protocolHooks.programMethod && !protocolHooks.noSeqExt()) return printSequential(writer, printWriter, "[", " ", "]", options, value);
     const storage = vectorStorage(value) ?? [];
     return printSequential(writer, printWriter, "[", " ", "]", options, Array.isArray(storage) ? storage : Array.from(storage));
-  });
+  }, [1, 2, 3]);
   //@unit cons.print effect: ChunkedCons, compilerFormBridge, Cons, cons, listFromArray, cycleNode,
   //@ emptyList, EmptyListValue, IndexedSeqValue, iterateNode, LazySeq, ListValue, mapProjection,
   //@ queueFromArray, rangeNode, RepeatValue, reSeq, treeMapSeqConstructor, view, ChunkedSeqValue
   //@ when: printWriterImpl requires: isCell, isChunkedCons, isLazy, isView, kindHooks, printKind,
   //@ printSequential, printWriter, queues
   kindHooks.print = printKind(kindHooks.print, value => isCell(value) || isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value),
-    (value, writer, options) => printSequential(writer, printWriter, queues.has(value) ? "#queue [" : "(", " ", queues.has(value) ? "]" : ")", options, value));
+    (value, writer, options) => printSequential(writer, printWriter, queues.has(value) ? "#queue [" : "(", " ", queues.has(value) ? "]" : ")", options, value),
+    [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 22, 23, 24, 25, 26, 27, 36]);
   //@unit makeMap.print effect: ArrayMapCell, makeMap, recordMethods, treeMapConstructor when: printWriterImpl
   //@ requires: isArrayMap, isHashMap, isTreeMap, kindHooks, mapPairs, maps, mapTraversal,
   //@ printKind, printMapEntries, printWriter, protocolHooks
   // An array map's and a hash map's keys and values, flat (`mapPairs`),
   // where no protocol implementation walks an array's seq
   // (`printSequential`); else entries.
-  kindHooks.print = printKind(kindHooks.print, value => maps.has(value), (value, writer, options) => !protocolHooks.programMethod && (isArrayMap(value) || isHashMap(value) || isTreeMap(value))
-    ? printMapEntries(mapPairs(value), writer, options, "", printWriter, true) : printMapEntries(mapTraversal(value), writer, options));
+  kindHooks.print = printKind(kindHooks.print, value => maps.has(value), (value, writer, options) => (!protocolHooks.programMethod || protocolHooks.noSeqExt()) && (isArrayMap(value) || isHashMap(value) || isTreeMap(value))
+    ? printMapEntries(mapPairs(value), writer, options, "", printWriter, true) : printMapEntries(mapTraversal(value), writer, options), [28, 29, 30]);
   //@unit makeSet.print effect: makeSet, treeSetConstructor when: printWriterImpl requires: kindHooks,
   //@ printKind, printSequential, printWriter, sets, setTraversal
   kindHooks.print = printKind(kindHooks.print, value => sets.has(value),
-    (value, writer, options) => printSequential(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value)));
+    (value, writer, options) => printSequential(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value)), [33, 44]);
   //@unit printSequential.seq effect: ChunkedCons, compilerFormBridge, Cons, cons, listFromArray,
   //@ cycleNode, emptyList, EmptyListValue, IndexedSeqValue, installMethods, iterateNode, LazySeq,
   //@ ListValue, mapProjection, prSequentialWriter, queueFromArray, rangeNode, RepeatValue, reSeq,
@@ -13713,10 +14047,10 @@
   // `printText` of an array of arguments, by index where no protocol
   // implementation could see its seq.
   function printValues(values, options) {
-    if (protocolHooks.programMethod) return printHooks.seqText(values, options);
+    if (protocolHooks.programMethod && !protocolHooks.noSeqExt()) return printHooks.seqText(values, options);
     if (!values.length) return "";
     const {buffer, writer} = stringWriter();
-    values.forEach((value, index) => { if (index) write(writer, " "); printWriter(value, writer, options); });
+    for (let i = 0; i < values.length; i++) { if (i) write(writer, " "); printWriter(values[i], writer, options); }
     flushWriter(writer); return buffer.text;
   }
   //@unit printText.install effect: installMethods when: printValues requires: printHooks, printText
@@ -13740,13 +14074,24 @@
     return prStr(value).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g,
       units => units.length === 2 ? units : "\\u" + units.charCodeAt(0).toString(16).padStart(4, "0"));
   }
-  //@unit str requires: kindHooks, maps, sequential, sets
-  function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || maps.has(value) || sets.has(value) ? kindHooks.strCollection(value) : String(value)).join(""); }
+  //@unit str1 requires: kindHooks, maps, sequential, sets
+  function str1(value) {
+    if (value == null) return "";
+    const t = typeof value;
+    return t === "string" ? value : t === "number" || t === "boolean" ? "" + value
+      : t === "object" && (sequential(value) || maps.has(value) || sets.has(value)) ? kindHooks.strCollection(value) : String(value);
+  }
+  //@unit str requires: str1
+  function str() {
+    let out = "";
+    for (let i = 0; i < arguments.length; i++) out += str1(arguments[i]);
+    return out;
+  }
   //@unit str.collections effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
   //@ IndexedSeqValue, queueFromArray, LazySeq, makeMap, treeMapConstructor, recordMethods, makeSet,
-  //@ treeSetConstructor when: str requires: kindHooks, print
+  //@ treeSetConstructor when: str1 requires: kindHooks, print
   kindHooks.strCollection = value => print(value, true);
   //@unit displayStr
   // `str` of one value for error messages, through `toString` for collections.
@@ -14029,6 +14374,21 @@
   const noValue = () => false;
   //@unit write effect requires: coreMethod, writerValue
   const write = coreMethod("IWriter/-write", [2], (writer, text) => writer.sb.append(text), writerValue);
+  //@unit writeText requires: protocolHooks, write
+  // Fast `-write` for the runtime's own `StringBufferWriter` (kind 47),
+  // falling back to the `write` protocol dispatcher for custom writers or
+  // when a `-write` slot is installed on the writer.
+  function writeText(writer, text) {
+    if (writer != null && writer.cljs$lang$kind$$LKEY === 47 && writer.sb !== undefined) {
+      const sf = protocolHooks.slotFirst;
+      if (!sf) return writer.sb.append(text);
+      if (sf.on) {
+        const method = writer.cljs$core$IWriter$_write$arity$2$LKEY;
+        return method && !method.builtin$LKEY ? method.call(writer, writer, text) : writer.sb.append(text);
+      }
+    }
+    return write(writer, text);
+  }
   //@unit flushWriter effect requires: coreMethod, writerValue
   const flushWriter = coreMethod("IWriter/-flush", [1], () => null, writerValue);
   //@unit prWriter effect requires: coreMethod, printableValue, printWriterImpl
@@ -14654,27 +15014,28 @@
   protocolHooks.extend = true;
   //@unit protocolHooks.ownMethod effect: installMethods when: SubvecValue, chunkStore, containsOf,
   //@ containsPath, countOf, countPath, dropFirstChunk, empty, find, firstOf, firstPath, getOf,
-  //@ getPath, metaOf, nextOf, nextPath, nthOf, nthPath, printSequential, printValues,
-  //@ printWriterImpl, reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath, restOf, restPath,
-  //@ rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: ownDeclared, ownMethod, protocolHooks
+  //@ getPath, makeMap.print, makeVector.print, metaOf, nextOf, nextPath, nthOf, nthPath,
+  //@ printMapEntries, printSequential, printValues, printWriterImpl, reduce, reduceKvOf,
+  //@ reduceKvPath, reduceOf, reducePath, restOf, restPath, rseq, seqOf, seqPath, subvec,
+  //@ vectorReduceSlot requires: ownDeclared, ownMethod, protocolHooks
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.programMethod = ownMethod;
   protocolHooks.declaredMethod = ownDeclared;
   //@unit protocolHooks.programMethod effect: extendType, extendInstance when: SubvecValue,
   //@ chunkStore, containsOf, containsPath, countOf, countPath, dropFirstChunk, empty, find,
-  //@ firstOf, firstPath, getOf, getPath, metaOf, nextOf, nextPath, nthOf, nthPath, printSequential,
-  //@ printValues, printWriterImpl, reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath, restOf,
-  //@ restPath, rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: extendedDeclared,
-  //@ extendedMethod, protocolHooks
+  //@ firstOf, firstPath, getOf, getPath, makeMap.print, makeVector.print, metaOf, nextOf, nextPath,
+  //@ nthOf, nthPath, printMapEntries, printSequential, printValues, printWriterImpl, reduce,
+  //@ reduceKvOf, reduceKvPath, reduceOf, reducePath, restOf, restPath, rseq, seqOf, seqPath,
+  //@ subvec, vectorReduceSlot requires: extendedDeclared, extendedMethod, protocolHooks
   // ... and only `extend-type` and `specify!` give the runtime's values and
   // host values implementations, which `extendedMethod` finds.
   protocolHooks.programMethod = extendedMethod;
   protocolHooks.declaredMethod = extendedDeclared;
   //@unit protocolHooks.ownSatisfies effect: installMethods when: KeySeqCell, accumulatingCount,
-  //@ boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isEmpty,
-  //@ isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable,
-  //@ isReversible, isSeq, isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs,
-  //@ makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reducePath, sequenceIterator requires: ownProtocol,
+  //@ cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isFn, isIFind, isIFn,
+  //@ isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable, isReversible, isSeq,
+  //@ isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs, makeMap.equiv,
+  //@ makeSet.equiv, mapConj, nthOf, nthPath, reducePath, sequenceIterator requires: ownProtocol,
   //@ protocolHooks
   // The generic operations test core protocols by name: without `extend-type`
   // or `specify!` the protocols a value declares, then their native tests ...
@@ -14685,12 +15046,12 @@
   //@ protocolHooks
   protocolHooks.implements = ownProtocol;
   //@unit protocolHooks.satisfies effect: extendType, extendInstance when: KeySeqCell,
-  //@ accumulatingCount, boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl,
-  //@ isCounted, isEmpty, isFn, isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap,
-  //@ isRecord, isReduceable, isReversible, isSeq, isSeqable, isSequential, isSet, isSorted,
-  //@ isVector, jsToClj, keyToJs, makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reducePath,
-  //@ sequenceIterator requires: canHoldField, demandMethod, demandProtocol, hostSatisfies,
-  //@ ownedKind, ownedProtocolValue, protocolHooks, protocolMethodInfo, protocolSentinel, satisfies
+  //@ accumulatingCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl, isCounted, isFn,
+  //@ isIFind, isIFn, isIndexed, isInst, isIterable, isList, isMap, isRecord, isReduceable,
+  //@ isReversible, isSeq, isSeqable, isSequential, isSet, isSorted, isVector, jsToClj, keyToJs,
+  //@ makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reducePath, sequenceIterator requires: canHoldField,
+  //@ demandMethod, demandProtocol, hostSatisfies, ownedKind, ownedProtocolValue,
+  //@ protocolHooks, protocolMethodInfo, protocolSentinel, satisfies
   // ... and with them also what those give the runtime's and host values.
   // Each reads the protocol of a resolved key (`methodKey`) from its `info`.
   // A core protocol's mask bit, then its marker, answer first, as
@@ -14781,10 +15142,10 @@
   //@unit protocolHooks.nextProtocol effect: installMethods when: KeySeqCell requires: nextProtocol,
   //@ protocolHooks
   protocolHooks.nextProtocol = nextProtocol;
-  //@unit protocolHooks.keyProtocol effect: installMethods when: KeySeqCell requires: keyProtocol,
+  //@unit protocolHooks.keyProtocol effect: installMethods when: KeySeqCell, keySeqReduce requires: keyProtocol,
   //@ protocolHooks
   protocolHooks.keyProtocol = keyProtocol;
-  //@unit protocolHooks.valProtocol effect: installMethods when: KeySeqCell requires: protocolHooks,
+  //@unit protocolHooks.valProtocol effect: installMethods when: KeySeqCell, keySeqReduce requires: protocolHooks,
   //@ valProtocol
   protocolHooks.valProtocol = valProtocol;
   //@unit protocolHooks.atom effect: installMethods when: getGlobalHierarchy requires: atom,

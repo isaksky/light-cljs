@@ -2979,7 +2979,7 @@ fn the_features_runtime_splits_by_signature() {
 fn loads_both_calling_str() -> String {
     LOADS_BOTH.replace(
         "start\n",
-        "(js/console.log (str \"n\" (js/parseInt \"1\")))\nstart\n",
+        "(js/console.log (str (aget #js [\"n\"] 0) (js/parseInt \"1\")))\nstart\n",
     )
 }
 
@@ -3271,7 +3271,7 @@ fn the_printer_of_collections_goes_with_the_collections() {
                   (-> (lazy/load editor)\n\
                       (.then (fn [f] (js/console.log (f)) (lazy/load reports)))\n\
                       (.then (fn [f] (js/console.log (f)) nil))))\n\
-                (js/console.log (str \"n\" (js/parseInt \"1\")))\n\
+                (js/console.log (str (aget #js [\"n\"] 0) (js/parseInt \"1\")))\n\
                 start\n";
     let program = analyze(&[
         ("app/main.cljs", main),

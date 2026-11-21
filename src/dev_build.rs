@@ -658,15 +658,29 @@ globalThis.__lightDevLoaded = globalThis.__lightDevLoaded$LKEY = (async () => {{
     }};
     globalThis.addEventListener("error", failed);
     try {{
-      await Promise.all(files.map(file => new Promise(resolve => {{
-        const script = document.createElement("script");
-        scripts.add(script);
-        script.src = new URL(file, base).href;
-        script.async = false;
-        script.onload = resolve;
-        script.onerror = () => {{ fail(new Error("cannot load " + script.src)); resolve(); }};
-        document.head.append(script);
-      }})));
+      let bundled = false;
+      if (files.length > 16 && /^https?:/.test(base)) {{
+        bundled = await new Promise(resolve => {{
+          const script = document.createElement("script");
+          scripts.add(script);
+          script.src = new URL("__light_bundle.js?n=" + files.length, base).href;
+          script.async = false;
+          script.onload = () => resolve(true);
+          script.onerror = () => resolve(false);
+          document.head.append(script);
+        }});
+      }}
+      if (!bundled) {{
+        await Promise.all(files.map(file => new Promise(resolve => {{
+          const script = document.createElement("script");
+          scripts.add(script);
+          script.src = new URL(file, base).href;
+          script.async = false;
+          script.onload = resolve;
+          script.onerror = () => {{ fail(new Error("cannot load " + script.src)); resolve(); }};
+          document.head.append(script);
+        }})));
+      }}
     }} finally {{
       globalThis.removeEventListener("error", failed);
       delete globalThis.__lightDevHalted$LKEY;

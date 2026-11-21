@@ -2361,6 +2361,40 @@ impl<'s> Rewrite<'s, '_> {
         !member
     }
 
+    /// Whether the group holds a single function expression:
+    /// `[async] function [name](...) { ... }`.
+    fn function_expr(&self, open: usize, close: usize) -> bool {
+        let mut items = self.top_level(open, close);
+        let Some(mut cur) = items.next() else {
+            return false;
+        };
+        if self.tokens[cur].kind == Kind::Name && self.text(cur) == "async" {
+            let Some(next) = items.next() else {
+                return false;
+            };
+            cur = next;
+        }
+        if self.tokens[cur].kind != Kind::Name || self.text(cur) != "function" {
+            return false;
+        }
+        let Some(mut cur) = items.next() else {
+            return false;
+        };
+        if self.tokens[cur].kind == Kind::Name && !reserved(self.text(cur)) {
+            let Some(next) = items.next() else {
+                return false;
+            };
+            cur = next;
+        }
+        if self.punct(cur) != "(" || self.partners[cur] >= close {
+            return false;
+        }
+        let Some(body) = items.next() else {
+            return false;
+        };
+        self.punct(body) == "{" && self.partners[body] < close && items.next().is_none()
+    }
+
     fn unwrap(&mut self, open: usize, close: usize) {
         self.dropped[open] = true;
         self.dropped[close] = true;
@@ -2420,6 +2454,20 @@ impl<'s> Rewrite<'s, '_> {
             let before = self.previous(open).map(|previous| self.text(previous));
             let after = self.next(close).map(|next| self.punct(next));
             let unwrap = self.simple(open, close)
+                // `(function(...) { ... })` in unambiguous expression position
+                // (not an IIFE `(...)(...)` or statement start): avoids V8's
+                // eager-compile heuristic for parenthesized function literals.
+                || (self.function_expr(open, close)
+                    && (matches!(
+                        self.previous(open).map(|previous| self.punct(previous)),
+                        Some("(" | "[" | "," | "=" | "?" | "&&" | "||" | "??")
+                    ) || self
+                        .previous(open)
+                        .is_some_and(|previous| self.keyword_at(previous, &["return", "throw"])))
+                    && matches!(
+                        after,
+                        None | Some(";" | "," | ")" | "]" | "}" | "?" | ":" | "&&" | "||" | "??")
+                    ))
                 // `x = (y);`: an assignment's right-hand side.
                 || (before == Some("=")
                     && matches!(after, None | Some(";" | "," | ")" | "]" | "}"))

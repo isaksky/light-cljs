@@ -309,6 +309,9 @@ struct State {
     /// The newest REPL units sent, whose locations error stacks map.
     sent: VecDeque<SentUnit>,
     next_unit: u64,
+    /// Cached single-request dev bundle (`runtime.js` + `client.js` + `build.units`),
+    /// keyed by `step`.
+    bundle: Option<(u64, Arc<Vec<u8>>)>,
 }
 
 /// A connected REPL's session: the build it is bound to, its current
@@ -474,6 +477,7 @@ impl DevServer {
                     compiler: None,
                     sent: VecDeque::new(),
                     next_unit: 1,
+                    bundle: None,
                 }),
             }));
         }
@@ -902,6 +906,7 @@ impl Shared {
         }
         if let Some(build) = step.build {
             state.build = build;
+            state.bundle = None;
         }
         let mut messages = diagnostics.clone();
         if step.error.is_none() && !step.load.is_empty() {
@@ -1360,13 +1365,25 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Request>
     Ok(Some(request))
 }
 
-/// Write a complete response and close the connection.
-fn respond(
+/// Whether the client explicitly asked for a persistent HTTP/1.1 connection.
+/// Requests without `Connection: keep-alive` still receive `Connection: close`
+/// so simple single-request clients that read until EOF finish immediately.
+fn wants_keep_alive(request: &Request) -> bool {
+    request.header("connection").is_some_and(|value| {
+        value
+            .split(',')
+            .any(|token| token.trim().eq_ignore_ascii_case("keep-alive"))
+    })
+}
+
+/// Write a complete response, closing or keeping the connection alive as requested.
+fn respond_with(
     stream: &mut TcpStream,
     status: &str,
     headers: &[(&str, &str)],
     body: &[u8],
     head_only: bool,
+    keep_alive: bool,
 ) -> io::Result<()> {
     let mut head = format!("HTTP/1.1 {status}\r\n");
     for (name, value) in headers {
@@ -1375,7 +1392,11 @@ fn respond(
     if !status.starts_with("204") && !status.starts_with("304") {
         write!(head, "Content-Length: {}\r\n", body.len()).unwrap();
     }
-    head.push_str("Connection: close\r\n\r\n");
+    head.push_str(if keep_alive {
+        "Connection: keep-alive\r\n\r\n"
+    } else {
+        "Connection: close\r\n\r\n"
+    });
     stream.write_all(head.as_bytes())?;
     if !head_only && !status.starts_with("204") && !status.starts_with("304") {
         stream.write_all(body)?;
@@ -1383,18 +1404,40 @@ fn respond(
     stream.flush()
 }
 
-fn respond_text(stream: &mut TcpStream, status: &str, text: &str) -> io::Result<()> {
-    respond(
+/// Write a complete response and close the connection.
+fn respond(
+    stream: &mut TcpStream,
+    status: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+    head_only: bool,
+) -> io::Result<()> {
+    respond_with(stream, status, headers, body, head_only, false)
+}
+
+fn respond_text_with(
+    stream: &mut TcpStream,
+    status: &str,
+    text: &str,
+    keep_alive: bool,
+) -> io::Result<()> {
+    respond_with(
         stream,
         status,
         &[("Content-Type", "text/plain; charset=utf-8")],
         format!("{text}\n").as_bytes(),
         false,
+        keep_alive,
     )
 }
 
-/// Serve one connection: one request, then close, except that an event
-/// stream stays open until the runtime goes away.
+fn respond_text(stream: &mut TcpStream, status: &str, text: &str) -> io::Result<()> {
+    respond_text_with(stream, status, text, false)
+}
+
+/// Serve one connection: loop while the client explicitly requests HTTP/1.1
+/// `Connection: keep-alive` on `GET`/`HEAD` requests, else handle one request
+/// and close; an event stream stays open until the runtime goes away.
 fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     // A peer that stops reading (a frozen tab) ends its connection rather
@@ -1417,64 +1460,91 @@ fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
     }
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
-    let request = match read_request(&mut reader) {
-        Ok(Some(request)) => request,
-        Ok(None) => return Ok(()),
-        Err(error) => return respond_text(&mut writer, "400 Bad Request", &error.to_string()),
-    };
-    if site.loopback && !request.header("host").is_some_and(loopback_host) {
-        return respond_text(
-            &mut writer,
-            "403 Forbidden",
-            "the dev server answers only requests for a loopback host",
-        );
-    }
-    let path = request
-        .target
-        .split(['?', '#'])
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    let head_only = request.method == "HEAD";
-    // A mount's endpoints and files are under its prefix; the first mount's
-    // are also at the root.
-    let (mount, within) = site.route(&path);
-    let shared = site.mount_of(mount);
-    match (request.method.as_str(), within) {
-        ("GET" | "HEAD", "") if !path.is_empty() => {
-            // `/NAME` is the directory `/NAME/`, against which its page's
-            // relative URLs resolve.
-            let location = format!("{path}/{}", &request.target[path.len()..]);
-            respond(
+    let mut handled = 0usize;
+    loop {
+        let request = match read_request(&mut reader) {
+            Ok(Some(request)) => request,
+            Ok(None) => return Ok(()),
+            Err(_) if handled > 0 => return Ok(()),
+            Err(error) => return respond_text(&mut writer, "400 Bad Request", &error.to_string()),
+        };
+        handled += 1;
+        if site.loopback && !request.header("host").is_some_and(loopback_host) {
+            return respond_text(
                 &mut writer,
-                "301 Moved Permanently",
-                &[
-                    ("Location", location.as_str()),
-                    ("Content-Type", "text/plain; charset=utf-8"),
-                ],
-                format!("{location}\n").as_bytes(),
-                head_only,
-            )
+                "403 Forbidden",
+                "the dev server answers only requests for a loopback host",
+            );
         }
-        ("GET", "/events") => events(writer, shared, &request),
-        ("POST", "/reply") => reply(&mut writer, shared, &request),
-        ("POST", "/repl") => repl(&mut writer, site, mount, &request),
-        ("GET" | "HEAD", _) => file(
-            &mut writer,
-            site,
-            shared,
-            &request,
-            &path,
-            within,
-            head_only,
-        ),
-        (_, "/reply") => respond_text(&mut writer, "405 Method Not Allowed", "POST a reply"),
-        (_, "/repl") => respond_text(&mut writer, "405 Method Not Allowed", "POST a REPL request"),
-        _ => respond_text(
-            &mut writer,
-            "405 Method Not Allowed",
-            "the dev server answers GET, HEAD, POST /reply and POST /repl",
-        ),
+        let path = request
+            .target
+            .split(['?', '#'])
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let head_only = request.method == "HEAD";
+        // A mount's endpoints and files are under its prefix; the first mount's
+        // are also at the root.
+        let (mount, within) = site.route(&path);
+        let shared = site.mount_of(mount);
+        let keep_alive = wants_keep_alive(&request)
+            && matches!(request.method.as_str(), "GET" | "HEAD")
+            && within != "/events";
+        let result = match (request.method.as_str(), within) {
+            ("GET" | "HEAD", "") if !path.is_empty() => {
+                // `/NAME` is the directory `/NAME/`, against which its page's
+                // relative URLs resolve.
+                let location = format!("{path}/{}", &request.target[path.len()..]);
+                respond_with(
+                    &mut writer,
+                    "301 Moved Permanently",
+                    &[
+                        ("Location", location.as_str()),
+                        ("Content-Type", "text/plain; charset=utf-8"),
+                    ],
+                    format!("{location}\n").as_bytes(),
+                    head_only,
+                    keep_alive,
+                )
+            }
+            ("GET", "/events") => return events(writer, shared, &request),
+            ("POST", "/reply") => return reply(&mut writer, shared, &request),
+            ("POST", "/repl") => return repl(&mut writer, site, mount, &request),
+            ("GET" | "HEAD", "/__light_bundle.js") => {
+                bundle(&mut writer, shared, &request, head_only, keep_alive)
+            }
+            ("GET" | "HEAD", _) => file(
+                &mut writer,
+                site,
+                shared,
+                &request,
+                &path,
+                within,
+                head_only,
+                keep_alive,
+            ),
+            (_, "/reply") => {
+                return respond_text(&mut writer, "405 Method Not Allowed", "POST a reply");
+            }
+            (_, "/repl") => {
+                return respond_text(
+                    &mut writer,
+                    "405 Method Not Allowed",
+                    "POST a REPL request",
+                );
+            }
+            _ => {
+                return respond_text(
+                    &mut writer,
+                    "405 Method Not Allowed",
+                    "the dev server answers GET, HEAD, POST /reply and POST /repl",
+                );
+            }
+        };
+        if !keep_alive {
+            return result;
+        }
+        result?;
     }
 }
 
@@ -2324,6 +2394,103 @@ fn invoke_form(
 /// `GET` of a file of a mount's build directory or of a source root, or of
 /// a mount's `/`: `path` is the request's, `within` the part of it within
 /// the mount.
+/// `GET /__light_bundle.js`: serve `runtime.js`, `client.js`, and every unit of
+/// the current build in one cached in-memory response, avoiding thousands of
+/// individual `<script>` round trips on initial page load.
+fn bundle(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    request: &Request,
+    head_only: bool,
+    keep_alive: bool,
+) -> io::Result<()> {
+    let expected_n = request
+        .target
+        .split_once('?')
+        .and_then(|(_, query)| {
+            query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("n="))
+                .and_then(|n| n.parse::<usize>().ok())
+        });
+    let (cached, step, units) = {
+        let state = shared.state();
+        if state.build.units.is_empty()
+            || expected_n.is_some_and(|n| state.build.units.len() + 2 != n)
+        {
+            drop(state);
+            return respond_text_with(stream, "404 Not Found", "no dev bundle", keep_alive);
+        }
+        if let Some((cached_step, bytes)) = &state.bundle
+            && *cached_step == state.step
+        {
+            (Some(bytes.clone()), state.step, Vec::new())
+        } else {
+            let units = state
+                .build
+                .units
+                .iter()
+                .map(|unit| unit.js.clone())
+                .collect::<Vec<_>>();
+            (None, state.step, units)
+        }
+    };
+    let bytes = match cached {
+        Some(bytes) => bytes,
+        None => {
+            let out_dir = shared.out_dir();
+            let Ok(runtime) = std::fs::read(out_dir.join("runtime.js")) else {
+                return respond_text_with(stream, "404 Not Found", "no runtime.js", keep_alive);
+            };
+            let Ok(client) = std::fs::read(out_dir.join("client.js")) else {
+                return respond_text_with(stream, "404 Not Found", "no client.js", keep_alive);
+            };
+            let cap = runtime.len()
+                + client.len()
+                + 2
+                + units.iter().map(|u| u.len() + 1).sum::<usize>();
+            let mut combined = Vec::with_capacity(cap);
+            combined.extend_from_slice(&runtime);
+            combined.push(b'\n');
+            combined.extend_from_slice(&client);
+            combined.push(b'\n');
+            for unit in &units {
+                let text = unit.trim_end_matches('\n');
+                let body = match text.rfind('\n') {
+                    Some(at) if text[at + 1..].starts_with("//# sourceMappingURL=") => &text[..at],
+                    None if text.starts_with("//# sourceMappingURL=") => "",
+                    _ => text,
+                };
+                combined.extend_from_slice(body.as_bytes());
+                combined.push(b'\n');
+            }
+            let bytes = Arc::new(combined);
+            let mut state = shared.state();
+            if state.step == step {
+                state.bundle = Some((step, bytes.clone()));
+            }
+            bytes
+        }
+    };
+    let etag = format!("\"bundle-{step}-{}\"", bytes.len());
+    let matches = request.header("if-none-match").is_some_and(|tags| {
+        tags.split(',').any(|tag| {
+            let tag = tag.trim();
+            tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag
+        })
+    });
+    let headers = [
+        ("Content-Type", "text/javascript; charset=utf-8"),
+        ("ETag", etag.as_str()),
+        ("Cache-Control", "no-cache"),
+    ];
+    if matches {
+        respond_with(stream, "304 Not Modified", &headers, &[], head_only, keep_alive)
+    } else {
+        respond_with(stream, "200 OK", &headers, &bytes, head_only, keep_alive)
+    }
+}
+
 fn file(
     stream: &mut TcpStream,
     site: &Site,
@@ -2332,6 +2499,7 @@ fn file(
     path: &str,
     within: &str,
     head_only: bool,
+    keep_alive: bool,
 ) -> io::Result<()> {
     let found = if within == "/" || within == "/index.html" {
         let page = shared.out_dir().join("index.html");
@@ -2344,17 +2512,18 @@ fn file(
                 "text/html; charset=utf-8",
                 INDEX_PAGE.as_bytes(),
                 head_only,
+                keep_alive,
             );
         }
     } else {
         resolve(site, shared, path, within)
     };
     let Some(found) = found else {
-        return respond_text(stream, "404 Not Found", &format!("no file {path}"));
+        return respond_text_with(stream, "404 Not Found", &format!("no file {path}"), keep_alive);
     };
     match std::fs::read(&found) {
-        Ok(bytes) => send(stream, request, content_type(&found), &bytes, head_only),
-        Err(_) => respond_text(stream, "404 Not Found", &format!("no file {path}")),
+        Ok(bytes) => send(stream, request, content_type(&found), &bytes, head_only, keep_alive),
+        Err(_) => respond_text_with(stream, "404 Not Found", &format!("no file {path}"), keep_alive),
     }
 }
 
@@ -2366,6 +2535,7 @@ fn send(
     content_type: &str,
     bytes: &[u8],
     head_only: bool,
+    keep_alive: bool,
 ) -> io::Result<()> {
     let etag = format!("\"{:016x}\"", fnv1a(bytes));
     let matches = request.header("if-none-match").is_some_and(|tags| {
@@ -2380,9 +2550,9 @@ fn send(
         ("Cache-Control", "no-cache"),
     ];
     if matches {
-        respond(stream, "304 Not Modified", &headers, &[], head_only)
+        respond_with(stream, "304 Not Modified", &headers, &[], head_only, keep_alive)
     } else {
-        respond(stream, "200 OK", &headers, bytes, head_only)
+        respond_with(stream, "200 OK", &headers, bytes, head_only, keep_alive)
     }
 }
 

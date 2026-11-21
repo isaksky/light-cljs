@@ -101,8 +101,8 @@ const SWAPS: &[(&str, &str)] = &[
     // `builtinSlots`, where the V8 profile's WeakSet never publishes.
     (
         "builtinSlots",
-        r#"  const builtinSlots = {members: [], has(method) { return this.members.includes(method); }};
-  function builtinSlot(method) { builtinSlots.members.push(method); return method; }"#,
+        r#"  const builtinSlots = {has: method => method != null && method.builtin$LKEY !== undefined};
+  function builtinSlot(method, tag = true) { Object.defineProperty(method, "builtin$LKEY", {value: tag}); return method; }"#,
     ),
     // Shareable once booted (light-cljs-646): the captured rest array is
     // sealed.

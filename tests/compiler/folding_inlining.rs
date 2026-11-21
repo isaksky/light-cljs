@@ -150,7 +150,7 @@ fn calls_outside_the_domain_or_of_replaceable_operations_stay() {
         r#"["1a" 1 ":k"]"#,
     );
     assert!(text.contains("\"a\""), "{text}");
-    assert!(text.contains("rt$str("), "{text}");
+    assert!(text.contains("rt$str1("), "{text}");
     let (text, _) = every_level(
         "(set! cljs.core/inc (fn [x] (- x 1))) (pr-str [(inc 1) (+ 1 2)])",
         "[0 3]",
@@ -687,7 +687,7 @@ fn inlined_arguments_run_once_and_in_order() {
         (defn twice [x] [x x])
         (pr-str [(wrap (t 1)) (later (t 2)) (twice (t 3)) (wrap (t 4)) (vec js/trace)])"#;
     let (text, stats) = every_level(source, r#"["<1>" 2 [3 3] "<4>" [1 2 :later 3 4]]"#);
-    assert!(text.contains("rt$str(\"<\", g"), "{text}");
+    assert!(text.contains("(\"<\" + g"), "{text}");
     assert_eq!(stats.inlined_calls, 2, "{stats:?}");
 }
 

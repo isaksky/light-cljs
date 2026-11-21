@@ -2892,6 +2892,46 @@ impl<'a> Emitter<'a> {
             } else {
                 self.runtime_root(extend, site, NameUse::Keep);
             }
+            // Only core protocols and dispatchers consulted via `hostExt` need
+            // to mark `hostExt` escaped when read as first-class values.
+            let escaped = if manifest.is_core_protocol(name.binding)
+                && site != self.protocol_operand
+                && matches!(
+                    name.binding,
+                    "ICounted"
+                        | "ICollection"
+                        | "ISeq"
+                        | "ISeqable"
+                        | "INext"
+                        | "IMap"
+                        | "ISet"
+                        | "IVector"
+                        | "IReduce"
+                        | "ISequential"
+                        | "IList"
+                        | "IRecord"
+                        | "IPrintWithWriter"
+                        | "Fn"
+                ) {
+                Some("hostExtEscaped")
+            } else if matches!(
+                name.binding,
+                "seqProtocol" | "firstProtocol" | "restProtocol" | "nextProtocol" | "reduceProtocol"
+            ) {
+                Some("hostExtSeqEscaped")
+            } else if name.binding == "prWriter" {
+                Some("hostExtPrintEscaped")
+            } else {
+                None
+            };
+            if let Some(binding) = escaped {
+                let root = RuntimeName::direct(binding, None);
+                if startup {
+                    self.startup_root(root, site, NameUse::Keep);
+                } else {
+                    self.runtime_root(root, site, NameUse::Keep);
+                }
+            }
         }
     }
 
@@ -4975,6 +5015,95 @@ impl<'a> Emitter<'a> {
             // arguments in order, which a literal also is (light-cljs-1021).
             // The literal's elements keep their kind (small integers, say),
             // where a rest parameter's are generic.
+            (C::Str, []) => self.output.push_str("\"\""),
+            (C::Str, [value]) => {
+                if matches!(self.program.exprs[value.0].kind, ExprKind::Nil) {
+                    self.output.push_str("\"\"");
+                } else {
+                    let ty = inference.ty(*value);
+                    let prim = Type::STRING.union(Type::NUMBER).union(Type::BOOLEAN);
+                    if Type::STRING.contains(ty) {
+                        self.value(*value);
+                    } else if prim.contains(ty) {
+                        self.wrapped("\"\" + ", *value, "");
+                    } else if prim.union(Type::NIL).contains(ty) {
+                        self.output.push_str("(\"\" + (");
+                        self.value(*value);
+                        self.output.push_str(" ?? \"\"))");
+                    } else if self.replaced_core.is_some() {
+                        self.rt(RuntimeName::direct("str1", None));
+                        self.output.push('(');
+                        self.value(*value);
+                        self.output.push(')');
+                    } else {
+                        return false;
+                    }
+                }
+            }
+            (C::Str, [_, _, ..]) => {
+                // Lower multi-arg `(str ...)` to JavaScript `+` when no
+                // argument's string conversion can observe or race with a
+                // later argument's side effects: primitive/nil conversions are
+                // pure, and any other argument is safe if every following
+                // argument is a pure operand (or it is the last argument).
+                let prim = Type::STRING.union(Type::NUMBER).union(Type::BOOLEAN);
+                let prim_or_nil = prim.union(Type::NIL);
+                let safe = args.iter().enumerate().all(|(i, &arg)| {
+                    i + 1 == args.len()
+                        || matches!(self.program.exprs[arg.0].kind, ExprKind::Nil)
+                        || prim_or_nil.contains(inference.ty(arg))
+                        || args[i + 1..].iter().all(|&later| self.pure_operand(later))
+                });
+                if !safe {
+                    return false;
+                }
+                let kept: Vec<ExprId> = args
+                    .iter()
+                    .copied()
+                    .filter(|&arg| !matches!(self.program.exprs[arg.0].kind, ExprKind::Nil))
+                    .collect();
+                if kept.is_empty() {
+                    self.output.push_str("\"\"");
+                } else {
+                    self.output.push('(');
+                    let mut in_string = false;
+                    for (index, &arg) in kept.iter().enumerate() {
+                        if index > 0 {
+                            self.output.push_str(" + ");
+                        }
+                        let ty = inference.ty(arg);
+                        if Type::STRING.contains(ty) {
+                            self.value(arg);
+                            in_string = true;
+                        } else if prim.contains(ty) {
+                            if !in_string {
+                                self.output.push_str("\"\" + ");
+                                in_string = true;
+                            }
+                            self.value(arg);
+                        } else if prim_or_nil.contains(ty) {
+                            if !in_string {
+                                self.output.push_str("\"\" + ");
+                                in_string = true;
+                            }
+                            self.output.push('(');
+                            self.value(arg);
+                            self.output.push_str(" ?? \"\")");
+                        } else {
+                            if self.replaced_core.is_some() {
+                                self.rt(RuntimeName::direct("str1", None));
+                            } else {
+                                self.rt(RuntimeName::core("str"));
+                            }
+                            self.output.push('(');
+                            self.value(arg);
+                            self.output.push(')');
+                            in_string = true;
+                        }
+                    }
+                    self.output.push(')');
+                }
+            }
             (C::Array, _) => {
                 self.output.push('[');
                 self.arguments(args);
@@ -9453,18 +9582,44 @@ impl<'a> Emitter<'a> {
                 key,
                 direct,
             } => {
-                self.rt(RuntimeName::export("protocolPredicate"));
-                self.output.push('(');
-                if *direct {
-                    self.output.push_str("null");
+                if self.replaced_core.is_some()
+                    && !self.native_forms
+                    && self.repeatable(*value)
+                    && (*direct || self.pure_operand(*protocol))
+                {
+                    let slot = crate::rta::protocol_slot(key, 0);
+                    self.output.push('(');
+                    self.value(*value);
+                    self.output.push_str(" != null && (");
+                    self.value(*value);
+                    self.output.push(')');
+                    self.keyed_member(&slot);
+                    self.output.push_str(" === ");
+                    self.rt(RuntimeName::direct("protocolSentinel", None));
+                    if !*direct {
+                        self.output.push_str(" || ");
+                        self.rt(RuntimeName::direct("protocolFallback", None));
+                        self.output.push('(');
+                        self.value(*protocol);
+                        self.output.push_str(", ");
+                        self.value(*value);
+                        self.output.push(')');
+                    }
+                    self.output.push(')');
                 } else {
-                    self.value(*protocol);
+                    self.rt(RuntimeName::export("protocolPredicate"));
+                    self.output.push('(');
+                    if *direct {
+                        self.output.push_str("null");
+                    } else {
+                        self.value(*protocol);
+                    }
+                    self.output.push_str(", ");
+                    self.string_units(&key.encode_utf16().collect::<Vec<_>>());
+                    self.output.push_str(", ");
+                    self.value(*value);
+                    write!(self.output, ", {})", direct).unwrap();
                 }
-                self.output.push_str(", ");
-                self.string_units(&key.encode_utf16().collect::<Vec<_>>());
-                self.output.push_str(", ");
-                self.value(*value);
-                write!(self.output, ", {})", direct).unwrap();
             }
             ExprKind::ExtendType {
                 instance,

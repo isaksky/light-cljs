@@ -1358,13 +1358,14 @@
         (assoc s :shadow-reused? reuse-shadow?)))))
 
 (defn ensure-runtime-builds!
-  "When --only runtime skips compile/size, ensure light and shadow outputs exist."
-  [{:keys [light shadow-mode skip-browser]} ctx]
+  "When --only runtime skips compile/size, ensure light and shadow outputs exist.
+   Always rebuild light outputs when their owning slice did not run in this invocation."
+  [{:keys [light shadow-mode skip-browser slices]} ctx]
   (let [{:keys [dir-200k rf-dir ports esbuild shadow-artifacts-dir]} ctx
         light-200k (fs/path dir-200k "out/light/workload.main.js")
         shadow-200k (fs/path dir-200k "out/shadow.js")
         saved-200k (fs/path shadow-artifacts-dir "re-frame-200k-shadow.js")]
-    (when-not (fs/exists? light-200k)
+    (when (or (not (contains? slices :compile)) (not (fs/exists? light-200k)))
       (cmp/log "== [runtime] building re-frame-200k (light-cljs)")
       (sh! {:dir dir-200k} light "release" "bench" "--no-cache")
       (spit (fs/file dir-200k "out/light/package.json") "{\"type\":\"module\"}\n"))
@@ -1384,7 +1385,7 @@
             bl (fs/path ex-dir "out/browser-light/js/client.js")
             bs (fs/path ex-dir "out/browser-shadow/js/client.js")
             saved-td (fs/path shadow-artifacts-dir "todomvc-shadow-client.js")]
-        (when-not (fs/exists? bl)
+        (when (or (not (contains? slices :size)) (not (fs/exists? bl)))
           (cmp/log "== [runtime] building todomvc browser bundle (light-cljs)")
           (let [{:keys [file]} (light-release-example! light port-dir ex-dir)]
             (stage-todomvc-browser! esbuild ex-dir port-dir :light file)))
