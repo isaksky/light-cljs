@@ -238,7 +238,8 @@
   // (vectors, map entries, maps, sets and list cells) hold no slots, and
   // the own paths answer them through this profile's units, as before
   // light-cljs-1054 (the seq walk), light-cljs-1066 (the lookups),
-  // light-cljs-1068 (the updates) and light-cljs-1072 (the reductions).
+  // light-cljs-1068 (the updates) and light-cljs-1072 (the reductions);
+  // `=` and `hash` take theirs from `equalPairOf` and `hashOf` below.
   // `nth.protocol`, `get.own`, `contains.own` and `reduce.protocol`
   // rewrap `nthPath`, `getPath`, `containsPath` and `reducePath` after this
   // unit loads, so those entries read the binding when called, with the
@@ -252,6 +253,29 @@
     conj: conjPath, assoc: assocPath, dissoc: dissocPath, disj: disjPath, pop: popPath,
     reduce: function () { return reducePath.apply(null, arguments); },
     reduceOwn: function () { return reduceOwn.apply(null, arguments); }, reduceKv: reduceKvPath};
+  //@unit equalPairOf requires: equalPairPath
+  // The V8 profile's upstream-shaped `=` of a value without an `-equiv`
+  // slot holding a method: here the old path (`equalPairPath`), as before
+  // light-cljs-1074, whose units answer the engine forms. Its own unit, not
+  // an entry of `operationPaths`, so that `=` keeps none of the other
+  // operations' paths.
+  function equalPairOf(left, right) { return equalPairPath(left, right); }
+  //@unit hashOf requires: hashPath
+  // And `hash`'s, the old path (`hashPath`).
+  function hashOf(value) { return hashPath(value); }
+  //@unit objectEquiv requires: builtinSlots, comparedSequential, equalPair, maps, methodKeys,
+  //@ namedOf, protocolHooks, sets, structuralEqualPair
+  // The V8 profile's `.equiv` as before light-cljs-1074: the engine forms
+  // have no keyed kind and no `-equiv` slot, so an identical receiver is
+  // told by this profile's stores, and a vector, list, map or set holding
+  // NaN is still not `.equiv` to itself (the Sol review's finding).
+  function objectEquiv(value, other) {
+    const equiv = protocolHooks.builtin?.(value, methodKeys[18], 2);
+    if (equiv && !builtinSlots.has(equiv)) return equiv.call(value, value, other);
+    if (maps.has(value)) return structuralEqualPair(value, other);
+    return sets.has(value) || namedOf(value) !== undefined || comparedSequential(value)
+      ? structuralEqualPair(value, other) : equalPair(value, other);
+  }
   //@unit ownSeqs
   // The V8 profile's switch for `first` and `rest` of a collection whose
   // seq a program extended: this profile takes the own paths

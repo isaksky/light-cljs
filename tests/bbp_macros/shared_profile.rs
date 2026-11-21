@@ -1553,6 +1553,11 @@ fn shared_profile_nan_occurrence_keys_use_canonical_equality() {
           check(core.count(set) === 1, 'NaN set persistence');
         }
         check(core.count(core.hashMap(key, 1, key, 2)) === 2 && core.count(core.hashSet(key, key)) === 2, 'NaN builders retain slots');
+        // `.equiv` of an identical engine collection holding NaN compares its
+        // contents (light-cljs-1074's Sol review).
+        const equivOf = core.PersistentVector.prototype.equiv;
+        for (const coll of [core.vector(key), __rt.formList(key), __rt.formMap(key, 1), __rt.formSet(key)])
+          check(!equivOf.call(coll, coll), 'NaN .equiv of an identical engine collection');
         return 'ok';
         "#
     ))

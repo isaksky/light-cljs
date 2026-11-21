@@ -180,8 +180,8 @@ pub const PROTOCOL_ROOTS: &[&str] = &["ISeqable", "ISequential"];
 /// suite checks the table against those effects.
 pub const RECORD_METHODS: &[(&str, &[usize], &str)] = &[
     ("ICloneable/-clone", &[1], "clone"),
-    ("IHash/-hash", &[1], "hash"),
-    ("IEquiv/-equiv", &[2], "equalPair"),
+    ("IHash/-hash", &[1], "hashOf"),
+    ("IEquiv/-equiv", &[2], "equalPairOf"),
     ("IMeta/-meta", &[1], "metaSupported"),
     ("IWithMeta/-with-meta", &[2], "withMetaSupported"),
     ("ILookup/-lookup", &[2, 3], "getOf"),

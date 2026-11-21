@@ -1885,7 +1885,7 @@ entries' `noBranch` tests. `=`, `hash` and the reductions keep theirs
 What light-cljs-1072 landed: the reductions, `reduce` and `reduce-kv`, are
 upstream's shape as the updates are, without their slot-first wrappers
 (`reduce.slots`, `reduceKv.slots`) and their slots' `noBranch` guards. `=`
-and `hash` keep theirs (light-cljs-1074).
+and `hash` followed (light-cljs-1074).
 
 - **One function per arity.** `reduce` sends two arguments to `reduce2`
   and three to `reduce3`, each of which reads the value's keyed kind and
@@ -2042,6 +2042,87 @@ marker or the class's slot.
 - `extended_programs_keep_host_predicate_and_deref_answers` pins master's
   answers for these at every level, and the counting test counts no
   `builtin` call for `deref` of an atom.
+
+What light-cljs-1074 landed: `=` and `hash` are upstream's shape as the
+reductions are, without their slot-first wrappers (`equalPair.slots`,
+`hash.slots`) and the wrappers' `noBranch` comparisons.
+
+- **One function each.** `=` of two values (`equalPair`) is true for
+  identical values, as master's, then reads the left value's keyed kind
+  and calls its `-equiv` slot, read once; `hash` reads the keyed kind and
+  calls the `-hash` slot, read once (71 and 52 bytes of bytecode, under
+  light-cljs-1033's 100). A program type's and a record's slot are
+  called as a runtime class's. Any other value takes upstream's path
+  (`equalPairOf`, `hashOf`): nil (equal to nil and undefined, hash 0); a
+  runtime class's prototype slot where its instance slot holds nil or
+  false; a string's, a number's or a boolean's hash by name of its
+  prototype's `IHash` mask bit or marker, as light-cljs-1014 read it, else
+  upstream's; a program's method (`extend-type` of a host type, `object`
+  or `default`, which reaches a cycle, an iterate or an atom too, a
+  program type's), a date's time, a JavaScript symbol's or a bigint's
+  text's hash, else identity, in the old path's order, but for the seqs
+  and the queue without a slot, which compare and hash their items before
+  any lookup: they implement `IEquiv` and `IHash` natively, and the
+  compile-time lookup demands declarations, which in the middle of a
+  comparison turned a nested demand's failure into an interrupt in the
+  QuickJS reference (`schedule_stress`).
+- **Kinds for every class the old paths recognised.** The views
+  over maps and arrays, ranges, repeats, the empty list, the key and value
+  seqs, `re-seq`'s conses and the queue compare and hash their items from
+  `equalPairOf` and `hashOf`, told by their keyed kind (one test of a
+  constant mask, as `reduceOf`'s), with a sequential value that is not a
+  record; iterates, cycles and every other runtime value keep their
+  identity, as `comparedSequential` answered, but for the UUIDs and the
+  vars, which `equalPairOf` and `hashOf` ask the kind hooks their builders
+  install (`kindHooks.equivNamed`, `kindHooks.hashNamed`: another UUID of
+  the same text, its text's hash cached in its `hash` field; another var
+  of an equal symbol, its symbol's hash). Slots for those fourteen classes
+  would add 28 slot units for answers no one of them gives differently
+  (light-cljs-1072 measured the same trade for `reduce`), and on the UUIDs
+  and vars would hide the methods an `extend-type` of `js/Object` gives
+  them through their prototypes (the Sol review's finding).
+- **The classes' own comparisons without the recognisers.** `classEquiv`,
+  `mapEquiv`, `vectorHash` and the maps', sets' and seqs' hashes
+  (`mapHash`, `setHash`, `seqHash`, which replace `structuralHash`) and
+  `namedHash` call their class's comparison or hash directly (`equivSet`,
+  `equivSequential`, `equivMap`, `hashSequential`, which now reads the
+  cached hash itself), where they asked `structuralEqualPair` and
+  `hashStructural` to tell the class again; those two and
+  `comparedSequential` serve only the old path. `.equiv` (`objectEquiv`) of
+  an identical receiver asks its class's slot to compare without the
+  identity test, by a third argument, and compares the items of a seq or
+  a queue without a slot, so that a collection holding NaN is still not
+  `.equiv` to itself.
+- **No guards to drop.** The classes' `-equiv` and `-hash` slots never
+  answered `noBranch`: the wrappers' comparisons with it are gone with the
+  wrappers.
+- **Answers kept.** As the lookups': a value whose slot holds nil or false
+  takes its class's slot; a program that writes a core protocol method's
+  member by name keeps `slotWrites.equalPair` and `slotWrites.hash`, which
+  send a runtime class's value to the old paths, and
+  `slotWrites.objectEquiv`, which compares an identical receiver whose
+  slot it cleared structurally, as `.equiv` did
+  (`equality_and_hash_fallbacks_keep_the_old_answers`, with the two Sol
+  reviews' scenarios).
+- **Profiles.** The old bodies are `equalPairPath` and `hashPath`, set in
+  `operationPaths` by `setDeclarationDemand`; the shared-heap profile swaps
+  `equalPairOf` and `hashOf` for units that call them, so that `=` keeps
+  none of the other operations' paths there. build.rs's scalar adapters of
+  `=`'s and `hash`'s arguments move to `equalPairPath` and `hashPath`, and
+  `equalPair` keeps its own, so that its identity test reads an occurrence
+  of NaN as NaN; the Pants real-core spike's swaps name neither. `RECORD_METHODS` names
+  `equalPairOf` and `hashOf`, which the record methods wait for.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1074; binaries
+  `light-cljs-c09a181b` and `light-cljs-1074-4ad8a055`, unreserved): no
+  touched gate operation over 5% slower (`eq-map-7` +8% in the full passes,
+  whose before range was 116 to 297 ns, and 1% and 2% faster in two
+  alternated pairs), `hash-fresh-vec-4` -19%, `hash-fresh-map-7` -17%,
+  `eq-vec-10` -13%, `kw-hash100` -22%; workload 200k's steady state
+  unchanged within its spread (36.4 to 35.1 and 35.1 to 36.5 ms per
+  iteration); the re-frame apps' whole bundles -84, -166 and +82 bytes
+  after gzip (simple, TodoMVC, flow; `light-cljs-1074-d8a80401`), where
+  the old paths' recognisers leave and the classes' hashes move into their
+  slots.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
@@ -3058,13 +3139,23 @@ its class's:
     extension set answer the predicates from the bits, and `nth`, `empty?`
     and `count` of a cons of one as their steps do; in the set that writes
     keyed names, the sorted map, whose prototype's
-    `cljs$lang$protocol_mask$partition0$` the program writes by name (64,
+    `cljs\$lang\$protocol_mask\$partition0\$` the program writes by name (64,
     `ISeq` alone), is no longer `map?` or `coll?`: the written mask replaces
     the bits its class declares, as upstream's would. The Proxy is asked as
     often as before.
 36. `value_kind_predicates_answer_as_the_brand_stores_did`: the
     `forged-map`, `forged-list`, `forged-set`, `forged-lazy-seq`,
     `forged-range` and `forged-seq` rows answer as their classes' rows.
+
+light-cljs-1074 rescoped no test: the classes' `-equiv` and `-hash` slots
+had no `noBranch` guards, and no test pins `=` or `hash` of a forged value.
+What changes for deliberate reflection only: a value made by
+`Object.create` of a runtime class's prototype compares and hashes through
+its class's slot without the old path's recognisers (`structuralEqualPair`,
+`hashStructural`, `comparedSequential`) telling its class again, so a
+forged vector, set or seq is compared, and a forged seq or keyword hashed,
+by the fields it lacks (which may throw, as its other slots do), where the
+old path answered it by identity.
 
 ### Documentation rules that change
 

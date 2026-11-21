@@ -2295,7 +2295,8 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
         "lookup.sets",
         "lookup.transients",
         "lookup.tree",
-        "structuralEqualPair.symbols",
+        // A symbol's comparison, its class's `-equiv` slot since light-cljs-1074.
+        "SymbolValue.equivSlot",
     ] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
@@ -5249,4 +5250,127 @@ fn reduction_fallbacks_keep_cleared_slots() {
     for unit in ["slotWrites.reduce", "slotWrites.reduceKv"] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
+}
+
+/// `=` and `hash` are upstream-shaped at `:advanced` (light-cljs-1074): the
+/// runtime's seqs and queue without an `-equiv` or `-hash` slot of their
+/// own compare and hash their items from `equalPairOf` and `hashOf`, by their
+/// keyed kind; iterates, cycles, atoms and host values keep their identity;
+/// UUIDs and vars have slots; `.equiv` of an identical collection compares
+/// its contents. Master c09a181b's answers, at every level.
+#[test]
+fn equality_and_hash_fallbacks_keep_the_old_answers() {
+    let source = r#"
+(defrecord R [a])
+(deftype T [x])
+(def u (uuid "00000000-0000-0000-0000-000000000001"))
+(let [i (iterate inc 1) c (cycle [1 2]) q (conj cljs.core/PersistentQueue.EMPTY 1 2) d (js/Date. 5)]
+  (pr-str [(= (range 3) [0 1 2]) (= [0 1 2] (range 3)) (= (seq {1 2}) [[1 2]]) (= (rseq [1 2]) '(2 1)) (= (keys {1 2}) [1])
+           (= (vals {1 2}) '(2)) (= (repeat 2 :a) [:a :a]) (= () []) (= () nil) (= (range 0.5 2) [0.5 1.5]) (= (re-seq #"a" "aa") ["a" "a"])
+           (= q [1 2]) (= [1 2] q) (= q '(1 2)) (= i i) (= i (iterate inc 1)) (= c c) (= c (cycle [1 2])) (= (range 2) (->R 1))
+           (= u (uuid "00000000-0000-0000-0000-000000000001")) (= u (uuid "00000000-0000-0000-0000-000000000002")) (= u "x")
+           (= (->R 1) (->R 1)) (= (->R 1) {:a 1}) (= {:a 1} (->R 1)) (= (T. 1) (T. 1)) (= d (js/Date. 5)) (= d 5) (= (atom 1) (atom 1))
+           (= (hash (range 3)) (hash [0 1 2])) (= (hash (seq {1 2})) (hash [[1 2]])) (= (hash q) (hash [1 2])) (= (hash (repeat 2 :a)) (hash [:a :a]))
+           (hash ()) (hash u) (= (hash i) (hash i)) (= (hash (->R 1)) (hash (->R 1))) (hash d) (hash "s") (hash 1.5) (hash false) (hash nil)
+           (let [v [##NaN] m {:a ##NaN} s #{##NaN} l (list ##NaN)] [(= v v) (.equiv v v) (.equiv m m) (.equiv s s) (.equiv l l) (.equiv c c) (.equiv q q)])
+           (.equiv [1] '(1)) (.equiv :a :a) (.equiv {:a 1} {:a 1})
+           (count (into #{} [[1] '(1) (range 1 2) (seq [1]) (subvec [0 1] 1) (lazy-seq [1])])) (get {(range 2) :r} [0 1])]))"#;
+    every_level(
+        source,
+        "[true true true true true true true true false true true true true true true false true false false true false false true false false false true false false true true true true -2017569654 -1060979852 true true 5 1975881410 63551 1237 0 [true false false false false true true] true true true 1 :r]",
+    );
+    // In release output, `=` and `hash` keep their upstream-shaped paths and
+    // not the old ones, which only the compile-time runtime, the shared-heap
+    // profile and a program writing a slot by name keep.
+    let kept = units(source);
+    for unit in [
+        "equalPair",
+        "equalPairOf",
+        "hash",
+        "hashOf",
+        "uuidValue.equiv",
+        "uuidValue.hash",
+    ] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    for unit in [
+        "equalPairPath",
+        "hashPath",
+        "structuralEqualPair",
+        "hashStructural",
+        "slotWrites.equalPair",
+        "slotWrites.hash",
+    ] {
+        assert!(!kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    // A slot cleared by name, on a class's prototype or on a value over a
+    // method `extend-type` gave its class, takes the old path, which answers
+    // the value by its class (the set's structural hash, not the
+    // extension's 99), as before.
+    let cleared = r#"
+(extend-type PersistentHashSet IHash (-hash [_] 99))
+(set! (.. PersistentVector -prototype -cljs$core$IEquiv$_equiv$arity$2) nil)
+(set! (.. PersistentArrayMap -prototype -cljs$core$IHash$_hash$arity$1) false)
+(set! (.. Keyword -prototype -cljs$core$IEquiv$_equiv$arity$2) nil)
+(set! (.. List -prototype -cljs$core$IHash$_hash$arity$1) nil)
+(let [p (fn [f] (try (pr-str (f)) (catch :default e (str "E:" (.-message e)))))
+      s (hash-set 1 2) l (list 1 2) m {:a 1}]
+  (set! (.-cljs$core$IHash$_hash$arity$1 s) nil)
+  (set! (.-cljs$core$IEquiv$_equiv$arity$2 m) false)
+  (pr-str [(p #(= [1 2] [1 2])) (p #(= [1 2] '(1 2))) (p #(= :a :a)) (p #(= :a (keyword "a"))) (p #(= m {:a 1})) (p #(= {:a 1} m))
+           (p #(= (hash {:a 1}) (hash {:a 1}))) (p #(hash s)) (p #(hash (hash-set 3))) (p #(= (hash l) (hash [1 2]))) (p #(= (hash [1 2]) (hash '(1 2))))
+           (p #(contains? #{[1 2]} '(1 2))) (p #(get {:a 1 [1] 2} [1]))]))"#;
+    every_level(
+        cleared,
+        r#"["true" "true" "true" "true" "true" "true" "true" "-1751407317" "99" "true" "true" "true" "2"]"#,
+    );
+    let kept = units(cleared);
+    for unit in ["slotWrites.equalPair", "slotWrites.hash"] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    // From the Sol review of light-cljs-1074: `.equiv` of an identical queue,
+    // repeat or reversed seq holding NaN compares its items, and an
+    // `extend-type` of `js/Object` answers UUIDs and vars, which have no slot
+    // of their own, as before.
+    every_level(
+        r#"(def v (var cljs.core/inc))
+(let [q (conj cljs.core/PersistentQueue.EMPTY ##NaN) r (repeat 1 ##NaN) rs (rseq [##NaN 1]) e (list) a (uuid "00000000-0000-0000-0000-000000000001") b (uuid "00000000-0000-0000-0000-000000000002")
+      before [(.equiv q q) (.equiv r r) (.equiv rs rs) (.equiv e e) (= a b) (= v v) (= v (var cljs.core/inc)) (= (hash v) (hash 'cljs.core/inc)) (= (hash a) (hash "00000000-0000-0000-0000-000000000001"))]]
+  (extend-type js/Object IEquiv (-equiv [_ _] true) IHash (-hash [_] 37))
+  (pr-str [before (= a b) (hash a) (= v (var cljs.core/dec)) (hash v) (= [1] [2]) (hash :k)]))"#,
+        "[[false false false true false true true true true] true 37 true 37 true -2146297393]",
+    );
+    // From the second Sol review: `.equiv` of an identical map, set or
+    // keyword whose slot a program cleared by name compares it structurally
+    // (`slotWrites.objectEquiv`), and an `extend-type` of `object` or
+    // `default` answers cycles, iterates, atoms and host objects, which have
+    // no native `IEquiv` or `IHash`, as before.
+    every_level(
+        r#"(let [m {:a ##NaN} s #{##NaN} k (Keyword. nil "k" js/NaN nil) q (conj cljs.core/PersistentQueue.EMPTY ##NaN) m2 {:b ##NaN} s2 #{##NaN 1}]
+  (set! (.-cljs$core$IEquiv$_equiv$arity$2 m) nil)
+  (set! (.-cljs$core$IEquiv$_equiv$arity$2 s) false)
+  (set! (.. PersistentHashSet -prototype -cljs$core$IEquiv$_equiv$arity$2) nil)
+  (pr-str [(.equiv m m) (.equiv s s) (.equiv s2 s2) (.equiv k k) (.equiv q q) (= m m) (= s s) (.equiv m2 m2) (.equiv {:a 1} {:a 1})]))"#,
+        "[false false false false false true true false true]",
+    );
+    every_level(
+        r#"(extend-type object IEquiv (-equiv [_ _] true) IHash (-hash [_] 37))
+(extend-type default IEquiv (-equiv [_ _] :d) IHash (-hash [_] 41))
+(pr-str [(= (iterate inc 1) (iterate inc 1)) (hash (iterate inc 1)) (hash (cycle [1])) (= (cycle [1]) (cycle [2])) (= (atom 1) (atom 2)) (hash (atom 1))
+         (= (range 2) [0 1]) (= (uuid "00000000-0000-0000-0000-000000000001") (uuid "00000000-0000-0000-0000-000000000002")) (hash (js/Date. 5)) (= (js-obj) (js-obj)) (hash (js-obj))])"#,
+        "[true 37 37 true false 1 true true 5 true 37]",
+    );
+    // The seqs and the queue without a slot compare and hash their items
+    // before any lookup (they implement `IEquiv` and `IHash` natively); an
+    // `extend-type` of `object` or `default` still answers them as before.
+    every_level(
+        r#"(extend-type object IEquiv (-equiv [_ _] true) IHash (-hash [_] 37))
+(extend-type default IEquiv (-equiv [_ _] true) IHash (-hash [_] 41))
+(let [q (conj cljs.core/PersistentQueue.EMPTY 1)]
+  (pr-str [(= (range 3) [9]) (= (range 0.5 2) [9]) (= (seq {1 2}) [9]) (= () [1]) (= (repeat 2 1) [3]) (= (keys {1 2}) [9]) (= (vals {1 2}) [9]) (= q [9])
+           (= (rseq [1 2]) [9]) (= (re-seq #"a" "a") [9]) (= (seq (sorted-map 1 2)) [9]) (= (seq (hash-map 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18)) [9])
+           (= (hash (range 3)) 37) (= (hash (seq {1 2})) 37) (= (hash ()) 37) (= (hash q) 37) (= (hash (repeat 2 1)) 37) (= (hash (keys {1 2})) 37) (= (hash (rseq [1 2])) 37)
+           (= (hash (re-seq #"a" "a")) 37) (= (hash (range 0.5 2)) 37) (= (iterate inc 1) (iterate inc 1)) (hash (cycle [1]))]))"#,
+        "[false false false false false true true true false true false false true true true true true true true true true true 37]",
+    );
 }

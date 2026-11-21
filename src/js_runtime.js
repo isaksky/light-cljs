@@ -1057,7 +1057,8 @@
   //@ methodKeys
   methodKeys[10] = methodKey("ICounted/-count");
   //@unit installMethods.ICountedKey effect: installMethods when: accumulatingCount, boundedCount,
-  //@ isCounted, isEmpty, structuralEqualPair requires: methodKey, methodKeys
+  //@ classEquiv, equalPairOf, isCounted, isEmpty, objectEquiv, structuralEqualPair requires: methodKey,
+  //@ methodKeys
   methodKeys[11] = methodKey("ICounted");
   //@unit installMethods.IDerefDerefKey effect: installMethods when: derefProtocol,
   //@ Loadable.dispatch requires: methodKey, methodKeys
@@ -1076,8 +1077,8 @@
   //@unit installMethods.IEncodeJSKey effect: installMethods when: cljToJs, keyToJs requires: methodKey,
   //@ methodKeys
   methodKeys[17] = methodKey("IEncodeJS");
-  //@unit installMethods.IEquivEquivKey effect: installMethods when: equalPair, keywordLookupEquiv,
-  //@ objectEquiv requires: methodKey, methodKeys
+  //@unit installMethods.IEquivEquivKey effect: installMethods when: equalPairOf, equalPairPath,
+  //@ keywordLookupEquiv, objectEquiv requires: methodKey, methodKeys
   methodKeys[18] = methodKey("IEquiv/-equiv");
   //@unit installMethods.IFindFindKey effect: installMethods when: find requires: methodKey,
   //@ methodKeys
@@ -1087,10 +1088,11 @@
   methodKeys[20] = methodKey("IFind");
   //@unit installMethods.IFnKey effect: installMethods when: isIFn requires: methodKey, methodKeys
   methodKeys[21] = methodKey("IFn");
-  //@unit installMethods.IHashHashKey effect: installMethods when: hash, hashStructural requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.IHashHashKey effect: installMethods when: hashOf, hashPath, hashStructural
+  //@ requires: methodKey, methodKeys
   methodKeys[22] = methodKey("IHash/-hash");
-  //@unit installMethods.IHashKey effect: installMethods when: hash requires: methodKey, methodKeys
+  //@unit installMethods.IHashKey effect: installMethods when: hashOf, hashPath requires: methodKey,
+  //@ methodKeys
   methodKeys[23] = methodKey("IHash");
   //@unit installMethods.IIndexedKey effect: installMethods when: isIndexed, nthOf, nthPath
   //@ requires: methodKey, methodKeys
@@ -1119,8 +1121,8 @@
   //@unit installMethods.IMapEntryKey effect: installMethods when: isMapEntry requires: methodKey,
   //@ methodKeys
   methodKeys[32] = methodKey("IMapEntry");
-  //@unit installMethods.IMapKey effect: installMethods when: isMap, structuralEqualPair requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.IMapKey effect: installMethods when: isMap, mapEquiv, structuralEqualPair
+  //@ requires: methodKey, methodKeys
   methodKeys[33] = methodKey("IMap");
   //@unit installMethods.IMetaKey effect: installMethods when: printsMeta requires: methodKey,
   //@ methodKeys
@@ -1146,8 +1148,8 @@
   //@unit installMethods.IPrintWithWriterPrWriterKey effect: installMethods when: printWriterImpl
   //@ requires: methodKey, methodKeys
   methodKeys[41] = methodKey("IPrintWithWriter/-pr-writer");
-  //@unit installMethods.IRecordKey effect: installMethods when: isRecord, structuralEqualPair
-  //@ requires: methodKey, methodKeys
+  //@unit installMethods.IRecordKey effect: installMethods when: isRecord, mapEquiv,
+  //@ structuralEqualPair requires: methodKey, methodKeys
   methodKeys[42] = methodKey("IRecord");
   //@unit installMethods.IReduceKey effect: installMethods when: isReduceable requires: methodKey,
   //@ methodKeys
@@ -1179,14 +1181,14 @@
   //@unit installMethods.ISeqableSeqKey effect: installMethods when: reducePath, rseq, seqOf,
   //@ seqPath, vectorReduceSlot requires: methodKey, methodKeys
   methodKeys[52] = methodKey("ISeqable/-seq");
-  //@unit installMethods.ISequentialKey effect: installMethods when: isSequential, nthOf, nthPath,
-  //@ structuralEqualPair requires: methodKey, methodKeys
+  //@unit installMethods.ISequentialKey effect: installMethods when: classEquiv, equalPairOf,
+  //@ isSequential, nthOf, nthPath, objectEquiv, structuralEqualPair requires: methodKey, methodKeys
   methodKeys[53] = methodKey("ISequential");
   //@unit installMethods.ISetDisjoinKey effect: installMethods when: disj, disjOf, disjPath
   //@ requires: methodKey, methodKeys
   methodKeys[54] = methodKey("ISet/-disjoin");
-  //@unit installMethods.ISetKey effect: installMethods when: isSet, structuralEqualPair requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.ISetKey effect: installMethods when: classEquiv, isSet, structuralEqualPair
+  //@ requires: methodKey, methodKeys
   methodKeys[55] = methodKey("ISet");
   //@unit installMethods.ISortedKey effect: installMethods when: isSorted requires: methodKey,
   //@ methodKeys
@@ -7738,27 +7740,88 @@
     for (let current = seq(value); current != null; current = next(current)) members = putMember(members, first(current), edit);
     return makeSet(PersistentHashSetValue, members, Array.isArray(members) ? "array-map" : "hash-map");
   }
-  //@unit objectEquiv requires: builtinSlots, comparedSequential, equalPair, maps, methodKeys,
-  //@ namedOf, protocolHooks, sets, structuralEqualPair
+  //@unit objectEquiv requires: builtinSlots, equalPair, kindHooks, methodKeys, protocolHooks
   // Object.equiv calls the receiver's IEquiv implementation directly, even
   // when an extension rejects an identical value. Language = keeps its own
   // identity shortcut. Saved Object methods dispatch on the borrowed receiver.
   // A class's own `-equiv` slot, which the compile-time lookup (build.rs)
-  // finds and which answers identical values as `=` does (light-cljs-1014),
-  // is no implementation here: the comparison below has no identity test.
+  // finds and which answers identical values as `=` does (light-cljs-1014)
+  // unless its third argument asks otherwise, is no implementation here.
+  // Two values that are not identical compare as `=` compares them; an
+  // identical receiver of a class with an `-equiv` slot of its own asks its
+  // slot to compare it without the identity test (its third argument,
+  // light-cljs-1074): sequence and collection protocols compare contents
+  // even for the same receiver (a list holding NaN is not equivalent to
+  // itself), and so does a keyword or a symbol whose public constructor was
+  // given a NaN `fqn` or `str`; one of the seqs and the queue without a slot
+  // of their own (the sequential kinds of `equalPairOf`) compares its items.
+  // Cycles and iterates keep their identity.
   function objectEquiv(value, other) {
     const equiv = protocolHooks.builtin?.(value, methodKeys[18], 2);
     if (equiv && !builtinSlots.has(equiv)) return equiv.call(value, value, other);
-    if (maps.has(value)) return structuralEqualPair(value, other);
-    // Sequence/collection protocols compare contents even for the same receiver
-    // (for example, a list containing NaN is not equivalent to itself). Cycle
-    // and Iterate retain their default identity equality, and so does a
-    // keyword or symbol whose public constructor was given a NaN `fqn`.
-    return sets.has(value) || namedOf(value) !== undefined || comparedSequential(value)
-      ? structuralEqualPair(value, other) : equalPair(value, other);
+    if (value === other) {
+      const own = value?.cljs$core$IEquiv$_equiv$arity$2$LKEY, kind = value?.cljs$lang$kind$$LKEY;
+      if (own) return own.call(value, value, other, true);
+      if (kind < 32 ? (214171630 >>> kind & 1) === 1 : kind === 36) return (kindHooks.equivSequential ?? kindHooks.equivVectors)(value, value);
+    }
+    return equalPair(value, other);
   }
-  //@unit equalPair requires: methodKeys, protocolHooks, structuralEqualPair
+  // `=` is upstream's (light-cljs-1074), as `reduce` (light-cljs-1072):
+  // identical values are equal, as master's; a value with a keyed kind then
+  // calls its keyed `-equiv` slot, read and called once; every other value,
+  // and a value whose slot holds no method, takes the operation's own path
+  // (`equalPairOf`), upstream's: nil, a program's method (`extend-type` of a
+  // host type, `object` or `default`, a program type's), dates, and the
+  // runtime's seqs and queue without a slot of their own, told by their
+  // keyed kind. The old path (`equalPairPath`) serves the compile-time
+  // runtime and the shared-heap profile (`operationPaths`). The function
+  // stays under the 100 bytes of bytecode that V8's Maglev inlines
+  // (light-cljs-1033).
+  //@unit equalPair requires: equalPairOf, slotFirst
   function equalPair(left, right) {
+    if (left === right) return true;
+    if (left != null && slotFirst.on && left.cljs$lang$kind$$LKEY !== undefined) {
+      const method = left.cljs$core$IEquiv$_equiv$arity$2$LKEY;
+      if (method) return method.call(left, left, right);
+    }
+    return equalPairOf(left, right);
+  }
+  //@unit equalPairOf requires: kindHooks, methodKeys, operationPaths, protocolHooks, recordTypeOf
+  // Upstream's `=` of two values that are not identical, the first without
+  // an `-equiv` slot holding a method, in the old path's order: nil equals
+  // only nil and undefined; a value of a runtime class whose instance slot
+  // holds nil or false takes its class's slot, as the old path answered by
+  // the class; the runtime's seqs without an `-equiv` slot (the views over
+  // maps and arrays, ranges, repeats, the empty list, the key and value
+  // seqs, `re-seq`'s conses) and the queue (kinds 7 to 11, 13, 15, 22, 23,
+  // 26, 27 and 36, with the other sequential kinds, in one test of a
+  // constant mask) compare their items with a sequential value that is not
+  // a record, as the old path's `equivSequential` did, before any lookup:
+  // they implement `IEquiv` natively, so no `extend-type` of `object` or
+  // `default` reaches them, and the compile-time lookup would demand
+  // declarations in the middle of a comparison. Then a program's method
+  // (`extend-type` of a host type, `object` or `default`, which reaches a
+  // cycle or an iterate too, a program type's); a UUID or a var
+  // another of its text or symbol (`equivNamed`); a date another date of
+  // its time; cycles, iterates and every other value are equal only to
+  // themselves.
+  function equalPairOf(left, right) {
+    const path = operationPaths.equalPair;
+    if (path !== undefined) return path(left, right);
+    if (left == null) return right == null;
+    const kind = left.cljs$lang$kind$$LKEY;
+    if (kind < 64) {
+      const method = Object.getPrototypeOf(left)?.cljs$core$IEquiv$_equiv$arity$2$LKEY;
+      if (method) return method.call(left, left, right);
+      if (kind < 32 ? (214171630 >>> kind & 1) === 1 : kind === 36) return recordTypeOf(right) === undefined && (kindHooks.equivSequential ?? kindHooks.equivVectors)(left, right);
+    }
+    const equiv = protocolHooks.builtin?.(left, methodKeys[18], 2);
+    if (equiv) return equiv.call(left, left, right);
+    return kindHooks.equivNamed?.(left, right) ?? (left instanceof Date && right instanceof Date && left.valueOf() === right.valueOf());
+  }
+  //@unit equalPairPath requires: methodKeys, protocolHooks, structuralEqualPair
+  // `=`'s own path over the runtime's classes (`operationPaths`).
+  function equalPairPath(left, right) {
     if (left == null) return right == null;
     if (left === right) return true;
     const equiv = protocolHooks.builtin?.(left, methodKeys[18], 2);
@@ -7767,6 +7830,9 @@
   }
   //@unit structuralEqualPair requires: comparedSequential, keywordOf, kindHooks, maps,
   //@ recordTypeOf, sets
+  // The old path's comparison of a value without a program's `IEquiv`
+  // method (`equalPairPath`), which the runtime's classes' own `-equiv`
+  // slots answer in release.
   function structuralEqualPair(left, right) {
     if (left instanceof Date) return right instanceof Date && left.valueOf() === right.valueOf();
     // Keywords compare by kind and `fqn` (docs/value-layout.md, section 3).
@@ -7794,36 +7860,22 @@
     const rightSymbol = symbolOf(right);
     return !!rightSymbol && leftSymbol.str$LKEY === rightSymbol.str$LKEY;
   })(structuralEqualPair);
-  //@unit equalPair.slots effect: ChunkedCons, ChunkedSeqValue, Cons, IndexedSeqValue, KeywordValue,
-  //@ LazySeq, ListValue, MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue, SymbolValue, treeMapConstructor,
-  //@ treeSetConstructor when: equalPair requires: equalPair, noBranch, slotFirst
-  // Slot-first equality (docs/value-layout.md, section 3, light-cljs-1014):
-  // a value of a runtime class (a keyed kind below 64) is, after `=`'s
-  // identity test, compared by its keyed `-equiv` slot, which is its class's
-  // own comparison (`classEquiv`, `mapEquiv`, `keywordEquiv`,
-  // `symbolEquiv`) or the method an
-  // `extend-type` or `specify!` of `IEquiv` wrote, which the operation's
-  // protocol lookup would have called; any other value, and a value whose
-  // slot is gone or answers `noBranch`, takes the operation. Records and
-  // the program's types (kinds from 64) keep the operation's path. The
-  // wrapper stays under 100 bytes of bytecode (light-cljs-1033).
-  equalPair = ((operation, noBranch, slotFirst) => Object.defineProperty(function (left, right) {
-    if (left != null && left.cljs$lang$kind$$LKEY < 64 && slotFirst.on) {
-      if (left === right) return true;
-      const method = left.cljs$core$IEquiv$_equiv$arity$2$LKEY;
-      if (method) { const result = method.call(left, left, right); if (result !== noBranch) return result; }
-    }
-    return operation(left, right);
-  }, "name", {value: operation.name}))(equalPair, noBranch, slotFirst);
-  //@unit uuidValue.equiv effect: uuidValue, makeVar when: structuralEqualPair requires: equalPair,
-  //@ kindHooks, uuids, vars
-  // A UUID or a Var, or undefined for another value.
+  //@unit uuidValue.equiv effect: uuidValue, makeVar when: equalPairOf, structuralEqualPair
+  //@ requires: equalPair, kindHooks, uuids, vars
+  // A UUID or a Var, or undefined for another value. They have no `-equiv`
+  // or `-hash` slot of their own, so that an `extend-type` of `js/Object`
+  // answers them through their prototypes, as before light-cljs-1074.
   kindHooks.equivNamed = (left, right) => uuids.has(left) ? uuids.has(right) && uuids.get(left) === uuids.get(right)
     : vars.has(left) ? vars.has(right) && equalPair(vars.get(left).sym$LKEY, vars.get(right).sym$LKEY) : undefined;
-  //@unit makeMap.equiv effect: ArrayMapCell, makeMap, treeMapConstructor when: structuralEqualPair
-  //@ requires: equalPair, get, kindHooks, mapCount, mapKinds, mapPairs, maps, methodKeys, missing,
-  //@ protocolHooks
+  //@unit uuidValue.hash effect: uuidValue, makeVar when: hashOf requires: hash, kindHooks, uuids,
+  //@ vars
+  // A UUID's hash, its text's, cached in its `hash` field, or a Var's, its
+  // symbol's, as `hashStructural` hashes them; undefined for another value.
+  kindHooks.hashNamed = value => uuids.has(value) ? value.hash$LKEY ?? (value.hash$LKEY = hash(value.uuid$LKEY))
+    : vars.has(value) ? hash(vars.get(value).sym$LKEY) : undefined;
+  //@unit makeMap.equiv effect: ArrayMapCell, makeMap, treeMapConstructor when: mapEquiv,
+  //@ structuralEqualPair requires: equalPair, get, kindHooks, mapCount, mapKinds, mapPairs, maps,
+  //@ methodKeys, missing, protocolHooks
   // A record, no map here, compares through its `IEquiv` method
   // (`recordMethods.equiv`), which every reader of this hook keeps.
   kindHooks.equivMap = (left, right) => {
@@ -7838,8 +7890,8 @@
     }
     return true;
   };
-  //@unit makeSet.equiv effect: makeSet, treeSetConstructor when: structuralEqualPair requires: kindHooks,
-  //@ lookup, methodKeys, missing, protocolHooks, setCount, sets, setTraversal
+  //@unit makeSet.equiv effect: makeSet, treeSetConstructor when: classEquiv, structuralEqualPair
+  //@ requires: kindHooks, lookup, methodKeys, missing, protocolHooks, setCount, sets, setTraversal
   // Each member of `left`, in the order `seq` walks them, as upstream's
   // `reduce-kv` over its map, is looked up in the other set: O(n) lookups.
   kindHooks.equivSet = (left, right) => {
@@ -7858,16 +7910,16 @@
   //@unit publicHashSet.count effect: publicHashSet when: setCount requires: count, kindHooks
   // A hash set its public constructor built counts the map it received.
   kindHooks.countPublicSet = slots => count(slots["hash-map"]);
-  //@unit mapEntry.equiv effect: mapEntry when: structuralEqualPair unless: makeVector requires: equalPair,
-  //@ kindHooks, vectorStore
+  //@unit mapEntry.equiv effect: mapEntry when: classEquiv, equalPairOf, objectEquiv,
+  //@ structuralEqualPair unless: makeVector requires: equalPair, kindHooks, vectorStore
   // `makeVector.equiv`, which follows, where map entries, of two items, are
   // the only values with items.
   kindHooks.equivVectors = (left, right) => {
     const a = vectorStore(left).tail$LKEY, b = vectorStore(right)?.tail$LKEY;
     return !!b && equalPair(a[0], b[0]) && equalPair(a[1], b[1]);
   };
-  //@unit makeVector.equiv effect: makeVector when: structuralEqualPair requires: equalPair,
-  //@ holdsVector, kindHooks, vectorCount, vectorStorage
+  //@unit makeVector.equiv effect: makeVector when: classEquiv, equalPairOf, objectEquiv,
+  //@ structuralEqualPair requires: equalPair, holdsVector, kindHooks, vectorCount, vectorStorage
   // Where no other sequential value and no protocol implementation exists.
   kindHooks.equivVectors = (left, right) => {
     if (!holdsVector(right) || vectorCount(left) !== vectorCount(right)) return false;
@@ -7882,8 +7934,9 @@
   //@unit cons.equiv effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
   //@ listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
   //@ iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue, IndexedSeqValue, queueFromArray,
-  //@ LazySeq, Eduction, ISequential, extendType, extendInstance when: structuralEqualPair requires: count,
-  //@ countedValue, equalPair, first, kindHooks, methodKeys, next, protocolHooks, seq, sequential
+  //@ LazySeq, Eduction, ISequential, extendType, extendInstance when: classEquiv, equalPairOf,
+  //@ objectEquiv, structuralEqualPair requires: count, countedValue, equalPair, first, kindHooks,
+  //@ methodKeys, next, protocolHooks, seq, sequential
   // Sequential values: vectors, cells, views, queues and lazy seqs, and the
   // values of a program type that implements `ISequential`, which keep the
   // protocol's unit (`PROTOCOL_ROOTS` in src/runtime_slice.rs), as
@@ -7992,17 +8045,88 @@
       result = (result + hash(first(current))) | 0;
     return mixCollectionHash(result, n);
   }
-  //@unit hash requires: hashStructural, methodKeys, protocolHooks, protocolSentinel, slotFirst
-  // Weak identity bookkeeping never reads or mutates foreign object fields.
+  // `hash` is upstream's (light-cljs-1074), as `=`: a value with a keyed
+  // kind calls its keyed `-hash` slot, read and called once, which each
+  // class caches where `hash` cached it (a vector's, a keyword's, a
+  // symbol's, a map's and a set's in its `hash` field); every other value,
+  // and a value whose slot holds no method, takes the operation's own path
+  // (`hashOf`), upstream's. The old path (`hashPath`) serves the
+  // compile-time runtime and the shared-heap profile (`operationPaths`).
+  // The function stays under the 100 bytes of bytecode that V8's Maglev
+  // inlines (light-cljs-1033).
+  //@unit hash requires: hashOf, slotFirst
   function hash(value) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IHash$_hash$arity$1$LKEY;
+      if (method) return method.call(value, value) | 0;
+    }
+    return hashOf(value);
+  }
+  //@unit hashOf requires: hash, kindHooks, methodKeys, objectHash, operationPaths, primitiveHash,
+  //@ protocolHooks, protocolSentinel
+  // Upstream's `hash` of a value without a `-hash` slot holding a method,
+  // in the old path's order. nil is 0. A value of a runtime class whose
+  // instance slot holds nil or false takes its class's slot, as the old
+  // path answered by the class, and a seq or the queue without a slot its
+  // items in order (`hashSequential`, which caches them; the sequential
+  // kinds of `equalPairOf`, before any lookup, as there). A string, a
+  // number or a boolean implements
+  // `IHash` only through its prototype's mask bit (`IHash`'s, partition 0,
+  // bit 22) or marker, which an `extend-type` of `js/Number` or `js/Object`
+  // writes: read by name, as upstream's `implements?` reads them, they cost
+  // what a field read costs (light-cljs-1014), and without a method it
+  // hashes as upstream's. Any other value takes the method it declares, a
+  // date its time, a UUID or a var its
+  // text's or symbol's (`hashNamed`); then a method `extend-type` of
+  // `object` or `default` gave it (a cycle's or an iterate's too), else a
+  // JavaScript symbol's or a bigint's text's hash, else its identity.
+  function hashOf(value) {
+    const path = operationPaths.hash;
+    if (path !== undefined) return path(value);
     if (value == null) return 0;
-    // A number, a string or another primitive implements `IHash` only
-    // through its prototype's mask bit (`IHash`'s, partition 0, bit 22) or
-    // marker, which an `extend-type` of `js/Number` or `js/Object` writes:
-    // read by name, as upstream's `implements?` reads them, they cost what
-    // a field read costs, where the protocol lookup's computed names cost
-    // a keyed read of a primitive each (light-cljs-1014). A session that
-    // demands declarations (`slotFirst`) takes the lookup, which demands.
+    const kind = value.cljs$lang$kind$$LKEY;
+    if (kind < 64) {
+      const method = Object.getPrototypeOf(value)?.cljs$core$IHash$_hash$arity$1$LKEY;
+      if (method) return method.call(value, value) | 0;
+      if (kind < 32 ? (214171630 >>> kind & 1) === 1 : kind === 36) return kindHooks.hashSequential(value);
+    }
+    const type = typeof value, primitive = type === "string" || type === "number" || type === "boolean";
+    if (primitive && (value.cljs$lang$protocol_mask$partition0$$LKEY & 4194304) === 0 && value.cljs$core$IHash$$LKEY !== protocolSentinel) return primitiveHash(value);
+    const method = protocolHooks.implements?.(methodKeys[23], value) ? protocolHooks.builtin?.(value, methodKeys[22], 1) : null;
+    if (method) return method.call(value, value) | 0;
+    if (primitive) return primitiveHash(value);
+    if (value instanceof Date) return value.valueOf() | 0;
+    const named = kindHooks.hashNamed?.(value);
+    if (named !== undefined) return named;
+    const own = protocolHooks.builtin?.(value, methodKeys[22], 1);
+    if (own) return own.call(value, value) | 0;
+    return type === "symbol" || type === "bigint" ? hash(String(value)) : objectHash(value);
+  }
+  //@unit primitiveHash requires: hashDouble, hashInt, stringHash
+  // Upstream's hash of a string, a number or a boolean.
+  function primitiveHash(value) {
+    if (typeof value === "string") return hashInt(stringHash(value));
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) return value === Infinity ? 2146435072 : value === -Infinity ? -1048576 : 2146959360;
+      return Number.isSafeInteger(value) ? (Math.floor(value) % 2147483647) | 0 : hashDouble(value);
+    }
+    return value ? 1231 : 1237;
+  }
+  //@unit objectHash requires: identityCounter, identityHashes
+  // The hash of a host object or another value without a hash of its own:
+  // its identity's, a counter's next value it keeps weakly. Weak identity
+  // bookkeeping never reads or mutates foreign object fields.
+  function objectHash(value) {
+    if (!identityHashes.has(value)) identityHashes.set(value, ++identityCounter);
+    return identityHashes.get(value);
+  }
+  //@unit hashPath requires: hashStructural, methodKeys, protocolHooks, protocolSentinel, slotFirst
+  // `hash`'s own path over the runtime's classes (`operationPaths`).
+  function hashPath(value) {
+    if (value == null) return 0;
+    // A primitive's `IHash`, read by name as `hashOf` reads it. A session
+    // that demands declarations (`slotFirst`) takes the lookup, which
+    // demands.
     if (typeof value !== "object" && typeof value !== "function" && slotFirst.on && (value.cljs$lang$protocol_mask$partition0$$LKEY & 4194304) === 0
       && value.cljs$core$IHash$$LKEY !== protocolSentinel) return hashStructural(value);
     const method = protocolHooks.implements?.(methodKeys[23], value) ? protocolHooks.builtin?.(value, methodKeys[22], 1) : null;
@@ -8018,19 +8142,14 @@
   // Caches `hash` as a value's hash in its own field, and gives it.
   function holdHash(value, hash) { return value.hash$LKEY = hash; }
   //@unit hashStructural requires: builtinSlots, collectionTraversal, comparedSequential, hash,
-  //@ hashDouble, hashInt, hashNamed, heldHash, holdHash, identityCounter, identityHashes,
-  //@ keywordOf, kindHooks, maps, mapTraversal, methodKeys, mixCollectionHash, protocolHooks,
-  //@ setKinds, sets, stringHash, symbolOf, uuids, vars
+  //@ hashNamed, heldHash, holdHash, keywordOf, kindHooks, maps, mapTraversal, methodKeys,
+  //@ mixCollectionHash, objectHash, primitiveHash, protocolHooks, setKinds, sets, symbolOf, uuids,
+  //@ vars
   // `hash` of a non-nil value without a program's `IHash` method: what the
   // runtime's classes' `-hash` slots answer (light-cljs-1014), as
   // `structuralEqualPair` is `equalPair` without one.
   function hashStructural(value) {
-    if (typeof value === "boolean") return value ? 1231 : 1237;
-    if (typeof value === "number") {
-      if (!Number.isFinite(value)) return value === Infinity ? 2146435072 : value === -Infinity ? -1048576 : 2146959360;
-      return Number.isSafeInteger(value) ? (Math.floor(value) % 2147483647) | 0 : hashDouble(value);
-    }
-    if (typeof value === "string") return hashInt(stringHash(value));
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return primitiveHash(value);
     if (value instanceof Date) return value.valueOf() | 0;
     if (uuids.has(value)) {
       if (value.hash$LKEY == null) value.hash$LKEY = hash(value.uuid$LKEY);
@@ -8078,37 +8197,20 @@
     const nativeHash = protocolHooks.builtin?.(value, methodKeys[22], 1);
     if (nativeHash && !builtinSlots.has(nativeHash)) return nativeHash.call(value, value) | 0;
     if (typeof value === "symbol" || typeof value === "bigint") return hash(String(value));
-    if (!identityHashes.has(value)) identityHashes.set(value, ++identityCounter);
-    return identityHashes.get(value);
+    return objectHash(value);
   }
-  //@unit hash.slots effect: ChunkedCons, ChunkedSeqValue, Cons, IndexedSeqValue, KeywordValue,
-  //@ LazySeq, ListValue, MapEntryType, PersistentArrayMapValue, PersistentHashMapValue,
-  //@ PersistentHashSetValue, PersistentVectorValue, SubvecValue, SymbolValue, treeMapConstructor,
-  //@ treeSetConstructor when: hash requires: hash, noBranch, slotFirst
-  // Slot-first hashing (docs/value-layout.md, section 3, light-cljs-1014):
-  // a value of a runtime class (a keyed kind below 64) is hashed by its
-  // keyed `-hash` slot, its class's own (`vectorHash`, `structuralHash`,
-  // `namedHash`) or
-  // the method an `extend-type` or `specify!` of `IHash` wrote, which the
-  // operation's protocol lookup would have called; any other value takes
-  // the operation. Each class caches its hash where `hash` cached it: a
-  // vector's, a keyword's, a symbol's, a map's and a set's in its `hash`
-  // field.
-  hash = ((operation, noBranch, slotFirst) => Object.defineProperty(function (value) {
-    if (value != null && value.cljs$lang$kind$$LKEY < 64 && slotFirst.on) {
-      const method = value.cljs$core$IHash$_hash$arity$1$LKEY;
-      if (method) { const result = method.call(value, value); if (result !== noBranch) return result | 0; }
-    }
-    return operation(value);
-  }, "name", {value: operation.name}))(hash, noBranch, slotFirst);
 
   //@unit makeVector.hash effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
-  //@ IndexedSeqValue, queueFromArray, LazySeq when: hashStructural requires: cellOf, chunkedConsOf,
-  //@ hashOrderedColl, holdHash, holdsVector, kindHooks, lazyOf, queues, viewOf
-  // Sequential values (see `makeVector.equiv`).
+  //@ IndexedSeqValue, queueFromArray, LazySeq when: hashOf, hashStructural, seqHash, vectorHash
+  //@ requires: cellOf, chunkedConsOf, hashOrderedColl, heldHash, holdHash, holdsVector, kindHooks,
+  //@ lazyOf, queues, viewOf
+  // Sequential values (see `makeVector.equiv`): the hash cached in the
+  // value's `hash` field (`heldHash`), else computed.
   kindHooks.hashSequential = value => {
+    const known = heldHash(value);
+    if (known != null) return known | 0;
     if (holdsVector(value) || queues.has(value) || ["cons", "list", "repeat"].includes(cellOf(value)?.cell$LKEY) || value.slots$LKEY || viewOf(value)?.view$LKEY === "chunked") {
       return holdHash(value, hashOrderedColl(value));
     }
@@ -8129,7 +8231,7 @@
   function hashed(value, cached) { value.hash$LKEY = cached; return value; }
 
   // The classes' own `-equiv` and `-hash` (light-cljs-1014), which the
-  // slot-first `=` and `hash` call (`equalPair.slots`, `hash.slots`), and
+  // upstream-shaped `=` and `hash` call (light-cljs-1074), and
   // the compile-time protocol lookup too (build.rs, light-cljs-439),
   // so each answers every value of its class as the operation does. Vectors
   // compare by count and then index and maps by count and then a lookup of
@@ -8140,20 +8242,24 @@
   // `extend-type` or `specify!` has reached a runtime class
   // (`fieldComparisons`), as a program's `ICounted`, `ISeqable` or
   // `ILookup` method could then answer differently from the fields;
-  // after one, each class compares and hashes structurally, as before.
-  // Cycles and iterates keep identity, and no slot.
-  //@unit classEquiv requires: equalPair, fieldComparisons, slotFirst, structuralEqualPair,
+  // after one, each class compares and hashes structurally, as before,
+  // by its own comparison (`equivMap`, `equivSet`, `equivSequential`) or
+  // hash, without the old path's recognisers (`structuralEqualPair`,
+  // `hashStructural`). Cycles and iterates keep identity, and no slot.
+  //@unit classEquiv requires: equalPair, fieldComparisons, kindHooks, recordTypeOf, slotFirst,
   //@ vectorLeaf
   // The `-equiv` of a vector, a map entry, a set or a seq. Identical values
   // are equal, as `equalPair` (the `-equiv` protocol function's fallback)
   // answers them. Where both are vectors or map entries holding their items
   // in their own trie and tail (no view, no caller's tail), their counts,
   // then their items index by index, the first unequal pair ending it, as
-  // their seqs' walk compared them; else the structural comparison. A
+  // their seqs' walk compared them; else, with any value but a record, a
+  // set's count and membership and the others' items, as the old path's
+  // structural comparison (`equivSet`, `equivSequential`). A
   // session that demands declarations (`slotFirst`) takes the walk, whose
   // operations demand.
-  function classEquiv(self, other) {
-    if (self === other) return true;
+  function classEquiv(self, other, full) {
+    if (self === other && !full) return true;
     if (other != null && fieldComparisons.on && slotFirst.on) {
       const kind = self.cljs$lang$kind$$LKEY, otherKind = other.cljs$lang$kind$$LKEY, cnt = self.cnt$LKEY;
       if ((kind === 1 || kind === 3) && (otherKind === 1 || otherKind === 3) && self.tail$LKEY !== undefined && other.tail$LKEY !== undefined
@@ -8166,9 +8272,11 @@
         return true;
       }
     }
-    return structuralEqualPair(self, other);
+    if (recordTypeOf(other) !== undefined) return false;
+    const kind = self.cljs$lang$kind$$LKEY;
+    return kind === 33 || kind === 44 ? kindHooks.equivSet(self, other) : (kindHooks.equivSequential ?? kindHooks.equivVectors)(self, other);
   }
-  //@unit vectorHash requires: fieldComparisons, hash, hashStructural, mixCollectionHash, slotFirst,
+  //@unit vectorHash requires: fieldComparisons, hash, kindHooks, mixCollectionHash, slotFirst,
   //@ vectorLeaf
   // A vector's or a map entry's `-hash`, upstream's `hash-ordered-coll` of
   // its items index by index where it holds them in its own trie and tail,
@@ -8185,10 +8293,10 @@
       }
       return self.hash$LKEY = mixCollectionHash(result, cnt);
     }
-    return hashStructural(self);
+    return kindHooks.hashSequential(self);
   }
-  //@unit mapEquiv requires: arrayIndex, equalPair, fieldComparisons, get, mapPairs, missing,
-  //@ slotFirst, structuralEqualPair
+  //@unit mapEquiv requires: arrayIndex, equalPair, fieldComparisons, get, kindHooks, mapPairs,
+  //@ missing, slotFirst
   // An array, hash or sorted map's `-equiv`: against another such map, their
   // counts, then each key of this one looked up in the other (an array map's
   // keys searched as its `-lookup` searches them, `arrayIndex`), an array
@@ -8196,8 +8304,8 @@
   // `equivMap` does; identical maps are equal (see `classEquiv`). A value's
   // `IEquiv` method that extends a runtime type midway sends the remaining
   // keys through `get`, as `equivMap` looked each up.
-  function mapEquiv(self, other) {
-    if (self === other) return true;
+  function mapEquiv(self, other, full) {
+    if (self === other && !full) return true;
     if (other != null && fieldComparisons.on && slotFirst.on) {
       const kind = self.cljs$lang$kind$$LKEY, otherKind = other.cljs$lang$kind$$LKEY, arr = otherKind === 28 ? other.arr$LKEY : undefined;
       if ((otherKind === 28 ? arr !== undefined : (otherKind === 29 || otherKind === 30) && (other.cnt$LKEY !== undefined || "cnt$LKEY" in other))
@@ -8213,16 +8321,59 @@
         return true;
       }
     }
-    return structuralEqualPair(self, other);
+    return kindHooks.equivMap(self, other);
   }
-  //@unit structuralHash requires: builtinSlot, hashStructural
-  // The `-hash` of a map, a set or a seq: its structural hash, cached where
-  // `hash` caches it.
-  const structuralHash = builtinSlot(self => hashStructural(self));
-  //@unit namedHash requires: builtinSlot, hashStructural
+  //@unit mapHash requires: builtinSlot, hash, heldHash, holdHash, mapTraversal, mixCollectionHash,
+  //@ objectHash
+  // The `-hash` of an array, hash or sorted map, as the old path hashed it:
+  // its cached hash, else upstream's `hash-unordered-coll` of its entries
+  // (an array map's keys and values flat, `mapPairs`; a hash map's trie's
+  // leaves, light-cljs-1036; a sorted map's tree's nodes, light-cljs-1035),
+  // cached in its `hash` field; one without its fields its identity's.
+  const mapHash = builtinSlot(self => {
+    const known = heldHash(self);
+    if (known != null) return known | 0;
+    const kind = self.cljs$lang$kind$$LKEY;
+    if (kind === 28 && self.arr$LKEY !== undefined) {
+      const arr = self.arr$LKEY;
+      let result = 0;
+      for (let i = 0; i < arr.length; i += 2) result = (result + mixCollectionHash((Math.imul(31, 31 + hash(arr[i])) + hash(arr[i + 1])) | 0, 2)) | 0;
+      return holdHash(self, mixCollectionHash(result, (arr.length + 1) >> 1));
+    }
+    if ((kind === 29 || kind === 30) && (self.cnt$LKEY !== undefined || "cnt$LKEY" in self)) {
+      const entries = mapTraversal(self);
+      let result = 0;
+      for (const entry of entries) result = (result + mixCollectionHash((Math.imul(31, 31 + hash(entry.key)) + hash(entry.value)) | 0, 2)) | 0;
+      return holdHash(self, mixCollectionHash(result, entries.length));
+    }
+    return objectHash(self);
+  });
+  //@unit setHash requires: builtinSlot, collectionTraversal, heldHash, holdHash, mixCollectionHash,
+  //@ objectHash, setKinds, sets
+  // The `-hash` of a hash or sorted set: its cached hash, else the sum of
+  // its members' hashes, mixed, cached in its `hash` field; one without its
+  // members its identity's.
+  const setHash = builtinSlot(self => {
+    const known = heldHash(self);
+    if (known != null) return known | 0;
+    const members = sets.get(self);
+    if (!members) return objectHash(self);
+    let result = 0;
+    for (const entry of collectionTraversal(members, setKinds.get(self))) result = (result + entry.hash) | 0;
+    return holdHash(self, mixCollectionHash(result, members.length));
+  });
+  //@unit seqHash requires: builtinSlot, kindHooks
+  // The `-hash` of a list, a cons, a lazy seq, an indexed or chunked seq or
+  // a chunked cons: upstream's `hash-ordered-coll` of its items, cached
+  // (`hashSequential`).
+  const seqHash = builtinSlot(self => kindHooks.hashSequential(self));
+  //@unit namedHash requires: builtinSlot, hashNamed
   // The `-hash` of a keyword or a symbol: its cached `hash` field, else
-  // computed and cached.
-  const namedHash = builtinSlot(self => { const known = self.hash$LKEY; return known != null ? known : hashStructural(self); });
+  // computed and cached, a literal's too (light-cljs-1050).
+  const namedHash = builtinSlot(self => {
+    const known = self.hash$LKEY;
+    return known != null ? known : self.hash$LKEY = (hashNamed(self) + (self.cljs$lang$kind$$LKEY === 20 ? 0x9e3779b9 : 0)) | 0;
+  });
   //@unit keywordEquiv requires: keywordOf
   // The `-equiv` of a keyword (light-cljs-1040): identical values are equal
   // (see `classEquiv`), else two keywords by kind and `fqn`, as
@@ -8230,108 +8381,114 @@
   // prototype, with no `fqn` of its own, is equal to no other value, as the
   // structural comparison answers it. The keyword searches take this slot
   // for no program's method (`keywordProgramEquiv`).
-  function keywordEquiv(self, other) {
-    if (self === other) return true;
+  function keywordEquiv(self, other, full) {
+    if (self === other && !full) return true;
     const a = keywordOf(self), b = keywordOf(other);
     return a !== undefined && b !== undefined && a.fqn$LKEY === b.fqn$LKEY;
   }
   //@unit symbolEquiv requires: symbolOf
   // The `-equiv` of a symbol: as a keyword's, by kind and `str`.
-  function symbolEquiv(self, other) {
-    if (self === other) return true;
+  function symbolEquiv(self, other, full) {
+    if (self === other && !full) return true;
     const a = symbolOf(self), b = symbolOf(other);
     return a !== undefined && b !== undefined && a.str$LKEY === b.str$LKEY;
   }
   //@unit PersistentVectorValue.equivSlot effect: PersistentVectorValue when: equalPair,
-  //@ keywordProgramEquiv requires: builtinSlot, classEquiv, PersistentVectorValue
+  //@ equalPairOf, keywordProgramEquiv, objectEquiv requires: builtinSlot, classEquiv,
+  //@ PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit PersistentVectorValue.hashSlot effect: PersistentVectorValue when: hash requires: builtinSlot,
+  //@unit PersistentVectorValue.hashSlot effect: PersistentVectorValue when: hash, hashOf requires: builtinSlot,
   //@ PersistentVectorValue, vectorHash
   PersistentVectorValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = builtinSlot(vectorHash);
-  //@unit SubvecValue.equivSlot effect: SubvecValue when: equalPair, keywordProgramEquiv requires: builtinSlot,
-  //@ classEquiv, SubvecValue
+  //@unit SubvecValue.equivSlot effect: SubvecValue when: equalPair, equalPairOf,
+  //@ keywordProgramEquiv, objectEquiv requires: builtinSlot, classEquiv, SubvecValue
   SubvecValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit SubvecValue.hashSlot effect: SubvecValue when: hash requires: builtinSlot, SubvecValue,
-  //@ vectorHash
+  //@unit SubvecValue.hashSlot effect: SubvecValue when: hash, hashOf requires: builtinSlot,
+  //@ SubvecValue, vectorHash
   SubvecValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = builtinSlot(vectorHash);
-  //@unit MapEntryType.equivSlot effect: MapEntryType when: equalPair, keywordProgramEquiv requires: builtinSlot,
-  //@ classEquiv, MapEntryType
+  //@unit MapEntryType.equivSlot effect: MapEntryType when: equalPair, equalPairOf,
+  //@ keywordProgramEquiv, objectEquiv requires: builtinSlot, classEquiv, MapEntryType
   MapEntryType.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit MapEntryType.hashSlot effect: MapEntryType when: hash requires: builtinSlot, MapEntryType,
-  //@ vectorHash
+  //@unit MapEntryType.hashSlot effect: MapEntryType when: hash, hashOf requires: builtinSlot,
+  //@ MapEntryType, vectorHash
   MapEntryType.prototype.cljs$core$IHash$_hash$arity$1$LKEY = builtinSlot(vectorHash);
   //@unit PersistentArrayMapValue.equivSlot effect: PersistentArrayMapValue when: equalPair,
-  //@ keywordProgramEquiv requires: builtinSlot, mapEquiv, PersistentArrayMapValue
+  //@ equalPairOf, keywordProgramEquiv, objectEquiv requires: builtinSlot, mapEquiv,
+  //@ PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(mapEquiv);
-  //@unit PersistentArrayMapValue.hashSlot effect: PersistentArrayMapValue when: hash requires: PersistentArrayMapValue,
-  //@ structuralHash
-  PersistentArrayMapValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
+  //@unit PersistentArrayMapValue.hashSlot effect: PersistentArrayMapValue when: hash, hashOf
+  //@ requires: mapHash, PersistentArrayMapValue
+  PersistentArrayMapValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = mapHash;
   //@unit PersistentHashMapValue.equivSlot effect: PersistentHashMapValue when: equalPair,
-  //@ keywordProgramEquiv requires: builtinSlot, mapEquiv, PersistentHashMapValue
+  //@ equalPairOf, keywordProgramEquiv, objectEquiv requires: builtinSlot, mapEquiv,
+  //@ PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(mapEquiv);
-  //@unit PersistentHashMapValue.hashSlot effect: PersistentHashMapValue when: hash requires: PersistentHashMapValue,
-  //@ structuralHash
-  PersistentHashMapValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
-  //@unit treeMapConstructor.equivSlot effect: treeMapConstructor when: equalPair,
-  //@ keywordProgramEquiv requires: builtinSlot, mapEquiv, treeMapConstructor
+  //@unit PersistentHashMapValue.hashSlot effect: PersistentHashMapValue when: hash, hashOf
+  //@ requires: mapHash, PersistentHashMapValue
+  PersistentHashMapValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = mapHash;
+  //@unit treeMapConstructor.equivSlot effect: treeMapConstructor when: equalPair, equalPairOf,
+  //@ keywordProgramEquiv, objectEquiv requires: builtinSlot, mapEquiv, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(mapEquiv);
-  //@unit treeMapConstructor.hashSlot effect: treeMapConstructor when: hash requires: structuralHash,
+  //@unit treeMapConstructor.hashSlot effect: treeMapConstructor when: hash, hashOf requires: mapHash,
   //@ treeMapConstructor
-  treeMapConstructor.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
+  treeMapConstructor.prototype.cljs$core$IHash$_hash$arity$1$LKEY = mapHash;
   //@unit PersistentHashSetValue.equivSlot effect: PersistentHashSetValue when: equalPair,
-  //@ keywordProgramEquiv requires: builtinSlot, classEquiv, PersistentHashSetValue
+  //@ equalPairOf, keywordProgramEquiv, objectEquiv requires: builtinSlot, classEquiv,
+  //@ PersistentHashSetValue
   PersistentHashSetValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit PersistentHashSetValue.hashSlot effect: PersistentHashSetValue when: hash requires: PersistentHashSetValue,
-  //@ structuralHash
-  PersistentHashSetValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
-  //@unit treeSetConstructor.equivSlot effect: treeSetConstructor when: equalPair,
-  //@ keywordProgramEquiv requires: builtinSlot, classEquiv, treeSetConstructor
+  //@unit PersistentHashSetValue.hashSlot effect: PersistentHashSetValue when: hash, hashOf
+  //@ requires: PersistentHashSetValue, setHash
+  PersistentHashSetValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = setHash;
+  //@unit treeSetConstructor.equivSlot effect: treeSetConstructor when: equalPair, equalPairOf,
+  //@ keywordProgramEquiv, objectEquiv requires: builtinSlot, classEquiv, treeSetConstructor
   treeSetConstructor.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit treeSetConstructor.hashSlot effect: treeSetConstructor when: hash requires: structuralHash,
+  //@unit treeSetConstructor.hashSlot effect: treeSetConstructor when: hash, hashOf requires: setHash,
   //@ treeSetConstructor
-  treeSetConstructor.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
-  //@unit KeywordValue.equivSlot effect: KeywordValue when: equalPair, keywordProgramEquiv requires: builtinSlot,
-  //@ keywordEquiv, KeywordValue
+  treeSetConstructor.prototype.cljs$core$IHash$_hash$arity$1$LKEY = setHash;
+  //@unit KeywordValue.equivSlot effect: KeywordValue when: equalPair, equalPairOf,
+  //@ keywordProgramEquiv, objectEquiv requires: builtinSlot, keywordEquiv, KeywordValue
   KeywordValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(keywordEquiv);
-  //@unit KeywordValue.hashSlot effect: KeywordValue when: hash requires: KeywordValue, namedHash
+  //@unit KeywordValue.hashSlot effect: KeywordValue when: hash, hashOf requires: KeywordValue,
+  //@ namedHash
   KeywordValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = namedHash;
-  //@unit SymbolValue.equivSlot effect: SymbolValue when: equalPair, keywordProgramEquiv requires: builtinSlot,
-  //@ symbolEquiv, SymbolValue
+  //@unit SymbolValue.equivSlot effect: SymbolValue when: equalPair, equalPairOf,
+  //@ keywordProgramEquiv, objectEquiv requires: builtinSlot, symbolEquiv, SymbolValue
   SymbolValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(symbolEquiv);
-  //@unit SymbolValue.hashSlot effect: SymbolValue when: hash requires: namedHash, SymbolValue
+  //@unit SymbolValue.hashSlot effect: SymbolValue when: hash, hashOf requires: namedHash,
+  //@ SymbolValue
   SymbolValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = namedHash;
-  //@unit ListValue.equivSlot effect: ListValue when: equalPair, keywordProgramEquiv requires: builtinSlot,
-  //@ classEquiv, ListValue
+  //@unit ListValue.equivSlot effect: ListValue when: equalPair, equalPairOf, keywordProgramEquiv,
+  //@ objectEquiv requires: builtinSlot, classEquiv, ListValue
   ListValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit ListValue.hashSlot effect: ListValue when: hash requires: ListValue, structuralHash
-  ListValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
-  //@unit Cons.equivSlot effect: Cons when: equalPair, keywordProgramEquiv requires: builtinSlot,
-  //@ classEquiv, Cons
+  //@unit ListValue.hashSlot effect: ListValue when: hash, hashOf requires: ListValue, seqHash
+  ListValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = seqHash;
+  //@unit Cons.equivSlot effect: Cons when: equalPair, equalPairOf, keywordProgramEquiv, objectEquiv
+  //@ requires: builtinSlot, classEquiv, Cons
   Cons.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit Cons.hashSlot effect: Cons when: hash requires: Cons, structuralHash
-  Cons.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
-  //@unit LazySeq.equivSlot effect: LazySeq when: equalPair, keywordProgramEquiv requires: builtinSlot,
-  //@ classEquiv, LazySeq
+  //@unit Cons.hashSlot effect: Cons when: hash, hashOf requires: Cons, seqHash
+  Cons.prototype.cljs$core$IHash$_hash$arity$1$LKEY = seqHash;
+  //@unit LazySeq.equivSlot effect: LazySeq when: equalPair, equalPairOf, keywordProgramEquiv,
+  //@ objectEquiv requires: builtinSlot, classEquiv, LazySeq
   LazySeq.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit LazySeq.hashSlot effect: LazySeq when: hash requires: LazySeq, structuralHash
-  LazySeq.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
-  //@unit IndexedSeqValue.equivSlot effect: IndexedSeqValue when: equalPair, keywordProgramEquiv
-  //@ requires: builtinSlot, classEquiv, IndexedSeqValue
+  //@unit LazySeq.hashSlot effect: LazySeq when: hash, hashOf requires: LazySeq, seqHash
+  LazySeq.prototype.cljs$core$IHash$_hash$arity$1$LKEY = seqHash;
+  //@unit IndexedSeqValue.equivSlot effect: IndexedSeqValue when: equalPair, equalPairOf,
+  //@ keywordProgramEquiv, objectEquiv requires: builtinSlot, classEquiv, IndexedSeqValue
   IndexedSeqValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit IndexedSeqValue.hashSlot effect: IndexedSeqValue when: hash requires: IndexedSeqValue,
-  //@ structuralHash
-  IndexedSeqValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
-  //@unit ChunkedSeqValue.equivSlot effect: ChunkedSeqValue when: equalPair, keywordProgramEquiv
-  //@ requires: builtinSlot, ChunkedSeqValue, classEquiv
+  //@unit IndexedSeqValue.hashSlot effect: IndexedSeqValue when: hash, hashOf requires: IndexedSeqValue,
+  //@ seqHash
+  IndexedSeqValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = seqHash;
+  //@unit ChunkedSeqValue.equivSlot effect: ChunkedSeqValue when: equalPair, equalPairOf,
+  //@ keywordProgramEquiv, objectEquiv requires: builtinSlot, ChunkedSeqValue, classEquiv
   ChunkedSeqValue.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit ChunkedSeqValue.hashSlot effect: ChunkedSeqValue when: hash requires: ChunkedSeqValue,
-  //@ structuralHash
-  ChunkedSeqValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
-  //@unit ChunkedCons.equivSlot effect: ChunkedCons when: equalPair, keywordProgramEquiv requires: builtinSlot,
-  //@ ChunkedCons, classEquiv
+  //@unit ChunkedSeqValue.hashSlot effect: ChunkedSeqValue when: hash, hashOf requires: ChunkedSeqValue,
+  //@ seqHash
+  ChunkedSeqValue.prototype.cljs$core$IHash$_hash$arity$1$LKEY = seqHash;
+  //@unit ChunkedCons.equivSlot effect: ChunkedCons when: equalPair, equalPairOf,
+  //@ keywordProgramEquiv, objectEquiv requires: builtinSlot, ChunkedCons, classEquiv
   ChunkedCons.prototype.cljs$core$IEquiv$_equiv$arity$2$LKEY = builtinSlot(classEquiv);
-  //@unit ChunkedCons.hashSlot effect: ChunkedCons when: hash requires: ChunkedCons, structuralHash
-  ChunkedCons.prototype.cljs$core$IHash$_hash$arity$1$LKEY = structuralHash;
+  //@unit ChunkedCons.hashSlot effect: ChunkedCons when: hash, hashOf requires: ChunkedCons, seqHash
+  ChunkedCons.prototype.cljs$core$IHash$_hash$arity$1$LKEY = seqHash;
 
   //@unit compilerFormBridge compile-time requires: atoms, cellOf, chunkedConsFirst, chunkedConsOf,
   //@ chunkedConsRest, EmptyListCell, generatedNames, holdsVector, ifnValues, isCell, isChunkedCons,
@@ -9822,9 +9979,9 @@
   // No-ops until setDeclarationDemand installs a compiler session's demand.
   let demandProtocol = () => {}, demandMethod = () => {}, demandMulti = () => {};
   //@unit setDeclarationDemand compile-time requires: assocPath, conjPath, containsPath, countPath,
-  //@ demandMethod, demandMulti, demandProtocol, disjPath, dissocPath, firstPath, getPath, nextPath,
-  //@ nthPath, operationPaths, peekPath, popPath, print, reduceKvPath, reduceOwn, reducePath,
-  //@ restPath, seqPath, slotFirst, typeNames
+  //@ demandMethod, demandMulti, demandProtocol, disjPath, dissocPath, equalPairPath, firstPath,
+  //@ getPath, hashPath, nextPath, nthPath, operationPaths, peekPath, popPath, print, reduceKvPath,
+  //@ reduceOwn, reducePath, restPath, seqPath, slotFirst, typeNames
   function setDeclarationDemand(demand) {
     // A session that demands declarations reads no slot before its demand
     // (`slotFirst`), and takes the operations' own paths, whose lookups
@@ -9835,6 +9992,7 @@
       operationPaths.count = countPath; operationPaths.nth = nthPath; operationPaths.get = getPath; operationPaths.contains = containsPath; operationPaths.peek = peekPath;
       operationPaths.conj = conjPath; operationPaths.assoc = assocPath; operationPaths.dissoc = dissocPath; operationPaths.disj = disjPath; operationPaths.pop = popPath;
       operationPaths.reduce = reducePath; operationPaths.reduceOwn = reduceOwn; operationPaths.reduceKv = reduceKvPath;
+      operationPaths.equalPair = equalPairPath; operationPaths.hash = hashPath;
     }
     const methodProtocols = new Map();
     demandProtocol = (key, value) => { if (demand) demand(key, value, typeNames.get(value?.constructor)); };
@@ -9974,6 +10132,29 @@
   reduceKvOf = (operation => function (rf, init, collection) {
     return slotWrites(collection, methodKeys[28]) ? reduceKvPath(rf, init, collection) : operation(rf, init, collection);
   })(reduceKvOf);
+  // And `=`'s and `hash`'s (light-cljs-1074), whose value without an
+  // `-equiv` or `-hash` slot holding a method takes the old path
+  // (`equalPairPath`, `hashPath`) where it is a runtime class's.
+  //@unit slotWrites.equalPair effect: slotWrites when: equalPairOf requires: equalPairOf,
+  //@ equalPairPath, methodKeys, slotWrites
+  equalPairOf = (operation => function (left, right) {
+    return slotWrites(left, methodKeys[18]) ? equalPairPath(left, right) : operation(left, right);
+  })(equalPairOf);
+  //@unit slotWrites.hash effect: slotWrites when: hashOf requires: hashOf, hashPath, methodKeys,
+  //@ slotWrites
+  hashOf = (operation => function (value) {
+    return slotWrites(value, methodKeys[22]) ? hashPath(value) : operation(value);
+  })(hashOf);
+  // `.equiv` of an identical runtime value whose `-equiv` slot such a
+  // program cleared compares it structurally, as `objectEquiv` did before
+  // light-cljs-1074 (the Sol review's finding): `=`'s identity test comes
+  // before its fallback, so `slotWrites.equalPair` never sees it.
+  //@unit slotWrites.objectEquiv effect: slotWrites when: objectEquiv requires: comparedSequential,
+  //@ maps, methodKeys, namedOf, objectEquiv, sets, slotWrites, structuralEqualPair
+  objectEquiv = (operation => function (value, other) {
+    return value === other && !value?.cljs$core$IEquiv$_equiv$arity$2$LKEY && slotWrites(value, methodKeys[18])
+      && (maps.has(value) || sets.has(value) || namedOf(value) !== undefined || comparedSequential(value)) ? structuralEqualPair(value, other) : operation(value, other);
+  })(objectEquiv);
   //@unit declarationReceiver compile-time requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
   //@unit patchDeclaration mutator
@@ -12056,14 +12237,15 @@
     for (const entry of entries) result = (result + (hash(nth(entry, 0)) ^ hash(nth(entry, 1)))) | 0;
     return result;
   }
-  //@unit recordMethods.hash effect: recordMethods when: hash, hashProtocol, hashStructural
-  //@ requires: recordEntries, recordEntriesHash, recordMethodTable, stringHash, typeNames
+  //@unit recordMethods.hash effect: recordMethods when: hashOf, hashPath, hashProtocol,
+  //@ hashStructural requires: recordEntries, recordEntriesHash, recordMethodTable, stringHash,
+  //@ typeNames
   recordMethodTable.push(Type => [
     ["IHash/-hash", 1, function () {
       if (this.__hash != null) return this.__hash;
       return this.__hash = recordEntriesHash(recordEntries(this, Type), 0) ^ stringHash(typeNames.get(Type) ?? "");
     }]]);
-  //@unit recordMethods.equiv effect: recordMethods when: equalPair, equivProtocol,
+  //@unit recordMethods.equiv effect: recordMethods when: equalPairOf, equalPairPath, equivProtocol,
   //@ keywordLookupEquiv, objectEquiv requires: equalPair, recordMethodTable
   recordMethodTable.push(Type => [
     ["IEquiv/-equiv", 2, function (_self, other) {
@@ -14445,13 +14627,14 @@
     if (!isEntryCell(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
     return nth(entry, 1);
   }
-  //@unit protocolHooks.builtin effect: installMethods when: Loadable.dispatch, addWatchProtocol,
-  //@ assocOf, assocPath, collectionWithMeta, compareKeys, conjOf, conjPath, conjTransient,
-  //@ coreMethod, countOf, countPath, derefProtocol, disj, disjOf, disjPath, dissocOf, dissocPath,
-  //@ equalPair, firstOf, firstSeq, hash, hashStructural, iterator, keywordLookupEquiv,
-  //@ keywordProgramEquiv, metaSupported, name, namespace, notifyWatches, objectEquiv, peekOf,
-  //@ peekPath, pop, popOf, popPath, removeWatchProtocol, restOf, restSeq, rseq, stateProtocol,
-  //@ vresetProtocol, withMetaSupported requires: builtin, protocolHooks
+  //@unit protocolHooks.builtin effect: installMethods when: addWatchProtocol, assocOf, assocPath,
+  //@ collectionWithMeta, compareKeys, conjOf, conjPath, conjTransient, coreMethod, countOf,
+  //@ countPath, derefProtocol, disj, disjOf, disjPath, dissocOf, dissocPath, equalPairOf,
+  //@ equalPairPath, firstOf, firstSeq, hashOf, hashPath, hashStructural, iterator,
+  //@ keywordLookupEquiv, keywordProgramEquiv, Loadable.dispatch, metaSupported, name, namespace,
+  //@ notifyWatches, objectEquiv, peekOf, peekPath, pop, popOf, popPath, removeWatchProtocol,
+  //@ restOf, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin,
+  //@ protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,
   //@ protocolHooks
@@ -14497,8 +14680,8 @@
   // or `specify!` the protocols a value declares, then their native tests ...
   protocolHooks.satisfies = ownProtocol;
   //@unit protocolHooks.ownImplements effect: installMethods when: chunkNext, concatMany, concatTwo,
-  //@ cons, countOf, countPath, drop, filter, hash, indexedSequence, into, isChunkedSeq, isMapEntry,
-  //@ isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta requires: ownProtocol,
+  //@ cons, countOf, countPath, drop, filter, hashOf, hashPath, indexedSequence, into, isChunkedSeq,
+  //@ isMapEntry, isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta requires: ownProtocol,
   //@ protocolHooks
   protocolHooks.implements = ownProtocol;
   //@unit protocolHooks.satisfies effect: extendType, extendInstance when: KeySeqCell,
@@ -14564,9 +14747,10 @@
     return !!(protocol[type] || protocol._ || nativeMethods.get(name)?.get(type) || nativeMethods.get(name)?.get("_"));
   }
   //@unit protocolHooks.implements effect: extendType, extendInstance when: chunkNext, concatMany,
-  //@ concatTwo, cons, countOf, countPath, drop, filter, hash, indexedSequence, into, isChunkedSeq,
-  //@ isMapEntry, isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta requires: demandMethod,
-  //@ implementsProtocol, ownedKind, protocolHooks, protocolMethodInfo, protocolSentinel
+  //@ concatTwo, cons, countOf, countPath, drop, filter, hashOf, hashPath, indexedSequence, into,
+  //@ isChunkedSeq, isMapEntry, isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta
+  //@ requires: demandMethod, implementsProtocol, ownedKind, protocolHooks, protocolMethodInfo,
+  //@ protocolSentinel
   // `implements?`: the mask bit, then the marker, as the hook above, else
   // the native test (`coreProtocolImplementation`'s order, without
   // `satisfies`'s demand).

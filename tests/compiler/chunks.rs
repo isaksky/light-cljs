@@ -2937,20 +2937,18 @@ fn the_features_runtime_splits_by_signature() {
     // which `get` no longer reaches since light-cljs-1066),
     // which assign the binding startup declares, `get`'s slot-first wrapper
     // (light-cljs-1009, none since light-cljs-1066, where `get` is one),
-    // and `=`'s slot-first wrapper (light-cljs-1014).
-    let wrappers = [
-        ("equalPair", "equalPair.slots"),
-        ("structuralEqualPair", "structuralEqualPair.symbols"),
-    ]
-    .map(|(binding, name)| {
-        let wrapper = manifest.unit_named(name).unwrap();
-        assert!(
-            manifest
-                .sharers(manifest.unit_of(binding).unwrap())
-                .contains(&wrapper)
-        );
-        wrapper
-    });
+    // and `=`'s slot-first wrapper (light-cljs-1014, none since
+    // light-cljs-1074, where `=` is one).
+    let wrappers =
+        [("structuralEqualPair", "structuralEqualPair.symbols")].map(|(binding, name)| {
+            let wrapper = manifest.unit_named(name).unwrap();
+            assert!(
+                manifest
+                    .sharers(manifest.unit_of(binding).unwrap())
+                    .contains(&wrapper)
+            );
+            wrapper
+        });
     assert!(
         manifest
             .sharers(manifest.unit_of("derefProtocol").unwrap())

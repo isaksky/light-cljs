@@ -773,6 +773,9 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "slotWrites.next",
     "slotWrites.reduce",
     "slotWrites.reduceKv",
+    "slotWrites.equalPair",
+    "slotWrites.hash",
+    "slotWrites.objectEquiv",
     "multiTables",
     "addMethodDirect",
     "mapEntry.lean",
@@ -1259,9 +1262,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // `next`'s (light-cljs-1071); the eight `-reduce` slot units
     // light-cljs-1072 gave the classes the old path walked with walks of their
     // own and its two `slotWrites` effects, less the slot-first wrappers of
-    // `reduce` and `reduce-kv`; and the 29 `-meta` slot units of the
-    // collections and seqs (light-cljs-1070).
-    assert_eq!(checked, 570);
+    // `reduce` and `reduce-kv`; the 29 `-meta` slot units of the
+    // collections and seqs (light-cljs-1070); and light-cljs-1074's hash of
+    // the UUIDs and vars (`uuidValue.hash`) and its three `slotWrites`
+    // effects, less the slot-first wrappers of `=` and `hash`.
+    assert_eq!(checked, 572);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1499,6 +1504,7 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
         Kind::Stores(&["cells", "views", "queues", "lazyValues"]),
     ),
     ("equivNamed", Kind::Stores(&["uuids", "vars"])),
+    ("hashNamed", Kind::Stores(&["uuids", "vars"])),
     ("metaDeferred", Kind::Stores(&["deferredVarMetadata"])),
     ("conjQueue", Kind::Stores(&["queues"])),
     ("conjVector", Kind::Stores(&["vectors"])),
@@ -1815,11 +1821,13 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
 /// A record is in the `maps` store, but the hooks of `Kind::Maps` need not
 /// wait for `makeType` (light-cljs-246): wherever an operation could pass a
 /// record to them, the record answers through its own method first.
-/// Equality reaches `kindHooks.equivMap` only from `equalPair` and
-/// `objectEquiv`, which dispatch `IEquiv` through `protocolHooks.builtin`,
-/// and from the classes' `-equiv` slots (`classEquiv`, `mapEquiv`,
-/// light-cljs-1014), which require `equalPair`; `recordMethods.equiv` and that hook wait for `equalPair`, which
-/// `structuralEqualPair` requires. `kindHooks.entryIndex` is read by `lookup`,
+/// Equality reaches `kindHooks.equivMap` only from the old path
+/// (`equalPairPath`, `structuralEqualPair`), which dispatches `IEquiv`
+/// through `protocolHooks.builtin` first, from a map's `-equiv` slot
+/// (`mapEquiv`, light-cljs-1014), which passes no record to it, and from
+/// `selfEquiv`, which passes it a map (light-cljs-1074);
+/// `recordMethods.equiv` and that hook wait for `equalPairOf` and
+/// `equalPairPath`, which keeps `structuralEqualPair`. `kindHooks.entryIndex` is read by `lookup`,
 /// which a record reaches only from `get`, after `protocolHooks.programMethod`
 /// finds `recordMethods.lookup`: both wait for `get`. The other callers of
 /// `lookup` take maps and sets: their own prototypes' methods, set
@@ -1838,18 +1846,22 @@ fn kind_hooks_skip_records() {
         );
     };
     for effect in ["recordMethods.equiv", "protocolHooks.builtin"] {
-        waits_for(effect, "equalPair");
+        waits_for(effect, "equalPairOf");
+        waits_for(effect, "equalPairPath");
     }
-    // Every unit keeping `structuralEqualPair` keeps `equalPair`, but for
-    // the effects waiting for it, which wrap it (`structuralEqualPair.symbols`).
+    // Every unit keeping `structuralEqualPair` is the old path
+    // (`equalPairPath`), but for the effects waiting for it, which wrap it
+    // (`structuralEqualPair.symbols`).
     let structural = unit("structuralEqualPair");
     for requirer in manifest.units.iter().filter(|other| {
         other.requires.contains(&"structuralEqualPair")
             && !manifest.conditions(unit(other.name)).contains(&structural)
     }) {
+        // `slotWrites.objectEquiv` passes it only a runtime class's value
+        // (`slotWrites` tests a kind below 64), never a record.
         assert!(
-            requirer.name == "equalPair" || requirer.requires.contains(&"equalPair"),
-            "`{}` keeps `structuralEqualPair` without `equalPair`",
+            requirer.name == "equalPairPath" || requirer.name == "slotWrites.objectEquiv",
+            "`{}` keeps `structuralEqualPair` without `equalPairPath`",
             requirer.name
         );
     }
@@ -1871,11 +1883,9 @@ fn kind_hooks_skip_records() {
     assert_eq!(
         callers("structuralEqualPair"),
         [
-            "objectEquiv",
-            "equalPair",
+            "equalPairPath",
             "structuralEqualPair",
-            "classEquiv",
-            "mapEquiv"
+            "slotWrites.objectEquiv"
         ]
     );
     assert_eq!(
@@ -2120,14 +2130,14 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- setDeclarationDemand",
             "disjOf <- slotWrites.disj",
             "dissocOf <- slotWrites.dissoc",
-            "equalPair <- equalPair.slots",
+            "equalPairOf <- slotWrites.equalPair",
             "firstOf <- slotWrites.first",
             "gensymCounter <- gensym",
             "getOf <- slotWrites.get",
             "getPath <- get.own",
             "globalHierarchy <- getGlobalHierarchy",
-            "hash <- hash.slots",
-            "identityCounter <- hashStructural",
+            "hashOf <- slotWrites.hash",
+            "identityCounter <- objectHash",
             "lookup <- lookup.sets",
             "lookup <- lookup.transients",
             "lookup <- lookup.tree",
@@ -2138,6 +2148,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "nextOf <- slotWrites.next",
             "nthOf <- slotWrites.nth",
             "nthPath <- nth.protocol",
+            "objectEquiv <- slotWrites.objectEquiv",
             "patchDeclaration <- declarationTransaction",
             "patchDeclaration <- extendType",
             "patchDeclaration <- installMethods",
@@ -2274,10 +2285,8 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("ListValue.peekSlot"),
             unit("ListValue.conjSlot"),
             unit("ListValue.popSlot"),
-            unit("equalPair.slots"),
             unit("cons.equiv"),
             unit("cons.compared"),
-            unit("hash.slots"),
             unit("makeVector.hash"),
             unit("ListValue.equivSlot"),
             unit("ListValue.hashSlot"),

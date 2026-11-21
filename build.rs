@@ -545,7 +545,7 @@ const SHARED_TASK_STATE: &[&str] = &[
     "setDeclaration",
     // The identity counter: dead in this profile, where the engine hashes
     // a host object by its heap identity (`identityHash`); the verbatim
-    // `hash` unit still names it in the branch the view never takes.
+    // `objectHash` unit still names it in the branch the view never takes.
     "identityCounter",
     // The global hierarchy (an engine atom under effect lanes is 649's).
     "globalHierarchy",
@@ -1068,14 +1068,17 @@ fn shared_scalar_reads(base: &str) -> String {
             // Read-only receivers, numeric indexes and sizes. Defaults, stored
             // values, callbacks and collection occurrences remain untouched.
             let (signature, inputs) = match name {
-                "seq" | "first" | "rest" | "next" | "count" | "hash" | "parsingString"
+                "seq" | "first" | "rest" | "next" | "count" | "hashPath" | "parsingString"
                 | "numberArgument" => (format!("function {name}(value) {{"), "value"),
                 "nth" => (
                     "function nth(value, index, notFound) {".into(),
                     "value,index",
                 ),
                 "lookup" | "get" => (format!("function {name}(value, key, notFound) {{"), "value"),
+                // `=`'s identity test reads the scalars too, so that an
+                // occurrence of NaN is not equal to itself.
                 "equalPair" => ("function equalPair(left, right) {".into(), "left,right"),
+                "equalPairPath" => ("function equalPairPath(left, right) {".into(), "left,right"),
                 "compareKeys" => ("function compareKeys(a, b) {".into(), "a,b"),
                 "printWriterImpl" => (
                     "function printWriterImpl(value, writer, options, skipMetadata = false) {"
