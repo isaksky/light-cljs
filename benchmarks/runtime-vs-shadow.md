@@ -5359,3 +5359,64 @@ Steady state, from the medians at 1 and 40 iterations: light-cljs 34.0 to 33.9 m
 | vec-peek | 3.65 (3.64-3.66) | 3.64 (3.61-3.65) | +0% | 3.49 | 1.05, 1.04 |
 
 No operation moves more than 1% either way. Pass 1's operations ran with `light-cljs-1078-e8ed2ca0`; the fix after it touches only `reduceOf`, whose operations pass 2 measures. Workload 200k (above) also ran with `e8ed2ca0`, before the fix, which changes only `reduceOf`'s cold path back to master's text.
+
+## 2026-11-21: the store tests by kind (light-cljs-1079)
+
+Whether a value is one of the runtime's own (`ownedKind`) and the store inventories that were store tests (`seqableValue`, `collectionValue`, `metaValue`, `withMetaValue`) and `fnValue` test the value's keyed kind against fixed bits, where a table of stores by kind (`kindTable`, `storeHolds`, `storesPredicate`, `ownedStores`) asked the class's store; the extended lookup answers a runtime class's mask bit for the protocols it caches by kind (docs/value-layout.md, "What light-cljs-1079 landed"). The sizes are in benchmarks/re-frame-vs-shadow.md.
+
+**Binaries:** before `light-cljs-1078-6b2eabef` (its compiler sources are master `3f9c2446`'s), after `light-cljs-1079-12301e59`, V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; all unreserved. Raw results: `research/output-speed/store-tests-1079`.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5 --ops ...`; the gate's program extends no type, so its operations reach the change through printing, `meta` and the predicates' native tests: printing, seq walks, records, `apply`, `merge`, `select-keys`, `group-by`, `sort-by`, `into`; before then after with `--baseline`; load 5.2-6.4 before, 6.0-7.1 after), light-cljs ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| count-small | 2.13 | 2.11 (2.11-2.14) | -1% | 2.10 | 1.00, 1.00 |
+| vec-conj-64 | 1,636 | 1,449 (1,444-1,657) | -11% | 1,469 | 1.08, 0.99 |
+| destructure-map-3 | 34.6 | 34.3 (34.1-34.5) | -1% | 34.5 | 1.00, 0.99 |
+| filter-count-1000 | 30,178 | 29,610 (28,633-30,398) | -2% | 30,872 | 0.98, 0.96 |
+| mapv-1000 | 14,091 | 14,126 (13,960-14,188) | +0% | 12,288 | 1.14, 1.15 |
+| keys-small | 299.4 | 301.0 (296.0-304.7) | +1% | 75.4 | 3.95, 3.99 |
+| lazy-walk-1000 | 39,097 | 39,627 (39,156-41,261) | +1% | 41,127 | 0.93, 0.96 |
+| seq-walk-vec-1000 | 27,319 | 27,507 (27,060-27,887) | +1% | 10,061 | 2.66, 2.73 |
+| str-nested-map | 4,078 | 4,109 (4,076-4,143) | +1% | 2,362 | 1.71, 1.74 |
+| str-concat | 168.1 | 169.3 (166.2-171.4) | +1% | 14.9 | 11.21, 11.39 |
+| protocol-on-record | 2.40 | 2.39 (2.37-2.46) | +0% | 2.39 | 1.00, 1.00 |
+| record-assoc | 50.4 | 49.9 (49.8-50.2) | -1% | 10.4 | 4.80, 4.82 |
+| multimethod | 71.0 | 71.3 (70.7-71.4) | +1% | 39.8 | 1.79, 1.79 |
+| variadic-call | 14.6 | 14.7 (14.5-14.7) | +0% | 9.74 | 1.52, 1.51 |
+| apply-vec | 179.1 | 179.4 (177.2-181.0) | +0% | 75.6 | 2.37, 2.37 |
+| swap-inc | 4.83 | 4.74 (4.71-4.87) | -2% | 5.67 | 0.85, 0.84 |
+| merge-small | 1,496 | 1,472 (1,415-1,543) | -2% | 726.9 | 2.06, 2.03 |
+| select-keys-3 | 211.0 | 215.2 (211.9-216.5) | +2% | 227.1 | 0.93, 0.95 |
+| group-by-100 | 6,062 | 6,049 (5,962-6,106) | +0% | 4,273 | 1.40, 1.42 |
+| sort-by-100 | 6,350 | 6,424 (6,300-6,558) | +1% | 4,676 | 1.35, 1.37 |
+| str-sorted-map-20 | 32,032 | 31,931 (31,598-33,134) | +0% | 20,501 | 1.55, 1.56 |
+| into-vec-small | 148.3 | 147.3 (144.8-149.7) | -1% | 129.1 | 1.15, 1.14 |
+| into-map-small | 421.8 | 427.6 (419.5-434.7) | +1% | 277.6 | 1.52, 1.54 |
+| into-list-small | 157.6 | 158.5 (156.4-159.0) | +1% | 111.2 | 1.40, 1.43 |
+
+No touched operation is more than 2% slower (`select-keys-3`, 211.0 to 215.2, whose runs overlap: 209.2-215.8 before). `vec-conj-64`'s -11% is noise: its runs overlap too (1,440-1,679 before, 1,444-1,657 after).
+
+**Predicates in a program that extends types** (the gate's program extends none, so the hooks' and the extended lookup's paths are timed by a small program of this pellet's, `research/output-speed/store-tests-1079/predbench`: an `extend-type` of a program type and of `object`, then each operation over 18 values (vectors, maps, lists, sets, lazy seqs, ranges, a keyword, an atom, a host object, a string, nil, a program type's value, a seq, a cons, a volatile, a delay and a uuid) in turn; built by each binary at `:advanced`, 5 runs of each alternated, every checksum equal; load 5.4-5.7), ns per call, median (range):
+
+| op | before | after | change |
+| --- | ---: | ---: | ---: |
+| `(satisfies? ISeqable x)` | 66.2 (64.8-67.1) | 61.3 (59.8-64.6) | -7% |
+| `(satisfies? IMeta x)` | 69.4 (66.4-72.6) | 63.7 (63.1-68.1) | -8% |
+| `seqable?` | 40.1 (38.8-40.5) | 38.4 (38.1-44.4) | -4% |
+| `coll?` | 29.7 (28.8-29.8) | 27.2 (26.8-27.4) | -8% |
+| `counted?` | 75.8 (74.5-80.2) | 71.6 (67.5-73.7) | -6% |
+| `fn?` | 36.8 (36.0-38.9) | 34.5 (33.6-35.1) | -6% |
+| `meta` | 88.1 (86.9-91.8) | 87.3 (86.5-89.7) | -1% |
+| `pr-str` (of the first seven) | 1,110 (1,086-1,139) | 1,104 (1,091-1,122) | -1% |
+
+The store test was a call to the class's store's `has`; the kind test is arithmetic on the kind the hooks have already read.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1079 --runs 5 --runtime-only --runtime 1,40`, a copy of the project whose light-cljs output was rebuilt with each binary just before its run, every checksum equal to the oracle's; load 5.8-6.0 before, 6.0-6.6 after), median wall time (range):
+
+| iterations | light before | light after | shadow-cljs (before run, after run) |
+| --- | ---: | ---: | ---: |
+| 1 | 0.353 s (0.343-0.357) | 0.350 s (0.346-0.353) | 0.330 s, 0.331 s |
+| 40 | 1.585 s (1.557-1.597) | 1.552 s (1.543-1.560) | 1.346 s, 1.331 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 31.6 to 30.8 ms per iteration, shadow-cljs 26.1 and 25.6 (light/shadow 1.21, 1.20).

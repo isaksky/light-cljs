@@ -1943,3 +1943,49 @@ bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
 - **light-cljs's output as written**, without React, after gzip: simple 68,580 to 68,413 (-167), TodoMVC 98,039 to 97,881 (-158), flow 281,360 to 281,186 (-174).
 - **Against the expectation** of 600 to 1,000 bytes per app: about a sixth to a quarter of it. The removed text was the most repeated in the fallbacks, so gzip had already shared most of it: 1.7 KB raw is about 150 to 260 bytes after gzip. What is left in the fallbacks is each operation's own steps (the seq walk of `nthOf`, `countOf`'s and `reduceOf`'s kinds).
 - **Ratchet fixtures at `:advanced`** (tests/support/ratchet_fixtures.rs): no fixture grows, and the 20 that keep several fallbacks shrink 71 to 1,062 bytes raw. A fallback that reads only its class's slot (`countOf`, `equalPairOf`, `hashOf`) keeps its own read: through the shared function, the programs that keep only those grew 17 to 90 bytes. `reduceOf` keeps its own read too, of the kind it reads once (the Sol review), 97 bytes where `reduce` is kept.
+
+## 2026-11-21: the store tests by kind (light-cljs-1079)
+
+light-cljs-1078's second part, filed as this pellet: the `satisfies` and `implements` hooks, printing and the metadata paths asked light-cljs-1046's store inventories (a table of stores by kind, `kindTable`, `storeHolds`, `storesPredicate`, `ownedStores`, and the `*Cells` lists that only they read). Now whether a value is one of the runtime's own (`ownedKind`) and the four inventories that were store tests (`seqableValue`, `collectionValue`, `metaValue`, `withMetaValue`) and `fnValue` test the keyed kind against fixed bits (docs/value-layout.md, "What light-cljs-1079 landed").
+
+```sh
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
+```
+
+### Measured before the change
+
+light-cljs-1078 saved a sixth to a quarter of its expectation, as gzip had already shared the text it removed, so this pellet first took each candidate group out of master's output as written (gzip -9, without React; the text then no longer runs) and measured what it would save:
+
+| Taken out of master's output | simple | TodoMVC | flow |
+|---|---:|---:|---:|
+| every inventory and recogniser (light-cljs-1049's upper bound; 94 to 96 units, 8.2 to 8.3 KB raw) | 2,172 | 2,180 | 2,330 |
+| the store table and the eight `*Cells` lists that only it reads (13 units, 785 raw) | 239 | 257 | 253 |
+| the 26 native tests that only the native tests' table keeps (1.35 KB raw) | 334 | 359 | 331 |
+| the native tests' table itself (`builtinCoreImplementation`, 476 raw) | 239 | 267 | 252 |
+| the ownership test (`ownedKind`, `ownedProtocolValue`) | 20 | 24 | 22 |
+| the four groups above together (42 units, 2.66 KB raw) | 848 | 884 | 902 |
+| the store table and lists out, the tests by kind bits in, as approximate text | 180 | 192 | 189 |
+
+- **Most of the upper bound stays.** The recognisers (`cellOf`, `viewOf`, `isArrayMap`, ...) have other readers: `empty`, `find`, printing, the classes' fields. The native tests' table must still answer every core protocol for `extend-type`'s external lookup and `implements?`.
+- **What a test by kind removes** is the store table and its lists, about 190 bytes per app. That is what this pellet did.
+- **What was not done:** answering the other native tests by masks. Of the 26, only those whose classes all carry complete masks could become a mask read; the rest keep a residual for the seqs over an array or a string (whose answers differ with their `view`), the classes without masks, records and host values. That is perhaps 80 to 120 bytes per app.
+
+### Setup
+
+- **Binaries:** before `light-cljs-1078-6b2eabef` (its compiler sources are master `3f9c2446`'s), after `light-cljs-1079-12301e59`; `light-cljs-f533efb1` for the gate. All V8 builds.
+- **Ports:** porter `shadow-port-tool-983` with the `light-cljs-1078-6b2eabef` binary, one port per app into an empty directory, built by every binary. On these ports `f533efb1` gives simple and TodoMVC their gate sizes exactly, and flow 328,639.
+- **Machine:** unreserved, load average 3.9 to 4.4. Sizes do not depend on load.
+- **Raw results:** `research/output-speed/store-tests-1079` (`size-<binary>.md`, `whatif/`, `scripts/`).
+
+### The whole bundle with React, gzip -9
+
+| App | master (`1078-6b2eabef`) | light-cljs-1079 | Change | Over `f533efb1` now |
+|---|---:|---:|---:|---:|
+| re-frame simple | 114,531 | 114,304 | -227 (-0.20%) | +5,673 |
+| TodoMVC | 145,790 | 145,629 | -161 (-0.11%) | +7,614 |
+| flow | 333,393 | 333,272 | -121 (-0.04%) | +4,633 |
+
+- **Raw:** the whole bundles are 681, 653 and 675 bytes smaller. brotli -q 11: simple -406, TodoMVC -196, flow +187.
+- **light-cljs's output as written**, without React, after gzip: simple 68,413 to 68,192 (-221), TodoMVC 97,881 to 97,680 (-201), flow 281,186 to 281,027 (-159).
+- **Against the expectation** of 800 to 1,500 bytes per app: 121 to 227 bytes, 15 to 28% of its low end, as the measurement above predicted. The rest of the 2 KB upper bound is code other paths read.
+- **Ratchet fixtures at `:advanced`** (tests/support/ratchet_fixtures.rs): no fixture grows; the 20 that keep a store test shrink 16 to 2,513 bytes raw. Printing kept every store through `ownedProtocolValue`, so the fixtures that print shrink most: `vector-printed` 15,815 to 13,302, `map-printed` 23,839 to 22,171.

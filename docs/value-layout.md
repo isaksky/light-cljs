@@ -2375,6 +2375,84 @@ are unchanged.
   of the repeated steps; the gate's 33 touched operations within -3% and
   +1%; workload 200k's steady state 34.0 to 33.9 ms per iteration.
 
+What light-cljs-1079 landed: whether a value is one of the runtime's own
+(`ownedKind`, `ownedProtocolValue`, `runtimeKind`) and the store
+inventories that were store tests (`seqableValue`, `collectionValue`,
+`metaValue`, `withMetaValue`) and `fnValue` test the value's keyed kind
+against fixed bits (`kindIn`, `kindPredicate`), where a table of stores by
+kind (`kindTable`, `storeHolds`, `storesPredicate`, `ownedStores`,
+light-cljs-1046) asked the class's store; the stores lose their
+`classKinds`.
+
+- **Measured first.** Taken out of master's output as written (gzip -9,
+  light-cljs-1078's method), the inventories and recognisers cost 2,172 to
+  2,330 bytes, but most of the recognisers have other readers (`cellOf`,
+  `viewOf`, `isArrayMap` and the others: `empty`, `find`, printing, the
+  classes' fields), and the native tests' table (`nativeImplementations`)
+  must still answer every core protocol for `extend-type`'s external
+  lookup (`externalMethod`) and `implements?`. What a test by kind can
+  remove, the store table and the eight `*Cells` lists that only it read,
+  measured 239 to 257 bytes, and 180 to 192 with approximate replacement
+  text, before any code was written.
+- **By kind.** The own values' kinds are those of the classes of
+  `protocolStores`: 1 to 17, 20 to 36, 38 to 41, 44 to 46 and the
+  records' 65. A value made by reflection from one of their prototypes
+  (`Object.create`) is the runtime's own now, as its class's values are,
+  where its class's store told it apart by an own field (section 5, item
+  38). An iterator seq, which is not the runtime's own, keeps its store's
+  field test in `seqableValue`, so `extend-type` of `object` still
+  reaches one made by reflection as it reaches every iterator seq.
+- **No answer by kind from a value made by reflection.** The `satisfies`
+  and `implements` hooks and the extended lookup keep a protocol's native
+  answer by kind (`protocolMethodInfo`'s `kinds`) for the 13 protocols
+  whose answer is the same for every value of a class. A value made by
+  reflection now reaches that step, and its native tests, which read its
+  fields, would answer false for its whole class. So the extended lookup
+  answers a runtime class's value whose class has a mask in the
+  protocol's partition by its bit, as the `satisfies` hook does: with the
+  bit set, its slot is the only method, where it asked the native test,
+  which is true for every value of such a class (light-cljs-1070's masks).
+  Only the classes without masks (Reduced, atoms, volatiles, delays,
+  multimethods, vars and functions with metadata) reach the answer by kind
+  there, and of those protocols' native tests only `metaValue` and
+  `fnValue` are true for them; both read only the kind now.
+- **The Pants build's profile** swaps in its own `seqableValue`,
+  `collectionValue`, `metaValue`, `withMetaValue` and `fnValue`, which probe
+  the stores in turn as its `ownedProtocolValue` does (src/js_shared_profile.js):
+  its engine forms have no kind. The `*Cells` lists and `protocolStores`
+  stay in the runtime's text for it; no V8 slice keeps them.
+- **Answers kept.** Every runtime, host and `specify!`-ed row of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup`, its forged
+  rows, and `extended_programs_answer_count_meta_and_predicates_without_the_lookup`
+  (whose counted store test is now `kindIn`, with no call for the hits)
+  answer as before. The Proxy is asked twice less in each extension set
+  (306, 319 and 306 times, where 308, 321 and 308): `fnValue` reads its
+  kind once where `metaFunctions` and `vars` read it in turn.
+- **What was not done.** Answering the other native tests by masks: the
+  26 that only the native tests' table keeps cost 335 to 350 bytes after
+  gzip and the table 244 to 276, but the table stays for every protocol,
+  and of those tests only the ones whose classes all carry complete masks
+  (`stackValue`, `setValue`, `sortedValue`, the transients' and a few
+  more) could become a mask read; the rest keep a residual for the seqs
+  over an array or a string, whose answers differ with their `view`, for
+  the classes without masks, for records and for host values. That is
+  perhaps 80 to 120 bytes, for a rewrite of `class_protocol_masks`, which
+  pins the masks against those tests. Splitting the views' class by
+  `view`, which would let masks answer them, is light-cljs-1077's (the
+  classes and constructors).
+- **Measured** (benchmarks/re-frame-vs-shadow.md and
+  benchmarks/runtime-vs-shadow.md, light-cljs-1079; binaries
+  `light-cljs-1078-6b2eabef`, master's compiler sources, and
+  `light-cljs-1079-12301e59`, unreserved): the re-frame apps' whole
+  bundles 227, 161 and 121 bytes smaller after gzip (simple, TodoMVC,
+  flow; 653 to 681 raw), against the pellet's expected 800 to 1,500; the
+  size ratchet's fixtures that print shrink most (`vector-printed` 15,815
+  to 13,302), as printing kept every store through `ownedProtocolValue`;
+  the gate's 24 operations that reach it within -2% and +2% (`vec-conj-64`'s
+  -11% overlapping noise); in a program that extends types, `satisfies?`,
+  `seqable?`, `coll?`, `counted?` and `fn?` 4 to 8% faster, `meta` and
+  printing 1%; workload 200k's steady state 31.6 to 30.8 ms per iteration.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -3443,6 +3521,37 @@ gives the class's answer, where it gave the other function's. Reading the
 slot once per item is this pellet's rule; where the dispatchers read it
 once (nil, false or a program's method first), `into` and a map's `-conj`
 read it once too (`into_onto_other_collections_keeps_extended_answers`).
+
+Rescoped by light-cljs-1079, whose test of the runtime's own values
+(`ownedKind`) and whose store inventories read the keyed kind alone, so a
+value made by `Object.create` of a prototype of one of the runtime's own
+classes is the runtime's own as its class's values are:
+
+38. tests/support/js_runtime.test.js, "public constructor fields preserve
+    canonical payload brands" (item 17's change, which the field accessor
+    now makes): writing `__hash` on a forged list, repeat, vector,
+    subvector, chunked seq, queue, array or hash map or hash set writes the
+    forged value's own hash field, where it threw "Expected public core
+    value", and writing a repeat's, cycle's or iterate's state reads the
+    state the forged value lacks (a `TypeError`); the symbols', conses' and
+    keywords' accessors, which test their fields, still throw. And
+    `protocol_hooks_answer_runtime_values_as_the_full_lookup`'s Proxy line
+    (items 2 and 4): asked 306, 319 and 306 times, where 308, 321 and 308.
+
+What else changes for such a value, which no test pins: `satisfies?` and
+`implements?` of a value made from the prototype of a class without masks
+(an atom, a volatile, a delay, a reduced value, a multimethod, a var, a
+function with metadata) answer as its class's values by kind (`IMeta` of a
+forged atom is true), and `extend-type` of `object` or `default` no longer
+reaches it; `seq?`'s, `coll?`'s and `meta`'s native tests (`seqableValue`,
+`collectionValue`, `metaValue`, `withMetaValue`) and `fn?`'s (`fnValue`) take
+it as its class's values; printing takes it for the runtime's own
+(`printableValue`), so its class's printer reads the fields it lacks, where
+it printed as a host object; and the extended lookup of a forged value
+whose class's mask bit is set gives its slot, where the native test,
+which read its fields, sent it through `satisfies` to `extendedDeclared`.
+Iterator seqs, chunks, chunk buffers, uuids, eductions, string writers and
+`ExceptionInfo`, which are not the runtime's own, keep their answers.
 
 ### Documentation rules that change
 

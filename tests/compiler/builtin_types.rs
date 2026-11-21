@@ -787,10 +787,22 @@ fn extended_programs_answer_count_meta_and_predicates_without_the_lookup() {
     options.pseudo_names = true;
     let mut js = prepare_application(&program(source), options).emit_js();
     for (head, count) in [
-        ("function extendedMethod(value, key, arity, fast = false, directOnly = false) {", " globalThis.__calls++;"),
-        ("const kindIn = (kind, low, high, program) =>", " globalThis.__calls++ >= 0 &&"),
-        ("function coreProtocolImplementation(protocol, value) {", " globalThis.__calls++;"),
-        ("function satisfies(protocol, value) {", " globalThis.__calls++;"),
+        (
+            "function extendedMethod(value, key, arity, fast = false, directOnly = false) {",
+            " globalThis.__calls++;",
+        ),
+        (
+            "const kindIn = (kind, low, high, program) =>",
+            " globalThis.__calls++ >= 0 &&",
+        ),
+        (
+            "function coreProtocolImplementation(protocol, value) {",
+            " globalThis.__calls++;",
+        ),
+        (
+            "function satisfies(protocol, value) {",
+            " globalThis.__calls++;",
+        ),
     ] {
         assert!(js.contains(head), "{head}");
         js = js.replace(head, &format!("{head}{count}"));
