@@ -5117,6 +5117,23 @@ The vector, array map, hash map and hash set classes have `-as-transient` and `-
 - **The new operations** `into-vec-small` (`(into [] v)` of vectors of 2 to 8 items) and `into-map-small` (`(into {} m)` of the 7-key maps), added after light-cljs-1073's so that no earlier operation's number moves, are the per-call cost: a small vector's `into` is within 6% of shadow-cljs's (1.77 before). `into-map-small` stays at 2.2 times shadow-cljs's: its readable profile (`--pseudo-names into-map-small`, research/output-speed/into-slots-1067/profile-into-map-small) has its time in each entry's `conj!` onto the map transient (`arrayIndex` 16%, `kindHooks.assocTransientMap` 14%, the entry's `nth` 10%, `editableTransient` 3%), where shadow-cljs's is in `array-index-of` and `-assoc!`, and 2.5% in `into2`'s own steps.
 - **Other gains:** `transient` of a vector reads its slot (`transient-vec-100` -4 to -7%), and `select-keys-3` (-7 to -11%) and `merge-small` (-1 to -5%) give their results metadata through `collectionWithMeta`, whose lookup now finds the class's `-with-meta` slot, which answers a value already holding the metadata at once, where the old path first tested eight stores.
 
+**Recheck with the final binary** `light-cljs-1067-f33cd4e3` (the review's fix, `withMetaSlot` reading `meta` once, rebased onto light-cljs-1074) against master `light-cljs-b86a231e`, the same operations but `transient-map-100`, `merge-small`, `sort-by-100` and `filter-count-1000`, run final, master, final (load 12-23, a peer's suites running), light-cljs ns per operation:
+
+| op | master | final (two runs) | change | shadow-cljs | light/shadow master, final |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| into-vec-small | 207.2 | 124.3, 124.2 | -40% | 110.0 | 1.88, 1.13 |
+| into-map-small | 526.4 | 389.8, 387.6 | -26% | 272.6 | 1.93, 1.42 |
+| into-vec-keys-small | 499.8 | 411.2, 415.4 | -18%, -17% | 191.8 | 2.61, 2.15 |
+| into-set-100 | 5,121 | 4,925, 5,018 | -4%, -2% | 3,189 | 1.61, 1.55 |
+| into-xform-1000 | 30,141 | 29,887, 30,301 | -1%, +1% | 14,228 | 2.12, 2.11 |
+| transient-vec-100 | 1,202 | 1,161, 1,162 | -3%, -3% | 1,075 | 1.12, 1.08 |
+| select-keys-3 | 184.3 | 177.9, 180.2 | -3%, -2% | 144.4 | 1.28, 1.24 |
+| mapv-1000 | 14,111 | 13,957, 14,035 | -1%, -1% | 13,380 | 1.05, 1.04 |
+| group-by-100 | 5,972 | 6,149, 6,192 | +3%, +4% | 4,361 | 1.37, 1.41 |
+
+- `group-by-100` calls none of the changed code (`groupBy` is `reduce`, `assoc`, `conj` and `get`); alone in its process (`--ops group-by-100`, master, final, master, final, load 11.5-13.0) it measured 6,867 to 6,792 (-1%) and 6,892 to 6,998 (+2%), so the +3 to +4% beside the `into` operations is their feedback in the shared process, as light-cljs-1060 found for `swap-assoc`. An earlier final-then-master attempt at load 9.5-16.3, whose shadow-cljs numbers rose 6 to 9% between its two runs, is not used.
+- `into-map-small` and `into-vec-keys-small` gain more here than against `8903e693` in percent, not in time: master `b86a231e` (with light-cljs-1074's `=` and `hash`) runs them faster than `8903e693` did (`into-map-small` 526 against 899 to 951 ns), and the per-call time this pellet removes is about the same (137 ns here, 158 to 167 there).
+
 **Workload 200k** (`compare.bb PROJECT --runs 3 --runtime-only --runtime 1,40`, two copies of `workload-200k-seed42`, `-1067b` built by the before binary and `-1067` by the after, run before, after, before, after), wall time at 40 iterations, median (range), and light-cljs's steady state:
 
 | round | light before | light after | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
