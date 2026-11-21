@@ -4559,7 +4559,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [306, 306, 302],
+            [305, 305, 301],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -4620,7 +4620,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [319, 319, 316],
+            [318, 318, 315],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -4649,7 +4649,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 // prototype (light-cljs-1028), and `nth` walks its seq: a
                 // write to a runtime prototype (docs/value-layout.md, section
                 // 5, item 23).
-                "sorted-map 010010011011010010000 1 [:a 1] 2\n",
+                "sorted-map 010010011010010010000 1 [:a 1] 2\n",
                 "set 000111010000010000000 :unmarked :error 2\n",
                 "hash-set 000111010000010000000 :unmarked :error 21\n",
                 "sorted-set 000111010011010000000 1 :error 2\n",
@@ -4687,7 +4687,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [306, 306, 306],
+            [305, 305, 305],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
@@ -5990,4 +5990,59 @@ fn fallbacks_read_a_host_value_as_before() {
         r#"[["3" 9] ["3" 9] ["E" 8] ["2" 3] ["2" 5] [":nf" 4] ["2" 5] ["E" 7] ["E" 3] ["E" 3] ["E" 2] ["E" 2] ["E" 2] ["1" 6] ["(2)" 9] ["(2)" 11] ["(1 2)" 10] ["false" 2] ["1" 2] ["true" 7]]"#,
     ];
     assert_eq!(printed, expected.map(|line| format!("{line}\n")));
+}
+
+/// light-cljs-1079: whether a value is one of the runtime's own
+/// (`ownedKind`) reads its keyed kind alone, so a value made by
+/// `Object.create` of the prototype of a class without masks (an atom, a
+/// var, a function with metadata, a reduced value, a delay, a volatile)
+/// answers `satisfies?`, `implements?` and `fn?` as its class's values do by
+/// kind, and `extend-type` of `object` or `default` no longer reaches it
+/// (docs/value-layout.md, section 5, item 38); a native test that reads its
+/// fields (`IDeref`'s) still answers false. Asked first, such a value leaves
+/// the genuine values' answers, which the hooks keep by kind
+/// (`protocolMethodInfo`'s `kinds`), as master gave them at every level. The
+/// store table that tested the class's store is gone from the slice.
+#[test]
+fn forged_values_of_classes_without_masks_answer_by_kind() {
+    let source = r#"(extend-type object ISeqable (-seq [_] (list :o)))
+        (extend-type default IMeta (-meta [_] :default-meta))
+        (def x 1)
+        (let [a (atom 1) v (var x) f (with-meta (fn [] 1) {:m 1}) r (reduced 1) d (delay 1) vo (volatile! 1)
+              forge (fn [value] (js/Object.create (js/Object.getPrototypeOf value)))
+              ask (fn [value] [(satisfies? IMeta value) (implements? IMeta value) (satisfies? Fn value) (implements? Fn value)
+                               (satisfies? ISeqable value) (satisfies? IDeref value) (fn? value)])]
+          (pr-str [(mapv ask (mapv forge [a v f r d vo])) (mapv ask [a v f r d vo]) (seq (js-obj)) (meta (js-obj))]))"#;
+    every_level(
+        source,
+        "[[[true true false false false false false] [true true true true false false true] \
+         [true true true true false false true] [false false false false false false false] \
+         [false false false false false false false] [false false false false false false false]] \
+         [[true true false false false true false] [true true true true false true true] \
+         [true true true true false false true] [false false false false false true false] \
+         [false false false false false true false] [false false false false false true false]] \
+         (:o) :default-meta]",
+    );
+    let units = assert_keeps_none(
+        source,
+        &[
+            "kindTable",
+            "storeHolds",
+            "storesPredicate",
+            "ownedStores",
+            "protocolStores",
+            "vectorCells",
+            "seqCells",
+            "viewCells",
+            "keywordCells",
+            "transientCells",
+        ],
+    );
+    for unit in [
+        "ownedKind",
+        "protocolHooks.satisfies",
+        "builtinCoreImplementation",
+    ] {
+        assert!(units.contains(&unit), "{unit}: {units:?}");
+    }
 }

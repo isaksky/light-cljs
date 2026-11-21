@@ -10490,9 +10490,23 @@
     if (transientState(value)) return isTransientCell(value);
     return chunkOf(value) !== undefined || cellOf(value)?.integer$LKEY === true || holdsVector(value) || viewOf(value)?.indexed$LKEY === true;
   }
-  //@unit cloneablePayload requires: cellOf, holdsVector, isEntryCell, maps, queues, recordCells,
-  //@ sets, viewOf
-  function cloneablePayload(value) { return (holdsVector(value) && !isEntryCell(value)) || (maps.has(value) && !recordCells.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cellOf(value)?.cell$LKEY) || ["indexed", "reverse"].includes(viewOf(value)?.view$LKEY); }
+  //@unit maskNative requires: protocolMasks
+  // A core protocol's native test by its mask bit, for a protocol whose bit
+  // every runtime class carries that implements it natively for each of its
+  // values (light-cljs-1070's masks): a runtime class's value (a keyed kind
+  // below 64) answers by its class's bit, as upstream's `implements?` reads
+  // it, and any other value, or one of an indexed seq's `view` that differs
+  // within its class, by `rest` (light-cljs-1079). A value made by reflection
+  // from a class's prototype answers as its class's values, as it does by
+  // kind (`ownedKind`). The Pants build's profile, whose engine forms have no
+  // kind, keeps the tests of the stores.
+  function maskNative(name, rest) {
+    const [field, bit] = protocolMasks.get(name);
+    return value => value != null && value.cljs$lang$kind$$LKEY < 64 && (value[field] & bit) !== 0 || rest !== undefined && !!rest(value);
+  }
+  //@unit cloneablePayload requires: maskNative, viewOf
+  // An indexed seq is cloneable where it is a vector's or a reversed one's.
+  const cloneablePayload = maskNative("ICloneable", value => ["indexed", "reverse"].includes(viewOf(value)?.view$LKEY));
   //@unit lookupValue requires: holdsVector, isTransient, maps, recordCells, sets
   const lookupValue = value => isTransient(value) || holdsVector(value) || maps.has(value) || sets.has(value) || recordCells.has(value);
   //@unit associativeValue requires: holdsVector, maps, recordCells
@@ -10515,8 +10529,8 @@
   const kvReduceValue = value => holdsVector(value) && !isEntryCell(value) || maps.has(value) || recordCells.has(value);
   //@unit iterableValue requires: cellOf, collectionValue, isChunkedCons
   const iterableValue = value => !["cycle", "iterate", "repeat"].includes(cellOf(value)?.cell$LKEY) && !isChunkedCons(value) && collectionValue(value);
-  //@unit stackValue requires: cellOf, holdsVector, isCell, queues
-  const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat"].includes(cellOf(value)?.cell$LKEY) && (holdsVector(value) || isCell(value) || queues.has(value));
+  //@unit stackValue requires: maskNative
+  const stackValue = maskNative("IStack");
   //@unit chunkedSeqValue requires: cellOf, isChunkedCons, viewOf
   const chunkedSeqValue = value => cellOf(value)?.cell$LKEY === "range" || isChunkedCons(value) || viewOf(value)?.view$LKEY === "chunked";
   //@unit chunkValue requires: chunkOf
@@ -10549,8 +10563,8 @@
   const sortedValue = value => comparatorOf(value) !== undefined;
   //@unit findValue requires: holdsVector, maps, recordCells
   const findValue = value => holdsVector(value) || (maps.has(value) && !recordCells.has(value));
-  //@unit reversibleValue requires: comparatorOf, holdsVector, viewOf
-  const reversibleValue = value => holdsVector(value) || viewOf(value)?.view$LKEY === "indexed" || comparatorOf(value) !== undefined;
+  //@unit reversibleValue requires: maskNative, viewOf
+  const reversibleValue = maskNative("IReversible", value => viewOf(value)?.view$LKEY === "indexed");
   //@unit dropValue requires: cellOf, holdsVector, isLazy, mapKinds, viewOf
   const dropValue = value => {
     // As `countedValue`, a cell or a lazy seq is in no other store.
@@ -10569,11 +10583,8 @@
   const instValue = value => value instanceof Date;
   //@unit uuidImplementation requires: uuids
   const uuidImplementation = value => uuids.has(value);
-  //@unit aseqValue requires: cellOf, isChunkedCons, viewOf
-  function aseqValue(value) {
-    const cell = cellOf(value), kind = viewOf(value)?.view$LKEY;
-    return kind === "chunked" || cell?.cell$LKEY === "cons" || (cell?.cell$LKEY === "list" && (cell.count$LKEY > 0 || cell.cljs$lang$kind$$LKEY === 12)) || isChunkedCons(value) || kind === "indexed" || kind === "hash-map";
-  }
+  //@unit aseqValue requires: maskNative, viewOf
+  const aseqValue = maskNative("ASeq", value => { const kind = viewOf(value)?.view$LKEY; return kind === "indexed" || kind === "hash-map"; });
   //@unit listValue requires: cellOf
   const listValue = value => ["list", "cons"].includes(cellOf(value)?.cell$LKEY);
   //@unit printableValue requires: isTransient, ownedProtocolValue
@@ -10586,12 +10597,12 @@
   const mapValue = value => maps.has(value) || recordCells.has(value);
   //@unit setValue requires: sets
   const setValue = value => sets.has(value);
-  //@unit comparableValue requires: holdsVector, namedOf, uuids
-  const comparableValue = value => holdsVector(value) || uuids.has(value) || namedOf(value) !== undefined || value instanceof Date;
+  //@unit comparableValue requires: maskNative, uuids
+  const comparableValue = maskNative("IComparable", value => uuids.has(value) || value instanceof Date);
   //@unit atomValue requires: atoms, directMethod, isTransient
   const atomValue = value => atoms.has(value) || !isTransient(value) && !!directMethod(value, "IAtom", 0);
-  //@unit pendingValue requires: cellOf, delays, isLazy
-  const pendingValue = value => ["repeat", "cycle", "iterate"].includes(cellOf(value)?.cell$LKEY) || delays.has(value) || isLazy(value);
+  //@unit pendingValue requires: delays, maskNative
+  const pendingValue = maskNative("IPending", value => delays.has(value));
   //@unit derefValue requires: atoms, delays, reducedValues, vars, volatiles
   const derefValue = value => delays.has(value) || vars.has(value) || atoms.has(value) || volatiles.has(value) || reducedValues.has(value);
   //@unit volatileValue requires: volatiles
@@ -11186,11 +11197,24 @@
     setMeta(result, metadata);
     return result;
   }
-  //@unit collectionWithMeta requires: cellCopy, cellOf, chunkedConsCells, extraFields, holdsVector,
-  //@ ifnValues, isCell, isChunkedCons, isEntryCell, isLazy, isView, kindHooks, lazyCells,
-  //@ mapCellCopy, maps, meta, metaFunctions, methodKeys, protocolHooks, protocolImplementations,
-  //@ prototypeCopy, queues, recordCells, reifyCells, seqCells, setMeta, setQueueCopy, sets,
-  //@ symbolCells, vars, vectorCellCopy, vectorCells, viewAt, viewCells, viewOf
+  //@unit withMetaKeeps requires: kindPredicate
+  // The values that `with-meta` of the metadata they hold gives back
+  // (`copyWithMeta`): the vectors, the seqs over an array or a string, the
+  // cells, the lazy seqs and chunked conses, the maps, the sets and the
+  // queues, by kind (light-cljs-1079), where their stores were probed in
+  // turn; the Pants build's profile still probes them.
+  const withMetaKeeps = kindPredicate(2143551470, 4114, 0);
+  //@unit withMetaCopies requires: kindPredicate
+  // The values besides the vectors whose copy `copyWithMeta` builds by their
+  // class: the symbols, the seqs over an array or a string, the cells, the
+  // maps, the sets, the queues, the vars and `reify` values, by kind as
+  // `withMetaKeeps`.
+  const withMetaCopies = kindPredicate(2145452000, 12306, 4);
+  //@unit collectionWithMeta requires: cellCopy, cellOf, extraFields, holdsVector, ifnValues,
+  //@ isCell, isChunkedCons, isEntryCell, isLazy, isView, kindHooks, mapCellCopy, maps, meta,
+  //@ metaFunctions, methodKeys, protocolHooks, protocolImplementations, prototypeCopy,
+  //@ recordCells, reifyCells, setMeta, setQueueCopy, vars, vectorCellCopy, viewAt, viewOf,
+  //@ withMetaCopies, withMetaKeeps
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
@@ -11205,7 +11229,7 @@
   // program's `IMeta` method runs once, as on this path alone.
   function copyWithMeta(value, metadata, compared) {
     if (!compared && !isEntryCell(value) &&
-        [vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells].some(store => store.has(value)) && meta(value) === metadata) return value;
+        withMetaKeeps(value) && meta(value) === metadata) return value;
     let result;
     if (isEntryCell(value)) return collectionWithMeta(kindHooks.entryVector(value), metadata);
     const kind = cellOf(value)?.cell$LKEY;
@@ -11220,7 +11244,7 @@
     else if (recordCells.has(value)) return kindHooks.withMetaRecord(value, metadata);
     else {
       const vector = holdsVector(value);
-      if (!vector && ![symbolCells, maps, sets, seqCells, viewCells, queues, vars, reifyCells].some(store => store.has(value))) throw new Error("value does not support metadata");
+      if (!vector && !withMetaCopies(value)) throw new Error("value does not support metadata");
       // A vector's, a view's, a symbol's, a map's, a set's or a var's copy
       // is built by its class, with its fields.
       result = vector ? vectorCellCopy(value) : isView(value) ? viewAt(value, value.i$LKEY) : isCell(value) ? cellCopy(value) : maps.has(value) ? mapCellCopy(value)
