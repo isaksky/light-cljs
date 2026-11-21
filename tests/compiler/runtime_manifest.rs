@@ -415,26 +415,26 @@ fn hidden_edges_and_stale_requires_in_the_runtime_fail_validation() {
             .map(|error| error.message)
             .collect::<Vec<_>>()
     };
-    let unit = "  //@unit transient requires: asTransientProtocol\n  function transient(value) { return asTransientProtocol(value); }\n";
+    let unit = "  //@unit popBang requires: popBangProtocol\n  function popBang(value) { return popBangProtocol(value); }\n";
     assert!(ANNOTATED_RUNTIME.contains(unit));
     // A new reference to the printer is a hidden edge until it is declared.
     let hidden = ANNOTATED_RUNTIME.replace(
         unit,
         &unit.replace(
-            "return asTransientProtocol",
-            "print; return asTransientProtocol",
+            "return popBangProtocol",
+            "print; return popBangProtocol",
         ),
     );
     assert_eq!(
         messages(&hidden),
-        ["unit `transient`: references `print` (declared by unit `print`) but does not require it"]
+        ["unit `popBang`: references `print` (declared by unit `print`) but does not require it"]
     );
     // A local that shadows a runtime binding is not an edge.
     let shadowed = ANNOTATED_RUNTIME.replace(
         unit,
         &unit.replace(
-            "return asTransientProtocol",
-            "const print = 1; return print && asTransientProtocol",
+            "return popBangProtocol",
+            "const print = 1; return print && popBangProtocol",
         ),
     );
     RuntimeManifest::parse(&shadowed)
@@ -443,10 +443,10 @@ fn hidden_edges_and_stale_requires_in_the_runtime_fail_validation() {
         .unwrap();
     // Dropping a reference leaves a stale require.
     let stale =
-        ANNOTATED_RUNTIME.replace(unit, &unit.replace("asTransientProtocol(value)", "value"));
+        ANNOTATED_RUNTIME.replace(unit, &unit.replace("popBangProtocol(value)", "value"));
     assert_eq!(
         messages(&stale),
-        ["unit `transient`: requires `asTransientProtocol` but never references it"]
+        ["unit `popBang`: requires `popBangProtocol` but never references it"]
     );
 }
 
@@ -1263,10 +1263,12 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // light-cljs-1072 gave the classes the old path walked with walks of their
     // own and its two `slotWrites` effects, less the slot-first wrappers of
     // `reduce` and `reduce-kv`; the 29 `-meta` slot units of the
-    // collections and seqs (light-cljs-1070); and light-cljs-1074's hash of
+    // collections and seqs (light-cljs-1070); light-cljs-1074's hash of
     // the UUIDs and vars (`uuidValue.hash`) and its three `slotWrites`
-    // effects, less the slot-first wrappers of `=` and `hash`.
-    assert_eq!(checked, 572);
+    // effects, less the slot-first wrappers of `=` and `hash`; and the four
+    // `-as-transient` and four `-with-meta` slot units of the editable
+    // collections (light-cljs-1067).
+    assert_eq!(checked, 580);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s

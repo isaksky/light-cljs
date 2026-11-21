@@ -4583,8 +4583,19 @@
     if (!(state === value ? value.cljs$lang$kind$$LKEY === 32 ? value.edit$LKEY !== null : state.editable$LKEY : state?.editable)) throw new Error(operation === "persistent!" ? "persistent! called twice" : operation + " after persistent!");
     return state;
   }
-  //@unit transient requires: asTransientProtocol
-  function transient(value) { return asTransientProtocol(value); }
+  //@unit transient requires: asTransientProtocol, slotFirst
+  // Upstream's `transient`, `-as-transient` of the value: a value with a
+  // keyed kind calls its slot, a program's (`extend-type`, `specify!`) or
+  // its class's (`asTransientSlot`, light-cljs-1067), read and called once;
+  // every other value, and one whose slot holds no method, takes the
+  // protocol's dispatcher, which finds a program's method in the same slot.
+  function transient(value) {
+    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IEditableCollection$_as_transient$arity$1$LKEY;
+      if (method) return method.call(value, value);
+    }
+    return asTransientProtocol(value);
+  }
   //@unit asTransient requires: copyEntries, holdsVector, kindHooks, makeTransient, maps, setKinds,
   //@ sets, vectorStore
   function asTransient(value) {
@@ -6070,6 +6081,19 @@
   const transientAssocSlot = builtinSlot((self, key, item) => transientState(self) === undefined ? noBranch : assocTransient(self, key, item));
   //@unit transientPersistentSlot requires: builtinSlot, noBranch, persistTransient, transientState
   const transientPersistentSlot = builtinSlot(self => transientState(self) === undefined ? noBranch : persistTransient(self));
+  //@unit asTransientSlot requires: asTransient, builtinSlot
+  // The `-as-transient` slot of the editable collections, a vector, an array
+  // or hash map and a hash set (light-cljs-1067), as upstream's
+  // PersistentVector, PersistentArrayMap, PersistentHashMap and
+  // PersistentHashSet implement IEditableCollection: the transient
+  // `asTransient` makes of each. One function for every class, so that
+  // `transient` calls one target. A method on `Object.prototype`
+  // (`extend-type` of `js/Object`), which the slot shadows, answers first,
+  // as the lookup found it through the chain (`metaSlot`).
+  const asTransientSlot = builtinSlot(function (self) {
+    const inherited = Object.prototype.cljs$core$IEditableCollection$_as_transient$arity$1$LKEY;
+    return inherited ? inherited.call(self, self) : asTransient(self);
+  });
   //@unit TransientVectorType.assocBang effect: TransientVectorType when: assocBangOwn requires: transientAssocSlot,
   //@ TransientVectorType
   TransientVectorType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = transientAssocSlot;
@@ -8988,6 +9012,18 @@
     const metadata = self.meta$LKEY;
     return metadata !== undefined || "meta$LKEY" in self ? metadata : null;
   });
+  //@unit withMetaSlot requires: builtinSlot, copyWithMeta, meta
+  // The `-with-meta` slot of the editable collections, whose values `into`
+  // gives its target's metadata (light-cljs-1067), as `-as-transient`'s
+  // (`asTransientSlot`): the value itself where `meta` answers `metadata`,
+  // else its copy with it, as `collectionWithMeta` answers where no program
+  // gave the value a method, which the slot is not. A method on
+  // `Object.prototype`, which the slot shadows, answers first (`metaSlot`).
+  const withMetaSlot = builtinSlot(function (self, metadata) {
+    const inherited = Object.prototype.cljs$core$IWithMeta$_with_meta$arity$2$LKEY;
+    if (inherited) return inherited.call(self, self, metadata);
+    return meta(self) === metadata ? self : copyWithMeta(self, metadata);
+  });
   //@unit metaOf requires: atoms, deferredVarMetadata, kindHooks, methodKeys, ownMeta, protocolHooks
   // `meta`'s own path: a program's method that the lookup finds (a host
   // value's, or one in a slot a program cleared, which the class's
@@ -9424,6 +9460,33 @@
   //@unit PersistentQueueValue.metaSlot effect: PersistentQueueValue when: meta, metaSlot,
   //@ treeMapSeqConstructor requires: metaSlot, PersistentQueueValue
   PersistentQueueValue.prototype.cljs$core$IMeta$_meta$arity$1$LKEY = metaSlot;
+  // The editable collections' `-as-transient` and `-with-meta` slots
+  // (`asTransientSlot`, `withMetaSlot`), which `transient` and `into` call
+  // before any lookup (light-cljs-1067).
+  //@unit PersistentVectorValue.asTransient effect: PersistentVectorValue when: asTransientSlot,
+  //@ transient requires: asTransientSlot, PersistentVectorValue
+  PersistentVectorValue.prototype.cljs$core$IEditableCollection$_as_transient$arity$1$LKEY = asTransientSlot;
+  //@unit PersistentArrayMapValue.asTransient effect: PersistentArrayMapValue when: asTransientSlot,
+  //@ transient requires: asTransientSlot, PersistentArrayMapValue
+  PersistentArrayMapValue.prototype.cljs$core$IEditableCollection$_as_transient$arity$1$LKEY = asTransientSlot;
+  //@unit PersistentHashMapValue.asTransient effect: PersistentHashMapValue when: asTransientSlot,
+  //@ transient requires: asTransientSlot, PersistentHashMapValue
+  PersistentHashMapValue.prototype.cljs$core$IEditableCollection$_as_transient$arity$1$LKEY = asTransientSlot;
+  //@unit PersistentHashSetValue.asTransient effect: PersistentHashSetValue when: asTransientSlot,
+  //@ transient requires: asTransientSlot, PersistentHashSetValue
+  PersistentHashSetValue.prototype.cljs$core$IEditableCollection$_as_transient$arity$1$LKEY = asTransientSlot;
+  //@unit PersistentVectorValue.withMetaSlot effect: PersistentVectorValue when: withMetaProtocol,
+  //@ withMetaSlot requires: PersistentVectorValue, withMetaSlot
+  PersistentVectorValue.prototype.cljs$core$IWithMeta$_with_meta$arity$2$LKEY = withMetaSlot;
+  //@unit PersistentArrayMapValue.withMetaSlot effect: PersistentArrayMapValue when: withMetaProtocol,
+  //@ withMetaSlot requires: PersistentArrayMapValue, withMetaSlot
+  PersistentArrayMapValue.prototype.cljs$core$IWithMeta$_with_meta$arity$2$LKEY = withMetaSlot;
+  //@unit PersistentHashMapValue.withMetaSlot effect: PersistentHashMapValue when: withMetaProtocol,
+  //@ withMetaSlot requires: PersistentHashMapValue, withMetaSlot
+  PersistentHashMapValue.prototype.cljs$core$IWithMeta$_with_meta$arity$2$LKEY = withMetaSlot;
+  //@unit PersistentHashSetValue.withMetaSlot effect: PersistentHashSetValue when: withMetaProtocol,
+  //@ withMetaSlot requires: PersistentHashSetValue, withMetaSlot
+  PersistentHashSetValue.prototype.cljs$core$IWithMeta$_with_meta$arity$2$LKEY = withMetaSlot;
   //@unit keys requires: mapProjection
   function keys(value) { return mapProjection(value, 0); }
   //@unit vals requires: mapProjection
@@ -10420,8 +10483,22 @@
     if (!metaSupported(value)) throw new Error("No protocol method IMeta.-meta defined for this value");
     return meta(value);
   }
-  //@unit withMetaProtocol requires: collectionWithMeta, kindHooks, protocolHooks, withMetaSupported
+  //@unit withMetaProtocol requires: collectionWithMeta, kindHooks, protocolHooks, slotFirst,
+  //@ withMetaSupported
+  // Upstream's `-with-meta`, which `into` calls with its target's metadata:
+  // an object with a keyed kind calls its slot, a program's (`extend-type`,
+  // `specify!`, a record's or a `reify`'s) or its class's (`withMetaSlot`,
+  // light-cljs-1067), read and called once; every other value, a function
+  // among them, whose program methods this path never called, and one whose
+  // slot holds no method, takes `withMetaOf`, the old body.
   function withMetaProtocol(value, metadata) {
+    if (typeof value === "object" && value !== null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+      const method = value.cljs$core$IWithMeta$_with_meta$arity$2$LKEY;
+      if (method) return method.call(value, value, metadata);
+    }
+    return withMetaOf(value, metadata);
+  }
+  function withMetaOf(value, metadata) {
     if (!withMetaSupported(value)) throw new Error("No protocol method IWithMeta.-with-meta defined for this value");
     // A function here has metadata, or a protocol implementation.
     return typeof value === "function" ? (protocolHooks.fnWithMeta ?? kindHooks.withMetaFn)(value, metadata) : collectionWithMeta(value, metadata);
@@ -10972,6 +11049,11 @@
     if (value == null) return null;
     const method = protocolHooks.builtin?.(value, methodKeys[66], 2);
     if (method) return method.call(value, value, metadata);
+    return copyWithMeta(value, metadata);
+  }
+  // `collectionWithMeta` past the lookup, which the class's slot takes
+  // (`withMetaSlot`), where it found none.
+  function copyWithMeta(value, metadata) {
     if (!isEntryCell(value) &&
         [vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells].some(store => store.has(value)) && meta(value) === metadata) return value;
     let result;
@@ -13267,28 +13349,43 @@
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
   //@unit into requires: conj, conjBangOwn, conjProtocol, editableValue, invalidArity, meta,
-  //@ methodKeys, persistentBang, protocolHooks, reduce, transduce, transient, vector,
+  //@ methodKeys, persistentBang, protocolHooks, reduce, slotFirst, transduce, transient, vector,
   //@ withMetaProtocol
+  // Upstream's `into`, one function per arity: onto a target that
+  // implements IEditableCollection, `conj!` of each item onto its
+  // `transient`, then `persistent!` and `-with-meta` of its `meta`, each of
+  // which calls the value's slot first (light-cljs-1067); onto any other,
+  // `conj` of each item.
   function into(to, from, source) {
     switch (arguments.length) {
+      case 2: return into2(to, from);
+      case 3: return into3(to, from, source);
       case 0: return vector();
       case 1: return to;
-      case 2: {
-        if (protocolHooks.implements?.(methodKeys[14], to) ?? editableValue(to))
-          return withMetaProtocol(persistentBang(reduce(conjBangOwn, transient(to), from)), meta(to));
-        return reduce(to == null ? conj : conjProtocol, to, from);
-      }
-      case 3: {
-        const editable = protocolHooks.implements?.(methodKeys[14], to) ?? editableValue(to), metadata = editable ? meta(to) : null;
-        const rf = !editable ? conj : function (result, input) {
-          if (arguments.length === 2) return conjBangOwn(result, input);
-          if (arguments.length === 1) return withMetaProtocol(persistentBang(result), metadata);
-          return invalidArity(arguments.length);
-        };
-        return transduce(from, rf, editable ? transient(to) : to, source);
-      }
       default: return invalidArity(arguments.length);
     }
+  }
+  // `implements?` of IEditableCollection: a value with a keyed kind whose
+  // mask has the protocol's bit (partition 1, 4: a vector, an array or hash
+  // map, a hash set, a program's type) implements it, as upstream's reads
+  // the bit and the `implements` hook answers first; any other value takes
+  // the hook, else the native test.
+  function editableTarget(to) {
+    if (to != null && slotFirst.on && to.cljs$lang$kind$$LKEY !== undefined && (to.cljs$lang$protocol_mask$partition1$$LKEY & 4) !== 0) return true;
+    return protocolHooks.implements?.(methodKeys[14], to) ?? editableValue(to);
+  }
+  function into2(to, from) {
+    if (editableTarget(to)) return withMetaProtocol(persistentBang(reduce(conjBangOwn, transient(to), from)), meta(to));
+    return reduce(to == null ? conj : conjProtocol, to, from);
+  }
+  function into3(to, xform, from) {
+    const editable = editableTarget(to), metadata = editable ? meta(to) : null;
+    const rf = !editable ? conj : function (result, input) {
+      if (arguments.length === 2) return conjBangOwn(result, input);
+      if (arguments.length === 1) return withMetaProtocol(persistentBang(result), metadata);
+      return invalidArity(arguments.length);
+    };
+    return transduce(xform, rf, editable ? transient(to) : to, from);
   }
   //@unit exceptionMessages
   // Match the CLJS constructor: preserve the supplied message/data/cause values

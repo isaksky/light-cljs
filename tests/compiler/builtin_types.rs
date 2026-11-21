@@ -3701,6 +3701,51 @@ fn into_and_transient_updates_take_no_protocol_lookup_per_item() {
     );
 }
 
+/// In release output of a program with `extend-type`, `into` of a small
+/// vector, map or set, onto a vector, map or set with or without metadata,
+/// with or without a transducer, takes no protocol lookup per call
+/// (light-cljs-1067): `into` reads the target's `IEditableCollection` mask
+/// bit and calls its `-as-transient` slot, and carries its metadata through
+/// its `-meta` and `-with-meta` slots, as upstream's `into` calls
+/// `-as-transient`, `meta` and `with-meta`, where on master `8903e693`
+/// each call took the lookups of `-as-transient` and of `-with-meta` (twice).
+/// Each number is one call's lookups, counted as
+/// `into_and_transient_updates_take_no_protocol_lookup_per_item` counts them.
+#[test]
+fn into_of_small_collections_takes_no_protocol_lookup_per_call() {
+    let source = r#"(extend-type Atom ICounted (-count [_] 1))
+        (let [lookups #(aget js/globalThis "__lookups")
+              cost (fn [f] (let [before (lookups) r (f)] [(- (lookups) before) r]))
+              m {:m 1} v [1 2 3] am {:a 1 :b 2} s #{1 2} mv (with-meta [] m) mm (with-meta {} m) ms (with-meta #{} m)
+              hm (zipmap (range 9) (range 9))
+              calls [#(into [] v) #(into [0] v) #(into mv v) #(into [] s) #(into [] am)
+                     #(into {} am) #(into {:z 0} am) #(into mm am) #(into {} [[1 2]]) #(count (into hm am))
+                     #(into #{} v) #(into #{0} s) #(into ms s)
+                     #(into [] (map inc) v) #(into ms (map inc) v) #(into {} (filter some?) am)]
+              results (mapv cost calls)]
+          (pr-str [(mapv first results) (mapv (comp meta second) results) (mapv second results)]))"#;
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program(source), options).emit_js();
+    for head in [
+        "function extendedMethod(value, key, arity, fast = false, directOnly = false) {",
+        "function builtin(value, key, arity) {",
+        "function satisfies(protocol, value) {",
+        "function coreProtocolImplementation(protocol, value) {",
+    ] {
+        assert!(js.contains(head), "{head}");
+        js = js.replace(head, &format!("{head} globalThis.__lookups++;"));
+    }
+    let expected = "[[0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0] \
+         [nil nil {:m 1} nil nil nil nil {:m 1} nil nil nil nil {:m 1} nil {:m 1} nil] \
+         [[1 2 3] [0 1 2 3] [1 2 3] [1 2] [[:a 1] [:b 2]] {:a 1, :b 2} {:z 0, :a 1, :b 2} {:a 1, :b 2} {1 2} 11 \
+         #{1 2 3} #{0 1 2} #{1 2} [2 3 4] #{2 3 4} {:a 1, :b 2}]]";
+    assert_eq!(
+        execute(&format!("globalThis.__lookups = 0; console.log({js});")),
+        format!("{expected}\n")
+    );
+}
+
 /// The transients' `-conj!`, `-assoc!` and `-persistent!` slots, which
 /// `conj!`, `assoc!`, `persistent!`, `into`, `mapv` and `filterv` call
 /// before any lookup, and a map transient's `conj!` of a map entry, which
