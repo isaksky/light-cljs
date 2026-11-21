@@ -3872,6 +3872,312 @@ fn with_meta_slots_read_extended_meta_once() {
     );
 }
 
+/// In release output of a program with `extend-type`, `into` onto a target
+/// that is no editable collection (a sorted set and map, a list and `()`, a
+/// queue, a subvector, a map entry, a program type that implements
+/// `ICollection` and a record) takes no protocol lookup per item
+/// (light-cljs-1076): it conjoins each item through the target's `-conj`
+/// slot, as upstream's `into` calls `-conj`, where on master `86dc4aa0`
+/// each item took the lookup of `-conj`'s dispatcher (`conjProtocol`). Each
+/// number is a call's lookups over 13 items less those over 3, counted as
+/// `into_and_transient_updates_take_no_protocol_lookup_per_item` counts them,
+/// for a vector, a lazy seq and a list of items, then a vector and a seq of
+/// pairs.
+#[test]
+fn into_onto_other_collections_takes_no_protocol_lookup_per_item() {
+    let source = r#"(extend-type Atom ICounted (-count [_] 1))
+        (defrecord R [a])
+        (deftype T [xs] ICollection (-conj [_ x] (T. (conj xs x))))
+        (let [lookups #(aget js/globalThis "__lookups")
+              cost (fn [f] (let [before (lookups)] (f) (- (lookups) before)))
+              per-item (fn [sources fs]
+                         (for [f fs [small big] sources] (let [s (small) b (big)] (- (cost #(f b)) (cost #(f s))))))
+              items [[#(vec (range 3)) #(vec (range 13))] [#(map inc (range 3)) #(map inc (range 13))]
+                     [#(list 1 2 3) #(apply list (range 13))]]
+              pairs [[#(mapv (fn [i] [i i]) (range 3)) #(mapv (fn [i] [i i]) (range 13))]
+                     [#(seq (zipmap (range 3) (range 3))) #(seq (zipmap (range 13) (range 13)))]]]
+          (.join (into-array
+                   (concat
+                     (per-item items [#(into (sorted-set) %) #(into (list 0) %) #(into () %) #(into cljs.core/PersistentQueue.EMPTY %)
+                                      #(into (subvec [1 2 3] 1) %) #(into (first {:a 1}) %) #(into (T. []) %)])
+                     (per-item pairs [#(into (sorted-map) %) #(into (sorted-map-by >) %) #(into (->R 1) %)])))
+                 " "))"#;
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program(source), options).emit_js();
+    for head in [
+        "function extendedMethod(value, key, arity, fast = false, directOnly = false) {",
+        "function builtin(value, key, arity) {",
+        "function satisfies(protocol, value) {",
+        "function coreProtocolImplementation(protocol, value) {",
+    ] {
+        assert!(js.contains(head), "{head}");
+        js = js.replace(head, &format!("{head} globalThis.__lookups++;"));
+    }
+    assert_eq!(
+        execute(&format!("globalThis.__lookups = 0; console.log({js});")),
+        format!("{}\n", ["0"; 7 * 3 + 3 * 2].join(" "))
+    );
+}
+
+/// `into` onto a target that is no editable collection, which conjoins each
+/// item through the target's `-conj` slot before any lookup
+/// (light-cljs-1076), keeps master `86dc4aa0`'s answers at every level: for
+/// `extend-type` of `ICollection` on a sorted map, a list, a queue, a
+/// subvector and a lazy seq, `specify!` of it on values, `extend-type` of
+/// `js/Object`, whose method the classes' slots shadow, of `object` and of
+/// `default`, members a program writes by name on a class's prototype (nil,
+/// false or a method) or on a value, and the slots of a program type, a list
+/// and two vectors that a getter answers nil or false first, which `into`
+/// and a map's `-conj` read as often as the dispatchers' lookups did (the
+/// Sol review of light-cljs-1076); for nil, seqs without a slot, records,
+/// metadata, and values that are no collection, whose error is the
+/// dispatcher's; and for programs with protocol implementations and none. A
+/// map's `-conj` of a vector or a map entry reads its items through their
+/// `-nth` slots: each program also conjoins entries onto maps and sorted
+/// maps, with `extend-type` of `IIndexed` on vectors and map entries and on
+/// `js/Object`, `specify!` of it, members written by name, and program types
+/// that implement `IVector` with and without `IIndexed`.
+#[test]
+fn into_onto_other_collections_keeps_extended_answers() {
+    let head = r#"(let [out (array)
+                       p (fn [f] (.push out (try (pr-str (f))
+                                              (catch :default e (if (instance? js/TypeError e) "TypeError" (str "E:" (.-message e)))))))]"#;
+    let common = r#"(p #(into nil [1 2])) (p #(into () [1 2])) (p #(into (list 0) [1 2])) (p #(into (sorted-set) [3 1]))
+                    (p #(into (sorted-map) {:b 1 :a 2})) (p #(into (sorted-map-by >) [[1 :a] [2 :b]])) (p #(seq (into cljs.core/PersistentQueue.EMPTY [1 2])))
+                    (p #(into (subvec [1 2 3] 1) [4])) (p #(into (first {:a 1}) [3])) (p #(into (map inc [1]) [5])) (p #(into (cons 1 nil) [2]))
+                    (p #(into (seq [1 2]) [3])) (p #(into (range 2) [5])) (p #(into (seq {:a 1}) [3])) (p #(into (list 0) []))
+                    (p #(meta (into (with-meta (sorted-map) {:m 1}) {:a 1}))) (p #(meta (into (with-meta (list 0) {:l 1}) [1])))
+                    (p #(meta (into (with-meta (sorted-set) {:s 1}) [1]))) (p #(meta (into (with-meta cljs.core/PersistentQueue.EMPTY {:q 1}) [1])))
+                    (p #(into 1 [2])) (p #(into (atom 1) [2])) (p #(into "a" [1])) (p #(into (js-obj) [1])) (p #(into (array) [1]))
+                    (p #(into (sorted-map) [1])) (p #(into 1 []))
+                    (p #(conj {} [:a 1])) (p #(into (sorted-map) [[:a 1] (first {:b 2})])) (p #(conj (sorted-map) {:c 3})) (p #(conj {} (list 1 2)))
+                    (p #(conj (zipmap (range 9) (range 9)) [:h 1])) (p #(into (sorted-map) (seq {:d 4})))
+                    (.join out " "))"#;
+    let types = r#"(defrecord R [a])
+                   (deftype T [xs] ICollection (-conj [_ x] (T. (conj xs x))) ICounted (-count [_] (count xs)))
+                   (deftype U [])
+                   (deftype V [] IVector IIndexed (-nth [_ i] (if (= i 0) :vk :vv)) (-nth [_ i _] i))
+                   (deftype W [] IVector)"#;
+    let typed = r#"(p #(into (->R 1) {:b 2})) (p #(into (->R 1) [[:a 5] [:c 6]])) (p #(count (into (T. []) [1 2]))) (p #(into (U.) [1]))
+                   (p #(into (sorted-map) [(V.)])) (p #(conj {} (V.))) (p #(conj {} (W.))) (p #(into (sorted-map) [(W.)]))
+                   (let [slot (js* "'cljs$core$ICollection$_conj$arity$2$LKEY'")
+                         answer (fn [first-read]
+                                  (let [value (T. []) reads (atom 0)]
+                                    (js/Object.defineProperty value slot
+                                      #js {:get (fn [] (if (= 1 (swap! reads inc)) first-read (fn [& _] :unexpected)))})
+                                    (p #(into value [1]))
+                                    (.push out @reads)))]
+                     (answer nil) (answer false))
+                   (let [getter (fn [value slot first-read f]
+                                  (let [reads (atom 0)]
+                                    (js/Object.defineProperty value slot
+                                      #js {:get (fn [] (if (= 1 (swap! reads inc)) first-read (fn [& _] :unexpected)))})
+                                    (p #(f value))
+                                    (.push out @reads)))
+                         conj-slot (js* "'cljs$core$ICollection$_conj$arity$2$LKEY'")
+                         nth-slot (js* "'cljs$core$IIndexed$_nth$arity$2$LKEY'")]
+                     (doseq [first-read [nil false]]
+                       (getter (list (count out)) conj-slot first-read #(into % [2]))
+                       (getter (vector :a (count out)) nth-slot first-read #(conj {} %))
+                       (getter (vector :b (count out)) nth-slot first-read #(into (sorted-map) [%]))))"#;
+    let programs = [
+        (
+            r#"(extend-type PersistentTreeMap ICollection (-conj [m x] [:tm (count m) x]))
+               (extend-type List ICollection (-conj [l x] [:list (count l) x]))
+               (extend-type PersistentQueue ICollection (-conj [q x] [:q (count q) x]))
+               (extend-type Subvec ICollection (-conj [v x] [:sv (count v) x]))
+               (extend-type LazySeq ICollection (-conj [s x] [:lz x]))"#,
+            "",
+        ),
+        (
+            "",
+            r#"(let [sm (specify! (sorted-map :a 1) ICollection (-conj [_ x] [:ssm x]))
+                    l (specify! (list 1) ICollection (-conj [_ x] [:sl x]))
+                    q (specify! (conj cljs.core/PersistentQueue.EMPTY 1) ICollection (-conj [_ x] [:sq x]))
+                    lz (specify! (map inc [1]) ICollection (-conj [_ x] [:slz x]))
+                    o (specify! (js-obj) ICollection (-conj [_ x] [:so x]))]
+                (p #(into sm [[:b 2]])) (p #(into l [2 3])) (p #(into q [2])) (p #(into lz [2])) (p #(into o [2])) (p #(conj l 2)))"#,
+        ),
+        (
+            r#"(extend-type js/Object ICollection (-conj [o x] [:obj x]))"#,
+            "",
+        ),
+        (
+            r#"(extend-type object ICollection (-conj [o x] [:object x]))"#,
+            "",
+        ),
+        (
+            r#"(extend-type default ICollection (-conj [o x] [:default x]))"#,
+            "",
+        ),
+        (
+            "",
+            r#"(set! (.. PersistentTreeMap -prototype -cljs$core$ICollection$_conj$arity$2) nil)
+               (set! (.. PersistentTreeSet -prototype -cljs$core$ICollection$_conj$arity$2) false)
+               (set! (.. PersistentQueue -prototype -cljs$core$ICollection$_conj$arity$2) (fn [_ x] [:byname x]))
+               (let [l (list 1) e (list 2) s (subvec [1 2 3] 1)]
+                 (set! (.-cljs$core$ICollection$_conj$arity$2 l) nil)
+                 (set! (.-cljs$core$ICollection$_conj$arity$2 e) false)
+                 (set! (.-cljs$core$ICollection$_conj$arity$2 s) (fn [_ x] [:byname-sv x]))
+                 (p #(into l [2])) (p #(into e [3])) (p #(into s [4])) (p #(into (sorted-map) [[:a 1]])) (p #(into (sorted-set) [1])))"#,
+        ),
+        (
+            r#"(extend-type PersistentVector IIndexed (-nth ([v i] [:nth i]) ([v i nf] [:nth3 i])))
+               (extend-type MapEntry IIndexed (-nth ([e i] [:enth i]) ([e i nf] [:enth3 i])))"#,
+            "",
+        ),
+        (
+            "",
+            r#"(let [v (specify! (vector :a 1) IIndexed (-nth ([_ i] [:s i]) ([_ i nf] [:s3 i])))
+                    e (specify! (first {:k :v}) IIndexed (-nth ([_ i] [:se i]) ([_ i nf] [:se3 i])))]
+                (p #(into (sorted-map) [v e])) (p #(conj {} v)) (p #(conj (sorted-map) e)) (p #(conj {} [:b 2])))"#,
+        ),
+        (
+            r#"(extend-type js/Object IIndexed (-nth ([o i] [:obj i]) ([o i nf] [:obj3 i])))"#,
+            "(p #(nth (js-obj) 0))",
+        ),
+        (
+            "",
+            r#"(set! (.. MapEntry -prototype -cljs$core$IIndexed$_nth$arity$2) false)
+               (let [v (vector :a 1) w (vector :b 2)]
+                 (set! (.-cljs$core$IIndexed$_nth$arity$2 v) nil)
+                 (set! (.-cljs$core$IIndexed$_nth$arity$2 w) (fn [_ i] [:byname i]))
+                 (p #(into (sorted-map) [v])) (p #(conj {} v)) (p #(conj (sorted-map) w)) (p #(conj {} w)))"#,
+        ),
+        (
+            "(deftype X [] ICounted (-count [_] 7))",
+            "(p #(count (X.)))",
+        ),
+    ];
+    let mut sources = Vec::new();
+    for (extensions, body) in programs {
+        sources.push(format!(
+            "{types} {extensions} {head} {body} {typed} {common}"
+        ));
+    }
+    // A program without protocol implementations.
+    sources.push(format!("{head} {common}"));
+    let outputs: Vec<String> = sources
+        .iter()
+        .map(|source| {
+            let program = program(source);
+            let mut answers = OptimizationLevel::ALL.iter().map(|level| {
+                execute(&format!(
+                    "console.log({});",
+                    prepare_application(&program, ApplicationOptions::new(*level)).emit_js()
+                ))
+            });
+            let first = answers.next().unwrap();
+            for (answer, level) in answers.zip(OptimizationLevel::ALL.iter().skip(1)) {
+                assert_eq!(answer, first, "at {level}: {source}");
+            }
+            first.trim_end().to_string()
+        })
+        .collect();
+    // `@` is the dispatcher's error for a value that is no collection.
+    let none = "E:No protocol method ICollection/-conj defined for this value";
+    let expected = [
+        "#cljs.user.R{:a 1, :b 2} #cljs.user.R{:a 5, :c 6} 2 @ [:tm 0 #object[cljs.user.V \
+         [object Object]]] {:vk :vv} E:No protocol method IIndexed/-nth defined for this value \
+         [:tm 0 #object[cljs.user.W [object Object]]] @ 1 TypeError 1 :unexpected 2 {:unexpected \
+         :unexpected} 3 [:tm 0 [:b 16]] 0 TypeError 1 TypeError 1 [:tm 0 [:b 22]] 0 [:list 1 2] \
+         [:list 1 2] [:list 1 1 2] #{1 3} [:tm 0 [:b 1] [:a 2]] [:tm 0 [1 :a] [2 :b]] (:q 0 1 2) \
+         [:sv 2 4] [:a 1 3] [:lz 5] [:list 1 2] (3 1 2) (5 0 1) (3 [:a 1]) (0) nil nil {:s 1} \
+         nil @ @ @ @ @ [:tm 0 1] 1 {:a 1} [:tm 0 [:a 1] [:b 2]] [:tm 0 {:c 3}] E:Map conj \
+         requires vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, :h 1} [:tm 0 [:d \
+         4]]",
+        "[:ssm [:b 2]] [:sl 2 3] [:sq 2] [:slz 2] [:so 2] [:sl 2] #cljs.user.R{:a 1, :b 2} \
+         #cljs.user.R{:a 5, :c 6} 2 @ {:vk :vv} {:vk :vv} E:No protocol method IIndexed/-nth \
+         defined for this value E:No protocol method IIndexed/-nth defined for this value @ 1 \
+         TypeError 1 :unexpected 2 {:unexpected :unexpected} 3 {:unexpected :unexpected} 3 \
+         TypeError 1 TypeError 1 TypeError 1 (2 1) (2 1) (2 1 0) #{1 3} {:a 2, :b 1} {2 :b, 1 \
+         :a} (1 2) [2 3 4] [:a 1 3] (5 2) (2 1) (3 1 2) (5 0 1) (3 [:a 1]) (0) {:m 1} {:l 1} {:s \
+         1} {:q 1} @ @ @ @ @ E:1 is not ISeqable 1 {:a 1} {:a 1, :b 2} {:c 3} E:Map conj \
+         requires vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, :h 1} {:d 4}",
+        "#cljs.user.R{:a 1, :b 2} #cljs.user.R{:a 5, :c 6} 2 [:obj 1] {:vk :vv} {:vk :vv} E:No \
+         protocol method IIndexed/-nth defined for this value E:No protocol method IIndexed/-nth \
+         defined for this value @ 1 TypeError 1 :unexpected 2 {:unexpected :unexpected} 3 \
+         {:unexpected :unexpected} 3 TypeError 1 TypeError 1 TypeError 1 (2 1) (2 1) (2 1 0) #{1 \
+         3} {:a 2, :b 1} {2 :b, 1 :a} (1 2) [2 3 4] [:a 1 3] [:obj 5] (2 1) [:obj 3] [:obj 5] \
+         [:obj 3] (0) {:m 1} {:l 1} {:s 1} {:q 1} [:obj 2] [:obj 2] [:obj 1] [:obj 1] [:obj 1] \
+         E:1 is not ISeqable 1 {:a 1} {:a 1, :b 2} {:c 3} E:Map conj requires vector entries {0 \
+         0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, :h 1} {:d 4}",
+        "#cljs.user.R{:a 1, :b 2} #cljs.user.R{:a 5, :c 6} 2 [:object 1] {:vk :vv} {:vk :vv} \
+         E:No protocol method IIndexed/-nth defined for this value E:No protocol method \
+         IIndexed/-nth defined for this value [:object 1] 1 TypeError 1 :unexpected 2 \
+         {:unexpected :unexpected} 3 {:unexpected :unexpected} 3 TypeError 1 TypeError 1 \
+         TypeError 1 (2 1) (2 1) (2 1 0) #{1 3} {:a 2, :b 1} {2 :b, 1 :a} (1 2) [2 3 4] [:a 1 3] \
+         (5 2) (2 1) (3 1 2) (5 0 1) (3 [:a 1]) (0) {:m 1} {:l 1} {:s 1} {:q 1} @ [:object 2] @ \
+         [:object 1] @ E:1 is not ISeqable 1 {:a 1} {:a 1, :b 2} {:c 3} E:Map conj requires \
+         vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, :h 1} {:d 4}",
+        "#cljs.user.R{:a 1, :b 2} #cljs.user.R{:a 5, :c 6} 2 [:default 1] {:vk :vv} {:vk :vv} \
+         E:No protocol method IIndexed/-nth defined for this value E:No protocol method \
+         IIndexed/-nth defined for this value [:default 1] 1 TypeError 1 :unexpected 2 \
+         {:unexpected :unexpected} 3 {:unexpected :unexpected} 3 TypeError 1 TypeError 1 \
+         TypeError 1 (2 1) (2 1) (2 1 0) #{1 3} {:a 2, :b 1} {2 :b, 1 :a} (1 2) [2 3 4] [:a 1 3] \
+         (5 2) (2 1) (3 1 2) (5 0 1) (3 [:a 1]) (0) {:m 1} {:l 1} {:s 1} {:q 1} [:default 2] \
+         [:default 2] [:default 1] [:default 1] [:default 1] E:1 is not ISeqable 1 {:a 1} {:a 1, \
+         :b 2} {:c 3} E:Map conj requires vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 \
+         7, 8 8, :h 1} {:d 4}",
+        "(2 1) TypeError [:byname-sv 4] {:a 1} TypeError #cljs.user.R{:a 1, :b 2} \
+         #cljs.user.R{:a 5, :c 6} 2 @ {:vk :vv} {:vk :vv} E:No protocol method IIndexed/-nth \
+         defined for this value E:No protocol method IIndexed/-nth defined for this value @ 1 \
+         TypeError 1 :unexpected 2 {:unexpected :unexpected} 3 {:unexpected :unexpected} 3 \
+         TypeError 1 TypeError 1 TypeError 1 (2 1) (2 1) (2 1 0) TypeError {:a 2, :b 1} {2 :b, 1 \
+         :a} (:byname 1 2) [2 3 4] [:a 1 3] (5 2) (2 1) (3 1 2) (5 0 1) (3 [:a 1]) (0) {:m 1} \
+         {:l 1} TypeError nil @ @ @ @ @ E:1 is not ISeqable 1 {:a 1} {:a 1, :b 2} {:c 3} E:Map \
+         conj requires vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, :h 1} {:d 4}",
+        "#cljs.user.R{:a 1, [:enth 0] [:enth 1]} #cljs.user.R{:a 1, [:nth 0] [:nth 1]} 2 @ {:vk \
+         :vv} {:vk :vv} E:No protocol method IIndexed/-nth defined for this value E:No protocol \
+         method IIndexed/-nth defined for this value @ 1 TypeError 1 :unexpected 2 {:unexpected \
+         :unexpected} 3 {:unexpected :unexpected} 3 TypeError 1 TypeError 1 TypeError 1 (2 1) (2 \
+         1) (2 1 0) #{1 3} {[:enth 0] [:enth 1]} {[:nth 0] [:nth 1]} (1 2) [[:nth 1] [:nth 2] 4] \
+         [:a 1 3] (5 2) (2 1) (3 1 2) (5 0 1) (3 [:a 1]) (0) {:m 1} {:l 1} {:s 1} {:q 1} @ @ @ @ \
+         @ E:1 is not ISeqable 1 {[:nth 0] [:nth 1]} {[:enth 0] [:enth 1], [:nth 0] [:nth 1]} \
+         {[:enth 0] [:enth 1]} E:Map conj requires vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 5, \
+         6 6, 7 7, 8 8, [:nth 0] [:nth 1]} {[:enth 0] [:enth 1]}",
+        "{[:s 0] [:s 1], [:se 0] [:se 1]} {[:s 0] [:s 1]} {[:se 0] [:se 1]} {:b 2} \
+         #cljs.user.R{:a 1, :b 2} #cljs.user.R{:a 5, :c 6} 2 @ {:vk :vv} {:vk :vv} E:No protocol \
+         method IIndexed/-nth defined for this value E:No protocol method IIndexed/-nth defined \
+         for this value @ 1 TypeError 1 :unexpected 2 {:unexpected :unexpected} 3 {:unexpected \
+         :unexpected} 3 TypeError 1 TypeError 1 TypeError 1 (2 1) (2 1) (2 1 0) #{1 3} {:a 2, :b \
+         1} {2 :b, 1 :a} (1 2) [2 3 4] [:a 1 3] (5 2) (2 1) (3 1 2) (5 0 1) (3 [:a 1]) (0) {:m \
+         1} {:l 1} {:s 1} {:q 1} @ @ @ @ @ E:1 is not ISeqable 1 {:a 1} {:a 1, :b 2} {:c 3} \
+         E:Map conj requires vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, :h 1} \
+         {:d 4}",
+        "[:obj 0] #cljs.user.R{:a 1, :b 2} #cljs.user.R{:a 5, :c 6} 2 @ {:vk :vv} {:vk :vv} \
+         {[:obj 0] [:obj 1]} {[:obj 0] [:obj 1]} @ 1 TypeError 1 :unexpected 2 {:unexpected \
+         :unexpected} 3 {:unexpected :unexpected} 3 TypeError 1 TypeError 1 TypeError 1 (2 1) (2 \
+         1) (2 1 0) #{1 3} {:a 2, :b 1} {2 :b, 1 :a} (1 2) [2 3 4] [:a 1 3] (5 2) (2 1) (3 1 2) \
+         (5 0 1) (3 [:a 1]) (0) {:m 1} {:l 1} {:s 1} {:q 1} @ @ @ @ @ E:1 is not ISeqable 1 {:a \
+         1} {:a 1, :b 2} {:c 3} E:Map conj requires vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 \
+         5, 6 6, 7 7, 8 8, :h 1} {:d 4}",
+        "{:a 1} {:a 1} {[:byname 0] [:byname 1]} {[:byname 0] [:byname 1]} #cljs.user.R{:a 1, :b \
+         2} #cljs.user.R{:a 5, :c 6} 2 @ {:vk :vv} {:vk :vv} E:No protocol method IIndexed/-nth \
+         defined for this value E:No protocol method IIndexed/-nth defined for this value @ 1 \
+         TypeError 1 :unexpected 2 {:unexpected :unexpected} 3 {:unexpected :unexpected} 3 \
+         TypeError 1 TypeError 1 TypeError 1 (2 1) (2 1) (2 1 0) #{1 3} TypeError {2 :b, 1 :a} \
+         (1 2) [2 3 4] [:a 1 3] (5 2) (2 1) (3 1 2) (5 0 1) (3 [:a 1]) (0) TypeError {:l 1} {:s \
+         1} {:q 1} @ @ @ @ @ E:1 is not ISeqable 1 {:a 1} TypeError TypeError E:Map conj \
+         requires vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, :h 1} TypeError",
+        "7 #cljs.user.R{:a 1, :b 2} #cljs.user.R{:a 5, :c 6} 2 @ {:vk :vv} {:vk :vv} E:No \
+         protocol method IIndexed/-nth defined for this value E:No protocol method IIndexed/-nth \
+         defined for this value @ 1 TypeError 1 :unexpected 2 {:unexpected :unexpected} 3 \
+         {:unexpected :unexpected} 3 TypeError 1 TypeError 1 TypeError 1 (2 1) (2 1) (2 1 0) #{1 \
+         3} {:a 2, :b 1} {2 :b, 1 :a} (1 2) [2 3 4] [:a 1 3] (5 2) (2 1) (3 1 2) (5 0 1) (3 [:a \
+         1]) (0) {:m 1} {:l 1} {:s 1} {:q 1} @ @ @ @ @ E:1 is not ISeqable 1 {:a 1} {:a 1, :b 2} \
+         {:c 3} E:Map conj requires vector entries {0 0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, \
+         :h 1} {:d 4}",
+        "(2 1) (2 1) (2 1 0) #{1 3} {:a 2, :b 1} {2 :b, 1 :a} (1 2) [2 3 4] [:a 1 3] (5 2) (2 1) \
+         (3 1 2) (5 0 1) (3 [:a 1]) (0) {:m 1} {:l 1} {:s 1} {:q 1} @ @ @ @ @ E:1 is not \
+         ISeqable 1 {:a 1} {:a 1, :b 2} {:c 3} E:Map conj requires vector entries {0 0, 1 1, 2 \
+         2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, :h 1} {:d 4}",
+    ]
+    .map(|answers| answers.replace('@', none));
+    assert_eq!(outputs, expected);
+}
+
 /// The transients' `-conj!`, `-assoc!` and `-persistent!` slots, which
 /// `conj!`, `assoc!`, `persistent!`, `into`, `mapv` and `filterv` call
 /// before any lookup, and a map transient's `conj!` of a map entry, which

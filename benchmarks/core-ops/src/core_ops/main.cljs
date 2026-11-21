@@ -381,6 +381,17 @@
   (let [ms (small-maps s)]
     (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (into {} (aget ms (bit-and i 3)))))) acc))))
 
+;; `into` onto a target that is no editable collection (light-cljs-1076),
+;; each item conjoined through the target's `-conj`: a sorted map of the
+;; 7-key maps' entries, and a list of vectors of 2 to 8 items.
+(defn b-into-sorted-map-small [n s]
+  (let [ms (small-maps s)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (into (sorted-map) (aget ms (bit-and i 3)))))) acc))))
+
+(defn b-into-list-small [n s]
+  (let [vs (array (vec-n 2 s) (vec-n 4 s) (vec-n 6 s) (vec-n 8 s))]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (into () (aget vs (bit-and i 3)))))) acc))))
+
 ;; Two loops with no core operation, the cost of the benches' loop itself.
 (defn b-bit-and [n s]
   (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (bit-and i 3) s)) acc)))
@@ -471,6 +482,8 @@
    ["vec-assoc-variadic-1024" b-vec-assoc-variadic 500000]
    ["into-vec-small" b-into-vec-small 1000000]
    ["into-map-small" b-into-map-small 500000]
+   ["into-sorted-map-small" b-into-sorted-map-small 200000]
+   ["into-list-small" b-into-list-small 1000000]
    ["bit-and" b-bit-and 10000000]
    ["aget-bit-and" b-js-array-index 10000000]])
 

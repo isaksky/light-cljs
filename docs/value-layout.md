@@ -2268,6 +2268,58 @@ reads a mask bit, a marker, the value's own method or a table.
   review's fixes); the re-frame apps' whole bundles 103 to 242 bytes larger
   after gzip (0.03 to 0.20%).
 
+What light-cljs-1076 landed: `into` onto a target that is no editable
+collection (a sorted map or set, a list or `()`, a queue, a subvector, a
+map entry, a record, a program type) takes no protocol lookup per item,
+where it took one (`conjProtocol`'s, `-conj`'s dispatcher), and onto a
+sorted map of vectors or map entries three.
+
+- **`-conj` slot first.** `into` without a transducer conjoins each item
+  with `conjOwn`, upstream's `-conj`: a value with a keyed kind calls its
+  `-conj` slot, a program's (`extend-type`, `specify!`, a record's) or its
+  class's (light-cljs-1068), read and called once (86 bytes of bytecode,
+  under light-cljs-1033's 100); one whose slot holds no method finishes
+  from the slot as read (`conjRead`), and every other value takes
+  `conjProtocol`, as before. With a transducer `into` already called
+  `conj`, whose slot it reads.
+- **Answers kept.** The lookup found a program's method in the same slot,
+  and otherwise the class's through `conj`, which reads it: the slot is
+  what it called. A value whose slot holds no method (a member a program
+  wrote by name, `slotWrites`, a seq without `-conj`, a program type that
+  does not implement `ICollection`) finishes from the slot as read
+  (`conjRead`), as the lookup's read did, without reading it again (the
+  Sol review of light-cljs-1076): false is called (a `TypeError`), nil or
+  undefined takes a host type's, `object`'s or `default`'s method, then
+  `conj` of a collection (the class's path), else the dispatcher's error,
+  which a value that is no collection keeps
+  (`into_onto_other_collections_keeps_extended_answers`, master
+  `86dc4aa0`'s answers at every level, with the reads of getters on a
+  program type's, a list's and two vectors' slots counted).
+- **A map's `-conj` of an entry.** `mapConj` (every map class's `-conj`,
+  `mapConjSlot`) reads a vector's or a map entry's items through their
+  `-nth` slots (`entryNth`), as upstream's maps call `-nth`, where `-nth`'s
+  dispatcher looked each up: a runtime class's value calls the slot, a
+  program's or its class's, which the dispatcher found in the same slot or
+  through `nth` (90 bytes of bytecode); one whose slot holds no method
+  finishes from the slot as read (`entryNthRead`), as `conjRead` does; a
+  program type's entry and a compiler session that demands declarations
+  take the dispatcher; without the dispatcher, `nth`, as before. The
+  `-nth` slot units wait for `mapConj` too. `conj` of a map and a vector
+  pair takes no lookup either.
+- **Counted.** `into_onto_other_collections_takes_no_protocol_lookup_per_item`
+  counts no lookup per item for a sorted set, lists, a queue, a subvector,
+  a map entry, a program type, sorted maps and a record, of vectors, lazy
+  seqs and lists of items and of pairs and map entries, where master took
+  1 per item (3 for the sorted maps).
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1076; binaries
+  `light-cljs-86dc4aa0`, `light-cljs-1076-86e2b4b3` and the final
+  `light-cljs-1076-5111cbc9`, unreserved): the gate's new
+  `into-sorted-map-small` 3,957 to 2,269 ns (light/shadow 5.16 to 2.96)
+  and `into-list-small` 435 to 124 ns (3.73 to 1.06), `merge-small` -13 to
+  -16%; no touched operation over 3% slower; workload 200k's steady state
+  unchanged within its spread; the re-frame apps' whole bundles 117 to 154
+  bytes larger after gzip (0.04 to 0.13%).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -3315,6 +3367,17 @@ its native implementation:
     continue (`read`) and `builtin`, which reads a value's kind and mask
     only where its slot holds a runtime class's method, ask the Proxy as
     often as before.
+
+light-cljs-1076 rescoped no test: no test pins `into` of a forged value or
+a map's `conj` of a forged entry. What changes for deliberate reflection
+only: `into` onto a value made by `Object.create` of a list's, a sorted
+collection's, a queue's, a subvector's or a map entry's prototype conjoins
+through its class's `-conj` slot, as `conj` has since light-cljs-1068, where
+`conjProtocol`'s lookup threw that no `-conj` is defined for it; and a map's
+`-conj` of a forged vector or map entry that the protocol hooks take for a
+vector by its class's mask bits (light-cljs-1070) reads its items through
+its class's `-nth` slot, which reads fields the value lacks, where the
+dispatcher threw that no `-nth` is defined for it.
 
 ### Documentation rules that change
 

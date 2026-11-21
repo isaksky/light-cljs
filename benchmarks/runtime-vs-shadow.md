@@ -5224,3 +5224,71 @@ The re-frame app's first output and steady state are unchanged within their spre
 
 - **Raw:** 374,578 to 375,604 (+1,026), 482,313 to 483,343 (+1,030), 1,287,891 to 1,288,928 (+1,037): the fronts of the predicates and `empty?` the apps keep, `countSlot`, `implementsSeq` and the lookups' steps; no per-class code. Before the review's fixes, on `b86a231e`: +263, +121 and +187 after gzip.
 - **Size ratchet** (the final commit, with the review's fixes): the readable runtime grows 6,422 bytes on `86dc4aa0` (every none and prepare ceiling moves to the next 1,000 above); advanced programs that keep a front grow 121 to 395 bytes and `extended-classes` 566 (tests/support/ratchet_fixtures.rs).
+
+## 2026-11-20: `into` onto other collections through `-conj` (light-cljs-1076)
+
+`into` without a transducer conjoins each item onto a target that is no editable collection (a sorted map or set, a list or `()`, a queue, a subvector, a map entry, a record, a program type) through the target's `-conj` slot (`conjOwn`), as upstream's `into` calls `-conj`, where `-conj`'s dispatcher (`conjProtocol`) looked it up per item; and a map's `-conj` of a vector or a map entry reads the entry's items through their `-nth` slots (`entryNth`), where `-nth`'s dispatcher looked each up (docs/value-layout.md, "What light-cljs-1076 landed"). In a program that implements protocols (the gate's records make it one), each item onto those targets took one protocol lookup, three onto a sorted map, and takes none.
+
+**Binaries** in research/shadow-credibility/bin: before `light-cljs-86dc4aa0` (master), after `light-cljs-1076-86e2b4b3` (this pellet's first runtime on `86dc4aa0`) and the final `light-cljs-1076-5111cbc9` (with the Sol review's fix, which changes only the paths of a slot that holds no method, `conjRead` and `entryNthRead`), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. Records in research/output-speed/into-conj-1076. No run waited for the machine; each figure gives its 1-minute load; all unreserved.
+
+**New gate operations** `into-sorted-map-small` (`(into (sorted-map) m)` of the 7-key maps) and `into-list-small` (`(into () v)` of vectors of 2 to 8 items), added after light-cljs-1067's, before the loop baselines, so that no earlier operation's number moves (80 operations). The sorted operations before them build their data with a transducer, which already called `conj`, so the gate did not time this path.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`). Pass 1 is all 80 operations, before then after with `--baseline`, during a peer's load of 18 to 608 (before 18-572, after 18-608): no operation is slower than +2% (`get-small-miss`; `bit-and` and `aget-bit-and` +0%), and its gains on operations this pellet does not reach (`into-xform-1000` -26%, `vec-conj-64` -24%) are that load, not the change. Pass 2 is the operations whose paths it reaches, after, before, after (load 4.3-4.8, 13.7-15.5, 5.2-15.5); light-cljs ns per operation, medians:
+
+| op | pass 1 before | pass 1 after | pass 2 before | pass 2 after (two runs) | change | shadow-cljs (pass 2 before) | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| into-sorted-map-small | 7,796 | 2,853 | 3,996 | 2,298, 2,278 | -42%, -43% | 784.1 | 5.10, 2.88 |
+| into-list-small | 788.4 | 196.6 | 442.5 | 122.8, 124.4 | -72%, -72% | 117.5 | 3.77, 1.05 |
+| merge-small | 2,779 | 1,681 | 1,749 | 1,427, 1,532 | -18%, -12% | 673.7 | 2.60, 2.25 |
+| into-map-small | 1,170 | 809.9 | 683.4 | 524.2, 525.9 | -23%, -23% | 279.6 | 2.44, 1.87 |
+| into-set-100 | 7,024 | 6,664 | 6,506 | 5,397, 5,406 | -17%, -17% | 3,622 | 1.80, 1.48 |
+| into-vec-small | 250.4 | 194.4 | 184.9 | 175.8, 179.4 | -5%, -3% | 124.8 | 1.48, 1.42 |
+| into-vec-keys-small | 1,311 | 682.7 | 406.2 | 410.4, 414.9 | +1%, +2% | 314.8 | 1.29, 1.29 |
+| into-xform-1000 | 40,222 | 29,709 | 30,348 | 30,059, 30,768 | -1%, +1% | 14,033 | 2.16, 2.16 |
+| sorted-map-assoc-100 | 193.5 | 158.6 | 125.0 | 124.1, 129.0 | -1%, +3% | 202.8 | 0.62, 0.61 |
+| str-sorted-map-20 | 39,453 | 32,660 | 30,660 | 30,077, 30,168 | -2%, -2% | 18,841 | 1.63, 1.58 |
+| vec-conj-64 | 1,771 | 1,352 | 1,831 | 1,703, 1,714 | -7%, -6% | 1,675 | 1.09, 1.02 |
+| group-by-100 | 7,564 | 6,195 | 6,141 | 6,119, 6,204 | -0%, +1% | 4,339 | 1.42, 1.41 |
+
+- **The path's own operations:** `into` of a small vector onto `()` is now within 5% of shadow-cljs's (3.77 times before), and onto a sorted map 2.9 times (5.1): its remaining time is the tree map's own insertion of keyword keys.
+- **`merge-small`** (-12 to -18%) conjoins a map onto a map, which reads each entry's items through `entryNth`.
+- **`into-map-small` and `into-set-100`** (-17 to -24% here and in the recheck) take none of the changed code (`into` onto an editable target): alone in their process (`--ops into-map-small,into-set-100`, master then final, load 6.3-7.2) they measure 375.1 to 384.1 ns (+2%) and 4,892 to 4,862 (-1%), so their gain beside the other operations is the shared process's type feedback (the reductions' function no longer `conjProtocol`'s variadic dispatcher), as light-cljs-1067 found for `group-by-100`; it is not claimed. `sorted-map-assoc-100`'s +3% in one after run (-1% in the other) and `into-vec-keys-small`'s +1 to +2% are within their runs' spread.
+
+**Recheck with the final binary** `light-cljs-1076-5111cbc9` against master `light-cljs-86dc4aa0`, the same operations, final, master, final (load 4.8-6.0, 5.9-10.4, 10.6-26.2), light-cljs ns per operation:
+
+| op | master | final (two runs) | change | shadow-cljs (master run) | light/shadow master, final |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| into-sorted-map-small | 3,957 | 2,269, 2,280 | -43%, -42% | 766.2 | 5.16, 2.96 |
+| into-list-small | 435.1 | 123.7, 121.4 | -72%, -72% | 116.6 | 3.73, 1.06 |
+| merge-small | 1,652 | 1,439, 1,382 | -13%, -16% | 666.9 | 2.48, 2.16 |
+| into-map-small | 676.7 | 520.6, 516.5 | -23%, -24% | 275.5 | 2.46, 1.89 |
+| into-set-100 | 6,519 | 5,343, 5,268 | -18%, -19% | 3,547 | 1.84, 1.51 |
+| into-vec-small | 182.2 | 176.1, 176.1 | -3%, -3% | 122.8 | 1.48, 1.43 |
+| into-vec-keys-small | 402.1 | 410.6, 407.8 | +2%, +1% | 310.6 | 1.29, 1.32 |
+| into-xform-1000 | 30,203 | 29,804, 29,419 | -1%, -3% | 13,905 | 2.17, 2.14 |
+| sorted-map-assoc-100 | 124.4 | 123.7, 124.7 | -1%, +0% | 199.1 | 0.62, 0.62 |
+| str-sorted-map-20 | 30,424 | 30,086, 29,723 | -1%, -2% | 18,464 | 1.65, 1.63 |
+| vec-conj-64 | 1,655 | 1,676, 1,672 | +1%, +1% | 1,600 | 1.03, 1.05 |
+| group-by-100 | 6,260 | 6,081, 6,057 | -3%, -3% | 4,313 | 1.45, 1.41 |
+
+No touched operation is more than 2% slower (`into-vec-keys-small`, +1 to +2%, as in pass 2).
+
+**Workload 200k** (`compare.bb PROJECT --runs 3 --runtime-only --runtime 1,40`, two copies of `workload-200k-seed42`, `-1076b` built by the before binary and `-1076` by the after, run before, after, before, after), wall time at 40 iterations, median (range), and light-cljs's steady state:
+
+| round | light before | light after | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.799 s (1.797-1.807) | 1.810 s (1.805-1.930) | 1.673 / 1.511 s | 36.2 to 36.6 (shadow-cljs 33.4 / 29.5) | 14.0-15.5 / 14.9-15.9 |
+| 2 | 2.058 s (1.748-2.081) | 1.818 s (1.719-1.868) | 1.528 / 1.562 s | 42.9 to 36.5 (shadow-cljs 30.1 / 30.2) | 15.3 / 16.1-16.3 |
+
+The steady state is unchanged within its spread (round 2's before run had one fast and two slow runs); the workload's `into` calls are onto vectors and maps.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the before binary, built by each binary), the whole bundle with React, gzip -9:
+
+| App | master `86dc4aa0` | first runtime (`86e2b4b3`) | final (`5111cbc9`) | change |
+| --- | ---: | ---: | ---: | ---: |
+| re-frame simple | 114,271 | 114,321 | 114,418 | +147 (+0.13%) |
+| TodoMVC | 145,538 | 145,613 | 145,692 | +154 (+0.11%) |
+| flow | 333,239 | 333,248 | 333,356 | +117 (+0.04%) |
+
+- **Raw (final):** 374,578 to 375,235 (+657), 482,313 to 482,970 (+657), 1,287,891 to 1,288,565 (+674): `conjOwn` and `conjRead` (347 bytes at advanced in `mapv-count`), `entryNth` and `entryNthRead`, the review's fix adding the last and moving `conjRead`'s finish to every value.
+- **Size ratchet** (rebased onto light-cljs-1075's `d87d84a1`): the readable runtime grows 3,651 bytes (every none and prepare ceiling moves to the next 1,000 above); `mapv-count` grows 347 bytes (ceiling 54,400), `features` and `features-direct` 774 (ceilings 120,000 and 119,600), and the features example's shared chunk 774 (ceiling 96,200) (tests/support/ratchet_fixtures.rs).

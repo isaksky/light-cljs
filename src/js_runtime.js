@@ -1044,8 +1044,8 @@
   //@unit installMethods.ICloneableKey effect: installMethods when: isCloneable requires: methodKey,
   //@ methodKeys
   methodKeys[6] = methodKey("ICloneable");
-  //@unit installMethods.ICollectionConjKey effect: installMethods when: conjOf, conjPath requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.ICollectionConjKey effect: installMethods when: conjOf, conjOwn, conjPath
+  //@ requires: methodKey, methodKeys
   methodKeys[7] = methodKey("ICollection/-conj");
   //@unit installMethods.ICollectionKey effect: installMethods when: isColl requires: methodKey,
   //@ methodKeys
@@ -1097,8 +1097,8 @@
   //@unit installMethods.IIndexedKey effect: installMethods when: isIndexed, nthOf, nthPath
   //@ requires: methodKey, methodKeys
   methodKeys[24] = methodKey("IIndexed");
-  //@unit installMethods.IIndexedNthKey effect: installMethods when: SubvecValue, nthOf, nthPath,
-  //@ subvec requires: methodKey, methodKeys
+  //@unit installMethods.IIndexedNthKey effect: installMethods when: mapConj, nthOf, nthPath,
+  //@ subvec, SubvecValue requires: methodKey, methodKeys
   methodKeys[25] = methodKey("IIndexed/-nth");
   //@unit installMethods.IIterableIteratorKey effect: installMethods when: iterator, reduceOf
   //@ requires: methodKey, methodKeys
@@ -3294,9 +3294,9 @@
     }
     return result;
   }
-  //@unit queueFromArray.conj effect: queueFromArray when: conj, conjOf, conjPath, conjSite,
-  //@ treeMapSeqConstructor requires: conj, kindHooks, makeVector, meta, PersistentQueueValue,
-  //@ queueFromArray, queues
+  //@unit queueFromArray.conj effect: queueFromArray when: conj, conjOf, conjOwn, conjPath,
+  //@ conjSite, treeMapSeqConstructor requires: conj, kindHooks, makeVector, meta,
+  //@ PersistentQueueValue, queueFromArray, queues
   kindHooks.conjQueue = (result, item) => {
     const q = result?.slots$LKEY;
     return q ? PersistentQueueValue(meta(result), q.count + 1, q.front != null ? q.front : conj(null, item), q.front != null ? conj(q.rear ?? makeVector([]), item) : makeVector([]), null)
@@ -3305,7 +3305,7 @@
   //@unit makeVector.conj effect: makeVector, mapEntry when: conjPath requires: kindHooks,
   //@ makeVector, vectorConj
   kindHooks.conjVector = (store, item) => makeVector(null, vectorConj(store, item));
-  //@unit SubvecValue.conj effect: SubvecValue when: conj, conjOf, conjPath, conjSite,
+  //@unit SubvecValue.conj effect: SubvecValue when: conj, conjOf, conjOwn, conjPath, conjSite,
   //@ treeMapSeqConstructor requires: assoc, kindHooks, meta, SubvecValue
   // A vector with slots and a source is a Subvec its public constructor built.
   kindHooks.conjSubvec = (result, item) => {
@@ -4355,11 +4355,14 @@
     return updatedMap(value, entries);
   }
 
-  //@unit mapConj requires: assoc, first, holdsVector, methodKeys, next, nth, protocolHooks, seq
+  //@unit mapConj requires: assoc, first, holdsVector, indexedNth, indexedValue, methodKeys, next,
+  //@ nth, protocolHooks, seq, slotFirst
   function mapConj(value, member) {
     if (member == null) return value;
-    // A vector's `-nth` is `nth`'s own (see `protocolHooks`).
-    const vectorLike = item => protocolHooks.satisfies?.(methodKeys[61], item) ?? holdsVector(item), nthOf = protocolHooks.nthProtocol ?? nth;
+    // A vector's `-nth` is `nth`'s own (see `protocolHooks`), which is
+    // slot-first: where `-nth`'s dispatcher is, `entryNth` reads the slot
+    // first as the dispatcher's lookup would.
+    const vectorLike = item => protocolHooks.satisfies?.(methodKeys[61], item) ?? holdsVector(item), nthOf = protocolHooks.nthProtocol ? entryNth : nth;
     if (vectorLike(member)) return assoc(value, nthOf(member, 0), nthOf(member, 1));
     let result = value;
     for (let current = seq(member); current !== null; current = next(current)) {
@@ -4368,6 +4371,31 @@
       result = assoc(result, nthOf(pair, 0), nthOf(pair, 1));
     }
     return result;
+  }
+  // `-nth` of an entry, as upstream's maps' `-conj` calls it
+  // (light-cljs-1076): a runtime class's value (a vector, a map entry)
+  // calls its `-nth` slot, a program's (`extend-type`, `specify!`) or its
+  // class's, read once, where the dispatcher's lookup found the program's in
+  // the same slot or else the class's through `nth`; one whose slot holds no
+  // method finishes from the slot as read (`entryNthRead`); any other value,
+  // and a compiler session that demands declarations (`slotFirst`), takes
+  // the dispatcher (`protocolHooks.nthProtocol`).
+  function entryNth(entry, index) {
+    if (slotFirst.on && entry.cljs$lang$kind$$LKEY < 64) {
+      const method = entry.cljs$core$IIndexed$_nth$arity$2$LKEY;
+      return method ? method.call(entry, entry, index) : entryNthRead(entry, index, method);
+    }
+    return protocolHooks.nthProtocol(entry, index);
+  }
+  // The dispatcher's answer from the slot as read, as its one lookup
+  // (`protocolHooks.builtin`) finished it: false is called, nil or
+  // undefined takes a host type's, `object`'s or `default`'s method, then
+  // the runtime's own `-nth` (`indexedNth`), else the dispatcher's error.
+  function entryNthRead(entry, index, read) {
+    const own = protocolHooks.builtin && (read != null ? read : protocolHooks.externalMethod?.(entry, methodKeys[25], 2));
+    if (own != null) return own.call(entry, entry, index);
+    if (indexedValue(entry)) return indexedNth(entry, index);
+    throw new Error("No protocol method IIndexed/-nth defined for this value");
   }
 
   //@unit ownSet requires: protocolHooks, sets
@@ -5900,8 +5928,8 @@
   // next call runs the program's method. A value with the prototype but no
   // store of its own (one made by reflection) answers `noBranch`, and the
   // slot-first wrapper then takes the operation, which answers it as before.
-  //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: nth, nthOf, nthSite,
-  //@ nthSite3 requires: builtinSlot, missing, PersistentVectorValue, vectorNth
+  //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: mapConj, nth, nthOf,
+  //@ nthSite, nthSite3 requires: builtinSlot, missing, PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const store = self;
     return vectorNth(store, index, missing);
@@ -5922,9 +5950,9 @@
     const store = self;
     return store.cnt$LKEY ? vectorNth(store, store.cnt$LKEY - 1, null) : null;
   });
-  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj, conjOf, conjSite,
-  //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, makeVector, PersistentVectorValue,
-  //@ vectorConj
+  //@unit PersistentVectorValue.conj effect: PersistentVectorValue when: conj, conjOf, conjOwn,
+  //@ conjSite, treeMapSeqConstructor requires: builtinSlot, conjMeta, makeVector,
+  //@ PersistentVectorValue, vectorConj
   PersistentVectorValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     const store = self;
     return conjMeta(self, makeVector(null, vectorConj(store, item)));
@@ -5968,7 +5996,7 @@
   // operations give it (`SubvecValue.conj`, `SubvecValue.assoc`). Each slot
   // is complete for a subvector: the compile-time runtime's protocol lookup
   // finds a slot and calls it.
-  //@unit SubvecValue.nth effect: SubvecValue when: nth, nthOf, nthSite, nthSite3 requires: builtinSlot,
+  //@unit SubvecValue.nth effect: SubvecValue when: mapConj, nth, nthOf, nthSite, nthSite3 requires: builtinSlot,
   //@ missing, SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     return vectorNth(self, index, missing);
@@ -5987,7 +6015,7 @@
   SubvecValue.prototype.cljs$core$IStack$_peek$arity$1$LKEY = builtinSlot(function (self) {
     return self.cnt$LKEY ? vectorNth(self, self.cnt$LKEY - 1, null) : null;
   });
-  //@unit SubvecValue.conjSlot effect: SubvecValue when: conj, conjOf, conjSite,
+  //@unit SubvecValue.conjSlot effect: SubvecValue when: conj, conjOf, conjOwn, conjSite,
   //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, kindHooks, makeVector, preserveMeta,
   //@ SubvecValue, vectorConj
   SubvecValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
@@ -6029,8 +6057,8 @@
   // vector's `conj`, `assoc` and `peek`, which give what a vector of its
   // items gives. A value of the entries' prototype that is not an entry of
   // two items in a tail, as only reflection makes, takes the operation.
-  //@unit MapEntryType.nth effect: MapEntryType when: nth, nthOf, nthSite, nthSite3 requires: builtinSlot,
-  //@ MapEntryType, outOfBounds
+  //@unit MapEntryType.nth effect: MapEntryType when: mapConj, nth, nthOf, nthSite, nthSite3
+  //@ requires: builtinSlot, MapEntryType, outOfBounds
   MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const tail = self.tail$LKEY;
     return index === 0 || index === 1 ? tail[index] : outOfBounds();
@@ -6068,7 +6096,7 @@
     const tail = self.tail$LKEY;
     return tail[1];
   });
-  //@unit MapEntryType.conjSlot effect: MapEntryType when: conj, conjOf, conjSite,
+  //@unit MapEntryType.conjSlot effect: MapEntryType when: conj, conjOf, conjOwn, conjSite,
   //@ treeMapSeqConstructor requires: builtinSlot, conjMeta, makeVector, MapEntryType, vectorConj
   MapEntryType.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     return conjMeta(self, makeVector(null, vectorConj(self, item)));
@@ -6101,8 +6129,8 @@
   // `editableTransient`: it throws, but the three-argument `nth` gives its
   // item for an index out of bounds. Each slot is complete for a transient
   // vector, as the compile-time runtime's protocol lookup finds and calls it.
-  //@unit TransientVectorType.nth effect: TransientVectorType when: nth, nthOf, nthSite, nthSite3
-  //@ requires: builtinSlot, missing, transientNth, TransientVectorType, vectorNth
+  //@unit TransientVectorType.nth effect: TransientVectorType when: mapConj, nth, nthOf, nthSite,
+  //@ nthSite3 requires: builtinSlot, missing, transientNth, TransientVectorType, vectorNth
   TransientVectorType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const editable = self.editable$LKEY;
     if (editable === true) return vectorNth(self, index, missing);
@@ -6233,16 +6261,16 @@
   //@unit TransientHashSetType.count effect: TransientHashSetType when: count, countOf, countSite,
   //@ countSlot requires: transientCountSlot, TransientHashSetType
   TransientHashSetType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = transientCountSlot;
-  //@unit TransientArrayMapType.nth effect: TransientArrayMapType when: nth, nthOf, nthSite,
-  //@ nthSite3 requires: TransientArrayMapType, transientNthSlots
+  //@unit TransientArrayMapType.nth effect: TransientArrayMapType when: mapConj, nth, nthOf,
+  //@ nthSite, nthSite3 requires: TransientArrayMapType, transientNthSlots
   TransientArrayMapType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientArrayMapType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
-  //@unit TransientHashMapType.nth effect: TransientHashMapType when: nth, nthOf, nthSite, nthSite3
-  //@ requires: TransientHashMapType, transientNthSlots
+  //@unit TransientHashMapType.nth effect: TransientHashMapType when: mapConj, nth, nthOf, nthSite,
+  //@ nthSite3 requires: TransientHashMapType, transientNthSlots
   TransientHashMapType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientHashMapType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
-  //@unit TransientHashSetType.nth effect: TransientHashSetType when: nth, nthOf, nthSite, nthSite3
-  //@ requires: TransientHashSetType, transientNthSlots
+  //@unit TransientHashSetType.nth effect: TransientHashSetType when: mapConj, nth, nthOf, nthSite,
+  //@ nthSite3 requires: TransientHashSetType, transientNthSlots
   TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
   //@unit TransientArrayMapType.lookup effect: TransientArrayMapType when: arrayMapContains, get,
@@ -6645,10 +6673,10 @@
     return built === missing ? self : conjMeta(self, built);
   });
   //@unit PersistentHashSetValue.conjSlot effect: PersistentHashSetValue when: conj, conjOf,
-  //@ conjSite, treeMapSeqConstructor requires: PersistentHashSetValue, setConjSlot
+  //@ conjOwn, conjSite, treeMapSeqConstructor requires: PersistentHashSetValue, setConjSlot
   PersistentHashSetValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = setConjSlot;
-  //@unit treeSetConstructor.conjSlot effect: treeSetConstructor when: conj, conjOf, conjSite,
-  //@ treeMapSeqConstructor requires: setConjSlot, treeSetConstructor
+  //@unit treeSetConstructor.conjSlot effect: treeSetConstructor when: conj, conjOf, conjOwn,
+  //@ conjSite, treeMapSeqConstructor requires: setConjSlot, treeSetConstructor
   treeSetConstructor.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = setConjSlot;
   // A set's `-disjoin` (light-cljs-1068), upstream's: a hash set's removes
   // the key from its members (`setDisjoin`), a sorted set's from its tree
@@ -6712,8 +6740,9 @@
     const q = self.slots$LKEY;
     return first(q !== undefined ? q.front : self);
   });
-  //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjOf, conjSite,
-  //@ treeMapSeqConstructor requires: builtinSlot, kindHooks, PersistentQueueValue, preserveMeta
+  //@unit PersistentQueueValue.conjSlot effect: PersistentQueueValue when: conj, conjOf, conjOwn,
+  //@ conjSite, treeMapSeqConstructor requires: builtinSlot, kindHooks, PersistentQueueValue,
+  //@ preserveMeta
   PersistentQueueValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) {
     return preserveMeta(self, kindHooks.conjQueue(self, item));
   });
@@ -6732,13 +6761,15 @@
     return preserveMeta(self, queueFromArray(self.arr$LKEY.slice(1)));
   });
   //@unit PersistentArrayMapValue.conjSlot effect: PersistentArrayMapValue when: conj, conjOf,
-  //@ conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot, PersistentArrayMapValue
+  //@ conjOwn, conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot,
+  //@ PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
   //@unit PersistentHashMapValue.conjSlot effect: PersistentHashMapValue when: conj, conjOf,
-  //@ conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot, PersistentHashMapValue
+  //@ conjOwn, conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot,
+  //@ PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
-  //@unit treeMapConstructor.conjSlot effect: treeMapConstructor when: conj, conjOf, conjSite,
-  //@ treeMapSeqConstructor requires: builtinSlot, mapConjSlot, treeMapConstructor
+  //@unit treeMapConstructor.conjSlot effect: treeMapConstructor when: conj, conjOf, conjOwn,
+  //@ conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
 
   // The seqs over an array or a string (`viewOf`) answer `first`, `rest`,
@@ -7086,8 +7117,8 @@
   arrayChunk.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     return self.step$LKEY !== null ? self.first$LKEY : firstOf(self);
   });
-  //@unit arrayChunk.nthSlot effect: arrayChunk when: nth, nthOf, nthSite, nthSite3 requires: arrayChunk,
-  //@ builtinSlot, chunkNth, missing
+  //@unit arrayChunk.nthSlot effect: arrayChunk when: mapConj, nth, nthOf, nthSite, nthSite3
+  //@ requires: arrayChunk, builtinSlot, chunkNth, missing
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     return chunkNth(self, index, missing);
   });
@@ -7212,10 +7243,10 @@
   // them before.
   //@unit listConjSlot requires: builtinSlot, conjMeta, cons
   const listConjSlot = builtinSlot(function (self, item) { return conjMeta(self, cons(item, self, "list")); });
-  //@unit ListValue.conjSlot effect: ListValue when: conj, conjOf, conjSite, treeMapSeqConstructor
-  //@ requires: listConjSlot, ListValue
+  //@unit ListValue.conjSlot effect: ListValue when: conj, conjOf, conjOwn, conjSite,
+  //@ treeMapSeqConstructor requires: listConjSlot, ListValue
   ListValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = listConjSlot;
-  //@unit EmptyListValue.conjSlot effect: EmptyListValue when: conj, conjOf, conjSite,
+  //@unit EmptyListValue.conjSlot effect: EmptyListValue when: conj, conjOf, conjOwn, conjSite,
   //@ treeMapSeqConstructor requires: EmptyListValue, listConjSlot
   EmptyListValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = listConjSlot;
   //@unit listPopSlot requires: builtinSlot, count, rest
@@ -7233,8 +7264,8 @@
   IntegerRangeValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return self.count$LKEY;
   });
-  //@unit IntegerRangeValue.nthSlot effect: IntegerRangeValue when: nth, nthOf, nthSite, nthSite3
-  //@ requires: builtinSlot, IntegerRangeValue, outOfBounds
+  //@unit IntegerRangeValue.nthSlot effect: IntegerRangeValue when: mapConj, nth, nthOf, nthSite,
+  //@ nthSite3 requires: builtinSlot, IntegerRangeValue, outOfBounds
   // Its item at an index below its count, computed, as upstream's Range's
   // `-nth` and as `nth` read its fields before light-cljs-1066.
   IntegerRangeValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
@@ -12472,8 +12503,8 @@
   //@ requires: count, recordMethodTable
   recordMethodTable.push(Type => [
     ["ICounted/-count", 1, function () { return Type.fieldNames.length + count(this.__extmap); }]]);
-  //@unit recordMethods.conj effect: recordMethods when: conjOf, conjPath, conjProtocol requires: assoc,
-  //@ conj, isVector, nth, recordMethodTable, reduce
+  //@unit recordMethods.conj effect: recordMethods when: conjOf, conjOwn, conjPath, conjProtocol
+  //@ requires: assoc, conj, isVector, nth, recordMethodTable, reduce
   recordMethodTable.push(() => [
     ["ICollection/-conj", 2, function (_self, entry) {
       if (isVector(entry)) return assoc(this, nth(entry, 0), nth(entry, 1));
@@ -13467,14 +13498,47 @@
     if (defaults.length === 1) methods[1] = x => run(x);
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
-  //@unit into requires: conj, conjBangOwn, conjProtocol, editableValue, invalidArity, meta,
-  //@ methodKeys, persistentBang, protocolHooks, reduce, slotFirst, transduce, transient, vector,
+  //@unit conjOwn requires: collectionValue, conj, conjProtocol, methodKeys, protocolHooks,
+  //@ slotFirst
+  // Upstream's `-conj` of one item, as `into` calls it onto a target that
+  // is no editable collection (light-cljs-1076): a value with a keyed kind
+  // calls its `-conj` slot, a program's (`extend-type`, `specify!`, a
+  // record's) or its class's (a sorted map's or set's, a list's, a queue's,
+  // a subvector's, a map entry's), read and called once, where
+  // `conjProtocol`'s lookup found the program's in the same slot or else the
+  // class's through `conj`; one whose slot holds no method finishes from
+  // the slot as read (`conjRead`); every other value takes `conjProtocol`.
+  // 86 bytes of bytecode (light-cljs-1033).
+  function conjOwn(coll, item) {
+    if (coll != null && slotFirst.on && coll.cljs$lang$kind$$LKEY !== undefined) {
+      const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
+      return method ? method.call(coll, coll, item) : conjRead(coll, item, method);
+    }
+    return conjProtocol(coll, item);
+  }
+  // `conjProtocol`'s answer for a value whose slot held no method, from the
+  // slot as read, as its one lookup (`protocolHooks.builtin`) finished it,
+  // without reading it again (the Sol review of light-cljs-1076): false is
+  // called, nil or undefined takes a host type's, `object`'s or `default`'s
+  // method, then `conj` for a collection (a runtime class's value whose
+  // member a program wrote by name, `slotWrites`, a seq without `-conj`, a
+  // record), else the dispatcher's error, which a value that is no
+  // collection keeps.
+  function conjRead(value, item, read) {
+    const own = protocolHooks.builtin && (read != null ? read : protocolHooks.externalMethod?.(value, methodKeys[7], 2));
+    if (own != null) return own.call(value, value, item);
+    if (collectionValue(value)) return conj(value, item);
+    throw new Error("No protocol method ICollection/-conj defined for this value");
+  }
+  //@unit into requires: conj, conjBangOwn, conjOwn, editableValue, invalidArity, meta, methodKeys,
+  //@ persistentBang, protocolHooks, reduce, slotFirst, transduce, transient, vector,
   //@ withMetaProtocol
   // Upstream's `into`, one function per arity: onto a target that
   // implements IEditableCollection, `conj!` of each item onto its
   // `transient`, then `persistent!` and `-with-meta` of its `meta`, each of
   // which calls the value's slot first (light-cljs-1067); onto any other,
-  // `conj` of each item.
+  // `-conj` of each item without a transducer (`conjOwn`, its slot first,
+  // light-cljs-1076), `conj` with one.
   function into(to, from, source) {
     switch (arguments.length) {
       case 2: return into2(to, from);
@@ -13495,7 +13559,7 @@
   }
   function into2(to, from) {
     if (editableTarget(to)) return withMetaProtocol(persistentBang(reduce(conjBangOwn, transient(to), from)), meta(to));
-    return reduce(to == null ? conj : conjProtocol, to, from);
+    return reduce(to == null ? conj : conjOwn, to, from);
   }
   function into3(to, xform, from) {
     const editable = editableTarget(to), metadata = editable ? meta(to) : null;
@@ -14844,21 +14908,21 @@
     return nth(entry, 1);
   }
   //@unit protocolHooks.builtin effect: installMethods when: addWatchProtocol, assocOf, assocPath,
-  //@ collectionWithMeta, compareKeys, conjOf, conjPath, conjTransient, coreMethod, countOf,
-  //@ countPath, derefProtocol, disj, disjOf, disjPath, dissocOf, dissocPath, equalPairOf,
+  //@ collectionWithMeta, compareKeys, conjOf, conjOwn, conjPath, conjTransient, coreMethod,
+  //@ countOf, countPath, derefProtocol, disj, disjOf, disjPath, dissocOf, dissocPath, equalPairOf,
   //@ equalPairPath, firstOf, firstSeq, hashOf, hashPath, hashStructural, iterator,
-  //@ keywordLookupEquiv, keywordProgramEquiv, Loadable.dispatch, metaSupported, name, namespace,
-  //@ notifyWatches, objectEquiv, peekOf, peekPath, pop, popOf, popPath, removeWatchProtocol,
-  //@ restOf, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported requires: builtin,
-  //@ protocolHooks
+  //@ keywordLookupEquiv, keywordProgramEquiv, Loadable.dispatch, mapConj, metaSupported, name,
+  //@ namespace, notifyWatches, objectEquiv, peekOf, peekPath, pop, popOf, popPath,
+  //@ removeWatchProtocol, restOf, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported
+  //@ requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,
   //@ protocolHooks
   // `builtin`'s first half, which the keyword searches read a keyword key's
   // slot with (light-cljs-989, `keywordProgramEquiv`).
   protocolHooks.keyMethod = keyMethod;
-  //@unit protocolHooks.external effect: extendType when: builtin, disj, keywordLookupEquiv, pop,
-  //@ extendedDeclared requires: externalMethod, protocolHooks
+  //@unit protocolHooks.external effect: extendType when: builtin, conjOwn, disj, extendedDeclared,
+  //@ keywordLookupEquiv, mapConj, pop requires: externalMethod, protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
   //@unit protocolHooks.extend effect: extendType, extendInstance when: conjMeta, containsOf,
