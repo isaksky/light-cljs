@@ -5009,6 +5009,7 @@ impl<'a> Emitter<'a> {
                 self.value(*value);
                 self.output.push_str(", null, null, null)");
             }
+            (C::Str, _) => return self.str_call(inference, args),
             (C::Count, [value]) => {
                 return self.count(inference, *value) || self.site_call(inference, core, args);
             }
@@ -5086,6 +5087,66 @@ impl<'a> Emitter<'a> {
         self.output.push('(');
         self.arguments(args);
         self.output.push(')');
+        true
+    }
+
+    /// `(str ...)` at `Advanced`, as upstream's `str` macro writes it
+    /// (light-cljs-1023): `""` for no operand, and otherwise each operand's
+    /// text joined with `+`, ``("a" + `${i}` + rt$strOne(x))``, with no rest
+    /// array, callback or `join` (11 times shadow-cljs's time on
+    /// `str-concat` before). A string operand is its own text; a number's or
+    /// a boolean's is a template's, which V8 converts faster than `+` of a
+    /// string and a number (13 against 18 ns on `str-concat`'s shape); any
+    /// other one's is `rt$strOne`'s, which may run code (a `toString`, a
+    /// printing). The runtime's `str` evaluates every operand before it takes
+    /// any one's text, so an operand evaluated after such code must be a
+    /// [`Emitter::pure_operand`]; otherwise the call stays the runtime's.
+    fn str_call(&mut self, inference: &Inference, args: &[ExprId]) -> bool {
+        let own_text = Type::STRING.union(Type::NUMBER).union(Type::BOOLEAN);
+        let plain = |id: ExprId| {
+            let ty = inference.ty(id);
+            !ty.is_never() && own_text.contains(ty)
+        };
+        let coded = args.iter().position(|&arg| !plain(arg));
+        if let Some(first) = coded
+            && !args[first + 1..].iter().all(|&arg| self.pure_operand(arg))
+        {
+            return false;
+        }
+        if args.is_empty() {
+            self.output.push_str("\"\"");
+            return true;
+        }
+        // One operand is its text alone: its value, a template or a call.
+        let joined = args.len() > 1;
+        if joined {
+            self.output.push('(');
+        }
+        for (index, &arg) in args.iter().enumerate() {
+            if index > 0 {
+                self.output.push_str(" + ");
+            }
+            if inference.ty(arg) == Type::STRING {
+                self.value(arg);
+            } else if plain(arg) {
+                self.output.push_str("`${");
+                self.value(arg);
+                self.output.push_str("}`");
+            } else {
+                let text = self.runtime_read(
+                    RuntimeName::direct("strOne", None),
+                    self.site,
+                    NameUse::Call,
+                );
+                self.output.push_str(&text);
+                self.output.push('(');
+                self.value(arg);
+                self.output.push(')');
+            }
+        }
+        if joined {
+            self.output.push(')');
+        }
         true
     }
 
@@ -9750,6 +9811,22 @@ impl<'a> Emitter<'a> {
                 if let Some(empty) = EmptyCollection::of(kind) {
                     self.empty_collection(empty);
                 } else if self.shaped(id) {
+                } else if let ExprKind::Vector(items) = kind
+                    && self.replaced_core.is_some()
+                    && items.len() <= 32
+                {
+                    // At `Advanced` a vector literal of at most 32 items is a
+                    // vector of its new array as the tail, with no copy and
+                    // no trie, as upstream builds one (light-cljs-1023).
+                    let text = self.runtime_read(
+                        RuntimeName::direct("vectorOfTail", None),
+                        self.site,
+                        NameUse::Call,
+                    );
+                    self.output.push_str(&text);
+                    self.output.push_str("([");
+                    self.arguments(items);
+                    self.output.push_str("])");
                 } else {
                     let (constructor, items) = composite(program, kind).unwrap();
                     self.construct(constructor, items.len(), |emitter, index| {

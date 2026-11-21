@@ -1173,7 +1173,15 @@ and `Prepare` output does not change.
     which calls the value's keyed slot or else the operation
     (light-cljs-1016, docs/value-layout.md). These need, besides core
     protocols intact, that the program writes no core protocol member by
-    name and spells none in raw text.
+    name and spells none in raw text;
+  - writes `(str ...)` as its operands' texts joined with `+`, as upstream's
+    `str` macro does (light-cljs-1023): a string operand as it is, a number
+    or boolean as a template (`` `${i}` ``), any other through
+    `rt$strOne(x)`. An operand evaluated after one whose text may run code
+    must be a pure operand, or the call stays `rt$str(...)`, which evaluates
+    every operand first. A vector literal of at most 32 items built at its
+    site is `rt$vectorOfTail([...])`, a vector of the new array as its tail,
+    with no copy and no trie.
 
   Except for the operators, these lowerings need core protocols intact. A
   replaced operation keeps its call.

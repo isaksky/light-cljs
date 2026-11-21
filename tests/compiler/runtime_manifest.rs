@@ -773,6 +773,9 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "mapValueAt",
     "entryPrototype",
     "MapEntryType.lean",
+    // The constructor of vector literals that only `Advanced` output calls
+    // (light-cljs-1023).
+    "vectorOfTail",
     // The call-site entries that `:advanced` output calls (light-cljs-1016).
     "countSite",
     "nthSite",

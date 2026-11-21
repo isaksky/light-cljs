@@ -226,9 +226,10 @@ fn advanced_hash_conses_constants_on_their_emitted_structure() {
     // each a read of an entry, are inlined at their calls (light-cljs-214),
     // and `first`, `second` and `:k` of the inlined constants read the entries
     // of their items (light-cljs-221).
-    assert_eq!(advanced.matches("rt$vectorFromArray(").count(), 3);
+    // The printed vector, built at its site, is its tail (light-cljs-1023).
+    assert_eq!(advanced.matches("rt$vectorFromArray(").count(), 2);
     assert!(
-        advanced.contains("rt$vectorFromArray([k0, k3, k4, (k0 === k0), (k0 === k0)"),
+        advanced.contains("rt$vectorOfTail([k0, k3, k4, (k0 === k0), (k0 === k0)"),
         "{advanced}"
     );
     // The table precedes the program in bundler output too.

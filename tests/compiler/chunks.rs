@@ -2976,10 +2976,12 @@ fn the_features_runtime_splits_by_signature() {
 }
 
 /// The entry of [`LOADS_BOTH`] that also logs a `str` call when it loads.
+/// Its operands are two calls, so that `Advanced` keeps the call of `str`
+/// rather than joining their texts (light-cljs-1023).
 fn loads_both_calling_str() -> String {
     LOADS_BOTH.replace(
         "start\n",
-        "(js/console.log (str \"n\" (js/parseInt \"1\")))\nstart\n",
+        "(js/console.log (str (js/String \"n\") (js/parseInt \"1\")))\nstart\n",
     )
 }
 
@@ -3258,7 +3260,8 @@ fn an_install_both_features_need_is_in_the_chunk_they_share() {
 
 /// `str` of a collection prints it through a hook (`str.collections`, an
 /// `effect:` unit of every collection constructor, `when: str`). Startup
-/// calls `str` on strings only and logs the features' strings as they are;
+/// calls `str` on strings only (two calls, which `Advanced` keeps a call of
+/// `str`, light-cljs-1023) and logs the features' strings as they are;
 /// one feature prints a vector and the other a map. The hook and the printer
 /// it needs are both features', in their shared chunk, and run before either
 /// feature's code: startup holds neither.
@@ -3271,7 +3274,7 @@ fn the_printer_of_collections_goes_with_the_collections() {
                   (-> (lazy/load editor)\n\
                       (.then (fn [f] (js/console.log (f)) (lazy/load reports)))\n\
                       (.then (fn [f] (js/console.log (f)) nil))))\n\
-                (js/console.log (str \"n\" (js/parseInt \"1\")))\n\
+                (js/console.log (str (js/String \"n\") (js/parseInt \"1\")))\n\
                 start\n";
     let program = analyze(&[
         ("app/main.cljs", main),

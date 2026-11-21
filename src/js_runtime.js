@@ -5418,6 +5418,11 @@
   function vectorFromArray(items) {
     return makeVector(Array.from(items));
   }
+  //@unit vectorOfTail requires: makeVector, VectorCell
+  // A vector of the new array `items`, at most 32 of them, as its tail:
+  // `vectorTrie`'s vector, without its copy and its walk. `Advanced` output
+  // builds a vector literal of at most 32 items with it (light-cljs-1023).
+  const vectorOfTail = items => makeVector(null, new VectorCell(null, items.length, 5, [], items, null));
 
   //@unit keywordCore requires: freshKeyword, invalidArity, keywordOf, makeKeyword, namedOf,
   //@ symbolOf
@@ -7795,12 +7800,16 @@
     const s = parsingString(value);
     return s === "true" ? true : s === "false" ? false : null;
   }
-  //@unit groupBy requires: assoc, conj, get, mapFromArray, reduce, vector
+  //@unit groupBy requires: assocBang, conj, get, mapFromArray, persistentBang, reduce, transient,
+  //@ vector
+  // As upstream: the groups gather in a transient map (light-cljs-1023),
+  // where each item made a new persistent map, and only a new group makes
+  // an empty vector (a group is never nil).
   function groupBy(fn, coll) {
-    return reduce((result, value) => {
-      const key = fn.call(null, value);
-      return assoc(result, key, conj(get(result, key, vector()), value));
-    }, mapFromArray([]), coll);
+    return persistentBang(reduce((result, value) => {
+      const key = fn.call(null, value), group = get(result, key, null);
+      return assocBang(result, key, conj(group === null ? vector() : group, value));
+    }, transient(mapFromArray([])), coll));
   }
   //@unit frequencies requires: assoc, get, mapFromArray, reduce
   function frequencies(coll) {
@@ -14084,13 +14093,23 @@
     return prStr(value).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g,
       units => units.length === 2 ? units : "\\u" + units.charCodeAt(0).toString(16).padStart(4, "0"));
   }
-  //@unit str requires: kindHooks, maps, sequential, sets
-  function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sequential(value) || maps.has(value) || sets.has(value) ? kindHooks.strCollection(value) : String(value)).join(""); }
+  //@unit strOne requires: kindHooks, maps, sequential, sets
+  // `str` of one value: a string itself, a number its text, nil "", a
+  // collection its printing, any other value `String`'s text. `Advanced`
+  // output calls it for each operand of a `str` call whose text may need
+  // code (light-cljs-1023), as upstream's `str` macro calls `str` of one. A
+  // template converts a number faster in V8 than `String` or `+` does.
+  function strOne(value) {
+    return typeof value === "string" ? value : typeof value === "number" ? `${value}` : value == null ? ""
+      : sequential(value) || maps.has(value) || sets.has(value) ? kindHooks.strCollection(value) : String(value);
+  }
+  //@unit str requires: strOne
+  function str(...values) { let text = ""; for (let i = 0; i < values.length; i++) text += strOne(values[i]); return text; }
   //@unit str.collections effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
   //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
   //@ IndexedSeqValue, queueFromArray, LazySeq, makeMap, treeMapConstructor, recordMethods, makeSet,
-  //@ treeSetConstructor when: str requires: kindHooks, print
+  //@ treeSetConstructor when: strOne requires: kindHooks, print
   kindHooks.strCollection = value => print(value, true);
   //@unit displayStr
   // `str` of one value for error messages, through `toString` for collections.
@@ -15179,7 +15198,10 @@
   //@ keywordLookupEquiv, mapConj, pop requires: externalMethod, protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
-  //@unit protocolHooks.extend effect: extendType, extendInstance when: conjMeta, containsOf, containsPath, containsProtocol, entryPrototype, member___hash, member_arr, member_cnt, member_has_nil_QMARK_, member_nil_val, member_root, member_shift, member_tail, ownMap, ownSet, treeMapSeqConstructor, vectorIndexOf, vectorPrototype requires: protocolHooks
+  //@unit protocolHooks.extend effect: extendType, extendInstance when: conjMeta, containsOf,
+  //@ containsPath, containsProtocol, entryPrototype, member___hash, member_arr, member_cnt,
+  //@ member_has_nil_QMARK_, member_nil_val, member_root, member_shift, member_tail, ownMap, ownSet,
+  //@ treeMapSeqConstructor, vectorIndexOf, vectorPrototype requires: protocolHooks
   // Only `extend-type` and `specify!` can give the runtime's own values
   // protocol implementations, which their host-facing methods and fields then
   // answer through the generic operations (`hostHooks`).
