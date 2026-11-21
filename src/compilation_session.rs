@@ -410,6 +410,13 @@ struct Catalog {
     unit_order: Option<std::collections::BTreeMap<crate::effect_lanes::UnitOrder, usize>>,
     bindings: HashMap<String, (VarId, usize)>,
     journal: RegistrationJournal,
+    /// Compiler-owned index of registered roots, bundles, :test units and
+    /// protocol extensions so V8/QuickJS isolates resolve on demand instead
+    /// of replaying the full registration journal (light-cljs-1090).
+    roots: RootIndex,
+    /// How many direct root reads [`SharedCatalog::resolve_root`] answered.
+    #[cfg(all(test, light_v8))]
+    root_resolutions: usize,
     /// By the slot each view joined with ([`SharedCatalog::join`]).
     threads: Vec<AnalysisThread>,
     /// How many threads wait for a unit another thread analyzes.
@@ -632,6 +639,255 @@ impl RegistrationJournal {
         self.registrations.len()
     }
 }
+/// What the JS registry (`src/compiler_roots.js`) holds for a name from one
+/// journal position on, as far as direct root resolution needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootSlot {
+    /// A root with its unit, or a declaration without one. `over_group`: a
+    /// `defonce` that replaced a group bundle's slot, which the registry
+    /// reads first while that bundle has the product (`oncePrevious`).
+    Root {
+        unit: Option<usize>,
+        over_group: bool,
+    },
+    /// A declaration bundle's product.
+    Bundle { group: bool },
+}
+impl RootSlot {
+    /// Whether the registry's slot has a unit (`slot.unit !== null`): a
+    /// bundle's slot does, with unit -1.
+    fn defined(self) -> bool {
+        !matches!(self, Self::Root { unit: None, .. })
+    }
+}
+/// Compiler-owned index of compile-time roots, bundles, `:test` units and
+/// protocol extensions, updated where each registration is recorded with the
+/// exact rules of `__lightRegisterUnit` and `__lightRegisterBundle` in
+/// `src/compiler_roots.js`.
+///
+/// Serves both direct name resolution ([`Self::resolve`]) and lazy on-demand
+/// materialization for V8/QuickJS engines (`__lightRootService`), eliminating
+/// eager catalog replay on both the coordinator and worker isolates.
+#[derive(Default)]
+pub(crate) struct RootIndex {
+    /// Per qualified name, the effective slot history by journal position.
+    slots: HashMap<String, Vec<(usize, RootSlot)>>,
+    /// Per qualified name, every journal position touching `name` in ascending
+    /// order (`Registration::Root(name, ...)` or a `Registration::Bundle`
+    /// naming `name` in `products`).
+    name_positions: HashMap<String, Vec<usize>>,
+    /// For each `unit` registered via `Registration::Root(_, Some(unit), ...)`,
+    /// its journal position (so `__lightCompilerTest(unit)` resolves in O(1)).
+    unit_positions: HashMap<usize, usize>,
+    /// 0-based index `(order - 1)` -> `(journal_position, Arc<BundleRecord>)`.
+    bundles: Vec<(usize, Arc<BundleRecord>)>,
+    /// `bundles.len()` strictly before each journal position `pos`
+    /// (`declarationFrontier` for a root registered at `pos`).
+    bundle_count_at: Vec<usize>,
+    /// Per protocol name in `bundle.extensions`, 1-based bundle orders that
+    /// extend it, in ascending order.
+    protocol_bundles: HashMap<String, Vec<usize>>,
+    /// Append-only log of `(journal_pos, protocol)` the first time each
+    /// protocol is extended by any bundle.
+    extended_protocols: Vec<(usize, String)>,
+}
+/// Summary of what a single [`RootIndex::record`] call changed, so the
+/// coordinator knows whether its attached engine needs an immediate cursor
+/// notification.
+#[derive(Clone, Copy, Debug, Default)]
+struct RecordEffect {
+    /// True if any touched name already had an earlier registration.
+    redefined: bool,
+    /// True if a bundle carried protocol/multimethod extensions.
+    has_extensions: bool,
+    /// New journal length, bundle count, and distinct extended protocol count.
+    journal_len: usize,
+    bundle_count: usize,
+    ext_protocol_count: usize,
+}
+impl RootIndex {
+    fn current(&self, name: &str) -> Option<RootSlot> {
+        self.slots.get(name)?.last().map(|&(_, slot)| slot)
+    }
+    fn set(&mut self, name: &str, position: usize, slot: RootSlot) {
+        let history = match self.slots.get_mut(name) {
+            Some(history) => history,
+            None => self.slots.entry(name.to_owned()).or_default(),
+        };
+        match history.last_mut() {
+            // A bundle naming a product twice sets it once.
+            Some(last) if last.0 == position => last.1 = slot,
+            _ => history.push((position, slot)),
+        }
+    }
+    fn note_position(&mut self, name: &str, position: usize) -> bool {
+        let positions = match self.name_positions.get_mut(name) {
+            Some(positions) => positions,
+            None => self.name_positions.entry(name.to_owned()).or_default(),
+        };
+        let existed = !positions.is_empty();
+        if positions.last() != Some(&position) {
+            positions.push(position);
+        }
+        existed
+    }
+    /// Note the registration recorded at journal `position`.
+    fn record(&mut self, position: usize, registration: &Registration) -> RecordEffect {
+        let bundles_before = self.bundles.len();
+        debug_assert_eq!(self.bundle_count_at.len(), position);
+        self.bundle_count_at.push(bundles_before);
+        let mut redefined = false;
+        let mut has_extensions = false;
+        match registration {
+            Registration::Root(name, unit, _, once, _) => {
+                redefined |= self.note_position(name, position);
+                if let Some(id) = *unit {
+                    self.unit_positions.insert(id, position);
+                }
+                let old = self.current(name);
+                // A declaration without a unit never replaces a slot, and a
+                // `defonce` keeps one with a unit unless a group bundle's.
+                if !(unit.is_none() && old.is_some()
+                    || *once
+                        && old.is_some_and(|old| {
+                            old.defined() && old != RootSlot::Bundle { group: true }
+                        }))
+                {
+                    let over_group = *once && old == Some(RootSlot::Bundle { group: true });
+                    let unit = *unit;
+                    self.set(name, position, RootSlot::Root { unit, over_group });
+                }
+            }
+            Registration::Bundle(bundle) => {
+                let order = self.bundles.len() + 1;
+                self.bundles.push((position, bundle.clone()));
+                for name in &bundle.products {
+                    redefined |= self.note_position(name, position);
+                }
+                if !bundle.extensions.is_empty() {
+                    has_extensions = true;
+                    for (protocol, _, _) in &bundle.extensions {
+                        let orders = match self.protocol_bundles.get_mut(protocol) {
+                            Some(orders) => orders,
+                            None => self.protocol_bundles.entry(protocol.clone()).or_default(),
+                        };
+                        if orders.is_empty() {
+                            self.extended_protocols.push((position, protocol.clone()));
+                        }
+                        if orders.last() != Some(&order) {
+                            orders.push(order);
+                        }
+                    }
+                }
+                // A `defonce`-like bundle whose every product is defined
+                // changes nothing.
+                let skipped = bundle.once
+                    && !bundle.products.is_empty()
+                    && bundle
+                        .products
+                        .iter()
+                        .all(|name| self.current(name).is_some_and(RootSlot::defined));
+                if !skipped {
+                    let group = bundle.group;
+                    for name in &bundle.products {
+                        self.set(name, position, RootSlot::Bundle { group });
+                    }
+                }
+            }
+        }
+        RecordEffect {
+            redefined,
+            has_extensions,
+            journal_len: position + 1,
+            bundle_count: self.bundles.len(),
+            ext_protocol_count: self.extended_protocols.len(),
+        }
+    }
+    /// The unit of the root `name` names to the journal's registrations
+    /// before `position`, matching `__lightRegisterUnit` / `__lightRegisterBundle`.
+    #[cfg_attr(not(all(test, light_v8)), allow(dead_code))]
+    pub(crate) fn resolve(&self, name: &str, position: usize) -> Result<usize, String> {
+        let slot = self.slots.get(name).and_then(|history| {
+            let visible = history.partition_point(|&(at, _)| at < position);
+            visible.checked_sub(1).map(|last| history[last].1)
+        });
+        match slot {
+            None => Err(format!("compiler root is not registered: {name}")),
+            Some(RootSlot::Root { unit: None, .. }) => Err(format!(
+                "compiler root is not registered: {name} (declared without a definition)"
+            )),
+            Some(RootSlot::Root {
+                unit: Some(unit),
+                over_group: false,
+            }) => Ok(unit),
+            Some(_) => Err(format!(
+                "{name} is a declaration-bundle product; bundle products and protocol extensions require the JS bundle registry"
+            )),
+        }
+    }
+    /// Distinct protocol names whose first extension arrived at or before
+    /// `visible` registrations, starting from `synced` already-delivered
+    /// entries in `extended_protocols`. Returns `(new_synced_count, names)`.
+    fn new_extended_protocols(&self, synced: usize, visible: usize) -> (usize, Vec<String>) {
+        if synced >= self.extended_protocols.len() {
+            return (synced, Vec::new());
+        }
+        let end = self.extended_protocols.partition_point(|(pos, _)| *pos < visible);
+        if end <= synced {
+            return (synced, Vec::new());
+        }
+        let names = self.extended_protocols[synced..end]
+            .iter()
+            .map(|(_, protocol)| protocol.clone())
+            .collect();
+        (end, names)
+    }
+    /// Bundle count visible strictly before journal position `visible`.
+    fn bundles_before(&self, visible: usize) -> usize {
+        self.bundle_count_at
+            .get(visible)
+            .copied()
+            .unwrap_or(self.bundles.len())
+    }
+}
+fn write_opt_usize(out: &mut String, value: Option<usize>) {
+    use std::fmt::Write;
+    match value {
+        Some(n) => {
+            let _ = write!(out, "{n}");
+        }
+        None => out.push_str("null"),
+    }
+}
+fn write_bundle_fields(out: &mut String, pos: usize, order: usize, bundle: &BundleRecord) {
+    use std::fmt::Write;
+    let _ = write!(out, "{pos},{order},{},[", bundle.unit);
+    for (i, name) in bundle.products.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        crate::source_map::json_string(out, name);
+    }
+    out.push_str("],[");
+    for (i, (protocol, selector, identity)) in bundle.extensions.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        crate::source_map::json_string(out, protocol);
+        out.push(',');
+        match selector {
+            Some(s) => crate::source_map::json_string(out, s),
+            None => out.push_str("null"),
+        }
+        out.push(',');
+        crate::source_map::json_string(out, identity);
+        out.push(']');
+    }
+    out.push_str("],");
+    crate::source_map::json_string(out, &bundle.location);
+    let _ = write!(out, ",{},{}", bundle.once, bundle.group);
+}
 impl Catalog {
     fn order(&self, id: usize) -> crate::effect_lanes::UnitOrder {
         self.unit_orders.as_ref().map_or_else(
@@ -836,6 +1092,12 @@ pub(crate) struct SharedCatalog {
     /// Whether [`Catalog::queued_ir`] is measured: only with `--stats`, so
     /// that a build without reads one relaxed load per unit.
     measuring_ir: std::sync::atomic::AtomicBool,
+    /// Atomic mirrors of the shared journal/root-index cursors so workers and
+    /// the coordinator can skip locking the catalog mutex when nothing new was
+    /// registered since their last sync.
+    journal_len: std::sync::atomic::AtomicUsize,
+    bundle_count: std::sync::atomic::AtomicUsize,
+    ext_protocol_count: std::sync::atomic::AtomicUsize,
     /// The build's test-only perturbation ([`crate::scheduler::Perturbation`]):
     /// the unit pool's scheduling, and the unit whose analysis panics.
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
@@ -1886,6 +2148,142 @@ impl SharedCatalog {
     pub(crate) fn extension_frontier(&self) -> usize {
         self.lock().journal.bundle_count
     }
+    /// The unit of the root `name` names, resolved in [`Catalog::roots`]
+    /// against registrations before `visible` (or the whole journal).
+    #[cfg(all(test, light_v8))]
+    pub(crate) fn resolve_root(&self, name: &str, visible: Option<usize>) -> Result<usize, String> {
+        let mut c = self.lock();
+        c.root_resolutions += 1;
+        let position = visible.unwrap_or(c.journal.registrations.len());
+        c.roots.resolve(name, position)
+    }
+    /// Answer a `__lightRootService` query from `src/compiler_roots.js` against
+    /// registrations strictly before `visible` (or the whole shared journal).
+    fn serve_root_request(&self, request: &str, visible: Option<usize>) -> String {
+        use std::fmt::Write;
+        let mut parts = request.split('\0');
+        let Some(kind) = parts.next() else {
+            return String::new();
+        };
+        let c = self.lock();
+        let max_pos = visible.unwrap_or(c.journal.registrations.len());
+        match kind {
+            "n" => {
+                let (Some(name), Some(from), Some(limit)) =
+                    (parts.next(), parts.next(), parts.next())
+                else {
+                    return String::new();
+                };
+                let Ok(from) = from.parse::<usize>() else {
+                    return String::new();
+                };
+                let Ok(limit) = limit.parse::<isize>() else {
+                    return String::new();
+                };
+                let to_pos = if limit < 0 {
+                    max_pos
+                } else {
+                    (limit as usize).min(max_pos)
+                };
+                if from >= to_pos {
+                    return String::new();
+                }
+                let Some(positions) = c.roots.name_positions.get(name) else {
+                    return String::new();
+                };
+                let start = positions.partition_point(|&pos| pos < from);
+                let end = positions.partition_point(|&pos| pos < to_pos);
+                if start >= end {
+                    return String::new();
+                }
+                let mut out = String::new();
+                let _ = write!(out, "[{to_pos},[");
+                for (i, &pos) in positions[start..end].iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    let decl_frontier = c.roots.bundle_count_at[pos];
+                    match &c.journal.registrations[pos] {
+                        Registration::Root(_, unit, test, once, location) => {
+                            let _ = write!(out, "[0,{pos},");
+                            write_opt_usize(&mut out, *unit);
+                            out.push(',');
+                            write_opt_usize(&mut out, *test);
+                            let _ = write!(out, ",{once},");
+                            crate::source_map::json_string(&mut out, location);
+                            let _ = write!(out, ",{decl_frontier}]");
+                        }
+                        Registration::Bundle(bundle) => {
+                            // `bundle_count_at[pos]` is bundles strictly before `pos`,
+                            // so this bundle's 1-based order is `decl_frontier + 1`.
+                            out.push_str("[1,");
+                            write_bundle_fields(&mut out, pos, decl_frontier + 1, bundle);
+                            out.push(']');
+                        }
+                    }
+                }
+                out.push_str("]]");
+                out
+            }
+            "p" => {
+                let (Some(protocol), Some(from), Some(to)) =
+                    (parts.next(), parts.next(), parts.next())
+                else {
+                    return String::new();
+                };
+                let (Ok(from), Ok(to)) = (from.parse::<usize>(), to.parse::<usize>()) else {
+                    return String::new();
+                };
+                let to_pos = to.min(max_pos);
+                if from >= to_pos {
+                    return String::new();
+                }
+                let Some(orders) = c.roots.protocol_bundles.get(protocol) else {
+                    return String::new();
+                };
+                let start =
+                    orders.partition_point(|&order| c.roots.bundles[order - 1].0 < from);
+                let end =
+                    orders.partition_point(|&order| c.roots.bundles[order - 1].0 < to_pos);
+                if start >= end {
+                    return String::new();
+                }
+                let mut out = String::from("[");
+                for (i, &order) in orders[start..end].iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    let (pos, bundle) = &c.roots.bundles[order - 1];
+                    out.push('[');
+                    write_bundle_fields(&mut out, *pos, order, bundle);
+                    out.push(']');
+                }
+                out.push(']');
+                out
+            }
+            "t" => {
+                let Some(unit) = parts.next().and_then(|s| s.parse::<usize>().ok()) else {
+                    return String::new();
+                };
+                let Some(&pos) = c.roots.unit_positions.get(&unit) else {
+                    return String::new();
+                };
+                if pos >= max_pos {
+                    return String::new();
+                }
+                if let Registration::Root(name, ..) = &c.journal.registrations[pos] {
+                    let mut out = String::new();
+                    let _ = write!(out, "[{pos},");
+                    crate::source_map::json_string(&mut out, name);
+                    out.push(']');
+                    out
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        }
+    }
     /// How many of them [`reaches_environment_data`].
     pub(crate) fn environment_bundles(&self) -> usize {
         self.lock().journal.environment_bundles
@@ -2008,8 +2406,12 @@ impl Catalog {
 #[derive(Default)]
 struct InstalledRegistrations {
     bootstrap: Option<Bootstrap>,
-    /// How many of the catalog's registrations `bootstrap` holds.
+    /// How many of the catalog's registrations `bootstrap` holds (or is synced to).
     installed: usize,
+    /// How many bundles `bootstrap` is synced to (V8/QuickJS RootIndex path).
+    synced_bundles: usize,
+    /// How many entries of [`RootIndex::extended_protocols`] `bootstrap` holds.
+    synced_ext_protocols: usize,
 }
 /// The coordinator's view of the catalog: the shared units, with the engine
 /// of the coordinator's thread and the engine bindings of the hosts it
@@ -2452,8 +2854,15 @@ impl CompilationSession {
         source: u32,
     ) -> Result<(), String> {
         let mut units = units.into_iter();
+        let mut needs_sync = false;
+        let native = self
+            .engine
+            .borrow()
+            .bootstrap
+            .as_ref()
+            .is_some_and(|b| b.evaluator.native_forms());
         for registration in registrations {
-            let end = {
+            let (end, effect) = {
                 let mut c = self.shared.lock();
                 let c = &mut *c;
                 match &registration {
@@ -2525,15 +2934,69 @@ impl CompilationSession {
                     }
                 }
             };
-            self.install_registrations(end, |_| Ok(()))?;
+            if native {
+                self.install_registrations(end, |_| Ok(()))?;
+            } else if effect.redefined || effect.has_extensions {
+                needs_sync = true;
+            }
         }
         if units.next().is_some() {
             return Err("an installed unit has no root".into());
+        }
+        if !native && needs_sync {
+            self.sync_catalog(None)?;
         }
         Ok(())
     }
     pub fn bootstrap(&self) -> Option<Bootstrap> {
         self.engine.borrow().bootstrap.clone()
+    }
+    /// Sync the coordinator's V8/QuickJS engine with the latest catalog cursor,
+    /// bundle count and newly extended protocols from [`Catalog::roots`],
+    /// without replaying individual registrations. Lock-free when nothing new
+    /// was registered or no new protocol was extended.
+    pub(crate) fn sync_catalog(&self, active: Option<&dyn MacroEvaluator>) -> Result<(), String> {
+        use std::sync::atomic::Ordering::Acquire;
+        let total = self.shared.journal_len.load(Acquire);
+        let bundles = self.shared.bundle_count.load(Acquire);
+        let ext_count = self.shared.ext_protocol_count.load(Acquire);
+        let (engine_ref, bootstrap_hold, prev_ext) = {
+            let mut state = self.engine.borrow_mut();
+            let Some(bootstrap) = state.bootstrap.as_ref() else {
+                return Ok(());
+            };
+            if bootstrap.evaluator.native_forms() {
+                return Ok(());
+            }
+            if state.installed >= total
+                && state.synced_bundles >= bundles
+                && state.synced_ext_protocols >= ext_count
+            {
+                return Ok(());
+            }
+            let prev_ext = state.synced_ext_protocols;
+            let bootstrap_hold = active.is_none().then(|| bootstrap.clone());
+            state.installed = total;
+            state.synced_bundles = bundles;
+            (active, bootstrap_hold, prev_ext)
+        };
+        let new_protocols = if ext_count > prev_ext {
+            let c = self.shared.lock();
+            let (new_synced, protocols) = c.roots.new_extended_protocols(prev_ext, total);
+            drop(c);
+            self.engine.borrow_mut().synced_ext_protocols = new_synced;
+            protocols
+        } else {
+            Vec::new()
+        };
+        let evaluator = match (engine_ref, &bootstrap_hold) {
+            (Some(engine), _) => engine,
+            (None, Some(bootstrap)) => bootstrap.evaluator.as_ref(),
+            (None, None) => return Ok(()),
+        };
+        evaluator
+            .sync_catalog(total, bundles, &new_protocols)
+            .map_err(|e| e.to_string())
     }
     /// Install in this view's engine, if it has one, the catalog's
     /// registrations before position `end` that it lacks, in order;
@@ -2547,6 +3010,10 @@ impl CompilationSession {
         let Some(bootstrap) = installed.bootstrap.clone() else {
             return Ok(());
         };
+        if !bootstrap.evaluator.native_forms() {
+            drop(installed);
+            return self.sync_catalog(None);
+        }
         let start = installed.installed;
         if start >= end {
             return Ok(());
@@ -2564,21 +3031,40 @@ impl CompilationSession {
         }
         read(&self.shared.lock().journal)
     }
-    fn record_registration(&self, catalog: &mut Catalog, registration: Registration) -> usize {
+    fn record_registration(
+        &self,
+        catalog: &mut Catalog,
+        registration: Registration,
+    ) -> (usize, RecordEffect) {
+        use std::sync::atomic::Ordering::Release;
+        let position = catalog.journal.registrations.len();
+        let effect = catalog.roots.record(position, &registration);
         #[cfg(feature = "bbp-macros")]
         if self.owns_namespace_journal.get() {
             // The shared catalog retains the arrival log for unit allocation
             // diagnostics. This writer's engine only installs its own view.
             catalog.journal.push(registration.clone());
-            return self
+            self.shared.journal_len.store(effect.journal_len, Release);
+            self.shared.bundle_count.store(effect.bundle_count, Release);
+            self.shared
+                .ext_protocol_count
+                .store(effect.ext_protocol_count, Release);
+            let end = self
                 .namespace_journal
                 .borrow_mut()
                 .as_mut()
                 .unwrap()
                 .journal
                 .push(registration);
+            return (end, effect);
         }
-        catalog.journal.push(registration)
+        let end = catalog.journal.push(registration);
+        self.shared.journal_len.store(effect.journal_len, Release);
+        self.shared.bundle_count.store(effect.bundle_count, Release);
+        self.shared
+            .ext_protocol_count
+            .store(effect.ext_protocol_count, Release);
+        (end, effect)
     }
     /// Keep the compile-time runtime's `gensym` from returning any of
     /// `names` in this compilation: now if the session has started, else
@@ -3359,15 +3845,25 @@ impl CompilationSession {
             once,
             group,
         });
-        let end = {
+        let (end, effect) = {
             let mut c = self.shared.lock();
             self.record_registration(&mut c, Registration::Bundle(bundle))
         };
         // Initializers that call `gensym` number in the scope that
         // registers them.
-        self.install_registrations(end, |engine| {
-            crate::generated_names::sync_gensym_scope(engine).map_err(|e| e.to_string())
-        })?;
+        if self
+            .engine
+            .borrow()
+            .bootstrap
+            .as_ref()
+            .is_some_and(|b| b.evaluator.native_forms())
+        {
+            self.install_registrations(end, |engine| {
+                crate::generated_names::sync_gensym_scope(engine).map_err(|e| e.to_string())
+            })?;
+        } else if effect.has_extensions || effect.redefined {
+            self.sync_catalog(None)?;
+        }
         if group {
             self.release_application_ir(unit);
         }
@@ -3428,7 +3924,7 @@ impl CompilationSession {
             worker_tests::retain(self.next_unit(), form, &snapshot, &host);
         }
         let (environment, binding) = host.into_parts();
-        let (id, end) = {
+        let (id, end, effect) = {
             let mut c = self.shared.lock();
             let c = &mut *c;
             // Allocate synthetic names under the same lock as their unit ID.
@@ -3494,9 +3990,9 @@ impl CompilationSession {
                 );
                 id
             });
-            let end =
+            let (end, effect) =
                 self.record_registration(c, Registration::Root(name, id, test, once, location));
-            (id, end)
+            (id, end, effect)
         };
         if let Some(id) = id {
             let mut bindings = self.unit_bindings.borrow_mut();
@@ -3505,7 +4001,17 @@ impl CompilationSession {
             }
             bindings[id] = Some(Box::new(binding));
         }
-        self.install_registrations(end, |_| Ok(()))?;
+        if self
+            .engine
+            .borrow()
+            .bootstrap
+            .as_ref()
+            .is_some_and(|b| b.evaluator.native_forms())
+        {
+            self.install_registrations(end, |_| Ok(()))?;
+        } else if effect.redefined {
+            self.sync_catalog(None)?;
+        }
         Ok(id)
     }
     /// Mark unit `id`, just registered, as macro-free: its form reaches no
@@ -4400,17 +4906,18 @@ fn analyze_unit(
                 .as_ref()
                 .map(|e| e.as_ref() as &dyn MacroEvaluator)
         });
-        // A proven macro-free native body cannot enter the VM, just as it
-        // can run in the pool's engine-free view. Its analysis cannot see or
-        // change the VM's frontier or gensym scope. Keep the engine available
-        // to the analyzer for control polls, including dispatch-held units
-        // whose polls are spent immediately rather than recorded.
-        let scope_engine = if macro_free && host.native_macro_backend() {
-            None
-        } else {
-            engine
-        };
+        // A proven macro-free body cannot enter the compile-time engine on any
+        // backend (`MacroFreeUnit` enforces this), just as it runs in the
+        // pool's engine-free view. Its analysis cannot see or change the
+        // engine's frontier or gensym scope. Keep the engine available to the
+        // analyzer for control polls on native backends.
+        let scope_engine = if macro_free { None } else { engine };
         let _frontier = if let Some(engine) = scope_engine {
+            if !on_worker
+                && let Some(session) = host.session_handle()
+            {
+                session.sync_catalog(Some(engine))?;
+            }
             engine
                 .compiler_frontier(Some(snapshot.extension_frontier))
                 .map_err(|e| e.to_string())?;
@@ -4651,12 +5158,28 @@ fn prepare_engine(
             .install_build_object("globalThis.__lightBuildCaller")
             .map_err(|e| e.to_string());
     }
+    let roots_view = view.clone();
     install_catalog_services(
         evaluator,
         view,
         binding.build.clone(),
         binding.dependency_log.clone(),
     )?;
+    if roots_view
+        .upgrade()
+        .is_some_and(|view| view.uses_root_index())
+    {
+        evaluator
+            .install_string_service(
+                "__lightRootService",
+                Rc::new(move |request| {
+                    roots_view
+                        .upgrade()
+                        .map_or_else(String::new, |view| view.root_service(request))
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+    }
     // From now on the runtime reports the first extension environment data
     // could reach through the build service (light-cljs-433), including one
     // it noted before, which the registry reports when it loads.
@@ -4740,6 +5263,16 @@ pub(crate) trait CatalogView {
     fn forward_build(&self, _request: &str) -> Option<String> {
         None
     }
+    /// Whether this view backs `compiler_roots.js` with the catalog's
+    /// Rust-owned [`RootIndex`] (`__lightRootService`) instead of eager replay.
+    fn uses_root_index(&self) -> bool {
+        false
+    }
+    /// Answer a `__lightRootService` lookup against this view's visibility
+    /// cursor.
+    fn root_service(&self, _request: &str) -> String {
+        String::new()
+    }
 }
 /// `__lightCompileUnit` in `active` for a view whose analyses `analyze` runs:
 /// analysis is shared by the threads, and the unit's registration is
@@ -4817,13 +5350,22 @@ impl CatalogView for CompilationSession {
         true
     }
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
-        compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))
+        self.sync_catalog(Some(active))?;
+        let code = compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))?;
+        self.sync_catalog(Some(active))?;
+        Ok(code)
     }
     fn unit_source(&self, id: usize) -> Option<u32> {
         self.shared.unit_source(id)
     }
     fn analysis_sources(&self) -> Vec<u32> {
         self.shared.analysis_sources(self.thread)
+    }
+    fn uses_root_index(&self) -> bool {
+        true
+    }
+    fn root_service(&self, request: &str) -> String {
+        self.shared.serve_root_request(request, None)
     }
 }
 /// A worker thread's view of a [`SharedCatalog`]: the units it analyzes and
@@ -4841,14 +5383,23 @@ pub(crate) struct WorkerView {
     /// The worker's host ([`MacroHost::bind`]), whose binding each unit's
     /// analysis frame is taken from.
     host: MacroHost,
-    /// How many of the catalog's registrations the host's engine holds.
+    /// How many of the catalog's registrations the host's engine holds (or is
+    /// synced to in [`RootIndex`]).
     installed: Cell<usize>,
+    /// How many bundles and distinct extended protocols this view's V8/QuickJS
+    /// engine has synced.
+    synced_bundles: Cell<usize>,
+    synced_ext_protocols: Cell<usize>,
     /// Whether its `light.build` requests go to the coordinator: a pool
     /// worker's ([`SharedCatalog::forward_build`]).
     forwards: Cell<bool>,
 }
 #[cfg_attr(not(test), allow(dead_code))]
 impl WorkerView {
+    #[cfg(all(test, light_v8))]
+    fn resolve_root(&self, name: &str) -> Result<usize, String> {
+        self.shared.resolve_root(name, Some(self.installed.get()))
+    }
     /// A view of `shared` for this thread, which analyzes in frames of
     /// `host`. If the host has an engine, the engine reaches the view
     /// through its services.
@@ -4867,6 +5418,8 @@ impl WorkerView {
                 thread,
                 host,
                 installed: Cell::new(0),
+                synced_bundles: Cell::new(0),
+                synced_ext_protocols: Cell::new(0),
                 forwards: Cell::new(false),
             }
         });
@@ -4876,22 +5429,46 @@ impl WorkerView {
         }
         Ok(view)
     }
-    /// Install in this thread's engine the registrations made since it last
-    /// looked, through `active` while the engine runs code that demands.
-    ///
-    /// A native producer task (big-boy-pants-js) is not this thread's
-    /// engine but a task of its own beside it, and is dropped once its
-    /// helper is compiled: it gets the registrations, and the engine still
-    /// lacks them and takes them at its next analysis. (A legacy engine's
-    /// nested demand runs in the engine itself.)
+    /// Advance this thread's engine to the catalog's current registration
+    /// frontier. On V8/QuickJS, updates the lightweight catalog cursor and
+    /// extended-protocol set without locking or replaying individual roots or
+    /// bundles (`__lightRootService` resolves them on demand from `RootIndex`).
+    /// On the native Pants backend, installs pending registrations directly.
     fn install(&self, active: Option<&dyn MacroEvaluator>) -> Result<(), String> {
+        use std::sync::atomic::Ordering::Acquire;
         let Some(bootstrap) = &self.host.engine.bootstrap else {
+            if active.is_none_or(|active| !active.has_native_bridge()) {
+                self.installed.set(self.shared.journal_len.load(Acquire));
+            }
             return Ok(());
         };
         let producer = active.is_some_and(|active| {
             active.has_native_bridge() && active.heap() != bootstrap.evaluator.heap()
         });
         let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
+        if !bootstrap.evaluator.native_forms() && !producer {
+            let total = self.shared.journal_len.load(Acquire);
+            if total == self.installed.get() {
+                return Ok(());
+            }
+            let prev_ext = self.synced_ext_protocols.get();
+            let ext_count = self.shared.ext_protocol_count.load(Acquire);
+            let (bundles, new_protocols) = if ext_count > prev_ext {
+                let c = self.shared.lock();
+                let bundles = c.roots.bundles_before(total);
+                let (new_synced, protocols) = c.roots.new_extended_protocols(prev_ext, total);
+                drop(c);
+                self.synced_ext_protocols.set(new_synced);
+                (bundles, protocols)
+            } else {
+                (self.shared.bundle_count.load(Acquire), Vec::new())
+            };
+            self.installed.set(total);
+            self.synced_bundles.set(bundles);
+            return engine
+                .sync_catalog(total, bundles, &new_protocols)
+                .map_err(|e| e.to_string());
+        }
         // A producer imported its parent's catalog frontier, which is the
         // engine's (`installed`), and keeps its own cursor from there: a
         // registration is installed in it once, however often it demands.
@@ -5194,6 +5771,19 @@ pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
 pub(crate) fn isolate_count(limit: usize, slots: crate::scheduler::Slots) -> usize {
     let reserved = limit.min(crate::evaluator::DEFAULT_MEMORY_LIMIT);
     1 + ((limit - reserved) / crate::evaluator::WORKER_SHARE).min(slots.workers())
+}
+
+/// Default cap on worker V8/QuickJS isolates started for a build's unit pool.
+/// Additional `--jobs` slots run as lightweight engine-less Rust workers taking
+/// macro-free units, while the engine workers serve macro-expanding units first
+/// and fall back to engine-less views for macro-free units (light-cljs-1090).
+pub(crate) const MAX_POOL_WORKER_ISOLATES: usize = 3;
+
+/// How many compile-time isolates (coordinator + workers) a V8/QuickJS unit
+/// pool sizes for `limit` and `slots`: bounded both by the memory budget
+/// ([`isolate_count`]) and by `1 + MAX_POOL_WORKER_ISOLATES`.
+pub(crate) fn pool_isolate_count(limit: usize, slots: crate::scheduler::Slots) -> usize {
+    isolate_count(limit, slots).min(1 + MAX_POOL_WORKER_ISOLATES)
 }
 
 #[cfg(test)]
@@ -5580,14 +6170,11 @@ fn execute_pool_job(
     if !shared.admits(id) {
         return shared.skipped();
     }
-    #[cfg(feature = "bbp-macros")]
-    let plain =
-        macro_free && slot.engines != PoolEngines::None && environment.native_macro_backend();
-    #[cfg(not(feature = "bbp-macros"))]
-    let plain = {
-        let _ = macro_free;
-        false
-    };
+    // Macro-free units never enter a compile-time engine on any backend
+    // (`MacroFreeUnit` enforces this): run them on the slot's engine-less
+    // view so an engine worker does not boot a V8/QuickJS isolate or sync
+    // catalog/frontier/gensym state just to analyze a macro-free unit.
+    let plain = macro_free && slot.engines != PoolEngines::None;
     #[cfg_attr(not(feature = "bbp-macros"), allow(unused_mut))]
     let (mut kept, engines) = if plain {
         (slot.plain.take(), PoolEngines::None)
@@ -5964,6 +6551,13 @@ impl CatalogView for WorkerView {
             }
             reply
         })
+    }
+    fn uses_root_index(&self) -> bool {
+        true
+    }
+    fn root_service(&self, request: &str) -> String {
+        self.shared
+            .serve_root_request(request, Some(self.installed.get()))
     }
 }
 /// Install in `evaluator` the services through which its code reaches the
@@ -8633,5 +9227,397 @@ mod worker_tests {
                 .iter()
                 .all(|t| t.stack.is_empty() && t.waiting.is_none())
         );
+    }
+}
+
+#[cfg(all(test, light_v8))]
+mod root_index_tests {
+    //! The catalog's [`RootIndex`] against the V8 registry (`compiler_roots.js`):
+    //! both direct resolution (`resolve_root`) and lazy `__lightRootService`
+    //! resolution must match eager V8 registration for every root/defonce/bundle
+    //! combination and visibility cursor.
+    use super::*;
+
+    const BUNDLE: usize = 10_000;
+
+    struct Recorder {
+        asked: RefCell<Vec<usize>>,
+        bundles: HashMap<usize, Vec<String>>,
+    }
+    impl CatalogView for Recorder {
+        fn compile_unit(&self, _: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
+            self.asked.borrow_mut().push(id);
+            if let Some(products) = self.bundles.get(&id) {
+                let mut body = String::from("rt => {");
+                for name in products {
+                    body.push_str(&format!(
+                        "globalThis.__lightCompilerBundleProducts[{name:?}] = {};",
+                        BUNDLE + id
+                    ));
+                }
+                body.push('}');
+                Ok(body)
+            } else {
+                Ok(format!("rt => {id}"))
+            }
+        }
+        fn unit_source(&self, _: usize) -> Option<u32> {
+            None
+        }
+        fn analysis_sources(&self) -> Vec<u32> {
+            Vec::new()
+        }
+    }
+
+    fn root(name: &str, unit: Option<usize>, once: bool) -> Registration {
+        Registration::Root(name.into(), unit, None, once, format!("{name}.cljs"))
+    }
+    fn bundle(products: &[&str], unit: usize, once: bool, group: bool) -> Registration {
+        Registration::Bundle(Arc::new(BundleRecord {
+            products: products.iter().map(|&name| name.into()).collect(),
+            unit,
+            extensions: Vec::new(),
+            location: "bundle.cljs".into(),
+            once,
+            group,
+        }))
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Read {
+        Unit(usize),
+        Bundle(usize),
+        Unavailable,
+    }
+
+    fn v8_reads(registrations: &[Registration], names: &[&str]) -> Vec<Read> {
+        let evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator> =
+            Rc::new(crate::v8_evaluator::V8Evaluator::new(Default::default()).unwrap());
+        let bundles = registrations
+            .iter()
+            .filter_map(|registration| match registration {
+                Registration::Bundle(bundle) => Some((bundle.unit, bundle.products.clone())),
+                Registration::Root(..) => None,
+            })
+            .collect();
+        let view = Rc::new(Recorder {
+            asked: RefCell::new(Vec::new()),
+            bundles,
+        });
+        let weak = Rc::downgrade(&view) as std::rc::Weak<Recorder>;
+        prepare_engine(&evaluator, weak, &MacroHost::new().engine).unwrap();
+        install_registrations(evaluator.as_ref(), 0, registrations, |_| Ok(())).unwrap();
+        names
+            .iter()
+            .map(|name| {
+                let value = evaluator
+                    .evaluate_js(&format!(
+                        "(() => {{ try {{ return globalThis.__lightCompilerRoots[{name:?}]; }} catch (error) {{ if (!String(error.message).includes('unavailable definition: ')) throw error; return -1; }} }})()"
+                    ))
+                    .unwrap();
+                let n = evaluator.number(value).unwrap();
+                evaluator.release(value).unwrap();
+                let read = match n {
+                    n if n < 0.0 => Read::Unavailable,
+                    n if n as usize >= BUNDLE => Read::Bundle(n as usize - BUNDLE),
+                    n => Read::Unit(n as usize),
+                };
+                if let Read::Unit(unit) | Read::Bundle(unit) = read {
+                    assert!(view.asked.borrow().contains(&unit), "{name}: {read:?}");
+                }
+                read
+            })
+            .collect()
+    }
+
+    fn index_read(answer: Result<usize, String>, name: &str, bundle: Option<usize>) -> Read {
+        match answer {
+            Ok(unit) => Read::Unit(unit),
+            Err(error) if error.contains("is a declaration-bundle product") => {
+                Read::Bundle(bundle.unwrap_or(usize::MAX))
+            }
+            Err(error) => {
+                assert!(
+                    error.starts_with(&format!("compiler root is not registered: {name}")),
+                    "{error}"
+                );
+                Read::Unavailable
+            }
+        }
+    }
+
+    fn record(session: &CompilationSession, registrations: &[Registration]) {
+        for registration in registrations {
+            session.record_registration(&mut session.shared.lock(), registration.clone());
+        }
+    }
+
+    fn index_reads(
+        names: &[&str],
+        v8: &[Read],
+        resolve: &dyn Fn(&str) -> Result<usize, String>,
+    ) -> Vec<Read> {
+        names
+            .iter()
+            .zip(v8)
+            .map(|(name, v8)| {
+                let bundle = match v8 {
+                    Read::Bundle(unit) => Some(*unit),
+                    _ => None,
+                };
+                index_read(resolve(name), name, bundle)
+            })
+            .collect()
+    }
+
+    struct LazyRecorder {
+        inner: Recorder,
+        shared: Arc<SharedCatalog>,
+    }
+    impl CatalogView for LazyRecorder {
+        fn compile_unit(&self, active: &dyn MacroEvaluator, unit: usize) -> Result<String, String> {
+            self.inner.compile_unit(active, unit)
+        }
+        fn unit_source(&self, id: usize) -> Option<u32> {
+            self.inner.unit_source(id)
+        }
+        fn analysis_sources(&self) -> Vec<u32> {
+            self.inner.analysis_sources()
+        }
+        fn uses_root_index(&self) -> bool {
+            true
+        }
+        fn root_service(&self, request: &str) -> String {
+            self.shared.serve_root_request(request, None)
+        }
+    }
+
+    fn lazy_v8_reads(
+        session: &CompilationSession,
+        registrations: &[Registration],
+        names: &[&str],
+    ) -> Vec<Read> {
+        let evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator> =
+            Rc::new(crate::v8_evaluator::V8Evaluator::new(Default::default()).unwrap());
+        let bundles = registrations
+            .iter()
+            .filter_map(|registration| match registration {
+                Registration::Bundle(bundle) => Some((bundle.unit, bundle.products.clone())),
+                Registration::Root(..) => None,
+            })
+            .collect();
+        let view = Rc::new(LazyRecorder {
+            inner: Recorder {
+                asked: RefCell::new(Vec::new()),
+                bundles,
+            },
+            shared: session.shared.clone(),
+        });
+        let weak = Rc::downgrade(&view) as std::rc::Weak<LazyRecorder>;
+        prepare_engine(&evaluator, weak, &MacroHost::new().engine).unwrap();
+        let (total, bundle_count, protocols) = {
+            let c = session.shared.lock();
+            let (_, protocols) = c.roots.new_extended_protocols(0, c.journal.registrations.len());
+            (c.journal.registrations.len(), c.journal.bundle_count, protocols)
+        };
+        evaluator.sync_catalog(total, bundle_count, &protocols).unwrap();
+        names
+            .iter()
+            .map(|name| {
+                let value = evaluator
+                    .evaluate_js(&format!(
+                        "(() => {{ try {{ return globalThis.__lightCompilerRoots[{name:?}]; }} catch (error) {{ if (!String(error.message).includes('unavailable definition: ')) throw error; return -1; }} }})()"
+                    ))
+                    .unwrap();
+                let n = evaluator.number(value).unwrap();
+                evaluator.release(value).unwrap();
+                let read = match n {
+                    n if n < 0.0 => Read::Unavailable,
+                    n if n as usize >= BUNDLE => Read::Bundle(n as usize - BUNDLE),
+                    n => Read::Unit(n as usize),
+                };
+                if let Read::Unit(unit) | Read::Bundle(unit) = read {
+                    assert!(
+                        view.inner.asked.borrow().contains(&unit),
+                        "{name}: {read:?}"
+                    );
+                }
+                read
+            })
+            .collect()
+    }
+
+    fn agree(case: &str, registrations: &[Registration], expected: &[(&str, Read)]) {
+        let names = expected.iter().map(|&(name, _)| name).collect::<Vec<_>>();
+        let expected = expected.iter().map(|&(_, read)| read).collect::<Vec<_>>();
+        let v8 = v8_reads(registrations, &names);
+        assert_eq!(v8, expected, "{case}: eager V8");
+        let session = CompilationSession::default();
+        record(&session, registrations);
+        let index = index_reads(&names, &v8, &|name| session.shared.resolve_root(name, None));
+        assert_eq!(index, expected, "{case}: RootIndex");
+        let lazy_v8 = lazy_v8_reads(&session, registrations, &names);
+        assert_eq!(lazy_v8, expected, "{case}: lazy RootIndex V8");
+    }
+
+    #[test]
+    fn the_root_index_resolves_as_the_v8_registry_does() {
+        use Read::{Bundle, Unavailable, Unit};
+        agree(
+            "plain root",
+            &[root("t/a", Some(1), false)],
+            &[("t/a", Unit(1)), ("t/b", Unavailable)],
+        );
+        agree(
+            "redefinition",
+            &[root("t/a", Some(1), false), root("t/a", Some(2), false)],
+            &[("t/a", Unit(2))],
+        );
+        agree(
+            "defonce over a defined name",
+            &[root("t/a", Some(1), false), root("t/a", Some(2), true)],
+            &[("t/a", Unit(1))],
+        );
+        agree(
+            "defonce over a declared name",
+            &[root("t/a", None, false), root("t/a", Some(2), true)],
+            &[("t/a", Unit(2))],
+        );
+        agree(
+            "defonce over an absent name",
+            &[root("t/a", Some(2), true)],
+            &[("t/a", Unit(2))],
+        );
+        agree(
+            "declaration without a unit",
+            &[
+                root("t/a", None, false),
+                root("t/b", Some(1), false),
+                root("t/b", None, false),
+            ],
+            &[("t/a", Unavailable), ("t/b", Unit(1))],
+        );
+        agree(
+            "bundle product over a root",
+            &[
+                root("t/a", Some(1), false),
+                bundle(&["t/a", "t/b"], 10, false, false),
+            ],
+            &[("t/a", Bundle(10)), ("t/b", Bundle(10))],
+        );
+        agree(
+            "defonce over a bundle product",
+            &[
+                bundle(&["t/a"], 10, false, false),
+                root("t/a", Some(2), true),
+            ],
+            &[("t/a", Bundle(10))],
+        );
+        agree(
+            "group bundle",
+            &[
+                root("t/a", Some(1), false),
+                bundle(&["t/a", "t/b"], 11, false, true),
+            ],
+            &[("t/a", Bundle(11)), ("t/b", Bundle(11))],
+        );
+        agree(
+            "defonce over a group bundle product",
+            &[
+                bundle(&["t/a"], 11, false, true),
+                root("t/a", Some(3), true),
+            ],
+            &[("t/a", Bundle(11))],
+        );
+        agree(
+            "redefinition after a bundle",
+            &[
+                bundle(&["t/a"], 10, false, false),
+                root("t/a", Some(2), false),
+            ],
+            &[("t/a", Unit(2))],
+        );
+        agree(
+            "once bundle over defined products",
+            &[
+                root("t/a", Some(1), false),
+                bundle(&["t/a"], 12, true, false),
+            ],
+            &[("t/a", Unit(1))],
+        );
+        agree(
+            "once bundle over some undefined products",
+            &[
+                root("t/a", Some(1), false),
+                root("t/b", None, false),
+                bundle(&["t/a", "t/b"], 12, true, false),
+            ],
+            &[("t/a", Bundle(12)), ("t/b", Bundle(12))],
+        );
+    }
+
+    #[test]
+    fn a_worker_resolves_roots_at_its_cursor_and_the_coordinator_at_the_journal() {
+        use Read::{Bundle, Unavailable, Unit};
+        let before = [root("t/a", Some(1), false), root("t/b", Some(2), false)];
+        let after = [
+            root("t/a", Some(3), false),
+            bundle(&["t/b"], 10, false, false),
+            root("t/c", Some(4), false),
+        ];
+        let all = before.iter().chain(&after).cloned().collect::<Vec<_>>();
+        let names = ["t/a", "t/b", "t/c"];
+        let session = CompilationSession::default();
+        record(&session, &before);
+        let view = WorkerView::new(session.shared.clone(), MacroHost::new()).unwrap();
+        view.install(None).unwrap();
+        record(&session, &after);
+        let expected_before = v8_reads(&before, &names);
+        assert_eq!(expected_before, [Unit(1), Unit(2), Unavailable]);
+        assert_eq!(
+            index_reads(&names, &expected_before, &|name| view.resolve_root(name)),
+            expected_before
+        );
+        let expected_all = v8_reads(&all, &names);
+        assert_eq!(expected_all, [Unit(3), Bundle(10), Unit(4)]);
+        assert_eq!(
+            index_reads(&names, &expected_all, &|name| {
+                session.shared.resolve_root(name, None)
+            }),
+            expected_all
+        );
+        // Advancing the worker's cursor brings it up to the full journal.
+        view.install(None).unwrap();
+        assert_eq!(
+            index_reads(&names, &expected_all, &|name| view.resolve_root(name)),
+            expected_all
+        );
+    }
+
+    #[test]
+    fn pool_isolate_count_caps_worker_isolates_while_preserving_memory_pool_invariants() {
+        use crate::evaluator::MemoryPool;
+        use crate::scheduler::Slots;
+        let slots = |n| Slots::new(n).unwrap();
+        assert_eq!(pool_isolate_count(64 << 20, slots(8)), 1);
+        assert_eq!(pool_isolate_count(128 << 20, slots(8)), 2);
+        assert_eq!(pool_isolate_count(256 << 20, slots(4)), 4);
+        assert_eq!(pool_isolate_count(4_000_000_000, slots(2)), 2);
+        assert_eq!(pool_isolate_count(4_000_000_000, slots(4)), 4);
+        assert_eq!(
+            pool_isolate_count(4_000_000_000, slots(8)),
+            1 + MAX_POOL_WORKER_ISOLATES
+        );
+        for n in [2, 4, 8, 12, 16] {
+            for limit in [64 << 20, 128 << 20, 256 << 20, 2 << 30] {
+                let isolates = pool_isolate_count(limit, slots(n));
+                let pool = MemoryPool::new(limit, isolates);
+                assert_eq!(
+                    pool.main_base() + (isolates - 1) * pool.base() + pool.headroom(),
+                    limit,
+                    "limit={limit} n={n}"
+                );
+            }
+        }
     }
 }

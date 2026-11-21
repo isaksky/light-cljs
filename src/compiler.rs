@@ -2853,7 +2853,7 @@ fn analyze_entry(
         let isolates = if macros.native_macro_backend() {
             analysis.unit_slots.get()
         } else {
-            crate::compilation_session::isolate_count(memory_limit, analysis.unit_slots)
+            crate::compilation_session::pool_isolate_count(memory_limit, analysis.unit_slots)
         };
         let engines = if isolates < 2 {
             PoolEngines::None

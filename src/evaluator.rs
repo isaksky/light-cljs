@@ -1518,6 +1518,26 @@ pub trait MacroEvaluator {
     /// Record that the producer task holds the catalog's first `end`
     /// registrations ([`Self::catalog_cursor`]).
     fn set_catalog_cursor(&self, _end: usize) {}
+    /// Advance the engine's view of the compiler-owned [`crate::compilation_session::RootIndex`]
+    /// to `cursor` registrations, `bundles` bundles, and any `new_protocols` extended since its
+    /// last sync, without replaying individual root or bundle registrations.
+    fn sync_catalog(
+        &self,
+        cursor: usize,
+        bundles: usize,
+        new_protocols: &[String],
+    ) -> Result<(), EvalError> {
+        let mut source = format!("rt => {{ globalThis.__lightSyncCatalog?.({cursor},{bundles},[");
+        for (index, protocol) in new_protocols.iter().enumerate() {
+            if index > 0 {
+                source.push(',');
+            }
+            crate::source_map::json_string(&mut source, protocol);
+        }
+        source.push_str("]); return null; }");
+        let value = self.evaluate_unit(&source)?;
+        self.release(value)
+    }
     /// Register `roots` in order, as one [`Self::register_compiler_root`]
     /// each would.
     fn register_compiler_roots(&self, roots: &[CompilerRoot<'_>]) -> Result<(), EvalError> {

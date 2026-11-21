@@ -1148,6 +1148,13 @@ impl MacroHost {
             depth: 128,
         };
         let run = || -> Result<Form, crate::evaluator::EvalError> {
+            // Ensure the coordinator's engine sees the latest catalog cursor
+            // and extended-protocol set before decoding macro arguments/env.
+            if let Some(session) = self.session_handle() {
+                session
+                    .sync_catalog(Some(evaluator))
+                    .map_err(crate::evaluator::EvalError)?;
+            }
             // Its `gensym` names belong to the unit that expands it.
             crate::generated_names::sync_gensym_scope(evaluator)?;
             let mut args = Vec::new();

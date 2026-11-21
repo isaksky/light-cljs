@@ -659,16 +659,18 @@ fn a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule() {
 /// every slot count and schedule, and the isolate is retired, not reused.
 #[test]
 fn a_panic_in_a_nested_demand_callback_fails_the_build_the_same_way_and_retires_the_isolate() {
+    // Each sibling expands a trivial macro so it uses the worker's engine
+    // isolate (macro-free units run engine-less and never boot an isolate).
     let mut body = String::from(
         "(defn helper [x] (inc x))\n\
-         (defmacro bumped [x] (helper x))\n",
+         (defmacro ok [x] x) (defmacro bumped [x] (helper x))\n",
     );
     for k in 0..10 {
-        body.push_str(&format!("(defn f{k} [] (+ 1 {k}))\n"));
+        body.push_str(&format!("(defn f{k} [] (ok (+ 1 {k})))\n"));
     }
     body.push_str("(defn g [] (bumped 1))\n");
     for k in 10..14 {
-        body.push_str(&format!("(defn f{k} [] (+ 1 {k}))\n"));
+        body.push_str(&format!("(defn f{k} [] (ok (+ 1 {k})))\n"));
     }
     body.push_str("(js/console.log (g))");
     let fixture = Fixture::main(&body);
