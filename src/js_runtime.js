@@ -4379,9 +4379,10 @@
   // the same slot or else the class's through `nth`; one whose slot holds no
   // method finishes from the slot as read (`entryNthRead`); any other value,
   // and a compiler session that demands declarations (`slotFirst`), takes
-  // the dispatcher (`protocolHooks.nthProtocol`).
+  // the dispatcher (`protocolHooks.nthProtocol`), nil among them, which
+  // `extend-type` of `nil` can make a vector (the second Sol review).
   function entryNth(entry, index) {
-    if (slotFirst.on && entry.cljs$lang$kind$$LKEY < 64) {
+    if (entry != null && slotFirst.on && entry.cljs$lang$kind$$LKEY < 64) {
       const method = entry.cljs$core$IIndexed$_nth$arity$2$LKEY;
       return method ? method.call(entry, entry, index) : entryNthRead(entry, index, method);
     }
@@ -13498,34 +13499,37 @@
     if (defaults.length === 1) methods[1] = x => run(x);
     return callable(3, methods, (x, y, z, tail) => apply(fn, ...patch([x, y, z]), tail));
   }
-  //@unit conjOwn requires: collectionValue, conj, conjProtocol, methodKeys, protocolHooks,
-  //@ slotFirst
+  //@unit conjOwn requires: builtinSlots, collectionValue, conj, conjProtocol, methodKeys,
+  //@ protocolHooks, slotFirst
   // Upstream's `-conj` of one item, as `into` calls it onto a target that
   // is no editable collection (light-cljs-1076): a value with a keyed kind
   // calls its `-conj` slot, a program's (`extend-type`, `specify!`, a
   // record's) or its class's (a sorted map's or set's, a list's, a queue's,
   // a subvector's, a map entry's), read and called once, where
   // `conjProtocol`'s lookup found the program's in the same slot or else the
-  // class's through `conj`; one whose slot holds no method finishes from
-  // the slot as read (`conjRead`); every other value takes `conjProtocol`.
-  // 86 bytes of bytecode (light-cljs-1033).
+  // class's through `conj`; a program type's value, and one whose slot
+  // holds no method, finishes from the slot as read (`conjRead`); every
+  // other value takes `conjProtocol`. 97 bytes of bytecode (light-cljs-1033).
   function conjOwn(coll, item) {
-    if (coll != null && slotFirst.on && coll.cljs$lang$kind$$LKEY !== undefined) {
+    let kind;
+    if (coll != null && slotFirst.on && (kind = coll.cljs$lang$kind$$LKEY) !== undefined) {
       const method = coll.cljs$core$ICollection$_conj$arity$2$LKEY;
-      return method ? method.call(coll, coll, item) : conjRead(coll, item, method);
+      return method && kind < 64 ? method.call(coll, coll, item) : conjRead(coll, item, method);
     }
     return conjProtocol(coll, item);
   }
-  // `conjProtocol`'s answer for a value whose slot held no method, from the
-  // slot as read, as its one lookup (`protocolHooks.builtin`) finished it,
-  // without reading it again (the Sol review of light-cljs-1076): false is
-  // called, nil or undefined takes a host type's, `object`'s or `default`'s
-  // method, then `conj` for a collection (a runtime class's value whose
-  // member a program wrote by name, `slotWrites`, a seq without `-conj`, a
-  // record), else the dispatcher's error, which a value that is no
-  // collection keeps.
+  // `conjProtocol`'s answer for a program type's value and one whose slot
+  // held no method, from the slot as read, as its one lookup
+  // (`protocolHooks.builtin`) finished it, without reading it again (the Sol
+  // reviews of light-cljs-1076): a program's method is called, but a runtime
+  // class's lent to a program type (`builtinSlots`, which the lookup passes
+  // over, as `countSlot`'s); false is called; nil or undefined takes a host
+  // type's, `object`'s or `default`'s method, then `conj` for a collection
+  // (a runtime class's value whose member a program wrote by name,
+  // `slotWrites`, a seq without `-conj`, a record), else the dispatcher's
+  // error, which a value that is no collection keeps.
   function conjRead(value, item, read) {
-    const own = protocolHooks.builtin && (read != null ? read : protocolHooks.externalMethod?.(value, methodKeys[7], 2));
+    const own = protocolHooks.builtin && (read != null && !builtinSlots.has(read) ? read : protocolHooks.externalMethod?.(value, methodKeys[7], 2));
     if (own != null) return own.call(value, value, item);
     if (collectionValue(value)) return conj(value, item);
     throw new Error("No protocol method ICollection/-conj defined for this value");

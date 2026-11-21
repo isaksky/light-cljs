@@ -4178,6 +4178,48 @@ fn into_onto_other_collections_keeps_extended_answers() {
     assert_eq!(outputs, expected);
 }
 
+/// A map's `-conj` of an entry that `extend-type` of `nil` makes a vector
+/// takes `-nth`'s dispatcher, which answers nil from `nil`'s table, as
+/// before light-cljs-1076's `entryNth` (the second Sol review): onto an
+/// array, a hash and a sorted map, by `conj`, `into` and `merge`.
+#[test]
+fn map_conj_preserves_nil_vector_extensions() {
+    every_level(
+        "(extend-type nil IVector IIndexed (-nth ([_ i] (if (= i 0) :k :v)) ([_ i nf] nf)))
+         (let [p (fn [f] (try (pr-str (f)) (catch :default e (str \"E:\" (.-message e)))))]
+           (pr-str [(p #(conj {} (list nil))) (p #(conj (zipmap (range 9) (range 9)) (list nil)))
+                    (p #(conj (sorted-map) (list nil))) (p #(into (sorted-map) [(list nil)]))
+                    (p #(merge {:a 1} (list nil))) (p #(conj {} nil))]))",
+        r#"["{:k :v}" "{0 0, 1 1, 2 2, 3 3, 4 4, 5 5, 6 6, 7 7, 8 8, :k :v}" "{:k :v}" "{:k :v}" "{:a 1, :k :v}" "{}"]"#,
+    );
+}
+
+/// `into` onto a program type's value whose `-conj` member holds a runtime
+/// class's method (a list's, `builtinSlots`) answers as `-conj`'s
+/// dispatcher, which passes over such a method (the second Sol review of
+/// light-cljs-1076, as `empty_preserves_borrowed_builtin_count_slots` for
+/// `-count`): the dispatcher's error for a program type, `object`'s method
+/// where a program extends `object`, and the class's path for a record and
+/// for a runtime class's value that holds another class's method, as
+/// before.
+#[test]
+fn into_preserves_borrowed_builtin_conj_slots() {
+    let body = "(deftype T [] ICounted (-count [_] 0))
+         (defrecord R [a])
+         (let [p (fn [f] (try (pr-str (f)) (catch :default e (str \"E:\" (.-message e)))))
+               lend (fn [value] (set! (.-cljs$core$ICollection$_conj$arity$2 value) (.-cljs$core$ICollection$_conj$arity$2 ())) value)]
+           (pr-str [(p #(into (lend (T.)) [1])) (p #(into (lend (->R 1)) [[:b 2]])) (p #(into (lend (sorted-set 1)) [2]))
+                    (p #(into (lend (T.)) [])) (p #(count (into (->R 1) [[:b 2]])))]))";
+    every_level(
+        body,
+        r##"["E:No protocol method ICollection/-conj defined for this value" "([:b 2] [:a 1])" "(2 1)" "#object[cljs.user.T [object Object]]" "2"]"##,
+    );
+    every_level(
+        &format!("(extend-type object ICollection (-conj [o x] [:object x])) {body}"),
+        r##"["[:object 1]" "([:b 2] [:a 1])" "(2 1)" "#object[cljs.user.T [object Object]]" "2"]"##,
+    );
+}
+
 /// The transients' `-conj!`, `-assoc!` and `-persistent!` slots, which
 /// `conj!`, `assoc!`, `persistent!`, `into`, `mapv` and `filterv` call
 /// before any lookup, and a map transient's `conj!` of a map entry, which

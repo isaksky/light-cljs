@@ -2277,10 +2277,13 @@ sorted map of vectors or map entries three.
 - **`-conj` slot first.** `into` without a transducer conjoins each item
   with `conjOwn`, upstream's `-conj`: a value with a keyed kind calls its
   `-conj` slot, a program's (`extend-type`, `specify!`, a record's) or its
-  class's (light-cljs-1068), read and called once (86 bytes of bytecode,
-  under light-cljs-1033's 100); one whose slot holds no method finishes
-  from the slot as read (`conjRead`), and every other value takes
-  `conjProtocol`, as before. With a transducer `into` already called
+  class's (light-cljs-1068), read and called once (97 bytes of bytecode,
+  under light-cljs-1033's 100); a program type's value, and one whose slot
+  holds no method, finishes from the slot as read (`conjRead`), which
+  passes over a runtime class's method lent to a program type
+  (`builtinSlots`), as the lookup did (the second Sol review,
+  `into_preserves_borrowed_builtin_conj_slots`), and every other value
+  takes `conjProtocol`, as before. With a transducer `into` already called
   `conj`, whose slot it reads.
 - **Answers kept.** The lookup found a program's method in the same slot,
   and otherwise the class's through `conj`, which reads it: the slot is
@@ -2300,10 +2303,11 @@ sorted map of vectors or map entries three.
   `-nth` slots (`entryNth`), as upstream's maps call `-nth`, where `-nth`'s
   dispatcher looked each up: a runtime class's value calls the slot, a
   program's or its class's, which the dispatcher found in the same slot or
-  through `nth` (90 bytes of bytecode); one whose slot holds no method
-  finishes from the slot as read (`entryNthRead`), as `conjRead` does; a
-  program type's entry and a compiler session that demands declarations
-  take the dispatcher; without the dispatcher, `nth`, as before. The
+  through `nth` (95 bytes of bytecode); one whose slot holds no method
+  finishes from the slot as read (`entryNthRead`), as `conjRead` does; nil,
+  which `extend-type` of `nil` can make a vector
+  (`map_conj_preserves_nil_vector_extensions`), a program type's entry and
+  a compiler session that demands declarations take the dispatcher; without the dispatcher, `nth`, as before. The
   `-nth` slot units wait for `mapConj` too. `conj` of a map and a vector
   pair takes no lookup either.
 - **Counted.** `into_onto_other_collections_takes_no_protocol_lookup_per_item`
