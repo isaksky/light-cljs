@@ -10473,11 +10473,16 @@
   // Whether a value's keyed kind is in the set of `kindIn`'s bits: one read
   // of the kind. No value that cannot hold a field has one.
   const kindPredicate = (low, high, program) => value => canHoldField(value) && kindIn(value.cljs$lang$kind$$LKEY, low, high, program);
-  //@unit seqableValue requires: collectionValue, iteratorSeqs
-  // `collectionValue`'s kinds, and an iterator seq by its store, which tells
-  // one from a value made by reflection: an iterator seq is not the
-  // runtime's own (`ownedKind`), so `extend-type` of `object` reaches it.
-  const seqableValue = value => collectionValue(value) || iteratorSeqs.has(value);
+  //@unit seqableValue requires: canHoldField, kindIn
+  // `collectionValue`'s kinds, and an iterator seq (37) with its own `iter`,
+  // as its store (`iteratorSeqs`) tells one from a value made by reflection:
+  // an iterator seq is not the runtime's own (`ownedKind`), so `extend-type`
+  // of `object` reaches it. One read of the keyed kind.
+  function seqableValue(value) {
+    if (!canHoldField(value)) return false;
+    const kind = value.cljs$lang$kind$$LKEY;
+    return kindIn(kind, 2143551470, 4114, 2) || kind === 37 && "iter$LKEY" in value;
+  }
   //@unit indexedValue requires: cellOf, chunkOf, holdsVector, isTransientCell, transientState,
   //@ viewOf
   function indexedValue(value) {

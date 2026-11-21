@@ -754,9 +754,10 @@ fn runtime_meta_slot_overrides_without_markers() {
 /// light-cljs-1070: in a program that extends types, `count` of a string or
 /// an array, `meta` of the runtime's collections and seqs, and a predicate of
 /// a value whose class declares the protocol by its mask bit or marker take
-/// no protocol lookup: the readable output's `extendedMethod`, `storeHolds`
-/// (the store test of the lookup's, the hooks' and the native tests' kind
-/// step; `runtimeKind` until light-cljs-1075 read the kind in the lookup),
+/// no protocol lookup: the readable output's `extendedMethod`, `kindIn`
+/// (the kind test of the lookup's, the hooks' and the native tests' kind
+/// step, `storeHolds`'s store test until light-cljs-1079; `runtimeKind`
+/// until light-cljs-1075 read the kind in the lookup),
 /// `coreProtocolImplementation` and `satisfies` count no call, nor `builtin`
 /// for `deref` of an atom, as upstream's `count`,
 /// `meta` and `satisfies?` read the mask bit, the marker or the class's
@@ -785,14 +786,14 @@ fn extended_programs_answer_count_meta_and_predicates_without_the_lookup() {
     let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
     options.pseudo_names = true;
     let mut js = prepare_application(&program(source), options).emit_js();
-    for head in [
-        "function extendedMethod(value, key, arity, fast = false, directOnly = false) {",
-        "function storeHolds(table, value, kind) {",
-        "function coreProtocolImplementation(protocol, value) {",
-        "function satisfies(protocol, value) {",
+    for (head, count) in [
+        ("function extendedMethod(value, key, arity, fast = false, directOnly = false) {", " globalThis.__calls++;"),
+        ("const kindIn = (kind, low, high, program) =>", " globalThis.__calls++ >= 0 &&"),
+        ("function coreProtocolImplementation(protocol, value) {", " globalThis.__calls++;"),
+        ("function satisfies(protocol, value) {", " globalThis.__calls++;"),
     ] {
         assert!(js.contains(head), "{head}");
-        js = js.replace(head, &format!("{head} globalThis.__calls++;"));
+        js = js.replace(head, &format!("{head}{count}"));
     }
     assert_eq!(
         execute(&format!("globalThis.__calls = 0; console.log({js});")),
@@ -4546,7 +4547,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 110011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [308, 308, 304],
+            [306, 306, 302],
         ),
         (
             // Host types, `object` and `default`, which a runtime value's
@@ -4607,7 +4608,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [321, 321, 318],
+            [319, 319, 316],
         ),
         (
             // Slots JavaScript writes on runtime prototypes: a marker with its
@@ -4674,7 +4675,7 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "specified-vector 100011111001010110000 5 1 2\n",
                 "get:Symbol(Symbol.iterator) get:Symbol(Symbol.toPrimitive) get:Symbol(Symbol.toStringTag) get:cljs$core$Fn$$LKEY get:cljs$core$IAssociative$$LKEY get:cljs$core$IChunkedSeq$$LKEY get:cljs$core$ICollection$$LKEY get:cljs$core$ICounted$$LKEY get:cljs$core$ICounted$_count$arity$1$LKEY get:cljs$core$IFn$$LKEY get:cljs$core$IIndexed$$LKEY get:cljs$core$IList$$LKEY get:cljs$core$IMap$$LKEY get:cljs$core$IMapEntry$$LKEY get:cljs$core$IRecord$$LKEY get:cljs$core$IReduce$$LKEY get:cljs$core$IReversible$$LKEY get:cljs$core$ISeq$$LKEY get:cljs$core$ISeqable$$LKEY get:cljs$core$ISequential$$LKEY get:cljs$core$ISet$$LKEY get:cljs$core$ISorted$$LKEY get:cljs$core$IUUID$$LKEY get:cljs$core$IVector$$LKEY get:cljs$lang$kind$$LKEY get:cljs$lang$protocol_mask$partition0$$LKEY get:cljs$lang$protocol_mask$partition1$$LKEY get:toString proto\n",
             ),
-            [308, 308, 308],
+            [306, 306, 306],
         ),
     ] {
         let source = format!("(deftype T []) (defrecord R [a])\n{extensions}\n{values}");
