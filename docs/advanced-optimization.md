@@ -4553,11 +4553,12 @@ upstream states that advanced mode is unsafe for certain patterns.
   `hostHooks`.
 - The runtime's types have their upstream fields and methods (`first` and
   `rest` of a `Cons`, `cnt` of a vector, `meta`, `__hash`, `sval` of a
-  `LazySeq`, ...: `UPSTREAM_MEMBERS` in `src/runtime_slice.rs`) only where
-  reachable code names one of them as a property, a method, a component of a
-  JavaScript global path or a string, or as an identifier in `js*` text, or
-  calls `reset-meta!` or `alter-meta!`,
-  which assign `meta` (light-cljs-238). Upstream they are compiler-owned
+  `LazySeq`, ...: `UPSTREAM_MEMBERS` in `src/runtime_slice.rs`) each only
+  where reachable code names that member as a property, a method, a component
+  of a JavaScript global path or a string, or as an identifier in `js*` text
+  (light-cljs-238; each by its own name since light-cljs-1077, where naming
+  one gave every type all of them), and `meta` also where it calls
+  `reset-meta!` or `alter-meta!`, which assign it. Upstream they are compiler-owned
   names, which Closure renames and removes where nothing names them. Host
   code that reads one the program does not name gets `undefined`, which is
   unsupported, as for protocol slots. The host-facing methods that
@@ -4574,7 +4575,8 @@ upstream states that advanced mode is unsafe for certain patterns.
   throws `typeHooks.arrayMap is not a function`.
 - The runtime's types have their statics (`EMPTY`, `HASHMAP_THRESHOLD`,
   `fromArray`, `fromArrays`: `TYPE_STATICS` in `src/runtime_slice.rs`) only
-  where reachable code names one of them as it names upstream members, or
+  where reachable code names that static as it names upstream members
+  (each by its own name since light-cljs-1077), and `EMPTY` also where it
   reads an empty literal (light-cljs-247). Reading one through a name
   computed at run time otherwise gets `undefined`, which is unsupported.
 - A multimethod's tables (`method-table`, `method-cache`, `prefer-table` and

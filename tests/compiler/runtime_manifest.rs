@@ -12,6 +12,7 @@ use light_cljs::runtime_manifest::{
     ANNOTATED_RUNTIME, ECMASCRIPT_GLOBALS, ENGINE_INTRINSICS, RUNTIME, RootUse, RuntimeManifest,
     SHARED_ANNOTATED_RUNTIME, SHARED_PROFILE, SHARED_RUNTIME, UnitId, is_header_line,
 };
+use light_cljs::runtime_slice::{TYPE_STATICS, UPSTREAM_MEMBERS};
 
 fn manifest() -> &'static RuntimeManifest<'static> {
     RuntimeManifest::embedded()
@@ -702,14 +703,50 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
     assert_eq!(sliced, expected);
 }
 
+/// The names of `names` ([`UPSTREAM_MEMBERS`], or [`TYPE_STATICS`] but
+/// `EMPTY`) that a unit's text defines, each named as a
+/// string (`"has-nil?"` in a field list), an object key (`first: "..."`),
+/// an accessor or method of an object literal (`get xform()`, `sval() {`)
+/// or an assigned property (`.forceChunk = `, `.fromArray = `).
+fn defined_members(body: &str, names: &[&'static str]) -> Vec<&'static str> {
+    names
+        .iter()
+        .copied()
+        .filter(|&name| name != "EMPTY")
+        .filter(|name| {
+            let written = name.replace("_QMARK_", "?");
+            let written = if name.starts_with('_') {
+                written
+            } else {
+                written.replace('_', "-")
+            };
+            [
+                format!("\"{written}\""),
+                format!("{name}: \""),
+                format!("get {name}()"),
+                format!("\n    {name}("),
+                format!(".{name} = "),
+            ]
+            .iter()
+            .any(|pattern| {
+                let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+                body.match_indices(pattern.as_str()).any(|(at, _)| {
+                    // `meta: "` within `_meta: "` is not the key `meta`.
+                    !pattern.starts_with(word) || !body[..at].ends_with(word)
+                })
+            })
+        })
+        .collect()
+}
+
 /// Units the export list does not reach; any other unreached unit is dead
 /// code. The compiler, macro host and REPL reach the `compile-time` units
 /// through the shared runtime's exports (`compilerForms`, `compilerFormBridge`,
 /// `setDeclarationDemand`, ...), and `core` reaches the reader and the
 /// namespace registry; a pellet that stops exporting compile-time machinery
-/// lists its units here. `upstreamMembers` is the condition of the types'
-/// `.fields` effects, which only an `Advanced` program that names one of
-/// `UPSTREAM_MEMBERS` roots (light-cljs-238). (`defineType`, which decorates the
+/// lists its units here. The flags of `UPSTREAM_MEMBERS` are the conditions
+/// of the types' `.fields` effects, which only an `Advanced` program that
+/// names the member roots (light-cljs-238, light-cljs-1077). (`defineType`, which decorates the
 /// constructors only `Advanced` emission writes, is reached through
 /// `Loadable.type` since light-cljs-272.) `mapEntry.lean`, `entryPrototype`,
 /// `MapEntryType.lean` and `mapEntry.equiv` build map entries and give them
@@ -717,7 +754,8 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// makeVector`, light-cljs-247), which the export list builds. `typeStatics`
 /// is the condition of the types' `.statics` effects, which only an
 /// `Advanced` program that names one of `TYPE_STATICS` or reads an empty
-/// literal roots (light-cljs-247); the reader keeps the queue's.
+/// literal roots (light-cljs-247); the reader keeps the queue's. It and the
+/// flags of the members and the other statics count as roots here.
 /// `multiTables` is a condition of `MultiFn.tables`, which only an
 /// `Advanced` program that could see the tables of its multimethods
 /// otherwise roots, and `addMethodDirect` is `-add-method` where only
@@ -786,13 +824,6 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "ClassBrand",
     "ClassBrand.types",
     "defineClass",
-    "upstreamMembers",
-    "typeStatics",
-    "ListValue.statics",
-    "PersistentHashSetValue.statics",
-    "PersistentVectorValue.statics",
-    "PersistentArrayMapValue.statics",
-    "PersistentHashMapValue.statics",
 ];
 
 /// The string-literal protocol method keys of `text` (`"IHash/-hash"`), each
@@ -1038,6 +1069,34 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                     }
                 })
                 .collect()
+        } else if unit.name.ends_with(".fields")
+            || unit.name.ends_with(".metaField")
+            || [
+                "PersistentArrayMapValue.threshold",
+                "PersistentHashMapValue.fromArrays",
+            ]
+            .contains(&unit.name)
+        {
+            // A type's upstream fields and methods, and its statics other than
+            // `EMPTY`, each of which only code naming it reads: the flag of
+            // each member the unit defines (`member_unit`, light-cljs-1077),
+            // and `resetMeta` where it defines `meta`, which `reset-meta!`
+            // assigns.
+            let members = defined_members(
+                body(id),
+                if unit.name.ends_with(".fields") || unit.name.ends_with(".metaField") {
+                    UPSTREAM_MEMBERS
+                } else {
+                    TYPE_STATICS
+                },
+            );
+            members
+                .iter()
+                .filter(|&&member| member == "meta")
+                .map(|_| "resetMeta".to_string())
+                .chain(members.iter().map(|member| format!("member_{member}")))
+                .map(|binding| manifest.unit_of(&binding).expect("a member's flag"))
+                .collect()
         } else if unit.name.ends_with(".statics") {
             // A type's statics, which only code naming them or an empty
             // literal reads (`typeStatics`, light-cljs-247), and the
@@ -1106,12 +1165,6 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                     branches_wrapper(body(other)).is_some_and(|(_, index)| entries.contains(&index))
                 })
                 .collect()
-        } else if unit.name.ends_with(".fields") {
-            // A type's upstream fields and methods, which only code naming
-            // them reads (`upstreamMembers`) or `reset-meta!` assigns.
-            ["resetMeta", "upstreamMembers"]
-                .map(|binding| manifest.unit_of(binding).unwrap())
-                .to_vec()
         } else if unit.name == "MapEntryType.vector" || unit.name == "mapEntry.vector" {
             // Map entries are vectors with the vectors' members where
             // vectors can be built, and else stores of two items with members
@@ -1288,8 +1341,12 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // `into`'s `-conj` and a map entry's `-nth` (light-cljs-1076); and the 16
     // effects that put the operations' own paths in front of their
     // upstream-shaped paths where `setDeclarationDemand` is kept
-    // (`operationPaths.count` and the others, light-cljs-1078).
-    assert_eq!(checked, 598);
+    // (`operationPaths.count` and the others, light-cljs-1078); and the 20
+    // `.metaField` effects that define the types' `meta` apart from their
+    // other fields, the array map's `HASHMAP_THRESHOLD` and the hash map's
+    // `fromArray` and `fromArrays` apart from their `EMPTY`, each waiting for
+    // its members' flags (light-cljs-1077).
+    assert_eq!(checked, 620);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -2277,8 +2334,15 @@ fn units_calling_name_or_namespace_are_known() {
 
 #[test]
 fn every_unit_is_reachable_from_the_export_list() {
+    // Or from the flags an `Advanced` program roots where it names an
+    // upstream member or a static of the runtime's types (light-cljs-1077).
     let manifest = manifest();
-    let reachable = manifest.reachable(manifest.export_roots());
+    let flags = UPSTREAM_MEMBERS
+        .iter()
+        .chain(TYPE_STATICS)
+        .map(|&name| light_cljs::runtime_slice::member_unit(name).unwrap())
+        .map(|flag| manifest.unit_of(flag).expect("a member's flag"));
+    let reachable = manifest.reachable(manifest.export_roots().into_iter().chain(flags));
     let unreachable = manifest
         .units
         .iter()
@@ -2343,18 +2407,34 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("printSequential.seq"),
             unit("str.collections"),
             unit("ListValue.fields"),
+            unit("ListValue.metaField"),
             unit("ListValue.members"),
             unit("ListValue.statics")
         ]
     );
     let list = manifest.reachable([unit("ListValue")]);
     assert!(list[unit("ListValue.members").0] && !list[unit("Eduction.members").0]);
-    // A type's upstream fields wait for a program that names one, or assigns
-    // `meta` through `reset-meta!`.
-    assert!(!list[unit("ListValue.fields").0]);
-    for condition in ["upstreamMembers", "resetMeta"] {
+    // A type's upstream fields wait for a program that names one, each its
+    // own flag; `meta` also for one that assigns it through `reset-meta!`
+    // (light-cljs-1077).
+    assert!(!list[unit("ListValue.fields").0] && !list[unit("ListValue.metaField").0]);
+    for (condition, fields, meta) in [
+        ("member_first", true, false),
+        ("member___hash", true, false),
+        ("member_meta", false, true),
+        ("resetMeta", false, true),
+        ("member_cnt", false, false),
+    ] {
         let kept = manifest.reachable([unit("ListValue"), unit(condition)]);
-        assert!(kept[unit("ListValue.fields").0] && !kept[unit("Cons.fields").0]);
+        assert_eq!(
+            (
+                kept[unit("ListValue.fields").0],
+                kept[unit("ListValue.metaField").0]
+            ),
+            (fields, meta),
+            "{condition}"
+        );
+        assert!(!kept[unit("Cons.fields").0] && !kept[unit("Cons.metaField").0]);
     }
     // Installs travel with a binding whose value escapes: a value root or a
     // kept unit that requires it. A root the program only calls keeps none.

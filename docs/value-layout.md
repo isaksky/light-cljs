@@ -2479,6 +2479,42 @@ lists in turn; six native tests read their class's mask bit
   `meta` and printing 1 to 2%; workload 200k's steady state 31.6 to 30.8
   and 30.6 to 30.9 ms per iteration, within its spread.
 
+What light-cljs-1077 landed: each upstream member of the runtime's types
+(`cnt`, `first`, `meta`, ...) and each of their statics but `EMPTY` is kept
+only where an `Advanced` program names that member, where naming any one
+kept every type's `.fields` effect, all their fields.
+
+- **Measured first.** As light-cljs-1078 and 1079 did, each candidate was
+  taken out of master's output as written before any code was written (gzip
+  -9, without React; benchmarks/re-frame-vs-shadow.md, light-cljs-1077).
+  The re-frame apps name a few members, mostly host names (`value`, `key`,
+  `name`, `current`) and a program type's `meta`, and that kept every
+  class's fields, 1.1 to 1.5 KB after gzip. The arity pairs (`-lookup` and
+  `-nth` of arity 2 calling arity 3) measured 33 to 50 bytes, and an extra
+  call on the hot path, so they were left as they are.
+- **One flag per member.** Each member has a flag unit, `member_<name>`
+  (`member_unit` in src/runtime_slice.rs), which the slice roots where rapid
+  type analysis finds a reachable expression naming it
+  (`TypeAnalysis::named_member_units`). A type's `.fields` effect waits for
+  the flags of the members it defines (`when: member_cnt, member_shift,
+  ...`), and its `meta` field is an effect of its own, `.metaField`, which
+  waits for `member_meta` or `resetMeta`. The units the fields' getters
+  call (`count.host`, `protocolHooks.extend`, `putMember.setMap`) wait for
+  the flags of the fields that call them. `upstreamMembers`, the one flag
+  for all, is gone. The hash map's `fromArray` and `fromArrays` and the
+  array map's `HASHMAP_THRESHOLD` are effects of their own too, waiting for
+  their flags; `typeStatics` keeps only the `EMPTY`s.
+- **Answers kept.** A program reads every member it names as `None` does:
+  `a_program_naming_one_upstream_member_reads_it_on_every_runtime_type`
+  builds, for each of the 59 members, a program naming only it and checks
+  that every runtime value has it where it has it at `None`. Host code
+  reading a member the program does not name gets `undefined`, as
+  docs/advanced-optimization.md already said of every member where a
+  program named none.
+- **What is left**: benchmarks/re-frame-vs-shadow.md, light-cljs-1077,
+  records the bytes over the gate by unit group and what removing each
+  would cost in speed.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

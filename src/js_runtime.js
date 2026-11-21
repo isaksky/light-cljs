@@ -5583,8 +5583,9 @@
     throw new Error("count not supported on this type");
   }
 
-  //@unit count.host effect: count, extendType, extendInstance when: entryPrototype, resetMeta,
-  //@ upstreamMembers, vectorPrototype requires: count, hostHooks
+  //@unit count.host effect: count, extendType, extendInstance when: entryPrototype, member___hash,
+  //@ member_arr, member_cnt, member_has_nil_QMARK_, member_nil_val, member_root, member_shift,
+  //@ member_tail, vectorPrototype requires: count, hostHooks
   hostHooks.count = count;
   //@unit accumulatingCount requires: count, countedValue, methodKeys, next, protocolHooks, seq
   function accumulatingCount(value) {
@@ -11212,9 +11213,9 @@
   const withMetaCopies = kindPredicate(2145452000, 12306, 4);
   //@unit collectionWithMeta requires: cellCopy, cellOf, extraFields, holdsVector, ifnValues,
   //@ isCell, isChunkedCons, isEntryCell, isLazy, isView, kindHooks, mapCellCopy, maps, meta,
-  //@ metaFunctions, methodKeys, protocolHooks, protocolImplementations, prototypeCopy,
-  //@ recordCells, reifyCells, setMeta, setQueueCopy, vars, vectorCellCopy, viewAt, viewOf,
-  //@ withMetaCopies, withMetaKeeps
+  //@ metaFunctions, methodKeys, protocolHooks, protocolImplementations, prototypeCopy, recordCells,
+  //@ reifyCells, setMeta, setQueueCopy, vars, vectorCellCopy, viewAt, viewOf, withMetaCopies,
+  //@ withMetaKeeps
   // `withMeta` of a value other than a function, for callers that pass no
   // function.
   function collectionWithMeta(value, metadata) {
@@ -14414,14 +14415,132 @@
   const lookupProtocol = coreMethod("ILookup/-lookup", [2, 3], get, lookupValue);
   //@unit containsProtocol effect requires: associativeValue, contains, coreMethod
   const containsProtocol = coreMethod("IAssociative/-contains-key?", [2], contains, associativeValue);
-  //@unit upstreamMembers
   // The upstream fields and methods of the runtime's types (`first`, `cnt`,
   // `meta`, `sval`, ...), which their `.fields` effects add, are compiler-owned
-  // names, which Closure renames and removes upstream: the effects wait for
-  // this unit, which an `Advanced` program keeps only where it names one of
-  // them (`UPSTREAM_MEMBERS` in src/runtime_slice.rs), or for `resetMeta`,
-  // which assigns `meta`.
-  const upstreamMembers = null;
+  // names, which Closure renames and removes upstream. Each has a flag
+  // (`member_<name>`, `member_unit` in src/runtime_slice.rs), which an
+  // `Advanced` program keeps only where it names that member
+  // (`UPSTREAM_MEMBERS`): the effects defining it wait for its flag, so a
+  // program naming `meta` keeps each type's `meta` field and not its other
+  // fields (light-cljs-1077); `meta`'s also for `resetMeta`, which assigns it.
+  //@unit member___hash
+  const member___hash = null;
+  //@unit member__hash
+  const member__hash = null;
+  //@unit member__meta
+  const member__meta = null;
+  //@unit member__next
+  const member__next = null;
+  //@unit member_add
+  const member_add = null;
+  //@unit member_all
+  const member_all = null;
+  //@unit member_arr
+  const member_arr = null;
+  //@unit member_ascending_QMARK_
+  const member_ascending_QMARK_ = null;
+  //@unit member_buf
+  const member_buf = null;
+  //@unit member_chunk
+  const member_chunk = null;
+  //@unit member_chunk_next
+  const member_chunk_next = null;
+  //@unit member_cnt
+  const member_cnt = null;
+  //@unit member_coll
+  const member_coll = null;
+  //@unit member_comp
+  const member_comp = null;
+  //@unit member_count
+  const member_count = null;
+  //@unit member_current
+  const member_current = null;
+  //@unit member_currentval
+  const member_currentval = null;
+  //@unit member_end
+  const member_end = null;
+  //@unit member_f
+  const member_f = null;
+  //@unit member_first
+  const member_first = null;
+  //@unit member_fn
+  const member_fn = null;
+  //@unit member_forceChunk
+  const member_forceChunk = null;
+  //@unit member_fqn
+  const member_fqn = null;
+  //@unit member_front
+  const member_front = null;
+  //@unit member_has_nil_QMARK_
+  const member_has_nil_QMARK_ = null;
+  //@unit member_hash_map
+  const member_hash_map = null;
+  //@unit member_i
+  const member_i = null;
+  //@unit member_key
+  const member_key = null;
+  //@unit member_left
+  const member_left = null;
+  //@unit member_meta
+  const member_meta = null;
+  //@unit member_more
+  const member_more = null;
+  //@unit member_name
+  const member_name = null;
+  //@unit member_next
+  const member_next = null;
+  //@unit member_nil_val
+  const member_nil_val = null;
+  //@unit member_node
+  const member_node = null;
+  //@unit member_ns
+  const member_ns = null;
+  //@unit member_off
+  const member_off = null;
+  //@unit member_prev
+  const member_prev = null;
+  //@unit member_prev_seed
+  const member_prev_seed = null;
+  //@unit member_rear
+  const member_rear = null;
+  //@unit member_rest
+  const member_rest = null;
+  //@unit member_right
+  const member_right = null;
+  //@unit member_root
+  const member_root = null;
+  //@unit member_s
+  const member_s = null;
+  //@unit member_seed
+  const member_seed = null;
+  //@unit member_shift
+  const member_shift = null;
+  //@unit member_stack
+  const member_stack = null;
+  //@unit member_start
+  const member_start = null;
+  //@unit member_step
+  const member_step = null;
+  //@unit member_str
+  const member_str = null;
+  //@unit member_sval
+  const member_sval = null;
+  //@unit member_tail
+  const member_tail = null;
+  //@unit member_tree
+  const member_tree = null;
+  //@unit member_tree_map
+  const member_tree_map = null;
+  //@unit member_v
+  const member_v = null;
+  //@unit member_val
+  const member_val = null;
+  //@unit member_value
+  const member_value = null;
+  //@unit member_vec
+  const member_vec = null;
+  //@unit member_xform
+  const member_xform = null;
   //@unit publicFields mutator requires: ownedProtocolValue
   // The upstream deftype fields; `read` answers all but `meta` (from `meta`)
   // and the hash, and `write` sets a mutable field other than the hash.
@@ -14492,8 +14611,8 @@
       lastIndexOf: seqMethods.lastIndexOf
     }));
   }
-  //@unit SymbolValue.fields effect: SymbolValue when: resetMeta, upstreamMembers requires: symbolOf,
-  //@ SymbolValue
+  //@unit SymbolValue.fields effect: SymbolValue when: member_ns, member_name, member_str,
+  //@ member__hash, member__meta requires: symbolOf, SymbolValue
   // Upstream's fields read and write the keyed ones (`_hash` the cache,
   // null until computed; `_meta` the metadata, null on a value that is no
   // symbol).
@@ -14504,7 +14623,8 @@
       this[key] = value;
     }
   });
-  //@unit Cons.fields effect: Cons when: resetMeta, upstreamMembers requires: cellOf, Cons
+  //@unit Cons.fields effect: Cons when: member_first, member_rest, member___hash requires: cellOf,
+  //@ Cons
   for (const [field, key] of Object.entries({first: "first$LKEY", rest: "rest$LKEY"})) Object.defineProperty(Cons.prototype, field, {
     get() { return cellOf(this)[key]; },
     set(value) {
@@ -14520,6 +14640,7 @@
       this.hash$LKEY = value;
     }
   });
+  //@unit Cons.metaField effect: Cons when: member_meta, resetMeta requires: cellOf, Cons
   Object.defineProperty(Cons.prototype, "meta", {
     get() { return "meta$LKEY" in this ? this.meta$LKEY : null; }, set(value) {
       if (!(cellOf(this)?.cell$LKEY === "cons")) throw new Error("Expected public core value");
@@ -14529,29 +14650,31 @@
   //@unit Cons.members values effect: Cons requires: Cons, seqIndexes, seqMethods
   seqIndexes(Cons);
   Cons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit Reduced.fields effect: Reduced when: resetMeta, upstreamMembers requires: Reduced,
-  //@ reducedValues
+  //@unit Reduced.fields effect: Reduced when: member_val requires: Reduced, reducedValues
   Object.defineProperty(Reduced.prototype, "val", {
     get() { return reducedValues.get(this); }, set(value) {
       if (!reducedValues.has(this)) throw new Error("Expected Reduced");
       reducedValues.reset(this, value);
     }
   });
-  //@unit ListValue.fields effect: ListValue when: resetMeta, upstreamMembers requires: cellOf,
-  //@ ListValue, meta, publicFields
-  publicFields(ListValue, ["meta", "first", "rest", "count", "__hash"], (value, field) => cellOf(value)[{first: "first$LKEY", rest: "rest$LKEY", count: "count$LKEY"}[field]], meta);
+  //@unit ListValue.fields effect: ListValue when: member_first, member_rest, member_count,
+  //@ member___hash requires: cellOf, ListValue, publicFields
+  publicFields(ListValue, ["first", "rest", "count", "__hash"], (value, field) => cellOf(value)[{first: "first$LKEY", rest: "rest$LKEY", count: "count$LKEY"}[field]]);
+  //@unit ListValue.metaField effect: ListValue when: member_meta, resetMeta requires: ListValue,
+  //@ meta, publicFields
+  publicFields(ListValue, ["meta"], null, meta);
   //@unit ListValue.members values effect: ListValue requires: ListValue, seqIndexes, seqMethods
   seqIndexes(ListValue);
   ListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit EmptyListValue.fields effect: EmptyListValue when: resetMeta, upstreamMembers requires: EmptyListValue,
+  //@unit EmptyListValue.fields effect: EmptyListValue when: resetMeta, member_meta requires: EmptyListValue,
   //@ meta, publicFields
   publicFields(EmptyListValue, ["meta"], null, meta);
   //@unit EmptyListValue.members values effect: EmptyListValue requires: EmptyListValue, seqIndexes,
   //@ seqMethods
   seqIndexes(EmptyListValue);
   EmptyListValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit KeywordValue.fields effect: KeywordValue when: resetMeta, upstreamMembers requires: keywordOf,
-  //@ KeywordValue
+  //@unit KeywordValue.fields effect: KeywordValue when: member_ns, member_name, member_fqn,
+  //@ member__hash requires: keywordOf, KeywordValue
   // Upstream's fields read the keyed ones; `_hash` is null until computed.
   // Writing `ns`, `name` or `fqn` makes a shadow property, as before, and
   // `_hash` sets the cache.
@@ -14564,31 +14687,41 @@
       Object.defineProperty(this, field, {value, writable: true, configurable: true, enumerable: true});
     }
   });
-  //@unit RepeatValue.fields effect: RepeatValue when: resetMeta, upstreamMembers requires: cellOf,
-  //@ cellStateField, meta, publicFields, RepeatValue
-  publicFields(RepeatValue, ["meta", "count", "val", "next", "__hash"], (value, field) => {
+  //@unit RepeatValue.fields effect: RepeatValue when: member_count, member_val, member_next,
+  //@ member___hash requires: cellOf, cellStateField, publicFields, RepeatValue
+  publicFields(RepeatValue, ["count", "val", "next", "__hash"], (value, field) => {
     const c = cellOf(value);
     return field === "count" ? c.remaining$LKEY : field === "val" ? c.first$LKEY : c.next$LKEY ?? null;
-  }, meta, cellStateField);
+  }, null, cellStateField);
+  //@unit RepeatValue.metaField effect: RepeatValue when: member_meta, resetMeta requires: meta,
+  //@ publicFields, RepeatValue
+  publicFields(RepeatValue, ["meta"], null, meta);
   //@unit RepeatValue.members values effect: RepeatValue requires: RepeatValue, seqIndexes
   seqIndexes(RepeatValue);
-  //@unit CycleValue.fields effect: CycleValue when: resetMeta, upstreamMembers requires: cellOf,
-  //@ cellStateField, cycleCurrent, CycleValue, meta, publicFields
-  publicFields(CycleValue, ["meta", "all", "prev", "current", "_next"], (value, field) => {
+  //@unit CycleValue.fields effect: CycleValue when: member_all, member_prev, member_current,
+  //@ member__next, member_currentval requires: cellOf, cellStateField, cycleCurrent, CycleValue,
+  //@ publicFields
+  publicFields(CycleValue, ["all", "prev", "current", "_next"], (value, field) => {
     const c = cellOf(value);
     return field === "all" ? c.all$LKEY : field === "prev" ? c.prev$LKEY : field === "current" ? c.current$LKEY : c.next$LKEY;
-  }, meta, cellStateField);
+  }, null, cellStateField);
   CycleValue.prototype.currentval = function () { return cycleCurrent(cellOf(this)); };
-  //@unit IterateValue.fields effect: IterateValue when: resetMeta, upstreamMembers requires: cellOf,
-  //@ cellStateField, IterateValue, meta, publicFields
-  publicFields(IterateValue, ["meta", "f", "prev-seed", "seed", "next"], (value, field) => {
+  //@unit CycleValue.metaField effect: CycleValue when: member_meta, resetMeta requires: CycleValue,
+  //@ meta, publicFields
+  publicFields(CycleValue, ["meta"], null, meta);
+  //@unit IterateValue.fields effect: IterateValue when: member_f, member_prev_seed, member_seed,
+  //@ member_next requires: cellOf, cellStateField, IterateValue, publicFields
+  publicFields(IterateValue, ["f", "prev-seed", "seed", "next"], (value, field) => {
     const c = cellOf(value);
     return field === "f" ? c.f$LKEY : field === "prev-seed" ? c.prev$LKEY : field === "seed" ? c.seed$LKEY : c.next$LKEY;
-  }, meta, cellStateField);
-  //@unit PersistentVectorValue.fields effect: PersistentVectorValue when: resetMeta,
-  //@ upstreamMembers requires: hostHooks, meta, missing, PersistentVectorValue, protocolHooks,
-  //@ publicFields, slotField, vectorCount, vectorStore, vectorTailOffset, viewTrie
-  publicFields(PersistentVectorValue, ["meta", "cnt", "shift", "root", "tail", "__hash"], (value, field) => {
+  }, null, cellStateField);
+  //@unit IterateValue.metaField effect: IterateValue when: member_meta, resetMeta requires: IterateValue,
+  //@ meta, publicFields
+  publicFields(IterateValue, ["meta"], null, meta);
+  //@unit PersistentVectorValue.fields effect: PersistentVectorValue when: member_cnt, member_shift,
+  //@ member_root, member_tail, member___hash requires: hostHooks, missing, PersistentVectorValue,
+  //@ protocolHooks, publicFields, slotField, vectorCount, vectorStore, vectorTailOffset, viewTrie
+  publicFields(PersistentVectorValue, ["cnt", "shift", "root", "tail", "__hash"], (value, field) => {
     const slot = slotField(value, field, protocolHooks.extend ? hostHooks.count : vectorCount);
     if (slot !== missing) return slot;
     // A copy of the tail and a token of the root keep the store private;
@@ -14601,106 +14734,148 @@
       // whose one field, not enumerable, is the root it names (`vroot`).
       return value.token$LKEY ??= Object.defineProperty({}, "vroot$LKEY", {value: store.root$LKEY});
     }
-  }, meta);
-  //@unit SubvecValue.fields effect: SubvecValue when: resetMeta, upstreamMembers requires: count,
-  //@ meta, missing, publicFields, slotField, SubvecValue
-  publicFields(SubvecValue, ["meta", "start", "end", "__hash"], (value, field) => {
+  });
+  //@unit PersistentVectorValue.metaField effect: PersistentVectorValue when: member_meta, resetMeta
+  //@ requires: meta, PersistentVectorValue, publicFields
+  publicFields(PersistentVectorValue, ["meta"], null, meta);
+  //@unit SubvecValue.fields effect: SubvecValue when: member_start, member_end, member___hash,
+  //@ member_v requires: count, missing, publicFields, slotField, SubvecValue
+  publicFields(SubvecValue, ["start", "end", "__hash"], (value, field) => {
     const slot = slotField(value, field, count);
     return slot !== missing ? slot : field === "start" ? 0 : count(value);
-  }, meta);
+  });
   Object.defineProperty(SubvecValue.prototype, "v", {get() { return this.v$LKEY; }});
-  //@unit ChunkedSeqValue.fields effect: ChunkedSeqValue when: resetMeta, upstreamMembers requires: ChunkedSeqValue,
-  //@ meta, publicFields, viewOf
+  //@unit SubvecValue.metaField effect: SubvecValue when: member_meta, resetMeta requires: meta,
+  //@ publicFields, SubvecValue
+  publicFields(SubvecValue, ["meta"], null, meta);
+  //@unit ChunkedSeqValue.fields effect: ChunkedSeqValue when: member_vec, member_node, member_i,
+  //@ member_off, member___hash requires: ChunkedSeqValue, publicFields, viewOf
   // A chunked seq's fields are its own (`ChunkedSeqCell`): upstream's `i` and
   // `off` are its `base` and `i`.
-  publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "meta", "__hash"], (value, field) => {
+  publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "__hash"], (value, field) => {
     const v = viewOf(value);
     return field === "vec" ? v.vec$LKEY : field === "node" ? v.arr$LKEY : field === "i" ? v.base$LKEY : v.i$LKEY;
-  }, meta);
+  });
+  //@unit ChunkedSeqValue.metaField effect: ChunkedSeqValue when: member_meta, resetMeta requires: ChunkedSeqValue,
+  //@ meta, publicFields
+  publicFields(ChunkedSeqValue, ["meta"], null, meta);
   //@unit ChunkedSeqValue.members values effect: ChunkedSeqValue requires: ChunkedSeqValue,
   //@ seqIndexes, seqMethods
   seqIndexes(ChunkedSeqValue);
   ChunkedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit PersistentQueueValue.fields effect: PersistentQueueValue when: resetMeta, upstreamMembers
-  //@ requires: count, meta, missing, PersistentQueueValue, publicFields, queues, seq, slotField,
-  //@ vector
-  publicFields(PersistentQueueValue, ["meta", "count", "front", "rear", "__hash"], (value, field) => {
+  //@unit PersistentQueueValue.fields effect: PersistentQueueValue when: member_count, member_front,
+  //@ member_rear, member___hash requires: count, missing, PersistentQueueValue, publicFields,
+  //@ queues, seq, slotField, vector
+  publicFields(PersistentQueueValue, ["count", "front", "rear", "__hash"], (value, field) => {
     const slot = slotField(value, field, count);
     return slot !== missing ? slot : field === "front" ? seq(queues.get(value)) : vector();
-  }, meta);
+  });
+  //@unit PersistentQueueValue.metaField effect: PersistentQueueValue when: member_meta, resetMeta
+  //@ requires: meta, PersistentQueueValue, publicFields
+  publicFields(PersistentQueueValue, ["meta"], null, meta);
   //@unit PersistentQueueValue.members values effect: PersistentQueueValue requires: PersistentQueueValue,
   //@ seqMethods
   PersistentQueueValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit PersistentArrayMapValue.fields effect: PersistentArrayMapValue when: resetMeta,
-  //@ upstreamMembers requires: hostHooks, mapCount, mapPairs, meta, missing,
+  //@unit PersistentArrayMapValue.fields effect: PersistentArrayMapValue when: member_cnt,
+  //@ member_arr, member___hash requires: hostHooks, mapCount, mapPairs, missing,
   //@ PersistentArrayMapValue, protocolHooks, publicFields, slotField
-  publicFields(PersistentArrayMapValue, ["meta", "cnt", "arr", "__hash"], (value, field) => {
+  publicFields(PersistentArrayMapValue, ["cnt", "arr", "__hash"], (value, field) => {
     const slot = slotField(value, field, protocolHooks.extend ? hostHooks.count : mapCount);
     return slot !== missing ? slot : mapPairs(value).slice();
-  }, meta);
-  //@unit PersistentHashMapValue.fields effect: PersistentHashMapValue when: resetMeta,
-  //@ upstreamMembers requires: contains, get, hostHooks, mapCount, meta, missing,
-  //@ PersistentHashMapValue, protocolHooks, publicFields, slotField
-  publicFields(PersistentHashMapValue, ["meta", "cnt", "root", "has-nil?", "nil-val", "__hash"], (value, field) => {
+  });
+  //@unit PersistentArrayMapValue.metaField effect: PersistentArrayMapValue when: member_meta,
+  //@ resetMeta requires: meta, PersistentArrayMapValue, publicFields
+  publicFields(PersistentArrayMapValue, ["meta"], null, meta);
+  //@unit PersistentHashMapValue.fields effect: PersistentHashMapValue when: member_cnt,
+  //@ member_root, member_has_nil_QMARK_, member_nil_val, member___hash requires: contains, get,
+  //@ hostHooks, mapCount, missing, PersistentHashMapValue, protocolHooks, publicFields, slotField
+  publicFields(PersistentHashMapValue, ["cnt", "root", "has-nil?", "nil-val", "__hash"], (value, field) => {
     const slot = slotField(value, field, protocolHooks.extend ? hostHooks.count : mapCount);
     return slot !== missing ? slot : field === "root" ? value : field === "has-nil?" ? contains(value, null) : get(value, null);
-  }, meta);
-  //@unit PersistentHashSetValue.fields effect: PersistentHashSetValue when: resetMeta,
-  //@ upstreamMembers requires: arrayMapFromArray, kindHooks, meta, missing, PersistentHashSetValue,
+  });
+  //@unit PersistentHashMapValue.metaField effect: PersistentHashMapValue when: member_meta,
+  //@ resetMeta requires: meta, PersistentHashMapValue, publicFields
+  publicFields(PersistentHashMapValue, ["meta"], null, meta);
+  //@unit PersistentHashSetValue.fields effect: PersistentHashSetValue when: member_hash_map,
+  //@ member___hash requires: arrayMapFromArray, kindHooks, missing, PersistentHashSetValue,
   //@ publicFields, setKinds, setTraversal, slotField
-  publicFields(PersistentHashSetValue, ["meta", "hash-map", "__hash"], (value, field) => {
+  publicFields(PersistentHashSetValue, ["hash-map", "__hash"], (value, field) => {
     const slot = slotField(value, field);
     if (slot !== missing) return slot;
     // A map of the set's kind: an array set's is an array map.
     const pairs = setTraversal(value).flatMap(e => [e.key, null]), kind = setKinds.get(value);
     return kind === "array-map" ? arrayMapFromArray(pairs) : kindHooks.hashSetMap(pairs, kind);
-  }, meta);
-  //@unit putMember.setMap effect: publicHashSet, putMember when: resetMeta, upstreamMembers
+  });
+  //@unit PersistentHashSetValue.metaField effect: PersistentHashSetValue when: member_meta,
+  //@ resetMeta requires: meta, PersistentHashSetValue, publicFields
+  publicFields(PersistentHashSetValue, ["meta"], null, meta);
+  //@unit putMember.setMap effect: publicHashSet, putMember when: member___hash, member_hash_map
   //@ requires: kindHooks, mapFromArray
   // Only promotion and the public constructor build sets of other kinds.
   kindHooks.hashSetMap = mapFromArray;
-  //@unit IndexedSeqValue.fields effect: IndexedSeqValue when: resetMeta, upstreamMembers requires: IndexedSeqValue,
-  //@ meta, publicFields, viewOf
-  publicFields(IndexedSeqValue, ["arr", "i", "meta"], (value, field) => {
+  //@unit IndexedSeqValue.fields effect: IndexedSeqValue when: member_arr, member_i requires: IndexedSeqValue,
+  //@ publicFields, viewOf
+  publicFields(IndexedSeqValue, ["arr", "i"], (value, field) => {
     const v = viewOf(value);
     return field === "arr" ? v.arr$LKEY : v.i$LKEY;
-  }, meta);
+  });
+  //@unit IndexedSeqValue.metaField effect: IndexedSeqValue when: member_meta, resetMeta requires: IndexedSeqValue,
+  //@ meta, publicFields
+  publicFields(IndexedSeqValue, ["meta"], null, meta);
   //@unit IndexedSeqValue.members values effect: IndexedSeqValue requires: IndexedSeqValue,
   //@ seqIndexes, seqMethods
   seqIndexes(IndexedSeqValue);
   IndexedSeqValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit RangeValue.fields effect: RangeValue when: resetMeta, upstreamMembers requires: cellOf,
-  //@ forceRangeChunk, meta, publicFields, rangeChunkField, rangeField, RangeValue
-  publicFields(RangeValue, ["meta", "start", "end", "step", "chunk", "chunk-next", "__hash"], rangeField, meta, rangeChunkField);
+  //@unit RangeValue.fields effect: RangeValue when: member_start, member_end, member_step,
+  //@ member_chunk, member_chunk_next, member___hash, member_forceChunk requires: cellOf,
+  //@ forceRangeChunk, publicFields, rangeChunkField, rangeField, RangeValue
+  publicFields(RangeValue, ["start", "end", "step", "chunk", "chunk-next", "__hash"], rangeField, null, rangeChunkField);
   RangeValue.prototype.forceChunk = function () { forceRangeChunk(cellOf(this)); return null; };
+  //@unit RangeValue.metaField effect: RangeValue when: member_meta, resetMeta requires: meta,
+  //@ publicFields, RangeValue
+  publicFields(RangeValue, ["meta"], null, meta);
   //@unit RangeValue.members values effect: RangeValue requires: RangeValue, seqIndexes, seqMethods
   seqIndexes(RangeValue);
   RangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit IntegerRangeValue.fields effect: IntegerRangeValue when: resetMeta, upstreamMembers
-  //@ requires: IntegerRangeValue, meta, publicFields, rangeField
-  publicFields(IntegerRangeValue, ["meta", "start", "end", "step", "cnt", "__hash"], rangeField, meta);
+  //@unit IntegerRangeValue.fields effect: IntegerRangeValue when: member_start, member_end,
+  //@ member_step, member_cnt, member___hash requires: IntegerRangeValue, publicFields, rangeField
+  publicFields(IntegerRangeValue, ["start", "end", "step", "cnt", "__hash"], rangeField);
+  //@unit IntegerRangeValue.metaField effect: IntegerRangeValue when: member_meta, resetMeta
+  //@ requires: IntegerRangeValue, meta, publicFields
+  publicFields(IntegerRangeValue, ["meta"], null, meta);
   //@unit IntegerRangeValue.members values effect: IntegerRangeValue requires: IntegerRangeValue,
   //@ seqIndexes, seqMethods
   seqIndexes(IntegerRangeValue);
   IntegerRangeValue.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit treeMapConstructor.fields effect: treeMapConstructor when: resetMeta, upstreamMembers
-  //@ requires: comparatorOf, meta, publicFields, treeMapConstructor
+  //@unit treeMapConstructor.fields effect: treeMapConstructor when: member_tree, member_cnt,
+  //@ member___hash, member_comp requires: comparatorOf, publicFields, treeMapConstructor
   // Its own fields (light-cljs-1035): the tree a public constructor gave it
   // is the one it gives back.
-  publicFields(treeMapConstructor, ["tree", "cnt", "meta", "__hash"], (value, field) => field === "tree" ? value.tree$LKEY : value.cnt$LKEY, meta);
+  publicFields(treeMapConstructor, ["tree", "cnt", "__hash"], (value, field) => field === "tree" ? value.tree$LKEY : value.cnt$LKEY);
   Object.defineProperty(treeMapConstructor.prototype, "comp", {get() { return comparatorOf(this); }});
-  //@unit treeSetConstructor.fields effect: treeSetConstructor when: resetMeta, upstreamMembers
-  //@ requires: meta, publicFields, treeSetConstructor
+  //@unit treeMapConstructor.metaField effect: treeMapConstructor when: member_meta, resetMeta
+  //@ requires: meta, publicFields, treeMapConstructor
+  publicFields(treeMapConstructor, ["meta"], null, meta);
+  //@unit treeSetConstructor.fields effect: treeSetConstructor when: member_tree_map, member___hash
+  //@ requires: publicFields, treeSetConstructor
   // Its own field (light-cljs-1038): the tree map that holds its members,
   // the one a public constructor gave it.
-  publicFields(treeSetConstructor, ["meta", "tree-map", "__hash"], value => value.treeMap$LKEY, meta);
-  //@unit treeMapSeqConstructor.fields effect: treeMapSeqConstructor when: resetMeta,
-  //@ upstreamMembers requires: meta, publicFields, treeMapSeqConstructor
+  publicFields(treeSetConstructor, ["tree-map", "__hash"], value => value.treeMap$LKEY);
+  //@unit treeSetConstructor.metaField effect: treeSetConstructor when: member_meta, resetMeta
+  //@ requires: meta, publicFields, treeSetConstructor
+  publicFields(treeSetConstructor, ["meta"], null, meta);
+  //@unit treeMapSeqConstructor.fields effect: treeMapSeqConstructor when: member_stack,
+  //@ member_ascending_QMARK_, member_cnt, member___hash requires: publicFields,
+  //@ treeMapSeqConstructor
   // Its own fields, which a public constructor gave it as its slots
   // (light-cljs-1035).
-  publicFields(treeMapSeqConstructor, ["meta", "stack", "ascending?", "cnt", "__hash"],
-    (value, field) => field === "stack" ? value.stack$LKEY : field === "cnt" ? value.cnt$LKEY : value.ascending$LKEY, meta);
-  //@unit MapEntryType.fields effect: MapEntryType when: resetMeta, upstreamMembers requires: MapEntryType
+  publicFields(treeMapSeqConstructor, ["stack", "ascending?", "cnt", "__hash"],
+    (value, field) => field === "stack" ? value.stack$LKEY : field === "cnt" ? value.cnt$LKEY : value.ascending$LKEY);
+  //@unit treeMapSeqConstructor.metaField effect: treeMapSeqConstructor when: member_meta, resetMeta
+  //@ requires: meta, publicFields, treeMapSeqConstructor
+  publicFields(treeMapSeqConstructor, ["meta"], null, meta);
+  //@unit MapEntryType.fields effect: MapEntryType when: member_key, member_val, member_left,
+  //@ member_right requires: MapEntryType
   // A map entry's `key` and `val` (upstream's MapEntry fields) and a sorted
   // map's node's `left` and `right` (its BlackNode's and RedNode's,
   // `TreeNodeCell`), undefined for another map entry. A node is never
@@ -14744,7 +14919,7 @@
     lastIndexOf(value, start = count(this)) { return sequentialIndex(this, value, start, true); },
     [Symbol.iterator]() { return es6Iterator(this); }
   }));
-  //@unit Eduction.fields effect: Eduction when: resetMeta, upstreamMembers requires: Eduction,
+  //@unit Eduction.fields effect: Eduction when: member_xform, member_coll requires: Eduction,
   //@ eductions
   Object.defineProperties(Eduction.prototype, Object.getOwnPropertyDescriptors({
     get xform() { return eductions.get(this).xform; },
@@ -14752,22 +14927,23 @@
     get coll() { return eductions.get(this).coll; },
     set coll(value) { eductions.get(this).coll = value; }
   }));
-  //@unit Delay.fields effect: Delay when: resetMeta, upstreamMembers requires: Delay, delays
+  //@unit Delay.fields effect: Delay when: member_f, member_value requires: Delay, delays
   for (const [field, key] of Object.entries({f: "thunk", value: "value"})) Object.defineProperty(Delay.prototype, field, {
     configurable: true, get() { return delays.get(this)[key]; }, set(value) { delays.get(this)[key] = value; }
   });
-  //@unit LazySeq.fields effect: LazySeq when: resetMeta, upstreamMembers requires: isLazy, lazyOf,
-  //@ LazySeq, lazyStep
+  //@unit LazySeq.fields effect: LazySeq when: member_fn, member_s, member___hash, member_sval
+  //@ requires: lazyOf, LazySeq, lazyStep
   for (const [field, key] of Object.entries({fn: "fn$LKEY", s: "s$LKEY", __hash: "hash$LKEY"})) Object.defineProperty(LazySeq.prototype, field, {
     configurable: true, get() { return lazyOf(this)[key]; }, set(value) { lazyOf(this)[key] = value; }
-  });
-  Object.defineProperty(LazySeq.prototype, "meta", {
-    configurable: true, get() { return isLazy(this) ? "meta$LKEY" in this ? this.meta$LKEY : null : undefined; },
-    set(value) { this.meta$LKEY = value; }
   });
   Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
     sval() { return lazyStep(lazyOf(this)); }
   }));
+  //@unit LazySeq.metaField effect: LazySeq when: member_meta, resetMeta requires: isLazy, LazySeq
+  Object.defineProperty(LazySeq.prototype, "meta", {
+    configurable: true, get() { return isLazy(this) ? "meta$LKEY" in this ? this.meta$LKEY : null : undefined; },
+    set(value) { this.meta$LKEY = value; }
+  });
   //@unit LazySeq.members values effect: LazySeq requires: LazySeq, objectEquiv, seqMethods
   Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
     equiv(other) { return objectEquiv(this, other); },
@@ -14787,15 +14963,17 @@
   RSeqType.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
   //@unit ChunkedCons.members values effect: ChunkedCons requires: ChunkedCons, seqMethods
   ChunkedCons.prototype[Symbol.iterator] = seqMethods[Symbol.iterator];
-  //@unit ChunkedCons.fields effect: ChunkedCons when: resetMeta, upstreamMembers requires: ChunkedCons,
-  //@ chunkedConsOf, meta
+  //@unit ChunkedCons.fields effect: ChunkedCons when: member_chunk, member_more, member___hash
+  //@ requires: ChunkedCons, chunkedConsOf
   for (const [field, key] of Object.entries({chunk: "chunk$LKEY", more: "more$LKEY", __hash: "hash$LKEY"})) Object.defineProperty(ChunkedCons.prototype, field, {
     configurable: true, get() { return chunkedConsOf(this)[key]; },
     set: field === "__hash" ? function (value) { chunkedConsOf(this).hash$LKEY = value; } : undefined
   });
+  //@unit ChunkedCons.metaField effect: ChunkedCons when: member_meta, resetMeta requires: ChunkedCons,
+  //@ meta
   Object.defineProperty(ChunkedCons.prototype, "meta", {get() { return meta(this); }});
-  //@unit ChunkBuffer.fields effect: ChunkBuffer when: resetMeta, upstreamMembers requires: chunk,
-  //@ chunkAppend, ChunkBuffer, chunkBufferOf
+  //@unit ChunkBuffer.fields effect: ChunkBuffer when: member_buf, member_end, member_add,
+  //@ member_chunk requires: chunk, chunkAppend, ChunkBuffer, chunkBufferOf
   for (const [field, key] of Object.entries({buf: "buf$LKEY", end: "end$LKEY"})) Object.defineProperty(ChunkBuffer.prototype, field, {
     configurable: true, get() { return chunkBufferOf(this)[key]; }, set(value) { chunkBufferOf(this)[key] = value; }
   });
@@ -14803,7 +14981,7 @@
     add(value) { return chunkAppend(this, value); },
     chunk() { return chunk(this); }
   }));
-  //@unit arrayChunk.fields effect: arrayChunk when: resetMeta, upstreamMembers requires: arrayChunk,
+  //@unit arrayChunk.fields effect: arrayChunk when: member_arr, member_off, member_end requires: arrayChunk,
   //@ chunkOf
   for (const [field, key] of Object.entries({arr: "arr$LKEY", off: "off$LKEY", end: "end$LKEY"})) Object.defineProperty(arrayChunk.prototype, field, {
     configurable: true, get() { return chunkOf(this)[key]; }, set(value) { chunkOf(this)[key] = value; }
@@ -14813,12 +14991,20 @@
   //@unit typeStatics
   // The statics of the runtime's types (`EMPTY`, `HASHMAP_THRESHOLD`,
   // `fromArray`, `fromArrays`), compiler-owned names upstream, which Closure
-  // removes where nothing reads them: their `.statics` effects wait for this
-  // unit, which an `Advanced` program keeps only where it names one of them
-  // (`TYPE_STATICS` in src/runtime_slice.rs) or reads an empty literal's
-  // `EMPTY` (light-cljs-247). The reader reads the queue's, which waits for it
+  // removes where nothing reads them: their `.statics` effects, the `EMPTY`s,
+  // wait for this unit, which an `Advanced` program keeps only where it names
+  // `EMPTY` (`TYPE_STATICS` in src/runtime_slice.rs) or reads an empty
+  // literal's (light-cljs-247). The reader reads the queue's, which waits for it
   // too.
   const typeStatics = null;
+  // The other statics' flags (`member_unit` in src/runtime_slice.rs), which
+  // an `Advanced` program keeps where it names that static (light-cljs-1077).
+  //@unit member_HASHMAP_THRESHOLD
+  const member_HASHMAP_THRESHOLD = null;
+  //@unit member_fromArray
+  const member_fromArray = null;
+  //@unit member_fromArrays
+  const member_fromArrays = null;
   //@unit ListValue.statics effect: ListValue when: typeStatics requires: emptyList, ListValue
   ListValue.EMPTY = emptyList;
   //@unit PersistentHashSetValue.statics effect: PersistentHashSetValue when: typeStatics requires: makeSet,
@@ -14833,10 +15019,15 @@
   //@unit PersistentArrayMapValue.statics effect: PersistentArrayMapValue when: typeStatics
   //@ requires: makeMap, PersistentArrayMapValue
   PersistentArrayMapValue.EMPTY = makeMap(PersistentArrayMapValue, [], "array-map");
+  //@unit PersistentArrayMapValue.threshold effect: PersistentArrayMapValue when: member_HASHMAP_THRESHOLD
+  //@ requires: PersistentArrayMapValue
   PersistentArrayMapValue.HASHMAP_THRESHOLD = 8;
-  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue when: typeStatics requires: aclone,
-  //@ displayStr, hashTrie, makeMap, PersistentHashMapValue, putEntry
+  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue when: typeStatics requires: hashTrie,
+  //@ makeMap, PersistentHashMapValue
   PersistentHashMapValue.EMPTY = makeMap(PersistentHashMapValue, hashTrie([]), "hash-map");
+  //@unit PersistentHashMapValue.fromArrays effect: PersistentHashMapValue when: member_fromArray,
+  //@ member_fromArrays requires: aclone, displayStr, hashTrie, makeMap, PersistentHashMapValue,
+  //@ putEntry
   PersistentHashMapValue.fromArray = (array, noClone) => {
     const items = noClone ? array : aclone(array), entries = [], length = items.length;
     const edit = {};
@@ -14988,9 +15179,7 @@
   //@ keywordLookupEquiv, mapConj, pop requires: externalMethod, protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
-  //@unit protocolHooks.extend effect: extendType, extendInstance when: conjMeta, containsOf,
-  //@ containsPath, containsProtocol, entryPrototype, ownMap, ownSet, resetMeta,
-  //@ treeMapSeqConstructor, upstreamMembers, vectorIndexOf, vectorPrototype requires: protocolHooks
+  //@unit protocolHooks.extend effect: extendType, extendInstance when: conjMeta, containsOf, containsPath, containsProtocol, entryPrototype, member___hash, member_arr, member_cnt, member_has_nil_QMARK_, member_nil_val, member_root, member_shift, member_tail, ownMap, ownSet, treeMapSeqConstructor, vectorIndexOf, vectorPrototype requires: protocolHooks
   // Only `extend-type` and `specify!` can give the runtime's own values
   // protocol implementations, which their host-facing methods and fields then
   // answer through the generic operations (`hostHooks`).

@@ -139,12 +139,12 @@ pub(crate) struct TypeAnalysis {
     discarded: Vec<bool>,
     /// Whether reachable code names `getBasis` (see [`names_property`]).
     basis: bool,
-    /// The first reachable expression that names an upstream member of the
+    /// The first reachable expression that names `EMPTY`, a static of the
     /// runtime's types.
-    members: Option<ExprId>,
-    /// The first reachable expression that names a static of the runtime's
-    /// types.
     statics: Option<ExprId>,
+    /// The flag units of the upstream members and the other statics that
+    /// reachable code names, each with the first expression naming it.
+    member_units: Vec<(&'static str, ExprId)>,
     /// The units to root for the record methods whose slots reachable code
     /// names, each with the first expression naming one.
     record_methods: Vec<(&'static str, ExprId)>,
@@ -375,28 +375,7 @@ pub(crate) fn analyze(
     let basis = program.exprs.iter().zip(&live).any(|(expr, live)| {
         *live && names_property(program, &expr.kind, |name| name == "getBasis")
     });
-    let members = program
-        .exprs
-        .iter()
-        .zip(&live)
-        .position(|(expr, live)| {
-            *live
-                && names_property(program, &expr.kind, |name| {
-                    crate::runtime_slice::UPSTREAM_MEMBERS.contains(&name)
-                })
-        })
-        .map(ExprId);
-    let statics = program
-        .exprs
-        .iter()
-        .zip(&live)
-        .position(|(expr, live)| {
-            *live
-                && names_property(program, &expr.kind, |name| {
-                    crate::runtime_slice::TYPE_STATICS.contains(&name)
-                })
-        })
-        .map(ExprId);
+    let (statics, member_units) = named_members(program, &live);
     let record_methods = named_record_methods(program, &live);
     let declarations = named_protocol_declarations(program, &live);
     let loadable_members = named_loadable_members(program, &live);
@@ -417,8 +396,8 @@ pub(crate) fn analyze(
         quiet,
         discarded,
         basis,
-        members,
         statics,
+        member_units,
         record_methods,
         declarations,
         loadable_members,
@@ -812,18 +791,19 @@ impl TypeAnalysis {
         self.basis
     }
 
-    /// The first reachable expression that names an upstream field or method
-    /// of the runtime's types ([`crate::runtime_slice::UPSTREAM_MEMBERS`]),
-    /// which only then can read one.
-    pub(crate) fn names_upstream_member(&self) -> Option<ExprId> {
-        self.members
-    }
-
-    /// The first reachable expression that names a static of the runtime's
-    /// types ([`crate::runtime_slice::TYPE_STATICS`]), which only then can
-    /// read one.
+    /// The first reachable expression that names `EMPTY`, a static of the
+    /// runtime's types ([`crate::runtime_slice::TYPE_STATICS`]), which only
+    /// then can read one.
     pub(crate) fn names_type_static(&self) -> Option<ExprId> {
         self.statics
+    }
+
+    /// The flag units ([`crate::runtime_slice::member_unit`]) of the upstream
+    /// members and the statics other than `EMPTY` that reachable code names,
+    /// each with the first expression naming it: the effects defining a
+    /// member wait for its flag (light-cljs-1077).
+    pub(crate) fn named_member_units(&self) -> &[(&'static str, ExprId)] {
+        &self.member_units
     }
 
     /// The units an `Advanced` slice of a program with records roots so that
@@ -1084,6 +1064,36 @@ fn names_property(program: &Program, kind: &ExprKind, mut named: impl FnMut(&str
             found
         }
     }
+}
+
+/// The first reachable expression naming `EMPTY`, and the flag unit of each
+/// upstream member of the runtime's types
+/// ([`crate::runtime_slice::UPSTREAM_MEMBERS`]) and other static
+/// ([`crate::runtime_slice::TYPE_STATICS`]) named, with the first expression
+/// naming it, in the order they are first named.
+fn named_members(
+    program: &Program,
+    live: &[bool],
+) -> (Option<ExprId>, Vec<(&'static str, ExprId)>) {
+    let mut statics = None;
+    let mut units: Vec<(&'static str, ExprId)> = Vec::new();
+    for (index, expr) in program.exprs.iter().enumerate() {
+        if !live[index] {
+            continue;
+        }
+        let site = ExprId(index);
+        names_property(program, &expr.kind, |name| {
+            if name == "EMPTY" {
+                statics.get_or_insert(site);
+            } else if let Some(unit) = crate::runtime_slice::member_unit(name)
+                && !units.iter().any(|(named, _)| *named == unit)
+            {
+                units.push((unit, site));
+            }
+            false
+        });
+    }
+    (statics, units)
 }
 
 /// For a program with records, the [`crate::runtime_slice::RECORD_METHODS`]

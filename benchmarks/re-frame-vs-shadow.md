@@ -1990,3 +1990,70 @@ light-cljs-1078 saved a sixth to a quarter of its expectation, as gzip had alrea
 - **light-cljs's output as written**, without React, after gzip: simple 68,413 to 68,192 (-221) at `12301e59` and 68,134 (-279) with the final binary, TodoMVC 97,881 to 97,680 (-201) and 97,587 (-294), flow 281,186 to 281,027 (-159) and 280,918 (-268).
 - **Against the expectation** of 800 to 1,500 bytes per app: 194 to 287 bytes, 24 to 36% of its low end, as the measurement above predicted. The rest of the 2 KB upper bound is code other paths read.
 - **Ratchet fixtures at `:advanced`** (tests/support/ratchet_fixtures.rs): no fixture grows; the 20 that keep a store test shrink 16 to 2,513 bytes raw. Printing kept every store through `ownedProtocolValue`, so the fixtures that print shrink most: `vector-printed` 15,815 to 13,302, `map-printed` 23,839 to 22,171; `extended-classes` 71,534 to 70,328.
+
+## 2026-11-21: each upstream member by its own name, and what is left over the gate (light-cljs-1077)
+
+light-cljs-1078 and 1079 left every app over its `f533efb1` size. This pellet shrinks the class layout's own code where that costs no speed, and records what is left (docs/value-layout.md, "What light-cljs-1077 landed").
+
+```sh
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
+bb research/output-speed/class-code-1077/scripts/whatif.bb TAG        # and fields.bb, statics.bb, arity.bb, whatif-trades.bb
+```
+
+### Measured before the change
+
+As light-cljs-1078 and 1079 did, each candidate was first taken out of master's output as written (gzip -9, without React; the text then no longer runs), or replaced by approximate text:
+
+| Candidate, on master's output | simple | TodoMVC | flow |
+|---|---:|---:|---:|
+| each class's fields only for the members the program names, `meta` apart | 699 | 362 | 101 |
+| the hash map's `fromArray` and `fromArrays` and the array map's `HASHMAP_THRESHOLD` only where named | 147 | 144 | 158 |
+| arity pairs: `-lookup` and `-nth` of arity 2 calling arity 3 (8 to 9 and 6 slots) | 33 | 43 | 50 |
+| the tree's remove path, `treeRemove` and its balancing, taken out whole | 0 | 568 | 574 |
+
+- **The fields were the largest.** Naming any one upstream member (`cnt`, `first`, `meta`, ...) kept every class's `.fields` effect, and every app names a few: host names such as `value`, `key`, `name` and `current`, which other objects have too. The fields cost 1,076, 1,232 and 1,499 bytes after gzip.
+- **The arity pairs were left as they are.** They would save 33 to 50 bytes for an extra call on `get`'s and `nth`'s two-argument paths. gzip already shares the two arities' bodies, which differ in a name or two.
+- **The tree's remove path was left as it is.** It is upstream's `tree-map-remove` with `balance-left-del`, `balance-right-del` and `tree-map-append`, and no smaller remove of a red-black tree was found that keeps its speed.
+
+### Setup
+
+- **Binaries:** master `light-cljs-1079-53b509ee` (its compiler sources are master `4af741fb`'s), `light-cljs-1077-0a0b5a28`, this pellet, and `light-cljs-f533efb1` for the gate. All V8 builds.
+- **Ports:** porter `shadow-port-tool-983` with the `light-cljs-1079-53b509ee` binary, one port per app into an empty directory, built by every binary. On these ports `f533efb1` gives simple and TodoMVC their gate sizes exactly, and flow 328,652.
+- **Machine:** unreserved, load average 5.1 to 7.6. Sizes do not depend on load.
+- **Raw results:** `research/output-speed/class-code-1077` (`size-<binary>.md`, `whatif-*.txt`, `scripts/`).
+
+### The whole bundle with React, gzip -9
+
+| App | `f533efb1` | master (`1079-53b509ee`) | light-cljs-1077 | Change | Over `f533efb1` now |
+|---|---:|---:|---:|---:|---:|
+| re-frame simple | 108,631 | 114,244 | 113,598 | -646 (-0.57%) | +4,967 (+4.6%) |
+| TodoMVC | 138,015 | 145,524 | 145,158 | -366 (-0.25%) | +7,143 (+5.2%) |
+| flow | 328,652 | 333,244 | 333,192 | -52 (-0.02%) | +4,540 (+1.4%) |
+
+- **Raw:** the whole bundles are 2,594, 1,433 and 156 bytes smaller. brotli -q 11: simple -566, TodoMVC -423, flow -21.
+- **light-cljs's output as written**, without React, after gzip: simple 68,134 to 67,474 (-660), TodoMVC 97,587 to 97,154 (-433), flow 280,920 to 280,887 (-33).
+- **flow saves least:** it names 19 members, `__hash` among them, which every collection class defines, so it keeps almost every class's fields. It keeps their `meta` as well, as it calls `reset-meta!`.
+- **The size ratchet's fixtures** at `:advanced` do not move: none names a member. The readable runtime at `none` grows 2,854 bytes, the 62 flags and their comments (tests/support/ratchet_fixtures.rs).
+
+### What is left over the gate
+
+No app meets the gate. What is left is the class layout's code, which carries the group's speed. Each line is what gzip -9 of light-cljs-1077's output as written loses when that group's units are taken out of it. The groups overlap a little after gzip, so they do not add up.
+
+| Units, light-cljs-1077 | simple | TodoMVC | flow | What removing them would cost in speed |
+|---|---:|---:|---:|---|
+| **over the gate, whole bundle** | **4,967** | **7,143** | **4,540** | |
+| the classes' protocol slots | 4,290 (296 units) | 4,617 (309) | 5,366 (337) | the class layout's dispatch, from which the group started at 3.5 to 3.75 times shadow-cljs's steady state (light-cljs-1028, 1012, 1066 and the others) |
+| class declarations and constructors (fields among them: 605, 770, 1,221) | 2,143 (103) | 2,901 (147) | 3,916 (171) | the same: classes, masks and markers are what the slots dispatch on |
+| B: the sorted map's and set's red-black tree | 67 (3) | 2,167 (62) | 2,639 (77) | `sorted-map-assoc-100` 3.4 times slower (193.8 to 650.8 ns), `str-sorted-map-20` +6% (light-cljs-1035) |
+| C: equality and hashing by fields | 817 (14) | 815 (14) | 873 (14) | `eq-vec-10` 11 times slower (44 to 491 ns), `hash-fresh-vec-4` 8 times, `hash-fresh-map-7` 2.9 times, `eq-map-7` +48% (light-cljs-1014) |
+| D: the reduce slots and walks | 971 (24) | 1,034 (25) | 1,213 (29) | `reduce-kv-small` 7 times slower (6.8 to 50 ns), `reduce-entries-small` 4 times, `reduce-vec-1000` +3% (light-cljs-1055, 1059, 1072) |
+| B, C and D together | 1,860 | 4,024 | 4,626 | all of the above |
+| `extend-type` over slots, and the copies with another prototype | 828 (12) | 828 (12) | 879 (12) | none, but `extend-type` and `specify!` of a runtime value need them: a feature, not a speed trade |
+| `protocolSlotCodes` | 395 | 388 | 417 | none; naming the slots at their sites costs more (light-cljs-1058) |
+
+Not of the class layout, for scale: printing (`print*`, `pr*`, `write*`) is 1,314, 1,317 and 1,477 bytes after gzip, and the host-facing members (`indexOf`, `lastIndexOf`, iteration, `equiv`) 335, 305 and 628.
+
+- **The speed costs** are the gate's own measurements by the pellets that added each group, from their before and after runs (benchmarks/runtime-vs-shadow.md).
+- **B, C and D are upper bounds.** Taking a group out does not put back the code it replaced. The old sorted array, the protocol-walk equality and the old reductions would come back, and with them some of those bytes.
+- **No trade closes simple or TodoMVC.** With B, C and D all given up, simple would still be at least 3.1 KB over and TodoMVC 3.1 KB. Only flow could reach its gate, and only if the old paths came back at no size at all. Reaching the gate for simple and TodoMVC would mean taking out most of the slots and declarations, the layout the group's speed comes from.
+- **The question is the user's**, as light-cljs-1077 says: the group puts speed first, and the user set this gate.

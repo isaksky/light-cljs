@@ -2308,10 +2308,19 @@ fn a_map_value_keeps_no_public_constructor_statics_or_other_kinds_branches() {
     ] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
+    // Each static other than `EMPTY` waits for its own name (light-cljs-1077).
     let kept = units("(js/console.log (.-HASHMAP_THRESHOLD (type {:a 1})))");
     assert!(
-        kept.contains(&"PersistentArrayMapValue.statics"),
+        kept.contains(&"PersistentArrayMapValue.threshold")
+            && !kept.contains(&"PersistentArrayMapValue.statics")
+            && !kept.contains(&"PersistentHashMapValue.fromArrays"),
         "{kept:?}"
+    );
+    let empty = units("(js/console.log {} [])");
+    assert!(
+        !empty.contains(&"PersistentArrayMapValue.threshold")
+            && !empty.contains(&"PersistentHashMapValue.fromArrays"),
+        "{empty:?}"
     );
     // The other kinds' branches where their builders are kept.
     let branches = "(pr-str [(get #{:a} :a) (get (sorted-map :b 2 :a 1) :a) (get (transient {:a 1}) :a)
@@ -2783,57 +2792,133 @@ fn upstream_fields_need_a_program_that_names_them() {
     let unnamed = assert_keeps_none(
         "(js/console.log (count (map inc (range 3))))",
         &[
-            "upstreamMembers",
             "publicFields",
             "LazySeq.fields",
+            "LazySeq.metaField",
             "ChunkedCons.fields",
             "IntegerRangeValue.fields",
         ],
     );
     assert!(unnamed.contains(&"LazySeq.members") && unnamed.contains(&"IntegerRangeValue.members"));
     // A program naming one as a property, method or string, or in `js*`
-    // text, reads the fields as `None` does.
-    for (source, expected, fields) in [
+    // text, reads the fields as `None` does: the fields of the types that
+    // define a member it names, each waiting for that member's flag, and
+    // not their `meta` unless it names `meta` too (light-cljs-1077).
+    for (source, expected, fields, flag) in [
         (
             "(let [c (cons 1 (list 2 3))] (array (.-first c) (count (.-rest c)) (.-__hash c)))",
             "[ 1, 2, null ]",
             "Cons.fields",
+            "member_first",
         ),
         (
             "(let [s (lazy-seq [1 2])] (array (count (.sval s)) (count (.-s s))))",
             "[ 2, 2 ]",
             "LazySeq.fields",
+            "member_sval",
         ),
-        ("(aget (range 3) \"cnt\")", "3", "IntegerRangeValue.fields"),
-        ("(js* \"~{}.first\" (cons 5 nil))", "5", "Cons.fields"),
+        (
+            "(aget (range 3) \"cnt\")",
+            "3",
+            "IntegerRangeValue.fields",
+            "member_cnt",
+        ),
+        (
+            "(js* \"~{}.first\" (cons 5 nil))",
+            "5",
+            "Cons.fields",
+            "member_first",
+        ),
     ] {
         every_level(source, expected);
         let units = units(source);
         assert!(
-            units.contains(&"upstreamMembers") && units.contains(&fields),
+            units.contains(&flag)
+                && units.contains(&fields)
+                && !units.contains(&fields.replace(".fields", ".metaField").as_str()),
             "{source} keeps {units:?}"
         );
     }
-    // `alter-meta!` reads and assigns `meta`.
-    for (source, expected, fields) in [
+    // `alter-meta!` reads and assigns `meta`, which is all it keeps.
+    for (source, expected, meta) in [
         (
             "(let [l (with-meta (list 1 2) {:a 1})] (pr-str (alter-meta! l assoc :b 2)))",
             "{:a 1, :b 2}",
-            "ListValue.fields",
+            "ListValue.metaField",
         ),
         (
             "(let [l (with-meta (lazy-seq [1]) {:a 1})] (pr-str (alter-meta! l assoc :b 2) (meta l)))",
             "{:a 1, :b 2} {:a 1, :b 2}",
-            "LazySeq.fields",
+            "LazySeq.metaField",
         ),
     ] {
         every_level(source, expected);
         let units = units(source);
         assert!(
-            !units.contains(&"upstreamMembers") && units.contains(&fields),
+            units.contains(&meta)
+                && !units.contains(&meta.replace(".metaField", ".fields").as_str())
+                && !units.iter().any(|unit| unit.starts_with("member_")),
             "{source} keeps {units:?}"
         );
     }
+}
+
+#[test]
+fn a_program_naming_one_upstream_member_reads_it_on_every_runtime_type() {
+    // Each member waits for its own flag (light-cljs-1077): a program that
+    // names only that member finds it on every runtime value that has it at
+    // `None`, which keeps every member.
+    let values = "[(cons 1 nil) (list 1 2) () :k 'sym (repeat 2 1) (cycle [1 2]) (iterate inc 0)
+                  [1] (subvec [1 2 3] 1) (seq (vec (range 40))) (conj cljs.core/PersistentQueue.EMPTY 1)
+                  {} (apply hash-map (range 20)) #{1} (seq [1 2]) (range 0.5 3) (range 3)
+                  (sorted-map 1 2) (sorted-set 1) (seq (sorted-map 1 2)) (first (sorted-map 1 2)) (eduction (map inc) [1])
+                  (delay 1) (lazy-seq nil) (seq (map inc (range 3))) (chunk-buffer 2)
+                  (array-chunk #js [1]) (reduced 1) (seq (apply hash-map (range 20)))]";
+    let has = |name: &str| {
+        format!("(apply str (map (fn [v] (if (js* \"~{{}} in ~{{}}\" {name:?} v) 1 0)) {values}))")
+    };
+    let all = format!(
+        "(apply str (interpose \" \" [{}]))",
+        UPSTREAM_MEMBERS
+            .iter()
+            .map(|&name| has(name))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let js = prepare_application(
+        &program(&all),
+        ApplicationOptions::new(OptimizationLevel::None),
+    )
+    .emit_js();
+    let expected = execute(&format!("console.log({js});"));
+    let each: Vec<String> = UPSTREAM_MEMBERS
+        .iter()
+        .map(|&name| {
+            prepare_application(
+                &program(&has(name)),
+                ApplicationOptions::new(OptimizationLevel::Advanced),
+            )
+            .emit_js()
+        })
+        .collect();
+    // One Node run of every program, from a file: the outputs together are
+    // too long for an argument.
+    let dir = crate::temp_dir::TempDir::new("upstream-members");
+    let script = dir.path().join("members.js");
+    std::fs::write(
+        &script,
+        format!("console.log([{}].join(' '));", each.join(",\n")),
+    )
+    .unwrap();
+    let printed = execute(&format!("require({:?});", script.display().to_string()));
+    assert_eq!(printed, expected);
+    // Every member is on some value here.
+    assert!(
+        !expected
+            .split_whitespace()
+            .any(|bits| bits.chars().all(|c| c == '0')),
+        "{expected}"
+    );
 }
 
 #[test]

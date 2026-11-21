@@ -5455,3 +5455,15 @@ Steady state, from the medians at 1 and 40 iterations: light-cljs 31.6 to 30.8 m
 **Predicates, pass 2** (the final binary, the same program; load 3.7-4.1), ns per call, median (range): `(satisfies? ISeqable x)` 66.5 (65.9-72.3) to 60.6 (58.3-63.5), -9%; `(satisfies? IMeta x)` 67.6 to 62.7, -7%; `seqable?` 39.8 to 38.0, -4%; `coll?` 29.4 to 26.6, -9%; `counted?` 76.1 to 72.0, -5%; `fn?` 36.8 to 34.3, -7%; `meta` 87.8 to 85.8, -2%; `pr-str` 1,090 to 1,083, -1%.
 
 **Workload 200k, pass 2** (the final binary, its own copy of the project rebuilt by each binary before its run; load 3.7-4.1 before, 3.8-3.9 after): 40 iterations 1.524 s (1.515-1.548) before, 1.530 s (1.523-1.537) after; 1 iteration 0.345 s and 0.336 s. Steady state 30.6 to 30.9 ms per iteration (+1%, within the runs' spread; shadow-cljs 25.1 and 25.5 in the two runs, light/shadow 1.22 and 1.21). With pass 1's 31.6 to 30.8, the change is within the workload's run-to-run spread both ways.
+
+## 2026-11-21: each upstream member by its own name (light-cljs-1077)
+
+An `Advanced` program keeps each upstream member of the runtime's types (`cnt`, `first`, `meta`, ...) and each static but `EMPTY` only where it names that member, where naming any one kept every type's fields (docs/value-layout.md, "What light-cljs-1077 landed"). No operation's code changes: what a program without the members it does not name loses is the accessors on the classes' prototypes. The sizes are in benchmarks/re-frame-vs-shadow.md.
+
+**Binaries:** before `light-cljs-1079-53b509ee` (its compiler sources are master `4af741fb`'s), after `light-cljs-1077-0a0b5a28`, V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; all unreserved. Raw results: `research/output-speed/class-code-1077`.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, all 80 operations, the after run with `--baseline` the before's; load 3.48-4.36 before, 3.49-4.81 after). The gate's program names one member, `all`, so before it kept every class's fields and now none: every operation on a runtime value reaches classes whose prototypes lost their accessors. No operation is more than 3% slower but one:
+- **`keys-hash100` +12%** (3,396 to 3,803 ns), whose runs overlap (3,356-3,793 before, 3,617-3,851 after) and which earlier pellets' runs show as two-valued (3,761-7,634 in light-cljs-1070's). Timed alone in two alternated pairs (`--ops keys-hash100,vals-hash100,keys-small`, load 3.72-4.16) it is 2,923 to 2,926 and 2,911 to 2,916 ns, +0% both times; `vals-hash100` +3% and -4%, `keys-small` +0% and +1%.
+- The rest are within -3% (`vec-nth-1024`) and +2% (`destructure-vec-3`, `multi-arity-call`, `str-sorted-map-20`).
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1077 --runs 5 --runtime-only --runtime 1,40`, a copy of the project whose light-cljs output was rebuilt with each binary just before its run, every checksum equal to the oracle's; two rounds, before then after; load 3.51-4.62), steady state from the medians at 1 and 40 iterations: light-cljs 30.1 to 30.2 and 29.9 to 30.2 ms per iteration, shadow-cljs 24.5 to 25.5 (light/shadow 1.17 to 1.23), within the spread.

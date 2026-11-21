@@ -127,14 +127,15 @@ pub(crate) struct Application<'a> {
     /// Whether types get their static `getBasis` method, which at `Advanced`
     /// only a program that names it can call (`crate::rta`).
     pub basis: bool,
-    /// At `Advanced`: the first expression that names an upstream field or
-    /// method of the runtime's types (`crate::rta`), where the slice roots
-    /// the unit their `.fields` effects wait for.
-    pub upstream_member: Option<ExprId>,
-    /// At `Advanced`: the first expression that names a static of the
-    /// runtime's types (`crate::rta`), where the slice roots the unit their
-    /// `.statics` effects wait for.
+    /// At `Advanced`: the first expression that names `EMPTY`, a static of
+    /// the runtime's types (`crate::rta`), where the slice roots the unit
+    /// their `.statics` effects wait for.
     pub type_static: Option<ExprId>,
+    /// At `Advanced`: the flag units of the upstream members and other
+    /// statics of the runtime's types that the program names (`crate::rta`),
+    /// each with the first expression naming it, which the slice roots: the
+    /// effects defining a member wait for its flag.
+    pub member_units: &'a [(&'static str, ExprId)],
     /// At `Advanced`: the units that install the record methods whose slots
     /// the program names (`crate::rta`), each with the first expression
     /// naming one, which the slice of a program with records roots.
@@ -2695,16 +2696,14 @@ impl<'a> Emitter<'a> {
             self.runtime_root(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
         }
         // Only code naming them reads the upstream fields and methods of the
-        // runtime's types, so an `Advanced` slice keeps them only then.
-        if let Some(site) = application.upstream_member {
-            self.runtime_root(
-                RuntimeName::direct(crate::runtime_slice::UPSTREAM_MEMBERS_UNIT, None),
-                Some(site),
-                NameUse::Keep,
-            );
+        // runtime's types and their statics, so an `Advanced` slice keeps each
+        // only then: each one it names keeps the effects defining it
+        // (light-cljs-1077).
+        for &(unit, site) in application.member_units {
+            self.runtime_root(RuntimeName::direct(unit, None), Some(site), NameUse::Keep);
         }
-        // Likewise the statics of the runtime's types, which an empty literal
-        // reads too (`empty_collection`).
+        // Likewise the statics' `EMPTY`, which an empty literal reads too
+        // (`empty_collection`).
         if let Some(site) = application.type_static {
             self.runtime_root(
                 RuntimeName::direct(crate::runtime_slice::TYPE_STATICS_UNIT, None),

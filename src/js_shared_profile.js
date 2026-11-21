@@ -1911,11 +1911,15 @@
   //@unit PersistentArrayMapValue.statics effect: PersistentArrayMapValue when: typeStatics
   //@ requires: makeMap, PersistentArrayMapValue
   PersistentArrayMapValue.EMPTY = makeMap(PersistentArrayMapValue, [], "array-map");
+  //@unit PersistentArrayMapValue.threshold effect: PersistentArrayMapValue when: member_HASHMAP_THRESHOLD
+  //@ requires: PersistentArrayMapValue
   PersistentArrayMapValue.HASHMAP_THRESHOLD = 8;
-  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue when: typeStatics requires: aclone,
-  //@ displayStr, makeMap, PersistentHashMapValue, putEntry
+  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue when: typeStatics requires: makeMap,
+  //@ PersistentHashMapValue
   // The V8 profile's, without the hash tries: the engine hashes the entries.
   PersistentHashMapValue.EMPTY = makeMap(PersistentHashMapValue, [], "hash-map");
+  //@unit PersistentHashMapValue.fromArrays effect: PersistentHashMapValue when: member_fromArray,
+  //@ member_fromArrays requires: aclone, displayStr, makeMap, PersistentHashMapValue, putEntry
   PersistentHashMapValue.fromArray = (array, noClone) => {
     const items = noClone ? array : aclone(array), entries = [], length = items.length;
     const edit = {};
