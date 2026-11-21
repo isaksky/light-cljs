@@ -5420,3 +5420,38 @@ The store test was a call to the class's store's `has`; the kind test is arithme
 | 40 | 1.585 s (1.557-1.597) | 1.552 s (1.543-1.560) | 1.346 s, 1.331 s |
 
 Steady state, from the medians at 1 and 40 iterations: light-cljs 31.6 to 30.8 ms per iteration, shadow-cljs 26.1 and 25.6 (light/shadow 1.21, 1.20).
+
+**Pass 2 with the final binary** `light-cljs-1079-53b509ee` (the Sol review's fixes: six native tests read their class's mask bit, `copyWithMeta`'s probes test the kind), the same operations, before then after with `--baseline` (load 4.1-4.7 before, 3.8-4.5 after), light-cljs ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| count-small | 2.09 | 2.10 (2.08-2.11) | +0% | 2.09 | 0.99, 1.00 |
+| vec-conj-64 | 1,659 | 1,440 (1,425-1,641) | -13% | 1,470 | 1.12, 0.98 |
+| destructure-map-3 | 34.2 | 34.3 (33.9-34.3) | +0% | 34.5 | 0.99, 0.99 |
+| filter-count-1000 | 29,970 | 29,926 (29,600-30,347) | +0% | 30,507 | 0.98, 0.98 |
+| mapv-1000 | 13,924 | 14,104 (14,014-14,176) | +1% | 12,161 | 1.13, 1.16 |
+| keys-small | 296.2 | 297.6 (293.8-302.3) | +0% | 74.4 | 3.96, 4.00 |
+| lazy-walk-1000 | 38,726 | 38,733 (38,453-39,186) | +0% | 40,892 | 0.95, 0.95 |
+| seq-walk-vec-1000 | 26,987 | 26,929 (26,816-27,126) | +0% | 10,056 | 2.66, 2.68 |
+| str-nested-map | 4,051 | 4,063 (4,048-4,118) | +0% | 2,346 | 1.73, 1.73 |
+| str-concat | 166.7 | 166.8 (165.7-168.1) | +0% | 14.9 | 11.26, 11.23 |
+| protocol-on-record | 2.35 | 2.34 (2.32-2.41) | +0% | 2.36 | 1.00, 0.99 |
+| record-assoc | 49.1 | 49.0 (49.0-50.4) | +0% | 10.0 | 4.89, 4.89 |
+| multimethod | 66.4 | 70.6 (66.4-71.3) | +6% | 39.5 | 1.69, 1.79 |
+| variadic-call | 14.4 | 14.4 (14.3-14.5) | +0% | 9.70 | 1.52, 1.49 |
+| apply-vec | 179.6 | 178.9 (175.9-183.1) | +0% | 74.8 | 2.42, 2.39 |
+| swap-inc | 4.76 | 4.70 (4.69-4.76) | -1% | 5.62 | 0.86, 0.84 |
+| merge-small | 1,416 | 1,407 (1,392-1,438) | -1% | 716.5 | 1.97, 1.96 |
+| select-keys-3 | 213.4 | 212.4 (194.0-214.3) | +0% | 223.8 | 0.95, 0.95 |
+| group-by-100 | 5,941 | 5,946 (5,851-6,113) | +0% | 4,235 | 1.39, 1.40 |
+| sort-by-100 | 6,317 | 6,177 (6,140-6,305) | -2% | 4,679 | 1.36, 1.32 |
+| str-sorted-map-20 | 31,808 | 31,754 (31,387-32,330) | +0% | 20,471 | 1.55, 1.55 |
+| into-vec-small | 146.7 | 144.6 (142.7-147.7) | -1% | 127.6 | 1.15, 1.13 |
+| into-map-small | 429.8 | 426.4 (394.3-430.6) | -1% | 274.4 | 1.57, 1.55 |
+| into-list-small | 156.4 | 156.5 (155.2-159.9) | +0% | 110.5 | 1.41, 1.42 |
+
+`multimethod`'s +6% is noise: its runs overlap (65.1-70.4 before, 66.4-71.3 after), and timed alone with `protocol-on-record` in two more alternated pairs (`mm-before1`, `mm-after1`, `mm-before2`, `mm-after2`) it was 4% and 8% faster (46.1 to 44.2 and 48.7 to 44.7 ns; that program's smaller set of operations times it lower). `vec-conj-64`'s -13% overlaps too (1,432-1,674 before, 1,425-1,641 after). Every other operation moves -2% to +1%.
+
+**Predicates, pass 2** (the final binary, the same program; load 3.7-4.1), ns per call, median (range): `(satisfies? ISeqable x)` 66.5 (65.9-72.3) to 60.6 (58.3-63.5), -9%; `(satisfies? IMeta x)` 67.6 to 62.7, -7%; `seqable?` 39.8 to 38.0, -4%; `coll?` 29.4 to 26.6, -9%; `counted?` 76.1 to 72.0, -5%; `fn?` 36.8 to 34.3, -7%; `meta` 87.8 to 85.8, -2%; `pr-str` 1,090 to 1,083, -1%.
+
+**Workload 200k, pass 2** (the final binary, its own copy of the project rebuilt by each binary before its run; load 3.7-4.1 before, 3.8-3.9 after): 40 iterations 1.524 s (1.515-1.548) before, 1.530 s (1.523-1.537) after; 1 iteration 0.345 s and 0.336 s. Steady state 30.6 to 30.9 ms per iteration (+1%, within the runs' spread; shadow-cljs 25.1 and 25.5 in the two runs, light/shadow 1.22 and 1.21). With pass 1's 31.6 to 30.8, the change is within the workload's run-to-run spread both ways.

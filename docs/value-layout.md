@@ -2381,8 +2381,10 @@ inventories that were store tests (`seqableValue`, `collectionValue`,
 `metaValue`, `withMetaValue`) and `fnValue` test the value's keyed kind
 against fixed bits (`kindIn`, `kindPredicate`), where a table of stores by
 kind (`kindTable`, `storeHolds`, `storesPredicate`, `ownedStores`,
-light-cljs-1046) asked the class's store; the stores lose their
-`classKinds`.
+light-cljs-1046) asked the class's store, and so do `copyWithMeta`'s two
+probes (`withMetaKeeps`, `withMetaCopies`), where they probed the `*Cells`
+lists in turn; six native tests read their class's mask bit
+(`maskNative`); the stores lose their `classKinds`.
 
 - **Measured first.** Taken out of master's output as written (gzip -9,
   light-cljs-1078's method), the inventories and recognisers cost 2,172 to
@@ -2416,42 +2418,66 @@ light-cljs-1046) asked the class's store; the stores lose their
   multimethods, vars and functions with metadata) reach the answer by kind
   there, and of those protocols' native tests only `metaValue` and
   `fnValue` are true for them; both read only the kind now.
+- **Mask bits for six native tests** (the Sol review of light-cljs-1079).
+  Where every class that implements a protocol natively carries its bit
+  for each of its values, the native test reads the bit of a runtime
+  class's value (a keyed kind below 64), as upstream's `implements?`
+  does, and tests the rest (`maskNative(name, rest)`): `stackValue`;
+  `cloneablePayload`, `reversibleValue` and `aseqValue`, whose rest is an
+  indexed seq of the `view` that answers (it differs within the class);
+  `pendingValue` (delays) and `comparableValue` (uuids and dates). The
+  one-call wrappers (`setValue`, `vectorValue`, `sortedValue`, the
+  transients') keep their one recogniser, which other paths keep too: a
+  mask read would be longer. Against master's runtime every one of the 52
+  native tests and `with-meta` answer alike over 80 real values (every
+  runtime class, host values, atoms, delays, volatiles, uuids, dates).
+  Spliced into the apps' output before they were written, the six
+  measured 0, 21 and 9 bytes after gzip (simple, TodoMVC, flow).
 - **The Pants build's profile** swaps in its own `seqableValue`,
-  `collectionValue`, `metaValue`, `withMetaValue` and `fnValue`, which probe
-  the stores in turn as its `ownedProtocolValue` does (src/js_shared_profile.js):
-  its engine forms have no kind. The `*Cells` lists and `protocolStores`
-  stay in the runtime's text for it; no V8 slice keeps them.
+  `collectionValue`, `metaValue`, `withMetaValue`, `fnValue`,
+  `withMetaKeeps`, `withMetaCopies` and the six mask-read tests, which
+  probe the stores in turn as its `ownedProtocolValue` does
+  (src/js_shared_profile.js): its engine forms have no kind. The `*Cells`
+  lists and `protocolStores` stay in the runtime's text for it; a V8
+  slice keeps them only with `clone`, whose copy of the stores' entries
+  only the profile's stores feed.
 - **Answers kept.** Every runtime, host and `specify!`-ed row of
   `protocol_hooks_answer_runtime_values_as_the_full_lookup`, its forged
   rows, and `extended_programs_answer_count_meta_and_predicates_without_the_lookup`
   (whose counted store test is now `kindIn`, with no call for the hits)
-  answer as before. The Proxy is asked twice less in each extension set
-  (306, 319 and 306 times, where 308, 321 and 308): `fnValue` reads its
-  kind once where `metaFunctions` and `vars` read it in turn.
-- **What was not done.** Answering the other native tests by masks: the
-  26 that only the native tests' table keeps cost 335 to 350 bytes after
-  gzip and the table 244 to 276, but the table stays for every protocol,
-  and of those tests only the ones whose classes all carry complete masks
-  (`stackValue`, `setValue`, `sortedValue`, the transients' and a few
-  more) could become a mask read; the rest keep a residual for the seqs
-  over an array or a string, whose answers differ with their `view`, for
-  the classes without masks, for records and for host values. That is
-  perhaps 80 to 120 bytes, for a rewrite of `class_protocol_masks`, which
-  pins the masks against those tests. Splitting the views' class by
-  `view`, which would let masks answer them, is light-cljs-1077's (the
-  classes and constructors).
+  answer as before, but `reversible?` of the sorted map in the set whose
+  program writes `PersistentTreeMap`'s whole mask by name (64, `ISeq`
+  alone; item 23), which is false now, as the mask it wrote says. The
+  Proxy is asked three times less in each extension set (305, 318 and
+  305 times, where 308, 321 and 308): `fnValue` reads its kind once,
+  where `metaFunctions` and `vars` read it in turn, and `aseqValue` twice,
+  where three times. `forged_values_of_classes_without_masks_answer_by_kind`
+  pins what such values answer now, and that the genuine values asked
+  after them answer as master's at every level.
+- **What is left.** The native tests' table (`nativeImplementations`,
+  244 to 276 bytes after gzip) stays: `extend-type`'s external lookup and
+  `implements?` ask it of every core protocol. Its other tests read a
+  recogniser that other paths keep (`countedValue`, `indexedValue`,
+  `dropValue`, `reduceValue` and the rest differ with an indexed seq's
+  `view` or answer classes without masks, records and host values).
+  Splitting the indexed seqs' class by `view`, which would let masks
+  answer them, is light-cljs-1077's (the classes and constructors).
 - **Measured** (benchmarks/re-frame-vs-shadow.md and
   benchmarks/runtime-vs-shadow.md, light-cljs-1079; binaries
-  `light-cljs-1078-6b2eabef`, master's compiler sources, and
-  `light-cljs-1079-12301e59`, unreserved): the re-frame apps' whole
-  bundles 227, 161 and 121 bytes smaller after gzip (simple, TodoMVC,
-  flow; 653 to 681 raw), against the pellet's expected 800 to 1,500; the
-  size ratchet's fixtures that print shrink most (`vector-printed` 15,815
-  to 13,302), as printing kept every store through `ownedProtocolValue`;
-  the gate's 24 operations that reach it within -2% and +2% (`vec-conj-64`'s
-  -11% overlapping noise); in a program that extends types, `satisfies?`,
-  `seqable?`, `coll?`, `counted?` and `fn?` 4 to 8% faster, `meta` and
-  printing 1%; workload 200k's steady state 31.6 to 30.8 ms per iteration.
+  `light-cljs-1078-6b2eabef`, master's compiler sources,
+  `light-cljs-1079-12301e59`, the tests by kind, and the final
+  `light-cljs-1079-53b509ee`, unreserved): the re-frame apps' whole
+  bundles 287, 266 and 194 bytes smaller after gzip (simple, TodoMVC,
+  flow; 1,141 to 1,161 raw), against the pellet's expected 800 to 1,500;
+  the size ratchet's fixtures that print shrink most (`vector-printed`
+  15,815 to 13,302), as printing kept every store through
+  `ownedProtocolValue`; the gate's 24 operations that reach the change
+  within -2% and +2% in two passes (`multimethod`'s +6% in the second and
+  `vec-conj-64`'s -11% and -13% overlapping noise; timed alone,
+  `multimethod` was 4% and 8% faster); in a program that extends types,
+  `satisfies?`, `seqable?`, `coll?`, `counted?` and `fn?` 4 to 9% faster,
+  `meta` and printing 1 to 2%; workload 200k's steady state 31.6 to 30.8
+  and 30.6 to 30.9 ms per iteration, within its spread.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
@@ -3536,7 +3562,10 @@ classes is the runtime's own as its class's values are:
     state the forged value lacks (a `TypeError`); the symbols', conses' and
     keywords' accessors, which test their fields, still throw. And
     `protocol_hooks_answer_runtime_values_as_the_full_lookup`'s Proxy line
-    (items 2 and 4): asked 306, 319 and 306 times, where 308, 321 and 308.
+    (items 2 and 4): asked 305, 318 and 305 times, where 308, 321 and 308;
+    and in its set that writes `PersistentTreeMap`'s mask by name (item
+    23), the sorted map is not `reversible?`, as the written mask says,
+    where its comparator made it so (`reversibleValue` reads the bit).
 
 What else changes for such a value, which no test pins: `satisfies?` and
 `implements?` of a value made from the prototype of a class without masks
@@ -3547,9 +3576,14 @@ reaches it; `seq?`'s, `coll?`'s and `meta`'s native tests (`seqableValue`,
 `collectionValue`, `metaValue`, `withMetaValue`) and `fn?`'s (`fnValue`) take
 it as its class's values; printing takes it for the runtime's own
 (`printableValue`), so its class's printer reads the fields it lacks, where
-it printed as a host object; and the extended lookup of a forged value
+it printed as a host object; the extended lookup of a forged value
 whose class's mask bit is set gives its slot, where the native test,
-which read its fields, sent it through `satisfies` to `extendedDeclared`.
+which read its fields, sent it through `satisfies` to `extendedDeclared`;
+the six native tests that read the mask bit (`maskNative`) answer such a
+value as its class's; and where `with-meta` of a forged value reaches the
+runtime's copy (`collectionWithMeta`, not its class's `-with-meta` slot), a
+class whose copy its class builds (`withMetaCopies`) copies the fields it
+lacks, where it threw that the value does not support metadata.
 Iterator seqs, chunks, chunk buffers, uuids, eductions, string writers and
 `ExceptionInfo`, which are not the runtime's own, keep their answers.
 
