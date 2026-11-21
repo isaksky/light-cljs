@@ -369,6 +369,18 @@
     (loop [i 0 acc 0]
       (if (< i n) (recur (inc i) (+ acc (count (assoc v (bit-and i 1023) i (bit-and (+ i 512) 1023) s)))) acc))))
 
+;; `into` of a small collection onto an empty one (light-cljs-1067), where
+;; the work of each call (the target's transient, `persistent!` and its
+;; metadata) weighs most: a vector of vectors of 2 to 8 items, and a map of
+;; the 7-key maps.
+(defn b-into-vec-small [n s]
+  (let [vs (array (vec-n 2 s) (vec-n 4 s) (vec-n 6 s) (vec-n 8 s))]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (into [] (aget vs (bit-and i 3)))))) acc))))
+
+(defn b-into-map-small [n s]
+  (let [ms (small-maps s)]
+    (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (count (into {} (aget ms (bit-and i 3)))))) acc))))
+
 ;; Two loops with no core operation, the cost of the benches' loop itself.
 (defn b-bit-and [n s]
   (loop [i 0 acc 0] (if (< i n) (recur (inc i) (+ acc (bit-and i 3) s)) acc)))
@@ -457,6 +469,8 @@
    ["disj-sorted-set-100" b-disj-sorted-set 200000]
    ["disj-variadic-set-7" b-disj-variadic-set 500000]
    ["vec-assoc-variadic-1024" b-vec-assoc-variadic 500000]
+   ["into-vec-small" b-into-vec-small 1000000]
+   ["into-map-small" b-into-map-small 500000]
    ["bit-and" b-bit-and 10000000]
    ["aget-bit-and" b-js-array-index 10000000]])
 

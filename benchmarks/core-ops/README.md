@@ -106,7 +106,8 @@ with the type feedback of a program that also walks map keys. light-cljs-1065
 added the two `into` operations after the printing ones, just before the loop
 baselines, so that no earlier operation's number moves. light-cljs-1073 added
 the six `pop`, `disj` and variadic-update operations after them, before the
-loop baselines, for the same reason.
+loop baselines, for the same reason, and light-cljs-1067 the two small `into`
+operations after those.
 
 ## Operations
 
@@ -124,4 +125,5 @@ loop baselines, for the same reason.
 | Calls and atoms | `multi-arity-call`, `variadic-call`, `apply-vec`, `unknown-fn-call`, `closure-alloc-call`, `swap-inc`, `swap-assoc` |
 | `into` without a transducer (light-cljs-1065) | `into-vec-keys-small` (a vector of the 7-key maps' keys), `into-set-100` (a set of a 100-item vector) |
 | `pop`, `disj` and the variadic updates (light-cljs-1073) | `vec-pop` (vectors of 3, 10, 33 and 100 items; the 33-item one takes its tail from the tree), `list-pop` (lists of 2 to 10 items), `disj-set-7` (one item from 7-item hash sets), `disj-sorted-set-100` (one item from a 100-item sorted set), `disj-variadic-set-7` (two items from the 7-item sets), `vec-assoc-variadic-1024` (two indexes of a 1,024-item vector) |
+| `into` of small collections (light-cljs-1067) | `into-vec-small` (a vector of vectors of 2 to 8 items), `into-map-small` (a map of the 7-key maps) |
 | Loop baselines | `bit-and`, `aget-bit-and` |
