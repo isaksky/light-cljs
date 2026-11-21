@@ -5088,3 +5088,51 @@ A first session with the review's earlier binary (`1070-2b676390`, load 9.6-15.4
 | 2 | 1.724 s (1.697-1.744) | 1.765 s (1.762-1.771) | 1.266 / 1.265 s | 35.1 to 36.5 (shadow-cljs 24.2 / 24.6) | 7.4 / 6.5 |
 
 The steady state is unchanged within the rounds' spread (one round 4% faster, the other 4% slower; light/shadow 1.49 and 1.45 before, 1.44 and 1.49 after).
+
+## 2026-11-20: `into` without a lookup per call (light-cljs-1067)
+
+The vector, array map, hash map and hash set classes have `-as-transient` and `-with-meta` slots (`asTransientSlot`, `withMetaSlot`); `transient` and `-with-meta` call a value's slot first; `into` reads its target's `IEditableCollection` mask bit, as upstream's `implements?` does, and is one function per arity (docs/value-layout.md, "What light-cljs-1067 landed"). In a program that implements protocols (the gate's records make it one), each `into` of a small collection took three protocol lookups (`-as-transient`'s dispatcher, `-with-meta`'s support test and its own lookup) and takes none.
+
+**Binaries** in research/shadow-credibility/bin: before `light-cljs-8903e693` (master), after `light-cljs-1067-a0a85250` (this pellet's runtime on `8903e693`; the rebase onto light-cljs-1074 changed none of its code), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. Records in research/output-speed/into-slots-1067. No run waited for the machine: a peer worker built and tested during the first gate pass; each figure gives its 1-minute load; all unreserved.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`). Pass 1 is all 78 operations, before then after with `--baseline` (load 5.3-9.5 before, 4.2-4.8 after); pass 2 is the operations whose paths this pellet reaches, after, before, after (load 4.1-4.5, 4.6-5.0, 5.4-5.9). light-cljs ns per operation, medians:
+
+| op | pass 1 before | pass 1 after | change | pass 2 before | pass 2 after (two runs) | change | shadow-cljs (pass 2) | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| into-vec-small | 300.7 | 194.2 | -35% | 278.0 | 170.1, 170.7 | -39% | 160.4 | 1.77, 1.06 |
+| into-map-small | 951.2 | 792.7 | -17% | 898.6 | 731.9, 732.4 | -19%, -18% | 328.1 | 2.75, 2.23 |
+| into-vec-keys-small | 816.7 | 686.5 | -16% | 668.4 | 584.5, 588.5 | -13%, -12% | 318.2 | 2.12, 1.85 |
+| into-set-100 | 7,335 | 7,006 | -4% | 6,520 | 6,363, 6,328 | -2%, -3% | 3,951 | 1.64, 1.60 |
+| into-xform-1000 | 29,594 | 28,981 | -2% | 29,530 | 29,228, 29,260 | -1%, -1% | 13,750 | 2.15, 2.13 |
+| transient-vec-100 | 1,185 | 1,138 | -4% | 1,192 | 1,114, 1,123 | -7%, -6% | 1,213 | 0.99, 0.93 |
+| transient-map-100 | 5,763 | 5,722 | -1% | 5,160 | 5,098, 5,094 | -1%, -1% | 3,679 | 1.39, 1.38 |
+| mapv-1000 | 14,270 | 14,112 | -1% | 14,000 | 13,953, 14,051 | -0%, +0% | 13,198 | 1.06, 1.06 |
+| select-keys-3 | 252.9 | 226.1 | -11% | 240.9 | 222.9, 216.1 | -7%, -10% | 167.5 | 1.44, 1.29 |
+| group-by-100 | 6,399 | 6,375 | -0% | 5,954 | 5,920, 6,084 | -1%, +2% | 4,447 | 1.34, 1.37 |
+| merge-small | 2,124 | 2,100 | -1% | 1,917 | 1,818, 1,858 | -5%, -3% | 684.1 | 2.82, 2.72 |
+| sort-by-100 | 7,444 | 7,368 | -1% | 5,310 | 5,336, 5,337 | +0%, +1% | 3,489 | 1.53, 1.53 |
+| filter-count-1000 | 34,030 | 34,230 | +1% | 33,110 | 33,081, 33,191 | -0%, +0% | 31,994 | 1.04, 1.04 |
+
+- **No operation of the 78 is more than 1% slower** in pass 1 (`dissoc-small`, `filter-count-1000`, `kw-hash100`, `swap-inc` and `vec-nth-1024` +1%); in pass 2 the largest move up is `group-by-100`'s +2% in one after run, -1% in the other.
+- **The new operations** `into-vec-small` (`(into [] v)` of vectors of 2 to 8 items) and `into-map-small` (`(into {} m)` of the 7-key maps), added after light-cljs-1073's so that no earlier operation's number moves, are the per-call cost: a small vector's `into` is within 6% of shadow-cljs's (1.77 before). `into-map-small` stays at 2.2 times shadow-cljs's: its readable profile (`--pseudo-names into-map-small`, research/output-speed/into-slots-1067/profile-into-map-small) has its time in each entry's `conj!` onto the map transient (`arrayIndex` 16%, `kindHooks.assocTransientMap` 14%, the entry's `nth` 10%, `editableTransient` 3%), where shadow-cljs's is in `array-index-of` and `-assoc!`, and 2.5% in `into2`'s own steps.
+- **Other gains:** `transient` of a vector reads its slot (`transient-vec-100` -4 to -7%), and `select-keys-3` (-7 to -11%) and `merge-small` (-1 to -5%) give their results metadata through `collectionWithMeta`, whose lookup now finds the class's `-with-meta` slot, which answers a value already holding the metadata at once, where the old path first tested eight stores.
+
+**Workload 200k** (`compare.bb PROJECT --runs 3 --runtime-only --runtime 1,40`, two copies of `workload-200k-seed42`, `-1067b` built by the before binary and `-1067` by the after, run before, after, before, after), wall time at 40 iterations, median (range), and light-cljs's steady state:
+
+| round | light before | light after | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.751 s (1.738-1.811) | 1.748 s (1.688-1.761) | 1.368 / 1.413 s | 35.6 to 35.6 (shadow-cljs 26.6 / 27.5) | 5.2-5.3 / 5.5-5.7 |
+| 2 | 1.749 s (1.738-1.750) | 1.687 s (1.665-1.699) | 1.369 / 1.344 s | 35.7 to 34.2 (shadow-cljs 26.4 / 26.0) | 5.0-5.5 / 4.8 |
+
+The steady state is unchanged in one round and 4% faster in the other (light/shadow 1.34 and 1.35 before, 1.29 and 1.31 after); the workload's `into` calls are a small share of its iterations.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the before binary, built by each binary), the whole bundle with React, gzip -9:
+
+| App | master `8903e693` | light-cljs-1067 (`a0a85250`) | change |
+| --- | ---: | ---: | ---: |
+| re-frame simple | 114,153 | 114,362 | +209 (+0.18%) |
+| TodoMVC | 145,337 | 145,610 | +273 (+0.19%) |
+| flow | 332,995 | 333,121 | +126 (+0.04%) |
+
+- **Raw:** 373,719 to 374,597 (+878), 481,337 to 482,215 (+878), 1,286,907 to 1,287,796 (+889): the four classes' slot assignments a program keeps, the two slots, `transient`'s and `-with-meta`'s slot-first entries and `into`'s functions per arity (tests/support/ratchet_fixtures.rs has the advanced breakdown for `mapv-count`, +700 bytes).
+- **Size ratchet:** the readable runtime grows 5,482 bytes (every none and prepare ceiling moves to the next 1,000 above); `mapv-count`, `features` and `features-direct` move to the next 100 above their sizes, and the features example's shared chunk to 95,200.

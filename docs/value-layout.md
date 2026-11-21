@@ -2173,7 +2173,16 @@ program that implements protocols.
   A value made by reflection from one of the four prototypes takes the
   slot, which reads no field first (deliberate reflection, section 5): no
   test pinned what `transient` or `-with-meta` gave one.
-- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1067): MEASURED.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1067; binaries
+  `light-cljs-8903e693` and `light-cljs-1067-a0a85250`, unreserved): the
+  gate's new `into-vec-small` 278 to 170 ns (light/shadow 1.77 to 1.06),
+  `into-map-small` -18%, `into-vec-keys-small` -12 to -16%,
+  `into-set-100` -2 to -4%, `into-xform-1000` -1 to -2%,
+  `transient-vec-100` -4 to -7% and `select-keys-3` -7 to -11%; no
+  operation of the 78 over 1% slower in the full pass, `group-by-100` +2%
+  in one of two rechecks; workload 200k's steady state 35.6 to 35.6 and
+  35.7 to 34.2 ms per iteration in two rounds; the re-frame apps' whole
+  bundles 126 to 273 bytes larger after gzip (0.04 to 0.19%).
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
