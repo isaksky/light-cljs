@@ -1654,7 +1654,9 @@ The user set a size gate for the group. Each app's whole bundle with React, afte
 - TodoMVC: 138,015;
 - flow: 328,645.
 
-Otherwise the bytes still over are attributed and filed as pellets. light-cljs-1047 attributed the growth to `685f86dd`, and the recovery pellets it filed have all landed: light-cljs-1048, 1050, 1051, 1052, 1053, 1058 and 1062. Since then the runtime pellets light-cljs-1054 to 1076 have landed too. **No app meets the gate on master `688b1f03`:** simple is 6,047 bytes over, TodoMVC 7,919 and flow 4,934. What is left is attributed below, and two pellets are filed for the part that is not the class layout's own code.
+Otherwise the bytes still over are attributed and filed as pellets. light-cljs-1047 attributed the growth to `685f86dd`, and the recovery pellets it filed have all landed: light-cljs-1048, 1050, 1051, 1052, 1053, 1058 and 1062. Since then the runtime pellets light-cljs-1054 to 1076 have landed too. **No app meets the gate on master `688b1f03`:** simple is 6,047 bytes over, TodoMVC 7,919 and flow 4,934. What is left is attributed below, and two pellets are filed:
+- light-cljs-1078 for the code upstream does not have;
+- light-cljs-1077 for the class layout's own code. It ends by asking the user if the gate can only be met by giving back speed.
 
 ```sh
 bb benchmarks/re-frame.bb setup
@@ -1680,7 +1682,7 @@ bb benchmarks/re-frame.bb growth simple todomvc flow \
 - **Raw results:** `research/output-speed/app-sizes-1049`.
   - `full-688b1f03.md` holds the run with both compilers. `light-<commit>.md` holds one light-cljs-only run per binary.
   - `growth.md` and `marginals.txt` hold the attribution, and `units-<app>-<commit>.edn` each slice's units with their bytes, from `--size-report`.
-  - `fixtures.md` holds the size ratchet's fixtures. `scripts/` holds the small scripts behind the unit tables.
+  - `fixtures.md` and `namespace-fixtures.txt` hold the size ratchet's fixtures. `scripts/` holds the small scripts behind the unit tables.
 
 ### The gate: the whole bundle with React, gzip -9
 
@@ -1772,6 +1774,19 @@ The shadow-cljs ratios are reported, not gated.
 | protocol-params | 50,656 | 66,283 | 15,859 | 18,504 | +2,645 |
 | defmulti | 11,010 | 18,473 | 3,980 | 5,677 | +1,697 |
 | extended-classes | 64,079 | 72,051 | 20,230 | 20,306 | +76 |
+
+The ratchet's namespace fixtures (`NAMESPACE_FIXTURES`) were built from the same sources by both binaries as one file at `:advanced` (`--compile --optimize advanced --entry app.main --source-root DIR`), which is the size the ratchet pins. `features` was also built chunked with `--out-dir`:
+
+| Fixture | raw `f533efb1` | raw master | gzip `f533efb1` | gzip master | gzip change |
+|---|---:|---:|---:|---:|---:|
+| features | 77,785 | 120,034 | 23,725 | 31,718 | +7,993 |
+| features-direct | 77,395 | 119,644 | 23,572 | 31,559 | +7,987 |
+| loadable-site | 587 | 923 | 376 | 564 | +188 |
+| direct-site | 280 | 272 | 238 | 234 | -4 |
+| features, chunked: `app.main.js` | 6,363 | 7,776 | 2,548 | 2,752 | +204 |
+| features, chunked: `app.editor+app.reports.js` | 62,826 | 96,195 | 19,516 | 25,765 | +6,249 |
+| features, chunked: `app.editor.js` | 5,246 | 12,517 | 2,307 | 4,130 | +1,823 |
+| features, chunked: `app.reports.js` | 4,972 | 5,505 | 2,130 | 2,316 | +186 |
 
 Every fixture that keeps runtime units is larger than at `f533efb1`, after gzip and raw. The small programs grow the most in proportion, for example `map-only` (+52%) and `map-printed` (+39%), because the runtime slice's floor rose with the classes. The size recovery's program-side savings do little for them.
 
@@ -1880,18 +1895,19 @@ Each row is the whole bundle with React after gzip, on the ports above, built by
 
 ### Pellets filed for the rest
 
+Every byte over the gate is in one of two pellets, run in this order:
+
 | Pellet | What it shrinks | Measured cost on master (gzip -9, output as written) | Expected saving per app |
 |---|---|---:|---:|
-| light-cljs-1077 | the 19 fallbacks' shared cold steps, in one or two shared functions | 1,941 to 2,042 (fallbacks); 2,627 to 2,778 with the fronts and entries | 600 to 1,000 |
-| light-cljs-1078 | `satisfies?`, `implements?` and the store tests of runtime classes answered by their masks and markers; the store inventories and the recognisers only they keep removed | 1,952 to 2,120, an upper bound | 800 to 1,500 |
-| **Together** | | | **1,400 to 2,500** |
+| light-cljs-1078 | the code upstream does not have: the 19 fallbacks' shared cold steps in one or two shared functions; and `satisfies?`, `implements?` and the store tests of runtime classes answered by their masks and markers, which removes the store inventories and the recognisers only they keep | fallbacks 1,941 to 2,042 (2,627 to 2,778 with the fronts and entries); inventories and recognisers 1,952 to 2,120, an upper bound | 1,400 to 2,500 |
+| light-cljs-1077 | the rest, the class layout's own code: the classes' slots (arity pairs, shared factories), declarations and constructors, the tree's remove path. Its gate is each app at or below its `f533efb1` size; if an app is still over, it records what is left and what removing it would cost in speed, and asks the user | slots 3,170 to 3,755; declarations and constructors 1,157 to 1,725; the tree 15 to 2,051; equality and hashing 901 to 958; reduce walks 853 to 901; `extend-type` and copies 825 to 856; `protocolSlotCodes` 389 to 409 | the rest of the gap |
 | **Over the gate** | | | **simple 6,047, TodoMVC 7,919, flow 4,934** |
 
-- **The two pellets are not expected to close the gate.** After them, simple would stay about 3.5 to 4.6 KB over, TodoMVC 5.4 to 6.5 KB and flow 2.4 to 3.5 KB.
-- **That remainder is the class layout's own code, which carries the group's speed:**
+- **light-cljs-1078 is not expected to close the gate.** After it, simple would stay about 3.5 to 4.6 KB over, TodoMVC 5.4 to 6.5 KB and flow 2.4 to 3.5 KB.
+- **That remainder, light-cljs-1077's, is the class layout's own code, which carries the group's speed:**
   - the classes' protocol slots, 3.2 to 3.8 KB after gzip;
   - their constructors and declarations, 1.2 to 1.7 KB;
   - the red-black tree, 1.6 KB in TodoMVC and 2.1 KB in flow;
   - equality and hashing by fields and the shared reduce walks, 1.8 to 1.9 KB, measured separately.
-- **Not filed:** that remainder, as light-cljs-1047 did not file it either. Bringing every app under its `f533efb1` size would mean giving back speed. That trade is the user's to make: the group puts speed first and records size growth.
+- **Shrinking all of it may mean giving back speed.** That trade is the user's to make, because the group puts speed first. light-cljs-1077 therefore shrinks what it can without slowing the gate, and then asks.
 - light-cljs-1048's table of core slot codes stays as light-cljs-1058 measured it: naming the slots at their sites costs more than the table.
