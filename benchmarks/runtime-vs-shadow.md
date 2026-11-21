@@ -5042,3 +5042,49 @@ A first session with the review's earlier binary (`1070-2b676390`, load 9.6-15.4
 - **Raw:** 371,278 to 373,719 (+2,441), 478,708 to 481,337 (+2,629), 1,284,065 to 1,286,907 (+2,842).
 - **Why re-frame simple grows more than 0.5%:** the keyed masks of each runtime class the app keeps (`classMasks`, two literals per class) and their `-meta` slots (`metaSlot`, one assignment per class), which upstream's classes also carry; the second attempt's steps (nil, primitives and program types in the `satisfies` hook, `hostSatisfies`, `deref` of an atom, the review's fix) are 34 to 47 bytes smaller to 40 bytes larger than the first attempt's.
 - **Size ratchet:** the readable runtime grows to 765,178 bytes (`console-log-sum` at none; the first attempt's ceiling was 763,000), a program that extends types about 250 bytes at advanced (`extended-classes` 71,656), and the exceeded none, prepare and advanced ceilings move up (tests/support/ratchet_fixtures.rs).
+
+## 2026-11-20: `=` and `hash` shaped as upstream's (light-cljs-1074)
+
+`=` and `hash` call a value's keyed `-equiv` or `-hash` slot, read once, then upstream's path (`equalPairOf`, `hashOf`), without their slot-first wrappers (`equalPair.slots`, `hash.slots`) and the wrappers' `noBranch` comparisons, each under light-cljs-1033's 100 bytes of bytecode (71 and 52); the classes' own comparisons and hashes call their class's directly, where they asked the old path's recognisers (`structuralEqualPair`, `hashStructural`, `comparedSequential`) to tell the class again; the slotless seqs, the queue, the UUIDs and the vars are told by their keyed kind (docs/value-layout.md, "What light-cljs-1074 landed").
+
+**Binaries** in research/shadow-credibility/bin: before `light-cljs-c09a181b` (master), after `light-cljs-1074-4ad8a055` for the timings (this pellet with the first Sol review's fixes; the second review's fixes in `d8a80401` change only the order of the fallbacks for a value without a slot and add an effect kept only where a program writes a slot by name, so the slots and the two small functions the timed operations take are the same) and `light-cljs-1074-d8a80401` for the sizes, V8 builds. Records in research/output-speed/eq-hash-1074. No run waited for the machine; all results are unreserved: the before pass ran at load 8.5-31.5 (this pellet's own builds and a peer's overlapped it), the after pass at 6.9-11.1, so operations this pellet does not touch moved too (`vec-conj-64` -27%, `multimethod` -12%); the touched operations were timed again in two alternated before/after pairs at load about 8.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, all 76 operations, the after run with `--baseline` the before's), light-cljs ns per operation, median (range), the operations that compare or hash:
+
+| op | light before | light after | change | shadow-cljs after | light/shadow after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| eq-map-7 | 124.8 (116.5-297.1) | 134.4 (133.5-135.1) | +8% (pairs: -1%, -2%) | 150.7 | 0.89 |
+| eq-vec-10 | 44.1 | 38.3 (38.2-41.1) | -13% (pairs: -15%, -16%) | 81.4 | 0.47 |
+| hash-fresh-vec-4 | 58.0 | 47.2 (46.2-47.8) | -19% | 116.0 | 0.41 |
+| hash-fresh-map-7 | 140.3 | 116.6 (114.3-118.6) | -17% (pairs: -18%, -18%) | 653.8 | 0.18 |
+| get-small | 11.4 | 11.1 (11.0-11.1) | -3% | 14.9 | 0.74 |
+| get-hash100 | 13.4 | 11.6 (11.6-12.9) | -13% | 12.1 | 0.96 |
+| kw-small | 7.93 | 7.72 (7.66-7.75) | -3% | 9.84 | 0.78 |
+| kw-hash100 | 16.6 | 13.0 (12.8-13.1) | -22% | 13.6 | 0.95 |
+| assoc-small-existing | 25.9 | 22.4 (22.0-22.9) | -14% | 29.5 | 0.76 |
+| assoc-small-new | 50.9 | 48.7 (47.6-49.5) | -4% | 39.5 | 1.23 |
+| assoc-hash100 | 95.3 | 83.6 (83.1-90.9) | -12% | 79.8 | 1.05 |
+| group-by-100 | 8,890 | 8,802 (8,691-8,838) | -1% | 5,120 | 1.72 |
+| into-set-100 | 7,726 | 6,857 (6,805-8,116) | -11% | 4,304 | 1.59 |
+
+- **No touched operation is more than 5% slower.** `eq-map-7` is the one operation of the 76 slower in the full passes (+8%), where the before pass's range was 116.5 to 297.1 ns; in two alternated pairs of the touched operations alone (`--ops eq-map-7,eq-vec-10,hash-fresh-map-7`, light-cljs 92.0 to 90.9 and 92.5 to 90.9 ns) it is 1% and 2% faster. Its comparison is the array map's slot (`mapEquiv`) as before, now without the wrapper's kind test and `noBranch` comparison, and its values' `=` takes the identity test first.
+- **What gains:** hashing a fresh vector or map (-17 to -19%: `hash` of their numbers and keywords reaches `hashOf`'s primitive test or the keyword's slot without the wrapper and the old body's second dispatch), `=` of vectors (-13 to -16%), and the hash map lookups and updates whose keys `hash` (`kw-hash100` -22%, `get-hash100` -13%, `assoc-hash100` -12%), less certainly given the passes' loads.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the `c09a181b` binary, built by each binary), the whole bundle with React, gzip -9:
+
+| App | master `c09a181b` | light-cljs-1074 (`d8a80401`) | change |
+| --- | ---: | ---: | ---: |
+| re-frame simple | 113,485 | 113,401 | -84 (-0.07%) |
+| TodoMVC | 144,693 | 144,527 | -166 (-0.11%) |
+| flow | 332,166 | 332,248 | +82 (+0.02%) |
+
+- **Raw:** 371,278 to 371,241 (-37), 478,708 to 478,789 (+81), 1,284,063 to 1,284,137 (+74). The wrappers, the old bodies and their recognisers leave every release slice (flow's runtime: `hashStructural` 1,354 bytes, `structuralEqualPair` and its symbols' wrapper 461, the two wrappers 413, `comparedSequential` and `cons.compared` 150), but the classes' hashes and comparisons they held move into the slots (`mapHash` 460, `setHash` 165, `primitiveHash` 254) and the upstream-shaped paths (`equalPairOf` about 460, `hashOf` about 650) take their place. A first version saved 68 to 121 bytes after gzip per app; the Sol reviews' fixes (UUIDs and vars told by their kind so that `extend-type js/Object` still reaches them, `.equiv` of an identical slotless seq comparing its items, the old path's order in the fallbacks) cost about that again, so flow, which keeps UUIDs, vars and most seq classes, grows 82 bytes. Most of the size ratchet's programs that compare or hash, which keep little more of the runtime than that, shrink 30 to 1,170 bytes (`keyword-case` 5,364 to 4,192); `atom-str` and `map-printed` grow 14 and 41, the `.equiv` fix's cost.
+
+**Workload 200k** (`compare.bb PROJECT --runs 3 --runtime-only --runtime 1,40`, two copies of `workload-200k-seed42`, `-1074b` built by the before binary and `-1074` by the after, run in turn twice: before, after, before, after), wall time at 40 iterations, median (range), and light-cljs's steady state:
+
+| round | light before | light after | shadow-cljs (before / after runs) | steady state, ms per iteration | load before / after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.783 s (1.742-1.787) | 1.722 s (1.713-1.761) | 1.279 / 1.272 s | 36.4 to 35.1 (shadow-cljs 24.4 / 24.4) | 8.5 / 7.8 |
+| 2 | 1.724 s (1.697-1.744) | 1.765 s (1.762-1.771) | 1.266 / 1.265 s | 35.1 to 36.5 (shadow-cljs 24.2 / 24.6) | 7.4 / 6.5 |
+
+The steady state is unchanged within the rounds' spread (one round 4% faster, the other 4% slower; light/shadow 1.49 and 1.45 before, 1.44 and 1.49 after).
