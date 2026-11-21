@@ -530,7 +530,12 @@ fn shared_map_slice() -> String {
     let m = RuntimeManifest::embedded();
     let roots = SLICE_ROOTS
         .iter()
-        .map(|name| (m.unit_of(name).unwrap(), RootUse::Call))
+        .map(|name| {
+            (
+                m.unit_of(name).or_else(|| m.unit_named(name)).unwrap(),
+                RootUse::Call,
+            )
+        })
         .collect::<Vec<_>>();
     let kept = m.reached_by_uses(&roots);
     let bindings = m
