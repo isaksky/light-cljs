@@ -2366,6 +2366,14 @@ are unchanged.
   printing and the metadata paths still ask. Some native tests read a
   value's own field (a view's `view`), so a class's masks alone do not
   answer them.
+- **Measured** (benchmarks/runtime-vs-shadow.md and
+  benchmarks/re-frame-vs-shadow.md, light-cljs-1078; binaries
+  `light-cljs-688b1f03` and the final `light-cljs-1078-6b2eabef`,
+  unreserved): the re-frame apps' whole bundles 147, 144 and 256 bytes
+  smaller after gzip (simple, TodoMVC, flow; 1.7 KB raw each), against
+  light-cljs-1049's expected 600 to 1,000, as gzip had already shared most
+  of the repeated steps; the gate's 33 touched operations within -3% and
+  +1%; workload 200k's steady state 34.0 to 33.9 ms per iteration.
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,

@@ -5298,7 +5298,7 @@ The steady state is unchanged within its spread (round 2's before run had one fa
 
 The upstream-shaped paths behind the operations' slot-first fronts (`countOf`, `nthOf` and the others) share their cold steps: one function reads a runtime class's slot and then the protocol lookup (`fallbackMethod`), one throws their errors (`unsupported`), and the own paths that a compiler session sets are put in front of them by effects that an `Advanced` slice does not keep, where sixteen of them tested those paths themselves (docs/value-layout.md, "What light-cljs-1078 landed"). The fronts and the call-site entries are unchanged. The sizes are in benchmarks/re-frame-vs-shadow.md.
 
-**Binaries:** before `light-cljs-688b1f03` (master; its compiler sources are master `15fc27ba`'s), after `light-cljs-1078-e8ed2ca0` (this pellet on `15fc27ba`), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; all unreserved.
+**Binaries:** before `light-cljs-688b1f03` (master; its compiler sources are master `15fc27ba`'s), after `light-cljs-1078-e8ed2ca0` (this pellet on `15fc27ba`) and the final `light-cljs-1078-6b2eabef` (with the Sol review's fix: `reduceOf` reads the kind once again), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; all unreserved.
 
 **Gate** (`bb benchmarks/core-ops/run.bb --runs 5 --ops ...`, the operations whose cold paths it reaches: nil and host values, lazy seqs and ranges, `conj` and `assoc` onto nil, printing, before then after with `--baseline`; load 5.3-9.2 before, 4.3-5.7 after), light-cljs ns per operation, median (range):
 
@@ -5341,3 +5341,21 @@ No touched operation is slower than +1% (`str-sorted-map-20`, 31,297 to 31,626, 
 | 40 | 1.689 s (1.676-1.696) | 1.684 s (1.674-1.705) | 1.405 s, 1.401 s |
 
 Steady state, from the medians at 1 and 40 iterations: light-cljs 34.0 to 33.9 ms per iteration, shadow-cljs 27.2 in both runs (light/shadow 1.25, 1.25): unchanged.
+
+**Gate pass 2** with the final binary `light-cljs-1078-6b2eabef` (the Sol review asked for the operations whose fallbacks call the shared step, `nth`, `peek` and `reduce-kv`, with ranges; and the reductions, whose `reduceOf` the fix changed), before then after with `--baseline` (load 7.0-7.4 before, 7.5-8.1 after), light-cljs ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| destructure-vec-3 | 5.46 (5.45-5.49) | 5.44 (5.41-5.46) | +0% | 9.84 | 0.56, 0.55 |
+| disj-set-7 | 62.2 (61.9-63.0) | 62.4 (61.9-62.7) | +0% | 114.2 | 0.54, 0.55 |
+| filter-count-1000 | 26,373 (26,218-26,585) | 26,217 (25,785-26,471) | -1% | 28,067 | 0.93, 0.93 |
+| reduce-entries-small | 83.8 (83.3-86.2) | 83.2 (83.0-84.4) | -1% | 85.7 | 0.97, 0.97 |
+| reduce-kv-small | 6.48 (6.44-6.57) | 6.43 (6.36-6.51) | -1% | 38.0 | 0.17, 0.17 |
+| reduce-map-inc-1000 | 34,410 (33,763-34,530) | 34,044 (33,810-34,603) | -1% | 42,672 | 0.81, 0.80 |
+| reduce-range-1000 | 4,876 (4,840-4,881) | 4,853 (4,785-4,995) | +0% | 5,472 | 0.90, 0.89 |
+| reduce-vec-1000 | 5,197 (5,147-5,317) | 5,211 (5,142-5,254) | +0% | 2,509 | 2.07, 2.08 |
+| str-sorted-map-20 | 30,851 (30,718-31,074) | 30,800 (30,596-31,219) | +0% | 20,169 | 1.52, 1.53 |
+| vec-nth-1024 | 4.54 (4.48-4.67) | 4.56 (4.55-4.59) | +0% | 5.15 | 0.87, 0.89 |
+| vec-peek | 3.65 (3.64-3.66) | 3.64 (3.61-3.65) | +0% | 3.49 | 1.05, 1.04 |
+
+No operation moves more than 1% either way. Pass 1's operations ran with `light-cljs-1078-e8ed2ca0`; the fix after it touches only `reduceOf`, whose operations pass 2 measures. Workload 200k (above) also ran with `e8ed2ca0`, before the fix, which changes only `reduceOf`'s cold path back to master's text.
