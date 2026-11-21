@@ -109,18 +109,6 @@ const SWAPS: &[(&str, &str)] = &[
         r#"  const builtinSlots = {members: [], has(method) { return this.members.includes(method); }};
   function builtinSlot(method) { builtinSlots.members.push(method); return method; }"#,
     ),
-    // Shareable once booted (light-cljs-646): the captured rest array is
-    // sealed.
-    (
-        "storesPredicate",
-        r#"  function storesPredicate(...stores) {
-    __rt.seal(stores);
-    return value => {
-      for (let i = 0; i < stores.length; i++) if (stores[i].has(value)) return true;
-      return false;
-    };
-  }"#,
-    ),
     // Shareable once booted (light-cljs-646): the arities array is sealed
     // and the method key resolved at boot, not memoized in a `let` the
     // dispatcher assigns.
