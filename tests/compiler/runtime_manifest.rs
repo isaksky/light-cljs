@@ -420,10 +420,7 @@ fn hidden_edges_and_stale_requires_in_the_runtime_fail_validation() {
     // A new reference to the printer is a hidden edge until it is declared.
     let hidden = ANNOTATED_RUNTIME.replace(
         unit,
-        &unit.replace(
-            "return popBangProtocol",
-            "print; return popBangProtocol",
-        ),
+        &unit.replace("return popBangProtocol", "print; return popBangProtocol"),
     );
     assert_eq!(
         messages(&hidden),
@@ -442,8 +439,7 @@ fn hidden_edges_and_stale_requires_in_the_runtime_fail_validation() {
         .validate()
         .unwrap();
     // Dropping a reference leaves a stale require.
-    let stale =
-        ANNOTATED_RUNTIME.replace(unit, &unit.replace("popBangProtocol(value)", "value"));
+    let stale = ANNOTATED_RUNTIME.replace(unit, &unit.replace("popBangProtocol(value)", "value"));
     assert_eq!(
         messages(&stale),
         ["unit `popBang`: requires `popBangProtocol` but never references it"]
