@@ -9028,7 +9028,7 @@
   const withMetaSlot = function (self, metadata) {
     const inherited = Object.prototype.cljs$core$IWithMeta$_with_meta$arity$2$LKEY;
     if (inherited) return inherited.call(self, self, metadata);
-    return meta(self) === metadata ? self : copyWithMeta(self, metadata);
+    return meta(self) === metadata ? self : copyWithMeta(self, metadata, true);
   };
   //@unit metaOf requires: atoms, deferredVarMetadata, kindHooks, methodKeys, ownMeta, protocolHooks
   // `meta`'s own path: a program's method that the lookup finds (a host
@@ -11058,9 +11058,11 @@
     return copyWithMeta(value, metadata);
   }
   // `collectionWithMeta` past the lookup, which the class's slot takes
-  // (`withMetaSlot`), where it found none.
-  function copyWithMeta(value, metadata) {
-    if (!isEntryCell(value) &&
+  // (`withMetaSlot`), where it found none; `compared` where the slot has
+  // read the value's `meta` and found it is not `metadata`, so that a
+  // program's `IMeta` method runs once, as on this path alone.
+  function copyWithMeta(value, metadata, compared) {
+    if (!compared && !isEntryCell(value) &&
         [vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells].some(store => store.has(value)) && meta(value) === metadata) return value;
     let result;
     if (isEntryCell(value)) return collectionWithMeta(kindHooks.entryVector(value), metadata);

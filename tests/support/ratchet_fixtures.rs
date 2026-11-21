@@ -1100,7 +1100,13 @@
 //! 100 above (`mapv-count` 53,900, `features` 119,000, `features-direct`
 //! 118,600); others move by 0 to 33 bytes. The features example's shared
 //! chunk, which holds the two features' `into` and `-with-meta`, grows 94,176
-//! to 95,167 on `b86a231e` (ceiling 94,200 to 95,200).
+//! to 95,167 on `b86a231e` (ceiling 94,200 to 95,200). Its review's fix
+//! (`withMetaSlot` reads the value's `meta` once, `copyWithMeta`'s
+//! `compared`) adds 194 bytes readable (`console-log-sum` 780,562 on
+//! `b86a231e`; `defmulti`, `direct-site`, `event-maps`, `keyword-case` and
+//! `multi-arity` pass their none and prepare ceilings, which move to the next
+//! 1,000 above) and 11 at advanced (`mapv-count` 53,852, `features` 118,978,
+//! the shared chunk 95,178).
 
 pub struct Fixture {
     pub name: &'static str,
@@ -1174,7 +1180,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [781_000, 781_000, 4_300],
+        ceilings: [782_000, 782_000, 4_300],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -1321,7 +1327,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [781_000, 781_000, 52_000],
+        ceilings: [782_000, 782_000, 52_000],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -1408,7 +1414,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn area ([w] (area w w)) ([w h] (* w h)))
                  (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
                  (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
-        ceilings: [783_000, 783_000, 400],
+        ceilings: [784_000, 784_000, 400],
         removed: [0, 0, 2],
         printed: "84\n",
     },
@@ -1525,7 +1531,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "defmulti",
         source: "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))",
-        ceilings: [781_000, 781_000, 19_000],
+        ceilings: [782_000, 782_000, 19_000],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
     },
@@ -1679,7 +1685,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [781_000, 781_000, 300],
+        ceilings: [782_000, 782_000, 300],
         removed: [0, 0, 0],
         printed: "null\nhello lazy\n",
     },

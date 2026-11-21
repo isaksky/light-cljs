@@ -2135,7 +2135,9 @@ program that implements protocols.
   slots, one function each for the four classes (`asTransientSlot`, the
   transient `asTransient` makes; `withMetaSlot`, the value itself where
   `meta` answers the metadata, else `collectionWithMeta`'s copy past its
-  lookup, `copyWithMeta`). Each answers a method `extend-type` of
+  lookup, `copyWithMeta`, told that the slot compared, so that a program's
+  `IMeta` is read once, as before (the Sol review of light-cljs-1067,
+  `with_meta_slots_read_extended_meta_once`). Each answers a method `extend-type` of
   `js/Object` put on `Object.prototype` first, as `metaSlot` does, since
   the slot shadows it where the lookup found it through the chain.
 - **Not `builtinSlots`.** The lookups that find these methods with
@@ -2157,7 +2159,7 @@ program that implements protocols.
 - **`into`.** One function per arity (`into2`, `into3`) under the entry,
   each under light-cljs-1033's 100 bytes of bytecode (`into` 98, `into2`
   94, `into3` 95, `editableTarget` 87, `transient` 53, `withMetaProtocol`
-  68, `asTransientSlot` 37, `withMetaSlot` 72). A target with a keyed kind
+  68, `asTransientSlot` 37, `withMetaSlot` 80). A target with a keyed kind
   whose mask has IEditableCollection's bit (partition 1, 4) is editable,
   as upstream's `implements?` reads the bit and the `implements` hooks
   answer first; any other value asks the hook as before. The target's

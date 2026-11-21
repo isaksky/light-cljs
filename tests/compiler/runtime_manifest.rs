@@ -526,11 +526,13 @@ fn undeclared_load_time_effects_fail_validation() {
         ["unit `write`: calls mutator `coreMethod` while loading but is not marked `effect`"]
     );
     // Calling a mutator inside a function body is not a load-time effect.
-    let unit = "  //@unit transient requires: asTransientProtocol\n  function transient(value) { return asTransientProtocol(value); }\n";
+    let unit = "  //@unit popBang requires: popBangProtocol\n  function popBang(value) { return popBangProtocol(value); }\n";
+    assert!(ANNOTATED_RUNTIME.contains(unit));
     let deferred = ANNOTATED_RUNTIME.replace(
         unit,
-        "  //@unit transient requires: asTransientProtocol, installMethods\n  function transient(value) { installMethods(value, []); return asTransientProtocol(value); }\n",
+        "  //@unit popBang requires: installMethods, popBangProtocol\n  function popBang(value) { installMethods(value, []); return popBangProtocol(value); }\n",
     );
+    assert_ne!(deferred, ANNOTATED_RUNTIME);
     RuntimeManifest::parse(&deferred)
         .unwrap()
         .validate()

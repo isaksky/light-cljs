@@ -3826,6 +3826,32 @@ fn transient_and_with_meta_slots_keep_extended_answers() {
     }
 }
 
+/// The `-with-meta` slot (`withMetaSlot`) reads a value's metadata once, as
+/// `collectionWithMeta`'s path did (the Sol review of light-cljs-1067): for a
+/// vector, an array and a hash map and a set that `specify!` gave an `IMeta`
+/// whose answer changes after its first read, `-with-meta`, `with-meta`,
+/// `vary-meta` and `into`, with and without a transducer, call it as often
+/// and give what master `8903e693` gave at every level: each entry is the
+/// reads, whether the result is the value itself and its metadata.
+#[test]
+fn with_meta_slots_read_extended_meta_once() {
+    every_level(
+        r#"(let [out (array)
+                 probe (fn [make f]
+                         (let [reads (atom 0) m {:x 1}
+                               v (specify! (make) IMeta (-meta [_] (if (= 1 (swap! reads inc)) nil m)))
+                               r (f v m)]
+                           (.push out (pr-str [@reads (identical? v r) (meta r)]))))]
+             (doseq [make [(fn [] [1]) (fn [] {:a 1}) (fn [] (zipmap (range 9) (range 9))) (fn [] #{1})]
+                     f [(fn [v m] (-with-meta v m)) (fn [v m] (with-meta v m)) (fn [v m] (vary-meta v assoc :k 1))
+                        (fn [v _] (into v [[2 3]])) (fn [v _] (into v (map identity) [[2 3]]))]]
+               (probe make f))
+             (.join out " "))"#,
+        &["[1 false {:x 1}] [1 false {:x 1}] [2 false {:k 1}] [1 false nil] [1 false nil]"; 4]
+            .join(" "),
+    );
+}
+
 /// The transients' `-conj!`, `-assoc!` and `-persistent!` slots, which
 /// `conj!`, `assoc!`, `persistent!`, `into`, `mapv` and `filterv` call
 /// before any lookup, and a map transient's `conj!` of a map entry, which
