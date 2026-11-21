@@ -2022,17 +2022,18 @@ marker or the class's slot.
   which decides it (`recordCells` holds a record by its kind), before the
   store test and the host tables (`hostSatisfies`) as before. `Fn`, which
   has no mask bit, is not in a class that declares its protocols by masks:
-  no such class is a var's or a function's (`fnValue`). Where no compiler
-  session demands declarations (`slotFirst`), the hooks take these steps
-  without the demands and read each property once (`satisfiesByKind`,
-  `implementsByKind`): the Proxy of
-  `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked 302,
-  315 and 302 times at none, where it was asked the mask twice. A value made
-  by reflection from a class with masks is not `fn?` under `extend-type`
-  of `default` or `object` `Fn`, where it was.
+  no such class is a var's or a function's (`fnValue`). The hook reads
+  the value's properties as before, in the same order (the Proxy of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked as
+  often): a variant that read each mask once, without the demands, measured
+  no faster and changed what an effectful getter answers, so it was not
+  kept. A value made by reflection from a class with masks is not `fn?`
+  under `extend-type` of `default` or `object` `Fn`, where it was.
 - **`deref` of an atom** calls the `-deref` it holds, of its own
-  (`specify!`), its class's (`extend-type`) or `Object.prototype`'s, else
-  reads its `state`, before the lookup, which found nothing else: a host
+  (`specify!`), its class's (`extend-type`) or `Object.prototype`'s, but
+  not a runtime class's slot written there (`builtinSlots`, which
+  `keyMethod` passes over), else reads its `state`, before the lookup,
+  which found nothing else: a host
   type's, `object`'s or `default`'s implementation never reaches the
   runtime's own values (`externalMethod`). The shared-heap profile answers
   its engine atoms before this.

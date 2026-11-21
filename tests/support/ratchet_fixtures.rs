@@ -1040,9 +1040,9 @@
 //! features example's shared chunk grows to 93,965 (ceiling 93,000 to
 //! 94,000). Its review's fix (`metaSlot` answers a method on
 //! `Object.prototype` first) and its second attempt (`deref` of an atom
-//! without the lookup, the `satisfies` and `implements` hooks without
-//! demands, `satisfiesByKind`, `implementsByKind` and `hostSatisfies`)
-//! grow the readable runtime to 767,222 (`console-log-sum` at none), so
+//! without the lookup, the `satisfies` hook's steps for nil, primitives and
+//! program types, `hostSatisfies`) grow the readable runtime to about
+//! 767,000 (`console-log-sum` at none), so
 //! every none and prepare ceiling moves to the next 1,000 above; at advanced
 //! a program that extends types grows about 1,000 bytes (`extended-classes`
 //! 72,481, ceiling 71,400 to 72,500) and one that keeps collections 100 to

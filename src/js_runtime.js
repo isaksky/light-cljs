@@ -2165,10 +2165,11 @@
   function reducedValue(value) { return protocolHooks.deref ? protocolHooks.deref(value) : reducedValues.get(value); }
   //@unit deref requires: derefProtocol
   function deref(value) { return derefProtocol(value); }
-  //@unit derefProtocol requires: atoms, deferredValue, delays, isAtomCell, isReduced, kindHooks,
-  //@ methodKeys, protocolHooks, reducedValues, slotFirst, vars, volatiles
-  // An atom of this runtime calls the `-deref` it holds, or reads its
-  // `state`, as the lookup answered it: only the value, its class or
+  //@unit derefProtocol requires: atoms, builtinSlots, deferredValue, delays, isAtomCell, isReduced,
+  //@ kindHooks, methodKeys, protocolHooks, reducedValues, slotFirst, vars, volatiles
+  // An atom of this runtime calls the `-deref` it holds, but a runtime
+  // class's slot written there (`builtinSlots`, which `keyMethod` passes
+  // over), or reads its `state`, as the lookup answered it: only the value, its class or
   // `Object.prototype` can hold that method, as `extend-type` of a host
   // type, `object` or `default` never reaches the runtime's own values
   // (`externalMethod`, light-cljs-1070). A compiler session demanding
@@ -2177,7 +2178,7 @@
     if (kindHooks.isLoadable?.(value)) return value.deref();
     if (slotFirst.on && isAtomCell(value)) {
       const method = value.cljs$core$IDeref$_deref$arity$1$LKEY;
-      return method ? method.call(value, value) : value.state;
+      return method && !builtinSlots.has(method) ? method.call(value, value) : value.state;
     }
     const method = protocolHooks.builtin?.(value, methodKeys[12], 1);
     if (method) return method.call(value, value);
@@ -14506,8 +14507,7 @@
   //@ isRecord, isReduceable, isReversible, isSeq, isSeqable, isSequential, isSet, isSorted,
   //@ isVector, jsToClj, keyToJs, makeMap.equiv, makeSet.equiv, mapConj, nthOf, nthPath, reducePath,
   //@ sequenceIterator requires: canHoldField, demandMethod, demandProtocol, hostSatisfies,
-  //@ ownedKind, ownedProtocolValue, protocolHooks, protocolMethodInfo, protocolSentinel, satisfies,
-  //@ satisfiesByKind, slotFirst
+  //@ ownedKind, ownedProtocolValue, protocolHooks, protocolMethodInfo, protocolSentinel, satisfies
   // ... and with them also what those give the runtime's and host values.
   // Each reads the protocol of a resolved key (`methodKey`) from its `info`.
   // A core protocol's mask bit, then its marker, answer first, as
@@ -14532,14 +14532,11 @@
   // (`recordCells`), the native test is not asked of nil or a primitive,
   // and is asked once per program type's kind; a protocol without a mask
   // (`Fn`) is not in a class that declares its protocols by masks, as no
-  // such class is a function's or a var's (light-cljs-1070). Where no
-  // compiler session demands declarations, such a protocol takes the same
-  // steps without the demands (`satisfiesByKind`).
+  // such class is a function's or a var's (light-cljs-1070).
   protocolHooks.satisfies = (key, value) => {
     const info = key.info || (key.info = protocolMethodInfo(key.key)), name = info.name;
     if (!name) return satisfies(info.protocol, value);
     const mask = info.mask, native = info.native, kinds = info.kinds;
-    if (kinds !== null && slotFirst.on) return satisfiesByKind(info, kinds, value);
     demandProtocol(name, value);
     if (mask && (value?.[mask[0]] & mask[1])) return true;
     demandMethod(name, 0, value);
@@ -14559,26 +14556,6 @@
     if (ownedProtocolValue(value) || mask && value?.[mask[0]]) return false;
     return hostSatisfies(info, value);
   };
-  //@unit satisfiesByKind requires: canHoldField, hostSatisfies, ownedKind, ownedProtocolValue,
-  //@ protocolSentinel
-  // The `satisfies` hook of a protocol that `kinds` holds, where no
-  // demand is made: each property of the value read once.
-  function satisfiesByKind(info, kinds, value) {
-    if (value == null) return hostSatisfies(info, value);
-    const mask = info.mask, bits = mask === undefined ? value.cljs$lang$protocol_mask$partition0$$LKEY : value[mask[0]];
-    if (mask !== undefined && bits & mask[1]) return true;
-    if (value[info.marker] === protocolSentinel) return true;
-    const kind = value.cljs$lang$kind$$LKEY;
-    if (kind < 64) {
-      if (bits) return false;
-      if (ownedKind(value, kind)) return kinds[kind] ?? (kinds[kind] = !!info.native(value));
-    } else if (kind < 128) {
-      if (kinds[kind] ?? (kinds[kind] = !!info.native(value))) return true;
-      return !ownedKind(value, kind) && !(mask !== undefined && bits) && hostSatisfies(info, value);
-    } else if (!canHoldField(value)) return !(mask !== undefined && bits) && hostSatisfies(info, value);
-    if (info.native(value)) return true;
-    return !ownedProtocolValue(value) && !(mask !== undefined && bits) && hostSatisfies(info, value);
-  }
   //@unit hostSatisfies requires: nativeMethods, nativeType
   // `satisfies?`'s host tables for a core protocol's `info`: what
   // `extend-type` of the value's host type, `object` or `default` gave.
@@ -14589,17 +14566,14 @@
   //@unit protocolHooks.implements effect: extendType, extendInstance when: chunkNext, concatMany,
   //@ concatTwo, cons, countOf, countPath, drop, filter, hash, indexedSequence, into, isChunkedSeq,
   //@ isMapEntry, isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta requires: demandMethod,
-  //@ implementsByKind, implementsProtocol, ownedKind, protocolHooks, protocolMethodInfo,
-  //@ protocolSentinel, slotFirst
+  //@ implementsProtocol, ownedKind, protocolHooks, protocolMethodInfo, protocolSentinel
   // `implements?`: the mask bit, then the marker, as the hook above, else
   // the native test (`coreProtocolImplementation`'s order, without
-  // `satisfies`'s demand), without the demand where none is made
-  // (`implementsByKind`).
+  // `satisfies`'s demand).
   protocolHooks.implements = (key, value) => {
     const info = key.info || (key.info = protocolMethodInfo(key.key)), name = info.name;
     if (!name) return implementsProtocol(info.protocol, value);
     const mask = info.mask, native = info.native, kinds = info.kinds;
-    if (kinds !== null && slotFirst.on) return implementsByKind(info, kinds, value);
     if (mask && (value?.[mask[0]] & mask[1])) return true;
     demandMethod(name, 0, value);
     if (value != null) {
@@ -14610,21 +14584,6 @@
     }
     return !!native?.(value);
   };
-  //@unit implementsByKind requires: ownedKind, protocolSentinel
-  // The `implements` hook of a protocol that `kinds` holds, where no
-  // demand is made: each property of the value read once.
-  function implementsByKind(info, kinds, value) {
-    if (value == null) return !!info.native(value);
-    const mask = info.mask, bits = mask === undefined ? 0 : value[mask[0]];
-    if (mask !== undefined && bits & mask[1]) return true;
-    if (value[info.marker] === protocolSentinel) return true;
-    const kind = value.cljs$lang$kind$$LKEY;
-    if (kind < 64) {
-      if (bits) return false;
-      if (ownedKind(value, kind)) return kinds[kind] ?? (kinds[kind] = !!info.native(value));
-    }
-    return !!info.native(value);
-  }
   //@unit protocolHooks.countProtocol effect: installMethods when: accumulatingCount requires: countProtocol,
   //@ protocolHooks
   // One install per core dispatcher the generic operations call.
