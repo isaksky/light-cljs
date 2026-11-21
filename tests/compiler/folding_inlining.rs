@@ -854,8 +854,9 @@ fn built_literals_stay_built_and_keys_stay_as_written() {
     );
     assert!(stats.inlined_calls >= 4, "{stats:?}");
     assert!(stats.folded_expressions >= 2, "{stats:?}");
-    // The source constants are one pooled value; the built ones are not.
-    assert!(text.contains("(k"), "{text}");
+    // The source constants are one pooled value; the built ones are not,
+    // and read their pooled keys (light-cljs-1080, before it a key shape).
+    assert!(text.contains("rt$arrayMapOfLiteral([k"), "{text}");
 }
 
 /// Recursive and mutually recursive functions inline to a fixed point within

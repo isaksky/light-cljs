@@ -771,6 +771,9 @@ fn defined_members(body: &str, names: &[&'static str]) -> Vec<&'static str> {
 const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "stamp",
     "mapValueAt",
+    // The constructor of map literals of at most 8 distinct constant keys
+    // that only `Advanced` output calls (light-cljs-1080).
+    "arrayMapOfLiteral",
     "entryPrototype",
     "MapEntryType.lean",
     // The constructor of vector literals that only `Advanced` output calls

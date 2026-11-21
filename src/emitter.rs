@@ -1606,10 +1606,11 @@ enum ConstantKey<'a> {
         parts: Box<[ConstantPart<'a>]>,
     },
     /// The key shape of map literals with these distinct constant keys in
-    /// this order (light-cljs-220), `rt$mapShape([keys], [hashes])`, which
-    /// sites read as `rt$mapFromShape(k<n>, [values])`; past 8 keys
-    /// `rt$hashMapShape` and `rt$hashMapFromShape`, whose shape also holds the
-    /// hash trie. With `set`, the shape of set literals whose first members
+    /// this order (light-cljs-220), past 8 keys, `rt$hashMapShape([keys],
+    /// [hashes])`, which sites read as `rt$hashMapFromShape(k<n>, [values])`
+    /// and which also holds the hash trie; a literal of at most 8 builds its
+    /// array map with no shape since light-cljs-1080
+    /// (`rt$arrayMapOfLiteral`). With `set`, the shape of set literals whose first members
     /// are these, `rt$setShape([members])`, which sites read as
     /// `rt$setFromShape(k<n>, [other members])`.
     Shape {
@@ -3360,8 +3361,11 @@ impl<'a> Emitter<'a> {
     /// docs/advanced-optimization.md, "Constant pool extension points"):
     ///
     /// - a map literal whose keys are distinct constants and whose values are
-    ///   not all constants, `rt$mapFromShape(k<n>, [values])`, or past 8
-    ///   entries, where sites call `mapFromArrays`, `rt$hashMapFromShape`;
+    ///   not all constants, `rt$arrayMapOfLiteral([k0, v0, k1, v1, ...])` of
+    ///   its constant keys and values in turn, which needs no shape
+    ///   (light-cljs-1080; before it `rt$mapFromShape(k<n>, [values])`), or
+    ///   past 8 entries, where sites call `mapFromArrays`,
+    ///   `rt$hashMapFromShape`;
     /// - a set literal whose first members are distinct scalar, keyword or
     ///   symbol constants and whose other members are not all such constants,
     ///   `rt$setFromShape(k<n>, [other members])`, which adds and checks the
@@ -3413,18 +3417,38 @@ impl<'a> Emitter<'a> {
         if !hashes.distinct(&keys) {
             return false;
         }
+        // At most 8 entries: an array map of one new array of the keys and
+        // values in turn, which it keeps, as upstream's literal does, with no
+        // shape to copy the keys from at each evaluation (light-cljs-1080).
+        // The keys are constants, so the values are still evaluated in
+        // order, once each.
+        if keys.len() <= 8 {
+            let text = self.runtime_read(
+                RuntimeName::direct("arrayMapOfLiteral", None),
+                self.site,
+                NameUse::Call,
+            );
+            self.output.push_str(&text);
+            self.output.push_str("([");
+            let values = items.iter().skip(1).step_by(2);
+            for (index, (&key, &value)) in keys.iter().zip(values).enumerate() {
+                if index > 0 {
+                    self.output.push_str(", ");
+                }
+                self.part(key);
+                self.output.push_str(", ");
+                self.value(value);
+            }
+            self.output.push_str("])");
+            return true;
+        }
         // Past 8 entries the shape also holds the hash trie.
-        let hash_map = keys.len() > 8;
         let shape = ConstantKey::Shape {
             set: false,
             keys: keys.clone(),
         };
         let number = self.constant_entry(shape, lazy.contains(&true), None, |emitter| {
-            emitter.rt(RuntimeName::export(if hash_map {
-                "hashMapShape"
-            } else {
-                "mapShape"
-            }));
+            emitter.rt(RuntimeName::export("hashMapShape"));
             emitter.output.push('(');
             emitter.parts(&keys);
             emitter.output.push_str(", [");
@@ -3436,13 +3460,8 @@ impl<'a> Emitter<'a> {
             }
             emitter.output.push_str("])");
         });
-        let constructor = if hash_map {
-            "hashMapFromShape"
-        } else {
-            "mapFromShape"
-        };
         let values = items.iter().skip(1).step_by(2).copied();
-        self.shaped_site(constructor, number, values);
+        self.shaped_site("hashMapFromShape", number, values);
         true
     }
 

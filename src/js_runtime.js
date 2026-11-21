@@ -4211,6 +4211,14 @@
     for (let i = 0; i < keys.length; i++) entries.push({key: keys[i], value: values[i], hash: hashes[i]});
     return entries;
   }
+  //@unit arrayMapOfLiteral requires: ArrayMapCell
+  // An array map of the new array `pairs`, distinct keys each followed by
+  // its value, which it keeps as upstream's literal keeps its array:
+  // `Advanced` output builds a map literal of at most 8 distinct constant
+  // keys with it (light-cljs-1080).
+  function arrayMapOfLiteral(pairs) {
+    return new ArrayMapCell(pairs.length >> 1, pairs);
+  }
   //@unit mapFromShape requires: ArrayMapCell
   // As `shapeEntries`, an array map of a shape's keys and `values`.
   function mapFromShape({keys}, values) {

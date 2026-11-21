@@ -1540,10 +1540,12 @@ fn constants_go_to_the_chunks_of_their_readers() {
 
 /// Hoisted methods, map shapes and lazy cells are table entries placed as
 /// any other: the keyword both features' hoisted methods return and the key
-/// both features' map shapes hold go to a chunk of constants alone, which
-/// only `Advanced` has; the methods, each shape and the reports' lazy
-/// vector stay with their one reader. The chunks print what the single file
-/// prints at every level.
+/// both features' map literals hold go to a chunk of constants alone, which
+/// only `Advanced` has; the methods, the reports' hash map shape and its
+/// lazy vector stay with their one reader. A map literal of at most 8 keys
+/// has no shape since light-cljs-1080: each feature's site builds it of
+/// its keys and values (`rt$arrayMapOfLiteral`). The chunks print what the
+/// single file prints at every level.
 #[test]
 fn methods_shapes_and_lazy_cells_are_placed_by_their_readers() {
     let reports = format!(
@@ -1551,7 +1553,8 @@ fn methods_shapes_and_lazy_cells_are_placed_by_their_readers() {
          (def big [{} :big-key])\n\
          (defn start [n]\n\
            (let [g (fn ([] :in-method) ([x] (+ x (count big))))]\n\
-             (pr-str [(g) (g n) (nth big n) (peek big) {{:shape-key n}}])))\n",
+             (pr-str [(g) (g n) (nth big n) (peek big) {{:shape-key n}}\n\
+                     (count (identity {{:shape-key n :r1 1 :r2 2 :r3 3 :r4 4 :r5 5 :r6 6 :r7 7 :r8 8}}))])))\n",
         (0..1100)
             .map(|n| n.to_string())
             .collect::<Vec<_>>()
@@ -1583,7 +1586,7 @@ fn methods_shapes_and_lazy_cells_are_placed_by_their_readers() {
         record,
         printed(
             "app.main.js",
-            r"[:in-method [1 :in-method :editor-method] {:shape-key 1, :other-key 2}]\n[:in-method 1103 2 :big-key {:shape-key 2}]\n"
+            r"[:in-method [1 :in-method :editor-method] {:shape-key 1, :other-key 2}]\n[:in-method 1103 2 :big-key {:shape-key 2} 9]\n"
         )
     );
     assert_eq!(files.len(), 3, "{files:?}");
@@ -1614,7 +1617,12 @@ fn methods_shapes_and_lazy_cells_are_placed_by_their_readers() {
         ("\"editor-method\"", &["app.editor.js"]),
         ("\"other-key\"", &["app.editor.js"]),
         ("\"big-key\"", &["app.reports.js"]),
-        ("rt$mapShape(", &["app.editor.js", "app.reports.js"]),
+        (
+            "rt$arrayMapOfLiteral([",
+            &["app.editor.js", "app.reports.js"],
+        ),
+        ("rt$hashMapShape(", &["app.reports.js"]),
+        ("rt$mapShape(", &[]),
         (" ??= ", &["app.reports.js"]),
     ] {
         assert_eq!(files_containing(&output, text), chunks, "{text}");

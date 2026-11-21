@@ -3796,13 +3796,16 @@ tier 4 (light-cljs-220); tier 5 (light-cljs-221) has a section of its own,
 - **Key shapes (tier 4, light-cljs-220).** At `Advanced`, when the table has
   `hashes` (core protocols intact), `Emitter::shaped` builds a `Map` literal
   whose keys are all constants and whose values are not (a map of constants
-  is pooled whole) from a key shape, `ConstantKey::Shape { set: false, keys }`
-  declared from the map site in `value_expr`: `const k3 =
-  rt$mapShape([k0, k1, k2], [1174270348, 2099068185, -1757859776]);`, the
-  keys' parts and their hashes from `ConstantHashes::part`. The site passes
-  the values, `rt$mapFromShape(k3, [k4, l0, l1])`, and each evaluation only
-  makes the frozen entries `{key, value, hash}` and the map: no key is looked
-  up, compared or hashed. `ConstantHashes::distinct` must prove the keys
+  is pooled whole) without looking up, comparing or hashing a key per
+  evaluation. Up to 8 entries the site builds the array map of one new array
+  of the keys' pooled parts and the values in turn, which the map keeps as
+  upstream's literal keeps its array, `rt$arrayMapOfLiteral([k0, k4, k1, l0,
+  k2, l1])` (light-cljs-1080; before it a pooled `rt$mapShape` that
+  `rt$mapFromShape(k3, [k4, l0, l1])` copied the keys from at each
+  evaluation). Past 8 entries the keys come from a key shape,
+  `ConstantKey::Shape { set: false, keys }` declared from the map site in
+  `value_expr`, the keys' parts and their hashes from `ConstantHashes::part`
+  (below). `ConstantHashes::distinct` must prove the keys
   pairwise unequal; keys it cannot tell apart (`{:a 1}` and `{:a 1.0}`, map or
   set keys with items, NaN, keywords spelled alike) keep `mapFromArray` and its
   merging, and reader-distinct numbers that are `=` (`1`, `1.0`) already make a
@@ -3815,9 +3818,9 @@ tier 4 (light-cljs-220); tier 5 (light-cljs-221) has a section of its own,
   evaluation's entries. Trie nodes are never mutated and the shape's token
   never reaches a transient, so the map has exactly the entries, root, nodes,
   capacities and collision order `mapFromArray` gives it, which later
-  operations (transient removal reorders collision nodes) can observe. The
-  only difference is that an array map's entries hold their hash from the
-  start, where `putEntry` computes it on the first read. Values are evaluated
+  operations (transient removal reorders collision nodes) can observe; an
+  array map holds the flat key, value array `arrayMapFromArray` builds of the
+  same pairs. Values are evaluated
   once each in the operand order the reader gave the literal, as before. A
   shape is a lazy cell when one of its keys is.
 - **Set shapes.** A `Set` literal whose first members in reader order are

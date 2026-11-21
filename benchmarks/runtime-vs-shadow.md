@@ -5619,3 +5619,41 @@ No operation ended slower than on master before the conversions:
 **Workload 200k** (`compare.bb workload-200k-seed42-1023 --runs 5 --runtime-only --runtime 1,40`, a copy of the project whose light-cljs output was rebuilt with each binary just before its run, every checksum equal to the oracle's; two rounds, master then `light-cljs-1023-1d906703`; load 9.2-11.2), steady state from the medians at 1 and 40 iterations: light-cljs 34.3 and 34.0 ms per iteration on master, 32.6 and 32.6 after; shadow-cljs 28.2, 28.0, 27.3, 27.2 in the same rounds; light/shadow 1.22 and 1.21 to 1.19 and 1.20.
 
 **Sizes** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only`, fresh ports with `shadow-port-tool-983`), gzip -9 bytes of light-cljs's output as written, without React, master to `light-cljs-1023-1d906703`: simple 67,474 to 67,565 (+91, +0.13%), todomvc 97,154 to 97,267 (+113, +0.12%), flow 280,884 to 280,475 (-409, -0.15%); the whole esbuild bundles 113,598 to 113,612, 145,158 to 145,235 and 333,137 to 333,290 (+0.01% to +0.05%). The growth is the `str` sites written out and `strOne` and `vectorOfTail` beside `str` and `vectorFromArray`. The size ratchet's notes are in tests/support/ratchet_fixtures.rs: nine fixtures grow 10 to 149 bytes at `:advanced`, and the readable runtime 1,111.
+
+## 2026-11-21: small map literals as one array (light-cljs-1080)
+
+At `:advanced` a map literal of at most 8 distinct constant keys whose values are not all constants is `rt$arrayMapOfLiteral([k0, v0, k1, v1, ...])`: an array map of the one array its site builds, which the map keeps, as upstream's literal is `new PersistentArrayMap(null, 3, [k1, v1, k2, v2, k3, v3], null)`. Before, the site built an array of the values, and `mapFromShape` read the keys from a pooled key shape (`rt$mapShape`) and pushed keys and values into a second array. The keys are constants, so the values are still evaluated in order, once each. Past 8 keys the hash-map shapes (`rt$hashMapShape`, `rt$hashMapFromShape`) stay. This is light-cljs-1023's prototype (`research/output-speed/gate-review-1023/map-literal-prototype.diff`), whose vector half landed there.
+
+**Binaries:** before `light-cljs-cb4c3d94` (master, light-cljs-1023 landed), after `light-cljs-1080-55250c16` (a work-in-progress commit whose compiler sources are this pellet's commit's); V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; every run is unreserved, with peers' builds and runs on it. Raw results: `research/output-speed/map-literals-1080`.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, all 80 operations, before then after with `--baseline` the before's; load 7.44-10.23 before, 4.68-6.50 after; `gate-before.md`, `gate-after.md`). The operations this reaches: `map-literal-3` builds its map in the loop; the small-map operations build theirs with a literal before it. Light-cljs ns per operation, medians with ranges:
+
+| op | light-cljs before | light-cljs after | change | shadow-cljs before, after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| map-literal-3 | 22.9 (22.6-23.4) | 9.85 (9.06-10.1) | -57% | 10.9, 10.8 | 2.10, 0.91 |
+| kw-small | 8.06 (7.89-8.11) | 8.08 (7.70-8.31) | +0% | 10.3, 9.98 | 0.79, 0.81 |
+| get-small | 11.5 (11.1-11.7) | 11.2 (11.0-11.8) | -2% | 15.8, 15.5 | 0.72, 0.72 |
+| get-small-miss | 16.2 (15.9-16.4) | 16.2 (15.4-16.4) | +0% | 20.4, 20.2 | 0.80, 0.80 |
+| contains-small | 9.66 (9.43-10.1) | 9.69 (9.33-10.0) | +0% | 12.8, 12.5 | 0.75, 0.77 |
+| count-small | 2.15 (2.14-2.22) | 2.15 (2.10-2.26) | +0% | 2.16, 2.13 | 1.00, 1.01 |
+| assoc-small-existing | 17.5 (17.3-17.8) | 17.3 (16.8-17.9) | -1% | 30.4, 31.6 | 0.58, 0.55 |
+| assoc-small-new | 41.6 (40.4-42.4) | 41.6 (40.5-42.3) | +0% | 41.5, 42.2 | 1.00, 0.99 |
+| dissoc-small | 49.9 (47.4-50.1) | 48.9 (46.3-49.5) | -2% | 61.3, 60.3 | 0.81, 0.81 |
+| update-small | 28.2 (26.4-28.8) | 27.8 (26.6-27.9) | -1% | 46.4, 46.3 | 0.61, 0.60 |
+
+`map-literal-3` is below shadow-cljs's median, its after range (9.06-10.1) below shadow-cljs's (10.0-11.0). The other 70 operations are within -10% (`reduce-kv-small`) and +6%: only `dissoc-hash100` is over +5% (83.2 to 87.8 ns, ranges 82.5-85.4 and 82.6-88.1), whose path builds no map literal; timed alone in two alternated pairs (`--ops dissoc-hash100`) it is 82.9 to 82.3 and 82.8 to 82.3 ns (-1% both times; shadow-cljs 74.8 and 75.6, light-cljs-1087's gap).
+
+The touched operations in a selection of their own (`--ops map-literal-3,kw-small,...,update-small --runs 5`, master then after with `--baseline`, two alternated pairs; load 4.90-8.62 over these and the `dissoc-hash100` pairs; `touched-before1.md` to `touched-after2.md`): `map-literal-3` 20.7 to 9.37 and 20.9 to 9.41 ns (-55% both; shadow-cljs 10.1 and 10.2; light/shadow 2.06 to 0.93), the small-map operations -2% to +1%.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1080 --runs 5 --runtime-only --runtime 1,40`, a copy of the project whose light-cljs output was rebuilt with each binary just before its run, every checksum equal to the oracle's; four rounds, before then after in the first two and after then before in the last two; load 6.36-7.85), steady state from the medians at 1 and 40 iterations, light-cljs ms per iteration and light/shadow:
+
+| round | before | after |
+| --- | ---: | ---: |
+| 1 | 31.1 (1.20) | 32.9 (1.22) |
+| 2 | 32.7 (1.16) | 34.0 (1.23) |
+| 3 | 33.0 (1.22) | 33.4 (1.22) |
+| 4 | 33.6 (1.19) | 32.5 (1.22) |
+
+Within the spread: light-cljs's medians are 31.1-33.6 before and 32.5-34.0 after, drifting with run order in the first two rounds (31.1, 32.9, 32.7, 34.0), and light/shadow 1.16-1.22 before and 1.22-1.23 after. The workload's 1,024 sites now build their maps this way, and a CPU profile of each output (`--pseudo-names`, 40 iterations, `workload-profile.txt`) shows `mapFromShape` at 0.42% of samples before and `arrayMapOfLiteral` at 0.14% after, which bounds what this change can move there.
+
+**Sizes** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only`, fresh ports with `shadow-port-tool-983`; `size-cb4c3d94.md`, `size-1080-55250c16.md`), gzip -9 bytes of light-cljs's output as written, without React: simple 67,569 to 67,028 (-541, -0.80%), todomvc 97,268 to 96,219 (-1,049, -1.08%); the whole esbuild bundles 113,620 to 113,095 and 145,233 to 144,083. Writing each site's keys costs fewer bytes than the shapes and their keys' hashes it removes from the pool. Flow's output is byte-identical (280,483): its rewrite-clj extends `IPrintWithWriter` to a type it is given at run time (`make-printable-cljs!`), so its program extends a core protocol beyond its own types and no map literal of it was ever shaped. The size ratchet's notes are in tests/support/ratchet_fixtures.rs: three fixtures shrink 156 to 188 bytes at `:advanced`, the others do not move, and the readable runtime grows 354 bytes.
