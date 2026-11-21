@@ -776,6 +776,9 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "slotWrites.objectEquiv",
     "multiTables",
     "addMethodDirect",
+    // The runtime class test of `slotWrites` alone since the protocol
+    // lookup reads the keyed kind once itself (light-cljs-1075).
+    "runtimeKind",
     "mapEntry.lean",
     "TypeBrand",
     "ClassBrand",
@@ -2085,6 +2088,8 @@ fn conditional_effects_wait_for_a_condition() {
 /// protocol wrappers stay (light-cljs-355), and the five `slotWrites`
 /// wrappers of the lookups' upstream-shaped paths join them (light-cljs-1066), and
 /// the updates' five (light-cljs-1068) and the seq walk's four (light-cljs-1071).
+/// `builtin` reads the demand itself, as `keyMethod` does, since
+/// light-cljs-1075 tells a runtime class's slot method from its read.
 /// A new one moves no unit out of its binding's chunk.
 #[test]
 fn units_assigning_a_binding_share_its_unit() {
@@ -2111,6 +2116,7 @@ fn units_assigning_a_binding_share_its_unit() {
             "declarationJournal <- installMethods",
             "declarationJournal <- multiState",
             "demandProtocol <- MultiFn.tables",
+            "demandProtocol <- builtin",
             "demandProtocol <- declarationReceiver",
             "demandProtocol <- demandKey",
             "demandProtocol <- directMethod",

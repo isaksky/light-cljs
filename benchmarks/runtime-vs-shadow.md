@@ -5153,3 +5153,74 @@ The steady state is unchanged in one round and 4% faster in the other (light/sha
 
 - **Raw:** 373,719 to 374,597 (+878), 481,337 to 482,215 (+878), 1,286,907 to 1,287,796 (+889): the four classes' slot assignments a program keeps, the two slots, `transient`'s and `-with-meta`'s slot-first entries and `into`'s functions per arity (tests/support/ratchet_fixtures.rs has the advanced breakdown for `mapv-count`, +700 bytes).
 - **Size ratchet:** the readable runtime grows 5,482 bytes (every none and prepare ceiling moves to the next 1,000 above); `mapv-count`, `features` and `features-direct` move to the next 100 above their sizes, and the features example's shared chunk to 95,200.
+
+## 2026-11-20: host values' and program types' predicates and the remaining lookups (light-cljs-1075)
+
+In a program that extends types, `coll?`, `seq?`, `sequential?`, `vector?`, `map?`, `set?`, `chunked-seq?` and `cons`'s and `nth`'s `implements?` of `ISeq` read the protocol's mask bit by its keyed name before the hooks, which go on from the marker where it is clear; `deref` of a program type calls its `-deref` slot; `empty?` reads `ICounted`'s bit and calls `-count`'s slot; `builtin` answers a runtime class's value whose slot holds its class's method and whose class declares the protocol by its mask bit without the external lookup's native test; the lookup reads the kind once, answers an array or a string past its marker where its caller takes only a direct method, answers a class's value whose mask leaves out a `kinds` protocol, reads the slot before a native test that differs within a class, and asks a function its host tables without `satisfies` again (docs/value-layout.md, "What light-cljs-1075 landed"). `extend-type`, `specify!`, `satisfies?` and `implements?` keep master's answers; values made by reflection change (section 5, item 37).
+
+**Binaries** in research/shadow-credibility/bin: before `light-cljs-b86a231e` (master, light-cljs-1074), after `light-cljs-1075-97606841` (this pellet on `b86a231e`, before the Sol review's fixes) for the timings and the gate; the final commit `light-cljs-1075-8965cfeb` (rebased onto light-cljs-1067's `86dc4aa0`, with the review's fixes) against `light-cljs-86dc4aa0` for the final profiles and the sizes. The fixes take the `builtin` shortcut only where a value's slot holds a runtime method (so `name` of a keyword takes the external lookup again) and give `empty?` a front; V8 builds; shadow-cljs 3.5.3, Node v26.12.1. Records in research/output-speed/predicates-1075. No run waited for the machine: peers' test suites and another project's builds ran throughout, each figure gives its 1-minute load; all unreserved.
+
+**Where the time was** (the re-frame-shaped 200k app, a `--pseudo-names` build by each binary, `node --cpu-prof --cpu-prof-interval 100 run-profile.mjs 42 1`, the samples under a frame of light-cljs-1070's list: `extendedMethod`, `storeProtocol`, `runtimeKind`, `coreProtocolImplementation`, `keyMethod`, the two hooks, `storeHolds`; 5 profiles of each alternated, load 12.1-13.6, this pellet's own builds overlapping the first two rounds), median (range) in ms:
+
+| | master `b86a231e` | light-cljs-1075 | after / before |
+| --- | ---: | ---: | ---: |
+| whole run to first output (load and first iteration) | 85.7 (79.6-97.6) | 60.7 (59.8-74.8) | 0.71 |
+| first iteration alone (`run`) | 22.5 (21.6-25.3) | 16.8 (13.8-20.6) | 0.75 |
+
+The final commit against master `86dc4aa0`, 5 profiles of each alternated at load 4.4-4.8: whole run 81.3 (74.8-88.0) to 53.1 (51.4-54.0) ms, 0.65; first iteration 21.7 (20.7-25.2) to 14.8 (13.6-18.2), 0.68 (profiles-86dc4aa0-summary.log; against `b86a231e` at load 39-64, 83.0 to 52.3).
+
+Earlier sessions of the same method with this pellet's steps as they landed gave 83.0 against 64.9 (3 rounds, load 15-18) and 81.3 against 58.5 (3 rounds, load 13-23); the target, under 73, holds in every session's median, and one profile of the five above (74.8, a load spike that also slowed its whole run to 2.95 s) is over it.
+
+- **What was left** on master: the hooks' own bodies (28 and 11 ms of self time), over a million calls from the predicates, three in five answered at their first test, the mask bit; `builtin` 15 ms (`=` of numbers, light-cljs-1074's, 4.7; `deref` of a program type 3.2; `empty?` of the queue; `name` of a keyword; `with-meta`, `conj` and `nth` of runtime values through the external lookup's native test); `first` of a vector, `seq` of an array and `nth` of an indexed seq through the lookup's store test and native test.
+- **What is left:** `=` of numbers and `compare` of strings through the external lookup (about 4 ms, light-cljs-1074's `=` among them; a host table answer cached per protocol and type was not taken, see docs/value-layout.md); the predicates' misses on program types and host values, which still take the hooks (`isSequential` and `isMap` of re-frame's reactions, `fn?` of vectors and strings, about 12 ms); `bounded-count` of `apply`'s arguments and of lazy seqs (3 to 4.5).
+
+**First output and steady state** (one Node script alternating the three outputs, each run's checksum checked against the project's oracle, 8 runs each at 1 and 40 iterations; steady state is the difference of the medians over 39 iterations), median (range):
+
+| project (session, load) | light-cljs master | light-cljs-1075 | shadow-cljs | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: |
+| re-frame-shaped 200k, first output (1, 10.5-18) | 1,908 ms (1,779-3,335) | 1,915 ms (1,747-3,374) | 1,708 ms (1,455-3,736) | 1.12, 1.12 |
+| re-frame-shaped 200k, steady state (1) | 463 ms per iteration | 483 | 327 | 1.42, 1.48 |
+| re-frame-shaped 200k, first output (2, 13.5-16.8) | 2,050 ms (1,971-3,178) | 2,008 ms (1,849-2,105) | 1,647 ms (1,610-1,932) | 1.24, 1.22 |
+| re-frame-shaped 200k, steady state (2) | 476 ms per iteration | 469 | (523; its 40-iteration runs 14.6-32.9 s) | |
+| workload 200k, first output (1, 10.5-15.9) | 373 ms (367-391) | 376 ms (365-405) | 346 ms (341-511) | 1.08, 1.09 |
+| workload 200k, steady state (1) | 37.0 ms per iteration | 36.7 | 28.3 | 1.31, 1.30 |
+
+The re-frame app's first output and steady state are unchanged within their spread: its 40-iteration runs ranged 18.2 to 26.6 s in the first session, and the two sessions moved the steady state +4% and -1%. The layers' 25 ms of a 1.9 s first output and 6 ms of a 470 ms iteration are below these sessions' resolution.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5 --ops ...`, the operations whose paths this pellet reaches, before with master and after with `--baseline`; load 9.3-11.2), light-cljs ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| count-small | 2.17 | 2.15 (2.14-2.23) | -1% | 2.15 | 1.01, 1.00 |
+| vec-nth-1024 | 4.75 | 4.60 (4.48-4.98) | -3% | 5.22 | 0.91, 0.88 |
+| destructure-vec-3 | 5.51 | 5.49 (5.48-5.53) | +0% | 9.91 | 0.56, 0.55 |
+| destructure-map-3 | 35.0 | 34.6 (34.2-34.7) | -1% | 35.7 | 1.01, 0.97 |
+| filter-count-1000 | 34,584 | 33,420 (32,889-34,362) | -3% | 32,454 | 1.06, 1.03 |
+| mapv-1000 | 14,437 | 14,601 (14,340-14,818) | +1% | 12,727 | 1.14, 1.15 |
+| lazy-walk-1000 | 37,562 | 37,379 (37,136-38,708) | +0% | 41,676 | 0.90, 0.90 |
+| seq-walk-vec-1000 | 20,472 | 20,316 (19,683-20,790) | -1% | 10,424 | 1.97, 1.95 |
+| reduce-range-1000 | 4,929 | 4,908 (4,878-4,998) | +0% | 5,520 | 0.88, 0.89 |
+| str-nested-map | 4,104 | 4,188 (4,075-4,269) | +2% | 2,324 | 1.74, 1.80 |
+| protocol-on-record | 2.40 | 2.41 (2.39-2.60) | +0% | 2.42 | 1.00, 1.00 |
+| multimethod | 64.2 | 68.2 (64.9-68.5) | +6% | 39.8 | 1.58, 1.71 |
+| variadic-call | 15.7 | 15.9 (15.6-16.1) | +1% | 10.0 | 1.53, 1.58 |
+| apply-vec | 181.5 | 169.4 (168.2-171.3) | -7% | 77.3 | 2.31, 2.19 |
+| swap-inc | 4.84 | 4.84 (4.82-4.94) | +0% | 5.74 | 0.85, 0.84 |
+| swap-assoc | 22.2 | 22.1 (21.8-22.5) | +0% | 36.1 | 0.60, 0.61 |
+| group-by-100 | 6,244 | 6,188 (6,161-6,195) | -1% | 4,212 | 1.48, 1.47 |
+| sort-by-100 | 5,120 | 5,076 (5,002-5,837) | -1% | 4,818 | 1.05, 1.05 |
+
+- **No touched operation is slower** where before and after ran in turn: `multimethod` (+6%), `str-nested-map` (+2%), `mapv-1000` and `variadic-call` (+1%), rechecked in two pairs of before then after (`--runs 5` each), moved +0% (68.5 to 68.8 ns), +1%, -1% and +0% in the pair at load 18.4-20.1; the other pair's after pass ran into a load spike (ranges up to five times the medians) and is not used (gate-recheck.log). The gate program extends no type, so it reaches the fronts of the predicates, `cons`, `concat` and `nth` and `countSlot`, not the external lookup's or the lookup's steps; `apply-vec`'s -7% is likely `cons`'s front, whose tail, `apply`'s arguments, declares `ISeq` by its bit.
+
+**Workload 200k** steady state: 37.0 to 36.7 ms per iteration (the first-output session above; shadow-cljs 28.3), unchanged within its spread.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the master binary, built by each binary), the whole bundle with React, gzip -9:
+
+| App | master `86dc4aa0` | light-cljs-1075 `8965cfeb` | change |
+| --- | ---: | ---: | ---: |
+| re-frame simple | 114,271 | 114,496 | +225 (+0.20%) |
+| TodoMVC | 145,538 | 145,780 | +242 (+0.17%) |
+| flow | 333,311 | 333,414 | +103 (+0.03%) |
+
+- **Raw:** 374,578 to 375,604 (+1,026), 482,313 to 483,343 (+1,030), 1,287,891 to 1,288,928 (+1,037): the fronts of the predicates and `empty?` the apps keep, `countSlot`, `implementsSeq` and the lookups' steps; no per-class code. Before the review's fixes, on `b86a231e`: +263, +121 and +187 after gzip.
+- **Size ratchet** (the final commit, with the review's fixes): the readable runtime grows 6,422 bytes on `86dc4aa0` (every none and prepare ceiling moves to the next 1,000 above); advanced programs that keep a front grow 121 to 395 bytes and `extended-classes` 566 (tests/support/ratchet_fixtures.rs).

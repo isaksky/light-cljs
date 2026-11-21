@@ -1038,8 +1038,8 @@
   //@unit installMethods.IChunkedNextKey effect: installMethods when: chunkNext requires: methodKey,
   //@ methodKeys
   methodKeys[4] = methodKey("IChunkedNext");
-  //@unit installMethods.IChunkedSeqKey effect: installMethods when: concatMany, concatTwo, filter,
-  //@ indexedSequence, isChunkedSeq, mapSeq requires: methodKey, methodKeys
+  //@unit installMethods.IChunkedSeqKey effect: installMethods when: isChunkedSeq requires: methodKey,
+  //@ methodKeys
   methodKeys[5] = methodKey("IChunkedSeq");
   //@unit installMethods.ICloneableKey effect: installMethods when: isCloneable requires: methodKey,
   //@ methodKeys
@@ -1169,8 +1169,8 @@
   //@unit installMethods.ISeqFirstKey effect: installMethods when: firstOf, firstPath, firstSeq
   //@ requires: methodKey, methodKeys
   methodKeys[48] = methodKey("ISeq/-first");
-  //@unit installMethods.ISeqKey effect: installMethods when: cons, isSeq, nthOf, nthPath requires: methodKey,
-  //@ methodKeys
+  //@unit installMethods.ISeqKey effect: installMethods when: implementsSeq, isSeq, nthPath
+  //@ requires: methodKey, methodKeys
   methodKeys[49] = methodKey("ISeq");
   //@unit installMethods.ISeqRestKey effect: installMethods when: restOf, restPath, restSeq
   //@ requires: methodKey, methodKeys
@@ -1769,15 +1769,24 @@
   //@unit macroexpand1 requires: expansionService
   const macroexpand1 = expansionService("macroexpand1", "macroexpand-1");
 
-  //@unit cons requires: ConsCell, count, ListCell, methodKeys, protocolHooks, seq, seqValue
+  //@unit cons requires: ConsCell, count, implementsSeq, ListCell, seq
   function cons(head, tail, kind = "cons") {
     if (kind === "cons") {
       if (tail == null) kind = "list";
-      else if (!(protocolHooks.implements?.(methodKeys[49], tail) ?? seqValue(tail))) tail = seq(tail);
+      else if (!implementsSeq(tail)) tail = seq(tail);
     }
     return kind === "list" ? new ListCell(head, tail, count(tail) + 1) : new ConsCell(head, tail);
   }
 
+  //@unit implementsSeq requires: methodKeys, protocolHooks, seqValue, slotFirst
+  // `implements?` of ISeq of a value that is not nil: its mask bit
+  // (partition 0, 64) first, as `isColl` reads its protocol's
+  // (light-cljs-1075).
+  function implementsSeq(x) {
+    // ISeq's mask bit (partition 0, 64).
+    const read = slotFirst.on;
+    return read && (x.cljs$lang$protocol_mask$partition0$$LKEY & 64) !== 0 || (protocolHooks.implements?.(methodKeys[49], x, read) ?? seqValue(x));
+  }
   //@unit listFromArray requires: emptyList, ListCell
   // Each tail was just built here. Its stored count is intrinsic, independent
   // of public ICounted overrides, as in List.-conj; no protocol dispatch is
@@ -2167,9 +2176,10 @@
   function reducedValue(value) { return protocolHooks.deref ? protocolHooks.deref(value) : reducedValues.get(value); }
   //@unit deref requires: derefProtocol
   function deref(value) { return derefProtocol(value); }
-  //@unit derefProtocol requires: atoms, builtinSlots, deferredValue, delays, isAtomCell, isReduced,
-  //@ kindHooks, methodKeys, protocolHooks, reducedValues, slotFirst, vars, volatiles
-  // An atom of this runtime calls the `-deref` it holds, but a runtime
+  //@unit derefProtocol requires: atoms, builtinSlots, deferredValue, delays, isReduced, kindHooks,
+  //@ methodKeys, protocolHooks, reducedValues, slotFirst, vars, volatiles
+  // An atom of this runtime (`Atom`, kind 38, with its own `state`, as
+  // `isAtomCell` tells it) calls the `-deref` it holds, but a runtime
   // class's slot written there (`builtinSlots`, which `keyMethod` passes
   // over), or reads its `state`, as the lookup answered it: only the value, its class or
   // `Object.prototype` can hold that method, as `extend-type` of a host
@@ -2178,9 +2188,17 @@
   // declarations takes the lookup, which demands.
   function derefProtocol(value) {
     if (kindHooks.isLoadable?.(value)) return value.deref();
-    if (slotFirst.on && isAtomCell(value)) {
+    const kind = slotFirst.on && value != null ? value.cljs$lang$kind$$LKEY : undefined;
+    if (kind === 38 && "state" in value) {
       const method = value.cljs$core$IDeref$_deref$arity$1$LKEY;
       return method && !builtinSlots.has(method) ? method.call(value, value) : value.state;
+    }
+    // A program type's value (a keyed kind from 64) calls the `-deref` its
+    // slot holds, as upstream's `deref` calls `-deref`: the method the
+    // lookup's first step (`keyMethod`) finds (light-cljs-1075).
+    if (kind >= 64) {
+      const method = value.cljs$core$IDeref$_deref$arity$1$LKEY;
+      if (method && !builtinSlots.has(method)) return method.call(value, value);
     }
     const method = protocolHooks.builtin?.(value, methodKeys[12], 1);
     if (method) return method.call(value, value);
@@ -2548,22 +2566,57 @@
   const isArray = x => Array.isArray(x);
   //@unit isObject requires: isCollectionValue, isIdent, reducedValues, uuids, vars
   const isObject = x => x != null && !isCollectionValue(x) && !isIdent(x) && !uuids.has(x) && !vars.has(x) && !reducedValues.has(x) && x.constructor === Object;
-  //@unit isColl requires: collectionValue, methodKeys, protocolHooks
-  const isColl = x => x != null && (protocolHooks.satisfies?.(methodKeys[8], x) ?? collectionValue(x));
-  //@unit isSeq requires: methodKeys, protocolHooks, seqValue
-  const isSeq = x => x != null && (protocolHooks.satisfies?.(methodKeys[49], x) ?? seqValue(x));
+  //@unit isColl requires: collectionValue, methodKeys, protocolHooks, slotFirst
+  // `coll?`, `seq?`, `sequential?`, `vector?`, `map?` and `set?` read the
+  // protocol's mask bit by its keyed name first, as upstream's `satisfies?`
+  // does in place, so a value that declares the protocol by its bit takes
+  // no hook (light-cljs-1075); where the bit is clear, the hook goes on
+  // from the marker (`read`), so it reads each property as often as it
+  // did. A compiler session demanding declarations takes the hook alone,
+  // which demands the protocol first (`slotFirst`).
+  const isColl = x => {
+    // ICollection's mask bit (partition 0, 8).
+    if (x == null) return false;
+    const read = slotFirst.on;
+    return read && (x.cljs$lang$protocol_mask$partition0$$LKEY & 8) !== 0 || (protocolHooks.satisfies?.(methodKeys[8], x, read) ?? collectionValue(x));
+  };
+  //@unit isSeq requires: methodKeys, protocolHooks, seqValue, slotFirst
+  const isSeq = x => {
+    // ISeq's mask bit (partition 0, 64).
+    if (x == null) return false;
+    const read = slotFirst.on;
+    return read && (x.cljs$lang$protocol_mask$partition0$$LKEY & 64) !== 0 || (protocolHooks.satisfies?.(methodKeys[49], x, read) ?? seqValue(x));
+  };
   //@unit isList requires: listValue, methodKeys, protocolHooks
   const isList = x => protocolHooks.satisfies?.(methodKeys[29], x) ?? listValue(x);
   //@unit isSeqable requires: methodKeys, protocolHooks, seqableValue
   const isSeqable = x => x == null || (protocolHooks.satisfies?.(methodKeys[51], x) ?? seqableValue(x)) || Array.isArray(x) || typeof x === "string" || x[Symbol.iterator] != null;
-  //@unit isSequential requires: methodKeys, protocolHooks, sequential
-  const isSequential = x => protocolHooks.satisfies?.(methodKeys[53], x) ?? sequential(x);
-  //@unit isVector requires: holdsVector, methodKeys, protocolHooks
-  const isVector = x => protocolHooks.satisfies?.(methodKeys[61], x) ?? holdsVector(x);
-  //@unit isMap requires: maps, methodKeys, protocolHooks
-  const isMap = x => x != null && (protocolHooks.satisfies?.(methodKeys[33], x) ?? maps.has(x));
-  //@unit isSet requires: methodKeys, protocolHooks, sets
-  const isSet = x => x != null && (protocolHooks.satisfies?.(methodKeys[55], x) ?? sets.has(x));
+  //@unit isSequential requires: methodKeys, protocolHooks, sequential, slotFirst
+  const isSequential = x => {
+    // ISequential's mask bit (partition 0, 16777216).
+    const read = x != null && slotFirst.on;
+    return read && (x.cljs$lang$protocol_mask$partition0$$LKEY & 16777216) !== 0 || (protocolHooks.satisfies?.(methodKeys[53], x, read) ?? sequential(x));
+  };
+  //@unit isVector requires: holdsVector, methodKeys, protocolHooks, slotFirst
+  const isVector = x => {
+    // IVector's mask bit (partition 0, 16384).
+    const read = x != null && slotFirst.on;
+    return read && (x.cljs$lang$protocol_mask$partition0$$LKEY & 16384) !== 0 || (protocolHooks.satisfies?.(methodKeys[61], x, read) ?? holdsVector(x));
+  };
+  //@unit isMap requires: maps, methodKeys, protocolHooks, slotFirst
+  const isMap = x => {
+    // IMap's mask bit (partition 0, 1024).
+    if (x == null) return false;
+    const read = slotFirst.on;
+    return read && (x.cljs$lang$protocol_mask$partition0$$LKEY & 1024) !== 0 || (protocolHooks.satisfies?.(methodKeys[33], x, read) ?? maps.has(x));
+  };
+  //@unit isSet requires: methodKeys, protocolHooks, sets, slotFirst
+  const isSet = x => {
+    // ISet's mask bit (partition 0, 4096).
+    if (x == null) return false;
+    const read = slotFirst.on;
+    return read && (x.cljs$lang$protocol_mask$partition0$$LKEY & 4096) !== 0 || (protocolHooks.satisfies?.(methodKeys[55], x, read) ?? sets.has(x));
+  };
   //@unit isAssociative requires: associativeValue, methodKeys, protocolHooks
   const isAssociative = x => protocolHooks.satisfies?.(methodKeys[3], x) ?? associativeValue(x);
   //@unit isIFind requires: findValue, methodKeys, protocolHooks
@@ -2582,10 +2635,36 @@
   const isRecord = x => protocolHooks.satisfies?.(methodKeys[42], x) ?? false;
   //@unit isMapEntry requires: mapEntryValue, methodKeys, protocolHooks
   const isMapEntry = x => protocolHooks.implements?.(methodKeys[32], x) ?? mapEntryValue(x);
-  //@unit isChunkedSeq requires: chunkedSeqValue, methodKeys, protocolHooks
-  const isChunkedSeq = x => protocolHooks.implements?.(methodKeys[5], x) ?? chunkedSeqValue(x);
-  //@unit isEmpty requires: countedValue, countProtocol, methodKeys, protocolHooks, seq
-  const isEmpty = x => x == null || ((protocolHooks.satisfies?.(methodKeys[11], x) ?? countedValue(x)) ? countProtocol(x) === 0 : seq(x) === null);
+  //@unit isChunkedSeq requires: chunkedSeqValue, methodKeys, protocolHooks, slotFirst
+  // `implements?` of IChunkedSeq: its mask bit (partition 1, 512) first, as
+  // `isColl` reads its protocol's (light-cljs-1075).
+  const isChunkedSeq = x => {
+    // IChunkedSeq's mask bit (partition 1, 512).
+    const read = x != null && slotFirst.on;
+    return read && (x.cljs$lang$protocol_mask$partition1$$LKEY & 512) !== 0 || (protocolHooks.implements?.(methodKeys[5], x, read) ?? chunkedSeqValue(x));
+  };
+  //@unit isEmpty requires: countedValue, countProtocol, countSlot, methodKeys, protocolHooks, seq,
+  //@ slotFirst
+  const isEmpty = x => {
+    // ICounted's mask bit (partition 0, 2), as `isColl` reads its protocol's.
+    if (x == null) return true;
+    const read = slotFirst.on;
+    if (read && (x.cljs$lang$protocol_mask$partition0$$LKEY & 2) !== 0) return countSlot(x) === 0;
+    return (protocolHooks.satisfies?.(methodKeys[11], x, read) ?? countedValue(x)) ? countProtocol(x) === 0 : seq(x) === null;
+  };
+  //@unit countSlot requires: builtinSlots, countProtocol
+  // `-count` of a value that declares `ICounted` by its mask bit, as
+  // upstream's `empty?` calls it: the method its keyed slot holds, read
+  // once, a program's or, for a runtime class's value (a keyed kind below
+  // 64), its class's, which the dispatcher reaches through `count`; one a
+  // runtime class lent another value (`builtinSlots`, the Sol review's
+  // finding), and a slot without a method, take the dispatcher
+  // (`countProtocol`), which passes over it (light-cljs-1075).
+  function countSlot(value) {
+    const method = value.cljs$core$ICounted$_count$arity$1$LKEY;
+    if (method && (value.cljs$lang$kind$$LKEY < 64 || !builtinSlots.has(method))) return method.call(value, value);
+    return countProtocol(value);
+  }
 
   // `reduce` is upstream's too (light-cljs-1072), as the updates
   // (light-cljs-1068): a value with a keyed kind calls its keyed `-reduce`
@@ -5565,8 +5644,8 @@
     }
     return nthOf(value, index, notFound, arity);
   }
-  //@unit nthOf requires: first, indexedValue, invalidArity, methodKeys, missing, next, nth,
-  //@ operationPaths, outOfBounds, protocolHooks, seq, sequential, seqValue, viewOf
+  //@unit nthOf requires: first, implementsSeq, indexedValue, invalidArity, methodKeys, missing,
+  //@ next, nth, operationPaths, outOfBounds, protocolHooks, seq, sequential, viewOf
   // Upstream's `nth` of `arity` arguments: nil, a host value's program
   // method, arrays and strings, the seq walk of a sequential value without
   // `-nth` (a list, a cons, a lazy seq, a seq of a vector, read by its
@@ -5593,7 +5672,7 @@
       return fallback;
     }
     const implementing = protocolHooks.implements;
-    if ((implementing?.(methodKeys[49], value) || implementing?.(methodKeys[53], value)) ?? (seqValue(value) || sequential(value))) {
+    if (implementsSeq(value) || (implementing?.(methodKeys[53], value) ?? sequential(value))) {
       // As `nthPath`'s walk.
       let current = value, remaining = index;
       if (!viewOf(current)?.indexed$LKEY && remaining < 0)
@@ -5831,8 +5910,8 @@
     const store = self;
     return vectorNth(store, index, notFound);
   });
-  //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count, countOf, countSite
-  //@ requires: builtinSlot, PersistentVectorValue
+  //@unit PersistentVectorValue.count effect: PersistentVectorValue when: count, countOf, countSite,
+  //@ countSlot requires: builtinSlot, PersistentVectorValue
   PersistentVectorValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const store = self;
     return store.cnt$LKEY;
@@ -5897,7 +5976,7 @@
   SubvecValue.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
     return vectorNth(self, index, notFound);
   });
-  //@unit SubvecValue.count effect: SubvecValue when: count, countOf, countSite requires: builtinSlot,
+  //@unit SubvecValue.count effect: SubvecValue when: count, countOf, countSite, countSlot requires: builtinSlot,
   //@ SubvecValue
   SubvecValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const slots = self.slots$LKEY;
@@ -5960,8 +6039,8 @@
     const tail = self.tail$LKEY;
     return index === 0 || index === 1 ? tail[index] : notFound;
   });
-  //@unit MapEntryType.count effect: MapEntryType when: count, countOf, countSite requires: builtinSlot,
-  //@ MapEntryType
+  //@unit MapEntryType.count effect: MapEntryType when: count, countOf, countSite, countSlot
+  //@ requires: builtinSlot, MapEntryType
   MapEntryType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return 2;
   });
@@ -6034,8 +6113,8 @@
     if (editable === true) return vectorNth(self, index, notFound);
     return transientNth(self, index, notFound);
   });
-  //@unit TransientVectorType.count effect: TransientVectorType when: count, countOf, countSite
-  //@ requires: builtinSlot, editableTransient, TransientVectorType
+  //@unit TransientVectorType.count effect: TransientVectorType when: count, countOf, countSite,
+  //@ countSlot requires: builtinSlot, editableTransient, TransientVectorType
   TransientVectorType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const editable = self.editable$LKEY;
     if (editable !== true) editableTransient(self, "count");
@@ -6145,14 +6224,14 @@
   //@unit transientLookupSlots requires: builtinSlot, transientLookup
   const transientLookupSlots = [builtinSlot(function (self, key) { return transientLookup(self, key, null); }),
     builtinSlot(function (self, key, notFound) { return transientLookup(self, key, notFound); })];
-  //@unit TransientArrayMapType.count effect: TransientArrayMapType when: count, countOf, countSite
-  //@ requires: TransientArrayMapType, transientCountSlot
+  //@unit TransientArrayMapType.count effect: TransientArrayMapType when: count, countOf, countSite,
+  //@ countSlot requires: TransientArrayMapType, transientCountSlot
   TransientArrayMapType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = transientCountSlot;
-  //@unit TransientHashMapType.count effect: TransientHashMapType when: count, countOf, countSite
-  //@ requires: transientCountSlot, TransientHashMapType
+  //@unit TransientHashMapType.count effect: TransientHashMapType when: count, countOf, countSite,
+  //@ countSlot requires: transientCountSlot, TransientHashMapType
   TransientHashMapType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = transientCountSlot;
-  //@unit TransientHashSetType.count effect: TransientHashSetType when: count, countOf, countSite
-  //@ requires: transientCountSlot, TransientHashSetType
+  //@unit TransientHashSetType.count effect: TransientHashSetType when: count, countOf, countSite,
+  //@ countSlot requires: transientCountSlot, TransientHashSetType
   TransientHashSetType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = transientCountSlot;
   //@unit TransientArrayMapType.nth effect: TransientArrayMapType when: nth, nthOf, nthSite,
   //@ nthSite3 requires: TransientArrayMapType, transientNthSlots
@@ -6369,13 +6448,13 @@
   treeMapConstructor.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return treeMapLookup(self, key, null); });
   treeMapConstructor.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return treeMapLookup(self, key, notFound); });
   //@unit PersistentArrayMapValue.count effect: PersistentArrayMapValue when: count, countOf,
-  //@ countSite requires: arrayMapCount, builtinSlot, PersistentArrayMapValue
+  //@ countSite, countSlot requires: arrayMapCount, builtinSlot, PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return arrayMapCount(self); });
   //@unit PersistentHashMapValue.count effect: PersistentHashMapValue when: count, countOf,
-  //@ countSite requires: builtinSlot, hashMapCount, PersistentHashMapValue
+  //@ countSite, countSlot requires: builtinSlot, hashMapCount, PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return hashMapCount(self); });
-  //@unit treeMapConstructor.countSlot effect: treeMapConstructor when: count, countOf, countSite
-  //@ requires: builtinSlot, treeMapConstructor, treeMapCount
+  //@unit treeMapConstructor.countSlot effect: treeMapConstructor when: count, countOf, countSite,
+  //@ countSlot requires: builtinSlot, treeMapConstructor, treeMapCount
   treeMapConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return treeMapCount(self); });
   //@unit PersistentArrayMapValue.assocSlot effect: PersistentArrayMapValue when: assoc, assocOf,
   //@ assocSite requires: arrayMapAssoc, builtinSlot, kindHooks, PersistentArrayMapValue
@@ -6527,7 +6606,7 @@
   // reflection, which has no `entries` (`arr`), answers `noBranch` and
   // takes the operation.
   //@unit PersistentHashSetValue.countSlot effect: PersistentHashSetValue when: count, countOf,
-  //@ countSite requires: builtinSlot, count, PersistentHashSetValue
+  //@ countSite, countSlot requires: builtinSlot, count, PersistentHashSetValue
   PersistentHashSetValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const members = self.entries$LKEY;
     const slots = self.slots$LKEY;
@@ -6550,8 +6629,8 @@
   // A sorted set's `-count` and `-lookup` (light-cljs-1066), upstream's
   // PersistentTreeSet's: its tree map's count, and the member its tree map
   // holds, which `count` and `get` answered by its kind before.
-  //@unit treeSetConstructor.countSlot effect: treeSetConstructor when: count, countOf, countSite
-  //@ requires: builtinSlot, count, treeSetConstructor
+  //@unit treeSetConstructor.countSlot effect: treeSetConstructor when: count, countOf, countSite,
+  //@ countSlot requires: builtinSlot, count, treeSetConstructor
   treeSetConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return count(self.treeMap$LKEY); });
   //@unit treeSetConstructor.lookupSlot effect: treeSetConstructor when: arrayMapContains, get,
   //@ getOf, getSite, getSite3 requires: builtinSlot, treeSetConstructor, treeSetMember
@@ -6600,7 +6679,7 @@
   PersistentHashSetValue.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return setLookup(self, key, null); });
   PersistentHashSetValue.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return setLookup(self, key, notFound); });
   //@unit PersistentQueueValue.countSlot effect: PersistentQueueValue when: count, countOf,
-  //@ countSite requires: builtinSlot, PersistentQueueValue
+  //@ countSite, countSlot requires: builtinSlot, PersistentQueueValue
   PersistentQueueValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const items = self.arr$LKEY;
     const slots = self.slots$LKEY;
@@ -6714,8 +6793,8 @@
   //@unit IndexedSeqValue.seq effect: IndexedSeqValue when: seq, seqOf, seqSite requires: IndexedSeqValue,
   //@ viewSeqSlot
   IndexedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
-  //@unit IndexedSeqValue.count effect: IndexedSeqValue when: count, countOf, countSite requires: IndexedSeqValue,
-  //@ viewCountSlot
+  //@unit IndexedSeqValue.count effect: IndexedSeqValue when: count, countOf, countSite, countSlot
+  //@ requires: IndexedSeqValue, viewCountSlot
   IndexedSeqValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
   //@unit ChunkedSeqValue.first effect: ChunkedSeqValue when: first, firstOf, firstSite requires: builtinSlot,
   //@ ChunkedSeqValue
@@ -6774,7 +6853,7 @@
   //@ seqSite requires: PersistentArrayMapSeqType, viewSeqSlot
   PersistentArrayMapSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
   //@unit PersistentArrayMapSeqType.countSlot effect: PersistentArrayMapSeqType when: count,
-  //@ countOf, countSite requires: PersistentArrayMapSeqType, viewCountSlot
+  //@ countOf, countSite, countSlot requires: PersistentArrayMapSeqType, viewCountSlot
   // Its entries from its offset, as `count` counts them.
   PersistentArrayMapSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
   //@unit NodeSeqType.firstSlot effect: NodeSeqType when: first, firstOf, firstSite requires: NodeSeqType,
@@ -6817,17 +6896,17 @@
   // them the slot; a vector's chunked seq counts its vector's items past its
   // own (upstream's RSeq is counted, its NodeSeq and ChunkedSeq walk to the
   // same count).
-  //@unit NodeSeqType.countSlot effect: NodeSeqType when: count, countOf, countSite requires: NodeSeqType,
-  //@ viewCountSlot
+  //@unit NodeSeqType.countSlot effect: NodeSeqType when: count, countOf, countSite, countSlot
+  //@ requires: NodeSeqType, viewCountSlot
   NodeSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
-  //@unit ArrayNodeSeqType.countSlot effect: ArrayNodeSeqType when: count, countOf, countSite
-  //@ requires: ArrayNodeSeqType, viewCountSlot
+  //@unit ArrayNodeSeqType.countSlot effect: ArrayNodeSeqType when: count, countOf, countSite,
+  //@ countSlot requires: ArrayNodeSeqType, viewCountSlot
   ArrayNodeSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
-  //@unit RSeqType.countSlot effect: RSeqType when: count, countOf, countSite requires: RSeqType,
+  //@unit RSeqType.countSlot effect: RSeqType when: count, countOf, countSite, countSlot requires: RSeqType,
   //@ viewCountSlot
   RSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
-  //@unit ChunkedSeqValue.countSlot effect: ChunkedSeqValue when: count, countOf, countSite
-  //@ requires: builtinSlot, ChunkedSeqValue, count
+  //@unit ChunkedSeqValue.countSlot effect: ChunkedSeqValue when: count, countOf, countSite,
+  //@ countSlot requires: builtinSlot, ChunkedSeqValue, count
   ChunkedSeqValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     const vec = self.vec$LKEY;
     return vec ? count(vec) - self.base$LKEY - self.i$LKEY : Math.max(0, self.arr$LKEY.length - self.i$LKEY);
@@ -6994,8 +7073,8 @@
   ChunkedSeqValue.prototype.cljs$core$IChunkedNext$_chunked_next$arity$1$LKEY = builtinSlot(function (self) {
     return self.arr$LKEY === undefined ? noBranch : seq(ownedChunkRest(self));
   });
-  //@unit arrayChunk.countSlot effect: arrayChunk when: count, countOf, countSite requires: arrayChunk,
-  //@ builtinSlot
+  //@unit arrayChunk.countSlot effect: arrayChunk when: count, countOf, countSite, countSlot
+  //@ requires: arrayChunk, builtinSlot
   arrayChunk.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return self.end$LKEY - self.off$LKEY;
   });
@@ -7015,8 +7094,8 @@
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
     return chunkNth(self, index, notFound);
   });
-  //@unit ChunkBuffer.countSlot effect: ChunkBuffer when: count, countOf, countSite requires: builtinSlot,
-  //@ ChunkBuffer
+  //@unit ChunkBuffer.countSlot effect: ChunkBuffer when: count, countOf, countSite, countSlot
+  //@ requires: builtinSlot, ChunkBuffer
   // A chunk buffer counts the items appended, as upstream's ChunkBuffer and
   // as `count` read its field before light-cljs-1066.
   ChunkBuffer.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return self.end$LKEY; });
@@ -7087,7 +7166,7 @@
   ListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return self;
   });
-  //@unit ListValue.countSlot effect: ListValue when: count, countOf, countSite requires: builtinSlot,
+  //@unit ListValue.countSlot effect: ListValue when: count, countOf, countSite, countSlot requires: builtinSlot,
   //@ ListValue
   ListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return self.count$LKEY;
@@ -7112,8 +7191,8 @@
   EmptyListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     return null;
   });
-  //@unit EmptyListValue.countSlot effect: EmptyListValue when: count, countOf, countSite requires: builtinSlot,
-  //@ EmptyListValue
+  //@unit EmptyListValue.countSlot effect: EmptyListValue when: count, countOf, countSite, countSlot
+  //@ requires: builtinSlot, EmptyListValue
   EmptyListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return 0;
   });
@@ -7149,8 +7228,8 @@
   //@unit EmptyListValue.popSlot effect: EmptyListValue when: pop, popOf requires: EmptyListValue,
   //@ listPopSlot
   EmptyListValue.prototype.cljs$core$IStack$_pop$arity$1$LKEY = listPopSlot;
-  //@unit IntegerRangeValue.countSlot effect: IntegerRangeValue when: count, countOf, countSite
-  //@ requires: builtinSlot, IntegerRangeValue
+  //@unit IntegerRangeValue.countSlot effect: IntegerRangeValue when: count, countOf, countSite,
+  //@ countSlot requires: builtinSlot, IntegerRangeValue
   IntegerRangeValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return self.count$LKEY;
   });
@@ -7265,7 +7344,7 @@
     return self;
   });
   //@unit treeMapSeqConstructor.countSlot effect: treeMapSeqConstructor when: count, countOf,
-  //@ countSite requires: builtinSlot, count, next, treeMapSeqConstructor
+  //@ countSite, countSlot requires: builtinSlot, count, next, treeMapSeqConstructor
   // Its count, or, below 0, one more than its next's, as upstream's
   // (light-cljs-1035), which `count` read from its fields before
   // light-cljs-1066.
@@ -11550,21 +11629,21 @@
     if (isVector(value)) return withMeta(value, null);
     return into(vector(), value);
   }
-  //@unit concatTwo requires: chunkCons, chunkedSeqValue, chunkFirst, chunkRest, cons, first,
-  //@ lazySequence, methodKeys, protocolHooks, rest, seq
+  //@unit concatTwo requires: chunkCons, chunkFirst, chunkRest, cons, first, isChunkedSeq,
+  //@ lazySequence, rest, seq
   function concatTwo(x, y) {
     return lazySequence(() => {
       const s = seq(x);
       if (s === null) return y;
-      return (protocolHooks.implements?.(methodKeys[5], s) ?? chunkedSeqValue(s)) ? chunkCons(chunkFirst(s), concatTwo(chunkRest(s), y)) : cons(first(s), concatTwo(rest(s), y));
+      return isChunkedSeq(s) ? chunkCons(chunkFirst(s), concatTwo(chunkRest(s), y)) : cons(first(s), concatTwo(rest(s), y));
     });
   }
-  //@unit concatMany requires: chunkCons, chunkedSeqValue, chunkFirst, chunkRest, cons, first,
-  //@ lazySequence, methodKeys, next, protocolHooks, rest, seq
+  //@unit concatMany requires: chunkCons, chunkFirst, chunkRest, cons, first, isChunkedSeq,
+  //@ lazySequence, next, rest, seq
   function concatMany(current, remaining) {
     return lazySequence(() => {
       const s = seq(current);
-      if (s !== null) return (protocolHooks.implements?.(methodKeys[5], s) ?? chunkedSeqValue(s)) ? chunkCons(chunkFirst(s), concatMany(chunkRest(s), remaining)) : cons(first(s), concatMany(rest(s), remaining));
+      if (s !== null) return isChunkedSeq(s) ? chunkCons(chunkFirst(s), concatMany(chunkRest(s), remaining)) : cons(first(s), concatMany(rest(s), remaining));
       return remaining == null ? null : concatMany(first(remaining), next(remaining));
     });
   }
@@ -11816,13 +11895,21 @@
     demandMethod(key.name, 0, value);
     return value != null && value[key.marker] === protocolSentinel;
   }
-  //@unit builtin requires: keyMethod, protocolHooks
+  //@unit builtin requires: builtinSlots, demandMethod, keySlot, protocolHooks
   // The value's own implementation of a resolved key (`methodKey`), else one
   // that `extend-type` of a host type, `object` or `default` gave
-  // (`externalMethod`).
+  // (`externalMethod`): `keyMethod`'s read, where a runtime class's own
+  // slot method (`builtinSlots`) is none. A runtime class's value (a keyed
+  // kind below 64) whose slot holds its class's method and whose class
+  // declares the key's protocol by its mask bit implements it natively,
+  // which those cannot override (`externalMethod`'s native test): it has no
+  // other, as upstream's dispatch calls the slot. Only a value whose slot
+  // holds a runtime method is read again (light-cljs-1075).
   function builtin(value, key, arity) {
-    const method = keyMethod(value, key, arity);
-    if (method != null) return method;
+    demandMethod(key.key, arity, value);
+    const method = value == null ? undefined : value[keySlot(key, arity)];
+    if (method === undefined || !builtinSlots.has(method)) { if (method != null) return method; }
+    else if (key.bit !== 0 && value.cljs$lang$kind$$LKEY < 64 && value[key.mask] & key.bit) return undefined;
     return protocolHooks.externalMethod?.(value, key, arity);
   }
   //@unit externalMethod requires: builtinCoreImplementation, coreProtocolsByName, dispatchCell,
@@ -11878,8 +11965,8 @@
     const kinds = storeNativeProtocols.has(name) ? Array(128).fill(undefined) : null;
     return {protocol, name, mask: protocolMasks.get(name), marker: name && protocolSlot(name, 0), native: nativeImplementations.get(protocol), kinds};
   }
-  //@unit extendedMethod requires: demandMethod, extendedDeclared, keyMethod, protocolMethodInfo,
-  //@ protocolSentinel, runtimeKind, satisfies
+  //@unit extendedMethod requires: demandMethod, extendedDeclared, hostSatisfies, keyMethod,
+  //@ ownedKind, protocolMethodInfo, protocolSentinel, satisfies, slotFirst
   // The generic operations' protocol lookup where `extend-type` or
   // `specify!` exist (their `programMethod` hook; `ownMethod` where only
   // `installMethods` is kept), after the slot-first wrappers and call-site
@@ -11890,7 +11977,7 @@
     const info = key.info || (key.info = protocolMethodInfo(key.key)), protocol = info.protocol, mask = info.mask, native = info.native;
     // A runtime class's mask bits are its native tests' answers (see
     // `ownMethod`), which the kind's step below gives.
-    let direct = !!(mask && (value?.[mask[0]] & mask[1])) && !(value.cljs$lang$kind$$LKEY < 64);
+    let direct = !!(mask && (value?.[mask[0]] & mask[1])) && !(value.cljs$lang$kind$$LKEY < 64), fn = false;
     if (!direct && info.name) {
       demandMethod(info.name, 0, value);
       direct = value != null && value[info.marker] === protocolSentinel;
@@ -11906,16 +11993,38 @@
       // `kinds` keeps the test's answer by kind, where it is the same for
       // every value of the kind. A host value reads one property here, the
       // keyed kind (light-cljs-1015, one store test since light-cljs-1046).
-      const kind = direct ? 0 : runtimeKind(value);
+      // An array or a string (no store holds one) where the caller takes
+      // only a direct method (`fast`, `directOnly`) has none past its
+      // marker, as upstream's `seq` and `nth` test `array?` after
+      // `implements?`, without the kind and the native test, which are
+      // false for it (light-cljs-1075).
+      if (!direct && (fast || directOnly) && (Array.isArray(value) || typeof value === "string")) return undefined;
+      const known = direct || value == null ? undefined : value.cljs$lang$kind$$LKEY, kinds = info.kinds;
+      // A function without a keyed kind (no store holds one, as `meta` of
+      // one asks) is in the protocol where its host tables say so: the
+      // steps of `satisfies` before them read what this lookup has read
+      // (light-cljs-1075).
+      fn = known === undefined && typeof value === "function" && slotFirst.on;
+      // A runtime class's value whose class has a mask in the protocol's
+      // partition without its bit is not in a protocol that `kinds` holds,
+      // as the `satisfies` hook answers it (light-cljs-1070): its native
+      // test, the same for every value of the class, is false, and a value
+      // made by reflection, which no store holds, answered nothing below
+      // (`satisfies` reads the mask) (light-cljs-1075).
+      if (known < 64 && kinds && mask) { const bits = value[mask[0]]; if (bits && !(bits & mask[1])) return undefined; }
+      const kind = known < 64 && ownedKind(value, known) ? known : 0;
       if (kind) {
-        const kinds = info.kinds;
+        // A protocol whose native test differs within a class (an indexed
+        // seq's `IIndexed`, by its `view`): no slot, no method, before the
+        // test, where no session demands declarations (light-cljs-1075).
+        if (!kinds && slotFirst.on) { const method = keyMethod(value, key, arity); return method && native?.(value) ? method : undefined; }
         if (!(kinds ? kinds[kind] ?? (kinds[kind] = !!native(value)) : native?.(value))) return undefined;
         return keyMethod(value, key, arity) || undefined;
       }
     }
     if (!direct) direct = !!native?.(value);
     if (!direct && (directOnly || (fast && (Array.isArray(value) || typeof value === "string")))) return undefined;
-    if (!direct && !satisfies(protocol, value)) return undefined;
+    if (!direct && !(fn ? !(mask && value[mask[0]]) && hostSatisfies(info, value) : satisfies(protocol, value))) return undefined;
     return extendedDeclared(value, key, arity, keyMethod(value, key, arity));
   }
   //@unit extendedDeclared requires: IMeta, protocolHooks, protocolMethodInfo
@@ -11935,8 +12044,10 @@
   // `true` where the value declares the core protocol of a resolved key
   // (`methodKey`: its mask bit or marker, as `implementsProtocol` reads
   // them), else nothing, for the caller's native test (`?? countedValue(value)`).
-  function ownProtocol(key, value) {
-    return key.bit !== 0 && value != null && value[key.mask] & key.bit || keyMarker(value, key) ? true : undefined;
+  // A predicate that has read the mask itself and found the bit clear
+  // (`read`, `isVector`) asks the marker alone (light-cljs-1075).
+  function ownProtocol(key, value, read) {
+    return read !== true && key.bit !== 0 && value != null && value[key.mask] & key.bit || keyMarker(value, key) ? true : undefined;
   }
   //@unit ownMethod requires: keyMarker, keyMethod, ownDeclared
   // `extendedMethod` where no `extend-type` or `specify!` exists: only values of
@@ -12896,9 +13007,9 @@
     if (protocolHooks.implements?.(methodKeys[13], coll) ?? dropValue(coll)) return (n > 0 ? dropProtocol(coll, Math.ceil(n)) : seq(coll)) ?? emptyList;
     return lazySequence(() => { let s = seq(coll), remaining = n; while (remaining > 0 && s !== null) { s = seq(rest(s)); remaining--; } return s; });
   }
-  //@unit mapSeq requires: apply, arrayChunk, callable, chunkCons, chunkedSeqValue, chunkFirst,
-  //@ chunkItem, chunkRest, chunkStore, cons, count, first, invalidArity, lazySequence,
-  //@ listFromArray, mapManySteps, methodKeys, protocolHooks, rest, seq, transform
+  //@unit mapSeq requires: apply, arrayChunk, callable, chunkCons, chunkFirst, chunkItem, chunkRest,
+  //@ chunkStore, cons, count, first, invalidArity, isChunkedSeq, lazySequence, listFromArray,
+  //@ mapManySteps, rest, seq, transform
   function mapSeq(fn, ...colls) {
     if (arguments.length === 0) return lazySequence(() => null);
     if (arguments.length === 1) return transform(rf => callable(2, {
@@ -12913,7 +13024,7 @@
       const sources = [];
       for (const coll of colls) { const s = seq(coll); sources.push(s); if (colls.length > 3 && s === null) return null; }
       if (sources.some(value => value === null)) return null;
-      if (sources.length === 1 && (protocolHooks.implements?.(methodKeys[5], sources[0]) ?? chunkedSeqValue(sources[0]))) {
+      if (sources.length === 1 && isChunkedSeq(sources[0])) {
         const chunk = chunkFirst(sources[0]), store = chunkStore(chunk), size = count(chunk), items = [];
         for (let i = 0; i < size; i++) items.push(fn.call(null, chunkItem(chunk, store, i)));
         return chunkCons(arrayChunk(items), mapSeq(fn, chunkRest(sources[0])));
@@ -12928,13 +13039,13 @@
       return every(x => x, sources) ? cons(mapSeq(first, sources), mapManySteps(mapSeq(rest, sources))) : null;
     });
   }
-  //@unit indexedSequence requires: arrayChunk, chunkCons, chunkedSeqValue, chunkFirst, chunkItem,
-  //@ chunkRest, chunkStore, cons, count, first, lazySequence, methodKeys, protocolHooks, rest, seq
+  //@unit indexedSequence requires: arrayChunk, chunkCons, chunkFirst, chunkItem, chunkRest,
+  //@ chunkStore, cons, count, first, isChunkedSeq, lazySequence, rest, seq
   function indexedSequence(fn, coll, index, keepOnly, indexed = true) {
     return lazySequence(() => {
       const s = seq(coll), at = index;
       if (s !== null) {
-        if (protocolHooks.implements?.(methodKeys[5], s) ?? chunkedSeqValue(s)) {
+        if (isChunkedSeq(s)) {
           const chunk = chunkFirst(s), store = chunkStore(chunk), size = count(chunk), values = [];
           for (let i = 0; i < size; i++) { const value = indexed ? fn.call(null, at + i, chunkItem(chunk, store, i)) : fn.call(null, chunkItem(chunk, store, i)); if (!keepOnly || value != null) values.push(value); }
           return chunkCons(arrayChunk(values), indexedSequence(fn, chunkRest(s), at + size, keepOnly, indexed));
@@ -12952,16 +13063,16 @@
   function keepIndexed(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, true); collectionArity("keep-indexed", arguments.length); return indexedSequence(fn, coll, 0, true); }
   //@unit keep requires: collectionArity, indexedSequence, indexedTransform
   function keep(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, false); collectionArity("keep", arguments.length); return indexedSequence(fn, coll, 0, true, false); }
-  //@unit filter requires: arrayChunk, chunkCons, chunkedSeqValue, chunkFirst, chunkItem, chunkRest,
-  //@ chunkStore, collectionArity, cons, count, first, lazySequence, methodKeys, protocolHooks,
-  //@ reducingFunction, rest, seq, transform, truth
+  //@unit filter requires: arrayChunk, chunkCons, chunkFirst, chunkItem, chunkRest, chunkStore,
+  //@ collectionArity, cons, count, first, isChunkedSeq, lazySequence, reducingFunction, rest, seq,
+  //@ transform, truth
   function filter(pred, coll) {
     if (arguments.length === 1) return transform(rf => reducingFunction(rf, (result, input) => truth(pred.call(null, input)) ? rf.call(null, result, input) : result));
     collectionArity("filter", arguments.length);
     return lazySequence(() => {
       const s = seq(coll);
       if (s !== null) {
-        if (protocolHooks.implements?.(methodKeys[5], s) ?? chunkedSeqValue(s)) {
+        if (isChunkedSeq(s)) {
           const chunk = chunkFirst(s), store = chunkStore(chunk), size = count(chunk), values = [];
           for (let i = 0; i < size; i++) { const value = chunkItem(chunk, store, i); if (truth(pred.call(null, value))) values.push(value); }
           return chunkCons(arrayChunk(values), filter(pred, chunkRest(s)));
@@ -14784,10 +14895,9 @@
   // The generic operations test core protocols by name: without `extend-type`
   // or `specify!` the protocols a value declares, then their native tests ...
   protocolHooks.satisfies = ownProtocol;
-  //@unit protocolHooks.ownImplements effect: installMethods when: chunkNext, concatMany, concatTwo,
-  //@ cons, countOf, countPath, drop, filter, hashOf, hashPath, indexedSequence, into, isChunkedSeq,
-  //@ isMapEntry, isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta requires: ownProtocol,
-  //@ protocolHooks
+  //@unit protocolHooks.ownImplements effect: installMethods when: chunkNext, countOf, countPath,
+  //@ drop, hashOf, hashPath, implementsSeq, into, isChunkedSeq, isMapEntry, isUuid, name,
+  //@ namespace, nthOf, nthPath, printsMeta requires: ownProtocol, protocolHooks
   protocolHooks.implements = ownProtocol;
   //@unit protocolHooks.satisfies effect: extendType, extendInstance when: KeySeqCell,
   //@ accumulatingCount, boundedCount, cljToJs, cons.equiv, isAssociative, isCloneable, isColl,
@@ -14821,12 +14931,12 @@
   // and is asked once per program type's kind; a protocol without a mask
   // (`Fn`) is not in a class that declares its protocols by masks, as no
   // such class is a function's or a var's (light-cljs-1070).
-  protocolHooks.satisfies = (key, value) => {
+  protocolHooks.satisfies = (key, value, read) => {
     const info = key.info || (key.info = protocolMethodInfo(key.key)), name = info.name;
     if (!name) return satisfies(info.protocol, value);
     const mask = info.mask, native = info.native, kinds = info.kinds;
     demandProtocol(name, value);
-    if (mask && (value?.[mask[0]] & mask[1])) return true;
+    if (mask && read !== true && (value?.[mask[0]] & mask[1])) return true;
     demandMethod(name, 0, value);
     if (value != null) {
       if (value[info.marker] === protocolSentinel) return true;
@@ -14848,22 +14958,23 @@
   // `satisfies?`'s host tables for a core protocol's `info`: what
   // `extend-type` of the value's host type, `object` or `default` gave.
   function hostSatisfies(info, value) {
-    const protocol = info.protocol, name = info.name, type = nativeType(value);
-    return !!(protocol[type] || protocol._ || nativeMethods.get(name)?.get(type) || nativeMethods.get(name)?.get("_"));
+    const protocol = info.protocol, type = nativeType(value);
+    if (protocol[type] || protocol._) return true;
+    const natives = nativeMethods.get(info.name);
+    return natives !== undefined && !!(natives.get(type) || natives.get("_"));
   }
-  //@unit protocolHooks.implements effect: extendType, extendInstance when: chunkNext, concatMany,
-  //@ concatTwo, cons, countOf, countPath, drop, filter, hashOf, hashPath, indexedSequence, into,
-  //@ isChunkedSeq, isMapEntry, isUuid, mapSeq, name, namespace, nthOf, nthPath, printsMeta
-  //@ requires: demandMethod, implementsProtocol, ownedKind, protocolHooks, protocolMethodInfo,
-  //@ protocolSentinel
+  //@unit protocolHooks.implements effect: extendType, extendInstance when: chunkNext, countOf,
+  //@ countPath, drop, hashOf, hashPath, implementsSeq, into, isChunkedSeq, isMapEntry, isUuid,
+  //@ name, namespace, nthOf, nthPath, printsMeta requires: demandMethod, implementsProtocol,
+  //@ ownedKind, protocolHooks, protocolMethodInfo, protocolSentinel
   // `implements?`: the mask bit, then the marker, as the hook above, else
   // the native test (`coreProtocolImplementation`'s order, without
   // `satisfies`'s demand).
-  protocolHooks.implements = (key, value) => {
+  protocolHooks.implements = (key, value, read) => {
     const info = key.info || (key.info = protocolMethodInfo(key.key)), name = info.name;
     if (!name) return implementsProtocol(info.protocol, value);
     const mask = info.mask, native = info.native, kinds = info.kinds;
-    if (mask && (value?.[mask[0]] & mask[1])) return true;
+    if (mask && read !== true && (value?.[mask[0]] & mask[1])) return true;
     demandMethod(name, 0, value);
     if (value != null) {
       if (value[info.marker] === protocolSentinel) return true;

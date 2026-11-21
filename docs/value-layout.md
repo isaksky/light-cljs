@@ -2186,6 +2186,88 @@ program that implements protocols.
   35.7 to 34.2 ms per iteration in two rounds; the re-frame apps' whole
   bundles 126 to 273 bytes larger after gzip (0.04 to 0.19%).
 
+What light-cljs-1075 landed: in a program that extends types, the
+predicates, `deref` of a program type, `empty?`, the external lookup of a
+runtime class's value, `meta` of a function and the host values' `seq`
+and `nth` answer with fewer steps of the extended lookup, where upstream
+reads a mask bit, a marker, the value's own method or a table.
+
+- **Where the time was.** On master `b86a231e` the re-frame-shaped app's
+  whole run to its first output spent about 80 to 90 ms of
+  `--pseudo-names` profiles in the layers light-cljs-1070 measured: the
+  `satisfies` and `implements` hooks' own bodies (28 and 11 ms), a million
+  and more calls of them from the predicates, three in five answered at
+  their first test, the mask bit; `builtin` (15 ms), of `=` of numbers
+  (light-cljs-1074's), `deref` of a program type, `empty?` of the queue,
+  `name` of a keyword and `with-meta`, `conj` and `nth` of runtime values,
+  each through the external lookup's native test; `first` of a vector,
+  `seq` of an array and `nth` of an indexed seq through the lookup's store
+  test and native test.
+- **The predicates read the bit first.** `coll?`, `seq?`, `sequential?`,
+  `vector?`, `map?`, `set?`, `chunked-seq?` and `cons`'s and `nth`'s
+  `implements?` of `ISeq` (`implementsSeq`) read the protocol's mask bit by
+  its keyed name, as upstream's `satisfies?` and `implements?` do in place
+  (78 to 95 bytes of bytecode each, under light-cljs-1033's 100). Where
+  the bit is clear they pass `read` to the hook (`ownProtocol` where only
+  `installMethods` is kept), which goes on from the marker, so a host
+  value's properties are read as often as before; a compiler session that
+  demands declarations takes the hook alone (`slotFirst`). `concat`,
+  `filter`, `map` and `map-indexed` ask `chunked-seq?`.
+- **`deref` of a program type** (a keyed kind from 64) calls the
+  `-deref` its slot holds before the lookup, as an atom's (light-cljs-1070),
+  reading the kind once for both.
+- **`empty?`** reads `ICounted`'s bit first, as the predicates read
+  theirs, and a value that declares it calls the method its `-count` slot
+  holds (`countSlot`), as upstream's calls `-count`: a program's, or a
+  runtime class's value's own; a runtime method lent to another value (the
+  Sol review's finding) and every other value take the dispatcher, which
+  also finds a host type's.
+- **`builtin`** answers nothing for a runtime class's value whose slot
+  holds its class's method (`builtinSlots`) and whose class declares the
+  key's protocol by its mask bit, before the external lookup's native test
+  that answered the same, reading the kind and mask only of a value whose
+  slot holds a runtime method, so a host value is read as before (a first
+  version in `externalMethod` read every value's kind, the Sol review's
+  finding): the class implements it
+  natively, which `extend-type` of a host type, `object` or `default`
+  cannot override. A value whose class has no bit for the protocol (a
+  hash map's seq for `ICounted`, an indexed seq, whose answer differs
+  with its `view`) takes the native test as before, so it still reaches
+  `object`'s `-count` where that test is false.
+- **The lookup** (`extendedMethod`) reads the keyed kind once (`runtimeKind`
+  is left to `slotWrites`); answers nothing past the marker for an array or
+  a string where its caller takes only a direct method, as upstream's
+  `seq` and `nth` test `array?` after `implements?`; answers nothing for a
+  runtime class's value whose class has a mask in a `kinds` protocol's
+  partition without its bit, as the `satisfies` hook does; reads the slot
+  before the native test of a protocol whose native test differs within a
+  class (`IIndexed` of an indexed seq), where no session demands
+  declarations; and asks a function without a keyed kind (`meta` of one)
+  its host tables (`hostSatisfies`) without `satisfies`'s steps again.
+  `hostSatisfies` reads `nativeMethods` once.
+- **What was not done.** A host table answer cached per protocol and type:
+  `extend-type`'s tables are written and undone through the declaration
+  journal (`patchDeclaration`, `setDeclaration`, its undo, redo and
+  snapshots) and by name, so a cache would need every one of them to
+  invalidate it, for about 3 ms of the run (`=` of numbers and `compare`
+  of strings).
+- **Answers kept.** `extend-type`, `specify!`, `satisfies?` and
+  `implements?` answer as before for the runtime's and host values
+  (`extended_programs_keep_count_meta_and_predicate_answers`,
+  `extended_programs_keep_host_predicate_and_deref_answers`,
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup`); only values
+  made by reflection change (section 5, item 37).
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1075;
+  unreserved): the layers' share of the re-frame-shaped app's whole run to
+  first output 81.3 to 53.1 ms (5 alternated profiles, load 4.4 to 4.8;
+  `light-cljs-86dc4aa0` against the final `light-cljs-1075-8965cfeb`;
+  0.65), its first iteration 21.7 to 14.8; its first output and steady
+  state and workload 200k's unchanged within their spread, and no touched
+  gate operation slower in an alternated pair, `apply-vec` -7%
+  (`light-cljs-b86a231e` against `light-cljs-1075-97606841`, before the
+  review's fixes); the re-frame apps' whole bundles 103 to 242 bytes larger
+  after gzip (0.03 to 0.20%).
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -3218,6 +3300,21 @@ its class's slot without the old path's recognisers (`structuralEqualPair`,
 forged vector, set or seq is compared, and a forged seq or keyword hashed,
 by the fields it lacks (which may throw, as its other slots do), where the
 old path answered it by identity.
+
+Rescoped by light-cljs-1075, whose `empty?` calls a counted value's
+`-count` slot and whose external lookup takes a runtime class's mask bit as
+its native implementation:
+
+37. `protocol_hooks_answer_runtime_values_as_the_full_lookup`: `empty?` of
+    the forged list, map and range calls their class's `-count` slot,
+    where it threw at the dispatcher's native test; in the set that extends
+    host types, `object` and `default`, the forged list's and range's bits,
+    which declare `ICounted`, keep `object`'s `-count` from them as from
+    their class, so `count` of a cons of one throws, where it gave 43. The
+    predicates that read a mask bit first (`isVector`), the hooks they
+    continue (`read`) and `builtin`, which reads a value's kind and mask
+    only where its slot holds a runtime class's method, ask the Proxy as
+    often as before.
 
 ### Documentation rules that change
 

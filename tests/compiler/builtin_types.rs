@@ -754,7 +754,9 @@ fn runtime_meta_slot_overrides_without_markers() {
 /// light-cljs-1070: in a program that extends types, `count` of a string or
 /// an array, `meta` of the runtime's collections and seqs, and a predicate of
 /// a value whose class declares the protocol by its mask bit or marker take
-/// no protocol lookup: the readable output's `extendedMethod`, `runtimeKind`,
+/// no protocol lookup: the readable output's `extendedMethod`, `storeHolds`
+/// (the store test of the lookup's, the hooks' and the native tests' kind
+/// step; `runtimeKind` until light-cljs-1075 read the kind in the lookup),
 /// `coreProtocolImplementation` and `satisfies` count no call, nor `builtin`
 /// for `deref` of an atom, as upstream's `count`,
 /// `meta` and `satisfies?` read the mask bit, the marker or the class's
@@ -785,7 +787,7 @@ fn extended_programs_answer_count_meta_and_predicates_without_the_lookup() {
     let mut js = prepare_application(&program(source), options).emit_js();
     for head in [
         "function extendedMethod(value, key, arity, fast = false, directOnly = false) {",
-        "const runtimeKind = value => {",
+        "function storeHolds(table, value, kind) {",
         "function coreProtocolImplementation(protocol, value) {",
         "function satisfies(protocol, value) {",
     ] {
@@ -869,6 +871,23 @@ fn inherited_object_meta_extensions_keep_runtime_answers() {
                   (meta (specify! [2] IMeta (-meta [_] :own))) (meta (range 3)) (meta (lazy-seq [1]))
                   (vec (keys (into (sorted-map) [[1 1] [2 2] [3 3]]))) (meta (rseq (into (sorted-map) [[1 1] [2 2]])))])",
         "[:custom :custom :custom :custom :custom :custom :custom :own :custom :custom [1 2 3] :custom]",
+    );
+}
+
+/// light-cljs-1075: `empty?` calls a counted value's `-count` slot, but a
+/// runtime class's method borrowed onto a program type's value takes the
+/// dispatcher, which passes over it and finds none, as before (the Sol
+/// review's scenario); a program type's own method, the queue's and an
+/// array's from `specify!` answer as before.
+#[test]
+fn empty_preserves_borrowed_builtin_count_slots() {
+    every_level(
+        "(deftype T [] ICounted (-count [_] 5))
+         (let [t (T.)]
+           (set! (.-cljs$core$ICounted$_count$arity$1 t) (.-cljs$core$ICounted$_count$arity$1 ()))
+           (pr-str [(try (empty? t) (catch :default _ :error)) (empty? (T.)) (empty? (conj cljs.core/PersistentQueue.EMPTY 1))
+                    (empty? cljs.core/PersistentQueue.EMPTY) (empty? (specify! (array 1) ICounted (-count [_] 0)))]))",
+        "[:error false false true true]",
     );
 }
 
@@ -3066,7 +3085,8 @@ fn views_read_their_first_from_the_kind_table() {
 /// keep the protocol lookup (`extendedMethod`); the operations answer as
 /// before at every level. Since light-cljs-1046 the lookup and the
 /// `satisfies` hooks test a runtime class's value by one store, its class's
-/// (`runtimeKind`, `ownedProtocolValue`), so no payload store probe
+/// (`ownedKind`, `ownedProtocolValue`; the lookup's through `runtimeKind`
+/// until light-cljs-1075), so no payload store probe
 /// (`payloadStore`, `kindStore`) is left either, with records and the operations of sets, queues and maps that have no
 /// slot (`meta`, `empty`, `find`, `reduce`, printing).
 #[test]
@@ -3099,7 +3119,7 @@ fn release_runtime_keeps_no_old_dispatch_layers() {
     ] {
         assert!(!kept.contains(&unit), "{unit}: {kept:?}");
     }
-    for unit in ["extendedMethod", "runtimeKind", "recordCells"] {
+    for unit in ["extendedMethod", "ownedKind", "recordCells"] {
         assert!(kept.contains(&unit), "{unit}: {kept:?}");
     }
 }
@@ -4063,6 +4083,12 @@ fn transient_map_conj_observes_value_method_changes_from_key() {
 /// prototypes declare, and the sorted map of the set that writes keyed names,
 /// whose mask the program writes by name, answers the written mask
 /// (docs/value-layout.md, section 5, item 35); the Proxy is asked as often.
+/// Since light-cljs-1075 `empty?` of the forged list, map and range calls
+/// their class's `-count` slot, where it threw, and in the set that extends
+/// host types, `object` and `default`, the forged list's and range's bits,
+/// which declare `ICounted`, keep `object`'s `-count` from them, as from
+/// their class, so `count` of a cons of one throws, where it gave 43 (item
+/// 37); the Proxy is asked as often.
 #[test]
 fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
     let values = r#"
@@ -4146,9 +4172,9 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000000e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-list 01001111010000001e000 nil nil :error\n",
-                "forged-map 00101101100001001e000 nil :error :error\n",
-                "forged-range 01001111000000011e010 nil :none :error\n",
+                "forged-list 010011110100000010000 nil nil :error\n",
+                "forged-map 001011011000010010000 nil :error :error\n",
+                "forged-range 010011110000000110010 nil :none :error\n",
                 "forged-seq 01001110000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
@@ -4207,9 +4233,9 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 110000110100000000001 42 :error :error\n",
                 "type 110000110100000000000 42 :error :error\n",
                 "proxy 110000110100000000000 42 :error :error\n",
-                "forged-list 010011110100000010000 nil nil 43\n",
+                "forged-list 010011110100000010000 nil nil :error\n",
                 "forged-map 001011011000010010000 nil :error :error\n",
-                "forged-range 010011110000000110010 nil :none 43\n",
+                "forged-range 010011110000000110010 nil :none :error\n",
                 "forged-seq 01001110000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :none 1\n",
                 "specified-map 001011111100010010000 1 [:s 1] 2\n",
@@ -4274,9 +4300,9 @@ fn protocol_hooks_answer_runtime_values_as_the_full_lookup() {
                 "uuid 00000000000000000e001 :error :error :error\n",
                 "type 00000000000000001e000 :error :error :error\n",
                 "proxy 00000000000000000e000 :error :error :error\n",
-                "forged-list 11001111010000001e000 nil nil :error\n",
-                "forged-map 00101101100001001e100 nil :error :error\n",
-                "forged-range 01001111000000011e010 nil :none :error\n",
+                "forged-list 110011110100000010000 nil nil :error\n",
+                "forged-map 001011011000010010100 nil :error :error\n",
+                "forged-range 010011110000000110010 nil :none :error\n",
                 "forged-seq 01001110000000000e000 :error :error :error\n",
                 "empty-queue 010011110000000001000 0 :queue 2\n",
                 "specified-map 001011111100010010100 1 [:s 1] 2\n",
