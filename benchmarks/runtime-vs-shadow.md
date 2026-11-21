@@ -4982,3 +4982,63 @@ bb benchmarks/core-ops/run.bb --light $BIN/light-cljs-76061c5c --ops $OPS --out 
 | 2 | 2.044 s (2.019-2.160) | 2.096 s (1.975-2.314) | 1.529 / 1.441 s | 43.0 to 44.0 (shadow-cljs 30.2 / 28.0) | 22.9 / 21.2 |
 
 The steady state is unchanged within the rounds' spread (one round 2% faster, the other 2% slower; light/shadow 1.49 and 1.43 before, 1.48 and 1.57 after), at a load four times light-cljs-1068's runs (35.8 ms there at load 5-6), where this pellet's own test suite and a peer's ran.
+
+## 2026-11-20: count, meta and the predicates without the extended lookup (light-cljs-1070)
+
+In a program that extends types, `count` of a string or an array, `meta` of the runtime's collections and seqs (one `-meta` slot, `metaSlot`), the predicates of 30 runtime classes (keyed masks, `classMasks`), the predicates of nil, primitives and program types, `deref` of an atom and `counted?` of a seq view answer without the extended lookup (`extendedMethod`, `storeProtocol`, `runtimeKind`, `coreProtocolImplementation`, `keyMethod`, the `satisfies` and `implements` hooks' store tests); `extend-type`, `specify!`, `satisfies?` and `implements?` keep master's answers (docs/value-layout.md, "What light-cljs-1070 landed").
+
+**Binaries** in research/shadow-credibility/bin: before `light-cljs-c09a181b` (master), after `light-cljs-1070-b01b100d` (this pellet's last runtime commit), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. Records in research/output-speed/predicates-1070-b (attempt one's in predicates-1070 overlapped its test suites and are not used). No run waited for the machine: peers' builds ran throughout, each figure gives its 1-minute load; all unreserved.
+
+**Where the time was** (the re-frame-shaped 200k app, a `--pseudo-names` build by each binary, `node --cpu-prof --cpu-prof-interval 100 run-profile.mjs 42 1`, the samples under a frame of the pellet's list: `extendedMethod`, `storeProtocol`, `runtimeKind`, `coreProtocolImplementation`, `keyMethod`, the two hooks, `storeHolds`; 5 profiles of each alternated, load 9.6-11.1), median (range) in ms:
+
+| | master `c09a181b` | light-cljs-1070 | after / before |
+| --- | ---: | ---: | ---: |
+| whole run to first output (load and first iteration) | 233.4 (224.1-240.4) | 78.7 (74.7-79.3) | 0.34 |
+| first iteration alone (`run`) | 46.1 (42.9-47.4) | 21.3 (19.2-22.1) | 0.46 |
+
+An earlier build of the same changes, profiled at load 7.3-7.9 against master: 69.7-72.5 ms against 216-229 (0.31-0.33). The pellet's 219 ms (light-cljs-1017) was the whole run; its target, a third, is 73 to 78 ms on these figures, which the whole run meets at the lower load and misses by about a millisecond at the higher.
+
+- **What is left** (the 5 profiles, ms per run): the `builtin` lookup of the core dispatchers (`-transient`, `-conj!`, `-reduce` of runtime values), `=` (light-cljs-1074's) and a program type's `deref`, 12.8; the predicates of values whose answer the hooks still compute (`map?`, `sequential?`, `vector?`, `fn?`, `coll?`, `set?`), about 28, most of it in the hook's own body; host values' `nth`, `seq`, `first` and `reduce`, about 13; `cons` 3.0 and `bounded-count` 2.3. light-cljs-1075 holds these.
+- **What did not pay:** a variant of the hooks that read each mask once and skipped the declaration demands where none is made measured no faster (71.0 against 71.9 ms medians) and changed what an effectful getter of a host object answers (the review's finding), so it was removed.
+
+**First output and steady state** (one Node script alternating the three outputs, each run's checksum checked against the project's oracle, 8 runs each at 1 and 40 iterations; steady state is the difference of the medians over 39 iterations), median (range):
+
+| project (load) | light-cljs master | light-cljs-1070 | shadow-cljs | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: |
+| re-frame-shaped 200k, first output (8.8-16.7) | 2,038 ms (1,929-2,137) | 1,809 ms (1,727-6,886) | 1,535 ms (1,479-7,794) | 1.33, 1.18 |
+| re-frame-shaped 200k, steady state | 473 ms per iteration | 444 | 314 | 1.51, 1.42 |
+| workload 200k, first output (15.1-16.0) | 373 ms (354-394) | 373 ms (361-383) | 345 ms (333-368) | 1.08, 1.08 |
+| workload 200k, steady state | 41.1 ms per iteration | 36.1 | 27.6 | 1.49, 1.31 |
+
+A first session with the review's earlier binary (`1070-2b676390`, load 9.6-15.4) gave the same picture: re-frame 1,981 to 1,813 ms first output (shadow-cljs 1,507) and 470 to 428 ms per iteration (306); workload 372 to 375 ms (352) and 37.6 to 33.3 ms per iteration (25.1). The workload's steady state gains where its program extends types: its iterations call the predicates and `count` that this pellet answers.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5 --ops ...`, the operations whose paths this pellet reaches, before with master and after with `--baseline`; load 9.1-9.4 before, 15.1-15.8 after), light-cljs ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| count-small | 2.12 | 2.13 (2.13-2.17) | +0% | 2.12 | 1.00, 1.00 |
+| filter-count-1000 | 32,783 | 33,873 (32,396-34,816) | +3% | 32,568 | 1.03, 1.04 |
+| into-xform-1000 | 29,398 | 30,837 (30,069-31,543) | +5% | 13,887 | 2.14, 2.22 |
+| mapv-1000 | 14,029 | 14,199 (14,160-14,454) | +1% | 13,464 | 1.06, 1.05 |
+| lazy-walk-1000 | 36,386 | 37,120 (36,497-37,630) | +2% | 40,356 | 0.93, 0.92 |
+| seq-walk-vec-1000 | 19,628 | 19,797 (19,179-20,790) | +1% | 10,422 | 1.92, 1.90 |
+| protocol-on-record | 2.40 | 2.40 (2.39-2.41) | +0% | 2.40 | 1.00, 1.00 |
+| multimethod | 78.8 | 79.8 (75.1-81.3) | +1% | 39.1 | 2.04, 2.04 |
+| variadic-call | 14.8 | 15.2 (14.9-15.5) | +3% | 9.66 | 1.56, 1.57 |
+| apply-vec | 161.9 | 164.9 (164.0-168.7) | +2% | 59.5 | 2.78, 2.77 |
+| swap-inc | 4.74 | 4.77 (4.71-5.00) | +1% | 5.77 | 0.84, 0.83 |
+| swap-assoc | 33.4 | 21.9 (21.1-22.6) | -34% | 35.5 | 0.96, 0.62 |
+
+- **No touched operation is slower** where before and after ran at the same load: the after pass above ran at a load 6 higher, and `into-xform-1000` (+5%), `filter-count-1000` and `variadic-call` (+3%) and `apply-vec` (+2%), rechecked in two rounds of before then after (`--runs 5` each, load 16.3-17.5), moved +0% and +0%, -1% and +1%, +1% and +0%, -1% and +1% (light-cljs 31,174 to 31,023 and 30,110 to 30,065 ns for `into-xform-1000`; 168.2 to 167.3 and 164.4 to 166.4 for `apply-vec`). The gate program extends no type, so these reach only `countedValue` (`apply`'s arguments) of this pellet's changes; `swap-assoc`'s -34% (33.4 ns in the master session, 21.2 and 21.9 in the two after sessions) is not this change: `swap!` reads an atom's `state` without `deref`, through no path this pellet changes.
+
+**Size** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN`, fresh ports from `shadow-port-tool-983` with the master binary, built by each binary), the whole bundle with React, gzip -9:
+
+| App | master `c09a181b` | first attempt `1070-be661268` | light-cljs-1070 `b01b100d` | change |
+| --- | ---: | ---: | ---: | ---: |
+| re-frame simple | 113,485 | 114,187 | 114,153 | +668 (+0.59%) |
+| TodoMVC | 144,693 | 145,384 | 145,337 | +644 (+0.45%) |
+| flow | 332,032 | 332,938 | 332,978 | +946 (+0.28%) |
+
+- **Raw:** 371,278 to 373,719 (+2,441), 478,708 to 481,337 (+2,629), 1,284,065 to 1,286,907 (+2,842).
+- **Why re-frame simple grows more than 0.5%:** the keyed masks of each runtime class the app keeps (`classMasks`, two literals per class) and their `-meta` slots (`metaSlot`, one assignment per class), which upstream's classes also carry; the second attempt's steps (nil, primitives and program types in the `satisfies` hook, `hostSatisfies`, `deref` of an atom, the review's fix) are 34 to 47 bytes smaller to 40 bytes larger than the first attempt's.
+- **Size ratchet:** the readable runtime grows to 765,178 bytes (`console-log-sum` at none; the first attempt's ceiling was 763,000), a program that extends types about 250 bytes at advanced (`extended-classes` 71,656), and the exceeded none, prepare and advanced ceilings move up (tests/support/ratchet_fixtures.rs).

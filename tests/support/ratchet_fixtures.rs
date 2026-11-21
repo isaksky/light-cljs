@@ -1041,14 +1041,14 @@
 //! 94,000). Its review's fix (`metaSlot` answers a method on
 //! `Object.prototype` first) and its second attempt (`deref` of an atom
 //! without the lookup, the `satisfies` hook's steps for nil, primitives and
-//! program types, `hostSatisfies`) grow the readable runtime to about
-//! 767,000 (`console-log-sum` at none), so
-//! every none and prepare ceiling moves to the next 1,000 above; at advanced
-//! a program that extends types grows about 1,000 bytes (`extended-classes`
-//! 72,481, ceiling 71,400 to 72,500) and one that keeps collections 100 to
-//! 400 (`mapv-count` 53,285, `features` 118,051), each exceeded ceiling
-//! moving to the next 100 above; the shared chunk is 94,066 (ceiling
-//! 94,100).
+//! program types, `hostSatisfies`) grow the readable runtime to 765,178
+//! (`console-log-sum` at none), so every none and prepare ceiling moves up
+//! (to the next 1,000 above a variant 2,000 bytes larger that the review
+//! dropped); at advanced a program that extends types grows about 250 bytes
+//! (`extended-classes` 71,656, ceiling 71,400 to 71,700) and one that keeps
+//! collections 100 to 400 (`mapv-count` 53,285, `features` 118,051), each
+//! exceeded ceiling moving to the next 100 above; the shared chunk is
+//! 94,066 (ceiling 94,100).
 
 pub struct Fixture {
     pub name: &'static str,
@@ -1489,7 +1489,7 @@ pub const FIXTURES: &[Fixture] = &[
                    cljs.core/PersistentTreeSet (specize* [s] [:sorted (count s)])
                    default (specize* [x] :other))
                  (js/console.log (pr-str (map specize* [#{1 2} [3] (seq #{4}) (= #{5} #{5})])))",
-        ceilings: [769_000, 769_000, 72_500],
+        ceilings: [769_000, 769_000, 71_700],
         removed: [0, 0, 0],
         printed: "([:set 2] :other :other :other)\nundefined\n",
     },
