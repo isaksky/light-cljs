@@ -46,9 +46,9 @@
     return value != null && value.cljs$lang$kind$$LKEY === 20 && "fqn$LKEY" in value ? value : undefined;
   }
   //@unit keywordCells requires: keywordOf
-  // `keywordOf` as an entry of the store inventories (`storesPredicate`,
-  // `protocolStores`), as `vectorCells`.
-  const keywordCells = Object.freeze({has: value => keywordOf(value) !== undefined, classKinds: [20]});
+  // `keywordOf` as an entry of the Pants build's profile's store
+  // inventories, as `vectorCells`.
+  const keywordCells = Object.freeze({has: value => keywordOf(value) !== undefined});
   //@unit KeywordCell
   // A keyword (see `keywordOf`) with `KeywordValue`'s prototype. Nothing in
   // it is frozen. The compile-time runtime stamps it (`stamp`).
@@ -62,7 +62,7 @@
     return value != null && value.cljs$lang$kind$$LKEY === 21 && "str$LKEY" in value ? value : undefined;
   }
   //@unit symbolCells requires: symbolOf
-  const symbolCells = Object.freeze({has: value => symbolOf(value) !== undefined, classKinds: [21]});
+  const symbolCells = Object.freeze({has: value => symbolOf(value) !== undefined});
   //@unit namedOf requires: keywordOf, symbolOf
   // A keyword's or a symbol's fields (`ns`, `name`, `hash`), else undefined.
   const namedOf = value => keywordOf(value) ?? symbolOf(value);
@@ -160,9 +160,10 @@
   // Whether a value is a map entry of the runtime's class (`EntryCell`).
   const isEntryCell = value => value != null && value.cljs$lang$kind$$LKEY === 3 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
   //@unit vectorCells requires: holdsVector
-  // `holdsVector` as an entry of the store inventories (`storesPredicate`,
-  // `ownedStores`), which test it as a store that is not exact.
-  const vectorCells = Object.freeze({has: holdsVector, classKinds: [1, 2, 3]});
+  // `holdsVector` as an entry of the store inventories that the Pants
+  // build's profile probes in turn (its `storesPredicate`, `protocolStores`;
+  // the V8 profile's test the keyed kind, `kindIn`, light-cljs-1079).
+  const vectorCells = Object.freeze({has: holdsVector});
   //@unit vectorCellCopy
   // A new value of a vector cell's prototype with its fields, its metadata
   // and hash included, built by a constructor (so the compile-time runtime
@@ -219,7 +220,7 @@
   const isView = value => viewOf(value) !== undefined;
   //@unit viewCells requires: isView
   // `isView` as an entry of the store inventories, as `vectorCells`.
-  const viewCells = Object.freeze({has: isView, classKinds: [5, 6, 7, 8, 9, 10]});
+  const viewCells = Object.freeze({has: isView});
   //@unit IndexedSeqCell
   // A seq over an array or a string with `IndexedSeqValue`'s prototype (see
   // `viewOf`); rest arguments are one over a fresh array of their own.
@@ -263,7 +264,7 @@
   const isLazy = value => lazyOf(value) !== undefined;
   //@unit lazyCells requires: isLazy
   // `isLazy` as an entry of the store inventories, as `viewCells`.
-  const lazyCells = Object.freeze({has: isLazy, classKinds: [16]});
+  const lazyCells = Object.freeze({has: isLazy});
   //@unit lazyStep
   // What the thunk of a lazy seq's state (`lazyOf`) gave, calling it on the
   // first call only. The state changes only after the call returns, so a
@@ -289,7 +290,7 @@
   const isChunkedCons = value => chunkedConsOf(value) !== undefined;
   //@unit chunkedConsCells requires: isChunkedCons
   // `isChunkedCons` as an entry of the store inventories, as `viewCells`.
-  const chunkedConsCells = Object.freeze({has: isChunkedCons, classKinds: [17]});
+  const chunkedConsCells = Object.freeze({has: isChunkedCons});
   //@unit ArrayChunkCell
   // A chunk with `ArrayChunk`'s prototype (`chunkOf`): the items of `arr`
   // from `off` to `end`; a range's chunk (an integer chunk) has no items but
@@ -331,7 +332,7 @@
   const isCell = value => cellOf(value) !== undefined;
   //@unit seqCells requires: isCell
   // `isCell` as an entry of the store inventories, as `viewCells`.
-  const seqCells = Object.freeze({has: isCell, classKinds: [11, 12, 13, 14, 15, 22, 23, 24, 25, 26, 27]});
+  const seqCells = Object.freeze({has: isCell});
   //@unit cellFields
   // A cell's copy (`cellOf`), for its metadata: a value of its prototype
   // with its own keyed fields, in their order, and none of the slots or
@@ -566,7 +567,7 @@
   // slots), so `get` answers undefined for them. A record is no map here:
   // its methods answer, and the native tests that took it for one test it
   // by its kind (`recordCells`, light-cljs-1037).
-  const maps = {has: value => mapOf(value) !== undefined, get: () => undefined, classKinds: [28, 29, 30]};
+  const maps = {has: value => mapOf(value) !== undefined, get: () => undefined};
   //@unit mapKinds requires: mapOf
   // A map's kind, which its class gives: "array-map", "hash-map" or
   // "sorted-map".
@@ -629,7 +630,6 @@
   // Its updates, lookups and count read its tree map instead. Each test
   // reads the keyed kind once, as `setCellOf` and `treeSetOf` would in turn.
   const sets = {
-    classKinds: [33, 44],
     has(value) {
       if (value == null) return false;
       const kind = value.cljs$lang$kind$$LKEY;
@@ -698,8 +698,8 @@
   const isTransient = value => isTransientCell(value) || isMapTransient(value) || transientSetOf(value) !== undefined;
   //@unit transientCells requires: isTransient
   // The transients, which are all classes, as an entry of the store
-  // inventories (`protocolStores`).
-  const transientCells = Object.freeze({has: isTransient, classKinds: [4, 31, 32, 34]});
+  // inventories (`protocolStores`), as `vectorCells`.
+  const transientCells = Object.freeze({has: isTransient});
   //@unit IteratorSeqCell
   // A seq of a host iterable's iterator, upstream's ES6IteratorSeq, kind 37
   // (`iteratorSeqs`, light-cljs-1013): its own keyed fields are its `first`
@@ -719,7 +719,6 @@
   // The iterator seqs (`IteratorSeqCell`): `has` tells one by its kind and
   // own `iter` field, `get` gives it.
   const iteratorSeqs = {
-    classKinds: [37],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 37 && "iter$LKEY" in value,
     get(value) { if (iteratorSeqs.has(value)) return value; }
   };
@@ -732,7 +731,6 @@
   // The reduced values (`ReducedCell`): `has` tells one by its kind and own
   // `val` field, which `get` reads and `reset` replaces.
   const reducedValues = {
-    classKinds: [35],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 35 && "val$LKEY" in value,
     get(value) { if (reducedValues.has(value)) return value.val$LKEY; },
     reset(value, val) { value.val$LKEY = val; }
@@ -784,7 +782,6 @@
   // readers read. The Pants build's profile swaps it for one that also
   // reads the engine's vars, whose fields it gives in a fresh object.
   const vars = {
-    classKinds: [45],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 45 && (value.sym$LKEY !== undefined || "sym$LKEY" in value),
     get(value) { if (vars.has(value)) return value; }
   };
@@ -797,8 +794,8 @@
   // The atoms and the volatiles (light-cljs-1013): instances of `Atom` and
   // `Volatile`, whose prototypes' keyed kinds are 38 and 39, with their own
   // `state` field, upstream's.
-  const atoms = {has: isAtomCell, classKinds: [38]},
-    volatiles = {has: value => value != null && value.cljs$lang$kind$$LKEY === 39 && "state" in value, classKinds: [39]};
+  const atoms = {has: isAtomCell},
+    volatiles = {has: value => value != null && value.cljs$lang$kind$$LKEY === 39 && "state" in value};
   //@unit QueueCell
   // A queue, upstream's PersistentQueue, with `PersistentQueueValue`'s
   // prototype, kind 36 (`queues`, light-cljs-1013): its own keyed field
@@ -809,7 +806,6 @@
   // The queues (`QueueCell`): `has` tells one by its kind and own `arr`
   // field, `get` reads its items.
   const queues = {
-    classKinds: [36],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 36 && value.arr$LKEY !== undefined,
     get(value) { if (queues.has(value)) return value.arr$LKEY; }
   };
@@ -822,7 +818,6 @@
   // The delays (`DelayCell`): `has` tells one by its kind and own field,
   // `get` reads its state.
   const delays = {
-    classKinds: [40],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 40 && value.state$LKEY !== undefined,
     get(value) { if (delays.has(value)) return value.state$LKEY; }
   };
@@ -853,7 +848,6 @@
   // The functions with metadata (`MetaFnCell`): `has` tells one by its kind
   // and own `afn` field, `get` reads the function it calls.
   const metaFunctions = {
-    classKinds: [46],
     has: value => value != null && value.cljs$lang$kind$$LKEY === 46 && value.afn$LKEY !== undefined,
     get(value) { if (metaFunctions.has(value)) return value.afn$LKEY; }
   };
@@ -870,9 +864,9 @@
   }
   //@unit recordCells
   // The records (kind 65, `recordTypeOf`) as an entry of the store
-  // inventories (`storesPredicate`, `protocolStores`), as `vectorCells`: the
-  // native tests that answered a record as a map answer it by its kind.
-  const recordCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 65, classKinds: [65]});
+  // inventories (`protocolStores`), as `vectorCells`: the native tests that
+  // answered a record as a map answer it by its kind.
+  const recordCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 65});
   //@unit isTypeValue
   // Whether a value is of a program's type, record or `reify` (kinds 64 to
   // 66, `kinds`).
@@ -880,7 +874,7 @@
   //@unit reifyCells
   // The `reify` values (kind 66, `kinds`), as an entry of the store
   // inventories: they implement `IMeta` natively.
-  const reifyCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 66, classKinds: [66]});
+  const reifyCells = Object.freeze({has: value => value != null && value.cljs$lang$kind$$LKEY === 66});
   //@unit protocolHooks
   // Generic operations' protocol dispatch, empty unless `installMethods` is kept.
   const protocolHooks = {};
@@ -10462,43 +10456,28 @@
   function nextValue(value) {
     return isCell(value) || isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value);
   }
-  //@unit kindTable
-  // Each store of `stores` at the keyed kinds of the classes whose values it
-  // holds (its `classKinds`), by the kind's number, else null: every store
-  // of the inventories (`storesPredicate`, `protocolStores`) is a class's
-  // kind test, and a value is in one store at most, its class's, whose test
-  // then tells it from a value made by reflection from the class's
-  // prototype, so an inventory tests one store where it probed each in turn
-  // (light-cljs-1046). Dense, so that no index a host gives
-  // `Array.prototype` is read (`storeHolds`). A store without `classKinds`
-  // (the Pants build's profile swaps some for ones that hold engine forms,
-  // which have no kind) is in no entry.
-  function kindTable(stores) {
-    const table = Array(128).fill(null);
-    for (const store of stores) for (const kind of store.classKinds ?? []) table[kind] = store;
-    return table;
-  }
-  //@unit storeHolds
-  // Whether the store of `table` (`kindTable`) for the keyed kind `kind`
-  // holds `value`: a kind that is no number from 0 to 127 has none.
-  function storeHolds(table, value, kind) {
-    if ((kind & 127) !== kind) return false;
-    const store = table[kind];
-    return store !== null && store.has(value);
-  }
-  //@unit storesPredicate requires: canHoldField, kindTable, storeHolds
-  // Whether a value is in one of the stores of `inventory`, which is fixed:
-  // one read of its keyed kind and the test of its class's store, where
-  // that is in the inventory (`kindTable`). No store holds a value that
-  // cannot hold a field. The Pants build's profile, whose engine forms have
-  // no kind, probes the stores in turn.
-  function storesPredicate(...inventory) {
-    const table = kindTable(inventory);
-    return value => canHoldField(value) && storeHolds(table, value, value.cljs$lang$kind$$LKEY);
-  }
-  //@unit seqableValue requires: chunkedConsCells, iteratorSeqs, lazyCells, maps, queues,
-  //@ recordCells, seqCells, sets, storesPredicate, vectorCells, viewCells
-  const seqableValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, iteratorSeqs, recordCells);
+  //@unit kindIn
+  // Whether a keyed kind is in a fixed set of kinds, given by the bits of
+  // kinds 0 to 31 (`low`), 32 to 63 (`high`) and 64 to 95 (`program`, so a
+  // record's 65 is its bit 1 and a `reify`'s 66 its bit 2): a kind that is
+  // no number from 0 to 95 is in none. The store inventories (`kindPredicate`)
+  // and the runtime's own values (`ownedKind`) are such sets since
+  // light-cljs-1079, where a table of their stores by kind (`kindTable`)
+  // asked the class's store, which also told a value of the class from one
+  // made by reflection from its prototype (light-cljs-1046): such a value
+  // is in them as its class's are, as it declares its class's mask bits
+  // (docs/value-layout.md, section 5). The Pants build's profile, whose
+  // engine forms have no kind, probes its stores in turn.
+  const kindIn = (kind, low, high, program) => (kind & 127) === kind && ((kind < 32 ? low : kind < 64 ? high : kind < 96 ? program : 0) >>> kind & 1) === 1;
+  //@unit kindPredicate requires: canHoldField, kindIn
+  // Whether a value's keyed kind is in the set of `kindIn`'s bits: one read
+  // of the kind. No value that cannot hold a field has one.
+  const kindPredicate = (low, high, program) => value => canHoldField(value) && kindIn(value.cljs$lang$kind$$LKEY, low, high, program);
+  //@unit seqableValue requires: collectionValue, iteratorSeqs
+  // `collectionValue`'s kinds, and an iterator seq by its store, which tells
+  // one from a value made by reflection: an iterator seq is not the
+  // runtime's own (`ownedKind`), so `extend-type` of `object` reaches it.
+  const seqableValue = value => collectionValue(value) || iteratorSeqs.has(value);
   //@unit indexedValue requires: cellOf, chunkOf, holdsVector, isTransientCell, transientState,
   //@ viewOf
   function indexedValue(value) {
@@ -10513,9 +10492,13 @@
   const lookupValue = value => isTransient(value) || holdsVector(value) || maps.has(value) || sets.has(value) || recordCells.has(value);
   //@unit associativeValue requires: holdsVector, maps, recordCells
   const associativeValue = value => holdsVector(value) || maps.has(value) || recordCells.has(value);
-  //@unit collectionValue requires: chunkedConsCells, lazyCells, maps, queues, recordCells,
-  //@ seqCells, sets, storesPredicate, vectorCells, viewCells
-  const collectionValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, recordCells);
+  //@unit collectionValue requires: kindPredicate
+  // The kinds of the vectors (1 to 3), the seqs over an array or a string (5
+  // to 10), the cells (11 to 15, 22 to 27), the lazy seqs and chunked conses
+  // (16, 17), the maps (28 to 30), the sets (33, 44), the queues (36) and
+  // the records (65): the stores it tested, which are the runtime's own
+  // (`ownedKind`).
+  const collectionValue = kindPredicate(2143551470, 4114, 2);
   //@unit emptyableValue requires: collectionValue, recordCells
   const emptyableValue = value => !recordCells.has(value) && collectionValue(value);
   //@unit editableValue requires: comparatorOf, holdsVector, isEntryCell, maps, recordCells, sets
@@ -10538,8 +10521,11 @@
   //@unit ifnValue requires: holdsVector, ifnMethods, isIdent, isTransient, maps, multiFns,
   //@ recordCells, sets, vars
   const ifnValue = value => multiFns.has(value) || isTransient(value) || !!ifnMethods(value) || isIdent(value) || holdsVector(value) || (maps.has(value) && !recordCells.has(value)) || sets.has(value) || vars.has(value);
-  //@unit fnValue requires: metaFunctions, vars
-  const fnValue = value => metaFunctions.has(value) || vars.has(value);
+  //@unit fnValue requires: kindPredicate
+  // The vars (45) and the functions with metadata (46), by kind as
+  // `seqableValue`: the `satisfies` hooks keep its answer by kind
+  // (`protocolMethodInfo`'s `kinds`) for a value that `ownedKind` holds.
+  const fnValue = kindPredicate(0, 24576, 0);
   //@unit multiFnValue requires: multiFns
   const multiFnValue = value => multiFns.has(value);
   //@unit transientValue requires: isTransient
@@ -10567,14 +10553,13 @@
     if (cell !== undefined) return cell.integer$LKEY === true || cell.cell$LKEY === "repeat";
     return !isLazy(value) && (mapKinds.get(value) === "array-map" || holdsVector(value) || ["indexed", "chunked", "array-map"].includes(viewOf(value)?.view$LKEY));
   };
-  //@unit metaValue requires: atoms, chunkedConsCells, lazyCells, maps, metaFunctions, queues,
-  //@ recordCells, reifyCells, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells,
-  //@ viewCells
-  const metaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, atoms, metaFunctions, reifyCells, recordCells);
-  //@unit withMetaValue requires: chunkedConsCells, lazyCells, maps, metaFunctions, queues,
-  //@ recordCells, reifyCells, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells,
-  //@ viewCells
-  const withMetaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, metaFunctions, reifyCells, recordCells);
+  //@unit metaValue requires: kindPredicate
+  // `collectionValue`'s kinds and the symbols' (21), the atoms' (38), the
+  // vars' (45), the functions with metadata's (46) and `reify`'s (66).
+  const metaValue = kindPredicate(2145648622, 28754, 6);
+  //@unit withMetaValue requires: kindPredicate
+  // `metaValue`'s kinds but the atoms'.
+  const withMetaValue = kindPredicate(2145648622, 28690, 6);
   //@unit instValue
   const instValue = value => value instanceof Date;
   //@unit uuidImplementation requires: uuids
@@ -10719,7 +10704,7 @@
   //@unit multiFns
   // The multimethods: instances of `MultiFn`, whose prototype's keyed kind
   // is 41 (light-cljs-1013), with their own `dispatch_fn` field.
-  const multiFns = {has: value => value != null && value.cljs$lang$kind$$LKEY === 41 && "dispatch_fn" in value, classKinds: [41]};
+  const multiFns = {has: value => value != null && value.cljs$lang$kind$$LKEY === 41 && "dispatch_fn" in value};
   //@unit makeHierarchy requires: arrayMapFromArray, invalidArity, keyword
   function makeHierarchy() {
     if (arguments.length) return invalidArity(arguments.length);
@@ -11932,23 +11917,24 @@
   //@unit protocolStores requires: atoms, chunkedConsCells, delays, keywordCells, lazyCells, maps,
   //@ metaFunctions, multiFns, queues, recordCells, reducedValues, seqCells, sets, symbolCells,
   //@ transientCells, vars, vectorCells, viewCells, volatiles
+  // The stores of the runtime's own values, which the Pants build's profile
+  // probes in turn (its `ownedProtocolValue`); the V8 profile tests their
+  // classes' kinds (`ownedKind`).
   const protocolStores = [multiFns, transientCells, keywordCells, symbolCells, vectorCells, maps, recordCells, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
-  //@unit ownedStores requires: kindTable, protocolStores
-  // The stores of `protocolStores` by kind (`kindTable`): the runtime's own
-  // values to the protocol lookups (`ownedKind`), which a record is and an
-  // iterator seq, a `reify`, a uuid, an eduction, a chunk, a chunk buffer
-  // and a string writer are not.
-  const ownedStores = kindTable(protocolStores);
-  //@unit ownedKind requires: ownedStores, storeHolds
-  // Whether a value whose keyed kind is `kind` is in its class's store of
-  // `protocolStores` (`ownedStores`).
-  const ownedKind = (value, kind) => storeHolds(ownedStores, value, kind);
+  //@unit ownedKind requires: kindIn
+  // Whether a keyed kind is one of the runtime's own values' to the protocol
+  // lookups: the kinds of the classes of `protocolStores` (1 to 17, 20 to
+  // 36, 38 to 41, 44 to 46 and the records' 65), which an iterator seq (37),
+  // a chunk (18), a chunk buffer (19), a uuid (42), an eduction (43), a
+  // string writer (47), an `ExceptionInfo` (48), a `deftype`'s value and a
+  // `reify` are not, so `extend-type` of `object` or `default` still reaches
+  // them (light-cljs-1046). By kind alone since light-cljs-1079 (`kindIn`).
+  const ownedKind = kind => kindIn(kind, -786434, 29663, 2);
   //@unit ownedProtocolValue requires: canHoldField, ownedKind
-  // Whether a value is in a store of `protocolStores`, by one read of its
-  // keyed kind and the test of its class's store (`ownedKind`), as
-  // `storesPredicate` tests its inventory. The Pants build's profile, whose
-  // engine forms have no kind, probes the stores in turn.
-  const ownedProtocolValue = value => canHoldField(value) && ownedKind(value, value.cljs$lang$kind$$LKEY);
+  // Whether a value is one of the runtime's own (`ownedKind`), by one read of
+  // its keyed kind. The Pants build's profile, whose engine forms have no
+  // kind, probes the stores of `protocolStores` in turn.
+  const ownedProtocolValue = value => canHoldField(value) && ownedKind(value.cljs$lang$kind$$LKEY);
   //@unit demandKey requires: demandMethod
   // The declaration demand of a method's resolved key (`methodKey`), for an
   // operation that reads the method's slot itself (`get`).
@@ -12003,16 +11989,16 @@
   }
   //@unit runtimeKind requires: ownedKind
   // The keyed kind of a value of the runtime's classes (a kind below 64)
-  // that its class's store holds (`ownedKind`), else 0: what the protocol
+  // that is the runtime's own (`ownedKind`), else 0: what the protocol
   // lookups (`extendedMethod`, the `satisfies` and `implements` hooks) test
   // for it in one step, where they probed the payload stores in turn
-  // (`payloadStore`, removed in light-cljs-1046). A host value, a value of
-  // a program type and one made by reflection from a class's prototype
-  // have none.
+  // (`payloadStore`, removed in light-cljs-1046). A host value and a value
+  // of a program type have none; one made by reflection from a class's
+  // prototype has its class's since light-cljs-1079.
   const runtimeKind = value => {
     if (value == null) return 0;
     const kind = value.cljs$lang$kind$$LKEY;
-    return kind < 64 && ownedKind(value, kind) ? kind : 0;
+    return kind < 64 && ownedKind(kind) ? kind : 0;
   };
   //@unit storeNativeProtocols
   // The core protocols of `protocolMethodInfo`'s `kinds`.
@@ -12079,13 +12065,16 @@
       // (light-cljs-1075).
       fn = known === undefined && typeof value === "function" && slotFirst.on;
       // A runtime class's value whose class has a mask in the protocol's
-      // partition without its bit is not in a protocol that `kinds` holds,
-      // as the `satisfies` hook answers it (light-cljs-1070): its native
-      // test, the same for every value of the class, is false, and a value
-      // made by reflection, which no store holds, answered nothing below
-      // (`satisfies` reads the mask) (light-cljs-1075).
-      if (known < 64 && kinds && mask) { const bits = value[mask[0]]; if (bits && !(bits & mask[1])) return undefined; }
-      const kind = known < 64 && ownedKind(value, known) ? known : 0;
+      // partition answers a protocol that `kinds` holds by its bit, as the
+      // `satisfies` hook answers it (light-cljs-1070): without it, it is not
+      // in the protocol (light-cljs-1075); with it, its native test, the
+      // same for every value of the class, is true, and its slot is the
+      // only method (light-cljs-1079). The kind's answer (`kinds`) is then
+      // only ever a class's without masks: a value made by reflection from
+      // a class's prototype is the runtime's own by its kind (`ownedKind`),
+      // and its native test, which reads its fields, would answer false.
+      if (known < 64 && kinds && mask) { const bits = value[mask[0]]; if (bits) return bits & mask[1] ? keyMethod(value, key, arity) || undefined : undefined; }
+      const kind = known < 64 && ownedKind(known) ? known : 0;
       if (kind) {
         // A protocol whose native test differs within a class (an indexed
         // seq's `IIndexed`, by its `view`): no slot, no method, before the
@@ -15025,16 +15014,18 @@
   // in the protocol's partition is not in a protocol that `kinds` holds by
   // kind where its bit is clear (`IndexedSeqValue.masks`): the native test
   // of such a protocol, the same for every value of the class, is false,
-  // and a value made by reflection from the prototype, which no store
-  // holds, answered false at the mask as well. Else a value of the
-  // runtime's classes (its class's store holds it, `ownedKind`) is in the
+  // and a value made by reflection from the prototype answers false at
+  // the mask as well. Else a value of the runtime's classes (by its kind,
+  // `ownedKind`, one made by reflection too since light-cljs-1079) is in the
   // protocol where its native test answers, by kind where `kinds` holds it,
   // as the value is the runtime's own (`ownedProtocolValue`), which
   // `extend-type` of host types, `object` or `default` cannot reach
   // (light-cljs-998); any other value takes `satisfies`'s native test and
   // host tables, without reading the mask bit or the marker again.
   // For a protocol that `kinds` holds, whose native test reads only the
-  // stores, which hold neither nil nor a primitive and hold a program
+  // stores or the kind (light-cljs-1079: of a class without masks, the
+  // only one that reaches its answer by kind, `metaValue` and `fnValue`
+  // read only the kind), which hold neither nil nor a primitive and hold a program
   // type's value (a keyed kind from 64 to 127) by its kind alone
   // (`recordCells`), the native test is not asked of nil or a primitive,
   // and is asked once per program type's kind; a protocol without a mask
@@ -15051,10 +15042,10 @@
       if (value[info.marker] === protocolSentinel) return true;
       const kind = value.cljs$lang$kind$$LKEY;
       if (kind < 64 && kinds && (mask ? value[mask[0]] : value.cljs$lang$protocol_mask$partition0$$LKEY)) return false;
-      if (kind < 64 && ownedKind(value, kind)) return kinds ? kinds[kind] ?? (kinds[kind] = !!native(value)) : !!native?.(value);
+      if (kind < 64 && ownedKind(kind)) return kinds ? kinds[kind] ?? (kinds[kind] = !!native(value)) : !!native?.(value);
       if (kinds && kind >= 64 && kind < 128) {
         if (kinds[kind] ?? (kinds[kind] = !!native(value))) return true;
-        if (ownedKind(value, kind) || mask && value[mask[0]]) return false;
+        if (ownedKind(kind) || mask && value[mask[0]]) return false;
         return hostSatisfies(info, value);
       }
     }
@@ -15089,7 +15080,7 @@
       if (value[info.marker] === protocolSentinel) return true;
       const kind = value.cljs$lang$kind$$LKEY;
       if (kind < 64 && kinds && mask && value[mask[0]]) return false;
-      if (kinds && kind < 64 && ownedKind(value, kind)) return kinds[kind] ?? (kinds[kind] = !!native(value));
+      if (kinds && kind < 64 && ownedKind(kind)) return kinds[kind] ?? (kinds[kind] = !!native(value));
     }
     return !!native?.(value);
   };

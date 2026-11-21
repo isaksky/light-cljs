@@ -1641,6 +1641,26 @@
   // which this profile's engine forms do not have: here the stores of
   // `protocolStores` are probed in turn, as before.
   const ownedProtocolValue = storesPredicate(...protocolStores);
+  //@unit seqableValue requires: chunkedConsCells, iteratorSeqs, lazyCells, maps, queues,
+  //@ recordCells, seqCells, sets, storesPredicate, vectorCells, viewCells
+  // The V8 profile's store inventories test the keyed kind (`kindPredicate`,
+  // light-cljs-1079), as `ownedProtocolValue`: here their stores are probed
+  // in turn, as before.
+  const seqableValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, iteratorSeqs, recordCells);
+  //@unit collectionValue requires: chunkedConsCells, lazyCells, maps, queues, recordCells,
+  //@ seqCells, sets, storesPredicate, vectorCells, viewCells
+  const collectionValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, recordCells);
+  //@unit metaValue requires: atoms, chunkedConsCells, lazyCells, maps, metaFunctions, queues,
+  //@ recordCells, reifyCells, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells,
+  //@ viewCells
+  const metaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, atoms, metaFunctions, reifyCells, recordCells);
+  //@unit withMetaValue requires: chunkedConsCells, lazyCells, maps, metaFunctions, queues,
+  //@ recordCells, reifyCells, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells,
+  //@ viewCells
+  const withMetaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, metaFunctions, reifyCells, recordCells);
+  //@unit fnValue requires: metaFunctions, vars
+  // This profile's `vars` also hold the engine's vars, which have no kind.
+  const fnValue = value => metaFunctions.has(value) || vars.has(value);
   //@unit demungePattern requires: demungeCharacters
   // The source of the V8 profile's global `RegExp`, a string: a regex
   // object is exotic data a seal cannot take, and an engine regex form
