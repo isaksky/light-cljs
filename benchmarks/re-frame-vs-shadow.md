@@ -1915,7 +1915,7 @@ Every byte over the gate is in one of two pellets, run in this order:
 ## 2026-11-21: the fallbacks' shared steps (light-cljs-1078)
 
 light-cljs-1049 left the core operations' 19 fallbacks (`countOf`, `nthOf`, ...) repeating the same cold steps. light-cljs-1078 shares them (docs/value-layout.md, "What light-cljs-1078 landed"):
-- one function reads a runtime class's slot and then the protocol lookup (`fallbackMethod`), for nine of them;
+- one function reads a runtime class's slot and then the protocol lookup (`fallbackMethod`), for eight of them;
 - one function throws their "not supported on this type" errors (`unsupported`);
 - the operations' own paths that a compiler session sets are put in front of sixteen of them by effects that an `Advanced` slice does not keep, where each tested them itself.
 
@@ -1942,4 +1942,4 @@ bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
 - **Raw:** the whole bundles are 1,772, 1,784 and 1,831 bytes smaller. brotli -q 11: simple -75, TodoMVC -275, flow +229.
 - **light-cljs's output as written**, without React, after gzip: simple 68,580 to 68,399 (-181), TodoMVC 98,039 to 97,874 (-165), flow 281,360 to 281,178 (-182).
 - **Against the expectation** of 600 to 1,000 bytes per app: about a fifth to a third of it. The removed text was the most repeated in the fallbacks, so gzip had already shared most of it: 1.8 KB raw is about 190 bytes after gzip. What is left in the fallbacks is each operation's own steps (the seq walk of `nthOf`, `countOf`'s and `reduceOf`'s kinds).
-- **Ratchet fixtures at `:advanced`** (tests/support/ratchet_fixtures.rs): no fixture grows, and those that keep several fallbacks shrink 71 to 1,159 bytes raw. A fallback that reads only its class's slot (`countOf`, `equalPairOf`, `hashOf`) keeps its own read: through the shared function, the programs that keep only those grew 17 to 90 bytes.
+- **Ratchet fixtures at `:advanced`** (tests/support/ratchet_fixtures.rs): no fixture grows, and the 20 that keep several fallbacks shrink 71 to 1,062 bytes raw. A fallback that reads only its class's slot (`countOf`, `equalPairOf`, `hashOf`) keeps its own read: through the shared function, the programs that keep only those grew 17 to 90 bytes. `reduceOf` keeps its own read too, of the kind it reads once (the Sol review), 97 bytes where `reduce` is kept.

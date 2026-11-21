@@ -5949,3 +5949,32 @@ fn fallbacks_share_their_cold_steps() {
         "{kept:?}"
     );
 }
+
+/// The shared steps read a host value's members as each path did (the Sol
+/// review of light-cljs-1078): a Proxy over an array counts every property
+/// read of each fallback, and `reduce` reads the keyed kind once. Master
+/// `15fc27ba`'s counts at each level, where the slices differ.
+#[test]
+fn fallbacks_read_a_host_value_as_before() {
+    let program = program(
+        r#"(let [reads (atom 0)
+               mk (fn [] (js/Proxy. #js [1 2] #js {:get (fn [t k r] (swap! reads inc) (js/Reflect.get t k r))}))
+               c (fn [f] (reset! reads 0) (let [v (try (pr-str (f (mk))) (catch :default e "E"))] [v @reads]))]
+           (pr-str [(c #(reduce + 0 %)) (c #(reduce + %)) (c #(reduce-kv (fn [a _ x] (+ a x)) 0 %)) (c count) (c #(nth % 1))
+                    (c #(nth % 5 :nf)) (c #(get % 1)) (c #(conj % 3)) (c #(assoc % 0 9)) (c #(dissoc % 0)) (c #(disj % 1))
+                    (c peek) (c pop) (c first) (c rest) (c next) (c seq) (c #(= % [1 2])) (c hash) (c #(contains? % 0))]))"#,
+    );
+    let printed: Vec<String> = OptimizationLevel::ALL
+        .into_iter()
+        .map(|level| {
+            let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+            execute(&format!("console.log({js});"))
+        })
+        .collect();
+    let expected = [
+        r#"[["3" 15] ["3" 15] ["E" 28] ["2" 6] ["2" 7] [":nf" 6] ["2" 7] ["E" 8] ["E" 4] ["E" 4] ["E" 4] ["E" 4] ["E" 4] ["1" 12] ["(2)" 15] ["(2)" 20] ["(1 2)" 13] ["false" 6] ["1" 14] ["true" 23]]"#,
+        r#"[["3" 15] ["3" 15] ["E" 28] ["2" 6] ["2" 7] [":nf" 6] ["2" 7] ["E" 8] ["E" 4] ["E" 4] ["E" 4] ["E" 4] ["E" 4] ["1" 12] ["(2)" 15] ["(2)" 20] ["(1 2)" 13] ["false" 6] ["1" 14] ["true" 23]]"#,
+        r#"[["3" 9] ["3" 9] ["E" 8] ["2" 3] ["2" 5] [":nf" 4] ["2" 5] ["E" 7] ["E" 3] ["E" 3] ["E" 2] ["E" 2] ["E" 2] ["1" 6] ["(2)" 9] ["(2)" 11] ["(1 2)" 10] ["false" 2] ["1" 2] ["true" 7]]"#,
+    ];
+    assert_eq!(printed, expected.map(|line| format!("{line}\n")));
+}

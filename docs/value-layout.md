@@ -2336,11 +2336,14 @@ are unchanged.
   holds nil or false, else what the hook the caller reads
   (`protocolHooks.builtin` or `protocolHooks.programMethod`) gives for
   `methodKeys[n]`: `assocOf`, `conjOf`, `disjOf`, `dissocOf`, `peekOf`
-  and `popOf` with the builtin lookup, `nthOf`, `reduceOf` and
-  `reduceKvOf` with the program's. Each still gives its nil, array and
+  and `popOf` with the builtin lookup, `nthOf` and `reduceKvOf` with
+  the program's. Each still gives its nil, array and
   string answers first, in its own order. `countOf`, `equalPairOf` and
   `hashOf`, which read the class's slot alone, keep their own read, so a
-  small program that keeps only them does not grow. `unsupported(name)`
+  small program that keeps only them does not grow; so does `reduceOf`,
+  whose later steps read the kind it read first, which `fallbackMethod`
+  would read again (a host Proxy counts every read: the Sol review,
+  `fallbacks_read_a_host_value_as_before`). `unsupported(name)`
   throws the "not supported on this type" errors, with the same texts.
 - **The own paths in front, not inside.** Where a compiler session that
   demands declarations or the shared-heap profile sets the operations' own

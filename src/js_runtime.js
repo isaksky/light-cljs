@@ -2711,8 +2711,7 @@
     }
     return reduceOf(rf, init, collection);
   }
-  //@unit reduceOf requires: fallbackMethod, iterator, iterReduce, methodKeys, protocolHooks,
-  //@ reduceWalk, seqReduce
+  //@unit reduceOf requires: iterator, iterReduce, methodKeys, protocolHooks, reduceWalk, seqReduce
   // Upstream's `reduce` of a value without a `-reduce` slot holding a
   // method: a value of a runtime class whose instance slot holds nil or
   // false takes its class's slot, as the old path answered by the class; a
@@ -2731,7 +2730,13 @@
   function reduceOf(rf, init, collection) {
     const arity = arguments.length, source = arity === 3 ? collection : init, kind = source?.cljs$lang$kind$$LKEY;
     if (arity === 2) init = undefined;
-    const own = fallbackMethod(source, arity === 3 ? "cljs$core$IReduce$_reduce$arity$3$LKEY" : "cljs$core$IReduce$_reduce$arity$2$LKEY", protocolHooks.programMethod, 44, arity, true);
+    // The kind read above, once: `fallbackMethod` would read it again.
+    if (kind < 64) {
+      const prototype = Object.getPrototypeOf(source);
+      const method = arity === 3 ? prototype?.cljs$core$IReduce$_reduce$arity$3$LKEY : prototype?.cljs$core$IReduce$_reduce$arity$2$LKEY;
+      if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
+    }
+    const own = protocolHooks.programMethod?.(source, methodKeys[44], arity, true);
     if (own) return arity === 3 ? own.call(source, source, rf, init) : own.call(source, source, rf);
     if (Array.isArray(source) || typeof source === "string") return reduceWalk(source, rf, init, arity);
     if (kind < 32) {
