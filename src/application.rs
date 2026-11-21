@@ -208,12 +208,13 @@ pub struct PreparedApplication {
     direct_methods: HashMap<ExprId, String>,
     /// `Advanced`: whether the program names `getBasis` (`crate::rta`).
     type_basis: bool,
-    /// `Advanced`: the first expression that names an upstream field or
-    /// method of the runtime's types (`crate::rta`).
-    upstream_member: Option<ExprId>,
-    /// `Advanced`: the first expression that names a static of the
+    /// `Advanced`: the first expression that names `EMPTY`, a static of the
     /// runtime's types (`crate::rta`).
     type_static: Option<ExprId>,
+    /// `Advanced`: the flag units of the upstream members and other statics
+    /// of the runtime's types that the program names, each with the first
+    /// expression naming it (`crate::rta`).
+    member_units: Vec<(&'static str, ExprId)>,
     /// `Advanced`: the units that install the record methods whose slots
     /// the program names, each with the first expression naming one
     /// (`crate::rta`).
@@ -321,8 +322,8 @@ impl PreparedApplication {
             methods: advanced.then_some(&self.direct_methods),
             entries: advanced.then_some(&self.entry_lookups),
             basis: !advanced || self.type_basis,
-            upstream_member: self.upstream_member.filter(|_| advanced),
             type_static: self.type_static.filter(|_| advanced),
+            member_units: if advanced { &self.member_units } else { &[] },
             record_methods: if advanced { &self.record_methods } else { &[] },
             protocol_declarations: if advanced {
                 &self.protocol_declarations
@@ -570,8 +571,8 @@ pub fn prepare_owned_application(
         direct_methods: HashMap::new(),
         entry_lookups: HashMap::new(),
         type_basis: true,
-        upstream_member: None,
         type_static: None,
+        member_units: Vec::new(),
         record_methods: Vec::new(),
         protocol_declarations: Vec::new(),
         loadable_members: Vec::new(),
@@ -689,8 +690,8 @@ pub fn prepare_owned_application(
         let rewrite = analysis.apply(&mut prepared.program, &mut prepared.globals, &candidates);
         prepared.direct_methods = analysis.direct_calls().clone();
         prepared.type_basis = analysis.names_basis();
-        prepared.upstream_member = analysis.names_upstream_member();
         prepared.type_static = analysis.names_type_static();
+        prepared.member_units = analysis.named_member_units().to_vec();
         prepared.record_methods = analysis.named_record_methods().to_vec();
         prepared.protocol_declarations = analysis.named_protocol_declarations().to_vec();
         prepared.loadable_members = analysis.named_loadable_members().to_vec();

@@ -12,6 +12,7 @@ use light_cljs::runtime_manifest::{
     ANNOTATED_RUNTIME, ECMASCRIPT_GLOBALS, ENGINE_INTRINSICS, RUNTIME, RootUse, RuntimeManifest,
     SHARED_ANNOTATED_RUNTIME, SHARED_PROFILE, SHARED_RUNTIME, UnitId, is_header_line,
 };
+use light_cljs::runtime_slice::{TYPE_STATICS, UPSTREAM_MEMBERS};
 
 fn manifest() -> &'static RuntimeManifest<'static> {
     RuntimeManifest::embedded()
@@ -415,26 +416,23 @@ fn hidden_edges_and_stale_requires_in_the_runtime_fail_validation() {
             .map(|error| error.message)
             .collect::<Vec<_>>()
     };
-    let unit = "  //@unit transient requires: asTransientProtocol\n  function transient(value) { return asTransientProtocol(value); }\n";
+    let unit = "  //@unit popBang requires: popBangProtocol\n  function popBang(value) { return popBangProtocol(value); }\n";
     assert!(ANNOTATED_RUNTIME.contains(unit));
     // A new reference to the printer is a hidden edge until it is declared.
     let hidden = ANNOTATED_RUNTIME.replace(
         unit,
-        &unit.replace(
-            "return asTransientProtocol",
-            "print; return asTransientProtocol",
-        ),
+        &unit.replace("return popBangProtocol", "print; return popBangProtocol"),
     );
     assert_eq!(
         messages(&hidden),
-        ["unit `transient`: references `print` (declared by unit `print`) but does not require it"]
+        ["unit `popBang`: references `print` (declared by unit `print`) but does not require it"]
     );
     // A local that shadows a runtime binding is not an edge.
     let shadowed = ANNOTATED_RUNTIME.replace(
         unit,
         &unit.replace(
-            "return asTransientProtocol",
-            "const print = 1; return print && asTransientProtocol",
+            "return popBangProtocol",
+            "const print = 1; return print && popBangProtocol",
         ),
     );
     RuntimeManifest::parse(&shadowed)
@@ -442,11 +440,10 @@ fn hidden_edges_and_stale_requires_in_the_runtime_fail_validation() {
         .validate()
         .unwrap();
     // Dropping a reference leaves a stale require.
-    let stale =
-        ANNOTATED_RUNTIME.replace(unit, &unit.replace("asTransientProtocol(value)", "value"));
+    let stale = ANNOTATED_RUNTIME.replace(unit, &unit.replace("popBangProtocol(value)", "value"));
     assert_eq!(
         messages(&stale),
-        ["unit `transient`: requires `asTransientProtocol` but never references it"]
+        ["unit `popBang`: requires `popBangProtocol` but never references it"]
     );
 }
 
@@ -530,11 +527,13 @@ fn undeclared_load_time_effects_fail_validation() {
         ["unit `write`: calls mutator `coreMethod` while loading but is not marked `effect`"]
     );
     // Calling a mutator inside a function body is not a load-time effect.
-    let unit = "  //@unit transient requires: asTransientProtocol\n  function transient(value) { return asTransientProtocol(value); }\n";
+    let unit = "  //@unit popBang requires: popBangProtocol\n  function popBang(value) { return popBangProtocol(value); }\n";
+    assert!(ANNOTATED_RUNTIME.contains(unit));
     let deferred = ANNOTATED_RUNTIME.replace(
         unit,
-        "  //@unit transient requires: asTransientProtocol, installMethods\n  function transient(value) { installMethods(value, []); return asTransientProtocol(value); }\n",
+        "  //@unit popBang requires: installMethods, popBangProtocol\n  function popBang(value) { installMethods(value, []); return popBangProtocol(value); }\n",
     );
+    assert_ne!(deferred, ANNOTATED_RUNTIME);
     RuntimeManifest::parse(&deferred)
         .unwrap()
         .validate()
@@ -704,14 +703,50 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
     assert_eq!(sliced, expected);
 }
 
+/// The names of `names` ([`UPSTREAM_MEMBERS`], or [`TYPE_STATICS`] but
+/// `EMPTY`) that a unit's text defines, each named as a
+/// string (`"has-nil?"` in a field list), an object key (`first: "..."`),
+/// an accessor or method of an object literal (`get xform()`, `sval() {`)
+/// or an assigned property (`.forceChunk = `, `.fromArray = `).
+fn defined_members(body: &str, names: &[&'static str]) -> Vec<&'static str> {
+    names
+        .iter()
+        .copied()
+        .filter(|&name| name != "EMPTY")
+        .filter(|name| {
+            let written = name.replace("_QMARK_", "?");
+            let written = if name.starts_with('_') {
+                written
+            } else {
+                written.replace('_', "-")
+            };
+            [
+                format!("\"{written}\""),
+                format!("{name}: \""),
+                format!("get {name}()"),
+                format!("\n    {name}("),
+                format!(".{name} = "),
+            ]
+            .iter()
+            .any(|pattern| {
+                let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+                body.match_indices(pattern.as_str()).any(|(at, _)| {
+                    // `meta: "` within `_meta: "` is not the key `meta`.
+                    !pattern.starts_with(word) || !body[..at].ends_with(word)
+                })
+            })
+        })
+        .collect()
+}
+
 /// Units the export list does not reach; any other unreached unit is dead
 /// code. The compiler, macro host and REPL reach the `compile-time` units
 /// through the shared runtime's exports (`compilerForms`, `compilerFormBridge`,
 /// `setDeclarationDemand`, ...), and `core` reaches the reader and the
 /// namespace registry; a pellet that stops exporting compile-time machinery
-/// lists its units here. `upstreamMembers` is the condition of the types'
-/// `.fields` effects, which only an `Advanced` program that names one of
-/// `UPSTREAM_MEMBERS` roots (light-cljs-238). (`defineType`, which decorates the
+/// lists its units here. The flags of `UPSTREAM_MEMBERS` are the conditions
+/// of the types' `.fields` effects, which only an `Advanced` program that
+/// names the member roots (light-cljs-238, light-cljs-1077). (`defineType`, which decorates the
 /// constructors only `Advanced` emission writes, is reached through
 /// `Loadable.type` since light-cljs-272.) `mapEntry.lean`, `entryPrototype`,
 /// `MapEntryType.lean` and `mapEntry.equiv` build map entries and give them
@@ -719,7 +754,8 @@ fn slices_keep_units_in_runtime_order_and_attribute_them_to_the_first_root() {
 /// makeVector`, light-cljs-247), which the export list builds. `typeStatics`
 /// is the condition of the types' `.statics` effects, which only an
 /// `Advanced` program that names one of `TYPE_STATICS` or reads an empty
-/// literal roots (light-cljs-247); the reader keeps the queue's.
+/// literal roots (light-cljs-247); the reader keeps the queue's. It and the
+/// flags of the members and the other statics count as roots here.
 /// `multiTables` is a condition of `MultiFn.tables`, which only an
 /// `Advanced` program that could see the tables of its multimethods
 /// otherwise roots, and `addMethodDirect` is `-add-method` where only
@@ -769,6 +805,8 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "slotWrites.contains",
     "slotWrites.peek",
     "slotWrites.conj",
+    "slotWrites.conjOwn",
+    "slotWrites.entryNth",
     "slotWrites.assoc",
     "slotWrites.dissoc",
     "slotWrites.disj",
@@ -786,18 +824,14 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "protocolFallback",
     "multiTables",
     "addMethodDirect",
+    // The runtime class test of `slotWrites` alone since the protocol
+    // lookup reads the keyed kind once itself (light-cljs-1075).
+    "runtimeKind",
     "mapEntry.lean",
     "TypeBrand",
     "ClassBrand",
     "ClassBrand.types",
     "defineClass",
-    "upstreamMembers",
-    "typeStatics",
-    "ListValue.statics",
-    "PersistentHashSetValue.statics",
-    "PersistentVectorValue.statics",
-    "PersistentArrayMapValue.statics",
-    "PersistentHashMapValue.statics",
 ];
 
 /// The string-literal protocol method keys of `text` (`"IHash/-hash"`), each
@@ -1043,6 +1077,34 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                     }
                 })
                 .collect()
+        } else if unit.name.ends_with(".fields")
+            || unit.name.ends_with(".metaField")
+            || [
+                "PersistentArrayMapValue.threshold",
+                "PersistentHashMapValue.fromArrays",
+            ]
+            .contains(&unit.name)
+        {
+            // A type's upstream fields and methods, and its statics other than
+            // `EMPTY`, each of which only code naming it reads: the flag of
+            // each member the unit defines (`member_unit`, light-cljs-1077),
+            // and `resetMeta` where it defines `meta`, which `reset-meta!`
+            // assigns.
+            let members = defined_members(
+                body(id),
+                if unit.name.ends_with(".fields") || unit.name.ends_with(".metaField") {
+                    UPSTREAM_MEMBERS
+                } else {
+                    TYPE_STATICS
+                },
+            );
+            members
+                .iter()
+                .filter(|&&member| member == "meta")
+                .map(|_| "resetMeta".to_string())
+                .chain(members.iter().map(|member| format!("member_{member}")))
+                .map(|binding| manifest.unit_of(&binding).expect("a member's flag"))
+                .collect()
         } else if unit.name.ends_with(".statics") {
             // A type's statics, which only code naming them or an empty
             // literal reads (`typeStatics`, light-cljs-247), and the
@@ -1057,14 +1119,19 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
             // is needed where the slot-first wrapper reading it is: wherever
             // the operation it wraps is; or where a function that reads it
             // first is (the chunk operations' `chunkFirst` and the others,
-            // light-cljs-1029).
+            // light-cljs-1029); or where an upstream-shaped path names it for
+            // the shared step that reads a class's slot (`fallbackMethod`,
+            // light-cljs-1078).
             let slots = installed_slots(body(id));
             (0..manifest.units.len())
                 .map(UnitId)
                 .filter(|&other| {
                     other != id
                         && installed_slots(body(other)).is_empty()
-                        && slots.iter().any(|slot| body(other).contains(slot))
+                        && slots.iter().any(|slot| {
+                            body(other).contains(slot)
+                                || body(other).contains(&format!("\"{}\"", &slot[1..]))
+                        })
                 })
                 .flat_map(|user| {
                     if wrapped_binding(body(user)).is_some() {
@@ -1074,6 +1141,15 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                     }
                 })
                 .collect()
+        } else if unit.name.starts_with("operationPaths.") {
+            // A unit putting an operation's own path in front of its
+            // upstream-shaped path (`operationPaths.count`, light-cljs-1078)
+            // is needed only where a compiler session can set that path.
+            vec![
+                manifest
+                    .unit_of("setDeclarationDemand")
+                    .expect("the declaration demand"),
+            ]
         } else if let Some(wrapped) = wrapped_binding(body(id)) {
             // A unit wrapping an operation (`seq = behindProtocol(seq, ...)`)
             // is needed wherever the operation is.
@@ -1097,12 +1173,6 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                     branches_wrapper(body(other)).is_some_and(|(_, index)| entries.contains(&index))
                 })
                 .collect()
-        } else if unit.name.ends_with(".fields") {
-            // A type's upstream fields and methods, which only code naming
-            // them reads (`upstreamMembers`) or `reset-meta!` assigns.
-            ["resetMeta", "upstreamMembers"]
-                .map(|binding| manifest.unit_of(binding).unwrap())
-                .to_vec()
         } else if unit.name == "MapEntryType.vector" || unit.name == "mapEntry.vector" {
             // Map entries are vectors with the vectors' members where
             // vectors can be built, and else stores of two items with members
@@ -1271,13 +1341,24 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // light-cljs-1072 gave the classes the old path walked with walks of their
     // own and its two `slotWrites` effects, less the slot-first wrappers of
     // `reduce` and `reduce-kv`; the 29 `-meta` slot units of the
-    // collections and seqs (light-cljs-1070); and light-cljs-1074's hash of
+    // collections and seqs (light-cljs-1070); light-cljs-1074's hash of
     // the UUIDs and vars (`uuidValue.hash`) and its three `slotWrites`
-    // effects, less the slot-first wrappers of `=` and `hash`; plus the five
-    // `hostExt` effects (`hostExt.core`, `hostExtEscaped.on`, `hostExtSeqEscaped.on`,
-    // `hostExtPrintEscaped.on`, `slotWrites.hostExt`) and the two printer hook units
-    // (`printSeq.hook`, `printWriter.hook`).
-    assert_eq!(checked, 581);
+    // effects, less the slot-first wrappers of `=` and `hash`; and the four
+    // `-as-transient` and four `-with-meta` slot units of the editable
+    // collections (light-cljs-1067); and the two `slotWrites` effects of
+    // `into`'s `-conj` and a map entry's `-nth` (light-cljs-1076); and the 16
+    // effects that put the operations' own paths in front of their
+    // upstream-shaped paths where `setDeclarationDemand` is kept
+    // (`operationPaths.count` and the others, light-cljs-1078); and the 20
+    // `.metaField` effects that define the types' `meta` apart from their
+    // other fields, the array map's `HASHMAP_THRESHOLD` and the hash map's
+    // `fromArray` and `fromArrays` apart from their `EMPTY`, each waiting for
+    // its members' flags (light-cljs-1077); plus the six `hostExt` effects
+    // (`hostExt.core`, `hostExtEscaped.on`, `hostExtSeqEscaped.on`,
+    // `hostExtPrintEscaped.on`, `hostExt.hook`, `slotWrites.hostExt`),
+    // `Atom.deref`, and the two printer hook units (`printSeq.hook`,
+    // `printWriter.hook`).
+    assert_eq!(checked, 629);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -2095,7 +2176,11 @@ fn conditional_effects_wait_for_a_condition() {
 /// light-cljs-302, so that they go with the values they handle; the seven
 /// protocol wrappers stay (light-cljs-355), and the five `slotWrites`
 /// wrappers of the lookups' upstream-shaped paths join them (light-cljs-1066), and
-/// the updates' five (light-cljs-1068) and the seq walk's four (light-cljs-1071).
+/// the updates' five (light-cljs-1068) and the seq walk's four (light-cljs-1071),
+/// and the effects kept with `setDeclarationDemand` that put the operations' own paths in front
+/// of sixteen of them (`operationPaths.count` and the others, light-cljs-1078).
+/// `builtin` reads the demand itself, as `keyMethod` does, since
+/// light-cljs-1075 tells a runtime class's slot method from its read.
 /// A new one moves no unit out of its binding's chunk.
 #[test]
 fn units_assigning_a_binding_share_its_unit() {
@@ -2112,16 +2197,22 @@ fn units_assigning_a_binding_share_its_unit() {
         [
             "MapEntryType <- MapEntryType.lean",
             "MapEntryType <- MapEntryType.vector",
+            "assocOf <- operationPaths.assoc",
             "assocOf <- slotWrites.assoc",
+            "conjOf <- operationPaths.conj",
             "conjOf <- slotWrites.conj",
+            "conjOwn <- slotWrites.conjOwn",
+            "containsOf <- operationPaths.contains",
             "containsOf <- slotWrites.contains",
             "containsPath <- contains.own",
+            "countOf <- operationPaths.count",
             "countOf <- slotWrites.count",
             "declarationJournal <- MultiFn.tables",
             "declarationJournal <- declarationTransaction",
             "declarationJournal <- installMethods",
             "declarationJournal <- multiState",
             "demandProtocol <- MultiFn.tables",
+            "demandProtocol <- builtin",
             "demandProtocol <- declarationReceiver",
             "demandProtocol <- demandKey",
             "demandProtocol <- directMethod",
@@ -2139,11 +2230,15 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- resetMulti",
             "demandProtocol <- satisfies",
             "demandProtocol <- setDeclarationDemand",
+            "disjOf <- operationPaths.disj",
             "disjOf <- slotWrites.disj",
+            "dissocOf <- operationPaths.dissoc",
             "dissocOf <- slotWrites.dissoc",
             "equalPairOf <- slotWrites.equalPair",
+            "firstOf <- operationPaths.first",
             "firstOf <- slotWrites.first",
             "gensymCounter <- gensym",
+            "getOf <- operationPaths.get",
             "getOf <- slotWrites.get",
             "getPath <- get.own",
             "globalHierarchy <- getGlobalHierarchy",
@@ -2154,16 +2249,21 @@ fn units_assigning_a_binding_share_its_unit() {
             "lookup <- lookup.tree",
             "macroexpandServices <- expansionService",
             "macroexpandServices <- setMacroexpandServices",
+            "mapConj <- slotWrites.entryNth",
             "mapEntry <- mapEntry.lean",
             "mapEntry <- mapEntry.vector",
+            "nextOf <- operationPaths.next",
             "nextOf <- slotWrites.next",
+            "nthOf <- operationPaths.nth",
             "nthOf <- slotWrites.nth",
             "nthPath <- nth.protocol",
             "objectEquiv <- slotWrites.objectEquiv",
             "patchDeclaration <- declarationTransaction",
             "patchDeclaration <- extendType",
             "patchDeclaration <- installMethods",
+            "peekOf <- operationPaths.peek",
             "peekOf <- slotWrites.peek",
+            "popOf <- operationPaths.pop",
             "popOf <- slotWrites.pop",
             "recordMethodTable <- recordMethods.assoc",
             "recordMethodTable <- recordMethods.clone",
@@ -2180,10 +2280,14 @@ fn units_assigning_a_binding_share_its_unit() {
             "recordMethodTable <- recordMethods.print",
             "recordMethodTable <- recordMethods.seq",
             "recordMethodTable <- recordMethods.withMeta",
+            "reduceKvOf <- operationPaths.reduceKv",
             "reduceKvOf <- slotWrites.reduceKv",
+            "reduceOf <- operationPaths.reduce",
             "reduceOf <- slotWrites.reduce",
             "reducePath <- reduce.protocol",
+            "restOf <- operationPaths.rest",
             "restOf <- slotWrites.rest",
+            "seqOf <- operationPaths.seq",
             "seqOf <- slotWrites.seq",
             "setDeclaration <- declarationTransaction",
             "setDeclaration <- extendType",
@@ -2242,8 +2346,15 @@ fn units_calling_name_or_namespace_are_known() {
 
 #[test]
 fn every_unit_is_reachable_from_the_export_list() {
+    // Or from the flags an `Advanced` program roots where it names an
+    // upstream member or a static of the runtime's types (light-cljs-1077).
     let manifest = manifest();
-    let reachable = manifest.reachable(manifest.export_roots());
+    let flags = UPSTREAM_MEMBERS
+        .iter()
+        .chain(TYPE_STATICS)
+        .map(|&name| light_cljs::runtime_slice::member_unit(name).unwrap())
+        .map(|flag| manifest.unit_of(flag).expect("a member's flag"));
+    let reachable = manifest.reachable(manifest.export_roots().into_iter().chain(flags));
     let unreachable = manifest
         .units
         .iter()
@@ -2308,18 +2419,34 @@ fn names_bindings_and_effect_targets_resolve_to_units() {
             unit("printSequential.seq"),
             unit("str.collections"),
             unit("ListValue.fields"),
+            unit("ListValue.metaField"),
             unit("ListValue.members"),
             unit("ListValue.statics")
         ]
     );
     let list = manifest.reachable([unit("ListValue")]);
     assert!(list[unit("ListValue.members").0] && !list[unit("Eduction.members").0]);
-    // A type's upstream fields wait for a program that names one, or assigns
-    // `meta` through `reset-meta!`.
-    assert!(!list[unit("ListValue.fields").0]);
-    for condition in ["upstreamMembers", "resetMeta"] {
+    // A type's upstream fields wait for a program that names one, each its
+    // own flag; `meta` also for one that assigns it through `reset-meta!`
+    // (light-cljs-1077).
+    assert!(!list[unit("ListValue.fields").0] && !list[unit("ListValue.metaField").0]);
+    for (condition, fields, meta) in [
+        ("member_first", true, false),
+        ("member___hash", true, false),
+        ("member_meta", false, true),
+        ("resetMeta", false, true),
+        ("member_cnt", false, false),
+    ] {
         let kept = manifest.reachable([unit("ListValue"), unit(condition)]);
-        assert!(kept[unit("ListValue.fields").0] && !kept[unit("Cons.fields").0]);
+        assert_eq!(
+            (
+                kept[unit("ListValue.fields").0],
+                kept[unit("ListValue.metaField").0]
+            ),
+            (fields, meta),
+            "{condition}"
+        );
+        assert!(!kept[unit("Cons.fields").0] && !kept[unit("Cons.metaField").0]);
     }
     // Installs travel with a binding whose value escapes: a value root or a
     // kept unit that requires it. A root the program only calls keeps none.

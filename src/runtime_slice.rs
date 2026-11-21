@@ -69,7 +69,10 @@ pub const RECORD_EQUIV_USES: &[&str] = &["equal", "entryIndex", "hashNodeFind", 
 /// keeps them likewise only where reachable code names one of them as a
 /// property, method, component of a `js/` path or string or in `js*` text
 /// ([`crate::rta`]): its slice
-/// then roots [`UPSTREAM_MEMBERS_UNIT`], whose `when:` the effects wait for.
+/// then roots the flag of each one it names ([`member_unit`]), which the
+/// effects defining that member wait for: a
+/// program that names `meta` keeps the `meta` field of each type it keeps,
+/// not their other fields (light-cljs-1077).
 /// The `builtin_types` suite checks the list against the runtime's prototypes.
 pub const UPSTREAM_MEMBERS: &[&str] = &[
     "__hash",
@@ -133,10 +136,28 @@ pub const UPSTREAM_MEMBERS: &[&str] = &[
     "xform",
 ];
 
-/// The runtime unit that the `.fields` effects of the runtime's types wait
-/// for, which an `Advanced` slice keeps only where the program names one of
-/// [`UPSTREAM_MEMBERS`].
-pub const UPSTREAM_MEMBERS_UNIT: &str = "upstreamMembers";
+/// The flag unit an `Advanced` slice roots where reachable code names the
+/// upstream member or static `name` ([`UPSTREAM_MEMBERS`], [`TYPE_STATICS`]):
+/// `member_<name>`, which the effects defining that member or static wait for
+/// (`when:`), or [`TYPE_STATICS_UNIT`] for `EMPTY`, which an empty literal
+/// reads too. `None` for any other name.
+pub fn member_unit(name: &str) -> Option<&'static str> {
+    static UNITS: std::sync::LazyLock<Vec<(&'static str, String)>> =
+        std::sync::LazyLock::new(|| {
+            UPSTREAM_MEMBERS
+                .iter()
+                .chain(TYPE_STATICS)
+                .map(|&name| (name, format!("member_{name}")))
+                .collect()
+        });
+    if name == "EMPTY" {
+        return Some(TYPE_STATICS_UNIT);
+    }
+    UNITS
+        .iter()
+        .find(|(member, _)| *member == name)
+        .map(|(_, unit)| unit.as_str())
+}
 
 /// The statics of the runtime's types (`EMPTY` of the collection types,
 /// `HASHMAP_THRESHOLD` of `PersistentArrayMap`, `fromArray` and `fromArrays`
@@ -146,12 +167,13 @@ pub const UPSTREAM_MEMBERS_UNIT: &str = "upstreamMembers";
 /// reachable code names one of them as [`UPSTREAM_MEMBERS`] are named
 /// ([`crate::rta`]) or reads an empty literal, which reads its type's
 /// `EMPTY`: its slice then roots [`TYPE_STATICS_UNIT`], whose `when:` the
-/// effects wait for (light-cljs-247).
+/// `EMPTY` effects wait for (light-cljs-247), and the flag of each other
+/// static it names ([`member_unit`], light-cljs-1077).
 pub const TYPE_STATICS: &[&str] = &["EMPTY", "HASHMAP_THRESHOLD", "fromArray", "fromArrays"];
 
 /// The runtime unit that the `.statics` effects of the runtime's types wait
-/// for, which an `Advanced` slice keeps only where the program names one of
-/// [`TYPE_STATICS`] or reads an empty literal.
+/// for, which an `Advanced` slice keeps only where the program names `EMPTY`
+/// or reads an empty literal.
 pub const TYPE_STATICS_UNIT: &str = "typeStatics";
 
 /// Core protocols whose implementations reach branches of the runtime's own

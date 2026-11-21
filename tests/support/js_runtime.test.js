@@ -1585,7 +1585,14 @@ for (const [Type, fields] of [
 ]) {
   for (const field of fields) {
     const forged = Object.create(Type.prototype);
-    assert.throws(() => { forged[field] = 9; }, /Expected public core value/);
+    // Rescoped (docs/value-layout.md, section 5, item 17): a value made by
+    // reflection from a class's prototype is the runtime's own by its kind
+    // since light-cljs-1079 (`ownedKind`), so the field accessor accepts it:
+    // `__hash` writes its own field, and a repeat's, cycle's or iterate's
+    // state writer reads the state it lacks. The symbols', conses' and
+    // keywords' own accessors still test their fields.
+    if (field === '__hash' && Type !== c.Cons) { forged[field] = 9; assert.equal(forged[field], 9); }
+    else assert.throws(() => { forged[field] = 9; }, [c.Repeat, c.Cycle, c.Iterate].includes(Type) ? TypeError : /Expected public core value/);
     assert.equal(runtime.inspect(forged), null);
   }
 }
@@ -2650,6 +2657,43 @@ console.log('set and indexed seq reduce slots answer as their operations');
     'error persistent! called twice', 'error TransientVector\'s key for assoc! must be a number.']);
 }
 console.log('transient conj!, assoc! and persistent! slots answer as their operations');
+
+// The editable collections' `-as-transient` and `-with-meta` slots
+// (light-cljs-1067) answer as `transient` and `-with-meta` do without them,
+// for every value of the class: a vector short, with a full tail and deeper,
+// an array map of one and of eight keys, a hash map, an array and a hash
+// set, each also with metadata: the transient, persisted at once, the value
+// with its own metadata (itself), another and none, and `into` of the
+// value, with and without a transducer, which keeps its metadata.
+{
+  const asTransient = 'cljs$core$IEditableCollection$_as_transient$arity$1$LKEY', withMeta = 'cljs$core$IWithMeta$_with_meta$arity$2$LKEY';
+  const m = c.hashMap('m', 1), other = c.hashMap('n', 2);
+  const values = [c.vector(1, 2), c.vec(c.range(32)), c.vec(c.range(1056)), c.withMeta(c.vector(1), m), c.arrayMap('a', 1),
+    c.arrayMap('a', 1, 'b', 2, 'c', 3, 'd', 4, 'e', 5, 'f', 6, 'g', 7, 'h', 8), c.zipmap(c.range(20), c.range(20)), c.withMeta(c.hashMap('a', 1), m),
+    c.hashSet(1), c.set(c.range(20)), c.withMeta(c.hashSet(1, 2), m)];
+  const outcome = call => { try { const r = call(); return 'ok ' + c.prStr(r) + ' ' + c.prStr(c.meta(r)); } catch (error) { return 'error ' + error.message; } };
+  // What a call gives with the class's slots taken off its prototype.
+  const without = (value, slots, call) => {
+    const own = Object.getPrototypeOf(value), kept = slots.map(slot => own[slot]);
+    for (const slot of slots) { assert.equal(typeof own[slot], 'function'); delete own[slot]; }
+    try { return call(); } finally { slots.forEach((slot, i) => { own[slot] = kept[i]; }); }
+  };
+  let checked = 0;
+  for (const value of values) {
+    const calls = [[[asTransient], () => c.persistentBang(c.transient(value))], [[asTransient], () => c.persistentBang(c.asTransientProtocol(value))],
+      [[withMeta], () => c.withMetaProtocol(value, c.meta(value))], [[withMeta], () => c.withMetaProtocol(value, other)],
+      [[withMeta], () => c.withMetaProtocol(value, null)], [[withMeta], () => c.withMeta(value, other)],
+      [[asTransient, withMeta], () => c.into(value, c.vector())], [[asTransient, withMeta], () => c.into(value, c.map(c.identity), c.vector())]];
+    for (const [slots, call] of calls) {
+      assert.equal(outcome(call), without(value, slots, () => outcome(call)), `${c.prStr(value)}: ${call}`);
+      checked++;
+    }
+    assert.equal(c.withMetaProtocol(value, c.meta(value)), value);
+    assert.notEqual(c.withMetaProtocol(value, other), value);
+  }
+  assert.equal(checked, 88);
+}
+console.log('editable collection -as-transient and -with-meta slots answer as their operations');
 
 // Keywords and symbols of two copies of one build (docs/value-layout.md,
 // sections 1 and 3, light-cljs-1011): each copy interns its own, so they are

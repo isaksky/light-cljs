@@ -788,13 +788,26 @@ fn builtin_type_members_travel_with_their_constructors() {
         "[[] 2 #js [:a 1] 3 \"a\" 4 [2 3] [1] 2 [0 1 2] {:k 1}]\n"
     );
     let named = embedded(&prepared(source, OptimizationLevel::Advanced));
-    assert!(named.contains(&"upstreamMembers") && named.contains(&"PersistentVectorValue.fields"));
-    for statics in [
+    for kept in [
+        "member_cnt",
+        "PersistentVectorValue.fields",
         "typeStatics",
         "PersistentVectorValue.statics",
         "PersistentHashMapValue.statics",
+        "member_fromArrays",
+        "PersistentHashMapValue.fromArrays",
     ] {
-        assert!(named.contains(&statics), "{statics}");
+        assert!(named.contains(&kept), "{kept}");
+    }
+    // Each member and other static only where the program names it
+    // (light-cljs-1077): this one names no vector's `meta` nor `tail`, and
+    // no `HASHMAP_THRESHOLD`.
+    for left_out in [
+        "PersistentVectorValue.metaField",
+        "member_tail",
+        "PersistentArrayMapValue.threshold",
+    ] {
+        assert!(!named.contains(&left_out), "{left_out}");
     }
     let empty = embedded(&prepared(
         "(js/console.log [] {})",
@@ -807,4 +820,5 @@ fn builtin_type_members_travel_with_their_constructors() {
     ] {
         assert!(empty.contains(&statics), "{statics}");
     }
+    assert!(!empty.contains(&"PersistentArrayMapValue.threshold"));
 }

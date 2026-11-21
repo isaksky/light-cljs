@@ -4,17 +4,42 @@ use light_cljs::{
     ApplicationOptions, GlobalId, MacroHost, OptimizationLevel, Program, analyze,
     analyze_with_macros, compile_namespace, emit_js, parse, prepare_application,
 };
-use std::{fs, process::Command};
+use std::{
+    fs,
+    io::Write,
+    process::{Command, Stdio},
+};
 
 fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
 }
 /// Run `js` as a Node script and return its stdout; a nonzero exit fails.
 pub(crate) fn execute(js: &str) -> String {
-    let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .args(["--eval", js])
-        .output()
-        .expect("optimization tests require Node");
+    let node = std::env::var_os("NODE").unwrap_or_else(|| "node".into());
+    // Large scripts (e.g. unoptimized multi-form programs near 1 MB) can
+    // exhaust macOS argv/stack space if passed via `--eval`; pipe via stdin.
+    let output = if js.len() > 131_072 {
+        let mut child = Command::new(node)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("optimization tests require Node");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(js.as_bytes())
+            .expect("failed writing script to Node stdin");
+        child
+            .wait_with_output()
+            .expect("optimization tests require Node")
+    } else {
+        Command::new(node)
+            .args(["--eval", js])
+            .output()
+            .expect("optimization tests require Node")
+    };
     assert!(
         output.status.success(),
         "{}\n{js}",

@@ -2124,6 +2124,397 @@ reductions are, without their slot-first wrappers (`equalPair.slots`,
   the old paths' recognisers leave and the classes' hashes move into their
   slots.
 
+What light-cljs-1067 landed: `into` of a vector, a map or a set takes no
+protocol lookup per call, where it took three (`-as-transient`'s
+dispatcher, and `-with-meta`'s support test and its own lookup), in a
+program that implements protocols.
+
+- **Slots.** As upstream's PersistentVector, PersistentArrayMap,
+  PersistentHashMap and PersistentHashSet implement IEditableCollection
+  and IWithMeta, their classes have keyed `-as-transient` and `-with-meta`
+  slots, one function each for the four classes (`asTransientSlot`, the
+  transient `asTransient` makes; `withMetaSlot`, the value itself where
+  `meta` answers the metadata, else `collectionWithMeta`'s copy past its
+  lookup, `copyWithMeta`, told that the slot compared, so that a program's
+  `IMeta` is read once, as before (the Sol review of light-cljs-1067,
+  `with_meta_slots_read_extended_meta_once`). Each answers a method `extend-type` of
+  `js/Object` put on `Object.prototype` first, as `metaSlot` does, since
+  the slot shadows it where the lookup found it through the chain.
+- **Not `builtinSlots`.** The lookups that find these methods with
+  `builtin` (`-as-transient`'s dispatcher, which `(-as-transient x)`
+  calls, and `collectionWithMeta`, which `with-meta`, `sort`,
+  `select-keys`, `update-vals` and the others call, and `-with-meta`'s
+  support test) take the slots as the value's own methods, which answer
+  as their own paths did. Marked, they hid `Object.prototype`'s method
+  from those lookups, and `with-meta` of a vector gave the vector's copy
+  where master gave the `js/Object` method's answer. Neither slot calls a
+  lookup of its own key.
+- **Slot first.** `transient` and `-with-meta` (`withMetaProtocol`) are
+  upstream's shape, as `meta` is: a value with a keyed kind (for
+  `-with-meta`, an object: this path never called a function's program
+  method) calls its slot, a program's (`extend-type`, `specify!`, a
+  record's, a `reify`'s) or its class's; every other value, and one whose
+  slot holds no method, takes the old path (`asTransientProtocol`,
+  `withMetaOf`).
+- **`into`.** One function per arity (`into2`, `into3`) under the entry,
+  each under light-cljs-1033's 100 bytes of bytecode (`into` 98, `into2`
+  94, `into3` 95, `editableTarget` 87, `transient` 53, `withMetaProtocol`
+  68, `asTransientSlot` 37, `withMetaSlot` 80). A target with a keyed kind
+  whose mask has IEditableCollection's bit (partition 1, 4) is editable,
+  as upstream's `implements?` reads the bit and the `implements` hooks
+  answer first; any other value asks the hook as before. The target's
+  metadata is read with `meta`, its slot since light-cljs-1070.
+- **Answers kept.** `transient_and_with_meta_slots_keep_extended_answers`
+  pins master `8903e693`'s answers at every level for `extend-type` and
+  `specify!` of the two protocols and of `IMeta`, `extend-type` of
+  `js/Object`, members written by name (nil, false or a method, on a
+  prototype or a value) and targets that are no editable collection;
+  `into_of_small_collections_takes_no_protocol_lookup_per_call` counts no
+  lookup for sixteen `into` calls; tests/support/js_runtime.test.js checks
+  each slot against its operation with the slot taken off the prototype.
+  A value made by reflection from one of the four prototypes takes the
+  slot, which reads no field first (deliberate reflection, section 5): no
+  test pinned what `transient` or `-with-meta` gave one.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1067; binaries
+  `light-cljs-8903e693` and `light-cljs-1067-a0a85250`, unreserved): the
+  gate's new `into-vec-small` 278 to 170 ns (light/shadow 1.77 to 1.06),
+  `into-map-small` -18%, `into-vec-keys-small` -12 to -16%,
+  `into-set-100` -2 to -4%, `into-xform-1000` -1 to -2%,
+  `transient-vec-100` -4 to -7% and `select-keys-3` -7 to -11%; no
+  operation of the 78 over 1% slower in the full pass, `group-by-100` +2%
+  in one of two rechecks; workload 200k's steady state 35.6 to 35.6 and
+  35.7 to 34.2 ms per iteration in two rounds; the re-frame apps' whole
+  bundles 126 to 273 bytes larger after gzip (0.04 to 0.19%).
+
+What light-cljs-1075 landed: in a program that extends types, the
+predicates, `deref` of a program type, `empty?`, the external lookup of a
+runtime class's value, `meta` of a function and the host values' `seq`
+and `nth` answer with fewer steps of the extended lookup, where upstream
+reads a mask bit, a marker, the value's own method or a table.
+
+- **Where the time was.** On master `b86a231e` the re-frame-shaped app's
+  whole run to its first output spent about 80 to 90 ms of
+  `--pseudo-names` profiles in the layers light-cljs-1070 measured: the
+  `satisfies` and `implements` hooks' own bodies (28 and 11 ms), a million
+  and more calls of them from the predicates, three in five answered at
+  their first test, the mask bit; `builtin` (15 ms), of `=` of numbers
+  (light-cljs-1074's), `deref` of a program type, `empty?` of the queue,
+  `name` of a keyword and `with-meta`, `conj` and `nth` of runtime values,
+  each through the external lookup's native test; `first` of a vector,
+  `seq` of an array and `nth` of an indexed seq through the lookup's store
+  test and native test.
+- **The predicates read the bit first.** `coll?`, `seq?`, `sequential?`,
+  `vector?`, `map?`, `set?`, `chunked-seq?` and `cons`'s and `nth`'s
+  `implements?` of `ISeq` (`implementsSeq`) read the protocol's mask bit by
+  its keyed name, as upstream's `satisfies?` and `implements?` do in place
+  (78 to 95 bytes of bytecode each, under light-cljs-1033's 100). Where
+  the bit is clear they pass `read` to the hook (`ownProtocol` where only
+  `installMethods` is kept), which goes on from the marker, so a host
+  value's properties are read as often as before; a compiler session that
+  demands declarations takes the hook alone (`slotFirst`). `concat`,
+  `filter`, `map` and `map-indexed` ask `chunked-seq?`.
+- **`deref` of a program type** (a keyed kind from 64) calls the
+  `-deref` its slot holds before the lookup, as an atom's (light-cljs-1070),
+  reading the kind once for both.
+- **`empty?`** reads `ICounted`'s bit first, as the predicates read
+  theirs, and a value that declares it calls the method its `-count` slot
+  holds (`countSlot`), as upstream's calls `-count`: a program's, or a
+  runtime class's value's own; a runtime method lent to another value (the
+  Sol review's finding) and every other value take the dispatcher, which
+  also finds a host type's.
+- **`builtin`** answers nothing for a runtime class's value whose slot
+  holds its class's method (`builtinSlots`) and whose class declares the
+  key's protocol by its mask bit, before the external lookup's native test
+  that answered the same, reading the kind and mask only of a value whose
+  slot holds a runtime method, so a host value is read as before (a first
+  version in `externalMethod` read every value's kind, the Sol review's
+  finding): the class implements it
+  natively, which `extend-type` of a host type, `object` or `default`
+  cannot override. A value whose class has no bit for the protocol (a
+  hash map's seq for `ICounted`, an indexed seq, whose answer differs
+  with its `view`) takes the native test as before, so it still reaches
+  `object`'s `-count` where that test is false.
+- **The lookup** (`extendedMethod`) reads the keyed kind once (`runtimeKind`
+  is left to `slotWrites`); answers nothing past the marker for an array or
+  a string where its caller takes only a direct method, as upstream's
+  `seq` and `nth` test `array?` after `implements?`; answers nothing for a
+  runtime class's value whose class has a mask in a `kinds` protocol's
+  partition without its bit, as the `satisfies` hook does; reads the slot
+  before the native test of a protocol whose native test differs within a
+  class (`IIndexed` of an indexed seq), where no session demands
+  declarations; and asks a function without a keyed kind (`meta` of one)
+  its host tables (`hostSatisfies`) without `satisfies`'s steps again.
+  `hostSatisfies` reads `nativeMethods` once.
+- **What was not done.** A host table answer cached per protocol and type:
+  `extend-type`'s tables are written and undone through the declaration
+  journal (`patchDeclaration`, `setDeclaration`, its undo, redo and
+  snapshots) and by name, so a cache would need every one of them to
+  invalidate it, for about 3 ms of the run (`=` of numbers and `compare`
+  of strings).
+- **Answers kept.** `extend-type`, `specify!`, `satisfies?` and
+  `implements?` answer as before for the runtime's and host values
+  (`extended_programs_keep_count_meta_and_predicate_answers`,
+  `extended_programs_keep_host_predicate_and_deref_answers`,
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup`); only values
+  made by reflection change (section 5, item 37).
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1075;
+  unreserved): the layers' share of the re-frame-shaped app's whole run to
+  first output 81.3 to 53.1 ms (5 alternated profiles, load 4.4 to 4.8;
+  `light-cljs-86dc4aa0` against the final `light-cljs-1075-8965cfeb`;
+  0.65), its first iteration 21.7 to 14.8; its first output and steady
+  state and workload 200k's unchanged within their spread, and no touched
+  gate operation slower in an alternated pair, `apply-vec` -7%
+  (`light-cljs-b86a231e` against `light-cljs-1075-97606841`, before the
+  review's fixes); the re-frame apps' whole bundles 103 to 242 bytes larger
+  after gzip (0.03 to 0.20%).
+
+What light-cljs-1076 landed: `into` onto a target that is no editable
+collection (a sorted map or set, a list or `()`, a queue, a subvector, a
+map entry, a record, a program type) takes no protocol lookup per item,
+where it took one (`conjProtocol`'s, `-conj`'s dispatcher), and onto a
+sorted map of vectors or map entries three.
+
+- **`-conj` slot first.** `into` without a transducer conjoins each item
+  with `conjOwn`, upstream's `-conj`: a value with a keyed kind calls its
+  `-conj` slot, a program's (`extend-type`, `specify!`, a record's) or its
+  class's (light-cljs-1068), read and called once (97 bytes of bytecode,
+  under light-cljs-1033's 100); a program type's value, and one whose slot
+  holds no method, finishes from the slot as read (`conjRead`), which
+  passes over a runtime class's method lent to a program type
+  (`builtinSlots`), as the lookup did (the second Sol review,
+  `into_preserves_borrowed_builtin_conj_slots`), and every other value
+  takes `conjProtocol`, as before. With a transducer `into` already called
+  `conj`, whose slot it reads.
+- **Answers kept.** The lookup found a program's method in the same slot,
+  and otherwise the class's through `conj`, which reads it: the slot is
+  what it called. A value whose slot holds no method (a member a program
+  wrote by name, `slotWrites`, a seq without `-conj`, a program type that
+  does not implement `ICollection`) finishes from the slot as read
+  (`conjRead`), as the lookup's read did, without reading it again (the
+  Sol review of light-cljs-1076): false is called (a `TypeError`), nil or
+  undefined takes a host type's, `object`'s or `default`'s method, then
+  `conj` of a collection (the class's path), else the dispatcher's error,
+  which a value that is no collection keeps
+  (`into_onto_other_collections_keeps_extended_answers`, master
+  `86dc4aa0`'s answers at every level, with the reads of getters on a
+  program type's, a list's and two vectors' slots counted).
+- **A map's `-conj` of an entry.** `mapConj` (every map class's `-conj`,
+  `mapConjSlot`) reads a vector's or a map entry's items through their
+  `-nth` slots (`entryNth`), as upstream's maps call `-nth`, where `-nth`'s
+  dispatcher looked each up: a runtime class's value calls the slot, a
+  program's or its class's, which the dispatcher found in the same slot or
+  through `nth` (95 bytes of bytecode); one whose slot holds no method
+  finishes from the slot as read (`entryNthRead`), as `conjRead` does; nil,
+  which `extend-type` of `nil` can make a vector
+  (`map_conj_preserves_nil_vector_extensions`), a program type's entry and
+  a compiler session that demands declarations take the dispatcher; without the dispatcher, `nth`, as before. The
+  `-nth` slot units wait for `mapConj` too. `conj` of a map and a vector
+  pair takes no lookup either.
+- **Counted.** `into_onto_other_collections_takes_no_protocol_lookup_per_item`
+  counts no lookup per item for a sorted set, lists, a queue, a subvector,
+  a map entry, a program type, sorted maps and a record, of vectors, lazy
+  seqs and lists of items and of pairs and map entries, where master took
+  1 per item (3 for the sorted maps).
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1076; binaries
+  `light-cljs-86dc4aa0`, `light-cljs-1076-86e2b4b3` and the final
+  `light-cljs-1076-5111cbc9`, unreserved): the gate's new
+  `into-sorted-map-small` 3,957 to 2,269 ns (light/shadow 5.16 to 2.96)
+  and `into-list-small` 435 to 124 ns (3.73 to 1.06), `merge-small` -13 to
+  -16%; no touched operation over 3% slower; workload 200k's steady state
+  unchanged within its spread; the re-frame apps' whole bundles 154 to 299
+  bytes larger after gzip (0.09 to 0.16%; the final `26d51570` against
+  light-cljs-1075's `d87d84a1`).
+
+What light-cljs-1078 landed: the upstream-shaped paths (`countOf`,
+`nthOf` and the others, the operations' fallbacks behind their slot-first
+fronts and call-site entries) share their cold steps; the fronts and entries
+are unchanged.
+
+- **One step for a class's slot and the lookup.** `fallbackMethod(value,
+  slot, hook, n, arity, ...)` gives the method a runtime class's value
+  (a keyed kind below 64) finds in its class's slot, where its own slot
+  holds nil or false, else what the hook the caller reads
+  (`protocolHooks.builtin` or `protocolHooks.programMethod`) gives for
+  `methodKeys[n]`: `assocOf`, `conjOf`, `disjOf`, `dissocOf`, `peekOf`
+  and `popOf` with the builtin lookup, `nthOf` and `reduceKvOf` with
+  the program's. Each still gives its nil, array and
+  string answers first, in its own order. `countOf`, `equalPairOf` and
+  `hashOf`, which read the class's slot alone, keep their own read, so a
+  small program that keeps only them does not grow; so does `reduceOf`,
+  whose later steps read the kind it read first, which `fallbackMethod`
+  would read again (a host Proxy counts every read: the Sol review,
+  `fallbacks_read_a_host_value_as_before`). `unsupported(name)`
+  throws the "not supported on this type" errors, with the same texts.
+- **The own paths in front, not inside.** Where a compiler session that
+  demands declarations or the shared-heap profile sets the operations' own
+  paths (`operationPaths`), sixteen effects put them in front of the
+  upstream-shaped paths (`operationPaths.count` and the others), each
+  passing the arguments as the path's own test did. They are kept only
+  with `setDeclarationDemand` (`when:`), so an `Advanced` slice, which
+  keeps no compile-time unit without reflection, carries neither them nor
+  the sixteen tests. Marking them compile-time instead would make every
+  slice that keeps an operation reach reflection and register its
+  namespaces (`reach_reflection`). `equalPairOf` and `hashOf` keep their
+  own test: the shared-heap profile's units of those names are the old
+  paths, which keep none of the other paths.
+- **Answers kept.** Each path asks the same slots and lookups in the same
+  order with the same arguments; a compiler session takes the same own
+  paths. The `when:` check reads a slot named for `fallbackMethod` as the
+  path's read of it, so the class slot units still wait for the paths.
+- **What is left** (light-cljs-1078's second part, filed as its own
+  pellet): the store inventories and the recognisers, which the hooks,
+  printing and the metadata paths still ask. Some native tests read a
+  value's own field (a view's `view`), so a class's masks alone do not
+  answer them.
+- **Measured** (benchmarks/runtime-vs-shadow.md and
+  benchmarks/re-frame-vs-shadow.md, light-cljs-1078; binaries
+  `light-cljs-688b1f03` and the final `light-cljs-1078-6b2eabef`,
+  unreserved): the re-frame apps' whole bundles 147, 144 and 256 bytes
+  smaller after gzip (simple, TodoMVC, flow; 1.7 KB raw each), against
+  light-cljs-1049's expected 600 to 1,000, as gzip had already shared most
+  of the repeated steps; the gate's 33 touched operations within -3% and
+  +1%; workload 200k's steady state 34.0 to 33.9 ms per iteration.
+
+What light-cljs-1079 landed: whether a value is one of the runtime's own
+(`ownedKind`, `ownedProtocolValue`, `runtimeKind`) and the store
+inventories that were store tests (`seqableValue`, `collectionValue`,
+`metaValue`, `withMetaValue`) and `fnValue` test the value's keyed kind
+against fixed bits (`kindIn`, `kindPredicate`), where a table of stores by
+kind (`kindTable`, `storeHolds`, `storesPredicate`, `ownedStores`,
+light-cljs-1046) asked the class's store, and so do `copyWithMeta`'s two
+probes (`withMetaKeeps`, `withMetaCopies`), where they probed the `*Cells`
+lists in turn; six native tests read their class's mask bit
+(`maskNative`); the stores lose their `classKinds`.
+
+- **Measured first.** Taken out of master's output as written (gzip -9,
+  light-cljs-1078's method), the inventories and recognisers cost 2,172 to
+  2,330 bytes, but most of the recognisers have other readers (`cellOf`,
+  `viewOf`, `isArrayMap` and the others: `empty`, `find`, printing, the
+  classes' fields), and the native tests' table (`nativeImplementations`)
+  must still answer every core protocol for `extend-type`'s external
+  lookup (`externalMethod`) and `implements?`. What a test by kind can
+  remove, the store table and the eight `*Cells` lists that only it read,
+  measured 239 to 257 bytes, and 180 to 192 with approximate replacement
+  text, before any code was written.
+- **By kind.** The own values' kinds are those of the classes of
+  `protocolStores`: 1 to 17, 20 to 36, 38 to 41, 44 to 46 and the
+  records' 65. A value made by reflection from one of their prototypes
+  (`Object.create`) is the runtime's own now, as its class's values are,
+  where its class's store told it apart by an own field (section 5, item
+  38). An iterator seq, which is not the runtime's own, keeps its store's
+  field test in `seqableValue`, so `extend-type` of `object` still
+  reaches one made by reflection as it reaches every iterator seq.
+- **No answer by kind from a value made by reflection.** The `satisfies`
+  and `implements` hooks and the extended lookup keep a protocol's native
+  answer by kind (`protocolMethodInfo`'s `kinds`) for the 13 protocols
+  whose answer is the same for every value of a class. A value made by
+  reflection now reaches that step, and its native tests, which read its
+  fields, would answer false for its whole class. So the extended lookup
+  answers a runtime class's value whose class has a mask in the
+  protocol's partition by its bit, as the `satisfies` hook does: with the
+  bit set, its slot is the only method, where it asked the native test,
+  which is true for every value of such a class (light-cljs-1070's masks).
+  Only the classes without masks (Reduced, atoms, volatiles, delays,
+  multimethods, vars and functions with metadata) reach the answer by kind
+  there, and of those protocols' native tests only `metaValue` and
+  `fnValue` are true for them; both read only the kind now.
+- **Mask bits for six native tests** (the Sol review of light-cljs-1079).
+  Where every class that implements a protocol natively carries its bit
+  for each of its values, the native test reads the bit of a runtime
+  class's value (a keyed kind below 64), as upstream's `implements?`
+  does, and tests the rest (`maskNative(name, rest)`): `stackValue`;
+  `cloneablePayload`, `reversibleValue` and `aseqValue`, whose rest is an
+  indexed seq of the `view` that answers (it differs within the class);
+  `pendingValue` (delays) and `comparableValue` (uuids and dates). The
+  one-call wrappers (`setValue`, `vectorValue`, `sortedValue`, the
+  transients') keep their one recogniser, which other paths keep too: a
+  mask read would be longer. Against master's runtime every one of the 52
+  native tests and `with-meta` answer alike over 80 real values (every
+  runtime class, host values, atoms, delays, volatiles, uuids, dates).
+  Spliced into the apps' output before they were written, the six
+  measured 0, 21 and 9 bytes after gzip (simple, TodoMVC, flow).
+- **The Pants build's profile** swaps in its own `seqableValue`,
+  `collectionValue`, `metaValue`, `withMetaValue`, `fnValue`,
+  `withMetaKeeps`, `withMetaCopies` and the six mask-read tests, which
+  probe the stores in turn as its `ownedProtocolValue` does
+  (src/js_shared_profile.js): its engine forms have no kind. The `*Cells`
+  lists and `protocolStores` stay in the runtime's text for it; a V8
+  slice keeps them only with `clone`, whose copy of the stores' entries
+  only the profile's stores feed.
+- **Answers kept.** Every runtime, host and `specify!`-ed row of
+  `protocol_hooks_answer_runtime_values_as_the_full_lookup`, its forged
+  rows, and `extended_programs_answer_count_meta_and_predicates_without_the_lookup`
+  (whose counted store test is now `kindIn`, with no call for the hits)
+  answer as before, but `reversible?` of the sorted map in the set whose
+  program writes `PersistentTreeMap`'s whole mask by name (64, `ISeq`
+  alone; item 23), which is false now, as the mask it wrote says. The
+  Proxy is asked three times less in each extension set (305, 318 and
+  305 times, where 308, 321 and 308): `fnValue` reads its kind once,
+  where `metaFunctions` and `vars` read it in turn, and `aseqValue` twice,
+  where three times. `forged_values_of_classes_without_masks_answer_by_kind`
+  pins what such values answer now, and that the genuine values asked
+  after them answer as master's at every level.
+- **What is left.** The native tests' table (`nativeImplementations`,
+  244 to 276 bytes after gzip) stays: `extend-type`'s external lookup and
+  `implements?` ask it of every core protocol. Its other tests read a
+  recogniser that other paths keep (`countedValue`, `indexedValue`,
+  `dropValue`, `reduceValue` and the rest differ with an indexed seq's
+  `view` or answer classes without masks, records and host values).
+  Splitting the indexed seqs' class by `view`, which would let masks
+  answer them, is light-cljs-1077's (the classes and constructors).
+- **Measured** (benchmarks/re-frame-vs-shadow.md and
+  benchmarks/runtime-vs-shadow.md, light-cljs-1079; binaries
+  `light-cljs-1078-6b2eabef`, master's compiler sources,
+  `light-cljs-1079-12301e59`, the tests by kind, and the final
+  `light-cljs-1079-53b509ee`, unreserved): the re-frame apps' whole
+  bundles 287, 266 and 194 bytes smaller after gzip (simple, TodoMVC,
+  flow; 1,141 to 1,161 raw), against the pellet's expected 800 to 1,500;
+  the size ratchet's fixtures that print shrink most (`vector-printed`
+  15,815 to 13,302), as printing kept every store through
+  `ownedProtocolValue`; the gate's 24 operations that reach the change
+  within -2% and +2% in two passes (`multimethod`'s +6% in the second and
+  `vec-conj-64`'s -11% and -13% overlapping noise; timed alone,
+  `multimethod` was 4% and 8% faster); in a program that extends types,
+  `satisfies?`, `seqable?`, `coll?`, `counted?` and `fn?` 4 to 9% faster,
+  `meta` and printing 1 to 2%; workload 200k's steady state 31.6 to 30.8
+  and 30.6 to 30.9 ms per iteration, within its spread.
+
+What light-cljs-1077 landed: each upstream member of the runtime's types
+(`cnt`, `first`, `meta`, ...) and each of their statics but `EMPTY` is kept
+only where an `Advanced` program names that member, where naming any one
+kept every type's `.fields` effect, all their fields.
+
+- **Measured first.** As light-cljs-1078 and 1079 did, each candidate was
+  taken out of master's output as written before any code was written (gzip
+  -9, without React; benchmarks/re-frame-vs-shadow.md, light-cljs-1077).
+  The re-frame apps name a few members, mostly host names (`value`, `key`,
+  `name`, `current`) and a program type's `meta`, and that kept every
+  class's fields, 1.1 to 1.5 KB after gzip. The arity pairs (`-lookup` and
+  `-nth` of arity 2 calling arity 3) measured 33 to 50 bytes, and an extra
+  call on the hot path, so they were left as they are.
+- **One flag per member.** Each member has a flag unit, `member_<name>`
+  (`member_unit` in src/runtime_slice.rs), which the slice roots where rapid
+  type analysis finds a reachable expression naming it
+  (`TypeAnalysis::named_member_units`). A type's `.fields` effect waits for
+  the flags of the members it defines (`when: member_cnt, member_shift,
+  ...`), and its `meta` field is an effect of its own, `.metaField`, which
+  waits for `member_meta` or `resetMeta`. The units the fields' getters
+  call (`count.host`, `protocolHooks.extend`, `putMember.setMap`) wait for
+  the flags of the fields that call them. `upstreamMembers`, the one flag
+  for all, is gone. The hash map's `fromArray` and `fromArrays` and the
+  array map's `HASHMAP_THRESHOLD` are effects of their own too, waiting for
+  their flags; `typeStatics` keeps only the `EMPTY`s.
+- **Answers kept.** A program reads every member it names as `None` does:
+  `a_program_naming_one_upstream_member_reads_it_on_every_runtime_type`
+  builds, for each of the 59 members, a program naming only it and checks
+  that every runtime value has it where it has it at `None`. Host code
+  reading a member the program does not name gets `undefined`, as
+  docs/advanced-optimization.md already said of every member where a
+  program named none.
+- **What is left**: benchmarks/re-frame-vs-shadow.md, light-cljs-1077,
+  records the bytes over the gate by unit group and what removing each
+  would cost in speed.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and
@@ -3156,6 +3547,81 @@ its class's slot without the old path's recognisers (`structuralEqualPair`,
 forged vector, set or seq is compared, and a forged seq or keyword hashed,
 by the fields it lacks (which may throw, as its other slots do), where the
 old path answered it by identity.
+
+Rescoped by light-cljs-1075, whose `empty?` calls a counted value's
+`-count` slot and whose external lookup takes a runtime class's mask bit as
+its native implementation:
+
+37. `protocol_hooks_answer_runtime_values_as_the_full_lookup`: `empty?` of
+    the forged list, map and range calls their class's `-count` slot,
+    where it threw at the dispatcher's native test; in the set that extends
+    host types, `object` and `default`, the forged list's and range's bits,
+    which declare `ICounted`, keep `object`'s `-count` from them as from
+    their class, so `count` of a cons of one throws, where it gave 43. The
+    predicates that read a mask bit first (`isVector`), the hooks they
+    continue (`read`) and `builtin`, which reads a value's kind and mask
+    only where its slot holds a runtime class's method, ask the Proxy as
+    often as before.
+
+light-cljs-1076 rescoped no test: no test pins `into` of a forged value or
+a map's `conj` of a forged entry. What changes for deliberate reflection
+only: `into` onto a value made by `Object.create` of a list's, a sorted
+collection's, a queue's, a subvector's or a map entry's prototype conjoins
+through its class's `-conj` slot, as `conj` has since light-cljs-1068, where
+`conjProtocol`'s lookup threw that no `-conj` is defined for it; and a map's
+`-conj` of a forged vector or map entry that the protocol hooks take for a
+vector by its class's mask bits (light-cljs-1070) reads its items through
+its class's `-nth` slot, which reads fields the value lacks, where the
+dispatcher threw that no `-nth` is defined for it. And a slot that a
+program defines as a getter under its keyed name, which it can only spell
+with the build's key (deliberate reflection, section 1), is read once per
+item where the slot holds a runtime class's method: `-conj`'s and `-nth`'s
+dispatchers read it twice there (their lookup passes over the class's
+method, then `conj` or `nth` reads the slot again and calls it), so a
+getter that answers the class's method first and another function after
+gives the class's answer, where it gave the other function's. Reading the
+slot once per item is this pellet's rule; where the dispatchers read it
+once (nil, false or a program's method first), `into` and a map's `-conj`
+read it once too (`into_onto_other_collections_keeps_extended_answers`).
+
+Rescoped by light-cljs-1079, whose test of the runtime's own values
+(`ownedKind`) and whose store inventories read the keyed kind alone, so a
+value made by `Object.create` of a prototype of one of the runtime's own
+classes is the runtime's own as its class's values are:
+
+38. tests/support/js_runtime.test.js, "public constructor fields preserve
+    canonical payload brands" (item 17's change, which the field accessor
+    now makes): writing `__hash` on a forged list, repeat, vector,
+    subvector, chunked seq, queue, array or hash map or hash set writes the
+    forged value's own hash field, where it threw "Expected public core
+    value", and writing a repeat's, cycle's or iterate's state reads the
+    state the forged value lacks (a `TypeError`); the symbols', conses' and
+    keywords' accessors, which test their fields, still throw. And
+    `protocol_hooks_answer_runtime_values_as_the_full_lookup`'s Proxy line
+    (items 2 and 4): asked 305, 318 and 305 times, where 308, 321 and 308;
+    and in its set that writes `PersistentTreeMap`'s mask by name (item
+    23), the sorted map is not `reversible?`, as the written mask says,
+    where its comparator made it so (`reversibleValue` reads the bit).
+
+What else changes for such a value, which no test pins: `satisfies?` and
+`implements?` of a value made from the prototype of a class without masks
+(an atom, a volatile, a delay, a reduced value, a multimethod, a var, a
+function with metadata) answer as its class's values by kind (`IMeta` of a
+forged atom is true), and `extend-type` of `object` or `default` no longer
+reaches it; `seq?`'s, `coll?`'s and `meta`'s native tests (`seqableValue`,
+`collectionValue`, `metaValue`, `withMetaValue`) and `fn?`'s (`fnValue`) take
+it as its class's values; printing takes it for the runtime's own
+(`printableValue`), so its class's printer reads the fields it lacks, where
+it printed as a host object; the extended lookup of a forged value
+whose class's mask bit is set gives its slot, where the native test,
+which read its fields, sent it through `satisfies` to `extendedDeclared`;
+the six native tests that read the mask bit (`maskNative`) answer such a
+value as its class's; and where `with-meta` of a forged value reaches the
+runtime's copy (`collectionWithMeta`, not its class's `-with-meta` slot), a
+class whose copy its class builds (`withMetaCopies`) copies the fields it
+lacks, where it threw that the value does not support metadata.
+Iterator seqs, chunks, chunk buffers, uuids, eductions, string writers and
+`ExceptionInfo`, which are not the runtime's own, keep their answers.
 
 ### Documentation rules that change
 

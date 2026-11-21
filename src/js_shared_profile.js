@@ -1644,6 +1644,53 @@
   // which this profile's engine forms do not have: here the stores of
   // `protocolStores` are probed in turn, as before.
   const ownedProtocolValue = storesPredicate(...protocolStores);
+  //@unit seqableValue requires: chunkedConsCells, iteratorSeqs, lazyCells, maps, queues,
+  //@ recordCells, seqCells, sets, storesPredicate, vectorCells, viewCells
+  // The V8 profile's store inventories test the keyed kind (`kindPredicate`,
+  // light-cljs-1079), as `ownedProtocolValue`: here their stores are probed
+  // in turn, as before.
+  const seqableValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, iteratorSeqs, recordCells);
+  //@unit collectionValue requires: chunkedConsCells, lazyCells, maps, queues, recordCells,
+  //@ seqCells, sets, storesPredicate, vectorCells, viewCells
+  const collectionValue = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, recordCells);
+  //@unit metaValue requires: atoms, chunkedConsCells, lazyCells, maps, metaFunctions, queues,
+  //@ recordCells, reifyCells, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells,
+  //@ viewCells
+  const metaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, atoms, metaFunctions, reifyCells, recordCells);
+  //@unit withMetaValue requires: chunkedConsCells, lazyCells, maps, metaFunctions, queues,
+  //@ recordCells, reifyCells, seqCells, sets, storesPredicate, symbolCells, vars, vectorCells,
+  //@ viewCells
+  const withMetaValue = storesPredicate(symbolCells, vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, vars, metaFunctions, reifyCells, recordCells);
+  //@unit fnValue requires: metaFunctions, vars
+  // This profile's `vars` also hold the engine's vars, which have no kind.
+  const fnValue = value => metaFunctions.has(value) || vars.has(value);
+  //@unit withMetaKeeps requires: chunkedConsCells, lazyCells, maps, queues, seqCells, sets,
+  //@ storesPredicate, vectorCells, viewCells
+  // The V8 profile's `copyWithMeta` tests these by kind (light-cljs-1079):
+  // here the stores are probed in turn, as before.
+  const withMetaKeeps = storesPredicate(vectorCells, maps, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells);
+  //@unit withMetaCopies requires: maps, queues, reifyCells, seqCells, sets, storesPredicate,
+  //@ symbolCells, vars, viewCells
+  const withMetaCopies = storesPredicate(symbolCells, maps, sets, seqCells, viewCells, queues, vars, reifyCells);
+  //@unit cloneablePayload requires: cellOf, holdsVector, isEntryCell, maps, queues, recordCells,
+  //@ sets, viewOf
+  // The V8 profile reads these native tests' mask bits (`maskNative`,
+  // light-cljs-1079), which this profile's engine forms do not have: here
+  // they test the stores and the recognisers, as before.
+  function cloneablePayload(value) { return (holdsVector(value) && !isEntryCell(value)) || (maps.has(value) && !recordCells.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cellOf(value)?.cell$LKEY) || ["indexed", "reverse"].includes(viewOf(value)?.view$LKEY); }
+  //@unit stackValue requires: cellOf, holdsVector, isCell, queues
+  const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat"].includes(cellOf(value)?.cell$LKEY) && (holdsVector(value) || isCell(value) || queues.has(value));
+  //@unit reversibleValue requires: comparatorOf, holdsVector, viewOf
+  const reversibleValue = value => holdsVector(value) || viewOf(value)?.view$LKEY === "indexed" || comparatorOf(value) !== undefined;
+  //@unit aseqValue requires: cellOf, isChunkedCons, viewOf
+  function aseqValue(value) {
+    const cell = cellOf(value), kind = viewOf(value)?.view$LKEY;
+    return kind === "chunked" || cell?.cell$LKEY === "cons" || (cell?.cell$LKEY === "list" && (cell.count$LKEY > 0 || cell.cljs$lang$kind$$LKEY === 12)) || isChunkedCons(value) || kind === "indexed" || kind === "hash-map";
+  }
+  //@unit comparableValue requires: holdsVector, namedOf, uuids
+  const comparableValue = value => holdsVector(value) || uuids.has(value) || namedOf(value) !== undefined || value instanceof Date;
+  //@unit pendingValue requires: cellOf, delays, isLazy
+  const pendingValue = value => ["repeat", "cycle", "iterate"].includes(cellOf(value)?.cell$LKEY) || delays.has(value) || isLazy(value);
   //@unit demungePattern requires: demungeCharacters
   // The source of the V8 profile's global `RegExp`, a string: a regex
   // object is exotic data a seal cannot take, and an engine regex form
@@ -1867,11 +1914,15 @@
   //@unit PersistentArrayMapValue.statics effect: PersistentArrayMapValue when: typeStatics
   //@ requires: makeMap, PersistentArrayMapValue
   PersistentArrayMapValue.EMPTY = makeMap(PersistentArrayMapValue, [], "array-map");
+  //@unit PersistentArrayMapValue.threshold effect: PersistentArrayMapValue when: member_HASHMAP_THRESHOLD
+  //@ requires: PersistentArrayMapValue
   PersistentArrayMapValue.HASHMAP_THRESHOLD = 8;
-  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue when: typeStatics requires: aclone,
-  //@ displayStr, makeMap, PersistentHashMapValue, putEntry
+  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue when: typeStatics requires: makeMap,
+  //@ PersistentHashMapValue
   // The V8 profile's, without the hash tries: the engine hashes the entries.
   PersistentHashMapValue.EMPTY = makeMap(PersistentHashMapValue, [], "hash-map");
+  //@unit PersistentHashMapValue.fromArrays effect: PersistentHashMapValue when: member_fromArray,
+  //@ member_fromArrays requires: aclone, displayStr, makeMap, PersistentHashMapValue, putEntry
   PersistentHashMapValue.fromArray = (array, noClone) => {
     const items = noClone ? array : aclone(array), entries = [], length = items.length;
     const edit = {};
