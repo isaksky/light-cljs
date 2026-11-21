@@ -2124,6 +2124,57 @@ reductions are, without their slot-first wrappers (`equalPair.slots`,
   the old paths' recognisers leave and the classes' hashes move into their
   slots.
 
+What light-cljs-1067 landed: `into` of a vector, a map or a set takes no
+protocol lookup per call, where it took three (`-as-transient`'s
+dispatcher, and `-with-meta`'s support test and its own lookup), in a
+program that implements protocols.
+
+- **Slots.** As upstream's PersistentVector, PersistentArrayMap,
+  PersistentHashMap and PersistentHashSet implement IEditableCollection
+  and IWithMeta, their classes have keyed `-as-transient` and `-with-meta`
+  slots, one function each for the four classes (`asTransientSlot`, the
+  transient `asTransient` makes; `withMetaSlot`, the value itself where
+  `meta` answers the metadata, else `collectionWithMeta`'s copy past its
+  lookup, `copyWithMeta`). Each answers a method `extend-type` of
+  `js/Object` put on `Object.prototype` first, as `metaSlot` does, since
+  the slot shadows it where the lookup found it through the chain.
+- **Not `builtinSlots`.** The lookups that find these methods with
+  `builtin` (`-as-transient`'s dispatcher, which `(-as-transient x)`
+  calls, and `collectionWithMeta`, which `with-meta`, `sort`,
+  `select-keys`, `update-vals` and the others call, and `-with-meta`'s
+  support test) take the slots as the value's own methods, which answer
+  as their own paths did. Marked, they hid `Object.prototype`'s method
+  from those lookups, and `with-meta` of a vector gave the vector's copy
+  where master gave the `js/Object` method's answer. Neither slot calls a
+  lookup of its own key.
+- **Slot first.** `transient` and `-with-meta` (`withMetaProtocol`) are
+  upstream's shape, as `meta` is: a value with a keyed kind (for
+  `-with-meta`, an object: this path never called a function's program
+  method) calls its slot, a program's (`extend-type`, `specify!`, a
+  record's, a `reify`'s) or its class's; every other value, and one whose
+  slot holds no method, takes the old path (`asTransientProtocol`,
+  `withMetaOf`).
+- **`into`.** One function per arity (`into2`, `into3`) under the entry,
+  each under light-cljs-1033's 100 bytes of bytecode (`into` 98, `into2`
+  94, `into3` 95, `editableTarget` 87, `transient` 53, `withMetaProtocol`
+  68, `asTransientSlot` 37, `withMetaSlot` 72). A target with a keyed kind
+  whose mask has IEditableCollection's bit (partition 1, 4) is editable,
+  as upstream's `implements?` reads the bit and the `implements` hooks
+  answer first; any other value asks the hook as before. The target's
+  metadata is read with `meta`, its slot since light-cljs-1070.
+- **Answers kept.** `transient_and_with_meta_slots_keep_extended_answers`
+  pins master `8903e693`'s answers at every level for `extend-type` and
+  `specify!` of the two protocols and of `IMeta`, `extend-type` of
+  `js/Object`, members written by name (nil, false or a method, on a
+  prototype or a value) and targets that are no editable collection;
+  `into_of_small_collections_takes_no_protocol_lookup_per_call` counts no
+  lookup for sixteen `into` calls; tests/support/js_runtime.test.js checks
+  each slot against its operation with the slot taken off the prototype.
+  A value made by reflection from one of the four prototypes takes the
+  slot, which reads no field first (deliberate reflection, section 5): no
+  test pinned what `transient` or `-with-meta` gave one.
+- **Measured** (benchmarks/runtime-vs-shadow.md, light-cljs-1067): MEASURED.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

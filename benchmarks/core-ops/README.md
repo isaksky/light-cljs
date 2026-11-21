@@ -1,7 +1,7 @@
 # Core operations: light-cljs's output against shadow-cljs's
 
 This is the output-speed gate. One ClojureScript source,
-`src/core_ops/main.cljs`, times 76 core operations: map, vector, list and set
+`src/core_ops/main.cljs`, times 78 core operations: map, vector, list and set
 access and updates, seqs, reductions, printing, equality, records, calls and atoms. Both
 compilers build it for release, and both outputs run in Node:
 - light-cljs at `:advanced`, its release default (`light-cljs.edn`);
