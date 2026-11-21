@@ -18,7 +18,12 @@ fn assemble(roots: &[&str], swaps: &[(&str, &str)], returned: &str) -> String {
     }
     let roots = roots
         .iter()
-        .map(|n| (m.unit_of(n).unwrap(), RootUse::Call))
+        .map(|n| {
+            (
+                m.unit_of(n).or_else(|| m.unit_named(n)).unwrap(),
+                RootUse::Call,
+            )
+        })
         .collect::<Vec<_>>();
     let kept = m.reached_by_uses(&roots);
     let mut text = m.source()[m.prologue.clone()].to_owned();
@@ -146,8 +151,20 @@ const SWAPS: &[(&str, &str)] = &[
 ];
 
 /// The units the swapped slice keeps: those `mapSeq` reaches and the seq
-/// walk's own paths, which only its swapped `operationPaths` names.
-const SLICE_ROOTS: &[&str] = &["mapSeq", "seqPath", "firstPath", "restPath", "nextPath"];
+/// walk's own paths, which only its swapped `operationPaths` names, with
+/// the effects that put them in front of the upstream-shaped paths, which
+/// a slice keeps with `setDeclarationDemand` (light-cljs-1078).
+const SLICE_ROOTS: &[&str] = &[
+    "mapSeq",
+    "seqPath",
+    "firstPath",
+    "restPath",
+    "nextPath",
+    "operationPaths.seq",
+    "operationPaths.first",
+    "operationPaths.rest",
+    "operationPaths.next",
+];
 
 /// `mapSeq(f, [1 2 3])` over an engine vector, walked twice with the
 /// engine's own `seq`/`first`/`next`, as `kind items... calls n`.
@@ -319,7 +336,12 @@ fn real_core_map_slice_publication_walk() {
     let m = RuntimeManifest::embedded();
     let roots = SLICE_ROOTS
         .iter()
-        .map(|name| (m.unit_of(name).unwrap(), RootUse::Call))
+        .map(|name| {
+            (
+                m.unit_of(name).or_else(|| m.unit_named(name)).unwrap(),
+                RootUse::Call,
+            )
+        })
         .collect::<Vec<_>>();
     let kept = m.reached_by_uses(&roots);
     let bindings = m

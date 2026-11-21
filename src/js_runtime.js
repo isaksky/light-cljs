@@ -909,8 +909,27 @@
   // and the shared-heap profile, whose engine forms hold no slots. Release
   // and dev builds set none: there a runtime class's value answers from its
   // slot, and the operation's own path is upstream's, for nil and host
-  // values (light-cljs-1054).
+  // values (light-cljs-1054). The upstream-shaped paths (`countOf` and the
+  // others) do not read them: effects kept with `setDeclarationDemand` wrap
+  // their bindings (`operationPaths.count` and the others), so that no
+  // `Advanced` output carries the test (light-cljs-1078); `equalPairOf` and `hashOf` read
+  // theirs.
   const operationPaths = {};
+  //@unit fallbackMethod requires: methodKeys
+  // The upstream-shaped paths' shared cold step (light-cljs-1078): the
+  // method a value of a runtime class (a keyed kind below 64) finds in its
+  // class's slot `slot`, where the value's own slot holds nil or false, as
+  // the old paths answered by the class; else what `hook` (the builtin or
+  // the program method lookup, which the caller reads from the protocol
+  // hooks, or none) gives for the method key numbered `n` and `arity`, with
+  // `fast` and `direct` as that lookup takes them. Only the fallbacks call
+  // it, after their nil, array and string answers.
+  function fallbackMethod(value, slot, hook, n, arity, fast, direct) {
+    return value?.cljs$lang$kind$$LKEY < 64 && Object.getPrototypeOf(value)?.[slot] || hook?.(value, methodKeys[n], arity, fast, direct);
+  }
+  //@unit unsupported
+  // The upstream-shaped paths' error for a value without the operation.
+  function unsupported(operation) { throw new Error(operation + " not supported on this type"); }
   //@unit fieldComparisons
   // Whether the classes' comparisons and hashes by their fields hold
   // (`classEquiv`, `vectorHash`, `mapEquiv`, light-cljs-1014), and a sorted
@@ -1848,10 +1867,8 @@
     }
     return seqOf(value);
   }
-  //@unit seqOf requires: IndexedSeqCell, iteratorSeq, methodKeys, operationPaths, protocolHooks
+  //@unit seqOf requires: IndexedSeqCell, iteratorSeq, methodKeys, protocolHooks
   function seqOf(value) {
-    const path = operationPaths.seq;
-    if (path !== undefined) return path(value);
     if (value == null) return null;
     if (value.cljs$lang$kind$$LKEY !== undefined) {
       const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY || Object.getPrototypeOf(value)?.cljs$core$ISeqable$_seq$arity$1$LKEY;
@@ -1988,12 +2005,10 @@
     }
     return firstOf(value);
   }
-  //@unit firstOf requires: methodKeys, operationPaths, ownSeqs, protocolHooks, seq
+  //@unit firstOf requires: methodKeys, ownSeqs, protocolHooks, seq, unsupported
   // The first item of a collection without `-first` is its seq's, read
   // from the seq's slot (upstream's `(-first (seq coll))`).
   function firstOf(value) {
-    const path = operationPaths.first;
-    if (path !== undefined) return path(value);
     if (value == null) return null;
     const own = protocolHooks.programMethod?.(value, methodKeys[48], 1, false, true);
     if (own) return own.call(value, value);
@@ -2002,7 +2017,7 @@
     if (ownSeqs.on) return protocolHooks.firstSeq(s);
     const method = s.cljs$core$ISeq$_first$arity$1$LKEY || Object.getPrototypeOf(s)?.cljs$core$ISeq$_first$arity$1$LKEY || protocolHooks.builtin?.(s, methodKeys[48], 1);
     if (method) return method.call(s, s);
-    throw new Error("ISeq.-first not supported on this type");
+    return unsupported("ISeq.-first");
   }
   //@unit firstPath requires: chunkOf, first, firstSeq, isCell, isChunkedCons, isView, iteratorSeqs,
   //@ lazyOf, methodKeys, protocolHooks, queues, seq
@@ -2052,10 +2067,8 @@
     }
     return restOf(value);
   }
-  //@unit restOf requires: emptyList, methodKeys, operationPaths, ownSeqs, protocolHooks, seq
+  //@unit restOf requires: emptyList, methodKeys, ownSeqs, protocolHooks, seq, unsupported
   function restOf(value) {
-    const path = operationPaths.rest;
-    if (path !== undefined) return path(value);
     if (value == null) return emptyList;
     const own = protocolHooks.programMethod?.(value, methodKeys[50], 1, false, true);
     if (own) return own.call(value, value);
@@ -2064,7 +2077,7 @@
     if (ownSeqs.on) return protocolHooks.restSeq(s);
     const method = s.cljs$core$ISeq$_rest$arity$1$LKEY || Object.getPrototypeOf(s)?.cljs$core$ISeq$_rest$arity$1$LKEY || protocolHooks.builtin?.(s, methodKeys[50], 1);
     if (method) return method.call(s, s);
-    throw new Error("ISeq.-rest not supported on this type");
+    return unsupported("ISeq.-rest");
   }
   //@unit restPath requires: emptyList, isCell, isChunkedCons, isView, iteratorSeqs, lazyOf,
   //@ methodKeys, protocolHooks, rest, restSeq, seq
@@ -2122,10 +2135,8 @@
     }
     return nextOf(value);
   }
-  //@unit nextOf requires: methodKeys, operationPaths, protocolHooks, rest, seq
+  //@unit nextOf requires: methodKeys, protocolHooks, rest, seq
   function nextOf(value) {
-    const path = operationPaths.next;
-    if (path !== undefined) return path(value);
     if (value == null) return null;
     const own = protocolHooks.programMethod?.(value, methodKeys[40], 1, false, true);
     if (own) return own.call(value, value);
@@ -2700,7 +2711,7 @@
     }
     return reduceOf(rf, init, collection);
   }
-  //@unit reduceOf requires: iterator, iterReduce, methodKeys, operationPaths, protocolHooks,
+  //@unit reduceOf requires: fallbackMethod, iterator, iterReduce, methodKeys, protocolHooks,
   //@ reduceWalk, seqReduce
   // Upstream's `reduce` of a value without a `-reduce` slot holding a
   // method: a value of a runtime class whose instance slot holds nil or
@@ -2718,16 +2729,9 @@
   // found it), else a set's and the queue's own iterator, else the walk of
   // its seq.
   function reduceOf(rf, init, collection) {
-    const path = operationPaths.reduce;
-    if (path !== undefined) return path.apply(null, arguments);
     const arity = arguments.length, source = arity === 3 ? collection : init, kind = source?.cljs$lang$kind$$LKEY;
     if (arity === 2) init = undefined;
-    if (kind < 64) {
-      const prototype = Object.getPrototypeOf(source);
-      const method = arity === 3 ? prototype?.cljs$core$IReduce$_reduce$arity$3$LKEY : prototype?.cljs$core$IReduce$_reduce$arity$2$LKEY;
-      if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
-    }
-    const own = protocolHooks.programMethod?.(source, methodKeys[44], arity, true);
+    const own = fallbackMethod(source, arity === 3 ? "cljs$core$IReduce$_reduce$arity$3$LKEY" : "cljs$core$IReduce$_reduce$arity$2$LKEY", protocolHooks.programMethod, 44, arity, true);
     if (own) return arity === 3 ? own.call(source, source, rf, init) : own.call(source, source, rf);
     if (Array.isArray(source) || typeof source === "string") return reduceWalk(source, rf, init, arity);
     if (kind < 32) {
@@ -3056,8 +3060,7 @@
     }
     return reduceKvOf(rf, init, collection);
   }
-  //@unit reduceKvOf requires: keyProtocol, methodKeys, operationPaths, protocolHooks, reduce,
-  //@ valProtocol
+  //@unit reduceKvOf requires: fallbackMethod, keyProtocol, protocolHooks, reduce, valProtocol
   // Upstream's `reduce-kv` of a value without a `-kv-reduce` slot holding a
   // method: a value of a runtime class whose instance slot holds nil or
   // false takes its class's slot, as the old path answered by the class; a
@@ -3065,13 +3068,7 @@
   // included, the `reduce` of its items' keys and values, as the old path
   // gave them.
   function reduceKvOf(rf, init, collection) {
-    const path = operationPaths.reduceKv;
-    if (path !== undefined) return path(rf, init, collection);
-    if (collection?.cljs$lang$kind$$LKEY < 64) {
-      const method = Object.getPrototypeOf(collection)?.cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY;
-      if (method) return method.call(collection, collection, rf, init);
-    }
-    const own = protocolHooks.programMethod?.(collection, methodKeys[28], 3);
+    const own = fallbackMethod(collection, "cljs$core$IKVReduce$_kv_reduce$arity$3$LKEY", protocolHooks.programMethod, 28, 3);
     if (own) return own.call(collection, collection, rf, init);
     if (collection == null) return init;
     return reduce((result, entry) => rf.call(null, result, keyProtocol(entry), valProtocol(entry)), init, collection);
@@ -3223,16 +3220,14 @@
     }
     return conjOf(coll, item);
   }
-  //@unit conjOf requires: conj, cons, emptyList, isCell, isChunkedCons, isLazy, isView, makeVector,
-  //@ methodKeys, operationPaths, protocolHooks
+  //@unit conjOf requires: conj, cons, emptyList, fallbackMethod, isCell, isChunkedCons, isLazy,
+  //@ isView, makeVector, protocolHooks, unsupported
   // Upstream's `conj`: none or one argument, each item in turn, nil the
   // list of the item; a value of a runtime class whose instance slot holds
   // nil or false takes its class's slot, as the old path answered by the
   // class; a seq without `-conj` (a cons, a lazy seq, a seq over an array
   // or a map) is consed onto, as the old path did.
   function conjOf(coll, item) {
-    const path = operationPaths.conj;
-    if (path !== undefined) return path.apply(null, arguments);
     const arity = arguments.length;
     if (arity !== 2) {
       if (arity === 0) return makeVector([]);
@@ -3241,14 +3236,10 @@
       return result;
     }
     if (coll == null) return cons(item, emptyList, "list");
-    if (coll.cljs$lang$kind$$LKEY < 64) {
-      const method = Object.getPrototypeOf(coll)?.cljs$core$ICollection$_conj$arity$2$LKEY;
-      if (method) return method.call(coll, coll, item);
-    }
-    const own = protocolHooks.builtin?.(coll, methodKeys[7], 2);
+    const own = fallbackMethod(coll, "cljs$core$ICollection$_conj$arity$2$LKEY", protocolHooks.builtin, 7, 2);
     if (own) return own.call(coll, coll, item);
     if (isCell(coll) || isChunkedCons(coll) || isView(coll) || isLazy(coll)) return cons(item, coll, "cons");
-    throw new Error("conj not supported on this type");
+    return unsupported("conj");
   }
   //@unit conjPath requires: cellOf, cons, emptyList, holdsVector, isCell, isChunkedCons, isLazy,
   //@ isView, kindHooks, makeVector, maps, methodKeys, missing, ownMeta, preserveMeta,
@@ -3356,8 +3347,8 @@
     }
     return assocOf(value, key, item);
   }
-  //@unit assocOf requires: ArrayMapCell, assoc, kindHooks, methodKeys, operationPaths,
-  //@ protocolHooks
+  //@unit assocOf requires: ArrayMapCell, assoc, fallbackMethod, kindHooks, methodKeys,
+  //@ protocolHooks, unsupported
   // Upstream's `assoc`: each further key and value in turn (a trailing key
   // gets nil, as upstream's takes `(second kvs)`), nil an array map of the
   // key; a value of a runtime class whose instance slot holds nil or false
@@ -3366,8 +3357,6 @@
   // once (`kindHooks.assocVector`), as the old path did, so that an
   // `extend-type` of `IMeta` is asked as often as before.
   function assocOf(value, key, item) {
-    const path = operationPaths.assoc;
-    if (path !== undefined) return path.apply(null, arguments);
     const arity = arguments.length;
     if (arity > 3) {
       if (value?.cljs$lang$kind$$LKEY <= 3 && !(value.v$LKEY !== undefined && value.slots$LKEY) && !protocolHooks.builtin?.(value, methodKeys[1], 3))
@@ -3377,13 +3366,9 @@
       return result;
     }
     if (value == null) return new ArrayMapCell(1, [key, item]);
-    if (value.cljs$lang$kind$$LKEY < 64) {
-      const method = Object.getPrototypeOf(value)?.cljs$core$IAssociative$_assoc$arity$3$LKEY;
-      if (method) return method.call(value, value, key, item);
-    }
-    const own = protocolHooks.builtin?.(value, methodKeys[1], 3);
+    const own = fallbackMethod(value, "cljs$core$IAssociative$_assoc$arity$3$LKEY", protocolHooks.builtin, 1, 3);
     if (own) return own.call(value, value, key, item);
-    throw new Error("assoc not supported on this type");
+    return unsupported("assoc");
   }
   //@unit assocPath requires: assoc, copyEntries, holdsVector, isArrayMap, isHashMap, isTreeMap,
   //@ kindHooks, maps, methodKeys, missing, protocolHooks, putCollectionEntry, updatedMap,
@@ -4283,13 +4268,11 @@
     }
     return dissocOf(value, key);
   }
-  //@unit dissocOf requires: dissoc, methodKeys, operationPaths, protocolHooks
+  //@unit dissocOf requires: dissoc, fallbackMethod, protocolHooks, unsupported
   // Upstream's `dissoc`: none or one argument, each key in turn, nil
   // itself; a value of a runtime class whose instance slot holds nil or
   // false takes its class's slot, as the old path answered by the class.
   function dissocOf(value, key) {
-    const path = operationPaths.dissoc;
-    if (path !== undefined) return path.apply(null, arguments);
     const arity = arguments.length;
     if (arity !== 2) {
       if (arity === 0) return null;
@@ -4298,13 +4281,9 @@
       return result;
     }
     if (value == null) return value;
-    if (value.cljs$lang$kind$$LKEY < 64) {
-      const method = Object.getPrototypeOf(value)?.cljs$core$IMap$_dissoc$arity$2$LKEY;
-      if (method) return method.call(value, value, key);
-    }
-    const own = protocolHooks.builtin?.(value, methodKeys[31], 2);
+    const own = fallbackMethod(value, "cljs$core$IMap$_dissoc$arity$2$LKEY", protocolHooks.builtin, 31, 2);
     if (own) return own.call(value, value, key);
-    throw new Error("dissoc not supported on this type");
+    return unsupported("dissoc");
   }
   //@unit dissocPath requires: dissoc, dissocEntries, isArrayMap, isHashMap, isTreeMap, kindHooks,
   //@ maps, methodKeys, protocolHooks
@@ -4550,16 +4529,14 @@
     if (own) return own.call(value, value, key);
     throw new Error("disj not supported on this type");
   }
-  //@unit disjOf requires: conjMeta, disj, dissoc, methodKeys, operationPaths, protocolHooks,
-  //@ setDisjoin
+  //@unit disjOf requires: conjMeta, disj, dissoc, fallbackMethod, methodKeys, protocolHooks,
+  //@ setDisjoin, unsupported
   // Upstream's `disj`: none or one argument, each key in turn, nil nil; a
   // value of a runtime class whose instance slot holds nil or false takes
   // its class's slot, as the old path answered by the class. A set without a
   // program's `-disjoin` removes every key at once, its metadata read once,
   // as the old path did.
   function disjOf(value, key) {
-    const path = operationPaths.disj;
-    if (path !== undefined) return path.apply(null, arguments);
     const arity = arguments.length;
     if (arity !== 2) {
       if (arity === 0) return null;
@@ -4575,13 +4552,9 @@
       return result;
     }
     if (value == null) return null;
-    if (value.cljs$lang$kind$$LKEY < 64) {
-      const method = Object.getPrototypeOf(value)?.cljs$core$ISet$_disjoin$arity$2$LKEY;
-      if (method) return method.call(value, value, key);
-    }
-    const own = protocolHooks.builtin?.(value, methodKeys[54], 2);
+    const own = fallbackMethod(value, "cljs$core$ISet$_disjoin$arity$2$LKEY", protocolHooks.builtin, 54, 2);
     if (own) return own.call(value, value, key);
-    throw new Error("disj not supported on this type");
+    return unsupported("disj");
   }
   //@unit disjPath requires: dissoc, methodKeys, preserveMeta, protocolHooks, setDisjoin, sets,
   //@ treeSetOf
@@ -5527,8 +5500,8 @@
     }
     return countOf(value);
   }
-  //@unit countOf requires: kindHooks, methodKeys, operationPaths, protocolHooks, protocolSentinel,
-  //@ seqableValue
+  //@unit countOf requires: kindHooks, methodKeys, protocolHooks, protocolSentinel, seqableValue,
+  //@ unsupported
   // Upstream's `count`: a value of a runtime class whose instance slot
   // holds nil or false takes its class's slot, as the old path answered by
   // the class; a string or an array that does not declare `ICounted` (its
@@ -5537,8 +5510,6 @@
   // (light-cljs-1070); a seqable value without `-count` (a cons, a lazy
   // seq, a program's type) counts its seq.
   function countOf(value) {
-    const path = operationPaths.count;
-    if (path !== undefined) return path(value);
     if (value == null) return 0;
     if (value.cljs$lang$kind$$LKEY < 64) {
       const method = Object.getPrototypeOf(value)?.cljs$core$ICounted$_count$arity$1$LKEY;
@@ -5554,7 +5525,7 @@
     if (protocolHooks.implements?.(methodKeys[51], value) ?? seqableValue(value)) return kindHooks.countSeq(value);
     const nativeCount = protocolHooks.builtin?.(value, methodKeys[10], 1);
     if (nativeCount) return nativeCount.call(value, value);
-    throw new Error("count not supported on this type");
+    return unsupported("count");
   }
   //@unit countPath requires: cellOf, chunkBufferOf, chunkOf, count, isLazy, isTransient, kindHooks,
   //@ maps, methodKeys, protocolHooks, queues, seqableValue, sets, vectorStore, viewOf
@@ -5673,25 +5644,19 @@
     }
     return nthOf(value, index, notFound, arity);
   }
-  //@unit nthOf requires: first, implementsSeq, indexedValue, invalidArity, methodKeys, missing,
-  //@ next, nth, operationPaths, outOfBounds, protocolHooks, seq, sequential, viewOf
+  //@unit nthOf requires: fallbackMethod, first, implementsSeq, indexedValue, invalidArity,
+  //@ methodKeys, missing, next, nth, outOfBounds, protocolHooks, seq, sequential, unsupported,
+  //@ viewOf
   // Upstream's `nth` of `arity` arguments: nil, a host value's program
   // method, arrays and strings, the seq walk of a sequential value without
   // `-nth` (a list, a cons, a lazy seq, a seq of a vector, read by its
   // offset), a value of a runtime class whose instance slot holds nil or
   // false by its class's slot.
   function nthOf(value, index, notFound, arity) {
-    const path = operationPaths.nth;
-    if (path !== undefined) return arity === 2 ? path(value, index) : arity === 3 ? path(value, index, notFound) : invalidArity(arity);
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
     if (typeof index !== "number") throw new Error("Index argument to nth must be a number");
     if (value == null) return arity === 2 ? value : notFound;
-    if (value.cljs$lang$kind$$LKEY < 64) {
-      const proto = Object.getPrototypeOf(value);
-      if (arity === 2) { const method = proto?.cljs$core$IIndexed$_nth$arity$2$LKEY; if (method) return method.call(value, value, index); }
-      else { const method = proto?.cljs$core$IIndexed$_nth$arity$3$LKEY; if (method) return method.call(value, value, index, notFound); }
-    }
-    const own = protocolHooks.programMethod?.(value, methodKeys[25], arity, true, true);
+    const own = fallbackMethod(value, arity === 2 ? "cljs$core$IIndexed$_nth$arity$2$LKEY" : "cljs$core$IIndexed$_nth$arity$3$LKEY", protocolHooks.programMethod, 25, arity, true, true);
     if (own) return arity === 2 ? own.call(value, value, index) : own.call(value, value, index, notFound);
     const fallback = arity === 2 ? missing : notFound;
     if (Array.isArray(value)) return index > -1 && index < value.length ? value[Math.trunc(index)] : fallback === missing ? outOfBounds() : fallback;
@@ -5729,7 +5694,7 @@
     }
     const nativeNth = protocolHooks.programMethod?.(value, methodKeys[25], arity);
     if (nativeNth) return arity === 2 ? nativeNth.call(value, value, index) : nativeNth.call(value, value, index, notFound);
-    throw new Error("nth not supported on this type");
+    return unsupported("nth");
   }
   //@unit nthPath requires: cellOf, chunkOf, first, indexedValue, invalidArity, isEntryCell,
   //@ isTransient, kindHooks, methodKeys, missing, next, nth, outOfBounds, protocolHooks, seq,
@@ -5848,7 +5813,7 @@
     }
     return getOf(value, key, notFound, arity);
   }
-  //@unit getOf requires: invalidArity, methodKeys, operationPaths, protocolHooks
+  //@unit getOf requires: invalidArity, methodKeys, protocolHooks
   // Upstream's `get` of `arity` arguments: nil, a host value's program
   // method, arrays and strings, else `notFound`. A value of a runtime
   // class whose instance slot holds nil or false takes its class's slot; one
@@ -5856,8 +5821,6 @@
   // protocol lookup would (`protocolHooks.declaredMethod`), from the slot
   // as read, as `get.own` answered it (light-cljs-358).
   function getOf(value, key, notFound, arity) {
-    const path = operationPaths.get;
-    if (path !== undefined) return arity === 2 ? path(value, key) : arity === 3 ? path(value, key, notFound) : invalidArity(arity);
     if (arity !== 2 && arity !== 3) return invalidArity(arity);
     if (value == null) return arity === 2 ? null : notFound;
     const kind = value.cljs$lang$kind$$LKEY;
@@ -7530,15 +7493,13 @@
     }
     return containsOf(value, key);
   }
-  //@unit containsOf requires: get, methodKeys, missing, operationPaths, protocolHooks
+  //@unit containsOf requires: get, methodKeys, missing, protocolHooks
   // Upstream's `contains?`: a value's `-contains-key?`, else whether `get`
   // finds the key. A value of a runtime class whose instance slot holds nil
   // or false takes its class's slot; one of a program's type finishes as the
   // protocol lookup would, from the slot as read, as `contains.own`
   // answered it (light-cljs-358).
   function containsOf(value, key) {
-    const path = operationPaths.contains;
-    if (path !== undefined) return path(value, key);
     const kind = value?.cljs$lang$kind$$LKEY;
     if (kind !== undefined) {
       const slot = (kind < 64 ? Object.getPrototypeOf(value) : value)?.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY;
@@ -9192,18 +9153,12 @@
     }
     return peekOf(value);
   }
-  //@unit peekOf requires: methodKeys, operationPaths, protocolHooks
+  //@unit peekOf requires: fallbackMethod, protocolHooks
   // Upstream's `peek`: nil, else the value's `-peek`; a value of a runtime
   // class whose instance slot holds nil or false takes its class's slot.
   function peekOf(value) {
-    const path = operationPaths.peek;
-    if (path !== undefined) return path(value);
     if (value == null) return null;
-    if (value.cljs$lang$kind$$LKEY < 64) {
-      const method = Object.getPrototypeOf(value)?.cljs$core$IStack$_peek$arity$1$LKEY;
-      if (method) return method.call(value, value);
-    }
-    const own = protocolHooks.builtin?.(value, methodKeys[57], 1);
+    const own = fallbackMethod(value, "cljs$core$IStack$_peek$arity$1$LKEY", protocolHooks.builtin, 57, 1);
     if (own) return own.call(value, value);
     throw new Error("No protocol method IStack.-peek defined for this value");
   }
@@ -9234,18 +9189,12 @@
     if (own) return own.call(value, value);
     throw new Error("No protocol method IStack.-pop defined for this value");
   }
-  //@unit popOf requires: methodKeys, operationPaths, protocolHooks
+  //@unit popOf requires: fallbackMethod, protocolHooks
   // Upstream's `pop`: nil, else the value's `-pop`; a value of a runtime
   // class whose instance slot holds nil or false takes its class's slot.
   function popOf(value) {
-    const path = operationPaths.pop;
-    if (path !== undefined) return path(value);
     if (value == null) return null;
-    if (value.cljs$lang$kind$$LKEY < 64) {
-      const method = Object.getPrototypeOf(value)?.cljs$core$IStack$_pop$arity$1$LKEY;
-      if (method) return method.call(value, value);
-    }
-    const own = protocolHooks.builtin?.(value, methodKeys[58], 1);
+    const own = fallbackMethod(value, "cljs$core$IStack$_pop$arity$1$LKEY", protocolHooks.builtin, 58, 1);
     if (own) return own.call(value, value);
     throw new Error("No protocol method IStack.-pop defined for this value");
   }
@@ -10187,6 +10136,70 @@
     };
     demandMulti = mf => { if (demand) demand("multifn:" + print(mf.name, false), mf); };
   }
+  // The operations' own paths where `operationPaths` holds them (a compiler
+  // session that demands declarations, the shared-heap profile), in front
+  // of the upstream-shaped paths (`countOf` and the others), each with the
+  // arguments it was given, as each path read them first until
+  // light-cljs-1078: effects kept only with `setDeclarationDemand`, which
+  // no `Advanced` slice keeps without reflection. `equalPairOf` and `hashOf` still read theirs themselves: the
+  // shared-heap profile's units of those names are the old paths, which
+  // keep none of the other operations' paths (`operationPaths`).
+  //@unit operationPaths.seq effect: seqOf when: setDeclarationDemand requires: operationPaths,
+  //@ seqOf
+  seqOf = (operation => function (value) { return (operationPaths.seq ?? operation)(value); })(seqOf);
+  //@unit operationPaths.first effect: firstOf when: setDeclarationDemand requires: firstOf,
+  //@ operationPaths
+  firstOf = (operation => function (value) { return (operationPaths.first ?? operation)(value); })(firstOf);
+  //@unit operationPaths.rest effect: restOf when: setDeclarationDemand requires: operationPaths,
+  //@ restOf
+  restOf = (operation => function (value) { return (operationPaths.rest ?? operation)(value); })(restOf);
+  //@unit operationPaths.next effect: nextOf when: setDeclarationDemand requires: nextOf,
+  //@ operationPaths
+  nextOf = (operation => function (value) { return (operationPaths.next ?? operation)(value); })(nextOf);
+  //@unit operationPaths.count effect: countOf when: setDeclarationDemand requires: countOf,
+  //@ operationPaths
+  countOf = (operation => function (value) { return (operationPaths.count ?? operation)(value); })(countOf);
+  //@unit operationPaths.nth effect: nthOf when: setDeclarationDemand requires: invalidArity, nthOf,
+  //@ operationPaths
+  nthOf = (operation => function (value, index, notFound, arity) {
+    const path = operationPaths.nth;
+    if (path === undefined) return operation(value, index, notFound, arity);
+    return arity === 2 ? path(value, index) : arity === 3 ? path(value, index, notFound) : invalidArity(arity);
+  })(nthOf);
+  //@unit operationPaths.get effect: getOf when: setDeclarationDemand requires: getOf, invalidArity,
+  //@ operationPaths
+  getOf = (operation => function (value, key, notFound, arity) {
+    const path = operationPaths.get;
+    if (path === undefined) return operation(value, key, notFound, arity);
+    return arity === 2 ? path(value, key) : arity === 3 ? path(value, key, notFound) : invalidArity(arity);
+  })(getOf);
+  //@unit operationPaths.contains effect: containsOf when: setDeclarationDemand requires: containsOf,
+  //@ operationPaths
+  containsOf = (operation => function (value, key) { return (operationPaths.contains ?? operation)(value, key); })(containsOf);
+  //@unit operationPaths.peek effect: peekOf when: setDeclarationDemand requires: operationPaths,
+  //@ peekOf
+  peekOf = (operation => function (value) { return (operationPaths.peek ?? operation)(value); })(peekOf);
+  //@unit operationPaths.pop effect: popOf when: setDeclarationDemand requires: operationPaths,
+  //@ popOf
+  popOf = (operation => function (value) { return (operationPaths.pop ?? operation)(value); })(popOf);
+  //@unit operationPaths.conj effect: conjOf when: setDeclarationDemand requires: conjOf,
+  //@ operationPaths
+  conjOf = (operation => function () { return (operationPaths.conj ?? operation).apply(null, arguments); })(conjOf);
+  //@unit operationPaths.assoc effect: assocOf when: setDeclarationDemand requires: assocOf,
+  //@ operationPaths
+  assocOf = (operation => function () { return (operationPaths.assoc ?? operation).apply(null, arguments); })(assocOf);
+  //@unit operationPaths.dissoc effect: dissocOf when: setDeclarationDemand requires: dissocOf,
+  //@ operationPaths
+  dissocOf = (operation => function () { return (operationPaths.dissoc ?? operation).apply(null, arguments); })(dissocOf);
+  //@unit operationPaths.disj effect: disjOf when: setDeclarationDemand requires: disjOf,
+  //@ operationPaths
+  disjOf = (operation => function () { return (operationPaths.disj ?? operation).apply(null, arguments); })(disjOf);
+  //@unit operationPaths.reduce effect: reduceOf when: setDeclarationDemand requires: operationPaths,
+  //@ reduceOf
+  reduceOf = (operation => function () { return (operationPaths.reduce ?? operation).apply(null, arguments); })(reduceOf);
+  //@unit operationPaths.reduceKv effect: reduceKvOf when: setDeclarationDemand requires: operationPaths,
+  //@ reduceKvOf
+  reduceKvOf = (operation => function (rf, init, collection) { return (operationPaths.reduceKv ?? operation)(rf, init, collection); })(reduceKvOf);
   //@unit slotWrites requires: protocolSentinel, runtimeKind
   // A program that writes a core protocol method's member by name
   // (`ProgramFacts::core_method_write`, the root an `Advanced` slice keeps

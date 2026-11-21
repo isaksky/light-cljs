@@ -5293,3 +5293,51 @@ The steady state is unchanged within its spread (round 2's before run had one fa
 - **Raw (final):** 374,578 to 375,235 (+657), 482,313 to 482,970 (+657), 1,287,891 to 1,288,565 (+674): `conjOwn` and `conjRead` (347 bytes at advanced in `mapv-count`), `entryNth` and `entryNthRead`, the review's fix adding the last and moving `conjRead`'s finish to every value.
 - **Rebased final** (`light-cljs-1076-26d51570`, with the second and third reviews' fixes, against master `light-cljs-d87d84a1`, light-cljs-1075's, fresh ports with the master binary): re-frame simple 114,496 to 114,678 (+182, +0.16%), TodoMVC 145,780 to 145,934 (+154, +0.11%), flow 333,444 to 333,743 (+299, +0.09%) after gzip; raw +720, +720 and +737.
 - **Size ratchet** (rebased onto light-cljs-1075's `d87d84a1`): the readable runtime grows 4,028 bytes with the second review's fixes (every none and prepare ceiling moves to the next 1,000 above); `mapv-count` grows 375 bytes (ceiling 54,400), `features` and `features-direct` 811 (ceilings 120,100 and 119,700), and the features example's shared chunk 814 (ceiling 96,200) (tests/support/ratchet_fixtures.rs).
+
+## 2026-11-21: the fallbacks' shared steps (light-cljs-1078)
+
+The upstream-shaped paths behind the operations' slot-first fronts (`countOf`, `nthOf` and the others) share their cold steps: one function reads a runtime class's slot and then the protocol lookup (`fallbackMethod`), one throws their errors (`unsupported`), and the own paths that a compiler session sets are put in front of them by effects that an `Advanced` slice does not keep, where sixteen of them tested those paths themselves (docs/value-layout.md, "What light-cljs-1078 landed"). The fronts and the call-site entries are unchanged. The sizes are in benchmarks/re-frame-vs-shadow.md.
+
+**Binaries:** before `light-cljs-688b1f03` (master; its compiler sources are master `15fc27ba`'s), after `light-cljs-1078-e8ed2ca0` (this pellet on `15fc27ba`), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; all unreserved.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5 --ops ...`, the operations whose cold paths it reaches: nil and host values, lazy seqs and ranges, `conj` and `assoc` onto nil, printing, before then after with `--baseline`; load 5.3-9.2 before, 4.3-5.7 after), light-cljs ns per operation, median (range):
+
+| op | light before | light after | change | shadow-cljs after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| count-small | 2.12 | 2.11 (2.11-2.12) | +0% | 2.12 | 1.01, 1.00 |
+| dissoc-small | 45.7 | 45.5 (45.1-47.4) | +0% | 82.8 | 0.56, 0.55 |
+| get-in-3 | 50.8 | 50.9 (50.6-50.9) | +0% | 48.1 | 1.03, 1.06 |
+| assoc-in-3 | 94.6 | 94.6 (93.8-95.9) | +0% | 90.1 | 1.06, 1.05 |
+| update-in-3 | 115.3 | 114.9 (114.4-116.9) | +0% | 100.5 | 1.15, 1.14 |
+| destructure-map-3 | 31.8 | 31.8 (31.6-32.4) | +0% | 34.5 | 0.92, 0.92 |
+| filter-count-1000 | 32,860 | 32,595 (32,005-32,766) | -1% | 30,390 | 1.07, 1.07 |
+| keys-small | 298.4 | 297.8 (294.4-303.2) | +0% | 74.4 | 4.00, 4.00 |
+| lazy-walk-1000 | 43,254 | 42,894 (42,799-43,343) | -1% | 40,964 | 1.05, 1.05 |
+| seq-walk-vec-1000 | 27,382 | 27,059 (26,956-27,538) | -1% | 10,378 | 2.63, 2.61 |
+| reduce-range-1000 | 4,901 | 4,837 (4,790-4,939) | -1% | 5,253 | 0.94, 0.92 |
+| str-nested-map | 4,108 | 4,118 (4,087-4,156) | +0% | 2,367 | 1.75, 1.74 |
+| eq-map-7 | 70.7 | 70.7 (70.2-71.2) | +0% | 100.2 | 0.70, 0.71 |
+| hash-fresh-map-7 | 77.3 | 76.6 (76.2-76.9) | -1% | 651.8 | 0.12, 0.12 |
+| multimethod | 67.2 | 67.3 (66.3-67.4) | +0% | 38.9 | 1.75, 1.73 |
+| variadic-call | 10.3 | 10.3 (10.2-10.3) | +0% | 9.48 | 1.08, 1.09 |
+| apply-vec | 178.3 | 176.4 (175.2-178.4) | -1% | 74.6 | 2.37, 2.37 |
+| merge-small | 1,493 | 1,487 (1,470-1,507) | +0% | 778.1 | 1.92, 1.91 |
+| select-keys-3 | 210.0 | 208.7 (190.8-210.9) | -1% | 232.2 | 0.89, 0.90 |
+| group-by-100 | 6,040 | 6,028 (5,792-6,094) | +0% | 4,283 | 1.40, 1.41 |
+| sort-by-100 | 6,374 | 6,364 (6,339-6,464) | +0% | 4,766 | 1.35, 1.34 |
+| str-sorted-map-20 | 31,297 | 31,626 (31,547-31,872) | +1% | 20,855 | 1.51, 1.52 |
+| vec-pop | 23.7 | 23.8 (23.7-23.8) | +0% | 24.5 | 0.97, 0.97 |
+| list-pop | 28.5 | 28.6 (28.4-30.0) | +0% | 12.9 | 2.19, 2.22 |
+| disj-set-7 | 116.0 | 112.8 (111.0-116.9) | -3% | 151.4 | 0.77, 0.74 |
+| into-list-small | 152.0 | 152.6 (151.5-157.2) | +0% | 109.1 | 1.39, 1.40 |
+
+No touched operation is slower than +1% (`str-sorted-map-20`, 31,297 to 31,626, whose runs overlap: 31,233-31,760 before) or faster than -3% (`disj-set-7`, 111.9-116.9 before, 111.0-116.9 after): the steps that moved are on the cold paths, and the fronts and call-site entries, which the gate's operations mostly take, are unchanged.
+
+**Workload 200k** (`compare.bb workload-200k-seed42 --runs 5 --runtime-only --runtime 1,40`, the project's light-cljs output rebuilt with each binary just before its run, every checksum equal to the oracle's; load 6.99-7.29 before, 7.90-8.22 after), median wall time (range):
+
+| iterations | light before | light after | shadow-cljs (before run, after run) |
+| --- | ---: | ---: | ---: |
+| 1 | 0.361 s (0.358-0.404) | 0.363 s (0.356-0.369) | 0.343 s, 0.342 s |
+| 40 | 1.689 s (1.676-1.696) | 1.684 s (1.674-1.705) | 1.405 s, 1.401 s |
+
+Steady state, from the medians at 1 and 40 iterations: light-cljs 34.0 to 33.9 ms per iteration, shadow-cljs 27.2 in both runs (light/shadow 1.25, 1.25): unchanged.

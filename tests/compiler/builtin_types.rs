@@ -5916,3 +5916,36 @@ fn equality_and_hash_fallbacks_keep_the_old_answers() {
         "[false false false false false true true true false true false false true true true true true true true true true true 37]",
     );
 }
+
+/// The upstream-shaped paths share their cold steps (light-cljs-1078): a
+/// class's slot and the protocol lookup through `fallbackMethod`, the errors
+/// through `unsupported`. Their nil answers, a host type's `extend-type`
+/// methods, the seq walks and the errors are master `15fc27ba`'s at every
+/// level, and an `Advanced` slice keeps none of the effects that put a
+/// compiler session's own paths in front of them (`operationPaths.count`
+/// and the others).
+#[test]
+fn fallbacks_share_their_cold_steps() {
+    let source = r#"(deftype Box [x])
+        (extend-type js/Date ICounted (-count [_] 42) ICollection (-conj [_ x] [:conj x]) IStack (-peek [_] :peek) (-pop [_] :pop))
+        (let [p (fn [f] (try (pr-str (f)) (catch :default e (str "E:" (.-message e)))))
+              d (js/Date. 0)]
+          (pr-str [(p #(count nil)) (p #(conj nil 1)) (p #(assoc nil :a 1)) (p #(dissoc nil :a)) (p #(disj nil 1))
+                   (p #(peek nil)) (p #(pop nil)) (p #(nth nil 0)) (p #(get nil :a)) (p #(reduce + nil)) (p #(reduce-kv + 7 nil))
+                   (p #(count 5)) (p #(conj 5 1)) (p #(assoc 5 :a 1)) (p #(dissoc 5 :a)) (p #(disj 5 1)) (p #(peek 5)) (p #(pop 5))
+                   (p #(nth 5 0)) (p #(first 5)) (p #(count (Box. 1)))
+                   (p #(count d)) (p #(conj d 1)) (p #(peek d)) (p #(pop d))
+                   (p #(conj (map inc [1]) 0)) (p #(nth (map inc [1 2 3]) 2)) (p #(reduce + (map inc [1 2])))]))"#;
+    every_level(
+        source,
+        r#"["0" "(1)" "{:a 1}" "nil" "nil" "nil" "nil" "nil" "nil" "0" "7" "E:count not supported on this type" "E:conj not supported on this type" "E:assoc not supported on this type" "E:dissoc not supported on this type" "E:disj not supported on this type" "E:No protocol method IStack.-peek defined for this value" "E:No protocol method IStack.-pop defined for this value" "E:nth not supported on this type" "E:5 is not ISeqable" "E:count not supported on this type" "42" "[:conj 1]" ":peek" ":pop" "(0 2)" "4" "5"]"#,
+    );
+    let kept = units(source);
+    for unit in ["fallbackMethod", "unsupported"] {
+        assert!(kept.contains(&unit), "{unit}: {kept:?}");
+    }
+    assert!(
+        !kept.iter().any(|unit| unit.starts_with("operationPaths.")),
+        "{kept:?}"
+    );
+}

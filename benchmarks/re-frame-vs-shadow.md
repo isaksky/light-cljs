@@ -1911,3 +1911,35 @@ Every byte over the gate is in one of two pellets, run in this order:
   - equality and hashing by fields and the shared reduce walks, 1.8 to 1.9 KB, measured separately.
 - **Shrinking all of it may mean giving back speed.** That trade is the user's to make, because the group puts speed first. light-cljs-1077 therefore shrinks what it can without slowing the gate, and then asks.
 - light-cljs-1048's table of core slot codes stays as light-cljs-1058 measured it: naming the slots at their sites costs more than the table.
+
+## 2026-11-21: the fallbacks' shared steps (light-cljs-1078)
+
+light-cljs-1049 left the core operations' 19 fallbacks (`countOf`, `nthOf`, ...) repeating the same cold steps. light-cljs-1078 shares them (docs/value-layout.md, "What light-cljs-1078 landed"):
+- one function reads a runtime class's slot and then the protocol lookup (`fallbackMethod`), for nine of them;
+- one function throws their "not supported on this type" errors (`unsupported`);
+- the operations' own paths that a compiler session sets are put in front of sixteen of them by effects that an `Advanced` slice does not keep, where each tested them itself.
+
+Its second part, answering the store tests of runtime classes by their masks, is filed as its own pellet: some native tests read a value's own field, so the masks alone do not answer them.
+
+```sh
+bb benchmarks/re-frame.bb size simple todomvc flow --light-only --light BIN
+```
+
+### Setup
+
+- **Binaries:** master `light-cljs-688b1f03` (its compiler sources are master `15fc27ba`'s) and `light-cljs-1078-e8ed2ca0`, this pellet on `15fc27ba`. Both are V8 builds.
+- **Ports:** porter `shadow-port-tool-983` with the `688b1f03` binary, one port per app into an empty directory, built by both binaries. On these ports `f533efb1` gives simple and TodoMVC their gate sizes exactly, and flow 328,663.
+- **Machine:** unreserved, load average 4.7 to 6.5. Sizes do not depend on load.
+
+### The whole bundle with React, gzip -9
+
+| App | master `688b1f03` | light-cljs-1078 | Change | Over `f533efb1` now |
+|---|---:|---:|---:|---:|
+| re-frame simple | 114,678 | 114,502 | -176 (-0.15%) | +5,871 |
+| TodoMVC | 145,934 | 145,757 | -177 (-0.12%) | +7,742 |
+| flow | 333,650 | 333,440 | -210 (-0.06%) | +4,777 |
+
+- **Raw:** the whole bundles are 1,772, 1,784 and 1,831 bytes smaller. brotli -q 11: simple -75, TodoMVC -275, flow +229.
+- **light-cljs's output as written**, without React, after gzip: simple 68,580 to 68,399 (-181), TodoMVC 98,039 to 97,874 (-165), flow 281,360 to 281,178 (-182).
+- **Against the expectation** of 600 to 1,000 bytes per app: about a fifth to a third of it. The removed text was the most repeated in the fallbacks, so gzip had already shared most of it: 1.8 KB raw is about 190 bytes after gzip. What is left in the fallbacks is each operation's own steps (the seq walk of `nthOf`, `countOf`'s and `reduceOf`'s kinds).
+- **Ratchet fixtures at `:advanced`** (tests/support/ratchet_fixtures.rs): no fixture grows, and those that keep several fallbacks shrink 71 to 1,159 bytes raw. A fallback that reads only its class's slot (`countOf`, `equalPairOf`, `hashOf`) keeps its own read: through the shared function, the programs that keep only those grew 17 to 90 bytes.

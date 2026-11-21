@@ -2325,6 +2325,45 @@ sorted map of vectors or map entries three.
   bytes larger after gzip (0.09 to 0.16%; the final `26d51570` against
   light-cljs-1075's `d87d84a1`).
 
+What light-cljs-1078 landed: the upstream-shaped paths (`countOf`,
+`nthOf` and the others, the operations' fallbacks behind their slot-first
+fronts and call-site entries) share their cold steps; the fronts and entries
+are unchanged.
+
+- **One step for a class's slot and the lookup.** `fallbackMethod(value,
+  slot, hook, n, arity, ...)` gives the method a runtime class's value
+  (a keyed kind below 64) finds in its class's slot, where its own slot
+  holds nil or false, else what the hook the caller reads
+  (`protocolHooks.builtin` or `protocolHooks.programMethod`) gives for
+  `methodKeys[n]`: `assocOf`, `conjOf`, `disjOf`, `dissocOf`, `peekOf`
+  and `popOf` with the builtin lookup, `nthOf`, `reduceOf` and
+  `reduceKvOf` with the program's. Each still gives its nil, array and
+  string answers first, in its own order. `countOf`, `equalPairOf` and
+  `hashOf`, which read the class's slot alone, keep their own read, so a
+  small program that keeps only them does not grow. `unsupported(name)`
+  throws the "not supported on this type" errors, with the same texts.
+- **The own paths in front, not inside.** Where a compiler session that
+  demands declarations or the shared-heap profile sets the operations' own
+  paths (`operationPaths`), sixteen effects put them in front of the
+  upstream-shaped paths (`operationPaths.count` and the others), each
+  passing the arguments as the path's own test did. They are kept only
+  with `setDeclarationDemand` (`when:`), so an `Advanced` slice, which
+  keeps no compile-time unit without reflection, carries neither them nor
+  the sixteen tests. Marking them compile-time instead would make every
+  slice that keeps an operation reach reflection and register its
+  namespaces (`reach_reflection`). `equalPairOf` and `hashOf` keep their
+  own test: the shared-heap profile's units of those names are the old
+  paths, which keep none of the other paths.
+- **Answers kept.** Each path asks the same slots and lookups in the same
+  order with the same arguments; a compiler session takes the same own
+  paths. The `when:` check reads a slot named for `fallbackMethod` as the
+  path's read of it, so the class slot units still wait for the paths.
+- **What is left** (light-cljs-1078's second part, filed as its own
+  pellet): the store inventories and the recognisers, which the hooks,
+  printing and the metadata paths still ask. Some native tests read a
+  value's own field (a view's `view`), so a class's masks alone do not
+  answer them.
+
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
    so each recognises the other's collections and seqs as its own (and

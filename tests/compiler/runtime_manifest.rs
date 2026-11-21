@@ -1052,14 +1052,19 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
             // is needed where the slot-first wrapper reading it is: wherever
             // the operation it wraps is; or where a function that reads it
             // first is (the chunk operations' `chunkFirst` and the others,
-            // light-cljs-1029).
+            // light-cljs-1029); or where an upstream-shaped path names it for
+            // the shared step that reads a class's slot (`fallbackMethod`,
+            // light-cljs-1078).
             let slots = installed_slots(body(id));
             (0..manifest.units.len())
                 .map(UnitId)
                 .filter(|&other| {
                     other != id
                         && installed_slots(body(other)).is_empty()
-                        && slots.iter().any(|slot| body(other).contains(slot))
+                        && slots.iter().any(|slot| {
+                            body(other).contains(slot)
+                                || body(other).contains(&format!("\"{}\"", &slot[1..]))
+                        })
                 })
                 .flat_map(|user| {
                     if wrapped_binding(body(user)).is_some() {
@@ -1069,6 +1074,15 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
                     }
                 })
                 .collect()
+        } else if unit.name.starts_with("operationPaths.") {
+            // A unit putting an operation's own path in front of its
+            // upstream-shaped path (`operationPaths.count`, light-cljs-1078)
+            // is needed only where a compiler session can set that path.
+            vec![
+                manifest
+                    .unit_of("setDeclarationDemand")
+                    .expect("the declaration demand"),
+            ]
         } else if let Some(wrapped) = wrapped_binding(body(id)) {
             // A unit wrapping an operation (`seq = behindProtocol(seq, ...)`)
             // is needed wherever the operation is.
@@ -1271,8 +1285,11 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // effects, less the slot-first wrappers of `=` and `hash`; and the four
     // `-as-transient` and four `-with-meta` slot units of the editable
     // collections (light-cljs-1067); and the two `slotWrites` effects of
-    // `into`'s `-conj` and a map entry's `-nth` (light-cljs-1076).
-    assert_eq!(checked, 582);
+    // `into`'s `-conj` and a map entry's `-nth` (light-cljs-1076); and the 16
+    // effects that put the operations' own paths in front of their
+    // upstream-shaped paths where `setDeclarationDemand` is kept
+    // (`operationPaths.count` and the others, light-cljs-1078).
+    assert_eq!(checked, 598);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -2090,7 +2107,9 @@ fn conditional_effects_wait_for_a_condition() {
 /// light-cljs-302, so that they go with the values they handle; the seven
 /// protocol wrappers stay (light-cljs-355), and the five `slotWrites`
 /// wrappers of the lookups' upstream-shaped paths join them (light-cljs-1066), and
-/// the updates' five (light-cljs-1068) and the seq walk's four (light-cljs-1071).
+/// the updates' five (light-cljs-1068) and the seq walk's four (light-cljs-1071),
+/// and the effects kept with `setDeclarationDemand` that put the operations' own paths in front
+/// of sixteen of them (`operationPaths.count` and the others, light-cljs-1078).
 /// `builtin` reads the demand itself, as `keyMethod` does, since
 /// light-cljs-1075 tells a runtime class's slot method from its read.
 /// A new one moves no unit out of its binding's chunk.
@@ -2109,11 +2128,15 @@ fn units_assigning_a_binding_share_its_unit() {
         [
             "MapEntryType <- MapEntryType.lean",
             "MapEntryType <- MapEntryType.vector",
+            "assocOf <- operationPaths.assoc",
             "assocOf <- slotWrites.assoc",
+            "conjOf <- operationPaths.conj",
             "conjOf <- slotWrites.conj",
             "conjOwn <- slotWrites.conjOwn",
+            "containsOf <- operationPaths.contains",
             "containsOf <- slotWrites.contains",
             "containsPath <- contains.own",
+            "countOf <- operationPaths.count",
             "countOf <- slotWrites.count",
             "declarationJournal <- MultiFn.tables",
             "declarationJournal <- declarationTransaction",
@@ -2138,11 +2161,15 @@ fn units_assigning_a_binding_share_its_unit() {
             "demandProtocol <- resetMulti",
             "demandProtocol <- satisfies",
             "demandProtocol <- setDeclarationDemand",
+            "disjOf <- operationPaths.disj",
             "disjOf <- slotWrites.disj",
+            "dissocOf <- operationPaths.dissoc",
             "dissocOf <- slotWrites.dissoc",
             "equalPairOf <- slotWrites.equalPair",
+            "firstOf <- operationPaths.first",
             "firstOf <- slotWrites.first",
             "gensymCounter <- gensym",
+            "getOf <- operationPaths.get",
             "getOf <- slotWrites.get",
             "getPath <- get.own",
             "globalHierarchy <- getGlobalHierarchy",
@@ -2156,14 +2183,18 @@ fn units_assigning_a_binding_share_its_unit() {
             "mapConj <- slotWrites.entryNth",
             "mapEntry <- mapEntry.lean",
             "mapEntry <- mapEntry.vector",
+            "nextOf <- operationPaths.next",
             "nextOf <- slotWrites.next",
+            "nthOf <- operationPaths.nth",
             "nthOf <- slotWrites.nth",
             "nthPath <- nth.protocol",
             "objectEquiv <- slotWrites.objectEquiv",
             "patchDeclaration <- declarationTransaction",
             "patchDeclaration <- extendType",
             "patchDeclaration <- installMethods",
+            "peekOf <- operationPaths.peek",
             "peekOf <- slotWrites.peek",
+            "popOf <- operationPaths.pop",
             "popOf <- slotWrites.pop",
             "recordMethodTable <- recordMethods.assoc",
             "recordMethodTable <- recordMethods.clone",
@@ -2180,10 +2211,14 @@ fn units_assigning_a_binding_share_its_unit() {
             "recordMethodTable <- recordMethods.print",
             "recordMethodTable <- recordMethods.seq",
             "recordMethodTable <- recordMethods.withMeta",
+            "reduceKvOf <- operationPaths.reduceKv",
             "reduceKvOf <- slotWrites.reduceKv",
+            "reduceOf <- operationPaths.reduce",
             "reduceOf <- slotWrites.reduce",
             "reducePath <- reduce.protocol",
+            "restOf <- operationPaths.rest",
             "restOf <- slotWrites.rest",
+            "seqOf <- operationPaths.seq",
             "seqOf <- slotWrites.seq",
             "setDeclaration <- declarationTransaction",
             "setDeclaration <- extendType",
