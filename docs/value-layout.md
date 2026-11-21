@@ -2321,8 +2321,9 @@ sorted map of vectors or map entries three.
   `into-sorted-map-small` 3,957 to 2,269 ns (light/shadow 5.16 to 2.96)
   and `into-list-small` 435 to 124 ns (3.73 to 1.06), `merge-small` -13 to
   -16%; no touched operation over 3% slower; workload 200k's steady state
-  unchanged within its spread; the re-frame apps' whole bundles 117 to 154
-  bytes larger after gzip (0.04 to 0.13%).
+  unchanged within its spread; the re-frame apps' whole bundles 154 to 299
+  bytes larger after gzip (0.09 to 0.16%; the final `26d51570` against
+  light-cljs-1075's `d87d84a1`).
 
 1. **Two copies of one build on a page.** With the per-build key that
    section 1 recommends, two loads of the *same* output file share the key,
@@ -3381,7 +3382,17 @@ through its class's `-conj` slot, as `conj` has since light-cljs-1068, where
 `-conj` of a forged vector or map entry that the protocol hooks take for a
 vector by its class's mask bits (light-cljs-1070) reads its items through
 its class's `-nth` slot, which reads fields the value lacks, where the
-dispatcher threw that no `-nth` is defined for it.
+dispatcher threw that no `-nth` is defined for it. And a slot that a
+program defines as a getter under its keyed name, which it can only spell
+with the build's key (deliberate reflection, section 1), is read once per
+item where the slot holds a runtime class's method: `-conj`'s and `-nth`'s
+dispatchers read it twice there (their lookup passes over the class's
+method, then `conj` or `nth` reads the slot again and calls it), so a
+getter that answers the class's method first and another function after
+gives the class's answer, where it gave the other function's. Reading the
+slot once per item is this pellet's rule; where the dispatchers read it
+once (nil, false or a program's method first), `into` and a map's `-conj`
+read it once too (`into_onto_other_collections_keeps_extended_answers`).
 
 ### Documentation rules that change
 
