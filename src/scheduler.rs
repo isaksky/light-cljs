@@ -1370,9 +1370,11 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
         let admitted = state.submit(&self.shared.limits, entry);
         let parked = state.parked;
         let any_restricted = self.shared.restricted
-            && state.servers.iter().enumerate().any(|(p, &s)| {
-                s < state.local.len() && state.runnable[p] > 0
-            });
+            && state
+                .servers
+                .iter()
+                .enumerate()
+                .any(|(p, &s)| s < state.local.len() && state.runnable[p] > 0);
         drop(state);
         self.shared.wake_filtered(admitted, parked, any_restricted);
     }
@@ -1630,6 +1632,96 @@ where
         Some(panic) => Err(PoolError::Panic(panic)),
         None => Ok(result),
     }
+}
+
+/// Stack size for worker threads in [`map`], matching the main thread's 8 MiB
+/// stack so deeply nested recursive emission or parsing never overflows on
+/// platforms with small pthread defaults (e.g., 512 KiB on macOS).
+const MAP_WORKER_STACK: usize = 8 << 20;
+
+/// Run independent `jobs`, each paired with an estimated cost (largest first),
+/// on up to `slots` CPU slots (the calling thread plus up to `slots.workers()`
+/// scoped worker threads), returning outcomes in the original `jobs` order.
+///
+/// With [`Slots::ONE`] or at most one job, runs inline on the calling thread
+/// with no pool overhead. Propagates any worker panic after joining all threads.
+pub fn map<T, O>(slots: Slots, jobs: Vec<(u64, T)>, execute: impl Fn(T) -> O + Sync) -> Vec<O>
+where
+    T: Send,
+    O: Send,
+{
+    let len = jobs.len();
+    if slots == Slots::ONE || len <= 1 {
+        return jobs.into_iter().map(|(_, job)| execute(job)).collect();
+    }
+    let mut indexed: Vec<(usize, u64, T)> = jobs
+        .into_iter()
+        .enumerate()
+        .map(|(index, (cost, job))| (index, cost, job))
+        .collect();
+    // Longest processing time first (LPT), ties in submission order.
+    indexed.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let queue: Mutex<VecDeque<(usize, T)>> = Mutex::new(
+        indexed
+            .into_iter()
+            .map(|(index, _, job)| (index, job))
+            .collect(),
+    );
+    let outcomes: Mutex<Vec<Option<O>>> = Mutex::new((0..len).map(|_| None).collect());
+    let failed = AtomicBool::new(false);
+    let failure: Mutex<Option<WorkerPanic>> = Mutex::new(None);
+    let workers = slots.get().min(len) - 1;
+    let run_slot = |slot: usize| {
+        loop {
+            if failed.load(Ordering::Relaxed) {
+                break;
+            }
+            let next = queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front();
+            let Some((index, job)) = next else {
+                break;
+            };
+            match panic::catch_unwind(AssertUnwindSafe(|| execute(job))) {
+                Ok(outcome) => {
+                    outcomes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)[index] = Some(outcome);
+                }
+                Err(payload) => {
+                    failed.store(true, Ordering::Relaxed);
+                    failure
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_or_insert(WorkerPanic {
+                            slot,
+                            message: panic_message(payload.as_ref()),
+                        });
+                    break;
+                }
+            }
+        }
+    };
+    thread::scope(|scope| {
+        for index in 0..workers {
+            let run_slot = &run_slot;
+            let _ = thread::Builder::new()
+                .name(format!("light-cljs-worker-{}", index + 1))
+                .stack_size(MAP_WORKER_STACK)
+                .spawn_scoped(scope, move || run_slot(index + 1));
+        }
+        run_slot(0);
+    });
+    if let Some(panic) = failure.into_inner().unwrap_or_else(|e| e.into_inner()) {
+        panic!("{panic}");
+    }
+    outcomes
+        .into_inner()
+        .unwrap_or_else(|e| e.into_inner())
+        .into_iter()
+        .map(|outcome| outcome.expect("every job completed"))
+        .collect()
 }
 
 /// How many of `deques` workers serve each phase ([`Config::servers`]):

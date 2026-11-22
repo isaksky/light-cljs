@@ -2037,6 +2037,27 @@ struct Previous {
     punct: [u8; 2],
 }
 
+/// Summary of the end of a [`TerseWriter`] buffer, used to compute the exact
+/// minimal separator when joining independently rewritten slices.
+#[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+#[derive(Clone, Copy)]
+pub struct WriterEnd {
+    previous: Option<Previous>,
+    ends_with_newline: bool,
+    ends_with_slash: bool,
+}
+
+/// First written token (or leading comment) of a rewritten slice, used with
+/// [`WriterEnd`] to join independently rewritten slices safely.
+#[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+#[derive(Clone, Debug)]
+pub struct FirstToken {
+    pub kind: Kind,
+    pub text: String,
+    pub is_comment: bool,
+    pub newline_before: bool,
+}
+
 fn word_byte(byte: u8) -> bool {
     identifier_part(byte) || byte == b'\\'
 }
@@ -2074,31 +2095,74 @@ fn may_start_statement(shape: Shape) -> bool {
     }
 }
 
+fn token_separator(
+    previous: Previous,
+    ends_with_newline: bool,
+    shape: Shape,
+    newline_before: bool,
+) -> &'static str {
+    if ends_with_newline {
+        return "";
+    }
+    let first = shape.text.as_bytes()[0];
+    let line = newline_before
+        && ((previous.restricted && !matches!(shape.text, ";" | "}"))
+            || (previous.ends_statement && may_start_statement(shape)));
+    if line {
+        return "\n";
+    }
+    let space = (word_byte(previous.last) && word_byte(first))
+        || (previous.last == b'+' && first == b'+')
+        || (previous.last == b'-' && first == b'-')
+        || (previous.last == b'/' && matches!(first, b'/' | b'*'))
+        || (previous.regex && word_byte(first))
+        || (previous.plain_number && first == b'.')
+        || (previous.last == b'<' && first == b'!')
+        || (previous.punct == *b"--" && first == b'>');
+    if space { " " } else { "" }
+}
+
 impl TerseWriter {
+    /// Snapshot of the writer's end state for joining with a following slice.
+    pub fn end_state(&self) -> Option<WriterEnd> {
+        (!self.out.is_empty()).then(|| WriterEnd {
+            previous: self.previous,
+            ends_with_newline: self.out.ends_with('\n'),
+            ends_with_slash: self.out.ends_with('/'),
+        })
+    }
+
+    /// Minimal separator between a slice ending with `prev` and a following
+    /// slice starting with `next` (assuming a line break separated their
+    /// top-level statements in the original source).
+    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+    pub fn boundary_separator(prev: WriterEnd, next: &FirstToken) -> &'static str {
+        if next.is_comment {
+            if next.newline_before && !prev.ends_with_newline {
+                "\n"
+            } else if prev.ends_with_slash {
+                " "
+            } else {
+                ""
+            }
+        } else if let Some(previous) = prev.previous {
+            let shape = Shape {
+                kind: next.kind,
+                text: &next.text,
+            };
+            token_separator(previous, prev.ends_with_newline, shape, true)
+        } else {
+            ""
+        }
+    }
+
     /// Writes `text`, separated as a token of `shape` (`text` itself for most
     /// tokens) that follows a line break when `newline_before`.
     pub fn write(&mut self, shape: Shape, text: &str, newline_before: bool) {
-        let first = shape.text.as_bytes()[0];
         if let Some(previous) = self.previous {
-            let line = newline_before
-                && ((previous.restricted && !matches!(shape.text, ";" | "}"))
-                    || (previous.ends_statement && may_start_statement(shape)));
-            let space = (word_byte(previous.last) && word_byte(first))
-                || (previous.last == b'+' && first == b'+')
-                || (previous.last == b'-' && first == b'-')
-                || (previous.last == b'/' && matches!(first, b'/' | b'*'))
-                || (previous.regex && word_byte(first))
-                || (previous.plain_number && first == b'.')
-                || (previous.last == b'<' && first == b'!')
-                || (previous.punct == *b"--" && first == b'>');
-            // After a line comment ([`TerseWriter::comment`]) the line has
-            // ended already.
-            if !self.out.ends_with('\n') {
-                if line {
-                    self.out.push('\n');
-                } else if space {
-                    self.out.push(' ');
-                }
+            let sep = token_separator(previous, self.out.ends_with('\n'), shape, newline_before);
+            if !sep.is_empty() {
+                self.out.push_str(sep);
             }
         }
         self.out.push_str(text);

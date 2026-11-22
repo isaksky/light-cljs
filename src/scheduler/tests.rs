@@ -1449,3 +1449,35 @@ fn nested_help_panic_stops_the_pool_and_cancels_the_outer_job() {
     );
     assert!(matches!(result, Err(PoolError::Panic(error)) if error.message == "nested producer"));
 }
+
+#[test]
+fn map_preserves_order_and_matches_single_slot() {
+    let empty: Vec<usize> = map(Slots::new(4).unwrap(), Vec::<(u64, usize)>::new(), |x| x);
+    assert!(empty.is_empty());
+
+    let single = map(Slots::new(4).unwrap(), vec![(10, 7usize)], |x| x * 3);
+    assert_eq!(single, vec![21]);
+
+    let make_jobs = || {
+        (0..64usize)
+            .map(|i| (((i * 37) % 13) as u64, i))
+            .collect::<Vec<_>>()
+    };
+    let expected = map(Slots::ONE, make_jobs(), |i| i * i + 1);
+    for count in [2, 4, 8] {
+        let got = map(Slots::new(count).unwrap(), make_jobs(), |i| i * i + 1);
+        assert_eq!(got, expected, "slots={count}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "boom")]
+fn map_propagates_worker_panic() {
+    let jobs = (0..16usize).map(|i| (i as u64, i)).collect::<Vec<_>>();
+    let _ = map(Slots::new(4).unwrap(), jobs, |i| {
+        if i == 7 {
+            panic!("boom");
+        }
+        i
+    });
+}

@@ -20,9 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::js_syntax::{
-    Declaration, Join, Kind, NO_PARTNER, NO_SCOPE, NameGenerator, Resolution, Shape, TerseWriter,
-    Token, closes_control_head, joined_declarations, lex_section, partners, redundant_semicolons,
-    reserved, resolve,
+    Declaration, FirstToken, Join, Kind, NO_PARTNER, NO_SCOPE, NameGenerator, Resolution, Shape,
+    TerseWriter, Token, WriterEnd, closes_control_head, joined_declarations, lex_section, partners,
+    redundant_semicolons, reserved, resolve,
 };
 
 /// One runtime unit as `build.rs` writes it.
@@ -546,6 +546,18 @@ fn constrained_short_names<'s>(
     for (position, word) in words.into_iter().enumerate() {
         stats.entry(word).or_insert((0, position)).0 += 1;
     }
+    constrained_short_names_from_stats(stats, excluded, avoid, fixed)
+}
+
+/// [`constrained_short_names`] from pre-aggregated `(count, first_position)`
+/// word statistics, allowing parallel workers to count each slice or chunk
+/// independently before merging.
+fn constrained_short_names_from_stats<'s, P: Ord + Copy>(
+    stats: HashMap<&'s str, (usize, P)>,
+    excluded: impl Fn(&str) -> bool,
+    avoid: &HashMap<&str, HashSet<&str>>,
+    fixed: impl Fn(&str) -> Option<&'static str>,
+) -> HashMap<&'s str, String> {
     let mut names = HashMap::with_capacity(stats.len());
     let mut order = Vec::with_capacity(stats.len());
     for &word in stats.keys() {
@@ -684,6 +696,17 @@ impl<'s> Locals<'s> {
         resolution: &Resolution,
         eligible: impl Fn(&str) -> bool,
     ) -> Self {
+        Self::new_canonical(source, tokens, in_raw, resolution, eligible, |word| word)
+    }
+
+    fn new_canonical(
+        source: &'s str,
+        tokens: &[Token],
+        in_raw: &[bool],
+        resolution: &Resolution,
+        eligible: impl Fn(&str) -> bool,
+        canonical: impl Fn(&'s str) -> &'s str,
+    ) -> Self {
         let declarations = &resolution.declarations;
         let mut named = declarations
             .iter()
@@ -804,8 +827,8 @@ impl<'s> Locals<'s> {
             let Some(occurrence) = occurrence else {
                 continue;
             };
-            let word = tokens[index].text(source);
-            if in_raw[index] || !compiler_name(word) {
+            let raw_word = tokens[index].text(source);
+            if in_raw[index] || !compiler_name(raw_word) {
                 continue;
             }
             let local = occurrence
@@ -813,6 +836,7 @@ impl<'s> Locals<'s> {
                 .map_or(NO_LOCAL, |declaration| local_of[declaration]);
             let (key, target) = match local {
                 NO_LOCAL => {
+                    let word = canonical(raw_word);
                     let number = *numbers.entry(word).or_insert_with(|| {
                         words.push(word);
                         words.len() as u32 - 1
@@ -1474,6 +1498,709 @@ pub(crate) fn terse_program_nested(
     Some((text, unit_bytes))
 }
 
+/// One slice fed into [`terse_program_slices`]: the header slice `H`
+/// (`k_prefix = None`) or a body slice `s` (`k_prefix = Some("k{s}_")`,
+/// `remap` mapping slice-local constant IDs to canonical constant IDs).
+#[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+pub(crate) struct TerseSlice<'a> {
+    pub(crate) source: &'a str,
+    pub(crate) raw: &'a [Range<usize>],
+    pub(crate) marks: Option<crate::source_map::Marks>,
+    pub(crate) k_prefix: Option<&'a str>,
+    pub(crate) remap: &'a [usize],
+}
+
+/// Runtime slice information for [`terse_program_slices`] when `embed && slice`.
+#[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+pub(crate) struct ParallelRuntime<'a> {
+    pub(crate) kept: &'a [bool],
+    pub(crate) bindings: &'a [&'static str],
+    /// Whether the nested outer-IIFE runtime form (`terse_program_nested`) is
+    /// eligible (true for terse ES modules; falls back to a runtime factory if
+    /// raw `js*` text could be captured by the runtime units).
+    pub(crate) can_nest: bool,
+}
+
+/// Output of [`terse_program_slices`], ready for streaming `RuntimeKey` hashing
+/// and parallel `RuntimeKey::apply_pieces` (or source-mapped assembly).
+#[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+pub(crate) struct ParallelTerseOutput {
+    /// Non-empty text pieces in order, split strictly at statement/wrapper
+    /// boundaries (never inside an identifier or `$LKEY` placeholder).
+    pub(crate) pieces: Vec<String>,
+    /// Total byte length of `pieces`.
+    pub(crate) total_len: usize,
+    /// Relocated source marks across the full output (when `mapped` is true).
+    pub(crate) marks: Option<crate::source_map::Marks>,
+    /// Merged `$LKEY` stem counts across `pieces` (when `count_lkeys` is true).
+    pub(crate) lkey_counts: crate::runtime_key::StemCounts,
+    /// Written bytes of the runtime slice (before short keyed-name adjustment).
+    pub(crate) runtime_bytes: usize,
+    /// Written per-unit bytes of the runtime slice (before short keyed-name
+    /// adjustment).
+    pub(crate) unit_bytes: Option<Vec<usize>>,
+}
+
+#[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+#[inline]
+fn canonical_k_word<'a>(
+    word: &'a str,
+    k_prefix: Option<&str>,
+    remap: &[usize],
+    canon_k_names: &'a [String],
+) -> &'a str {
+    if let Some(prefix) = k_prefix
+        && let Some(rest) = word.strip_prefix(prefix)
+        && let Ok(local) = rest.parse::<usize>()
+        && let Some(&canon) = remap.get(local)
+    {
+        return canon_k_names[canon].as_str();
+    }
+    word
+}
+
+#[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+fn boundary_top_decls(
+    source: &str,
+    tokens: &[Token],
+    in_raw: &[bool],
+    comments: &[RawComment<'_>],
+    statements: &[(usize, usize)],
+) -> (Option<&'static str>, Option<&'static str>) {
+    if tokens.is_empty() || statements.is_empty() {
+        return (None, None);
+    }
+    let mut statements = statements.to_vec();
+    statements.sort_unstable();
+    let keyword_of = |text: &str| match text {
+        "var" => Some("var"),
+        "let" => Some("let"),
+        "const" => Some("const"),
+        _ => None,
+    };
+    let has_leading_comment = comments.iter().any(|&(at, ..)| at == 0);
+    let has_trailing_comment = comments.iter().any(|&(at, ..)| at == tokens.len());
+    let first = if !has_leading_comment && !in_raw[0] && statements[0].0 == 0 {
+        keyword_of(tokens[0].text(source))
+    } else {
+        None
+    };
+    let last_idx = tokens.len() - 1;
+    let last = if !has_trailing_comment && !in_raw[last_idx] {
+        statements
+            .iter()
+            .find(|&&(_, semi)| semi == last_idx)
+            .filter(|&&(kw, _)| {
+                !in_raw[kw]
+                    && (tokens[kw].text(source) != "var"
+                        || kw == 0
+                        || (tokens[kw - 1].kind == Kind::Punct
+                            && matches!(tokens[kw - 1].text(source), ";" | "{" | "}")))
+            })
+            .and_then(|&(kw, _)| keyword_of(tokens[kw].text(source)))
+    } else {
+        None
+    };
+    (first, last)
+}
+
+/// Parallel 2-stage terse rewriting across `P+1` independently emitted slices
+/// (header slice `H` followed by `P` top-level statement slices):
+///
+/// 1. Parallel lex + partners + `raw_tokens` + `resolve` + `Locals::new` +
+///    per-slice word frequency counting, dropping `Resolution` immediately per
+///    slice so at most `slots` slices hold `Resolution` simultaneously.
+/// 2. Serial merge of global word stats and `excluded`, one global
+///    `constrained_short_names_from_stats`, and writing the nested runtime
+///    units (keeping `rooted` restricted to runtime roots so runtime-internal
+///    bindings keep 1–2-char short names) or terse runtime factory.
+/// 3. Parallel local naming + `Rewrite` + `TerseWriter` + mark relocation +
+///    `$LKEY` stem counting, dropping per-slice token buffers immediately.
+/// 4. Boundary joining with exact [`TerseWriter::boundary_separator`] and
+///    optional adjacent declaration joining (`;var ` -> `,`).
+///
+/// Returns `None` if any slice cannot be followed by `raw_tokens` / `lex`,
+/// signaling the caller to fall back to `hygienic`.
+#[allow(dead_code, clippy::too_many_arguments)] // Wired by light-cljs-1097 parallel release emission
+pub(crate) fn terse_program_slices<'a>(
+    slices: Vec<TerseSlice<'a>>,
+    canon_k_names: &'a [String],
+    runtime: Option<ParallelRuntime<'a>>,
+    package_imports: &str,
+    is_module: bool,
+    mapped: bool,
+    count_lkeys: bool,
+    slots: crate::scheduler::Slots,
+) -> Option<ParallelTerseOutput> {
+    let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
+    let spelled: HashSet<&'static str> = match &runtime {
+        Some(rt) if rt.can_nest => manifest
+            .units
+            .iter()
+            .zip(rt.kept)
+            .filter(|(_, kept)| **kept)
+            .flat_map(|(unit, _)| unit.declares.iter().copied())
+            .filter(|binding| keeps_name(binding))
+            .collect(),
+        _ => HashSet::new(),
+    };
+    let check_capture = runtime.as_ref().is_some_and(|rt| rt.can_nest);
+
+    struct SliceLexed<'s> {
+        source: &'s str,
+        tokens: Vec<Token>,
+        partners: Vec<u32>,
+        in_raw: Vec<bool>,
+        comments: Vec<RawComment<'s>>,
+        locals: Locals<'s>,
+        joins: Vec<Join>,
+        marks: Option<crate::source_map::Marks>,
+        k_prefix: Option<&'s str>,
+        remap: &'s [usize],
+        resolved_ok: bool,
+        captured_by_units: bool,
+        first_top_decl: Option<&'static str>,
+        last_top_decl: Option<&'static str>,
+        word_stats: HashMap<&'s str, (usize, u32)>,
+        excluded: HashSet<&'s str>,
+    }
+
+    // Step 2.1: Parallel lex + resolve + local analysis + word counting.
+    let lex_jobs: Vec<(u64, TerseSlice<'a>)> = slices
+        .into_iter()
+        .map(|slice| (slice.source.len() as u64, slice))
+        .collect();
+    let lexed_results = crate::scheduler::map(slots, lex_jobs, |slice| {
+        let source = slice.source;
+        if source.len() >= u32::MAX as usize {
+            return None;
+        }
+        let mut raw = slice
+            .raw
+            .iter()
+            .filter(|segment| !segment.is_empty())
+            .cloned()
+            .collect::<Vec<_>>();
+        raw.sort_by_key(|range| range.start);
+        let tokens = lex_section(source, 0..source.len(), false).ok()?;
+        if tokens.len() >= u32::MAX as usize {
+            return None;
+        }
+        let partners = partners(source, &tokens);
+        let (in_raw, comments) = raw_tokens(source, &tokens, &partners, &raw, None)?;
+        let captured_by_units = check_capture
+            && raw
+                .iter()
+                .any(|range| captured_by_units(&source[range.clone()], &spelled));
+        let k_prefix = slice.k_prefix;
+        let remap = slice.remap;
+        let canon = |word: &'a str| canonical_k_word(word, k_prefix, remap, canon_k_names);
+        let (locals, mut joins, resolved_ok, first_top_decl, last_top_decl) =
+            match resolve(source, &tokens) {
+                Ok(resolution) => {
+                    let locals = Locals::new_canonical(
+                        source,
+                        &tokens,
+                        &in_raw,
+                        &resolution,
+                        |_| true,
+                        canon,
+                    );
+                    let joins = joined_declarations(source, &tokens, &resolution.statements);
+                    let (first_decl, last_decl) = boundary_top_decls(
+                        source,
+                        &tokens,
+                        &in_raw,
+                        &comments,
+                        &resolution.statements,
+                    );
+                    // Drop `resolution` immediately inside this job.
+                    (locals, joins, true, first_decl, last_decl)
+                }
+                Err(_) => (
+                    Locals::none(tokens.len()),
+                    vec![Join::Keep; tokens.len()],
+                    false,
+                    None,
+                    None,
+                ),
+            };
+        for semicolon in 0..tokens.len() {
+            if joins[semicolon] == Join::Comma && (in_raw[semicolon] || in_raw[semicolon + 1]) {
+                joins[semicolon] = Join::Keep;
+                joins[semicolon + 1] = Join::Keep;
+            }
+        }
+        let mut word_stats: HashMap<&'a str, (usize, u32)> = HashMap::new();
+        let mut excluded: HashSet<&'a str> = HashSet::new();
+        for (index, ((token, &is_raw), &local)) in
+            tokens.iter().zip(&in_raw).zip(&locals.of_token).enumerate()
+        {
+            if token.kind == Kind::Name {
+                let raw_word = token.text(source);
+                if compiler_name(raw_word) && !is_raw {
+                    if local == NO_LOCAL {
+                        let word = canon(raw_word);
+                        word_stats.entry(word).or_insert((0, index as u32)).0 += 1;
+                    }
+                } else {
+                    excluded.insert(raw_word);
+                }
+            }
+        }
+        Some(SliceLexed {
+            source,
+            tokens,
+            partners,
+            in_raw,
+            comments,
+            locals,
+            joins,
+            marks: slice.marks,
+            k_prefix,
+            remap,
+            resolved_ok,
+            captured_by_units,
+            first_top_decl,
+            last_top_decl,
+            word_stats,
+            excluded,
+        })
+    });
+
+    if lexed_results.iter().any(Option::is_none) {
+        return None;
+    }
+
+    // Step 2.2: Serial global name table + nested units / runtime factory.
+    let mut lexed_slices = Vec::with_capacity(lexed_results.len());
+    let mut global_stats: HashMap<&'a str, (usize, (usize, u32))> = HashMap::new();
+    let mut excluded: HashSet<&'a str> = HashSet::new();
+    let mut any_captured = false;
+    let mut all_resolved = true;
+    for (slice_idx, slice) in lexed_results.into_iter().enumerate() {
+        let mut slice = slice.unwrap();
+        any_captured |= slice.captured_by_units;
+        all_resolved &= slice.resolved_ok;
+        for (word, (count, first)) in std::mem::take(&mut slice.word_stats) {
+            let entry = global_stats.entry(word).or_insert((0, (slice_idx, first)));
+            entry.0 += count;
+        }
+        excluded.extend(std::mem::take(&mut slice.excluded));
+        lexed_slices.push(slice);
+    }
+
+    let use_nested = runtime.as_ref().is_some_and(|rt| {
+        rt.can_nest
+            && !any_captured
+            && all_resolved
+            && !spelled.iter().any(|binding| excluded.contains(binding))
+    });
+
+    let mut avoid: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+    if let Some(rt) = &runtime {
+        if use_nested {
+            for (unit, _) in TERSE_UNITS.iter().zip(rt.kept).filter(|(_, kept)| **kept) {
+                for &(binding, names) in unit.avoid {
+                    if !keeps_name(TERSE_BINDINGS[binding]) {
+                        avoid
+                            .entry(runtime_read(binding))
+                            .or_default()
+                            .extend(names.split(' '));
+                    }
+                }
+            }
+        } else {
+            // Non-nested factory destructures `const [rt$a, ...] = <factory>;`
+            // at the start of the program body: count each binding once so
+            // every destructured root exists in `global_names`.
+            for (pos, &binding) in rt.bindings.iter().enumerate() {
+                let word: &'a str = runtime_read(binding_index(binding));
+                let entry = global_stats.entry(word).or_insert((0, (0, pos as u32)));
+                entry.0 += 1;
+            }
+        }
+    }
+
+    let unavailable = |name: &str| excluded.contains(name) || (use_nested && keeps_name(name));
+    let global_names =
+        constrained_short_names_from_stats(global_stats, unavailable, &avoid, |_| None);
+
+    // Build prefix text (`package_imports` + optional `export default ` +
+    // runtime wrapper/factory) and runtime source marks.
+    let mut prefix = String::new();
+    if is_module {
+        prefix.push_str(package_imports);
+        prefix.push_str("export default ");
+    }
+    let wrapper_start = prefix.len();
+    let mut prefix_marks = mapped.then(crate::source_map::Marks::default);
+    let mut alias_nonempty = false;
+    let (runtime_bytes, unit_bytes) = if let Some(rt) = &runtime {
+        if use_nested {
+            let units = TERSE_UNITS
+                .iter()
+                .zip(rt.kept)
+                .filter_map(|(unit, kept)| kept.then_some(unit))
+                .collect::<Vec<_>>();
+            let mut named: Vec<Option<&str>> = vec![None; TERSE_BINDINGS.len()];
+            let mut aliased: Vec<(usize, &str)> = Vec::new();
+            for &binding in rt.bindings {
+                let index = binding_index(binding);
+                let rt_word = runtime_read(index);
+                if keeps_name(TERSE_BINDINGS[index]) {
+                    if let Some(short) = global_names.get(rt_word) {
+                        aliased.push((index, short.as_str()));
+                    }
+                } else {
+                    named[index] = global_names.get(rt_word).map(String::as_str);
+                }
+            }
+            // Keep `rooted` restricted to runtime roots (not all `g`/`k`
+            // bindings declared inside the inner program function) so
+            // runtime-internal bindings keep 1–2-char short names.
+            let rooted: HashSet<&str> = named.iter().flatten().copied().collect();
+            let mut count = vec![0usize; TERSE_BINDINGS.len()];
+            let mut seen_at = vec![usize::MAX; TERSE_BINDINGS.len()];
+            let mut seen = 0usize;
+            let mut internal_avoid: HashMap<usize, HashSet<&str>> = HashMap::new();
+            for unit in &units {
+                for (_, index) in placeholders(unit.text) {
+                    count[index] += 1;
+                    if seen_at[index] == usize::MAX {
+                        seen_at[index] = seen;
+                        seen += 1;
+                    }
+                }
+                for &(binding, names) in unit.avoid {
+                    internal_avoid
+                        .entry(binding)
+                        .or_default()
+                        .extend(names.split(' '));
+                }
+            }
+            let mut internal = (0..TERSE_BINDINGS.len())
+                .filter(|&index| {
+                    count[index] > 0 && named[index].is_none() && !keeps_name(TERSE_BINDINGS[index])
+                })
+                .collect::<Vec<_>>();
+            internal.sort_by_key(|&index| (std::cmp::Reverse(count[index]), seen_at[index]));
+            let mut candidates = NameGenerator::default().filter(|name| {
+                !unavailable(name)
+                    && !rooted.contains(name.as_str())
+                    && TERSE_GLOBALS.binary_search(&name.as_str()).is_err()
+            });
+            let mut generated: Vec<String> = Vec::new();
+            let mut taken: Vec<bool> = Vec::new();
+            let mut free = 0;
+            let mut chosen: Vec<Option<usize>> = vec![None; TERSE_BINDINGS.len()];
+            for &binding in &internal {
+                let avoided = internal_avoid.get(&binding);
+                while taken.get(free) == Some(&true) {
+                    free += 1;
+                }
+                let mut at = free;
+                loop {
+                    if at == generated.len() {
+                        generated.push(candidates.next().expect("names never run out"));
+                        taken.push(false);
+                    }
+                    if !taken[at]
+                        && !avoided.is_some_and(|avoided| avoided.contains(generated[at].as_str()))
+                    {
+                        break;
+                    }
+                    at += 1;
+                }
+                taken[at] = true;
+                chosen[binding] = Some(at);
+            }
+            let name = |index: usize| -> &str {
+                match (named[index], chosen[index]) {
+                    (Some(name), _) => name,
+                    (None, Some(at)) => generated[at].as_str(),
+                    (None, None) => TERSE_BINDINGS[index],
+                }
+            };
+            let mut runtime_text = String::from("(()=>{");
+            let mut unit_marks = mapped.then(Vec::new);
+            if let Some(marks) = unit_marks.as_mut() {
+                let prologue =
+                    &crate::runtime_manifest::ANNOTATED_RUNTIME[manifest.prologue.clone()];
+                marks.push((0, prologue.find("(() =>").unwrap_or_default(), None));
+            }
+            let raw_unit_bytes = write_units(&mut runtime_text, rt.kept, name, unit_marks.as_mut());
+            let units_end = wrapper_start + runtime_text.len();
+            runtime_text.push_str("return(()=>{");
+            let program_body_start = wrapper_start + runtime_text.len();
+            for (pos, &(binding, short)) in aliased.iter().enumerate() {
+                runtime_text.push_str(if pos == 0 { "const " } else { "," });
+                runtime_text.push_str(short);
+                runtime_text.push('=');
+                runtime_text.push_str(TERSE_BINDINGS[binding]);
+            }
+            if !aliased.is_empty() {
+                runtime_text.push(';');
+                alias_nonempty = true;
+            }
+            prefix.push_str(&runtime_text);
+            if let Some(marks) = prefix_marks.as_mut() {
+                for (offset, source, name) in unit_marks.into_iter().flatten() {
+                    let origin = (crate::source_map::RUNTIME, source);
+                    match name {
+                        Some(name) => marks.named(wrapper_start + offset, Some(origin), name),
+                        None => marks.position(wrapper_start + offset, origin.0, origin.1),
+                    }
+                }
+                marks.unmapped(units_end);
+                marks.unmapped(program_body_start);
+            }
+            let bytes = crate::runtime_slice::written_unit_bytes(raw_unit_bytes);
+            let total_bytes = bytes.iter().sum();
+            (total_bytes, Some(bytes))
+        } else {
+            prefix.push_str("(()=>{");
+            if !rt.bindings.is_empty() {
+                prefix.push_str("const[");
+                for (pos, &binding) in rt.bindings.iter().enumerate() {
+                    if pos > 0 {
+                        prefix.push(',');
+                    }
+                    let rt_word = runtime_read(binding_index(binding));
+                    prefix.push_str(&global_names[rt_word]);
+                }
+                prefix.push_str("]=");
+            }
+            let factory_start = prefix.len();
+            let mut factory_marks = mapped.then(Vec::new);
+            let (factory, raw_unit_bytes) =
+                terse_slice_marked(rt.kept, rt.bindings, factory_marks.as_mut());
+            let trimmed = factory.trim();
+            let trimmed_lead = factory.len() - factory.trim_start().len();
+            prefix.push_str(trimmed);
+            prefix.push(';');
+            if let Some(marks) = prefix_marks.as_mut() {
+                for (offset, source, name) in factory_marks.into_iter().flatten() {
+                    let origin = (crate::source_map::RUNTIME, source);
+                    let pos = factory_start + offset.saturating_sub(trimmed_lead);
+                    match name {
+                        Some(name) => marks.named(pos, Some(origin), name),
+                        None => marks.position(pos, origin.0, origin.1),
+                    }
+                }
+                marks.unmapped(prefix.len());
+            }
+            let bytes = crate::runtime_slice::written_unit_bytes(raw_unit_bytes);
+            let rt_bytes = crate::runtime_key::written_len(trimmed);
+            (rt_bytes, Some(bytes))
+        }
+    } else {
+        prefix.push_str("(()=>{");
+        (0, None)
+    };
+
+    // Step 2.3: Parallel local naming + rewrite + TerseWriter + mark relocation
+    // + `$LKEY` stem counting.
+    struct SliceRewritten {
+        text: String,
+        marks: Option<crate::source_map::Marks>,
+        lkey_counts: crate::runtime_key::StemCounts,
+        first_token: Option<FirstToken>,
+        writer_end: Option<WriterEnd>,
+        ends_with_droppable_semi: bool,
+        first_top_decl: Option<&'static str>,
+        last_top_decl: Option<&'static str>,
+    }
+
+    let rewrite_jobs: Vec<(u64, SliceLexed<'a>)> = lexed_slices
+        .into_iter()
+        .map(|slice| (slice.tokens.len() as u64, slice))
+        .collect();
+    let rewritten_slices = crate::scheduler::map(slots, rewrite_jobs, |slice| {
+        let SliceLexed {
+            source,
+            tokens,
+            partners,
+            in_raw,
+            comments,
+            locals,
+            joins,
+            mut marks,
+            k_prefix,
+            remap,
+            first_top_decl,
+            last_top_decl,
+            ..
+        } = slice;
+        let mut candidates = Candidates::new(|name: &str| {
+            excluded.contains(name) || (use_nested && keeps_name(name))
+        });
+        let local_names = locals.names(&global_names, &mut candidates);
+        let Locals { of_token, .. } = locals;
+        let offsets = if marks.is_some() {
+            RewriteOffsets::all(tokens.len())
+        } else {
+            RewriteOffsets::None
+        };
+        let name = |index: usize, word: &str| -> &str {
+            match of_token[index] {
+                NO_LOCAL => {
+                    let canon = canonical_k_word(word, k_prefix, remap, canon_k_names);
+                    global_names[canon].as_str()
+                }
+                local => local_names[local as usize].as_str(),
+            }
+        };
+        let rewritten = rewrite_tokens_inner(
+            source, None, tokens, partners, in_raw, comments, joins, name, offsets, false,
+        );
+        if let Some(marks) = marks.as_mut()
+            && let RewriteOffsets::All(written) = rewritten.offsets
+        {
+            let end = rewritten.output.len();
+            marks.relocate(|offset| {
+                Some(
+                    written
+                        .get(written.partition_point(|(old, _)| *old < offset))
+                        .map_or(end, |(_, new)| *new),
+                )
+            });
+        }
+        let lkey_counts = if count_lkeys {
+            crate::runtime_key::StemCounts::of(&rewritten.output)
+        } else {
+            crate::runtime_key::StemCounts::default()
+        };
+        SliceRewritten {
+            text: rewritten.output,
+            marks,
+            lkey_counts,
+            first_token: rewritten.first_token,
+            writer_end: rewritten.writer_end,
+            ends_with_droppable_semi: rewritten.ends_with_droppable_semi,
+            first_top_decl,
+            last_top_decl,
+        }
+    });
+
+    // Step 2.4: Join slices with exact ASI/separator handling, optional
+    // cross-slice declaration joining, and merged `$LKEY` counts & marks.
+    let mut lkey_counts = if count_lkeys {
+        crate::runtime_key::StemCounts::of(&prefix)
+    } else {
+        crate::runtime_key::StemCounts::default()
+    };
+    let mut pieces: Vec<String> = Vec::with_capacity(rewritten_slices.len() + 2);
+    let mut all_marks = prefix_marks;
+    let mut total_len = 0usize;
+
+    // Merge `$LKEY` stem counts across all slices, keeping empty slices only
+    // when mapped so their marks still relocate at the boundary offset.
+    let mut slices_for_join: Vec<SliceRewritten> = Vec::with_capacity(rewritten_slices.len());
+    for mut slice in rewritten_slices {
+        if count_lkeys {
+            lkey_counts.merge(std::mem::take(&mut slice.lkey_counts));
+        }
+        if !slice.text.is_empty() || slice.marks.is_some() {
+            slices_for_join.push(slice);
+        }
+    }
+
+    // Optional `const a=Atom;` + `const ...` join with the first non-empty slice.
+    if !mapped
+        && alias_nonempty
+        && let Some(first) = slices_for_join.iter_mut().find(|s| !s.text.is_empty())
+        && first.first_top_decl == Some("const")
+        && first.text.starts_with("const")
+        && first
+            .text
+            .as_bytes()
+            .get(5)
+            .is_some_and(|&b| b == b' ' || b == b'[' || b == b'{')
+    {
+        let strip = 5 + usize::from(first.text.as_bytes()[5] == b' ');
+        prefix.pop();
+        prefix.push(',');
+        first.text.drain(..strip);
+    }
+
+    total_len += prefix.len();
+    pieces.push(prefix);
+
+    let last_non_empty = slices_for_join.iter().rposition(|s| !s.text.is_empty());
+    let mut prev_end: Option<WriterEnd> = None;
+    let mut prev_decl: Option<&'static str> = None;
+    for (idx, mut slice) in slices_for_join.into_iter().enumerate() {
+        if slice.text.is_empty() {
+            if let (Some(all), Some(marks)) = (all_marks.as_mut(), slice.marks) {
+                all.absorb(marks, total_len);
+            }
+            continue;
+        }
+        let mut joined_decl = false;
+        if !mapped
+            && let (Some(kw), Some(next_kw)) = (prev_decl, slice.first_top_decl)
+            && kw == next_kw
+            && pieces.last().is_some_and(|prev| prev.ends_with(';'))
+            && slice.text.starts_with(kw)
+            && slice
+                .text
+                .as_bytes()
+                .get(kw.len())
+                .is_some_and(|&b| b == b' ' || b == b'[' || b == b'{')
+        {
+            let strip = kw.len() + usize::from(slice.text.as_bytes()[kw.len()] == b' ');
+            if let Some(prev) = pieces.last_mut() {
+                prev.pop();
+                prev.push(',');
+            }
+            slice.text.drain(..strip);
+            joined_decl = true;
+        }
+        if !joined_decl && let (Some(prev), Some(next)) = (prev_end, slice.first_token.as_ref()) {
+            let sep = TerseWriter::boundary_separator(prev, next);
+            if !sep.is_empty()
+                && let Some(last_piece) = pieces.last_mut()
+            {
+                last_piece.push_str(sep);
+                total_len += sep.len();
+            }
+        }
+        if last_non_empty == Some(idx)
+            && !mapped
+            && slice.ends_with_droppable_semi
+            && slice.text.ends_with(';')
+        {
+            slice.text.pop();
+        }
+        if let (Some(all), Some(marks)) = (all_marks.as_mut(), slice.marks) {
+            all.absorb(marks, total_len);
+        }
+        total_len += slice.text.len();
+        prev_end = slice.writer_end;
+        prev_decl = slice.last_top_decl;
+        pieces.push(slice.text);
+    }
+
+    let suffix = match (use_nested, is_module) {
+        (true, true) => concat!("})()", "})()", ";\n"),
+        (true, false) => concat!("})()", "})()", "\n"),
+        (false, true) => "})();\n",
+        (false, false) => "})()\n",
+    };
+    total_len += suffix.len();
+    pieces.push(suffix.to_owned());
+
+    Some(ParallelTerseOutput {
+        pieces,
+        total_len,
+        marks: all_marks,
+        lkey_counts,
+        runtime_bytes,
+        unit_bytes,
+    })
+}
+
 /// Whether the raw `js*` text `text` could read a name that units written
 /// around the program's function declare ([`terse_program_nested`]), other
 /// than through its identifiers, which the units' names avoid: a direct
@@ -1576,6 +2303,18 @@ fn kept_read(word: &str) -> Option<&'static str> {
 /// global the units read ([`TERSE_GLOBALS`]). The units' text itself is
 /// written afterwards from the table ([`terse_module_units`]).
 pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s str, String>) {
+    terse_texts_with_slots(texts, crate::scheduler::Slots::ONE)
+}
+
+/// Parallel version of [`terse_texts`] on `slots` CPU slots: fans out lexing,
+/// resolution, local analysis and per-text word counting across all `texts`,
+/// merges the single global frequency table serially, then fans out local
+/// naming and rewriting across all `texts`. Produces output identical to
+/// [`terse_texts`].
+pub(crate) fn terse_texts_with_slots<'s>(
+    texts: &[Text<'s>],
+    slots: crate::scheduler::Slots,
+) -> (Vec<String>, HashMap<&'s str, String>) {
     let module = texts.iter().any(|text| text.units.is_some());
     let fixed = |word: &str| if module { kept_read(word) } else { None };
     let module_level =
@@ -1597,40 +2336,64 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
             raw
         })
         .collect::<Vec<_>>();
-    let lexed = texts
+    let lexed_jobs = texts
         .iter()
         .zip(&raws)
-        .map(|(text, raw)| Lexed::new(text.source, text.runtime.clone(), raw, eligible))
-        .collect::<Option<Vec<_>>>();
-    if let Some(lexed) = lexed {
-        let mut words: Vec<&'s str> = Vec::new();
-        let mut excluded = HashSet::new();
-        for (text, lexed) in texts.iter().zip(&lexed) {
-            if let Some(kept) = text.units {
-                words.extend(unit_words(kept).map(|word| -> &'s str { word }));
+        .map(|(text, raw)| (text.source.len() as u64, (text, raw.as_slice())))
+        .collect::<Vec<_>>();
+    let lexed_parts = crate::scheduler::map(slots, lexed_jobs, |(text, raw)| {
+        let lexed = Lexed::new(text.source, text.runtime.clone(), raw, eligible)?;
+        let mut word_stats: HashMap<&'s str, (usize, u32)> = HashMap::new();
+        let mut excluded: HashSet<&'s str> = HashSet::new();
+        let mut unit_pos = 0u32;
+        if let Some(kept) = text.units {
+            for word in unit_words(kept) {
+                let word: &'s str = word;
+                word_stats.entry(word).or_insert((0, unit_pos)).0 += 1;
+                unit_pos += 1;
             }
-            lexed.words(&mut words, &mut excluded);
         }
-        words.extend(kept_reads(module).map(|word| -> &'s str { word }));
-        let names = constrained_short_names(
-            words,
+        lexed.word_stats(unit_pos, |w| w, &mut word_stats, &mut excluded);
+        Some((lexed, word_stats, excluded))
+    });
+    if lexed_parts.iter().all(Option::is_some) {
+        let mut lexed = Vec::with_capacity(lexed_parts.len());
+        let mut stats: HashMap<&'s str, (usize, (usize, u32))> = HashMap::new();
+        let mut excluded: HashSet<&'s str> = HashSet::new();
+        for (text_index, part) in lexed_parts.into_iter().enumerate() {
+            let (text_lexed, word_stats, text_excluded) = part.unwrap();
+            excluded.extend(text_excluded);
+            for (word, (count, first)) in word_stats {
+                let entry = stats.entry(word).or_insert((0, (text_index, first)));
+                entry.0 += count;
+            }
+            lexed.push(text_lexed);
+        }
+        let tail_index = texts.len();
+        for (pos, word) in kept_reads(module).enumerate() {
+            let word: &'s str = word;
+            let entry = stats.entry(word).or_insert((0, (tail_index, pos as u32)));
+            entry.0 += 1;
+        }
+        let names = constrained_short_names_from_stats(
+            stats,
             |name| excluded.contains(name) || module_level(name),
             &avoid,
             fixed,
         );
-        let mut candidates =
-            Candidates::new(|name: &str| excluded.contains(name) || module_level(name));
-        let locals = lexed
-            .iter()
-            .map(|text| text.locals.names(&names, &mut candidates))
-            .collect::<Vec<_>>();
-        let outputs = lexed
+        let rewrite_jobs: Vec<(u64, Lexed<'s>)> = lexed
             .into_iter()
-            .zip(&locals)
-            .map(|(text, locals)| text.rewrite(&names, locals, RewriteOffsets::None).0)
+            .map(|text| (text.tokens.len() as u64, text))
             .collect();
+        let outputs = crate::scheduler::map(slots, rewrite_jobs, |text| {
+            let mut candidates =
+                Candidates::new(|name: &str| excluded.contains(name) || module_level(name));
+            let locals = text.locals.names(&names, &mut candidates);
+            text.rewrite(&names, &locals, RewriteOffsets::None).0
+        });
         return (outputs, names);
     }
+    drop(lexed_parts);
     debug_assert!(
         raws.iter().any(|raw| !raw.is_empty())
             || texts
@@ -1650,36 +2413,55 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
         .map(|(text, raw)| raw.iter().cloned().chain(text.runtime.clone()).collect())
         .collect::<Vec<Vec<_>>>();
     // A unit's locals are short names, which no prefixed name is.
-    let words = texts
+    let scan_jobs = texts
         .iter()
         .zip(&skipped)
-        .flat_map(|(text, skipped)| {
-            text.units
-                .into_iter()
-                .flat_map(unit_words)
-                .map(|word| -> &'s str { word })
-                .chain(
-                    scanned_names(text.source, skipped)
-                        .into_iter()
-                        .map(|(_, word)| word),
-                )
-        })
-        .chain(kept_reads(module).map(|word| -> &'s str { word }))
+        .map(|(text, skip)| (text.source.len() as u64, (text, skip.as_slice())))
         .collect::<Vec<_>>();
-    let names = constrained_short_names(words, |_| false, &HashMap::new(), fixed)
+    let scanned_per_text = crate::scheduler::map(slots, scan_jobs, |(text, skip)| {
+        let mut word_stats: HashMap<&'s str, (usize, u32)> = HashMap::new();
+        let mut pos = 0u32;
+        if let Some(kept) = text.units {
+            for word in unit_words(kept) {
+                let word: &'s str = word;
+                word_stats.entry(word).or_insert((0, pos)).0 += 1;
+                pos += 1;
+            }
+        }
+        for (_, word) in scanned_names(text.source, skip) {
+            word_stats.entry(word).or_insert((0, pos)).0 += 1;
+            pos += 1;
+        }
+        word_stats
+    });
+    let mut stats: HashMap<&'s str, (usize, (usize, u32))> = HashMap::new();
+    for (text_index, word_stats) in scanned_per_text.into_iter().enumerate() {
+        for (word, (count, first)) in word_stats {
+            let entry = stats.entry(word).or_insert((0, (text_index, first)));
+            entry.0 += count;
+        }
+    }
+    let tail_index = texts.len();
+    for (pos, word) in kept_reads(module).enumerate() {
+        let word: &'s str = word;
+        let entry = stats.entry(word).or_insert((0, (tail_index, pos as u32)));
+        entry.0 += 1;
+    }
+    let names = constrained_short_names_from_stats(stats, |_| false, &HashMap::new(), fixed)
         .into_iter()
         .map(|(word, name)| match fixed(word) {
             Some(_) => (word, name),
             None => (word, format!("{prefix}{name}")),
         })
         .collect::<HashMap<_, _>>();
-    let outputs = texts
+    let rename_jobs = texts
         .iter()
         .zip(&skipped)
-        .map(|(text, skipped)| {
-            rename_compiler_names(text.source, skipped, |word| names[word].clone()).0
-        })
-        .collect();
+        .map(|(text, skip)| (text.source.len() as u64, (text, skip.as_slice())))
+        .collect::<Vec<_>>();
+    let outputs = crate::scheduler::map(slots, rename_jobs, |(text, skip)| {
+        rename_compiler_names(text.source, skip, |word| names[word].clone()).0
+    });
     (outputs, names)
 }
 
@@ -1990,6 +2772,33 @@ impl<'s> Lexed<'s> {
         }
     }
 
+    /// Aggregate per-word `(count, first_pos)` statistics and `excluded`
+    /// identifiers directly for parallel slice/chunk naming, applying
+    /// `canonical` to each global compiler name.
+    fn word_stats(
+        &self,
+        pos_offset: u32,
+        canonical: impl Fn(&'s str) -> &'s str,
+        stats: &mut HashMap<&'s str, (usize, u32)>,
+        excluded: &mut HashSet<&'s str>,
+    ) {
+        let tokens = self.tokens.iter().zip(&self.in_raw);
+        for (index, ((token, &in_raw), &local)) in tokens.zip(&self.locals.of_token).enumerate() {
+            if token.kind == Kind::Name {
+                let raw_word = token.text(self.source);
+                if compiler_name(raw_word) && !in_raw {
+                    if local == NO_LOCAL {
+                        let word = canonical(raw_word);
+                        let pos = pos_offset + index as u32;
+                        stats.entry(word).or_insert((0, pos)).0 += 1;
+                    }
+                } else {
+                    excluded.insert(raw_word);
+                }
+            }
+        }
+    }
+
     /// The text rewritten with the short `names` of its compiler names and
     /// the names of its `locals` ([`Locals::names`]), recording output offsets
     /// according to `offsets`.
@@ -2015,14 +2824,24 @@ impl<'s> Lexed<'s> {
                 local => &locals[local as usize],
             }
         };
-        rewrite_tokens(
-            source, runtime, tokens, partners, in_raw, comments, joins, name, offsets,
-        )
+        let rewritten = rewrite_tokens_inner(
+            source, runtime, tokens, partners, in_raw, comments, joins, name, offsets, true,
+        );
+        (rewritten.output, rewritten.offsets)
     }
 }
 
+#[allow(dead_code)] // Fields used by terse_program_slices (light-cljs-1097)
+struct RewrittenTokens {
+    output: String,
+    offsets: RewriteOffsets,
+    first_token: Option<FirstToken>,
+    writer_end: Option<WriterEnd>,
+    ends_with_droppable_semi: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
-fn rewrite_tokens<'n>(
+fn rewrite_tokens_inner<'n>(
     source: &str,
     runtime: Option<Range<usize>>,
     tokens: Vec<Token>,
@@ -2032,7 +2851,8 @@ fn rewrite_tokens<'n>(
     joins: Vec<Join>,
     name: impl Fn(usize, &str) -> &'n str,
     mut offsets: RewriteOffsets,
-) -> (String, RewriteOffsets) {
+    trailing_newline: bool,
+) -> RewrittenTokens {
     let is_runtime = |token: &Token| {
         runtime
             .as_ref()
@@ -2062,17 +2882,29 @@ fn rewrite_tokens<'n>(
         dropped,
         cleared,
         dotted,
+        partners,
         ..
     } = rewrite;
     let mut writer = TerseWriter::default();
     let mut comments = comments.into_iter().peekable();
+    let mut first_token: Option<FirstToken> = None;
+    let mut last_written: Option<usize> = None;
     for (index, token) in tokens.iter().enumerate() {
         while let Some((_, text, newline)) = comments.next_if(|(at, ..)| *at == index) {
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: Kind::Punct,
+                    text: String::new(),
+                    is_comment: true,
+                    newline_before: newline,
+                });
+            }
             writer.comment(text, newline);
         }
         if dropped[index] || joins[index] == Join::Drop {
             continue;
         }
+        last_written = Some(index);
         // The writer separates a token by at most one space or line break.
         let before = writer.out.len();
         let newline = token.newline_before && !cleared[index];
@@ -2081,25 +2913,38 @@ fn rewrite_tokens<'n>(
                 kind: Kind::Punct,
                 text: ",",
             };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: comma.kind,
+                    text: ",".to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
             writer.write(comma, ",", newline);
             offsets.record(token.start as usize, &writer.out, before);
             continue;
         }
-        if let Some(name) = dotted[index] {
-            writer.write(
-                Shape {
-                    kind: Kind::Punct,
-                    text: ".",
-                },
-                ".",
-                newline,
-            );
+        if let Some(prop) = dotted[index] {
+            let dot = Shape {
+                kind: Kind::Punct,
+                text: ".",
+            };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: dot.kind,
+                    text: ".".to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
+            writer.write(dot, ".", newline);
             writer.write(
                 Shape {
                     kind: Kind::Name,
-                    text: name,
+                    text: prop,
                 },
-                name,
+                prop,
                 false,
             );
             offsets.record(token.start as usize, &writer.out, before);
@@ -2111,6 +2956,14 @@ fn rewrite_tokens<'n>(
                 kind: Kind::Punct,
                 text: "(",
             };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: open.kind,
+                    text: "(".to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
             writer.write(open, &word[..word.len() - 1], newline);
             let close = Shape {
                 kind: Kind::Punct,
@@ -2122,24 +2975,77 @@ fn rewrite_tokens<'n>(
                 kind: Kind::Name,
                 text: word,
             };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: shape.kind,
+                    text: shape.text.to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
             writer.write(shape, name(index, word), newline);
         } else {
             let shape = Shape {
                 kind: token.kind,
                 text: word,
             };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: shape.kind,
+                    text: shape.text.to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
             writer.write(shape, word, newline);
         }
         offsets.record(token.start as usize, &writer.out, before);
     }
+    let mut had_trailing_comment = false;
     for (_, text, newline) in comments {
+        had_trailing_comment = true;
+        if first_token.is_none() {
+            first_token = Some(FirstToken {
+                kind: Kind::Punct,
+                text: String::new(),
+                is_comment: true,
+                newline_before: newline,
+            });
+        }
         writer.comment(text, newline);
     }
+    let ends_with_droppable_semi = !had_trailing_comment
+        && last_written.is_some_and(|last| {
+            last > 0
+                && joins[last] == Join::Keep
+                && dotted[last].is_none()
+                && !in_raw[last]
+                && tokens[last].kind == Kind::Punct
+                && tokens[last].text(source) == ";"
+                && {
+                    let previous = &tokens[last - 1];
+                    let body = match (previous.kind, previous.text(source)) {
+                        (Kind::Name, "else" | "do") | (Kind::Punct, ":") => true,
+                        (Kind::Punct, ")") => {
+                            closes_control_head(source, &tokens, &partners, last - 1)
+                        }
+                        _ => false,
+                    };
+                    !body
+                }
+        });
+    let writer_end = writer.end_state();
     let mut output = writer.out;
-    if !output.ends_with('\n') {
+    if trailing_newline && !output.ends_with('\n') {
         output.push('\n');
     }
-    (output, offsets)
+    RewrittenTokens {
+        output,
+        offsets,
+        first_token,
+        writer_end,
+        ends_with_droppable_semi,
+    }
 }
 
 /// Which `tokens` are raw `js*` text, inside one of the `raw` ranges (sorted
@@ -3775,5 +4681,177 @@ console.log(g1({}), g2({x: 2}, 3, 4), g3(5));
         assert_eq!(no_marks, with_marks);
         assert_eq!(bytes_no_marks, bytes_with_marks);
         assert!(!marks.list.is_empty());
+    }
+
+    #[test]
+    fn terse_texts_with_slots_matches_single_slot() {
+        let s0 = "export const g0 = 1;\nexport function g1(l0) { return g0 + l0; }\n";
+        let s1 = "import { g0, g1 } from './a.js';\nexport const g2 = g1(g0) + 2;\n";
+        let s2 = "import { g2 } from './b.js';\nconsole.log(g2);\n";
+        let make_texts = || {
+            vec![
+                Text {
+                    source: s0,
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: None,
+                },
+                Text {
+                    source: s1,
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: None,
+                },
+                Text {
+                    source: s2,
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: None,
+                },
+            ]
+        };
+        let (out1, names1) = terse_texts_with_slots(&make_texts(), crate::scheduler::Slots::ONE);
+        let (out4, names4) =
+            terse_texts_with_slots(&make_texts(), crate::scheduler::Slots::new(4).unwrap());
+        assert_eq!(out1, out4);
+        assert_eq!(names1, names4);
+
+        // Hygienic fallback path (unparseable raw hole).
+        let raw_src = "export const g0 = \"/*raw*/\" + 1;\n";
+        let raw_range = 19..24; // inside string literal -> triggers hygienic fallback
+        let make_fallback = || {
+            vec![
+                Text {
+                    source: raw_src,
+                    raw: vec![raw_range.clone()],
+                    runtime: None,
+                    units: None,
+                },
+                Text {
+                    source: s1,
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: None,
+                },
+            ]
+        };
+        let (fb1, fbn1) = terse_texts_with_slots(&make_fallback(), crate::scheduler::Slots::ONE);
+        let (fb4, fbn4) =
+            terse_texts_with_slots(&make_fallback(), crate::scheduler::Slots::new(4).unwrap());
+        assert_eq!(fb1, fb4);
+        assert_eq!(fbn1, fbn4);
+    }
+
+    #[test]
+    fn terse_program_slices_matches_single_slot_and_canonicalizes_constants() {
+        let manifest = RuntimeManifest::embedded();
+        let kept = manifest
+            .units
+            .iter()
+            .map(|unit| {
+                unit.declares.contains(&"keyword")
+                    || unit.declares.contains(&"Atom")
+                    || unit.name == "keyword"
+                    || unit.name == "Atom"
+            })
+            .collect::<Vec<_>>();
+        let canon_k_names = vec!["k0".to_owned(), "k1".to_owned()];
+        let header = "const k0 = rt$keyword(\"a\");\nconst k1 = rt$keyword(\"b\");\nvar g0 = 0;\n";
+        let slice0 = "var g1 = function(l0) { var l1 = l0 + 1; return [k0_0, rt$Atom, l1, obj.p_alpha$LKEY]; };\n";
+        let slice1 = "var g2 = g1(g0);\nconsole.log(g2, k1_0, k1_1, obj.p_alpha$LKEY);\n";
+        let remap0 = [0usize];
+        let remap1 = [0usize, 1usize];
+
+        let run_case = |slots: crate::scheduler::Slots, can_nest: bool, mapped: bool| {
+            let mut m0 = crate::source_map::Marks::default();
+            m0.position(0, 0, 1);
+            let mut m1 = crate::source_map::Marks::default();
+            m1.position(0, 0, 2);
+            terse_program_slices(
+                vec![
+                    TerseSlice {
+                        source: header,
+                        raw: &[],
+                        marks: None,
+                        k_prefix: None,
+                        remap: &[],
+                    },
+                    TerseSlice {
+                        source: slice0,
+                        raw: &[],
+                        marks: mapped.then_some(m0),
+                        k_prefix: Some("k0_"),
+                        remap: &remap0,
+                    },
+                    TerseSlice {
+                        source: slice1,
+                        raw: &[],
+                        marks: mapped.then_some(m1),
+                        k_prefix: Some("k1_"),
+                        remap: &remap1,
+                    },
+                ],
+                &canon_k_names,
+                Some(ParallelRuntime {
+                    kept: &kept,
+                    bindings: &["keyword", "Atom"],
+                    can_nest,
+                }),
+                "",
+                true,
+                mapped,
+                true,
+                slots,
+            )
+            .expect("terse_program_slices succeeds")
+        };
+
+        let out1 = run_case(crate::scheduler::Slots::ONE, true, false);
+        let out4 = run_case(crate::scheduler::Slots::new(4).unwrap(), true, false);
+        assert_eq!(out1.pieces, out4.pieces);
+        assert_eq!(out1.total_len, out4.total_len);
+        assert_eq!(out1.runtime_bytes, out4.runtime_bytes);
+        assert_eq!(out1.unit_bytes, out4.unit_bytes);
+        let joined: String = out1.pieces.concat();
+        assert_eq!(joined.len(), out1.total_len);
+        assert!(joined.starts_with("export default (()=>{"));
+        assert!(joined.ends_with("})()})();\n"));
+        // Canonicalized constants must never leave slice-local `k0_0`/`k1_0`/`k1_1`.
+        assert!(!joined.contains("k0_0"));
+        assert!(!joined.contains("k1_0"));
+        assert!(!joined.contains("k1_1"));
+        // Verify streaming RuntimeKey matches whole-text RuntimeKey.
+        let key_whole = crate::runtime_key::RuntimeKey::release(
+            [joined.as_str()],
+            crate::OptimizationLevel::Advanced,
+            None,
+        )
+        .shortened([joined.as_str()]);
+        let key_pieces = crate::runtime_key::RuntimeKey::release_pieces(
+            out1.pieces.iter().map(String::as_str),
+            out1.total_len,
+            crate::OptimizationLevel::Advanced,
+            None,
+        )
+        .shortened_from_counts(out1.lkey_counts);
+        assert_eq!(key_pieces.key(), key_whole.key());
+        assert_eq!(key_pieces.short_names(), key_whole.short_names());
+        assert_eq!(
+            key_pieces.apply_pieces(out1.pieces, crate::scheduler::Slots::new(4).unwrap()),
+            key_whole.apply(&joined)
+        );
+
+        // Mapped mode & non-nested factory fallback also match across slot counts.
+        let mapped1 = run_case(crate::scheduler::Slots::ONE, true, true);
+        let mapped4 = run_case(crate::scheduler::Slots::new(4).unwrap(), true, true);
+        assert_eq!(mapped1.pieces, mapped4.pieces);
+        assert!(!mapped1.marks.unwrap().list.is_empty());
+
+        let factory1 = run_case(crate::scheduler::Slots::ONE, false, false);
+        let factory4 = run_case(crate::scheduler::Slots::new(4).unwrap(), false, false);
+        assert_eq!(factory1.pieces, factory4.pieces);
+        let factory_joined: String = factory1.pieces.concat();
+        assert!(factory_joined.starts_with("export default (()=>{const["));
+        assert!(factory_joined.ends_with("})();\n"));
     }
 }

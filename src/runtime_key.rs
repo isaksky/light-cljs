@@ -74,43 +74,85 @@ struct ShortNames {
     table: String,
 }
 
+/// Per-slice `$LKEY` stem counts and escaped stems collected in parallel before
+/// merging into [`ShortNames`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StemCounts {
+    uses: std::collections::HashMap<String, usize>,
+    escaped: std::collections::HashSet<String>,
+}
+
+impl StemCounts {
+    /// Count `$LKEY` stems in `text` (one slice or chunk of an output).
+    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+    pub(crate) fn of(text: &str) -> Self {
+        let mut counts = Self::default();
+        counts.scan(text);
+        counts
+    }
+
+    /// Accumulate `$LKEY` stems from `text` into `self`.
+    pub(crate) fn scan(&mut self, text: &str) {
+        for (at, _) in text.match_indices(KEY_PLACEHOLDER) {
+            if !name_end(&text[at + KEY_PLACEHOLDER.len()..]) {
+                continue;
+            }
+            let stem = &text[stem_start(text, at)..at];
+            if escaped_stem(text, at) {
+                if !self.escaped.contains(stem) {
+                    self.escaped.insert(stem.to_owned());
+                }
+            } else if shortened_stem(stem) {
+                if let Some(count) = self.uses.get_mut(stem) {
+                    *count += 1;
+                } else {
+                    self.uses.insert(stem.to_owned(), 1);
+                }
+            }
+        }
+    }
+
+    /// Merge `other` into `self`.
+    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+    pub(crate) fn merge(&mut self, other: Self) {
+        for stem in other.escaped {
+            self.escaped.insert(stem);
+        }
+        for (stem, count) in other.uses {
+            *self.uses.entry(stem).or_default() += count;
+        }
+    }
+}
+
 impl ShortNames {
     /// The short names of the keyed names in `texts`, which hold the key
     /// placeholder: by use, most first, ties in the stems' order.
     fn of<'a>(texts: impl IntoIterator<Item = &'a str>) -> Self {
-        let mut uses = std::collections::HashMap::<&str, usize>::new();
-        // The end of a name a string escapes part of is no name: it, and
-        // so the name, keep the whole keyed name everywhere.
-        let mut escaped = std::collections::HashSet::new();
+        let mut counts = StemCounts::default();
         for text in texts {
-            for (at, _) in text.match_indices(KEY_PLACEHOLDER) {
-                if !name_end(&text[at + KEY_PLACEHOLDER.len()..]) {
-                    continue;
-                }
-                let stem = &text[stem_start(text, at)..at];
-                if escaped_stem(text, at) {
-                    escaped.insert(stem);
-                } else if shortened_stem(stem) {
-                    *uses.entry(stem).or_default() += 1;
-                }
-            }
+            counts.scan(text);
         }
-        let mut ranked = uses
+        Self::from_counts(counts)
+    }
+
+    fn from_counts(counts: StemCounts) -> Self {
+        let mut ranked = counts
+            .uses
             .into_iter()
-            .filter(|(stem, _)| !escaped.contains(stem))
+            .filter(|(stem, _)| !counts.escaped.contains(stem))
             .collect::<Vec<_>>();
-        ranked.sort_by(|(a, m), (b, n)| n.cmp(m).then(a.cmp(b)));
+        ranked.sort_by(|(a, m), (b, n)| n.cmp(m).then_with(|| a.cmp(b)));
         let mut codes = std::collections::HashMap::with_capacity(ranked.len());
         let mut table = String::from(" ");
         for (index, (stem, _)) in ranked.into_iter().enumerate() {
             let code = short_code(index);
-            if slot_stem(stem) {
-                table.push_str(stem);
+            if slot_stem(&stem) {
+                table.push_str(&stem);
                 table.push(' ');
                 table.push_str(&code);
                 table.push(' ');
             }
-            codes.insert(stem.to_owned(), code);
+            codes.insert(stem, code);
         }
         Self { codes, table }
     }
@@ -233,6 +275,28 @@ impl RuntimeKey {
         }
     }
 
+    /// Equivalent to [`Self::release`] on a single output file whose text is
+    /// the concatenation of `pieces` (with total byte length `total_len`),
+    /// streaming the pieces directly into SHA-256 without concatenating first.
+    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+    pub(crate) fn release_pieces<'a>(
+        pieces: impl IntoIterator<Item = &'a str>,
+        total_len: usize,
+        level: OptimizationLevel,
+        runtime_key: Option<&str>,
+    ) -> Self {
+        let mut fingerprint = Fingerprint::new("light-cljs release runtime key 1");
+        fingerprint.text(level.name()).optional_text(runtime_key);
+        fingerprint.present().text_pieces(pieces, total_len);
+        fingerprint.absent();
+        let digest = fingerprint.finish();
+        Self {
+            key: base36_key(&digest),
+            hash: Some(hex(&digest[8..16])),
+            names: None,
+        }
+    }
+
     /// The key of the dev build whose identity is `identity` (its build of
     /// light-cljs.edn and its entry namespace, `crate::dev_build::dev_key`):
     /// derived from the whole runtime source and the identity, so it depends
@@ -264,6 +328,14 @@ impl RuntimeKey {
     /// them, as they share the key.
     pub fn shortened<'a>(mut self, texts: impl IntoIterator<Item = &'a str>) -> Self {
         self.names = Some(ShortNames::of(texts));
+        self
+    }
+
+    /// Equivalent to [`Self::shortened`] using pre-merged [`StemCounts`]
+    /// counted in parallel across slices or chunks.
+    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+    pub(crate) fn shortened_from_counts(mut self, counts: StemCounts) -> Self {
+        self.names = Some(ShortNames::from_counts(counts));
         self
     }
 
@@ -337,6 +409,35 @@ impl RuntimeKey {
     /// `text` with the key and the hash written for their placeholders.
     pub fn apply(&self, text: &str) -> String {
         self.substitute(text, |_, _| {})
+    }
+
+    /// Apply [`Self::apply`] in parallel across `pieces` (split at statement
+    /// boundaries, never inside a `$LKEY` identifier or placeholder) and
+    /// assemble the result into a single pre-sized [`String`].
+    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
+    pub(crate) fn apply_pieces(
+        &self,
+        pieces: Vec<String>,
+        slots: crate::scheduler::Slots,
+    ) -> String {
+        let jobs: Vec<(u64, String)> = pieces
+            .into_iter()
+            .filter(|piece| !piece.is_empty())
+            .map(|piece| (piece.len() as u64, piece))
+            .collect();
+        let applied = crate::scheduler::map(slots, jobs, |piece| {
+            if !piece.contains("$L") {
+                piece
+            } else {
+                self.apply(&piece)
+            }
+        });
+        let total: usize = applied.iter().map(String::len).sum();
+        let mut out = String::with_capacity(total);
+        for piece in applied {
+            out.push_str(&piece);
+        }
+        out
     }
 
     /// [`RuntimeKey::apply`] undone: `text` with this key and hash written
@@ -699,5 +800,36 @@ mod tests {
         let units = RuntimeKey::dev("a").units();
         assert_eq!(units.key(), RuntimeKey::dev("a").key());
         assert_eq!(units.hash(), None);
+    }
+
+    #[test]
+    fn pieces_release_counts_and_apply_match_whole_text() {
+        let pieces = vec![
+            "a.cnt$LKEY;b.cljs$core$ISeq$_first$arity$1$LKEY(b);".to_owned(),
+            "c.cnt$LKEY;\"$LNAMES\";".to_owned(),
+            "d.cljs$lang$kind$$LKEY;\"$LHASH\"\n".to_owned(),
+        ];
+        let joined: String = pieces.concat();
+        let expected_key =
+            RuntimeKey::release([joined.as_str()], OptimizationLevel::Advanced, Some("k"))
+                .shortened([joined.as_str()]);
+        let mut merged = StemCounts::default();
+        for piece in &pieces {
+            merged.merge(StemCounts::of(piece));
+        }
+        let actual_key = RuntimeKey::release_pieces(
+            pieces.iter().map(String::as_str),
+            joined.len(),
+            OptimizationLevel::Advanced,
+            Some("k"),
+        )
+        .shortened_from_counts(merged);
+        assert_eq!(actual_key, expected_key);
+        let expected = expected_key.apply(&joined);
+        for slots in [1, 2, 4] {
+            let actual = actual_key
+                .apply_pieces(pieces.clone(), crate::scheduler::Slots::new(slots).unwrap());
+            assert_eq!(actual, expected, "slots={slots}");
+        }
     }
 }
