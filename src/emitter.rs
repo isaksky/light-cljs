@@ -1416,7 +1416,7 @@ struct FunctionNames<'a> {
     /// What the expressions from `from` on name before it, in order, and
     /// whether each replaces a name found earlier.
     earlier: Vec<(usize, FunctionName, bool)>,
-    before: std::cell::OnceCell<Vec<Option<FunctionName>>>,
+    before: std::sync::OnceLock<Vec<Option<FunctionName>>>,
 }
 
 /// The local or definition whose name a function takes in a source map.
@@ -11290,5 +11290,11 @@ mod namespace_unit_tests {
             }
             assert!(named, "{example}: some unit names a function");
         }
+    }
+
+    #[test]
+    fn namespace_units_is_sync() {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<NamespaceUnits<'_>>();
     }
 }

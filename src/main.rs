@@ -510,14 +510,34 @@ fn print_size_report(prepared: &light_cljs::PreparedApplication) -> io::Result<(
 /// Write the dev build of `program` (`--reloadable`) into `out_dir`.
 /// `sources` are the program's source files by source index. `build` is the
 /// build of light-cljs.edn it is, if any, part of its identity
-/// ([`light_cljs::dev_build::emit_dev_build_of`]). With `phases`
+/// ([`light_cljs::dev_build::write_dev_build_on`]). With `phases`
 /// (`--stats`), add the emission and write times to them.
 fn write_dev_build(
     program: &mut light_cljs::Program,
     sources: &[(PathBuf, String)],
     out_dir: &Path,
     build: Option<&str>,
-    mut phases: Option<&mut PhaseTimes>,
+    phases: Option<&mut PhaseTimes>,
+) -> Result<(), Box<dyn Error>> {
+    write_dev_build_on(
+        program,
+        sources,
+        out_dir,
+        build,
+        phases,
+        light_cljs::scheduler::Slots::ONE,
+    )
+}
+
+/// [`write_dev_build`] running on `slots` CPU work slots (`--jobs N`),
+/// streaming each namespace unit and source map directly to `out_dir`.
+fn write_dev_build_on(
+    program: &mut light_cljs::Program,
+    sources: &[(PathBuf, String)],
+    out_dir: &Path,
+    build: Option<&str>,
+    phases: Option<&mut PhaseTimes>,
+    slots: light_cljs::scheduler::Slots,
 ) -> Result<(), Box<dyn Error>> {
     let started = phases.is_some().then(Instant::now);
     program.flatten_leaves();
@@ -534,19 +554,18 @@ fn write_dev_build(
         .zip(sources)
         .map(|(url, (_, text))| SourceFile { url, text })
         .collect::<Vec<_>>();
-    let output = light_cljs::dev_build::emit_dev_build_of(program, &files, build);
-    let written = phases.is_some().then(Instant::now);
-    if let (Some(phases), Some(started), Some(written)) = (phases.as_deref_mut(), started, written)
-    {
-        phases.emission += written - started;
-    }
-    for file in output {
-        let path = out_dir.join(&file.name);
-        fs::write(&path, file.text)
-            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-    }
-    if let (Some(phases), Some(written)) = (phases, written) {
-        phases.write += written.elapsed();
+    let setup = started.map_or(Duration::ZERO, |started| started.elapsed());
+    let timing = light_cljs::dev_build::write_dev_build_on(
+        program,
+        &files,
+        build,
+        out_dir,
+        slots,
+        phases.is_some(),
+    )?;
+    if let Some(phases) = phases {
+        phases.emission += setup + timing.emission;
+        phases.write += timing.write;
     }
     Ok(())
 }
@@ -743,12 +762,13 @@ fn build_namespace(
         }
     };
     if let (true, Some(out_dir)) = (reloadable, &out_dir) {
-        write_dev_build(
+        write_dev_build_on(
             &mut program,
             &files,
             out_dir,
             build.as_deref(),
             stats.as_mut().map(|stats| &mut stats.phases),
+            flags.jobs,
         )?;
         return report_stats(stats, begun, flags.stats_file.as_deref());
     }

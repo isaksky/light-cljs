@@ -727,8 +727,17 @@ fn unit_source_maps_point_node_stack_traces_at_the_sources() {
     dev_build(&root, &out);
     let map = fs::read_to_string(out.join("app.util.js.map")).unwrap();
     assert!(
-        map.starts_with("{\"version\":3,\"file\":\"app.util.js\",\"sources\":[\"../src/app/util.cljs\",\"../src/app/main.cljs\"],\"names\":["),
+        map.starts_with(
+            "{\"version\":3,\"file\":\"app.util.js\",\"sources\":[\"../src/app/util.cljs\"],\"names\":["
+        ),
         "{map}"
+    );
+    let main_map = fs::read_to_string(out.join("app.main.js.map")).unwrap();
+    assert!(
+        main_map.starts_with(
+            "{\"version\":3,\"file\":\"app.main.js\",\"sources\":[\"../src/app/main.cljs\"],\"names\":["
+        ),
+        "{main_map}"
     );
     let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("--enable-source-maps")
@@ -783,4 +792,185 @@ fn reloadable_flags_are_checked() {
         );
     }
     assert!(!Path::new(out).exists());
+}
+
+/// Read every file in a dev build directory into sorted `(name, bytes)` pairs.
+fn read_dev_dir(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let name = entry.file_name().into_string().unwrap();
+            let bytes = fs::read(entry.path()).unwrap();
+            (name, bytes)
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+
+/// Parallel dev emission and streaming writes (`--jobs 8`) produce byte-for-byte
+/// identical `.js`, `.js.map`, `manifest.json`, and `index.js` files to `--jobs 1`,
+/// with compact per-unit `"sources"` entries and working Node source-map traces.
+#[test]
+fn parallel_dev_build_matches_single_slot_byte_for_byte() {
+    let dir = TempDir::new("dev-parallel-determinism");
+    let root = dir.join("src");
+    fs::create_dir_all(root.join("app")).unwrap();
+    // 40 namespaces so coarse batching creates multiple batches across 8 slots.
+    let count = 40usize;
+    fs::write(
+        root.join("app/macros.cljs"),
+        "(ns app.macros)\n(defmacro tagged [tag x] `[~tag ~x])\n",
+    )
+    .unwrap();
+    let mut requires = String::new();
+    let mut calls = String::new();
+    for i in 0..count {
+        let dep = if i == 0 {
+            "(:require [app.macros :refer [tagged]])".to_owned()
+        } else {
+            format!(
+                "(:require [app.macros :refer [tagged]] [app.n{:02} :as prev])",
+                i - 1
+            )
+        };
+        let body = if i == 0 {
+            "(defn step [x]\n  (when (neg? x)\n    (throw (js/Error. (str \"neg \" x))))\n  (tagged :n00 (inc x)))\n"
+                .to_owned()
+        } else {
+            format!(
+                "(defn step [x]\n  (let [[_ v] (prev/step x)]\n    (tagged :n{i:02} (+ v {i}))))\n"
+            )
+        };
+        fs::write(
+            root.join(format!("app/n{i:02}.cljs")),
+            format!("(ns app.n{i:02}\n  {dep})\n{body}"),
+        )
+        .unwrap();
+        requires.push_str(&format!("\n            [app.n{i:02}]"));
+        if i == count - 1 {
+            calls.push_str(&format!("(app.n{i:02}/step 1)\n"));
+        }
+    }
+    fs::write(
+        root.join("app/main.cljs"),
+        format!(
+            "(ns app.main\n  (:require{requires}))\n(defn ^:dev/after-load reload [] :ok)\n(js/console.log (str {calls}))\n"
+        ),
+    )
+    .unwrap();
+
+    // 1. Library API: emit_dev_build_on and write_dev_build_on across slots 1, 2, 8.
+    let (mut program, sources) = analyze_namespace_entry_with_sources(
+        "app.main",
+        std::slice::from_ref(&root),
+        &mut MacroHost::new(),
+        AnalysisOptions {
+            warning_mode: true,
+            ..AnalysisOptions::default()
+        },
+        &mut Vec::new(),
+    )
+    .unwrap();
+    program.flatten_leaves();
+    let source_files: Vec<_> = sources
+        .iter()
+        .map(|(path, text)| {
+            let rel = path.strip_prefix(&root).unwrap().to_str().unwrap();
+            (format!("../src/{rel}"), text.as_str())
+        })
+        .collect();
+    let source_refs: Vec<_> = source_files
+        .iter()
+        .map(|(url, text)| light_cljs::source_map::SourceFile { url, text })
+        .collect();
+
+    let s1 = light_cljs::scheduler::Slots::ONE;
+    let s2 = light_cljs::scheduler::Slots::new(2).unwrap();
+    let s8 = light_cljs::scheduler::Slots::new(8).unwrap();
+    let emitted_1 = light_cljs::dev_build::emit_dev_build_on(&program, &source_refs, None, s1);
+    let emitted_2 = light_cljs::dev_build::emit_dev_build_on(&program, &source_refs, None, s2);
+    let emitted_8 = light_cljs::dev_build::emit_dev_build_on(&program, &source_refs, None, s8);
+    assert_eq!(emitted_1, emitted_2);
+    assert_eq!(emitted_1, emitted_8);
+
+    let lib_out_1 = dir.join("lib-j1");
+    let lib_out_8 = dir.join("lib-j8");
+    light_cljs::dev_build::write_dev_build_on(&program, &source_refs, None, &lib_out_1, s1, true)
+        .unwrap();
+    light_cljs::dev_build::write_dev_build_on(&program, &source_refs, None, &lib_out_8, s8, true)
+        .unwrap();
+    let lib_files_1 = read_dev_dir(&lib_out_1);
+    let lib_files_8 = read_dev_dir(&lib_out_8);
+    assert_eq!(lib_files_1, lib_files_8);
+    let mut emitted_sorted: Vec<_> = emitted_1
+        .into_iter()
+        .map(|f| (f.name, f.text.into_bytes()))
+        .collect();
+    emitted_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(lib_files_1, emitted_sorted);
+
+    // 2. CLI end-to-end: --compile --reloadable --jobs 1 vs --jobs 8 (with --stats).
+    let cli_out_1 = dir.join("cli-j1");
+    let cli_out_8 = dir.join("cli-j8");
+    for (jobs, out) in [("1", &cli_out_1), ("8", &cli_out_8)] {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args([
+                "--compile",
+                "--no-cache",
+                "--entry",
+                "app.main",
+                "--source-root",
+                root.to_str().unwrap(),
+                "--reloadable",
+                "--out-dir",
+                out.to_str().unwrap(),
+                "--jobs",
+                jobs,
+                "--stats",
+            ])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "--jobs {jobs}: {stderr}");
+        let stat = |key: &str| -> f64 {
+            stderr
+                .lines()
+                .find_map(|line| {
+                    let (k, v) = line.split_once(' ')?;
+                    (k == key).then(|| v.parse::<f64>().unwrap())
+                })
+                .unwrap_or_else(|| panic!("missing {key} in:\n{stderr}"))
+        };
+        let wall = stat("time.wall-ms");
+        let emission = stat("time.emission-ms");
+        let write = stat("time.write-ms");
+        assert!(emission >= 0.0 && emission <= wall, "jobs={jobs}: {stderr}");
+        assert!(write >= 0.0 && write <= wall, "jobs={jobs}: {stderr}");
+    }
+    let cli_files_1 = read_dev_dir(&cli_out_1);
+    let cli_files_8 = read_dev_dir(&cli_out_8);
+    assert_eq!(cli_files_1, cli_files_8);
+
+    // Every unit map only lists the single source it references.
+    for i in 0..count {
+        let map = fs::read_to_string(cli_out_8.join(format!("app.n{i:02}.js.map"))).unwrap();
+        let expected = format!(
+            "{{\"version\":3,\"file\":\"app.n{i:02}.js\",\"sources\":[\"../src/app/n{i:02}.cljs\"],\"names\":["
+        );
+        assert!(map.starts_with(&expected), "app.n{i:02}.js.map: {map}");
+    }
+
+    // Running the --jobs 8 build in Node prints the expected result.
+    let run = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .arg(cli_out_8.join("index.js"))
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{run:?}");
+    let expected_sum: usize = 2 + (1..count).sum::<usize>();
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        format!("[:n{:02} {expected_sum}]\n", count - 1)
+    );
 }
