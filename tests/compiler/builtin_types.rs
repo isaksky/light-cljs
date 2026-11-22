@@ -3774,6 +3774,344 @@ fn walks_of_map_keys_and_values_take_no_protocol_lookup_per_item() {
     );
 }
 
+/// An array map's seq is an index into its keys and values, upstream's
+/// PersistentArrayMapSeq (light-cljs-1081): each answer of a map seq, of
+/// its steps and of the key and value seqs over it, of a literal's map and
+/// of a public constructor's (an odd array, a count below its pairs), is
+/// master `1fac567c`'s at every level, including shared entry identity
+/// across repeated traversals of one map seq.
+#[test]
+fn array_map_seqs_answer_as_the_seqs_of_their_entries() {
+    every_level(
+        r#"(let [m {:a 1 :b 2 :c 3} s (seq m) pm (PersistentArrayMap. nil 1 (array :x 1 :y 2 :z) nil)
+                 out (array) p (fn [x] (.push out (pr-str x)))]
+             (p s) (p (count s)) (p (counted? s)) (p (rest s)) (p (next (next (next s)))) (p (rest (rest (rest s))))
+             (p (drop 1 s)) (p (drop 2 s)) (p (drop 3 s)) (p (drop 9 s)) (p (count (drop 1 s))) (p (nthnext s 2)) (p (nth s 1))
+             (p (last s)) (p (vec s)) (p (map key s)) (p (conj s :x)) (p (empty s)) (p (with-meta s {:m 1}))
+             (p (meta (with-meta (rest s) {:m 1}))) (p (= (with-meta s {:m 1}) s)) (p (= s [[:a 1] [:b 2] [:c 3]]))
+             (p (= (hash s) (hash (list [:a 1] [:b 2] [:c 3])))) (p (= (rest s) (list [:b 2] [:c 3])))
+             (p [(seq? s) (sequential? s) (reversible? s) (chunked-seq? s) (list? s) (instance? PersistentArrayMapSeq (rest s))])
+             (p (reduce (fn [a [_ v]] (+ a v)) 0 s)) (p (reduce conj s)) (p (reduce (fn [a e] (if (= (key e) :b) (reduced a) (+ a (val e)))) 0 s))
+             (p (reduce conj [] (rest s))) (p (identical? (first s) (first s))) (p (identical? (second s) (second s))) (p (= (first s) (first s))) (p (map-entry? (first s)))
+             (p (into [] (keys m))) (p (into [] (vals m))) (p (reduce + (vals m))) (p (reduce str (keys m))) (p (reduce + 10 (rest (vals m))))
+             (p (reduce (fn [a k] (if (= k :b) (reduced [a k]) (conj a k))) [] (keys m))) (p (count (keys m))) (p (next (keys {:a 1})))
+             (p (rest (vals {:a 1}))) (p (keys (rest s))) (p (vals (drop 2 s))) (p (= (keys m) (list :a :b :c)))
+             (p (seq pm)) (p (count (seq pm))) (p (keys pm)) (p (vals pm)) (p (into [] (vals pm))) (p (reduce conj [] (seq pm)))
+             (p (vec (js/Array.from (seq m))))
+             (.join out " "))"#,
+        "([:a 1] [:b 2] [:c 3]) 3 true ([:b 2] [:c 3]) nil () ([:b 2] [:c 3]) ([:c 3]) () () 2 ([:c 3]) [:b 2] [:c 3] [[:a 1] [:b 2] [:c 3]] (:a :b :c) (:x [:a 1] [:b 2] [:c 3]) () ([:a 1] [:b 2] [:c 3]) {:m 1} true true true true [true true false false false true] 6 [:a 1 [:b 2] [:c 3]] 1 [[:b 2] [:c 3]] true true true true [:a :b :c] [1 2 3] 6 \":a:b:c\" 15 [[:a] :b] 3 nil () (:b :c) (3) true ([:x 1] [:y 2] [:z nil]) 3 (:x :y :z) (1 2 nil) [1 2 nil] [[:x 1] [:y 2] [:z nil]] [[:a 1] [:b 2] [:c 3]]",
+    );
+    // Sharing realized tail entries preserves `specify!` across repeated
+    // traversals, `with-meta`, `keys`/`vals`, and `reduce`.
+    every_level(
+        r#"(let [s (seq {:a 1 :b 2 :c 3})
+                 sm (with-meta s {:tag 1})
+                 e2 (second s)]
+             (specify! e2 IMapEntry (-key [_] :changed) (-val [_] 99))
+             (pr-str [(identical? e2 (second s))
+                      (identical? e2 (second sm))
+                      (identical? e2 (first (drop 1 s)))
+                      (key (second s))
+                      (val (second s))
+                      (into [] (keys s))
+                      (into [] (vals s))
+                      (reduce (fn [a e] (conj a [(key e) (val e)])) [] s)]))"#,
+        "[true true true :changed 99 [:a :changed :c] [1 99 3] [[:a 1] [:changed 99] [:c 3]]]",
+    );
+}
+
+/// Saving `seq`, `keys`, and `vals` of a public `PersistentArrayMap` snapshots
+/// the backing array before caller mutations, while fresh seqs observe edits
+/// and appended elements (light-cljs-1081).
+#[test]
+fn array_map_seq_snapshots_public_constructor_arrays() {
+    every_level(
+        r#"(let [arr (array :a 1 :b 2)
+                 pm (PersistentArrayMap. nil 2 arr nil)
+                 s (seq pm)
+                 ks (keys pm)
+                 vs (vals pm)]
+             (aset arr 0 :x)
+             (aset arr 1 10)
+             (aset arr 3 20)
+             (.push arr :c 3)
+             (pr-str [(vec s) (count s) (reduce (fn [a e] (conj a e)) [] s)
+                      (into [] ks) (into [] vs) (reduce + vs)
+                      (vec (seq pm)) (count (seq pm))
+                      (into [] (keys pm)) (into [] (vals pm))]))"#,
+        "[[[:a 1] [:b 2]] 2 [[:a 1] [:b 2]] [:a :b] [1 2] 3 [[:x 10] [:b 20] [:c 3]] 3 [:x :b :c] [10 20 3]]",
+    );
+}
+
+/// `KeySeqCell` honors a `specify!`-overridden `ISeq/-rest` for `next`, `rest`,
+/// and `reduce` on both `keys` and `vals` over array maps and hash maps
+/// (light-cljs-1081).
+#[test]
+fn key_seq_next_honors_specified_rest() {
+    every_level(
+        r#"(let [m {:a 1 :b 2}
+                 hm (zipmap (range 10) (range 10))
+                 ks (specify! (keys m) ISeq (-rest [_] (list :tail)))
+                 vs (specify! (vals m) ISeq (-rest [_] (list 99)))
+                 kn (specify! (keys m) ISeq (-rest [_] nil))
+                 ke (specify! (vals m) ISeq (-rest [_] ()))
+                 hk (specify! (keys hm) ISeq (-rest [_] (list :htail)))
+                 hv (specify! (vals hm) ISeq (-rest [_] (list 777)))]
+             (pr-str [(next ks) (rest ks) (reduce conj [] ks) (reduce (fn [a b] [a b]) ks)
+                      (next vs) (rest vs) (reduce conj [] vs) (reduce + vs)
+                      (next kn) (reduce conj [] kn)
+                      (next ke) (reduce conj [] ke)
+                      (next hk) (reduce conj [] hk)
+                      (next hv) (reduce conj [] hv)]))"#,
+        "[(:tail) (:tail) [:a :tail] [:a :tail] (99) (99) [1 99] 100 nil [:a] nil [1] (:htail) [0 :htail] (777) [0 777]]",
+    );
+}
+
+/// Reductions of `keys`/`vals` and `PersistentArrayMapSeq` observe `specify!`
+/// and `extend-type` changes made by the reducing function without replaying
+/// already-processed elements (light-cljs-1081).
+#[test]
+fn key_seq_reductions_observe_protocol_changes_during_reducer() {
+    every_level(
+        r#"(let [ks1 (keys {:a 1 :b 2 :c 3})
+                 r1 (reduce (fn [a k] (specify! ks1 INext (-next [_] nil)) (conj a k)) [] ks1)
+                 ks2 (keys {:a 1})
+                 r2 (reduce (fn [a k] (specify! ks2 INext (-next [_] (list :more))) (conj a k)) [] ks2)
+                 ks3 (keys {:a 1 :b 2})
+                 r3 (reduce (fn [a k] (specify! ks3 ISeq (-rest [_] (list :tail))) (conj a k)) [] ks3)
+                 s4 (seq {:a 1 :b 2 :c 3})
+                 r4 (reduce (fn [a k] (specify! s4 INext (-next [_] nil)) (conj a k)) [] (keys s4))
+                 s5 (seq {:a 1 :b 2 :c 3})
+                 r5 (reduce (fn [a k] (when (= k :a) (specify! (second s5) IMapEntry (-key [_] :changed))) (conj a k)) [] (keys s5))
+                 s6 (seq {:a 1 :b 2 :c 3})
+                 r6 (reduce (fn [a e] (specify! s6 INext (-next [_] nil)) (conj a e)) [] s6)
+                 hm (zipmap (range 10) (range 10))
+                 hks (keys hm)
+                 r7 (reduce (fn [a k] (specify! hks INext (-next [_] nil)) (conj a k)) [] hks)
+                 hs8 (seq hm)
+                 r8 (reduce (fn [a k] (when (empty? a) (specify! (second hs8) IMapEntry (-key [_] :h-changed))) (conj a k)) [] (keys hs8))
+                 hs9 (seq hm)
+                 r9 (reduce (fn [a e] (specify! hs9 INext (-next [_] nil)) (conj a e)) [] hs9)]
+             (pr-str [r1 r2 r3 r4 r5 r6 (count r7) (second r8) (count r9)]))"#,
+        "[[:a] [:a :more] [:a :tail] [:a] [:a :changed :c] [[:a 1]] 1 :h-changed 1]",
+    );
+    every_level(
+        r#"(let [ks (keys {:a 1 :b 2 :c 3})
+                 done (atom false)]
+             (pr-str (reduce (fn [a k]
+                               (when-not @done
+                                 (reset! done true)
+                                 (extend-type MapEntry IMapEntry (-key [e] [:ext (nth e 0)])))
+                               (conj a k))
+                             [] ks)))"#,
+        "[:a [:ext :b] [:ext :c]]",
+    );
+    every_level(
+        r#"(let [ks (keys {:a 1 :b 2 :c 3})
+                 s (seq {:a 1 :b 2 :c 3})
+                 done (atom false)
+                 r1 (reduce (fn [a k]
+                              (when-not @done
+                                (reset! done true)
+                                (extend-type PersistentArrayMapSeq INext (-next [_] nil)))
+                              [a k])
+                            ks)
+                 r2 (reduce conj [] s)]
+             (pr-str [r1 r2]))"#,
+        "[[:a :b] [[:a 1]]]",
+    );
+}
+
+/// Entry caches on lazy array-map and hash-map seqs ignore numeric properties
+/// inherited from `Array.prototype` and `Object.prototype` across `first` and
+/// both `reduce` arities (light-cljs-1081).
+#[test]
+fn array_map_seq_cache_ignores_inherited_numeric_properties() {
+    every_level(
+        r#"(let [arr-desc (js/Object.getOwnPropertyDescriptor (.-prototype js/Array) "0")
+                 obj-desc (js/Object.getOwnPropertyDescriptor (.-prototype js/Object) "0")]
+             (try
+               (aset (.-prototype js/Array) 0 99)
+               (aset (.-prototype js/Object) 0 98)
+               (let [am {:a 1 :b 2}
+                     hm (zipmap (range 10) (range 10))
+                     hm25 (zipmap (range 25) (range 25))
+                     s1 (seq am) s2 (seq am) s3 (seq am)
+                     hs1 (seq hm) hs2 (seq hm) hs3 (seq hm)
+                     as1 (seq hm25) as2 (seq hm25) as3 (seq hm25)]
+                 (pr-str [(first s1)
+                          (identical? (first s1) (first s1))
+                          (reduce (fn [a e] (+ a (val e))) 0 s2)
+                          (val (reduce (fn [a e] (if (> (val e) (val a)) e a)) s3))
+                          (map-entry? (first hs1))
+                          (identical? (first hs1) (first hs1))
+                          (reduce (fn [a e] (+ a (val e))) 0 hs2)
+                          (val (reduce (fn [a e] (if (> (val e) (val a)) e a)) hs3))
+                          (map-entry? (first as1))
+                          (identical? (first as1) (first as1))
+                          (reduce (fn [a e] (+ a (val e))) 0 as2)
+                          (val (reduce (fn [a e] (if (> (val e) (val a)) e a)) as3))]))
+               (finally
+                 (if arr-desc
+                   (js/Object.defineProperty (.-prototype js/Array) "0" arr-desc)
+                   (js-delete (.-prototype js/Array) "0"))
+                 (if obj-desc
+                   (js/Object.defineProperty (.-prototype js/Object) "0" obj-desc)
+                   (js-delete (.-prototype js/Object) "0")))))"#,
+        "[[:a 1] true 3 2 true true 45 9 true true 300 24]",
+    );
+}
+
+/// Edge cases of array-map seqs, key/value seqs, and hash/sorted-map seq
+/// reductions (light-cljs-1081): direct `-drop` preserving view-offset
+/// semantics for nonpositive offsets (fresh seq without metadata, negative
+/// offset on a tail), `drop` preserving metadata at `n <= 0`, `specify!` on
+/// `keys`/`vals`, on `(seq m)`, and on cached array-map and hash-map entries,
+/// 2-arg/3-arg/`reduced` reductions of hash-map (`NodeSeq`, `ArrayNodeSeq`)
+/// and sorted-map `seq`/`keys`/`vals`, and standalone `=`, `hash`, `str` and
+/// `pr-str` of `(seq {:a 1})` and `(seq (hash-map ...))`.
+#[test]
+fn map_seq_and_key_seq_edge_cases() {
+    every_level(
+        r#"(let [m {:a 1 :b 2 :c 3} s (seq m) sm (with-meta s {:tag 1})
+                 pm (PersistentArrayMap. nil 1 (array :x 1 :y 2 :z) nil)
+                 hm10 (zipmap (range 10) (range 10))
+                 hm25 (zipmap (range 25) (range 25))
+                 tm (sorted-map 3 30 1 10 2 20)
+                 k1 (keys m) k2 (keys m) k3 (keys m) v1 (vals m)
+                 s1 (seq m) s2 (seq m) s3 (seq m)
+                 s4 (seq m) e4 (first s4)
+                 hs (seq hm10) hsm (with-meta hs {:tag 2}) he2 (second hs)
+                 out (array) p (fn [x] (.push out (pr-str x)))]
+             (specify! k1 ISeq (-first [_] :k-first))
+             (specify! k2 INext (-next [_] nil))
+             (specify! k3 ISeqable (-seq [_] (list :k-seq)))
+             (specify! v1 ISeq (-first [_] 99))
+             (specify! s1 ISeq (-first [_] (first {:z 9})))
+             (specify! s2 INext (-next [_] nil))
+             (specify! s3 ISeqable (-seq [_] (list (first {:q 8}))))
+             (specify! e4 IMapEntry (-key [_] :e-key) (-val [_] 77))
+             (specify! he2 IMapEntry (-key [_] :h-key) (-val [_] 88))
+             ;; direct -drop preserves master view-offset semantics (fresh seq, no meta, negative step)
+             (p (identical? (-drop s 0) s))
+             (p (identical? (first s) (first (-drop s 0))))
+             (p (key (first (-drop (rest s) -1))))
+             (p (vec (-drop s -1)))
+             (p (meta (-drop sm 0)))
+             (p (meta (-drop sm -1)))
+             (p (meta (-drop sm 1)))
+             (p (meta (drop 0 sm)))
+             (p (meta (drop -1 sm)))
+             (p (-drop sm 1))
+             (p (-drop m 0))
+             (p (-drop {} 0))
+             (p (-drop pm 2))
+             (p (-drop pm 3))
+             (p (count (-drop pm 2)))
+             ;; specify! on keys / vals
+             (p [(first k1) (reduce conj [] k1) (reduce (fn [a b] [a b]) k1)])
+             (p [(next k2) (reduce conj [] k2)])
+             (p (reduce conj [] k3))
+             (p [(first v1) (reduce + v1) (reduce + 10 v1)])
+             ;; specify! on PersistentArrayMapSeq and on a cached entry
+             (p [(first s1) (reduce conj [] s1) (first (keys s1)) (reduce conj [] (keys s1))])
+             (p [(next s2) (reduce conj [] s2) (next (keys s2)) (reduce conj [] (keys s2))])
+             (p (reduce conj [] s3))
+             (p [(first (keys s4)) (first (vals s4)) (reduce conj [] (keys s4)) (reduce + (vals s4))])
+             ;; shared lazy entry identity and specify! on hash-map seq
+             (p [(identical? he2 (second hs)) (identical? he2 (second hsm))
+                 (second (keys hs)) (second (vals hs))
+                 (second (into [] (keys hs))) (second (into [] (vals hs)))])
+             ;; hash-map (NodeSeq, ArrayNodeSeq) and sorted-map seq/keys/vals reduce
+             (p [(reduce + (keys hm10)) (reduce + 100 (vals hm10))
+                 (reduce (fn [a x] (if (>= a 10) (reduced :stop) (+ a x))) 0 (keys hm10))
+                 (reduce (fn [a e] (+ a (val e))) 0 (seq hm10))
+                 (count (reduce (fn [a e] (if (= (count a) 3) (reduced a) (conj a e))) [] (seq hm10)))])
+             (p [(reduce + (keys hm25)) (reduce + 100 (vals hm25))
+                 (reduce (fn [a x] (if (>= a 20) (reduced :stop) (+ a x))) 0 (vals hm25))
+                 (reduce (fn [a e] (+ a (val e))) 0 (seq hm25))
+                 (count (reduce (fn [a e] (if (= (count a) 4) (reduced a) (conj a e))) [] (seq hm25)))])
+             (p [(reduce + (keys tm)) (reduce + 100 (vals tm))
+                 (reduce (fn [a x] (if (= x 20) (reduced a) (+ a x))) 0 (vals tm))
+                 (into [] (keys tm)) (into [] (vals tm))])
+             (.join out " "))"#,
+        "false true :a [nil [:a 1] [:b 2] [:c 3]] nil nil nil {:tag 1} {:tag 1} ([:b 2] [:c 3]) ([:a 1] [:b 2] [:c 3]) nil ([:z nil]) nil 1 [:k-first [:k-first :b :c] [[:k-first :b] :c]] [nil [:a]] [:k-seq] [99 104 114] [[:z 9] [[:z 9] [:b 2] [:c 3]] :z [:z :b :c]] [nil [[:a 1]] nil [:a]] [[:q 8]] [:e-key 77 [:e-key :b :c] 82] [true true :h-key 88 :h-key 88] [45 145 :stop 45 3] [300 400 :stop 300 4] [6 160 10 [1 2 3] [10 20 30]]",
+    );
+    // Standalone programs with only an array map's or hash map's seq (no list,
+    // vector or view builder) still keep equality, hashing, str and printing hooks.
+    every_level(r#"(= (seq {:a 1}) (seq {:a 1}))"#, "true");
+    every_level(r#"(= (hash (seq {:a 1})) (hash (seq {:a 1})))"#, "true");
+    every_level(r#"(str (seq {:a 1}))"#, "([:a 1])");
+    every_level(r#"(pr-str (seq {:a 1}))"#, "([:a 1])");
+    every_level(r#"(= (seq (hash-map :a 1)) (seq (hash-map :a 1)))"#, "true");
+    every_level(
+        r#"(= (hash (seq (hash-map :a 1))) (hash (seq (hash-map :a 1))))"#,
+        "true",
+    );
+    every_level(r#"(str (seq (hash-map :a 1)))"#, "([:a 1])");
+    every_level(r#"(pr-str (seq (hash-map :a 1)))"#, "([:a 1])");
+}
+
+/// In release output, a walk or a reduction of an array map's or hash map's
+/// keys or values makes no map entry, creating or counting `(seq m)` makes no
+/// map entry, repeated `(first s)` on one seq makes one entry, and a full
+/// walk of `(seq m)` makes one per entry (light-cljs-1081): each number is
+/// the entries made (`EntryCell`'s calls, counted) over an 8-key array map,
+/// a 10-key `NodeSeq` hash map, and a 25-key `ArrayNodeSeq` hash map, without
+/// an `extend-type` and with one of `Atom`. With `MapEntry`'s `-key` extended,
+/// key walks make the entries `-key` reads while `vals` walks make none; with
+/// `-nth` extended, both make entries; `seq` creation and `count` still make none.
+#[test]
+fn walks_of_array_map_keys_and_values_make_no_entries() {
+    let walks = r#"(let [made #(aget js/globalThis "__entries")
+              cost (fn [f] (let [before (made)] (f) (- (made) before)))
+              walk (fn [s] (loop [q s a 0] (if q (recur (next q) (+ a (if (nil? (first q)) 0 1))) a)))
+              walk-rest (fn [s] (loop [q s a 0] (if (seq q) (recur (rest q) (+ a (if (nil? (first q)) 0 1))) a)))
+              m (apply array-map (range 16))
+              hm (apply hash-map (range 20))
+              hm25 (apply hash-map (range 50))]
+          (.join (into-array (map cost [#(walk (keys m)) #(walk (vals m)) #(walk-rest (keys m)) #(reduce + (vals m))
+                                        #(into [] (keys m)) #(count (keys m)) #(walk (seq m)) #(walk-rest (seq m))
+                                        #(reduce (fn [a _] (inc a)) 0 (seq m)) #(count (seq m))
+                                        #(seq hm) #(count (seq hm)) #(let [s (seq hm)] (first s) (first s))
+                                        #(walk (keys hm)) #(walk (vals hm)) #(reduce + (vals hm)) #(into [] (keys hm))
+                                        #(walk (seq hm)) #(reduce (fn [a _] (inc a)) 0 (seq hm))
+                                        #(seq hm25) #(count (seq hm25)) #(let [s (seq hm25)] (first s) (first s))
+                                        #(walk (keys hm25)) #(walk (vals hm25)) #(reduce + (vals hm25)) #(into [] (keys hm25))
+                                        #(walk (seq hm25))])) " "))"#;
+    for (extensions, expected) in [
+        (
+            "",
+            "0 0 0 0 0 0 8 8 8 0 0 0 1 0 0 0 0 10 10 0 0 1 0 0 0 0 25",
+        ),
+        (
+            "(extend-type Atom ICounted (-count [_] 1))",
+            "0 0 0 0 0 0 8 8 8 0 0 0 1 0 0 0 0 10 10 0 0 1 0 0 0 0 25",
+        ),
+        (
+            "(extend-type MapEntry IMapEntry (-key [e] (nth e 0)))",
+            "8 0 8 0 8 0 8 8 8 0 0 0 1 10 0 0 10 10 10 0 0 1 25 0 0 25 25",
+        ),
+        (
+            "(extend-type MapEntry IIndexed (-nth ([e i] (if (zero? i) (.-k e) 2)) ([e i nf] nf)))",
+            "8 8 8 8 8 0 8 8 8 0 0 0 1 10 10 10 10 10 10 0 0 1 25 25 25 25 25",
+        ),
+    ] {
+        let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+        options.pseudo_names = true;
+        let mut js =
+            prepare_application(&program(&format!("{extensions} {walks}")), options).emit_js();
+        let head = "function EntryCell(key, val) {";
+        assert!(js.contains(head), "{head}");
+        js = js.replace(head, &format!("{head} globalThis.__entries++;"));
+        assert_eq!(
+            execute(&format!("globalThis.__entries = 0; console.log({js});")),
+            format!("{expected}\n"),
+            "{extensions}"
+        );
+    }
+}
+
 /// In release output of a program with `extend-type`, `into` of a vector,
 /// a set or a map, `mapv`, `filterv` and `vec` of a seq, and `conj!` and
 /// `assoc!` onto transients take no protocol lookup per item

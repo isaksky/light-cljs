@@ -32,11 +32,22 @@ const SEQ_FIXTURES: &[(&str, &str)] = &[
 ];
 
 fn program_output(js: &str) -> String {
-    let output = std::process::Command::new("node")
-        .arg("-e")
-        .arg(js)
-        .output()
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("node")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(js.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
         "{}",

@@ -1345,6 +1345,61 @@ fn shared_profile_published_multimethod_invokes_in_spawned_task() {
     assert_eq!(out, r#"[["def",0],["a","a",null],["a","a",2],["def",4]]"#);
 }
 
+/// Array-map and hash-map walks (`seq`, `keys`, `vals`, `first`, `rest`,
+/// `next`, `count`, `reduce`, `drop`) run cleanly on the published shared-heap
+/// runtime in a spawned task without mutating sealed boot state (light-cljs-1081).
+#[test]
+fn shared_profile_published_map_walks_run_in_spawned_task() {
+    let rt = Runtime::new();
+    let booted = boot(&rt);
+    rt.publish(&booted)
+        .unwrap_or_else(|e| panic!("booted runtime does not publish: {e}"));
+    let walk = compile_function(
+        "function walk(rt) { \
+           const core = rt.core; \
+           globalThis.__lightSharedCells = core.sharedTaskCells(); \
+           const am = core.arrayMap(core.keyword(null, 'a'), 1, core.keyword(null, 'b'), 2, core.keyword(null, 'c'), 3); \
+           const pm = new core.PersistentArrayMap(null, 2, [core.keyword(null, 'x'), 10, core.keyword(null, 'y'), 20], null); \
+           const hmArgs = []; \
+           for (let i = 0; i < 12; i++) hmArgs.push(core.keyword(null, 'k' + i), i); \
+           const hm = core.hashMap(...hmArgs); \
+           const collect = s => { const out = []; for (let q = core.seq(s); q != null; q = core.next(q)) out.push(core.first(q)); return out; }; \
+           const amSeq = core.seq(am), amKeys = core.keys(am), amVals = core.vals(am); \
+           return JSON.stringify([ \
+             core.count(amSeq), \
+             core.prStr(core.first(amSeq)), \
+             core.prStr(core.rest(amSeq)), \
+             core.prStr(core.drop(1, amSeq)), \
+             core.prStr(core.drop(0, amSeq)), \
+             collect(amKeys).map(k => core.name(k)), \
+             collect(amVals), \
+             core.reduce((a, b) => a + b, 0, amVals), \
+             core.reduce((a, e) => a + core.valProtocol(e), 0, amSeq), \
+             core.count(core.seq(pm)), \
+             collect(core.keys(pm)).map(k => core.name(k)), \
+             core.reduce((a, b) => a + b, 0, core.vals(pm)), \
+             core.count(core.keys(hm)), \
+             core.reduce((a, b) => a + b, 0, core.vals(hm)), \
+             core.reduce((a, e) => a + core.valProtocol(e), 0, core.seq(hm)) \
+           ]); \
+         }",
+    )
+    .unwrap();
+    let task = rt.spawn(&walk, &[&booted]).unwrap();
+    let out = std::thread::scope(|s| {
+        s.spawn(|| match task.run().unwrap() {
+            RunOutcome::Complete(v) => v.string().unwrap().to_string_lossy(),
+            other => panic!("{other:?}"),
+        })
+        .join()
+        .unwrap()
+    });
+    assert_eq!(
+        out,
+        r#"[3,"[:a 1]","([:b 2] [:c 3])","([:b 2] [:c 3])","([:a 1] [:b 2] [:c 3])",["a","b","c"],[1,2,3],6,6,2,["x","y"],30,12,66,66]"#
+    );
+}
+
 /// The operations that copy a collection's metadata to their result
 /// (`preserveMeta`: `empty`, `pop`, `conj`, `assoc`) give an engine result
 /// the engine metadata of its input as a form (`formWithMeta`), never by

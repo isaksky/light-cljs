@@ -1364,8 +1364,9 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // (`hostExt.core`, `hostExtEscaped.on`, `hostExtSeqEscaped.on`,
     // `hostExtPrintEscaped.on`, `hostExt.hook`, `slotWrites.hostExt`),
     // `Atom.deref`, and the two printer hook units (`printSeq.hook`,
-    // `printWriter.hook`).
-    assert_eq!(checked, 629);
+    // `printWriter.hook`); and the three map seqs' `-reduce` slot units and
+    // the array map seq's `seq` and `drop` hooks (light-cljs-1081).
+    assert_eq!(checked, 634);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1516,6 +1517,11 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("seqQueue", Kind::Stores(&["queues"])),
     ("seqVector", Kind::Stores(&["vectors"])),
     ("seqMap", Kind::Stores(&["maps"])),
+    // An array map's seq, its index cell (light-cljs-1081).
+    (
+        "seqArrayMap",
+        Kind::Units(&["ArrayMapCell", "makeMap", "PersistentArrayMapValue"]),
+    ),
     // Sorted maps' seqs, of their trees (light-cljs-1035).
     ("seqTree", Kind::Units(&["treeMapConstructor"])),
     ("seqSet", Kind::Stores(&["sets"])),
@@ -1660,6 +1666,10 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
         Kind::Units(&["PersistentHashMapValue", "publicHashSet", "putMember"]),
     ),
     (
+        "seqHashMap",
+        Kind::Units(&["PersistentHashMapValue", "publicHashSet", "putMember"]),
+    ),
+    (
         "hashEntryIndex",
         Kind::Units(&[
             "PersistentHashMapValue",
@@ -1767,6 +1777,7 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
         Kind::Units(&["PersistentArrayMapValue"]),
     ),
     ("iteratorVector", Kind::Stores(&["vectors"])),
+    ("dropArrayMapSeq", Kind::Units(&["ArrayMapIndexCell"])),
     ("dropChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
     ("dropVector", Kind::Stores(&["vectors"])),
     ("chunkedVectorRest", Kind::Units(&["ChunkedSeqValue"])),
@@ -1810,6 +1821,9 @@ fn kind_hooks_are_installed_wherever_their_kind_can_be_built() {
                 "CycleCell",
                 "KeySeqCell",
                 "TreeMapStackCell",
+                "ArrayMapIndexCell",
+                "NodeSeqCell",
+                "ArrayNodeSeqCell",
             ],
             _ => &[],
         };

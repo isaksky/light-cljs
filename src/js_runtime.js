@@ -233,13 +233,27 @@
   // and `off` are its `base` and `i`. Only a chunked seq has `vec`.
   function ChunkedSeqCell(node, off, vec, base) { this.arr$LKEY = node; this.i$LKEY = off; this.indexed$LKEY = false; this.view$LKEY = "chunked"; this.vec$LKEY = vec; this.base$LKEY = base; /*@brand*/ }
   //@unit NodeSeqCell
-  // The seqs of maps over an array of their entries, one class per map seq
-  // type, with the fields of `viewOf`.
-  function NodeSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  // A hash map's seq (NodeSeq or ArrayNodeSeq, kinds 7 and 8): a cell
+  // ("hash-map") over the map's frozen traversal array of `{key, value}` leaf
+  // objects (`nodes`), making each `MapEntry` lazily on `-first` or `-reduce`
+  // and caching realized entries by index in a prototype-free map on `root`
+  // (light-cljs-1081). It holds no `arr`, so is no view (`viewOf`). The
+  // shared-heap profile swaps these for views over pre-built engine entries.
+  function NodeSeqCell(nodes, i, root) { this.cell$LKEY = "hash-map"; this.nodes$LKEY = nodes; this.i$LKEY = i; this.root$LKEY = root ?? this; this.entries$LKEY = null; /*@brand*/ }
   //@unit ArrayNodeSeqCell
-  function ArrayNodeSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
-  //@unit ArrayMapSeqCell
-  function ArrayMapSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  function ArrayNodeSeqCell(nodes, i, root) { this.cell$LKEY = "hash-map"; this.nodes$LKEY = nodes; this.i$LKEY = i; this.root$LKEY = root ?? this; this.entries$LKEY = null; /*@brand*/ }
+  //@unit ArrayMapIndexCell
+  // An array map's seq, upstream's PersistentArrayMapSeq, with its type's
+  // prototype and kind 9 (light-cljs-1081): a cell ("array-map") of the
+  // map's own keys and values, flat (`pairs`, its `arr`, which nothing
+  // writes), from the index `i` of its first key. It makes a map entry
+  // only where `-first` or `-reduce` asks for one, caching realized entries
+  // by position in a prototype-free map on the root cell (`root.entries`,
+  // null until any entry is realized) so that traversals of one seq share
+  // entry identity and `specify!` state while `keys`/`vals` allocate no entry
+  // cache or entries. It holds no `arr`, so is no view (`viewOf`), as a
+  // sorted map's `TreeMapStackCell` is none.
+  function ArrayMapIndexCell(pairs, i, root) { this.cell$LKEY = "array-map"; this.pairs$LKEY = pairs; this.i$LKEY = i; this.root$LKEY = root ?? this; this.entries$LKEY = null; /*@brand*/ }
   //@unit RSeqCell
   function RSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
   //@unit LazySeqCell
@@ -314,10 +328,11 @@
   }
   //@unit cellOf
   // A list, the empty list, a cons, a range, a repeat, an iterate, a cycle,
-  // a map's key or value seq or a sorted map's seq (light-cljs-1030): the
-  // value itself, of one of the classes below, whose own keyed field
-  // `cell` is today's kind of seq ("list", "cons", "range", "repeat",
-  // "iterate", "cycle", "keys", "vals" or "tree-seq"), else undefined.
+  // a map's key or value seq, a sorted map's seq (light-cljs-1030) or an
+  // array map's (light-cljs-1081): the value itself, of one of the classes
+  // below, whose own keyed field `cell` is today's kind of seq ("list",
+  // "cons", "range", "repeat", "iterate", "cycle", "keys", "vals",
+  // "tree-seq" or "array-map"), else undefined.
   // Each class reads `first` and `rest` under keyed names, its own fields
   // where they are data, getters of its prototype where a step computes
   // them. As `viewOf`, one made by reflection from a prototype has no own
@@ -340,7 +355,8 @@
   // The names are a frozen array, which the Pants build's shared heap can
   // publish, where a `Set` stays its task's.
   const cellFields = Object.freeze(["cell$LKEY", "first$LKEY", "rest$LKEY", "count$LKEY", "end$LKEY", "step$LKEY", "integer$LKEY", "remaining$LKEY", "next$LKEY",
-    "f$LKEY", "prev$LKEY", "seed$LKEY", "realized$LKEY", "all$LKEY", "current$LKEY", "mseq$LKEY", "stack$LKEY", "ascending$LKEY", "cnt$LKEY"]);
+    "f$LKEY", "prev$LKEY", "seed$LKEY", "realized$LKEY", "all$LKEY", "current$LKEY", "mseq$LKEY", "stack$LKEY", "ascending$LKEY", "cnt$LKEY",
+    "pairs$LKEY", "nodes$LKEY", "i$LKEY", "root$LKEY", "entries$LKEY"]);
   // The shared-heap profile's copies engine lists and conses too.
   function cellCopy(value) {
     const Type = function () {};
@@ -1421,13 +1437,42 @@
   IntegerRangeCell.prototype = IntegerRangeValue.prototype;
   //@unit NodeSeqType effect requires: builtinType, NodeSeqCell, sequencePrototype, viewType
   const NodeSeqType = viewType(builtinType(function () {}, sequencePrototype), NodeSeqCell, 7);
-  //@unit PersistentArrayMapSeqType effect requires: ArrayMapSeqCell, builtinType,
+  //@unit NodeSeqCell.type effect: NodeSeqCell requires: emptyList, hashMapSeqFirst, hashMapSeqNext,
+  //@ NodeSeqType
+  // A hash map's seq is a cell of its type's prototype (light-cljs-1081):
+  // to the readers of any cell (`firstSeq`, `restSeq`, `reduceWalk`), its
+  // `first` is the entry at its index, made lazily as read, and its `rest`
+  // the seq from the next entry, or the empty list.
+  Object.defineProperties(NodeSeqType.prototype, {
+    first$LKEY: {configurable: true, get() { return hashMapSeqFirst(this); }},
+    rest$LKEY: {configurable: true, get() { return hashMapSeqNext(this) ?? emptyList; }}
+  });
+  //@unit PersistentArrayMapSeqType effect requires: ArrayMapIndexCell, builtinType,
   //@ sequencePrototype, viewType
-  // The seq of an array map, as NodeSeqType is a hash map's.
-  const PersistentArrayMapSeqType = viewType(builtinType(function () {}, sequencePrototype), ArrayMapSeqCell, 9);
+  // The seq of an array map, upstream's PersistentArrayMapSeq, kind 9: its
+  // values are `ArrayMapIndexCell` cells (light-cljs-1081), as a sorted map's
+  // seqs are `TreeMapStackCell` cells. The shared-heap profile swaps this
+  // unit for `ArrayMapSeqCell` views over pre-built engine entries.
+  const PersistentArrayMapSeqType = viewType(builtinType(function () {}, sequencePrototype), ArrayMapIndexCell, 9);
+  //@unit ArrayMapIndexCell.type effect: ArrayMapIndexCell requires: arrayMapSeqFirst,
+  //@ arrayMapSeqNext, emptyList, PersistentArrayMapSeqType
+  // An array map's seq is a cell of its type's prototype (light-cljs-1081):
+  // to the readers of any cell (`firstSeq`, `restSeq`, `reduceWalk`), its
+  // `first` is the entry of the key and value at its index, made as it is
+  // read, and its `rest` the seq from the next key, or the empty list.
+  Object.defineProperties(PersistentArrayMapSeqType.prototype, {
+    first$LKEY: {configurable: true, get() { return arrayMapSeqFirst(this); }},
+    rest$LKEY: {configurable: true, get() { return arrayMapSeqNext(this) ?? emptyList; }}
+  });
   //@unit ArrayNodeSeqType effect requires: ArrayNodeSeqCell, builtinType, sequencePrototype,
   //@ viewType
   const ArrayNodeSeqType = viewType(builtinType(function () {}, sequencePrototype), ArrayNodeSeqCell, 8);
+  //@unit ArrayNodeSeqCell.type effect: ArrayNodeSeqCell requires: ArrayNodeSeqType, emptyList,
+  //@ hashMapSeqFirst, hashMapSeqNext
+  Object.defineProperties(ArrayNodeSeqType.prototype, {
+    first$LKEY: {configurable: true, get() { return hashMapSeqFirst(this); }},
+    rest$LKEY: {configurable: true, get() { return hashMapSeqNext(this) ?? emptyList; }}
+  });
   //@unit RSeqType effect requires: builtinType, RSeqCell, sequencePrototype, viewType
   const RSeqType = viewType(builtinType(function () {}, sequencePrototype), RSeqCell, 10);
   //@unit ArrayList
@@ -2002,20 +2047,47 @@
   // chunked seq over its trie's leaves.
   kindHooks.seqVector = (value, store) => !store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), 0, true, "indexed")
     : new ChunkedSeqCell(vectorChunk(value, 0), 0, value, 0);
+  //@unit arrayMapSeq requires: ArrayMapIndexCell
+  // An array map's seq is an index into its keys and values, upstream's
+  // PersistentArrayMapSeq, which makes each entry as `-first` asks for it
+  // (`ArrayMapIndexCell`, light-cljs-1081), of a copy of the array a public
+  // constructor's map was given (its `slots`), which a program can write,
+  // so that the seq reads it as it was when made, as its entries did.
+  function arrayMapSeq(value) {
+    const pairs = value.arr$LKEY;
+    return pairs.length ? new ArrayMapIndexCell(value.slots$LKEY === undefined ? pairs : pairs.slice(), 0, null) : null;
+  }
+  //@unit ArrayMapCell.seq effect: ArrayMapCell, makeMap, PersistentArrayMapValue when: seqPath
+  //@ requires: arrayMapSeq, kindHooks
+  kindHooks.seqArrayMap = arrayMapSeq;
+  //@unit hashMapSeq requires: ArrayNodeSeqCell, ArrayNodeSeqType, kindHooks, mapTraversal, NodeSeqCell
+  // A hash map's seq walks its cached traversal array of internal `{key, value}`
+  // leaf objects (`NodeSeqCell` or `ArrayNodeSeqCell`), making each `MapEntry`
+  // lazily on `-first` or `-reduce` (light-cljs-1081).
+  function hashMapSeq(value) {
+    const nodes = mapTraversal(value);
+    if (!nodes.length) return null;
+    const Cell = kindHooks.hashMapSeqType(value) === ArrayNodeSeqType ? ArrayNodeSeqCell : NodeSeqCell;
+    return new Cell(nodes, 0, null);
+  }
   //@unit makeMap.seq effect: ArrayMapCell, makeMap, PersistentArrayMapValue,
-  //@ PersistentHashMapValue, treeMapConstructor, recordMethods when: seq, seqOf, seqPath, seqSite
-  //@ requires: IndexedSeqValue, isTreeMap, kindHooks, mapEntry, mapKinds, mapPairs,
-  //@ PersistentArrayMapSeqType, view
+  //@ PersistentHashMapValue, treeMapConstructor, recordMethods when: seqPath requires: IndexedSeqValue,
+  //@ isArrayMap, isTreeMap, kindHooks, mapEntry, mapKinds, mapPairs, view
+  // An array map's seq is its index cell (`seqArrayMap`), a hash map's is its
+  // lazy traversal cell (`seqHashMap`), a sorted map's walks its tree
+  // (`seqTree`), and a record's or another map's is a view over an array of
+  // its entries.
   kindHooks.seqMap = value => {
+    if (isArrayMap(value)) return kindHooks.seqArrayMap(value);
     // A sorted map's seq walks its tree (light-cljs-1035).
     if (isTreeMap(value)) return kindHooks.seqTree(value, true);
-    const pairs = mapPairs(value), kind = mapKinds.get(value), n = (pairs.length + 1) >> 1;
+    const kind = mapKinds.get(value);
+    if (kind === "hash-map") return kindHooks.seqHashMap(value);
+    const pairs = mapPairs(value), n = (pairs.length + 1) >> 1;
     if (!n) return null;
     const items = [];
     for (let i = 0; i < n; i++) items.push(mapEntry(pairs[2 * i], pairs[2 * i + 1]));
-    return view(kind === "hash-map" ? kindHooks.hashMapSeqType(value)
-      : kind === "array-map" ? PersistentArrayMapSeqType : IndexedSeqValue,
-      Object.freeze(items), 0, false, kind);
+    return view(IndexedSeqValue, Object.freeze(items), 0, false, kind);
   };
   //@unit treeMapConstructor.seq effect: treeMapConstructor when: rseq, seq, seqOf, seqPath, seqSite
   //@ requires: kindHooks, treeMapSeq
@@ -2192,8 +2264,8 @@
     if (own) return own.call(value, value);
     return seq(rest(value));
   }
-  //@unit nextPath requires: cellOf, lazyOf, methodKeys, next, protocolHooks, rest, seq, viewAt,
-  //@ viewOf
+  //@unit nextPath requires: cellOf, emptyList, lazyOf, methodKeys, next, protocolHooks, rest, seq,
+  //@ viewAt, viewOf
   // `next`'s own path over the runtime's classes (`operationPaths`).
   function nextPath(value) {
     if (value == null) return null;
@@ -2205,6 +2277,7 @@
     const cell = cellOf(value);
     if (cell?.cell$LKEY === "list") return cell.count$LKEY === 1 || cell.count$LKEY === 0 && cell.cljs$lang$kind$$LKEY !== 12 ? null : cell.rest$LKEY;
     if (cell?.cell$LKEY === "repeat") return cell.next$LKEY ?? (cell.remaining$LKEY === -1 ? value : cell.remaining$LKEY > 1 ? cell.rest$LKEY : null);
+    if (cell?.cell$LKEY === "array-map" || cell?.cell$LKEY === "hash-map") { const tail = cell.rest$LKEY; return tail === emptyList ? null : tail; }
     // Flat views advance directly; other kinds keep their rest/seq behavior.
     const slice = viewOf(value), kind = slice?.view$LKEY;
     if (slice && (kind === "indexed" || kind === "hash-map" || kind === "array-map" || kind === "set"))
@@ -2854,16 +2927,22 @@
     while (iter.hasNext()) { init = rf.call(null, init, iter.next()); if (isReduced(init)) return reducedValue(init); }
     return init;
   }
-  //@unit seqReduce requires: first, isReduced, next, reduce, reducedValue, seq
-  // Upstream's `seq-reduce`: the walk of a value's seq with `first` and
-  // `next`; without `init`, its first item and the `reduce` of its next.
-  function seqReduce(source, rf, init, arity) {
-    if (arity === 2) { const current = seq(source); return current == null ? rf.call(null) : reduce(rf, first(current), next(current)); }
-    for (let current = seq(source); current != null; current = next(current)) {
+  //@unit seqReduceFrom requires: first, isReduced, next, reducedValue
+  // The tail walk of `seqReduce` from an already-obtained seq `current`,
+  // without calling `seq` on it again (light-cljs-1081).
+  function seqReduceFrom(current, rf, init) {
+    for (; current != null; current = next(current)) {
       init = rf.call(null, init, first(current));
       if (isReduced(init)) return reducedValue(init);
     }
     return init;
+  }
+  //@unit seqReduce requires: first, next, reduce, seq, seqReduceFrom
+  // Upstream's `seq-reduce`: the walk of a value's seq with `first` and
+  // `next`; without `init`, its first item and the `reduce` of its next.
+  function seqReduce(source, rf, init, arity) {
+    if (arity === 2) { const current = seq(source); return current == null ? rf.call(null) : reduce(rf, first(current), next(current)); }
+    return seqReduceFrom(seq(source), rf, init);
   }
   //@unit reduceWalk requires: cellOf, first, isReduced, next, reducedValue, seq, viewOf
   // The old path's last walk, of a vector, a map, a map seq or another
@@ -3971,13 +4050,14 @@
     return ordered;
   };
   //@unit PersistentHashMapValue.seqType effect: PersistentHashMapValue, publicHashSet, putMember
-  //@ when: seq, seqOf, seqPath, seqSite requires: ArrayNodeSeqType, kindHooks, maps, NodeSeqType
+  //@ when: hashMapSeq, seqPath requires: ArrayNodeSeqType, hashMapSeq, kindHooks, maps, NodeSeqType
   // As upstream's: an ArrayNodeSeq where the trie's root is an array node (17+
   // slots). Positional entries (an engine map's) are not hashed again: NodeSeq.
   kindHooks.hashMapSeqType = value => {
     const root = value.cljs$lang$kind$$LKEY === 29 ? value.root$LKEY : maps.get(value).root;
     return root?.kind === "array" ? ArrayNodeSeqType : NodeSeqType;
   };
+  kindHooks.seqHashMap = hashMapSeq;
   //@unit hashEntryIndex requires: ensureHashRoot, hash, hashNodeFind
   function hashEntryIndex(entries, key, keyHash) {
     if (key == null) return entries.findIndex(entry => entry.key == null);
@@ -5660,6 +5740,8 @@
     // A sorted map's seq holds its count, or one below 0 where it counts its
     // nodes, as upstream's (light-cljs-1035).
     if (cell?.cell$LKEY === "tree-seq") return cell.cnt$LKEY < 0 ? kindHooks.countTreeSeq(value) : cell.cnt$LKEY;
+    if (cell?.cell$LKEY === "array-map") return Math.max(0, (cell.pairs$LKEY.length - cell.i$LKEY + 1) >> 1);
+    if (cell?.cell$LKEY === "hash-map") return Math.max(0, cell.nodes$LKEY.length - cell.i$LKEY);
     if (!slots && queues.has(value)) return queues.get(value).length;
     if (slots && ("cnt" in slots || "count" in slots)) return "cnt" in slots ? slots.cnt : slots.count;
     const chunked = viewOf(value);
@@ -5710,10 +5792,11 @@
     }
     return result;
   }
-  //@unit count.seqs effect: ChunkedCons, compilerFormBridge, cons, listFromArray, Cons, cycleNode,
-  //@ emptyList, EmptyListValue, Eduction, extendInstance, extendType, iterateNode, iteration,
-  //@ iteratorSeq, ISeqable, LazySeq, ListValue, mapProjection, rangeNode, RepeatValue, reSeq,
-  //@ treeMapSeqConstructor when: countOf, countPath requires: accumulatingCount, kindHooks
+  //@unit count.seqs effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, ChunkedCons, compilerFormBridge, cons,
+  //@ listFromArray, Cons, cycleNode, emptyList, EmptyListValue, Eduction, extendInstance, extendType,
+  //@ iterateNode, iteration, iteratorSeq, ISeqable, LazySeq, ListValue, mapProjection, rangeNode,
+  //@ RepeatValue, reSeq, treeMapSeqConstructor when: countOf, countPath requires: accumulatingCount,
+  //@ kindHooks
   // Only these units, and a program type implementing `ISeqable`
   // (`PROTOCOL_ROOTS` in src/runtime_slice.rs), build values `count` walks.
   kindHooks.countSeq = accumulatingCount;
@@ -6015,7 +6098,8 @@
   // store of its own (one made by reflection) answers `noBranch`, and the
   // slot-first wrapper then takes the operation, which answers it as before.
   //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: mapConj, nth, nthOf,
-  //@ nthSite, nthSite3 requires: builtinSlot, missing, PersistentVectorValue, vectorNth
+  //@ nthSite, nthSite3, ownEntryItems requires: builtinSlot, missing, PersistentVectorValue,
+  //@ vectorNth
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const store = self;
     return vectorNth(store, index, missing);
@@ -6082,8 +6166,8 @@
   // operations give it (`SubvecValue.conj`, `SubvecValue.assoc`). Each slot
   // is complete for a subvector: the compile-time runtime's protocol lookup
   // finds a slot and calls it.
-  //@unit SubvecValue.nth effect: SubvecValue when: mapConj, nth, nthOf, nthSite, nthSite3 requires: builtinSlot,
-  //@ missing, SubvecValue, vectorNth
+  //@unit SubvecValue.nth effect: SubvecValue when: mapConj, nth, nthOf, nthSite, nthSite3,
+  //@ ownEntryItems requires: builtinSlot, missing, SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     return vectorNth(self, index, missing);
   });
@@ -6143,12 +6227,16 @@
   // vector's `conj`, `assoc` and `peek`, which give what a vector of its
   // items gives. A value of the entries' prototype that is not an entry of
   // two items in a tail, as only reflection makes, takes the operation.
-  //@unit MapEntryType.nth effect: MapEntryType when: mapConj, nth, nthOf, nthSite, nthSite3
-  //@ requires: builtinSlot, MapEntryType, outOfBounds
-  MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
+  //@unit entryNthSlot requires: builtinSlot, outOfBounds
+  // A map entry's own `-nth` of two arguments, named so that a key seq
+  // tells that no program replaced it (`ownEntryItems`, light-cljs-1081).
+  const entryNthSlot = builtinSlot(function (self, index) {
     const tail = self.tail$LKEY;
     return index === 0 || index === 1 ? tail[index] : outOfBounds();
   });
+  //@unit MapEntryType.nth effect: MapEntryType when: mapConj, nth, nthOf, nthSite, nthSite3,
+  //@ ownEntryItems requires: builtinSlot, entryNthSlot, MapEntryType
+  MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = entryNthSlot;
   MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
     const tail = self.tail$LKEY;
     return index === 0 || index === 1 ? tail[index] : notFound;
@@ -6216,7 +6304,8 @@
   // item for an index out of bounds. Each slot is complete for a transient
   // vector, as the compile-time runtime's protocol lookup finds and calls it.
   //@unit TransientVectorType.nth effect: TransientVectorType when: mapConj, nth, nthOf, nthSite,
-  //@ nthSite3 requires: builtinSlot, missing, transientNth, TransientVectorType, vectorNth
+  //@ nthSite3, ownEntryItems requires: builtinSlot, missing, transientNth, TransientVectorType,
+  //@ vectorNth
   TransientVectorType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const editable = self.editable$LKEY;
     if (editable === true) return vectorNth(self, index, missing);
@@ -6348,15 +6437,15 @@
   //@ countSlot requires: transientCountSlot, TransientHashSetType
   TransientHashSetType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = transientCountSlot;
   //@unit TransientArrayMapType.nth effect: TransientArrayMapType when: mapConj, nth, nthOf,
-  //@ nthSite, nthSite3 requires: TransientArrayMapType, transientNthSlots
+  //@ nthSite, nthSite3, ownEntryItems requires: TransientArrayMapType, transientNthSlots
   TransientArrayMapType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientArrayMapType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
   //@unit TransientHashMapType.nth effect: TransientHashMapType when: mapConj, nth, nthOf, nthSite,
-  //@ nthSite3 requires: TransientHashMapType, transientNthSlots
+  //@ nthSite3, ownEntryItems requires: TransientHashMapType, transientNthSlots
   TransientHashMapType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientHashMapType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
   //@unit TransientHashSetType.nth effect: TransientHashSetType when: mapConj, nth, nthOf, nthSite,
-  //@ nthSite3 requires: TransientHashSetType, transientNthSlots
+  //@ nthSite3, ownEntryItems requires: TransientHashSetType, transientNthSlots
   TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
   //@unit TransientArrayMapType.lookup effect: TransientArrayMapType when: arrayMapContains, get,
@@ -6610,11 +6699,11 @@
   // hash map's seq of its entries, a sorted map's of its tree. Each comes
   // before the map's `-reduce`, which reads it as its class's own.
   //@unit PersistentArrayMapValue.seqSlot effect: PersistentArrayMapValue when: seq, seqOf, seqSite
-  //@ requires: builtinSlot, kindHooks, PersistentArrayMapValue
-  PersistentArrayMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return kindHooks.seqMap(self); });
+  //@ requires: arrayMapSeq, builtinSlot, PersistentArrayMapValue
+  PersistentArrayMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return arrayMapSeq(self); });
   //@unit PersistentHashMapValue.seqSlot effect: PersistentHashMapValue when: seq, seqOf, seqSite
-  //@ requires: builtinSlot, kindHooks, PersistentHashMapValue
-  PersistentHashMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return kindHooks.seqMap(self); });
+  //@ requires: builtinSlot, hashMapSeq, PersistentHashMapValue
+  PersistentHashMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return hashMapSeq(self); });
   //@unit treeMapConstructor.seqSlot effect: treeMapConstructor when: seq, seqOf, seqSite requires: builtinSlot,
   //@ kindHooks, treeMapConstructor
   treeMapConstructor.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) { return kindHooks.seqTree(self, true); });
@@ -6941,62 +7030,191 @@
     const arr = self.arr$LKEY;
     return self.i$LKEY < arr.length ? self : null;
   });
-  // The map seqs (`PersistentArrayMapSeq`, `NodeSeq`, `ArrayNodeSeq`), views
-  // over an array of a map's entries (a map's `seq`), answer `first`,
-  // `rest`, `next` and `seq`, and an array map's seq `count`, from slots, as
-  // upstream's types implement ISeq, INext, ISeqable and (the array map's)
-  // ICounted (light-cljs-1064). Their `-first`, `-seq` and `-count` are an
-  // indexed seq's; the three classes share a `-next`, which steps to a view of
-  // the seq's own class, as `next` does (`viewAt`), and a `-rest`, which is
-  // that or the empty list. The key and value seqs call them.
-  //@unit mapSeqNextSlot requires: builtinSlot
-  const mapSeqNextSlot = builtinSlot(function (self) {
-    const arr = self.arr$LKEY;
-    const i = self.i$LKEY + 1;
-    return i < arr.length ? new self.cljs$lang$cell$$LKEY(arr, i, self.indexed$LKEY, self.view$LKEY) : null;
+  // The map seqs (`PersistentArrayMapSeq`, `NodeSeq`, `ArrayNodeSeq`) answer
+  // `first`, `rest`, `next`, `seq`, `count`, and `reduce` from keyed slots,
+  // lazily materializing `MapEntry` objects only when `-first` or `-reduce`
+  // asks for one and caching realized entries in a prototype-free map on
+  // `root` so repeated traversals share identity (light-cljs-1064,
+  // light-cljs-1081). The shared-heap profile swaps these for view slots.
+  //@unit hashMapSeqFirst requires: builtinSlot, mapEntry
+  const hashMapSeqFirst = builtinSlot(function (self) {
+    const i = self.i$LKEY, nodes = self.nodes$LKEY;
+    if (i < 0 || i >= nodes.length) return undefined;
+    const root = self.root$LKEY;
+    let entries = root.entries$LKEY;
+    if (entries === null) entries = root.entries$LKEY = Object.create(null);
+    let entry = entries[i];
+    if (entry === undefined) { const node = nodes[i]; entry = entries[i] = mapEntry(node.key, node.value); }
+    return entry;
   });
-  //@unit mapSeqRestSlot requires: builtinSlot, emptyList, mapSeqNextSlot
-  const mapSeqRestSlot = builtinSlot(function (self) { return mapSeqNextSlot(self) ?? emptyList; });
+  //@unit hashMapSeqNext requires: builtinSlot
+  const hashMapSeqNext = builtinSlot(function (self) {
+    const nodes = self.nodes$LKEY, i = self.i$LKEY + 1;
+    return i < nodes.length ? new self.cljs$lang$cell$$LKEY(nodes, i, self.root$LKEY) : null;
+  });
+  //@unit hashMapSeqRest requires: builtinSlot, emptyList, hashMapSeqNext
+  const hashMapSeqRest = builtinSlot(function (self) { return hashMapSeqNext(self) ?? emptyList; });
+  //@unit hashMapSeqCountSlot requires: builtinSlot
+  const hashMapSeqCountSlot = builtinSlot(function (self) {
+    return Math.max(0, self.nodes$LKEY.length - self.i$LKEY);
+  });
+  //@unit hashMapSeqReduce requires: isReduced, mapEntry, next, reducedValue, reduceSlot, seqReduce,
+  //@ seqReduceFrom, slotFirst
+  // A hash map's seqs' `-reduce`, as upstream's NodeSeq and ArrayNodeSeq
+  // implement IReduce (light-cljs-1081): caches realized entries on `root`
+  // and revalidates protocol slots via `valid`/`step` after every callback so
+  // mid-reduction `specify!` and `extend-type` resume via `seqReduceFrom`
+  // without replay.
+  function hashMapSeqReduce(valid, step) {
+    return reduceSlot(function (self, rf, init, arity) {
+      const start = self.i$LKEY;
+      if (!slotFirst.on || start < 0 || !valid(self)) return seqReduce(self, rf, init, arity);
+      const nodes = self.nodes$LKEY, n = nodes.length, root = self.root$LKEY, Cell = self.cljs$lang$cell$$LKEY;
+      let i = start, entries = root.entries$LKEY;
+      if (entries === null) entries = root.entries$LKEY = Object.create(null);
+      if (arity === 2) {
+        if (i >= n) return rf.call(null);
+        let entry = entries[i];
+        if (entry === undefined) { const node = nodes[i]; entry = entries[i] = mapEntry(node.key, node.value); }
+        init = entry;
+        i++;
+      }
+      for (; i < n; i++) {
+        let entry = entries[i];
+        if (entry === undefined) { const node = nodes[i]; entry = entries[i] = mapEntry(node.key, node.value); }
+        init = rf.call(null, init, entry);
+        if (isReduced(init)) return reducedValue(init);
+        if (!slotFirst.on || !step(i === start ? self : null))
+          return seqReduceFrom(next(i === start ? self : new Cell(nodes, i, root)), rf, init);
+      }
+      return init;
+    });
+  }
+  // An array map's seq (`ArrayMapIndexCell`, light-cljs-1081) answers as
+  // upstream's PersistentArrayMapSeq: `-first` the entry of the key and
+  // value at its index, made as it is asked for, `-next` the seq from the
+  // next key, `-count` its keys from its index, each from its own fields.
+  // The shared-heap profile swaps these for the view slots.
+  //@unit arrayMapSeqFirst requires: builtinSlot, mapEntry
+  const arrayMapSeqFirst = builtinSlot(function (self) {
+    const i = self.i$LKEY, pairs = self.pairs$LKEY;
+    if (i < 0 || i >= pairs.length) return undefined;
+    const root = self.root$LKEY, idx = i >> 1;
+    let entries = root.entries$LKEY;
+    if (entries === null) entries = root.entries$LKEY = Object.create(null);
+    let entry = entries[idx];
+    if (entry === undefined) entry = entries[idx] = mapEntry(pairs[i], pairs[i + 1]);
+    return entry;
+  });
+  //@unit arrayMapSeqNext requires: ArrayMapIndexCell, builtinSlot
+  const arrayMapSeqNext = builtinSlot(function (self) {
+    const pairs = self.pairs$LKEY, i = self.i$LKEY + 2;
+    return i < pairs.length ? new ArrayMapIndexCell(pairs, i, self.root$LKEY) : null;
+  });
+  //@unit arraySeqWitness requires: PersistentArrayMapSeqType
+  // An unstamped object inheriting from `PersistentArrayMapSeqType.prototype`
+  // so reductions can revalidate prototype-level protocol extensions cheaply
+  // without reading directly off the prototype dictionary (light-cljs-1081).
+  const arraySeqWitness = Object.create(PersistentArrayMapSeqType.prototype);
   //@unit PersistentArrayMapSeqType.firstSlot effect: PersistentArrayMapSeqType when: first,
-  //@ firstOf, firstSite requires: PersistentArrayMapSeqType, viewFirstSlot
-  PersistentArrayMapSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = viewFirstSlot;
+  //@ firstOf, firstSite requires: arrayMapSeqFirst, PersistentArrayMapSeqType
+  PersistentArrayMapSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = arrayMapSeqFirst;
   //@unit PersistentArrayMapSeqType.restSlot effect: PersistentArrayMapSeqType when: rest, restOf,
-  //@ restSite requires: mapSeqRestSlot, PersistentArrayMapSeqType
-  PersistentArrayMapSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = mapSeqRestSlot;
+  //@ restSite requires: arrayMapSeqNext, builtinSlot, emptyList, PersistentArrayMapSeqType
+  PersistentArrayMapSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) { return arrayMapSeqNext(self) ?? emptyList; });
   //@unit PersistentArrayMapSeqType.nextSlot effect: PersistentArrayMapSeqType when: next, nextSite
-  //@ requires: mapSeqNextSlot, PersistentArrayMapSeqType
-  PersistentArrayMapSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = mapSeqNextSlot;
+  //@ requires: arrayMapSeqNext, PersistentArrayMapSeqType
+  PersistentArrayMapSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = arrayMapSeqNext;
+  //@unit cellSeqSlot requires: builtinSlot
+  const cellSeqSlot = builtinSlot(function (self) { return self; });
   //@unit PersistentArrayMapSeqType.seqSlot effect: PersistentArrayMapSeqType when: seq, seqOf,
-  //@ seqSite requires: PersistentArrayMapSeqType, viewSeqSlot
-  PersistentArrayMapSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
+  //@ seqSite requires: cellSeqSlot, PersistentArrayMapSeqType
+  // A cell holds a key at its index, so `-seq` is itself.
+  PersistentArrayMapSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
   //@unit PersistentArrayMapSeqType.countSlot effect: PersistentArrayMapSeqType when: count,
-  //@ countOf, countSite, countSlot requires: PersistentArrayMapSeqType, viewCountSlot
+  //@ countOf, countSite, countSlot requires: builtinSlot, PersistentArrayMapSeqType
   // Its entries from its offset, as `count` counts them.
-  PersistentArrayMapSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
-  //@unit NodeSeqType.firstSlot effect: NodeSeqType when: first, firstOf, firstSite requires: NodeSeqType,
-  //@ viewFirstSlot
-  NodeSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = viewFirstSlot;
-  //@unit NodeSeqType.restSlot effect: NodeSeqType when: rest, restOf, restSite requires: mapSeqRestSlot,
+  PersistentArrayMapSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
+    return Math.max(0, (self.pairs$LKEY.length - self.i$LKEY + 1) >> 1);
+  });
+  //@unit PersistentArrayMapSeqType.reduceSlot effect: PersistentArrayMapSeqType when: reduce,
+  //@ reduceOf requires: ArrayMapIndexCell, arrayMapSeqFirst, arrayMapSeqNext, arraySeqWitness,
+  //@ cellSeqSlot, isReduced, mapEntry, next, PersistentArrayMapSeqType, reducedValue, reduceSlot,
+  //@ seqReduce, seqReduceFrom, slotFirst
+  // An array map's seq's `-reduce` (light-cljs-1081): the entries of its
+  // keys and values from its index, cached in a prototype-free map on the
+  // shared root cell and revalidating protocol slots after every callback so
+  // mid-reduction `specify!` and `extend-type` resume via `next`/`first`
+  // without replay.
+  PersistentArrayMapSeqType.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = PersistentArrayMapSeqType.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(function (self, rf, init, arity) {
+    const start = self.i$LKEY;
+    if (!slotFirst.on || start < 0
+      || self.cljs$core$ISeqable$_seq$arity$1$LKEY !== cellSeqSlot
+      || self.cljs$core$ISeq$_first$arity$1$LKEY !== arrayMapSeqFirst
+      || self.cljs$core$INext$_next$arity$1$LKEY !== arrayMapSeqNext)
+      return seqReduce(self, rf, init, arity);
+    const pairs = self.pairs$LKEY, n = pairs.length, root = self.root$LKEY;
+    let i = start, entries = root.entries$LKEY;
+    if (entries === null) entries = root.entries$LKEY = Object.create(null);
+    if (arity === 2) {
+      if (i >= n) return rf.call(null);
+      const k = i >> 1;
+      init = entries[k] ?? (entries[k] = mapEntry(pairs[i], pairs[i + 1]));
+      i += 2;
+    }
+    for (; i < n; i += 2) {
+      const k = i >> 1;
+      init = rf.call(null, init, entries[k] ?? (entries[k] = mapEntry(pairs[i], pairs[i + 1])));
+      if (isReduced(init)) return reducedValue(init);
+      if (!slotFirst.on
+        || (i === start ? self : arraySeqWitness).cljs$core$INext$_next$arity$1$LKEY !== arrayMapSeqNext
+        || arraySeqWitness.cljs$core$ISeq$_first$arity$1$LKEY !== arrayMapSeqFirst)
+        return seqReduceFrom(next(i === start ? self : new ArrayMapIndexCell(pairs, i, root)), rf, init);
+    }
+    return init;
+  });
+  //@unit NodeSeqType.firstSlot effect: NodeSeqType when: first, firstOf, firstSite requires: hashMapSeqFirst,
   //@ NodeSeqType
-  NodeSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = mapSeqRestSlot;
-  //@unit NodeSeqType.nextSlot effect: NodeSeqType when: next, nextSite requires: mapSeqNextSlot,
+  NodeSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = hashMapSeqFirst;
+  //@unit NodeSeqType.restSlot effect: NodeSeqType when: rest, restOf, restSite requires: hashMapSeqRest,
   //@ NodeSeqType
-  NodeSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = mapSeqNextSlot;
-  //@unit NodeSeqType.seqSlot effect: NodeSeqType when: seq, seqOf, seqSite requires: NodeSeqType,
-  //@ viewSeqSlot
-  NodeSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
+  NodeSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = hashMapSeqRest;
+  //@unit NodeSeqType.nextSlot effect: NodeSeqType when: next, nextSite requires: hashMapSeqNext,
+  //@ NodeSeqType
+  NodeSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = hashMapSeqNext;
+  //@unit NodeSeqType.seqSlot effect: NodeSeqType when: seq, seqOf, seqSite requires: cellSeqSlot,
+  //@ NodeSeqType
+  NodeSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
   //@unit ArrayNodeSeqType.firstSlot effect: ArrayNodeSeqType when: first, firstOf, firstSite
-  //@ requires: ArrayNodeSeqType, viewFirstSlot
-  ArrayNodeSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = viewFirstSlot;
+  //@ requires: ArrayNodeSeqType, hashMapSeqFirst
+  ArrayNodeSeqType.prototype.cljs$core$ISeq$_first$arity$1$LKEY = hashMapSeqFirst;
   //@unit ArrayNodeSeqType.restSlot effect: ArrayNodeSeqType when: rest, restOf, restSite requires: ArrayNodeSeqType,
-  //@ mapSeqRestSlot
-  ArrayNodeSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = mapSeqRestSlot;
+  //@ hashMapSeqRest
+  ArrayNodeSeqType.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = hashMapSeqRest;
   //@unit ArrayNodeSeqType.nextSlot effect: ArrayNodeSeqType when: next, nextSite requires: ArrayNodeSeqType,
-  //@ mapSeqNextSlot
-  ArrayNodeSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = mapSeqNextSlot;
+  //@ hashMapSeqNext
+  ArrayNodeSeqType.prototype.cljs$core$INext$_next$arity$1$LKEY = hashMapSeqNext;
   //@unit ArrayNodeSeqType.seqSlot effect: ArrayNodeSeqType when: seq, seqOf, seqSite requires: ArrayNodeSeqType,
-  //@ viewSeqSlot
-  ArrayNodeSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
+  //@ cellSeqSlot
+  ArrayNodeSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
+  //@unit NodeSeqType.reduceSlot effect: NodeSeqType when: reduce, reduceOf requires: cellSeqSlot,
+  //@ hashMapSeqFirst, hashMapSeqNext, hashMapSeqReduce, NodeSeqType
+  NodeSeqType.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = NodeSeqType.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = (function () {
+    const witness = Object.create(NodeSeqType.prototype);
+    return hashMapSeqReduce(
+      self => self.cljs$core$ISeqable$_seq$arity$1$LKEY === cellSeqSlot && self.cljs$core$ISeq$_first$arity$1$LKEY === hashMapSeqFirst && self.cljs$core$INext$_next$arity$1$LKEY === hashMapSeqNext,
+      first => (first ?? witness).cljs$core$INext$_next$arity$1$LKEY === hashMapSeqNext && witness.cljs$core$ISeq$_first$arity$1$LKEY === hashMapSeqFirst
+    );
+  })();
+  //@unit ArrayNodeSeqType.reduceSlot effect: ArrayNodeSeqType when: reduce, reduceOf requires: ArrayNodeSeqType,
+  //@ cellSeqSlot, hashMapSeqFirst, hashMapSeqNext, hashMapSeqReduce
+  ArrayNodeSeqType.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = ArrayNodeSeqType.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = (function () {
+    const witness = Object.create(ArrayNodeSeqType.prototype);
+    return hashMapSeqReduce(
+      self => self.cljs$core$ISeqable$_seq$arity$1$LKEY === cellSeqSlot && self.cljs$core$ISeq$_first$arity$1$LKEY === hashMapSeqFirst && self.cljs$core$INext$_next$arity$1$LKEY === hashMapSeqNext,
+      first => (first ?? witness).cljs$core$INext$_next$arity$1$LKEY === hashMapSeqNext && witness.cljs$core$ISeq$_first$arity$1$LKEY === hashMapSeqFirst
+    );
+  })();
   // A reversed seq (`rseq` of a vector or a map, upstream's RSeq) answers
   // the seq walk from slots too (light-cljs-1054), as the operations read
   // it before: an indexed seq's `-first` and `-seq`, and a `-rest` and
@@ -7014,11 +7232,11 @@
   // own (upstream's RSeq is counted, its NodeSeq and ChunkedSeq walk to the
   // same count).
   //@unit NodeSeqType.countSlot effect: NodeSeqType when: count, countOf, countSite, countSlot
-  //@ requires: NodeSeqType, viewCountSlot
-  NodeSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
+  //@ requires: hashMapSeqCountSlot, NodeSeqType
+  NodeSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = hashMapSeqCountSlot;
   //@unit ArrayNodeSeqType.countSlot effect: ArrayNodeSeqType when: count, countOf, countSite,
-  //@ countSlot requires: ArrayNodeSeqType, viewCountSlot
-  ArrayNodeSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
+  //@ countSlot requires: ArrayNodeSeqType, hashMapSeqCountSlot
+  ArrayNodeSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = hashMapSeqCountSlot;
   //@unit RSeqType.countSlot effect: RSeqType when: count, countOf, countSite, countSlot requires: RSeqType,
   //@ viewCountSlot
   RSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
@@ -7203,8 +7421,8 @@
   arrayChunk.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     return self.step$LKEY !== null ? self.first$LKEY : firstOf(self);
   });
-  //@unit arrayChunk.nthSlot effect: arrayChunk when: mapConj, nth, nthOf, nthSite, nthSite3
-  //@ requires: arrayChunk, builtinSlot, chunkNth, missing
+  //@unit arrayChunk.nthSlot effect: arrayChunk when: mapConj, nth, nthOf, nthSite, nthSite3,
+  //@ ownEntryItems requires: arrayChunk, builtinSlot, chunkNth, missing
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     return chunkNth(self, index, missing);
   });
@@ -7240,8 +7458,6 @@
   const cellRestSlot = builtinSlot(function (self) { return self.rest$LKEY ?? emptyList; });
   //@unit cellNextSlot requires: builtinSlot, rest, seq
   const cellNextSlot = builtinSlot(function (self) { return seq(rest(self)); });
-  //@unit cellSeqSlot requires: builtinSlot
-  const cellSeqSlot = builtinSlot(function (self) { return self; });
   //@unit Cons.firstSlot effect: Cons when: first, firstOf, firstSite requires: builtinSlot, Cons
   // A cons's slots of its own, which only conses reach.
   Cons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
@@ -7351,7 +7567,7 @@
     return self.count$LKEY;
   });
   //@unit IntegerRangeValue.nthSlot effect: IntegerRangeValue when: mapConj, nth, nthOf, nthSite,
-  //@ nthSite3 requires: builtinSlot, IntegerRangeValue, outOfBounds
+  //@ nthSite3, ownEntryItems requires: builtinSlot, IntegerRangeValue, outOfBounds
   // Its item at an index below its count, computed, as upstream's Range's
   // `-nth` and as `nth` read its fields before light-cljs-1066.
   IntegerRangeValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
@@ -8160,12 +8376,12 @@
     }
     return !other;
   };
-  //@unit cons.equiv effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
-  //@ listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
-  //@ iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue, IndexedSeqValue, queueFromArray,
-  //@ LazySeq, Eduction, ISequential, extendType, extendInstance when: classEquiv, equalPairOf,
-  //@ objectEquiv, structuralEqualPair requires: count, countedValue, equalPair, first, kindHooks,
-  //@ methodKeys, next, protocolHooks, seq, sequential
+  //@unit cons.equiv effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, emptyList, Cons, ListValue,
+  //@ EmptyListValue, RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
+  //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
+  //@ IndexedSeqValue, queueFromArray, LazySeq, Eduction, ISequential, extendType, extendInstance
+  //@ when: classEquiv, equalPairOf, objectEquiv, structuralEqualPair requires: count, countedValue,
+  //@ equalPair, first, kindHooks, methodKeys, next, protocolHooks, seq, sequential
   // Sequential values: vectors, cells, views, queues and lazy seqs, and the
   // values of a program type that implements `ISequential`, which keep the
   // protocol's unit (`PROTOCOL_ROOTS` in src/runtime_slice.rs), as
@@ -8200,11 +8416,11 @@
   function comparedSequential(value) {
     return holdsVector(value) || !!kindHooks.comparedSeq?.(value);
   }
-  //@unit cons.compared effect: emptyList, Cons, ListValue, EmptyListValue, RepeatValue, cons,
-  //@ listFromArray, compilerFormBridge, mapProjection, cycleNode, treeMapSeqConstructor, reSeq,
-  //@ iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue, IndexedSeqValue, queueFromArray,
-  //@ LazySeq when: comparedSequential requires: cellOf, isCell, isChunkedCons, isLazy, isView,
-  //@ kindHooks, queues
+  //@unit cons.compared effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, emptyList, Cons, ListValue,
+  //@ EmptyListValue, RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
+  //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
+  //@ IndexedSeqValue, queueFromArray, LazySeq when: comparedSequential requires: cellOf, isCell,
+  //@ isChunkedCons, isLazy, isView, kindHooks, queues
   kindHooks.comparedSeq = value => isCell(value) ? !["cycle", "iterate"].includes(cellOf(value).cell$LKEY)
     : isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value);
 
@@ -8429,12 +8645,12 @@
     return objectHash(value);
   }
 
-  //@unit makeVector.hash effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
-  //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
-  //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
-  //@ IndexedSeqValue, queueFromArray, LazySeq when: hashOf, hashStructural, seqHash, vectorHash
-  //@ requires: cellOf, chunkedConsOf, hashOrderedColl, heldHash, holdHash, holdsVector, kindHooks,
-  //@ lazyOf, queues, viewOf
+  //@unit makeVector.hash effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, makeVector, mapEntry, emptyList, Cons,
+  //@ ListValue, EmptyListValue, RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection,
+  //@ cycleNode, treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view,
+  //@ ChunkedSeqValue, IndexedSeqValue, queueFromArray, LazySeq when: hashOf, hashStructural, seqHash,
+  //@ vectorHash requires: cellOf, chunkedConsOf, hashOrderedColl, heldHash, holdHash, holdsVector,
+  //@ kindHooks, lazyOf, queues, viewOf
   // Sequential values (see `makeVector.equiv`): the hash cached in the
   // value's `hash` field (`heldHash`), else computed.
   kindHooks.hashSequential = value => {
@@ -9375,9 +9591,24 @@
     if (entries === null) return null;
     return new KeySeqCell(index === 0 ? "keys" : "vals", entries);
   }
+  //@unit ownEntryItems requires: entryNthSlot, MapEntryType
+  // Whether a map entry the runtime makes gives its key (`keyed`) or its
+  // value as `entryKey` and `entryVal` read them, its item at 0 or 1: its
+  // type has no `-key` or `-val` slot that a program gave it, and its own
+  // `-nth` (light-cljs-1081). A key seq then reads the key or value
+  // without the entry. The slots are read from an unstamped object whose
+  // prototype is `MapEntryType.prototype` (so the Pants build's shared heap
+  // can seal it), rather than from the prototype directly, whose many slots
+  // make reading them from the prototype itself slow in V8.
+  function ownEntryItems(keyed) {
+    const entry = entryWitness;
+    return (keyed ? entry.cljs$core$IMapEntry$_key$arity$1$LKEY : entry.cljs$core$IMapEntry$_val$arity$1$LKEY) === undefined
+      && entry.cljs$core$IIndexed$_nth$arity$2$LKEY === entryNthSlot;
+  }
+  const entryWitness = Object.create(MapEntryType.prototype);
   //@unit KeySeqCell.type effect: KeySeqCell requires: emptyList, entryKey, entryVal, first,
-  //@ isEntryCell, KeySeqCell, mapProjection, methodKeys, next, noBranch, protocolHooks,
-  //@ sequencePrototype, slotFirst
+  //@ isEntryCell, KeySeqCell, methodKeys, next, noBranch, protocolHooks, sequencePrototype,
+  //@ slotFirst
   // A key or value seq's prototype, of no public type: its `first` is the
   // key or value of its first entry, its `rest` the projection of the
   // entries' next, each read when a step asks. As upstream's KeySeq calls
@@ -9388,49 +9619,121 @@
   // seq has a keyed kind, so a host seq's member written without its
   // protocol stays unread. Where none does, or a compiler session demands
   // declarations (`slotFirst`), it takes the protocol's dispatcher, as before.
+  // Its slots below call plain methods (no getters on the fast or fallback
+  // slot paths, light-cljs-1081); `first$LKEY` and `rest$LKEY` stay on the
+  // prototype for `firstSeq`/`restSeq`/`reduceWalk` when `slotFirst` is off
+  // or `ownSeqs` is on.
   KeySeqCell.prototype = Object.create(sequencePrototype);
   KeySeqCell.prototype.cljs$lang$kind$$LKEY = 26;
+  KeySeqCell.prototype.kfirst$LKEY = function () {
+    const entries = this.mseq$LKEY, keyed = this.cell$LKEY === "keys", on = slotFirst.on;
+    const own = on && entries.cljs$lang$kind$$LKEY !== undefined ? entries.cljs$core$ISeq$_first$arity$1$LKEY : undefined;
+    let entry = own ? own.call(entries, entries) : noBranch;
+    if (entry === noBranch) entry = (protocolHooks.firstProtocol ?? first)(entries);
+    if (on && isEntryCell(entry)) {
+      const method = keyed ? entry.cljs$core$IMapEntry$_key$arity$1$LKEY : entry.cljs$core$IMapEntry$_val$arity$1$LKEY;
+      return method ? method.call(entry, entry) : keyed ? entryKey(entry) : entryVal(entry);
+    }
+    return keyed ? (protocolHooks.keyProtocol ?? entryKey)(entry) : (protocolHooks.valProtocol ?? entryVal)(entry);
+  };
+  KeySeqCell.prototype.knext$LKEY = function () {
+    const entries = this.mseq$LKEY, own = slotFirst.on && entries.cljs$lang$kind$$LKEY !== undefined ? entries.cljs$core$INext$_next$arity$1$LKEY : undefined;
+    let following = own ? own.call(entries, entries) : noBranch;
+    if (following === noBranch) following = protocolHooks.satisfies?.(methodKeys[39], entries) ? protocolHooks.nextProtocol(entries) : next(entries);
+    return following == null ? null : new KeySeqCell(this.cell$LKEY, following);
+  };
   Object.defineProperties(KeySeqCell.prototype, {
-    first$LKEY: {configurable: true, get() {
-      const entries = this.mseq$LKEY, keyed = this.cell$LKEY === "keys", on = slotFirst.on;
-      const own = on && entries.cljs$lang$kind$$LKEY !== undefined ? entries.cljs$core$ISeq$_first$arity$1$LKEY : undefined;
-      let entry = own ? own.call(entries, entries) : noBranch;
-      if (entry === noBranch) entry = (protocolHooks.firstProtocol ?? first)(entries);
-      if (on && isEntryCell(entry)) {
-        const method = keyed ? entry.cljs$core$IMapEntry$_key$arity$1$LKEY : entry.cljs$core$IMapEntry$_val$arity$1$LKEY;
-        return method ? method.call(entry, entry) : keyed ? entryKey(entry) : entryVal(entry);
-      }
-      return keyed ? (protocolHooks.keyProtocol ?? entryKey)(entry) : (protocolHooks.valProtocol ?? entryVal)(entry);
-    }},
-    rest$LKEY: {configurable: true, get() {
-      const entries = this.mseq$LKEY, own = slotFirst.on && entries.cljs$lang$kind$$LKEY !== undefined ? entries.cljs$core$INext$_next$arity$1$LKEY : undefined;
-      let following = own ? own.call(entries, entries) : noBranch;
-      if (following === noBranch) following = protocolHooks.satisfies?.(methodKeys[39], entries) ? protocolHooks.nextProtocol(entries) : next(entries);
-      return following == null ? emptyList : mapProjection(following, this.cell$LKEY === "keys" ? 0 : 1, true);
-    }}
+    first$LKEY: {configurable: true, get() { return this.kfirst$LKEY(); }},
+    rest$LKEY: {configurable: true, get() { return this.knext$LKEY() ?? emptyList; }}
   });
   // A key or value seq's slots, on the prototype its type sets above,
-  // which a slot set before it would miss (light-cljs-1064).
-  //@unit KeySeqCell.firstSlot effect: KeySeqCell when: first, firstOf, firstSite requires: cellFirstSlot,
-  //@ KeySeqCell
-  KeySeqCell.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
-  //@unit KeySeqCell.restSlot effect: KeySeqCell when: rest, restOf, restSite requires: cellRestSlot,
-  //@ KeySeqCell
-  KeySeqCell.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = cellRestSlot;
-  //@unit KeySeqCell.nextSlot effect: KeySeqCell when: next, nextSite requires: cellNextSlot,
-  //@ KeySeqCell
-  KeySeqCell.prototype.cljs$core$INext$_next$arity$1$LKEY = cellNextSlot;
+  // which a slot set before it would miss (light-cljs-1064). Each steps as
+  // upstream's KeySeq and ValSeq (light-cljs-1081): `-first` is
+  // `(-key (-first mseq))`, `-next` honors a specified `-rest` (`seq(rest(self))`)
+  // and otherwise projects `(-next mseq)`, `-rest` that or the empty list,
+  // `-seq` itself. The slot functions stay tiny wrappers around `keySeqFirst`,
+  // `keySeqRest`, and `keySeqNext` so V8 keeps polymorphic `firstSite`/`nextSite`
+  // call sites (such as `lazy-walk-1000`) within its inlining budget while
+  // monomorphic key/value walks inline both levels.
+  //@unit keySeqWitness requires: KeySeqCell
+  const keySeqWitness = Object.create(KeySeqCell.prototype);
+  //@unit KeySeqCell.firstSlot effect: KeySeqCell when: first, firstOf, firstSite requires: arrayMapSeqFirst,
+  //@ builtinSlot, hashMapSeqFirst, KeySeqCell, ownEntryItems, slotFirst
+  KeySeqCell.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot((function () {
+    function keySeqFirst(self) {
+      const entries = self.mseq$LKEY, pairs = entries.pairs$LKEY, keyed = self.cell$LKEY === "keys";
+      if (pairs !== undefined) {
+        const i = entries.i$LKEY;
+        return i >= 0 && entries.root$LKEY.entries$LKEY === null && entries.cljs$core$ISeq$_first$arity$1$LKEY === arrayMapSeqFirst && slotFirst.on && ownEntryItems(keyed)
+          ? pairs[keyed ? i : i + 1] : self.kfirst$LKEY();
+      }
+      const nodes = entries.nodes$LKEY;
+      if (nodes !== undefined) {
+        const i = entries.i$LKEY;
+        return i >= 0 && i < nodes.length && entries.root$LKEY.entries$LKEY === null && entries.cljs$core$ISeq$_first$arity$1$LKEY === hashMapSeqFirst && slotFirst.on && ownEntryItems(keyed)
+          ? (keyed ? nodes[i].key : nodes[i].value) : self.kfirst$LKEY();
+      }
+      return self.kfirst$LKEY();
+    }
+    return function (self) { return keySeqFirst(self); };
+  })());
+  //@unit KeySeqCell.restSlot effect: KeySeqCell when: rest, restOf, restSite requires: ArrayMapIndexCell,
+  //@ arrayMapSeqNext, builtinSlot, emptyList, hashMapSeqNext, KeySeqCell, slotFirst
+  KeySeqCell.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot((function () {
+    function keySeqRest(self) {
+      const entries = self.mseq$LKEY, pairs = entries.pairs$LKEY;
+      if (pairs !== undefined) {
+        if (entries.cljs$core$INext$_next$arity$1$LKEY !== arrayMapSeqNext || !slotFirst.on) return self.knext$LKEY() ?? emptyList;
+        const i = entries.i$LKEY + 2;
+        return i < pairs.length ? new KeySeqCell(self.cell$LKEY, new ArrayMapIndexCell(pairs, i, entries.root$LKEY)) : emptyList;
+      }
+      const nodes = entries.nodes$LKEY;
+      if (nodes !== undefined) {
+        if (entries.cljs$core$INext$_next$arity$1$LKEY !== hashMapSeqNext || !slotFirst.on) return self.knext$LKEY() ?? emptyList;
+        const i = entries.i$LKEY + 1;
+        return i < nodes.length ? new KeySeqCell(self.cell$LKEY, new entries.cljs$lang$cell$$LKEY(nodes, i, entries.root$LKEY)) : emptyList;
+      }
+      return self.knext$LKEY() ?? emptyList;
+    }
+    return function (self) { return keySeqRest(self); };
+  })());
+  //@unit KeySeqCell.nextSlot effect: KeySeqCell when: next, nextSite requires: ArrayMapIndexCell,
+  //@ arrayMapSeqNext, builtinSlot, hashMapSeqNext, KeySeqCell, rest, seq, slotFirst
+  KeySeqCell.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot((function () {
+    const restOwn = KeySeqCell.prototype.cljs$core$ISeq$_rest$arity$1$LKEY;
+    function keySeqNext(self) {
+      if (self.cljs$core$ISeq$_rest$arity$1$LKEY !== restOwn) return seq(rest(self));
+      const entries = self.mseq$LKEY, pairs = entries.pairs$LKEY;
+      if (pairs !== undefined) {
+        if (entries.cljs$core$INext$_next$arity$1$LKEY !== arrayMapSeqNext || !slotFirst.on) return self.knext$LKEY();
+        const i = entries.i$LKEY + 2;
+        return i < pairs.length ? new KeySeqCell(self.cell$LKEY, new ArrayMapIndexCell(pairs, i, entries.root$LKEY)) : null;
+      }
+      const nodes = entries.nodes$LKEY;
+      if (nodes !== undefined) {
+        if (entries.cljs$core$INext$_next$arity$1$LKEY !== hashMapSeqNext || !slotFirst.on) return self.knext$LKEY();
+        const i = entries.i$LKEY + 1;
+        return i < nodes.length ? new KeySeqCell(self.cell$LKEY, new entries.cljs$lang$cell$$LKEY(nodes, i, entries.root$LKEY)) : null;
+      }
+      return self.knext$LKEY();
+    }
+    return function (self) { return keySeqNext(self); };
+  })());
   //@unit KeySeqCell.seqSlot effect: KeySeqCell when: seq, seqOf, seqSite requires: cellSeqSlot,
   //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit keySeqReduce requires: entryKey, entryVal, hostExt, isEntryCell, isReduced, protocolHooks,
-  //@ reducedValue, seqReduce, slotFirst, viewOf
+  //@unit keySeqReduce requires: entryKey, entryVal, hostExt, isEntryCell, isReduced, mapProjection,
+  //@ next, protocolHooks, reducedValue, seqReduce, seqReduceFrom, slotFirst, viewAt, viewOf
+  // Fast reduction for `KeySeqCell` over non-chunked view seqs (`IndexedSeq`
+  // or shared-profile map seqs) when no `ISeq`/`ISeqable`/`INext` extension
+  // is active (`!hostExt.seq`); rechecks `hostExt.seq` after every callback so
+  // mid-reduction `specify!`/`extend-type` resumes via `seqReduceFrom`.
   function keySeqReduce(ks, rf, init, arity) {
     if (!slotFirst.on || hostExt.seq) return seqReduce(ks, rf, init, arity);
     const entries = ks.mseq$LKEY, slice = viewOf(entries);
     if (slice && !slice.vec$LKEY) {
-      const arr = slice.arr$LKEY, keyed = ks.cell$LKEY === "keys", len = arr.length;
-      let i = slice.i$LKEY;
+      const arr = slice.arr$LKEY, keyed = ks.cell$LKEY === "keys", len = arr.length, start = slice.i$LKEY;
+      let i = start;
       if (arity === 2) {
         if (i >= len) return rf.call(null);
         const e = arr[i++];
@@ -9443,14 +9746,84 @@
         const item = m ? m.call(e, e) : isEntryCell(e) ? (keyed ? entryKey(e) : entryVal(e)) : keyed ? (protocolHooks.keyProtocol ?? entryKey)(e) : (protocolHooks.valProtocol ?? entryVal)(e);
         init = rf.call(null, init, item);
         if (isReduced(init)) return reducedValue(init);
+        if (!slotFirst.on || hostExt.seq)
+          return seqReduceFrom(next(i === start ? ks : mapProjection(viewAt(slice, i), keyed ? 0 : 1, true)), rf, init);
       }
       return init;
     }
     return seqReduce(ks, rf, init, arity);
   }
-  //@unit KeySeqCell.reduceSlot effect: KeySeqCell when: reduce, reduceOf requires: KeySeqCell,
-  //@ keySeqReduce, reduceSlot
-  KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot(keySeqReduce);
+  //@unit KeySeqCell.reduceSlot effect: KeySeqCell when: reduce, reduceOf requires: ArrayMapIndexCell,
+  //@ arrayMapSeqFirst, arrayMapSeqNext, arraySeqWitness, cellSeqSlot, hashMapSeqFirst,
+  //@ hashMapSeqNext, isReduced, KeySeqCell, keySeqReduce, keySeqWitness, next, ownEntryItems,
+  //@ reducedValue, reduceSlot, seqReduce, seqReduceFrom, slotFirst
+  // Its `-reduce`: of an array-map or hash-map seq whose steps its slots would
+  // take directly from its flat pairs or traversal nodes, where no `specify!`
+  // replaced the key seq's own or cached an entry, those keys or values from
+  // its index, without seqs or entries (light-cljs-1081). After every
+  // callback, revalidate dispatch assumptions and resume from the current
+  // cell's `next` via `seqReduceFrom` if any protocol or entry cache changed.
+  // Other backing seqs delegate to `keySeqReduce` (view fast path or `seqReduce`).
+  KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = KeySeqCell.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = reduceSlot((function () {
+    const proto = KeySeqCell.prototype;
+    const firstOwn = proto.cljs$core$ISeq$_first$arity$1$LKEY;
+    const restOwn = proto.cljs$core$ISeq$_rest$arity$1$LKEY;
+    const nextOwn = proto.cljs$core$INext$_next$arity$1$LKEY;
+    return function (self, rf, init, arity) {
+      const entries = self.mseq$LKEY, pairs = entries.pairs$LKEY, nodes = pairs === undefined ? entries.nodes$LKEY : undefined;
+      if (pairs === undefined && nodes === undefined) return keySeqReduce(self, rf, init, arity);
+      const keyed = self.cell$LKEY === "keys", start = entries.i$LKEY, root = entries.root$LKEY;
+      if (!slotFirst.on || start < 0 || root.entries$LKEY !== null
+        || self.cljs$core$ISeqable$_seq$arity$1$LKEY !== cellSeqSlot
+        || self.cljs$core$ISeq$_first$arity$1$LKEY !== firstOwn
+        || self.cljs$core$ISeq$_rest$arity$1$LKEY !== restOwn
+        || self.cljs$core$INext$_next$arity$1$LKEY !== nextOwn
+        || !ownEntryItems(keyed))
+        return seqReduce(self, rf, init, arity);
+      if (pairs !== undefined) {
+        if (entries.cljs$core$ISeq$_first$arity$1$LKEY !== arrayMapSeqFirst
+          || entries.cljs$core$INext$_next$arity$1$LKEY !== arrayMapSeqNext)
+          return seqReduce(self, rf, init, arity);
+        const n = pairs.length, item = keyed ? 0 : 1;
+        let i = start;
+        if (arity === 2) { if (i >= n) return rf.call(null); init = pairs[i + item]; i += 2; }
+        for (; i < n; i += 2) {
+          init = rf.call(null, init, pairs[i + item]);
+          if (isReduced(init)) return reducedValue(init);
+          const cur = i === start ? self : keySeqWitness, seqCur = i === start ? entries : arraySeqWitness;
+          if (!slotFirst.on || root.entries$LKEY !== null
+            || cur.cljs$core$INext$_next$arity$1$LKEY !== nextOwn
+            || cur.cljs$core$ISeq$_rest$arity$1$LKEY !== restOwn
+            || keySeqWitness.cljs$core$ISeq$_first$arity$1$LKEY !== firstOwn
+            || seqCur.cljs$core$INext$_next$arity$1$LKEY !== arrayMapSeqNext
+            || arraySeqWitness.cljs$core$ISeq$_first$arity$1$LKEY !== arrayMapSeqFirst
+            || !ownEntryItems(keyed))
+            return seqReduceFrom(next(i === start ? self : new KeySeqCell(self.cell$LKEY, new ArrayMapIndexCell(pairs, i, root))), rf, init);
+        }
+        return init;
+      }
+      if (entries.cljs$core$ISeq$_first$arity$1$LKEY !== hashMapSeqFirst
+        || entries.cljs$core$INext$_next$arity$1$LKEY !== hashMapSeqNext)
+        return seqReduce(self, rf, init, arity);
+      const n = nodes.length, Cell = entries.cljs$lang$cell$$LKEY, seqWitness = Object.create(Object.getPrototypeOf(entries));
+      let i = start;
+      if (arity === 2) { if (i >= n) return rf.call(null); init = keyed ? nodes[i].key : nodes[i].value; i++; }
+      for (; i < n; i++) {
+        init = rf.call(null, init, keyed ? nodes[i].key : nodes[i].value);
+        if (isReduced(init)) return reducedValue(init);
+        const cur = i === start ? self : keySeqWitness, seqCur = i === start ? entries : seqWitness;
+        if (!slotFirst.on || root.entries$LKEY !== null
+          || cur.cljs$core$INext$_next$arity$1$LKEY !== nextOwn
+          || cur.cljs$core$ISeq$_rest$arity$1$LKEY !== restOwn
+          || keySeqWitness.cljs$core$ISeq$_first$arity$1$LKEY !== firstOwn
+          || seqCur.cljs$core$INext$_next$arity$1$LKEY !== hashMapSeqNext
+          || seqWitness.cljs$core$ISeq$_first$arity$1$LKEY !== hashMapSeqFirst
+          || !ownEntryItems(keyed))
+          return seqReduceFrom(next(i === start ? self : new KeySeqCell(self.cell$LKEY, new Cell(nodes, i, root))), rf, init);
+      }
+      return init;
+    };
+  })());
   //@unit classMasks
   // Gives a class's prototype its keyed masks, partition 0 and 1.
   function classMasks(Type, partition0, partition1) {
@@ -10615,7 +10988,7 @@
     const view = viewOf(value);
     if (view !== undefined) { const kind = view.view$LKEY; return kind === "indexed" || kind === "array-map" || kind === "sorted-map" || kind === "chunked"; }
     const cell = cellOf(value);
-    if (cell !== undefined) return cell.cell$LKEY === "tree-seq" || cell.integer$LKEY === true || cell.cell$LKEY === "list";
+    if (cell !== undefined) { const kind = cell.cell$LKEY; return cell.integer$LKEY === true || kind === "tree-seq" || kind === "list" || kind === "array-map"; }
     return !isChunkedCons(value) && !isLazy(value) && (isTransient(value) || chunkBufferOf(value) !== undefined || chunkOf(value) !== undefined || holdsVector(value) || maps.has(value) || recordCells.has(value) || sets.has(value) || queues.has(value));
   }
   //@unit seqValue requires: chunkOf, isCell, isChunkedCons, isLazy, isView, iteratorSeqs, queues
@@ -10739,7 +11112,7 @@
   const dropValue = value => {
     // As `countedValue`, a cell or a lazy seq is in no other store.
     const cell = cellOf(value);
-    if (cell !== undefined) return cell.integer$LKEY === true || cell.cell$LKEY === "repeat";
+    if (cell !== undefined) return cell.integer$LKEY === true || cell.cell$LKEY === "repeat" || cell.cell$LKEY === "array-map";
     return !isLazy(value) && (mapKinds.get(value) === "array-map" || holdsVector(value) || ["indexed", "chunked", "array-map"].includes(viewOf(value)?.view$LKEY));
   };
   //@unit metaValue requires: kindPredicate
@@ -13336,12 +13709,20 @@
     const cell = cellOf(value);
     if (cell?.cell$LKEY === "repeat") return cell.remaining$LKEY === -1 ? value : repeat(cell.remaining$LKEY - n, cell.first$LKEY);
     if (cell?.cell$LKEY === "range") return n > 0 ? n < cell.count$LKEY ? rangeNode(cell.first$LKEY + cell.step$LKEY * n, cell.end$LKEY, cell.step$LKEY, true) : null : value;
+    // An array map's seq from the `n`th key on (light-cljs-1081).
+    if (cell?.cell$LKEY === "array-map") return kindHooks.dropArrayMapSeq(cell, n);
     const slice = viewOf(value);
     if (slice?.vec$LKEY) return kindHooks.dropChunkedSeq(slice, n);
     if (holdsVector(value)) return kindHooks.dropVector(value, n);
     const offset = slice.i$LKEY + n;
     return offset < slice.arr$LKEY.length ? viewAt(slice, offset) : null;
   }
+  //@unit ArrayMapIndexCell.drop effect: ArrayMapIndexCell when: dropOwned requires: ArrayMapIndexCell,
+  //@ kindHooks
+  kindHooks.dropArrayMapSeq = (cell, n) => {
+    const i = cell.i$LKEY + 2 * n;
+    return i < cell.pairs$LKEY.length ? new ArrayMapIndexCell(cell.pairs$LKEY, i, cell.root$LKEY) : null;
+  };
   //@unit ChunkedSeqValue.drop effect: ChunkedSeqValue when: dropOwned requires: ChunkedSeqCell,
   //@ count, kindHooks, vectorChunk
   // A chunked seq with a vector (`ChunkedSeqCell`) drops into later leaves.
@@ -14268,13 +14649,13 @@
     if (typeof value === "symbol") return write(writer, "#object[" + String(value) + "]");
     return write(writer, "#object[" + (value.constructor?.cljs$lang$ctorStr?.replaceAll("/", ".") || value.constructor?.name || "Object") + " " + String(value) + "]");
   }
-  //@unit printsMeta.print effect: Atom, ChunkedCons, collectionWithMeta, compilerFormBridge, Cons,
-  //@ cons, listFromArray, cycleNode, emptyList, EmptyListValue, fnWithMeta, IndexedSeqValue,
-  //@ installMethods, iterateNode, LazySeq, ListValue, makeIFn, makeMap, makeReify, makeSet,
-  //@ recordMethods, makeVar, makeVector, mapEntry, mapProjection, queueFromArray, rangeNode, reify,
-  //@ RepeatValue, reSeq, symbol, SymbolValue, treeMapConstructor, treeMapSeqConstructor,
-  //@ treeSetConstructor, view, ChunkedSeqValue when: printWriterImpl requires: kindHooks, meta,
-  //@ printsMeta, printWriter, write
+  //@unit printsMeta.print effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, Atom, ChunkedCons,
+  //@ collectionWithMeta, compilerFormBridge, Cons, cons, listFromArray, cycleNode, emptyList,
+  //@ EmptyListValue, fnWithMeta, IndexedSeqValue, installMethods, iterateNode, LazySeq, ListValue,
+  //@ makeIFn, makeMap, makeReify, makeSet, recordMethods, makeVar, makeVector, mapEntry,
+  //@ mapProjection, queueFromArray, rangeNode, reify, RepeatValue, reSeq, symbol, SymbolValue,
+  //@ treeMapConstructor, treeMapSeqConstructor, treeSetConstructor, view, ChunkedSeqValue
+  //@ when: printWriterImpl requires: kindHooks, meta, printsMeta, printWriter, write
   // Only values of these kinds, and of types with protocol implementations,
   // have metadata to print.
   kindHooks.printMetadata = (value, writer, options) => {
@@ -14333,11 +14714,11 @@
     const storage = vectorStorage(value) ?? [];
     return printSequential(writer, printWriter, "[", " ", "]", options, Array.isArray(storage) ? storage : Array.from(storage));
   }, [1, 2, 3]);
-  //@unit cons.print effect: ChunkedCons, compilerFormBridge, Cons, cons, listFromArray, cycleNode,
-  //@ emptyList, EmptyListValue, IndexedSeqValue, iterateNode, LazySeq, ListValue, mapProjection,
-  //@ queueFromArray, rangeNode, RepeatValue, reSeq, treeMapSeqConstructor, view, ChunkedSeqValue
-  //@ when: printWriterImpl requires: isCell, isChunkedCons, isLazy, isView, kindHooks, printKind,
-  //@ printSequential, printWriter, queues
+  //@unit cons.print effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, ChunkedCons, compilerFormBridge, Cons,
+  //@ cons, listFromArray, cycleNode, emptyList, EmptyListValue, IndexedSeqValue, iterateNode,
+  //@ LazySeq, ListValue, mapProjection, queueFromArray, rangeNode, RepeatValue, reSeq,
+  //@ treeMapSeqConstructor, view, ChunkedSeqValue when: printWriterImpl requires: isCell,
+  //@ isChunkedCons, isLazy, isView, kindHooks, printKind, printSequential, printWriter, queues
   kindHooks.print = printKind(kindHooks.print, value => isCell(value) || isChunkedCons(value) || isView(value) || queues.has(value) || isLazy(value),
     (value, writer, options) => printSequential(writer, printWriter, queues.has(value) ? "#queue [" : "(", " ", queues.has(value) ? "]" : ")", options, value),
     [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 22, 23, 24, 25, 26, 27, 36]);
@@ -14353,11 +14734,11 @@
   //@ printKind, printSequential, printWriter, sets, setTraversal
   kindHooks.print = printKind(kindHooks.print, value => sets.has(value),
     (value, writer, options) => printSequential(writer, (e, target, opts) => printWriter(e.key, target, opts), "#{", " ", "}", options, setTraversal(value)), [33, 44]);
-  //@unit printSequential.seq effect: ChunkedCons, compilerFormBridge, Cons, cons, listFromArray,
-  //@ cycleNode, emptyList, EmptyListValue, IndexedSeqValue, installMethods, iterateNode, LazySeq,
-  //@ ListValue, mapProjection, prSequentialWriter, queueFromArray, rangeNode, RepeatValue, reSeq,
-  //@ treeMapSeqConstructor, view, ChunkedSeqValue when: printSequential requires: first, next,
-  //@ printHooks, seq
+  //@unit printSequential.seq effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, ChunkedCons, compilerFormBridge,
+  //@ Cons, cons, listFromArray, cycleNode, emptyList, EmptyListValue, IndexedSeqValue,
+  //@ installMethods, iterateNode, LazySeq, ListValue, mapProjection, prSequentialWriter,
+  //@ queueFromArray, rangeNode, RepeatValue, reSeq, treeMapSeqConstructor, view, ChunkedSeqValue
+  //@ when: printSequential requires: first, next, printHooks, seq
   // What `printSequential` walks other than arrays: the seqs these build, and
   // what the public entry and protocol implementations pass.
   printHooks.seq = seq;
@@ -14454,11 +14835,11 @@
   }
   //@unit str requires: strOne
   function str(...values) { let text = ""; for (let i = 0; i < values.length; i++) text += strOne(values[i]); return text; }
-  //@unit str.collections effect: makeVector, mapEntry, emptyList, Cons, ListValue, EmptyListValue,
-  //@ RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
-  //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
-  //@ IndexedSeqValue, queueFromArray, LazySeq, makeMap, treeMapConstructor, recordMethods, makeSet,
-  //@ treeSetConstructor when: strOne requires: kindHooks, print
+  //@unit str.collections effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, makeVector, mapEntry, emptyList,
+  //@ Cons, ListValue, EmptyListValue, RepeatValue, cons, listFromArray, compilerFormBridge,
+  //@ mapProjection, cycleNode, treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode,
+  //@ view, ChunkedSeqValue, IndexedSeqValue, queueFromArray, LazySeq, makeMap, treeMapConstructor,
+  //@ recordMethods, makeSet, treeSetConstructor when: strOne requires: kindHooks, print
   kindHooks.strCollection = value => print(value, true);
   //@unit displayStr
   // `str` of one value for error messages, through `toString` for collections.

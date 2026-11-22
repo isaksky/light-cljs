@@ -283,9 +283,15 @@
   // nothing.
   const ownSeqs = {get on() { return false; }, set on(value) {}};
   //@unit hostExt
-  // In the shared-heap profile `slotFirst.on` is always false and top-level
-  // objects are sealed on boot; report all bits set and ignore writes.
+  // In the shared-heap profile top-level objects are sealed on boot and engine
+  // forms hold no protocol-mask properties; report all bits set, ignore writes,
+  // and leave `protocolHooks.pred` unset so predicates route through the
+  // protocol hooks and native store views.
   const hostExt = {get p0() { return -1; }, set p0(_) {}, get p1() { return -1; }, set p1(_) {}, get fn() { return true; }, set fn(_) {}, get seq() { return true; }, set seq(_) {}};
+  //@unit hostExt.hook effect: extendType, extendInstance when: implementsSeq, isChunkedSeq, isColl,
+  //@ isCounted, isFn, isList, isMap, isMapEntry, isRecord, isSeq, isSequential, isSet, isVector
+  //@ requires: protocolHooks
+  protocolHooks.pred = null;
   //@unit sharedMethodKeys
   // The resolved keys `coreMethod` makes for the core protocol dispatchers,
   // which only their dispatchers hold: `sharedProfileBoot` fills their memos
@@ -705,6 +711,52 @@
     for (let i = 0; i < ordered.length; i++) value = __rt.formConj(value, ordered[i].key);
     return value;
   }
+  //@unit NodeSeqCell
+  // The shared-heap profile's view classes for map seqs (`makeMap.seq`):
+  // engine maps pre-build frozen arrays of engine entries so that published
+  // seqs stay immutable (light-cljs-1081).
+  function NodeSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit ArrayNodeSeqCell
+  function ArrayNodeSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit ArrayMapSeqCell
+  function ArrayMapSeqCell(arr, i, indexed, kind) { this.arr$LKEY = arr; this.i$LKEY = i; this.indexed$LKEY = indexed; this.view$LKEY = kind; /*@brand*/ }
+  //@unit PersistentArrayMapSeqType effect requires: ArrayMapSeqCell, builtinType,
+  //@ sequencePrototype, viewType
+  const PersistentArrayMapSeqType = viewType(builtinType(function () {}, sequencePrototype), ArrayMapSeqCell, 9);
+  //@unit hashMapSeqFirst requires: viewFirstSlot
+  const hashMapSeqFirst = viewFirstSlot;
+  //@unit hashMapSeqNext requires: builtinSlot
+  const hashMapSeqNext = builtinSlot(function (self) {
+    const arr = self.arr$LKEY, i = self.i$LKEY + 1;
+    return i < arr.length ? new self.cljs$lang$cell$$LKEY(arr, i, self.indexed$LKEY, self.view$LKEY) : null;
+  });
+  //@unit hashMapSeqCountSlot requires: viewCountSlot
+  const hashMapSeqCountSlot = viewCountSlot;
+  //@unit hashMapSeqReduce requires: reduceSlot, reduceWalk
+  function hashMapSeqReduce() { return reduceSlot(reduceWalk); }
+  //@unit NodeSeqType.seqSlot effect: NodeSeqType when: seq, seqOf, seqSite requires: NodeSeqType,
+  //@ viewSeqSlot
+  NodeSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
+  //@unit ArrayNodeSeqType.seqSlot effect: ArrayNodeSeqType when: seq, seqOf, seqSite
+  //@ requires: ArrayNodeSeqType, viewSeqSlot
+  ArrayNodeSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
+  //@unit arrayMapSeqFirst requires: viewFirstSlot
+  const arrayMapSeqFirst = viewFirstSlot;
+  //@unit arrayMapSeqNext requires: hashMapSeqNext
+  const arrayMapSeqNext = hashMapSeqNext;
+  //@unit PersistentArrayMapSeqType.seqSlot effect: PersistentArrayMapSeqType when: seq, seqOf,
+  //@ seqSite requires: PersistentArrayMapSeqType, viewSeqSlot
+  PersistentArrayMapSeqType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
+  //@unit PersistentArrayMapSeqType.countSlot effect: PersistentArrayMapSeqType when: count,
+  //@ countOf, countSite, countSlot requires: PersistentArrayMapSeqType, viewCountSlot
+  PersistentArrayMapSeqType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
+  //@unit PersistentArrayMapSeqType.reduceSlot effect: PersistentArrayMapSeqType when: reduce,
+  //@ reduceOf requires: hashMapSeqReduce, PersistentArrayMapSeqType
+  PersistentArrayMapSeqType.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = PersistentArrayMapSeqType.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = hashMapSeqReduce();
+  //@unit arrayMapSeq requires: kindHooks
+  function arrayMapSeq(value) { return kindHooks.seqMap(value); }
+  //@unit hashMapSeq requires: kindHooks
+  function hashMapSeq(value) { return kindHooks.seqMap(value); }
   //@unit makeMap.seq effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: first, rest, seq
   //@ requires: IndexedSeqValue, isTreeMap, kindHooks, mapEntry, mapKinds, mapTraversal,
   //@ PersistentArrayMapSeqType, view
@@ -1467,7 +1519,8 @@
   // cons's, whose `cellOf` is a view of its fields rather than the value: a
   // runtime list or cons of those fields.
   const cellFields = Object.freeze(["cell$LKEY", "first$LKEY", "rest$LKEY", "count$LKEY", "end$LKEY", "step$LKEY", "integer$LKEY", "remaining$LKEY", "next$LKEY",
-    "f$LKEY", "prev$LKEY", "seed$LKEY", "realized$LKEY", "all$LKEY", "current$LKEY", "mseq$LKEY", "stack$LKEY", "ascending$LKEY", "cnt$LKEY"]);
+    "f$LKEY", "prev$LKEY", "seed$LKEY", "realized$LKEY", "all$LKEY", "current$LKEY", "mseq$LKEY", "stack$LKEY", "ascending$LKEY", "cnt$LKEY",
+    "pairs$LKEY", "i$LKEY", "root$LKEY", "entries$LKEY"]);
   function cellCopy(value) {
     const cell = cellOf(value);
     if (cell !== value) return cell.cell$LKEY === "cons" ? new ConsCell(cell.first$LKEY, cell.rest$LKEY)
@@ -1679,7 +1732,7 @@
   // they test the stores and the recognisers, as before.
   function cloneablePayload(value) { return (holdsVector(value) && !isEntryCell(value)) || (maps.has(value) && !recordCells.has(value)) || sets.has(value) || queues.has(value) || ["list", "cons", "range"].includes(cellOf(value)?.cell$LKEY) || ["indexed", "reverse"].includes(viewOf(value)?.view$LKEY); }
   //@unit stackValue requires: cellOf, holdsVector, isCell, queues
-  const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat"].includes(cellOf(value)?.cell$LKEY) && (holdsVector(value) || isCell(value) || queues.has(value));
+  const stackValue = value => !["cycle", "iterate", "range", "tree-seq", "repeat", "array-map"].includes(cellOf(value)?.cell$LKEY) && (holdsVector(value) || isCell(value) || queues.has(value));
   //@unit reversibleValue requires: comparatorOf, holdsVector, viewOf
   const reversibleValue = value => holdsVector(value) || viewOf(value)?.view$LKEY === "indexed" || comparatorOf(value) !== undefined;
   //@unit aseqValue requires: cellOf, isChunkedCons, viewOf
@@ -1699,6 +1752,11 @@
   const demungePattern = Object.keys(demungeCharacters).sort((a, b) => b.length - a.length).join("|") + "|\\$";
   //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbolOf
   function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(new RegExp(demungePattern, "g"), key => key === "$" ? "/" : demungeCharacters[key]); return symbolOf(value) !== undefined ? symbolCore(result) : result; }
+  //@unit stringEscapes
+  // A regex literal is exotic data a seal cannot take (light-cljs-666): keep
+  // `stringEscapeTest` a sealable object delegating to a per-call regex test
+  // so `printWriterImpl` publishes cleanly after `ba3efd525`.
+  const stringEscapes = {'"': '\\"', '\\': '\\\\', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t'}, stringEscapeTest = {test: value => /[\\"\b\f\n\r\t]/.test(value)};
   //@unit sharedIntrinsicRegExp
   const sharedIntrinsicRegExp = RegExp;
   //@unit sharedRegExpCall requires: sharedFormOf

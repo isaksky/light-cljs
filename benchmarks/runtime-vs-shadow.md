@@ -5687,3 +5687,49 @@ ns per call, medians of 5 runs per compiler with their ranges. `multimethod` is 
 **TodoMVC** (`bb benchmarks/re-frame.bb runtime todomvc --runs 5`, a fresh port with `shadow-port-tool-983`, load 3.4-4.7; `todomvc-*.md`): adding 1,000 todos takes 2,117 ms (2,093-2,155) on master and 2,138 (2,103-2,149) after, shadow-cljs 956 and 960 (light/shadow 2.21 and 2.23); no multimethod is on that step's path, and the other steps are within their ranges.
 
 **Sizes** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only`, fresh ports with `shadow-port-tool-983`; `size-1fac567c.md`, `size-1083-46bf535d.md`), gzip -9 bytes of light-cljs's output as written, without React, master `1fac567c` to the final change: simple 67,028 to 67,028 (it keeps no multimethod), todomvc 96,219 to 96,724 (+505, +0.52%), flow 280,479 to 280,948 (+469, +0.17%); the whole esbuild bundles 113,095 to 113,095, 144,083 to 144,602 (+0.36%) and 333,314 to 333,869 (+0.17%). The growth is the steps above in the apps that keep a multimethod (re-frame.alpha's `reg`, and todomvc's router): the per-count calls, `leanMethod` with the `Map` past 16 entries and `leanCode`, `leanPlain` and `symbolOf`; before the review's fixes todomvc grew 348 bytes (+0.36%). The size ratchet's note is in tests/support/ratchet_fixtures.rs: `defmulti` grows about 1,500 bytes at `:advanced` (19,782 bytes after single-pass nested-vector `leanCode`), and the readable runtime 5,846.
+
+## 2026-11-22: array-map and hash-map index seqs and getter-free key/value seqs (light-cljs-1081)
+
+In the gate on master `ba3efd525`, `keys-small` (3.66x) and `vals-small` (3.66x) remained far above shadow-cljs's medians because an array map's `seq` allocated every `MapEntry` up front into a fresh array, and `KeySeqCell` read every step through prototype getters and generic `first`/`next`/`key`/`val` dispatch; hash-map seqs (`NodeSeq`, `ArrayNodeSeq`) similarly built and froze every `MapEntry` up front on `seq`, and `into-vec-keys-small` (0.94x on `ba3efd525` after `keySeqReduce`) still built the whole array of `MapEntry` objects before reducing. Now:
+
+- **Lazy array-map and hash-map index seqs (`ArrayMapIndexCell`, `NodeSeqCell`, `ArrayNodeSeqCell`).** `(seq m)` on an array map creates an `ArrayMapIndexCell(arr, i, root)` (snapshotting a public `PersistentArrayMap`'s array so later edits to the caller's array are not observed), and `(seq hm)` on a hash map creates a `NodeSeqCell(nodes, i, root)` or `ArrayNodeSeqCell(nodes, i, root)` indexing its cached `mapTraversal` array of internal `{key, value}` leaf objects — each with keyed `-first`, `-rest`, `-next`, `-seq`, `-count`, and `-reduce` slots (plus `-drop` on array-map seqs preserving master's view-offset semantics for nonpositive offsets). Realized `MapEntry` objects are built lazily only when `-first` or `-reduce` demands an entry and cached once per index in a prototype-free `Object.create(null)` map on `root` (immune to `Array.prototype`/`Object.prototype` pollution) so repeated `(first s)` / `(second s)` / tail traversals share entry identity and preserve `specify!` on entries, while `(seq m)`, `(count (seq m))`, `(keys m)`, and `(vals m)` allocate zero entry cache or `MapEntry` objects. Moving `makeMap.seq` to `when: seqPath` keeps `makeMap.seq` out of `:advanced` builds without `seqPath`.
+- **Getter-free `KeySeqCell` with slim slots and direct key/value reads.** `KeySeqCell` uses plain `first`/`rest`/`next`/`seq`/`reduce` methods behind thin 1-line keyed slot wrappers (keeping V8 TurboFan feedback vectors compact so polymorphic `firstSite`/`nextSite` in `lazy-walk-1000` still inline `ChunkedCons`). When walking an unextended `ArrayMapIndexCell`, `NodeSeqCell`, or `ArrayNodeSeqCell` with no realized entry cache (`root.entries === null`), `first` and `reduce` read keys and values straight from the flat pairs array or traversal nodes without building any `MapEntry`; `seqReduceFrom` and post-callback revalidation in `ArrayMapIndexCell`, `NodeSeq`/`ArrayNodeSeq`, `KeySeqCell`, and `keySeqReduce` ensure mid-reduction protocol mutations (`extend-type`, `specify!`) take effect on the very next step.
+
+**Binaries:** before `light-cljs-ba3efd525` (master `ba3efd525`, SHA-256 `91d2970f3008019c...`), after `light-cljs-1081-after` (this change's runtime, SHA-256 `94d5230bf1b153d8...`), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; all runs are unreserved.
+
+**Gate — touched operations** (`bb benchmarks/core-ops/run.bb --runs 5 --ops keys-small,vals-small,keys-hash100,vals-hash100,into-vec-keys-small,merge-small,destructure-map-3,str-nested-map`, load 2.68-3.20 before, 2.93-3.51 after) and **full 80-op pass** (`--runs 5`, load 2.74-5.89 before, 3.04-4.09 after), light-cljs ns per operation, medians of 5 alternated runs with ranges:
+
+| op (touched selection) | light-cljs before | light-cljs after | change | shadow-cljs before, after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| keys-small | 244.2 (240.4-246.4) | 57.8 (56.7-60.0) | -76% | 65.8, 64.9 | 3.71, 0.89 |
+| vals-small | 245.3 (238.0-247.1) | 46.5 (46.3-46.7) | -81% | 87.7, 87.1 | 2.80, 0.53 |
+| into-vec-keys-small | 255.1 (253.5-258.1) | 135.8 (134.7-138.0) | -47% | 336.1, 335.8 | 0.76, 0.40 |
+| keys-hash100 | 2,902 (2,877-2,952) | 954.7 (944.4-971.2) | -67% | 5,380, 5,324 | 0.54, 0.18 |
+| vals-hash100 | 3,321 (3,057-3,361) | 1,141 (1,127-1,143) | -66% | 5,137, 5,164 | 0.65, 0.22 |
+| merge-small | 1,463 (1,446-1,560) | 1,396 (1,387-1,432) | -5% | 782.1, 784.1 | 1.87, 1.78 |
+| str-nested-map | 907.9 (882.7-916.9) | 915.9 (893.5-928.2) | +1% | 2,328, 2,327 | 0.39, 0.39 |
+| destructure-map-3 | 31.8 (31.8-32.4) | 31.6 (29.9-32.8) | -1% | 34.5, 34.1 | 0.92, 0.93 |
+
+| op (full 80-op pass) | light-cljs before | light-cljs after | change | shadow-cljs before, after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| keys-small | 267.2 (266.4-275.2) | 59.2 (58.0-59.5) | -78% | 73.1, 73.2 | 3.66, 0.81 |
+| vals-small | 278.1 (275.5-284.4) | 46.1 (45.7-46.7) | -83% | 75.9, 76.3 | 3.66, 0.60 |
+| into-vec-keys-small | 302.8 (298.7-307.9) | 175.8 (174.1-178.4) | -42% | 322.0, 323.6 | 0.94, 0.54 |
+| keys-hash100 | 3,331 (3,223-3,622) | 816.6 (801.6-826.8) | -75% | 4,907, 4,931 | 0.68, 0.17 |
+| vals-hash100 | 3,747 (3,596-3,841) | 996.4 (991.5-1,019) | -73% | 4,902, 4,886 | 0.76, 0.20 |
+| lazy-walk-1000 | 36,279 (35,260-36,453) | 36,867 (36,261-37,077) | +2% | 48,779, 48,982 | 0.74, 0.75 |
+| seq-walk-vec-1000 | 26,166 (26,037-27,441) | 24,005 (23,605-24,499) | -8% | 19,196, 19,173 | 1.36, 1.25 |
+| merge-small | 1,434 (1,431-1,497) | 1,470 (1,457-1,545) | +3% | 875.6, 877.2 | 1.64, 1.68 |
+| str-nested-map | 898.2 (878.0-931.4) | 873.1 (859.0-894.2) | -3% | 2,282, 2,296 | 0.39, 0.38 |
+| destructure-map-3 | 34.3 (34.0-34.5) | 34.1 (33.8-34.6) | +0% | 49.0, 49.0 | 0.70, 0.70 |
+
+`keys-small`, `vals-small`, and `into-vec-keys-small` are all well below shadow-cljs's medians in both selections (0.40-0.89x), and lazy hash-map seqs cut `keys-hash100` and `vals-hash100` by 66-75% (to 0.17-0.22x shadow-cljs). In the full 80-op pass, every single one of the other 70 operations is within -11% (`apply-vec`) and -8% (`seq-walk-vec-1000`) to +3% (`merge-small` and `select-keys-3`, both with overlapping ranges; `merge-small` is -5% in the touched selection); zero operations regress beyond their ranges.
+
+**Workload 200k** (`compare.bb --runs 5 --runtime-only --runtime 1,40`, private copy rebuilt with each binary just before its run, every checksum equal to the oracle's; load 3.05-3.21 before, 3.05-3.58 after): 1 iteration wall 0.313 s (0.308-0.319) to 0.318 s (0.315-0.330), 40 iterations wall 1.371 s (1.349-1.428) to 1.382 s (1.342-1.416), steady state 27.1 to 27.3 ms per iteration (shadow-cljs 23.0 and 22.5 ms; light/shadow 1.18 before and 1.21 after), peak memory at 40 iterations 0.253 to 0.251 GB (light/shadow 0.95 both).
+
+**Sizes** (light-cljs `:advanced` output as written, without React, compiled with `--no-cache` from `research/shadow-credibility/{simple-port-973,todomvc-port-980,flow-port-980}`):
+- `simple`: raw 253,507 to 260,287 (+6,780), gzip -9 68,731 to 70,315 (+1,584, +2.30%), brotli 59,352 to 60,598 (+1,246).
+- `todomvc`: raw 368,927 to 375,700 (+6,773), gzip -9 98,547 to 100,125 (+1,578, +1.60%), brotli 84,623 to 85,960 (+1,337).
+- `flow`: raw 1,210,576 to 1,217,362 (+6,786), gzip -9 282,579 to 284,342 (+1,763, +0.62%), brotli 227,331 to 228,594 (+1,263).
+
+The fixed ~6.78 KB raw (~1.58-1.76 KB gzip) across all three apps is the lazy `ArrayMapIndexCell` and `NodeSeqCell`/`ArrayNodeSeqCell` classes (with shared prototype-free entry caches and `seqReduceFrom` protocol-mutation fallbacks), `KeySeqCell`'s plain methods and slim slot wrappers for both map representations, and `ownEntryItems`, trading ~1.6 KB gzip for the 42-83% reduction across all five map key/value walk benchmarks with zero regressions across the 80-op gate. The size ratchet's note is in tests/support/ratchet_fixtures.rs (readable runtime +22,002 bytes; three record-only fixtures shrink 939-2,124 bytes at `:advanced`, nine seq-walking fixtures grow).
