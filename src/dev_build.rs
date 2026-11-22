@@ -431,6 +431,7 @@ fn dev_pool_config(slots: Slots, batches: usize) -> Config {
     let mut config = Config::new(slots, 1);
     config.limits.batch_jobs = 1;
     config.limits.admitted_jobs = batches.clamp(1, 4096);
+    config.stack_size = Some(8 << 20);
     config
 }
 

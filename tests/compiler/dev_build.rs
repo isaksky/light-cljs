@@ -974,3 +974,144 @@ fn parallel_dev_build_matches_single_slot_byte_for_byte() {
         format!("[:n{:02} {expected_sum}]\n", count - 1)
     );
 }
+
+/// Dev emission workers use the compiler's 8 MiB stack, so namespaces at the
+/// parser's 127-level nesting limit emit identically at `--jobs 1` and
+/// `--jobs 8` even in unoptimized builds.
+#[test]
+fn parallel_dev_build_preserves_accepted_nesting() {
+    let dir = TempDir::new("dev-parallel-nesting");
+    let root = dir.join("src");
+    fs::create_dir_all(root.join("app")).unwrap();
+    let deep_127 = format!("{}0{}", "(let* [] ".repeat(127), ")".repeat(127));
+    let deep_126 = format!("{}42{}", "(let* [] ".repeat(126), ")".repeat(126));
+    fs::write(
+        root.join("app/deep.cljs"),
+        format!("(ns app.deep)\n{deep_127}\n(def value {deep_126})\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("app/main.cljs"),
+        "(ns app.main (:require [app.deep :as d]))\n(js/console.log d/value)\n",
+    )
+    .unwrap();
+    let out_1 = dir.join("j1");
+    let out_8 = dir.join("j8");
+    for (jobs, out) in [("1", &out_1), ("8", &out_8)] {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args([
+                "--compile",
+                "--no-cache",
+                "--entry",
+                "app.main",
+                "--source-root",
+                root.to_str().unwrap(),
+                "--reloadable",
+                "--out-dir",
+                out.to_str().unwrap(),
+                "--jobs",
+                jobs,
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "--jobs {jobs}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(read_dev_dir(&out_1), read_dev_dir(&out_8));
+    let run = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .arg(out_8.join("index.js"))
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{run:?}");
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "42\n");
+}
+
+/// A worker write failure during streaming dev output cancels remaining work,
+/// drains cleanly, returns `DevBuildError::Write` naming the obstructed path,
+/// and leaves a subsequent retry clean.
+#[test]
+fn streaming_dev_build_propagates_namespace_write_errors() {
+    let dir = TempDir::new("dev-stream-write-error");
+    let root = dir.join("src");
+    fs::create_dir_all(root.join("app")).unwrap();
+    let count = 24usize;
+    let mut requires = String::new();
+    for i in 0..count {
+        fs::write(
+            root.join(format!("app/n{i:02}.cljs")),
+            format!("(ns app.n{i:02})\n(defn f [x] (+ x {i}))\n"),
+        )
+        .unwrap();
+        requires.push_str(&format!("\n            [app.n{i:02}]"));
+    }
+    fs::write(
+        root.join("app/main.cljs"),
+        format!("(ns app.main\n  (:require{requires}))\n(app.n00/f 1)\n"),
+    )
+    .unwrap();
+    let (mut program, sources) = analyze_namespace_entry_with_sources(
+        "app.main",
+        std::slice::from_ref(&root),
+        &mut MacroHost::new(),
+        AnalysisOptions {
+            warning_mode: true,
+            ..AnalysisOptions::default()
+        },
+        &mut Vec::new(),
+    )
+    .unwrap();
+    program.flatten_leaves();
+    let source_files: Vec<_> = sources
+        .iter()
+        .map(|(path, text)| {
+            let rel = path.strip_prefix(&root).unwrap().to_str().unwrap();
+            (format!("../src/{rel}"), text.as_str())
+        })
+        .collect();
+    let source_refs: Vec<_> = source_files
+        .iter()
+        .map(|(url, text)| light_cljs::source_map::SourceFile { url, text })
+        .collect();
+
+    let mut expected: Vec<_> = light_cljs::dev_build::emit_dev_build_on(
+        &program,
+        &source_refs,
+        None,
+        light_cljs::scheduler::Slots::ONE,
+    )
+    .into_iter()
+    .map(|file| (file.name, file.text.into_bytes()))
+    .collect();
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (label, slots) in [
+        ("j1", light_cljs::scheduler::Slots::ONE),
+        ("j8", light_cljs::scheduler::Slots::new(8).unwrap()),
+    ] {
+        let out = dir.join(label);
+        let obstructed = out.join("app.n00.js.map");
+        fs::create_dir_all(&obstructed).unwrap();
+        let error = light_cljs::dev_build::write_dev_build_on(
+            &program,
+            &source_refs,
+            None,
+            &out,
+            slots,
+            false,
+        )
+        .unwrap_err();
+        match error {
+            light_cljs::dev_build::DevBuildError::Write { path, .. } => {
+                assert_eq!(path, obstructed, "{label}");
+            }
+            other => panic!("{label}: expected Write error, got {other:?}"),
+        }
+        fs::remove_dir(&obstructed).unwrap();
+        light_cljs::dev_build::write_dev_build_on(&program, &source_refs, None, &out, slots, false)
+            .unwrap();
+        assert_eq!(read_dev_dir(&out), expected, "{label}");
+    }
+}
