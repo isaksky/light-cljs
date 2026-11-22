@@ -49,7 +49,11 @@ pub(super) struct Chunks<'a> {
     current: ChunkId,
     /// By chunk: the chunks that have evaluated before its forms run, by
     /// chunk index: itself, startup, and what it imports, transitively.
-    loaded: Vec<Vec<bool>>,
+    loaded: &'a [Vec<bool>],
+    /// When true, this [`Chunks`] belongs to one parallel emission task whose
+    /// `runtime` holds only two slots: `[0]` for startup roots and `[1]` for
+    /// `current`'s roots.
+    task_mode: bool,
     /// By constant table entry: what placing it needs.
     constants: Vec<Constant>,
     /// While an entry's initializer is written: what it reads.
@@ -195,8 +199,14 @@ impl Chunks<'_> {
         match &mut self.initializer {
             Some(initializer) if !startup => initializer.runtime.record(name, site, used),
             _ => {
-                let chunk = if startup { STARTUP } else { self.current };
-                self.runtime[chunk.0].record(name, site, used);
+                let index = if self.task_mode {
+                    usize::from(!startup && self.current != STARTUP)
+                } else if startup {
+                    STARTUP.0
+                } else {
+                    self.current.0
+                };
+                self.runtime[index].record(name, site, used);
             }
         }
     }
@@ -237,7 +247,7 @@ fn identifier(text: &str) -> bool {
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
 }
 
-impl Emitter<'_> {
+impl Emitter<'_, '_> {
     /// A loadable of `target`, whose type `class` reads, in a chunk that may
     /// not have evaluated when the loadable's own chunk runs: an importer of
     /// that chunk and a getter that reads the target from its module
@@ -507,6 +517,83 @@ fn unit_signatures(
         .collect()
 }
 
+/// One top-level item collected for a chunk in a single pre-pass over
+/// `program.root`.
+#[derive(Clone, Copy)]
+enum ChunkFormItem {
+    NamespaceEntry { id: ExprId, empty_return: bool },
+    Form { id: ExprId, context: ExprContext },
+}
+
+struct ChunkCollector<'a> {
+    program: &'a Program,
+    plan: &'a ChunkPlan,
+    sources: &'a HashMap<&'a str, usize>,
+    forms: &'a [Option<ChunkId>],
+}
+
+impl ChunkCollector<'_> {
+    fn collect(
+        &self,
+        id: ExprId,
+        context: ExprContext,
+        namespace: usize,
+        out: &mut [Vec<ChunkFormItem>],
+    ) {
+        let namespace = self
+            .program
+            .namespace_entries
+            .get(&id)
+            .map_or(namespace, |name| self.sources[name.as_str()]);
+        let ExprKind::Do(body) = &self.program.exprs[id.0].kind else {
+            if let Some(chunk) = self.forms[id.0] {
+                debug_assert!(
+                    context != ExprContext::Return || chunk == STARTUP,
+                    "the program's value is startup's"
+                );
+                out[chunk.0].push(ChunkFormItem::Form { id, context });
+            }
+            return;
+        };
+        let target = self.plan.namespace_chunks[namespace];
+        let empty_return = body.is_empty() && context == ExprContext::Return;
+        if empty_return {
+            debug_assert_eq!(target, STARTUP, "the program's value is startup's");
+        }
+        if self.program.namespace_entries.contains_key(&id) || empty_return {
+            out[target.0].push(ChunkFormItem::NamespaceEntry { id, empty_return });
+        }
+        for (index, &form) in body.iter().enumerate() {
+            let context = if index + 1 == body.len() {
+                context
+            } else {
+                ExprContext::Discard
+            };
+            self.collect(form, context, namespace, out);
+        }
+    }
+}
+
+/// Output of one parallel chunk/sub-slice emission task.
+struct ChunkTaskOutput<'a> {
+    chunk: ChunkId,
+    output: String,
+    raw_segments: Vec<std::ops::Range<usize>>,
+    imports: Vec<PackageImport>,
+    operands_declared: usize,
+    runtime_global: RuntimeRoots,
+    startup_runtime: RuntimeRoots,
+    own_runtime: RuntimeRoots,
+    core_cells: Vec<(&'static str, RuntimeName)>,
+    targets: Vec<(ChunkId, String)>,
+    lazy: bool,
+    constant_reads: usize,
+    local_constants: Vec<LocalConstant<'a>>,
+    local_chunk_constants: Vec<Constant>,
+    has_raw_js: bool,
+    needs_runtime: bool,
+}
+
 /// The chunks of `plan` for `program` with the decisions of `application`,
 /// in plan order, with the plan they follow: `plan` and the chunks its
 /// constants and runtime units add, which hold no form; see the module
@@ -516,11 +603,17 @@ fn unit_signatures(
 /// namespace granularity (docs/code-splitting.md, "Phase 3", the
 /// reflection gate). `reflective`: the forms are known to reach reflection,
 /// so they are written once, with the namespaces' registration.
-pub(crate) fn emit_chunked(
+///
+/// Runs on `slots` CPU work slots (`--jobs N`): parallel per-chunk/sub-slice
+/// AST → JS emission with canonical constant merging, parallel `scanned_names`
+/// import/export discovery, and parallel [`crate::terse::terse_texts_with_slots`].
+/// Keeps `Slots::ONE` inline.
+pub(crate) fn emit_chunked_with_slots(
     program: &Program,
     application: Application<'_>,
     plan: &ChunkPlan,
     reflective: bool,
+    slots: crate::scheduler::Slots,
 ) -> Option<(ChunkPlan, Vec<EmittedChunk>)> {
     let direct = application.direct;
     let slice = direct.is_some();
@@ -539,91 +632,570 @@ pub(crate) fn emit_chunked(
     let loaded = loaded_chunks(plan);
     // A form outside every namespace's body is the entry's.
     let entry = plan.roots[crate::chunks::STARTUP_ROOT].namespace;
-    let setup = Setup {
-        demand_roots: false,
-        application_roots: false,
-        module: true,
-        mapped: false,
-        application: Some(application),
-        direct,
-        function_names: None,
-        js_exposed_locals: None,
-        unit_root: None,
-    };
-    // As in the single file, `Advanced` output registers its namespaces only
-    // when the forms of all chunks reach reflection.
-    let write = |register_namespaces: bool| {
-        let mut emitter = Emitter::new(program, setup, register_namespaces);
-        emitter.chunks = Some(Chunks {
-            plan,
-            current: STARTUP,
-            loaded: loaded.clone(),
-            constants: Vec::new(),
-            initializer: None,
-            runtime: vec![RuntimeRoots::default(); count],
-            targets: Vec::new(),
-            lazy: false,
-            constant_reads: 0,
-        });
-        let mut bodies = Vec::with_capacity(count);
-        for chunk in 0..count {
-            emitter.chunks.as_mut().unwrap().current = ChunkId(chunk);
-            emitter.imports = Some(Vec::new());
-            emitter.operand_scope(false, |emitter| {
-                emitter.chunk_forms(program.root, ExprContext::Return, entry, &sources, &forms)
+
+    // Stage 1: Emit all chunk bodies (serial inline on `Slots::ONE`, parallel
+    // across chunks and sub-slices of large chunks on `slots > Slots::ONE`).
+    let (
+        bodies,
+        mut merged_runtime,
+        mut core_cells,
+        mut chunks_constants,
+        mut chunks_runtime,
+        mut chunks_targets,
+        chunks_lazy,
+        constants_declarations,
+        raw_js,
+        needs_runtime,
+        register_namespaces,
+    ) = if slots == crate::scheduler::Slots::ONE {
+        let setup = Setup {
+            demand_roots: false,
+            application_roots: false,
+            module: true,
+            mapped: false,
+            application: Some(application),
+            direct,
+            function_names: None,
+            js_exposed_locals: None,
+            unit_root: None,
+            shared_tables: None,
+            constant_slice: None,
+        };
+        // As in the single file, `Advanced` output registers its namespaces only
+        // when the forms of all chunks reach reflection.
+        let write = |register_namespaces: bool| {
+            let mut emitter = Emitter::new(program, setup, register_namespaces);
+            emitter.chunks = Some(Chunks {
+                plan,
+                current: STARTUP,
+                loaded: &loaded,
+                task_mode: false,
+                constants: Vec::new(),
+                initializer: None,
+                runtime: vec![RuntimeRoots::default(); count],
+                targets: Vec::new(),
+                lazy: false,
+                constant_reads: 0,
             });
-            bodies.push((
-                std::mem::take(&mut emitter.output),
-                std::mem::take(&mut emitter.raw_segments),
-                emitter.imports.take().unwrap_or_default(),
-            ));
+            let mut bodies = Vec::with_capacity(count);
+            for chunk in 0..count {
+                emitter.chunks.as_mut().unwrap().current = ChunkId(chunk);
+                emitter.imports = Some(Vec::new());
+                emitter.operand_scope(false, |emitter| {
+                    emitter.chunk_forms(program.root, ExprContext::Return, entry, &sources, &forms)
+                });
+                bodies.push((
+                    std::mem::take(&mut emitter.output),
+                    std::mem::take(&mut emitter.raw_segments),
+                    emitter.imports.take().unwrap_or_default(),
+                ));
+            }
+            emitter.record_application_roots(Some(application));
+            (emitter, bodies)
+        };
+        let mut register_namespaces = !slice || reflective;
+        let (mut emitter, mut bodies) = write(register_namespaces);
+        if slice && !reflective && emitter.runtime.reach_reflection() {
+            if plan.moves_definitions() || plan.drops_chunks() {
+                return None;
+            }
+            register_namespaces = true;
+            (emitter, bodies) = write(true);
         }
-        emitter.record_application_roots(Some(application));
-        (emitter, bodies)
-    };
-    let (mut emitter, mut bodies) = write(!slice || reflective);
-    if slice && !reflective && emitter.runtime.reach_reflection() {
-        if plan.moves_definitions() || plan.drops_chunks() {
-            return None;
-        }
-        (emitter, bodies) = write(true);
-    }
-    let embed = if slice {
-        !emitter.runtime.is_empty()
+        let chunks = emitter.chunks.take().expect("a chunked build");
+        (
+            bodies,
+            emitter.runtime,
+            emitter.core_cells,
+            chunks.constants,
+            chunks.runtime,
+            chunks.targets,
+            chunks.lazy,
+            emitter.constants.map(|c| c.declarations),
+            emitter.has_raw_js,
+            emitter.needs_runtime,
+            register_namespaces,
+        )
     } else {
-        !program.namespace_entries.is_empty() || emitter.needs_runtime
+        // Pre-collect every chunk's forms in one linear walk of `program.root`.
+        let mut chunk_items = vec![Vec::new(); count];
+        ChunkCollector {
+            program,
+            plan,
+            sources: &sources,
+            forms: &forms,
+        }
+        .collect(program.root, ExprContext::Return, entry, &mut chunk_items);
+        // Split large chunks (such as `STARTUP`) into weight-balanced
+        // sub-slices so a single large chunk cannot bottleneck the pool.
+        let mut memo = vec![0u32; program.exprs.len()];
+        let mut stack = Vec::new();
+        struct ChunkTaskSpec {
+            chunk: ChunkId,
+            range: std::ops::Range<usize>,
+            weight: u64,
+        }
+        let mut tasks = Vec::with_capacity(count);
+        for (chunk_idx, items) in chunk_items.iter().enumerate() {
+            if items.is_empty() {
+                continue;
+            }
+            let weights: Vec<u64> = items
+                .iter()
+                .map(|&item| match item {
+                    ChunkFormItem::NamespaceEntry { .. } => 1,
+                    ChunkFormItem::Form { id, .. } => {
+                        super::parallel::expr_weight(program, id, &mut memo, &mut stack)
+                    }
+                })
+                .collect();
+            let total_w: u64 = weights.iter().sum();
+            let sub_slices = if total_w >= 2048 && items.len() >= 16 {
+                (slots.get() * 2).min(items.len())
+            } else {
+                1
+            };
+            for range in super::parallel::partition_slices(&weights, sub_slices) {
+                let weight: u64 = weights[range.clone()].iter().sum();
+                tasks.push(ChunkTaskSpec {
+                    chunk: ChunkId(chunk_idx),
+                    range,
+                    weight,
+                });
+            }
+        }
+        drop(memo);
+        drop(stack);
+
+        let shared_tables = super::parallel::SharedTables::new(program, direct);
+        let run_tasks = |register_namespaces: bool| -> Vec<ChunkTaskOutput<'_>> {
+            let jobs: Vec<(u64, (usize, &ChunkTaskSpec))> = tasks
+                .iter()
+                .enumerate()
+                .map(|(task_id, spec)| (spec.weight, (task_id, spec)))
+                .collect();
+            crate::scheduler::map(slots, jobs, |(task_id, spec)| {
+                let mut emitter = Emitter::new(
+                    program,
+                    Setup {
+                        demand_roots: false,
+                        application_roots: false,
+                        module: true,
+                        mapped: false,
+                        application: Some(application),
+                        direct,
+                        function_names: None,
+                        js_exposed_locals: None,
+                        unit_root: None,
+                        shared_tables: Some(&shared_tables),
+                        constant_slice: slice.then_some(task_id),
+                    },
+                    register_namespaces,
+                );
+                emitter.chunks = Some(Chunks {
+                    plan,
+                    current: spec.chunk,
+                    loaded: &loaded,
+                    task_mode: true,
+                    constants: Vec::new(),
+                    initializer: None,
+                    runtime: vec![RuntimeRoots::default(); 2],
+                    targets: Vec::new(),
+                    lazy: false,
+                    constant_reads: 0,
+                });
+                emitter.operands = Some(Operands {
+                    hoists: false,
+                    ..Operands::default()
+                });
+                for &item in &chunk_items[spec.chunk.0][spec.range.clone()] {
+                    match item {
+                        ChunkFormItem::NamespaceEntry { id, empty_return } => {
+                            let site = emitter.site.replace(id);
+                            emitter.namespace_entry(id);
+                            if empty_return {
+                                emitter.indentation();
+                                emitter.output.push_str("return null;\n");
+                            }
+                            emitter.site = site;
+                        }
+                        ChunkFormItem::Form { id, context } => {
+                            emitter.emit(id, context);
+                        }
+                    }
+                }
+                let operands_declared = emitter.operands.take().map_or(0, |o| o.declared);
+                let mut ch = emitter.chunks.take().expect("a chunked build");
+                let own_runtime = ch.runtime.pop().unwrap();
+                let startup_runtime = ch.runtime.pop().unwrap();
+                ChunkTaskOutput {
+                    chunk: spec.chunk,
+                    output: emitter.output,
+                    raw_segments: emitter.raw_segments,
+                    imports: emitter.imports.take().unwrap_or_default(),
+                    operands_declared,
+                    runtime_global: emitter.runtime,
+                    startup_runtime,
+                    own_runtime,
+                    core_cells: emitter.core_cells,
+                    targets: ch.targets,
+                    lazy: ch.lazy,
+                    constant_reads: ch.constant_reads,
+                    local_constants: emitter.constants.map(|c| c.entries).unwrap_or_default(),
+                    local_chunk_constants: ch.constants,
+                    has_raw_js: emitter.has_raw_js,
+                    needs_runtime: emitter.needs_runtime,
+                }
+            })
+        };
+
+        let merge_runtime =
+            |task_outputs: &[ChunkTaskOutput<'_>]| -> (RuntimeRoots, Vec<RuntimeRoots>) {
+                let mut global = RuntimeRoots::default();
+                let mut per_chunk = vec![RuntimeRoots::default(); count];
+                for task in task_outputs {
+                    global.extend(&task.runtime_global);
+                    per_chunk[STARTUP.0].extend(&task.startup_runtime);
+                    if task.chunk != STARTUP {
+                        per_chunk[task.chunk.0].extend(&task.own_runtime);
+                    }
+                }
+                if slice && !global.is_empty() {
+                    let mut app_roots = RuntimeRoots::default();
+                    for &(unit, site) in application.protocol_declarations {
+                        app_roots.record(
+                            RuntimeName::direct(unit, None),
+                            Some(site),
+                            NameUse::Keep,
+                        );
+                    }
+                    for &(unit, site) in application.loadable_members {
+                        app_roots.record(
+                            RuntimeName::direct(unit, None),
+                            Some(site),
+                            NameUse::Keep,
+                        );
+                    }
+                    for &(unit, site) in application.member_units {
+                        app_roots.record(
+                            RuntimeName::direct(unit, None),
+                            Some(site),
+                            NameUse::Keep,
+                        );
+                    }
+                    if let Some(site) = application.type_static {
+                        app_roots.record(
+                            RuntimeName::direct(crate::runtime_slice::TYPE_STATICS_UNIT, None),
+                            Some(site),
+                            NameUse::Keep,
+                        );
+                    }
+                    if let Some(site) = application
+                        .inference
+                        .and_then(|inference| inference.facts().core_method_write())
+                    {
+                        app_roots.record(
+                            RuntimeName::direct("extendType", None),
+                            Some(site),
+                            NameUse::Keep,
+                        );
+                        app_roots.record(
+                            RuntimeName::direct("slotWrites", None),
+                            Some(site),
+                            NameUse::Keep,
+                        );
+                    }
+                    if let Some(site) = application.multi_tables {
+                        app_roots.record(
+                            RuntimeName::direct(crate::runtime_slice::MULTI_TABLES_UNIT, None),
+                            Some(site),
+                            NameUse::Keep,
+                        );
+                    }
+                    global.extend(&app_roots);
+                    per_chunk[STARTUP.0].extend(&app_roots);
+                }
+                (global, per_chunk)
+            };
+
+        let mut register_namespaces = !slice || reflective;
+        let mut task_outputs = run_tasks(register_namespaces);
+        let (mut merged_runtime, mut chunks_runtime) = merge_runtime(&task_outputs);
+        if slice && !reflective && merged_runtime.reach_reflection() {
+            if plan.moves_definitions() || plan.drops_chunks() {
+                return None;
+            }
+            register_namespaces = true;
+            task_outputs = run_tasks(true);
+            (merged_runtime, chunks_runtime) = merge_runtime(&task_outputs);
+        }
+        drop(shared_tables);
+        drop(chunk_items);
+
+        // Ordered merge of task metadata and canonical constant table.
+        let mut core_cells: Vec<(&'static str, RuntimeName)> = Vec::new();
+        let mut targets: Vec<(ChunkId, String)> = Vec::new();
+        let mut lazy = false;
+        let mut has_raw_js = false;
+        let mut needs_runtime = false;
+        let mut canon_numbers: HashMap<(ConstantKey<'_>, bool), usize> = HashMap::new();
+        let mut canon_constants: Vec<Constant> = Vec::new();
+        let mut canon_declarations = String::new();
+        let mut remaps: Vec<Vec<usize>> = Vec::with_capacity(task_outputs.len());
+        let mut base_reads = 0usize;
+
+        for (task_id, task) in task_outputs.iter_mut().enumerate() {
+            for &(name, initial) in &task.core_cells {
+                if !core_cells.iter().any(|(existing, _)| *existing == name) {
+                    core_cells.push((name, initial));
+                }
+            }
+            targets.extend(std::mem::take(&mut task.targets));
+            lazy |= task.lazy;
+            has_raw_js |= task.has_raw_js;
+            needs_runtime |= task.needs_runtime;
+
+            if slice {
+                let mut entries = std::mem::take(&mut task.local_constants);
+                let mut metas = std::mem::take(&mut task.local_chunk_constants);
+                debug_assert_eq!(entries.len(), metas.len());
+                let mut remap = Vec::with_capacity(entries.len());
+                let mut new_entries: Vec<(usize, usize)> = Vec::new();
+                for (local_id, (entry, meta)) in entries.iter().zip(metas.iter_mut()).enumerate() {
+                    let canon_key = super::parallel::remap_constant_key(&entry.key, &remap);
+                    let dedup_key = (canon_key, entry.lazy);
+                    let adjusted_first = meta
+                        .first
+                        .map(|(seq, chunk, site)| (base_reads + seq, chunk, site));
+                    if let Some(&cid) = canon_numbers.get(&dedup_key) {
+                        remap.push(cid);
+                        canon_constants[cid].readers.union(&meta.readers);
+                        if canon_constants[cid].first.is_none() {
+                            canon_constants[cid].first = adjusted_first;
+                        }
+                        canon_constants[cid].runtime.extend(&meta.runtime);
+                    } else {
+                        let cid = canon_constants.len();
+                        canon_numbers.insert(dedup_key, cid);
+                        remap.push(cid);
+                        let remapped_parts = meta.parts.iter().map(|&p| remap[p]).collect();
+                        canon_constants.push(Constant {
+                            declaration: 0..0,
+                            method: meta.method,
+                            parts: remapped_parts,
+                            readers: meta.readers.clone(),
+                            runtime: std::mem::take(&mut meta.runtime),
+                            label: std::mem::take(&mut meta.label),
+                            first: adjusted_first,
+                        });
+                        new_entries.push((local_id, cid));
+                    }
+                }
+                new_entries
+                    .sort_unstable_by_key(|&(local_id, _)| entries[local_id].finalized_order);
+                let k_prefix = format!("k{task_id}_");
+                for (local_id, cid) in new_entries {
+                    let entry = &mut entries[local_id];
+                    let needs_rewrite = matches!(
+                        entry.key,
+                        ConstantKey::Composite { .. }
+                            | ConstantKey::Shape { .. }
+                            | ConstantKey::Method { .. }
+                    ) && entry.value.contains(&k_prefix);
+                    if needs_rewrite {
+                        let (rewritten, _) = super::parallel::rewrite_slice_k_names(
+                            &entry.value,
+                            &[],
+                            &k_prefix,
+                            &remap,
+                        );
+                        entry.value = rewritten;
+                    }
+                    let decl = if entry.lazy {
+                        format!("  let c{cid}; const k{cid} = () => c{cid} ??= ")
+                    } else {
+                        format!("  const k{cid} = ")
+                    };
+                    let start = canon_declarations.len();
+                    writeln!(canon_declarations, "{decl}{};", entry.value).unwrap();
+                    canon_constants[cid].declaration = start..canon_declarations.len();
+                }
+                remaps.push(remap);
+            } else {
+                remaps.push(Vec::new());
+            }
+            base_reads += task.constant_reads;
+        }
+        drop(canon_numbers);
+
+        // Rewrite slice-local `k{t}_{local}` -> `k{canon}` in parallel across
+        // tasks (shifting raw_segments) before joining sub-slices per chunk.
+        let rewritten_tasks = if slice {
+            let jobs: Vec<(u64, (usize, ChunkTaskOutput<'_>))> = task_outputs
+                .into_iter()
+                .enumerate()
+                .map(|(task_id, task)| (task.output.len() as u64, (task_id, task)))
+                .collect();
+            crate::scheduler::map(slots, jobs, |(task_id, mut task)| {
+                let remap = &remaps[task_id];
+                if !remap.is_empty() {
+                    let k_prefix = format!("k{task_id}_");
+                    let (text, anchors) = super::parallel::rewrite_slice_k_names(
+                        &task.output,
+                        &task.raw_segments,
+                        &k_prefix,
+                        remap,
+                    );
+                    for range in &mut task.raw_segments {
+                        let len = range.end - range.start;
+                        let start = crate::terse::renamed_offset(&anchors, range.start);
+                        range.start = start;
+                        range.end = start + len;
+                    }
+                    task.output = text;
+                }
+                task
+            })
+        } else {
+            task_outputs
+        };
+
+        // Assemble each chunk's `(forms, raw, packages)` from its ordered tasks.
+        let mut bodies: Vec<(String, Vec<std::ops::Range<usize>>, Vec<PackageImport>)> = (0..count)
+            .map(|_| (String::new(), Vec::new(), Vec::new()))
+            .collect();
+        let mut max_operands = vec![0usize; count];
+        for task in rewritten_tasks {
+            let chunk = task.chunk.0;
+            max_operands[chunk] = max_operands[chunk].max(task.operands_declared);
+            let (out, raw, imports) = &mut bodies[chunk];
+            let base = out.len();
+            out.push_str(&task.output);
+            raw.extend(
+                task.raw_segments
+                    .into_iter()
+                    .map(|r| r.start + base..r.end + base),
+            );
+            for import in task.imports {
+                let index = Emitter::package_import(imports, &import.package);
+                imports[index].namespace |= import.namespace;
+                for export in import.exports {
+                    if !imports[index].exports.contains(&export) {
+                        imports[index].exports.push(export);
+                    }
+                }
+            }
+        }
+        for (chunk, &declared) in max_operands.iter().enumerate() {
+            if declared > 0 {
+                let mut decl = String::from("  let ");
+                for index in 0..declared {
+                    if index > 0 {
+                        decl.push_str(", ");
+                    }
+                    write!(decl, "operand{index}").unwrap();
+                }
+                decl.push_str(";\n");
+                let (out, raw, _) = &mut bodies[chunk];
+                out.insert_str(0, &decl);
+                for range in raw {
+                    range.start += decl.len();
+                    range.end += decl.len();
+                }
+            }
+        }
+
+        (
+            bodies,
+            merged_runtime,
+            core_cells,
+            canon_constants,
+            chunks_runtime,
+            targets,
+            lazy,
+            slice.then_some(canon_declarations),
+            has_raw_js,
+            needs_runtime,
+            register_namespaces,
+        )
+    };
+
+    let embed = if slice {
+        !merged_runtime.is_empty()
+    } else {
+        !program.namespace_entries.is_empty() || needs_runtime
     };
     debug_assert!(
-        embed || emitter.runtime.is_empty(),
+        embed || merged_runtime.is_empty(),
         "emitted code reads the runtime without embedding it"
     );
     // Startup registers the namespaces before any form runs, and declares
     // what every chunk reads of the runtime below `Advanced`.
     let registration = if embed {
-        if let Some(chunks) = &mut emitter.chunks {
-            chunks.write_startup();
-        }
         if slice {
             // Startup's runtime registers the build's key as it loads.
-            emitter.keep_runtime(super::RUNTIME_KEY_UNIT);
+            let key_root = RuntimeName::direct(super::RUNTIME_KEY_UNIT, None);
+            merged_runtime.record(key_root, None, NameUse::Keep);
+            chunks_runtime[STARTUP.0].record(key_root, None, NameUse::Keep);
         }
-        let retained = |global: usize| !slice || application.globals[global];
-        emitter.registration(None, &[], true, retained, None)
+        if register_namespaces {
+            let mut reg_emitter = Emitter::new(
+                program,
+                Setup {
+                    demand_roots: false,
+                    application_roots: false,
+                    module: false,
+                    mapped: false,
+                    application: Some(application),
+                    direct,
+                    function_names: None,
+                    js_exposed_locals: None,
+                    unit_root: None,
+                    shared_tables: None,
+                    constant_slice: None,
+                },
+                true,
+            );
+            reg_emitter.runtime = std::mem::take(&mut merged_runtime);
+            reg_emitter.core_cells = std::mem::take(&mut core_cells);
+            reg_emitter.chunks = Some(Chunks {
+                plan,
+                current: STARTUP,
+                loaded: &loaded,
+                task_mode: false,
+                constants: Vec::new(),
+                initializer: None,
+                runtime: std::mem::take(&mut chunks_runtime),
+                targets: Vec::new(),
+                lazy: false,
+                constant_reads: 0,
+            });
+            let retained = |global: usize| !slice || application.globals[global];
+            let reg = reg_emitter.registration(None, &[], true, retained, None);
+            #[cfg(debug_assertions)]
+            {
+                merged_runtime = reg_emitter.runtime;
+            }
+            core_cells = reg_emitter.core_cells;
+            chunks_runtime = reg_emitter.chunks.take().unwrap().runtime;
+            reg
+        } else {
+            String::new()
+        }
     } else {
         String::new()
     };
     let mut startup_head = String::new();
-    for (name, initial) in &emitter.core_cells {
+    for (name, initial) in &core_cells {
         writeln!(startup_head, "  let core${name} = {initial};").unwrap();
     }
-    let mut chunks = emitter.chunks.take().expect("a chunked build");
     // Each constant table entry goes to the chunk of its signature, and at
     // `Advanced` each runtime unit too; either may be a chunk the plan does
     // not have. Each chunk declares its entries in the order the table
     // declares them, the parts of a composite first.
-    let signatures = constant_signatures(plan, &chunks.constants);
+    let signatures = constant_signatures(plan, &chunks_constants);
     let units = if slice && embed {
-        unit_signatures(plan, &chunks.runtime, &chunks.constants, &signatures)
+        unit_signatures(plan, &chunks_runtime, &chunks_constants, &signatures)
     } else {
         Vec::new()
     };
@@ -659,18 +1231,17 @@ pub(crate) fn emit_chunked(
     // What each chunk's code and constants read of the runtime, for the size
     // report.
     let mut chunk_roots = vec![RuntimeRoots::default(); count];
-    for (chunk, names) in chunks.runtime.iter().enumerate() {
+    for (chunk, names) in chunks_runtime.iter().enumerate() {
         chunk_roots[renumbered[chunk].0].extend(names);
     }
     // Each entry's first demand by code, for the size report: its own first
     // read or an earlier one of an entry containing it, transitively (parts
     // precede their composites), in the placed plan's chunks.
-    let mut firsts = chunks
-        .constants
+    let mut firsts = chunks_constants
         .iter()
         .map(|constant| constant.first)
         .collect::<Vec<_>>();
-    for (entry, constant) in chunks.constants.iter().enumerate().rev() {
+    for (entry, constant) in chunks_constants.iter().enumerate().rev() {
         if let Some(first) = firsts[entry] {
             for &part in &constant.parts {
                 if firsts[part].is_none_or(|demand| first.0 < demand.0) {
@@ -685,29 +1256,29 @@ pub(crate) fn emit_chunked(
         .collect::<Vec<_>>();
     let mut tables = vec![String::new(); count];
     let mut chunk_constants = vec![Vec::new(); count];
-    if let Some(constants) = &emitter.constants {
-        let mut order = (0..chunks.constants.len()).collect::<Vec<_>>();
-        order.sort_unstable_by_key(|&entry| chunks.constants[entry].declaration.start);
+    if let Some(declarations) = &constants_declarations {
+        let mut order = (0..chunks_constants.len()).collect::<Vec<_>>();
+        order.sort_unstable_by_key(|&entry| chunks_constants[entry].declaration.start);
         for entry in order {
-            let declaration = chunks.constants[entry].declaration.clone();
-            tables[owners[entry].0].push_str(&constants.declarations[declaration]);
-            chunk_roots[owners[entry].0].extend(&chunks.constants[entry].runtime);
+            let declaration = chunks_constants[entry].declaration.clone();
+            tables[owners[entry].0].push_str(&declarations[declaration]);
+            chunk_roots[owners[entry].0].extend(&chunks_constants[entry].runtime);
             chunk_constants[owners[entry].0].push(ChunkConstant {
-                label: std::mem::take(&mut chunks.constants[entry].label),
+                label: std::mem::take(&mut chunks_constants[entry].label),
                 first: firsts[entry],
             });
         }
     }
     #[cfg(debug_assertions)]
     for table in &tables {
-        check_runtime_reads(table, &[], &emitter.runtime, &emitter.core_cells);
+        check_runtime_reads(table, &[], &merged_runtime, &core_cells);
     }
     startup_head.push_str(&tables[STARTUP.0]);
     let mut placed = (0..count).map(|_| None).collect::<Vec<_>>();
     for (chunk, body) in bodies.into_iter().enumerate() {
         placed[renumbered[chunk].0] = Some(body);
     }
-    for (chunk, _) in &mut chunks.targets {
+    for (chunk, _) in &mut chunks_targets {
         *chunk = renumbered[chunk.0];
     }
     let mut written = placed
@@ -767,10 +1338,13 @@ pub(crate) fn emit_chunked(
             constant_entry(name).map(|entry| owners[entry])
         }
     };
-    let mut read = vec![BTreeSet::new(); count];
-    for (chunk, text) in written.iter().enumerate() {
+    let scan_jobs: Vec<(u64, &Written)> = written
+        .iter()
+        .map(|text| ((text.head.len() + text.run.len()) as u64, text))
+        .collect();
+    let mut read: Vec<BTreeSet<String>> = crate::scheduler::map(slots, scan_jobs, |text| {
         #[cfg(debug_assertions)]
-        check_runtime_reads(&text.run, &text.raw, &emitter.runtime, &emitter.core_cells);
+        check_runtime_reads(&text.run, &text.raw, &merged_runtime, &core_cells);
         let mut names = BTreeSet::new();
         for (source, skipped) in [(&text.head, &Vec::new()), (&text.run, &text.raw)] {
             for (range, word) in scanned_names(source, skipped) {
@@ -780,8 +1354,8 @@ pub(crate) fn emit_chunked(
                 }
             }
         }
-        read[chunk] = names;
-    }
+        names
+    });
     // Each chunk's runtime: a slice of the units of its signature that
     // returns the bindings its own code and other chunks read
     // (docs/code-splitting.md, "What a chunk file contains"),
@@ -902,7 +1476,7 @@ pub(crate) fn emit_chunked(
             helpers_text.push_str(PRELUDE_TRUTH);
         }
         helpers_text.push_str(&helpers(names.contains("host"), names.contains("pkg")));
-        if chunk == STARTUP.0 && chunks.lazy {
+        if chunk == STARTUP.0 && chunks_lazy {
             helpers_text.push_str(LAZY);
         }
         text.head.insert_str(0, &helpers_text);
@@ -992,7 +1566,7 @@ pub(crate) fn emit_chunked(
             }
         }
     }
-    for (chunk, name) in &chunks.targets {
+    for (chunk, name) in &chunks_targets {
         globals[chunk.0].insert(name.clone());
         exports[chunk.0].insert(name.clone());
     }
@@ -1030,12 +1604,11 @@ pub(crate) fn emit_chunked(
             ]
         })
         .collect::<Vec<_>>();
-    let raw_js = emitter.has_raw_js;
     // Each compiler name's final spelling: a short name at `Advanced`, the
     // hygiene prefix and the name where raw text could capture it, else the
     // name.
     let (renamed, table, prefix) = if terse {
-        let (renamed, names) = crate::terse::terse_texts(&texts);
+        let (renamed, names) = crate::terse::terse_texts_with_slots(&texts, slots);
         let names = names
             .into_iter()
             .map(|(word, name)| (word.to_owned(), name))
@@ -1048,21 +1621,22 @@ pub(crate) fn emit_chunked(
                 .map(|range| &text.run[range.clone()])
                 .chain(text.runtime.iter().map(|range| &text.head[range.clone()]))
         }));
-        let renamed = texts
+        let rename_jobs: Vec<(u64, &Text<'_>)> = texts
             .iter()
-            .map(|text| {
-                let skipped = text
-                    .raw
-                    .iter()
-                    .cloned()
-                    .chain(text.runtime.clone())
-                    .collect::<Vec<_>>();
-                crate::terse::rename_compiler_names(text.source, &skipped, |word| {
-                    format!("{prefix}{word}")
-                })
-                .0
-            })
+            .map(|text| (text.source.len() as u64, text))
             .collect();
+        let renamed = crate::scheduler::map(slots, rename_jobs, |text| {
+            let skipped = text
+                .raw
+                .iter()
+                .cloned()
+                .chain(text.runtime.clone())
+                .collect::<Vec<_>>();
+            crate::terse::rename_compiler_names(text.source, &skipped, |word| {
+                format!("{prefix}{word}")
+            })
+            .0
+        });
         (renamed, None, prefix)
     } else {
         let renamed = texts.iter().map(|text| text.source.to_owned()).collect();

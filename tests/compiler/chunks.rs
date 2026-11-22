@@ -4315,3 +4315,129 @@ fn a_lazy_operation_works_on_a_startup_record() {
     let (record, _) = chunk_files(&analyze(RECORD));
     assert_eq!(record, printed("app.main.js", r"7\n"));
 }
+
+/// Multi-chunk parallel release emission (`--jobs 4`) preserves chunk
+/// placement, canonical constant merging (including lazy cells, hoisted
+/// methods, shapes, and cross-chunk readers), reflection fallback, raw `js*`
+/// hygiene, and runtime results across every optimization level
+/// (light-cljs-1097).
+#[test]
+fn parallel_chunked_emission_matches_serial_runtime_and_placement() {
+    let slots4 = light_cljs::scheduler::Slots::new(4).unwrap();
+    let reports = format!(
+        "(ns app.reports)\n\
+         (def big [{} :big-key])\n\
+         (defn start [n]\n\
+           (let [g (fn ([] :in-method) ([x] (+ x (count big))))]\n\
+             (pr-str [(g) (g n) (nth big n) (peek big) {{:shape-key n}}\n\
+                     (count (identity {{:shape-key n :r1 1 :r2 2 :r3 3 :r4 4 :r5 5 :r6 6 :r7 7 :r8 8}}))])))\n",
+        (0..1100)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let large_startup = format!(
+        "(ns app.main (:require [light.lazy :as lazy]))\n\
+         {}\n\
+         (def editor (lazy/loadable app.editor/start))\n\
+         (def reports (lazy/loadable app.reports/start))\n\
+         (defn start []\n\
+           (-> (lazy/load editor)\n\
+               (.then (fn [f] (js/console.log (f (+ 1 (count s19)))) (lazy/load reports)))\n\
+               (.then (fn [f] (js/console.log (f 2)) nil))))\n\
+         start\n",
+        (0..20)
+            .map(|i| format!("(def s{i} [:startup-k{i} :shared-startup {i}])"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let programs = [
+        ("constants", fixture_program("constants")),
+        (
+            "methods-shapes-lazy",
+            analyze(&[
+                ("app/main.cljs", &large_startup),
+                (
+                    "app/editor.cljs",
+                    "(ns app.editor)\n\
+                     (defn start [n]\n\
+                       (let [f (fn ([] :in-method) ([x] [x :in-method :editor-method :shared-startup]))]\n\
+                         (pr-str [(f) (f n) {:shape-key n :other-key (inc n)}])))\n",
+                ),
+                ("app/reports.cljs", &reports),
+            ]),
+        ),
+        (
+            "reflection-and-raw-js",
+            analyze(&[
+                (
+                    "app/main.cljs",
+                    "(ns app.main (:require [light.lazy :as lazy]))\n\
+                     (def editor (lazy/loadable app.editor/start))\n\
+                     (defn start []\n\
+                       (-> (lazy/load editor)\n\
+                           (.then (fn [f] (js/console.log (str *ns* \":\" (f))) nil))))\n\
+                     start\n",
+                ),
+                (
+                    "app/editor.cljs",
+                    "(ns app.editor)\n\
+                     (defn start [] (let [x 41] (js* \"~{} = ~{} + 1\" x x) (str *ns* \"=\" x)))\n",
+                ),
+            ]),
+        ),
+    ];
+
+    for (label, program) in &programs {
+        for level in OptimizationLevel::ALL {
+            for pseudo_names in [false, true] {
+                if !level.advanced() && pseudo_names {
+                    continue;
+                }
+                let mut opts = ApplicationOptions::new(level);
+                opts.pseudo_names = pseudo_names;
+                let prepared = prepare_application(program, opts);
+                let serial = prepared.emit_chunks();
+                let parallel = prepared.emit_chunks_with_slots(slots4);
+                let parallel2 = prepared.emit_chunks_with_slots(slots4);
+
+                // Deterministic at a given slot count and identical chunk set.
+                assert_eq!(
+                    parallel.files.len(),
+                    serial.files.len(),
+                    "{label} {level} pseudo={pseudo_names}"
+                );
+                let serial_names: Vec<&str> =
+                    serial.files.iter().map(|f| f.name.as_str()).collect();
+                let parallel_names: Vec<&str> =
+                    parallel.files.iter().map(|f| f.name.as_str()).collect();
+                assert_eq!(
+                    parallel_names, serial_names,
+                    "{label} {level} pseudo={pseudo_names}"
+                );
+                for (a, b) in parallel.files.iter().zip(&parallel2.files) {
+                    assert_eq!(a.source, b.source, "{label} non-deterministic {}", a.name);
+                }
+
+                let serial_files: Vec<(&str, &str)> = serial
+                    .files
+                    .iter()
+                    .map(|f| (f.name.as_str(), f.source.as_str()))
+                    .collect();
+                let parallel_files: Vec<(&str, &str)> = parallel
+                    .files
+                    .iter()
+                    .map(|f| (f.name.as_str(), f.source.as_str()))
+                    .collect();
+                let expected = run_modules(&serial_files, &serial.startup().name)
+                    .unwrap_or_else(|e| panic!("serial {label} {level}: {e}"));
+                let actual = run_modules(&parallel_files, &parallel.startup().name)
+                    .unwrap_or_else(|e| panic!("parallel {label} {level}: {e}"));
+                assert_eq!(
+                    actual, expected,
+                    "runtime mismatch {label} {level} pseudo={pseudo_names}"
+                );
+            }
+        }
+    }
+}

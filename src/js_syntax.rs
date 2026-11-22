@@ -2039,7 +2039,6 @@ struct Previous {
 
 /// Summary of the end of a [`TerseWriter`] buffer, used to compute the exact
 /// minimal separator when joining independently rewritten slices.
-#[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
 #[derive(Clone, Copy)]
 pub struct WriterEnd {
     previous: Option<Previous>,
@@ -2049,7 +2048,6 @@ pub struct WriterEnd {
 
 /// First written token (or leading comment) of a rewritten slice, used with
 /// [`WriterEnd`] to join independently rewritten slices safely.
-#[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
 #[derive(Clone, Debug)]
 pub struct FirstToken {
     pub kind: Kind,
@@ -2135,7 +2133,6 @@ impl TerseWriter {
     /// Minimal separator between a slice ending with `prev` and a following
     /// slice starting with `next` (assuming a line break separated their
     /// top-level statements in the original source).
-    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
     pub fn boundary_separator(prev: WriterEnd, next: &FirstToken) -> &'static str {
         if next.is_comment {
             if next.newline_before && !prev.ends_with_newline {

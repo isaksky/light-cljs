@@ -84,7 +84,6 @@ pub(crate) struct StemCounts {
 
 impl StemCounts {
     /// Count `$LKEY` stems in `text` (one slice or chunk of an output).
-    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
     pub(crate) fn of(text: &str) -> Self {
         let mut counts = Self::default();
         counts.scan(text);
@@ -113,7 +112,6 @@ impl StemCounts {
     }
 
     /// Merge `other` into `self`.
-    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
     pub(crate) fn merge(&mut self, other: Self) {
         for stem in other.escaped {
             self.escaped.insert(stem);
@@ -278,7 +276,6 @@ impl RuntimeKey {
     /// Equivalent to [`Self::release`] on a single output file whose text is
     /// the concatenation of `pieces` (with total byte length `total_len`),
     /// streaming the pieces directly into SHA-256 without concatenating first.
-    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
     pub(crate) fn release_pieces<'a>(
         pieces: impl IntoIterator<Item = &'a str>,
         total_len: usize,
@@ -333,7 +330,6 @@ impl RuntimeKey {
 
     /// Equivalent to [`Self::shortened`] using pre-merged [`StemCounts`]
     /// counted in parallel across slices or chunks.
-    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
     pub(crate) fn shortened_from_counts(mut self, counts: StemCounts) -> Self {
         self.names = Some(ShortNames::from_counts(counts));
         self
@@ -414,7 +410,6 @@ impl RuntimeKey {
     /// Apply [`Self::apply`] in parallel across `pieces` (split at statement
     /// boundaries, never inside a `$LKEY` identifier or placeholder) and
     /// assemble the result into a single pre-sized [`String`].
-    #[allow(dead_code)] // Wired by light-cljs-1097 parallel release emission
     pub(crate) fn apply_pieces(
         &self,
         pieces: Vec<String>,

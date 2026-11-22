@@ -262,25 +262,82 @@ impl PreparedApplication {
         crate::runtime_slice::EmittedRuntime,
         Option<crate::source_map::SourceMapping>,
     ) {
-        let (code, mut runtime, mut mapping) =
-            crate::emitter::emit_application(&self.program, self.application(), module, mapped);
+        self.emit_with_slots(module, mapped, crate::scheduler::Slots::ONE)
+    }
+
+    fn emit_with_slots(
+        &self,
+        module: bool,
+        mapped: bool,
+        slots: crate::scheduler::Slots,
+    ) -> (
+        String,
+        crate::runtime_slice::EmittedRuntime,
+        Option<crate::source_map::SourceMapping>,
+    ) {
+        let (emitted, mut runtime, mut mapping) = crate::emitter::emit_application_with_slots(
+            &self.program,
+            self.application(),
+            module,
+            mapped,
+            self.short_names && !mapped,
+            slots,
+        );
         // The output writer: the build's key for its placeholder
         // (docs/value-layout.md, section 1).
-        let key = crate::runtime_key::RuntimeKey::release(
-            [code.as_str()],
-            self.level,
-            self.runtime_key.as_deref(),
-        );
-        // At `Advanced` without pseudo-names every keyed name is short
-        // (docs/value-layout.md, section 1, "Short names at `:advanced`").
-        let key = if self.short_names {
-            key.shortened([code.as_str()])
-        } else {
-            key
-        };
-        let code = match &mut mapping {
-            Some(mapping) => key.apply_mapped(&code, mapping),
-            None => key.apply(&code),
+        let (code, key) = match emitted {
+            crate::emitter::EmittedCode::Single(code) => {
+                let key = crate::runtime_key::RuntimeKey::release(
+                    [code.as_str()],
+                    self.level,
+                    self.runtime_key.as_deref(),
+                );
+                // At `Advanced` without pseudo-names every keyed name is short
+                // (docs/value-layout.md, section 1, "Short names at `:advanced`").
+                let key = if self.short_names {
+                    key.shortened([code.as_str()])
+                } else {
+                    key
+                };
+                let code = match &mut mapping {
+                    Some(mapping) => key.apply_mapped(&code, mapping),
+                    None => key.apply(&code),
+                };
+                (code, key)
+            }
+            crate::emitter::EmittedCode::Pieces {
+                pieces,
+                total_len,
+                lkey_counts,
+            } => {
+                debug_assert!(mapping.is_none());
+                let key = crate::runtime_key::RuntimeKey::release_pieces(
+                    pieces.iter().map(String::as_str),
+                    total_len,
+                    self.level,
+                    self.runtime_key.as_deref(),
+                );
+                let key = if self.short_names {
+                    let counts = lkey_counts.unwrap_or_else(|| {
+                        let jobs: Vec<(u64, &str)> = pieces
+                            .iter()
+                            .map(|p| (p.len() as u64, p.as_str()))
+                            .collect();
+                        let per_piece =
+                            crate::scheduler::map(slots, jobs, crate::runtime_key::StemCounts::of);
+                        let mut merged = crate::runtime_key::StemCounts::default();
+                        for c in per_piece {
+                            merged.merge(c);
+                        }
+                        merged
+                    });
+                    key.shortened_from_counts(counts)
+                } else {
+                    key
+                };
+                let code = key.apply_pieces(pieces, slots);
+                (code, key)
+            }
         };
         if self.short_names {
             crate::runtime_slice::shortened_bytes(
@@ -290,6 +347,11 @@ impl PreparedApplication {
             );
         }
         (code, runtime, mapping)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn application_for_test(&self) -> crate::emitter::Application<'_> {
+        self.application()
     }
     /// The short names [`PreparedApplication::emit_js`]'s output writes for its
     /// keyed names, each with the whole keyed name it stands for, both with
@@ -346,10 +408,20 @@ impl PreparedApplication {
     pub fn emit_js(&self) -> String {
         self.emit(false, false).0
     }
+    /// [`PreparedApplication::emit_js`] running on `slots` CPU work slots
+    /// (`--jobs N`).
+    pub fn emit_js_with_slots(&self, slots: crate::scheduler::Slots) -> String {
+        self.emit_with_slots(false, false, slots).0
+    }
     /// One ES module for a bundler; see [`crate::emitter::emit_esm`]. Its
     /// runtime is the one [`PreparedApplication::emit_js`] embeds.
     pub fn emit_esm(&self) -> String {
         self.emit(true, false).0
+    }
+    /// [`PreparedApplication::emit_esm`] running on `slots` CPU work slots
+    /// (`--jobs N`).
+    pub fn emit_esm_with_slots(&self, slots: crate::scheduler::Slots) -> String {
+        self.emit_with_slots(true, false, slots).0
     }
     /// One ES module per chunk of the program's [`crate::chunks::plan`]
     /// (docs/code-splitting.md, "Phase 2"), in plan order: startup first,
@@ -369,6 +441,14 @@ impl PreparedApplication {
     pub fn emit_chunks(&self) -> crate::chunks::ChunkedOutput {
         self.emit_chunks_reported().0
     }
+    /// [`PreparedApplication::emit_chunks`] running on `slots` CPU work slots
+    /// (`--jobs N`).
+    pub fn emit_chunks_with_slots(
+        &self,
+        slots: crate::scheduler::Slots,
+    ) -> crate::chunks::ChunkedOutput {
+        self.emit_chunks_reported_with_slots(slots).0
+    }
     /// [`PreparedApplication::emit_chunks`] and, for an `Advanced` build of
     /// more than one chunk, which runtime units each chunk embeds and why
     /// (`--size-report` with `--out-dir`). Every other build embeds the
@@ -379,29 +459,41 @@ impl PreparedApplication {
         crate::chunks::ChunkedOutput,
         Option<crate::ChunkedRetention>,
     ) {
+        self.emit_chunks_reported_with_slots(crate::scheduler::Slots::ONE)
+    }
+    /// [`PreparedApplication::emit_chunks_reported`] running on `slots` CPU
+    /// work slots (`--jobs N`).
+    pub fn emit_chunks_reported_with_slots(
+        &self,
+        slots: crate::scheduler::Slots,
+    ) -> (
+        crate::chunks::ChunkedOutput,
+        Option<crate::ChunkedRetention>,
+    ) {
         let plan = crate::chunks::plan(&self.program, self);
-        if let Some(output) = self.write_chunks(&plan, false) {
+        if let Some(output) = self.write_chunks_with_slots(&plan, false, slots) {
             return output;
         }
         let plan = crate::chunks::namespace_plan(&self.program, self);
-        self.write_chunks(&plan, true)
+        self.write_chunks_with_slots(&plan, true, slots)
             .expect("a plan that moves no definition is written")
     }
     /// The files of `plan` and their runtimes' report, or `None` when its
     /// forms reach reflection and it moves a definition out of its
     /// namespace's chunk or drops a chunk. `reflective`: the forms are known
     /// to reach reflection.
-    fn write_chunks(
+    fn write_chunks_with_slots(
         &self,
         plan: &crate::chunks::ChunkPlan,
         reflective: bool,
+        slots: crate::scheduler::Slots,
     ) -> Option<(
         crate::chunks::ChunkedOutput,
         Option<crate::ChunkedRetention>,
     )> {
         if plan.chunks.len() == 1 {
             let emitted = vec![crate::emitter::EmittedChunk {
-                source: self.emit_esm(),
+                source: self.emit_esm_with_slots(slots),
                 imports: Vec::new(),
                 runtime: Default::default(),
                 constants: Vec::new(),
@@ -410,8 +502,13 @@ impl PreparedApplication {
             return Some((output, None));
         }
         // The constant table and the runtime may add chunks to the plan.
-        let (plan, mut emitted) =
-            crate::emitter::emit_chunked(&self.program, self.application(), plan, reflective)?;
+        let (plan, mut emitted) = crate::emitter::emit_chunked_with_slots(
+            &self.program,
+            self.application(),
+            plan,
+            reflective,
+            slots,
+        )?;
         // The chunks of one build share its key, derived from all of them.
         let key = crate::runtime_key::RuntimeKey::release(
             emitted.iter().map(|chunk| chunk.source.as_str()),
@@ -420,20 +517,53 @@ impl PreparedApplication {
         );
         // And one table of short names, from all of them.
         let key = if self.short_names {
-            key.shortened(emitted.iter().map(|chunk| chunk.source.as_str()))
+            if slots == crate::scheduler::Slots::ONE {
+                key.shortened(emitted.iter().map(|chunk| chunk.source.as_str()))
+            } else {
+                let jobs: Vec<(u64, &str)> = emitted
+                    .iter()
+                    .map(|chunk| (chunk.source.len() as u64, chunk.source.as_str()))
+                    .collect();
+                let counts = crate::scheduler::map(slots, jobs, crate::runtime_key::StemCounts::of);
+                let mut merged = crate::runtime_key::StemCounts::default();
+                for c in counts {
+                    merged.merge(c);
+                }
+                key.shortened_from_counts(merged)
+            }
         } else {
             key
         };
-        for chunk in &mut emitted {
-            chunk.source = key.apply(&chunk.source);
-            if self.short_names {
-                let runtime = &mut chunk.runtime;
-                crate::runtime_slice::shortened_bytes(
-                    &mut runtime.bytes,
-                    &mut runtime.unit_bytes,
-                    &key,
-                );
+        if slots == crate::scheduler::Slots::ONE {
+            for chunk in &mut emitted {
+                chunk.source = key.apply(&chunk.source);
+                if self.short_names {
+                    let runtime = &mut chunk.runtime;
+                    crate::runtime_slice::shortened_bytes(
+                        &mut runtime.bytes,
+                        &mut runtime.unit_bytes,
+                        &key,
+                    );
+                }
             }
+        } else {
+            let apply_jobs: Vec<(u64, crate::emitter::EmittedChunk)> = emitted
+                .into_iter()
+                .map(|chunk| (chunk.source.len() as u64, chunk))
+                .collect();
+            let short_names = self.short_names;
+            emitted = crate::scheduler::map(slots, apply_jobs, |mut chunk| {
+                chunk.source = key.apply(&chunk.source);
+                if short_names {
+                    let runtime = &mut chunk.runtime;
+                    crate::runtime_slice::shortened_bytes(
+                        &mut runtime.bytes,
+                        &mut runtime.unit_bytes,
+                        &key,
+                    );
+                }
+                chunk
+            });
         }
         let report = self.level.advanced().then(|| {
             let chunks = plan
@@ -459,9 +589,27 @@ impl PreparedApplication {
         let (code, _, mapping) = self.emit(false, true);
         (code, mapping.expect("a mapped emission"))
     }
+    /// [`PreparedApplication::emit_js_mapped`] running on `slots` CPU work
+    /// slots (`--jobs N`).
+    pub fn emit_js_mapped_with_slots(
+        &self,
+        slots: crate::scheduler::Slots,
+    ) -> (String, crate::source_map::SourceMapping) {
+        let (code, _, mapping) = self.emit_with_slots(false, true, slots);
+        (code, mapping.expect("a mapped emission"))
+    }
     /// [`PreparedApplication::emit_esm`] (the same text) and its source map.
     pub fn emit_esm_mapped(&self) -> (String, crate::source_map::SourceMapping) {
         let (code, _, mapping) = self.emit(true, true);
+        (code, mapping.expect("a mapped emission"))
+    }
+    /// [`PreparedApplication::emit_esm_mapped`] running on `slots` CPU work
+    /// slots (`--jobs N`).
+    pub fn emit_esm_mapped_with_slots(
+        &self,
+        slots: crate::scheduler::Slots,
+    ) -> (String, crate::source_map::SourceMapping) {
+        let (code, _, mapping) = self.emit_with_slots(true, true, slots);
         (code, mapping.expect("a mapped emission"))
     }
     /// Which runtime units the emitted output embeds, each with its size and

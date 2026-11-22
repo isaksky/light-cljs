@@ -391,16 +391,16 @@ impl CompileFlags {
                 );
             }
             let code = if esm {
-                prepared.emit_esm()
+                prepared.emit_esm_with_slots(self.jobs)
             } else {
-                prepared.emit_js()
+                prepared.emit_js_with_slots(self.jobs)
             };
             return Ok((code, None));
         }
         let (mut code, mapping) = if esm {
-            prepared.emit_esm_mapped()
+            prepared.emit_esm_mapped_with_slots(self.jobs)
         } else {
-            prepared.emit_js_mapped()
+            prepared.emit_js_mapped_with_slots(self.jobs)
         };
         // Sources are named relative to the map's directory, or for an
         // embedded map the current directory.
@@ -833,7 +833,7 @@ fn build_namespace(
     let mut chunk_report = None;
     let (emission, write) = if let Some(out_dir) = out_dir {
         let started = timer(&stats);
-        let (chunks, report) = prepared.emit_chunks_reported();
+        let (chunks, report) = prepared.emit_chunks_reported_with_slots(flags.jobs);
         let emission = elapsed(started);
         let started = timer(&stats);
         let manifest = chunks.manifest();

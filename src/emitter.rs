@@ -23,7 +23,9 @@ use crate::source_map::{Mark, Marks, SourceMapping};
 use crate::value_hash::ConstantHashes;
 
 mod chunked;
-pub(crate) use chunked::{ChunkConstant, EmittedChunk, emit_chunked};
+mod parallel;
+pub(crate) use chunked::{ChunkConstant, EmittedChunk, emit_chunked_with_slots};
+pub(crate) use parallel::{EmittedCode, emit_application_with_slots};
 
 #[cfg(test)]
 thread_local! {
@@ -481,6 +483,8 @@ pub(crate) fn emit_reader_registration(
             function_names: None,
             js_exposed_locals: None,
             unit_root: None,
+            shared_tables: None,
+            constant_slice: None,
         },
         true,
     );
@@ -923,6 +927,8 @@ fn emit_js_mode(
                 function_names,
                 js_exposed_locals: shared_exposed,
                 unit_root,
+                shared_tables: None,
+                constant_slice: None,
             },
             register_namespaces,
         );
@@ -1608,24 +1614,65 @@ fn expr_reads_runtime(kind: &ExprKind) -> bool {
     ) || matches!(kind, ExprKind::Fn { methods, .. } if methods.iter().any(|m| m.rest.is_some()))
 }
 
+/// Scan `program.exprs` once to populate `js_exposed_locals` and/or
+/// `assignable_locals`.
+fn scan_local_flags(
+    program: &Program,
+    compute_exposed: bool,
+    compute_assignable: bool,
+) -> (Vec<bool>, Vec<bool>) {
+    let mut exposed = Vec::new();
+    let mut assignable = if compute_assignable {
+        vec![false; program.locals.len() + 1]
+    } else {
+        Vec::new()
+    };
+    for expr in program.exprs.iter() {
+        match &expr.kind {
+            ExprKind::JsTemplate { args, .. } => {
+                for &arg in args {
+                    if let ExprKind::Local(local) = program.exprs[arg.0].kind {
+                        if compute_exposed {
+                            if exposed.is_empty() {
+                                exposed.resize(program.locals.len(), false);
+                            }
+                            exposed[local.0] = true;
+                        }
+                        if compute_assignable {
+                            assignable[local.0] = true;
+                        }
+                    }
+                }
+            }
+            ExprKind::Fn { methods, .. } if compute_assignable => {
+                for method in methods {
+                    for param in method.params.iter().chain(&method.rest) {
+                        assignable[param.0] = true;
+                    }
+                }
+            }
+            ExprKind::Reify { methods, .. }
+            | ExprKind::DefType { methods, .. }
+            | ExprKind::ExtendType { methods, .. }
+                if compute_assignable =>
+            {
+                for (_, method) in methods {
+                    for param in method.params.iter().chain(&method.rest) {
+                        assignable[param.0] = true;
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+    (exposed, assignable)
+}
+
 /// Locals passed directly as arguments to a `js*` template in `program`,
 /// which raw JavaScript may assign, so their declarations use `let` instead
 /// of `const`. Empty when no local is exposed.
 fn scan_js_exposed_locals(program: &Program) -> Vec<bool> {
-    let mut exposed = Vec::new();
-    for expr in program.exprs.iter() {
-        if let ExprKind::JsTemplate { args, .. } = &expr.kind {
-            for &arg in args {
-                if let ExprKind::Local(local) = program.exprs[arg.0].kind {
-                    if exposed.is_empty() {
-                        exposed.resize(program.locals.len(), false);
-                    }
-                    exposed[local.0] = true;
-                }
-            }
-        }
-    }
-    exposed
+    scan_local_flags(program, true, false).0
 }
 
 /// Locals passed directly to a `js*` template reachable from `root`, used for
@@ -1701,6 +1748,156 @@ fn write_member(out: &mut String, name: &str) {
     let keyed = crate::analyzer::keyed_name(name);
     write_string(out, name.encode_utf16(), !keyed);
     out.push(']');
+}
+
+fn record_kit_parts(record_kits: [bool; 2], inference: Option<&Inference>) -> (bool, bool) {
+    let [equiv, hash] = record_kits;
+    let hash = hash && inference.is_some_and(|inference| inference.facts().core_protocols_intact());
+    (equiv, hash)
+}
+
+fn record_direct_runtime_read(
+    runtime: &mut RuntimeRoots,
+    binding: &'static str,
+    site: Option<ExprId>,
+) -> String {
+    let resolved = RuntimeName::direct(binding, None);
+    runtime.record(resolved, site, NameUse::Value);
+    let manifest = RuntimeManifest::embedded();
+    if manifest.is_core_dispatcher(binding) || manifest.is_core_protocol(binding) {
+        runtime.record(RuntimeName::direct("extendType", None), site, NameUse::Keep);
+    }
+    resolved.to_string()
+}
+
+fn write_record_kit_into(
+    program: &Program,
+    out: &mut String,
+    expr: ExprId,
+    equiv: bool,
+    hash: bool,
+    runtime: &mut RuntimeRoots,
+) {
+    let ExprKind::DefType { global, layout, .. } = &program.exprs[expr.0].kind else {
+        unreachable!("a record definition")
+    };
+    let binding = &program.globals[global.0];
+    let fields = &layout.fields;
+    let members: Vec<String> = fields
+        .iter()
+        .map(|field| crate::analyzer::munge_js_member(field))
+        .collect();
+    out.push('[');
+    if equiv {
+        let equal_pair = record_direct_runtime_read(runtime, "equalPair", Some(expr));
+        out.push_str(
+            "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && this.constructor === a1.constructor",
+        );
+        for member in members.iter().map(String::as_str).chain(["__extmap"]) {
+            out.push_str(" && ");
+            out.push_str(&equal_pair);
+            out.push_str("(this");
+            write_member(out, member);
+            out.push_str(", a1");
+            write_member(out, member);
+            out.push(')');
+        }
+        out.push_str("; }]");
+    }
+    if hash {
+        if equiv {
+            out.push_str(", ");
+        }
+        let to_array = record_direct_runtime_read(runtime, "toArray", Some(expr));
+        let hash_fn =
+            (!fields.is_empty()).then(|| record_direct_runtime_read(runtime, "hash", Some(expr)));
+        let record_entries_hash =
+            record_direct_runtime_read(runtime, "recordEntriesHash", Some(expr));
+        out.push_str("[\"IHash/-hash\", 1, function() { const h = this");
+        write_member(out, "__hash");
+        // The shared method reads every field and the extension map's
+        // entries (`recordEntries`) before it hashes any of them.
+        out.push_str("; if (h != null) return h; const ");
+        for (index, member) in members.iter().enumerate() {
+            write!(out, "v{index} = this").unwrap();
+            write_member(out, member);
+            out.push_str(", ");
+        }
+        out.push_str("e = this");
+        write_member(out, "__extmap");
+        out.push_str(", x = e == null ? null : ");
+        out.push_str(&to_array);
+        out.push_str("(e); let r = ");
+        if fields.is_empty() {
+            out.push('0');
+        }
+        for (index, field) in fields.iter().enumerate() {
+            if index > 0 {
+                out.push_str(" + ");
+            }
+            let units: Vec<u16> = field.encode_utf16().collect();
+            let key = crate::value_hash::keyword(None, &units);
+            write!(out, "({key} ^ {}(v{index}))", hash_fn.as_deref().unwrap()).unwrap();
+        }
+        // Each term is an `int32`, so their sum wraps as the shared
+        // method's running `| 0` does.
+        if fields.len() > 1 {
+            out.push_str(" | 0");
+        }
+        // Then the extension map's entries, as the shared method adds them.
+        out.push_str("; if (x != null) r = ");
+        out.push_str(&record_entries_hash);
+        out.push_str("(x, r); return this");
+        write_member(out, "__hash");
+        let name = format!("{}/{}", binding.namespace, binding.name);
+        let units: Vec<u16> = name.encode_utf16().collect();
+        let type_hash = crate::value_hash::string_hash(&units);
+        write!(out, " = r ^ {type_hash}; }}]").unwrap();
+    }
+    out.push(']');
+}
+
+#[allow(clippy::too_many_arguments)]
+fn splice_record_kits_into(
+    program: &Program,
+    output: &mut String,
+    raw_segments: &mut [std::ops::Range<usize>],
+    marks: Option<&mut [Mark]>,
+    sites: Vec<RecordKitSite>,
+    equiv: bool,
+    hash: bool,
+    runtime: &mut RuntimeRoots,
+) {
+    if sites.is_empty() || (!equiv && !hash) {
+        return;
+    }
+    let track_shifts = !raw_segments.is_empty() || marks.is_some();
+    let mut shifts = Vec::with_capacity(if track_shifts { sites.len() } else { 0 });
+    let original = std::mem::take(output);
+    let mut spliced = String::with_capacity(original.len() + sites.len() * 256);
+    let mut cursor = 0;
+    let mut delta = 0isize;
+    for site in sites {
+        debug_assert!(site.range.start >= cursor);
+        spliced.push_str(&original[cursor..site.range.start]);
+        let before = spliced.len();
+        spliced.push_str(site.prefix);
+        write_record_kit_into(program, &mut spliced, site.expr, equiv, hash, runtime);
+        let inserted = spliced.len() - before;
+        delta += inserted as isize - site.range.len() as isize;
+        if track_shifts {
+            shifts.push((site.range.end, delta));
+        }
+        cursor = site.range.end;
+    }
+    spliced.push_str(&original[cursor..]);
+    *output = spliced;
+    if track_shifts {
+        shift_ranges(raw_segments, &shifts);
+        if let Some(marks) = marks {
+            shift_marks(marks, &shifts);
+        }
+    }
 }
 
 /// Debug check that every runtime read in emitted code outside raw JavaScript
@@ -2202,6 +2399,30 @@ pub(crate) fn constant_nodes(
     nodes
 }
 
+/// Named-literal lookup in [`ConstantTable`]: dense by `NamedLiteralId` in
+/// serial whole-program emission, or compact sparse map per parallel slice.
+enum NamedConstantMap {
+    Dense(Vec<[Option<usize>; 2]>),
+    Sparse(HashMap<(NamedLiteralId, bool), usize>),
+}
+
+/// Precomputed or lazily populated constant-node classification table.
+enum ConstantClasses<'a> {
+    Owned(Vec<ConstantClass>),
+    Shared(&'a [ConstantClass]),
+}
+
+/// One constant entry recorded inside a parallel slice before ordered
+/// canonical merge across slices (`crate::emitter::parallel` and `chunked`).
+struct LocalConstant<'a> {
+    key: ConstantKey<'a>,
+    lazy: bool,
+    value: String,
+    finalized_order: usize,
+    marks: Vec<Mark>,
+    record_kit_sites: Vec<RecordKitSite>,
+}
+
 /// The constant table of `Advanced` application output
 /// (docs/advanced-optimization.md, "Phase 1 constant table extension
 /// points" and "Constant collection literals"). Every distinct constant the
@@ -2213,14 +2434,14 @@ pub(crate) fn constant_nodes(
 /// initializer is written before the entry is numbered, so the constants it
 /// reads come first. Only emitted sites add entries, so constants are inert
 /// for reachability.
-struct ConstantTable<'a> {
-    /// The declarations, one line each.
+struct ConstantTable<'p, 's> {
+    /// The declarations, one line each (serial mode only).
     declarations: String,
     /// Entry numbers by key.
-    numbers: HashMap<ConstantKey<'a>, usize>,
+    numbers: HashMap<ConstantKey<'p>, usize>,
     /// Entry numbers by `NamedLiteralId` and kind (keyword, symbol), so a
     /// repeated site reads its number without hashing its spelling.
-    named: Vec<[Option<usize>; 2]>,
+    named: NamedConstantMap,
     /// Whether each entry, by number, is a lazy cell.
     lazy: Vec<bool>,
     /// The number of composite entries.
@@ -2228,12 +2449,20 @@ struct ConstantTable<'a> {
     /// The number of hoisted method entries ([`ConstantKey::Method`]).
     functions: usize,
     /// What the pool knows about each expression, by `ExprId`.
-    classes: Vec<ConstantClass>,
+    classes: ConstantClasses<'s>,
     /// The entries' hashes, which composite initializers embed
     /// (light-cljs-219), when the program extends no core protocol beyond its
     /// own types: then the runtime's `hash` of a constant is a function of
     /// its structure, which `crate::value_hash` computes.
-    hashes: Option<ConstantHashes<'a>>,
+    hashes: Option<ConstantHashes<'p>>,
+    /// When `Some(s)`, slice-local parallel constant table naming constants
+    /// `k{s}_{local}` / `c{s}_{local}` and collecting entries for ordered merge.
+    slice_id: Option<usize>,
+    /// Slice-local entries in local ID order (populated only when `slice_id.is_some()`).
+    entries: Vec<LocalConstant<'p>>,
+    /// Monotonic counter recording entry finalization order (children before
+    /// composites, method bodies after the constants they reference).
+    next_finalized: usize,
 }
 
 /// A test of membership in a set literal that emission writes as
@@ -2333,7 +2562,7 @@ enum EntrySlots {
     None,
 }
 
-struct Emitter<'a> {
+struct Emitter<'a, 's> {
     native_forms: bool,
     /// Native units bind their immutable core functions once per factory call.
     native_core_bindings: Vec<&'static str>,
@@ -2396,7 +2625,7 @@ struct Emitter<'a> {
     /// direct read that initializes `core$<name>`.
     core_cells: Vec<(&'static str, RuntimeName)>,
     /// `Some` at `Advanced`: literal keywords and symbols read table constants.
-    constants: Option<ConstantTable<'a>>,
+    constants: Option<ConstantTable<'a, 's>>,
     output: String,
     indent: usize,
     captures: Vec<(LocalId, RecurTargetId)>,
@@ -2433,8 +2662,8 @@ struct Emitter<'a> {
     /// whether the output names it, so that its method assigns it `this`.
     receivers: Vec<(LocalId, bool)>,
     /// At `Advanced`: the dispatcher global of each program protocol method,
-    /// by key ([`Emitter::defined_dispatcher`]), built on first use.
-    dispatchers: Option<HashMap<&'a str, GlobalId>>,
+    /// by key ([`Emitter::defined_dispatcher`]), built on first use or shared.
+    dispatchers: Dispatchers<'a, 's>,
     raw_segments: Vec<std::ops::Range<usize>>,
     /// Every runtime name written so far, the roots of an `Advanced` slice.
     runtime: RuntimeRoots,
@@ -2471,26 +2700,26 @@ struct Emitter<'a> {
     /// its declarations.
     constant_marks: Vec<Mark>,
     /// With a source map: the names of functions ([`FunctionNames`]).
-    function_names: Option<&'a FunctionNames<'a>>,
+    function_names: Option<&'s FunctionNames<'a>>,
     /// In a chunked build, the chunk being written and what the chunks
     /// share ([`chunked`]).
-    chunks: Option<chunked::Chunks<'a>>,
+    chunks: Option<chunked::Chunks<'s>>,
     /// At `Advanced`: what each expression's evaluation reads or creates,
-    /// by `ExprId`, as [`Emitter::scope_flags`] computes it on first use.
-    scope_flags: Vec<u8>,
-    /// The operand local that holds each local of a value-position `let`
-    /// being written ([`Emitter::hoisted_let`]), by `LocalId`, else
-    /// [`NO_OPERAND`].
-    operand_locals: Vec<u32>,
+    /// by `ExprId`, as [`Emitter::scope_flags`] computes it on first use or
+    /// reads from shared precomputed tables.
+    scope_flags: ScopeFlags<'s>,
+    /// Active `(LocalId, operand_index)` stack for value-position `let`s
+    /// currently being written ([`Emitter::hoisted_let`]).
+    operand_locals: Vec<(LocalId, u32)>,
     /// The number of labeled statements being written in the function
     /// being written, which numbers their labels: blocks of lifted
     /// expressions ([`Emitter::lifted`]) and, at `Advanced`, loops
     /// ([`Emitter::iteration`]).
     lifts: usize,
-    /// At `Advanced`, by `RecurTargetId`, the number of the label of the
-    /// loop being written ([`Emitter::iteration`]), which its `recur`s
+    /// At `Advanced`, active `(RecurTargetId, label)` stack for enclosing
+    /// loops being written ([`Emitter::iteration`]), which their `recur`s
     /// continue.
-    loop_labels: Vec<u32>,
+    loop_labels: Vec<(RecurTargetId, u32)>,
     /// The lifted first operand of the statement being written and the
     /// operand local that holds its value ([`Emitter::lift_head`]).
     substitute: Option<(ExprId, usize)>,
@@ -2498,11 +2727,11 @@ struct Emitter<'a> {
     substituted: bool,
     /// By `LocalId`, then one more entry: whether something may assign the
     /// local once bound ([`Emitter::stable_local`]), built on first use by
-    /// an application's emission.
-    assignable_locals: Vec<bool>,
+    /// an application's emission or shared across parallel slices.
+    assignable_locals: LocalFlags<'s>,
     /// Locals passed directly to `js*` templates, so their declarations emit
     /// `let` instead of `const` ([`Emitter::js_exposed_local`]).
-    js_exposed_locals: JsExposedLocals<'a>,
+    js_exposed_locals: JsExposedLocals<'s>,
     /// Root expression when emitting a compile-time or standalone interactive
     /// unit whose `Program` retains an unrelated frozen prefix.
     unit_root: Option<ExprId>,
@@ -2568,21 +2797,47 @@ enum JsExposedLocals<'a> {
     Unit(HashSet<LocalId>),
 }
 
+/// Pre-scanned or lazily computed per-local boolean flags
+/// ([`Emitter::stable_local`]).
+enum LocalFlags<'a> {
+    Pending,
+    Shared(&'a [bool]),
+    Owned(Vec<bool>),
+}
+
+/// Pre-scanned or lazily computed protocol dispatcher map
+/// ([`Emitter::defined_dispatcher`]).
+enum Dispatchers<'a, 's> {
+    Pending,
+    Shared(&'s HashMap<&'a str, GlobalId>),
+    Owned(HashMap<&'a str, GlobalId>),
+}
+
+/// Pre-scanned or lazily computed per-expression scope flags
+/// ([`Emitter::scope_flags`]).
+enum ScopeFlags<'a> {
+    Pending,
+    Shared(&'a [u8]),
+    Owned(Vec<u8>),
+}
+
 /// What a fresh [`Emitter`] writes for ([`Emitter::new`]).
 #[derive(Clone, Copy)]
-struct Setup<'a> {
+struct Setup<'a, 's> {
     demand_roots: bool,
     application_roots: bool,
     module: bool,
     mapped: bool,
     application: Option<Application<'a>>,
     direct: Option<&'a [&'static str]>,
-    function_names: Option<&'a FunctionNames<'a>>,
-    js_exposed_locals: Option<&'a [bool]>,
+    function_names: Option<&'s FunctionNames<'a>>,
+    js_exposed_locals: Option<&'s [bool]>,
     unit_root: Option<ExprId>,
+    shared_tables: Option<&'s parallel::SharedTables<'a>>,
+    constant_slice: Option<usize>,
 }
 
-impl<'a> Emitter<'a> {
+impl<'a, 's> Emitter<'a, 's> {
     #[inline(always)]
     fn note_runtime_expr(&mut self, kind: &ExprKind) {
         if !self.needs_runtime && self.replaced_core.is_none() && expr_reads_runtime(kind) {
@@ -2595,60 +2850,17 @@ impl<'a> Emitter<'a> {
     fn populate_local_flags(&mut self, need_assignable: bool) {
         let program = self.program;
         let compute_exposed = matches!(self.js_exposed_locals, JsExposedLocals::Pending);
-        let compute_assignable =
-            self.assignable_locals.is_empty() && (need_assignable || self.replaced_core.is_some());
+        let compute_assignable = matches!(self.assignable_locals, LocalFlags::Pending)
+            && (need_assignable || self.replaced_core.is_some());
         if !compute_exposed && !compute_assignable {
             return;
         }
-        let mut exposed = Vec::new();
-        let mut assignable = if compute_assignable {
-            vec![false; program.locals.len() + 1]
-        } else {
-            Vec::new()
-        };
-        for expr in program.exprs.iter() {
-            match &expr.kind {
-                ExprKind::JsTemplate { args, .. } => {
-                    for &arg in args {
-                        if let ExprKind::Local(local) = program.exprs[arg.0].kind {
-                            if compute_exposed {
-                                if exposed.is_empty() {
-                                    exposed.resize(program.locals.len(), false);
-                                }
-                                exposed[local.0] = true;
-                            }
-                            if compute_assignable {
-                                assignable[local.0] = true;
-                            }
-                        }
-                    }
-                }
-                ExprKind::Fn { methods, .. } if compute_assignable => {
-                    for method in methods {
-                        for param in method.params.iter().chain(&method.rest) {
-                            assignable[param.0] = true;
-                        }
-                    }
-                }
-                ExprKind::Reify { methods, .. }
-                | ExprKind::DefType { methods, .. }
-                | ExprKind::ExtendType { methods, .. }
-                    if compute_assignable =>
-                {
-                    for (_, method) in methods {
-                        for param in method.params.iter().chain(&method.rest) {
-                            assignable[param.0] = true;
-                        }
-                    }
-                }
-                _ => (),
-            }
-        }
+        let (exposed, assignable) = scan_local_flags(program, compute_exposed, compute_assignable);
         if compute_exposed {
             self.js_exposed_locals = JsExposedLocals::Owned(exposed);
         }
         if compute_assignable {
-            self.assignable_locals = assignable;
+            self.assignable_locals = LocalFlags::Owned(assignable);
         }
     }
 
@@ -2756,7 +2968,7 @@ impl<'a> Emitter<'a> {
 
     /// A fresh emitter of `program` for `setup`, which registers its
     /// namespaces when `register_namespaces`.
-    fn new(program: &'a Program, setup: Setup<'a>, register_namespaces: bool) -> Self {
+    fn new(program: &'a Program, setup: Setup<'a, 's>, register_namespaces: bool) -> Self {
         let Setup {
             demand_roots,
             application_roots,
@@ -2812,17 +3024,35 @@ impl<'a> Emitter<'a> {
             lean_multi: direct.is_some()
                 && application.is_some_and(|application| application.lean_multi),
             core_cells: Vec::new(),
-            constants: direct.map(|_| ConstantTable {
-                declarations: String::new(),
-                numbers: HashMap::new(),
-                named: vec![[None; 2]; program.named_literals.len()],
-                lazy: Vec::new(),
-                composites: 0,
-                functions: 0,
-                classes: vec![ConstantClass::Unknown; program.exprs.len()],
-                hashes: inference
-                    .is_some_and(|inference| inference.facts().core_protocols_intact())
-                    .then(ConstantHashes::default),
+            constants: direct.map(|_| {
+                let slice_id = setup.constant_slice;
+                ConstantTable {
+                    declarations: String::new(),
+                    numbers: HashMap::new(),
+                    named: if slice_id.is_some() {
+                        NamedConstantMap::Sparse(HashMap::new())
+                    } else {
+                        NamedConstantMap::Dense(vec![[None; 2]; program.named_literals.len()])
+                    },
+                    lazy: Vec::new(),
+                    composites: 0,
+                    functions: 0,
+                    classes: match setup.shared_tables {
+                        Some(tables) if !tables.constant_classes.is_empty() => {
+                            ConstantClasses::Shared(&tables.constant_classes)
+                        }
+                        _ => ConstantClasses::Owned(vec![
+                            ConstantClass::Unknown;
+                            program.exprs.len()
+                        ]),
+                    },
+                    hashes: inference
+                        .is_some_and(|inference| inference.facts().core_protocols_intact())
+                        .then(ConstantHashes::default),
+                    slice_id,
+                    entries: Vec::new(),
+                    next_finalized: 0,
+                }
             }),
             output: String::new(),
             indent: 1,
@@ -2838,14 +3068,28 @@ impl<'a> Emitter<'a> {
             boxed_return: false,
             operands: None,
             this_target: None,
-            scope_flags: Vec::new(),
+            scope_flags: match setup.shared_tables {
+                Some(tables) if !tables.scope_flags.is_empty() => {
+                    ScopeFlags::Shared(&tables.scope_flags)
+                }
+                _ => ScopeFlags::Pending,
+            },
             operand_locals: Vec::new(),
             lifts: 0,
             loop_labels: Vec::new(),
             substitute: None,
             substituted: false,
-            assignable_locals: Vec::new(),
-            js_exposed_locals: match setup.js_exposed_locals {
+            assignable_locals: match setup.shared_tables {
+                Some(tables) if !tables.assignable_locals.is_empty() => {
+                    LocalFlags::Shared(&tables.assignable_locals)
+                }
+                _ => LocalFlags::Pending,
+            },
+            js_exposed_locals: match setup.js_exposed_locals.or_else(|| {
+                setup
+                    .shared_tables
+                    .map(|tables| tables.js_exposed_locals.as_slice())
+            }) {
                 Some(table) => JsExposedLocals::Shared(table),
                 None => JsExposedLocals::Pending,
             },
@@ -2856,7 +3100,13 @@ impl<'a> Emitter<'a> {
 
             self_aliases: Vec::new(),
             receivers: Vec::new(),
-            dispatchers: None,
+            dispatchers: match setup
+                .shared_tables
+                .and_then(|tables| tables.dispatchers.as_ref())
+            {
+                Some(map) => Dispatchers::Shared(map),
+                None => Dispatchers::Pending,
+            },
             raw_segments: Vec::new(),
             runtime: RuntimeRoots::default(),
             cell_callee: None,
@@ -3587,17 +3837,38 @@ impl<'a> Emitter<'a> {
         );
         let value = std::mem::replace(&mut self.output, site);
         let number = self.constants.as_ref().unwrap().lazy.len();
-        let declaration = if lazy {
-            format!("  let c{number}; const k{number} = () => c{number} ??= ")
+        let slice_mode = self.constants.as_ref().unwrap().slice_id.is_some();
+        let declared = if slice_mode {
+            let entry_marks = self
+                .marks
+                .as_mut()
+                .map_or_else(Vec::new, |m| m.split_off(marks));
+            let constants = self.constants.as_mut().unwrap();
+            let finalized_order = constants.next_finalized;
+            constants.next_finalized += 1;
+            constants.entries.push(LocalConstant {
+                key: key.clone(),
+                lazy,
+                value,
+                finalized_order,
+                marks: entry_marks,
+                record_kit_sites: Vec::new(),
+            });
+            0..0
         } else {
-            format!("  const k{number} = ")
+            let declaration = if lazy {
+                format!("  let c{number}; const k{number} = () => c{number} ??= ")
+            } else {
+                format!("  const k{number} = ")
+            };
+            let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
+            self.take_marks(marks, at);
+            let constants = self.constants.as_mut().unwrap();
+            let start = constants.declarations.len();
+            writeln!(constants.declarations, "{declaration}{value};").unwrap();
+            start..constants.declarations.len()
         };
-        let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
-        self.take_marks(marks, at);
         let constants = self.constants.as_mut().unwrap();
-        let start = constants.declarations.len();
-        writeln!(constants.declarations, "{declaration}{value};").unwrap();
-        let declared = start..constants.declarations.len();
         constants.composites += usize::from(matches!(key, ConstantKey::Composite { .. }));
         constants.lazy.push(lazy);
         if let Some(chunks) = &mut self.chunks {
@@ -3608,13 +3879,20 @@ impl<'a> Emitter<'a> {
         number
     }
 
-    /// A read of table entry `number`: `k<n>`, or `k<n>()` for a lazy cell.
+    /// A read of table entry `number`: `k<n>`, or `k<n>()` for a lazy cell
+    /// (`k<s>_<n>` in a parallel slice).
     fn constant_reference(&mut self, number: usize) {
         if let Some(chunks) = &mut self.chunks {
             chunks.read_constant(number, self.site);
         }
-        let lazy = self.constants.as_ref().unwrap().lazy[number];
-        write!(self.output, "k{number}{}", if lazy { "()" } else { "" }).unwrap();
+        let constants = self.constants.as_ref().unwrap();
+        let lazy = constants.lazy[number];
+        let call = if lazy { "()" } else { "" };
+        if let Some(slice_id) = constants.slice_id {
+            write!(self.output, "k{slice_id}_{number}{call}").unwrap();
+        } else {
+            write!(self.output, "k{number}{call}").unwrap();
+        }
     }
 
     /// `rt.keyword(namespace, name)` or `rt.symbol(namespace, name)`.
@@ -3663,7 +3941,11 @@ impl<'a> Emitter<'a> {
         origin: Option<ExprId>,
     ) -> usize {
         let constants = self.constants.as_ref().unwrap();
-        if let Some(number) = constants.named[literal.0][usize::from(symbol)] {
+        let existing = match &constants.named {
+            NamedConstantMap::Dense(table) => table[literal.0][usize::from(symbol)],
+            NamedConstantMap::Sparse(map) => map.get(&(literal, symbol)).copied(),
+        };
+        if let Some(number) = existing {
             return number;
         }
         let program = self.program;
@@ -3679,7 +3961,14 @@ impl<'a> Emitter<'a> {
             emitter.construct_named(literal, symbol)
         });
         let constants = self.constants.as_mut().unwrap();
-        constants.named[literal.0][usize::from(symbol)] = Some(number);
+        match &mut constants.named {
+            NamedConstantMap::Dense(table) => {
+                table[literal.0][usize::from(symbol)] = Some(number);
+            }
+            NamedConstantMap::Sparse(map) => {
+                map.insert((literal, symbol), number);
+            }
+        }
         if let Some(hashes) = &mut constants.hashes {
             hashes.named(number, symbol, namespace, name);
         }
@@ -3703,7 +3992,14 @@ impl<'a> Emitter<'a> {
     fn constant_nodes(&mut self, id: ExprId) -> Option<u32> {
         let constants = self.constants.as_mut()?;
         let replaced = self.replaced_core.unwrap_or_default();
-        constant_nodes(self.program, replaced, &mut constants.classes, id)
+        match &mut constants.classes {
+            ConstantClasses::Owned(classes) => constant_nodes(self.program, replaced, classes, id),
+            ConstantClasses::Shared(classes) => match classes[id.0] {
+                ConstantClass::Constant(nodes) => Some(nodes),
+                ConstantClass::Variable => None,
+                ConstantClass::Unknown => unreachable!("precomputed constant_classes"),
+            },
+        }
     }
 
     /// The part a constant contributes to its parent, declaring the pool
@@ -4206,8 +4502,11 @@ impl<'a> Emitter<'a> {
     }
 
     fn local(&mut self, id: LocalId) {
-        if let Some(&operand) = self.operand_locals.get(id.0)
-            && operand != NO_OPERAND
+        if let Some(&(_, operand)) = self
+            .operand_locals
+            .iter()
+            .rev()
+            .find(|&&(local, _)| local == id)
         {
             write!(self.output, "operand{operand}").unwrap();
             return;
@@ -6312,8 +6611,8 @@ impl<'a> Emitter<'a> {
                     writeln!(self.output, "captures{} = null;", target.0).unwrap();
                 }
                 self.indentation();
-                match self.loop_labels.get(target.0) {
-                    Some(label) if self.shapes.is_some() => {
+                match self.loop_labels.iter().rev().find(|&&(t, _)| t == *target) {
+                    Some(&(_, label)) if self.shapes.is_some() => {
                         writeln!(self.output, "continue recur_{label};").unwrap();
                     }
                     _ => writeln!(self.output, "continue recur{};", target.0).unwrap(),
@@ -6706,12 +7005,9 @@ impl<'a> Emitter<'a> {
         self.indentation();
         let numbered = self.shapes.is_some();
         if numbered {
-            if self.loop_labels.is_empty() {
-                self.loop_labels = vec![0; self.program.recur_targets.len()];
-            }
             let label = self.lifts;
             self.lifts += 1;
-            self.loop_labels[target.0] = label as u32;
+            self.loop_labels.push((target, label as u32));
             writeln!(self.output, "recur_{label}: while (true) {{").unwrap();
         } else {
             writeln!(self.output, "recur{}: while (true) {{", target.0).unwrap();
@@ -6738,6 +7034,7 @@ impl<'a> Emitter<'a> {
             self.output.push_str("break;\n");
         }
         if numbered {
+            self.loop_labels.pop();
             self.lifts -= 1;
         }
         self.indent -= 1;
@@ -7527,8 +7824,19 @@ impl<'a> Emitter<'a> {
             return number;
         }
         let number = constants.lazy.len();
+        let slice_mode = constants.slice_id.is_some();
         constants.lazy.push(false);
         constants.functions += 1;
+        if slice_mode {
+            constants.entries.push(LocalConstant {
+                key: key.clone(),
+                lazy: false,
+                value: String::new(),
+                finalized_order: 0,
+                marks: Vec::new(),
+                record_kit_sites: Vec::new(),
+            });
+        }
         if let Some(chunks) = &mut self.chunks {
             chunks.method(number, key.label());
         }
@@ -7565,20 +7873,35 @@ impl<'a> Emitter<'a> {
         self.indent = indent;
         let value = std::mem::replace(&mut self.output, output);
         let hoisted_sites = std::mem::replace(&mut self.record_kit_sites, record_kit_sites);
-        let declaration = format!("  const k{number} = ");
-        let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
-        self.take_marks(marks, at);
-        for mut site in hoisted_sites {
-            site.range.start += at;
-            site.range.end += at;
-            self.constant_record_kit_sites.push(site);
-        }
-        let declarations = &mut self.constants.as_mut().unwrap().declarations;
-        let start = declarations.len();
-        writeln!(declarations, "{declaration}{value};").unwrap();
-        // A chunked build declares the method in the chunk of its function.
-        if let Some(chunks) = &mut self.chunks {
-            chunks.declared(number, start..declarations.len());
+        if slice_mode {
+            let entry_marks = self
+                .marks
+                .as_mut()
+                .map_or_else(Vec::new, |m| m.split_off(marks));
+            let constants = self.constants.as_mut().unwrap();
+            let finalized_order = constants.next_finalized;
+            constants.next_finalized += 1;
+            let entry = &mut constants.entries[number];
+            entry.value = value;
+            entry.finalized_order = finalized_order;
+            entry.marks = entry_marks;
+            entry.record_kit_sites = hoisted_sites;
+        } else {
+            let declaration = format!("  const k{number} = ");
+            let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
+            self.take_marks(marks, at);
+            for mut site in hoisted_sites {
+                site.range.start += at;
+                site.range.end += at;
+                self.constant_record_kit_sites.push(site);
+            }
+            let declarations = &mut self.constants.as_mut().unwrap().declarations;
+            let start = declarations.len();
+            writeln!(declarations, "{declaration}{value};").unwrap();
+            // A chunked build declares the method in the chunk of its function.
+            if let Some(chunks) = &mut self.chunks {
+                chunks.declared(number, start..declarations.len());
+            }
         }
         number
     }
@@ -7661,16 +7984,28 @@ impl<'a> Emitter<'a> {
     /// each from its children's. A function's body has a scope of its own,
     /// so it adds none.
     fn scope_flags(&mut self, id: ExprId) -> u8 {
-        let program = self.program;
-        if self.scope_flags.is_empty() {
-            self.scope_flags = vec![0; program.exprs.len()];
+        if let ScopeFlags::Shared(flags) = self.scope_flags {
+            debug_assert!(flags[id.0] & SCOPE_DONE != 0);
+            return flags[id.0];
         }
-        if self.scope_flags[id.0] & SCOPE_DONE != 0 {
-            return self.scope_flags[id.0];
+        let program = self.program;
+        let flags = match &mut self.scope_flags {
+            ScopeFlags::Pending => {
+                self.scope_flags = ScopeFlags::Owned(vec![0; program.exprs.len()]);
+                let ScopeFlags::Owned(flags) = &mut self.scope_flags else {
+                    unreachable!()
+                };
+                flags
+            }
+            ScopeFlags::Owned(flags) => flags,
+            ScopeFlags::Shared(_) => unreachable!(),
+        };
+        if flags[id.0] & SCOPE_DONE != 0 {
+            return flags[id.0];
         }
         let mut pending = vec![(id, false)];
         while let Some((id, expanded)) = pending.pop() {
-            if self.scope_flags[id.0] & SCOPE_DONE != 0 {
+            if flags[id.0] & SCOPE_DONE != 0 {
                 continue;
             }
             let own = match program.exprs[id.0].kind {
@@ -7690,7 +8025,7 @@ impl<'a> Emitter<'a> {
                 _ => None,
             };
             if let Some(own) = own {
-                self.scope_flags[id.0] = own | SCOPE_DONE;
+                flags[id.0] = own | SCOPE_DONE;
                 continue;
             }
             if expanded {
@@ -7703,21 +8038,21 @@ impl<'a> Emitter<'a> {
                     | ExprKind::Try { .. } => SCOPE_STATEMENT,
                     _ => 0,
                 };
-                let mut flags = SCOPE_DONE | statement;
+                let mut computed = SCOPE_DONE | statement;
                 visit_children(&program.exprs[id.0].kind, |child| {
-                    flags |= self.scope_flags[child.0];
+                    computed |= flags[child.0];
                 });
-                self.scope_flags[id.0] = flags;
+                flags[id.0] = computed;
             } else {
                 pending.push((id, true));
                 visit_children(&program.exprs[id.0].kind, |child| {
-                    if self.scope_flags[child.0] & SCOPE_DONE == 0 {
+                    if flags[child.0] & SCOPE_DONE == 0 {
                         pending.push((child, false));
                     }
                 });
             }
         }
-        self.scope_flags[id.0]
+        flags[id.0]
     }
 
     /// Whether the value-position `let` or `letfn` `id` is the comma
@@ -7757,11 +8092,9 @@ impl<'a> Emitter<'a> {
     fn hoisted_let(&mut self, id: ExprId, bindings: &[(LocalId, ExprId)], body: ExprId) {
         self.output.push('(');
         if self.scope_flags(id) & SCOPE_CLOSURE == 0 {
-            if self.operand_locals.is_empty() {
-                self.operand_locals = vec![NO_OPERAND; self.program.locals.len()];
-            }
             let operands = self.operands.as_ref().expect("a function body hoists");
             let base = operands.live;
+            let saved_locals = self.operand_locals.len();
             for &(local, init) in bindings {
                 let operand = self.operands.as_ref().unwrap().live;
                 write!(self.output, "operand{operand} = ").unwrap();
@@ -7770,12 +8103,10 @@ impl<'a> Emitter<'a> {
                 let operands = self.operands.as_mut().unwrap();
                 operands.live = operand + 1;
                 operands.declared = operands.declared.max(operand + 1);
-                self.operand_locals[local.0] = operand as u32;
+                self.operand_locals.push((local, operand as u32));
             }
             self.value(body);
-            for &(local, _) in bindings {
-                self.operand_locals[local.0] = NO_OPERAND;
-            }
+            self.operand_locals.truncate(saved_locals);
             self.operands.as_mut().unwrap().live = base;
             self.output.push(')');
             return;
@@ -7970,10 +8301,14 @@ impl<'a> Emitter<'a> {
         if !self.plain_local(local) {
             return false;
         }
-        if self.assignable_locals.is_empty() {
+        if matches!(self.assignable_locals, LocalFlags::Pending) {
             self.populate_local_flags(true);
         }
-        !self.assignable_locals[local.0]
+        match &self.assignable_locals {
+            LocalFlags::Shared(flags) => !flags[local.0],
+            LocalFlags::Owned(flags) => !flags[local.0],
+            LocalFlags::Pending => unreachable!(),
+        }
     }
 
     /// The statement that [`Emitter::lift_head`] lifted the head of is
@@ -8602,163 +8937,35 @@ impl<'a> Emitter<'a> {
         }
         if !self.record_kit_sites.is_empty() {
             let sites = std::mem::take(&mut self.record_kit_sites);
-            let track_shifts = !self.raw_segments.is_empty() || self.marks.is_some();
-            let mut shifts = Vec::with_capacity(if track_shifts { sites.len() } else { 0 });
-            let original = std::mem::take(&mut self.output);
-            let mut spliced = String::with_capacity(original.len() + sites.len() * 256);
-            let mut cursor = 0;
-            let mut delta = 0isize;
-            for site in sites {
-                debug_assert!(site.range.start >= cursor);
-                spliced.push_str(&original[cursor..site.range.start]);
-                let before = spliced.len();
-                spliced.push_str(site.prefix);
-                self.write_record_kit(&mut spliced, site.expr, equiv, hash);
-                let inserted = spliced.len() - before;
-                delta += inserted as isize - site.range.len() as isize;
-                if track_shifts {
-                    shifts.push((site.range.end, delta));
-                }
-                cursor = site.range.end;
-            }
-            spliced.push_str(&original[cursor..]);
-            self.output = spliced;
-            if track_shifts {
-                shift_ranges(&mut self.raw_segments, &shifts);
-                if let Some(marks) = &mut self.marks {
-                    shift_marks(&mut marks.list, &shifts);
-                }
-            }
+            splice_record_kits_into(
+                self.program,
+                &mut self.output,
+                &mut self.raw_segments,
+                self.marks.as_mut().map(|marks| marks.list.as_mut_slice()),
+                sites,
+                equiv,
+                hash,
+                &mut self.runtime,
+            );
         }
         if !self.constant_record_kit_sites.is_empty() {
             let sites = std::mem::take(&mut self.constant_record_kit_sites);
-            let track_shifts = !self.constant_marks.is_empty();
-            let mut shifts = Vec::with_capacity(if track_shifts { sites.len() } else { 0 });
-            let original = std::mem::take(
-                &mut self
-                    .constants
-                    .as_mut()
-                    .expect("constant table for hoisted record")
-                    .declarations,
+            let declarations = &mut self
+                .constants
+                .as_mut()
+                .expect("constant table for hoisted record")
+                .declarations;
+            splice_record_kits_into(
+                self.program,
+                declarations,
+                &mut [],
+                (!self.constant_marks.is_empty()).then_some(self.constant_marks.as_mut_slice()),
+                sites,
+                equiv,
+                hash,
+                &mut self.runtime,
             );
-            let mut spliced = String::with_capacity(original.len() + sites.len() * 256);
-            let mut cursor = 0;
-            let mut delta = 0isize;
-            for site in sites {
-                debug_assert!(site.range.start >= cursor);
-                spliced.push_str(&original[cursor..site.range.start]);
-                let before = spliced.len();
-                spliced.push_str(site.prefix);
-                self.write_record_kit(&mut spliced, site.expr, equiv, hash);
-                let inserted = spliced.len() - before;
-                delta += inserted as isize - site.range.len() as isize;
-                if track_shifts {
-                    shifts.push((site.range.end, delta));
-                }
-                cursor = site.range.end;
-            }
-            spliced.push_str(&original[cursor..]);
-            self.constants.as_mut().unwrap().declarations = spliced;
-            if track_shifts {
-                shift_marks(&mut self.constant_marks, &shifts);
-            }
         }
-    }
-
-    fn write_record_kit(&mut self, out: &mut String, expr: ExprId, equiv: bool, hash: bool) {
-        let ExprKind::DefType { global, layout, .. } = &self.program.exprs[expr.0].kind else {
-            unreachable!("a record definition")
-        };
-        let binding = &self.program.globals[global.0];
-        let fields = &layout.fields;
-        let members: Vec<String> = fields
-            .iter()
-            .map(|field| crate::analyzer::munge_js_member(field))
-            .collect();
-        out.push('[');
-        if equiv {
-            let equal_pair = self.runtime_read(
-                RuntimeName::direct("equalPair", None),
-                Some(expr),
-                NameUse::Value,
-            );
-            out.push_str(
-                "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && this.constructor === a1.constructor",
-            );
-            for member in members.iter().map(String::as_str).chain(["__extmap"]) {
-                out.push_str(" && ");
-                out.push_str(&equal_pair);
-                out.push_str("(this");
-                write_member(out, member);
-                out.push_str(", a1");
-                write_member(out, member);
-                out.push(')');
-            }
-            out.push_str("; }]");
-        }
-        if hash {
-            if equiv {
-                out.push_str(", ");
-            }
-            let to_array = self.runtime_read(
-                RuntimeName::direct("toArray", None),
-                Some(expr),
-                NameUse::Value,
-            );
-            let hash_fn = (!fields.is_empty()).then(|| {
-                self.runtime_read(
-                    RuntimeName::direct("hash", None),
-                    Some(expr),
-                    NameUse::Value,
-                )
-            });
-            let record_entries_hash = self.runtime_read(
-                RuntimeName::direct("recordEntriesHash", None),
-                Some(expr),
-                NameUse::Value,
-            );
-            out.push_str("[\"IHash/-hash\", 1, function() { const h = this");
-            write_member(out, "__hash");
-            // The shared method reads every field and the extension map's
-            // entries (`recordEntries`) before it hashes any of them.
-            out.push_str("; if (h != null) return h; const ");
-            for (index, member) in members.iter().enumerate() {
-                write!(out, "v{index} = this").unwrap();
-                write_member(out, member);
-                out.push_str(", ");
-            }
-            out.push_str("e = this");
-            write_member(out, "__extmap");
-            out.push_str(", x = e == null ? null : ");
-            out.push_str(&to_array);
-            out.push_str("(e); let r = ");
-            if fields.is_empty() {
-                out.push('0');
-            }
-            for (index, field) in fields.iter().enumerate() {
-                if index > 0 {
-                    out.push_str(" + ");
-                }
-                let units: Vec<u16> = field.encode_utf16().collect();
-                let key = crate::value_hash::keyword(None, &units);
-                write!(out, "({key} ^ {}(v{index}))", hash_fn.as_deref().unwrap()).unwrap();
-            }
-            // Each term is an `int32`, so their sum wraps as the shared
-            // method's running `| 0` does.
-            if fields.len() > 1 {
-                out.push_str(" | 0");
-            }
-            // Then the extension map's entries, as the shared method adds them.
-            out.push_str("; if (x != null) r = ");
-            out.push_str(&record_entries_hash);
-            out.push_str("(x, r); return this");
-            write_member(out, "__hash");
-            let name = format!("{}/{}", binding.namespace, binding.name);
-            let units: Vec<u16> = name.encode_utf16().collect();
-            let type_hash = crate::value_hash::string_hash(&units);
-            write!(out, " = r ^ {type_hash}; }}]").unwrap();
-        }
-        out.push(']');
     }
 
     /// Which of a record's own `-equiv` and `-hash`
@@ -8766,12 +8973,7 @@ impl<'a> Emitter<'a> {
     /// extension can replace `IHash` of a keyword, whose hashes it holds as
     /// constants, as for the constant pool's.
     fn record_kit_parts(&self, record_kits: [bool; 2]) -> (bool, bool) {
-        let [equiv, hash] = record_kits;
-        let hash = hash
-            && self
-                .inference
-                .is_some_and(|inference| inference.facts().core_protocols_intact());
-        (equiv, hash)
+        record_kit_parts(record_kits, self.inference)
     }
 
     /// The value of the type definition `id` that [`Emitter::defined_type`]
@@ -8833,14 +9035,23 @@ impl<'a> Emitter<'a> {
             return None;
         }
         let owner = facts.top_position(owner)?;
-        let dispatchers = self.dispatchers.get_or_insert_with(|| {
-            program
-                .protocols
-                .values()
-                .flatten()
-                .map(|method| (method.key.as_str(), method.global))
-                .collect()
-        });
+        let dispatchers: &HashMap<&'a str, GlobalId> = match &mut self.dispatchers {
+            Dispatchers::Shared(map) => map,
+            Dispatchers::Owned(map) => map,
+            Dispatchers::Pending => {
+                let map = program
+                    .protocols
+                    .values()
+                    .flatten()
+                    .map(|method| (method.key.as_str(), method.global))
+                    .collect();
+                self.dispatchers = Dispatchers::Owned(map);
+                let Dispatchers::Owned(map) = &self.dispatchers else {
+                    unreachable!()
+                };
+                map
+            }
+        };
         let global = *dispatchers.get(key)?;
         let Definition::Protocol(protocol) = facts.definition(global) else {
             return None;
@@ -10934,11 +11145,6 @@ impl<'a> Emitter<'a> {
     }
 }
 
-/// Whether the value of `id` may read the `arguments` of the function it is
-/// emitted in, or holds raw JavaScript (which may read `this`), outside
-/// nested functions.
-/// [`Emitter::operand_locals`]: the local is no operand local.
-const NO_OPERAND: u32 = u32::MAX;
 /// [`Emitter::scope_flags`]: computed.
 const SCOPE_DONE: u8 = 1;
 /// [`Emitter::scope_flags`]: the evaluation reads the function scope
@@ -11172,6 +11378,8 @@ pub(crate) fn emit_namespace_registration(
             function_names: None,
             js_exposed_locals: None,
             unit_root: None,
+            shared_tables: None,
+            constant_slice: None,
         },
         true,
     );
