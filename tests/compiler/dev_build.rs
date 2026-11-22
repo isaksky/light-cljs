@@ -1115,3 +1115,141 @@ fn streaming_dev_build_propagates_namespace_write_errors() {
         assert_eq!(read_dev_dir(&out), expected, "{label}");
     }
 }
+
+/// Dev (`--reloadable`) builds at `--jobs 1, 2, 4, 8` and cold cached dev builds
+/// (`--cache-dir`, where artifact capture disables `ParallelTopLevel`) emit
+/// byte-identical output and never submit 1-unit per-form `warning_mode` drains
+/// to `UnitPool`.
+#[test]
+fn dev_build_and_cached_warning_mode_avoid_single_unit_pool_ping_pong() {
+    let dir = TempDir::new("dev-warning-mode-drain-pooling");
+    let root = dir.join("src");
+    fs::create_dir_all(root.join("app")).unwrap();
+    let count = 8usize;
+    let mut requires = String::new();
+    let mut calls = String::new();
+    for i in 0..count {
+        fs::write(
+            root.join(format!("app/s{i}.cljs")),
+            format!(
+                "(ns app.s{i})\n\
+                 (defrecord Rec{i} [x])\n\
+                 (when false (Rec{i}. 1 2))\n\
+                 (defn step [n] (+ (.-x (->Rec{i} n)) {i}))\n"
+            ),
+        )
+        .unwrap();
+        requires.push_str(&format!("\n            [app.s{i}]"));
+        calls.push_str(&format!(" (app.s{i}/step {i})"));
+    }
+    fs::write(
+        root.join("app/main.cljs"),
+        format!("(ns app.main\n  (:require{requires}))\n(js/console.log (pr-str [{calls}]))\n"),
+    )
+    .unwrap();
+
+    let run_cli = |extra: &[&str], out: &Path| -> String {
+        let mut args = vec![
+            "--compile",
+            "--entry",
+            "app.main",
+            "--source-root",
+            root.to_str().unwrap(),
+            "--reloadable",
+            "--out-dir",
+            out.to_str().unwrap(),
+            "--stats",
+        ];
+        args.extend_from_slice(extra);
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(&args)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{args:?}: {stderr}");
+        stderr
+    };
+    let stat_opt = |stderr: &str, key: &str| -> Option<f64> {
+        stderr.lines().find_map(|line| {
+            let (k, v) = line.split_once(' ')?;
+            (k == key).then(|| v.parse::<f64>().unwrap())
+        })
+    };
+    let warning_lines = |stderr: &str| -> Vec<String> {
+        stderr
+            .lines()
+            .filter(|line| line.contains("warning:") || line.contains("Wrong number of args"))
+            .map(ToOwned::to_owned)
+            .collect()
+    };
+
+    // Uncached dev build across jobs 1, 2, 4, 8: byte-identical output and
+    // warnings, and zero single-unit deferred pooling.
+    let out_j1 = dir.join("nocache-j1");
+    let stderr_j1 = run_cli(
+        &[
+            "--no-cache",
+            "--macro-memory-limit",
+            "268435456",
+            "--jobs",
+            "1",
+        ],
+        &out_j1,
+    );
+    let files_j1 = read_dev_dir(&out_j1);
+    let warnings_j1 = warning_lines(&stderr_j1);
+    assert_eq!(warnings_j1.len(), count, "{stderr_j1}");
+
+    for jobs in ["2", "4", "8"] {
+        let out = dir.join(format!("nocache-j{jobs}"));
+        let stderr = run_cli(
+            &[
+                "--no-cache",
+                "--macro-memory-limit",
+                "268435456",
+                "--jobs",
+                jobs,
+            ],
+            &out,
+        );
+        assert_eq!(read_dev_dir(&out), files_j1, "nocache jobs={jobs}");
+        assert_eq!(warning_lines(&stderr), warnings_j1, "nocache jobs={jobs}");
+        assert_eq!(
+            stat_opt(&stderr, "deferred-units.pooled").unwrap_or(0.0),
+            0.0,
+            "nocache jobs={jobs} should not pool 1-unit warning drains:\n{stderr}"
+        );
+    }
+
+    // Cold cached dev build (`--cache-dir` disables ParallelTopLevel): byte-identical
+    // to j=1 with zero pooled units and zero pool jobs at j=2 and j=8.
+    for jobs in ["1", "2", "8"] {
+        let out = dir.join(format!("cache-j{jobs}"));
+        let cache = dir.join(format!("cache-dir-j{jobs}"));
+        let stderr = run_cli(
+            &[
+                "--cache-dir",
+                cache.to_str().unwrap(),
+                "--macro-memory-limit",
+                "268435456",
+                "--jobs",
+                jobs,
+            ],
+            &out,
+        );
+        assert_eq!(read_dev_dir(&out), files_j1, "cache jobs={jobs}");
+        assert_eq!(warning_lines(&stderr), warnings_j1, "cache jobs={jobs}");
+        if jobs != "1" {
+            assert_eq!(
+                stat_opt(&stderr, "deferred-units.pooled").unwrap_or(0.0),
+                0.0,
+                "cache jobs={jobs} should not pool 1-unit warning drains:\n{stderr}"
+            );
+            assert_eq!(
+                stat_opt(&stderr, "pool.jobs").unwrap_or(0.0),
+                0.0,
+                "cache jobs={jobs} should not ping-pong units on pool:\n{stderr}"
+            );
+        }
+    }
+}

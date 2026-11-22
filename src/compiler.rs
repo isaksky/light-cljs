@@ -3003,7 +3003,12 @@ fn analyze_entry(
         && macros.engine.script_host.is_none()
         && install.is_none()
         && blockers.is_empty()
-        && analysis.unit_slots.get() >= 3
+        // In `warning_mode`, non-macro namespaces drain units inline per form
+        // instead of queuing deferred-unit batches, so enabling lookahead
+        // namespaces at `--jobs 2` keeps the single worker busy instead of
+        // starving deferred units.
+        && (analysis.unit_slots.get() >= 3
+            || (options.warning_mode && analysis.unit_slots.get() >= 2))
     {
         macros
             .session_handle()
@@ -3379,7 +3384,10 @@ fn analyze_entry(
                             let source = crate::compile_cache::DeclarationSource {
                                 namespace: &file.name,
                                 source_index: index,
-                                source_name: resolution.source_name.as_deref().unwrap_or(&file.name),
+                                source_name: resolution
+                                    .source_name
+                                    .as_deref()
+                                    .unwrap_or(&file.name),
                                 text: &file.source,
                                 forms: (file.syntax.roots.iter())
                                     .map(|root| file.syntax.nodes[root.0].span.clone())
@@ -3775,8 +3783,7 @@ fn prepare_source(
         )
     }) {
         let aliases = macros.reader_aliases(&file.name, &file.aliases, &file.requires);
-        let source =
-            crate::compiler_data::Source::new(file.path.to_string_lossy(), &*file.source);
+        let source = crate::compiler_data::Source::new(file.path.to_string_lossy(), &*file.source);
         let c = crate::compiler_data::DataBuilder;
         let mut view = crate::compiler_reader::NamespaceView::new(&file.name, &source);
         view.aliases = aliases

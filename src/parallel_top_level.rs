@@ -23,8 +23,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::analyzer::{AnalysisOptions, NamespaceAnalysis, NamespaceInput};
 use crate::analyzer::namespace_publication::{NamespacePublication, WaveSnapshot};
+use crate::analyzer::{AnalysisOptions, NamespaceAnalysis, NamespaceInput};
 use crate::build_services::BuildGuard;
 use crate::compilation_session::{
     CompilationSession, NamespaceOverlayOutput, PoolPolicy, SharedCatalog,
@@ -57,7 +57,13 @@ const MAX_RETRIES: u8 = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlotState {
     Pending,
-    Running { needs_engine: bool },
+    /// Reserved for the coordinator to run inline in `warning_mode`, so the
+    /// coordinator shares lookahead waves with pool workers instead of
+    /// blocking on every namespace in `take_or_wait`.
+    Coordinator,
+    Running {
+        needs_engine: bool,
+    },
     Done,
 }
 
@@ -88,7 +94,9 @@ enum TopLevelOutcome {
     /// error needing exact serial partial accounting, or foreign macro-table
     /// mutation); re-dispatch with fresh snapshot when `retry` is true, or
     /// fall straight back to the coordinator otherwise.
-    NeedCoordinator { retry: bool },
+    NeedCoordinator {
+        retry: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +136,11 @@ pub(super) struct ParallelTopLevel {
     ready: HashMap<usize, TopLevelOutcome>,
     in_flight: usize,
     in_flight_engine: usize,
+    /// Remaining worker dispatches before reserving one ready namespace for the
+    /// coordinator in `warning_mode` (tracks engine and plain classes separately
+    /// so mixed pools balance both).
+    warn_engine_quota: usize,
+    warn_plain_quota: usize,
     /// Incremented whenever any published namespace mutates a foreign namespace's
     /// globals or macro tables.
     foreign_mutation_epoch: u64,
@@ -157,6 +170,8 @@ impl ParallelTopLevel {
             ready: HashMap::new(),
             in_flight: 0,
             in_flight_engine: 0,
+            warn_engine_quota: pool_policy.engine_workers,
+            warn_plain_quota: workers,
             foreign_mutation_epoch: 0,
             published_names: Vec::new(),
         }
@@ -200,7 +215,12 @@ impl ParallelTopLevel {
                 }
             };
             for req in &file.requires {
-                add_dep(req, &self.ns_index, &mut self.dependents, &mut self.unmet_deps);
+                add_dep(
+                    req,
+                    &self.ns_index,
+                    &mut self.dependents,
+                    &mut self.unmet_deps,
+                );
             }
             for (_, target) in &file.aliases {
                 add_dep(
@@ -311,8 +331,8 @@ impl ParallelTopLevel {
             return;
         };
         let buffered_full = self.ready.len() >= MAX_BUFFERED;
-        let has_engine_room =
-            self.pool_policy.engine_workers > 0 && self.in_flight_engine < self.max_in_flight_engine;
+        let has_engine_room = self.pool_policy.engine_workers > 0
+            && self.in_flight_engine < self.max_in_flight_engine;
         let end = if buffered_full && !has_engine_room {
             ordered.len().min(current_index + 1 + NEAR_LOOKAHEAD)
         } else {
@@ -370,6 +390,24 @@ impl ParallelTopLevel {
             }
             if self.ready.len() >= MAX_BUFFERED * 2 && j >= current_index + 1 + NEAR_LOOKAHEAD {
                 continue;
+            }
+            // In `warning_mode`, each namespace drains all its units inline, so
+            // pre-emptively dispatching every ready namespace to pool workers
+            // starves the coordinator into blocking on `take_or_wait` (most
+            // severely at `--jobs 2`, where 1 worker serializes the whole wave).
+            // Reserve 1 ready namespace per `workers` worker dispatches so the
+            // coordinator and workers share waves concurrently.
+            if options.warning_mode {
+                let (quota, refill) = if needs_engine {
+                    (&mut self.warn_engine_quota, self.pool_policy.engine_workers)
+                } else {
+                    (&mut self.warn_plain_quota, self.pool_policy.workers.max(1))
+                };
+                if *quota == 0 {
+                    self.states[j] = SlotState::Coordinator;
+                    *quota = refill;
+                    continue;
+                }
             }
 
             let (snap, env, marks, globals_len, data_readers) = wave.get_or_insert_with(|| {
@@ -464,8 +502,8 @@ impl ParallelTopLevel {
                     // `defers_source_units() == true` just like the coordinator.
                     worker_host.tables.bootstrap_seed = false;
 
-                    let outcome_res = prepare_source(&mut worker_host, &file_clone).and_then(
-                        |resolution| {
+                    let outcome_res =
+                        prepare_source(&mut worker_host, &file_clone).and_then(|resolution| {
                             let input = NamespaceInput {
                                 name: &file_clone.name,
                                 source: &file_clone.source,
@@ -481,8 +519,7 @@ impl ParallelTopLevel {
                                 options,
                                 recording_cfg,
                             )
-                        },
-                    );
+                        });
 
                     let entered_engine = worker_host.engine.entered_engine.get();
                     let reflected_namespaces =
@@ -552,6 +589,11 @@ impl ParallelTopLevel {
                 self.in_flight += 1;
                 if needs_engine {
                     self.in_flight_engine += 1;
+                    if options.warning_mode {
+                        self.warn_engine_quota = self.warn_engine_quota.saturating_sub(1);
+                    }
+                } else if options.warning_mode {
+                    self.warn_plain_quota = self.warn_plain_quota.saturating_sub(1);
                 }
             }
         }
@@ -657,12 +699,7 @@ impl ParallelTopLevel {
     /// Record that canonical namespace `index` (`name`) has now been published
     /// (whether via parallel overlay or serial fallback), unlocking its direct
     /// dependents in the DAG.
-    pub(super) fn note_published(
-        &mut self,
-        index: usize,
-        name: &str,
-        mutated_foreign_ns: bool,
-    ) {
+    pub(super) fn note_published(&mut self, index: usize, name: &str, mutated_foreign_ns: bool) {
         debug_assert_eq!(self.published_names.len(), index);
         self.published_names.push(name.to_owned());
         if mutated_foreign_ns {
@@ -715,7 +752,9 @@ fn classify_top_level(
 
 fn metadata_has_macro(file: &NamespaceSource, node: NodeId) -> bool {
     match &file.syntax.nodes[node.0].kind {
-        NodeKind::Keyword { .. } => &file.source[file.syntax.nodes[node.0].span.clone()] == ":macro",
+        NodeKind::Keyword { .. } => {
+            &file.source[file.syntax.nodes[node.0].span.clone()] == ":macro"
+        }
         NodeKind::Collection {
             kind: CollectionKind::Map,
             children,
@@ -759,7 +798,10 @@ fn classify_form(
             let head_unwrapped = unwrap_meta(file, head);
             if !matches!(file.syntax.nodes[head_unwrapped.0].kind, NodeKind::Symbol) {
                 return children.iter().fold(TopLevelClass::Plain, |acc, &child| {
-                    merge_class(acc, classify_form(file, macros, child, inspect_deferred_bodies))
+                    merge_class(
+                        acc,
+                        classify_form(file, macros, child, inspect_deferred_bodies),
+                    )
                 });
             }
             let op = &file.source[file.syntax.nodes[head_unwrapped.0].span.clone()];
@@ -771,12 +813,14 @@ fn classify_form(
             match unqualified {
                 "ns" | "ns*" | "comment" | "quote" => return TopLevelClass::Plain,
                 "do" => {
-                    return children[1..].iter().fold(TopLevelClass::Plain, |acc, &child| {
-                        merge_class(
-                            acc,
-                            classify_form(file, macros, child, inspect_deferred_bodies),
-                        )
-                    });
+                    return children[1..]
+                        .iter()
+                        .fold(TopLevelClass::Plain, |acc, &child| {
+                            merge_class(
+                                acc,
+                                classify_form(file, macros, child, inspect_deferred_bodies),
+                            )
+                        });
                 }
                 "defmacro" => return TopLevelClass::CoordinatorOnly,
                 "def" | "defn" | "defn-" | "defonce" | "declare" | "defprotocol" | "defrecord"
@@ -791,9 +835,11 @@ fn classify_form(
                     if !inspect_deferred_bodies {
                         return TopLevelClass::Plain;
                     }
-                    return children[1..].iter().fold(TopLevelClass::Plain, |acc, &child| {
-                        merge_class(acc, classify_form(file, macros, child, true))
-                    });
+                    return children[1..]
+                        .iter()
+                        .fold(TopLevelClass::Plain, |acc, &child| {
+                            merge_class(acc, classify_form(file, macros, child, true))
+                        });
                 }
                 _ => {}
             }
@@ -817,7 +863,10 @@ fn classify_form(
         }
         NodeKind::Collection { children, .. } => {
             children.iter().fold(TopLevelClass::Plain, |acc, &child| {
-                merge_class(acc, classify_form(file, macros, child, inspect_deferred_bodies))
+                merge_class(
+                    acc,
+                    classify_form(file, macros, child, inspect_deferred_bodies),
+                )
             })
         }
         NodeKind::Prefix { kind, form } => {

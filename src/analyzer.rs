@@ -8522,12 +8522,13 @@ impl Analyzer<'_> {
             self.macro_host.engine.expansions.get(),
             self.macro_host.engine.generated_nodes.get(),
         );
-        let pooled = if !pooled_pairs.is_empty() && session.submit_units(pooled_pairs.clone(), charged) {
-            pooled_pairs.into_iter().map(|(id, _)| id).collect()
-        } else {
-            session.note_charged(charged);
-            Vec::new()
-        };
+        let pooled =
+            if !pooled_pairs.is_empty() && session.submit_units(pooled_pairs.clone(), charged) {
+                pooled_pairs.into_iter().map(|(id, _)| id).collect()
+            } else {
+                session.note_charged(charged);
+                Vec::new()
+            };
         // The coordinator's engine starts here if one of the units may
         // enter one and nothing has started it, at every `--jobs` value: a
         // unit analyzed here would start it inside its analysis, and a
@@ -8549,7 +8550,7 @@ impl Analyzer<'_> {
     }
 
     fn drain_deferred_keeping(&mut self, keep_later: bool) -> Result<(), AnalysisError> {
-        if self.registers_ahead {
+        if self.registers_ahead || self.deferred.is_empty() {
             return Ok(());
         }
         let Some(session) = self.macro_host.session_handle() else {
@@ -8559,31 +8560,36 @@ impl Analyzer<'_> {
         if session.is_local_overlay() {
             return self.drain_local_units(&session, units, keep_later);
         }
-        session.schedule_units(
-            &units.iter().map(|d| d.unit).collect::<Vec<_>>(),
-            self.unit_slots.get() == 1,
-        );
+        let forced = self.unit_slots.get() == 1;
+        if let [only] = units.as_slice() {
+            session.schedule_units(&[only.unit], forced);
+        } else {
+            let ids: Vec<usize> = units.iter().map(|d| d.unit).collect();
+            session.schedule_units(&ids, forced);
+        }
         // With `--jobs N`, the build pool analyzes the units given to it,
         // one batch in unit order, while this thread drains every unit in
         // order, as with one slot, waiting for those
         // (docs/compiler-concurrency.md, "As built (light-cljs-339)").
-        let pooled_pairs = if self.unit_slots.get() > 1 {
+        // Do not submit a 1-unit batch: `drain_units` immediately blocks
+        // waiting for it, turning per-form `warning_mode` drains into
+        // sequential cross-thread ping-pongs with zero parallelism.
+        let pooled_pairs = if self.unit_slots.get() > 1 && units.len() > 1 {
             session.poolable(units.iter().map(|d| d.unit))
         } else {
             Vec::new()
         };
-        let pooled: Vec<usize> = if !pooled_pairs.is_empty()
-            && session.submit_units(
-                pooled_pairs.clone(),
-                (
-                    self.macro_host.engine.expansions.get(),
-                    self.macro_host.engine.generated_nodes.get(),
-                ),
-            ) {
-            pooled_pairs.into_iter().map(|(id, _)| id).collect()
-        } else {
-            Vec::new()
-        };
+        let charged = (
+            self.macro_host.engine.expansions.get(),
+            self.macro_host.engine.generated_nodes.get(),
+        );
+        let pooled: Vec<usize> =
+            if !pooled_pairs.is_empty() && session.submit_units(pooled_pairs.clone(), charged) {
+                pooled_pairs.into_iter().map(|(id, _)| id).collect()
+            } else {
+                session.note_charged(charged);
+                Vec::new()
+            };
         self.drain_units(&session, units, keep_later, &pooled)
     }
 
@@ -8614,16 +8620,22 @@ impl Analyzer<'_> {
             self.warnings
                 .extend(later.by_ref().take(at.saturating_sub(position)));
             position = position.max(at);
-            let (program, warnings) = match session.analyze_local(unit, self.engine, &self.macro_host.engine) {
-                Ok(analyzed) => analyzed,
-                Err(message) => {
-                    failure = Some(session.local_diagnostic(unit).unwrap_or_else(|| AnalysisError {
-                        span: self.program.exprs[placeholder.0].span.clone(),
-                        kind: AnalysisErrorKind::MacroExpansion(message),
-                    }));
-                    break;
-                }
-            };
+            let (program, warnings) =
+                match session.analyze_local(unit, self.engine, &self.macro_host.engine) {
+                    Ok(analyzed) => analyzed,
+                    Err(message) => {
+                        failure =
+                            Some(
+                                session
+                                    .local_diagnostic(unit)
+                                    .unwrap_or_else(|| AnalysisError {
+                                        span: self.program.exprs[placeholder.0].span.clone(),
+                                        kind: AnalysisErrorKind::MacroExpansion(message),
+                                    }),
+                            );
+                        break;
+                    }
+                };
             let drained = DrainedUnit {
                 placeholder,
                 unit,
@@ -12714,7 +12726,7 @@ impl Analyzer<'_> {
             // drain here publishes is the namespace's own: later namespaces
             // see it from its drain point on, as without warnings
             // ([`Self::withhold_published`]).
-            if self.options.warning_mode {
+            if self.options.warning_mode && !self.deferred.is_empty() {
                 if self.defines_macros {
                     let at = self.warnings.len();
                     for deferred in self.deferred.iter_mut().rev() {

@@ -5,7 +5,7 @@
 //! and byte-identical JS output across `--jobs 1, 2, 4, 8`.
 
 use crate::macro_free_units::{
-    Sources, build_with, execute, isolate_per_slot, same_at_every_slot_count,
+    Sources, build_blocked, build_with, execute, isolate_per_slot, same_at_every_slot_count,
 };
 
 fn assert_identical_across_all_slots(
@@ -375,4 +375,265 @@ fn qualified_symbol_without_require_preserves_canonical_order() {
 
     let serial = same_at_every_slot_count(&sources, "app.main", false);
     assert_eq!(execute(serial.output.as_ref().unwrap()), "43 44\n");
+}
+
+#[test]
+fn warning_mode_coordinator_per_form_drains_skip_single_unit_pooling() {
+    // A linear require chain forces every namespace to run on the coordinator
+    // (no lookahead namespace is ever ready ahead of `current_index`). In
+    // `warning_mode`, per-form drains produce 1-unit batches and must execute
+    // inline without submitting single-unit round trips to `UnitPool`.
+    let chain = Sources::new();
+    for i in 0..4 {
+        let req = if i == 0 {
+            String::new()
+        } else {
+            format!(" (:require [app.c{} :as prev])", i - 1)
+        };
+        let call_prev = if i == 0 {
+            format!("{i}")
+        } else {
+            "(prev/step 1)".to_owned()
+        };
+        chain.write(
+            &format!("app/c{i}.cljs"),
+            &format!(
+                r#"(ns app.c{i}{req})
+(defrecord Box{i} [a])
+(when false (Box{i}. 1 2))
+(defn warn-{i} [] missing-var-{i})
+(defn f0 [x] (+ x {i}))
+(defn f1 [x] (when (pos? x) (f0 x)))
+(defn f2 [x] (let [y (f1 x)] (+ y {call_prev})))
+(defn step [x] (+ (.-a (->Box{i} (f2 x))) {i}))"#
+            ),
+        );
+    }
+    chain.write(
+        "app/main.cljs",
+        "(ns app.main (:require [app.c3 :as c]))\n(js/console.log (c/step 2))",
+    );
+
+    let serial = build_with(&chain, "app.main", 1, true, isolate_per_slot());
+    assert!(serial.output.is_ok(), "{:?}", serial.output);
+    assert!(
+        serial
+            .warnings
+            .iter()
+            .any(|(kind, msg, _, _)| kind == "fn-arity" && msg.contains("passed to Box0")),
+        "missing record constructor arity warning: {:?}",
+        serial.warnings
+    );
+    for slots in [2, 4, 8] {
+        let built = build_with(&chain, "app.main", slots, true, isolate_per_slot());
+        assert_eq!(built.output, serial.output, "{slots} slots output");
+        assert_eq!(built.warnings, serial.warnings, "{slots} slots warnings");
+        assert_eq!(built.spans, serial.spans, "{slots} slots spans");
+        assert_eq!(built.mapped, serial.mapped, "{slots} slots mapped");
+        assert_eq!(
+            built.stats.deferred_units.pooled, 0,
+            "{slots} slots should not pool 1-unit per-form warning drains"
+        );
+        assert_eq!(
+            built.stats.deferred_units.pool.started, 0,
+            "{slots} slots linear chain should not ping-pong units on pool"
+        );
+    }
+    assert_eq!(execute(serial.output.as_ref().unwrap()), "17\n");
+
+    // A cache blocker disables `ParallelTopLevel` on a wide sibling DAG too:
+    // per-form coordinator drains must still skip 1-unit pooling.
+    let wide = Sources::new();
+    wide.write("app/blocker.cljs", "(ns app.blocker) (def k 1)");
+    let mut requires = String::from("[app.blocker]");
+    for i in 0..4 {
+        wide.write(
+            &format!("app/b{i}.cljs"),
+            &format!(
+                "(ns app.b{i} (:require [app.blocker :as b]))\n\
+                 (defn f0 [x] (+ x b/k {i}))\n\
+                 (defn f1 [x] (when x (f0 x)))\n\
+                 (defn w [] missing-b-{i})"
+            ),
+        );
+        requires.push_str(&format!(" [app.b{i}]"));
+    }
+    wide.write(
+        "app/main.cljs",
+        &format!("(ns app.main (:require {requires}))\n(js/console.log (app.b3/f1 2))"),
+    );
+    let blockers = vec!["app.blocker".to_owned()];
+    let serial_blocked = build_blocked(&wide, "app.main", 1, true, isolate_per_slot(), &blockers);
+    for slots in [2, 4, 8] {
+        let built = build_blocked(
+            &wide,
+            "app.main",
+            slots,
+            true,
+            isolate_per_slot(),
+            &blockers,
+        );
+        assert_eq!(built.output, serial_blocked.output, "blocked {slots} slots");
+        assert_eq!(
+            built.warnings, serial_blocked.warnings,
+            "blocked {slots} slots warnings"
+        );
+        assert_eq!(
+            built.stats.deferred_units.pooled, 0,
+            "blocked {slots} slots"
+        );
+        assert_eq!(
+            built.stats.deferred_units.pool.started, 0,
+            "blocked {slots} slots"
+        );
+    }
+    assert_eq!(execute(serial_blocked.output.as_ref().unwrap()), "6\n");
+}
+
+#[test]
+fn warning_mode_uses_parallel_top_level_at_two_slots_without_unit_ping_pong() {
+    let sources = Sources::new();
+    sources.write(
+        "app/macros.cljs",
+        "(ns app.macros)\n(defmacro add-one [x] `(+ ~x 1))",
+    );
+    let mut requires = String::new();
+    let mut calls = String::new();
+    for i in 0..8 {
+        let ns_name = format!("app.s{i}");
+        sources.write(
+            &format!("app/s{i}.cljs"),
+            &format!(
+                r#"(ns {ns_name} (:require [app.macros :refer [add-one]]))
+(defrecord Item{i} [v])
+(when false (Item{i}. 1 2))
+(defn warned-{i} [] undeclared-s-{i})
+(defn compute-{i} [x] (+ (.-v (->Item{i} (add-one x))) {i}))"#
+            ),
+        );
+        requires.push_str(&format!("[{ns_name} :as s{i}] "));
+        calls.push_str(&format!(" (s{i}/compute-{i} {i})"));
+    }
+    sources.write(
+        "app/main.cljs",
+        &format!("(ns app.main (:require {requires}))\n(js/console.log (pr-str [{calls}]))"),
+    );
+
+    let serial = assert_identical_across_all_slots(&sources, "app.main", true);
+    assert_eq!(serial.warnings.len(), 16, "{:?}", serial.warnings);
+    assert_eq!(
+        execute(serial.output.as_ref().unwrap()),
+        "[1 3 5 7 9 11 13 15]\n"
+    );
+
+    for slots in [2, 4, 8] {
+        let built = build_with(&sources, "app.main", slots, true, isolate_per_slot());
+        assert_eq!(built.output, serial.output, "{slots} slots");
+        assert_eq!(built.warnings, serial.warnings, "{slots} slots");
+        assert_eq!(
+            built.stats.deferred_units.pooled, 0,
+            "{slots} slots should not submit 1-unit warning drains"
+        );
+        assert!(
+            built.stats.deferred_units.pool.started > 0,
+            "{slots} slots should run lookahead namespaces via ParallelTopLevel in warning_mode"
+        );
+    }
+
+    // Early failure cutoff in a sibling namespace matches `--jobs 1` across
+    // slots 2, 4, 8: warnings from earlier forms/namespaces stay, later ones stop.
+    sources.write(
+        "app/s2.cljs",
+        r#"(ns app.s2 (:require [app.macros :refer [add-one]]))
+(defn before-fail [] undeclared-before-fail)
+(quote)
+(defn after-fail [] undeclared-after-fail)"#,
+    );
+    let failed = assert_identical_across_all_slots(&sources, "app.main", true);
+    let err = failed.output.unwrap_err();
+    assert!(err.contains("quote"), "{err}");
+    assert!(
+        failed
+            .warnings
+            .iter()
+            .any(|(_, msg, _, _)| msg.contains("undeclared-before-fail")),
+        "{:?}",
+        failed.warnings
+    );
+    assert!(
+        failed
+            .warnings
+            .iter()
+            .all(|(_, msg, _, _)| !msg.contains("undeclared-after-fail")),
+        "{:?}",
+        failed.warnings
+    );
+}
+
+#[test]
+fn warning_mode_macro_defining_namespace_keeps_multi_unit_batch_pooling() {
+    let sources = Sources::new();
+    sources.write(
+        "app/m.cljs",
+        r#"(ns app.m)
+(defmacro emit-inc [x] `(+ ~x 1))
+(defn f0 [x] (when x (+ x 1)))
+(defn f1 [x] (let [y (emit-inc x)] y))
+(defn f2 [] undeclared-m-2)
+(defn f3 [x] (+ (f0 x) (f1 x)))"#,
+    );
+    sources.write(
+        "app/main.cljs",
+        "(ns app.main (:require [app.m :as m]))\n(js/console.log (m/f3 10))",
+    );
+
+    let serial = assert_identical_across_all_slots(&sources, "app.main", true);
+    assert_eq!(execute(serial.output.as_ref().unwrap()), "22\n");
+    for slots in [2, 4, 8] {
+        let built = build_with(&sources, "app.main", slots, true, isolate_per_slot());
+        assert!(
+            built.stats.deferred_units.pooled >= 4,
+            "{slots} slots should still pool macro-defining namespace's deferred batch: {:?}",
+            built.stats.deferred_units
+        );
+    }
+
+    // Failing after multiple deferred units in a macro-defining namespace runs
+    // `drained_before_failure` -> `drain_deferred_keeping(true)` with >1 units,
+    // which still pools the multi-unit batch and keeps exact warning/error parity.
+    sources.write(
+        "app/m.cljs",
+        r#"(ns app.m)
+(defmacro emit-inc [x] `(+ ~x 1))
+(defn f0 [] undeclared-m-0)
+(defn f1 [] undeclared-m-1)
+(defn f2 [] undeclared-m-2)
+(defn f3 [] undeclared-m-3)
+(quote)
+(defn f4 [] undeclared-m-4)"#,
+    );
+    let failed = assert_identical_across_all_slots(&sources, "app.main", true);
+    assert!(failed.output.as_ref().unwrap_err().contains("quote"));
+    let msgs: Vec<&str> = failed
+        .warnings
+        .iter()
+        .map(|(_, m, _, _)| m.as_str())
+        .collect();
+    assert_eq!(
+        msgs,
+        [
+            "Use of undeclared Var app.m/undeclared-m-0",
+            "Use of undeclared Var app.m/undeclared-m-1",
+            "Use of undeclared Var app.m/undeclared-m-2",
+            "Use of undeclared Var app.m/undeclared-m-3",
+        ]
+    );
+    for slots in [2, 4, 8] {
+        let built = build_with(&sources, "app.main", slots, true, isolate_per_slot());
+        assert!(
+            built.stats.deferred_units.pooled >= 4,
+            "{slots} slots should still pool >1-unit batches in drain_deferred_keeping: {:?}",
+            built.stats.deferred_units
+        );
+    }
 }
