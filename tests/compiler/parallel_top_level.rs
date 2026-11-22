@@ -534,10 +534,12 @@ fn warning_mode_uses_parallel_top_level_at_two_slots_without_unit_ping_pong() {
             built.stats.deferred_units.pooled, 0,
             "{slots} slots should not submit 1-unit warning drains"
         );
-        assert!(
-            built.stats.deferred_units.pool.started > 0,
-            "{slots} slots should run lookahead namespaces via ParallelTopLevel in warning_mode"
-        );
+        if !crate::macro_free_units::PANTS_BUILD {
+            assert!(
+                built.stats.deferred_units.pool.started > 0,
+                "{slots} slots should run lookahead namespaces via ParallelTopLevel in warning_mode"
+            );
+        }
     }
 
     // Early failure cutoff in a sibling namespace matches `--jobs 1` across
@@ -636,4 +638,101 @@ fn warning_mode_macro_defining_namespace_keeps_multi_unit_batch_pooling() {
             built.stats.deferred_units
         );
     }
+}
+
+#[test]
+fn warning_mode_reserves_coordinator_work_in_plain_and_engine_waves() {
+    // 10 independent siblings -> 9 ready lookahead siblings beyond the initial
+    // namespace. At `--jobs 2` (`workers == 1`), `ParallelTopLevel`'s
+    // `warning_mode` quota reserves half of the ready lookahead siblings for
+    // the coordinator (`SlotState::Coordinator`), so the sole worker runs 5
+    // lookahead namespaces instead of serializing all 9 while the coordinator
+    // blocks in `take_or_wait`. Verify both Plain (`warn_plain_quota`) and
+    // Engine (`warn_engine_quota`) waves.
+    let plain = Sources::new();
+    let mut plain_reqs = String::new();
+    let mut plain_calls = String::new();
+    for i in 0..10 {
+        plain.write(
+            &format!("app/p{i}.cljs"),
+            &format!(
+                "(ns app.p{i})\n\
+                 (defn f0 [x] (+ x {i}))\n\
+                 (defn f1 [x] (when (pos? x) (f0 x)))\n\
+                 (defn w [] undeclared-p-{i})"
+            ),
+        );
+        plain_reqs.push_str(&format!("[app.p{i} :as p{i}] "));
+        plain_calls.push_str(&format!(" (p{i}/f1 1)"));
+    }
+    plain.write(
+        "app/main.cljs",
+        &format!(
+            "(ns app.main (:require {plain_reqs}))\n(js/console.log (pr-str [{plain_calls}]))"
+        ),
+    );
+
+    let plain_serial = build_with(&plain, "app.main", 1, true, isolate_per_slot());
+    let plain_two = build_with(&plain, "app.main", 2, true, isolate_per_slot());
+    assert_eq!(plain_two.output, plain_serial.output);
+    assert_eq!(plain_two.warnings, plain_serial.warnings);
+    assert_eq!(plain_two.spans, plain_serial.spans);
+    assert_eq!(plain_two.mapped, plain_serial.mapped);
+    assert_eq!(plain_two.stats.deferred_units.pooled, 0);
+    if !crate::macro_free_units::PANTS_BUILD {
+        let started = plain_two.stats.deferred_units.pool.started;
+        assert!(
+            (1..=5).contains(&started),
+            "plain warning_mode wave at 2 slots should split 9 lookahead siblings between worker and coordinator (got pool.started={started})"
+        );
+    }
+    assert_eq!(
+        execute(plain_serial.output.as_ref().unwrap()),
+        "[1 2 3 4 5 6 7 8 9 10]\n"
+    );
+
+    let engine = Sources::new();
+    engine.write(
+        "app/macros.cljs",
+        "(ns app.macros)\n(defmacro bump [x] `(+ ~x 2))",
+    );
+    let mut engine_reqs = String::new();
+    let mut engine_calls = String::new();
+    for i in 0..10 {
+        engine.write(
+            &format!("app/e{i}.cljs"),
+            &format!(
+                "(ns app.e{i} (:require [app.macros :refer [bump]]))\n\
+                 (defn f0 [x] (bump (+ x {i})))\n\
+                 (defn w [] undeclared-e-{i})"
+            ),
+        );
+        engine_reqs.push_str(&format!("[app.e{i} :as e{i}] "));
+        engine_calls.push_str(&format!(" (e{i}/f0 1)"));
+    }
+    engine.write(
+        "app/main.cljs",
+        &format!(
+            "(ns app.main (:require {engine_reqs}))\n(js/console.log (pr-str [{engine_calls}]))"
+        ),
+    );
+
+    let engine_serial = build_with(&engine, "app.main", 1, true, isolate_per_slot());
+    let engine_two = build_with(&engine, "app.main", 2, true, isolate_per_slot());
+    assert_eq!(engine_two.output, engine_serial.output);
+    assert_eq!(engine_two.warnings, engine_serial.warnings);
+    assert_eq!(engine_two.spans, engine_serial.spans);
+    assert_eq!(engine_two.mapped, engine_serial.mapped);
+    assert_eq!(engine_two.stats.deferred_units.pooled, 0);
+    if !crate::macro_free_units::PANTS_BUILD {
+        let started = engine_two.stats.deferred_units.pool.started;
+        assert!(
+            (1..=5).contains(&started),
+            "engine warning_mode wave at 2 slots should split 9 lookahead siblings between worker and coordinator (got pool.started={started})"
+        );
+    }
+    assert_eq!(
+        execute(engine_serial.output.as_ref().unwrap()),
+        "[3 4 5 6 7 8 9 10 11 12]\n"
+    );
 }
