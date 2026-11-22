@@ -2696,12 +2696,28 @@ walks its hierarchy, only where the program could see the difference.
   The cache stays where it can tell: a cached answer survives a change of
   a constructor's prototypes, as upstream's does, and the cache starts as
   the method table, whose entry for a function wins over a later key it
-  also isa. Only answers for a function, or a vector holding one
-  (`leanCached`), are cached; any other value isa only the keys equal to it,
-  so its answer is the walk's, and the cache, a scan of entries, does not
-  grow with distinct numbers or keywords. A function, equal only to itself,
-  has its answer in a `Map` by identity (`fns`), so distinct closures do not
-  scan a growing cache either (from the Sol review).
+  also isa. Answers for a function, or a vector holding one
+  (`leanCached`), are always cached. Any other value isa only the keys equal
+  to it, so its answer is the walk's; a plain one (`leanPlain`: nil, a
+  boolean, a string, a number equal to itself, a keyword, a symbol, or a
+  vector of them) is cached too, as upstream caches every answer: in the
+  cache while it holds fewer than 16 entries, past them in a `Map` by a text
+  that equal plain values share (`more`, `leanCode`, serialized once at the
+  root so nested vectors stay linear), so that the cache, a
+  scan of entries, does not grow with distinct numbers or keywords
+  (light-cljs-1083). `getMethod`
+  scans the cache by identity first, as upstream's `array-index-of` compares
+  keywords, so an interned keyword literal finds its method or cached
+  answer with no walk; else `leanMethod` looks up the cache by equality and
+  walks. A function, equal only to itself, has its answer in a `Map` by
+  identity (`fns`), so distinct closures do not scan a growing cache either
+  (from the Sol review). `MultiFn`'s `call` passes 0 to 3 arguments to the
+  dispatch function and the method through a step per count
+  (`multiCall1`), with no rest array or spread, and more through
+  `multiApply`; where the tables are in atoms, its `-get-method` is the
+  dispatcher's steps for two arguments, which `getMethodProtocol` puts in
+  `multiHooks.getMethodProtocol`: a program's method from the protocol
+  lookup, else `getMethod`.
 - **Where the tables stay in atoms.** `MultiFn.tables effect: multiHooks
   when: ...` installs the persistent path (`multiHooks.addMethod`,
   `.getMethod` and `.getMethodProtocol`, through which a call dispatches

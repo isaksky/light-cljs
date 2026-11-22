@@ -388,10 +388,104 @@ fn multimethods_are_named_by_text_where_only_messages_read_names() {
     }
 }
 
-/// The arrays cache only answers that can change while the methods do not
-/// (a function's, also in a vector), so distinct dispatch values of other
-/// kinds leave the cache, a scan, as it was: 60,000 of them would take
-/// minutes to scan through a cache holding every earlier one.
+/// `MultiFn`'s `call` passes 0 to 3 arguments as they came and more through
+/// `apply` (light-cljs-1083): each reaches the dispatch function and the
+/// method with its own count, which a dispatch function of fixed arities
+/// and a method with a rest parameter read.
+#[test]
+fn calls_pass_each_count_of_arguments_to_the_dispatch_function_and_method() {
+    every_level(
+        "(defmulti m (fn [& xs] (count xs))) (defmethod m 0 [] :zero) (defmethod m 1 [a] [:one a]) (defmethod m 2 [a b] [:two a b]) (defmethod m 3 [a b c] [:three a b c]) (defmethod m :default [& xs] (vec xs)) \
+         (defmulti n (fn ([a] :one) ([a b] :two) ([a b c] :three))) (defmethod n :one [a] [a]) (defmethod n :two [a b] [a b]) (defmethod n :three ([a b c] [a b c]) ([a b c d] :four)) \
+         (js/console.log (pr-str [(m) (m 1) (m 1 2) (m 1 2 3) (m 1 2 3 4) (m 1 2 3 4 5) (apply m []) (apply m [1 2]) (apply m 1 2 3 [4 5 6]) ((identity m) 7) \
+                                  (n :a) (n :a :b) (n :a :b :c) (try (n) (catch :default _ :arity)) (try (n 1 2 3 4) (catch :default _ :arity))]))",
+        "[:zero [:one 1] [:two 1 2] [:three 1 2 3] [1 2 3 4] [1 2 3 4 5] :zero [:two 1 2] [1 2 3 4 5 6] [:one 7] [:a] [:a :b] [:a :b :c] :arity :arity]",
+        false,
+    );
+}
+
+/// Where the tables are in atoms, a call's `-get-method` takes the
+/// dispatcher's steps for two arguments (light-cljs-1083): a program's own
+/// `-get-method` of a multimethod still answers its calls, of each count,
+/// and another multimethod's calls take its tables.
+#[test]
+fn a_programs_get_method_answers_calls_where_the_tables_are_in_atoms() {
+    every_level(
+        "(defmulti m identity) (defmethod m :a [x] [:a x]) (defmulti n (fn [x & _] x)) (defmethod n :a [x & more] [:n x more]) \
+         (specify! m IMultiFn (-get-method [_ d] (fn [& xs] [:specified d xs]))) \
+         (js/console.log (pr-str [(m :a) (m :b) (n :a) (n :a 1 2 3) (apply n [:a 1]) (fn? (get-method n :a))]))",
+        "[[:specified :a (:a)] [:specified :b (:b)] [:n :a nil] [:n :a (1 2 3)] [:n :a (1)] true]",
+        true,
+    );
+}
+
+/// The arrays cache a walk's answer for a keyword, a symbol, a string, a
+/// number or a vector of them, as upstream's cache does, found by identity
+/// first; an equal value that is not identical finds it too, and a new
+/// method clears it (light-cljs-1083).
+#[test]
+fn plain_dispatch_values_find_cached_answers_until_a_method_changes() {
+    every_level(
+        "(defmulti c identity) (defmethod c :a [_] 1) (defmethod c :default [x] [:default x]) \
+         (defn all [] [(c :a) (c :b) (c :b) (c (keyword \"b\")) (c 'x) (c 'x) (c (symbol \"x\")) (c \"s\") (c (str \"s\")) (c [:a 'x 1]) (c (vector :a 'x 1)) (c 2) (c 2) (c nil) (c true)]) \
+         (js/console.log (pr-str (all))) \
+         (defmethod c :b [_] 2) (defmethod c 'x [_] 3) (defmethod c [:a 'x 1] [_] 4) (defmethod c 2 [_] 5) \
+         (js/console.log (pr-str (all))) \
+         (js/console.log (pr-str (mapv c (range 20))) (pr-str (mapv c (range 20))))",
+        "[1 [:default :b] [:default :b] [:default :b] [:default x] [:default x] [:default x] [:default \"s\"] [:default \"s\"] [:default [:a x 1]] [:default [:a x 1]] [:default 2] [:default 2] [:default nil] [:default true]]\n\
+         [1 2 2 2 3 3 3 [:default \"s\"] [:default \"s\"] 4 4 5 5 [:default nil] [:default true]]\n\
+         [[:default 0] [:default 1] 5 [:default 3] [:default 4] [:default 5] [:default 6] [:default 7] [:default 8] [:default 9] [:default 10] [:default 11] [:default 12] [:default 13] [:default 14] [:default 15] [:default 16] [:default 17] [:default 18] [:default 19]] [[:default 0] [:default 1] 5 [:default 3] [:default 4] [:default 5] [:default 6] [:default 7] [:default 8] [:default 9] [:default 10] [:default 11] [:default 12] [:default 13] [:default 14] [:default 15] [:default 16] [:default 17] [:default 18] [:default 19]]",
+        false,
+    );
+}
+
+/// Past 16 entries the arrays cache a plain value's answer by its code
+/// (`more`, light-cljs-1083): keywords, symbols, numbers, strings and
+/// vectors of them answer as a walk does, equal values that are not
+/// identical too, and a new method (including replacing `:default`) clears
+/// both the first 16 entries and the overflow cache.
+#[test]
+fn plain_dispatch_values_past_sixteen_answers_find_them_until_a_method_changes() {
+    every_level(
+        "(defmulti d identity) (defmethod d :default [x] [:default x]) \
+         (defn many [] [(mapv d (map #(keyword (str \"k\" %)) (range 20))) (mapv d (map #(vector % (symbol (str \"s\" %)) [(str %)]) (range 20))) (mapv d (range 20))]) \
+         (js/console.log (= (many) (many)) (pr-str [(d :k0) (d :k19) (d [19 's19 [\"19\"]]) (d 19) (d \"19\") (d 'k19)])) \
+         (defmethod d :k19 [_] 1) (defmethod d [19 's19 [\"19\"]] [_] 2) (defmethod d 19 [_] 3) \
+         (js/console.log (pr-str [(d :k19) (d (keyword \"k19\")) (d [19 (symbol \"s19\") [(str 19)]]) (d 19) (d 18) (d \"19\") (d 'k19)])) \
+         (many) \
+         (defmethod d :default [x] [:new-default x]) \
+         (js/console.log (pr-str [(d :k0) (d :k18) (d [18 's18 [\"18\"]]) (d 18) (d \"19\") (d 'k19) (d :k19) (d 19)]))",
+        "true [[:default :k0] [:default :k19] [:default [19 s19 [\"19\"]]] [:default 19] [:default \"19\"] [:default k19]]\n\
+         [1 1 2 3 [:default 18] [:default \"19\"] [:default k19]]\n\
+         [[:new-default :k0] [:new-default :k18] [:new-default [18 s18 [\"18\"]]] [:new-default 18] [:new-default \"19\"] [:new-default k19] 1 3]",
+        false,
+    );
+}
+
+/// Nested plain vectors in the overflow cache serialize once at the root
+/// (`leanCode`, light-cljs-1083), so a 30-level singleton vector keeps a
+/// linear key instead of growing exponentially under repeated JSON escaping.
+#[test]
+fn nested_plain_dispatch_values_have_linear_overflow_keys() {
+    every_level(
+        "(defmulti nested identity) (defmethod nested :default [_] :old) \
+         (defn wrap [leaf] (loop [i 0 v leaf] (if (< i 30) (recur (inc i) [v]) v))) \
+         (doseq [i (range 20)] (nested i)) \
+         (def a (wrap 0)) (def b (wrap 0)) (def c (wrap 1)) \
+         (js/console.log (pr-str [(nested a) (nested b) (nested c)])) \
+         (defmethod nested :default [_] :new) \
+         (js/console.log (pr-str [(nested a) (nested b) (nested c)]))",
+        "[:old :old :old]\n[:new :new :new]",
+        false,
+    );
+}
+
+/// The arrays keep a plain value's answer (above) in the cache only while
+/// it holds fewer than 16 entries, past them in a `Map` by its code, and
+/// others only where they can change while the methods do not (a
+/// function's, also in a vector), so distinct dispatch values leave the
+/// cache, a scan, short: 60,000 of them would take minutes to scan through
+/// a cache holding every earlier one.
 #[test]
 fn distinct_dispatch_values_leave_the_cache_as_it_was() {
     every_level(

@@ -10805,6 +10805,16 @@
   // function's prototypes can change and make it isa more or fewer keys, also
   // as an item of a vector. Any other value isa only the keys equal to it.
   const leanCached = value => typeof value === "function" || !!isaItems(value)?.some(leanCached);
+  //@unit leanPlain requires: isaItems, keywordOf, symbolOf
+  // Whether `isaPlain`'s answers for `dispatch` are the method of the key
+  // equal to it, else the default, as long as the methods do not change, so
+  // that a walk's answer can be cached (light-cljs-1083), as upstream's
+  // `method-cache` caches every one: nil, a boolean, a string, a number
+  // equal to itself, a keyword, a symbol, or a vector of them. They equal
+  // keys by kind and spelling or by value, and no program's `IEquiv` method
+  // takes part where the tables are arrays (`multi_tables` in src/rta.rs).
+  const leanPlain = value => value == null || typeof value === "string" || typeof value === "boolean"
+    || (typeof value === "number" ? value === value : keywordOf(value) !== undefined || symbolOf(value) !== undefined || !!isaItems(value)?.every(leanPlain));
   //@unit isaItems requires: holdsVector, kindHooks, vectorStore
   // The items of a vector that `isa?` compares, or null. Where no vector can
   // be built map entries, which hold their two in the tail of their store,
@@ -10880,7 +10890,7 @@
     for (const entry of toArray(updated)) for (const ancestor of toArray(nth(entry, 1))) result = derive(result, nth(entry, 0), ancestor);
     return result;
   }
-  //@unit MultiFn requires: getMethod, multiHooks, printHooks, truth
+  //@unit MultiFn requires: multiApply, multiCall0, multiCall1, multiCall2, multiCall3
   class MultiFn {
     constructor(name, dispatchFn, defaultDispatchVal, hierarchy, methodTable, preferTable, methodCache, cachedHierarchy) {
       this.name = name; this.dispatch_fn = dispatchFn; this.default_dispatch_val = defaultDispatchVal;
@@ -10888,15 +10898,40 @@
       this.method_cache = methodCache; this.cached_hierarchy = cachedHierarchy;
       /*@brand*/
     }
-    call(_self, ...args) {
-      // `-get-method`, which only multimethods implement where their tables
-      // are arrays (`multi_tables` in src/rta.rs).
-      const dispatch = this.dispatch_fn.call(null, ...args), target = (multiHooks.getMethodProtocol ?? getMethod)(this, dispatch);
-      if (!truth(target)) throw new Error("No method in multimethod '" + printHooks.text(this.name) + "' for dispatch value: " + printHooks.text(dispatch));
-      return target.call(null, ...args);
+    // Upstream's `-invoke`: 0 to 3 arguments go to the dispatch function and
+    // the method as they came, with no rest array or spread, each through a
+    // step of its own, so that `call` stays small enough for V8 to inline
+    // into its caller (light-cljs-1083); more go as an array (`multiApply`).
+    call(_self, a, b, c) {
+      switch (arguments.length) {
+        case 2: return multiCall1(this, a);
+        case 3: return multiCall2(this, a, b);
+        case 4: return multiCall3(this, a, b, c);
+        case 1: return multiCall0(this);
+        default: return multiApply(this, Array.prototype.slice.call(arguments, 1));
+      }
     }
-    apply(_self, args) { return this.call(null, ...Array.from(args)); }
+    apply(_self, args) { return multiApply(this, Array.from(args)); }
   }
+  //@unit multiTarget requires: getMethod, multiHooks, printHooks
+  // The method of the multimethod `mf` for the dispatch value `dispatch`,
+  // else an error: `-get-method`, which only multimethods implement where
+  // their tables are arrays (`multi_tables` in src/rta.rs). The message is
+  // built apart (`noMultiMethod`), which keeps the steps that call this small.
+  function multiTarget(mf, dispatch) {
+    const target = (multiHooks.getMethodProtocol ?? getMethod)(mf, dispatch);
+    return target == null || target === false ? noMultiMethod(mf, dispatch) : target;
+  }
+  function noMultiMethod(mf, dispatch) {
+    throw new Error("No method in multimethod '" + printHooks.text(mf.name) + "' for dispatch value: " + printHooks.text(dispatch));
+  }
+  //@unit multiApply requires: multiTarget
+  // `MultiFn`'s `call` of the arguments in the array `items`, and of 0 to 3.
+  const multiApply = (mf, items) => multiTarget(mf, mf.dispatch_fn.call(null, ...items)).call(null, ...items);
+  const multiCall0 = mf => multiTarget(mf, mf.dispatch_fn.call(null)).call(null);
+  const multiCall1 = (mf, a) => multiTarget(mf, mf.dispatch_fn.call(null, a)).call(null, a);
+  const multiCall2 = (mf, a, b) => multiTarget(mf, mf.dispatch_fn.call(null, a, b)).call(null, a, b);
+  const multiCall3 = (mf, a, b, c) => multiTarget(mf, mf.dispatch_fn.call(null, a, b, c)).call(null, a, b, c);
   //@unit MultiFn.kind effect: MultiFn requires: MultiFn
   // A multimethod is a class of the class layout, kind 41 (`multiFns`,
   // light-cljs-1013).
@@ -10948,8 +10983,9 @@
   function leanAdd(mf, dispatch, method) {
     const methods = leanTables.get(mf)?.methods ?? [];
     // `resetMultiCache`: the cache starts as the method table; answers for
-    // functions, equal only to themselves, are cached by identity (`fns`).
-    leanPut(methods, dispatch, method); leanTables.set(mf, {methods, cache: methods.slice(), fns: new Map()}); return mf;
+    // functions, equal only to themselves, are cached by identity (`fns`),
+    // and a plain value's past 16 entries by its code (`more`, `leanMethod`).
+    leanPut(methods, dispatch, method); leanTables.set(mf, {methods, cache: methods.slice(), fns: new Map(), more: null}); return mf;
   }
   //@unit addMethod requires: leanAdd, multiHooks
   function addMethod(mf, dispatch, method) { return (multiHooks.addMethod ?? leanAdd)(mf, dispatch, method); }
@@ -10993,30 +11029,76 @@
     }
     return best;
   }
-  //@unit getMethod requires: bestMethod, isaPlain, leanCached, leanGet, leanPut, leanTables,
-  //@ multiHooks, truth
+  //@unit getMethod requires: leanMethod, leanTables, multiHooks
+  // As `MultiFn.tables` where the hierarchy, which then never changes, has
+  // no ancestors, and without preferences, which only it can have. The
+  // cache's entries are compared with `dispatch` by identity first, as
+  // upstream's `array-index-of` compares keywords: a keyword literal, which
+  // is interned, finds its method or its cached answer at its first equal
+  // key, with no comparison of spellings and no walk (light-cljs-1083).
   function getMethod(mf, dispatch) {
     if (multiHooks.getMethod) return multiHooks.getMethod(mf, dispatch);
-    // As `MultiFn.tables` where the hierarchy, which then never changes, has
-    // no ancestors, and without preferences, which only it can have.
-    // Only an answer that can change while the methods do not tells the
-    // cache from a new walk (`leanCached`), so only such answers are cached:
-    // the cache, a scan of entries, stays as small as their dispatch values,
-    // and a function's, which only it equals, is a lookup by identity.
-    const tables = leanTables.get(mf) ?? {methods: [], cache: [], fns: new Map()}, cache = leanCached(dispatch);
-    const fn = typeof dispatch === "function";
-    const cached = cache && ((fn ? tables.fns.get(dispatch) : undefined) ?? leanGet(tables.cache, dispatch));
+    const tables = leanTables.get(mf);
+    if (tables !== undefined) {
+      const cache = tables.cache;
+      for (let i = 0; i < cache.length; i++) {
+        const entry = cache[i];
+        if (entry.key === dispatch) {
+          const target = entry.value;
+          if (target != null && target !== false) return target;
+          break;
+        }
+      }
+    }
+    return leanMethod(mf, tables, dispatch);
+  }
+  //@unit leanMethod requires: bestMethod, isaPlain, leanCached, leanCode, leanGet, leanPlain,
+  //@ leanPut, truth
+  // `getMethod` past the cache's identical keys: the cache by equality, else
+  // a walk of the methods. An answer that can change while the methods do
+  // not (`leanCached`) is cached, as upstream's is, and so is every plain
+  // value's (`leanPlain`), whose answer a walk would only repeat: in the
+  // cache while it holds fewer than 16 entries, past them in a `Map` by the
+  // value's code (`more`, `leanCode`), so that the cache, a scan, stays short
+  // where a program dispatches on many values. A function, which only it
+  // equals, is cached by identity (`fns`).
+  function leanMethod(mf, found, dispatch) {
+    const tables = found ?? {methods: [], cache: [], fns: new Map(), more: null};
+    const fn = typeof dispatch === "function", plain = !fn && leanPlain(dispatch), cache = fn || plain || leanCached(dispatch);
+    let code;
+    const cached = cache && ((fn ? tables.fns.get(dispatch) : undefined) ?? leanGet(tables.cache, dispatch)
+      ?? (plain && tables.more ? tables.more.get(code = leanCode(dispatch)) : undefined));
     if (truth(cached)) return cached;
     const best = bestMethod(mf, dispatch, tables.methods, entry => entry.key, isaPlain, isaPlain);
     const target = best === null ? leanGet(tables.methods, mf.default_dispatch_val) : best.value;
     if (!truth(target)) return null;
-    if (fn) tables.fns.set(dispatch, target); else if (cache) leanPut(tables.cache, dispatch, target);
+    if (fn) tables.fns.set(dispatch, target);
+    else if (!plain || tables.cache.length < 16) { if (cache) leanPut(tables.cache, dispatch, target); }
+    else if ((code ??= leanCode(dispatch)) !== undefined) (tables.more ??= new Map()).set(code, target);
     return target;
+  }
+  //@unit leanCode requires: isaItems, keywordOf, symbolOf
+  // A text that two plain values (`leanPlain`) share exactly when they are
+  // equal, by kind and then by value or spelling, a vector's serialized once
+  // at the root so nesting stays linear; undefined for a keyword or symbol
+  // without a string spelling, which `more` then does not cache.
+  function leanCode(value, nested) {
+    if (value == null) return "n";
+    if (typeof value === "string") return "s" + value;
+    if (typeof value === "number") return "d" + value;
+    if (typeof value === "boolean") return value ? "t" : "f";
+    const keyword = keywordOf(value), symbol = keyword === undefined ? symbolOf(value) : undefined;
+    const spelling = keyword !== undefined ? keyword.fqn$LKEY : symbol?.str$LKEY;
+    if (keyword !== undefined || symbol !== undefined) return typeof spelling === "string" ? (keyword !== undefined ? "k" : "y") + spelling : undefined;
+    const out = isaItems(value).map(item => leanCode(item, true));
+    return out.includes(undefined) ? undefined : nested ? out : "v" + JSON.stringify(out);
   }
   //@unit MultiFn.tables effect: multiHooks when: methods, MultiFnFactory, multiTables, prefers,
   //@ preferMethod, removeMethod, resetMulti requires: assoc, bestMethod, declarationJournal,
   //@ demandMulti, deref, equalPair, get, getMethodProtocol, isaIn, multiHooks, multiPrefers,
   //@ multiState, nth, resetMultiCache, toArray, truth
+  // A call's `-get-method` (`multiTarget`), until `getMethodProtocol`, which
+  // is defined further on, puts its own two-argument steps here.
   multiHooks.getMethodProtocol = (mf, dispatch) => getMethodProtocol(mf, dispatch);
   // Only the tables in atoms run in a compiler session, which demands the
   // multimethod first (`setDeclarationDemand`).
@@ -13883,7 +13965,7 @@
   // The printer for code that must not keep it; `printWriterImpl.install`
   // replaces it where the program can print. A collection's `toString`...
   printHooks.collection = value => Object.prototype.toString.call(value);
-  //@unit printHooks.messages effect: printHooks when: bestMethod, derive, MultiFn, preferMethod
+  //@unit printHooks.messages effect: printHooks when: bestMethod, derive, multiTarget, preferMethod
   //@ requires: printHooks, printNumber
   // ... and the values in messages.
   printHooks.text = value => value == null ? "nil" : typeof value === "number" ? printNumber(value) : String(value);
@@ -14059,7 +14141,7 @@
     finally { coreCells.printReadably = saved; }
   }
   //@unit printWriterImpl.install effect: printWriterImpl when: bestMethod, derive, entryPrototype,
-  //@ Eduction, mapPrototype, MultiFn, preferMethod, sequencePrototype, setPrototype,
+  //@ Eduction, mapPrototype, multiTarget, preferMethod, sequencePrototype, setPrototype,
   //@ transientPrototype, vectorPrototype requires: print, printHooks, printSequential, printWriter
   // Only a program that can print has collection `toString`, where it keeps a
   // collection type, and prints values into messages.
@@ -15108,8 +15190,24 @@
   const removeMethodProtocol = coreMethod("IMultiFn/-remove-method", [2], removeMethod, multiFnValue);
   //@unit preferMethodProtocol effect requires: coreMethod, multiFnValue, preferMethod
   const preferMethodProtocol = coreMethod("IMultiFn/-prefer-method", [3], preferMethod, multiFnValue);
-  //@unit getMethodProtocol effect requires: coreMethod, getMethod, multiFnValue
+  //@unit getMethodProtocol effect requires: coreMethod, getMethod, multiFnValue, multiHooks,
+  //@ protocolHooks
   const getMethodProtocol = coreMethod("IMultiFn/-get-method", [2], getMethod, multiFnValue);
+  // Where the tables are in atoms (`MultiFn.tables`), a call's `-get-method`
+  // (`multiTarget`) takes the dispatcher's steps for its two arguments with
+  // no rest array, slice or spread, and no step between it and the call: a
+  // program's method from the protocol lookup, else `getMethod` of a
+  // multimethod, else the dispatcher, which throws (light-cljs-1083). The
+  // key is resolved at boot, where the protocol machinery has loaded, else on
+  // first call, as `coreMethod` does; the shared-heap profile registers it in
+  // `sharedMethodKeys` so boot seals it.
+  if (multiHooks.getMethodProtocol) {
+    let resolved = protocolHooks.methodKey?.("IMultiFn/-get-method");
+    multiHooks.getMethodProtocol = (mf, dispatch) => {
+      const method = protocolHooks.builtin?.(mf, resolved || (resolved = protocolHooks.methodKey("IMultiFn/-get-method")), 2);
+      return method != null ? method.call(mf, mf, dispatch) : multiFnValue(mf) ? getMethod(mf, dispatch) : getMethodProtocol(mf, dispatch);
+    };
+  }
   //@unit methods effect requires: coreMethod, demandMulti, deref, multiFnValue
   const methods = coreMethod("IMultiFn/-methods", [1], mf => { demandMulti(mf); return deref(mf.method_table); }, multiFnValue);
   //@unit prefers effect requires: coreMethod, demandMulti, deref, multiFnValue
