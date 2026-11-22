@@ -1435,7 +1435,7 @@ fn definitions_move_toward_their_readers_and_methods_stay() {
             "{text}"
         );
     }
-    for (chunk, method) in [(editor, "`<p>"), (reports, " rows`")] {
+    for (chunk, method) in [(editor, "\"<p>\""), (reports, "\" rows\"")] {
         assert!(
             chunk.contains("rt$addMethodDirect(") && chunk.contains(method),
             "{chunk}"
@@ -1540,10 +1540,12 @@ fn constants_go_to_the_chunks_of_their_readers() {
 
 /// Hoisted methods, map shapes and lazy cells are table entries placed as
 /// any other: the keyword both features' hoisted methods return and the key
-/// both features' map shapes hold go to a chunk of constants alone, which
-/// only `Advanced` has; the methods, each shape and the reports' lazy
-/// vector stay with their one reader. The chunks print what the single file
-/// prints at every level.
+/// both features' map literals hold go to a chunk of constants alone, which
+/// only `Advanced` has; the methods, the reports' hash map shape and its
+/// lazy vector stay with their one reader. A map literal of at most 8 keys
+/// has no shape since light-cljs-1080: each feature's site builds it of
+/// its keys and values (`rt$arrayMapOfLiteral`). The chunks print what the
+/// single file prints at every level.
 #[test]
 fn methods_shapes_and_lazy_cells_are_placed_by_their_readers() {
     let reports = format!(
@@ -1551,7 +1553,8 @@ fn methods_shapes_and_lazy_cells_are_placed_by_their_readers() {
          (def big [{} :big-key])\n\
          (defn start [n]\n\
            (let [g (fn ([] :in-method) ([x] (+ x (count big))))]\n\
-             (pr-str [(g) (g n) (nth big n) (peek big) {{:shape-key n}}])))\n",
+             (pr-str [(g) (g n) (nth big n) (peek big) {{:shape-key n}}\n\
+                     (count (identity {{:shape-key n :r1 1 :r2 2 :r3 3 :r4 4 :r5 5 :r6 6 :r7 7 :r8 8}}))])))\n",
         (0..1100)
             .map(|n| n.to_string())
             .collect::<Vec<_>>()
@@ -1583,7 +1586,7 @@ fn methods_shapes_and_lazy_cells_are_placed_by_their_readers() {
         record,
         printed(
             "app.main.js",
-            r"[:in-method [1 :in-method :editor-method] {:shape-key 1, :other-key 2}]\n[:in-method 1103 2 :big-key {:shape-key 2}]\n"
+            r"[:in-method [1 :in-method :editor-method] {:shape-key 1, :other-key 2}]\n[:in-method 1103 2 :big-key {:shape-key 2} 9]\n"
         )
     );
     assert_eq!(files.len(), 3, "{files:?}");
@@ -1614,7 +1617,12 @@ fn methods_shapes_and_lazy_cells_are_placed_by_their_readers() {
         ("\"editor-method\"", &["app.editor.js"]),
         ("\"other-key\"", &["app.editor.js"]),
         ("\"big-key\"", &["app.reports.js"]),
-        ("rt$mapShape(", &["app.editor.js", "app.reports.js"]),
+        (
+            "rt$arrayMapOfLiteral([",
+            &["app.editor.js", "app.reports.js"],
+        ),
+        ("rt$hashMapShape(", &["app.reports.js"]),
+        ("rt$mapShape(", &[]),
         (" ??= ", &["app.reports.js"]),
     ] {
         assert_eq!(files_containing(&output, text), chunks, "{text}");
@@ -2976,10 +2984,12 @@ fn the_features_runtime_splits_by_signature() {
 }
 
 /// The entry of [`LOADS_BOTH`] that also logs a `str` call when it loads.
+/// Its operands are two calls, so that `Advanced` keeps the call of `str`
+/// rather than joining their texts (light-cljs-1023).
 fn loads_both_calling_str() -> String {
     LOADS_BOTH.replace(
         "start\n",
-        "(js/console.log (str (aget #js [\"n\"] 0) (js/parseInt \"1\")))\nstart\n",
+        "(js/console.log (str (js/String \"n\") (js/parseInt \"1\")))\nstart\n",
     )
 }
 
@@ -3258,7 +3268,8 @@ fn an_install_both_features_need_is_in_the_chunk_they_share() {
 
 /// `str` of a collection prints it through a hook (`str.collections`, an
 /// `effect:` unit of every collection constructor, `when: str`). Startup
-/// calls `str` on strings only and logs the features' strings as they are;
+/// calls `str` on strings only (two calls, which `Advanced` keeps a call of
+/// `str`, light-cljs-1023) and logs the features' strings as they are;
 /// one feature prints a vector and the other a map. The hook and the printer
 /// it needs are both features', in their shared chunk, and run before either
 /// feature's code: startup holds neither.
@@ -3271,7 +3282,7 @@ fn the_printer_of_collections_goes_with_the_collections() {
                   (-> (lazy/load editor)\n\
                       (.then (fn [f] (js/console.log (f)) (lazy/load reports)))\n\
                       (.then (fn [f] (js/console.log (f)) nil))))\n\
-                (js/console.log (str (aget #js [\"n\"] 0) (js/parseInt \"1\")))\n\
+                (js/console.log (str (js/String \"n\") (js/parseInt \"1\")))\n\
                 start\n";
     let program = analyze(&[
         ("app/main.cljs", main),
@@ -4303,4 +4314,185 @@ fn a_lazy_operation_works_on_a_startup_record() {
     ];
     let (record, _) = chunk_files(&analyze(RECORD));
     assert_eq!(record, printed("app.main.js", r"7\n"));
+}
+
+/// Multi-chunk parallel release emission (`--jobs 4`) preserves chunk
+/// placement, canonical constant merging (including lazy cells, hoisted
+/// methods, shapes, and cross-chunk readers), reflection fallback, raw `js*`
+/// hygiene, and runtime results across every optimization level
+/// (light-cljs-1097).
+#[test]
+fn parallel_chunked_emission_matches_serial_runtime_and_placement() {
+    let slots4 = light_cljs::scheduler::Slots::new(4).unwrap();
+    let reports = format!(
+        "(ns app.reports)\n\
+         (def big [{} :big-key])\n\
+         (defn start [n]\n\
+           (let [g (fn ([] :in-method) ([x] (+ x (count big))))]\n\
+             (pr-str [(g) (g n) (nth big n) (peek big) {{:shape-key n}}\n\
+                     (count (identity {{:shape-key n :r1 1 :r2 2 :r3 3 :r4 4 :r5 5 :r6 6 :r7 7 :r8 8}}))])))\n",
+        (0..1100)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let large_startup = format!(
+        "(ns app.main (:require [light.lazy :as lazy]))\n\
+         {}\n\
+         (def editor (lazy/loadable app.editor/start))\n\
+         (def reports (lazy/loadable app.reports/start))\n\
+         (defn start []\n\
+           (-> (lazy/load editor)\n\
+               (.then (fn [f] (js/console.log (f (+ 1 (count s19)))) (lazy/load reports)))\n\
+               (.then (fn [f] (js/console.log (f 2)) nil))))\n\
+         start\n",
+        (0..20)
+            .map(|i| format!("(def s{i} [:startup-k{i} :shared-startup {i}])"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let heavy_chunk_defns = |prefix: &str| -> String {
+        (0..36)
+            .map(|i| {
+                format!(
+                    "(defn {prefix}{i} [x]\n\
+                       (let [a (js* \"(~{{}} + 1)\" x)\n\
+                             b (+ a {i})\n\
+                             c (js/JSON.stringify\n\
+                                 (array\n\
+                                   (let [p (+ a 1) q (+ p 2) r (+ q 3) s (+ r 4)] (+ p q r s))\n\
+                                   (let [t (+ b 5) u (+ t 6) w (+ u 7) z (+ w 8)] (+ t u w z))\n\
+                                   (+ a b) (+ a 1) (+ b 2) (+ a 3) (+ b 4) (+ a 5) (+ b 6) (+ a 7)\n\
+                                   (+ b 8) (+ a 9) (+ b 10) (+ a 11) (+ b 12) (+ a 13) (+ b 14) (+ a 15)))\n\
+                             v [:{prefix}k{i} :shared-subdiv (count c) (+ a b)]]\n\
+                         (+ (count v) (nth v 2) (nth v 3))))"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let heavy_chunk_calls = |prefix: &str| -> String {
+        (0..36)
+            .map(|i| format!("({prefix}{i} {}) ({prefix}{i} {})", i + 1, i + 2))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let subdiv_main = format!(
+        "(ns app.main (:require [light.lazy :as lazy]))\n\
+         {}\n\
+         (def heavy-lazy (lazy/loadable app.heavy/run))\n\
+         (defn start []\n\
+           (let [startup-sum (+ {})]\n\
+             (-> (lazy/load heavy-lazy)\n\
+                 (.then (fn [f] (js/console.log (str startup-sum \":\" (f 3))) nil)))))\n\
+         start\n",
+        heavy_chunk_defns("s"),
+        heavy_chunk_calls("s")
+    );
+    let subdiv_heavy = format!(
+        "(ns app.heavy)\n\
+         {}\n\
+         (defn run [base] (+ base {}))\n",
+        heavy_chunk_defns("h"),
+        heavy_chunk_calls("h")
+    );
+    let subdiv_program = analyze(&[
+        ("app/main.cljs", &subdiv_main),
+        ("app/heavy.cljs", &subdiv_heavy),
+    ]);
+    assert!(
+        subdiv_program.exprs.len() > 6000,
+        "expected subdivided startup+lazy program to exceed both 2048-expr thresholds, got {} exprs",
+        subdiv_program.exprs.len()
+    );
+    let programs = [
+        ("constants", fixture_program("constants")),
+        (
+            "methods-shapes-lazy",
+            analyze(&[
+                ("app/main.cljs", &large_startup),
+                (
+                    "app/editor.cljs",
+                    "(ns app.editor)\n\
+                     (defn start [n]\n\
+                       (let [f (fn ([] :in-method) ([x] [x :in-method :editor-method :shared-startup]))]\n\
+                         (pr-str [(f) (f n) {:shape-key n :other-key (inc n)}])))\n",
+                ),
+                ("app/reports.cljs", &reports),
+            ]),
+        ),
+        ("subdivided-startup-and-lazy", subdiv_program),
+        (
+            "reflection-and-raw-js",
+            analyze(&[
+                (
+                    "app/main.cljs",
+                    "(ns app.main (:require [light.lazy :as lazy]))\n\
+                     (def editor (lazy/loadable app.editor/start))\n\
+                     (defn start []\n\
+                       (-> (lazy/load editor)\n\
+                           (.then (fn [f] (js/console.log (str *ns* \":\" (f))) nil))))\n\
+                     start\n",
+                ),
+                (
+                    "app/editor.cljs",
+                    "(ns app.editor)\n\
+                     (defn start [] (let [x 41] (js* \"~{} = ~{} + 1\" x x) (str *ns* \"=\" x)))\n",
+                ),
+            ]),
+        ),
+    ];
+
+    for (label, program) in &programs {
+        for level in OptimizationLevel::ALL {
+            for pseudo_names in [false, true] {
+                if !level.advanced() && pseudo_names {
+                    continue;
+                }
+                let mut opts = ApplicationOptions::new(level);
+                opts.pseudo_names = pseudo_names;
+                let prepared = prepare_application(program, opts);
+                let serial = prepared.emit_chunks();
+                let parallel = prepared.emit_chunks_with_slots(slots4);
+                let parallel2 = prepared.emit_chunks_with_slots(slots4);
+
+                // Deterministic at a given slot count and identical chunk set.
+                assert_eq!(
+                    parallel.files.len(),
+                    serial.files.len(),
+                    "{label} {level} pseudo={pseudo_names}"
+                );
+                let serial_names: Vec<&str> =
+                    serial.files.iter().map(|f| f.name.as_str()).collect();
+                let parallel_names: Vec<&str> =
+                    parallel.files.iter().map(|f| f.name.as_str()).collect();
+                assert_eq!(
+                    parallel_names, serial_names,
+                    "{label} {level} pseudo={pseudo_names}"
+                );
+                for (a, b) in parallel.files.iter().zip(&parallel2.files) {
+                    assert_eq!(a.source, b.source, "{label} non-deterministic {}", a.name);
+                }
+
+                let serial_files: Vec<(&str, &str)> = serial
+                    .files
+                    .iter()
+                    .map(|f| (f.name.as_str(), f.source.as_str()))
+                    .collect();
+                let parallel_files: Vec<(&str, &str)> = parallel
+                    .files
+                    .iter()
+                    .map(|f| (f.name.as_str(), f.source.as_str()))
+                    .collect();
+                let expected = run_modules(&serial_files, &serial.startup().name)
+                    .unwrap_or_else(|e| panic!("serial {label} {level}: {e}"));
+                let actual = run_modules(&parallel_files, &parallel.startup().name)
+                    .unwrap_or_else(|e| panic!("parallel {label} {level}: {e}"));
+                assert_eq!(
+                    actual, expected,
+                    "runtime mismatch {label} {level} pseudo={pseudo_names}"
+                );
+            }
+        }
+    }
 }

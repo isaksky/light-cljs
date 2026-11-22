@@ -2,11 +2,14 @@
 //! "Constant collection literals", tier 4).
 //!
 //! At `Advanced` a map literal whose keys are distinct constants and whose
-//! values are not all constants reads its keys from a pooled shape,
-//! `const k3 = rt$mapShape([k0, k1, k2], [<hashes>]);`, and its site passes only
-//! the values, `rt$mapFromShape(k3, [k4, l3, l4])`: no key is looked up, compared
-//! or hashed per evaluation. Past 8 entries the shape also holds the hash trie
-//! `mapFromArray` builds (`rt$hashMapShape`, `rt$hashMapFromShape`). A set
+//! values are not all constants builds its array map of one new array of its
+//! constant keys and values in turn, which the map keeps,
+//! `rt$arrayMapOfLiteral([k0, k3, k1, l3, k2, l4])` (light-cljs-1080; before it a
+//! pooled `rt$mapShape` and `rt$mapFromShape(k3, [k4, l3, l4])`): no key is
+//! looked up, compared or hashed per evaluation. Past 8 entries the keys are
+//! read from a pooled shape, `const k3 = rt$hashMapShape([k0, k1, ...],
+//! [<hashes>]);`, which also holds the hash trie `mapFromArray` builds, and the
+//! site passes only the values, `rt$hashMapFromShape(k3, [...])`. A set
 //! literal whose first members are distinct scalar, keyword or symbol constants
 //! adds its other members to a pooled shape of the first ones
 //! (`rt$setShape`, `rt$setFromShape`), checking them as `literalSetFromArray`
@@ -198,7 +201,10 @@ fn shaped_maps_behave_as_maps_built_at_their_site() {
         "{printed}"
     );
     let advanced = emit(&program, OptimizationLevel::Advanced);
-    assert!(advanced.contains("rt$mapFromShape(k"), "{advanced}");
+    // A map of at most 8 constant keys is built of its keys and values in
+    // turn (light-cljs-1080).
+    assert!(advanced.contains("rt$arrayMapOfLiteral(["), "{advanced}");
+    assert!(!advanced.contains("rt$mapFromShape("), "{advanced}");
     assert!(advanced.contains("rt$hashMapFromShape(k"));
     // The built maps' first key is not a constant.
     assert!(advanced.contains("rt$arrayMapFromArray([rt$identity("));
@@ -292,7 +298,7 @@ fn set_literals_add_their_other_members_to_a_shape_of_their_first_members() {
 /// Runtime internals the structural test compares, exposed on `globalThis`
 /// by [`exposed`].
 const INTERNALS: &str = "maps, mapKinds, arrayMapEntries, sets, setKinds, hashRoots, hash, keyword, symbol, \
-     vectorFromArray, listFromArray, setFromArray, mapFromArray, mapShape, mapFromShape, \
+     vectorFromArray, listFromArray, setFromArray, mapFromArray, arrayMapOfLiteral, \
      hashMapShape, hashMapFromShape, setShape, setFromShape, literalSetFromArray, transientState, core";
 
 /// `None` output of a program whose runtime exposes [`INTERNALS`] as
@@ -421,13 +427,21 @@ for (let trial = 0; trial < 600; trial++) {
   const big = trial % 2 === 1, count = big ? 9 + random(110) : 1 + random(8);
   const keys = keysOf(count), values = keys.map(valueOf), hashes = keys.map(key => key == null ? 0 : I.hash(key));
   const built = I.mapFromArray(keys.flatMap((key, i) => [key, values[i]]), big ? "hash-map" : "array-map");
-  const shape = big ? I.hashMapShape(keys.slice(), hashes.slice()) : I.mapShape(keys.slice(), hashes.slice());
-  const fromShape = big ? I.hashMapFromShape : I.mapFromShape;
+  // At most 8 keys, an `Advanced` site builds its map of one array of
+  // the keys and values in turn, which the map keeps (light-cljs-1080).
+  const shape = big ? I.hashMapShape(keys.slice(), hashes.slice()) : null;
+  const fromShape = big ? I.hashMapFromShape : (_, values) => I.arrayMapOfLiteral(keys.flatMap((key, i) => [key, values[i]]));
   sameMap(built, fromShape(shape, values));
   // A shape builds any number of maps, which share no entries or nodes.
   const other = fromShape(shape, values.map(valueOf));
   sameMap(built, fromShape(shape, values));
   if (payloadOf(other)[0] === payloadOf(built)[0] || (big && rootOf(payloadOf(other)) === rootOf(payloadOf(built)))) fail("shared");
+  // The array map keeps the very array its site built, with no copy
+  // (light-cljs-1080).
+  if (!big) {
+    const pairs = keys.flatMap((key, i) => [key, values[i]]);
+    if (field(I.arrayMapOfLiteral(pairs), "arr") !== pairs) fail("literal pairs copied");
+  }
   if (big) hashMaps++; else maps++;
 }
 for (let trial = 0; trial < 600; trial++) {
@@ -623,7 +637,9 @@ fn shape_key_hashes_are_the_runtime_hashes() {
     // runtime's, in Node and QuickJS (see `constant_hashes::agrees`).
     let advanced = emit(&program(&edge_cases()), OptimizationLevel::Advanced);
     let checked = agrees(&advanced, "edge cases");
-    assert!(checked > 100, "{checked}");
+    // 94 since light-cljs-1080, whose map literals of at most 8 keys have no
+    // shape and so no hashes.
+    assert!(checked > 80, "{checked}");
 }
 
 #[test]
@@ -634,7 +650,9 @@ fn event_map_allocations_per_evaluation_are_pinned() {
     // evaluation interns its keywords and puts each key, comparing it with
     // the keys before it; at `Advanced` the keys and the trie are built once,
     // with their shapes, and each evaluation only makes the entries and copies
-    // the trie, and puts only the set's other member. The literals pass
+    // the trie, and puts only the set's other member. Since light-cljs-1080
+    // the event map has no shape: its site builds one array of its pooled
+    // keys and its values, which the map keeps (`arrayMapOfLiteral`). The literals pass
     // through `identity`: read directly, the map literals' lookups and counts
     // fold, and the hash map is not built at all (light-cljs-221). Since
     // light-cljs-1034 an array map's builder searches its flat key, value
@@ -654,6 +672,7 @@ fn event_map_allocations_per_evaluation_are_pinned() {
         "keyword",
         "mapFromArray",
         "mapFromShape",
+        "arrayMapOfLiteral",
         "hashMapFromShape",
         "literalSetFromArray",
         "setFromShape",
@@ -664,9 +683,9 @@ fn event_map_allocations_per_evaluation_are_pinned() {
     ];
     let program = program(source);
     let expected = [
-        r#"{"keyword":16000,"mapFromArray":2000,"mapFromShape":0,"hashMapFromShape":0,"literalSetFromArray":1000,"setFromShape":0,"putEntry":12000,"putMember":2000,"entryIndex":2000,"hashNodeAssoc":16000}"#,
-        r#"{"keyword":16000,"mapFromArray":2000,"mapFromShape":0,"hashMapFromShape":0,"literalSetFromArray":1000,"setFromShape":0,"putEntry":12000,"putMember":2000,"entryIndex":2000,"hashNodeAssoc":16000}"#,
-        r#"{"keyword":15,"mapFromArray":0,"mapFromShape":1000,"hashMapFromShape":1000,"literalSetFromArray":1000,"setFromShape":1000,"putEntry":1001,"putMember":1001,"entryIndex":1001,"hashNodeAssoc":16}"#,
+        r#"{"keyword":16000,"mapFromArray":2000,"mapFromShape":0,"arrayMapOfLiteral":0,"hashMapFromShape":0,"literalSetFromArray":1000,"setFromShape":0,"putEntry":12000,"putMember":2000,"entryIndex":2000,"hashNodeAssoc":16000}"#,
+        r#"{"keyword":16000,"mapFromArray":2000,"mapFromShape":0,"arrayMapOfLiteral":0,"hashMapFromShape":0,"literalSetFromArray":1000,"setFromShape":0,"putEntry":12000,"putMember":2000,"entryIndex":2000,"hashNodeAssoc":16000}"#,
+        r#"{"keyword":15,"mapFromArray":0,"mapFromShape":0,"arrayMapOfLiteral":1000,"hashMapFromShape":1000,"literalSetFromArray":1000,"setFromShape":1000,"putEntry":1001,"putMember":1001,"entryIndex":1001,"hashNodeAssoc":16}"#,
     ];
     for (level, expected) in OptimizationLevel::ALL.into_iter().zip(expected) {
         assert_eq!(
@@ -676,7 +695,8 @@ fn event_map_allocations_per_evaluation_are_pinned() {
         );
     }
     // The shapes, with the keys' hashes, and the sites, which pass the values
-    // and the set's other member in their operand order. Each builder is
+    // and the set's other member in their operand order; the event map's
+    // site passes its pooled keys too, each before its value (light-cljs-1080). Each builder is
     // called once, so its site is inlined into the loop (light-cljs-214), where
     // `(:x m)` is `rt$getSite(m, :x)` (light-cljs-370, light-cljs-1016), so
     // `:x` is read after the map's first key.
@@ -689,14 +709,13 @@ fn event_map_allocations_per_evaluation_are_pinned() {
     assert_eq!(
         shaped,
         [
-            "const k4 = rt$mapShape([k0, k1, k2, k3], [1174270348, 2099068185, -1757859776, 253001721]);",
-            "const k16 = rt$hashMapShape([k6, k7, k8, k9, k10, k11, k12, k13, k14, k15], \
+            "const k15 = rt$hashMapShape([k5, k6, k7, k8, k9, k10, k11, k12, k13, k14], \
              [1381269198, 1738089905, -1763192079, -1397974765, 1109658740, 1482224470, \
              1972142424, -1597136552, -1386841315, -2123407586]);",
-            "const k17 = rt$setShape([null]);",
-            "const next1 = (l5 + rt$getSite(rt$identity(rt$mapFromShape(k4, [k5, l4, (l4 + 1), \"button\"])), k1) \
-             + rt$countSite(rt$identity(rt$hashMapFromShape(k16, [5, 7, 3, l4, 8, 2, 4, 6, 9, l4]))) \
-             + rt$countSite(rt$identity(rt$setFromShape(k17, [l4]))));",
+            "const k16 = rt$setShape([null]);",
+            "const next1 = (l5 + rt$getSite(rt$identity(rt$arrayMapOfLiteral([k0, k4, k1, l4, k2, (l4 + 1), k3, \"button\"])), k1) \
+             + rt$countSite(rt$identity(rt$hashMapFromShape(k15, [5, 7, 3, l4, 8, 2, 4, 6, 9, l4]))) \
+             + rt$countSite(rt$identity(rt$setFromShape(k16, [l4]))));",
         ]
     );
 }
@@ -706,8 +725,9 @@ fn generated_programs_build_shaped_maps_and_sets() {
     // The generator's shape reads (`Builder::shape_read` in
     // tests/support/generated.rs) compare each shaped literal with one built at
     // its site, and `generated_optimization` compares the levels; this pins
-    // that the fixed seeds do build shaped maps of both kinds and shaped sets
-    // at `Advanced`.
+    // that the fixed seeds do build both kinds of maps of constant keys (an
+    // array map of its keys and values in turn since light-cljs-1080, a
+    // shaped hash map) and shaped sets at `Advanced`.
     let mut sites = [0; 3];
     for seed in SEEDS {
         let program = namespace_program(seed);
@@ -716,7 +736,7 @@ fn generated_programs_build_shaped_maps_and_sets() {
             OptimizationLevel::Advanced,
         );
         for (count, site) in sites.iter_mut().zip([
-            "rt$mapFromShape(k",
+            "rt$arrayMapOfLiteral([",
             "rt$hashMapFromShape(k",
             "rt$setFromShape(k",
         ]) {

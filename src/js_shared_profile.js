@@ -1755,14 +1755,17 @@
     const offset = match.index + Math.max(1, match[0].length);
     return cons(value, lazySequence(() => offset <= text.length ? reSeq(re, text.slice(offset)) : null));
   }
-  //@unit multiFns requires: sharedFormOf, sharedSet
-  // Only the brand view belongs here. Mutable method/preference registries
-  // and dispatch frontier installation remain light-cljs-649's.
-  const multiFns = (store => ({
-    has(value) { const type = __rt.structTypeOf(sharedFormOf(value)); return type !== null && __rt.formName(type) === "cljs.core/MultiFn" || store.has(value); },
-    add(value) { store.add(value); return this; },
-    delete: value => store.delete(value)
-  }))(__rt.seal(sharedSet()));
+  //@unit multiFns requires: sharedFormOf
+  // Only the brand view belongs here (engine structs plus class-layout
+  // `MultiFn` instances, kind 41). Mutable method/preference registries and
+  // dispatch frontier installation remain light-cljs-649's.
+  const multiFns = {
+    has(value) {
+      const type = __rt.structTypeOf(sharedFormOf(value));
+      return type !== null && __rt.formName(type) === "cljs.core/MultiFn"
+        || value != null && value.cljs$lang$kind$$LKEY === 41 && "dispatch_fn" in value;
+    }
+  };
   //@unit leanTables requires: entryIndex, sharedStore
   const leanTables = sharedStore();
   // The value of `key` in `entries`, as `get` of an array map gives it.
@@ -1860,6 +1863,21 @@
     };
     dispatchCell(key).dispatcher = dispatch;
     return dispatch;
+  }
+  //@unit getMethodProtocol effect requires: coreMethod, getMethod, multiFnValue, multiHooks,
+  //@ protocolHooks, sharedMethodKeys
+  // Shareable once booted (as `coreMethod` above): the resolved key is
+  // registered in `sharedMethodKeys` so `sharedProfileBoot` fills its memos
+  // and seals it, and the hook assigns no captured binding.
+  const getMethodProtocol = coreMethod("IMultiFn/-get-method", [2], getMethod, multiFnValue);
+  if (multiHooks.getMethodProtocol) {
+    const resolved = protocolHooks.methodKey?.("IMultiFn/-get-method");
+    if (resolved !== undefined) sharedMethodKeys.push(resolved);
+    sharedMethodKeys.maxArity = Math.max(sharedMethodKeys.maxArity, 2);
+    multiHooks.getMethodProtocol = (mf, dispatch) => {
+      const method = protocolHooks.builtin?.(mf, resolved ?? protocolHooks.methodKey("IMultiFn/-get-method"), 2);
+      return method != null ? method.call(mf, mf, dispatch) : multiFnValue(mf) ? getMethod(mf, dispatch) : getMethodProtocol(mf, dispatch);
+    };
   }
   //@unit protocolMasks requires: protocolMaskNames, sharedMap
   // Membership checks are on every generic collection operation. Resolve the

@@ -2892,7 +2892,6 @@ fn a_program_naming_one_upstream_member_reads_it_on_every_runtime_type() {
         ApplicationOptions::new(OptimizationLevel::None),
     )
     .emit_js();
-    let expected = execute(&format!("console.log({js});"));
     let each: Vec<String> = UPSTREAM_MEMBERS
         .iter()
         .map(|&name| {
@@ -2903,9 +2902,12 @@ fn a_program_naming_one_upstream_member_reads_it_on_every_runtime_type() {
             .emit_js()
         })
         .collect();
-    // One Node run of every program, from a file: the outputs together are
-    // too long for an argument.
+    // Run both the `None` oracle and the combined `Advanced` outputs from
+    // files: each is near or past macOS's argv/stack limit for `node --eval`.
     let dir = crate::temp_dir::TempDir::new("upstream-members");
+    let oracle = dir.path().join("all.js");
+    std::fs::write(&oracle, format!("console.log({js});")).unwrap();
+    let expected = execute(&format!("require({:?});", oracle.display().to_string()));
     let script = dir.path().join("members.js");
     std::fs::write(
         &script,

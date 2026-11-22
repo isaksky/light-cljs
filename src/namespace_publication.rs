@@ -18,20 +18,25 @@ pub(crate) struct NamespacePublication {
     requires: Vec<String>,
     charges: Option<crate::compilation_session::UnitCharges>,
     changed_globals: Vec<usize>,
+    warnings: Vec<AnalysisWarning>,
+    mutated_foreign_ns: bool,
 }
 
-impl NamespaceAnalysis {
-    /// Snapshot only the state analysis reads. Pending merges and compiler
-    /// counters remain with the coordinator. `source_index` is canonical.
-    pub(crate) fn namespace_job(
-        &mut self,
-        source_index: usize,
-        slots: crate::scheduler::Slots,
-    ) -> NamespaceJob {
-        self.program.freeze();
+/// Reusable frozen prefix snapshot shared across all ready namespaces in a
+/// single parallel dispatch wave (O(1) structural sharing per namespace).
+pub(crate) struct WaveSnapshot {
+    program: Program,
+    globals: crate::name_index::NameIndex,
+    record_layouts: RecordLayouts,
+    shared: SharedPrefix,
+    globals_before: crate::arena::Arena<GlobalBinding>,
+}
+
+impl WaveSnapshot {
+    pub(crate) fn job(&self, source_index: usize, slots: crate::scheduler::Slots) -> NamespaceJob {
         NamespaceJob {
-            shared: SharedPrefix::same(&self.program),
-            globals_before: self.program.globals.clone(),
+            shared: self.shared.clone(),
+            globals_before: self.globals_before.clone(),
             top: NamespaceTop {
                 program: self.program.clone(),
                 globals: self.globals.clone(),
@@ -44,9 +49,36 @@ impl NamespaceAnalysis {
             },
         }
     }
+}
+
+impl NamespaceAnalysis {
+    /// Freeze the program once so every ready namespace in a parallel wave can
+    /// clone an O(1) [`NamespaceJob`] from the same snapshot.
+    pub(crate) fn wave_snapshot(&mut self) -> WaveSnapshot {
+        self.program.freeze();
+        WaveSnapshot {
+            shared: SharedPrefix::same(&self.program),
+            globals_before: self.program.globals.clone(),
+            program: self.program.clone(),
+            globals: self.globals.clone(),
+            record_layouts: self.record_layouts.clone(),
+        }
+    }
+
+    /// Snapshot only the state analysis reads. Pending merges and compiler
+    /// counters remain with the coordinator. `source_index` is canonical.
+    #[cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
+    pub(crate) fn namespace_job(
+        &mut self,
+        source_index: usize,
+        slots: crate::scheduler::Slots,
+    ) -> NamespaceJob {
+        self.wave_snapshot().job(source_index, slots)
+    }
 
     /// Append only top-level IR now. Deferred fragments retain their original
     /// snapshots and relocate when the ordinary `merge_front` drains them.
+    #[cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
     pub(crate) fn publish_namespace(&mut self, mut published: NamespacePublication) {
         assert_eq!(published.drained.source_index, self.roots.len());
         let start = self.program.exprs.len();
@@ -62,6 +94,51 @@ impl NamespaceAnalysis {
         );
         published.drained.relocate(ids);
         published.drained.top = start..self.program.exprs.len();
+        self.record_layouts.extend(&self.program.exprs);
+        self.last_lazy = self.lazy_namespaces_since(first_lazy);
+        self.roots.push(root);
+        self.requires.push(published.requires);
+        self.pending.push_back(Pending::Analyzed(published.drained));
+    }
+
+    /// Publish a parallel overlay namespace pass in canonical order: relocates
+    /// local unit IDs to canonical unit IDs, appends top-level warnings in
+    /// serial order (so `finish_capture` and `hold_warnings` match `--jobs 1`),
+    /// appends top-level IR, and queues deferred units for `merge_front`.
+    pub(crate) fn publish_overlay_namespace(
+        &mut self,
+        mut published: NamespacePublication,
+        base_unit_id: usize,
+        pooled: Vec<usize>,
+        warnings: &mut Vec<AnalysisWarning>,
+    ) {
+        assert_eq!(published.drained.source_index, self.roots.len());
+        let warnings_start = warnings.len();
+        warnings.extend(published.warnings);
+        published.drained.warnings = HeldWarnings::Reported(warnings_start);
+        published.drained.relocate_unit_ids(base_unit_id, pooled);
+        let start = self.program.exprs.len();
+        let first_lazy = self.program.lazy_targets.len();
+        published.program.root = published.root;
+        let (root, ids) = crate::program_fragment::append_published(
+            &mut self.program,
+            &published.program,
+            &published.shared,
+            &published.drained.namespace,
+            &mut self.globals,
+            &published.changed_globals,
+        );
+        published.drained.relocate(ids);
+        let end = self.program.exprs.len();
+        for i in start..end {
+            if let ExprKind::DefinitionTest { unit, .. } = &mut self.program.exprs[i].kind
+                && *unit >= crate::compilation_session::LOCAL_UNIT_BASE
+            {
+                *unit = base_unit_id + (*unit - crate::compilation_session::LOCAL_UNIT_BASE);
+            }
+        }
+        published.drained.top = start..end;
+        self.record_layouts.extend(&self.program.exprs);
         self.last_lazy = self.lazy_namespaces_since(first_lazy);
         self.roots.push(root);
         self.requires.push(published.requires);
@@ -72,6 +149,7 @@ impl NamespaceAnalysis {
 impl NamespaceJob {
     /// The host belongs to this thread and must share the build's unit catalog.
     /// Namespace workers run their own units; no nested unit pool is started.
+    #[cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
     pub(crate) fn analyze(
         mut self,
         input: &NamespaceInput<'_>,
@@ -94,6 +172,9 @@ impl NamespaceJob {
             recording.finish(),
             host,
             input.name,
+            Vec::new(),
+            Vec::new(),
+            None,
         );
         let (root, mut drained) = outcome?;
         if let Some(session) = host.session_handle() {
@@ -128,6 +209,122 @@ impl NamespaceJob {
             requires: input.requires.to_vec(),
             charges: Some(charges),
             changed_globals,
+            warnings: Vec::new(),
+            mutated_foreign_ns: false,
+        })
+    }
+
+    /// Analyze a namespace's top-level pass on a pool worker backed by a
+    /// private [`crate::compilation_session::CompilationSession`] overlay
+    /// (Stage C, light-cljs-1090). Deferred units stay unanalyzed in the
+    /// overlay (except in `warning_mode`) until canonical publication.
+    pub(crate) fn analyze_overlay(
+        mut self,
+        input: &NamespaceInput<'_>,
+        resolution: NamespaceResolution,
+        result: bool,
+        host: &mut MacroHost,
+        options: AnalysisOptions,
+        recording_cfg: crate::macro_host::UnitRecording,
+    ) -> Result<NamespacePublication, AnalysisError> {
+        let mut warnings = Vec::new();
+        let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
+        let engine = evaluator
+            .as_ref()
+            .map(|e| e.as_ref() as &dyn crate::evaluator::MacroEvaluator);
+        let logs_capture = recording_cfg.capture;
+        let started_gensyms = if logs_capture {
+            crate::generated_names::start_log();
+            match engine {
+                Some(engine) => {
+                    crate::compilation_session::CompilationSession::take_gensyms_from_engine(engine)
+                        .map(drop)
+                }
+                None => Ok(()),
+            }
+        } else {
+            Ok(())
+        };
+        let started_namespaces = match engine {
+            Some(engine) if logs_capture => {
+                crate::compilation_session::CompilationSession::take_namespaces_from_engine(
+                    engine, false,
+                )
+                .map(drop)
+            }
+            _ => Ok(()),
+        };
+        let recording = crate::macro_host::MacroFreeUnit::enter(
+            input.name.to_owned(),
+            false,
+            recording_cfg,
+            true,
+        );
+        let outcome = self
+            .top
+            .analyze(input, resolution, result, host, options, &mut warnings);
+        let recorded = recording.finish();
+        let trace_rows = crate::compile_trace::take_worker_rows();
+        let mut gensyms = if logs_capture {
+            let logged = crate::generated_names::stop_log();
+            started_gensyms.map(|()| logged)
+        } else {
+            Ok(Vec::new())
+        };
+        let namespaces = match engine {
+            Some(engine) if logs_capture => started_namespaces.and_then(|()| {
+                crate::compilation_session::CompilationSession::take_namespaces_from_engine(
+                    engine, false,
+                )
+            }),
+            _ => Ok(Vec::new()),
+        };
+        let mut recorded = recorded;
+        if gensyms.is_err() {
+            recorded
+                .events
+                .push(crate::macro_host::UnitEvent::Unmeasured);
+            gensyms = Ok(Vec::new());
+        }
+        let namespaces = namespaces.unwrap_or_else(|_| {
+            recorded
+                .events
+                .push(crate::macro_host::UnitEvent::Unmeasured);
+            Vec::new()
+        });
+        let charges = crate::compilation_session::UnitCharges::namespace(
+            recorded,
+            host,
+            input.name,
+            gensyms.unwrap_or_default(),
+            namespaces,
+            trace_rows,
+        );
+        let (root, drained) = outcome?;
+        let changed_globals = self
+            .top
+            .program
+            .globals
+            .changed_entries(&self.globals_before, self.globals_before.len());
+        let mutated_foreign_ns = changed_globals
+            .iter()
+            .any(|&idx| self.top.program.globals[idx].namespace != input.name)
+            || self
+                .top
+                .program
+                .globals
+                .range(self.globals_before.len()..self.top.program.globals.len())
+                .any(|g| g.declared && g.namespace != input.name);
+        Ok(NamespacePublication {
+            program: self.top.program,
+            shared: self.shared,
+            root,
+            drained,
+            requires: input.requires.to_vec(),
+            charges: Some(charges),
+            changed_globals,
+            warnings,
+            mutated_foreign_ns,
         })
     }
 }
@@ -139,8 +336,18 @@ impl NamespacePublication {
             .unwrap()
             .charge_namespace(charges, host)
     }
+    #[cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
     pub(crate) fn deferred_units(&self) -> impl Iterator<Item = usize> + '_ {
         self.drained.dispatched.iter().map(|unit| unit.unit)
+    }
+    pub(crate) fn dispatched_local_ids(&self) -> Vec<usize> {
+        self.drained.dispatched.iter().map(|unit| unit.unit).collect()
+    }
+    pub(crate) fn any_may_enter_engine(&self) -> bool {
+        self.drained.dispatched.iter().any(|u| u.may_enter_engine)
+    }
+    pub(crate) fn mutated_foreign_ns(&self) -> bool {
+        self.mutated_foreign_ns
     }
 }
 
@@ -160,9 +367,26 @@ impl DrainedNamespace {
             .map(|id| ids.expr(*id))
             .collect();
     }
+
+    fn relocate_unit_ids(&mut self, base: usize, pooled: Vec<usize>) {
+        let map = |id: usize| {
+            if id >= crate::compilation_session::LOCAL_UNIT_BASE {
+                base + (id - crate::compilation_session::LOCAL_UNIT_BASE)
+            } else {
+                id
+            }
+        };
+        for unit in &mut self.units {
+            unit.unit = map(unit.unit);
+        }
+        for unit in &mut self.dispatched {
+            unit.unit = map(unit.unit);
+        }
+        self.pooled = pooled;
+    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "bbp-macros"))]
 mod tests {
     use super::*;
 

@@ -19,7 +19,7 @@ use light_cljs::compile_stats::{CompileStats, PhaseTimes};
 use light_cljs::source_map::{SourceFile, data_url};
 use light_cljs::{
     ApplicationOptions, Define, LineIndex, MacroHost, OptimizationLevel, PreparedApplication,
-    TokenKind, Tokenizer, parse, prepare_application, prepare_owned_application,
+    TokenKind, Tokenizer, parse, prepare_owned_application,
 };
 
 mod config_cli;
@@ -391,16 +391,16 @@ impl CompileFlags {
                 );
             }
             let code = if esm {
-                prepared.emit_esm()
+                prepared.emit_esm_with_slots(self.jobs)
             } else {
-                prepared.emit_js()
+                prepared.emit_js_with_slots(self.jobs)
             };
             return Ok((code, None));
         }
         let (mut code, mapping) = if esm {
-            prepared.emit_esm_mapped()
+            prepared.emit_esm_mapped_with_slots(self.jobs)
         } else {
-            prepared.emit_js_mapped()
+            prepared.emit_js_mapped_with_slots(self.jobs)
         };
         // Sources are named relative to the map's directory, or for an
         // embedded map the current directory.
@@ -510,16 +510,37 @@ fn print_size_report(prepared: &light_cljs::PreparedApplication) -> io::Result<(
 /// Write the dev build of `program` (`--reloadable`) into `out_dir`.
 /// `sources` are the program's source files by source index. `build` is the
 /// build of light-cljs.edn it is, if any, part of its identity
-/// ([`light_cljs::dev_build::emit_dev_build_of`]). With `phases`
+/// ([`light_cljs::dev_build::write_dev_build_on`]). With `phases`
 /// (`--stats`), add the emission and write times to them.
 fn write_dev_build(
-    program: &light_cljs::Program,
+    program: &mut light_cljs::Program,
     sources: &[(PathBuf, String)],
     out_dir: &Path,
     build: Option<&str>,
-    mut phases: Option<&mut PhaseTimes>,
+    phases: Option<&mut PhaseTimes>,
+) -> Result<(), Box<dyn Error>> {
+    write_dev_build_on(
+        program,
+        sources,
+        out_dir,
+        build,
+        phases,
+        light_cljs::scheduler::Slots::ONE,
+    )
+}
+
+/// [`write_dev_build`] running on `slots` CPU work slots (`--jobs N`),
+/// streaming each namespace unit and source map directly to `out_dir`.
+fn write_dev_build_on(
+    program: &mut light_cljs::Program,
+    sources: &[(PathBuf, String)],
+    out_dir: &Path,
+    build: Option<&str>,
+    phases: Option<&mut PhaseTimes>,
+    slots: light_cljs::scheduler::Slots,
 ) -> Result<(), Box<dyn Error>> {
     let started = phases.is_some().then(Instant::now);
+    program.flatten_leaves();
     fs::create_dir_all(out_dir)
         .map_err(|error| format!("cannot create {}: {error}", out_dir.display()))?;
     // Source maps name the sources relative to the build directory.
@@ -533,19 +554,18 @@ fn write_dev_build(
         .zip(sources)
         .map(|(url, (_, text))| SourceFile { url, text })
         .collect::<Vec<_>>();
-    let output = light_cljs::dev_build::emit_dev_build_of(program, &files, build);
-    let written = phases.is_some().then(Instant::now);
-    if let (Some(phases), Some(started), Some(written)) = (phases.as_deref_mut(), started, written)
-    {
-        phases.emission += written - started;
-    }
-    for file in output {
-        let path = out_dir.join(&file.name);
-        fs::write(&path, file.text)
-            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-    }
-    if let (Some(phases), Some(written)) = (phases, written) {
-        phases.write += written.elapsed();
+    let setup = started.map_or(Duration::ZERO, |started| started.elapsed());
+    let timing = light_cljs::dev_build::write_dev_build_on(
+        program,
+        &files,
+        build,
+        out_dir,
+        slots,
+        phases.is_some(),
+    )?;
+    if let Some(phases) = phases {
+        phases.emission += setup + timing.emission;
+        phases.write += timing.write;
     }
     Ok(())
 }
@@ -731,7 +751,7 @@ fn build_namespace(
     if options.warning_mode {
         print_warnings(&warnings);
     }
-    let (program, files) = match program {
+    let (mut program, files) = match program {
         Ok(program) => program,
         Err(error) => {
             // The counters up to the failure, then the failure itself.
@@ -742,12 +762,13 @@ fn build_namespace(
         }
     };
     if let (true, Some(out_dir)) = (reloadable, &out_dir) {
-        write_dev_build(
-            &program,
+        write_dev_build_on(
+            &mut program,
             &files,
             out_dir,
             build.as_deref(),
             stats.as_mut().map(|stats| &mut stats.phases),
+            flags.jobs,
         )?;
         return report_stats(stats, begun, flags.stats_file.as_deref());
     }
@@ -812,7 +833,7 @@ fn build_namespace(
     let mut chunk_report = None;
     let (emission, write) = if let Some(out_dir) = out_dir {
         let started = timer(&stats);
-        let (chunks, report) = prepared.emit_chunks_reported();
+        let (chunks, report) = prepared.emit_chunks_reported_with_slots(flags.jobs);
         let emission = elapsed(started);
         let started = timer(&stats);
         let manifest = chunks.manifest();
@@ -1315,7 +1336,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 )
             })?;
             if mode == "compile" {
-                let prepared = prepare_application(&program, flags.options(&program)?);
+                let options = flags.options(&program)?;
+                let prepared = prepare_owned_application(program, options);
                 let sources = [(Path::new(&source_name), source.as_str())];
                 let (output, map) = flags.output(&prepared, false, &sources)?;
                 flags.write_map(map)?;

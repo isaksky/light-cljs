@@ -2743,6 +2743,19 @@ impl Program {
         self.named_literals.unfreeze();
     }
 
+    /// Flatten frozen chunk trees into a direct leaf directory without copying
+    /// or moving entries; see [`crate::arena::Arena::flatten_leaves`].
+    pub fn flatten_leaves(&mut self) {
+        self.namespaces.flatten_leaves();
+        self.exprs.flatten_leaves();
+        self.locals.flatten_leaves();
+        self.recur_targets.flatten_leaves();
+        self.globals.flatten_leaves();
+        self.js_globals.flatten_leaves();
+        self.strings.flatten_leaves();
+        self.named_literals.flatten_leaves();
+    }
+
     pub(crate) fn shrink_to_fit(&mut self) {
         self.namespaces.shrink_to_fit();
         self.exprs.shrink_to_fit();
@@ -4412,6 +4425,17 @@ impl NamespaceAnalysis {
         &self.program
     }
 
+    pub(crate) fn globals_len(&self) -> usize {
+        self.program.globals.len()
+    }
+
+    pub(crate) fn has_global_in_namespace_since(&self, since: usize, namespace: &str) -> bool {
+        self.program
+            .globals
+            .range(since..self.program.globals.len())
+            .any(|g| g.namespace == namespace)
+    }
+
     pub(crate) fn new(macro_host: &mut MacroHost) -> Self {
         macro_host.begin_compilation();
         Self::in_compilation()
@@ -4794,7 +4818,7 @@ impl NamespaceAnalysis {
             position = position.max(at);
             kept.push((unit, warnings.len().saturating_sub(from)));
             let queued = pooled.next_if_eq(&unit).is_some();
-            let (program, unit_warnings) = match session.analyze_drained(unit, queued) {
+            let (program, unit_warnings, released) = match session.analyze_drained(unit, queued) {
                 Ok(analyzed) => analyzed,
                 Err(message) => {
                     failure = Some(session.diagnostic(unit).unwrap_or_else(|| AnalysisError {
@@ -4818,7 +4842,7 @@ impl NamespaceAnalysis {
                 program,
                 shared,
             });
-            {
+            if !released {
                 let _traced = crate::compile_trace::enter(
                     crate::compile_trace::Stage::Release,
                     drained.source_index,
@@ -5216,7 +5240,6 @@ mod namespace_top_tests {
 #[path = "analyzer_parallel_probe.rs"]
 mod parallel_probe;
 
-#[cfg(feature = "bbp-macros")]
 #[path = "namespace_publication.rs"]
 pub(crate) mod namespace_publication;
 
@@ -8481,24 +8504,31 @@ impl Analyzer<'_> {
             return;
         };
         let units = std::mem::take(&mut self.deferred);
+        if session.is_local_overlay() {
+            // Parallel top-level pass (Stage C): keep deferred units unanalyzed
+            // until canonical publication assigns their canonical unit IDs and
+            // submits them to the shared unit pool.
+            self.dispatched = Some((units, Vec::new()));
+            return;
+        }
         // Each unit's lane position follows the pass (light-cljs-480); a
         // blocker's consumer's units wait for their lanes.
-        session.hold_units(units.iter().map(|d| d.unit), self.unit_slots.get() == 1);
+        let pooled_pairs = session.hold_and_poolable(
+            units.iter().map(|d| d.unit),
+            self.unit_slots.get() == 1,
+            self.unit_slots.get() > 1,
+        );
         let charged = (
             self.macro_host.engine.expansions.get(),
             self.macro_host.engine.generated_nodes.get(),
         );
-        let pooled = if self.unit_slots.get() > 1 {
-            session.poolable(units.iter().map(|d| d.unit))
-        } else {
-            Vec::new()
-        };
-        let pooled = if !pooled.is_empty() && session.submit_units(pooled.clone(), charged) {
-            pooled
-        } else {
-            session.note_charged(charged);
-            Vec::new()
-        };
+        let pooled =
+            if !pooled_pairs.is_empty() && session.submit_units(pooled_pairs.clone(), charged) {
+                pooled_pairs.into_iter().map(|(id, _)| id).collect()
+            } else {
+                session.note_charged(charged);
+                Vec::new()
+            };
         // The coordinator's engine starts here if one of the units may
         // enter one and nothing has started it, at every `--jobs` value: a
         // unit analyzed here would start it inside its analysis, and a
@@ -8520,39 +8550,114 @@ impl Analyzer<'_> {
     }
 
     fn drain_deferred_keeping(&mut self, keep_later: bool) -> Result<(), AnalysisError> {
-        if self.registers_ahead {
+        if self.registers_ahead || self.deferred.is_empty() {
             return Ok(());
         }
         let Some(session) = self.macro_host.session_handle() else {
             return Ok(());
         };
         let units = std::mem::take(&mut self.deferred);
-        session.schedule_units(
-            &units.iter().map(|d| d.unit).collect::<Vec<_>>(),
-            self.unit_slots.get() == 1,
-        );
+        if session.is_local_overlay() {
+            return self.drain_local_units(&session, units, keep_later);
+        }
+        let forced = self.unit_slots.get() == 1;
+        if let [only] = units.as_slice() {
+            session.schedule_units(&[only.unit], forced);
+        } else {
+            let ids: Vec<usize> = units.iter().map(|d| d.unit).collect();
+            session.schedule_units(&ids, forced);
+        }
         // With `--jobs N`, the build pool analyzes the units given to it,
         // one batch in unit order, while this thread drains every unit in
         // order, as with one slot, waiting for those
         // (docs/compiler-concurrency.md, "As built (light-cljs-339)").
-        let pooled = if self.unit_slots.get() > 1 {
+        // Do not submit a 1-unit batch: `drain_units` immediately blocks
+        // waiting for it, turning per-form `warning_mode` drains into
+        // sequential cross-thread ping-pongs with zero parallelism.
+        let pooled_pairs = if self.unit_slots.get() > 1 && units.len() > 1 {
             session.poolable(units.iter().map(|d| d.unit))
         } else {
             Vec::new()
         };
-        let pooled = if !pooled.is_empty()
-            && session.submit_units(
-                pooled.clone(),
-                (
-                    self.macro_host.engine.expansions.get(),
-                    self.macro_host.engine.generated_nodes.get(),
-                ),
-            ) {
-            pooled
-        } else {
-            Vec::new()
-        };
+        let charged = (
+            self.macro_host.engine.expansions.get(),
+            self.macro_host.engine.generated_nodes.get(),
+        );
+        let pooled: Vec<usize> =
+            if !pooled_pairs.is_empty() && session.submit_units(pooled_pairs.clone(), charged) {
+                pooled_pairs.into_iter().map(|(id, _)| id).collect()
+            } else {
+                session.note_charged(charged);
+                Vec::new()
+            };
         self.drain_units(&session, units, keep_later, &pooled)
+    }
+
+    /// Drain local overlay units inline on a parallel namespace worker
+    /// (`warning_mode` form-by-form draining).
+    fn drain_local_units(
+        &mut self,
+        session: &crate::compilation_session::CompilationSession,
+        units: Vec<DeferredUnit>,
+        keep_later: bool,
+    ) -> Result<(), AnalysisError> {
+        let mut position = units
+            .first()
+            .and_then(|d| d.warnings_at)
+            .unwrap_or(usize::MAX)
+            .min(self.warnings.len());
+        let mut later = self.warnings.split_off(position).into_iter();
+        let mut failure = None;
+        for DeferredUnit {
+            placeholder,
+            unit,
+            shared,
+            warnings_at,
+            ..
+        } in units
+        {
+            let at = warnings_at.unwrap_or(usize::MAX);
+            self.warnings
+                .extend(later.by_ref().take(at.saturating_sub(position)));
+            position = position.max(at);
+            let (program, warnings) =
+                match session.analyze_local(unit, self.engine, &self.macro_host.engine) {
+                    Ok(analyzed) => analyzed,
+                    Err(message) => {
+                        failure =
+                            Some(
+                                session
+                                    .local_diagnostic(unit)
+                                    .unwrap_or_else(|| AnalysisError {
+                                        span: self.program.exprs[placeholder.0].span.clone(),
+                                        kind: AnalysisErrorKind::MacroExpansion(message),
+                                    }),
+                            );
+                        break;
+                    }
+                };
+            let drained = DrainedUnit {
+                placeholder,
+                unit,
+                program,
+                shared,
+            };
+            if let Some(drained_units) = &mut self.drained {
+                publish_globals(
+                    &mut self.program,
+                    &mut self.globals,
+                    &drained.program,
+                    &drained.shared,
+                    Some(&mut self.withheld),
+                );
+                drained_units.push(drained);
+            }
+            self.warnings.extend(warnings);
+        }
+        if failure.is_none() || keep_later {
+            self.warnings.extend(later);
+        }
+        failure.map_or(Ok(()), Err)
     }
 
     /// Append `units` in order, analyzing each unless another thread has
@@ -8879,8 +8984,13 @@ impl Analyzer<'_> {
             let macro_free = self.unit_slots.get() > 1 && judged;
             let (mut snapshot, shared) = self.definition_snapshot();
             snapshot.definition_test = test_form.clone();
+            // The build pool takes macro-free units, and with engines of its
+            // own every unit but a `:test` one; a namespace kept on the main
+            // isolate has one slot here.
+            let pooled =
+                self.unit_slots.get() > 1 && session.pools(macro_free, test_form.is_some());
             let unit = session
-                .register(
+                .register_with_flags(
                     format!("{}/{}", self.namespace, self.program.globals[global.0].name),
                     form,
                     snapshot,
@@ -8893,20 +9003,11 @@ impl Analyzer<'_> {
                         let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
                         format!("{}:{}:{}", loc.source, loc.line, loc.column)
                     },
+                    macro_free,
+                    pooled,
                 )
                 .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
-            // The build pool takes macro-free units, and with engines of its
-            // own every unit but a `:test` one; a namespace kept on the main
-            // isolate has one slot here.
-            let pooled =
-                self.unit_slots.get() > 1 && session.pools(macro_free, test_form.is_some());
             Ok(unit.map(|unit| {
-                if macro_free {
-                    session.set_macro_free(unit);
-                }
-                if pooled {
-                    session.set_pooled(unit);
-                }
                 let placeholder = self.push(
                     ExprKind::Nil,
                     self.syntax.nodes[initializer.unwrap().0].span.clone(),
@@ -10060,9 +10161,10 @@ impl Analyzer<'_> {
         // new work; the dispatch starts the coordinator's engine for a
         // bundle at every slot count, as before.
         let macro_free = self.unit_slots.get() > 1 && self.macro_free_bundle(intrinsic, &form);
+        let pooled = self.unit_slots.get() > 1 && session.pools_bundle(macro_free);
         let (snapshot, shared) = self.definition_snapshot();
         let unit = session
-            .register_bundle(
+            .register_bundle_with_flags(
                 &self.program,
                 crate::compilation_session::BundleRegistration {
                     products: &products,
@@ -10074,20 +10176,10 @@ impl Analyzer<'_> {
                     location: format!("{}:{}:{}", loc.source, loc.line, loc.column),
                     analyzed: None,
                 },
+                macro_free,
+                pooled,
             )
             .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
-        // The build pool takes a bundle under a definition's rule: its
-        // workers' isolates install the catalog's bundles and restore the
-        // unit's extension frontier as the main isolate does
-        // (`analyze_unit`), and a namespace kept on the main isolate has
-        // one slot here; with a single worker the coordinator keeps it
-        // (`CompilationSession::pools_bundle`).
-        if macro_free {
-            session.set_macro_free(unit);
-        }
-        if self.unit_slots.get() > 1 && session.pools_bundle(macro_free) {
-            session.set_pooled(unit);
-        }
         self.program.exprs[expr.0].kind = ExprKind::Nil;
         self.deferred.push(DeferredUnit {
             placeholder: expr,
@@ -12634,7 +12726,7 @@ impl Analyzer<'_> {
             // drain here publishes is the namespace's own: later namespaces
             // see it from its drain point on, as without warnings
             // ([`Self::withhold_published`]).
-            if self.options.warning_mode {
+            if self.options.warning_mode && !self.deferred.is_empty() {
                 if self.defines_macros {
                     let at = self.warnings.len();
                     for deferred in self.deferred.iter_mut().rev() {

@@ -772,6 +772,34 @@ impl MacroEvaluator for Active<'_, '_, '_> {
             Ok(())
         })
     }
+    fn sync_catalog(
+        &self,
+        cursor: usize,
+        bundles: usize,
+        new_protocols: &[String],
+    ) -> Result<(), EvalError> {
+        self.enter(|scope| {
+            let cursor = v8::Number::new(scope, cursor as f64).into();
+            let bundles = v8::Number::new(scope, bundles as f64).into();
+            let protocols: Local<v8::Value> = if new_protocols.is_empty() {
+                v8::null(scope).into()
+            } else {
+                let array = v8::Array::new(scope, new_protocols.len() as i32);
+                for (index, protocol) in new_protocols.iter().enumerate() {
+                    let s = bridge::string(scope, protocol)?;
+                    bridge::put(scope, array, index as u32, s.into())?;
+                }
+                array.into()
+            };
+            invoke(
+                scope,
+                self.state,
+                "syncCatalog",
+                &[cursor, bundles, protocols],
+            )?;
+            Ok(())
+        })
+    }
     fn evaluate_registration(
         &self,
         source: &str,
@@ -1077,6 +1105,14 @@ impl MacroEvaluator for V8Evaluator {
         test: Option<usize>,
     ) -> Result<(), EvalError> {
         self.with_active(|e| e.register_compiler_root(name, unit, once, location, test))
+    }
+    fn sync_catalog(
+        &self,
+        cursor: usize,
+        bundles: usize,
+        new_protocols: &[String],
+    ) -> Result<(), EvalError> {
+        self.with_active(|e| e.sync_catalog(cursor, bundles, new_protocols))
     }
     fn evaluate_registration(
         &self,

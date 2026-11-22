@@ -293,11 +293,13 @@ local, global or call inside, a set literal whose members are not all
 scalars, keywords or symbols, `#js`, regexes and `#inst` are built where they
 are evaluated, as at every other level (see "Constant collection literals"
 in [advanced-optimization.md](advanced-optimization.md)). A map literal whose
-keys are distinct constants is built there from a key shape in the table,
-`const k3 = rt$mapShape([k0, k1, k2], [1174270348, 2099068185, -1757859776]);`,
-and its site passes only the values, `rt$mapFromShape(k3, [k4, l0, l1])`, so
-no evaluation looks up, compares or hashes its keys; past 8 entries the shape
-also holds the hash trie. A set literal whose first members in reader order
+keys are distinct constants is built there of one array of its pooled keys
+and its values in turn, which the map keeps, `rt$arrayMapOfLiteral([k0, k4,
+k1, l0, k2, l1])`, so no evaluation looks up, compares or hashes its keys;
+past 8 entries the keys come from a key shape in the table,
+`const k3 = rt$hashMapShape([k0, k1, ...], [1174270348, 2099068185, ...]);`,
+which also holds the hash trie, and the site passes only the values,
+`rt$hashMapFromShape(k3, [...])`. A set literal whose first members in reader order
 are distinct scalars, keywords or symbols adds its other members to a shape
 of those, with the same duplicate check. The maps and sets are the ones the
 builders make, down to their entries and trie nodes. At every level,

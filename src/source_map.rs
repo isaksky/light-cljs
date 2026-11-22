@@ -386,37 +386,93 @@ impl SourceMapping {
 
     /// The Source Map v3 JSON. `file` is the output's name; `sources` are the
     /// program's sources by source index (the order a namespace program
-    /// loaded them in; one for a single source), followed by the runtime when
-    /// the output embeds it. With `include_sources`, `sourcesContent` holds
-    /// every source's text.
+    /// loaded them in; one for a single source). Only sources referenced by
+    /// emitted segments appear in `"sources"` (in their relative order in
+    /// `sources`), followed by [`RUNTIME_SOURCE_URL`] when referenced. With
+    /// `include_sources`, `"sourcesContent"` holds those referenced sources'
+    /// text.
     pub fn to_json(
         &self,
         file: Option<&str>,
         sources: &[SourceFile<'_>],
         include_sources: bool,
     ) -> String {
-        let runtime = self
-            .segments
-            .iter()
-            .any(|segment| segment.source == RUNTIME);
+        let mut runtime = false;
+        let mut used: Vec<usize> = Vec::new();
+        let mut seen: Option<Vec<bool>> = None;
+        let mut last: Option<usize> = None;
+        for segment in &self.segments {
+            match segment.source {
+                UNMAPPED => continue,
+                RUNTIME => {
+                    if segment.byte <= ANNOTATED_RUNTIME.len() {
+                        runtime = true;
+                    }
+                    continue;
+                }
+                source if source < sources.len() => {
+                    if segment.byte > sources[source].text.len() || last == Some(source) {
+                        continue;
+                    }
+                    last = Some(source);
+                    if let Some(seen) = seen.as_mut() {
+                        if !seen[source] {
+                            seen[source] = true;
+                            used.push(source);
+                        }
+                    } else if !used.contains(&source) {
+                        used.push(source);
+                        if used.len() > 8 {
+                            let mut table = vec![false; sources.len()];
+                            for &index in &used {
+                                table[index] = true;
+                            }
+                            seen = Some(table);
+                        }
+                    }
+                }
+                _ => continue,
+            }
+        }
+        used.sort_unstable();
         let mut positions: Vec<Option<Positions>> = Vec::new();
-        positions.resize_with(sources.len() + 1, || None);
+        positions.resize_with(used.len() + usize::from(runtime), || None);
         let mut mappings = String::new();
         let mut line = 0;
         let mut previous = [0i64; 5];
         let mut first = true;
+        let mut last_mapped: Option<(usize, usize)> = None;
         for segment in &self.segments {
-            let mut fields = vec![i64::from(segment.column)];
+            let mut fields = [i64::from(segment.column), 0, 0, 0, 0];
+            let mut field_count = 1;
             // A segment of one field, the column, maps to no source.
             if segment.source != UNMAPPED {
                 let (index, text) = match segment.source {
-                    RUNTIME => (sources.len(), ANNOTATED_RUNTIME),
-                    source if source < sources.len() => (source, sources[source].text),
+                    RUNTIME => {
+                        if segment.byte > ANNOTATED_RUNTIME.len() {
+                            continue;
+                        }
+                        (used.len(), ANNOTATED_RUNTIME)
+                    }
+                    source if source < sources.len() => {
+                        let text = sources[source].text;
+                        if segment.byte > text.len() {
+                            continue;
+                        }
+                        let compact = match last_mapped {
+                            Some((prev, compact)) if prev == source => compact,
+                            _ => {
+                                let compact = used
+                                    .binary_search(&source)
+                                    .expect("referenced source was collected");
+                                last_mapped = Some((source, compact));
+                                compact
+                            }
+                        };
+                        (compact, text)
+                    }
                     _ => continue,
                 };
-                if segment.byte > text.len() {
-                    continue;
-                }
                 let mut byte = segment.byte;
                 while !text.is_char_boundary(byte) {
                     byte -= 1;
@@ -424,8 +480,14 @@ impl SourceMapping {
                 let (original_line, original_column) = positions[index]
                     .get_or_insert_with(|| Positions::new(text))
                     .at(byte);
-                fields.extend([index as i64, original_line as i64, original_column as i64]);
-                fields.extend(segment.name.map(i64::from));
+                fields[1] = index as i64;
+                fields[2] = original_line as i64;
+                fields[3] = original_column as i64;
+                field_count = 4;
+                if let Some(name) = segment.name {
+                    fields[4] = i64::from(name);
+                    field_count = 5;
+                }
             }
             while line < segment.line {
                 mappings.push(';');
@@ -437,7 +499,7 @@ impl SourceMapping {
                 mappings.push(',');
             }
             first = false;
-            for (slot, value) in fields.into_iter().enumerate() {
+            for (slot, &value) in fields[..field_count].iter().enumerate() {
                 vlq(&mut mappings, value - previous[slot]);
                 previous[slot] = value;
             }
@@ -447,14 +509,15 @@ impl SourceMapping {
         if !first {
             mappings.push(';');
         }
-        let mut json = String::from("{\"version\":3");
+        let mut json = String::with_capacity(mappings.len() + 128);
+        json.push_str("{\"version\":3");
         if let Some(file) = file {
             json.push_str(",\"file\":");
             json_string(&mut json, file);
         }
-        let urls = sources
+        let urls = used
             .iter()
-            .map(|source| source.url)
+            .map(|&source| sources[source].url)
             .chain(runtime.then_some(RUNTIME_SOURCE_URL));
         json.push_str(",\"sources\":[");
         for (index, url) in urls.enumerate() {
@@ -466,9 +529,9 @@ impl SourceMapping {
         json.push(']');
         if include_sources {
             json.push_str(",\"sourcesContent\":[");
-            let texts = sources
+            let texts = used
                 .iter()
-                .map(|source| source.text)
+                .map(|&source| sources[source].text)
                 .chain(runtime.then_some(ANNOTATED_RUNTIME));
             for (index, text) in texts.enumerate() {
                 if index > 0 {
@@ -761,6 +824,202 @@ mod tests {
         assert_eq!(
             json,
             "{\"version\":3,\"file\":\"out.js\",\"sources\":[\"in.cljs\"],\"names\":[\"x\"],\"mappings\":\"AAAA,EAAI;AAAAA,C;AACA;\"}\n"
+        );
+    }
+
+    fn decode_vlq_fields(segment: &str) -> Vec<i64> {
+        let mut fields = Vec::new();
+        let mut value = 0u64;
+        let mut shift = 0u32;
+        for byte in segment.bytes() {
+            let digit = match byte {
+                b'A'..=b'Z' => (byte - b'A') as u64,
+                b'a'..=b'z' => (byte - b'a' + 26) as u64,
+                b'0'..=b'9' => (byte - b'0' + 52) as u64,
+                b'+' => 62,
+                b'/' => 63,
+                other => panic!("unexpected VLQ digit {other}"),
+            };
+            value |= (digit & 31) << shift;
+            if digit & 32 == 0 {
+                let signed = if value & 1 == 1 {
+                    -((value >> 1) as i64)
+                } else {
+                    (value >> 1) as i64
+                };
+                fields.push(signed);
+                value = 0;
+                shift = 0;
+            } else {
+                shift += 5;
+            }
+        }
+        assert_eq!(shift, 0);
+        fields
+    }
+
+    type DecodedSegment = (u32, u32, Option<(usize, usize, usize)>);
+
+    fn decode_mappings(mappings: &str) -> Vec<DecodedSegment> {
+        let mut out = Vec::new();
+        let mut state = [0i64; 5];
+        for (line, row) in mappings.split(';').enumerate() {
+            state[0] = 0;
+            if row.is_empty() {
+                continue;
+            }
+            for seg in row.split(',') {
+                let deltas = decode_vlq_fields(seg);
+                for (slot, delta) in deltas.iter().enumerate() {
+                    state[slot] += delta;
+                }
+                let origin = (deltas.len() >= 4).then_some((
+                    state[1] as usize,
+                    state[2] as usize,
+                    state[3] as usize,
+                ));
+                out.push((line as u32, state[0] as u32, origin));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn to_json_compacts_referenced_sources_and_remaps_indices() {
+        let sources = [
+            SourceFile {
+                url: "a.cljs",
+                text: "(def a 0)\n",
+            },
+            SourceFile {
+                url: "b.cljs",
+                text: "(def b 1)\n",
+            },
+            SourceFile {
+                url: "c.cljs",
+                text: "line0\n(def c 2)\n",
+            },
+            SourceFile {
+                url: "d.cljs",
+                text: "(def d 3)\n",
+            },
+            SourceFile {
+                url: "e.cljs",
+                text: "(def e 4)\n",
+            },
+        ];
+        let mut marks = Marks::default();
+        // Reference source 4, then source 2 (out of order), then RUNTIME.
+        let code = "e();\nc();\nrt();";
+        marks.position(0, 4, 5);
+        marks.position(5, 2, 6);
+        marks.position(10, RUNTIME, 0);
+        let mapping = marks.finish(code);
+        let json = mapping.to_json(Some("unit.js"), &sources, false);
+        assert!(
+            json.starts_with(
+                "{\"version\":3,\"file\":\"unit.js\",\"sources\":[\"c.cljs\",\"e.cljs\",\"light-cljs/js_runtime.js\"],\"names\":[],\"mappings\":\""
+            ),
+            "{json}"
+        );
+        let mappings = json
+            .split("\"mappings\":\"")
+            .nth(1)
+            .unwrap()
+            .strip_suffix("\"}\n")
+            .unwrap();
+        let decoded = decode_mappings(mappings);
+        // Line 0 -> compact source 1 (e.cljs, 0:5)
+        // Line 1 -> compact source 0 (c.cljs, 1:0)
+        // Line 2 -> compact source 2 (RUNTIME, 0:0)
+        assert_eq!(
+            decoded,
+            vec![
+                (0, 0, Some((1, 0, 5))),
+                (1, 0, Some((0, 1, 0))),
+                (2, 0, Some((2, 0, 0))),
+            ]
+        );
+
+        let with_content = mapping.to_json(Some("unit.js"), &sources, true);
+        let expected_content = "\"sourcesContent\":[\"line0\\n(def c 2)\\n\",\"(def e 4)\\n\",";
+        assert!(
+            with_content.contains(expected_content)
+                && !with_content.contains("(def a 0)")
+                && !with_content.contains("(def b 1)")
+                && !with_content.contains("(def d 3)"),
+            "{with_content:.300}"
+        );
+    }
+
+    #[test]
+    fn to_json_compacts_more_than_eight_referenced_sources() {
+        let urls: Vec<String> = (0..20).map(|i| format!("s{i:02}.cljs")).collect();
+        let texts: Vec<String> = (0..20).map(|i| format!("(def v{i} {i})\n")).collect();
+        let sources: Vec<SourceFile<'_>> = urls
+            .iter()
+            .zip(&texts)
+            .map(|(url, text)| SourceFile { url, text })
+            .collect();
+        // Reference 12 sources in descending order to exercise the >8 bitmap path.
+        let referenced = [19, 17, 15, 13, 11, 9, 7, 5, 3, 1, 18, 2];
+        let mut code = String::new();
+        let mut marks = Marks::default();
+        for (index, &source) in referenced.iter().enumerate() {
+            if index > 0 {
+                code.push('\n');
+            }
+            marks.position(code.len(), source, 5);
+            code.push_str("x;");
+        }
+        let json = marks.finish(&code).to_json(None, &sources, false);
+        let mut expected_sources = referenced.to_vec();
+        expected_sources.sort_unstable();
+        let expected_list: Vec<String> = expected_sources
+            .iter()
+            .map(|&i| format!("\"s{i:02}.cljs\""))
+            .collect();
+        let expected_prefix = format!(
+            "{{\"version\":3,\"sources\":[{}],\"names\":[],\"mappings\":\"",
+            expected_list.join(",")
+        );
+        assert!(json.starts_with(&expected_prefix), "{json}");
+        let mappings = json
+            .split("\"mappings\":\"")
+            .nth(1)
+            .unwrap()
+            .strip_suffix("\"}\n")
+            .unwrap();
+        let decoded = decode_mappings(mappings);
+        assert_eq!(decoded.len(), referenced.len());
+        for (line, (&orig, entry)) in referenced.iter().zip(&decoded).enumerate() {
+            let compact = expected_sources.binary_search(&orig).unwrap();
+            assert_eq!(*entry, (line as u32, 0, Some((compact, 0, 5))));
+        }
+    }
+
+    #[test]
+    fn to_json_skips_unreferenced_and_out_of_bounds_sources() {
+        let sources = [
+            SourceFile {
+                url: "a.cljs",
+                text: "abc",
+            },
+            SourceFile {
+                url: "b.cljs",
+                text: "def",
+            },
+        ];
+        let mut marks = Marks::default();
+        // Out-of-bounds byte offset in source 0, out-of-bounds source index 5,
+        // and an unmapped mark.
+        marks.position(0, 0, 100);
+        marks.position(2, 5, 0);
+        marks.unmapped(4);
+        let json = marks.finish("abcdef").to_json(None, &sources, true);
+        assert!(
+            json.starts_with("{\"version\":3,\"sources\":[],\"sourcesContent\":[],\"names\":[],"),
+            "{json}"
         );
     }
 }

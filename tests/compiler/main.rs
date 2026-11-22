@@ -152,6 +152,7 @@ mod object_equiv;
 mod optimization;
 mod original_eval_source_probe;
 mod parallel_diagnostics;
+mod parallel_top_level;
 mod positional_constructors;
 mod predicate_macro;
 mod prim_seq;

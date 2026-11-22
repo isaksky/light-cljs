@@ -806,7 +806,7 @@ fn start(
     };
     let tag = tag(options);
     crate::print_tagged_warnings(&tag, &warnings);
-    let (program, sources) = program?;
+    let (mut program, sources) = program?;
     // The build's warnings, located for the server, which shows them to the
     // runtimes that connect before the first step.
     let startup = warnings
@@ -830,7 +830,7 @@ fn start(
         })
         .collect::<Vec<_>>();
     crate::write_dev_build(
-        &program,
+        &mut program,
         &sources,
         &options.out_dir,
         options.mount.as_deref(),

@@ -1086,9 +1086,16 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
             "{level}: the JavaScript does not change"
         );
         let json = std::fs::read_to_string(&map).unwrap();
+        // At `advanced` the program reads no runtime: `(str "boom " x)` of
+        // a number is a template (light-cljs-1023).
+        let sources = if level == OptimizationLevel::Advanced {
+            "\"../app.cljs\""
+        } else {
+            "\"../app.cljs\",\"light-cljs/js_runtime.js\""
+        };
         assert!(
             json.starts_with(&format!(
-                "{{\"version\":3,\"file\":\"app-{name}.js\",\"sources\":[\"../app.cljs\",\"light-cljs/js_runtime.js\"],\"names\":["
+                "{{\"version\":3,\"file\":\"app-{name}.js\",\"sources\":[{sources}],\"names\":["
             )),
             "{level}: {json:.200}"
         );
@@ -1313,20 +1320,22 @@ fn source_maps_point_node_stack_traces_at_the_cljs_source_at_every_level() {
         &format!("{}:2:10", real("app.cljs")),
         "inline",
     );
-    // The text of every source, the runtime's too.
+    // The text of every source, the runtime's too: `pick.cljs` reads it
+    // at `advanced`, where `app.cljs` no longer does (light-cljs-1023).
     let map = path("out/sources.js.map");
     compiled(&[
         "--compile",
         "--optimize",
         "advanced",
-        &path("app.cljs"),
+        &path("pick.cljs"),
         "--source-map",
         &map,
         "--source-map-include-sources",
     ]);
     let json = std::fs::read_to_string(&map).unwrap();
+    let pick = std::fs::read_to_string(path("pick.cljs")).unwrap();
     assert!(
-        json.contains(&format!("\"sourcesContent\":[{program:?},\"")),
+        json.contains(&format!("\"sourcesContent\":[{pick:?},\"")),
         "{json:.300}"
     );
     assert!(json.len() > runtime.len());

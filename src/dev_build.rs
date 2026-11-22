@@ -39,11 +39,17 @@
 //! one registers every namespace of the build, as single-file output does
 //! before its first form runs.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::fmt::Write;
+use std::fmt::{self, Write};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::analyzer::{ExprId, ExprKind, Program};
 use crate::runtime_key::RuntimeKey;
+use crate::scheduler::{Config, Job, Next, PoolError, Slots};
 use crate::source_map::{SourceFile, json_string};
 
 /// One file of a dev build: its name in the directory and its text.
@@ -51,6 +57,44 @@ use crate::source_map::{SourceFile, json_string};
 pub struct DevFile {
     pub name: String,
     pub text: String,
+}
+
+/// Wall-time shares of emitting and writing a dev build, for `--stats`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DevBuildTiming {
+    pub emission: Duration,
+    pub write: Duration,
+}
+
+/// An error while emitting or writing a dev build directly to disk.
+#[derive(Debug)]
+pub enum DevBuildError {
+    CreateDir { path: PathBuf, source: io::Error },
+    Write { path: PathBuf, source: io::Error },
+    Pool(PoolError),
+}
+
+impl fmt::Display for DevBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CreateDir { path, source } => {
+                write!(f, "cannot create {}: {source}", path.display())
+            }
+            Self::Write { path, source } => {
+                write!(f, "cannot write {}: {source}", path.display())
+            }
+            Self::Pool(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for DevBuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::CreateDir { source, .. } | Self::Write { source, .. } => Some(source),
+            Self::Pool(error) => Some(error),
+        }
+    }
 }
 
 /// The dev client, `client.js` (docs/dev-workflow.md, "The server and the
@@ -78,65 +122,389 @@ pub fn emit_dev_build_of(
     sources: &[SourceFile<'_>],
     build: Option<&str>,
 ) -> Vec<DevFile> {
-    let entries = program
-        .namespace_entries
-        .iter()
-        .map(|(id, namespace)| (namespace.as_str(), *id))
-        .collect::<HashMap<_, _>>();
-    assert!(
-        !program.namespaces.is_empty()
-            && program
-                .namespaces
-                .iter()
-                .all(|namespace| entries.contains_key(namespace.as_str())),
-        "a dev build needs a program analyzed from namespace sources"
-    );
-    let manifest = DevManifest::new(program);
-    let page = dev_key(build, &manifest.entry);
-    let mut files = vec![
-        DevFile {
-            name: "runtime.js".into(),
-            text: runtime_file(&page),
-        },
-        DevFile {
-            name: "client.js".into(),
-            text: client_file(&page),
-        },
+    emit_dev_build_on(program, sources, build, Slots::ONE)
+}
+
+/// [`emit_dev_build_of`] running on `slots` CPU work slots (`--jobs N`),
+/// collecting the build's files in manifest order. With [`Slots::ONE`], every
+/// unit runs inline on the calling thread with no threads spawned.
+pub fn emit_dev_build_on(
+    program: &Program,
+    sources: &[SourceFile<'_>],
+    build: Option<&str>,
+    slots: Slots,
+) -> Vec<DevFile> {
+    let ctx = DevBuildContext::new(program, build);
+    let mut files = Vec::with_capacity(ctx.manifest.namespaces.len() * 2 + 4);
+    files.push(DevFile {
+        name: "runtime.js".into(),
+        text: runtime_file(&ctx.page),
+    });
+    files.push(DevFile {
+        name: "client.js".into(),
+        text: client_file(&ctx.page),
+    });
+    if slots.workers() == 0 || ctx.manifest.namespaces.len() <= 1 {
+        for index in 0..ctx.manifest.namespaces.len() {
+            files.extend(ctx.emit_namespace(sources, index));
+        }
+    } else {
+        let batches = dev_batches(program, &ctx.manifest, slots);
+        let config = dev_pool_config(slots, batches.len());
+        let pooled = crate::scheduler::run(
+            &config,
+            |_slot| (),
+            |(), batch: DevBatch, worker| {
+                let mut out = Vec::with_capacity(batch.indices.len());
+                for index in batch.indices {
+                    if worker.cancelled() {
+                        break;
+                    }
+                    out.push((index, ctx.emit_namespace(sources, index)));
+                }
+                out
+            },
+            |pool| {
+                pool.submit_batch(batches);
+                let mut emitted: Vec<Option<[DevFile; 2]>> =
+                    vec![None; ctx.manifest.namespaces.len()];
+                loop {
+                    match pool.next_outcome() {
+                        Ok(Next::Outcome(batch)) => {
+                            for (index, pair) in batch {
+                                emitted[index] = Some(pair);
+                            }
+                        }
+                        Ok(Next::Quiescent) => return Ok(emitted),
+                        Ok(Next::Stalled { .. }) => {
+                            unreachable!("dev build pool holds no demands")
+                        }
+                        Err(panic) => return Err(panic),
+                    }
+                }
+            },
+        );
+        match pooled {
+            Ok(Ok(emitted)) => {
+                for pair in emitted {
+                    files.extend(pair.expect("every namespace emitted"));
+                }
+            }
+            Ok(Err(panic)) | Err(PoolError::Panic(panic)) => panic!("{panic}"),
+            Err(PoolError::Spawn(_)) => {
+                for index in 0..ctx.manifest.namespaces.len() {
+                    files.extend(ctx.emit_namespace(sources, index));
+                }
+            }
+        }
+    }
+    files.push(DevFile {
+        name: "manifest.json".into(),
+        text: ctx.manifest.to_json(),
+    });
+    files.push(DevFile {
+        name: "index.js".into(),
+        text: ctx.manifest.index(&ctx.page),
+    });
+    files
+}
+
+/// Emit and write the dev build of `program` directly into `out_dir` on
+/// `slots` CPU work slots (`--jobs N`), streaming each namespace's `<ns>.js`
+/// and `<ns>.js.map` straight to disk inside the worker rather than buffering
+/// every file in memory. With `timed`, measure emission and write wall times
+/// for `--stats`.
+pub fn write_dev_build_on(
+    program: &Program,
+    sources: &[SourceFile<'_>],
+    build: Option<&str>,
+    out_dir: &Path,
+    slots: Slots,
+    timed: bool,
+) -> Result<DevBuildTiming, DevBuildError> {
+    let setup_start = timed.then(Instant::now);
+    let ctx = DevBuildContext::new(program, build);
+    let fixed = [
+        ("runtime.js", runtime_file(&ctx.page)),
+        ("client.js", client_file(&ctx.page)),
+        ("manifest.json", ctx.manifest.to_json()),
+        ("index.js", ctx.manifest.index(&ctx.page)),
     ];
-    let key = page.units();
-    let units = crate::emitter::NamespaceUnits::new(program);
-    for (index, namespace) in manifest.namespaces.iter().enumerate() {
+    let batches = (slots.workers() > 0 && ctx.manifest.namespaces.len() > 1)
+        .then(|| dev_batches(program, &ctx.manifest, slots));
+    let fixed_write_start = timed.then(Instant::now);
+    let setup_emit = setup_start
+        .zip(fixed_write_start)
+        .map_or(Duration::ZERO, |(start, end)| end - start);
+
+    fs::create_dir_all(out_dir).map_err(|source| DevBuildError::CreateDir {
+        path: out_dir.to_path_buf(),
+        source,
+    })?;
+    for (name, text) in fixed {
+        write_dev_file(out_dir, name, &text)?;
+    }
+    let fixed_write = fixed_write_start.map_or(Duration::ZERO, |start| start.elapsed());
+
+    let units_start = timed.then(Instant::now);
+    let (emit_work, write_work) = match batches {
+        None => {
+            let mut emit_time = Duration::ZERO;
+            let mut write_time = Duration::ZERO;
+            for index in 0..ctx.manifest.namespaces.len() {
+                let t0 = timed.then(Instant::now);
+                let [unit, map] = ctx.emit_namespace(sources, index);
+                let t1 = timed.then(Instant::now);
+                write_dev_file(out_dir, &unit.name, &unit.text)?;
+                write_dev_file(out_dir, &map.name, &map.text)?;
+                if let (Some(t0), Some(t1)) = (t0, t1) {
+                    let t2 = Instant::now();
+                    emit_time += t1 - t0;
+                    write_time += t2 - t1;
+                }
+            }
+            (emit_time, write_time)
+        }
+        Some(batches) => {
+            let config = dev_pool_config(slots, batches.len());
+            let pooled = crate::scheduler::run(
+                &config,
+                |_slot| (),
+                |(), batch: DevBatch, worker| -> Result<(Duration, Duration), DevBuildError> {
+                    let mut emit_time = Duration::ZERO;
+                    let mut write_time = Duration::ZERO;
+                    for index in batch.indices {
+                        if worker.cancelled() {
+                            break;
+                        }
+                        let t0 = timed.then(Instant::now);
+                        let [unit, map] = ctx.emit_namespace(sources, index);
+                        let t1 = timed.then(Instant::now);
+                        write_dev_file(out_dir, &unit.name, &unit.text)?;
+                        write_dev_file(out_dir, &map.name, &map.text)?;
+                        if let (Some(t0), Some(t1)) = (t0, t1) {
+                            let t2 = Instant::now();
+                            emit_time += t1 - t0;
+                            write_time += t2 - t1;
+                        }
+                    }
+                    Ok((emit_time, write_time))
+                },
+                |pool| {
+                    pool.submit_batch(batches);
+                    let mut emit_work = Duration::ZERO;
+                    let mut write_work = Duration::ZERO;
+                    let mut failure: Option<DevBuildError> = None;
+                    loop {
+                        match pool.next_outcome() {
+                            Ok(Next::Outcome(Ok((emit, write)))) => {
+                                emit_work += emit;
+                                write_work += write;
+                            }
+                            Ok(Next::Outcome(Err(error))) => {
+                                if failure.is_none() {
+                                    failure = Some(error);
+                                    pool.cancel();
+                                }
+                            }
+                            Ok(Next::Quiescent) => {
+                                return match failure {
+                                    Some(error) => Err(error),
+                                    None => Ok((emit_work, write_work)),
+                                };
+                            }
+                            Ok(Next::Stalled { .. }) => {
+                                unreachable!("dev build pool holds no demands")
+                            }
+                            Err(panic) => return Err(DevBuildError::Pool(PoolError::Panic(panic))),
+                        }
+                    }
+                },
+            );
+            pooled.map_err(DevBuildError::Pool)??
+        }
+    };
+    let units_wall = units_start.map_or(Duration::ZERO, |start| start.elapsed());
+    let (units_emit, units_write) = split_wall(units_wall, emit_work, write_work);
+    Ok(DevBuildTiming {
+        emission: setup_emit + units_emit,
+        write: fixed_write + units_write,
+    })
+}
+
+/// Shared read-only state for emitting all namespace units of one dev build.
+struct DevBuildContext<'a> {
+    entries: HashMap<&'a str, ExprId>,
+    manifest: DevManifest,
+    page: RuntimeKey,
+    key: RuntimeKey,
+    units: crate::emitter::NamespaceUnits<'a>,
+}
+
+impl<'a> DevBuildContext<'a> {
+    fn new(program: &'a Program, build: Option<&str>) -> Self {
+        let entries = program
+            .namespace_entries
+            .iter()
+            .map(|(id, namespace)| (namespace.as_str(), *id))
+            .collect::<HashMap<_, _>>();
+        assert!(
+            !program.namespaces.is_empty()
+                && program
+                    .namespaces
+                    .iter()
+                    .all(|namespace| entries.contains_key(namespace.as_str())),
+            "a dev build needs a program analyzed from namespace sources"
+        );
+        let manifest = DevManifest::new(program);
+        let page = dev_key(build, &manifest.entry);
+        let key = page.units();
+        let units = crate::emitter::NamespaceUnits::new(program);
+        Self {
+            entries,
+            manifest,
+            page,
+            key,
+            units,
+        }
+    }
+
+    fn emit_namespace(&self, sources: &[SourceFile<'_>], index: usize) -> [DevFile; 2] {
+        let namespace = &self.manifest.namespaces[index];
         let map = format!("{}.map", namespace.file);
         let mut define = String::from(DEFINE);
         json_string(&mut define, &namespace.name);
         define.push_str(", ");
         json_list(&mut define, &namespace.requires);
         define.push_str(", ");
-        let (unit, mut mapping) = units.emit(
-            entries[namespace.name.as_str()],
+        let (unit, mut mapping) = self.units.emit(
+            self.entries[namespace.name.as_str()],
             index == 0,
             [&define, ");\n"],
         );
-        let mut unit = key.apply_mapped(&unit, &mut mapping);
+        let mut unit = self.key.apply_mapped(&unit, &mut mapping);
         writeln!(unit, "//# sourceMappingURL={map}").unwrap();
-        files.push(DevFile {
-            name: namespace.file.clone(),
-            text: unit,
-        });
-        files.push(DevFile {
-            name: map,
-            text: mapping.to_json(Some(&namespace.file), sources, false),
-        });
+        let json = mapping.to_json(Some(&namespace.file), sources, false);
+        [
+            DevFile {
+                name: namespace.file.clone(),
+                text: unit,
+            },
+            DevFile {
+                name: map,
+                text: json,
+            },
+        ]
     }
-    files.push(DevFile {
-        name: "manifest.json".into(),
-        text: manifest.to_json(),
-    });
-    files.push(DevFile {
-        name: "index.js".into(),
-        text: manifest.index(&page),
-    });
-    files
+}
+
+/// A coarse batch of manifest namespace indices scheduled as one pool job,
+/// prioritized longest-first by estimated expression weight.
+#[derive(Debug, PartialEq, Eq)]
+struct DevBatch {
+    indices: Vec<usize>,
+    weight: u64,
+}
+
+impl Job for DevBatch {
+    fn phase(&self) -> usize {
+        0
+    }
+
+    fn cost(&self) -> u64 {
+        self.weight.max(1)
+    }
+
+    fn priority(&self) -> u64 {
+        self.weight
+    }
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    fn key(&self) -> u64 {
+        self.indices[0] as u64
+    }
+}
+
+const MAX_DEV_BATCH_NAMESPACES: usize = 16;
+
+fn dev_pool_config(slots: Slots, batches: usize) -> Config {
+    let mut config = Config::new(slots, 1);
+    config.limits.batch_jobs = 1;
+    config.limits.admitted_jobs = batches.clamp(1, 4096);
+    config.stack_size = Some(8 << 20);
+    config
+}
+
+/// Partition `0..manifest.namespaces.len()` into coarse batches weighted by
+/// expression count (plus whole-program registration cost on namespace 0),
+/// ordered heaviest-first so large units start early.
+fn dev_batches(program: &Program, manifest: &DevManifest, slots: Slots) -> Vec<DevBatch> {
+    let mut weights = vec![0u64; manifest.namespaces.len()];
+    for expr in program.exprs.iter() {
+        if let Some(weight) = weights.get_mut(expr.source_index) {
+            *weight += 1;
+        }
+    }
+    for weight in &mut weights {
+        *weight = (*weight).max(1);
+    }
+    if let Some(first) = weights.first_mut() {
+        // Namespace 0 registers every namespace and global of the program.
+        *first = first
+            .saturating_add(program.globals.len() as u64)
+            .saturating_add(program.namespaces.len() as u64);
+    }
+    pack_dev_batches(&weights, slots)
+}
+
+fn pack_dev_batches(weights: &[u64], slots: Slots) -> Vec<DevBatch> {
+    let count = weights.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by_key(|&index| (Reverse(weights[index]), index));
+    let workers = slots.workers().max(1);
+    let max_batch_ns = count
+        .div_ceil(workers * 4)
+        .clamp(1, MAX_DEV_BATCH_NAMESPACES);
+    let total_weight: u64 = weights.iter().copied().fold(0u64, u64::saturating_add);
+    let target_weight = (total_weight / (workers as u64 * 8)).max(1);
+    let mut batches = Vec::new();
+    let mut cursor = 0;
+    while cursor < order.len() {
+        let first = order[cursor];
+        let mut indices = vec![first];
+        let mut weight = weights[first];
+        cursor += 1;
+        while cursor < order.len() && indices.len() < max_batch_ns {
+            let next = order[cursor];
+            let next_weight = weights[next];
+            if weight.saturating_add(next_weight) > target_weight {
+                break;
+            }
+            indices.push(next);
+            weight = weight.saturating_add(next_weight);
+            cursor += 1;
+        }
+        batches.push(DevBatch { indices, weight });
+    }
+    batches
+}
+
+fn write_dev_file(out_dir: &Path, name: &str, text: &str) -> Result<(), DevBuildError> {
+    let path = out_dir.join(name);
+    fs::write(&path, text).map_err(|source| DevBuildError::Write { path, source })
+}
+
+fn split_wall(wall: Duration, emit: Duration, write: Duration) -> (Duration, Duration) {
+    let total = emit.as_nanos() + write.as_nanos();
+    if total == 0 {
+        return (wall, Duration::ZERO);
+    }
+    let write_nanos = wall.as_nanos().saturating_mul(write.as_nanos()) / total;
+    let write_wall = Duration::from_nanos(write_nanos.min(u128::from(u64::MAX)) as u64);
+    (wall.saturating_sub(write_wall), write_wall)
 }
 
 /// The opening of a unit's call of its build's `define`, with the key
@@ -755,4 +1123,58 @@ fn json_list(out: &mut String, items: &[impl AsRef<str>]) {
         json_string(out, item.as_ref());
     }
     out.push(']');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pack_dev_batches_covers_every_namespace_heaviest_first() {
+        // One heavy namespace 0 plus 500 small namespaces on 8 slots (7 workers).
+        let mut weights = vec![100u64; 501];
+        weights[0] = 25_000;
+        weights[17] = 8_000;
+        let slots = Slots::new(8).unwrap();
+        let batches = pack_dev_batches(&weights, slots);
+        assert_eq!(batches[0].indices, vec![0]);
+        assert_eq!(batches[0].priority(), 25_000);
+        assert_eq!(batches[1].indices, vec![17]);
+        assert_eq!(batches[1].priority(), 8_000);
+        assert!(
+            batches.iter().all(|batch| !batch.indices.is_empty()
+                && batch.indices.len() <= MAX_DEV_BATCH_NAMESPACES)
+        );
+        // Every namespace appears exactly once.
+        let mut seen = vec![false; weights.len()];
+        for batch in &batches {
+            let sum: u64 = batch.indices.iter().map(|&i| weights[i]).sum();
+            assert_eq!(batch.weight, sum);
+            for &index in &batch.indices {
+                assert!(
+                    !std::mem::replace(&mut seen[index], true),
+                    "duplicate {index}"
+                );
+            }
+        }
+        assert!(seen.into_iter().all(|v| v));
+        // Small project gets 1 namespace per batch so workers stay busy.
+        let small = pack_dev_batches(&[50, 40, 30, 20], slots);
+        assert_eq!(small.len(), 4);
+        assert_eq!(small[0].indices, vec![0]);
+    }
+
+    #[test]
+    fn split_wall_preserves_wall_total() {
+        let wall = Duration::from_millis(100);
+        let (emit, write) =
+            split_wall(wall, Duration::from_millis(300), Duration::from_millis(100));
+        assert_eq!(emit + write, wall);
+        assert_eq!(emit, Duration::from_millis(75));
+        assert_eq!(write, Duration::from_millis(25));
+        assert_eq!(
+            split_wall(wall, Duration::ZERO, Duration::ZERO),
+            (wall, Duration::ZERO)
+        );
+    }
 }

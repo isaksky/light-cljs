@@ -19,6 +19,7 @@
                 registerNamespaces: functions => { for (const fn of functions) fn(rt); },
                 canCacheRegistration: () => globalThis.eval === compilerEval,
                 registerRoot: (name, unit, once, location, test) => globalThis.__lightRegisterUnit(name, unit, once, location, test),
+                syncCatalog: (cursor, bundles, protocols) => globalThis.__lightSyncCatalog?.(cursor, bundles, protocols),
                 bind: (name, id) => { (globalThis.__lightApplicationRoots$LKEY ??= Object.create(null))[name] = get(id); },
                 coreBinding: (name, id) => { rt.core[name] = get(id); },
                 coreLookup: name => save(rt.core[name]),

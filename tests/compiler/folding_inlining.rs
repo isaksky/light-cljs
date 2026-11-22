@@ -150,7 +150,7 @@ fn calls_outside_the_domain_or_of_replaceable_operations_stay() {
         r#"["1a" 1 ":k"]"#,
     );
     assert!(text.contains("\"a\""), "{text}");
-    assert!(text.contains("rt$str1("), "{text}");
+    assert!(text.contains("rt$strOne("), "{text}");
     let (text, _) = every_level(
         "(set! cljs.core/inc (fn [x] (- x 1))) (pr-str [(inc 1) (+ 1 2)])",
         "[0 3]",
@@ -205,6 +205,85 @@ fn constant_tests_select_their_branch_and_drop_what_only_the_other_reads() {
     );
     assert!(!text.contains("HELPER_SENTINEL"), "{text}");
     assert!(stats.removed_definitions >= 1, "{stats:?}");
+}
+
+/// `str` at `Advanced` is its operands' texts joined with `+`, as upstream's
+/// `str` macro writes it (light-cljs-1023): a string, number or boolean
+/// operand as it is, any other one through `rt$strOne`. An operand
+/// evaluated after one whose text may run code must be pure, or the call
+/// stays the runtime's, which evaluates every operand before it takes any
+/// one's text.
+#[test]
+fn str_calls_join_their_operands_texts() {
+    let source = r#"
+        (defn t [x] (.push js/trace x) x)
+        (deftype T [n] Object (toString [_] (.push js/trace (+ 10 n)) (str "T" n)))
+        (defn label [i s] (str "a" (inc i) "b" s))
+        (defn one [x] (str x))
+        (defn texts [v] (str "<" v ">"))
+        (defn ordered [x] (str (T. x) (t x)))
+        (pr-str [(label 1 :k) (label 2 nil) (one nil) (one [1 "a"]) (one 1.5) (one false)
+                 (texts {:a 1}) (texts (T. 3)) (ordered 4) (vec js/trace)])"#;
+    let (text, _) = every_level(
+        source,
+        r#"["a2b:k" "a3b" "" "[1 \"a\"]" "1.5" "false" "<{:a 1}>" "<T3>" "T44" [13 4 14]]"#,
+    );
+    for joined in ["\"b\" + rt$strOne(", "\"<\" + rt$strOne(", ") + \">\")"] {
+        assert!(text.contains(joined), "{joined}: {text}");
+    }
+    // `ordered` reads its second operand after the first one's `toString`.
+    assert_eq!(text.matches("rt$str(").count(), 1, "{text}");
+}
+
+/// At `Advanced` a vector literal of at most 32 items built at its site is a
+/// vector of its new array as the tail (light-cljs-1023); one of 33 is built
+/// as before. Both behave as any vector across the tail's end.
+#[test]
+fn vector_literals_of_at_most_32_items_are_their_tail() {
+    let items = |n: usize| {
+        (0..n)
+            .map(|i| format!("(+ x {i})"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let source = format!(
+        r#"
+        (defn small [x] [{}])
+        (defn large [x] [{}])
+        (defn check [v]
+          [(count v) (nth v 31) (count (conj v :a)) (nth (conj v :a) 32) (count (pop v))
+           (peek (assoc v 0 :z)) (first (assoc v 0 :z)) (count (persistent! (conj! (transient v) 1)))
+           (reduce + (seq v)) (= v (vec (seq v)))])
+        (pr-str [(check (small 1)) (check (large 1))])"#,
+        items(32),
+        items(33)
+    );
+    let (text, _) = every_level(
+        &source,
+        "[[32 32 33 :a 31 32 :z 33 528 true] [33 32 34 33 32 33 :z 34 561 true]]",
+    );
+    for constructor in ["rt$vectorOfTail([", "rt$vectorFromArray(["] {
+        assert!(text.contains(constructor), "{constructor}: {text}");
+    }
+}
+
+/// `group-by` gathers its groups in a transient map, as upstream's does
+/// (light-cljs-1023): the groups keep their items' order, more than 8 groups
+/// make a hash map, any key works, nil and false too, and the result is a
+/// persistent map that later updates do not reach.
+#[test]
+fn group_by_gathers_in_a_transient_map() {
+    let source = r#"
+        (def few (group-by odd? (range 6)))
+        (def many (group-by #(mod % 11) (range 30)))
+        (def odd-keys (group-by #(case (mod % 3) 0 nil 1 false :k) (range 7)))
+        (pr-str [few (count many) (get many 3) (get many 10) (map? many)
+                 (sort-by str (keys odd-keys)) (get odd-keys nil) (get odd-keys false) (get odd-keys :k)
+                 (count (assoc few :x 1)) (count few) (group-by identity []) (group-by first nil)])"#;
+    every_level(
+        source,
+        "[{false [0 2 4], true [1 3 5]} 11 [3 14 25] [10 21] true (nil :k false) [0 3 6] [1 4] [2 5] 3 2 {} {}]",
+    );
 }
 
 /// A `let` binding of a constant is substituted and dropped, and so is an
@@ -263,7 +342,7 @@ fn const_reads_are_their_value_after_the_definition_runs() {
         "(when (some? js/globalThis) (def ^:const INNER 1)) (pr-str [INNER])",
         "[1]",
     );
-    assert!(text.contains("rt$vectorFromArray([g"), "{text}");
+    assert!(text.contains("rt$vectorOfTail([g"), "{text}");
 }
 
 /// `goog-define` defines a constant whose literal default a build replaces
@@ -687,7 +766,7 @@ fn inlined_arguments_run_once_and_in_order() {
         (defn twice [x] [x x])
         (pr-str [(wrap (t 1)) (later (t 2)) (twice (t 3)) (wrap (t 4)) (vec js/trace)])"#;
     let (text, stats) = every_level(source, r#"["<1>" 2 [3 3] "<4>" [1 2 :later 3 4]]"#);
-    assert!(text.contains("`<${g"), "{text}");
+    assert!(text.contains("(\"<\" + `${g"), "{text}");
     assert_eq!(stats.inlined_calls, 2, "{stats:?}");
 }
 
@@ -775,8 +854,9 @@ fn built_literals_stay_built_and_keys_stay_as_written() {
     );
     assert!(stats.inlined_calls >= 4, "{stats:?}");
     assert!(stats.folded_expressions >= 2, "{stats:?}");
-    // The source constants are one pooled value; the built ones are not.
-    assert!(text.contains("(k"), "{text}");
+    // The source constants are one pooled value; the built ones are not,
+    // and read their pooled keys (light-cljs-1080, before it a key shape).
+    assert!(text.contains("rt$arrayMapOfLiteral([k"), "{text}");
 }
 
 /// Recursive and mutually recursive functions inline to a fixed point within

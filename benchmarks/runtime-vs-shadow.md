@@ -5467,3 +5467,223 @@ An `Advanced` program keeps each upstream member of the runtime's types (`cnt`, 
 - The rest are within -3% (`vec-nth-1024`) and +2% (`destructure-vec-3`, `multi-arity-call`, `str-sorted-map-20`).
 
 **Workload 200k** (`compare.bb workload-200k-seed42-1077 --runs 5 --runtime-only --runtime 1,40`, a copy of the project whose light-cljs output was rebuilt with each binary just before its run, every checksum equal to the oracle's; two rounds, before then after; load 3.51-4.62), steady state from the medians at 1 and 40 iterations: light-cljs 30.1 to 30.2 and 29.9 to 30.2 ms per iteration, shadow-cljs 24.5 to 25.5 (light/shadow 1.17 to 1.23), within the spread.
+
+## 2026-11-21: the gate after the class conversions (light-cljs-1023)
+
+The review that the conversion pellets' per-pellet thresholds moved to: the full core-ops gate on master once every conversion and size pellet had landed, every operation above shadow-cljs's median profiled, two small causes fixed here (`str`, vector literals), one operation improved (`group-by`), and the causes left filed, one pellet per cause, as light-cljs-1080 to light-cljs-1087 (more causes than eight were found; the merged ones are named in light-cljs-1085, light-cljs-1086 and light-cljs-1087).
+
+**Binaries:** master `light-cljs-ed53a283` (light-cljs-1077 landed), `light-cljs-1023-1d906703` (this pellet's fixes but the last `group-by` step, for the second full pass), `light-cljs-1023-24d518ff` (all of them), and `light-cljs-f533efb1` (master before the conversions, whose compiler is `6ceeb23b`'s, light-cljs-1007's table's); V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; every run is unreserved, and peers' builds and runs loaded it throughout. Raw results, the profiles and the map-literal prototype: `research/output-speed/gate-review-1023`.
+
+### The full gate on master
+
+`bb benchmarks/core-ops/run.bb --runs 5 --baseline` light-cljs-1007's `master-6ceeb23b.edn`, all 80 operations on `light-cljs-ed53a283`, 5 runs per compiler alternated, load 5.3-13.8. Medians over the runs with their ranges, ns per operation. Status: "at or below" shadow-cljs's median; "parity" above it but within the run-to-run ranges (light-cljs's lowest run at or under shadow-cljs's highest); otherwise the fix here or the pellet filed for it. 41 operations are at or below, 9 at parity, and 30 above it: the 28 whose ranges are apart and `record-kw-field` and `merge-small`, whose ranges meet only through one slow shadow-cljs run.
+
+| op | light-cljs ns/op | range | shadow-cljs ns/op | range | light/shadow | status |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| kw-small | 7.69 | 7.56-7.77 | 9.87 | 9.75-9.93 | 0.78 | at or below |
+| get-small | 11.0 | 11.0-11.2 | 14.9 | 14.9-14.9 | 0.74 | at or below |
+| get-small-miss | 15.6 | 15.3-15.7 | 19.3 | 19.2-19.3 | 0.81 | at or below |
+| contains-small | 9.39 | 9.26-9.44 | 12.1 | 12.1-12.2 | 0.78 | at or below |
+| count-small | 2.12 | 2.11-2.14 | 2.13 | 2.10-2.13 | 1.00 | at or below |
+| assoc-small-existing | 17.1 | 16.9-17.4 | 29.4 | 29.2-30.0 | 0.58 | at or below |
+| assoc-small-new | 40.4 | 40.0-41.4 | 39.6 | 39.1-40.1 | 1.02 | parity (ranges overlap) |
+| dissoc-small | 46.8 | 45.9-48.3 | 57.7 | 57.0-58.8 | 0.81 | at or below |
+| update-small | 27.1 | 26.5-27.7 | 44.1 | 44.0-44.6 | 0.61 | at or below |
+| map-literal-3 | 21.0 | 20.5-24.9 | 10.4 | 10.0-10.5 | 2.02 | light-cljs-1080 |
+| get-hash100 | 11.7 | 11.5-11.7 | 12.0 | 11.9-12.3 | 0.97 | at or below |
+| kw-hash100 | 12.9 | 12.9-14.5 | 13.5 | 13.5-13.7 | 0.96 | at or below |
+| assoc-hash100 | 74.3 | 73.7-76.0 | 80.1 | 79.2-81.0 | 0.93 | at or below |
+| dissoc-hash100 | 79.2 | 77.6-79.9 | 77.9 | 77.3-78.7 | 1.02 | parity (ranges overlap); just above them in the second pass: light-cljs-1087 |
+| update-hash100 | 85.0 | 84.5-86.1 | 97.4 | 95.9-98.5 | 0.87 | at or below |
+| get-in-3 | 64.3 | 63.7-66.7 | 58.5 | 57.3-59.4 | 1.10 | light-cljs-1087 |
+| assoc-in-3 | 136.1 | 135.5-137.7 | 134.0 | 129.8-137.6 | 1.02 | parity (ranges overlap) |
+| update-in-3 | 162.0 | 148.2-166.7 | 139.5 | 137.8-143.1 | 1.16 | light-cljs-1087 |
+| vec-conj-64 | 1,330 | 1,310-1,540 | 1,330 | 1,288-1,343 | 1.00 | parity (ranges overlap) |
+| vec-literal-4 | 21.1 | 20.5-21.6 | 6.87 | 6.77-7.15 | 3.07 | fixed here |
+| vec-nth-1024 | 4.56 | 4.49-4.65 | 5.17 | 5.15-5.26 | 0.88 | at or below |
+| vec-invoke-1024 | 5.12 | 5.06-5.13 | 4.92 | 4.80-5.13 | 1.04 | parity (ranges overlap); just above them in the second pass: light-cljs-1087 |
+| vec-peek | 3.66 | 3.58-3.68 | 3.48 | 3.46-3.50 | 1.05 | light-cljs-1087 |
+| vec-assoc-1024 | 53.9 | 53.5-55.1 | 74.8 | 74.3-75.6 | 0.72 | at or below |
+| destructure-vec-3 | 5.45 | 5.43-5.49 | 9.84 | 9.83-9.97 | 0.55 | at or below |
+| destructure-map-3 | 50.9 | 50.8-54.0 | 49.4 | 49.1-49.5 | 1.03 | light-cljs-1087 |
+| reduce-vec-1000 | 5,224 | 5,205-5,280 | 2,508 | 2,491-2,515 | 2.08 | light-cljs-1084 |
+| reduce-map-inc-1000 | 38,754 | 38,293-41,417 | 41,543 | 40,375-42,714 | 0.93 | at or below |
+| filter-count-1000 | 31,788 | 31,392-32,226 | 29,022 | 28,836-30,401 | 1.10 | light-cljs-1087 |
+| into-xform-1000 | 29,247 | 28,789-30,380 | 18,755 | 18,466-18,785 | 1.56 | light-cljs-1084 |
+| mapv-1000 | 14,065 | 13,967-14,511 | 14,516 | 14,350-14,671 | 0.97 | at or below |
+| keys-small | 284.5 | 279.4-288.1 | 77.0 | 76.1-80.3 | 3.69 | light-cljs-1081 |
+| vals-small | 292.2 | 289.3-295.5 | 79.2 | 78.5-79.3 | 3.69 | light-cljs-1081 |
+| keys-hash100 | 3,743 | 3,485-3,934 | 5,065 | 5,053-5,172 | 0.74 | at or below |
+| vals-hash100 | 3,964 | 3,817-4,079 | 5,083 | 5,045-5,147 | 0.78 | at or below |
+| lazy-walk-1000 | 36,294 | 36,050-36,915 | 50,802 | 50,337-51,835 | 0.71 | at or below |
+| seq-walk-vec-1000 | 25,143 | 24,959-25,901 | 19,675 | 19,534-20,120 | 1.28 | light-cljs-1087 |
+| reduce-range-1000 | 4,844 | 4,759-4,891 | 5,476 | 5,474-5,548 | 0.88 | at or below |
+| reduce-kv-small | 6.46 | 6.44-6.53 | 37.9 | 37.6-38.2 | 0.17 | at or below |
+| reduce-entries-small | 82.0 | 81.4-84.3 | 78.9 | 76.4-81.0 | 1.04 | light-cljs-1087 |
+| str-nested-map | 4,242 | 4,224-4,251 | 2,376 | 2,332-2,390 | 1.79 | light-cljs-1086 |
+| str-concat | 167.7 | 166.0-169.8 | 14.6 | 14.4-14.7 | 11.49 | fixed here |
+| eq-map-7 | 134.5 | 133.3-135.8 | 151.2 | 151.0-152.9 | 0.89 | at or below |
+| eq-vec-10 | 39.0 | 38.8-39.8 | 83.1 | 81.2-83.4 | 0.47 | at or below |
+| hash-fresh-vec-4 | 47.0 | 46.6-47.3 | 116.9 | 115.8-228.2 | 0.40 | at or below |
+| hash-fresh-map-7 | 107.0 | 106.0-107.9 | 656.6 | 652.9-1,722 | 0.16 | at or below |
+| protocol-on-record | 2.38 | 2.37-2.46 | 2.40 | 2.39-3.64 | 0.99 | at or below |
+| record-kw-field | 5.78 | 5.76-5.81 | 4.21 | 4.18-9.54 | 1.37 | light-cljs-1082 (shadow-cljs's range holds one slow run) |
+| record-dot-field | 0.88 | 0.87-0.88 | 0.88 | 0.87-2.99 | 1.00 | at or below |
+| record-assoc | 54.2 | 53.1-54.6 | 14.1 | 13.8-33.8 | 3.86 | light-cljs-1082 |
+| multimethod | 111.3 | 110.2-111.5 | 48.4 | 47.5-82.0 | 2.30 | light-cljs-1083 |
+| multi-arity-call | 2.02 | 1.99-2.03 | 2.00 | 1.98-8.87 | 1.01 | parity (ranges overlap) |
+| variadic-call | 14.6 | 14.6-15.0 | 14.5 | 14.2-19.5 | 1.01 | parity (ranges overlap) |
+| apply-vec | 181.2 | 179.7-185.5 | 93.5 | 90.1-103.9 | 1.94 | light-cljs-1084 |
+| unknown-fn-call | 4.50 | 4.46-4.56 | 6.50 | 6.49-17.9 | 0.69 | at or below |
+| closure-alloc-call | 9.28 | 9.17-9.53 | 8.48 | 8.39-20.5 | 1.09 | parity (shadow-cljs's range holds one slow run); above in the second pass: light-cljs-1087 |
+| swap-inc | 4.77 | 4.73-4.93 | 5.64 | 5.60-12.5 | 0.85 | at or below |
+| swap-assoc | 27.4 | 25.3-28.2 | 37.8 | 37.5-193.7 | 0.73 | at or below |
+| merge-small | 1,653 | 1,606-1,726 | 906.8 | 896.4-2,520 | 1.82 | light-cljs-1085 (shadow-cljs's range holds one slow run) |
+| select-keys-3 | 242.9 | 231.6-245.9 | 255.8 | 251.5-280.2 | 0.95 | at or below |
+| group-by-100 | 6,081 | 6,051-6,365 | 5,115 | 5,085-5,699 | 1.19 | improved here (1.11x to 1.19x after); light-cljs-1085 |
+| sort-by-100 | 7,326 | 7,012-7,446 | 4,796 | 4,723-5,448 | 1.53 | light-cljs-1084 |
+| transient-vec-100 | 1,152 | 1,146-1,165 | 1,161 | 1,151-1,299 | 0.99 | at or below |
+| transient-map-100 | 4,705 | 4,641-5,027 | 4,559 | 4,186-4,833 | 1.03 | parity (ranges overlap); just above them in the second pass: light-cljs-1087 |
+| sorted-map-assoc-100 | 157.7 | 155.9-162.3 | 211.0 | 209.5-236.5 | 0.75 | at or below |
+| str-sorted-map-20 | 33,052 | 32,493-34,469 | 20,811 | 20,663-22,477 | 1.59 | light-cljs-1086 |
+| into-vec-keys-small | 684.3 | 675.4-704.6 | 337.1 | 329.0-339.4 | 2.03 | light-cljs-1081 |
+| into-set-100 | 6,650 | 6,638-6,770 | 4,385 | 4,288-4,490 | 1.52 | light-cljs-1085 |
+| vec-pop | 24.1 | 23.8-24.3 | 24.6 | 24.3-24.9 | 0.98 | at or below |
+| list-pop | 28.9 | 28.6-29.1 | 14.9 | 14.9-15.0 | 1.93 | light-cljs-1087 |
+| disj-set-7 | 118.0 | 111.6-118.5 | 157.7 | 157.2-159.8 | 0.75 | at or below |
+| disj-sorted-set-100 | 205.1 | 203.7-213.9 | 227.5 | 223.6-228.5 | 0.90 | at or below |
+| disj-variadic-set-7 | 205.0 | 203.7-205.9 | 302.4 | 299.7-308.8 | 0.68 | at or below |
+| vec-assoc-variadic-1024 | 173.0 | 170.0-173.3 | 223.4 | 221.4-223.9 | 0.77 | at or below |
+| into-vec-small | 194.2 | 192.2-195.6 | 158.5 | 157.5-162.1 | 1.23 | light-cljs-1085 |
+| into-map-small | 797.5 | 788.6-807.7 | 335.7 | 329.7-336.7 | 2.38 | light-cljs-1085 |
+| into-sorted-map-small | 2,785 | 2,766-2,803 | 843.9 | 832.2-845.7 | 3.30 | light-cljs-1086 |
+| into-list-small | 193.7 | 193.1-194.2 | 123.9 | 122.2-125.4 | 1.56 | light-cljs-1084 |
+| bit-and | 0.59 | 0.58-0.60 | 0.59 | 0.58-0.60 | 1.00 | at or below |
+| aget-bit-and | 0.60 | 0.59-0.60 | 0.60 | 0.59-0.61 | 1.00 | at or below |
+
+### What this pellet fixed and improved
+
+- **`str`** at `:advanced` is its operands' texts joined with `+`, as upstream's `str` macro writes it: a string as it is, a number or boolean as a template (`` `${i}` ``, which V8 converts faster than `+` of a string and a number), any other operand through `rt$strOne`, the runtime's one-value `str`. An operand evaluated after one whose text may run code (a `toString`, a printing) must be a pure operand, or the call stays the runtime's `str`, which evaluates every operand first; that `str` is now a loop over `strOne` where it mapped a closure over a rest array and joined. `str-concat` was 15% slower on master than on `6ceeb23b` (145.9 to 167.7 ns, the only operation of light-cljs-1007's table that got slower by more than 1%): `str` asked `sets.has` and `maps.has` of every number, which read its keyed kind.
+- **Vector literals** of at most 32 items built at their site are `rt$vectorOfTail([...])`, a vector of the new array as its tail, as upstream's `PersistentVector` of a tail, where `vectorFromArray` copied the array and `vectorTrie` walked it with a default-parameter closure. Pooled constant vectors keep `vectorFromArray`.
+- **`group-by`** gathers its groups in a transient map, as upstream's does, where each item made a new persistent map, and makes an empty vector only for a new group: 1.19x to 1.11x-1.19x; the rest, the transient `assoc!`'s layers, is light-cljs-1085's.
+
+Before and after for the operations these reach, light-cljs ns per operation, from the two full passes (master, then `light-cljs-1023-1d906703`, load 8.8-14.1, `gate-1d906703.md`):
+
+| op | light-cljs master | light-cljs after (range) | change | shadow-cljs master, after | light/shadow master, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| str-concat | 167.7 | 13.3 (13.1-13.4) | -92% | 14.6, 15.1 | 11.49, 0.88 |
+| str-nested-map | 4,242 | 3,990 (3,952-4,028) | -6% | 2,376, 2,395 | 1.79, 1.67 |
+| str-sorted-map-20 | 33,052 | 31,858 (31,565-33,753) | -4% | 20,811, 20,837 | 1.59, 1.53 |
+| vec-literal-4 | 21.1 | 6.32 (6.26-6.43) | -70% | 6.87, 6.86 | 3.07, 0.92 |
+| hash-fresh-vec-4 | 47.0 | 30.1 (29.8-30.3) | -36% | 116.9, 118.1 | 0.40, 0.26 |
+| group-by-100 | 6,081 | 5,745 (5,548-6,155) | -6% | 5,115, 5,173 | 1.19, 1.11 |
+
+The same operations with the final binary, in a selection of their own (`--ops str-nested-map,str-concat,str-sorted-map-20,vec-literal-4,hash-fresh-vec-4,group-by-100,merge-small,multimethod --runs 5`, master then `light-cljs-1023-24d518ff` with `--baseline`, two alternated pairs, load 10.1-22.8; `touched-before1.md` to `touched-after2.md`), light-cljs ns per operation, before and after, and light/shadow:
+
+| op | pair 1 | pair 2 | light/shadow before, after |
+| --- | ---: | ---: | ---: |
+| str-concat | 140.6 to 14.2 (-90%) | 145.5 to 14.0 (-90%) | 8.88-9.25, 0.89-0.90 |
+| vec-literal-4 | 25.4 to 10.1 (-60%) | 30.6 to 10.2 (-67%) | 2.37-2.91, 0.96-0.98 |
+| hash-fresh-vec-4 | 48.6 to 25.8 (-47%) | 49.2 to 26.1 (-47%) | 0.93, 0.50-0.51 |
+| group-by-100 | 6,206 to 4,887 (-21%) | 6,290 to 5,212 (-17%) | 1.40, 1.11-1.19 |
+| str-nested-map | 3,914 to 3,813 (-3%) | 3,914 to 3,801 (-3%) | 1.60-1.61, 1.57 |
+| str-sorted-map-20 | 31,027 to 30,307 (-2%) | 32,260 to 30,029 (-7%) | 1.46-1.49, 1.45-1.47 |
+| multimethod | 70.3 to 53.9 (-23%) | 72.1 to 53.9 (-25%) | 1.89-1.95, 1.42-1.45 |
+| merge-small | 1,529 to 1,578 (+3%) | 1,496 to 1,597 (+7%) | 2.04-2.10, 2.19-2.24 |
+
+`str-concat` and `vec-literal-4` are below shadow-cljs's medians. `group-by-100` is 1.11x and 1.19x after (its after ranges 4,730-4,969 and 4,687-6,267 against shadow-cljs's 4,306-4,461 and 4,352-4,518): its remaining cause, the transient `assoc!`'s layers, is light-cljs-1085's, where it is filed with its profile on this binary (`profile-group-by-24d518ff.txt`). `str` of a collection gains only the call's overhead; printing itself is light-cljs-1086's. `multimethod` gains 23-25% here and 20% in the full pass, though no change reaches its path; `merge-small` loses 3-7% in both selections but, timed alone in two more alternated pairs (`--ops merge-small`), it is 1,385 to 1,398 and 1,374 to 1,390 ns (+1%, within the ranges): both move with the type feedback the changed operations leave, as `--ops` selections show (README, "Order matters").
+
+The other operations of the second full pass are within -15% and +6% of master's: `destructure-map-3` -15%, `filter-count-1000` -8% and `multimethod` -20%, which none of the fixes reaches, run after `str-concat` and the vector literals in `benches`, whose type feedback changed; `merge-small` +6% (1,653 to 1,746 ns), +1% when timed alone (below).
+
+### The filed causes
+
+Each pellet holds its operations' gate numbers, its profile (`--pseudo-names`, `light-cljs-1023-b58edd5f`, `profiles-b58edd5f.txt`) and its "Do":
+
+- **light-cljs-1080, map literals** (`map-literal-3` 2.02x): `mapFromShape` copies the site's values array and the shape's keys into a third array; one interleaved array at the site, prototyped here (`map-literal-prototype.diff`, held back because it moves eight pinned tests of light-cljs-220's key shapes).
+- **light-cljs-1081, key and value seqs** (`keys-small` and `vals-small` 3.69x, `into-vec-keys-small` 2.03x): a map's `seq` makes every entry up front, and `KeySeqCell` reads through getters with the slot-first tests per step.
+- **light-cljs-1082, records** (`record-assoc` 3.86x, `record-kw-field` 1.37x): the shared `recordMethodTable` methods find a field with a `Map` lookup and build the new record with `members.map` and a spread; upstream's `defrecord` writes both per type.
+- **light-cljs-1083, multimethods** (`multimethod` 2.30x): keyword dispatch values are never cached, so every call walks the table with `isa?` and `dominates`; `call` takes and spreads rest arrays.
+- **light-cljs-1084, function values** (`reduce-vec-1000` 2.08x, `apply-vec` 1.94x, `into-xform-1000` 1.56x, `into-list-small` 1.56x, `sort-by-100` 1.53x): `+` and `-` as values branch on `arguments`, a transducer's step is `callable`'s rest-and-spread wrapper, `apply` conses and walks its arguments as seqs, `sort-by` builds its comparator per comparison.
+- **light-cljs-1085, building collections** (`into-map-small` 2.38x, `merge-small` 1.82x, `into-set-100` 1.52x, `into-vec-small` 1.23x, `group-by-100` 1.19x, 1.11x-1.19x after this pellet): a `WeakSet` per transient vector, `nth` reads of map entries in a map's `into`, and an entry object per hash-trie insert; three causes merged.
+- **light-cljs-1086, printing and compare** (`into-sorted-map-small` 3.30x, `str-nested-map` 1.79x, `str-sorted-map-20` 1.59x): the printer writes each piece through the generic `coreMethod` dispatcher and probes each value with `ownMethod` and `keyMarker`; `compare` probes `IComparable` through `protocolHooks.builtin` before comparing two keywords.
+- **light-cljs-1087, small gaps in the gate's order** (`list-pop` 1.93x, `seq-walk-vec-1000` 1.28x, `update-in-3` 1.16x, `get-in-3` 1.10x, `filter-count-1000` 1.10x, `vec-peek`, `reduce-entries-small`, `destructure-map-3`, and the parity operations just above their ranges in the second pass: `closure-alloc-call`, `vec-invoke-1024`, `dissoc-hash100`, `transient-map-100`): most are at parity when run alone, so their causes are the type feedback of the operations before them; `list-pop`'s `-pop` calls the generic `count` and `rest`.
+
+### Against master before the conversions
+
+No operation ended slower than on master before the conversions:
+- **The 64 operations of light-cljs-1007's table**, against its `master-6ceeb23b.edn` (`6ceeb23b`'s compiler is `f533efb1`'s; the master pass above ran with `--baseline` it): 61 are faster on `ed53a283` (-99% to -1%), `multi-arity-call` (+0%) and `closure-alloc-call` (+1%) are within their ranges, and one is slower, `str-concat`, 145.9 to 167.7 ns (+15%), which this pellet's `str` change takes to 13.3. The conversion pellets' sections above report each of these steps; none left an operation slower than this.
+- **The 16 operations added since** (the key and value walks of light-cljs-1064, the `into`s of light-cljs-1065, 1067 and 1076, the `pop`s and `disj`s of light-cljs-1073), which light-cljs-1007's table lacks: timed in a selection of their own on `light-cljs-f533efb1` and on `light-cljs-ed53a283` with `--baseline` the first (`--runs 3`, load 6.5-18.5; `f533-new-ops.md`, `master-new-ops.md`), every one is 63% to 98% faster on master: `vec-assoc-variadic-1024` 434.3 to 159.4 ns (-63%), `into-set-100` 21,963 to 5,151 (-77%), `disj-variadic-set-7` -81%, `into-sorted-map-small` -83%, the others -89% to -98%. A full pass on `light-cljs-f533efb1` was started but stopped at the tool's time limit after its second run (its outputs take 10 to 15 minutes a run), so these come from the selection.
+
+### Workload 200k and sizes
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1023 --runs 5 --runtime-only --runtime 1,40`, a copy of the project whose light-cljs output was rebuilt with each binary just before its run, every checksum equal to the oracle's; two rounds, master then `light-cljs-1023-1d906703`; load 9.2-11.2), steady state from the medians at 1 and 40 iterations: light-cljs 34.3 and 34.0 ms per iteration on master, 32.6 and 32.6 after; shadow-cljs 28.2, 28.0, 27.3, 27.2 in the same rounds; light/shadow 1.22 and 1.21 to 1.19 and 1.20.
+
+**Sizes** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only`, fresh ports with `shadow-port-tool-983`), gzip -9 bytes of light-cljs's output as written, without React, master to `light-cljs-1023-1d906703`: simple 67,474 to 67,565 (+91, +0.13%), todomvc 97,154 to 97,267 (+113, +0.12%), flow 280,884 to 280,475 (-409, -0.15%); the whole esbuild bundles 113,598 to 113,612, 145,158 to 145,235 and 333,137 to 333,290 (+0.01% to +0.05%). The growth is the `str` sites written out and `strOne` and `vectorOfTail` beside `str` and `vectorFromArray`. The size ratchet's notes are in tests/support/ratchet_fixtures.rs: nine fixtures grow 10 to 149 bytes at `:advanced`, and the readable runtime 1,111.
+
+## 2026-11-21: small map literals as one array (light-cljs-1080)
+
+At `:advanced` a map literal of at most 8 distinct constant keys whose values are not all constants is `rt$arrayMapOfLiteral([k0, v0, k1, v1, ...])`: an array map of the one array its site builds, which the map keeps, as upstream's literal is `new PersistentArrayMap(null, 3, [k1, v1, k2, v2, k3, v3], null)`. Before, the site built an array of the values, and `mapFromShape` read the keys from a pooled key shape (`rt$mapShape`) and pushed keys and values into a second array. The keys are constants, so the values are still evaluated in order, once each. Past 8 keys the hash-map shapes (`rt$hashMapShape`, `rt$hashMapFromShape`) stay. This is light-cljs-1023's prototype (`research/output-speed/gate-review-1023/map-literal-prototype.diff`), whose vector half landed there.
+
+**Binaries:** before `light-cljs-cb4c3d94` (master, light-cljs-1023 landed), after `light-cljs-1080-55250c16` (a work-in-progress commit whose compiler sources are this pellet's commit's); V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; every run is unreserved, with peers' builds and runs on it. Raw results: `research/output-speed/map-literals-1080`.
+
+**Gate** (`bb benchmarks/core-ops/run.bb --runs 5`, all 80 operations, before then after with `--baseline` the before's; load 7.44-10.23 before, 4.68-6.50 after; `gate-before.md`, `gate-after.md`). The operations this reaches: `map-literal-3` builds its map in the loop; the small-map operations build theirs with a literal before it. Light-cljs ns per operation, medians with ranges:
+
+| op | light-cljs before | light-cljs after | change | shadow-cljs before, after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| map-literal-3 | 22.9 (22.6-23.4) | 9.85 (9.06-10.1) | -57% | 10.9, 10.8 | 2.10, 0.91 |
+| kw-small | 8.06 (7.89-8.11) | 8.08 (7.70-8.31) | +0% | 10.3, 9.98 | 0.79, 0.81 |
+| get-small | 11.5 (11.1-11.7) | 11.2 (11.0-11.8) | -2% | 15.8, 15.5 | 0.72, 0.72 |
+| get-small-miss | 16.2 (15.9-16.4) | 16.2 (15.4-16.4) | +0% | 20.4, 20.2 | 0.80, 0.80 |
+| contains-small | 9.66 (9.43-10.1) | 9.69 (9.33-10.0) | +0% | 12.8, 12.5 | 0.75, 0.77 |
+| count-small | 2.15 (2.14-2.22) | 2.15 (2.10-2.26) | +0% | 2.16, 2.13 | 1.00, 1.01 |
+| assoc-small-existing | 17.5 (17.3-17.8) | 17.3 (16.8-17.9) | -1% | 30.4, 31.6 | 0.58, 0.55 |
+| assoc-small-new | 41.6 (40.4-42.4) | 41.6 (40.5-42.3) | +0% | 41.5, 42.2 | 1.00, 0.99 |
+| dissoc-small | 49.9 (47.4-50.1) | 48.9 (46.3-49.5) | -2% | 61.3, 60.3 | 0.81, 0.81 |
+| update-small | 28.2 (26.4-28.8) | 27.8 (26.6-27.9) | -1% | 46.4, 46.3 | 0.61, 0.60 |
+
+`map-literal-3` is below shadow-cljs's median, its after range (9.06-10.1) below shadow-cljs's (10.0-11.0). The other 70 operations are within -10% (`reduce-kv-small`) and +6%: only `dissoc-hash100` is over +5% (83.2 to 87.8 ns, ranges 82.5-85.4 and 82.6-88.1), whose path builds no map literal; timed alone in two alternated pairs (`--ops dissoc-hash100`) it is 82.9 to 82.3 and 82.8 to 82.3 ns (-1% both times; shadow-cljs 74.8 and 75.6, light-cljs-1087's gap).
+
+The touched operations in a selection of their own (`--ops map-literal-3,kw-small,...,update-small --runs 5`, master then after with `--baseline`, two alternated pairs; load 4.90-8.62 over these and the `dissoc-hash100` pairs; `touched-before1.md` to `touched-after2.md`): `map-literal-3` 20.7 to 9.37 and 20.9 to 9.41 ns (-55% both; shadow-cljs 10.1 and 10.2; light/shadow 2.06 to 0.93), the small-map operations -2% to +1%.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1080 --runs 5 --runtime-only --runtime 1,40`, a copy of the project whose light-cljs output was rebuilt with each binary just before its run, every checksum equal to the oracle's; four rounds, before then after in the first two and after then before in the last two; load 6.36-7.85), steady state from the medians at 1 and 40 iterations, light-cljs ms per iteration and light/shadow:
+
+| round | before | after |
+| --- | ---: | ---: |
+| 1 | 31.1 (1.20) | 32.9 (1.22) |
+| 2 | 32.7 (1.16) | 34.0 (1.23) |
+| 3 | 33.0 (1.22) | 33.4 (1.22) |
+| 4 | 33.6 (1.19) | 32.5 (1.22) |
+
+Within the spread: light-cljs's medians are 31.1-33.6 before and 32.5-34.0 after, drifting with run order in the first two rounds (31.1, 32.9, 32.7, 34.0), and light/shadow 1.16-1.22 before and 1.22-1.23 after. The workload's 1,024 sites now build their maps this way, and a CPU profile of each output (`--pseudo-names`, 40 iterations, `workload-profile.txt`) shows `mapFromShape` at 0.42% of samples before and `arrayMapOfLiteral` at 0.14% after, which bounds what this change can move there.
+
+**Sizes** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only`, fresh ports with `shadow-port-tool-983`; `size-cb4c3d94.md`, `size-1080-55250c16.md`), gzip -9 bytes of light-cljs's output as written, without React: simple 67,569 to 67,028 (-541, -0.80%), todomvc 97,268 to 96,219 (-1,049, -1.08%); the whole esbuild bundles 113,620 to 113,095 and 145,233 to 144,083. Writing each site's keys costs fewer bytes than the shapes and their keys' hashes it removes from the pool. Flow's output is byte-identical (280,483): its rewrite-clj extends `IPrintWithWriter` to a type it is given at run time (`make-printable-cljs!`), so its program extends a core protocol beyond its own types and no map literal of it was ever shaped. The size ratchet's notes are in tests/support/ratchet_fixtures.rs: three fixtures shrink 156 to 188 bytes at `:advanced`, the others do not move, and the readable runtime grows 354 bytes.
+
+## 2026-11-21: multimethod calls (light-cljs-1083)
+
+A multimethod call was 1.88x shadow-cljs's in the full gate on master `cb4c3d94`. Where a program's multimethods keep lean array tables (at `:advanced`, `multi_tables` in src/rta.rs), `getMethod` cached only a function's answers, so a keyword dispatch value walked the methods on every call with `isa?` and `dominates`; `MultiFn`'s `call` took and spread rest arrays. Now:
+
+- **The lean cache.** `getMethod` scans the cache by identity first, as upstream's `array-index-of` compares keywords, so an interned keyword literal finds its method, or its cached answer, with no walk. A walk's answer for a plain dispatch value (`leanPlain`: nil, a boolean, a string, a number equal to itself, a keyword, a symbol, or a vector of them) is cached, as upstream caches every answer: in the cache while it holds fewer than 16 entries, past them in a `Map` by a text that equal plain values share (`leanCode`), so the cache, a scan, stays short; a new method clears both, as before.
+- **Calls.** `MultiFn`'s `call` passes 0 to 3 arguments to the dispatch function and the method through a step per count (`multiCall1`), with no rest array or spread, and more through `multiApply`.
+- **Tables in atoms.** Where a program keeps them there (it can give a hierarchy ancestors, prefers methods, has more than eight methods, or reads the tables; workload 200k is such a program), a call's `-get-method` takes the protocol dispatcher's steps for two arguments (`getMethodProtocol`), where it went through the dispatcher's rest array, slice and spread behind a function that called it. Without this, the per-count steps alone made these calls 5% slower (65.2 to 68.5 ns, medians of six alternated runs), one call level past what V8 inlined.
+
+**Binaries:** master `light-cljs-cb4c3d94` and `light-cljs-1083-4127d2a9` (this change before its rebase onto light-cljs-1080, which touches no multimethod unit, and before the review's two fixes: the `Map` past 16 entries and a key resolved at boot for the shared-heap profile), and for the last rows and the sizes `light-cljs-1083-46bf535d` (the final change on master `1fac567c`) and `light-cljs-1fac567c`; V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; every run is unreserved. Raw records and profiles: `research/output-speed/multimethods-1083`.
+
+| measurement | light-cljs before | light-cljs after | change | shadow-cljs before, after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| gate `multimethod`, full pass (load 4.4-5.9, then 10.3-14.0; `gate-before`, `gate-after2`) | 88.1 (87.1-93.1) | 42.0 (41.5-43.4) | -52% | 46.9, 46.7 | 1.88, 0.90 |
+| gate `multimethod` alone, pair 1 (`--ops multimethod`, load 11.6-12.4; `mm2-*`) | 50.7 (50.3-51.7) | 20.3 (19.7-21.6) | -60% | 38.2, 38.7 | 1.33, 0.52 |
+| gate `multimethod` alone, pair 2 (load 10.4-11.0) | 51.1 (50.9-51.7) | 19.9 (19.6-20.4) | -61% | 38.1, 38.0 | 1.34, 0.52 |
+| tables in atoms, pair 1 (the gate's source with one `derive`, `atoms-main.cljs`, `--ops multimethod`, load 8.8-8.9; `atoms2-*`) | 65.6 (64.9-66.0) | 45.5 (45.0-46.3) | -31% | 38.3, 38.2 | 1.71, 1.19 |
+| tables in atoms, pair 2 (load 8.5-8.7) | 65.1 (64.7-69.1) | 46.2 (45.8-46.3) | -29% | 38.2, 38.2 | 1.70, 1.21 |
+| final binary: `multimethod` alone, two pairs (`mm3-*`) | 51.1, 50.8 | 20.0, 19.9 | -61% | 38.0, 38.5 | 1.34-1.35, 0.52-0.53 |
+| final binary: tables in atoms, two pairs (`atoms3-*`) | 64.6, 64.5 | 45.4, 44.4 | -30%, -31% | 38.4, 37.7 | 1.70-1.71, 1.18 |
+
+ns per call, medians of 5 runs per compiler with their ranges. `multimethod` is below shadow-cljs's median in every pass. With the tables in atoms it is still 1.20x: each call asks the protocol lookup for a program's `-get-method` and reads the atoms through `deref` (profile `profile-atoms-4127d2a9.txt`), filed as light-cljs-1088.
+
+**The other operations** of the full pass are within -6% and +5% of master's. Four are +4% to +5%, none of which reaches a multimethod step; the after pass ran at twice the load. Timed alone in two alternated pairs (`--ops map-literal-3,merge-small,into-set-100,into-xform-1000`, load 4.8-7.7; `moved-*`): `map-literal-3` +0% and +0%, `into-xform-1000` +1% and -1%, `into-set-100` -1% and +0%, `merge-small` +5% and +0% (and +1% and -1% in two pairs of its own with the first binary of this change, `merge-*`), as light-cljs-1023 found it moving with the type feedback of the operations before it.
+
+**Workload 200k** (`compare.bb workload-200k-seed42-1083 --runs 5 --runtime-only --runtime 1,40`, the project's light-cljs output rebuilt with each binary just before its run, every checksum equal to the oracle's; two rounds, master then after; load 6.3-9.9; `workload3-*`): steady state 33.3 and 31.6 ms per iteration on master, 32.5 and 32.5 after; shadow-cljs 26.6, 26.1, 27.1 and 25.6 in the same runs; light/shadow 1.25 and 1.17 before, 1.24 and 1.27 after, no change beyond the rounds' spread. Its multimethods keep their tables in atoms; multimethod calls are about 2% of its profile.
+
+**TodoMVC** (`bb benchmarks/re-frame.bb runtime todomvc --runs 5`, a fresh port with `shadow-port-tool-983`, load 3.4-4.7; `todomvc-*.md`): adding 1,000 todos takes 2,117 ms (2,093-2,155) on master and 2,138 (2,103-2,149) after, shadow-cljs 956 and 960 (light/shadow 2.21 and 2.23); no multimethod is on that step's path, and the other steps are within their ranges.
+
+**Sizes** (`bb benchmarks/re-frame.bb size simple todomvc flow --light-only`, fresh ports with `shadow-port-tool-983`; `size-1fac567c.md`, `size-1083-46bf535d.md`), gzip -9 bytes of light-cljs's output as written, without React, master `1fac567c` to the final change: simple 67,028 to 67,028 (it keeps no multimethod), todomvc 96,219 to 96,724 (+505, +0.52%), flow 280,479 to 280,948 (+469, +0.17%); the whole esbuild bundles 113,095 to 113,095, 144,083 to 144,602 (+0.36%) and 333,314 to 333,869 (+0.17%). The growth is the steps above in the apps that keep a multimethod (re-frame.alpha's `reg`, and todomvc's router): the per-count calls, `leanMethod` with the `Map` past 16 entries and `leanCode`, `leanPlain` and `symbolOf`; before the review's fixes todomvc grew 348 bytes (+0.36%). The size ratchet's note is in tests/support/ratchet_fixtures.rs: `defmulti` grows about 1,500 bytes at `:advanced` (19,782 bytes after single-pass nested-vector `leanCode`), and the readable runtime 5,846.

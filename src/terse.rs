@@ -20,9 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::js_syntax::{
-    Declaration, Join, Kind, NO_SCOPE, NameGenerator, Resolution, Shape, TerseWriter, Token,
-    closes_control_head, joined_declarations, lex_section, partners, redundant_semicolons,
-    reserved, resolve,
+    Declaration, FirstToken, Join, Kind, NO_PARTNER, NO_SCOPE, NameGenerator, Resolution, Shape,
+    TerseWriter, Token, WriterEnd, closes_control_head, joined_declarations, lex_section, partners,
+    redundant_semicolons, reserved, resolve,
 };
 
 /// One runtime unit as `build.rs` writes it.
@@ -420,56 +420,84 @@ fn write_units<'n>(
 /// and terse output renames all of them, wherever they occur: a capture
 /// object's keys (`captures4.l7`) are such names too. A constant member key
 /// that is one of them stays bracketed (`x["f"]`).
+#[inline]
 pub(crate) fn compiler_name(word: &str) -> bool {
-    const NUMBERED: [&str; 17] = [
-        "l",
-        "g",
-        "k",
-        "c",
-        "m",
-        "a",
-        "r",
-        "next",
-        "saved",
-        "temporary",
-        "captures",
-        "self",
-        "recur",
-        "installed",
-        "operand",
-        "receiver",
-        "__lightUnitReify",
-    ];
-    let numbered = |word: &str| {
-        NUMBERED.iter().any(|head| {
-            word.strip_prefix(head).is_some_and(|tail| {
-                !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit() || b == b'_')
-            })
-        })
+    let bytes = word.as_bytes();
+    let Some(&first) = bytes.first() else {
+        return false;
     };
-    numbered(word)
-        || word
-            .strip_prefix('g')
-            .and_then(|tail| tail.strip_suffix('$'))
-            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
-        || matches!(
-            word,
-            "rt" | "__lightSessionRuntime"
-                | "truth"
-                | "host"
-                | "pkg"
-                | "f"
-                | "text"
-                | "savedPrint"
-                | "savedNewline"
-                | "caught"
-                | "caseValue"
-                | "lazy$"
-        )
-        || word.starts_with("rt$")
-        || word.starts_with("core$")
-        || word.starts_with("nativeCore$")
-        || word.starts_with("nativeCoreGetter$")
+    match first {
+        b'l' => numbered_tail(&bytes[1..]) || word == "lazy$",
+        b'g' => {
+            numbered_tail(&bytes[1..])
+                || (bytes.len() >= 3
+                    && bytes[bytes.len() - 1] == b'$'
+                    && bytes[1..bytes.len() - 1].iter().all(u8::is_ascii_digit))
+        }
+        b'k' | b'm' | b'a' => numbered_tail(&bytes[1..]),
+        b'c' => {
+            numbered_tail(&bytes[1..])
+                || word.starts_with("core$")
+                || matches!(word, "caught" | "caseValue")
+                || word
+                    .strip_prefix("captures")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b'r' => {
+            numbered_tail(&bytes[1..])
+                || word == "rt"
+                || word.starts_with("rt$")
+                || word
+                    .strip_prefix("recur")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+                || word
+                    .strip_prefix("receiver")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b'o' => word
+            .strip_prefix("operand")
+            .is_some_and(|tail| numbered_tail(tail.as_bytes())),
+        b't' => {
+            matches!(word, "truth" | "text")
+                || word
+                    .strip_prefix("temporary")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b's' => {
+            matches!(word, "savedPrint" | "savedNewline")
+                || word
+                    .strip_prefix("saved")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+                || word
+                    .strip_prefix("self")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b'n' => {
+            word.starts_with("nativeCore$")
+                || word.starts_with("nativeCoreGetter$")
+                || word
+                    .strip_prefix("next")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b'i' => word
+            .strip_prefix("installed")
+            .is_some_and(|tail| numbered_tail(tail.as_bytes())),
+        b'f' => word == "f",
+        b'h' => word == "host",
+        b'p' => word == "pkg",
+        b'_' => {
+            word == "__lightSessionRuntime"
+                || word
+                    .strip_prefix("__lightUnitReify")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        _ => false,
+    }
+}
+
+#[inline]
+fn numbered_tail(tail: &[u8]) -> bool {
+    !tail.is_empty() && tail.iter().all(|&b| b.is_ascii_digit() || b == b'_')
 }
 
 /// A prefix that no raw `js*` segment of `source` contains: `__light<n>_`.
@@ -518,6 +546,18 @@ fn constrained_short_names<'s>(
     for (position, word) in words.into_iter().enumerate() {
         stats.entry(word).or_insert((0, position)).0 += 1;
     }
+    constrained_short_names_from_stats(stats, excluded, avoid, fixed)
+}
+
+/// [`constrained_short_names`] from pre-aggregated `(count, first_position)`
+/// word statistics, allowing parallel workers to count each slice or chunk
+/// independently before merging.
+fn constrained_short_names_from_stats<'s, P: Ord + Copy>(
+    stats: HashMap<&'s str, (usize, P)>,
+    excluded: impl Fn(&str) -> bool,
+    avoid: &HashMap<&str, HashSet<&str>>,
+    fixed: impl Fn(&str) -> Option<&'static str>,
+) -> HashMap<&'s str, String> {
     let mut names = HashMap::with_capacity(stats.len());
     let mut order = Vec::with_capacity(stats.len());
     for &word in stats.keys() {
@@ -656,6 +696,17 @@ impl<'s> Locals<'s> {
         resolution: &Resolution,
         eligible: impl Fn(&str) -> bool,
     ) -> Self {
+        Self::new_canonical(source, tokens, in_raw, resolution, eligible, |word| word)
+    }
+
+    fn new_canonical(
+        source: &'s str,
+        tokens: &[Token],
+        in_raw: &[bool],
+        resolution: &Resolution,
+        eligible: impl Fn(&str) -> bool,
+        canonical: impl Fn(&'s str) -> &'s str,
+    ) -> Self {
         let declarations = &resolution.declarations;
         let mut named = declarations
             .iter()
@@ -776,8 +827,8 @@ impl<'s> Locals<'s> {
             let Some(occurrence) = occurrence else {
                 continue;
             };
-            let word = tokens[index].text(source);
-            if in_raw[index] || !compiler_name(word) {
+            let raw_word = tokens[index].text(source);
+            if in_raw[index] || !compiler_name(raw_word) {
                 continue;
             }
             let local = occurrence
@@ -785,6 +836,7 @@ impl<'s> Locals<'s> {
                 .map_or(NO_LOCAL, |declaration| local_of[declaration]);
             let (key, target) = match local {
                 NO_LOCAL => {
+                    let word = canonical(raw_word);
                     let number = *numbers.entry(word).or_insert_with(|| {
                         words.push(word);
                         words.len() as u32 - 1
@@ -859,9 +911,18 @@ impl<'s> Locals<'s> {
                     .iter()
                     .any(|&local| avoid.contains_key(&(local as u32)))
             {
-                let assigned = constrained_scope(&order, &avoided, candidates, |local| {
-                    (avoid.get(&(local as u32)).copied(), self.first[local])
-                });
+                let assigned = constrained_scope(
+                    &order,
+                    &avoided,
+                    candidates,
+                    |local| {
+                        avoid
+                            .get(&(local as u32))
+                            .copied()
+                            .filter(|set| !set.is_empty())
+                    },
+                    |local| self.first[local],
+                );
                 for (local, name) in assigned {
                     names[local] = name;
                 }
@@ -898,28 +959,42 @@ impl<'s> Locals<'s> {
 /// each takes the first of `candidates` that no local before it took, that
 /// the scope avoids and that it avoids itself. The locals then take the
 /// names of each length in order of first occurrence, each the first that
-/// it does not avoid. `of` gives a local's constraint and first occurrence.
-fn constrained_scope<'a, F: Fn(&str) -> bool>(
+/// it does not avoid. `own_of` gives a local's constraint and `first_of`
+/// gives its first occurrence.
+fn constrained_scope<'a, 'b: 'a, P: Ord, F: Fn(&str) -> bool>(
     order: &[usize],
     avoided: &HashSet<&str>,
     candidates: &mut Candidates<F>,
-    of: impl Fn(usize) -> (Option<&'a HashSet<&'a str>>, u32),
+    own_of: impl Fn(usize) -> Option<&'a HashSet<&'b str>>,
+    first_of: impl Fn(usize) -> P,
 ) -> Vec<(usize, String)> {
     let mut taken: Vec<bool> = Vec::new();
     let mut free = 0;
     let mut chosen = Vec::with_capacity(order.len());
+    let mut owns = Vec::with_capacity(order.len());
     for &local in order {
-        let (own, _) = of(local);
+        let own = own_of(local);
+        owns.push(own);
         while taken.get(free) == Some(&true) {
             free += 1;
         }
         let mut at = free;
         loop {
-            if taken.len() <= at {
-                taken.resize(at + 1, false);
+            if at == taken.len() {
+                taken.push(false);
+            } else if taken[at] {
+                at += 1;
+                continue;
             }
             let name = candidates.get(at);
-            if !taken[at] && !avoided.contains(name) && !own.is_some_and(|own| own.contains(name)) {
+            if avoided.contains(name) {
+                // Scope-wide avoided names are unusable by every local in this
+                // scope; mark `taken` so `free` skips them in amortized O(1).
+                taken[at] = true;
+                at += 1;
+                continue;
+            }
+            if !own.is_some_and(|own| own.contains(name)) {
                 break;
             }
             at += 1;
@@ -940,27 +1015,40 @@ fn constrained_scope<'a, F: Fn(&str) -> bool>(
         batches[length].push(position);
     }
     for batch in batches {
+        if batch.is_empty() {
+            continue;
+        }
         let mut slots = batch
             .iter()
             .map(|&position| chosen[position])
             .collect::<Vec<_>>();
         slots.sort_unstable();
         let mut positions = batch;
-        positions.sort_by_key(|&position| of(order[position]).1);
+        positions.sort_by_key(|&position| first_of(order[position]));
+        if !positions.iter().any(|&position| owns[position].is_some()) {
+            for (position, slot) in positions.into_iter().zip(slots) {
+                chosen[position] = slot;
+            }
+            continue;
+        }
         let mut used = vec![false; slots.len()];
         let mut first_unused = 0;
         let mut assigned = Vec::with_capacity(positions.len());
         for &position in &positions {
-            let (own, _) = of(order[position]);
             while used.get(first_unused) == Some(&true) {
                 first_unused += 1;
             }
-            let found = (first_unused..slots.len()).find(|&index| {
-                !used[index] && !own.is_some_and(|own| own.contains(candidates.get(slots[index])))
-            });
-            let Some(index) = found else {
-                assigned.clear();
-                break;
+            let index = match owns[position] {
+                None => first_unused,
+                Some(own) => {
+                    let Some(index) = (first_unused..slots.len())
+                        .find(|&index| !used[index] && !own.contains(candidates.get(slots[index])))
+                    else {
+                        assigned.clear();
+                        break;
+                    };
+                    index
+                }
             };
             used[index] = true;
             assigned.push((position, slots[index]));
@@ -993,16 +1081,25 @@ impl<F: Fn(&str) -> bool> Candidates<F> {
         }
     }
 
+    #[inline]
     fn get(&mut self, at: usize) -> &str {
+        if at >= self.names.len() {
+            self.grow(at);
+        }
+        &self.names[at]
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn grow(&mut self, at: usize) {
+        let excluded = &self.excluded;
         while self.names.len() <= at {
-            let excluded = &self.excluded;
             let name = self
                 .generator
                 .find(|name| !excluded(name))
                 .expect("names never run out");
             self.names.push(name);
         }
-        &self.names[at]
     }
 }
 
@@ -1047,7 +1144,7 @@ pub(crate) fn terse_program(
         .cloned()
         .collect::<Vec<_>>();
     raw.sort_by_key(|range| range.start);
-    match rewritten(source, runtime.clone(), &raw) {
+    match rewritten(source, runtime.clone(), &raw, marks.is_some()) {
         Some((output, written)) => {
             if let Some(marks) = marks {
                 marks.relocate(|offset| match &runtime {
@@ -1070,7 +1167,10 @@ pub(crate) fn terse_program(
             output
         }
         None => {
-            debug_assert!(false, "emitted JavaScript does not lex:\n{source}");
+            debug_assert!(
+                source.len() >= u32::MAX as usize,
+                "emitted JavaScript does not lex:\n{source}"
+            );
             source.to_owned()
         }
     }
@@ -1168,10 +1268,10 @@ pub(crate) fn terse_program_nested(
     // The statement's tokens, which no declaration around joins.
     let first = lexed
         .tokens
-        .partition_point(|token| token.start < statement.start);
+        .partition_point(|token| (token.start as usize) < statement.start);
     let after = lexed
         .tokens
-        .partition_point(|token| token.start < statement.end);
+        .partition_point(|token| (token.start as usize) < statement.end);
     for join in &mut lexed.joins[first..=after.min(lexed.tokens.len() - 1)] {
         *join = Join::Keep;
     }
@@ -1301,17 +1401,35 @@ pub(crate) fn terse_program_nested(
         }
     };
     // The statement's first token and its `;`, its last.
-    let (start, semicolon) = (lexed.tokens[first].start, lexed.tokens[after - 1].start);
+    let (start, semicolon) = (
+        lexed.tokens[first].start as usize,
+        lexed.tokens[after - 1].start as usize,
+    );
     debug_assert_eq!(&source[semicolon..semicolon + 1], ";");
-    let (output, written) = lexed.rewrite(&names, &locals);
-    let at = |offset: usize| {
-        written
-            .get(written.partition_point(|(old, _)| *old < offset))
-            .map_or(output.len(), |(_, new)| *new)
+    let offsets = if marks.is_some() {
+        RewriteOffsets::all(lexed.tokens.len())
+    } else {
+        RewriteOffsets::pair(start, semicolon)
+    };
+    let (output, offsets) = lexed.rewrite(&names, &locals, offsets);
+    let (cut, written) = match offsets {
+        RewriteOffsets::Pair { found, .. } => {
+            let cut_start = found.0.unwrap_or(output.len());
+            let cut_semi = found.1.unwrap_or(output.len());
+            (cut_start..cut_semi + 1, Vec::new())
+        }
+        RewriteOffsets::All(written) => {
+            let at = |offset: usize| {
+                written
+                    .get(written.partition_point(|(old, _)| *old < offset))
+                    .map_or(output.len(), |(_, new)| *new)
+            };
+            (at(start)..at(semicolon) + 1, written)
+        }
+        RewriteOffsets::None => unreachable!(),
     };
     // The statement as written, through its `;`: what follows, comments of
     // raw text before the next token among it, stays.
-    let cut = at(start)..at(semicolon) + 1;
     debug_assert_eq!(&output[cut.end - 1..cut.end], ";");
     // What the statement is written as: the aliases, if any.
     let mut alias = String::new();
@@ -1348,6 +1466,11 @@ pub(crate) fn terse_program_nested(
     text.push_str(output[rest..].trim_end());
     text.push_str("})()\n");
     if let Some(marks) = marks {
+        let at = |offset: usize| {
+            written
+                .get(written.partition_point(|(old, _)| *old < offset))
+                .map_or(output.len(), |(_, new)| *new)
+        };
         marks.relocate(|offset| {
             if statement.start <= offset && offset < statement.end {
                 return None;
@@ -1373,6 +1496,1028 @@ pub(crate) fn terse_program_nested(
         marks.unmapped(program_at + cut.start);
     }
     Some((text, unit_bytes))
+}
+
+/// One slice fed into [`terse_program_slices`]: the header slice `H`
+/// (`k_prefix = None`) or a body slice `s` (`k_prefix = Some("k{s}_")`,
+/// `remap` mapping slice-local constant IDs to canonical constant IDs).
+pub(crate) struct TerseSlice<'a> {
+    pub(crate) source: &'a str,
+    pub(crate) raw: &'a [Range<usize>],
+    pub(crate) marks: Option<crate::source_map::Marks>,
+    pub(crate) k_prefix: Option<&'a str>,
+    pub(crate) remap: &'a [usize],
+}
+
+/// Runtime slice information for [`terse_program_slices`] when `embed && slice`.
+pub(crate) struct ParallelRuntime<'a> {
+    pub(crate) kept: &'a [bool],
+    pub(crate) bindings: &'a [&'static str],
+    /// Whether the nested outer-IIFE runtime form (`terse_program_nested`) is
+    /// eligible (true for terse ES modules; falls back to a runtime factory if
+    /// raw `js*` text could be captured by the runtime units).
+    pub(crate) can_nest: bool,
+}
+
+/// Output of [`terse_program_slices`], ready for streaming `RuntimeKey` hashing
+/// and parallel `RuntimeKey::apply_pieces` (or source-mapped assembly).
+pub(crate) struct ParallelTerseOutput {
+    /// Non-empty text pieces in order, split strictly at statement/wrapper
+    /// boundaries (never inside an identifier or `$LKEY` placeholder).
+    pub(crate) pieces: Vec<String>,
+    /// Total byte length of `pieces`.
+    pub(crate) total_len: usize,
+    /// Relocated source marks across the full output (when `mapped` is true).
+    pub(crate) marks: Option<crate::source_map::Marks>,
+    /// Merged `$LKEY` stem counts across `pieces` (when `count_lkeys` is true).
+    pub(crate) lkey_counts: crate::runtime_key::StemCounts,
+    /// Written bytes of the runtime slice (before short keyed-name adjustment).
+    pub(crate) runtime_bytes: usize,
+    /// Written per-unit bytes of the runtime slice (before short keyed-name
+    /// adjustment).
+    pub(crate) unit_bytes: Option<Vec<usize>>,
+}
+
+#[inline]
+pub(crate) fn canonical_k_word<'a>(
+    word: &'a str,
+    k_prefix: Option<&str>,
+    remap: &[usize],
+    canon_k_names: &'a [String],
+) -> &'a str {
+    if let Some(prefix) = k_prefix
+        && let Some(rest) = word.strip_prefix(prefix)
+        && let Ok(local) = rest.parse::<usize>()
+        && let Some(&canon) = remap.get(local)
+    {
+        return canon_k_names[canon].as_str();
+    }
+    word
+}
+
+fn boundary_top_decls(
+    source: &str,
+    tokens: &[Token],
+    in_raw: &[bool],
+    comments: &[RawComment<'_>],
+    statements: &[(usize, usize)],
+) -> (Option<&'static str>, Option<&'static str>) {
+    if tokens.is_empty() || statements.is_empty() {
+        return (None, None);
+    }
+    let mut statements = statements.to_vec();
+    statements.sort_unstable();
+    let keyword_of = |text: &str| match text {
+        "var" => Some("var"),
+        "let" => Some("let"),
+        "const" => Some("const"),
+        _ => None,
+    };
+    let has_leading_comment = comments.iter().any(|&(at, ..)| at == 0);
+    let has_trailing_comment = comments.iter().any(|&(at, ..)| at == tokens.len());
+    let first = if !has_leading_comment && !in_raw[0] && statements[0].0 == 0 {
+        keyword_of(tokens[0].text(source))
+    } else {
+        None
+    };
+    let last_idx = tokens.len() - 1;
+    let last = if !has_trailing_comment && !in_raw[last_idx] {
+        statements
+            .iter()
+            .find(|&&(_, semi)| semi == last_idx)
+            .filter(|&&(kw, _)| {
+                !in_raw[kw]
+                    && (tokens[kw].text(source) != "var"
+                        || kw == 0
+                        || (tokens[kw - 1].kind == Kind::Punct
+                            && matches!(tokens[kw - 1].text(source), ";" | "{" | "}")))
+            })
+            .and_then(|&(kw, _)| keyword_of(tokens[kw].text(source)))
+    } else {
+        None
+    };
+    (first, last)
+}
+
+/// Parallel 2-stage terse rewriting across `P+1` independently emitted slices
+/// (header slice `H` followed by `P` top-level statement slices):
+///
+/// 1. Parallel lex + partners + `raw_tokens` + `resolve` + `Locals::new` +
+///    per-slice word frequency counting, dropping `Resolution` immediately per
+///    slice so at most `slots` slices hold `Resolution` simultaneously.
+/// 2. Serial merge of global word stats and `excluded`, one global
+///    `constrained_short_names_from_stats`, and writing the nested runtime
+///    units (keeping `rooted` restricted to runtime roots so runtime-internal
+///    bindings keep 1–2-char short names) or terse runtime factory.
+/// 3. Parallel local naming + `Rewrite` + `TerseWriter` + mark relocation +
+///    `$LKEY` stem counting, dropping per-slice token buffers immediately.
+/// 4. Boundary joining with exact [`TerseWriter::boundary_separator`] and
+///    optional adjacent declaration joining (`;var ` -> `,`).
+///
+/// Falls back to parallel hygienic renaming across all slices if any slice
+/// cannot be followed by `raw_tokens` / `lex` (for example unparseable raw
+/// `js*` text).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn terse_program_slices<'a>(
+    slices: Vec<TerseSlice<'a>>,
+    canon_k_names: &'a [String],
+    runtime: Option<ParallelRuntime<'a>>,
+    package_imports: &str,
+    is_module: bool,
+    mapped: bool,
+    count_lkeys: bool,
+    slots: crate::scheduler::Slots,
+) -> ParallelTerseOutput {
+    let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
+    let spelled: HashSet<&'static str> = match &runtime {
+        Some(rt) if rt.can_nest => manifest
+            .units
+            .iter()
+            .zip(rt.kept)
+            .filter(|(_, kept)| **kept)
+            .flat_map(|(unit, _)| unit.declares.iter().copied())
+            .filter(|binding| keeps_name(binding))
+            .collect(),
+        _ => HashSet::new(),
+    };
+    let check_capture = runtime.as_ref().is_some_and(|rt| rt.can_nest);
+
+    struct SliceLexed<'s> {
+        source: &'s str,
+        raw: &'s [Range<usize>],
+        tokens: Vec<Token>,
+        partners: Vec<u32>,
+        in_raw: Vec<bool>,
+        comments: Vec<RawComment<'s>>,
+        locals: Locals<'s>,
+        joins: Vec<Join>,
+        marks: Option<crate::source_map::Marks>,
+        k_prefix: Option<&'s str>,
+        remap: &'s [usize],
+        resolved_ok: bool,
+        captured_by_units: bool,
+        first_top_decl: Option<&'static str>,
+        last_top_decl: Option<&'static str>,
+        word_stats: HashMap<&'s str, (usize, u32)>,
+        excluded: HashSet<&'s str>,
+        top_decls: HashSet<&'s str>,
+        disqualified: HashSet<&'s str>,
+        occ_words: HashSet<&'s str>,
+    }
+
+    enum LexOutcome<'s> {
+        Lexed(Box<SliceLexed<'s>>),
+        Fallback(TerseSlice<'s>),
+    }
+
+    // Step 2.1: Parallel lex + resolve + local analysis + word counting.
+    let lex_jobs: Vec<(u64, TerseSlice<'a>)> = slices
+        .into_iter()
+        .map(|slice| (slice.source.len() as u64, slice))
+        .collect();
+    let lexed_results: Vec<LexOutcome<'a>> = crate::scheduler::map(slots, lex_jobs, |slice| {
+        let source = slice.source;
+        if source.len() >= u32::MAX as usize {
+            return LexOutcome::Fallback(slice);
+        }
+        let mut raw = slice
+            .raw
+            .iter()
+            .filter(|segment| !segment.is_empty())
+            .cloned()
+            .collect::<Vec<_>>();
+        raw.sort_by_key(|range| range.start);
+        let Ok(tokens) = lex_section(source, 0..source.len(), false) else {
+            return LexOutcome::Fallback(slice);
+        };
+        if tokens.len() >= u32::MAX as usize {
+            return LexOutcome::Fallback(slice);
+        }
+        let partners = partners(source, &tokens);
+        let Some((in_raw, comments)) = raw_tokens(source, &tokens, &partners, &raw, None) else {
+            return LexOutcome::Fallback(slice);
+        };
+        let captured_by_units = check_capture
+            && raw
+                .iter()
+                .any(|range| captured_by_units(&source[range.clone()], &spelled));
+        let k_prefix = slice.k_prefix;
+        let remap = slice.remap;
+        let canon = |word: &'a str| canonical_k_word(word, k_prefix, remap, canon_k_names);
+        let (
+            locals,
+            mut joins,
+            resolved_ok,
+            first_top_decl,
+            last_top_decl,
+            top_decls,
+            disqualified,
+            occ_words,
+        ) = match resolve(source, &tokens) {
+            Ok(resolution) => {
+                let locals =
+                    Locals::new_canonical(source, &tokens, &in_raw, &resolution, |_| true, canon);
+                let mut top_decls = HashSet::new();
+                for declaration in &resolution.declarations {
+                    if declaration.scope == 0
+                        && declaration.token.is_some()
+                        && compiler_name(declaration.name)
+                        && !operand_local(declaration.name)
+                    {
+                        top_decls.insert(canon(declaration.name));
+                    }
+                }
+                let mut disqualified = HashSet::new();
+                let mut occ_words = HashSet::new();
+                for (index, occurrence) in resolution.occurrences.iter().enumerate() {
+                    let Some(occurrence) = occurrence else {
+                        continue;
+                    };
+                    let raw_word = tokens[index].text(source);
+                    if !compiler_name(raw_word) {
+                        continue;
+                    }
+                    let word = canon(raw_word);
+                    if in_raw[index] || occurrence.shorthand {
+                        disqualified.insert(word);
+                    } else if locals.of_token[index] == NO_LOCAL {
+                        occ_words.insert(word);
+                    }
+                }
+                let joins = joined_declarations(source, &tokens, &resolution.statements);
+                let (first_decl, last_decl) =
+                    boundary_top_decls(source, &tokens, &in_raw, &comments, &resolution.statements);
+                // Drop `resolution` immediately inside this job.
+                (
+                    locals,
+                    joins,
+                    true,
+                    first_decl,
+                    last_decl,
+                    top_decls,
+                    disqualified,
+                    occ_words,
+                )
+            }
+            Err(_) => (
+                Locals::none(tokens.len()),
+                vec![Join::Keep; tokens.len()],
+                false,
+                None,
+                None,
+                HashSet::new(),
+                HashSet::new(),
+                HashSet::new(),
+            ),
+        };
+        for semicolon in 0..tokens.len() {
+            if joins[semicolon] == Join::Comma && (in_raw[semicolon] || in_raw[semicolon + 1]) {
+                joins[semicolon] = Join::Keep;
+                joins[semicolon + 1] = Join::Keep;
+            }
+        }
+        let mut word_stats: HashMap<&'a str, (usize, u32)> = HashMap::new();
+        let mut excluded: HashSet<&'a str> = HashSet::new();
+        for (index, ((token, &is_raw), &local)) in
+            tokens.iter().zip(&in_raw).zip(&locals.of_token).enumerate()
+        {
+            if token.kind == Kind::Name {
+                let raw_word = token.text(source);
+                if compiler_name(raw_word) && !is_raw {
+                    if local == NO_LOCAL {
+                        let word = canon(raw_word);
+                        word_stats.entry(word).or_insert((0, index as u32)).0 += 1;
+                    }
+                } else {
+                    excluded.insert(raw_word);
+                }
+            }
+        }
+        LexOutcome::Lexed(Box::new(SliceLexed {
+            source,
+            raw: slice.raw,
+            tokens,
+            partners,
+            in_raw,
+            comments,
+            locals,
+            joins,
+            marks: slice.marks,
+            k_prefix,
+            remap,
+            resolved_ok,
+            captured_by_units,
+            first_top_decl,
+            last_top_decl,
+            word_stats,
+            excluded,
+            top_decls,
+            disqualified,
+            occ_words,
+        }))
+    });
+
+    if lexed_results
+        .iter()
+        .any(|outcome| matches!(outcome, LexOutcome::Fallback(_)))
+    {
+        let recovered: Vec<TerseSlice<'a>> = lexed_results
+            .into_iter()
+            .map(|outcome| match outcome {
+                LexOutcome::Lexed(lexed) => TerseSlice {
+                    source: lexed.source,
+                    raw: lexed.raw,
+                    marks: lexed.marks,
+                    k_prefix: lexed.k_prefix,
+                    remap: lexed.remap,
+                },
+                LexOutcome::Fallback(slice) => slice,
+            })
+            .collect();
+        return hygienic_slices(
+            recovered,
+            canon_k_names,
+            runtime,
+            package_imports,
+            is_module,
+            mapped,
+            count_lkeys,
+            slots,
+        );
+    }
+
+    // Step 2.2: Serial global name table + nested units / runtime factory.
+    let mut lexed_slices = Vec::with_capacity(lexed_results.len());
+    let mut global_stats: HashMap<&'a str, (usize, (usize, u32, u32))> = HashMap::new();
+    let mut excluded: HashSet<&'a str> = HashSet::new();
+    let mut top_decls: HashSet<&'a str> = HashSet::new();
+    let mut disqualified: HashSet<&'a str> = HashSet::new();
+    let mut occ_words: HashSet<&'a str> = HashSet::new();
+    let mut any_captured = false;
+    let mut all_resolved = true;
+    for (slice_idx, outcome) in lexed_results.into_iter().enumerate() {
+        let LexOutcome::Lexed(mut slice) = outcome else {
+            unreachable!()
+        };
+        any_captured |= slice.captured_by_units;
+        all_resolved &= slice.resolved_ok;
+        for (word, (count, first)) in std::mem::take(&mut slice.word_stats) {
+            let entry = global_stats
+                .entry(word)
+                .or_insert((0, (slice_idx, first, 0)));
+            entry.0 += count;
+        }
+        excluded.extend(std::mem::take(&mut slice.excluded));
+        top_decls.extend(std::mem::take(&mut slice.top_decls));
+        disqualified.extend(std::mem::take(&mut slice.disqualified));
+        occ_words.extend(std::mem::take(&mut slice.occ_words));
+        lexed_slices.push(*slice);
+    }
+
+    let use_nested = runtime.as_ref().is_some_and(|rt| {
+        rt.can_nest
+            && !any_captured
+            && all_resolved
+            && !spelled.iter().any(|binding| excluded.contains(binding))
+            && !rt.bindings.iter().any(|binding| {
+                keeps_name(binding) && disqualified.contains(runtime_read(binding_index(binding)))
+            })
+    });
+
+    let mut avoid: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+    if let Some(rt) = &runtime {
+        // Place the runtime root bindings right after `truth` in slice 0
+        // (matching `const [rt$a, ...] = <factory>;` in `terse_program` and
+        // `terse_program_nested`) and count each root's declaration once.
+        let rt_first_token = lexed_slices
+            .first()
+            .and_then(|s| s.tokens.get(1).map(|t| (s.source, t)))
+            .filter(|&(src, tok)| tok.kind == Kind::Name && tok.text(src) == "truth")
+            .map_or(0u32, |_| 2u32);
+        for (pos, &binding) in rt.bindings.iter().enumerate() {
+            let word: &'a str = runtime_read(binding_index(binding));
+            top_decls.insert(word);
+            let rt_pos = (0, rt_first_token, pos as u32 + 1);
+            let entry = global_stats.entry(word).or_insert((0, rt_pos));
+            entry.0 += 1;
+            if rt_pos < entry.1 {
+                entry.1 = rt_pos;
+            }
+        }
+        if use_nested {
+            for (unit, _) in TERSE_UNITS.iter().zip(rt.kept).filter(|(_, kept)| **kept) {
+                for &(binding, names) in unit.avoid {
+                    if !keeps_name(TERSE_BINDINGS[binding]) {
+                        avoid
+                            .entry(runtime_read(binding))
+                            .or_default()
+                            .extend(names.split(' '));
+                    }
+                }
+            }
+        }
+    }
+
+    let unavailable = |name: &str| {
+        excluded.contains(name)
+            || (use_nested && (keeps_name(name) || TERSE_GLOBALS.binary_search(&name).is_ok()))
+    };
+    // Match `terse_program` / `terse_program_nested`'s two-tier naming:
+    // 1) `non_top_stats` (`operand*`, `recur*`, `captures.l*`, raw/shorthand
+    //    names) get short names first so `operand0..` stay 1-char globally.
+    // 2) Top-level program bindings (`truth`, `rt$*`, `core$*`, `k*`, `c*`,
+    //    `g*`, `host`, `pkg`) are named like Scope 1 of `(() => { ... })()`,
+    //    avoiding `non_top` names that occur as variable references (`occ_words`)
+    //    and keeping `a, c, d, ...` free for inner functions' per-scope locals.
+    let mut global_names: HashMap<&'a str, String>;
+    let mut non_top_names_for_rooted: Vec<String> = Vec::new();
+    if all_resolved {
+        let mut non_top_stats: HashMap<&'a str, (usize, (usize, u32, u32))> = HashMap::new();
+        let mut top_entries: Vec<(&'a str, usize, (usize, u32, u32))> = Vec::new();
+        for (word, (count, first)) in global_stats {
+            if top_decls.contains(word) && !disqualified.contains(word) {
+                top_entries.push((word, count, first));
+            } else {
+                non_top_stats.insert(word, (count, first));
+            }
+        }
+        global_names =
+            constrained_short_names_from_stats(non_top_stats, unavailable, &avoid, |_| None);
+        let mut top_avoided: HashSet<&str> = HashSet::new();
+        for (&word, short) in &global_names {
+            if use_nested {
+                non_top_names_for_rooted.push(short.clone());
+            }
+            if occ_words.contains(word) {
+                top_avoided.insert(short.as_str());
+            }
+        }
+        top_entries.sort_by_key(|&(_, count, first)| (std::cmp::Reverse(count), first));
+        let order: Vec<usize> = (0..top_entries.len()).collect();
+        let mut candidates = Candidates::new(unavailable);
+        let assigned = constrained_scope(
+            &order,
+            &top_avoided,
+            &mut candidates,
+            |idx| avoid.get(top_entries[idx].0).filter(|set| !set.is_empty()),
+            |idx| top_entries[idx].2,
+        );
+        drop(top_avoided);
+        for (idx, short) in assigned {
+            global_names.insert(top_entries[idx].0, short);
+        }
+    } else {
+        global_names =
+            constrained_short_names_from_stats(global_stats, unavailable, &avoid, |_| None);
+    }
+
+    // Build prefix text (`package_imports` + optional `export default ` +
+    // runtime wrapper/factory) and runtime source marks.
+    let mut prefix = String::new();
+    if is_module {
+        prefix.push_str(package_imports);
+        prefix.push_str("export default ");
+    }
+    let wrapper_start = prefix.len();
+    let mut prefix_marks = mapped.then(crate::source_map::Marks::default);
+    let mut alias_nonempty = false;
+    let (runtime_bytes, unit_bytes) = if let Some(rt) = &runtime {
+        if use_nested {
+            let units = TERSE_UNITS
+                .iter()
+                .zip(rt.kept)
+                .filter_map(|(unit, kept)| kept.then_some(unit))
+                .collect::<Vec<_>>();
+            let mut named: Vec<Option<&str>> = vec![None; TERSE_BINDINGS.len()];
+            let mut aliased: Vec<(usize, &str)> = Vec::new();
+            for &binding in rt.bindings {
+                let index = binding_index(binding);
+                let rt_word = runtime_read(index);
+                if keeps_name(TERSE_BINDINGS[index]) {
+                    if let Some(short) = global_names.get(rt_word) {
+                        aliased.push((index, short.as_str()));
+                    }
+                } else {
+                    named[index] = global_names.get(rt_word).map(String::as_str);
+                }
+            }
+            // Keep `rooted` restricted to runtime roots and free `non_top`
+            // names (not `g`/`k` bindings declared inside the inner program
+            // function) so runtime-internal bindings keep 1–2-char short names,
+            // matching `terse_program_nested`.
+            let rooted: HashSet<&str> = named
+                .iter()
+                .flatten()
+                .copied()
+                .chain(non_top_names_for_rooted.iter().map(String::as_str))
+                .collect();
+            let mut count = vec![0usize; TERSE_BINDINGS.len()];
+            let mut seen_at = vec![usize::MAX; TERSE_BINDINGS.len()];
+            let mut seen = 0usize;
+            let mut internal_avoid: HashMap<usize, HashSet<&str>> = HashMap::new();
+            for unit in &units {
+                for (_, index) in placeholders(unit.text) {
+                    count[index] += 1;
+                    if seen_at[index] == usize::MAX {
+                        seen_at[index] = seen;
+                        seen += 1;
+                    }
+                }
+                for &(binding, names) in unit.avoid {
+                    internal_avoid
+                        .entry(binding)
+                        .or_default()
+                        .extend(names.split(' '));
+                }
+            }
+            let mut internal = (0..TERSE_BINDINGS.len())
+                .filter(|&index| {
+                    count[index] > 0 && named[index].is_none() && !keeps_name(TERSE_BINDINGS[index])
+                })
+                .collect::<Vec<_>>();
+            internal.sort_by_key(|&index| (std::cmp::Reverse(count[index]), seen_at[index]));
+            let mut candidates = NameGenerator::default().filter(|name| {
+                !unavailable(name)
+                    && !rooted.contains(name.as_str())
+                    && TERSE_GLOBALS.binary_search(&name.as_str()).is_err()
+            });
+            let mut generated: Vec<String> = Vec::new();
+            let mut taken: Vec<bool> = Vec::new();
+            let mut free = 0;
+            let mut chosen: Vec<Option<usize>> = vec![None; TERSE_BINDINGS.len()];
+            for &binding in &internal {
+                let avoided = internal_avoid.get(&binding);
+                while taken.get(free) == Some(&true) {
+                    free += 1;
+                }
+                let mut at = free;
+                loop {
+                    if at == generated.len() {
+                        generated.push(candidates.next().expect("names never run out"));
+                        taken.push(false);
+                    }
+                    if !taken[at]
+                        && !avoided.is_some_and(|avoided| avoided.contains(generated[at].as_str()))
+                    {
+                        break;
+                    }
+                    at += 1;
+                }
+                taken[at] = true;
+                chosen[binding] = Some(at);
+            }
+            let name = |index: usize| -> &str {
+                match (named[index], chosen[index]) {
+                    (Some(name), _) => name,
+                    (None, Some(at)) => generated[at].as_str(),
+                    (None, None) => TERSE_BINDINGS[index],
+                }
+            };
+            let mut runtime_text = String::from("(()=>{");
+            let mut unit_marks = mapped.then(Vec::new);
+            if let Some(marks) = unit_marks.as_mut() {
+                let prologue =
+                    &crate::runtime_manifest::ANNOTATED_RUNTIME[manifest.prologue.clone()];
+                marks.push((0, prologue.find("(() =>").unwrap_or_default(), None));
+            }
+            let raw_unit_bytes = write_units(&mut runtime_text, rt.kept, name, unit_marks.as_mut());
+            let units_end = wrapper_start + runtime_text.len();
+            runtime_text.push_str("return(()=>{");
+            let program_body_start = wrapper_start + runtime_text.len();
+            for (pos, &(binding, short)) in aliased.iter().enumerate() {
+                runtime_text.push_str(if pos == 0 { "const " } else { "," });
+                runtime_text.push_str(short);
+                runtime_text.push('=');
+                runtime_text.push_str(TERSE_BINDINGS[binding]);
+            }
+            if !aliased.is_empty() {
+                runtime_text.push(';');
+                alias_nonempty = true;
+            }
+            prefix.push_str(&runtime_text);
+            if let Some(marks) = prefix_marks.as_mut() {
+                for (offset, source, name) in unit_marks.into_iter().flatten() {
+                    let origin = (crate::source_map::RUNTIME, source);
+                    match name {
+                        Some(name) => marks.named(wrapper_start + offset, Some(origin), name),
+                        None => marks.position(wrapper_start + offset, origin.0, origin.1),
+                    }
+                }
+                marks.unmapped(units_end);
+                marks.unmapped(program_body_start);
+            }
+            let bytes = crate::runtime_slice::written_unit_bytes(raw_unit_bytes);
+            let total_bytes = bytes.iter().sum();
+            (total_bytes, Some(bytes))
+        } else {
+            prefix.push_str("(()=>{");
+            if !rt.bindings.is_empty() {
+                prefix.push_str("const[");
+                for (pos, &binding) in rt.bindings.iter().enumerate() {
+                    if pos > 0 {
+                        prefix.push(',');
+                    }
+                    let rt_word = runtime_read(binding_index(binding));
+                    prefix.push_str(&global_names[rt_word]);
+                }
+                prefix.push_str("]=");
+            }
+            let factory_start = prefix.len();
+            let mut factory_marks = mapped.then(Vec::new);
+            let (factory, raw_unit_bytes) =
+                terse_slice_marked(rt.kept, rt.bindings, factory_marks.as_mut());
+            let trimmed = factory.trim();
+            let trimmed_lead = factory.len() - factory.trim_start().len();
+            prefix.push_str(trimmed);
+            prefix.push(';');
+            if let Some(marks) = prefix_marks.as_mut() {
+                for (offset, source, name) in factory_marks.into_iter().flatten() {
+                    let origin = (crate::source_map::RUNTIME, source);
+                    let pos = factory_start + offset.saturating_sub(trimmed_lead);
+                    match name {
+                        Some(name) => marks.named(pos, Some(origin), name),
+                        None => marks.position(pos, origin.0, origin.1),
+                    }
+                }
+                marks.unmapped(prefix.len());
+            }
+            let bytes = crate::runtime_slice::written_unit_bytes(raw_unit_bytes);
+            let rt_bytes = crate::runtime_key::written_len(trimmed);
+            (rt_bytes, Some(bytes))
+        }
+    } else {
+        prefix.push_str("(()=>{");
+        (0, None)
+    };
+
+    // Step 2.3: Parallel local naming + rewrite + TerseWriter + mark relocation
+    // + `$LKEY` stem counting.
+    struct SliceRewritten {
+        text: String,
+        marks: Option<crate::source_map::Marks>,
+        lkey_counts: crate::runtime_key::StemCounts,
+        first_token: Option<FirstToken>,
+        writer_end: Option<WriterEnd>,
+        ends_with_droppable_semi: bool,
+        first_top_decl: Option<&'static str>,
+        last_top_decl: Option<&'static str>,
+    }
+
+    let rewrite_jobs: Vec<(u64, SliceLexed<'a>)> = lexed_slices
+        .into_iter()
+        .map(|slice| (slice.tokens.len() as u64, slice))
+        .collect();
+    let rewritten_slices = crate::scheduler::map(slots, rewrite_jobs, |slice| {
+        let SliceLexed {
+            source,
+            tokens,
+            partners,
+            in_raw,
+            comments,
+            locals,
+            joins,
+            mut marks,
+            k_prefix,
+            remap,
+            first_top_decl,
+            last_top_decl,
+            ..
+        } = slice;
+        let mut candidates = Candidates::new(|name: &str| {
+            excluded.contains(name) || (use_nested && keeps_name(name))
+        });
+        let local_names = locals.names(&global_names, &mut candidates);
+        let Locals { of_token, .. } = locals;
+        let offsets = if marks.is_some() {
+            RewriteOffsets::all(tokens.len())
+        } else {
+            RewriteOffsets::None
+        };
+        let name = |index: usize, word: &str| -> &str {
+            match of_token[index] {
+                NO_LOCAL => {
+                    let canon = canonical_k_word(word, k_prefix, remap, canon_k_names);
+                    global_names[canon].as_str()
+                }
+                local => local_names[local as usize].as_str(),
+            }
+        };
+        let rewritten = rewrite_tokens_inner(
+            source, None, tokens, partners, in_raw, comments, joins, name, offsets, false,
+        );
+        if let Some(marks) = marks.as_mut()
+            && let RewriteOffsets::All(written) = rewritten.offsets
+        {
+            let end = rewritten.output.len();
+            marks.relocate(|offset| {
+                Some(
+                    written
+                        .get(written.partition_point(|(old, _)| *old < offset))
+                        .map_or(end, |(_, new)| *new),
+                )
+            });
+        }
+        let lkey_counts = if count_lkeys {
+            crate::runtime_key::StemCounts::of(&rewritten.output)
+        } else {
+            crate::runtime_key::StemCounts::default()
+        };
+        SliceRewritten {
+            text: rewritten.output,
+            marks,
+            lkey_counts,
+            first_token: rewritten.first_token,
+            writer_end: rewritten.writer_end,
+            ends_with_droppable_semi: rewritten.ends_with_droppable_semi,
+            first_top_decl,
+            last_top_decl,
+        }
+    });
+
+    // Step 2.4: Join slices with exact ASI/separator handling, optional
+    // cross-slice declaration joining, and merged `$LKEY` counts & marks.
+    let mut lkey_counts = if count_lkeys {
+        crate::runtime_key::StemCounts::of(&prefix)
+    } else {
+        crate::runtime_key::StemCounts::default()
+    };
+    let mut pieces: Vec<String> = Vec::with_capacity(rewritten_slices.len() + 2);
+    let mut all_marks = prefix_marks;
+    let mut total_len = 0usize;
+
+    // Merge `$LKEY` stem counts across all slices, keeping empty slices only
+    // when mapped so their marks still relocate at the boundary offset.
+    let mut slices_for_join: Vec<SliceRewritten> = Vec::with_capacity(rewritten_slices.len());
+    for mut slice in rewritten_slices {
+        if count_lkeys {
+            lkey_counts.merge(std::mem::take(&mut slice.lkey_counts));
+        }
+        if !slice.text.is_empty() || slice.marks.is_some() {
+            slices_for_join.push(slice);
+        }
+    }
+
+    // Optional `const a=Atom;` + `const ...` join with the first non-empty slice.
+    if alias_nonempty
+        && let Some(first) = slices_for_join.iter_mut().find(|s| !s.text.is_empty())
+        && first.first_top_decl == Some("const")
+        && first.text.starts_with("const")
+        && first
+            .text
+            .as_bytes()
+            .get(5)
+            .is_some_and(|&b| b == b' ' || b == b'[' || b == b'{')
+    {
+        let strip = 5 + usize::from(first.text.as_bytes()[5] == b' ');
+        prefix.pop();
+        prefix.push(',');
+        first.text.drain(..strip);
+        if let Some(marks) = first.marks.as_mut() {
+            marks.relocate(|offset| Some(offset.saturating_sub(strip)));
+        }
+    }
+
+    total_len += prefix.len();
+    pieces.push(prefix);
+
+    let last_non_empty = slices_for_join.iter().rposition(|s| !s.text.is_empty());
+    let mut prev_end: Option<WriterEnd> = None;
+    let mut prev_decl: Option<&'static str> = None;
+    for (idx, mut slice) in slices_for_join.into_iter().enumerate() {
+        if slice.text.is_empty() {
+            if let (Some(all), Some(marks)) = (all_marks.as_mut(), slice.marks) {
+                all.absorb(marks, total_len);
+            }
+            continue;
+        }
+        let mut joined_decl = false;
+        if let (Some(kw), Some(next_kw)) = (prev_decl, slice.first_top_decl)
+            && kw == next_kw
+            && pieces.last().is_some_and(|prev| prev.ends_with(';'))
+            && slice.text.starts_with(kw)
+            && slice
+                .text
+                .as_bytes()
+                .get(kw.len())
+                .is_some_and(|&b| b == b' ' || b == b'[' || b == b'{')
+        {
+            let strip = kw.len() + usize::from(slice.text.as_bytes()[kw.len()] == b' ');
+            if let Some(prev) = pieces.last_mut() {
+                prev.pop();
+                prev.push(',');
+            }
+            slice.text.drain(..strip);
+            if let Some(marks) = slice.marks.as_mut() {
+                marks.relocate(|offset| Some(offset.saturating_sub(strip)));
+            }
+            joined_decl = true;
+        }
+        if !joined_decl && let (Some(prev), Some(next)) = (prev_end, slice.first_token.as_ref()) {
+            let sep = TerseWriter::boundary_separator(prev, next);
+            if !sep.is_empty()
+                && let Some(last_piece) = pieces.last_mut()
+            {
+                last_piece.push_str(sep);
+                total_len += sep.len();
+            }
+        }
+        if last_non_empty == Some(idx)
+            && slice.ends_with_droppable_semi
+            && slice.text.ends_with(';')
+        {
+            slice.text.pop();
+            if let Some(marks) = slice.marks.as_mut() {
+                let new_end = slice.text.len();
+                marks.relocate(|offset| Some(offset.min(new_end)));
+            }
+        }
+        if let (Some(all), Some(marks)) = (all_marks.as_mut(), slice.marks) {
+            all.absorb(marks, total_len);
+        }
+        total_len += slice.text.len();
+        prev_end = slice.writer_end;
+        prev_decl = slice.last_top_decl;
+        pieces.push(slice.text);
+    }
+
+    let suffix = match (use_nested, is_module) {
+        (true, true) => concat!("})()", "})()", ";\n"),
+        (true, false) => concat!("})()", "})()", "\n"),
+        (false, true) => "})();\n",
+        (false, false) => "})()\n",
+    };
+    total_len += suffix.len();
+    pieces.push(suffix.to_owned());
+
+    ParallelTerseOutput {
+        pieces,
+        total_len,
+        marks: all_marks,
+        lkey_counts,
+        runtime_bytes,
+        unit_bytes,
+    }
+}
+
+/// Parallel hygienic fallback for [`terse_program_slices`] when any slice
+/// cannot be lexed or followed by `raw_tokens`: preserves layout, prefixes
+/// every compiler name with a raw-safe hygiene prefix + short name, and
+/// canonicalizes per-slice `k{s}_{local}` references.
+#[allow(clippy::too_many_arguments)]
+fn hygienic_slices<'a>(
+    slices: Vec<TerseSlice<'a>>,
+    canon_k_names: &'a [String],
+    runtime: Option<ParallelRuntime<'a>>,
+    package_imports: &str,
+    is_module: bool,
+    mapped: bool,
+    count_lkeys: bool,
+    slots: crate::scheduler::Slots,
+) -> ParallelTerseOutput {
+    let hy_prefix = raw_hygiene_prefix(
+        slices
+            .iter()
+            .flat_map(|slice| slice.raw.iter().map(|r| &slice.source[r.clone()])),
+    );
+    let scan_jobs: Vec<(u64, &TerseSlice<'a>)> = slices
+        .iter()
+        .map(|slice| (slice.source.len() as u64, slice))
+        .collect();
+    let per_slice_stats = crate::scheduler::map(slots, scan_jobs, |slice| {
+        let mut stats: HashMap<&'a str, (usize, u32)> = HashMap::new();
+        for (pos, (_, word)) in scanned_names(slice.source, slice.raw)
+            .into_iter()
+            .enumerate()
+        {
+            let canon = canonical_k_word(word, slice.k_prefix, slice.remap, canon_k_names);
+            stats.entry(canon).or_insert((0, pos as u32)).0 += 1;
+        }
+        stats
+    });
+    let mut global_stats: HashMap<&'a str, (usize, (usize, u32))> = HashMap::new();
+    if let Some(rt) = &runtime {
+        for (pos, &binding) in rt.bindings.iter().enumerate() {
+            let word: &'a str = runtime_read(binding_index(binding));
+            global_stats.entry(word).or_insert((0, (0, pos as u32))).0 += 1;
+        }
+    }
+    for (slice_idx, stats) in per_slice_stats.into_iter().enumerate() {
+        for (word, (count, first)) in stats {
+            let entry = global_stats
+                .entry(word)
+                .or_insert((0, (slice_idx + 1, first)));
+            entry.0 += count;
+        }
+    }
+    let names: HashMap<&'a str, String> =
+        constrained_short_names_from_stats(global_stats, |_| false, &HashMap::new(), |_| None)
+            .into_iter()
+            .map(|(word, short)| (word, format!("{hy_prefix}{short}")))
+            .collect();
+
+    let mut prefix = String::new();
+    if is_module {
+        prefix.push_str(package_imports);
+        prefix.push_str("export default ");
+    }
+    prefix.push_str("(() => {\n");
+    let mut prefix_marks = mapped.then(crate::source_map::Marks::default);
+    let (runtime_bytes, unit_bytes) = if let Some(rt) = &runtime {
+        if !rt.bindings.is_empty() {
+            prefix.push_str("  const [");
+            for (pos, &binding) in rt.bindings.iter().enumerate() {
+                if pos > 0 {
+                    prefix.push_str(", ");
+                }
+                let rt_word = runtime_read(binding_index(binding));
+                prefix.push_str(&names[rt_word]);
+            }
+            prefix.push_str("] = ");
+        } else {
+            prefix.push_str("  ");
+        }
+        let factory_start = prefix.len();
+        let mut factory_marks = mapped.then(Vec::new);
+        let (factory, raw_unit_bytes) =
+            terse_slice_marked(rt.kept, rt.bindings, factory_marks.as_mut());
+        let trimmed = factory.trim();
+        let trimmed_lead = factory.len() - factory.trim_start().len();
+        prefix.push_str(trimmed);
+        prefix.push_str(";\n");
+        if let Some(marks) = prefix_marks.as_mut() {
+            for (offset, source, name) in factory_marks.into_iter().flatten() {
+                let origin = (crate::source_map::RUNTIME, source);
+                let pos = factory_start + offset.saturating_sub(trimmed_lead);
+                match name {
+                    Some(name) => marks.named(pos, Some(origin), name),
+                    None => marks.position(pos, origin.0, origin.1),
+                }
+            }
+            marks.unmapped(prefix.len());
+        }
+        let bytes = crate::runtime_slice::written_unit_bytes(raw_unit_bytes);
+        let rt_bytes = crate::runtime_key::written_len(trimmed);
+        (rt_bytes, Some(bytes))
+    } else {
+        (0, None)
+    };
+
+    let rename_jobs: Vec<(u64, TerseSlice<'a>)> = slices
+        .into_iter()
+        .map(|s| (s.source.len() as u64, s))
+        .collect();
+    let renamed_slices = crate::scheduler::map(slots, rename_jobs, |slice| {
+        let k_prefix = slice.k_prefix;
+        let remap = slice.remap;
+        let (text, anchors) = rename_compiler_names(slice.source, slice.raw, |word| {
+            let canon = canonical_k_word(word, k_prefix, remap, canon_k_names);
+            names[canon].clone()
+        });
+        let mut marks = slice.marks;
+        if let Some(marks) = marks.as_mut() {
+            marks.relocate(|offset| Some(renamed_offset(&anchors, offset)));
+        }
+        let lkey_counts = if count_lkeys {
+            crate::runtime_key::StemCounts::of(&text)
+        } else {
+            crate::runtime_key::StemCounts::default()
+        };
+        (text, marks, lkey_counts)
+    });
+
+    let mut lkey_counts = if count_lkeys {
+        crate::runtime_key::StemCounts::of(&prefix)
+    } else {
+        crate::runtime_key::StemCounts::default()
+    };
+    let mut pieces = Vec::with_capacity(renamed_slices.len() + 2);
+    let mut all_marks = prefix_marks;
+    let mut total_len = prefix.len();
+    pieces.push(prefix);
+    for (text, marks, counts) in renamed_slices {
+        if count_lkeys {
+            lkey_counts.merge(counts);
+        }
+        if let (Some(all), Some(marks)) = (all_marks.as_mut(), marks) {
+            all.absorb(marks, total_len);
+        }
+        if !text.is_empty() {
+            total_len += text.len();
+            pieces.push(text);
+        }
+    }
+    let suffix = if is_module { "})();\n" } else { "})()\n" };
+    total_len += suffix.len();
+    pieces.push(suffix.to_owned());
+
+    ParallelTerseOutput {
+        pieces,
+        total_len,
+        marks: all_marks,
+        lkey_counts,
+        runtime_bytes,
+        unit_bytes,
+    }
 }
 
 /// Whether the raw `js*` text `text` could read a name that units written
@@ -1476,7 +2621,20 @@ fn kept_read(word: &str) -> Option<&'static str> {
 /// keeps its spelling keeps it, and no name is one of those spellings or a
 /// global the units read ([`TERSE_GLOBALS`]). The units' text itself is
 /// written afterwards from the table ([`terse_module_units`]).
+#[cfg(test)]
 pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s str, String>) {
+    terse_texts_with_slots(texts, crate::scheduler::Slots::ONE)
+}
+
+/// Parallel version of [`terse_texts`] on `slots` CPU slots: fans out lexing,
+/// resolution, local analysis and per-text word counting across all `texts`,
+/// merges the single global frequency table serially, then fans out local
+/// naming and rewriting across all `texts`. Produces output identical to
+/// [`terse_texts`].
+pub(crate) fn terse_texts_with_slots<'s>(
+    texts: &[Text<'s>],
+    slots: crate::scheduler::Slots,
+) -> (Vec<String>, HashMap<&'s str, String>) {
     let module = texts.iter().any(|text| text.units.is_some());
     let fixed = |word: &str| if module { kept_read(word) } else { None };
     let module_level =
@@ -1498,42 +2656,69 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
             raw
         })
         .collect::<Vec<_>>();
-    let lexed = texts
+    let lexed_jobs = texts
         .iter()
         .zip(&raws)
-        .map(|(text, raw)| Lexed::new(text.source, text.runtime.clone(), raw, eligible))
-        .collect::<Option<Vec<_>>>();
-    if let Some(lexed) = lexed {
-        let mut words: Vec<&'s str> = Vec::new();
-        let mut excluded = HashSet::new();
-        for (text, lexed) in texts.iter().zip(&lexed) {
-            if let Some(kept) = text.units {
-                words.extend(unit_words(kept).map(|word| -> &'s str { word }));
+        .map(|(text, raw)| (text.source.len() as u64, (text, raw.as_slice())))
+        .collect::<Vec<_>>();
+    let lexed_parts = crate::scheduler::map(slots, lexed_jobs, |(text, raw)| {
+        let lexed = Lexed::new(text.source, text.runtime.clone(), raw, eligible)?;
+        let mut word_stats: HashMap<&'s str, (usize, u32)> = HashMap::new();
+        let mut excluded: HashSet<&'s str> = HashSet::new();
+        let mut unit_pos = 0u32;
+        if let Some(kept) = text.units {
+            for word in unit_words(kept) {
+                let word: &'s str = word;
+                word_stats.entry(word).or_insert((0, unit_pos)).0 += 1;
+                unit_pos += 1;
             }
-            lexed.words(&mut words, &mut excluded);
         }
-        words.extend(kept_reads(module).map(|word| -> &'s str { word }));
-        let names = constrained_short_names(
-            words,
+        lexed.word_stats(unit_pos, |w| w, &mut word_stats, &mut excluded);
+        Some((lexed, word_stats, excluded))
+    });
+    if lexed_parts.iter().all(Option::is_some) {
+        let mut lexed = Vec::with_capacity(lexed_parts.len());
+        let mut stats: HashMap<&'s str, (usize, (usize, u32))> = HashMap::new();
+        let mut excluded: HashSet<&'s str> = HashSet::new();
+        for (text_index, part) in lexed_parts.into_iter().enumerate() {
+            let (text_lexed, word_stats, text_excluded) = part.unwrap();
+            excluded.extend(text_excluded);
+            for (word, (count, first)) in word_stats {
+                let entry = stats.entry(word).or_insert((0, (text_index, first)));
+                entry.0 += count;
+            }
+            lexed.push(text_lexed);
+        }
+        let tail_index = texts.len();
+        for (pos, word) in kept_reads(module).enumerate() {
+            let word: &'s str = word;
+            let entry = stats.entry(word).or_insert((0, (tail_index, pos as u32)));
+            entry.0 += 1;
+        }
+        let names = constrained_short_names_from_stats(
+            stats,
             |name| excluded.contains(name) || module_level(name),
             &avoid,
             fixed,
         );
-        let mut candidates =
-            Candidates::new(|name: &str| excluded.contains(name) || module_level(name));
-        let locals = lexed
-            .iter()
-            .map(|text| text.locals.names(&names, &mut candidates))
-            .collect::<Vec<_>>();
-        let outputs = lexed
+        let rewrite_jobs: Vec<(u64, Lexed<'s>)> = lexed
             .into_iter()
-            .zip(&locals)
-            .map(|(text, locals)| text.rewrite(&names, locals).0)
+            .map(|text| (text.tokens.len() as u64, text))
             .collect();
+        let outputs = crate::scheduler::map(slots, rewrite_jobs, |text| {
+            let mut candidates =
+                Candidates::new(|name: &str| excluded.contains(name) || module_level(name));
+            let locals = text.locals.names(&names, &mut candidates);
+            text.rewrite(&names, &locals, RewriteOffsets::None).0
+        });
         return (outputs, names);
     }
+    drop(lexed_parts);
     debug_assert!(
-        raws.iter().any(|raw| !raw.is_empty()),
+        raws.iter().any(|raw| !raw.is_empty())
+            || texts
+                .iter()
+                .any(|text| text.source.len() >= u32::MAX as usize),
         "emitted JavaScript does not lex"
     );
     let prefix = raw_hygiene_prefix(
@@ -1548,36 +2733,55 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
         .map(|(text, raw)| raw.iter().cloned().chain(text.runtime.clone()).collect())
         .collect::<Vec<Vec<_>>>();
     // A unit's locals are short names, which no prefixed name is.
-    let words = texts
+    let scan_jobs = texts
         .iter()
         .zip(&skipped)
-        .flat_map(|(text, skipped)| {
-            text.units
-                .into_iter()
-                .flat_map(unit_words)
-                .map(|word| -> &'s str { word })
-                .chain(
-                    scanned_names(text.source, skipped)
-                        .into_iter()
-                        .map(|(_, word)| word),
-                )
-        })
-        .chain(kept_reads(module).map(|word| -> &'s str { word }))
+        .map(|(text, skip)| (text.source.len() as u64, (text, skip.as_slice())))
         .collect::<Vec<_>>();
-    let names = constrained_short_names(words, |_| false, &HashMap::new(), fixed)
+    let scanned_per_text = crate::scheduler::map(slots, scan_jobs, |(text, skip)| {
+        let mut word_stats: HashMap<&'s str, (usize, u32)> = HashMap::new();
+        let mut pos = 0u32;
+        if let Some(kept) = text.units {
+            for word in unit_words(kept) {
+                let word: &'s str = word;
+                word_stats.entry(word).or_insert((0, pos)).0 += 1;
+                pos += 1;
+            }
+        }
+        for (_, word) in scanned_names(text.source, skip) {
+            word_stats.entry(word).or_insert((0, pos)).0 += 1;
+            pos += 1;
+        }
+        word_stats
+    });
+    let mut stats: HashMap<&'s str, (usize, (usize, u32))> = HashMap::new();
+    for (text_index, word_stats) in scanned_per_text.into_iter().enumerate() {
+        for (word, (count, first)) in word_stats {
+            let entry = stats.entry(word).or_insert((0, (text_index, first)));
+            entry.0 += count;
+        }
+    }
+    let tail_index = texts.len();
+    for (pos, word) in kept_reads(module).enumerate() {
+        let word: &'s str = word;
+        let entry = stats.entry(word).or_insert((0, (tail_index, pos as u32)));
+        entry.0 += 1;
+    }
+    let names = constrained_short_names_from_stats(stats, |_| false, &HashMap::new(), fixed)
         .into_iter()
         .map(|(word, name)| match fixed(word) {
             Some(_) => (word, name),
             None => (word, format!("{prefix}{name}")),
         })
         .collect::<HashMap<_, _>>();
-    let outputs = texts
+    let rename_jobs = texts
         .iter()
         .zip(&skipped)
-        .map(|(text, skipped)| {
-            rename_compiler_names(text.source, skipped, |word| names[word].clone()).0
-        })
-        .collect();
+        .map(|(text, skip)| (text.source.len() as u64, (text, skip.as_slice())))
+        .collect::<Vec<_>>();
+    let outputs = crate::scheduler::map(slots, rename_jobs, |(text, skip)| {
+        rename_compiler_names(text.source, skip, |word| names[word].clone()).0
+    });
     (outputs, names)
 }
 
@@ -1735,15 +2939,67 @@ const BEFORE_EXPRESSION: &[&str] = &[
     "...",
 ];
 
+/// Output-offset tracking for [`rewrite_tokens`]: skipped when source maps are
+/// not requested, tracking just two source offsets for [`terse_program_nested`]
+/// without marks, or recording every written token for source-map relocation.
+enum RewriteOffsets {
+    None,
+    Pair {
+        targets: (usize, usize),
+        found: (Option<usize>, Option<usize>),
+    },
+    All(Vec<(usize, usize)>),
+}
+
+impl RewriteOffsets {
+    fn pair(first: usize, second: usize) -> Self {
+        Self::Pair {
+            targets: (first, second),
+            found: (None, None),
+        }
+    }
+
+    fn all(capacity: usize) -> Self {
+        Self::All(Vec::with_capacity(capacity))
+    }
+
+    #[inline]
+    fn record(&mut self, source_start: usize, out: &str, before: usize) {
+        match self {
+            Self::None => {}
+            Self::Pair { targets, found } => {
+                if (found.0.is_none() && source_start >= targets.0)
+                    || (found.1.is_none() && source_start >= targets.1)
+                {
+                    let pos = before
+                        + usize::from(matches!(out.as_bytes().get(before), Some(b' ' | b'\n')));
+                    if found.0.is_none() && source_start >= targets.0 {
+                        found.0 = Some(pos);
+                    }
+                    if found.1.is_none() && source_start >= targets.1 {
+                        found.1 = Some(pos);
+                    }
+                }
+            }
+            Self::All(written) => {
+                let pos =
+                    before + usize::from(matches!(out.as_bytes().get(before), Some(b' ' | b'\n')));
+                written.push((source_start, pos));
+            }
+        }
+    }
+}
+
 /// The program rewritten from its tokens, with the start of each written
-/// token in `source` and in the output; `None` when it does not lex, or when
-/// a token crosses a boundary of the `raw` ranges (sorted, disjoint `js*`
-/// text) or the compiler names outside them are not the names
-/// [`scanned_names`] finds there.
+/// token in `source` and in the output when `track_written` is set; `None`
+/// when it does not lex, or when a token crosses a boundary of the `raw`
+/// ranges (sorted, disjoint `js*` text) or the compiler names outside them
+/// are not the names [`scanned_names`] finds there.
 fn rewritten(
     source: &str,
     runtime: Option<Range<usize>>,
     raw: &[Range<usize>],
+    track_written: bool,
 ) -> Option<(String, Vec<(usize, usize)>)> {
     let lexed = Lexed::new(source, runtime, raw, |_| true)?;
     let mut words = Vec::new();
@@ -1753,8 +3009,26 @@ fn rewritten(
     let locals = lexed
         .locals
         .names(&names, &mut Candidates::new(|name| excluded.contains(name)));
-    Some(lexed.rewrite(&names, &locals))
+    let offsets = if track_written {
+        RewriteOffsets::all(lexed.tokens.len())
+    } else {
+        RewriteOffsets::None
+    };
+    let (output, offsets) = lexed.rewrite(&names, &locals, offsets);
+    let written = match offsets {
+        RewriteOffsets::All(written) => written,
+        RewriteOffsets::None | RewriteOffsets::Pair { .. } => Vec::new(),
+    };
+    Some((output, written))
 }
+
+/// A raw `js*` comment kept in terse output: the token index it precedes
+/// (`tokens.len()` after the last), its source slice, and whether a line break
+/// preceded it since the token before.
+type RawComment<'s> = (usize, &'s str, bool);
+
+/// Per-token raw flags paired with the raw comments kept in terse output.
+type RawTokens<'s> = (Vec<bool>, Vec<RawComment<'s>>);
 
 /// The tokens of a text [`rewritten`] writes: which are raw `js*` text, the
 /// comments of raw text it keeps, its locals named per scope ([`Locals`])
@@ -1763,9 +3037,9 @@ struct Lexed<'s> {
     source: &'s str,
     runtime: Option<Range<usize>>,
     tokens: Vec<Token>,
-    partners: Vec<usize>,
+    partners: Vec<u32>,
     in_raw: Vec<bool>,
-    comments: Vec<(usize, &'s str, bool)>,
+    comments: Vec<RawComment<'s>>,
     locals: Locals<'s>,
     joins: Vec<Join>,
 }
@@ -1780,6 +3054,9 @@ impl<'s> Lexed<'s> {
         raw: &[Range<usize>],
         eligible: impl Fn(&str) -> bool,
     ) -> Option<Self> {
+        if source.len() >= u32::MAX as usize {
+            return None;
+        }
         // The runtime factory is one token, an atom like a template literal.
         let mut tokens = Vec::new();
         match &runtime {
@@ -1787,17 +3064,19 @@ impl<'s> Lexed<'s> {
                 tokens.extend(lex_section(source, 0..factory.start, false).ok()?);
                 tokens.push(Token {
                     kind: Kind::Template,
-                    start: factory.start,
-                    end: factory.end,
+                    start: factory.start as u32,
+                    end: factory.end as u32,
                     newline_before: false,
                 });
                 tokens.extend(lex_section(source, factory.end..source.len(), false).ok()?);
             }
             None => tokens.extend(lex_section(source, 0..source.len(), false).ok()?),
         }
+        if tokens.len() >= u32::MAX as usize {
+            return None;
+        }
         let partners = partners(source, &tokens);
-        let in_raw = raw_tokens(source, &tokens, &partners, raw, runtime.as_ref())?;
-        let comments = raw_comments(source, &tokens, raw);
+        let (in_raw, comments) = raw_tokens(source, &tokens, &partners, raw, runtime.as_ref())?;
         // Adjacent `let` and `const` statements join: `let a,b;`, unless the
         // `;` or the keyword is raw text.
         let (locals, mut joins) = match resolve(source, &tokens) {
@@ -1844,14 +3123,42 @@ impl<'s> Lexed<'s> {
         }
     }
 
+    /// Aggregate per-word `(count, first_pos)` statistics and `excluded`
+    /// identifiers directly for parallel slice/chunk naming, applying
+    /// `canonical` to each global compiler name.
+    fn word_stats(
+        &self,
+        pos_offset: u32,
+        canonical: impl Fn(&'s str) -> &'s str,
+        stats: &mut HashMap<&'s str, (usize, u32)>,
+        excluded: &mut HashSet<&'s str>,
+    ) {
+        let tokens = self.tokens.iter().zip(&self.in_raw);
+        for (index, ((token, &in_raw), &local)) in tokens.zip(&self.locals.of_token).enumerate() {
+            if token.kind == Kind::Name {
+                let raw_word = token.text(self.source);
+                if compiler_name(raw_word) && !in_raw {
+                    if local == NO_LOCAL {
+                        let word = canonical(raw_word);
+                        let pos = pos_offset + index as u32;
+                        stats.entry(word).or_insert((0, pos)).0 += 1;
+                    }
+                } else {
+                    excluded.insert(raw_word);
+                }
+            }
+        }
+    }
+
     /// The text rewritten with the short `names` of its compiler names and
-    /// the names of its `locals` ([`Locals::names`]), with the start of each
-    /// written token in the source and in the output.
+    /// the names of its `locals` ([`Locals::names`]), recording output offsets
+    /// according to `offsets`.
     fn rewrite(
         self,
         names: &HashMap<&str, String>,
         locals: &[String],
-    ) -> (String, Vec<(usize, usize)>) {
+        offsets: RewriteOffsets,
+    ) -> (String, RewriteOffsets) {
         let Lexed {
             source,
             runtime,
@@ -1868,24 +3175,40 @@ impl<'s> Lexed<'s> {
                 local => &locals[local as usize],
             }
         };
-        rewrite_tokens(
-            source, runtime, tokens, partners, in_raw, comments, joins, name,
-        )
+        let rewritten = rewrite_tokens_inner(
+            source, runtime, tokens, partners, in_raw, comments, joins, name, offsets, true,
+        );
+        (rewritten.output, rewritten.offsets)
     }
 }
 
+#[allow(dead_code)] // Fields used by terse_program_slices (light-cljs-1097)
+struct RewrittenTokens {
+    output: String,
+    offsets: RewriteOffsets,
+    first_token: Option<FirstToken>,
+    writer_end: Option<WriterEnd>,
+    ends_with_droppable_semi: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
-fn rewrite_tokens<'n>(
+fn rewrite_tokens_inner<'n>(
     source: &str,
     runtime: Option<Range<usize>>,
     tokens: Vec<Token>,
-    partners: Vec<usize>,
+    partners: Vec<u32>,
     in_raw: Vec<bool>,
-    comments: Vec<(usize, &str, bool)>,
+    comments: Vec<RawComment<'_>>,
     joins: Vec<Join>,
     name: impl Fn(usize, &str) -> &'n str,
-) -> (String, Vec<(usize, usize)>) {
-    let is_runtime = |token: &Token| runtime.as_ref().is_some_and(|r| r.start == token.start);
+    mut offsets: RewriteOffsets,
+    trailing_newline: bool,
+) -> RewrittenTokens {
+    let is_runtime = |token: &Token| {
+        runtime
+            .as_ref()
+            .is_some_and(|r| r.start == token.start as usize)
+    };
     let mut commented = vec![false; tokens.len() + 1];
     for &(index, ..) in &comments {
         commented[index] = true;
@@ -1910,51 +3233,72 @@ fn rewrite_tokens<'n>(
         dropped,
         cleared,
         dotted,
+        partners,
         ..
     } = rewrite;
     let mut writer = TerseWriter::default();
-    let mut written = Vec::new();
     let mut comments = comments.into_iter().peekable();
+    let mut first_token: Option<FirstToken> = None;
+    let mut last_written: Option<usize> = None;
     for (index, token) in tokens.iter().enumerate() {
         while let Some((_, text, newline)) = comments.next_if(|(at, ..)| *at == index) {
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: Kind::Punct,
+                    text: String::new(),
+                    is_comment: true,
+                    newline_before: newline,
+                });
+            }
             writer.comment(text, newline);
         }
         if dropped[index] || joins[index] == Join::Drop {
             continue;
         }
+        last_written = Some(index);
         // The writer separates a token by at most one space or line break.
         let before = writer.out.len();
-        let separated = |out: &str| {
-            before + usize::from(matches!(out.as_bytes().get(before), Some(b' ' | b'\n')))
-        };
         let newline = token.newline_before && !cleared[index];
         if joins[index] == Join::Comma {
             let comma = Shape {
                 kind: Kind::Punct,
                 text: ",",
             };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: comma.kind,
+                    text: ",".to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
             writer.write(comma, ",", newline);
-            written.push((token.start, separated(&writer.out)));
+            offsets.record(token.start as usize, &writer.out, before);
             continue;
         }
-        if let Some(name) = dotted[index] {
-            writer.write(
-                Shape {
-                    kind: Kind::Punct,
-                    text: ".",
-                },
-                ".",
-                newline,
-            );
+        if let Some(prop) = dotted[index] {
+            let dot = Shape {
+                kind: Kind::Punct,
+                text: ".",
+            };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: dot.kind,
+                    text: ".".to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
+            writer.write(dot, ".", newline);
             writer.write(
                 Shape {
                     kind: Kind::Name,
-                    text: name,
+                    text: prop,
                 },
-                name,
+                prop,
                 false,
             );
-            written.push((token.start, separated(&writer.out)));
+            offsets.record(token.start as usize, &writer.out, before);
             continue;
         }
         let word = token.text(source);
@@ -1963,6 +3307,14 @@ fn rewrite_tokens<'n>(
                 kind: Kind::Punct,
                 text: "(",
             };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: open.kind,
+                    text: "(".to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
             writer.write(open, &word[..word.len() - 1], newline);
             let close = Shape {
                 kind: Kind::Punct,
@@ -1974,48 +3326,139 @@ fn rewrite_tokens<'n>(
                 kind: Kind::Name,
                 text: word,
             };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: shape.kind,
+                    text: shape.text.to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
             writer.write(shape, name(index, word), newline);
         } else {
             let shape = Shape {
                 kind: token.kind,
                 text: word,
             };
+            if first_token.is_none() {
+                first_token = Some(FirstToken {
+                    kind: shape.kind,
+                    text: shape.text.to_owned(),
+                    is_comment: false,
+                    newline_before: newline,
+                });
+            }
             writer.write(shape, word, newline);
         }
-        written.push((token.start, separated(&writer.out)));
+        offsets.record(token.start as usize, &writer.out, before);
     }
+    let mut had_trailing_comment = false;
     for (_, text, newline) in comments {
+        had_trailing_comment = true;
+        if first_token.is_none() {
+            first_token = Some(FirstToken {
+                kind: Kind::Punct,
+                text: String::new(),
+                is_comment: true,
+                newline_before: newline,
+            });
+        }
         writer.comment(text, newline);
     }
+    let ends_with_droppable_semi = !had_trailing_comment
+        && last_written.is_some_and(|last| {
+            last > 0
+                && joins[last] == Join::Keep
+                && dotted[last].is_none()
+                && !in_raw[last]
+                && tokens[last].kind == Kind::Punct
+                && tokens[last].text(source) == ";"
+                && {
+                    let previous = &tokens[last - 1];
+                    let body = match (previous.kind, previous.text(source)) {
+                        (Kind::Name, "else" | "do") | (Kind::Punct, ":") => true,
+                        (Kind::Punct, ")") => {
+                            closes_control_head(source, &tokens, &partners, last - 1)
+                        }
+                        _ => false,
+                    };
+                    !body
+                }
+        });
+    let writer_end = writer.end_state();
     let mut output = writer.out;
-    if !output.ends_with('\n') {
+    if trailing_newline && !output.ends_with('\n') {
         output.push('\n');
     }
-    (output, written)
+    RewrittenTokens {
+        output,
+        offsets,
+        first_token,
+        writer_end,
+        ends_with_droppable_semi,
+    }
 }
 
-/// The comments of raw `js*` text (sorted, disjoint `raw` ranges), which
-/// terse output keeps: each with the index of the token it precedes
-/// (`tokens.len()` after the last) and whether a line break precedes it
-/// since the token before.
-fn raw_comments<'s>(
+/// Which `tokens` are raw `js*` text, inside one of the `raw` ranges (sorted
+/// and disjoint, without the `runtime` factory), together with the comments of
+/// raw text that terse output keeps (each with the index of the token it
+/// precedes, or `tokens.len()` after the last, and whether a line break
+/// precedes it since the token before).
+///
+/// Returns `None` when a token crosses a boundary of a raw range, or when the
+/// compiler names of the other tokens are not those [`scanned_names`] finds
+/// outside the ranges, which the readable output renames. Either happens only
+/// where raw text puts a hole inside one of its strings, comments, templates
+/// or identifiers.
+///
+/// Also `None` where raw text may not lex as a JavaScript engine lexes it
+/// (the lexer serves the runtime and emitted code): a byte outside ASCII
+/// other than in a string literal (`a` and a no-break space would be one
+/// name), an HTML-like comment (`<!--`, `-->`), and a `/` that the lexer
+/// takes for a division or a regular expression where the tokens before it
+/// do not tell which ([`slash_starts_regex`]).
+fn raw_tokens<'s>(
     source: &'s str,
     tokens: &[Token],
+    partners: &[u32],
     raw: &[Range<usize>],
-) -> Vec<(usize, &'s str, bool)> {
+    runtime: Option<&Range<usize>>,
+) -> Option<RawTokens<'s>> {
+    let mut in_raw = vec![false; tokens.len()];
     let mut comments = Vec::new();
     if raw.is_empty() {
-        return comments;
+        return Some((in_raw, comments));
     }
     let bytes = source.as_bytes();
-    let in_raw = |at: usize| {
-        raw.get(raw.partition_point(|range| range.end <= at))
-            .is_some_and(|range| range.start <= at)
+    let non_ascii = |text: &str| {
+        if text.is_ascii() {
+            0
+        } else {
+            text.bytes().filter(|byte| !byte.is_ascii()).count()
+        }
     };
-    let mut gap_start = 0;
-    for index in 0..=tokens.len() {
-        // Between two tokens there is only whitespace and comments.
-        let gap_end = tokens.get(index).map_or(source.len(), |token| token.start);
+    let raw_containing = |at: usize| {
+        let idx = raw.partition_point(|range| range.end <= at);
+        raw.get(idx).filter(|range| range.start <= at)
+    };
+    // Punctuators that start at `index` and touch: `<!--` and `-->` (`-->=`).
+    let adjacent = |index: usize, texts: &[&str]| {
+        texts.iter().enumerate().all(|(offset, text)| {
+            tokens.get(index + offset).is_some_and(|token| {
+                token.kind == Kind::Punct
+                    && token.text(source).starts_with(*text)
+                    && (offset == 0 || tokens[index + offset - 1].end == token.start)
+            })
+        })
+    };
+    let scan_gap = |index: usize,
+                    gap_start: usize,
+                    gap_end: usize,
+                    comments: &mut Vec<RawComment<'s>>,
+                    needs_full_scan: &mut bool| {
+        if gap_end - gap_start < 2 || !bytes[gap_start..gap_end].contains(&b'/') {
+            return;
+        }
         let mut newline = false;
         let mut at = gap_start;
         while at < gap_end {
@@ -2037,113 +3480,151 @@ fn raw_comments<'s>(
                 }
             };
             let text = &source[at..end];
-            if in_raw(at) {
+            if let Some(range) = raw_containing(at) {
                 comments.push((index, text, newline));
+                if end > range.end {
+                    *needs_full_scan = true;
+                }
+            } else {
+                *needs_full_scan = true;
             }
             newline |= text.contains(['\n', '\r']);
             at = end;
         }
-        if let Some(token) = tokens.get(index) {
-            gap_start = token.end;
-        }
-    }
-    comments
-}
+    };
 
-/// Which `tokens` are raw `js*` text, inside one of the `raw` ranges (sorted
-/// and disjoint, without the `runtime` factory); `None` when a token crosses
-/// a boundary of one, or when the compiler names of the other tokens are
-/// not those [`scanned_names`] finds outside the ranges, which the readable
-/// output renames. Either happens only where raw text puts a hole inside
-/// one of its strings, comments, templates or identifiers.
-///
-/// Also `None` where raw text may not lex as a JavaScript engine lexes it
-/// (the lexer serves the runtime and emitted code): a byte outside ASCII
-/// other than in a string literal (`a` and a no-break space would be one
-/// name), an HTML-like comment (`<!--`, `-->`), and a `/` that the lexer
-/// takes for a division or a regular expression where the tokens before it
-/// do not tell which ([`slash_starts_regex`]).
-fn raw_tokens(
-    source: &str,
-    tokens: &[Token],
-    partners: &[usize],
-    raw: &[Range<usize>],
-    runtime: Option<&Range<usize>>,
-) -> Option<Vec<bool>> {
-    let mut in_raw = vec![false; tokens.len()];
-    if raw.is_empty() {
-        return Some(in_raw);
-    }
+    // Fast path proves `named == scanned_names(source, &skipped)` without
+    // re-scanning the entire source whenever `raw` ranges are disjoint from
+    // each other and `runtime`, every comment lies inside a single raw range,
+    // and every emitted token matches `scanned_names`'s byte rules locally.
+    let mut needs_full_scan = raw.windows(2).any(|w| w[0].end > w[1].start)
+        || runtime.is_some_and(|rt| raw.iter().any(|r| r.start < rt.end && rt.start < r.end));
     let mut ranges = raw.iter().peekable();
+    let mut non_ascii_in_raw_strings = 0usize;
+    let mut gap_start = 0usize;
     for (index, token) in tokens.iter().enumerate() {
-        while ranges.next_if(|range| range.end <= token.start).is_some() {}
+        let token_start = token.start as usize;
+        let token_end = token.end as usize;
+        scan_gap(
+            index,
+            gap_start,
+            token_start,
+            &mut comments,
+            &mut needs_full_scan,
+        );
+        gap_start = token_end;
+
+        while ranges.next_if(|range| range.end <= token_start).is_some() {}
         match ranges.peek() {
-            Some(range) if range.start <= token.start => {
-                if token.end > range.end {
+            Some(range) if range.start <= token_start => {
+                if token_end > range.end {
                     return None;
                 }
                 in_raw[index] = true;
+                if token.kind == Kind::Str {
+                    non_ascii_in_raw_strings += non_ascii(token.text(source));
+                }
             }
-            Some(range) if range.start < token.end => return None,
+            Some(range) if range.start < token_end => return None,
             _ => {}
         }
+
+        if in_raw[index] || (index > 0 && in_raw[index - 1]) {
+            if in_raw[index]
+                && (adjacent(index, &["<", "!", "--"]) || adjacent(index, &["--", ">"]))
+            {
+                return None;
+            }
+            let text = token.text(source);
+            let slash =
+                token.kind == Kind::Regex || (token.kind == Kind::Punct && text.starts_with('/'));
+            if slash
+                && slash_starts_regex(source, tokens, partners, index)
+                    != Some(token.kind == Kind::Regex)
+            {
+                return None;
+            }
+        }
+
+        if !in_raw[index] && !needs_full_scan {
+            let is_runtime = runtime.is_some_and(|r| r.start == token_start && r.end == token_end)
+                && token.kind == Kind::Template;
+            if !is_runtime {
+                match token.kind {
+                    Kind::Punct => {}
+                    Kind::Name => {
+                        let text = token.text(source);
+                        if !text.is_ascii() && !scanned_names(text, &[]).is_empty() {
+                            return None;
+                        }
+                    }
+                    Kind::Str => {
+                        if bytes[token_start] != b'"' {
+                            let text = token.text(source);
+                            if text.as_bytes().contains(&b'"') {
+                                needs_full_scan = true;
+                            } else if !scanned_names(text, &[]).is_empty() {
+                                return None;
+                            }
+                        }
+                    }
+                    Kind::Number => {
+                        let text = token.text(source);
+                        if !text.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+                            if bytes.get(token_end).copied() == Some(b'$') {
+                                needs_full_scan = true;
+                            } else if !scanned_names(text, &[]).is_empty() {
+                                return None;
+                            }
+                        }
+                    }
+                    Kind::Private => {
+                        if !scanned_names(token.text(source), &[]).is_empty() {
+                            return None;
+                        }
+                    }
+                    Kind::Regex
+                    | Kind::Template
+                    | Kind::TemplateHead
+                    | Kind::TemplateMiddle
+                    | Kind::TemplateTail => {
+                        needs_full_scan = true;
+                    }
+                }
+            }
+        }
     }
-    let non_ascii = |text: &str| text.bytes().filter(|byte| !byte.is_ascii()).count();
-    let in_strings = tokens
-        .iter()
-        .zip(&in_raw)
-        .filter(|(token, in_raw)| **in_raw && token.kind == Kind::Str)
-        .map(|(token, _)| non_ascii(token.text(source)))
-        .sum::<usize>();
+    scan_gap(
+        tokens.len(),
+        gap_start,
+        source.len(),
+        &mut comments,
+        &mut needs_full_scan,
+    );
     if raw
         .iter()
         .map(|range| non_ascii(&source[range.clone()]))
         .sum::<usize>()
-        != in_strings
+        != non_ascii_in_raw_strings
     {
         return None;
     }
-    // Punctuators that start at `index` and touch: `<!--` and `-->` (`-->=`).
-    let adjacent = |index: usize, texts: &[&str]| {
-        texts.iter().enumerate().all(|(offset, text)| {
-            tokens.get(index + offset).is_some_and(|token| {
-                token.kind == Kind::Punct
-                    && token.text(source).starts_with(*text)
-                    && (offset == 0 || tokens[index + offset - 1].end == token.start)
+    if needs_full_scan {
+        let mut skipped = raw.to_vec();
+        skipped.extend(runtime.cloned());
+        let scanned = scanned_names(source, &skipped);
+        let named = tokens
+            .iter()
+            .zip(&in_raw)
+            .filter(|(token, in_raw)| {
+                !**in_raw && token.kind == Kind::Name && compiler_name(token.text(source))
             })
-        })
-    };
-    for (index, token) in tokens.iter().enumerate() {
-        let touches_raw = in_raw[index] || (index > 0 && in_raw[index - 1]);
-        if !touches_raw {
-            continue;
-        }
-        if in_raw[index] && (adjacent(index, &["<", "!", "--"]) || adjacent(index, &["--", ">"])) {
-            return None;
-        }
-        let text = token.text(source);
-        let slash =
-            token.kind == Kind::Regex || (token.kind == Kind::Punct && text.starts_with('/'));
-        if slash
-            && slash_starts_regex(source, tokens, partners, index)
-                != Some(token.kind == Kind::Regex)
-        {
+            .map(|(token, _)| token.start as usize..token.end as usize);
+        if !named.eq(scanned.into_iter().map(|(range, _)| range)) {
             return None;
         }
     }
-    let mut skipped = raw.to_vec();
-    skipped.extend(runtime.cloned());
-    let scanned = scanned_names(source, &skipped);
-    let named = tokens
-        .iter()
-        .zip(&in_raw)
-        .filter(|(token, in_raw)| {
-            !**in_raw && token.kind == Kind::Name && compiler_name(token.text(source))
-        })
-        .map(|(token, _)| token.start..token.end);
-    named
-        .eq(scanned.into_iter().map(|(range, _)| range))
-        .then_some(in_raw)
+    Some((in_raw, comments))
 }
 
 /// Whether the `/` (or `/=`, or regular expression) token at `index` starts a
@@ -2155,7 +3636,7 @@ fn raw_tokens(
 fn slash_starts_regex(
     source: &str,
     tokens: &[Token],
-    partners: &[usize],
+    partners: &[u32],
     index: usize,
 ) -> Option<bool> {
     let Some(previous) = index.checked_sub(1).map(|at| &tokens[at]) else {
@@ -2193,14 +3674,14 @@ fn slash_starts_regex(
             ")" => {
                 let open = partners[index - 1];
                 Some(
-                    open != usize::MAX
+                    open != NO_PARTNER
                         && open > 0
-                        && tokens[open - 1].kind == Kind::Name
+                        && tokens[open as usize - 1].kind == Kind::Name
                         && matches!(
-                            tokens[open - 1].text(source),
+                            tokens[open as usize - 1].text(source),
                             "if" | "for" | "while" | "with"
                         )
-                        && !member(open - 1),
+                        && !member(open as usize - 1),
                 )
             }
             "}" | "++" | "--" => None,
@@ -2236,7 +3717,7 @@ struct Rewrite<'s, 't> {
     /// starts with one keeps its parentheses, since the comment may end a
     /// line (`return (// c` and a line break).
     commented: &'t [bool],
-    partners: Vec<usize>,
+    partners: Vec<u32>,
     /// Tokens not written.
     dropped: Vec<bool>,
     /// Tokens whose preceding line break is dropped: tokens of a group whose
@@ -2278,11 +3759,13 @@ impl<'s> Rewrite<'s, '_> {
                 return None;
             }
             let at = index;
-            index = if self.partners[at] > at && self.partners[at] < close {
-                self.partners[at] + 1
-            } else {
-                at + 1
-            };
+            let partner = self.partners[at];
+            index =
+                if partner != NO_PARTNER && (partner as usize) > at && (partner as usize) < close {
+                    partner as usize + 1
+                } else {
+                    at + 1
+                };
             Some(at)
         })
     }
@@ -2385,7 +3868,9 @@ impl<'s> Rewrite<'s, '_> {
             }
             match self.punct(index) {
                 "." => member = true,
-                "(" | "[" if self.partners[index] < close => {}
+                "(" | "["
+                    if self.partners[index] != NO_PARTNER
+                        && (self.partners[index] as usize) < close => {}
                 _ => return false,
             }
         }
@@ -2417,13 +3902,19 @@ impl<'s> Rewrite<'s, '_> {
             };
             cur = next;
         }
-        if self.punct(cur) != "(" || self.partners[cur] >= close {
+        if self.punct(cur) != "("
+            || self.partners[cur] == NO_PARTNER
+            || (self.partners[cur] as usize) >= close
+        {
             return false;
         }
         let Some(body) = items.next() else {
             return false;
         };
-        self.punct(body) == "{" && self.partners[body] < close && items.next().is_none()
+        self.punct(body) == "{"
+            && self.partners[body] != NO_PARTNER
+            && (self.partners[body] as usize) < close
+            && items.next().is_none()
     }
 
     fn unwrap(&mut self, open: usize, close: usize) {
@@ -2438,7 +3929,8 @@ impl<'s> Rewrite<'s, '_> {
     fn run(&mut self) {
         for index in 0..self.tokens.len() {
             if self.punct(index) != "["
-                || self.partners[index] != index + 2
+                || self.partners[index] == NO_PARTNER
+                || self.partners[index] as usize != index + 2
                 || self.raw[index..=index + 2].contains(&true)
             {
                 continue;
@@ -2464,20 +3956,25 @@ impl<'s> Rewrite<'s, '_> {
         }
         for open in (0..self.tokens.len()).rev() {
             let close = self.partners[open];
-            if self.punct(open) != "(" || close == usize::MAX || self.next(open) == Some(close) {
+            if self.punct(open) != "(" || close == NO_PARTNER {
+                continue;
+            }
+            let close = close as usize;
+            if self.next(open) == Some(close) {
                 continue;
             }
             // `((x))`: the inner pair, when its top level holds no comma.
             if let Some(inner) = self.next(open)
                 && self.punct(inner) == "("
-                && Some(self.partners[inner]) == self.previous(close)
-                && self.next(inner) != Some(self.partners[inner])
-                && !self.holds(inner, self.partners[inner], ",")
+                && self.partners[inner] != NO_PARTNER
+                && Some(self.partners[inner] as usize) == self.previous(close)
+                && self.next(inner) != Some(self.partners[inner] as usize)
+                && !self.holds(inner, self.partners[inner] as usize, ",")
                 && !self.raw[inner]
-                && !self.raw[self.partners[inner]]
+                && !self.raw[self.partners[inner] as usize]
                 && !self.commented[inner + 1]
             {
-                self.unwrap(inner, self.partners[inner]);
+                self.unwrap(inner, self.partners[inner] as usize);
             }
             if self.raw[open] || self.raw[close] || self.commented[open + 1] || !self.group(open) {
                 continue;
@@ -2573,7 +4070,7 @@ mod tests {
         let mut backward: HashMap<Named, Named> = HashMap::new();
         let mut at = 0;
         let context = |index: usize, text: &str| {
-            let start = left[index].start;
+            let start = left[index].start as usize;
             format!(
                 "at original byte {start} (`{}`):",
                 &text[start.saturating_sub(60)..(start + 60).min(text.len())]
@@ -3063,8 +4560,8 @@ console.log(g1({}), g2({x: 2}, 3, 4), g3(5));
                 .count();
             assert_eq!(named, declaring);
             for &(offset, at, _) in &marks[1..] {
-                let token = &tokens[tokens.partition_point(|token| token.start < at)];
-                assert_eq!(token.start, at);
+                let token = &tokens[tokens.partition_point(|token| (token.start as usize) < at)];
+                assert_eq!(token.start as usize, at);
                 let word = token.text(source);
                 let written = &text[offset..];
                 let name = written
@@ -3081,5 +4578,729 @@ console.log(g1({}), g2({x: 2}, 3, 4), g3(5));
                 assert!(matches, "`{word}` at {at} maps to {:?}", &written[..20]);
             }
         }
+    }
+
+    #[test]
+    fn compiler_name_dispatch_matches_reference() {
+        fn reference(word: &str) -> bool {
+            const NUMBERED: [&str; 17] = [
+                "l",
+                "g",
+                "k",
+                "c",
+                "m",
+                "a",
+                "r",
+                "next",
+                "saved",
+                "temporary",
+                "captures",
+                "self",
+                "recur",
+                "installed",
+                "operand",
+                "receiver",
+                "__lightUnitReify",
+            ];
+            let numbered = NUMBERED.iter().any(|head| {
+                word.strip_prefix(head).is_some_and(|tail| {
+                    !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+                })
+            });
+            numbered
+                || word
+                    .strip_prefix('g')
+                    .and_then(|tail| tail.strip_suffix('$'))
+                    .is_some_and(|number| {
+                        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+                    })
+                || matches!(
+                    word,
+                    "rt" | "__lightSessionRuntime"
+                        | "truth"
+                        | "host"
+                        | "pkg"
+                        | "f"
+                        | "text"
+                        | "savedPrint"
+                        | "savedNewline"
+                        | "caught"
+                        | "caseValue"
+                        | "lazy$"
+                )
+                || word.starts_with("rt$")
+                || word.starts_with("core$")
+                || word.starts_with("nativeCore$")
+                || word.starts_with("nativeCoreGetter$")
+        }
+
+        let stems = [
+            "",
+            "l",
+            "g",
+            "k",
+            "c",
+            "m",
+            "a",
+            "r",
+            "f",
+            "o",
+            "t",
+            "s",
+            "n",
+            "i",
+            "h",
+            "p",
+            "_",
+            "next",
+            "saved",
+            "temporary",
+            "captures",
+            "self",
+            "recur",
+            "installed",
+            "operand",
+            "receiver",
+            "__lightUnitReify",
+            "__lightSessionRuntime",
+            "rt",
+            "rt$",
+            "core$",
+            "nativeCore$",
+            "nativeCoreGetter$",
+            "truth",
+            "host",
+            "pkg",
+            "text",
+            "savedPrint",
+            "savedNewline",
+            "caught",
+            "caseValue",
+            "lazy$",
+            "return",
+            "const",
+            "let",
+            "function",
+            "length",
+            "prototype",
+            "call",
+            "apply",
+            "Object",
+            "Array",
+            "x",
+            "z",
+            "é",
+        ];
+        let suffixes = [
+            "", "0", "12", "_", "0_1", "_0", "$", "0$", "12$", "0_1$", "a", "0a", "x", "$x",
+        ];
+        for stem in stems {
+            for suffix in suffixes {
+                let candidate = format!("{stem}{suffix}");
+                assert_eq!(
+                    compiler_name(&candidate),
+                    reference(&candidate),
+                    "mismatch for {candidate:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn constrained_scope_matches_reference_and_scales_linearly() {
+        fn reference<'a, F: Fn(&str) -> bool>(
+            order: &[usize],
+            avoided: &HashSet<&str>,
+            candidates: &mut Candidates<F>,
+            own_of: impl Fn(usize) -> Option<&'a HashSet<&'a str>>,
+            first_of: impl Fn(usize) -> u32,
+        ) -> Vec<(usize, String)> {
+            let mut taken: Vec<bool> = Vec::new();
+            let mut chosen = Vec::with_capacity(order.len());
+            for &local in order {
+                let own = own_of(local);
+                let mut at = 0;
+                loop {
+                    if taken.len() <= at {
+                        taken.resize(at + 1, false);
+                    }
+                    let name = candidates.get(at);
+                    if !taken[at]
+                        && !avoided.contains(name)
+                        && !own.is_some_and(|own| own.contains(name))
+                    {
+                        break;
+                    }
+                    at += 1;
+                }
+                taken[at] = true;
+                chosen.push(at);
+            }
+            let mut batches: Vec<Vec<usize>> = Vec::new();
+            for (position, &at) in chosen.iter().enumerate() {
+                let length = candidates.get(at).len();
+                if batches.len() <= length {
+                    batches.resize_with(length + 1, Vec::new);
+                }
+                batches[length].push(position);
+            }
+            for batch in batches {
+                let mut slots = batch.iter().map(|&p| chosen[p]).collect::<Vec<_>>();
+                slots.sort_unstable();
+                let mut positions = batch;
+                positions.sort_by_key(|&p| first_of(order[p]));
+                let mut used = vec![false; slots.len()];
+                let mut assigned = Vec::with_capacity(positions.len());
+                for &position in &positions {
+                    let own = own_of(order[position]);
+                    let found = (0..slots.len()).find(|&index| {
+                        !used[index]
+                            && !own.is_some_and(|own| own.contains(candidates.get(slots[index])))
+                    });
+                    let Some(index) = found else {
+                        assigned.clear();
+                        break;
+                    };
+                    used[index] = true;
+                    assigned.push((position, slots[index]));
+                }
+                for (position, slot) in assigned {
+                    chosen[position] = slot;
+                }
+            }
+            order
+                .iter()
+                .zip(chosen)
+                .map(|(&local, at)| (local, candidates.get(at).to_owned()))
+                .collect()
+        }
+
+        // Exact equivalence on tricky mixed constraints, including batch reorder
+        // and batch fallback when a constrained local runs out of eligible slots.
+        let order: Vec<usize> = (0..120).collect();
+        let first: Vec<u32> = (0..120).map(|i| ((i * 37) % 120) as u32).collect();
+        let avoided: HashSet<&str> = ["a", "c", "aa"].into_iter().collect();
+        let own_a: HashSet<&str> = ["b", "d"].into_iter().collect();
+        let own_b: HashSet<&str> = ["b", "e", "ab"].into_iter().collect();
+        let mut own_map: HashMap<usize, &HashSet<&str>> = HashMap::new();
+        for local in [0, 1, 5, 10, 50, 51, 52] {
+            own_map.insert(local, if local % 2 == 0 { &own_a } else { &own_b });
+        }
+        let mut c1 = Candidates::new(|_| false);
+        let mut c2 = Candidates::new(|_| false);
+        let actual = constrained_scope(
+            &order,
+            &avoided,
+            &mut c1,
+            |local| own_map.get(&local).copied(),
+            |local| first[local],
+        );
+        let expected = reference(
+            &order,
+            &avoided,
+            &mut c2,
+            |local| own_map.get(&local).copied(),
+            |local| first[local],
+        );
+        assert_eq!(actual, expected);
+
+        // Large scope with slot 0 (`"a"`) in `avoided`: previously O(N^2).
+        let n = 10_000usize;
+        let big_order: Vec<usize> = (0..n).collect();
+        let big_first: Vec<u32> = (0..n).map(|i| (n - i) as u32).collect();
+        let big_avoided: HashSet<&str> = ["a", "b"].into_iter().collect();
+        let big_own: HashSet<&str> = ["c", "d", "e"].into_iter().collect();
+        let mut big_candidates = Candidates::new(|_| false);
+        let assigned = constrained_scope(
+            &big_order,
+            &big_avoided,
+            &mut big_candidates,
+            |local| (local < 20).then_some(&big_own),
+            |local| big_first[local],
+        );
+        assert_eq!(assigned.len(), n);
+        let unique: HashSet<&str> = assigned.iter().map(|(_, name)| name.as_str()).collect();
+        assert_eq!(unique.len(), n);
+        assert!(!unique.contains("a") && !unique.contains("b"));
+        for &(local, ref name) in &assigned {
+            if local < 20 {
+                assert!(!big_own.contains(name.as_str()), "local {local} got {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn raw_tokens_matches_full_scanned_names_on_edge_cases() {
+        fn reference<'s>(
+            source: &'s str,
+            tokens: &[Token],
+            partners: &[u32],
+            raw: &[Range<usize>],
+            runtime: Option<&Range<usize>>,
+        ) -> Option<RawTokens<'s>> {
+            let mut in_raw = vec![false; tokens.len()];
+            if raw.is_empty() {
+                return Some((in_raw, Vec::new()));
+            }
+            let mut ranges = raw.iter().peekable();
+            for (index, token) in tokens.iter().enumerate() {
+                while ranges
+                    .next_if(|range| range.end <= token.start as usize)
+                    .is_some()
+                {}
+                match ranges.peek() {
+                    Some(range) if range.start <= token.start as usize => {
+                        if token.end as usize > range.end {
+                            return None;
+                        }
+                        in_raw[index] = true;
+                    }
+                    Some(range) if range.start < token.end as usize => return None,
+                    _ => {}
+                }
+            }
+            let non_ascii = |text: &str| text.bytes().filter(|byte| !byte.is_ascii()).count();
+            let in_strings = tokens
+                .iter()
+                .zip(&in_raw)
+                .filter(|(token, in_raw)| **in_raw && token.kind == Kind::Str)
+                .map(|(token, _)| non_ascii(token.text(source)))
+                .sum::<usize>();
+            if raw
+                .iter()
+                .map(|range| non_ascii(&source[range.clone()]))
+                .sum::<usize>()
+                != in_strings
+            {
+                return None;
+            }
+            let adjacent = |index: usize, texts: &[&str]| {
+                texts.iter().enumerate().all(|(offset, text)| {
+                    tokens.get(index + offset).is_some_and(|token| {
+                        token.kind == Kind::Punct
+                            && token.text(source).starts_with(*text)
+                            && (offset == 0 || tokens[index + offset - 1].end == token.start)
+                    })
+                })
+            };
+            for (index, token) in tokens.iter().enumerate() {
+                if !(in_raw[index] || (index > 0 && in_raw[index - 1])) {
+                    continue;
+                }
+                if in_raw[index]
+                    && (adjacent(index, &["<", "!", "--"]) || adjacent(index, &["--", ">"]))
+                {
+                    return None;
+                }
+                let text = token.text(source);
+                let slash = token.kind == Kind::Regex
+                    || (token.kind == Kind::Punct && text.starts_with('/'));
+                if slash
+                    && slash_starts_regex(source, tokens, partners, index)
+                        != Some(token.kind == Kind::Regex)
+                {
+                    return None;
+                }
+            }
+            let mut skipped = raw.to_vec();
+            skipped.extend(runtime.cloned());
+            let scanned = scanned_names(source, &skipped);
+            let named = tokens
+                .iter()
+                .zip(&in_raw)
+                .filter(|(token, in_raw)| {
+                    !**in_raw && token.kind == Kind::Name && compiler_name(token.text(source))
+                })
+                .map(|(token, _)| token.start as usize..token.end as usize);
+            if !named.eq(scanned.into_iter().map(|(range, _)| range)) {
+                return None;
+            }
+            let bytes = source.as_bytes();
+            let in_raw_at = |at: usize| {
+                raw.get(raw.partition_point(|range| range.end <= at))
+                    .is_some_and(|range| range.start <= at)
+            };
+            let mut comments = Vec::new();
+            let mut gap_start = 0;
+            for index in 0..=tokens.len() {
+                let gap_end = tokens
+                    .get(index)
+                    .map_or(source.len(), |token| token.start as usize);
+                let mut newline = false;
+                let mut at = gap_start;
+                while at < gap_end {
+                    let end = match (bytes[at], bytes.get(at + 1)) {
+                        (b'\n' | b'\r', _) => {
+                            newline = true;
+                            at += 1;
+                            continue;
+                        }
+                        (b'/', Some(b'/')) => source[at..gap_end]
+                            .find(['\n', '\r'])
+                            .map_or(gap_end, |length| at + length),
+                        (b'/', Some(b'*')) => source[at + 2..gap_end]
+                            .find("*/")
+                            .map_or(gap_end, |length| at + length + 4),
+                        _ => {
+                            at += 1;
+                            continue;
+                        }
+                    };
+                    let text = &source[at..end];
+                    if in_raw_at(at) {
+                        comments.push((index, text, newline));
+                    }
+                    newline |= text.contains(['\n', '\r']);
+                    at = end;
+                }
+                if let Some(token) = tokens.get(index) {
+                    gap_start = token.end as usize;
+                }
+            }
+            Some((in_raw, comments))
+        }
+
+        let cases: &[&[(bool, &str)]] = &[
+            // Normal emitted JS + raw comment + trailing raw comment
+            &[
+                (false, "let l1 = \"l2\\\"l3\";\nlet l2 = 1e-5 + 0xff + "),
+                (true, "/* c */\n// line\nfoo(1)"),
+                (false, ";\n"),
+                (true, "// eof"),
+            ],
+            // Hole inside raw line comment
+            &[
+                (false, "let l1 = 1;\n"),
+                (true, "// note "),
+                (false, "l1"),
+                (false, "\nconsole.log(l1);\n"),
+            ],
+            // Hole inside raw block comment
+            &[
+                (false, "let l1 = 1;\n"),
+                (true, "/* "),
+                (false, "l1"),
+                (true, " */"),
+                (false, "console.log(l1);\n"),
+            ],
+            // Hole inside raw block comment with non-compiler word
+            &[
+                (false, "let l1 = 1;\n"),
+                (true, "/* "),
+                (false, "hello"),
+                (true, " */"),
+                (false, "console.log(l1);\n"),
+            ],
+            // Non-raw comment containing compiler name
+            &[
+                (false, "let l1 = 1; /* l1 */ "),
+                (true, "foo"),
+                (false, ";\n"),
+            ],
+            // Non-raw comment without compiler name
+            &[
+                (false, "let l1 = 1; /* note */ "),
+                (true, "foo"),
+                (false, ";\n"),
+            ],
+            // Non-raw single-quoted string with compiler name vs without vs containing quote
+            &[(false, "let l1 = 'l1'; "), (true, "foo"), (false, ";\n")],
+            &[(false, "let l1 = 'ok'; "), (true, "foo"), (false, ";\n")],
+            &[
+                (false, "let l1 = '\"'; let l2 = '\"'; "),
+                (true, "foo"),
+                (false, ";\n"),
+            ],
+            // Non-raw number edge cases (`0a0` contains compiler name `a0`, `1e$a` touches `$`)
+            &[(false, "let l1 = 0a0; "), (true, "foo"), (false, ";\n")],
+            &[(false, "let l1 = 1e$a; "), (true, "foo"), (false, ";\n")],
+            // Non-raw non-ASCII identifier containing compiler name vs harmless
+            &[(false, "let éa0 = 1; "), (true, "foo"), (false, ";\n")],
+            &[(false, "let éfoo = 1; "), (true, "foo"), (false, ";\n")],
+            // Non-raw regex containing compiler name vs harmless
+            &[(false, "let l1 = /l1/; "), (true, "foo"), (false, ";\n")],
+            &[(false, "let l1 = /abc/; "), (true, "foo"), (false, ";\n")],
+        ];
+
+        for pieces in cases {
+            let mut source = String::new();
+            let mut raw = Vec::new();
+            for &(is_raw, text) in *pieces {
+                if is_raw && !text.is_empty() {
+                    raw.push(source.len()..source.len() + text.len());
+                }
+                source.push_str(text);
+            }
+            let tokens = lex_section(&source, 0..source.len(), false).unwrap();
+            let p = partners(&source, &tokens);
+            let actual = raw_tokens(&source, &tokens, &p, &raw, None);
+            let expected = reference(&source, &tokens, &p, &raw, None);
+            assert_eq!(actual, expected, "mismatch for source:\n{source}");
+        }
+    }
+
+    #[test]
+    fn terse_program_nested_without_marks_matches_with_marks() {
+        let manifest = RuntimeManifest::embedded();
+        let kept = manifest
+            .units
+            .iter()
+            .map(|unit| unit.declares.contains(&"keyword") || unit.name == "keyword")
+            .collect::<Vec<_>>();
+        let (factory_text, _) = terse_slice(&kept, &["keyword"]);
+        let prefix = "(() => {\nconst [rt$keyword] = ";
+        let factory_start = prefix.len();
+        let factory_end = factory_start + factory_text.len();
+        let stmt_start = "(() => {\n".len();
+        let stmt_end = factory_end + 1;
+        let source = format!(
+            "{prefix}{factory_text};\nconst k0 = rt$keyword(\"a\");\nconsole.log(k0);\n}})();\n"
+        );
+        let factory = factory_start..factory_end;
+        let statement = stmt_start..stmt_end;
+
+        let (no_marks, bytes_no_marks) = terse_program_nested(
+            &source,
+            std::slice::from_ref(&factory),
+            statement.clone(),
+            factory.clone(),
+            &kept,
+            &["keyword"],
+            None,
+        )
+        .expect("nested terse succeeds");
+
+        let mut marks = crate::source_map::Marks::default();
+        marks.position(stmt_end + 1, 0, 10);
+        let (with_marks, bytes_with_marks) = terse_program_nested(
+            &source,
+            std::slice::from_ref(&factory),
+            statement,
+            factory.clone(),
+            &kept,
+            &["keyword"],
+            Some(&mut marks),
+        )
+        .expect("nested terse with marks succeeds");
+
+        assert_eq!(no_marks, with_marks);
+        assert_eq!(bytes_no_marks, bytes_with_marks);
+        assert!(!marks.list.is_empty());
+    }
+
+    #[test]
+    fn terse_texts_with_slots_matches_single_slot() {
+        let s0 = "export const g0 = 1;\nexport function g1(l0) { return g0 + l0; }\n";
+        let s1 = "import { g0, g1 } from './a.js';\nexport const g2 = g1(g0) + 2;\n";
+        let s2 = "import { g2 } from './b.js';\nconsole.log(g2);\n";
+        let make_texts = || {
+            vec![
+                Text {
+                    source: s0,
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: None,
+                },
+                Text {
+                    source: s1,
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: None,
+                },
+                Text {
+                    source: s2,
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: None,
+                },
+            ]
+        };
+        let (out1, names1) = terse_texts_with_slots(&make_texts(), crate::scheduler::Slots::ONE);
+        let (out4, names4) =
+            terse_texts_with_slots(&make_texts(), crate::scheduler::Slots::new(4).unwrap());
+        assert_eq!(out1, out4);
+        assert_eq!(names1, names4);
+
+        // Hygienic fallback path (unparseable raw hole).
+        let raw_src = "export const g0 = \"/*raw*/\" + 1;\n";
+        let raw_range = 19..24; // inside string literal -> triggers hygienic fallback
+        let make_fallback = || {
+            vec![
+                Text {
+                    source: raw_src,
+                    raw: vec![raw_range.clone()],
+                    runtime: None,
+                    units: None,
+                },
+                Text {
+                    source: s1,
+                    raw: Vec::new(),
+                    runtime: None,
+                    units: None,
+                },
+            ]
+        };
+        let (fb1, fbn1) = terse_texts_with_slots(&make_fallback(), crate::scheduler::Slots::ONE);
+        let (fb4, fbn4) =
+            terse_texts_with_slots(&make_fallback(), crate::scheduler::Slots::new(4).unwrap());
+        assert_eq!(fb1, fb4);
+        assert_eq!(fbn1, fbn4);
+    }
+
+    #[test]
+    fn terse_program_slices_matches_single_slot_and_canonicalizes_constants() {
+        let manifest = RuntimeManifest::embedded();
+        let kept = manifest
+            .units
+            .iter()
+            .map(|unit| {
+                unit.declares.contains(&"keyword")
+                    || unit.declares.contains(&"Atom")
+                    || unit.name == "keyword"
+                    || unit.name == "Atom"
+            })
+            .collect::<Vec<_>>();
+        let canon_k_names = vec!["k0".to_owned(), "k1".to_owned()];
+        let header = "const k0 = rt$keyword(\"a\");\nconst k1 = rt$keyword(\"b\");\nvar g0 = 0;\n";
+        let slice0 = "var g1 = function(l0) { var l1 = l0 + 1; return [k0_0, rt$Atom, l1, obj.p_alpha$LKEY]; };\n";
+        let slice1 = "var g2 = g1(g0);\nconsole.log(g2, k1_0, k1_1, obj.p_alpha$LKEY);\n";
+        let remap0 = [0usize];
+        let remap1 = [0usize, 1usize];
+
+        let run_case = |slots: crate::scheduler::Slots, can_nest: bool, mapped: bool| {
+            let mut m0 = crate::source_map::Marks::default();
+            m0.position(0, 0, 1);
+            let mut m1 = crate::source_map::Marks::default();
+            m1.position(0, 0, 2);
+            terse_program_slices(
+                vec![
+                    TerseSlice {
+                        source: header,
+                        raw: &[],
+                        marks: None,
+                        k_prefix: None,
+                        remap: &[],
+                    },
+                    TerseSlice {
+                        source: slice0,
+                        raw: &[],
+                        marks: mapped.then_some(m0),
+                        k_prefix: Some("k0_"),
+                        remap: &remap0,
+                    },
+                    TerseSlice {
+                        source: slice1,
+                        raw: &[],
+                        marks: mapped.then_some(m1),
+                        k_prefix: Some("k1_"),
+                        remap: &remap1,
+                    },
+                ],
+                &canon_k_names,
+                Some(ParallelRuntime {
+                    kept: &kept,
+                    bindings: &["keyword", "Atom"],
+                    can_nest,
+                }),
+                "",
+                true,
+                mapped,
+                true,
+                slots,
+            )
+        };
+
+        let out1 = run_case(crate::scheduler::Slots::ONE, true, false);
+        let out4 = run_case(crate::scheduler::Slots::new(4).unwrap(), true, false);
+        assert_eq!(out1.pieces, out4.pieces);
+        assert_eq!(out1.total_len, out4.total_len);
+        assert_eq!(out1.runtime_bytes, out4.runtime_bytes);
+        assert_eq!(out1.unit_bytes, out4.unit_bytes);
+        let joined: String = out1.pieces.concat();
+        assert_eq!(joined.len(), out1.total_len);
+        assert!(joined.starts_with("export default (()=>{"));
+        assert!(joined.ends_with("})()})();\n"));
+        // Canonicalized constants must never leave slice-local `k0_0`/`k1_0`/`k1_1`.
+        assert!(!joined.contains("k0_0"));
+        assert!(!joined.contains("k1_0"));
+        assert!(!joined.contains("k1_1"));
+        // Verify streaming RuntimeKey matches whole-text RuntimeKey.
+        let key_whole = crate::runtime_key::RuntimeKey::release(
+            [joined.as_str()],
+            crate::OptimizationLevel::Advanced,
+            None,
+        )
+        .shortened([joined.as_str()]);
+        let key_pieces = crate::runtime_key::RuntimeKey::release_pieces(
+            out1.pieces.iter().map(String::as_str),
+            out1.total_len,
+            crate::OptimizationLevel::Advanced,
+            None,
+        )
+        .shortened_from_counts(out1.lkey_counts);
+        assert_eq!(key_pieces.key(), key_whole.key());
+        assert_eq!(key_pieces.short_names(), key_whole.short_names());
+        assert_eq!(
+            key_pieces.apply_pieces(out1.pieces, crate::scheduler::Slots::new(4).unwrap()),
+            key_whole.apply(&joined)
+        );
+
+        // Mapped mode & non-nested factory fallback also match across slot counts.
+        let mapped1 = run_case(crate::scheduler::Slots::ONE, true, true);
+        let mapped4 = run_case(crate::scheduler::Slots::new(4).unwrap(), true, true);
+        assert_eq!(mapped1.pieces, mapped4.pieces);
+        assert!(!mapped1.marks.unwrap().list.is_empty());
+
+        let factory1 = run_case(crate::scheduler::Slots::ONE, false, false);
+        let factory4 = run_case(crate::scheduler::Slots::new(4).unwrap(), false, false);
+        assert_eq!(factory1.pieces, factory4.pieces);
+        let factory_joined: String = factory1.pieces.concat();
+        assert!(factory_joined.starts_with("export default (()=>{const["));
+        assert!(factory_joined.ends_with("})();\n"));
+
+        // Hygienic fallback when a slice has raw text that `raw_tokens` cannot
+        // follow (an emitted hole inside a raw `js*` string literal: `"~{}"`).
+        let bad_raw = "var g1 = \"k0_0\" + k0_0;\n";
+        let bad_ranges = [9..10, 14..15];
+        let run_fallback = |slots: crate::scheduler::Slots| {
+            let mut m = crate::source_map::Marks::default();
+            m.position(0, 0, 5);
+            terse_program_slices(
+                vec![
+                    TerseSlice {
+                        source: header,
+                        raw: &[],
+                        marks: None,
+                        k_prefix: None,
+                        remap: &[],
+                    },
+                    TerseSlice {
+                        source: bad_raw,
+                        raw: &bad_ranges,
+                        marks: Some(m),
+                        k_prefix: Some("k0_"),
+                        remap: &remap0,
+                    },
+                ],
+                &canon_k_names,
+                Some(ParallelRuntime {
+                    kept: &kept,
+                    bindings: &["keyword", "Atom"],
+                    can_nest: true,
+                }),
+                "",
+                true,
+                true,
+                true,
+                slots,
+            )
+        };
+        let fb1 = run_fallback(crate::scheduler::Slots::ONE);
+        let fb4 = run_fallback(crate::scheduler::Slots::new(4).unwrap());
+        assert_eq!(fb1.pieces, fb4.pieces);
+        let fb_joined: String = fb1.pieces.concat();
+        assert!(fb_joined.contains("__light0_"));
+        assert!(!fb_joined.contains("k0_0"));
+        assert!(!fb1.marks.unwrap().list.is_empty());
     }
 }

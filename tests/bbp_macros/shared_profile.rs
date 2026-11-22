@@ -1297,6 +1297,54 @@ fn shared_profile_engine_multimethod_brand_is_recognized() {
     );
 }
 
+/// Multimethod calls use `multiHooks.getMethodProtocol`, whose resolved
+/// method key is registered in `sharedMethodKeys` so boot fills its memos
+/// and seals it (light-cljs-1083): publishing the booted runtime and
+/// invoking a multimethod across arities in a spawned task succeeds without
+/// mutating sealed boot state.
+#[test]
+fn shared_profile_published_multimethod_invokes_in_spawned_task() {
+    let rt = Runtime::new();
+    let booted = boot(&rt);
+    rt.publish(&booted)
+        .unwrap_or_else(|e| panic!("booted runtime does not publish: {e}"));
+    let call = compile_function(
+        "function call(rt) { \
+           const core = rt.core; \
+           globalThis.__lightSharedCells = core.sharedTaskCells(); \
+           const mf = new core.MultiFn( \
+             core.symbol('demo', 'm'), \
+             (...xs) => xs[0], \
+             core.keyword(null, 'default'), \
+             core.getGlobalHierarchy(), \
+             core.atom(core.hashMap()), \
+             core.atom(core.hashMap()), \
+             core.atom(core.hashMap()), \
+             core.atom(null) \
+           ); \
+           core.addMethod(mf, core.keyword(null, 'a'), (k, x) => ['a', core.name(k), x ?? null]); \
+           core.addMethod(mf, core.keyword(null, 'default'), (...xs) => ['def', xs.length]); \
+           return JSON.stringify([ \
+             mf.call(null), \
+             mf.call(null, core.keyword(null, 'a')), \
+             mf.call(null, core.keyword(null, 'a'), 2), \
+             mf.call(null, core.keyword(null, 'b'), 1, 2, 3) \
+           ]); \
+         }",
+    )
+    .unwrap();
+    let task = rt.spawn(&call, &[&booted]).unwrap();
+    let out = std::thread::scope(|s| {
+        s.spawn(|| match task.run().unwrap() {
+            RunOutcome::Complete(v) => v.string().unwrap().to_string_lossy(),
+            other => panic!("{other:?}"),
+        })
+        .join()
+        .unwrap()
+    });
+    assert_eq!(out, r#"[["def",0],["a","a",null],["a","a",2],["def",4]]"#);
+}
+
 /// The operations that copy a collection's metadata to their result
 /// (`preserveMeta`: `empty`, `pop`, `conj`, `assoc`) give an engine result
 /// the engine metadata of its input as a form (`formWithMeta`), never by

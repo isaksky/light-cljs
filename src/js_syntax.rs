@@ -33,18 +33,22 @@ pub enum Kind {
     Regex,
 }
 
+/// Sentinel value in a `partners` table for tokens without a matching bracket.
+pub const NO_PARTNER: u32 = u32::MAX;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Token {
     pub kind: Kind,
-    pub start: usize,
-    pub end: usize,
+    pub start: u32,
+    pub end: u32,
     /// Whether a line terminator (or a comment holding one) precedes the token.
     pub newline_before: bool,
 }
 
 impl Token {
+    #[inline]
     pub fn text<'a>(&self, source: &'a str) -> &'a str {
-        &source[self.start..self.end]
+        &source[self.start as usize..self.end as usize]
     }
 }
 
@@ -155,6 +159,12 @@ pub fn lex_section(
     range: Range<usize>,
     balanced: bool,
 ) -> Result<Vec<Token>, LexError> {
+    if range.end >= u32::MAX as usize {
+        return Err(LexError {
+            offset: range.start,
+            message: "source exceeds u32::MAX - 1 byte offset limit",
+        });
+    }
     let bytes = source.as_bytes();
     let end = range.end;
     let at = |i: usize| if i < end { bytes[i] } else { 0 };
@@ -351,8 +361,8 @@ pub fn lex_section(
         }
         tokens.push(Token {
             kind,
-            start,
-            end: i,
+            start: start as u32,
+            end: i as u32,
             newline_before: newline,
         });
         newline = false;
@@ -492,7 +502,7 @@ struct Parser<'t, 'a> {
     source: &'a str,
     tokens: &'t [Token],
     /// For each bracket token, the index of its partner.
-    partners: Vec<usize>,
+    partners: Vec<u32>,
     pos: usize,
     scopes: Vec<Scope<'a>>,
     /// Each scope's names by scope and name: the name's position in
@@ -569,7 +579,10 @@ fn parse_with_variables<'t, 'a>(
     tokens: &'t [Token],
     record_variables: bool,
 ) -> Result<(Parser<'t, 'a>, bool), (usize, String)> {
-    let mut partners = vec![usize::MAX; tokens.len()];
+    if tokens.len() >= u32::MAX as usize {
+        return Err((0, "token count exceeds u32::MAX - 1".to_string()));
+    }
+    let mut partners = vec![NO_PARTNER; tokens.len()];
     let mut open = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         if token.kind != Kind::Punct {
@@ -585,10 +598,10 @@ fn parse_with_variables<'t, 'a>(
                 };
                 match open.pop() {
                     Some(opener) if tokens[opener].text(source) == expected => {
-                        partners[opener] = index;
-                        partners[index] = opener;
+                        partners[opener] = index as u32;
+                        partners[index] = opener as u32;
                     }
-                    _ => return Err((token.start, format!("unbalanced `{close}`"))),
+                    _ => return Err((token.start as usize, format!("unbalanced `{close}`"))),
                 }
             }
             _ => {}
@@ -596,7 +609,7 @@ fn parse_with_variables<'t, 'a>(
     }
     if let Some(&opener) = open.last() {
         return Err((
-            tokens[opener].start,
+            tokens[opener].start as usize,
             format!("unclosed `{}`", tokens[opener].text(source)),
         ));
     }
@@ -635,7 +648,7 @@ fn parse_with_variables<'t, 'a>(
             && (parser.pos == start + 1
                 || (parser.pos == start + 2 && tokens[start + 1].text(source) == ";"))
         {
-            parser.directive_end = tokens[parser.pos - 1].end;
+            parser.directive_end = tokens[parser.pos - 1].end as usize;
         } else {
             prologue = false;
         }
@@ -672,16 +685,16 @@ pub(crate) fn assign_existing_vars(source: &str, locals: &[&str]) -> Option<Stri
         // Parentheses make an object pattern an assignment in statement
         // position. In a for-in/of head the grammar requires a bare target.
         edits.push((
-            tokens[statement.keyword].start..tokens[statement.keyword].end,
+            tokens[statement.keyword].start as usize..tokens[statement.keyword].end as usize,
             if statement.enumeration { "" } else { "(" }.to_string(),
         ));
         if !statement.enumeration {
-            let end = tokens[statement.end - 1].end;
+            let end = tokens[statement.end - 1].end as usize;
             edits.push((end..end, ")".to_string()));
             for declarator in statement.declarators {
                 if !declarator.initialized {
-                    let start = tokens[declarator.range.start].start;
-                    let end = tokens[declarator.range.end - 1].end;
+                    let start = tokens[declarator.range.start].start as usize;
+                    let end = tokens[declarator.range.end - 1].end as usize;
                     // A repeated `var x;` leaves an existing value alone.
                     edits.push((start..end, "void 0".to_string()));
                 }
@@ -870,7 +883,10 @@ impl<'a> Parser<'_, 'a> {
 
     fn fail(&mut self, message: impl Into<String>) {
         if self.error.is_none() {
-            let offset = self.peek().or(self.tokens.last()).map_or(0, |t| t.start);
+            let offset = self
+                .peek()
+                .or(self.tokens.last())
+                .map_or(0, |t| t.start as usize);
             self.error = Some((offset, message.into()));
         }
         self.pos = self.tokens.len();
@@ -948,7 +964,9 @@ impl<'a> Parser<'_, 'a> {
 
     /// Whether the `(` at `index` opens arrow function parameters.
     fn arrow_parameters_at(&self, index: usize) -> bool {
-        self.punct_at(index) == Some("(") && self.punct_at(self.partners[index] + 1) == Some("=>")
+        self.punct_at(index) == Some("(")
+            && self.partners[index] != NO_PARTNER
+            && self.punct_at(self.partners[index] as usize + 1) == Some("=>")
     }
 
     fn statements_until_brace(&mut self, scope: usize) {
@@ -1361,7 +1379,7 @@ impl<'a> Parser<'_, 'a> {
             // A left-hand-side expression; its end is the class body's `{`.
             while self.pos < self.tokens.len() && !self.at_punct("{") {
                 if self.at_punct("(") || self.at_punct("[") {
-                    let close = self.partners[self.pos];
+                    let close = self.partners[self.pos] as usize;
                     self.pos += 1;
                     self.expression(scope, SEQUENCE);
                     if self.pos != close {
@@ -1541,7 +1559,7 @@ impl<'a> Parser<'_, 'a> {
                     }
                     "(" if self.arrow_parameters_at(self.pos) => self.arrow(scope),
                     "(" | "[" => {
-                        let close = self.partners[self.pos];
+                        let close = self.partners[self.pos] as usize;
                         self.pos += 1;
                         self.expression(scope, SEQUENCE);
                         if self.pos != close {
@@ -2019,6 +2037,25 @@ struct Previous {
     punct: [u8; 2],
 }
 
+/// Summary of the end of a [`TerseWriter`] buffer, used to compute the exact
+/// minimal separator when joining independently rewritten slices.
+#[derive(Clone, Copy)]
+pub struct WriterEnd {
+    previous: Option<Previous>,
+    ends_with_newline: bool,
+    ends_with_slash: bool,
+}
+
+/// First written token (or leading comment) of a rewritten slice, used with
+/// [`WriterEnd`] to join independently rewritten slices safely.
+#[derive(Clone, Debug)]
+pub struct FirstToken {
+    pub kind: Kind,
+    pub text: String,
+    pub is_comment: bool,
+    pub newline_before: bool,
+}
+
 fn word_byte(byte: u8) -> bool {
     identifier_part(byte) || byte == b'\\'
 }
@@ -2056,31 +2093,73 @@ fn may_start_statement(shape: Shape) -> bool {
     }
 }
 
+fn token_separator(
+    previous: Previous,
+    ends_with_newline: bool,
+    shape: Shape,
+    newline_before: bool,
+) -> &'static str {
+    if ends_with_newline {
+        return "";
+    }
+    let first = shape.text.as_bytes()[0];
+    let line = newline_before
+        && ((previous.restricted && !matches!(shape.text, ";" | "}"))
+            || (previous.ends_statement && may_start_statement(shape)));
+    if line {
+        return "\n";
+    }
+    let space = (word_byte(previous.last) && word_byte(first))
+        || (previous.last == b'+' && first == b'+')
+        || (previous.last == b'-' && first == b'-')
+        || (previous.last == b'/' && matches!(first, b'/' | b'*'))
+        || (previous.regex && word_byte(first))
+        || (previous.plain_number && first == b'.')
+        || (previous.last == b'<' && first == b'!')
+        || (previous.punct == *b"--" && first == b'>');
+    if space { " " } else { "" }
+}
+
 impl TerseWriter {
+    /// Snapshot of the writer's end state for joining with a following slice.
+    pub fn end_state(&self) -> Option<WriterEnd> {
+        (!self.out.is_empty()).then(|| WriterEnd {
+            previous: self.previous,
+            ends_with_newline: self.out.ends_with('\n'),
+            ends_with_slash: self.out.ends_with('/'),
+        })
+    }
+
+    /// Minimal separator between a slice ending with `prev` and a following
+    /// slice starting with `next` (assuming a line break separated their
+    /// top-level statements in the original source).
+    pub fn boundary_separator(prev: WriterEnd, next: &FirstToken) -> &'static str {
+        if next.is_comment {
+            if next.newline_before && !prev.ends_with_newline {
+                "\n"
+            } else if prev.ends_with_slash {
+                " "
+            } else {
+                ""
+            }
+        } else if let Some(previous) = prev.previous {
+            let shape = Shape {
+                kind: next.kind,
+                text: &next.text,
+            };
+            token_separator(previous, prev.ends_with_newline, shape, true)
+        } else {
+            ""
+        }
+    }
+
     /// Writes `text`, separated as a token of `shape` (`text` itself for most
     /// tokens) that follows a line break when `newline_before`.
     pub fn write(&mut self, shape: Shape, text: &str, newline_before: bool) {
-        let first = shape.text.as_bytes()[0];
         if let Some(previous) = self.previous {
-            let line = newline_before
-                && ((previous.restricted && !matches!(shape.text, ";" | "}"))
-                    || (previous.ends_statement && may_start_statement(shape)));
-            let space = (word_byte(previous.last) && word_byte(first))
-                || (previous.last == b'+' && first == b'+')
-                || (previous.last == b'-' && first == b'-')
-                || (previous.last == b'/' && matches!(first, b'/' | b'*'))
-                || (previous.regex && word_byte(first))
-                || (previous.plain_number && first == b'.')
-                || (previous.last == b'<' && first == b'!')
-                || (previous.punct == *b"--" && first == b'>');
-            // After a line comment ([`TerseWriter::comment`]) the line has
-            // ended already.
-            if !self.out.ends_with('\n') {
-                if line {
-                    self.out.push('\n');
-                } else if space {
-                    self.out.push(' ');
-                }
+            let sep = token_separator(previous, self.out.ends_with('\n'), shape, newline_before);
+            if !sep.is_empty() {
+                self.out.push_str(sep);
             }
         }
         self.out.push_str(text);
@@ -2148,9 +2227,13 @@ impl TerseWriter {
 }
 
 /// For each bracket punctuator of `tokens`, the index of its partner; other
-/// tokens and unmatched brackets have `usize::MAX`.
-pub fn partners(source: &str, tokens: &[Token]) -> Vec<usize> {
-    let mut partners = vec![usize::MAX; tokens.len()];
+/// tokens and unmatched brackets have [`NO_PARTNER`].
+pub fn partners(source: &str, tokens: &[Token]) -> Vec<u32> {
+    assert!(
+        tokens.len() < u32::MAX as usize,
+        "token count exceeds u32::MAX - 1"
+    );
+    let mut partners = vec![NO_PARTNER; tokens.len()];
     let mut open: Vec<usize> = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         if token.kind != Kind::Punct {
@@ -2169,8 +2252,8 @@ pub fn partners(source: &str, tokens: &[Token]) -> Vec<usize> {
                     && tokens[opener].text(source) == expected
                 {
                     open.pop();
-                    partners[opener] = index;
-                    partners[index] = opener;
+                    partners[opener] = index as u32;
+                    partners[index] = opener as u32;
                 }
             }
             _ => {}
@@ -2181,18 +2264,13 @@ pub fn partners(source: &str, tokens: &[Token]) -> Vec<usize> {
 
 /// Whether the `)` at `close` ends the head of an `if`, `for`, `while` or
 /// `with` statement, after which a statement starts.
-pub fn closes_control_head(
-    source: &str,
-    tokens: &[Token],
-    partners: &[usize],
-    close: usize,
-) -> bool {
+pub fn closes_control_head(source: &str, tokens: &[Token], partners: &[u32], close: usize) -> bool {
     let open = partners[close];
-    open != usize::MAX
+    open != NO_PARTNER
         && open > 0
-        && tokens[open - 1].kind == Kind::Name
+        && tokens[open as usize - 1].kind == Kind::Name
         && matches!(
-            tokens[open - 1].text(source),
+            tokens[open as usize - 1].text(source),
             "if" | "for" | "while" | "with"
         )
 }
@@ -2200,7 +2278,7 @@ pub fn closes_control_head(
 /// The `;` tokens that can go: those right before a `}`, which ends the
 /// statement anyway, unless the `;` is an empty statement that a statement
 /// needs as its body (`if (a) ;`, `else ;`, `do ;`, `label: ;`, `case a: ;`).
-pub fn redundant_semicolons(source: &str, tokens: &[Token], partners: &[usize]) -> Vec<bool> {
+pub fn redundant_semicolons(source: &str, tokens: &[Token], partners: &[u32]) -> Vec<bool> {
     let mut redundant = vec![false; tokens.len()];
     for index in 1..tokens.len().saturating_sub(1) {
         let token = &tokens[index];
@@ -2560,5 +2638,22 @@ mod tests {
         for word in ["do", "if", "in", "of", "NaN", "Map", "Set", "let"] {
             assert!(!names.contains(&word.to_owned()), "{word}");
         }
+    }
+
+    #[test]
+    fn token_is_compact_and_guards_u32_limits() {
+        assert_eq!(std::mem::size_of::<Token>(), 12);
+        assert_eq!(NO_PARTNER, u32::MAX);
+        assert!(lex_section("", 0..(u32::MAX as usize), false).is_err());
+
+        let text = "f(a, [b]) + )";
+        let tokens = lex_section(text, 0..text.len(), false).unwrap();
+        let table = partners(text, &tokens);
+        assert_eq!(table[0], NO_PARTNER); // `f`
+        assert_eq!(table[1], 7); // `(` -> `)`
+        assert_eq!(table[7], 1); // `)` -> `(`
+        assert_eq!(table[4], 6); // `[` -> `]`
+        assert_eq!(table[6], 4); // `]` -> `[`
+        assert_eq!(*table.last().unwrap(), NO_PARTNER); // unmatched `)`
     }
 }

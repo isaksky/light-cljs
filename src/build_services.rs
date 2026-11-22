@@ -96,6 +96,22 @@ impl BuildGuard {
             }
         }
     }
+
+    /// Record source metadata for `index` ahead of parallel top-level analysis
+    /// without advancing the coordinator's current `window`.
+    pub(crate) fn register_source(&self, index: usize, name: &str, file: Option<&str>) {
+        if let Some(context) = self.build.borrow_mut().as_mut() {
+            if context.sources.len() <= index {
+                context.sources.resize(index + 1, None);
+            }
+            if context.sources[index].is_none() {
+                context.sources[index] = Some(Site {
+                    namespace: name.to_owned(),
+                    file: file.map(str::to_owned),
+                });
+            }
+        }
+    }
 }
 
 impl Drop for BuildGuard {

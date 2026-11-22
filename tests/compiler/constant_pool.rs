@@ -226,9 +226,10 @@ fn advanced_hash_conses_constants_on_their_emitted_structure() {
     // each a read of an entry, are inlined at their calls (light-cljs-214),
     // and `first`, `second` and `:k` of the inlined constants read the entries
     // of their items (light-cljs-221).
-    assert_eq!(advanced.matches("rt$vectorFromArray(").count(), 3);
+    // The printed vector, built at its site, is its tail (light-cljs-1023).
+    assert_eq!(advanced.matches("rt$vectorFromArray(").count(), 2);
     assert!(
-        advanced.contains("rt$vectorFromArray([k0, k3, k4, (k0 === k0), (k0 === k0)"),
+        advanced.contains("rt$vectorOfTail([k0, k3, k4, (k0 === k0), (k0 === k0)"),
         "{advanced}"
     );
     // The table precedes the program in bundler output too.
@@ -453,7 +454,9 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     // Below `Advanced` each iteration builds every literal (keywords are
     // interned but still looked up per site); at `Advanced` the constant
     // parts are built once, and only the map with a dynamic value is built
-    // per iteration, on its key shape (light-cljs-220), and the constant map
+    // per iteration, of its pooled keys and its values in one array
+    // (`arrayMapOfLiteral`, light-cljs-1080; before it on its key shape,
+    // light-cljs-220, which the pool no longer holds), and the constant map
     // by `arrayMapFromArray` (light-cljs-230), the constant set by
     // `arraySetFromArray` (light-cljs-231). The row passes through
     // `identity`: read directly, the lookups of its constant values and their
@@ -473,6 +476,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         "mapFromArray",
         "arrayMapFromArray",
         "mapFromShape",
+        "arrayMapOfLiteral",
         "setFromArray",
         "arraySetFromArray",
         "keyword",
@@ -480,9 +484,9 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
     ];
     let program = program(source);
     let expected = [
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":2000,"mapFromShape":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
-        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":2000,"mapFromShape":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
-        r#"{"vectorFromArray":1,"mapFromArray":0,"arrayMapFromArray":1,"mapFromShape":1000,"setFromArray":0,"arraySetFromArray":1,"keyword":10,"makeVector":2}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":2000,"mapFromShape":0,"arrayMapOfLiteral":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":2000,"mapFromArray":2000,"arrayMapFromArray":2000,"mapFromShape":0,"arrayMapOfLiteral":0,"setFromArray":1000,"arraySetFromArray":0,"keyword":13000,"makeVector":2001}"#,
+        r#"{"vectorFromArray":1,"mapFromArray":0,"arrayMapFromArray":1,"mapFromShape":0,"arrayMapOfLiteral":1000,"setFromArray":0,"arraySetFromArray":1,"keyword":10,"makeVector":2}"#,
     ];
     for (level, expected) in OptimizationLevel::ALL.into_iter().zip(expected) {
         assert_eq!(
@@ -500,29 +504,28 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
             "2 = rt$keyword(null, \"pos\");",
             "3 = rt$keyword(null, \"empty\");",
             "4 = rt$keyword(null, \"meta\");",
-            "5 = rt$mapShape([k0, k1, k2, k3, k4], \
-             [-1388402092, 1771418977, -864607220, 767870958, 1499536964]);",
-            "6 = rt$keyword(null, \"b\");",
-            "7 = rt$keyword(null, \"a\");",
-            "8 = rt$hashed(rt$arraySetFromArray([k6, k7]), 551401264);",
-            "9 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
-            "10 = rt$keyword(null, \"kind\");",
-            "11 = rt$keyword(null, \"row\");",
-            "12 = rt$keyword(null, \"dims\");",
-            "13 = rt$hashed(rt$arrayMapFromArray([k10, k11, k12, k9]), 1014014460);",
+            "5 = rt$keyword(null, \"b\");",
+            "6 = rt$keyword(null, \"a\");",
+            "7 = rt$hashed(rt$arraySetFromArray([k5, k6]), 551401264);",
+            "8 = rt$hashed(rt$vectorFromArray([1, 2]), 1185709346);",
+            "9 = rt$keyword(null, \"kind\");",
+            "10 = rt$keyword(null, \"row\");",
+            "11 = rt$keyword(null, \"dims\");",
+            "12 = rt$hashed(rt$arrayMapFromArray([k9, k10, k11, k8]), 1014014460);",
         ]
     );
-    // 705 bytes, as before light-cljs-1011: 826 while its keyword constants
-    // carried their hashes, which light-cljs-1050 took out.
+    // 593 bytes since light-cljs-1080 took out the row's key shape: 705, as
+    // before light-cljs-1011, and 826 while its keyword constants carried
+    // their hashes, which light-cljs-1050 took out.
     let table = pool(&program, OptimizationLevel::Advanced);
     assert_eq!(
         table,
         ConstantPool {
-            entries: 14,
+            entries: 13,
             composites: 3,
             functions: 0,
             lazy: 0,
-            bytes: 705
+            bytes: 593
         }
     );
     assert_eq!(
@@ -534,7 +537,7 @@ fn hot_loop_allocations_and_pool_size_are_pinned() {
         .to_string()
         .lines()
         .nth(1),
-        Some("constant pool: 14 entries (3 composite, 0 lazy), 705 bytes")
+        Some("constant pool: 13 entries (3 composite, 0 lazy), 593 bytes")
     );
     assert_eq!(table.bytes, table_bytes(&advanced));
     for level in [OptimizationLevel::None, OptimizationLevel::Prepare] {

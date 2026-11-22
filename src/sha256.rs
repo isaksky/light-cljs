@@ -144,6 +144,25 @@ impl Fingerprint {
         self.field(Field::Text, text.as_bytes())
     }
 
+    /// Equivalent to [`Self::text`] on the concatenation of `pieces` (whose
+    /// total byte length must equal `total_len`), without allocating the
+    /// concatenated buffer.
+    pub fn text_pieces<'a>(
+        &mut self,
+        pieces: impl IntoIterator<Item = &'a str>,
+        total_len: usize,
+    ) -> &mut Self {
+        self.hash.update(&[Field::Text as u8]);
+        self.hash.update(&(total_len as u64).to_le_bytes());
+        let mut written = 0usize;
+        for piece in pieces {
+            written += piece.len();
+            self.hash.update(piece.as_bytes());
+        }
+        debug_assert_eq!(written, total_len, "text_pieces length mismatch");
+        self
+    }
+
     pub fn number(&mut self, number: u64) -> &mut Self {
         self.field(Field::Number, &number.to_le_bytes())
     }
@@ -411,5 +430,23 @@ mod tests {
             hash.update(&message[split..]);
             assert_eq!(hash.finish(), whole, "split at {split}");
         }
+    }
+
+    #[test]
+    fn text_pieces_matches_text_across_chunk_boundaries() {
+        let pieces = [
+            "",
+            "alpha ",
+            &"x".repeat(70),
+            " beta ",
+            &"y".repeat(129),
+            "",
+        ];
+        let joined: String = pieces.concat();
+        let mut whole = Fingerprint::new("pieces-test");
+        whole.text(&joined);
+        let mut streamed = Fingerprint::new("pieces-test");
+        streamed.text_pieces(pieces, joined.len());
+        assert_eq!(streamed.finish(), whole.finish());
     }
 }

@@ -1173,7 +1173,15 @@ and `Prepare` output does not change.
     which calls the value's keyed slot or else the operation
     (light-cljs-1016, docs/value-layout.md). These need, besides core
     protocols intact, that the program writes no core protocol member by
-    name and spells none in raw text.
+    name and spells none in raw text;
+  - writes `(str ...)` as its operands' texts joined with `+`, as upstream's
+    `str` macro does (light-cljs-1023): a string operand as it is, a number
+    or boolean as a template (`` `${i}` ``), any other through
+    `rt$strOne(x)`. An operand evaluated after one whose text may run code
+    must be a pure operand, or the call stays `rt$str(...)`, which evaluates
+    every operand first. A vector literal of at most 32 items built at its
+    site is `rt$vectorOfTail([...])`, a vector of the new array as its tail,
+    with no copy and no trie.
 
   Except for the operators, these lowerings need core protocols intact. A
   replaced operation keeps its call.
@@ -2688,12 +2696,28 @@ walks its hierarchy, only where the program could see the difference.
   The cache stays where it can tell: a cached answer survives a change of
   a constructor's prototypes, as upstream's does, and the cache starts as
   the method table, whose entry for a function wins over a later key it
-  also isa. Only answers for a function, or a vector holding one
-  (`leanCached`), are cached; any other value isa only the keys equal to it,
-  so its answer is the walk's, and the cache, a scan of entries, does not
-  grow with distinct numbers or keywords. A function, equal only to itself,
-  has its answer in a `Map` by identity (`fns`), so distinct closures do not
-  scan a growing cache either (from the Sol review).
+  also isa. Answers for a function, or a vector holding one
+  (`leanCached`), are always cached. Any other value isa only the keys equal
+  to it, so its answer is the walk's; a plain one (`leanPlain`: nil, a
+  boolean, a string, a number equal to itself, a keyword, a symbol, or a
+  vector of them) is cached too, as upstream caches every answer: in the
+  cache while it holds fewer than 16 entries, past them in a `Map` by a text
+  that equal plain values share (`more`, `leanCode`, serialized once at the
+  root so nested vectors stay linear), so that the cache, a
+  scan of entries, does not grow with distinct numbers or keywords
+  (light-cljs-1083). `getMethod`
+  scans the cache by identity first, as upstream's `array-index-of` compares
+  keywords, so an interned keyword literal finds its method or cached
+  answer with no walk; else `leanMethod` looks up the cache by equality and
+  walks. A function, equal only to itself, has its answer in a `Map` by
+  identity (`fns`), so distinct closures do not scan a growing cache either
+  (from the Sol review). `MultiFn`'s `call` passes 0 to 3 arguments to the
+  dispatch function and the method through a step per count
+  (`multiCall1`), with no rest array or spread, and more through
+  `multiApply`; where the tables are in atoms, its `-get-method` is the
+  dispatcher's steps for two arguments, which `getMethodProtocol` puts in
+  `multiHooks.getMethodProtocol`: a program's method from the protocol
+  lookup, else `getMethod`.
 - **Where the tables stay in atoms.** `MultiFn.tables effect: multiHooks
   when: ...` installs the persistent path (`multiHooks.addMethod`,
   `.getMethod` and `.getMethodProtocol`, through which a call dispatches
@@ -3788,13 +3812,16 @@ tier 4 (light-cljs-220); tier 5 (light-cljs-221) has a section of its own,
 - **Key shapes (tier 4, light-cljs-220).** At `Advanced`, when the table has
   `hashes` (core protocols intact), `Emitter::shaped` builds a `Map` literal
   whose keys are all constants and whose values are not (a map of constants
-  is pooled whole) from a key shape, `ConstantKey::Shape { set: false, keys }`
-  declared from the map site in `value_expr`: `const k3 =
-  rt$mapShape([k0, k1, k2], [1174270348, 2099068185, -1757859776]);`, the
-  keys' parts and their hashes from `ConstantHashes::part`. The site passes
-  the values, `rt$mapFromShape(k3, [k4, l0, l1])`, and each evaluation only
-  makes the frozen entries `{key, value, hash}` and the map: no key is looked
-  up, compared or hashed. `ConstantHashes::distinct` must prove the keys
+  is pooled whole) without looking up, comparing or hashing a key per
+  evaluation. Up to 8 entries the site builds the array map of one new array
+  of the keys' pooled parts and the values in turn, which the map keeps as
+  upstream's literal keeps its array, `rt$arrayMapOfLiteral([k0, k4, k1, l0,
+  k2, l1])` (light-cljs-1080; before it a pooled `rt$mapShape` that
+  `rt$mapFromShape(k3, [k4, l0, l1])` copied the keys from at each
+  evaluation). Past 8 entries the keys come from a key shape,
+  `ConstantKey::Shape { set: false, keys }` declared from the map site in
+  `value_expr`, the keys' parts and their hashes from `ConstantHashes::part`
+  (below). `ConstantHashes::distinct` must prove the keys
   pairwise unequal; keys it cannot tell apart (`{:a 1}` and `{:a 1.0}`, map or
   set keys with items, NaN, keywords spelled alike) keep `mapFromArray` and its
   merging, and reader-distinct numbers that are `=` (`1`, `1.0`) already make a
@@ -3807,9 +3834,9 @@ tier 4 (light-cljs-220); tier 5 (light-cljs-221) has a section of its own,
   evaluation's entries. Trie nodes are never mutated and the shape's token
   never reaches a transient, so the map has exactly the entries, root, nodes,
   capacities and collision order `mapFromArray` gives it, which later
-  operations (transient removal reorders collision nodes) can observe. The
-  only difference is that an array map's entries hold their hash from the
-  start, where `putEntry` computes it on the first read. Values are evaluated
+  operations (transient removal reorders collision nodes) can observe; an
+  array map holds the flat key, value array `arrayMapFromArray` builds of the
+  same pairs. Values are evaluated
   once each in the operand order the reader gave the literal, as before. A
   shape is a lazy cell when one of its keys is.
 - **Set shapes.** A `Set` literal whose first members in reader order are

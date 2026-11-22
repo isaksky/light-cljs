@@ -2030,7 +2030,7 @@ fn parse_core_table<'a>(
             ));
         };
         let name = key.text(source);
-        insert(name, CoreReference::Cell(name), key.start)?;
+        insert(name, CoreReference::Cell(name), key.start as usize)?;
         at += 1;
         if cell_tokens
             .get(at)
@@ -2055,7 +2055,7 @@ fn parse_core_table<'a>(
             Some("}") => break,
             _ => {
                 return Err((
-                    key.start,
+                    key.start as usize,
                     format!("`{CORE_CELLS}` must be a flat object literal"),
                 ));
             }
@@ -2101,12 +2101,12 @@ fn parse_core_table<'a>(
         at += 1;
         let reference = if text(at) == Some(":") {
             let Some(binding) = name_at(at + 1) else {
-                return Err((key.start, shape()));
+                return Err((key.start as usize, shape()));
             };
             at += 2;
             if text(at) == Some(".") {
                 let Some(member) = name_at(at + 1) else {
-                    return Err((key.start, shape()));
+                    return Err((key.start as usize, shape()));
                 };
                 at += 2;
                 CoreReference::Member(binding.text(source), member.text(source))
@@ -2122,15 +2122,15 @@ fn parse_core_table<'a>(
         };
         if !bindings.contains_key(binding) {
             return Err((
-                key.start,
+                key.start as usize,
                 format!("the core table reads `{binding}` for `{name}`, which no unit declares"),
             ));
         }
-        insert(name, reference, key.start)?;
+        insert(name, reference, key.start as usize)?;
         match text(at) {
             Some(",") => at += 1,
             Some("}") => break,
-            _ => return Err((key.start, shape())),
+            _ => return Err((key.start as usize, shape())),
         }
     }
     if hub_tokens[at..]
@@ -2180,7 +2180,7 @@ fn parse_dispatchers<'a>(
             let key = tokens
                 .get(index + 2)
                 .filter(|token| token.kind == Kind::Str)
-                .map(|token| &source[token.start + 1..token.end - 1]);
+                .map(|token| &source[token.start as usize + 1..token.end as usize - 1]);
             let declarator = matches!(text(index.checked_sub(3)), Some("const" | ","))
                 && text(index.checked_sub(1)) == Some("=")
                 && text(Some(index + 1)) == Some("(");
@@ -2188,13 +2188,13 @@ fn parse_dispatchers<'a>(
                 (Some(binding), Some(key)) if declarator && !key.contains('\\') => {
                     if table.insert(key, binding.text(source)).is_some() {
                         errors.push((
-                            token.start,
+                            token.start as usize,
                             format!("`{CORE_METHOD}` registers a dispatcher for `{key}` twice"),
                         ));
                     }
                 }
                 _ => errors.push((
-                    token.start,
+                    token.start as usize,
                     format!(
                         "unit `{}`: `{CORE_METHOD}` registers a core protocol dispatcher by key; \
                          call it only as `const <binding> = {CORE_METHOD}(\"<key>\", ...)` so the \

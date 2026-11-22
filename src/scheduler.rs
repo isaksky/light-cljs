@@ -874,6 +874,47 @@ struct Shared<J, O> {
 }
 
 impl<J: Job, O> Shared<J, O> {
+    fn submit_batch(&self, jobs: impl IntoIterator<Item = J>) {
+        let entries: Vec<_> = jobs
+            .into_iter()
+            .map(|job| Entry::new(job, self.phases))
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        if let Some(p) = &self.perturbation
+            && let Some(first) = entries.first()
+        {
+            p.pause(first.key, usize::MAX, perturb::Boundary::Submit);
+        }
+        let mut state = self.lock();
+        if state.cancelled || state.shutdown {
+            state.counts.cancelled += entries.len() as u64;
+            drop(state);
+            return;
+        }
+        let mut admitted = 0;
+        let mut any_restricted = false;
+        let deques = state.local.len();
+        for entry in entries {
+            let phase = entry.phase;
+            let added = state.submit(&self.limits, entry);
+            if added > 0 && state.servers[phase] < deques {
+                any_restricted = true;
+            }
+            admitted += added;
+        }
+        let parked = state.parked;
+        crate::wait_timeline::instant(
+            crate::wait_timeline::Kind::Queue,
+            state.runnable_total as u64,
+            state.backlog_len as u64,
+        );
+        drop(state);
+        self.wake_filtered(admitted, parked, any_restricted);
+    }
+
     fn submit_urgent(&self, job: J) {
         let entry = Entry::new(job, self.phases);
         let mut state = self.lock();
@@ -905,20 +946,30 @@ impl<J: Job, O> Shared<J, O> {
         }
     }
 
-    /// Wake workers for `count` newly runnable jobs: one for one, all for
-    /// several, and all whenever some phase has fewer servers, since the
-    /// one woken might not serve the job's phase.
+    /// Wake workers for `count` newly runnable jobs: skip when none are
+    /// parked, wake only `min(count, parked)` via `notify_one` when every
+    /// admitted job is in an unrestricted phase, and `notify_all` when a
+    /// restricted phase needs a specific subset of workers.
     fn wake(&self, count: usize) {
+        self.wake_filtered(count, usize::MAX, self.restricted);
+    }
+
+    fn wake_filtered(&self, count: usize, parked: usize, any_restricted: bool) {
+        if count == 0 || parked == 0 {
+            return;
+        }
         // Under a fixed assignment only the job's owner may run it.
         #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
-        if count > 0 && self.perturbation.as_ref().is_some_and(|p| p.fixed) {
+        if self.perturbation.as_ref().is_some_and(|p| p.fixed) {
             self.work.notify_all();
             return;
         }
-        match count {
-            0 => {}
-            1 if !self.restricted => self.work.notify_one(),
-            _ => self.work.notify_all(),
+        if any_restricted || count >= parked {
+            self.work.notify_all();
+        } else {
+            for _ in 0..count {
+                self.work.notify_one();
+            }
         }
     }
 
@@ -976,6 +1027,20 @@ pub struct Submitter<J: Job, O>(Arc<Shared<J, O>>);
 impl<J: Job, O> Submitter<J, O> {
     pub fn push_urgent(&self, job: J) {
         self.0.submit_urgent(job);
+    }
+
+    pub fn submit_batch(&self, jobs: impl IntoIterator<Item = J>) {
+        self.0.submit_batch(jobs);
+    }
+
+    pub fn cancel(&self) {
+        self.0.cancelled.store(true, Ordering::Relaxed);
+        let mut state = self.0.lock();
+        state.cancelled = true;
+        let dropped = state.drain_unstarted();
+        drop(state);
+        self.0.outcomes.notify_all();
+        drop(dropped);
     }
 }
 impl<J: Job, O> HelpHandle<J, O> {
@@ -1279,6 +1344,11 @@ struct Inline<'a, J: Job, O, W> {
 }
 
 impl<J: Job, O, W> Coordinator<'_, J, O, W> {
+    /// A thread-safe handle to submit batches or urgent jobs directly to this pool.
+    pub fn submitter(&self) -> Submitter<J, O> {
+        Submitter(self.shared.owner.upgrade().expect("running scheduler"))
+    }
+
     /// The pool's slots, the coordinator's included.
     pub fn slots(&self) -> Slots {
         self.slots
@@ -1298,11 +1368,18 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
             return;
         }
         let admitted = state.submit(&self.shared.limits, entry);
+        let parked = state.parked;
+        let any_restricted = self.shared.restricted
+            && state
+                .servers
+                .iter()
+                .enumerate()
+                .any(|(p, &s)| s < state.local.len() && state.runnable[p] > 0);
         drop(state);
-        self.shared.wake(admitted);
+        self.shared.wake_filtered(admitted, parked, any_restricted);
     }
 
-    /// Submit several jobs under one lock; a batch wakes every worker.
+    /// Submit several jobs under one lock; wakes only as many workers as needed.
     pub fn submit_batch(&mut self, jobs: impl IntoIterator<Item = J>) {
         let entries: Vec<_> = jobs
             .into_iter()
@@ -1321,16 +1398,24 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
             return;
         }
         let mut admitted = 0;
+        let mut any_restricted = false;
+        let deques = state.local.len();
         for entry in entries {
-            admitted += state.submit(&self.shared.limits, entry);
+            let phase = entry.phase;
+            let added = state.submit(&self.shared.limits, entry);
+            if added > 0 && state.servers[phase] < deques {
+                any_restricted = true;
+            }
+            admitted += added;
         }
+        let parked = state.parked;
         crate::wait_timeline::instant(
             crate::wait_timeline::Kind::Queue,
             state.runnable_total as u64,
             state.backlog_len as u64,
         );
         drop(state);
-        self.shared.wake(admitted);
+        self.shared.wake_filtered(admitted, parked, any_restricted);
     }
 
     /// Run `job` before any queued work, as soon as a slot frees: work the
@@ -1547,6 +1632,96 @@ where
         Some(panic) => Err(PoolError::Panic(panic)),
         None => Ok(result),
     }
+}
+
+/// Stack size for worker threads in [`map`], matching the main thread's 8 MiB
+/// stack so deeply nested recursive emission or parsing never overflows on
+/// platforms with small pthread defaults (e.g., 512 KiB on macOS).
+const MAP_WORKER_STACK: usize = 8 << 20;
+
+/// Run independent `jobs`, each paired with an estimated cost (largest first),
+/// on up to `slots` CPU slots (the calling thread plus up to `slots.workers()`
+/// scoped worker threads), returning outcomes in the original `jobs` order.
+///
+/// With [`Slots::ONE`] or at most one job, runs inline on the calling thread
+/// with no pool overhead. Propagates any worker panic after joining all threads.
+pub fn map<T, O>(slots: Slots, jobs: Vec<(u64, T)>, execute: impl Fn(T) -> O + Sync) -> Vec<O>
+where
+    T: Send,
+    O: Send,
+{
+    let len = jobs.len();
+    if slots == Slots::ONE || len <= 1 {
+        return jobs.into_iter().map(|(_, job)| execute(job)).collect();
+    }
+    let mut indexed: Vec<(usize, u64, T)> = jobs
+        .into_iter()
+        .enumerate()
+        .map(|(index, (cost, job))| (index, cost, job))
+        .collect();
+    // Longest processing time first (LPT), ties in submission order.
+    indexed.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let queue: Mutex<VecDeque<(usize, T)>> = Mutex::new(
+        indexed
+            .into_iter()
+            .map(|(index, _, job)| (index, job))
+            .collect(),
+    );
+    let outcomes: Mutex<Vec<Option<O>>> = Mutex::new((0..len).map(|_| None).collect());
+    let failed = AtomicBool::new(false);
+    let failure: Mutex<Option<WorkerPanic>> = Mutex::new(None);
+    let workers = slots.get().min(len) - 1;
+    let run_slot = |slot: usize| {
+        loop {
+            if failed.load(Ordering::Relaxed) {
+                break;
+            }
+            let next = queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front();
+            let Some((index, job)) = next else {
+                break;
+            };
+            match panic::catch_unwind(AssertUnwindSafe(|| execute(job))) {
+                Ok(outcome) => {
+                    outcomes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)[index] = Some(outcome);
+                }
+                Err(payload) => {
+                    failed.store(true, Ordering::Relaxed);
+                    failure
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_or_insert(WorkerPanic {
+                            slot,
+                            message: panic_message(payload.as_ref()),
+                        });
+                    break;
+                }
+            }
+        }
+    };
+    thread::scope(|scope| {
+        for index in 0..workers {
+            let run_slot = &run_slot;
+            let _ = thread::Builder::new()
+                .name(format!("light-cljs-worker-{}", index + 1))
+                .stack_size(MAP_WORKER_STACK)
+                .spawn_scoped(scope, move || run_slot(index + 1));
+        }
+        run_slot(0);
+    });
+    if let Some(panic) = failure.into_inner().unwrap_or_else(|e| e.into_inner()) {
+        panic!("{panic}");
+    }
+    outcomes
+        .into_inner()
+        .unwrap_or_else(|e| e.into_inner())
+        .into_iter()
+        .map(|outcome| outcome.expect("every job completed"))
+        .collect()
 }
 
 /// How many of `deques` workers serve each phase ([`Config::servers`]):

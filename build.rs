@@ -489,6 +489,48 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         };
         runtime.insert_str(runtime.find(anchor).unwrap() + within, &hook);
     }
+    if !shared {
+        const NS_REFLECT_HOOKS: [(&str, &str, &str); 5] = [
+            (
+                "  const namespaces = new Map();\n",
+                "",
+                "  let _regNsDepth = 0, _flushingNs = false; // namespaceLog\n",
+            ),
+            (
+                "    if (!namespaces.has(key)) namespaces.set(key, new Namespace(obj, name));\n",
+                "    if (!namespaces",
+                "    if (!_regNsDepth && !_flushingNs && typeof globalThis.__lightRootService === \"function\") { const _add = globalThis.__lightRootService(\"c\\u0000\" + key); if (_add) { _flushingNs = true; try { for (const _n of JSON.parse(_add)) createNs(symbol(null, _n)); } finally { _flushingNs = false; } } } // namespaceLog\n",
+            ),
+            (
+                "      excludes: new Set(context.excludes ?? []), bindings: new Set(context.bindings ?? [])};\n    return ns;\n  }\n",
+                "",
+                "  const _origRegNs = registerReaderNamespace; registerReaderNamespace = function registerReaderNamespace(name, context, added) { _regNsDepth++; try { return _origRegNs(name, context, added); } finally { _regNsDepth--; } }; // namespaceLog\n",
+            ),
+            (
+                "    return namespaces.get(str(name)) ?? null;\n",
+                "    return",
+                "    if (!_flushingNs && typeof globalThis.__lightRootService === \"function\") { const _add = globalThis.__lightRootService(\"r\\u0000\" + str(name)); if (_add) { _flushingNs = true; try { for (const _n of JSON.parse(_add)) createNs(symbol(null, _n)); } finally { _flushingNs = false; } } } // namespaceLog\n",
+            ),
+            (
+                "  function allNs() { if (arguments.length) return invalidArity(arguments.length); return listFromArray([...namespaces.values()]); }\n",
+                "",
+                "  const _origAllNs = allNs; allNs = function allNs() { if (!_flushingNs && typeof globalThis.__lightRootService === \"function\") { const _add = globalThis.__lightRootService(\"r\\u0000*\"); if (_add) { _flushingNs = true; try { for (const _n of JSON.parse(_add)) createNs(symbol(null, _n)); } finally { _flushingNs = false; } } } return _origAllNs.apply(this, arguments); }; // namespaceLog\n",
+            ),
+        ];
+        for (anchor, before, hook) in NS_REFLECT_HOOKS {
+            assert_eq!(
+                runtime.matches(anchor).count(),
+                1,
+                "compile-time ns-reflect hook anchor {anchor:?}"
+            );
+            let within = if before.is_empty() {
+                anchor.len()
+            } else {
+                anchor.find(before).unwrap()
+            };
+            runtime.insert_str(runtime.find(anchor).unwrap() + within, hook);
+        }
+    }
     // Each runtime class constructor's brand marker becomes the compile-time
     // stamp (docs/value-layout.md, section 4), which output never has.
     assert!(
@@ -721,11 +763,11 @@ fn rewrite_task_state(unit: &str, source: &str, body: std::ops::Range<usize>) ->
             "shared-heap runtime: `{text}` as a shorthand property at byte {}",
             token.start
         );
-        out.push_str(&source[at..token.start]);
+        out.push_str(&source[at..token.start as usize]);
         out.push_str(SHARED_CELLS);
         out.push('.');
         out.push_str(text);
-        at = token.start + text.len();
+        at = token.start as usize + text.len();
     }
     out.push_str(&source[at..body.end]);
     out
@@ -1395,7 +1437,7 @@ fn terse_runtime(source: &str) -> String {
         let mut avoid: Vec<(usize, HashSet<String>)> = Vec::new();
         let mut lines = LineMarks::default();
         for (position, token) in tokens.iter().enumerate() {
-            lines.token(&writer.out, &line_starts, token.start);
+            lines.token(&writer.out, &line_starts, token.start as usize);
             match joins[position] {
                 _ if redundant[position] => continue,
                 Join::Drop => continue,

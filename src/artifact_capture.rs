@@ -1536,7 +1536,7 @@ impl Converter<'_> {
                         .text(&text)
                         .parse::<usize>()
                         .map_err(|e| format!("unit reference {}: {e}", id.text(&text)))?;
-                    units.push(((id.start as u32, id.end as u32), self.unit(unit)?));
+                    units.push(((id.start, id.end), self.unit(unit)?));
                 }
             }
         }
