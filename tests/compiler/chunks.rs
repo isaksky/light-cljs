@@ -1435,7 +1435,7 @@ fn definitions_move_toward_their_readers_and_methods_stay() {
             "{text}"
         );
     }
-    for (chunk, method) in [(editor, "\"<p>\""), (reports, "\" rows\"")] {
+    for (chunk, method) in [(editor, "`<p>"), (reports, " rows`")] {
         assert!(
             chunk.contains("rt$addMethodDirect(") && chunk.contains(method),
             "{chunk}"

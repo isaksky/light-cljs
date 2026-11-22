@@ -1594,8 +1594,8 @@ pub(crate) fn renamed_offset(anchors: &[(usize, usize)], offset: usize) -> usize
 }
 
 /// The compiler names of `source` outside the `skipped` ranges, with their
-/// ranges: identifiers outside double-quoted strings, the only literals the
-/// emitter writes with free text.
+/// ranges: identifiers outside double-quoted strings and template literal text,
+/// the only literals the emitter writes with free text.
 pub(crate) fn scanned_names<'s>(
     source: &'s str,
     skipped: &[Range<usize>],
@@ -1608,6 +1608,24 @@ pub(crate) fn scanned_names<'s>(
     skipped.sort_by_key(|range| range.start);
     let bytes = source.as_bytes();
     let mut names = Vec::new();
+    let mut template_braces: Vec<bool> = Vec::new();
+    let skip_template = |at: &mut usize, limit: usize, braces: &mut Vec<bool>| {
+        while *at < limit {
+            let byte = bytes[*at];
+            if byte == b'\\' {
+                *at = (*at + 2).min(limit);
+            } else if byte == b'`' {
+                *at += 1;
+                break;
+            } else if byte == b'$' && *at + 1 < limit && bytes[*at + 1] == b'{' {
+                *at += 2;
+                braces.push(true);
+                break;
+            } else {
+                *at += 1;
+            }
+        }
+    };
     let mut skipped = skipped.iter().peekable();
     let mut at = 0;
     while at < bytes.len() {
@@ -1627,6 +1645,19 @@ pub(crate) fn scanned_names<'s>(
                 } else if byte == b'"' {
                     break;
                 }
+            }
+        } else if bytes[at] == b'`' {
+            at += 1;
+            skip_template(&mut at, limit, &mut template_braces);
+        } else if bytes[at] == b'{' {
+            if !template_braces.is_empty() {
+                template_braces.push(false);
+            }
+            at += 1;
+        } else if bytes[at] == b'}' {
+            at += 1;
+            if template_braces.pop() == Some(true) {
+                skip_template(&mut at, limit, &mut template_braces);
             }
         } else if bytes[at].is_ascii_alphabetic() || matches!(bytes[at], b'_' | b'$') {
             at += 1;

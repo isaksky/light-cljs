@@ -687,7 +687,7 @@ fn inlined_arguments_run_once_and_in_order() {
         (defn twice [x] [x x])
         (pr-str [(wrap (t 1)) (later (t 2)) (twice (t 3)) (wrap (t 4)) (vec js/trace)])"#;
     let (text, stats) = every_level(source, r#"["<1>" 2 [3 3] "<4>" [1 2 :later 3 4]]"#);
-    assert!(text.contains("(\"<\" + g"), "{text}");
+    assert!(text.contains("`<${g"), "{text}");
     assert_eq!(stats.inlined_calls, 2, "{stats:?}");
 }
 
@@ -791,4 +791,29 @@ fn recursion_reaches_a_fixed_point() {
         (defn once [n] (fact n))
         (pr-str [(even-step 10) (odd-step 7) (once 5)])"#;
     every_level(source, "[true true 120]");
+}
+
+/// Multi-arg and primitive 1-arg `str` lower to JavaScript template literals,
+/// escaping template syntax, controls, compiler-looking names, and runtime-key
+/// placeholders while preserving `nil`, `or`/`and`, and nested calls.
+#[test]
+fn str_lowers_to_template_literals_across_edge_cases() {
+    let source = r#"
+        (defn fmt [i s] (str "a" i "b" s))
+        (defn opt [flag] (str "x=" (if flag 42 nil) ",y=" (or (when flag "hi") nil)))
+        (defn tricky [x]
+          (let [nul (str "r\r\n\u0000" "0" x)]
+            [(str "`\\${x}" x)
+             (str "$" "{x}" x)
+             (str "$" x)
+             [(.charCodeAt nul 1) (.charCodeAt nul 2) (.charCodeAt nul 3) (.charCodeAt nul 4) (count nul)]
+             (str "rt$bogus core$fake l$0 " x)
+             (str "$LKEY " "$L" "KEY " "$LHASH " x)
+             (str "outer:" (str "inner:" x))]))
+        (pr-str [(fmt 3 :k) (fmt 4 7) (opt true) (opt false) (tricky 9)])"#;
+    let (text, _) = every_level(
+        source,
+        r#"["a3b:k" "a4b7" "x=42,y=hi" "x=,y=" ["`\\${x}9" "${x}9" "$9" [13 10 0 48 6] "rt$bogus core$fake l$0 9" "$LKEY $LKEY $LHASH 9" "outer:inner:9"]]"#,
+    );
+    assert!(text.contains('`'), "{text}");
 }

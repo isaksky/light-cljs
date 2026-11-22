@@ -253,7 +253,7 @@ fn truth_tests_drop_truth_when_javascript_truthiness_agrees() {
     for test in ["rt$seqSite(l", "rt$keywordCore(l"] {
         assert!(js.contains(&format!("if ({test}")), "{test}: {js}");
     }
-    for kept in ["truth(rt$countSite(l", "truth((\"\" + (l", "truth(l"] {
+    for kept in ["truth(rt$countSite(l", "truth(`${(l", "truth(l"] {
         assert!(js.contains(kept), "{kept}: {js}");
     }
     // A program that tests only booleans declares no `truth`.
@@ -828,6 +828,33 @@ fn core_operations_call_their_site_entries() {
         let js = every_level(source, expected);
         assert!(js.contains(call) && !js.contains("Site("), "{js}");
     }
+    // `deref` uses `derefSite` when core slots are runtime-only (even when
+    // program protocols are extended), and falls back to `deref` when `IDeref`
+    // is extended or written by name.
+    let deref_js = every_level(
+        r#"(defprotocol P (-p [this]))
+           (deftype Box [v] IDeref (-deref [_] v) P (-p [_] v))
+           (extend-type Atom P (-p [this] @this))
+           (defn read-v [x] @x)
+           (pr-str [(read-v (atom 1)) (read-v (atom nil)) (read-v (Box. 2))
+                    (read-v (volatile! 3)) (read-v (delay 4)) (read-v (reduced 5))
+                    (try (read-v (js/Object.create (.-prototype Atom))) (catch :default _ :err))])"#,
+        "[1 nil 2 3 4 5 :err]",
+    );
+    assert!(
+        deref_js.contains("rt$derefSite(") && !deref_js.contains("rt$deref("),
+        "{deref_js}"
+    );
+    let deref_ext = every_level(
+        r#"(extend-type Atom IDeref (-deref [_] :ext))
+           (defn read-v [x] @x)
+           (pr-str [(read-v (atom 1)) (read-v (volatile! 2))])"#,
+        "[:ext 2]",
+    );
+    assert!(
+        deref_ext.contains("rt$deref(") && !deref_ext.contains("rt$derefSite("),
+        "{deref_ext}"
+    );
 }
 
 #[test]

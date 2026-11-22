@@ -1435,6 +1435,24 @@ fn check_runtime_reads(
     raw.sort_by_key(|range| range.start);
     let mut raw = raw.into_iter().peekable();
     let mut missing = Vec::new();
+    let mut template_braces: Vec<bool> = Vec::new();
+    let skip_template = |at: &mut usize, braces: &mut Vec<bool>| {
+        while *at < bytes.len() {
+            let byte = bytes[*at];
+            if byte == b'\\' {
+                *at = (*at + 2).min(bytes.len());
+            } else if byte == b'`' {
+                *at += 1;
+                break;
+            } else if byte == b'$' && bytes.get(*at + 1) == Some(&b'{') {
+                *at += 2;
+                braces.push(true);
+                break;
+            } else {
+                *at += 1;
+            }
+        }
+    };
     let mut at = 0;
     while at < bytes.len() {
         if let Some(range) = raw.next_if(|range| range.start <= at) {
@@ -1450,6 +1468,19 @@ fn check_runtime_reads(
                 if byte == b'"' {
                     break;
                 }
+            }
+        } else if bytes[at] == b'`' {
+            at += 1;
+            skip_template(&mut at, &mut template_braces);
+        } else if bytes[at] == b'{' {
+            if !template_braces.is_empty() {
+                template_braces.push(false);
+            }
+            at += 1;
+        } else if bytes[at] == b'}' {
+            at += 1;
+            if template_braces.pop() == Some(true) {
+                skip_template(&mut at, &mut template_braces);
             }
         } else if identifier(bytes[at]) {
             let end = raw.peek().map_or(bytes.len(), |range| range.start);
@@ -5024,11 +5055,13 @@ impl<'a> Emitter<'a> {
                     if Type::STRING.contains(ty) {
                         self.value(*value);
                     } else if prim.contains(ty) {
-                        self.wrapped("\"\" + ", *value, "");
-                    } else if prim.union(Type::NIL).contains(ty) {
-                        self.output.push_str("(\"\" + (");
+                        self.output.push_str("`${");
                         self.value(*value);
-                        self.output.push_str(" ?? \"\"))");
+                        self.output.push_str("}`");
+                    } else if prim.union(Type::NIL).contains(ty) {
+                        self.output.push_str("`${(");
+                        self.value(*value);
+                        self.output.push_str(") ?? \"\"}`");
                     } else if self.replaced_core.is_some() {
                         self.rt(RuntimeName::direct("str1", None));
                         self.output.push('(');
@@ -5040,11 +5073,14 @@ impl<'a> Emitter<'a> {
                 }
             }
             (C::Str, [_, _, ..]) => {
-                // Lower multi-arg `(str ...)` to JavaScript `+` when no
-                // argument's string conversion can observe or race with a
-                // later argument's side effects: primitive/nil conversions are
+                // Lower multi-arg `(str ...)` to a JavaScript template literal
+                // when no argument's string conversion can observe or race with
+                // a later argument's side effects: primitive/nil conversions are
                 // pure, and any other argument is safe if every following
                 // argument is a pure operand (or it is the last argument).
+                // Template literals emit V8 `ToString` before `Add`, keeping
+                // every concatenation site pure String+String rather than
+                // mixing String+Number feedback.
                 let prim = Type::STRING.union(Type::NUMBER).union(Type::BOOLEAN);
                 let prim_or_nil = prim.union(Type::NIL);
                 let safe = args.iter().enumerate().all(|(i, &arg)| {
@@ -5059,48 +5095,91 @@ impl<'a> Emitter<'a> {
                 let kept: Vec<ExprId> = args
                     .iter()
                     .copied()
-                    .filter(|&arg| !matches!(self.program.exprs[arg.0].kind, ExprKind::Nil))
+                    .filter(|&arg| match self.program.exprs[arg.0].kind {
+                        ExprKind::Nil => false,
+                        ExprKind::String(id) => !self.program.strings[id.0].is_empty(),
+                        _ => true,
+                    })
                     .collect();
                 if kept.is_empty() {
                     self.output.push_str("\"\"");
-                } else {
-                    self.output.push('(');
-                    let mut in_string = false;
-                    for (index, &arg) in kept.iter().enumerate() {
-                        if index > 0 {
-                            self.output.push_str(" + ");
-                        }
-                        let ty = inference.ty(arg);
-                        if Type::STRING.contains(ty) {
-                            self.value(arg);
-                            in_string = true;
-                        } else if prim.contains(ty) {
-                            if !in_string {
-                                self.output.push_str("\"\" + ");
-                                in_string = true;
-                            }
-                            self.value(arg);
-                        } else if prim_or_nil.contains(ty) {
-                            if !in_string {
-                                self.output.push_str("\"\" + ");
-                                in_string = true;
-                            }
-                            self.output.push('(');
-                            self.value(arg);
-                            self.output.push_str(" ?? \"\")");
+                } else if kept.len() == 1 {
+                    let arg = kept[0];
+                    let ty = inference.ty(arg);
+                    if Type::STRING.contains(ty) {
+                        self.value(arg);
+                    } else if prim.contains(ty) {
+                        self.output.push_str("`${");
+                        self.value(arg);
+                        self.output.push_str("}`");
+                    } else if prim_or_nil.contains(ty) {
+                        self.output.push_str("`${(");
+                        self.value(arg);
+                        self.output.push_str(") ?? \"\"}`");
+                    } else {
+                        if self.replaced_core.is_some() {
+                            self.rt(RuntimeName::direct("str1", None));
                         } else {
-                            if self.replaced_core.is_some() {
-                                self.rt(RuntimeName::direct("str1", None));
+                            self.rt(RuntimeName::core("str"));
+                        }
+                        self.output.push('(');
+                        self.value(arg);
+                        self.output.push(')');
+                    }
+                } else if kept
+                    .iter()
+                    .all(|&arg| matches!(self.program.exprs[arg.0].kind, ExprKind::String(_)))
+                {
+                    let units = kept.iter().flat_map(|&arg| {
+                        let ExprKind::String(id) = self.program.exprs[arg.0].kind else {
+                            unreachable!()
+                        };
+                        self.program.strings[id.0].iter().copied()
+                    });
+                    write_string(&mut self.output, units, true);
+                } else {
+                    self.output.push('`');
+                    let mut literal_run_start = None;
+                    for (index, &arg) in kept.iter().enumerate() {
+                        if let ExprKind::String(id) = self.program.exprs[arg.0].kind {
+                            let run_start = *literal_run_start.get_or_insert(self.output.len());
+                            let next_starts_with_brace = kept.get(index + 1).is_some_and(|&next| {
+                                matches!(
+                                    self.program.exprs[next.0].kind,
+                                    ExprKind::String(nid)
+                                        if self.program.strings[nid.0].first() == Some(&0x7b)
+                                )
+                            });
+                            write_template_chunk(
+                                &mut self.output,
+                                &self.program.strings[id.0],
+                                run_start,
+                                next_starts_with_brace,
+                            );
+                        } else {
+                            literal_run_start = None;
+                            self.output.push_str("${");
+                            let ty = inference.ty(arg);
+                            if prim.contains(ty) {
+                                self.value(arg);
+                            } else if prim_or_nil.contains(ty) {
+                                self.output.push('(');
+                                self.value(arg);
+                                self.output.push_str(") ?? \"\"");
                             } else {
-                                self.rt(RuntimeName::core("str"));
+                                if self.replaced_core.is_some() {
+                                    self.rt(RuntimeName::direct("str1", None));
+                                } else {
+                                    self.rt(RuntimeName::core("str"));
+                                }
+                                self.output.push('(');
+                                self.value(arg);
+                                self.output.push(')');
                             }
-                            self.output.push('(');
-                            self.value(arg);
-                            self.output.push(')');
-                            in_string = true;
+                            self.output.push('}');
                         }
                     }
-                    self.output.push(')');
+                    self.output.push('`');
                 }
             }
             (C::Array, _) => {
@@ -5208,6 +5287,7 @@ impl<'a> Emitter<'a> {
             (C::Assoc, 3) => "assocSite",
             (C::Dissoc, 2) => "dissocSite",
             (C::Contains, 2) => "containsSite",
+            (C::Deref, 1) => "derefSite",
             _ => return false,
         };
         let text = self.runtime_read(RuntimeName::direct(entry, None), self.site, NameUse::Call);
@@ -10773,6 +10853,42 @@ fn write_string(out: &mut String, units: impl Iterator<Item = u16>, values: bool
         }
     }
     out.push('"');
+}
+
+/// Append UTF-16 `units` as literal characters inside a JavaScript template
+/// literal. Escapes `` ` ``, `\`, `${` (including a trailing `$` when the next
+/// literal chunk starts with `{`), controls and non-ASCII, and the `$` of any
+/// runtime key placeholder ending within `out[run_start..]`.
+fn write_template_chunk(
+    out: &mut String,
+    units: &[u16],
+    run_start: usize,
+    next_starts_with_brace: bool,
+) {
+    const KEY: &[u8] = crate::runtime_key::KEY_PLACEHOLDER.as_bytes();
+    const HASH: &[u8] = crate::runtime_key::HASH_PLACEHOLDER.as_bytes();
+    const NAMES: &[u8] = crate::runtime_key::NAMES_PLACEHOLDER.as_bytes();
+    for (i, &unit) in units.iter().enumerate() {
+        match unit {
+            0x60 => out.push_str("\\`"),
+            0x5c => out.push_str("\\\\"),
+            0x24 if units.get(i + 1) == Some(&0x7b)
+                || (i + 1 == units.len() && next_starts_with_brace) =>
+            {
+                out.push_str("\\$");
+            }
+            0x20..=0x7e => out.push(char::from_u32(unit.into()).unwrap()),
+            _ => write!(out, "\\u{unit:04x}").unwrap(),
+        }
+        if matches!(unit, 0x59 | 0x48 | 0x53)
+            && let Some(placeholder) = [KEY, HASH, NAMES]
+                .into_iter()
+                .find(|placeholder| out.as_bytes()[run_start..].ends_with(placeholder))
+        {
+            let at = out.len() - placeholder.len();
+            out.replace_range(at..at + 1, "\\u0024");
+        }
+    }
 }
 
 #[cfg(test)]

@@ -7594,6 +7594,9 @@
   //@unit containsSite requires: contains
   const containsSite = (value, key) => value != null && value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY
     ? value.cljs$core$IAssociative$_contains_key_QMARK_$arity$2$LKEY(value, key) : contains(value, key);
+  //@unit derefSite requires: deref
+  const derefSite = value => value != null && value.cljs$core$IDeref$_deref$arity$1$LKEY
+    ? value.cljs$core$IDeref$_deref$arity$1$LKEY(value) : deref(value);
   //@unit contains requires: containsOf, slotFirst
   function contains(value, key) {
     if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
@@ -10848,7 +10851,7 @@
   //@unit Atom.kind effect: Atom requires: Atom
   // An atom is a class of the class layout, kind 38 (`atoms`, light-cljs-1013).
   Atom.prototype.cljs$lang$kind$$LKEY = 38;
-  //@unit Atom.deref effect: Atom when: deref, derefProtocol requires: Atom, builtinSlot,
+  //@unit Atom.deref effect: Atom when: deref, derefProtocol, derefSite requires: Atom, builtinSlot,
   //@ derefProtocol
   // An atom's `-deref` slot, tagged `2` (`builtinSlot`) so `deref` calls it on
   // the same slot-first path as `deftype` `IDeref` values while still passing

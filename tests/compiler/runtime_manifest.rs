@@ -794,6 +794,7 @@ const UNREACHABLE_FROM_EXPORTS: &[&str] = &[
     "assocSite",
     "dissocSite",
     "containsSite",
+    "derefSite",
     "mapEntry.equiv",
     // The lookups' own paths where a program writes a core protocol
     // method's member by name (light-cljs-1066), and the seq walk's
