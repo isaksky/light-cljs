@@ -58,42 +58,76 @@ mod emission_pass_tests {
 
     #[test]
     fn record_kits_splice_all_arg_shapes_raw_segments_marks_and_hoisted_methods() {
+        let line_col = |text: &str, byte: usize| -> (u32, u32) {
+            let prefix = &text[..byte];
+            let line = prefix.bytes().filter(|&b| b == b'\n').count() as u32;
+            let tail = prefix.rsplit('\n').next().unwrap_or(prefix);
+            let col = tail.encode_utf16().count() as u32;
+            (line, col)
+        };
         // Covers: sole + non-sole records, markers on/off, raw js* before and
         // after records, and a record inside a hoisted local function.
-        let cases = [
-            // sole + non-sole, markers off, raw js* before and after
-            r#"(let [pre (js* "1 + 2")]
-                 (defrecord Sole [a b])
-                 (defn make-dynamic [x]
-                   (defrecord Dyn [v])
-                   (->Dyn x))
-                 (let [post (js* "3 + 4")
-                       r (->Sole pre post)
-                       d (make-dynamic 9)]
-                   (array (= r (->Sole 3 7)) (hash r) (= d d) (hash d))))"#,
+        let cases: &[(&str, Option<&str>, bool)] = &[
+            // sole + non-sole, markers off, raw js* before and after, plus a
+            // sentinel string after the spliced records to check main `marks`.
+            (
+                r#"(let [pre (js* "1 + 2")]
+                     (defrecord Sole [a b])
+                     (defn make-dynamic [x]
+                       (defrecord Dyn [v])
+                       (->Dyn x))
+                     (let [post (js* "3 + 4")
+                           r (->Sole pre post)
+                           d (make-dynamic 9)]
+                       (array (= r (->Sole 3 7)) (hash r) (= d d) (hash d) "after-main-record")))"#,
+                Some("\"after-main-record\""),
+                false,
+            ),
             // sole + non-sole, markers on (protocol member named)
-            r#"(defrecord Marked [a])
-               (defn make-marked [x]
-                 (defrecord DynMarked [v])
-                 (->DynMarked x))
-               (let [r (->Marked 1)
-                     d (make-marked 2)
-                     _ (js* "~{}.cljs$core$IEquiv$" r)]
-                 (array (= r (->Marked 1)) (hash r) (= d d) (hash d)))"#,
-            // hoisted local function defining a record
-            r#"(let [make (fn [x]
-                            (defrecord HoistedRec [k])
-                            (->HoistedRec x))]
-                 (let [a (make 1) b (make 1)]
-                   (array (= a b) (hash a))))"#,
+            (
+                r#"(defrecord Marked [a])
+                   (defn make-marked [x]
+                     (defrecord DynMarked [v])
+                     (->DynMarked x))
+                   (let [r (->Marked 1)
+                         d (make-marked 2)
+                         _ (js* "~{}.cljs$core$IEquiv$" r)]
+                     (array (= r (->Marked 1)) (hash r) (= d d) (hash d)))"#,
+                None,
+                false,
+            ),
+            // hoisted local function (multi-arity so call_shapes hoists it
+            // into `constants.declarations`) defining a record followed by a
+            // throw whose source-map position verifies `constant_marks`
+            // relocation.
+            (
+                r#"(let [make (fn
+                                ([x]
+                                  (defrecord HoistedRec [k])
+                                  (let [r (->HoistedRec x)]
+                                    (when (nil? r)
+                                      (throw "after-hoisted-record"))
+                                    r))
+                                ([x y] (+ x y)))]
+                     (let [a (make 1) b (make 2)]
+                       (array (= a b) (hash a) (make 3 4))))"#,
+                Some("\"after-hoisted-record\""),
+                true,
+            ),
         ];
-        for source in cases {
+        for &(source, sentinel, expect_hoisted) in cases {
             let program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
             for pseudo_names in [true, false] {
                 let mut options =
                     crate::ApplicationOptions::new(crate::OptimizationLevel::Advanced);
                 options.pseudo_names = pseudo_names;
                 let prepared = crate::prepare_application(&program, options);
+                if expect_hoisted {
+                    assert!(
+                        prepared.retention().constants.functions > 0,
+                        "expected hoisted local function (pseudo={pseudo_names})"
+                    );
+                }
                 super::BODY_EMISSIONS.set(0);
                 let plain = prepared.emit_js();
                 assert_eq!(super::BODY_EMISSIONS.get(), 1, "pseudo={pseudo_names}");
@@ -109,9 +143,40 @@ mod emission_pass_tests {
                 let (mapped, mapping) = prepared.emit_js_mapped();
                 assert_eq!(super::BODY_EMISSIONS.get(), 1, "pseudo={pseudo_names}");
                 assert_eq!(plain, mapped, "plain vs mapped mismatch");
-                let json = mapping.to_json(None, &[], false);
-                assert!(json.contains("\"mappings\":\""), "{json}");
+                if let Some(needle) = sentinel {
+                    let expected_byte = source.find(needle).unwrap();
+                    let generated_byte = mapped.find(needle).unwrap();
+                    let (line, col) = line_col(&mapped, generated_byte);
+                    assert_eq!(
+                        mapping.original(line, col),
+                        Some((0, expected_byte)),
+                        "source-map mismatch after record kit splice for {needle} (pseudo={pseudo_names})"
+                    );
+                }
             }
+        }
+    }
+
+    #[test]
+    fn unit_emission_handles_many_js_exposed_locals() {
+        let mut source = String::from("(let [");
+        for i in 0..256 {
+            use std::fmt::Write;
+            write!(source, "x{i} {i} ").unwrap();
+        }
+        source.push_str("]\n");
+        for i in 0..256 {
+            use std::fmt::Write;
+            writeln!(source, "  (js* \"~{{}} = ~{{}} + 1\" x{i} x{i})").unwrap();
+        }
+        source.push_str("  x255)");
+        let program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        let unit = super::emit_js_unit(&program);
+        for i in 0..256 {
+            assert!(
+                unit.contains(&format!("let __light0_l{i} =")),
+                "missing let declaration for l{i}"
+            );
         }
     }
 
@@ -1566,8 +1631,8 @@ fn scan_js_exposed_locals(program: &Program) -> Vec<bool> {
 /// Locals passed directly to a `js*` template reachable from `root`, used for
 /// compile-time and standalone interactive units whose `Program` retains an
 /// unrelated frozen prefix.
-fn scan_unit_js_exposed_locals(program: &Program, root: ExprId) -> Vec<LocalId> {
-    let mut exposed = Vec::new();
+fn scan_unit_js_exposed_locals(program: &Program, root: ExprId) -> HashSet<LocalId> {
+    let mut exposed = HashSet::new();
     let mut pending = vec![root];
     let mut seen = HashSet::new();
     while let Some(id) = pending.pop() {
@@ -1577,10 +1642,8 @@ fn scan_unit_js_exposed_locals(program: &Program, root: ExprId) -> Vec<LocalId> 
         let kind = &program.exprs[id.0].kind;
         if let ExprKind::JsTemplate { args, .. } = kind {
             for &arg in args {
-                if let ExprKind::Local(local) = program.exprs[arg.0].kind
-                    && !exposed.contains(&local)
-                {
-                    exposed.push(local);
+                if let ExprKind::Local(local) = program.exprs[arg.0].kind {
+                    exposed.insert(local);
                 }
             }
         }
@@ -2502,7 +2565,7 @@ enum JsExposedLocals<'a> {
     Pending,
     Shared(&'a [bool]),
     Owned(Vec<bool>),
-    Unit(Vec<LocalId>),
+    Unit(HashSet<LocalId>),
 }
 
 /// What a fresh [`Emitter`] writes for ([`Emitter::new`]).
