@@ -763,11 +763,11 @@ fn rewrite_task_state(unit: &str, source: &str, body: std::ops::Range<usize>) ->
             "shared-heap runtime: `{text}` as a shorthand property at byte {}",
             token.start
         );
-        out.push_str(&source[at..token.start]);
+        out.push_str(&source[at..token.start as usize]);
         out.push_str(SHARED_CELLS);
         out.push('.');
         out.push_str(text);
-        at = token.start + text.len();
+        at = token.start as usize + text.len();
     }
     out.push_str(&source[at..body.end]);
     out
@@ -1437,7 +1437,7 @@ fn terse_runtime(source: &str) -> String {
         let mut avoid: Vec<(usize, HashSet<String>)> = Vec::new();
         let mut lines = LineMarks::default();
         for (position, token) in tokens.iter().enumerate() {
-            lines.token(&writer.out, &line_starts, token.start);
+            lines.token(&writer.out, &line_starts, token.start as usize);
             match joins[position] {
                 _ if redundant[position] => continue,
                 Join::Drop => continue,

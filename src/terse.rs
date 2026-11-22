@@ -20,8 +20,8 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::js_syntax::{
-    Declaration, Join, Kind, NO_SCOPE, NameGenerator, Resolution, Shape, TerseWriter, Token,
-    closes_control_head, joined_declarations, lex_section, partners, redundant_semicolons,
+    Declaration, Join, Kind, NO_PARTNER, NO_SCOPE, NameGenerator, Resolution, Shape, TerseWriter,
+    Token, closes_control_head, joined_declarations, lex_section, partners, redundant_semicolons,
     reserved, resolve,
 };
 
@@ -420,56 +420,84 @@ fn write_units<'n>(
 /// and terse output renames all of them, wherever they occur: a capture
 /// object's keys (`captures4.l7`) are such names too. A constant member key
 /// that is one of them stays bracketed (`x["f"]`).
+#[inline]
 pub(crate) fn compiler_name(word: &str) -> bool {
-    const NUMBERED: [&str; 17] = [
-        "l",
-        "g",
-        "k",
-        "c",
-        "m",
-        "a",
-        "r",
-        "next",
-        "saved",
-        "temporary",
-        "captures",
-        "self",
-        "recur",
-        "installed",
-        "operand",
-        "receiver",
-        "__lightUnitReify",
-    ];
-    let numbered = |word: &str| {
-        NUMBERED.iter().any(|head| {
-            word.strip_prefix(head).is_some_and(|tail| {
-                !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit() || b == b'_')
-            })
-        })
+    let bytes = word.as_bytes();
+    let Some(&first) = bytes.first() else {
+        return false;
     };
-    numbered(word)
-        || word
-            .strip_prefix('g')
-            .and_then(|tail| tail.strip_suffix('$'))
-            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
-        || matches!(
-            word,
-            "rt" | "__lightSessionRuntime"
-                | "truth"
-                | "host"
-                | "pkg"
-                | "f"
-                | "text"
-                | "savedPrint"
-                | "savedNewline"
-                | "caught"
-                | "caseValue"
-                | "lazy$"
-        )
-        || word.starts_with("rt$")
-        || word.starts_with("core$")
-        || word.starts_with("nativeCore$")
-        || word.starts_with("nativeCoreGetter$")
+    match first {
+        b'l' => numbered_tail(&bytes[1..]) || word == "lazy$",
+        b'g' => {
+            numbered_tail(&bytes[1..])
+                || (bytes.len() >= 3
+                    && bytes[bytes.len() - 1] == b'$'
+                    && bytes[1..bytes.len() - 1].iter().all(u8::is_ascii_digit))
+        }
+        b'k' | b'm' | b'a' => numbered_tail(&bytes[1..]),
+        b'c' => {
+            numbered_tail(&bytes[1..])
+                || word.starts_with("core$")
+                || matches!(word, "caught" | "caseValue")
+                || word
+                    .strip_prefix("captures")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b'r' => {
+            numbered_tail(&bytes[1..])
+                || word == "rt"
+                || word.starts_with("rt$")
+                || word
+                    .strip_prefix("recur")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+                || word
+                    .strip_prefix("receiver")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b'o' => word
+            .strip_prefix("operand")
+            .is_some_and(|tail| numbered_tail(tail.as_bytes())),
+        b't' => {
+            matches!(word, "truth" | "text")
+                || word
+                    .strip_prefix("temporary")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b's' => {
+            matches!(word, "savedPrint" | "savedNewline")
+                || word
+                    .strip_prefix("saved")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+                || word
+                    .strip_prefix("self")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b'n' => {
+            word.starts_with("nativeCore$")
+                || word.starts_with("nativeCoreGetter$")
+                || word
+                    .strip_prefix("next")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        b'i' => word
+            .strip_prefix("installed")
+            .is_some_and(|tail| numbered_tail(tail.as_bytes())),
+        b'f' => word == "f",
+        b'h' => word == "host",
+        b'p' => word == "pkg",
+        b'_' => {
+            word == "__lightSessionRuntime"
+                || word
+                    .strip_prefix("__lightUnitReify")
+                    .is_some_and(|tail| numbered_tail(tail.as_bytes()))
+        }
+        _ => false,
+    }
+}
+
+#[inline]
+fn numbered_tail(tail: &[u8]) -> bool {
+    !tail.is_empty() && tail.iter().all(|&b| b.is_ascii_digit() || b == b'_')
 }
 
 /// A prefix that no raw `js*` segment of `source` contains: `__light<n>_`.
@@ -859,9 +887,18 @@ impl<'s> Locals<'s> {
                     .iter()
                     .any(|&local| avoid.contains_key(&(local as u32)))
             {
-                let assigned = constrained_scope(&order, &avoided, candidates, |local| {
-                    (avoid.get(&(local as u32)).copied(), self.first[local])
-                });
+                let assigned = constrained_scope(
+                    &order,
+                    &avoided,
+                    candidates,
+                    |local| {
+                        avoid
+                            .get(&(local as u32))
+                            .copied()
+                            .filter(|set| !set.is_empty())
+                    },
+                    |local| self.first[local],
+                );
                 for (local, name) in assigned {
                     names[local] = name;
                 }
@@ -898,28 +935,42 @@ impl<'s> Locals<'s> {
 /// each takes the first of `candidates` that no local before it took, that
 /// the scope avoids and that it avoids itself. The locals then take the
 /// names of each length in order of first occurrence, each the first that
-/// it does not avoid. `of` gives a local's constraint and first occurrence.
+/// it does not avoid. `own_of` gives a local's constraint and `first_of`
+/// gives its first occurrence.
 fn constrained_scope<'a, F: Fn(&str) -> bool>(
     order: &[usize],
     avoided: &HashSet<&str>,
     candidates: &mut Candidates<F>,
-    of: impl Fn(usize) -> (Option<&'a HashSet<&'a str>>, u32),
+    own_of: impl Fn(usize) -> Option<&'a HashSet<&'a str>>,
+    first_of: impl Fn(usize) -> u32,
 ) -> Vec<(usize, String)> {
     let mut taken: Vec<bool> = Vec::new();
     let mut free = 0;
     let mut chosen = Vec::with_capacity(order.len());
+    let mut owns = Vec::with_capacity(order.len());
     for &local in order {
-        let (own, _) = of(local);
+        let own = own_of(local);
+        owns.push(own);
         while taken.get(free) == Some(&true) {
             free += 1;
         }
         let mut at = free;
         loop {
-            if taken.len() <= at {
-                taken.resize(at + 1, false);
+            if at == taken.len() {
+                taken.push(false);
+            } else if taken[at] {
+                at += 1;
+                continue;
             }
             let name = candidates.get(at);
-            if !taken[at] && !avoided.contains(name) && !own.is_some_and(|own| own.contains(name)) {
+            if avoided.contains(name) {
+                // Scope-wide avoided names are unusable by every local in this
+                // scope; mark `taken` so `free` skips them in amortized O(1).
+                taken[at] = true;
+                at += 1;
+                continue;
+            }
+            if !own.is_some_and(|own| own.contains(name)) {
                 break;
             }
             at += 1;
@@ -940,27 +991,40 @@ fn constrained_scope<'a, F: Fn(&str) -> bool>(
         batches[length].push(position);
     }
     for batch in batches {
+        if batch.is_empty() {
+            continue;
+        }
         let mut slots = batch
             .iter()
             .map(|&position| chosen[position])
             .collect::<Vec<_>>();
         slots.sort_unstable();
         let mut positions = batch;
-        positions.sort_by_key(|&position| of(order[position]).1);
+        positions.sort_by_key(|&position| first_of(order[position]));
+        if !positions.iter().any(|&position| owns[position].is_some()) {
+            for (position, slot) in positions.into_iter().zip(slots) {
+                chosen[position] = slot;
+            }
+            continue;
+        }
         let mut used = vec![false; slots.len()];
         let mut first_unused = 0;
         let mut assigned = Vec::with_capacity(positions.len());
         for &position in &positions {
-            let (own, _) = of(order[position]);
             while used.get(first_unused) == Some(&true) {
                 first_unused += 1;
             }
-            let found = (first_unused..slots.len()).find(|&index| {
-                !used[index] && !own.is_some_and(|own| own.contains(candidates.get(slots[index])))
-            });
-            let Some(index) = found else {
-                assigned.clear();
-                break;
+            let index = match owns[position] {
+                None => first_unused,
+                Some(own) => {
+                    let Some(index) = (first_unused..slots.len())
+                        .find(|&index| !used[index] && !own.contains(candidates.get(slots[index])))
+                    else {
+                        assigned.clear();
+                        break;
+                    };
+                    index
+                }
             };
             used[index] = true;
             assigned.push((position, slots[index]));
@@ -993,16 +1057,25 @@ impl<F: Fn(&str) -> bool> Candidates<F> {
         }
     }
 
+    #[inline]
     fn get(&mut self, at: usize) -> &str {
+        if at >= self.names.len() {
+            self.grow(at);
+        }
+        &self.names[at]
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn grow(&mut self, at: usize) {
+        let excluded = &self.excluded;
         while self.names.len() <= at {
-            let excluded = &self.excluded;
             let name = self
                 .generator
                 .find(|name| !excluded(name))
                 .expect("names never run out");
             self.names.push(name);
         }
-        &self.names[at]
     }
 }
 
@@ -1047,7 +1120,7 @@ pub(crate) fn terse_program(
         .cloned()
         .collect::<Vec<_>>();
     raw.sort_by_key(|range| range.start);
-    match rewritten(source, runtime.clone(), &raw) {
+    match rewritten(source, runtime.clone(), &raw, marks.is_some()) {
         Some((output, written)) => {
             if let Some(marks) = marks {
                 marks.relocate(|offset| match &runtime {
@@ -1070,7 +1143,10 @@ pub(crate) fn terse_program(
             output
         }
         None => {
-            debug_assert!(false, "emitted JavaScript does not lex:\n{source}");
+            debug_assert!(
+                source.len() >= u32::MAX as usize,
+                "emitted JavaScript does not lex:\n{source}"
+            );
             source.to_owned()
         }
     }
@@ -1168,10 +1244,10 @@ pub(crate) fn terse_program_nested(
     // The statement's tokens, which no declaration around joins.
     let first = lexed
         .tokens
-        .partition_point(|token| token.start < statement.start);
+        .partition_point(|token| (token.start as usize) < statement.start);
     let after = lexed
         .tokens
-        .partition_point(|token| token.start < statement.end);
+        .partition_point(|token| (token.start as usize) < statement.end);
     for join in &mut lexed.joins[first..=after.min(lexed.tokens.len() - 1)] {
         *join = Join::Keep;
     }
@@ -1301,17 +1377,35 @@ pub(crate) fn terse_program_nested(
         }
     };
     // The statement's first token and its `;`, its last.
-    let (start, semicolon) = (lexed.tokens[first].start, lexed.tokens[after - 1].start);
+    let (start, semicolon) = (
+        lexed.tokens[first].start as usize,
+        lexed.tokens[after - 1].start as usize,
+    );
     debug_assert_eq!(&source[semicolon..semicolon + 1], ";");
-    let (output, written) = lexed.rewrite(&names, &locals);
-    let at = |offset: usize| {
-        written
-            .get(written.partition_point(|(old, _)| *old < offset))
-            .map_or(output.len(), |(_, new)| *new)
+    let offsets = if marks.is_some() {
+        RewriteOffsets::all(lexed.tokens.len())
+    } else {
+        RewriteOffsets::pair(start, semicolon)
+    };
+    let (output, offsets) = lexed.rewrite(&names, &locals, offsets);
+    let (cut, written) = match offsets {
+        RewriteOffsets::Pair { found, .. } => {
+            let cut_start = found.0.unwrap_or(output.len());
+            let cut_semi = found.1.unwrap_or(output.len());
+            (cut_start..cut_semi + 1, Vec::new())
+        }
+        RewriteOffsets::All(written) => {
+            let at = |offset: usize| {
+                written
+                    .get(written.partition_point(|(old, _)| *old < offset))
+                    .map_or(output.len(), |(_, new)| *new)
+            };
+            (at(start)..at(semicolon) + 1, written)
+        }
+        RewriteOffsets::None => unreachable!(),
     };
     // The statement as written, through its `;`: what follows, comments of
     // raw text before the next token among it, stays.
-    let cut = at(start)..at(semicolon) + 1;
     debug_assert_eq!(&output[cut.end - 1..cut.end], ";");
     // What the statement is written as: the aliases, if any.
     let mut alias = String::new();
@@ -1348,6 +1442,11 @@ pub(crate) fn terse_program_nested(
     text.push_str(output[rest..].trim_end());
     text.push_str("})()\n");
     if let Some(marks) = marks {
+        let at = |offset: usize| {
+            written
+                .get(written.partition_point(|(old, _)| *old < offset))
+                .map_or(output.len(), |(_, new)| *new)
+        };
         marks.relocate(|offset| {
             if statement.start <= offset && offset < statement.end {
                 return None;
@@ -1528,12 +1627,15 @@ pub(crate) fn terse_texts<'s>(texts: &[Text<'s>]) -> (Vec<String>, HashMap<&'s s
         let outputs = lexed
             .into_iter()
             .zip(&locals)
-            .map(|(text, locals)| text.rewrite(&names, locals).0)
+            .map(|(text, locals)| text.rewrite(&names, locals, RewriteOffsets::None).0)
             .collect();
         return (outputs, names);
     }
     debug_assert!(
-        raws.iter().any(|raw| !raw.is_empty()),
+        raws.iter().any(|raw| !raw.is_empty())
+            || texts
+                .iter()
+                .any(|text| text.source.len() >= u32::MAX as usize),
         "emitted JavaScript does not lex"
     );
     let prefix = raw_hygiene_prefix(
@@ -1704,15 +1806,67 @@ const BEFORE_EXPRESSION: &[&str] = &[
     "...",
 ];
 
+/// Output-offset tracking for [`rewrite_tokens`]: skipped when source maps are
+/// not requested, tracking just two source offsets for [`terse_program_nested`]
+/// without marks, or recording every written token for source-map relocation.
+enum RewriteOffsets {
+    None,
+    Pair {
+        targets: (usize, usize),
+        found: (Option<usize>, Option<usize>),
+    },
+    All(Vec<(usize, usize)>),
+}
+
+impl RewriteOffsets {
+    fn pair(first: usize, second: usize) -> Self {
+        Self::Pair {
+            targets: (first, second),
+            found: (None, None),
+        }
+    }
+
+    fn all(capacity: usize) -> Self {
+        Self::All(Vec::with_capacity(capacity))
+    }
+
+    #[inline]
+    fn record(&mut self, source_start: usize, out: &str, before: usize) {
+        match self {
+            Self::None => {}
+            Self::Pair { targets, found } => {
+                if (found.0.is_none() && source_start >= targets.0)
+                    || (found.1.is_none() && source_start >= targets.1)
+                {
+                    let pos = before
+                        + usize::from(matches!(out.as_bytes().get(before), Some(b' ' | b'\n')));
+                    if found.0.is_none() && source_start >= targets.0 {
+                        found.0 = Some(pos);
+                    }
+                    if found.1.is_none() && source_start >= targets.1 {
+                        found.1 = Some(pos);
+                    }
+                }
+            }
+            Self::All(written) => {
+                let pos =
+                    before + usize::from(matches!(out.as_bytes().get(before), Some(b' ' | b'\n')));
+                written.push((source_start, pos));
+            }
+        }
+    }
+}
+
 /// The program rewritten from its tokens, with the start of each written
-/// token in `source` and in the output; `None` when it does not lex, or when
-/// a token crosses a boundary of the `raw` ranges (sorted, disjoint `js*`
-/// text) or the compiler names outside them are not the names
-/// [`scanned_names`] finds there.
+/// token in `source` and in the output when `track_written` is set; `None`
+/// when it does not lex, or when a token crosses a boundary of the `raw`
+/// ranges (sorted, disjoint `js*` text) or the compiler names outside them
+/// are not the names [`scanned_names`] finds there.
 fn rewritten(
     source: &str,
     runtime: Option<Range<usize>>,
     raw: &[Range<usize>],
+    track_written: bool,
 ) -> Option<(String, Vec<(usize, usize)>)> {
     let lexed = Lexed::new(source, runtime, raw, |_| true)?;
     let mut words = Vec::new();
@@ -1722,8 +1876,26 @@ fn rewritten(
     let locals = lexed
         .locals
         .names(&names, &mut Candidates::new(|name| excluded.contains(name)));
-    Some(lexed.rewrite(&names, &locals))
+    let offsets = if track_written {
+        RewriteOffsets::all(lexed.tokens.len())
+    } else {
+        RewriteOffsets::None
+    };
+    let (output, offsets) = lexed.rewrite(&names, &locals, offsets);
+    let written = match offsets {
+        RewriteOffsets::All(written) => written,
+        RewriteOffsets::None | RewriteOffsets::Pair { .. } => Vec::new(),
+    };
+    Some((output, written))
 }
+
+/// A raw `js*` comment kept in terse output: the token index it precedes
+/// (`tokens.len()` after the last), its source slice, and whether a line break
+/// preceded it since the token before.
+type RawComment<'s> = (usize, &'s str, bool);
+
+/// Per-token raw flags paired with the raw comments kept in terse output.
+type RawTokens<'s> = (Vec<bool>, Vec<RawComment<'s>>);
 
 /// The tokens of a text [`rewritten`] writes: which are raw `js*` text, the
 /// comments of raw text it keeps, its locals named per scope ([`Locals`])
@@ -1732,9 +1904,9 @@ struct Lexed<'s> {
     source: &'s str,
     runtime: Option<Range<usize>>,
     tokens: Vec<Token>,
-    partners: Vec<usize>,
+    partners: Vec<u32>,
     in_raw: Vec<bool>,
-    comments: Vec<(usize, &'s str, bool)>,
+    comments: Vec<RawComment<'s>>,
     locals: Locals<'s>,
     joins: Vec<Join>,
 }
@@ -1749,6 +1921,9 @@ impl<'s> Lexed<'s> {
         raw: &[Range<usize>],
         eligible: impl Fn(&str) -> bool,
     ) -> Option<Self> {
+        if source.len() >= u32::MAX as usize {
+            return None;
+        }
         // The runtime factory is one token, an atom like a template literal.
         let mut tokens = Vec::new();
         match &runtime {
@@ -1756,17 +1931,19 @@ impl<'s> Lexed<'s> {
                 tokens.extend(lex_section(source, 0..factory.start, false).ok()?);
                 tokens.push(Token {
                     kind: Kind::Template,
-                    start: factory.start,
-                    end: factory.end,
+                    start: factory.start as u32,
+                    end: factory.end as u32,
                     newline_before: false,
                 });
                 tokens.extend(lex_section(source, factory.end..source.len(), false).ok()?);
             }
             None => tokens.extend(lex_section(source, 0..source.len(), false).ok()?),
         }
+        if tokens.len() >= u32::MAX as usize {
+            return None;
+        }
         let partners = partners(source, &tokens);
-        let in_raw = raw_tokens(source, &tokens, &partners, raw, runtime.as_ref())?;
-        let comments = raw_comments(source, &tokens, raw);
+        let (in_raw, comments) = raw_tokens(source, &tokens, &partners, raw, runtime.as_ref())?;
         // Adjacent `let` and `const` statements join: `let a,b;`, unless the
         // `;` or the keyword is raw text.
         let (locals, mut joins) = match resolve(source, &tokens) {
@@ -1814,13 +1991,14 @@ impl<'s> Lexed<'s> {
     }
 
     /// The text rewritten with the short `names` of its compiler names and
-    /// the names of its `locals` ([`Locals::names`]), with the start of each
-    /// written token in the source and in the output.
+    /// the names of its `locals` ([`Locals::names`]), recording output offsets
+    /// according to `offsets`.
     fn rewrite(
         self,
         names: &HashMap<&str, String>,
         locals: &[String],
-    ) -> (String, Vec<(usize, usize)>) {
+        offsets: RewriteOffsets,
+    ) -> (String, RewriteOffsets) {
         let Lexed {
             source,
             runtime,
@@ -1838,7 +2016,7 @@ impl<'s> Lexed<'s> {
             }
         };
         rewrite_tokens(
-            source, runtime, tokens, partners, in_raw, comments, joins, name,
+            source, runtime, tokens, partners, in_raw, comments, joins, name, offsets,
         )
     }
 }
@@ -1848,13 +2026,18 @@ fn rewrite_tokens<'n>(
     source: &str,
     runtime: Option<Range<usize>>,
     tokens: Vec<Token>,
-    partners: Vec<usize>,
+    partners: Vec<u32>,
     in_raw: Vec<bool>,
-    comments: Vec<(usize, &str, bool)>,
+    comments: Vec<RawComment<'_>>,
     joins: Vec<Join>,
     name: impl Fn(usize, &str) -> &'n str,
-) -> (String, Vec<(usize, usize)>) {
-    let is_runtime = |token: &Token| runtime.as_ref().is_some_and(|r| r.start == token.start);
+    mut offsets: RewriteOffsets,
+) -> (String, RewriteOffsets) {
+    let is_runtime = |token: &Token| {
+        runtime
+            .as_ref()
+            .is_some_and(|r| r.start == token.start as usize)
+    };
     let mut commented = vec![false; tokens.len() + 1];
     for &(index, ..) in &comments {
         commented[index] = true;
@@ -1882,7 +2065,6 @@ fn rewrite_tokens<'n>(
         ..
     } = rewrite;
     let mut writer = TerseWriter::default();
-    let mut written = Vec::new();
     let mut comments = comments.into_iter().peekable();
     for (index, token) in tokens.iter().enumerate() {
         while let Some((_, text, newline)) = comments.next_if(|(at, ..)| *at == index) {
@@ -1893,9 +2075,6 @@ fn rewrite_tokens<'n>(
         }
         // The writer separates a token by at most one space or line break.
         let before = writer.out.len();
-        let separated = |out: &str| {
-            before + usize::from(matches!(out.as_bytes().get(before), Some(b' ' | b'\n')))
-        };
         let newline = token.newline_before && !cleared[index];
         if joins[index] == Join::Comma {
             let comma = Shape {
@@ -1903,7 +2082,7 @@ fn rewrite_tokens<'n>(
                 text: ",",
             };
             writer.write(comma, ",", newline);
-            written.push((token.start, separated(&writer.out)));
+            offsets.record(token.start as usize, &writer.out, before);
             continue;
         }
         if let Some(name) = dotted[index] {
@@ -1923,7 +2102,7 @@ fn rewrite_tokens<'n>(
                 name,
                 false,
             );
-            written.push((token.start, separated(&writer.out)));
+            offsets.record(token.start as usize, &writer.out, before);
             continue;
         }
         let word = token.text(source);
@@ -1951,7 +2130,7 @@ fn rewrite_tokens<'n>(
             };
             writer.write(shape, word, newline);
         }
-        written.push((token.start, separated(&writer.out)));
+        offsets.record(token.start as usize, &writer.out, before);
     }
     for (_, text, newline) in comments {
         writer.comment(text, newline);
@@ -1960,31 +2139,69 @@ fn rewrite_tokens<'n>(
     if !output.ends_with('\n') {
         output.push('\n');
     }
-    (output, written)
+    (output, offsets)
 }
 
-/// The comments of raw `js*` text (sorted, disjoint `raw` ranges), which
-/// terse output keeps: each with the index of the token it precedes
-/// (`tokens.len()` after the last) and whether a line break precedes it
-/// since the token before.
-fn raw_comments<'s>(
+/// Which `tokens` are raw `js*` text, inside one of the `raw` ranges (sorted
+/// and disjoint, without the `runtime` factory), together with the comments of
+/// raw text that terse output keeps (each with the index of the token it
+/// precedes, or `tokens.len()` after the last, and whether a line break
+/// precedes it since the token before).
+///
+/// Returns `None` when a token crosses a boundary of a raw range, or when the
+/// compiler names of the other tokens are not those [`scanned_names`] finds
+/// outside the ranges, which the readable output renames. Either happens only
+/// where raw text puts a hole inside one of its strings, comments, templates
+/// or identifiers.
+///
+/// Also `None` where raw text may not lex as a JavaScript engine lexes it
+/// (the lexer serves the runtime and emitted code): a byte outside ASCII
+/// other than in a string literal (`a` and a no-break space would be one
+/// name), an HTML-like comment (`<!--`, `-->`), and a `/` that the lexer
+/// takes for a division or a regular expression where the tokens before it
+/// do not tell which ([`slash_starts_regex`]).
+fn raw_tokens<'s>(
     source: &'s str,
     tokens: &[Token],
+    partners: &[u32],
     raw: &[Range<usize>],
-) -> Vec<(usize, &'s str, bool)> {
+    runtime: Option<&Range<usize>>,
+) -> Option<RawTokens<'s>> {
+    let mut in_raw = vec![false; tokens.len()];
     let mut comments = Vec::new();
     if raw.is_empty() {
-        return comments;
+        return Some((in_raw, comments));
     }
     let bytes = source.as_bytes();
-    let in_raw = |at: usize| {
-        raw.get(raw.partition_point(|range| range.end <= at))
-            .is_some_and(|range| range.start <= at)
+    let non_ascii = |text: &str| {
+        if text.is_ascii() {
+            0
+        } else {
+            text.bytes().filter(|byte| !byte.is_ascii()).count()
+        }
     };
-    let mut gap_start = 0;
-    for index in 0..=tokens.len() {
-        // Between two tokens there is only whitespace and comments.
-        let gap_end = tokens.get(index).map_or(source.len(), |token| token.start);
+    let raw_containing = |at: usize| {
+        let idx = raw.partition_point(|range| range.end <= at);
+        raw.get(idx).filter(|range| range.start <= at)
+    };
+    // Punctuators that start at `index` and touch: `<!--` and `-->` (`-->=`).
+    let adjacent = |index: usize, texts: &[&str]| {
+        texts.iter().enumerate().all(|(offset, text)| {
+            tokens.get(index + offset).is_some_and(|token| {
+                token.kind == Kind::Punct
+                    && token.text(source).starts_with(*text)
+                    && (offset == 0 || tokens[index + offset - 1].end == token.start)
+            })
+        })
+    };
+    let scan_gap = |index: usize,
+                    gap_start: usize,
+                    gap_end: usize,
+                    comments: &mut Vec<RawComment<'s>>,
+                    needs_full_scan: &mut bool| {
+        if gap_end - gap_start < 2 || !bytes[gap_start..gap_end].contains(&b'/') {
+            return;
+        }
         let mut newline = false;
         let mut at = gap_start;
         while at < gap_end {
@@ -2006,113 +2223,151 @@ fn raw_comments<'s>(
                 }
             };
             let text = &source[at..end];
-            if in_raw(at) {
+            if let Some(range) = raw_containing(at) {
                 comments.push((index, text, newline));
+                if end > range.end {
+                    *needs_full_scan = true;
+                }
+            } else {
+                *needs_full_scan = true;
             }
             newline |= text.contains(['\n', '\r']);
             at = end;
         }
-        if let Some(token) = tokens.get(index) {
-            gap_start = token.end;
-        }
-    }
-    comments
-}
+    };
 
-/// Which `tokens` are raw `js*` text, inside one of the `raw` ranges (sorted
-/// and disjoint, without the `runtime` factory); `None` when a token crosses
-/// a boundary of one, or when the compiler names of the other tokens are
-/// not those [`scanned_names`] finds outside the ranges, which the readable
-/// output renames. Either happens only where raw text puts a hole inside
-/// one of its strings, comments, templates or identifiers.
-///
-/// Also `None` where raw text may not lex as a JavaScript engine lexes it
-/// (the lexer serves the runtime and emitted code): a byte outside ASCII
-/// other than in a string literal (`a` and a no-break space would be one
-/// name), an HTML-like comment (`<!--`, `-->`), and a `/` that the lexer
-/// takes for a division or a regular expression where the tokens before it
-/// do not tell which ([`slash_starts_regex`]).
-fn raw_tokens(
-    source: &str,
-    tokens: &[Token],
-    partners: &[usize],
-    raw: &[Range<usize>],
-    runtime: Option<&Range<usize>>,
-) -> Option<Vec<bool>> {
-    let mut in_raw = vec![false; tokens.len()];
-    if raw.is_empty() {
-        return Some(in_raw);
-    }
+    // Fast path proves `named == scanned_names(source, &skipped)` without
+    // re-scanning the entire source whenever `raw` ranges are disjoint from
+    // each other and `runtime`, every comment lies inside a single raw range,
+    // and every emitted token matches `scanned_names`'s byte rules locally.
+    let mut needs_full_scan = raw.windows(2).any(|w| w[0].end > w[1].start)
+        || runtime.is_some_and(|rt| raw.iter().any(|r| r.start < rt.end && rt.start < r.end));
     let mut ranges = raw.iter().peekable();
+    let mut non_ascii_in_raw_strings = 0usize;
+    let mut gap_start = 0usize;
     for (index, token) in tokens.iter().enumerate() {
-        while ranges.next_if(|range| range.end <= token.start).is_some() {}
+        let token_start = token.start as usize;
+        let token_end = token.end as usize;
+        scan_gap(
+            index,
+            gap_start,
+            token_start,
+            &mut comments,
+            &mut needs_full_scan,
+        );
+        gap_start = token_end;
+
+        while ranges.next_if(|range| range.end <= token_start).is_some() {}
         match ranges.peek() {
-            Some(range) if range.start <= token.start => {
-                if token.end > range.end {
+            Some(range) if range.start <= token_start => {
+                if token_end > range.end {
                     return None;
                 }
                 in_raw[index] = true;
+                if token.kind == Kind::Str {
+                    non_ascii_in_raw_strings += non_ascii(token.text(source));
+                }
             }
-            Some(range) if range.start < token.end => return None,
+            Some(range) if range.start < token_end => return None,
             _ => {}
         }
+
+        if in_raw[index] || (index > 0 && in_raw[index - 1]) {
+            if in_raw[index]
+                && (adjacent(index, &["<", "!", "--"]) || adjacent(index, &["--", ">"]))
+            {
+                return None;
+            }
+            let text = token.text(source);
+            let slash =
+                token.kind == Kind::Regex || (token.kind == Kind::Punct && text.starts_with('/'));
+            if slash
+                && slash_starts_regex(source, tokens, partners, index)
+                    != Some(token.kind == Kind::Regex)
+            {
+                return None;
+            }
+        }
+
+        if !in_raw[index] && !needs_full_scan {
+            let is_runtime = runtime.is_some_and(|r| r.start == token_start && r.end == token_end)
+                && token.kind == Kind::Template;
+            if !is_runtime {
+                match token.kind {
+                    Kind::Punct => {}
+                    Kind::Name => {
+                        let text = token.text(source);
+                        if !text.is_ascii() && !scanned_names(text, &[]).is_empty() {
+                            return None;
+                        }
+                    }
+                    Kind::Str => {
+                        if bytes[token_start] != b'"' {
+                            let text = token.text(source);
+                            if text.as_bytes().contains(&b'"') {
+                                needs_full_scan = true;
+                            } else if !scanned_names(text, &[]).is_empty() {
+                                return None;
+                            }
+                        }
+                    }
+                    Kind::Number => {
+                        let text = token.text(source);
+                        if !text.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+                            if bytes.get(token_end).copied() == Some(b'$') {
+                                needs_full_scan = true;
+                            } else if !scanned_names(text, &[]).is_empty() {
+                                return None;
+                            }
+                        }
+                    }
+                    Kind::Private => {
+                        if !scanned_names(token.text(source), &[]).is_empty() {
+                            return None;
+                        }
+                    }
+                    Kind::Regex
+                    | Kind::Template
+                    | Kind::TemplateHead
+                    | Kind::TemplateMiddle
+                    | Kind::TemplateTail => {
+                        needs_full_scan = true;
+                    }
+                }
+            }
+        }
     }
-    let non_ascii = |text: &str| text.bytes().filter(|byte| !byte.is_ascii()).count();
-    let in_strings = tokens
-        .iter()
-        .zip(&in_raw)
-        .filter(|(token, in_raw)| **in_raw && token.kind == Kind::Str)
-        .map(|(token, _)| non_ascii(token.text(source)))
-        .sum::<usize>();
+    scan_gap(
+        tokens.len(),
+        gap_start,
+        source.len(),
+        &mut comments,
+        &mut needs_full_scan,
+    );
     if raw
         .iter()
         .map(|range| non_ascii(&source[range.clone()]))
         .sum::<usize>()
-        != in_strings
+        != non_ascii_in_raw_strings
     {
         return None;
     }
-    // Punctuators that start at `index` and touch: `<!--` and `-->` (`-->=`).
-    let adjacent = |index: usize, texts: &[&str]| {
-        texts.iter().enumerate().all(|(offset, text)| {
-            tokens.get(index + offset).is_some_and(|token| {
-                token.kind == Kind::Punct
-                    && token.text(source).starts_with(*text)
-                    && (offset == 0 || tokens[index + offset - 1].end == token.start)
+    if needs_full_scan {
+        let mut skipped = raw.to_vec();
+        skipped.extend(runtime.cloned());
+        let scanned = scanned_names(source, &skipped);
+        let named = tokens
+            .iter()
+            .zip(&in_raw)
+            .filter(|(token, in_raw)| {
+                !**in_raw && token.kind == Kind::Name && compiler_name(token.text(source))
             })
-        })
-    };
-    for (index, token) in tokens.iter().enumerate() {
-        let touches_raw = in_raw[index] || (index > 0 && in_raw[index - 1]);
-        if !touches_raw {
-            continue;
-        }
-        if in_raw[index] && (adjacent(index, &["<", "!", "--"]) || adjacent(index, &["--", ">"])) {
-            return None;
-        }
-        let text = token.text(source);
-        let slash =
-            token.kind == Kind::Regex || (token.kind == Kind::Punct && text.starts_with('/'));
-        if slash
-            && slash_starts_regex(source, tokens, partners, index)
-                != Some(token.kind == Kind::Regex)
-        {
+            .map(|(token, _)| token.start as usize..token.end as usize);
+        if !named.eq(scanned.into_iter().map(|(range, _)| range)) {
             return None;
         }
     }
-    let mut skipped = raw.to_vec();
-    skipped.extend(runtime.cloned());
-    let scanned = scanned_names(source, &skipped);
-    let named = tokens
-        .iter()
-        .zip(&in_raw)
-        .filter(|(token, in_raw)| {
-            !**in_raw && token.kind == Kind::Name && compiler_name(token.text(source))
-        })
-        .map(|(token, _)| token.start..token.end);
-    named
-        .eq(scanned.into_iter().map(|(range, _)| range))
-        .then_some(in_raw)
+    Some((in_raw, comments))
 }
 
 /// Whether the `/` (or `/=`, or regular expression) token at `index` starts a
@@ -2124,7 +2379,7 @@ fn raw_tokens(
 fn slash_starts_regex(
     source: &str,
     tokens: &[Token],
-    partners: &[usize],
+    partners: &[u32],
     index: usize,
 ) -> Option<bool> {
     let Some(previous) = index.checked_sub(1).map(|at| &tokens[at]) else {
@@ -2162,14 +2417,14 @@ fn slash_starts_regex(
             ")" => {
                 let open = partners[index - 1];
                 Some(
-                    open != usize::MAX
+                    open != NO_PARTNER
                         && open > 0
-                        && tokens[open - 1].kind == Kind::Name
+                        && tokens[open as usize - 1].kind == Kind::Name
                         && matches!(
-                            tokens[open - 1].text(source),
+                            tokens[open as usize - 1].text(source),
                             "if" | "for" | "while" | "with"
                         )
-                        && !member(open - 1),
+                        && !member(open as usize - 1),
                 )
             }
             "}" | "++" | "--" => None,
@@ -2205,7 +2460,7 @@ struct Rewrite<'s, 't> {
     /// starts with one keeps its parentheses, since the comment may end a
     /// line (`return (// c` and a line break).
     commented: &'t [bool],
-    partners: Vec<usize>,
+    partners: Vec<u32>,
     /// Tokens not written.
     dropped: Vec<bool>,
     /// Tokens whose preceding line break is dropped: tokens of a group whose
@@ -2247,11 +2502,13 @@ impl<'s> Rewrite<'s, '_> {
                 return None;
             }
             let at = index;
-            index = if self.partners[at] > at && self.partners[at] < close {
-                self.partners[at] + 1
-            } else {
-                at + 1
-            };
+            let partner = self.partners[at];
+            index =
+                if partner != NO_PARTNER && (partner as usize) > at && (partner as usize) < close {
+                    partner as usize + 1
+                } else {
+                    at + 1
+                };
             Some(at)
         })
     }
@@ -2354,7 +2611,9 @@ impl<'s> Rewrite<'s, '_> {
             }
             match self.punct(index) {
                 "." => member = true,
-                "(" | "[" if self.partners[index] < close => {}
+                "(" | "["
+                    if self.partners[index] != NO_PARTNER
+                        && (self.partners[index] as usize) < close => {}
                 _ => return false,
             }
         }
@@ -2373,7 +2632,8 @@ impl<'s> Rewrite<'s, '_> {
     fn run(&mut self) {
         for index in 0..self.tokens.len() {
             if self.punct(index) != "["
-                || self.partners[index] != index + 2
+                || self.partners[index] == NO_PARTNER
+                || self.partners[index] as usize != index + 2
                 || self.raw[index..=index + 2].contains(&true)
             {
                 continue;
@@ -2399,20 +2659,25 @@ impl<'s> Rewrite<'s, '_> {
         }
         for open in (0..self.tokens.len()).rev() {
             let close = self.partners[open];
-            if self.punct(open) != "(" || close == usize::MAX || self.next(open) == Some(close) {
+            if self.punct(open) != "(" || close == NO_PARTNER {
+                continue;
+            }
+            let close = close as usize;
+            if self.next(open) == Some(close) {
                 continue;
             }
             // `((x))`: the inner pair, when its top level holds no comma.
             if let Some(inner) = self.next(open)
                 && self.punct(inner) == "("
-                && Some(self.partners[inner]) == self.previous(close)
-                && self.next(inner) != Some(self.partners[inner])
-                && !self.holds(inner, self.partners[inner], ",")
+                && self.partners[inner] != NO_PARTNER
+                && Some(self.partners[inner] as usize) == self.previous(close)
+                && self.next(inner) != Some(self.partners[inner] as usize)
+                && !self.holds(inner, self.partners[inner] as usize, ",")
                 && !self.raw[inner]
-                && !self.raw[self.partners[inner]]
+                && !self.raw[self.partners[inner] as usize]
                 && !self.commented[inner + 1]
             {
-                self.unwrap(inner, self.partners[inner]);
+                self.unwrap(inner, self.partners[inner] as usize);
             }
             if self.raw[open] || self.raw[close] || self.commented[open + 1] || !self.group(open) {
                 continue;
@@ -2494,7 +2759,7 @@ mod tests {
         let mut backward: HashMap<Named, Named> = HashMap::new();
         let mut at = 0;
         let context = |index: usize, text: &str| {
-            let start = left[index].start;
+            let start = left[index].start as usize;
             format!(
                 "at original byte {start} (`{}`):",
                 &text[start.saturating_sub(60)..(start + 60).min(text.len())]
@@ -2984,8 +3249,8 @@ console.log(g1({}), g2({x: 2}, 3, 4), g3(5));
                 .count();
             assert_eq!(named, declaring);
             for &(offset, at, _) in &marks[1..] {
-                let token = &tokens[tokens.partition_point(|token| token.start < at)];
-                assert_eq!(token.start, at);
+                let token = &tokens[tokens.partition_point(|token| (token.start as usize) < at)];
+                assert_eq!(token.start as usize, at);
                 let word = token.text(source);
                 let written = &text[offset..];
                 let name = written
@@ -3002,5 +3267,513 @@ console.log(g1({}), g2({x: 2}, 3, 4), g3(5));
                 assert!(matches, "`{word}` at {at} maps to {:?}", &written[..20]);
             }
         }
+    }
+
+    #[test]
+    fn compiler_name_dispatch_matches_reference() {
+        fn reference(word: &str) -> bool {
+            const NUMBERED: [&str; 17] = [
+                "l",
+                "g",
+                "k",
+                "c",
+                "m",
+                "a",
+                "r",
+                "next",
+                "saved",
+                "temporary",
+                "captures",
+                "self",
+                "recur",
+                "installed",
+                "operand",
+                "receiver",
+                "__lightUnitReify",
+            ];
+            let numbered = NUMBERED.iter().any(|head| {
+                word.strip_prefix(head).is_some_and(|tail| {
+                    !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit() || b == b'_')
+                })
+            });
+            numbered
+                || word
+                    .strip_prefix('g')
+                    .and_then(|tail| tail.strip_suffix('$'))
+                    .is_some_and(|number| {
+                        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+                    })
+                || matches!(
+                    word,
+                    "rt" | "__lightSessionRuntime"
+                        | "truth"
+                        | "host"
+                        | "pkg"
+                        | "f"
+                        | "text"
+                        | "savedPrint"
+                        | "savedNewline"
+                        | "caught"
+                        | "caseValue"
+                        | "lazy$"
+                )
+                || word.starts_with("rt$")
+                || word.starts_with("core$")
+                || word.starts_with("nativeCore$")
+                || word.starts_with("nativeCoreGetter$")
+        }
+
+        let stems = [
+            "",
+            "l",
+            "g",
+            "k",
+            "c",
+            "m",
+            "a",
+            "r",
+            "f",
+            "o",
+            "t",
+            "s",
+            "n",
+            "i",
+            "h",
+            "p",
+            "_",
+            "next",
+            "saved",
+            "temporary",
+            "captures",
+            "self",
+            "recur",
+            "installed",
+            "operand",
+            "receiver",
+            "__lightUnitReify",
+            "__lightSessionRuntime",
+            "rt",
+            "rt$",
+            "core$",
+            "nativeCore$",
+            "nativeCoreGetter$",
+            "truth",
+            "host",
+            "pkg",
+            "text",
+            "savedPrint",
+            "savedNewline",
+            "caught",
+            "caseValue",
+            "lazy$",
+            "return",
+            "const",
+            "let",
+            "function",
+            "length",
+            "prototype",
+            "call",
+            "apply",
+            "Object",
+            "Array",
+            "x",
+            "z",
+            "é",
+        ];
+        let suffixes = [
+            "", "0", "12", "_", "0_1", "_0", "$", "0$", "12$", "0_1$", "a", "0a", "x", "$x",
+        ];
+        for stem in stems {
+            for suffix in suffixes {
+                let candidate = format!("{stem}{suffix}");
+                assert_eq!(
+                    compiler_name(&candidate),
+                    reference(&candidate),
+                    "mismatch for {candidate:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn constrained_scope_matches_reference_and_scales_linearly() {
+        fn reference<'a, F: Fn(&str) -> bool>(
+            order: &[usize],
+            avoided: &HashSet<&str>,
+            candidates: &mut Candidates<F>,
+            own_of: impl Fn(usize) -> Option<&'a HashSet<&'a str>>,
+            first_of: impl Fn(usize) -> u32,
+        ) -> Vec<(usize, String)> {
+            let mut taken: Vec<bool> = Vec::new();
+            let mut chosen = Vec::with_capacity(order.len());
+            for &local in order {
+                let own = own_of(local);
+                let mut at = 0;
+                loop {
+                    if taken.len() <= at {
+                        taken.resize(at + 1, false);
+                    }
+                    let name = candidates.get(at);
+                    if !taken[at]
+                        && !avoided.contains(name)
+                        && !own.is_some_and(|own| own.contains(name))
+                    {
+                        break;
+                    }
+                    at += 1;
+                }
+                taken[at] = true;
+                chosen.push(at);
+            }
+            let mut batches: Vec<Vec<usize>> = Vec::new();
+            for (position, &at) in chosen.iter().enumerate() {
+                let length = candidates.get(at).len();
+                if batches.len() <= length {
+                    batches.resize_with(length + 1, Vec::new);
+                }
+                batches[length].push(position);
+            }
+            for batch in batches {
+                let mut slots = batch.iter().map(|&p| chosen[p]).collect::<Vec<_>>();
+                slots.sort_unstable();
+                let mut positions = batch;
+                positions.sort_by_key(|&p| first_of(order[p]));
+                let mut used = vec![false; slots.len()];
+                let mut assigned = Vec::with_capacity(positions.len());
+                for &position in &positions {
+                    let own = own_of(order[position]);
+                    let found = (0..slots.len()).find(|&index| {
+                        !used[index]
+                            && !own.is_some_and(|own| own.contains(candidates.get(slots[index])))
+                    });
+                    let Some(index) = found else {
+                        assigned.clear();
+                        break;
+                    };
+                    used[index] = true;
+                    assigned.push((position, slots[index]));
+                }
+                for (position, slot) in assigned {
+                    chosen[position] = slot;
+                }
+            }
+            order
+                .iter()
+                .zip(chosen)
+                .map(|(&local, at)| (local, candidates.get(at).to_owned()))
+                .collect()
+        }
+
+        // Exact equivalence on tricky mixed constraints, including batch reorder
+        // and batch fallback when a constrained local runs out of eligible slots.
+        let order: Vec<usize> = (0..120).collect();
+        let first: Vec<u32> = (0..120).map(|i| ((i * 37) % 120) as u32).collect();
+        let avoided: HashSet<&str> = ["a", "c", "aa"].into_iter().collect();
+        let own_a: HashSet<&str> = ["b", "d"].into_iter().collect();
+        let own_b: HashSet<&str> = ["b", "e", "ab"].into_iter().collect();
+        let mut own_map: HashMap<usize, &HashSet<&str>> = HashMap::new();
+        for local in [0, 1, 5, 10, 50, 51, 52] {
+            own_map.insert(local, if local % 2 == 0 { &own_a } else { &own_b });
+        }
+        let mut c1 = Candidates::new(|_| false);
+        let mut c2 = Candidates::new(|_| false);
+        let actual = constrained_scope(
+            &order,
+            &avoided,
+            &mut c1,
+            |local| own_map.get(&local).copied(),
+            |local| first[local],
+        );
+        let expected = reference(
+            &order,
+            &avoided,
+            &mut c2,
+            |local| own_map.get(&local).copied(),
+            |local| first[local],
+        );
+        assert_eq!(actual, expected);
+
+        // Large scope with slot 0 (`"a"`) in `avoided`: previously O(N^2).
+        let n = 10_000usize;
+        let big_order: Vec<usize> = (0..n).collect();
+        let big_first: Vec<u32> = (0..n).map(|i| (n - i) as u32).collect();
+        let big_avoided: HashSet<&str> = ["a", "b"].into_iter().collect();
+        let big_own: HashSet<&str> = ["c", "d", "e"].into_iter().collect();
+        let mut big_candidates = Candidates::new(|_| false);
+        let assigned = constrained_scope(
+            &big_order,
+            &big_avoided,
+            &mut big_candidates,
+            |local| (local < 20).then_some(&big_own),
+            |local| big_first[local],
+        );
+        assert_eq!(assigned.len(), n);
+        let unique: HashSet<&str> = assigned.iter().map(|(_, name)| name.as_str()).collect();
+        assert_eq!(unique.len(), n);
+        assert!(!unique.contains("a") && !unique.contains("b"));
+        for &(local, ref name) in &assigned {
+            if local < 20 {
+                assert!(!big_own.contains(name.as_str()), "local {local} got {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn raw_tokens_matches_full_scanned_names_on_edge_cases() {
+        fn reference<'s>(
+            source: &'s str,
+            tokens: &[Token],
+            partners: &[u32],
+            raw: &[Range<usize>],
+            runtime: Option<&Range<usize>>,
+        ) -> Option<RawTokens<'s>> {
+            let mut in_raw = vec![false; tokens.len()];
+            if raw.is_empty() {
+                return Some((in_raw, Vec::new()));
+            }
+            let mut ranges = raw.iter().peekable();
+            for (index, token) in tokens.iter().enumerate() {
+                while ranges
+                    .next_if(|range| range.end <= token.start as usize)
+                    .is_some()
+                {}
+                match ranges.peek() {
+                    Some(range) if range.start <= token.start as usize => {
+                        if token.end as usize > range.end {
+                            return None;
+                        }
+                        in_raw[index] = true;
+                    }
+                    Some(range) if range.start < token.end as usize => return None,
+                    _ => {}
+                }
+            }
+            let non_ascii = |text: &str| text.bytes().filter(|byte| !byte.is_ascii()).count();
+            let in_strings = tokens
+                .iter()
+                .zip(&in_raw)
+                .filter(|(token, in_raw)| **in_raw && token.kind == Kind::Str)
+                .map(|(token, _)| non_ascii(token.text(source)))
+                .sum::<usize>();
+            if raw
+                .iter()
+                .map(|range| non_ascii(&source[range.clone()]))
+                .sum::<usize>()
+                != in_strings
+            {
+                return None;
+            }
+            let adjacent = |index: usize, texts: &[&str]| {
+                texts.iter().enumerate().all(|(offset, text)| {
+                    tokens.get(index + offset).is_some_and(|token| {
+                        token.kind == Kind::Punct
+                            && token.text(source).starts_with(*text)
+                            && (offset == 0 || tokens[index + offset - 1].end == token.start)
+                    })
+                })
+            };
+            for (index, token) in tokens.iter().enumerate() {
+                if !(in_raw[index] || (index > 0 && in_raw[index - 1])) {
+                    continue;
+                }
+                if in_raw[index]
+                    && (adjacent(index, &["<", "!", "--"]) || adjacent(index, &["--", ">"]))
+                {
+                    return None;
+                }
+                let text = token.text(source);
+                let slash = token.kind == Kind::Regex
+                    || (token.kind == Kind::Punct && text.starts_with('/'));
+                if slash
+                    && slash_starts_regex(source, tokens, partners, index)
+                        != Some(token.kind == Kind::Regex)
+                {
+                    return None;
+                }
+            }
+            let mut skipped = raw.to_vec();
+            skipped.extend(runtime.cloned());
+            let scanned = scanned_names(source, &skipped);
+            let named = tokens
+                .iter()
+                .zip(&in_raw)
+                .filter(|(token, in_raw)| {
+                    !**in_raw && token.kind == Kind::Name && compiler_name(token.text(source))
+                })
+                .map(|(token, _)| token.start as usize..token.end as usize);
+            if !named.eq(scanned.into_iter().map(|(range, _)| range)) {
+                return None;
+            }
+            let bytes = source.as_bytes();
+            let in_raw_at = |at: usize| {
+                raw.get(raw.partition_point(|range| range.end <= at))
+                    .is_some_and(|range| range.start <= at)
+            };
+            let mut comments = Vec::new();
+            let mut gap_start = 0;
+            for index in 0..=tokens.len() {
+                let gap_end = tokens
+                    .get(index)
+                    .map_or(source.len(), |token| token.start as usize);
+                let mut newline = false;
+                let mut at = gap_start;
+                while at < gap_end {
+                    let end = match (bytes[at], bytes.get(at + 1)) {
+                        (b'\n' | b'\r', _) => {
+                            newline = true;
+                            at += 1;
+                            continue;
+                        }
+                        (b'/', Some(b'/')) => source[at..gap_end]
+                            .find(['\n', '\r'])
+                            .map_or(gap_end, |length| at + length),
+                        (b'/', Some(b'*')) => source[at + 2..gap_end]
+                            .find("*/")
+                            .map_or(gap_end, |length| at + length + 4),
+                        _ => {
+                            at += 1;
+                            continue;
+                        }
+                    };
+                    let text = &source[at..end];
+                    if in_raw_at(at) {
+                        comments.push((index, text, newline));
+                    }
+                    newline |= text.contains(['\n', '\r']);
+                    at = end;
+                }
+                if let Some(token) = tokens.get(index) {
+                    gap_start = token.end as usize;
+                }
+            }
+            Some((in_raw, comments))
+        }
+
+        let cases: &[&[(bool, &str)]] = &[
+            // Normal emitted JS + raw comment + trailing raw comment
+            &[
+                (false, "let l1 = \"l2\\\"l3\";\nlet l2 = 1e-5 + 0xff + "),
+                (true, "/* c */\n// line\nfoo(1)"),
+                (false, ";\n"),
+                (true, "// eof"),
+            ],
+            // Hole inside raw line comment
+            &[
+                (false, "let l1 = 1;\n"),
+                (true, "// note "),
+                (false, "l1"),
+                (false, "\nconsole.log(l1);\n"),
+            ],
+            // Hole inside raw block comment
+            &[
+                (false, "let l1 = 1;\n"),
+                (true, "/* "),
+                (false, "l1"),
+                (true, " */"),
+                (false, "console.log(l1);\n"),
+            ],
+            // Hole inside raw block comment with non-compiler word
+            &[
+                (false, "let l1 = 1;\n"),
+                (true, "/* "),
+                (false, "hello"),
+                (true, " */"),
+                (false, "console.log(l1);\n"),
+            ],
+            // Non-raw comment containing compiler name
+            &[
+                (false, "let l1 = 1; /* l1 */ "),
+                (true, "foo"),
+                (false, ";\n"),
+            ],
+            // Non-raw comment without compiler name
+            &[
+                (false, "let l1 = 1; /* note */ "),
+                (true, "foo"),
+                (false, ";\n"),
+            ],
+            // Non-raw single-quoted string with compiler name vs without vs containing quote
+            &[(false, "let l1 = 'l1'; "), (true, "foo"), (false, ";\n")],
+            &[(false, "let l1 = 'ok'; "), (true, "foo"), (false, ";\n")],
+            &[
+                (false, "let l1 = '\"'; let l2 = '\"'; "),
+                (true, "foo"),
+                (false, ";\n"),
+            ],
+            // Non-raw number edge cases (`0a0` contains compiler name `a0`, `1e$a` touches `$`)
+            &[(false, "let l1 = 0a0; "), (true, "foo"), (false, ";\n")],
+            &[(false, "let l1 = 1e$a; "), (true, "foo"), (false, ";\n")],
+            // Non-raw non-ASCII identifier containing compiler name vs harmless
+            &[(false, "let éa0 = 1; "), (true, "foo"), (false, ";\n")],
+            &[(false, "let éfoo = 1; "), (true, "foo"), (false, ";\n")],
+            // Non-raw regex containing compiler name vs harmless
+            &[(false, "let l1 = /l1/; "), (true, "foo"), (false, ";\n")],
+            &[(false, "let l1 = /abc/; "), (true, "foo"), (false, ";\n")],
+        ];
+
+        for pieces in cases {
+            let mut source = String::new();
+            let mut raw = Vec::new();
+            for &(is_raw, text) in *pieces {
+                if is_raw && !text.is_empty() {
+                    raw.push(source.len()..source.len() + text.len());
+                }
+                source.push_str(text);
+            }
+            let tokens = lex_section(&source, 0..source.len(), false).unwrap();
+            let p = partners(&source, &tokens);
+            let actual = raw_tokens(&source, &tokens, &p, &raw, None);
+            let expected = reference(&source, &tokens, &p, &raw, None);
+            assert_eq!(actual, expected, "mismatch for source:\n{source}");
+        }
+    }
+
+    #[test]
+    fn terse_program_nested_without_marks_matches_with_marks() {
+        let manifest = RuntimeManifest::embedded();
+        let kept = manifest
+            .units
+            .iter()
+            .map(|unit| unit.declares.contains(&"keyword") || unit.name == "keyword")
+            .collect::<Vec<_>>();
+        let (factory_text, _) = terse_slice(&kept, &["keyword"]);
+        let prefix = "(() => {\nconst [rt$keyword] = ";
+        let factory_start = prefix.len();
+        let factory_end = factory_start + factory_text.len();
+        let stmt_start = "(() => {\n".len();
+        let stmt_end = factory_end + 1;
+        let source = format!(
+            "{prefix}{factory_text};\nconst k0 = rt$keyword(\"a\");\nconsole.log(k0);\n}})();\n"
+        );
+        let factory = factory_start..factory_end;
+        let statement = stmt_start..stmt_end;
+
+        let (no_marks, bytes_no_marks) = terse_program_nested(
+            &source,
+            std::slice::from_ref(&factory),
+            statement.clone(),
+            factory.clone(),
+            &kept,
+            &["keyword"],
+            None,
+        )
+        .expect("nested terse succeeds");
+
+        let mut marks = crate::source_map::Marks::default();
+        marks.position(stmt_end + 1, 0, 10);
+        let (with_marks, bytes_with_marks) = terse_program_nested(
+            &source,
+            std::slice::from_ref(&factory),
+            statement,
+            factory.clone(),
+            &kept,
+            &["keyword"],
+            Some(&mut marks),
+        )
+        .expect("nested terse with marks succeeds");
+
+        assert_eq!(no_marks, with_marks);
+        assert_eq!(bytes_no_marks, bytes_with_marks);
+        assert!(!marks.list.is_empty());
     }
 }
