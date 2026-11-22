@@ -2743,6 +2743,19 @@ impl Program {
         self.named_literals.unfreeze();
     }
 
+    /// Flatten frozen chunk trees into a direct leaf directory without copying
+    /// or moving entries; see [`crate::arena::Arena::flatten_leaves`].
+    pub fn flatten_leaves(&mut self) {
+        self.namespaces.flatten_leaves();
+        self.exprs.flatten_leaves();
+        self.locals.flatten_leaves();
+        self.recur_targets.flatten_leaves();
+        self.globals.flatten_leaves();
+        self.js_globals.flatten_leaves();
+        self.strings.flatten_leaves();
+        self.named_literals.flatten_leaves();
+    }
+
     pub(crate) fn shrink_to_fit(&mut self) {
         self.namespaces.shrink_to_fit();
         self.exprs.shrink_to_fit();

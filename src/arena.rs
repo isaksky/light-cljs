@@ -145,6 +145,10 @@ pub struct Arena<T> {
     /// Relaxed: a stale or racing value is only a missed hint, never a wrong
     /// lookup, and on the targets we build it costs what a `Cell` does.
     hint: AtomicUsize,
+    /// When non-empty, `chunks` holds only `Chunk::Leaf`s and `buckets[id >> 6]`
+    /// is the chunk index holding `id & !63`, giving O(1) frozen lookups
+    /// without copying entries into `tail` ([`Self::flatten_leaves`]).
+    buckets: Vec<u32>,
 }
 
 impl<T> Default for Arena<T> {
@@ -155,6 +159,7 @@ impl<T> Default for Arena<T> {
             frozen: 0,
             tail: Vec::new(),
             hint: AtomicUsize::new(0),
+            buckets: Vec::new(),
         }
     }
 }
@@ -170,6 +175,7 @@ where
             frozen: self.frozen,
             tail: self.tail.clone(),
             hint: AtomicUsize::new(self.hint.load(Relaxed)),
+            buckets: self.buckets.clone(),
         }
     }
 }
@@ -249,6 +255,74 @@ impl<T> Arena<T> {
         self.chunks.shrink_to_fit();
         self.starts.shrink_to_fit();
         self.tail.shrink_to_fit();
+        self.buckets.shrink_to_fit();
+    }
+
+    /// Whether frozen lookups avoid binary-tree descents (either nothing is
+    /// frozen, or [`Self::flatten_leaves`] has indexed the leaves).
+    pub fn is_flat(&self) -> bool {
+        self.frozen == 0 || !self.buckets.is_empty()
+    }
+
+    /// Flatten frozen `Chunk::Branch` trees into their `Chunk::Leaf` slices
+    /// and build a coarse `id >> 6` directory. Entries remain in their
+    /// existing leaf allocations (zero copies or moves and no peak-RSS spike),
+    /// while frozen lookups become direct leaf reads instead of ~14-level tree
+    /// descents (light-cljs-1095).
+    pub fn flatten_leaves(&mut self) {
+        if self.chunks.is_empty() || !self.buckets.is_empty() {
+            return;
+        }
+        fn collect_leaves<T>(chunk: Arc<Chunk<T>>, out: &mut Vec<Arc<Chunk<T>>>) {
+            if matches!(&*chunk, Chunk::Leaf(_)) {
+                out.push(chunk);
+                return;
+            }
+            match Arc::try_unwrap(chunk) {
+                Ok(Chunk::Branch { left, right, .. }) => {
+                    collect_leaves(left, out);
+                    collect_leaves(right, out);
+                }
+                Ok(Chunk::Leaf(_)) => unreachable!(),
+                Err(shared) => {
+                    let Chunk::Branch { left, right, .. } = &*shared else {
+                        unreachable!()
+                    };
+                    let left = Arc::clone(left);
+                    let right = Arc::clone(right);
+                    drop(shared);
+                    collect_leaves(left, out);
+                    collect_leaves(right, out);
+                }
+            }
+        }
+        let mut leaves = Vec::with_capacity(self.frozen.div_ceil(LEAF_SIZE) + self.chunks.len());
+        for chunk in self.chunks.drain(..) {
+            collect_leaves(chunk, &mut leaves);
+        }
+        let mut starts = Vec::with_capacity(leaves.len());
+        let mut buckets = if leaves.len() <= u32::MAX as usize {
+            Vec::with_capacity(self.frozen.div_ceil(LEAF_SIZE))
+        } else {
+            Vec::new()
+        };
+        let track_buckets = leaves.len() <= u32::MAX as usize;
+        let mut offset = 0usize;
+        for (index, leaf) in leaves.iter().enumerate() {
+            let end = offset + leaf.len();
+            if track_buckets {
+                while (buckets.len() << 6) < end {
+                    buckets.push(index as u32);
+                }
+            }
+            starts.push(offset);
+            offset = end;
+        }
+        debug_assert_eq!(offset, self.frozen);
+        self.chunks = leaves;
+        self.starts = starts;
+        self.buckets = buckets;
+        *self.hint.get_mut() = 0;
     }
 
     pub fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
@@ -352,7 +426,44 @@ impl<T> Arena<T> {
         changed
     }
 
+    #[inline(always)]
+    fn flat_chunk(&self, id: usize) -> (usize, usize) {
+        let bucket = id >> 6;
+        let index = self.buckets[bucket] as usize;
+        let start = self.starts[index];
+        let offset = id - start;
+        if offset < self.chunks[index].len() {
+            return (index, offset);
+        }
+        self.flat_chunk_slow(id, bucket, index + 1)
+    }
+
+    #[inline(never)]
+    fn flat_chunk_slow(&self, id: usize, bucket: usize, start_index: usize) -> (usize, usize) {
+        let end_index = self
+            .buckets
+            .get(bucket + 1)
+            .map_or(self.chunks.len(), |&next| {
+                (next as usize + 1).min(self.chunks.len())
+            });
+        let slice = &self.starts[start_index..end_index];
+        let index = start_index + slice.partition_point(|&s| s <= id) - 1;
+        (index, id - self.starts[index])
+    }
+
+    #[inline(never)]
+    fn flat_leaf_slow(&self, id: usize, bucket: usize, start_index: usize) -> (usize, &[T]) {
+        let (index, _) = self.flat_chunk_slow(id, bucket, start_index);
+        let Chunk::Leaf(entries) = &*self.chunks[index] else {
+            unreachable!("flattened arena holds only leaves")
+        };
+        (self.starts[index], entries)
+    }
+
     fn chunk(&self, id: usize) -> (usize, usize) {
+        if !self.buckets.is_empty() {
+            return self.flat_chunk(id);
+        }
         let hint = self.hint.load(Relaxed);
         if let Some(&start) = self.starts.get(hint)
             && start <= id
@@ -372,6 +483,19 @@ impl<T> Arena<T> {
         }
         if id >= self.frozen {
             return self.tail.get(id - self.frozen);
+        }
+        if !self.buckets.is_empty() {
+            let bucket = id >> 6;
+            let index = self.buckets[bucket] as usize;
+            let start = self.starts[index];
+            if let Chunk::Leaf(entries) = &*self.chunks[index] {
+                let offset = id - start;
+                if offset < entries.len() {
+                    return Some(&entries[offset]);
+                }
+            }
+            let (start, leaf) = self.flat_leaf_slow(id, bucket, index + 1);
+            return leaf.get(id - start);
         }
         let (chunk, index) = self.chunk(id);
         let (start, leaf) = self.chunks[chunk].leaf(index);
@@ -432,6 +556,13 @@ impl<T> Arena<T> {
         if id >= self.frozen {
             return (self.frozen, &self.tail);
         }
+        if !self.buckets.is_empty() {
+            let (chunk, _) = self.flat_chunk(id);
+            let Chunk::Leaf(entries) = &*self.chunks[chunk] else {
+                unreachable!("flattened arena holds only leaves")
+            };
+            return (self.starts[chunk], entries);
+        }
         let (chunk, index) = self.chunk(id);
         let (start, leaf) = self.chunks[chunk].leaf(index);
         (self.starts[chunk] + start, leaf)
@@ -456,6 +587,7 @@ impl<T: Clone> Arena<T> {
         if self.tail.is_empty() {
             return;
         }
+        self.buckets.clear();
         self.starts.push(self.frozen);
         self.frozen += self.tail.len();
         self.chunks
@@ -514,6 +646,7 @@ impl<T: Clone> Arena<T> {
         }
         entries.append(&mut self.tail);
         self.starts.clear();
+        self.buckets.clear();
         self.frozen = 0;
         self.tail = entries;
     }
@@ -534,6 +667,19 @@ impl<T> Index<usize> for Arena<T> {
         note_read();
         if id >= self.frozen {
             return &self.tail[id - self.frozen];
+        }
+        if !self.buckets.is_empty() {
+            let bucket = id >> 6;
+            let index = self.buckets[bucket] as usize;
+            let start = self.starts[index];
+            if let Chunk::Leaf(entries) = &*self.chunks[index] {
+                let offset = id - start;
+                if offset < entries.len() {
+                    return &entries[offset];
+                }
+            }
+            let (start, leaf) = self.flat_leaf_slow(id, bucket, index + 1);
+            return &leaf[id - start];
         }
         let (start, leaf) = self.leaf(id);
         &leaf[id - start]
@@ -846,5 +992,73 @@ mod tests {
                 });
             }
         });
+    }
+
+    #[test]
+    fn flatten_leaves_indexes_frozen_entries_without_copying() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        #[derive(PartialEq, Eq, Debug)]
+        struct Counted(usize, Rc<Cell<usize>>);
+        impl Clone for Counted {
+            fn clone(&self) -> Self {
+                self.1.set(self.1.get() + 1);
+                Self(self.0, self.1.clone())
+            }
+        }
+
+        let copies = Rc::new(Cell::new(0));
+        let mut arena = Arena::new();
+        // Mix large chunks, sub-leaf chunks, and >64 consecutive 1-entry chunks
+        // to exercise both fast-path and slow-path bucket lookups.
+        let mut next = 0usize;
+        for count in [900, 17, 1, 1, 64, 33, 250] {
+            for _ in 0..count {
+                arena.push(Counted(next, copies.clone()));
+                next += 1;
+            }
+            arena.freeze();
+        }
+        for _ in 0..80 {
+            arena.push(Counted(next, copies.clone()));
+            next += 1;
+            arena.freeze();
+        }
+        // Leave a non-empty unfrozen tail.
+        for _ in 0..19 {
+            arena.push(Counted(next, copies.clone()));
+            next += 1;
+        }
+        let snapshot = arena.clone();
+        copies.set(0);
+        assert!(!arena.is_flat());
+        arena.flatten_leaves();
+        assert!(arena.is_flat());
+        assert!(arena.frozen() > 0);
+        assert_eq!(copies.get(), 0, "flatten_leaves must not copy entries");
+        assert_eq!(arena.len(), next);
+        for i in 0..next {
+            assert_eq!(arena[i].0, i);
+            assert_eq!(arena.get(i).unwrap().0, i);
+        }
+        assert_eq!(arena.get(next), None);
+        assert_eq!(
+            arena.iter().map(|entry| entry.0).collect::<Vec<_>>(),
+            (0..next).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            arena.iter().rev().map(|entry| entry.0).collect::<Vec<_>>(),
+            (0..next).rev().collect::<Vec<_>>()
+        );
+        // Mutations on a flattened arena isolate snapshots and preserve index.
+        arena[42] = Counted(9999, copies.clone());
+        assert_eq!(arena[42].0, 9999);
+        assert_eq!(snapshot[42].0, 42);
+        assert_eq!(arena.changed_entries(&snapshot, next), vec![42]);
+        // Freezing again invalidates the flat directory cleanly.
+        arena.freeze();
+        assert!(!arena.is_flat());
+        assert_eq!(arena[next - 1].0, next - 1);
     }
 }

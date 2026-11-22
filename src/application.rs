@@ -533,14 +533,13 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
 }
 
 /// [`prepare_application`] of a program the caller no longer needs. At
-/// `Advanced` the passes and emission read its tables by ID many times over,
-/// so the shared chunk trees analysis left are first flattened into one run of
-/// entries each ([`Program::unfreeze`]), and a lookup is an array index rather
-/// than a walk whose depth and cache misses grow with the program
-/// (light-cljs-417). Entries no other program shares are moved, not copied.
-/// The trees' freed leaves stay resident for a while and raise the peak
-/// resident size by about the expression table, so below `Advanced`, where
-/// preparation does far less, the tables stay as they are.
+/// `Advanced` the passes and emission read and rewrite its tables by ID many
+/// times over, so the shared chunk trees analysis left are first flattened into
+/// one contiguous run of entries each ([`Program::unfreeze`], light-cljs-417).
+/// Below `Advanced` the trees' freed leaves from `unfreeze` stay resident and
+/// raise peak RSS by ~125–150 MB on 200k builds, so [`Program::flatten_leaves`]
+/// replaces the binary trees with a zero-copy flat leaf directory instead
+/// (light-cljs-1095).
 pub fn prepare_owned_application(
     mut program: Program,
     mut options: ApplicationOptions,
@@ -550,6 +549,8 @@ pub fn prepare_owned_application(
     let level = options.optimize;
     if level.advanced() {
         program.unfreeze();
+    } else {
+        program.flatten_leaves();
     }
     let globals = program.globals.len();
     let mut prepared = PreparedApplication {
@@ -1588,6 +1589,7 @@ mod tests {
                 level.advanced(),
                 "{level}"
             );
+            assert!(prepared.program().exprs.is_flat(), "{level}");
             assert_eq!(prepared.emit_js(), expected, "{level}");
         }
         // Preparing a clone leaves the shared tables of the original alone.

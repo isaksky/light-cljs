@@ -19,7 +19,7 @@ use light_cljs::compile_stats::{CompileStats, PhaseTimes};
 use light_cljs::source_map::{SourceFile, data_url};
 use light_cljs::{
     ApplicationOptions, Define, LineIndex, MacroHost, OptimizationLevel, PreparedApplication,
-    TokenKind, Tokenizer, parse, prepare_application, prepare_owned_application,
+    TokenKind, Tokenizer, parse, prepare_owned_application,
 };
 
 mod config_cli;
@@ -513,13 +513,14 @@ fn print_size_report(prepared: &light_cljs::PreparedApplication) -> io::Result<(
 /// ([`light_cljs::dev_build::emit_dev_build_of`]). With `phases`
 /// (`--stats`), add the emission and write times to them.
 fn write_dev_build(
-    program: &light_cljs::Program,
+    program: &mut light_cljs::Program,
     sources: &[(PathBuf, String)],
     out_dir: &Path,
     build: Option<&str>,
     mut phases: Option<&mut PhaseTimes>,
 ) -> Result<(), Box<dyn Error>> {
     let started = phases.is_some().then(Instant::now);
+    program.flatten_leaves();
     fs::create_dir_all(out_dir)
         .map_err(|error| format!("cannot create {}: {error}", out_dir.display()))?;
     // Source maps name the sources relative to the build directory.
@@ -731,7 +732,7 @@ fn build_namespace(
     if options.warning_mode {
         print_warnings(&warnings);
     }
-    let (program, files) = match program {
+    let (mut program, files) = match program {
         Ok(program) => program,
         Err(error) => {
             // The counters up to the failure, then the failure itself.
@@ -743,7 +744,7 @@ fn build_namespace(
     };
     if let (true, Some(out_dir)) = (reloadable, &out_dir) {
         write_dev_build(
-            &program,
+            &mut program,
             &files,
             out_dir,
             build.as_deref(),
@@ -1315,7 +1316,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 )
             })?;
             if mode == "compile" {
-                let prepared = prepare_application(&program, flags.options(&program)?);
+                let options = flags.options(&program)?;
+                let prepared = prepare_owned_application(program, options);
                 let sources = [(Path::new(&source_name), source.as_str())];
                 let (output, map) = flags.output(&prepared, false, &sources)?;
                 flags.write_map(map)?;

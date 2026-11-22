@@ -720,6 +720,42 @@ fn plan_with(
             forms.push((id, namespace));
         }
     }
+    // Without lazy roots, every namespace, item and global belongs to the one
+    // startup chunk, so skip building `ItemGraph` and running signature walks.
+    if program.lazy_namespaces.is_empty() {
+        debug_assert!(emitted.lazy_targets.is_empty());
+        let item_count = forms.len();
+        let items = forms
+            .into_iter()
+            .map(|(expr, namespace)| Item {
+                expr,
+                namespace,
+                chunk: STARTUP,
+                movable: false,
+                reached: None,
+            })
+            .collect();
+        return ChunkPlan {
+            roots: vec![Root {
+                namespace: entry,
+                chunk: STARTUP,
+            }],
+            namespace_signatures,
+            namespace_chunks: vec![STARTUP; sources],
+            items,
+            global_chunks: vec![STARTUP; emitted.globals.len()],
+            chunks: vec![Chunk {
+                name: format!("{}.js", names[entry]),
+                signature: Signature::full(1),
+                namespaces: (0..sources).collect(),
+                roots: vec![STARTUP_ROOT],
+                items: (0..item_count).collect(),
+                imports: Vec::new(),
+                setters: Vec::new(),
+                sites: Vec::new(),
+            }],
+        };
+    }
     let graph = ItemGraph::new(emitted, &forms);
 
     // Which items move: at `Advanced`, the definitions removal could drop
@@ -1295,5 +1331,31 @@ mod tests {
         // FNV-1a's published test vectors.
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn single_chunk_fast_path_constructs_startup_plan() {
+        let source = "(def a 1) (defn f [x] (+ a x)) (f 41)";
+        let program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        assert!(program.lazy_namespaces.is_empty());
+        for level in crate::OptimizationLevel::ALL {
+            let prepared =
+                crate::prepare_application(&program, crate::ApplicationOptions::new(level));
+            let p = plan(&program, &prepared);
+            assert_eq!(p.chunks.len(), 1, "{level}");
+            assert_eq!(p.roots.len(), 1, "{level}");
+            assert_eq!(p.roots[0].chunk, STARTUP, "{level}");
+            assert_eq!(p.chunks[0].name, format!("{}.js", program.namespaces[0]));
+            assert_eq!(p.chunks[0].namespaces, vec![0]);
+            assert_eq!(p.chunks[0].roots, vec![STARTUP_ROOT]);
+            assert_eq!(p.chunks[0].items.len(), p.items.len());
+            assert!(p.chunks[0].imports.is_empty());
+            assert!(p.chunks[0].setters.is_empty());
+            assert!(p.chunks[0].sites.is_empty());
+            assert!(!p.moves_definitions());
+            assert!(!p.drops_chunks());
+            assert_eq!(p.global_chunks.len(), prepared.program().globals.len());
+            assert!(p.global_chunks.iter().all(|&c| c == STARTUP));
+        }
     }
 }

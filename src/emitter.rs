@@ -43,7 +43,7 @@ mod emission_pass_tests {
         let prepared = crate::prepare_application(&program, options);
         super::BODY_EMISSIONS.set(0);
         let plain = prepared.emit_js();
-        assert_eq!(super::BODY_EMISSIONS.get(), 2);
+        assert_eq!(super::BODY_EMISSIONS.get(), 1);
         // Records are told by their prototypes' keyed kind (light-cljs-1037),
         // so no emission is spent choosing a brand.
         assert!(plain.contains("rt$defineType(function Type("));
@@ -52,8 +52,119 @@ mod emission_pass_tests {
         assert!(plain.contains("rt$recordEntriesHash"));
         super::BODY_EMISSIONS.set(0);
         let (mapped, _) = prepared.emit_js_mapped();
-        assert_eq!(super::BODY_EMISSIONS.get(), 2);
+        assert_eq!(super::BODY_EMISSIONS.get(), 1);
         assert_eq!(plain, mapped);
+    }
+
+    #[test]
+    fn record_kits_splice_all_arg_shapes_raw_segments_marks_and_hoisted_methods() {
+        // Covers: sole + non-sole records, markers on/off, raw js* before and
+        // after records, and a record inside a hoisted local function.
+        let cases = [
+            // sole + non-sole, markers off, raw js* before and after
+            r#"(let [pre (js* "1 + 2")]
+                 (defrecord Sole [a b])
+                 (defn make-dynamic [x]
+                   (defrecord Dyn [v])
+                   (->Dyn x))
+                 (let [post (js* "3 + 4")
+                       r (->Sole pre post)
+                       d (make-dynamic 9)]
+                   (array (= r (->Sole 3 7)) (hash r) (= d d) (hash d))))"#,
+            // sole + non-sole, markers on (protocol member named)
+            r#"(defrecord Marked [a])
+               (defn make-marked [x]
+                 (defrecord DynMarked [v])
+                 (->DynMarked x))
+               (let [r (->Marked 1)
+                     d (make-marked 2)
+                     _ (js* "~{}.cljs$core$IEquiv$" r)]
+                 (array (= r (->Marked 1)) (hash r) (= d d) (hash d)))"#,
+            // hoisted local function defining a record
+            r#"(let [make (fn [x]
+                            (defrecord HoistedRec [k])
+                            (->HoistedRec x))]
+                 (let [a (make 1) b (make 1)]
+                   (array (= a b) (hash a))))"#,
+        ];
+        for source in cases {
+            let program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+            for pseudo_names in [true, false] {
+                let mut options =
+                    crate::ApplicationOptions::new(crate::OptimizationLevel::Advanced);
+                options.pseudo_names = pseudo_names;
+                let prepared = crate::prepare_application(&program, options);
+                super::BODY_EMISSIONS.set(0);
+                let plain = prepared.emit_js();
+                assert_eq!(super::BODY_EMISSIONS.get(), 1, "pseudo={pseudo_names}");
+                assert!(
+                    plain.contains("this.constructor"),
+                    "missing equiv kit (pseudo={pseudo_names}): {plain}"
+                );
+                assert!(
+                    plain.contains("IHash/-hash"),
+                    "missing hash kit (pseudo={pseudo_names}): {plain}"
+                );
+                super::BODY_EMISSIONS.set(0);
+                let (mapped, mapping) = prepared.emit_js_mapped();
+                assert_eq!(super::BODY_EMISSIONS.get(), 1, "pseudo={pseudo_names}");
+                assert_eq!(plain, mapped, "plain vs mapped mismatch");
+                let json = mapping.to_json(None, &[], false);
+                assert!(json.contains("\"mappings\":\""), "{json}");
+            }
+        }
+    }
+
+    #[test]
+    fn js_exposed_locals_emit_let_directly_for_all_binding_forms() {
+        let source = r#"(let [plain 1
+                              exposed 2]
+                          (js* "~{} = 20" exposed)
+                          (loop [i 0 acc 0]
+                            (js* "~{} = ~{} + 1" acc acc)
+                            (if (< i 2)
+                              (recur (inc i) acc)
+                              (try
+                                (throw (js/Error. "boom"))
+                                (catch :default err
+                                  (js* "~{} = 'caught'" err)
+                                  (let [f (fn self
+                                            ([x] (js* "~{} = null" self) x)
+                                            ([x y] (+ x y)))
+                                        t (this-as me (js* "~{} = 7" me) me)]
+                                    [plain exposed acc err (f 1 2) t]))))))"#;
+        let program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        let find_local = |name: &str| {
+            program
+                .locals
+                .iter()
+                .position(|local| local.name == name)
+                .unwrap_or_else(|| panic!("missing local {name}"))
+        };
+        let plain = find_local("plain");
+        let exposed = find_local("exposed");
+        let acc = find_local("acc");
+        let i = find_local("i");
+        let err = find_local("err");
+        let self_fn = find_local("self");
+        let me = find_local("me");
+
+        let mut options = crate::ApplicationOptions::new(crate::OptimizationLevel::None);
+        options.pseudo_names = true;
+        let js = crate::prepare_application(&program, options).emit_js();
+        assert!(!js.contains("let  "), "no double-space patch: {js}");
+        assert!(js.contains(&format!("const __light0_l{plain} =")), "{js}");
+        assert!(js.contains(&format!("const __light0_l{i} =")), "{js}");
+        for id in [exposed, acc, err, self_fn, me] {
+            assert!(
+                js.contains(&format!("let __light0_l{id} =")),
+                "expected `let __light0_l{id} =` in:\n{js}"
+            );
+            assert!(
+                !js.contains(&format!("const __light0_l{id} =")),
+                "unexpected `const __light0_l{id} =` in:\n{js}"
+            );
+        }
     }
 }
 
@@ -303,6 +414,8 @@ pub(crate) fn emit_reader_registration(
             application: None,
             direct: None,
             function_names: None,
+            js_exposed_locals: None,
+            unit_root: None,
         },
         true,
     );
@@ -665,6 +778,9 @@ struct Interactive<'a> {
     /// functions, found once for every unit of the build
     /// ([`NamespaceUnits`]) instead of by each.
     function_names: Option<&'a FunctionNames<'a>>,
+    /// For a dev build unit, the locals exposed to raw `js*` templates across
+    /// the program, scanned once in [`NamespaceUnits`] instead of per unit.
+    js_exposed_locals: Option<&'a [bool]>,
 }
 
 /// The globals of each namespace of a program, in ID order.
@@ -724,8 +840,10 @@ fn emit_js_mode(
     } else {
         None
     };
+    let shared_exposed = interactive.and_then(|interactive| interactive.js_exposed_locals);
+    let unit_root = shared.map(|_| root);
     // The prelude, the `let g<n>;` declarations and the program body.
-    let body = |register_namespaces: bool, record_kits: [bool; 2]| {
+    let body = |register_namespaces: bool| {
         #[cfg(test)]
         BODY_EMISSIONS.with(|count| count.set(count.get() + 1));
         let mut emitter = Emitter::new(
@@ -738,6 +856,8 @@ fn emit_js_mode(
                 application,
                 direct,
                 function_names,
+                js_exposed_locals: shared_exposed,
+                unit_root,
             },
             register_namespaces,
         );
@@ -752,7 +872,6 @@ fn emit_js_mode(
         // A deferred definition's program contains its initializer alone,
         // usually wrapped in a Do; no Def node reaches the emitter there.
         emitter.native_multimethod_function = native_forms && emitter.function_value(root);
-        emitter.record_kits = record_kits;
         emitter.output.push_str(PRELUDE_OPEN);
         if native_forms {
             // Truth tests are the engine's `__rt.cljTruth` ([`Emitter::truth_open`]):
@@ -811,9 +930,8 @@ fn emit_js_mode(
             }
             declare(format!("g{global}"));
         }
-        emitter.insert((prelude_end, 0, 0), &declarations);
+        emitter.insert(InsertPoint::at(prelude_end), &declarations);
         emitter.record_application_roots(application);
-        emitter.allow_js_local_assignment();
         // `Advanced` output that tests no value with `truth` does not declare it.
         if emitter.inference.is_some() && !emitter.truth_used {
             let start = PRELUDE_OPEN.len();
@@ -824,6 +942,10 @@ fn emit_js_mode(
             for range in &mut emitter.raw_segments {
                 range.start -= PRELUDE_TRUTH.len();
                 range.end -= PRELUDE_TRUTH.len();
+            }
+            for site in &mut emitter.record_kit_sites {
+                site.range.start -= PRELUDE_TRUTH.len();
+                site.range.end -= PRELUDE_TRUTH.len();
             }
             if let Some(marks) = &mut emitter.marks {
                 marks.shift(start, -(PRELUDE_TRUTH.len() as isize));
@@ -836,31 +958,33 @@ fn emit_js_mode(
     // (`RuntimeRoots::reach_reflection`): the body is emitted without the
     // registration, and again with it when those roots reach reflection.
     let slice = direct.is_some();
-    let (mut emitter, mut prelude_end) = body(!slice, [false; 2]);
-    if slice && emitter.runtime.reach_reflection() {
-        (emitter, prelude_end) = body(true, [false; 2]);
-    }
+    let (emitter, prelude_end) = body(!slice);
+    let (mut emitter, prelude_end) = if slice && emitter.runtime.reach_reflection() {
+        body(true)
+    } else {
+        (emitter, prelude_end)
+    };
     // A record type has its own `-equiv` and `-hash`, which read its fields
     // directly, where the slice installs the shared ones
-    // (`Emitter::record_kit`): the body is emitted again with them, which
-    // only adds roots of units those require. A type's constructor brands
-    // nothing: its prototype's keyed kind tells its instances
-    // (light-cljs-1037), so no body is emitted again for brands.
-    let record_kits = if slice && emitter.defined_records {
-        emitter.runtime.record_kits()
-    } else {
-        [false; 2]
-    };
-    if record_kits.contains(&true) {
-        (emitter, prelude_end) = body(emitter.register_namespaces, record_kits);
+    // (`Emitter::splice_record_kits`): splice them at the recorded `defineType`
+    // call sites in one forward pass rather than re-emitting the body. A type's
+    // constructor brands nothing: its prototype's keyed kind tells its
+    // instances (light-cljs-1037), so no body is emitted again for brands.
+    if slice
+        && (!emitter.record_kit_sites.is_empty() || !emitter.constant_record_kit_sites.is_empty())
+    {
+        let record_kits = emitter.runtime.record_kits();
+        if record_kits.contains(&true) {
+            emitter.splice_record_kits(record_kits);
+        }
     }
     if let Some(temporary) = emitter.native_invoke_temporary {
         let declaration = format!("  const temporary{temporary}_0 = {NATIVE_PREPARE_INVOKE};\n");
-        emitter.insert((prelude_end, 0, 0), &declaration);
+        emitter.insert(InsertPoint::at(prelude_end), &declaration);
     }
     if let Some(temporary) = emitter.native_call_member_temporary {
         let declaration = format!("  const temporary{temporary}_0 = {NATIVE_CALL_MEMBER};\n");
-        emitter.insert((prelude_end, 0, 0), &declaration);
+        emitter.insert(InsertPoint::at(prelude_end), &declaration);
     }
     #[cfg(debug_assertions)]
     check_runtime_reads(
@@ -889,7 +1013,10 @@ fn emit_js_mode(
     let embed = if slice {
         !emitter.runtime.is_empty()
     } else {
-        demand_roots || application_roots || reads_runtime(program, &emitter.used)
+        demand_roots
+            || application_roots
+            || !program.namespace_entries.is_empty()
+            || emitter.needs_runtime
     };
     debug_assert!(
         embed || emitter.runtime.is_empty(),
@@ -1072,10 +1199,7 @@ fn emit_js_mode(
     // not accidentally capture compiler locals or be captured by our helpers.
     // Terse output renames every compiler name anyway, to short names that no
     // raw text spells.
-    let raw_js = emitter
-        .used
-        .iter()
-        .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }));
+    let raw_js = emitter.has_raw_js;
     // Each compiler name of a local or definition names its token.
     if let Some(marks) = &mut emitter.marks {
         let mut skipped = emitter.raw_segments.clone();
@@ -1382,40 +1506,138 @@ pub(crate) fn interactive_prelude() -> String {
     )
 }
 
-/// Whether some emitted expression is of a kind whose emission reads the
-/// runtime. Below `Advanced` this decides whether the whole runtime is embedded.
-fn reads_runtime(program: &Program, used: &HashSet<ExprId>) -> bool {
-    !program.namespace_entries.is_empty() || program.exprs.iter().enumerate().any(|(id, expr)| {
-        used.contains(&ExprId(id)) && (
-        matches!(
-            expr.kind,
-            ExprKind::Keyword(_)
-                | ExprKind::Symbol(_)
-                | ExprKind::List(_)
-                | ExprKind::Vector(_)
-                | ExprKind::Map(_)
-                | ExprKind::Set(_)
-                | ExprKind::LiteralMap(_)
-                | ExprKind::LiteralSet(_)
-                | ExprKind::CoreFn(_)
-                | ExprKind::ReaderLiteral { .. }
-                | ExprKind::WithMeta { .. }
-                | ExprKind::Var { .. }
-                | ExprKind::WithOutStr(_)
-                | ExprKind::DefProtocol { .. }
-                | ExprKind::ExtendType { .. }
-                | ExprKind::ProtocolPredicate { .. }
-                | ExprKind::Reify { .. }
-                | ExprKind::DefType { .. }
-                | ExprKind::LoadableType
-                | ExprKind::Assert { message: Some(_), .. }
-                | ExprKind::Case { strict: false, .. }
-                | ExprKind::Case { keyword_tests: true, .. }
-                | ExprKind::Case { default: None, .. }
+/// Whether `kind` is an expression kind whose emission reads the runtime.
+/// Below `Advanced` this decides whether the whole runtime is embedded.
+fn expr_reads_runtime(kind: &ExprKind) -> bool {
+    matches!(
+        kind,
+        ExprKind::Keyword(_)
+            | ExprKind::Symbol(_)
+            | ExprKind::List(_)
+            | ExprKind::Vector(_)
+            | ExprKind::Map(_)
+            | ExprKind::Set(_)
+            | ExprKind::LiteralMap(_)
+            | ExprKind::LiteralSet(_)
+            | ExprKind::CoreFn(_)
+            | ExprKind::ReaderLiteral { .. }
+            | ExprKind::WithMeta { .. }
+            | ExprKind::Var { .. }
+            | ExprKind::WithOutStr(_)
+            | ExprKind::DefProtocol { .. }
+            | ExprKind::ExtendType { .. }
+            | ExprKind::ProtocolPredicate { .. }
+            | ExprKind::Reify { .. }
+            | ExprKind::DefType { .. }
+            | ExprKind::LoadableType
+            | ExprKind::Assert {
+                message: Some(_),
+                ..
+            }
+            | ExprKind::Case { strict: false, .. }
+            | ExprKind::Case {
+                keyword_tests: true,
+                ..
+            }
+            | ExprKind::Case { default: None, .. }
+    ) || matches!(kind, ExprKind::Fn { methods, .. } if methods.iter().any(|m| m.rest.is_some()))
+}
 
-        ) || matches!(&expr.kind, ExprKind::Fn { methods, .. } if methods.iter().any(|m| m.rest.is_some()))
-        )
-    })
+/// Locals passed directly as arguments to a `js*` template in `program`,
+/// which raw JavaScript may assign, so their declarations use `let` instead
+/// of `const`. Empty when no local is exposed.
+fn scan_js_exposed_locals(program: &Program) -> Vec<bool> {
+    let mut exposed = Vec::new();
+    for expr in program.exprs.iter() {
+        if let ExprKind::JsTemplate { args, .. } = &expr.kind {
+            for &arg in args {
+                if let ExprKind::Local(local) = program.exprs[arg.0].kind {
+                    if exposed.is_empty() {
+                        exposed.resize(program.locals.len(), false);
+                    }
+                    exposed[local.0] = true;
+                }
+            }
+        }
+    }
+    exposed
+}
+
+/// Locals passed directly to a `js*` template reachable from `root`, used for
+/// compile-time and standalone interactive units whose `Program` retains an
+/// unrelated frozen prefix.
+fn scan_unit_js_exposed_locals(program: &Program, root: ExprId) -> Vec<LocalId> {
+    let mut exposed = Vec::new();
+    let mut pending = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let kind = &program.exprs[id.0].kind;
+        if let ExprKind::JsTemplate { args, .. } = kind {
+            for &arg in args {
+                if let ExprKind::Local(local) = program.exprs[arg.0].kind
+                    && !exposed.contains(&local)
+                {
+                    exposed.push(local);
+                }
+            }
+        }
+        visit_children(kind, |child| pending.push(child));
+    }
+    exposed
+}
+
+/// Adjust `offset` by cumulative splice deltas `(end, delta)` in one forward
+/// pass (falling back to binary search if an input offset moves backward).
+fn shift_offset(
+    offset: usize,
+    shifts: &[(usize, isize)],
+    cursor: &mut usize,
+    prev: &mut usize,
+) -> usize {
+    if offset < *prev {
+        *cursor = shifts.partition_point(|&(end, _)| end <= offset);
+    } else {
+        while *cursor < shifts.len() && shifts[*cursor].0 <= offset {
+            *cursor += 1;
+        }
+    }
+    *prev = offset;
+    if *cursor > 0 {
+        offset.wrapping_add_signed(shifts[*cursor - 1].1)
+    } else {
+        offset
+    }
+}
+
+fn shift_ranges(ranges: &mut [std::ops::Range<usize>], shifts: &[(usize, isize)]) {
+    let mut cursor = 0;
+    let mut prev = 0;
+    for range in ranges {
+        let len = range.end - range.start;
+        let start = shift_offset(range.start, shifts, &mut cursor, &mut prev);
+        range.start = start;
+        range.end = start + len;
+    }
+}
+
+fn shift_marks(marks: &mut [Mark], shifts: &[(usize, isize)]) {
+    let mut cursor = 0;
+    let mut prev = 0;
+    for mark in marks {
+        mark.output = shift_offset(mark.output, shifts, &mut cursor, &mut prev);
+    }
+}
+
+/// Write `["name"]` into `out` with the same keying rule as
+/// [`Emitter::property_name`].
+fn write_member(out: &mut String, name: &str) {
+    out.push('[');
+    let keyed = crate::analyzer::keyed_name(name);
+    write_string(out, name.encode_utf16(), !keyed);
+    out.push(']');
 }
 
 /// Debug check that every runtime read in emitted code outside raw JavaScript
@@ -2119,7 +2341,10 @@ struct Emitter<'a> {
     reify_receivers: Vec<RecurTargetId>,
     capture_resets: Vec<RecurTargetId>,
     field_resets: Vec<RecurTargetId>,
-    used: HashSet<ExprId>,
+    /// Whether this emission emitted any raw `js*` template.
+    has_raw_js: bool,
+    /// Below `Advanced`: whether any emitted expression requires the runtime.
+    needs_runtime: bool,
     // Upstream return-context def exits before its following test-property write.
     returned_definition: Option<ExprId>,
     /// Whether the innermost function being written is an `^:async` method,
@@ -2170,12 +2395,12 @@ struct Emitter<'a> {
     shapes: Option<&'a CallShapes>,
     /// Whether the output calls the prelude's `truth`.
     truth_used: bool,
-    /// Which of a record's `-equiv` and `-hash` [`Emitter::record_kit`] writes
-    /// for each record type it defines (light-cljs-267), as
-    /// [`RuntimeRoots::record_kits`] decides.
-    record_kits: [bool; 2],
-    /// Whether this emission defined a record type ([`Emitter::defined_type`]).
-    defined_records: bool,
+    /// `defrecord` `defineType(...)` sites in `output` eligible for post-body
+    /// `record_kit` splicing (`Advanced`, single-file).
+    record_kit_sites: Vec<RecordKitSite>,
+    /// Same, for `defrecord` definitions inside hoisted methods written into
+    /// `constants.declarations`.
+    constant_record_kit_sites: Vec<RecordKitSite>,
     /// With a source map: where the text of each expression starts
     /// ([`Emitter::mark`]), and the functions' and names' positions.
     marks: Option<Marks>,
@@ -2212,6 +2437,12 @@ struct Emitter<'a> {
     /// local once bound ([`Emitter::stable_local`]), built on first use by
     /// an application's emission.
     assignable_locals: Vec<bool>,
+    /// Locals passed directly to `js*` templates, so their declarations emit
+    /// `let` instead of `const` ([`Emitter::js_exposed_local`]).
+    js_exposed_locals: JsExposedLocals<'a>,
+    /// Root expression when emitting a compile-time or standalone interactive
+    /// unit whose `Program` retains an unrelated frozen prefix.
+    unit_root: Option<ExprId>,
     /// At `Advanced` in a single file: the compiler names of the globals
     /// (and method entries, `g3_1`) that a statement of the program's own
     /// function declares where it defines them, `var g3 = ...;`, so that
@@ -2230,6 +2461,50 @@ struct Emitter<'a> {
     declaring_type: bool,
 }
 
+/// Saved positions in the emitter's buffers before a region that may need
+/// declarations inserted ahead of it ([`Emitter::insert`]).
+#[derive(Clone, Copy)]
+struct InsertPoint {
+    output: usize,
+    marks: usize,
+    raw: usize,
+    record_kits: usize,
+}
+
+impl InsertPoint {
+    fn at(output: usize) -> Self {
+        Self {
+            output,
+            marks: 0,
+            raw: 0,
+            record_kits: 0,
+        }
+    }
+}
+
+/// A `defrecord` `defineType(...)` call site in `output` (or
+/// `constants.declarations`) where a record kit may be spliced after the body
+/// pass finishes ([`Emitter::splice_record_kits`]).
+struct RecordKitSite {
+    /// Byte range to replace: empty `at..at` when `markers` is false, or
+    /// `at..at + 4` covering `null` when `markers` is true.
+    range: std::ops::Range<usize>,
+    /// The `DefType` expression (for `global`, `fields`, and runtime-root
+    /// attribution).
+    expr: ExprId,
+    /// Prefix emitted before the kit: `""`, `", "`, or `", null, "`.
+    prefix: &'static str,
+}
+
+/// Pre-scanned locals passed directly to `js*` templates
+/// ([`Emitter::js_exposed_local`]).
+enum JsExposedLocals<'a> {
+    Pending,
+    Shared(&'a [bool]),
+    Owned(Vec<bool>),
+    Unit(Vec<LocalId>),
+}
+
 /// What a fresh [`Emitter`] writes for ([`Emitter::new`]).
 #[derive(Clone, Copy)]
 struct Setup<'a> {
@@ -2240,43 +2515,114 @@ struct Setup<'a> {
     application: Option<Application<'a>>,
     direct: Option<&'a [&'static str]>,
     function_names: Option<&'a FunctionNames<'a>>,
+    js_exposed_locals: Option<&'a [bool]>,
+    unit_root: Option<ExprId>,
 }
 
 impl<'a> Emitter<'a> {
-    /// A local passed directly to `js*` may be assigned by that JavaScript.
-    /// Use lexical `let`, including for per-iteration copies, so closures keep
-    /// their own iteration's binding. The equal-length replacement preserves
-    /// source-map anchors and the recorded raw-text boundaries.
-    fn allow_js_local_assignment(&mut self) {
-        let mut exposed = HashSet::new();
-        for &id in &self.used {
-            if let ExprKind::JsTemplate { args, .. } = &self.program.exprs[id.0].kind {
-                for &arg in args {
-                    if let ExprKind::Local(local) = self.program.exprs[arg.0].kind {
-                        exposed.insert(local.0);
-                    }
-                }
-            }
+    #[inline(always)]
+    fn note_runtime_expr(&mut self, kind: &ExprKind) {
+        if !self.needs_runtime && self.replaced_core.is_none() && expr_reads_runtime(kind) {
+            self.needs_runtime = true;
         }
-        if exposed.is_empty() {
+    }
+
+    /// Populate `js_exposed_locals` (and `assignable_locals` when needed or
+    /// at `Advanced`) in one linear pass over `program.exprs`.
+    fn populate_local_flags(&mut self, need_assignable: bool) {
+        let program = self.program;
+        let compute_exposed = matches!(self.js_exposed_locals, JsExposedLocals::Pending);
+        let compute_assignable =
+            self.assignable_locals.is_empty() && (need_assignable || self.replaced_core.is_some());
+        if !compute_exposed && !compute_assignable {
             return;
         }
-        let mut raw = self.raw_segments.clone();
-        raw.sort_by_key(|range| range.start);
-        let replacements = crate::terse::scanned_names(&self.output, &raw)
-            .into_iter()
-            .filter_map(|(range, name)| {
-                let local: usize = name.strip_prefix('l')?.parse().ok()?;
-                let start = range.start.checked_sub("const ".len())?;
-                let prior_raw = raw.partition_point(|range| range.start < start + 5);
-                (exposed.contains(&local)
-                    && self.output.get(start..range.start) == Some("const ")
-                    && (prior_raw == 0 || raw[prior_raw - 1].end <= start))
-                    .then_some(start)
-            })
-            .collect::<Vec<_>>();
-        for start in replacements {
-            self.output.replace_range(start..start + 5, "let  ");
+        let mut exposed = Vec::new();
+        let mut assignable = if compute_assignable {
+            vec![false; program.locals.len() + 1]
+        } else {
+            Vec::new()
+        };
+        for expr in program.exprs.iter() {
+            match &expr.kind {
+                ExprKind::JsTemplate { args, .. } => {
+                    for &arg in args {
+                        if let ExprKind::Local(local) = program.exprs[arg.0].kind {
+                            if compute_exposed {
+                                if exposed.is_empty() {
+                                    exposed.resize(program.locals.len(), false);
+                                }
+                                exposed[local.0] = true;
+                            }
+                            if compute_assignable {
+                                assignable[local.0] = true;
+                            }
+                        }
+                    }
+                }
+                ExprKind::Fn { methods, .. } if compute_assignable => {
+                    for method in methods {
+                        for param in method.params.iter().chain(&method.rest) {
+                            assignable[param.0] = true;
+                        }
+                    }
+                }
+                ExprKind::Reify { methods, .. }
+                | ExprKind::DefType { methods, .. }
+                | ExprKind::ExtendType { methods, .. }
+                    if compute_assignable =>
+                {
+                    for (_, method) in methods {
+                        for param in method.params.iter().chain(&method.rest) {
+                            assignable[param.0] = true;
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+        if compute_exposed {
+            self.js_exposed_locals = JsExposedLocals::Owned(exposed);
+        }
+        if compute_assignable {
+            self.assignable_locals = assignable;
+        }
+    }
+
+    /// Whether `local` is passed directly to a `js*` template, which may
+    /// assign it, so its declaration must use lexical `let` instead of `const`.
+    fn js_exposed_local(&mut self, local: LocalId) -> bool {
+        if matches!(self.js_exposed_locals, JsExposedLocals::Pending) {
+            if let Some(root) = self.unit_root {
+                let exposed = scan_unit_js_exposed_locals(self.program, root);
+                self.js_exposed_locals = JsExposedLocals::Unit(exposed);
+            } else {
+                self.populate_local_flags(false);
+            }
+        }
+        match &self.js_exposed_locals {
+            JsExposedLocals::Shared(table) => table.get(local.0).copied().unwrap_or(false),
+            JsExposedLocals::Owned(table) => table.get(local.0).copied().unwrap_or(false),
+            JsExposedLocals::Unit(locals) => locals.contains(&local),
+            JsExposedLocals::Pending => unreachable!(),
+        }
+    }
+
+    /// `"let "` when `local` is exposed to a `js*` template, else `"const "`.
+    fn local_declaration_keyword(&mut self, local: LocalId) -> &'static str {
+        if self.js_exposed_local(local) {
+            "let "
+        } else {
+            "const "
+        }
+    }
+
+    fn insert_point(&self) -> InsertPoint {
+        InsertPoint {
+            output: self.output.len(),
+            marks: self.marks_len(),
+            raw: self.raw_segments.len(),
+            record_kits: self.record_kit_sites.len(),
         }
     }
 
@@ -2422,7 +2768,8 @@ impl<'a> Emitter<'a> {
             reify_receivers: Vec::new(),
             capture_resets: Vec::new(),
             field_resets: Vec::new(),
-            used: HashSet::new(),
+            has_raw_js: false,
+            needs_runtime: false,
             returned_definition: None,
             asynchronous: false,
             boxed_return: false,
@@ -2435,6 +2782,11 @@ impl<'a> Emitter<'a> {
             substitute: None,
             substituted: false,
             assignable_locals: Vec::new(),
+            js_exposed_locals: match setup.js_exposed_locals {
+                Some(table) => JsExposedLocals::Shared(table),
+                None => JsExposedLocals::Pending,
+            },
+            unit_root: setup.unit_root,
             declared_in_place: None,
             top_statement: false,
             declaring_type: false,
@@ -2451,8 +2803,8 @@ impl<'a> Emitter<'a> {
             inference,
             shapes,
             truth_used: false,
-            record_kits: [false; 2],
-            defined_records: false,
+            record_kit_sites: Vec::new(),
+            constant_record_kit_sites: Vec::new(),
             marks: mapped.then(Marks::default),
             constant_marks: Vec::new(),
             function_names: setup.function_names,
@@ -3146,6 +3498,7 @@ impl<'a> Emitter<'a> {
         }
         let site = std::mem::take(&mut self.output);
         let raw = self.raw_segments.len();
+        let record_sites = self.record_kit_sites.len();
         let marks = self.marks_len();
         self.mark(origin.or(self.site));
         // A chunked build records the entries the initializer reads.
@@ -3163,6 +3516,11 @@ impl<'a> Emitter<'a> {
             self.raw_segments.len(),
             raw,
             "a constant holds raw JavaScript"
+        );
+        debug_assert_eq!(
+            self.record_kit_sites.len(),
+            record_sites,
+            "a constant defines a record"
         );
         let value = std::mem::replace(&mut self.output, site);
         let number = self.constants.as_ref().unwrap().lazy.len();
@@ -5545,7 +5903,7 @@ impl<'a> Emitter<'a> {
         let site = self.site.replace(id);
         // The statements of `id` declare the locals of the value-position
         // `let`s in them that the block around them binds ([`Emitter::hoists`]).
-        let start = (self.output.len(), self.marks_len(), self.raw_segments.len());
+        let start = self.insert_point();
         let outer = match &mut self.operands {
             Some(operands) if operands.hoists && context != ExprContext::Value => Some((
                 std::mem::take(&mut operands.hoisted),
@@ -5567,11 +5925,7 @@ impl<'a> Emitter<'a> {
 
     /// Declare `hoisted` ([`Operands::hoisted`]) at `start` of the
     /// statements that bind them: `let l5, l6_0;`.
-    fn declare_hoisted(
-        &mut self,
-        start: (usize, usize, usize),
-        mut hoisted: Vec<(LocalId, Option<usize>)>,
-    ) {
+    fn declare_hoisted(&mut self, start: InsertPoint, mut hoisted: Vec<(LocalId, Option<usize>)>) {
         if hoisted.is_empty() {
             return;
         }
@@ -5657,7 +6011,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_expr(&mut self, id: ExprId, context: ExprContext) {
-        self.used.insert(id);
+        self.note_runtime_expr(&self.program.exprs[id.0].kind);
         // Only this statement, and the forms of a `do` that it is, are the
         // program function's own statements.
         let top = std::mem::take(&mut self.top_statement);
@@ -5841,8 +6195,9 @@ impl<'a> Emitter<'a> {
                         continue;
                     }
                     let head = self.lift_head(init);
+                    let keyword = self.local_declaration_keyword(local);
                     self.indentation();
-                    self.output.push_str("const ");
+                    self.output.push_str(keyword);
                     self.local(local);
                     self.output.push_str(" = ");
                     self.value(init);
@@ -5941,8 +6296,9 @@ impl<'a> Emitter<'a> {
                         }
                         self.output.push_str(") {\n");
                         self.indent += 1;
+                        let keyword = self.local_declaration_keyword(catch.binding);
                         self.indentation();
-                        self.output.push_str("const ");
+                        self.output.push_str(keyword);
                         self.local(catch.binding);
                         self.output.push_str(" = caught;\n");
                         self.emit(catch.body, context);
@@ -6134,8 +6490,10 @@ impl<'a> Emitter<'a> {
                 self.top_statement = false;
             }
             ExprKind::ThisAs { binding, body } => {
+                let keyword = self.local_declaration_keyword(*binding);
                 self.indentation();
-                self.output.push_str("{ const ");
+                self.output.push_str("{ ");
+                self.output.push_str(keyword);
                 self.local(*binding);
                 self.output
                     .push_str(" = (this == null ? globalThis : Object(this));\n");
@@ -6163,8 +6521,9 @@ impl<'a> Emitter<'a> {
                         continue;
                     }
                     let head = self.lift_head(init);
+                    let keyword = self.local_declaration_keyword(local);
                     self.indentation();
-                    self.output.push_str("const ");
+                    self.output.push_str(keyword);
                     self.local(local);
                     self.output.push_str(" = ");
                     self.value(init);
@@ -6296,8 +6655,9 @@ impl<'a> Emitter<'a> {
         }
         self.indent += 1;
         for (index, &param) in frame.params.iter().enumerate() {
+            let keyword = self.local_declaration_keyword(param);
             self.indentation();
-            self.output.push_str("const ");
+            self.output.push_str(keyword);
             self.local(param);
             if frame.receiver_from_this && index == 0 {
                 if self.native_protocol_target == Some(target) {
@@ -6378,7 +6738,7 @@ impl<'a> Emitter<'a> {
         let receiver = method.params.first().copied().filter(|_| through_this);
         let deferred = receiver.is_some() && method.params.len() == 1 && method.rest.is_none();
         self.output.push('(');
-        let params_at = (self.output.len(), self.marks_len(), self.raw_segments.len());
+        let params_at = self.insert_point();
         if !deferred {
             for (index, param) in method.params.iter().chain(method.rest.iter()).enumerate() {
                 if index > 0 {
@@ -6389,7 +6749,7 @@ impl<'a> Emitter<'a> {
         }
         self.output.push_str(") {\n");
         self.indent += 1;
-        let body_at = (self.output.len(), self.marks_len(), self.raw_segments.len());
+        let body_at = self.insert_point();
         if let Some(receiver) = receiver {
             self.receivers.push((receiver, false));
         }
@@ -6443,7 +6803,7 @@ impl<'a> Emitter<'a> {
         // function inside it rebinds `this` declares its `self<n>` alias of
         // `this` only for such a function: upstream's prologue without its
         // dead statements (light-cljs-264).
-        let start = (self.output.len(), self.marks_len(), self.raw_segments.len());
+        let start = self.insert_point();
         if through_this {
             self.this_target = Some(method.target);
         } else if self.reify_receivers.contains(&method.target)
@@ -6531,22 +6891,26 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Insert `text` into the output at `at`, the output length, marks length
-    /// and raw segments length when the text after it began, moving that
-    /// text's marks and raw segments.
-    fn insert(&mut self, (at, marks, raw): (usize, usize, usize), text: &str) {
+    /// Insert `text` into the output at `at`, the buffer positions when the
+    /// text after it began, moving that text's marks, raw segments and record
+    /// kit splice sites.
+    fn insert(&mut self, at: InsertPoint, text: &str) {
         if text.is_empty() {
             return;
         }
-        self.output.insert_str(at, text);
-        for range in &mut self.raw_segments[raw..] {
+        self.output.insert_str(at.output, text);
+        for range in &mut self.raw_segments[at.raw..] {
             range.start += text.len();
             range.end += text.len();
         }
+        for site in &mut self.record_kit_sites[at.record_kits..] {
+            site.range.start += text.len();
+            site.range.end += text.len();
+        }
         if let Some(list) = &mut self.marks {
-            for mark in list.list[marks..]
+            for mark in list.list[at.marks..]
                 .iter_mut()
-                .filter(|mark| mark.output >= at)
+                .filter(|mark| mark.output >= at.output)
             {
                 mark.output += text.len();
             }
@@ -6559,7 +6923,7 @@ impl<'a> Emitter<'a> {
     /// reach into a function, so its labeled statements number theirs from
     /// 0 ([`Emitter::lifts`]).
     fn operand_scope(&mut self, hoists: bool, body: impl FnOnce(&mut Self)) {
-        let start = (self.output.len(), self.marks_len(), self.raw_segments.len());
+        let start = self.insert_point();
         let outer = self.operands.replace(Operands {
             hoists,
             ..Operands::default()
@@ -6747,9 +7111,10 @@ impl<'a> Emitter<'a> {
             self.method_with_ifn_captures(None, method, ifn_call);
             self.output.push_str(";\n");
         }
+        let keyword = name.map_or("const ", |name| self.local_declaration_keyword(name));
         let function = name.map_or_else(|| "f".into(), |name| format!("l{}", name.0));
         self.indentation();
-        write!(self.output, "const {function} = ").unwrap();
+        write!(self.output, "{keyword}{function} = ").unwrap();
         self.dispatcher(&entries, methods, macro_function);
         self.output.push_str(";\n");
         self.arity_properties(&function, &entries, methods, macro_function, true);
@@ -6956,16 +7321,8 @@ impl<'a> Emitter<'a> {
         dispatcher: Option<bool>,
         declared: bool,
     ) {
+        let _ = init;
         let program = self.program;
-        let mut wrapper = init;
-        while wrapper != function {
-            self.used.insert(wrapper);
-            let ExprKind::Do(items) = &program.exprs[wrapper.0].kind else {
-                unreachable!("a fn in one-form do forms")
-            };
-            wrapper = items[0];
-        }
-        self.used.insert(function);
         let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind else {
             unreachable!("method entries of a fn")
         };
@@ -7066,16 +7423,8 @@ impl<'a> Emitter<'a> {
     /// [`Emitter::hoists`] (`hoisted`), each is an assignment, `l5_0 =
     /// function(l6) {...}, `, to a local of the function being written.
     fn local_entries(&mut self, init: ExprId, function: &LocalFunction, hoisted: bool) {
+        let _ = init;
         let program = self.program;
-        let mut wrapper = init;
-        while wrapper != function.function {
-            self.used.insert(wrapper);
-            let ExprKind::Do(items) = &program.exprs[wrapper.0].kind else {
-                unreachable!("a fn in one-form do forms")
-            };
-            wrapper = items[0];
-        }
-        self.used.insert(function.function);
         let ExprKind::Fn { methods, .. } = &program.exprs[function.function.0].kind else {
             unreachable!("entries of a fn")
         };
@@ -7126,6 +7475,7 @@ impl<'a> Emitter<'a> {
             unreachable!("a hoisted method of a fn")
         };
         let output = std::mem::take(&mut self.output);
+        let record_kit_sites = std::mem::take(&mut self.record_kit_sites);
         let indent = std::mem::replace(&mut self.indent, 1);
         let captures = std::mem::take(&mut self.captures);
         let reify_captures = std::mem::take(&mut self.reify_captures);
@@ -7151,9 +7501,15 @@ impl<'a> Emitter<'a> {
         self.captures = captures;
         self.indent = indent;
         let value = std::mem::replace(&mut self.output, output);
+        let hoisted_sites = std::mem::replace(&mut self.record_kit_sites, record_kit_sites);
         let declaration = format!("  const k{number} = ");
         let at = self.constants.as_ref().unwrap().declarations.len() + declaration.len();
         self.take_marks(marks, at);
+        for mut site in hoisted_sites {
+            site.range.start += at;
+            site.range.end += at;
+            self.constant_record_kit_sites.push(site);
+        }
         let declarations = &mut self.constants.as_mut().unwrap().declarations;
         let start = declarations.len();
         writeln!(declarations, "{declaration}{value};").unwrap();
@@ -7172,15 +7528,12 @@ impl<'a> Emitter<'a> {
     fn direct_call(&mut self, callee: ExprId, args: &[ExprId], direct: DirectCall) {
         match direct.entry {
             Some(Entry::Global { global, method }) => {
-                self.used.insert(callee);
                 write!(self.output, "g{}_{method}", global.0).unwrap();
             }
             Some(Entry::Scoped { local, method }) => {
-                self.used.insert(callee);
                 write!(self.output, "l{}_{method}", local.0).unwrap();
             }
             Some(Entry::Hoisted { function, method }) => {
-                self.used.insert(callee);
                 let number = self.hoisted_method(function, method);
                 self.constant_reference(number);
             }
@@ -7555,35 +7908,7 @@ impl<'a> Emitter<'a> {
             return false;
         }
         if self.assignable_locals.is_empty() {
-            let program = self.program;
-            let mut assignable = vec![false; program.locals.len()];
-            let mut parameters = |method: &FnMethod| {
-                for param in method.params.iter().chain(&method.rest) {
-                    assignable[param.0] = true;
-                }
-            };
-            let mut holes = Vec::new();
-            for expr in program.exprs.iter() {
-                match &expr.kind {
-                    ExprKind::Fn { methods, .. } => methods.iter().for_each(&mut parameters),
-                    ExprKind::Reify { methods, .. }
-                    | ExprKind::DefType { methods, .. }
-                    | ExprKind::ExtendType { methods, .. } => {
-                        methods.iter().for_each(|(_, method)| parameters(method));
-                    }
-                    ExprKind::JsTemplate { args, .. } => holes.extend(args.iter().copied()),
-                    _ => (),
-                }
-            }
-            for hole in holes {
-                if let ExprKind::Local(local) = program.exprs[hole.0].kind {
-                    assignable[local.0] = true;
-                }
-            }
-            // Never empty once computed: a program has a local or this is
-            // computed again, which finds none.
-            assignable.push(false);
-            self.assignable_locals = assignable;
+            self.populate_local_flags(true);
         }
         !self.assignable_locals[local.0]
     }
@@ -7723,7 +8048,6 @@ impl<'a> Emitter<'a> {
         };
         let mut effects = Vec::new();
         for &item in before {
-            self.used.insert(item);
             let kind = &self.program.exprs[item.0].kind;
             if !(matches!(
                 kind,
@@ -8131,28 +8455,40 @@ impl<'a> Emitter<'a> {
         self.object_methods(methods, Some(id), EntrySlots::InPlaceOfKey);
         if record {
             self.output.push_str(", 1");
-            let (equiv, hash) = self.record_kit_parts();
             // A program that names a protocol member or mask keeps a record's
             // markers ([`crate::inference::ProgramFacts::protocol_members_named`]).
             let markers = self
                 .inference
                 .is_none_or(|inference| inference.facts().protocol_members_named());
-            if !self.sole_type(global) {
+            let sole = self.sole_type(global);
+            if !sole {
                 self.output.push_str(", () => ");
                 self.global(global);
-            } else if equiv || hash || markers {
-                self.output.push_str(", null");
-            }
-            if equiv || hash {
-                self.output.push_str(", ");
-                self.record_kit(&name, fields);
             } else if markers {
                 self.output.push_str(", null");
             }
-            if markers {
-                self.output.push_str(", true");
+            if self.chunks.is_none() {
+                if markers {
+                    self.output.push_str(", ");
+                    let start = self.output.len();
+                    self.output.push_str("null");
+                    self.record_kit_sites.push(RecordKitSite {
+                        range: start..self.output.len(),
+                        expr: id,
+                        prefix: "",
+                    });
+                    self.output.push_str(", true");
+                } else {
+                    let at = self.output.len();
+                    self.record_kit_sites.push(RecordKitSite {
+                        range: at..at,
+                        expr: id,
+                        prefix: if sole { ", null, " } else { ", " },
+                    });
+                }
+            } else if markers {
+                self.output.push_str(", null, true");
             }
-            self.defined_records = true;
         }
         self.output.push_str("); ");
         // `crate::rta` keeps the factory only where the program reads it.
@@ -8165,17 +8501,19 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// At `Advanced`, a record type's own `-equiv` and `-hash`, where
-    /// [`RuntimeRoots::record_kits`] says so (light-cljs-267). The runtime's
-    /// `recordMethods.equiv` and `recordMethods.hash` walk `Type.fieldNames`
-    /// and read each field by its name, a keyed load that V8 leaves
-    /// megamorphic whatever the type, and the shared hash builds a map entry
-    /// per field. These read each field as the constructor writes it, and the
-    /// hash adds the fields' keyword hashes and the type name's string hash
-    /// as constants ([`crate::value_hash`]; the hash is written only where
-    /// core protocols are intact, so that no extension replaces a keyword's
-    /// hash), so that they compute what the shared ones do, reading in the
-    /// same order, with the same `__hash` cache:
+    /// At `Advanced`, splice each record type's own `-equiv` and `-hash` into
+    /// its `defineType(...)` call sites in one linear forward pass, shifting
+    /// `raw_segments` and `marks` in one linear pass (light-cljs-267,
+    /// light-cljs-1095). The runtime's `recordMethods.equiv` and
+    /// `recordMethods.hash` walk `Type.fieldNames` and read each field by its
+    /// name, a keyed load that V8 leaves megamorphic whatever the type, and
+    /// the shared hash builds a map entry per field. These read each field as
+    /// the constructor writes it, and the hash adds the fields' keyword hashes
+    /// and the type name's string hash as constants ([`crate::value_hash`];
+    /// the hash is written only where core protocols are intact, so that no
+    /// extension replaces a keyword's hash), so that they compute what the
+    /// shared ones do, reading in the same order, with the same `__hash`
+    /// cache:
     ///
     /// ```text
     /// [["IEquiv/-equiv", 2, function(a0, a1)
@@ -8194,84 +8532,178 @@ impl<'a> Emitter<'a> {
     /// one definition of the type's slots, where a call of
     /// `installMethods` after `defineType` defined them twice
     /// (light-cljs-1069).
-    fn record_kit(&mut self, name: &str, fields: &[String]) {
-        let (equiv, hash) = self.record_kit_parts();
+    fn splice_record_kits(&mut self, record_kits: [bool; 2]) {
+        let (equiv, hash) = self.record_kit_parts(record_kits);
+        if !equiv && !hash {
+            return;
+        }
+        if !self.record_kit_sites.is_empty() {
+            let sites = std::mem::take(&mut self.record_kit_sites);
+            let track_shifts = !self.raw_segments.is_empty() || self.marks.is_some();
+            let mut shifts = Vec::with_capacity(if track_shifts { sites.len() } else { 0 });
+            let original = std::mem::take(&mut self.output);
+            let mut spliced = String::with_capacity(original.len() + sites.len() * 256);
+            let mut cursor = 0;
+            let mut delta = 0isize;
+            for site in sites {
+                debug_assert!(site.range.start >= cursor);
+                spliced.push_str(&original[cursor..site.range.start]);
+                let before = spliced.len();
+                spliced.push_str(site.prefix);
+                self.write_record_kit(&mut spliced, site.expr, equiv, hash);
+                let inserted = spliced.len() - before;
+                delta += inserted as isize - site.range.len() as isize;
+                if track_shifts {
+                    shifts.push((site.range.end, delta));
+                }
+                cursor = site.range.end;
+            }
+            spliced.push_str(&original[cursor..]);
+            self.output = spliced;
+            if track_shifts {
+                shift_ranges(&mut self.raw_segments, &shifts);
+                if let Some(marks) = &mut self.marks {
+                    shift_marks(&mut marks.list, &shifts);
+                }
+            }
+        }
+        if !self.constant_record_kit_sites.is_empty() {
+            let sites = std::mem::take(&mut self.constant_record_kit_sites);
+            let track_shifts = !self.constant_marks.is_empty();
+            let mut shifts = Vec::with_capacity(if track_shifts { sites.len() } else { 0 });
+            let original = std::mem::take(
+                &mut self
+                    .constants
+                    .as_mut()
+                    .expect("constant table for hoisted record")
+                    .declarations,
+            );
+            let mut spliced = String::with_capacity(original.len() + sites.len() * 256);
+            let mut cursor = 0;
+            let mut delta = 0isize;
+            for site in sites {
+                debug_assert!(site.range.start >= cursor);
+                spliced.push_str(&original[cursor..site.range.start]);
+                let before = spliced.len();
+                spliced.push_str(site.prefix);
+                self.write_record_kit(&mut spliced, site.expr, equiv, hash);
+                let inserted = spliced.len() - before;
+                delta += inserted as isize - site.range.len() as isize;
+                if track_shifts {
+                    shifts.push((site.range.end, delta));
+                }
+                cursor = site.range.end;
+            }
+            spliced.push_str(&original[cursor..]);
+            self.constants.as_mut().unwrap().declarations = spliced;
+            if track_shifts {
+                shift_marks(&mut self.constant_marks, &shifts);
+            }
+        }
+    }
+
+    fn write_record_kit(&mut self, out: &mut String, expr: ExprId, equiv: bool, hash: bool) {
+        let ExprKind::DefType { global, layout, .. } = &self.program.exprs[expr.0].kind else {
+            unreachable!("a record definition")
+        };
+        let binding = &self.program.globals[global.0];
+        let fields = &layout.fields;
         let members: Vec<String> = fields
             .iter()
             .map(|field| crate::analyzer::munge_js_member(field))
             .collect();
-        self.output.push('[');
+        out.push('[');
         if equiv {
-            self.output.push_str(
+            let equal_pair = self.runtime_read(
+                RuntimeName::direct("equalPair", None),
+                Some(expr),
+                NameUse::Value,
+            );
+            out.push_str(
                 "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && this.constructor === a1.constructor",
             );
             for member in members.iter().map(String::as_str).chain(["__extmap"]) {
-                self.output.push_str(" && ");
-                self.rt(RuntimeName::direct("equalPair", None));
-                self.output.push_str("(this");
-                self.member(member);
-                self.output.push_str(", a1");
-                self.member(member);
-                self.output.push(')');
+                out.push_str(" && ");
+                out.push_str(&equal_pair);
+                out.push_str("(this");
+                write_member(out, member);
+                out.push_str(", a1");
+                write_member(out, member);
+                out.push(')');
             }
-            self.output.push_str("; }]");
+            out.push_str("; }]");
         }
         if hash {
             if equiv {
-                self.output.push_str(", ");
+                out.push_str(", ");
             }
-            self.output
-                .push_str("[\"IHash/-hash\", 1, function() { const h = this");
-            self.member("__hash");
+            let to_array = self.runtime_read(
+                RuntimeName::direct("toArray", None),
+                Some(expr),
+                NameUse::Value,
+            );
+            let hash_fn = (!fields.is_empty()).then(|| {
+                self.runtime_read(
+                    RuntimeName::direct("hash", None),
+                    Some(expr),
+                    NameUse::Value,
+                )
+            });
+            let record_entries_hash = self.runtime_read(
+                RuntimeName::direct("recordEntriesHash", None),
+                Some(expr),
+                NameUse::Value,
+            );
+            out.push_str("[\"IHash/-hash\", 1, function() { const h = this");
+            write_member(out, "__hash");
             // The shared method reads every field and the extension map's
             // entries (`recordEntries`) before it hashes any of them.
-            self.output.push_str("; if (h != null) return h; const ");
+            out.push_str("; if (h != null) return h; const ");
             for (index, member) in members.iter().enumerate() {
-                write!(self.output, "v{index} = this").unwrap();
-                self.member(member);
-                self.output.push_str(", ");
+                write!(out, "v{index} = this").unwrap();
+                write_member(out, member);
+                out.push_str(", ");
             }
-            self.output.push_str("e = this");
-            self.member("__extmap");
-            self.output.push_str(", x = e == null ? null : ");
-            self.rt(RuntimeName::direct("toArray", None));
-            self.output.push_str("(e); let r = ");
+            out.push_str("e = this");
+            write_member(out, "__extmap");
+            out.push_str(", x = e == null ? null : ");
+            out.push_str(&to_array);
+            out.push_str("(e); let r = ");
             if fields.is_empty() {
-                self.output.push('0');
+                out.push('0');
             }
             for (index, field) in fields.iter().enumerate() {
                 if index > 0 {
-                    self.output.push_str(" + ");
+                    out.push_str(" + ");
                 }
                 let units: Vec<u16> = field.encode_utf16().collect();
                 let key = crate::value_hash::keyword(None, &units);
-                write!(self.output, "({key} ^ ").unwrap();
-                self.rt(RuntimeName::direct("hash", None));
-                write!(self.output, "(v{index}))").unwrap();
+                write!(out, "({key} ^ {}(v{index}))", hash_fn.as_deref().unwrap()).unwrap();
             }
             // Each term is an `int32`, so their sum wraps as the shared
             // method's running `| 0` does.
             if fields.len() > 1 {
-                self.output.push_str(" | 0");
+                out.push_str(" | 0");
             }
             // Then the extension map's entries, as the shared method adds them.
-            self.output.push_str("; if (x != null) r = ");
-            self.rt(RuntimeName::direct("recordEntriesHash", None));
-            self.output.push_str("(x, r); return this");
-            self.member("__hash");
+            out.push_str("; if (x != null) r = ");
+            out.push_str(&record_entries_hash);
+            out.push_str("(x, r); return this");
+            write_member(out, "__hash");
+            let name = format!("{}/{}", binding.namespace, binding.name);
             let units: Vec<u16> = name.encode_utf16().collect();
             let type_hash = crate::value_hash::string_hash(&units);
-            write!(self.output, " = r ^ {type_hash}; }}]").unwrap();
+            write!(out, " = r ^ {type_hash}; }}]").unwrap();
         }
-        self.output.push(']');
+        out.push(']');
     }
 
-    /// Which of a record's own `-equiv` and `-hash` [`Emitter::record_kit`]
-    /// writes: the hash only where no program extension can replace `IHash`
-    /// of a keyword, whose hashes it holds as constants, as for the constant
-    /// pool's.
-    fn record_kit_parts(&self) -> (bool, bool) {
-        let [equiv, hash] = self.record_kits;
+    /// Which of a record's own `-equiv` and `-hash`
+    /// [`Emitter::splice_record_kits`] writes: the hash only where no program
+    /// extension can replace `IHash` of a keyword, whose hashes it holds as
+    /// constants, as for the constant pool's.
+    fn record_kit_parts(&self, record_kits: [bool; 2]) -> (bool, bool) {
+        let [equiv, hash] = record_kits;
         let hash = hash
             && self
                 .inference
@@ -8511,6 +8943,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn js_template(&mut self, segments: &[String], args: &[ExprId]) {
+        self.has_raw_js = true;
         for (index, segment) in segments.iter().enumerate() {
             let start = self.output.len();
             self.output.push_str(segment);
@@ -8773,7 +9206,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn value_expr(&mut self, id: ExprId) {
-        self.used.insert(id);
+        self.note_runtime_expr(&self.program.exprs[id.0].kind);
         if let Some((head, operand)) = self.substitute
             && head == id
         {
@@ -10357,7 +10790,9 @@ impl<'a> Emitter<'a> {
                     // own. Only called, its value does not escape, so the slice
                     // leaves out its variadic arity ABI (`install:` units).
                     let site = self.site.replace(*callee);
-                    self.used.insert(*callee);
+                    if self.replaced_core.is_none() {
+                        self.needs_runtime = true;
+                    }
                     let text = self.runtime_read(
                         RuntimeName::core(core.runtime_name()),
                         self.site,
@@ -10557,6 +10992,7 @@ fn emit_interactive(
         namespace_globals: indexes.map(|(globals, _)| globals),
         namespace_positions: indexes.map(|(_, positions)| positions),
         function_names: None,
+        js_exposed_locals: None,
     };
     let (unit, _, mapping) = emit_js_mode(
         program,
@@ -10581,6 +11017,7 @@ fn emit_interactive(
 pub(crate) struct NamespaceUnits<'a> {
     program: &'a Program,
     function_names: FunctionNames<'a>,
+    js_exposed_locals: Vec<bool>,
     namespace_globals: NamespaceGlobals,
     namespace_positions: HashMap<String, usize>,
 }
@@ -10603,6 +11040,7 @@ impl<'a> NamespaceUnits<'a> {
         Self {
             program,
             function_names: FunctionNames::new(program, 0),
+            js_exposed_locals: scan_js_exposed_locals(program),
             namespace_globals,
             namespace_positions,
         }
@@ -10629,6 +11067,7 @@ impl<'a> NamespaceUnits<'a> {
             namespace_globals: Some(&self.namespace_globals),
             namespace_positions: Some(&self.namespace_positions),
             function_names: Some(&self.function_names),
+            js_exposed_locals: Some(&self.js_exposed_locals),
         };
         let (unit, _, mapping) = emit_js_mode(
             program,
@@ -10668,6 +11107,8 @@ pub(crate) fn emit_namespace_registration(
             application: None,
             direct: None,
             function_names: None,
+            js_exposed_locals: None,
+            unit_root: None,
         },
         true,
     );
@@ -10734,6 +11175,7 @@ mod namespace_unit_tests {
             namespace_globals: None,
             namespace_positions: None,
             function_names: None,
+            js_exposed_locals: None,
         };
         let (unit, _, mapping) = emit_js_mode(
             program,

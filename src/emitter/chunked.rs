@@ -301,7 +301,6 @@ impl Emitter<'_> {
             return;
         };
         if plan.namespace_chunks[namespace] == current {
-            self.used.insert(id);
             let site = self.site.replace(id);
             self.namespace_entry(id);
             if body.is_empty() && context == ExprContext::Return {
@@ -548,6 +547,8 @@ pub(crate) fn emit_chunked(
         application: Some(application),
         direct,
         function_names: None,
+        js_exposed_locals: None,
+        unit_root: None,
     };
     // As in the single file, `Advanced` output registers its namespaces only
     // when the forms of all chunks reach reflection.
@@ -571,7 +572,6 @@ pub(crate) fn emit_chunked(
             emitter.operand_scope(false, |emitter| {
                 emitter.chunk_forms(program.root, ExprContext::Return, entry, &sources, &forms)
             });
-            emitter.allow_js_local_assignment();
             bodies.push((
                 std::mem::take(&mut emitter.output),
                 std::mem::take(&mut emitter.raw_segments),
@@ -591,7 +591,7 @@ pub(crate) fn emit_chunked(
     let embed = if slice {
         !emitter.runtime.is_empty()
     } else {
-        reads_runtime(program, &emitter.used)
+        !program.namespace_entries.is_empty() || emitter.needs_runtime
     };
     debug_assert!(
         embed || emitter.runtime.is_empty(),
@@ -1030,10 +1030,7 @@ pub(crate) fn emit_chunked(
             ]
         })
         .collect::<Vec<_>>();
-    let raw_js = emitter
-        .used
-        .iter()
-        .any(|id| matches!(program.exprs[id.0].kind, ExprKind::JsTemplate { .. }));
+    let raw_js = emitter.has_raw_js;
     // Each compiler name's final spelling: a short name at `Advanced`, the
     // hygiene prefix and the name where raw text could capture it, else the
     // name.
