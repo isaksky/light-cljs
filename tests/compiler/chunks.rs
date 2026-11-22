@@ -4351,6 +4351,60 @@ fn parallel_chunked_emission_matches_serial_runtime_and_placement() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    let heavy_chunk_defns = |prefix: &str| -> String {
+        (0..36)
+            .map(|i| {
+                format!(
+                    "(defn {prefix}{i} [x]\n\
+                       (let [a (js* \"(~{{}} + 1)\" x)\n\
+                             b (+ a {i})\n\
+                             c (js/JSON.stringify\n\
+                                 (array\n\
+                                   (let [p (+ a 1) q (+ p 2) r (+ q 3) s (+ r 4)] (+ p q r s))\n\
+                                   (let [t (+ b 5) u (+ t 6) w (+ u 7) z (+ w 8)] (+ t u w z))\n\
+                                   (+ a b) (+ a 1) (+ b 2) (+ a 3) (+ b 4) (+ a 5) (+ b 6) (+ a 7)\n\
+                                   (+ b 8) (+ a 9) (+ b 10) (+ a 11) (+ b 12) (+ a 13) (+ b 14) (+ a 15)))\n\
+                             v [:{prefix}k{i} :shared-subdiv (count c) (+ a b)]]\n\
+                         (+ (count v) (nth v 2) (nth v 3))))"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let heavy_chunk_calls = |prefix: &str| -> String {
+        (0..36)
+            .map(|i| format!("({prefix}{i} {}) ({prefix}{i} {})", i + 1, i + 2))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let subdiv_main = format!(
+        "(ns app.main (:require [light.lazy :as lazy]))\n\
+         {}\n\
+         (def heavy-lazy (lazy/loadable app.heavy/run))\n\
+         (defn start []\n\
+           (let [startup-sum (+ {})]\n\
+             (-> (lazy/load heavy-lazy)\n\
+                 (.then (fn [f] (js/console.log (str startup-sum \":\" (f 3))) nil)))))\n\
+         start\n",
+        heavy_chunk_defns("s"),
+        heavy_chunk_calls("s")
+    );
+    let subdiv_heavy = format!(
+        "(ns app.heavy)\n\
+         {}\n\
+         (defn run [base] (+ base {}))\n",
+        heavy_chunk_defns("h"),
+        heavy_chunk_calls("h")
+    );
+    let subdiv_program = analyze(&[
+        ("app/main.cljs", &subdiv_main),
+        ("app/heavy.cljs", &subdiv_heavy),
+    ]);
+    assert!(
+        subdiv_program.exprs.len() > 6000,
+        "expected subdivided startup+lazy program to exceed both 2048-expr thresholds, got {} exprs",
+        subdiv_program.exprs.len()
+    );
     let programs = [
         ("constants", fixture_program("constants")),
         (
@@ -4367,6 +4421,7 @@ fn parallel_chunked_emission_matches_serial_runtime_and_placement() {
                 ("app/reports.cljs", &reports),
             ]),
         ),
+        ("subdivided-startup-and-lazy", subdiv_program),
         (
             "reflection-and-raw-js",
             analyze(&[

@@ -728,44 +728,7 @@ pub(crate) fn emit_chunked_with_slots(
         .collect(program.root, ExprContext::Return, entry, &mut chunk_items);
         // Split large chunks (such as `STARTUP`) into weight-balanced
         // sub-slices so a single large chunk cannot bottleneck the pool.
-        let mut memo = vec![0u32; program.exprs.len()];
-        let mut stack = Vec::new();
-        struct ChunkTaskSpec {
-            chunk: ChunkId,
-            range: std::ops::Range<usize>,
-            weight: u64,
-        }
-        let mut tasks = Vec::with_capacity(count);
-        for (chunk_idx, items) in chunk_items.iter().enumerate() {
-            if items.is_empty() {
-                continue;
-            }
-            let weights: Vec<u64> = items
-                .iter()
-                .map(|&item| match item {
-                    ChunkFormItem::NamespaceEntry { .. } => 1,
-                    ChunkFormItem::Form { id, .. } => {
-                        super::parallel::expr_weight(program, id, &mut memo, &mut stack)
-                    }
-                })
-                .collect();
-            let total_w: u64 = weights.iter().sum();
-            let sub_slices = if total_w >= 2048 && items.len() >= 16 {
-                (slots.get() * 2).min(items.len())
-            } else {
-                1
-            };
-            for range in super::parallel::partition_slices(&weights, sub_slices) {
-                let weight: u64 = weights[range.clone()].iter().sum();
-                tasks.push(ChunkTaskSpec {
-                    chunk: ChunkId(chunk_idx),
-                    range,
-                    weight,
-                });
-            }
-        }
-        drop(memo);
-        drop(stack);
+        let tasks = plan_chunk_tasks(program, &chunk_items, slots);
 
         let shared_tables = super::parallel::SharedTables::new(program, direct);
         let run_tasks = |register_namespaces: bool| -> Vec<ChunkTaskOutput<'_>> {
@@ -1818,6 +1781,57 @@ fn global_order(word: &str) -> (usize, usize) {
     (global, entry)
 }
 
+#[derive(Clone, Debug)]
+struct ChunkTaskSpec {
+    chunk: ChunkId,
+    range: std::ops::Range<usize>,
+    weight: u64,
+}
+
+const CHUNK_SUBSLICE_WEIGHT_THRESHOLD: u64 = 2048;
+const CHUNK_SUBSLICE_ITEM_THRESHOLD: usize = 16;
+
+fn plan_chunk_tasks(
+    program: &Program,
+    chunk_items: &[Vec<ChunkFormItem>],
+    slots: crate::scheduler::Slots,
+) -> Vec<ChunkTaskSpec> {
+    let mut memo = vec![0u32; program.exprs.len()];
+    let mut stack = Vec::new();
+    let mut tasks = Vec::with_capacity(chunk_items.len());
+    for (chunk_idx, items) in chunk_items.iter().enumerate() {
+        if items.is_empty() {
+            continue;
+        }
+        let weights: Vec<u64> = items
+            .iter()
+            .map(|&item| match item {
+                ChunkFormItem::NamespaceEntry { .. } => 1,
+                ChunkFormItem::Form { id, .. } => {
+                    super::parallel::expr_weight(program, id, &mut memo, &mut stack)
+                }
+            })
+            .collect();
+        let total_w: u64 = weights.iter().sum();
+        let sub_slices = if total_w >= CHUNK_SUBSLICE_WEIGHT_THRESHOLD
+            && items.len() >= CHUNK_SUBSLICE_ITEM_THRESHOLD
+        {
+            (slots.get() * 2).min(items.len())
+        } else {
+            1
+        };
+        for range in super::parallel::partition_slices(&weights, sub_slices) {
+            let weight: u64 = weights[range.clone()].iter().sum();
+            tasks.push(ChunkTaskSpec {
+                chunk: ChunkId(chunk_idx),
+                range,
+                weight,
+            });
+        }
+    }
+    tasks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1880,6 +1894,122 @@ mod tests {
             crate::js_syntax::NameGenerator::default()
                 .take(100_000)
                 .all(|name| !name.starts_with('_'))
+        );
+    }
+
+    #[test]
+    fn subdivided_chunk_tasks_split_large_startup_and_lazy_chunks() {
+        let heavy_defns = |prefix: &str| -> String {
+            (0..36)
+                .map(|i| {
+                    format!(
+                        "(defn {prefix}{i} [x]\n\
+                           (let [a (js* \"(~{{}} + 1)\" x)\n\
+                                 b (+ a {i})\n\
+                                 c (js/JSON.stringify\n\
+                                     (array\n\
+                                       (let [p (+ a 1) q (+ p 2) r (+ q 3) s (+ r 4)] (+ p q r s))\n\
+                                       (let [t (+ b 5) u (+ t 6) w (+ u 7) z (+ w 8)] (+ t u w z))\n\
+                                       (+ a b) (+ a 1) (+ b 2) (+ a 3) (+ b 4) (+ a 5) (+ b 6) (+ a 7)\n\
+                                       (+ b 8) (+ a 9) (+ b 10) (+ a 11) (+ b 12) (+ a 13) (+ b 14) (+ a 15)))\n\
+                                 v [:{prefix}k{i} :shared-subdiv (count c) (+ a b)]]\n\
+                             (+ (count v) (nth v 2) (nth v 3))))"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let calls = |prefix: &str| -> String {
+            (0..36)
+                .map(|i| format!("({prefix}{i} {}) ({prefix}{i} {})", i + 1, i + 2))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let main_src = format!(
+            "(ns app.main (:require [light.lazy :as lazy]))\n\
+             {}\n\
+             (def lazy-run (lazy/loadable app.heavy/run))\n\
+             (defn start []\n\
+               (let [s (+ {})]\n\
+                 (-> (lazy/load lazy-run) (.then (fn [f] (+ s (f 3)))))))\n\
+             start\n",
+            heavy_defns("s"),
+            calls("s")
+        );
+        let heavy_src = format!(
+            "(ns app.heavy)\n\
+             {}\n\
+             (defn run [base] (+ base {}))\n",
+            heavy_defns("h"),
+            calls("h")
+        );
+        let dir =
+            std::env::temp_dir().join(format!("light-cljs-subdiv-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("app/main.cljs"), &main_src).unwrap();
+        std::fs::write(dir.join("app/heavy.cljs"), &heavy_src).unwrap();
+        let mut host = crate::MacroHost::new();
+        let (program, _) = crate::compiler::analyze_namespace_entry_with_sources(
+            "app.main",
+            std::slice::from_ref(&dir),
+            &mut host,
+            crate::analyzer::AnalysisOptions::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let prepared = crate::prepare_application(
+            &program,
+            crate::ApplicationOptions::new(crate::OptimizationLevel::Advanced),
+        );
+        let program = prepared.program();
+        let plan = crate::chunks::plan(program, &prepared);
+        let sources = program
+            .namespaces
+            .iter()
+            .enumerate()
+            .map(|(source, name)| (name.as_str(), source))
+            .collect::<HashMap<_, _>>();
+        let mut forms = vec![None; program.exprs.len()];
+        for item in &plan.items {
+            forms[item.expr.0] = Some(item.chunk);
+        }
+        let entry = plan.roots[crate::chunks::STARTUP_ROOT].namespace;
+        let mut chunk_items = vec![Vec::new(); plan.chunks.len()];
+        ChunkCollector {
+            program,
+            plan: &plan,
+            sources: &sources,
+            forms: &forms,
+        }
+        .collect(program.root, ExprContext::Return, entry, &mut chunk_items);
+
+        let slots = crate::scheduler::Slots::new(4).unwrap();
+        let tasks = plan_chunk_tasks(program, &chunk_items, slots);
+        let summary: Vec<_> = (0..plan.chunks.len())
+            .map(|c| {
+                let ts: Vec<_> = tasks.iter().filter(|t| t.chunk.0 == c).collect();
+                let w: u64 = ts.iter().map(|t| t.weight).sum();
+                (c, chunk_items[c].len(), w, ts.len())
+            })
+            .collect();
+        let startup_tasks = tasks.iter().filter(|t| t.chunk == STARTUP).count();
+        let lazy_chunk = (0..plan.chunks.len())
+            .map(ChunkId)
+            .find(|&c| c != STARTUP && !chunk_items[c.0].is_empty())
+            .expect("a non-empty lazy chunk");
+        let lazy_tasks = tasks.iter().filter(|t| t.chunk == lazy_chunk).count();
+        assert!(
+            startup_tasks > 1,
+            "expected startup chunk to subdivide into >1 tasks, got {startup_tasks}; chunks={summary:?}, exprs={}",
+            program.exprs.len()
+        );
+        assert!(
+            lazy_tasks > 1,
+            "expected lazy chunk to subdivide into >1 tasks, got {lazy_tasks}; chunks={summary:?}, exprs={}",
+            program.exprs.len()
         );
     }
 }

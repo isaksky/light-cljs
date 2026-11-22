@@ -1502,6 +1502,10 @@ mod tests {
                             key
                         };
                         let mapped_final = key.apply_mapped(&mapped_raw, &mut mapping);
+                        assert_eq!(
+                            mapped_final, final1,
+                            "mapped text diverged from unmapped for {label} {level} pseudo={pseudo_names} mod={module}"
+                        );
                         if label == "records-and-hoisted" {
                             for needle in ["\"after-hoisted-record\"", "\"after-main-record\""] {
                                 let expected_byte = source.find(needle).unwrap();

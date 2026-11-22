@@ -2258,8 +2258,7 @@ pub(crate) fn terse_program_slices<'a>(
     }
 
     // Optional `const a=Atom;` + `const ...` join with the first non-empty slice.
-    if !mapped
-        && alias_nonempty
+    if alias_nonempty
         && let Some(first) = slices_for_join.iter_mut().find(|s| !s.text.is_empty())
         && first.first_top_decl == Some("const")
         && first.text.starts_with("const")
@@ -2273,6 +2272,9 @@ pub(crate) fn terse_program_slices<'a>(
         prefix.pop();
         prefix.push(',');
         first.text.drain(..strip);
+        if let Some(marks) = first.marks.as_mut() {
+            marks.relocate(|offset| Some(offset.saturating_sub(strip)));
+        }
     }
 
     total_len += prefix.len();
@@ -2289,8 +2291,7 @@ pub(crate) fn terse_program_slices<'a>(
             continue;
         }
         let mut joined_decl = false;
-        if !mapped
-            && let (Some(kw), Some(next_kw)) = (prev_decl, slice.first_top_decl)
+        if let (Some(kw), Some(next_kw)) = (prev_decl, slice.first_top_decl)
             && kw == next_kw
             && pieces.last().is_some_and(|prev| prev.ends_with(';'))
             && slice.text.starts_with(kw)
@@ -2306,6 +2307,9 @@ pub(crate) fn terse_program_slices<'a>(
                 prev.push(',');
             }
             slice.text.drain(..strip);
+            if let Some(marks) = slice.marks.as_mut() {
+                marks.relocate(|offset| Some(offset.saturating_sub(strip)));
+            }
             joined_decl = true;
         }
         if !joined_decl && let (Some(prev), Some(next)) = (prev_end, slice.first_token.as_ref()) {
@@ -2318,11 +2322,14 @@ pub(crate) fn terse_program_slices<'a>(
             }
         }
         if last_non_empty == Some(idx)
-            && !mapped
             && slice.ends_with_droppable_semi
             && slice.text.ends_with(';')
         {
             slice.text.pop();
+            if let Some(marks) = slice.marks.as_mut() {
+                let new_end = slice.text.len();
+                marks.relocate(|offset| Some(offset.min(new_end)));
+            }
         }
         if let (Some(all), Some(marks)) = (all_marks.as_mut(), slice.marks) {
             all.absorb(marks, total_len);

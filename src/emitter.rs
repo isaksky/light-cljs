@@ -2708,9 +2708,13 @@ struct Emitter<'a, 's> {
     /// by `ExprId`, as [`Emitter::scope_flags`] computes it on first use or
     /// reads from shared precomputed tables.
     scope_flags: ScopeFlags<'s>,
-    /// Active `(LocalId, operand_index)` stack for value-position `let`s
-    /// currently being written ([`Emitter::hoisted_let`]).
-    operand_locals: Vec<(LocalId, u32)>,
+    /// Active `LocalId -> operand_index` map for value-position `let`s
+    /// currently being written ([`Emitter::hoisted_let`]), paired with
+    /// [`Emitter::operand_undo`] for O(1) lookup and O(active) memory.
+    operand_locals: HashMap<LocalId, u32>,
+    /// Undo log of `(LocalId, previous_operand)` entries pushed by
+    /// [`Emitter::hoisted_let`] and drained on exit.
+    operand_undo: Vec<(LocalId, Option<u32>)>,
     /// The number of labeled statements being written in the function
     /// being written, which numbers their labels: blocks of lifted
     /// expressions ([`Emitter::lifted`]) and, at `Advanced`, loops
@@ -3074,7 +3078,8 @@ impl<'a, 's> Emitter<'a, 's> {
                 }
                 _ => ScopeFlags::Pending,
             },
-            operand_locals: Vec::new(),
+            operand_locals: HashMap::new(),
+            operand_undo: Vec::new(),
             lifts: 0,
             loop_labels: Vec::new(),
             substitute: None,
@@ -4502,12 +4507,7 @@ impl<'a, 's> Emitter<'a, 's> {
     }
 
     fn local(&mut self, id: LocalId) {
-        if let Some(&(_, operand)) = self
-            .operand_locals
-            .iter()
-            .rev()
-            .find(|&&(local, _)| local == id)
-        {
+        if let Some(&operand) = self.operand_locals.get(&id) {
             write!(self.output, "operand{operand}").unwrap();
             return;
         }
@@ -8094,7 +8094,7 @@ impl<'a, 's> Emitter<'a, 's> {
         if self.scope_flags(id) & SCOPE_CLOSURE == 0 {
             let operands = self.operands.as_ref().expect("a function body hoists");
             let base = operands.live;
-            let saved_locals = self.operand_locals.len();
+            let saved_undo = self.operand_undo.len();
             for &(local, init) in bindings {
                 let operand = self.operands.as_ref().unwrap().live;
                 write!(self.output, "operand{operand} = ").unwrap();
@@ -8103,10 +8103,20 @@ impl<'a, 's> Emitter<'a, 's> {
                 let operands = self.operands.as_mut().unwrap();
                 operands.live = operand + 1;
                 operands.declared = operands.declared.max(operand + 1);
-                self.operand_locals.push((local, operand as u32));
+                let prev = self.operand_locals.insert(local, operand as u32);
+                self.operand_undo.push((local, prev));
             }
             self.value(body);
-            self.operand_locals.truncate(saved_locals);
+            for (local, prev) in self.operand_undo.drain(saved_undo..).rev() {
+                match prev {
+                    Some(operand) => {
+                        self.operand_locals.insert(local, operand);
+                    }
+                    None => {
+                        self.operand_locals.remove(&local);
+                    }
+                }
+            }
             self.operands.as_mut().unwrap().live = base;
             self.output.push(')');
             return;
@@ -11504,5 +11514,71 @@ mod namespace_unit_tests {
     fn namespace_units_is_sync() {
         fn assert_sync<T: Sync>() {}
         assert_sync::<NamespaceUnits<'_>>();
+    }
+
+    #[test]
+    fn hoisted_let_operand_locals_restore_nested_mappings_and_scale() {
+        // Nested value-position `let`s inside a call argument must allocate
+        // distinct operand slots while nested, then restore outer mappings so
+        // the outer body still reads its own operand slots cleanly. Use a
+        // runtime expression and two calls so `:advanced` neither folds nor
+        // single-call-inlines `run`.
+        let nested_src = r#"(defn run [x]
+          (js/JSON.stringify
+            (let [a (js/Math.floor (+ x 1))
+                  b (let [c (js/Math.floor (+ a 2))
+                          d (js/Math.floor (+ c 3))]
+                      (+ c d))
+                  e (js/Math.floor (+ a b))]
+              (array a b e))))
+          (array (run (js* "10")) (run (js* "20")))"#;
+        let program = crate::analyze(nested_src, &crate::parse(nested_src).unwrap()).unwrap();
+        let mut opts = crate::ApplicationOptions::new(crate::OptimizationLevel::Advanced);
+        opts.pseudo_names = true;
+        let prepared = crate::prepare_application(&program, opts);
+        let js = prepared.emit_js();
+        assert!(js.contains("operand0"), "expected operand locals:\n{js}");
+        assert!(
+            js.contains("operand1"),
+            "expected nested operand locals:\n{js}"
+        );
+        let out = std::process::Command::new("node")
+            .args(["-e", &format!("console.log(JSON.stringify({js}))")])
+            .output()
+            .expect("node available");
+        assert!(
+            out.status.success(),
+            "node failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            r#"["[11,29,40]","[21,49,70]"]"#
+        );
+
+        // Large closure-free value-position `let` (1,500 bindings) must keep
+        // O(1) operand-local lookup without quadratic blowup.
+        let count = 1500usize;
+        let mut bindings = String::new();
+        let mut reads = String::new();
+        for i in 0..count {
+            use std::fmt::Write;
+            if i == 0 {
+                writeln!(bindings, "v0 (js/Math.floor x)").unwrap();
+            } else {
+                writeln!(bindings, "v{i} (js/Math.floor (+ v{} 1))", i - 1).unwrap();
+            }
+            write!(reads, " v{i}").unwrap();
+        }
+        let large_src = format!(
+            "(defn wide [x] (js/JSON.stringify (let [{bindings}] (array{reads}))))\n\
+             (array (wide (js* \"0\")) (wide (js* \"1\")))"
+        );
+        let large_prog = crate::analyze(&large_src, &crate::parse(&large_src).unwrap()).unwrap();
+        let mut opts = crate::ApplicationOptions::new(crate::OptimizationLevel::Advanced);
+        opts.pseudo_names = true;
+        let large_prepared = crate::prepare_application(&large_prog, opts);
+        let large_js = large_prepared.emit_js();
+        assert!(large_js.contains(&format!("operand{}", count - 1)));
     }
 }
