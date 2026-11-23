@@ -496,68 +496,6 @@ impl CompactInferred {
     }
 
     #[inline]
-    fn known_raw(ty: Type, known_tag: u8, known_id: u32) -> Self {
-        let mut value = Self::of(ty);
-        value.known_tag = known_tag;
-        value.known_id = known_id;
-        value.normalized()
-    }
-
-    #[inline]
-    fn known_function(id: ExprId) -> Self {
-        let raw = u32::try_from(id.0).expect("expression id fits in u32");
-        Self::known_raw(Type::FN, KNOWN_FUNCTION, raw)
-    }
-
-    #[inline]
-    fn known_instance(ty: Type, global: GlobalId) -> Self {
-        let raw = u32::try_from(global.0).expect("global id fits in u32");
-        Self::known_raw(ty, KNOWN_INSTANCE, raw)
-    }
-
-    #[inline]
-    fn known_instance_raw(ty: Type, global: u32) -> Self {
-        Self::known_raw(ty, KNOWN_INSTANCE, global)
-    }
-
-    #[inline]
-    fn with_elements(mut self, element: Self) -> Self {
-        let (elem_ty, elem_tag, elem_id) = if element.known_tag != KNOWN_UNKNOWN
-            && element
-                .ty
-                .intersection(known_classes(element.known_tag))
-                .is_never()
-        {
-            (element.ty, KNOWN_UNKNOWN, 0)
-        } else {
-            (element.ty, element.known_tag, element.known_id)
-        };
-        self.elem_ty = elem_ty;
-        self.elem_tag = elem_tag;
-        self.elem_id = elem_id;
-        self.normalized()
-    }
-
-    #[inline]
-    fn normalized(mut self) -> Self {
-        if self.known_tag != KNOWN_UNKNOWN
-            && self
-                .ty
-                .intersection(known_classes(self.known_tag))
-                .is_never()
-        {
-            self.known_tag = KNOWN_UNKNOWN;
-            self.known_id = 0;
-        }
-        if self.ty.intersection(SEQUENTIAL).is_never() {
-            self.elem_ty = Type::NEVER;
-            self.elem_tag = KNOWN_UNKNOWN;
-            self.elem_id = 0;
-        }
-        self
-    }
-
-    #[inline]
     fn union(self, other: Self) -> Self {
         if self == other || other.ty.is_never() {
             return self;
@@ -599,30 +537,316 @@ impl CompactInferred {
     }
 
     #[inline]
+    fn to_inferred(self) -> Inferred {
+        Inferred {
+            ty: self.ty,
+            known: decode_known(self.known_tag, self.known_id),
+            elements: Element {
+                ty: self.elem_ty,
+                known: decode_known(self.elem_tag, self.elem_id),
+            },
+        }
+    }
+}
+
+const REF_VECTOR: u8 = 1 << 0;
+const REF_ARRAY: u8 = 1 << 1;
+const NO_ID: u32 = u32::MAX;
+const INSTANCE_CLASSES: Type = Type::RECORD.union(Type::OBJECT);
+
+/// Associative, commutative, idempotent refinement of a [`Type`] used inside
+/// the fixed-point solver (light-cljs-1100): each of the four refinable
+/// classes (`FN`, `RECORD|OBJECT`, `VECTOR`, `HOST`) tracks its refinement
+/// independently as a height-2 flat lattice (`Bot` when the class is absent
+/// from `ty`, `Exact` when refined, `Top` when unrefined).
+///
+/// Projecting to [`CompactInferred`] / [`Known`] happens only at query
+/// boundaries (`to_compact`), so parallel BSP slice merges and serial sweeps
+/// converge to the exact same state regardless of join order or grouping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Refined {
+    ty: Type,
+    /// `REF_VECTOR`: every `VECTOR` value is a flat vector (`Known::Vector`).
+    /// `REF_ARRAY`: every `HOST` value is a JS array (`Known::Array`).
+    flags: u8,
+    /// Single `Fn` [`ExprId`] for `FN` values, or `NO_ID` when absent/widened.
+    fn_id: u32,
+    /// Single program type [`GlobalId`] for `RECORD|OBJECT` values, or `NO_ID`.
+    inst_id: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<Refined>() == 12);
+
+impl Refined {
+    const NEVER: Self = Self::of(Type::NEVER);
+    const ANY: Self = Self::of(Type::ANY);
+
+    #[inline]
+    const fn of(ty: Type) -> Self {
+        Self {
+            ty,
+            flags: 0,
+            fn_id: NO_ID,
+            inst_id: NO_ID,
+        }
+    }
+
+    #[inline]
+    fn normalized(mut self) -> Self {
+        if self.fn_id != NO_ID && self.ty.intersection(Type::FN).is_never() {
+            self.fn_id = NO_ID;
+        }
+        if self.inst_id != NO_ID && self.ty.intersection(INSTANCE_CLASSES).is_never() {
+            self.inst_id = NO_ID;
+        }
+        if (self.flags & REF_VECTOR) != 0 && self.ty.intersection(Type::VECTOR).is_never() {
+            self.flags &= !REF_VECTOR;
+        }
+        if (self.flags & REF_ARRAY) != 0 && self.ty.intersection(Type::HOST).is_never() {
+            self.flags &= !REF_ARRAY;
+        }
+        self
+    }
+
+    #[inline]
+    fn union(self, other: Self) -> Self {
+        if self == other || other.ty.is_never() {
+            return self;
+        }
+        if self.ty.is_never() {
+            return other;
+        }
+        let ty = self.ty.union(other.ty);
+
+        let a_has_vec = !self.ty.intersection(Type::VECTOR).is_never();
+        let b_has_vec = !other.ty.intersection(Type::VECTOR).is_never();
+        let vec_flag = if (a_has_vec || b_has_vec)
+            && (!a_has_vec || (self.flags & REF_VECTOR) != 0)
+            && (!b_has_vec || (other.flags & REF_VECTOR) != 0)
+        {
+            REF_VECTOR
+        } else {
+            0
+        };
+
+        let a_has_host = !self.ty.intersection(Type::HOST).is_never();
+        let b_has_host = !other.ty.intersection(Type::HOST).is_never();
+        let array_flag = if (a_has_host || b_has_host)
+            && (!a_has_host || (self.flags & REF_ARRAY) != 0)
+            && (!b_has_host || (other.flags & REF_ARRAY) != 0)
+        {
+            REF_ARRAY
+        } else {
+            0
+        };
+
+        let a_has_fn = !self.ty.intersection(Type::FN).is_never();
+        let b_has_fn = !other.ty.intersection(Type::FN).is_never();
+        let fn_id = match (a_has_fn, b_has_fn) {
+            (false, false) => NO_ID,
+            (true, false) => self.fn_id,
+            (false, true) => other.fn_id,
+            (true, true) => {
+                if self.fn_id == other.fn_id {
+                    self.fn_id
+                } else {
+                    NO_ID
+                }
+            }
+        };
+
+        let a_has_inst = !self.ty.intersection(INSTANCE_CLASSES).is_never();
+        let b_has_inst = !other.ty.intersection(INSTANCE_CLASSES).is_never();
+        let inst_id = match (a_has_inst, b_has_inst) {
+            (false, false) => NO_ID,
+            (true, false) => self.inst_id,
+            (false, true) => other.inst_id,
+            (true, true) => {
+                if self.inst_id == other.inst_id {
+                    self.inst_id
+                } else {
+                    NO_ID
+                }
+            }
+        };
+
+        Self {
+            ty,
+            flags: vec_flag | array_flag,
+            fn_id,
+            inst_id,
+        }
+    }
+
+    #[inline]
+    fn project_known(self) -> (u8, u32) {
+        let has_fn = self.fn_id != NO_ID;
+        let has_inst = self.inst_id != NO_ID;
+        let has_vec = (self.flags & REF_VECTOR) != 0;
+        let has_array = (self.flags & REF_ARRAY) != 0;
+        let count = (has_fn as u8) + (has_inst as u8) + (has_vec as u8) + (has_array as u8);
+        if count != 1 {
+            return (KNOWN_UNKNOWN, 0);
+        }
+        if has_fn {
+            (KNOWN_FUNCTION, self.fn_id)
+        } else if has_inst {
+            (KNOWN_INSTANCE, self.inst_id)
+        } else if has_vec {
+            (KNOWN_VECTOR, 0)
+        } else {
+            (KNOWN_ARRAY, 0)
+        }
+    }
+}
+
+/// Associative solver lattice value (value + sequential elements), projected to
+/// 16-byte [`CompactInferred`] when stored in [`Inference`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LatticeValue {
+    value: Refined,
+    elements: Refined,
+}
+
+const _: () = assert!(std::mem::size_of::<LatticeValue>() == 24);
+
+impl LatticeValue {
+    const NEVER: Self = Self::of(Type::NEVER);
+    const ANY: Self = Self::of(Type::ANY);
+
+    #[inline]
+    const fn of(ty: Type) -> Self {
+        Self {
+            value: Refined::of(ty),
+            elements: if ty.intersection(SEQUENTIAL).is_never() {
+                Refined::NEVER
+            } else {
+                Refined::ANY
+            },
+        }
+    }
+
+    #[inline]
+    fn from_refined(value: Refined) -> Self {
+        Self {
+            value,
+            elements: if value.ty.intersection(SEQUENTIAL).is_never() {
+                Refined::NEVER
+            } else {
+                Refined::ANY
+            },
+        }
+        .normalized()
+    }
+
+    #[inline]
+    const fn ty(self) -> Type {
+        self.value.ty
+    }
+
+    #[inline]
+    fn known_function(id: ExprId) -> Self {
+        let raw = u32::try_from(id.0).expect("expression id fits in u32");
+        assert!(raw != NO_ID, "expression id reserved sentinel");
+        Self::from_refined(Refined {
+            ty: Type::FN,
+            flags: 0,
+            fn_id: raw,
+            inst_id: NO_ID,
+        })
+    }
+
+    #[inline]
+    fn known_instance(ty: Type, global: GlobalId) -> Self {
+        let raw = u32::try_from(global.0).expect("global id fits in u32");
+        assert!(raw != NO_ID, "global id reserved sentinel");
+        Self::known_instance_raw(ty, raw)
+    }
+
+    #[inline]
+    fn known_instance_raw(ty: Type, global: u32) -> Self {
+        Self::from_refined(Refined {
+            ty,
+            flags: 0,
+            fn_id: NO_ID,
+            inst_id: global,
+        })
+    }
+
+    #[inline]
+    fn known_vector(ty: Type) -> Self {
+        Self::from_refined(Refined {
+            ty,
+            flags: REF_VECTOR,
+            fn_id: NO_ID,
+            inst_id: NO_ID,
+        })
+    }
+
+    #[inline]
+    fn known_array(ty: Type) -> Self {
+        Self::from_refined(Refined {
+            ty,
+            flags: REF_ARRAY,
+            fn_id: NO_ID,
+            inst_id: NO_ID,
+        })
+    }
+
+    #[inline]
+    fn with_elements(mut self, element: Self) -> Self {
+        self.elements = element.value.normalized();
+        self.normalized()
+    }
+
+    #[inline]
+    fn normalized(mut self) -> Self {
+        self.value = self.value.normalized();
+        if self.value.ty.intersection(SEQUENTIAL).is_never() {
+            self.elements = Refined::NEVER;
+        }
+        self
+    }
+
+    #[inline]
+    fn union(self, other: Self) -> Self {
+        if self == other || other.value.ty.is_never() {
+            return self;
+        }
+        if self.value.ty.is_never() {
+            return other;
+        }
+        Self {
+            value: self.value.union(other.value),
+            elements: self.elements.union(other.elements),
+        }
+    }
+
+    #[inline]
     fn keep(mut self, classes: Type) -> Self {
-        self.ty = self.ty.intersection(classes);
+        self.value.ty = self.value.ty.intersection(classes);
         self.normalized()
     }
 
     #[inline]
     fn remove(mut self, classes: Type) -> Self {
-        self.ty = self.ty.difference(classes);
+        self.value.ty = self.value.ty.difference(classes);
         self.normalized()
     }
 
     #[inline]
     fn element(self) -> Self {
         let mut element = Self::NEVER;
-        if !self.ty.intersection(SEQUENTIAL).is_never() {
-            element = Self::known_raw(self.elem_ty, self.elem_tag, self.elem_id);
+        if !self.value.ty.intersection(SEQUENTIAL).is_never() {
+            element = Self::from_refined(self.elements);
         }
-        if !self.ty.intersection(Type::MAP).is_never() {
+        if !self.value.ty.intersection(Type::MAP).is_never() {
             element = element.union(Self::of(Type::VECTOR));
         }
-        if !self.ty.intersection(Type::STRING).is_never() {
+        if !self.value.ty.intersection(Type::STRING).is_never() {
             element = element.union(Self::of(Type::STRING));
         }
-        let other = self.ty.difference(
+        let other = self.value.ty.difference(
             SEQUENTIAL
                 .union(Type::MAP)
                 .union(Type::STRING)
@@ -635,14 +859,16 @@ impl CompactInferred {
     }
 
     #[inline]
-    fn to_inferred(self) -> Inferred {
-        Inferred {
-            ty: self.ty,
-            known: decode_known(self.known_tag, self.known_id),
-            elements: Element {
-                ty: self.elem_ty,
-                known: decode_known(self.elem_tag, self.elem_id),
-            },
+    fn to_compact(self) -> CompactInferred {
+        let (known_tag, known_id) = self.value.project_known();
+        let (elem_tag, elem_id) = self.elements.project_known();
+        CompactInferred {
+            ty: self.value.ty,
+            elem_ty: self.elements.ty,
+            known_tag,
+            elem_tag,
+            known_id,
+            elem_id,
         }
     }
 }
@@ -1466,6 +1692,13 @@ impl Inference {
     ) -> Self {
         let mut solver = Solver::new(program, &facts, closed);
         let mut solved = solver.solve(slots, parallel_dirty_min_nodes);
+        // If BSP snapshot lag caused the multi-slot solve to exhaust
+        // `ROUND_LIMIT`, retry serially with the original `ClosedFunctions`
+        // before discarding parameter types.
+        if solved.is_none() && slots != crate::scheduler::Slots::ONE {
+            solver = Solver::new(program, &facts, closed);
+            solved = solver.solve(crate::scheduler::Slots::ONE, parallel_dirty_min_nodes);
+        }
         // Parameter types that do not converge (a call chain longer than the
         // round limit runs one round per link) must not cost the program the
         // types it has without them.
@@ -1473,21 +1706,30 @@ impl Inference {
         if solved.is_none() && !closed.is_empty() {
             solver = Solver::new(program, &facts, &without);
             solved = solver.solve(slots, parallel_dirty_min_nodes);
+            if solved.is_none() && slots != crate::scheduler::Slots::ONE {
+                solver = Solver::new(program, &facts, &without);
+                solved = solver.solve(crate::scheduler::Slots::ONE, parallel_dirty_min_nodes);
+            }
         }
-        let (values, mut locals, uses, rounds, pinned, parameters) = match solved {
+        let (values, locals, uses, rounds, parameters) = match solved {
             Some((rounds, form_nodes)) => {
                 let values = solver.populate_values(slots, &form_nodes, parallel_final_min_nodes);
                 let Solver {
                     ctx, state, uses, ..
                 } = solver;
-                (
-                    values,
-                    state.locals,
-                    uses,
-                    rounds,
-                    ctx.pinned,
-                    ctx.parameters,
-                )
+                let locals = state
+                    .locals
+                    .into_iter()
+                    .zip(ctx.pinned)
+                    .map(|(value, pinned)| {
+                        if pinned {
+                            CompactInferred::ANY
+                        } else {
+                            value.to_compact()
+                        }
+                    })
+                    .collect();
+                (values, locals, uses, rounds, ctx.parameters)
             }
             None => {
                 let Solver { ctx, uses, .. } = solver;
@@ -1496,16 +1738,10 @@ impl Inference {
                     vec![CompactInferred::ANY; program.locals.len()],
                     uses,
                     ROUND_LIMIT,
-                    ctx.pinned,
                     ctx.parameters,
                 )
             }
         };
-        for (local, pinned) in locals.iter_mut().zip(pinned) {
-            if pinned {
-                *local = CompactInferred::ANY;
-            }
-        }
         let typed_parameters = parameters
             .iter()
             .filter(|parameter| locals[parameter.0] != CompactInferred::ANY)
@@ -1617,13 +1853,13 @@ const INLINE_ARGS: usize = 8;
 const INLINE_FILTERS: usize = 4;
 
 enum ArgBuf {
-    Inline([CompactInferred; INLINE_ARGS], usize),
-    Heap(Vec<CompactInferred>),
+    Inline([LatticeValue; INLINE_ARGS], usize),
+    Heap(Vec<LatticeValue>),
 }
 
 impl ArgBuf {
     #[inline]
-    fn as_slice(&self) -> &[CompactInferred] {
+    fn as_slice(&self) -> &[LatticeValue] {
         match self {
             Self::Inline(buf, len) => &buf[..*len],
             Self::Heap(vec) => vec.as_slice(),
@@ -1631,7 +1867,7 @@ impl ArgBuf {
     }
 
     #[inline]
-    fn push(&mut self, value: CompactInferred) {
+    fn push(&mut self, value: LatticeValue) {
         match self {
             Self::Inline(buf, len) => {
                 if *len < INLINE_ARGS {
@@ -1656,15 +1892,15 @@ enum TypeBuf {
 
 impl TypeBuf {
     #[inline]
-    fn from_args(arguments: &[CompactInferred]) -> Self {
+    fn from_args(arguments: &[LatticeValue]) -> Self {
         if arguments.len() <= INLINE_ARGS {
             let mut buf = [Type::NEVER; INLINE_ARGS];
             for (slot, arg) in buf.iter_mut().zip(arguments) {
-                *slot = arg.ty;
+                *slot = arg.ty();
             }
             Self::Inline(buf, arguments.len())
         } else {
-            Self::Heap(arguments.iter().map(|value| value.ty).collect())
+            Self::Heap(arguments.iter().map(|value| value.ty()).collect())
         }
     }
 
@@ -1687,12 +1923,12 @@ enum Filter {
 
 impl Filter {
     #[inline]
-    fn apply(self, value: CompactInferred) -> CompactInferred {
+    fn apply(self, value: LatticeValue) -> LatticeValue {
         match self {
             Self::Keep(classes) => value.keep(classes),
             Self::Remove(classes) => value.remove(classes),
             Self::Instance(global, class) => {
-                CompactInferred::known_instance_raw(value.ty.intersection(class), global)
+                LatticeValue::known_instance_raw(value.ty().intersection(class), global)
             }
         }
     }
@@ -1783,19 +2019,15 @@ enum Receivers {
 impl Receivers {
     /// Whether a call with receiver `receiver` may run the implementation.
     #[inline]
-    fn reach(self, receiver: CompactInferred, inherits: bool) -> bool {
+    fn reach(self, receiver: LatticeValue, inherits: bool) -> bool {
+        let ty = receiver.ty();
+        let inst = receiver.value.inst_id;
         match self {
-            _ if inherits || !receiver.ty.intersection(Type::HOST).is_never() => {
-                !receiver.ty.is_never()
-            }
+            _ if inherits || !ty.intersection(Type::HOST).is_never() => !ty.is_never(),
             Self::Type(global, class) => {
-                !receiver.ty.intersection(class).is_never()
-                    && !(receiver.known_tag == KNOWN_INSTANCE && receiver.known_id != global)
+                !ty.intersection(class).is_never() && !(inst != NO_ID && inst != global)
             }
-            Self::Reify => {
-                !receiver.ty.intersection(Type::OBJECT).is_never()
-                    && receiver.known_tag != KNOWN_INSTANCE
-            }
+            Self::Reify => !ty.intersection(Type::OBJECT).is_never() && inst == NO_ID,
             Self::Any => true,
         }
     }
@@ -2036,15 +2268,15 @@ struct StaticCtx<'p> {
 /// Mutable fixed-point summary tables owned by the coordinator (and read as an
 /// immutable snapshot during parallel BSP waves and the final pass).
 struct SolverState {
-    def_values: Vec<CompactInferred>,
-    fn_returns: Vec<CompactInferred>,
-    locals: Vec<CompactInferred>,
-    contents: Vec<CompactInferred>,
+    def_values: Vec<LatticeValue>,
+    fn_returns: Vec<LatticeValue>,
+    locals: Vec<LatticeValue>,
+    contents: Vec<LatticeValue>,
 }
 
 impl SolverState {
     #[inline]
-    fn read_dep(&self, ctx: &StaticCtx<'_>, dep: usize) -> CompactInferred {
+    fn read_dep(&self, ctx: &StaticCtx<'_>, dep: usize) -> LatticeValue {
         let layout = ctx.layout;
         if dep < layout.fn_base {
             self.def_values[dep]
@@ -2059,7 +2291,7 @@ impl SolverState {
     }
 
     #[inline]
-    fn join_dep(&mut self, ctx: &StaticCtx<'_>, dep: usize, value: CompactInferred) -> bool {
+    fn join_dep(&mut self, ctx: &StaticCtx<'_>, dep: usize, value: LatticeValue) -> bool {
         let layout = ctx.layout;
         let slot = if dep < layout.fn_base {
             &mut self.def_values[dep]
@@ -2094,6 +2326,7 @@ struct Solver<'p> {
     ctx: StaticCtx<'p>,
     state: SolverState,
     uses: Vec<u32>,
+    bsp_waves: usize,
 }
 
 impl<'p> Solver<'p> {
@@ -2101,9 +2334,9 @@ impl<'p> Solver<'p> {
         let expr_count = program.exprs.len();
         let local_count = program.locals.len();
         assert!(
-            u32::try_from(expr_count).is_ok()
-                && u32::try_from(program.globals.len()).is_ok()
-                && u32::try_from(local_count).is_ok(),
+            expr_count < u32::MAX as usize
+                && program.globals.len() < u32::MAX as usize
+                && local_count < u32::MAX as usize,
             "program tables fit in u32"
         );
         let mut bound = vec![false; local_count];
@@ -2138,9 +2371,9 @@ impl<'p> Solver<'p> {
                     let slot = u32::try_from(fn_returns.len()).expect("fn count fits in u32");
                     fn_slot[index] = slot;
                     fn_returns.push(if methods.iter().any(|method| method.asynchronous) {
-                        CompactInferred::ANY
+                        LatticeValue::ANY
                     } else {
-                        CompactInferred::NEVER
+                        LatticeValue::NEVER
                     });
                     if closed.closed(ExprId(index)) {
                         closed_fns.push(ExprId(index));
@@ -2267,9 +2500,9 @@ impl<'p> Solver<'p> {
             .zip(&pinned)
             .map(|(bound, pinned)| {
                 if *bound && !*pinned {
-                    CompactInferred::NEVER
+                    LatticeValue::NEVER
                 } else {
-                    CompactInferred::ANY
+                    LatticeValue::ANY
                 }
             })
             .collect();
@@ -2297,10 +2530,10 @@ impl<'p> Solver<'p> {
             total,
         };
         let state = SolverState {
-            def_values: vec![CompactInferred::NEVER; program.globals.len()],
+            def_values: vec![LatticeValue::NEVER; program.globals.len()],
             fn_returns,
             locals,
-            contents: vec![CompactInferred::NEVER; closed.atoms()],
+            contents: vec![LatticeValue::NEVER; closed.atoms()],
         };
         let ctx = StaticCtx {
             program,
@@ -2320,6 +2553,7 @@ impl<'p> Solver<'p> {
             ctx,
             state,
             uses: vec![0; local_count],
+            bsp_waves: 0,
         }
     }
 
@@ -2347,7 +2581,7 @@ impl<'p> Solver<'p> {
             let reverse = round % 2 == 0;
             let changed = if use_parallel && round <= PARALLEL_ROUND_LIMIT {
                 let (dirty_count, dirty_nodes) = dirty_stats(&cur_dirty, &meta.form_nodes);
-                if dirty_nodes >= parallel_dirty_min_nodes && dirty_count >= slots.get() * 2 {
+                if dirty_nodes >= parallel_dirty_min_nodes && slots.get() <= dirty_count / 2 {
                     let ranges = partition_dirty_ranges(
                         &cur_dirty,
                         &meta.form_nodes,
@@ -2477,7 +2711,7 @@ impl<'p> Solver<'p> {
         subs: &mut SubscriberGraph,
         cur_dirty: &mut BitSet,
         next_dirty: &mut BitSet,
-        narrowed: &mut Vec<(LocalId, CompactInferred)>,
+        narrowed: &mut Vec<(LocalId, LatticeValue)>,
         local_read_stamp: &mut Vec<u32>,
     ) -> bool {
         let form_count = self.ctx.forms.len();
@@ -2543,6 +2777,7 @@ impl<'p> Solver<'p> {
         ranges: &[(usize, usize, usize)],
         next_dirty: &mut BitSet,
     ) -> bool {
+        self.bsp_waves += 1;
         let jobs: Vec<(u64, (usize, usize, usize))> = ranges
             .iter()
             .enumerate()
@@ -2601,7 +2836,7 @@ impl<'p> Solver<'p> {
                     cursor = rel + 1;
                 }
             }
-            let mut deltas: Vec<(u32, CompactInferred, u32)> = env
+            let mut deltas: Vec<(u32, LatticeValue, u32)> = env
                 .dep_deltas
                 .into_iter()
                 .map(|(dep, (val, last_pos))| (dep, val, last_pos))
@@ -2705,7 +2940,7 @@ impl<'p> Solver<'p> {
         let mut values = vec![CompactInferred::UNVISITED; expr_count];
         if slots == crate::scheduler::Slots::ONE
             || total_nodes < parallel_final_min_nodes
-            || form_count < slots.get() * 2
+            || slots.get() > form_count / 2
         {
             let mut env = FinalDirectEnv {
                 ctx: &self.ctx,
@@ -2893,8 +3128,8 @@ fn partition_node_ranges(
 struct SliceWaveOutput {
     lo: usize,
     hi: usize,
-    deltas: Vec<(u32, CompactInferred, u32)>,
-    local_deltas: Vec<(LocalId, CompactInferred)>,
+    deltas: Vec<(u32, LatticeValue, u32)>,
+    local_deltas: Vec<(LocalId, LatticeValue)>,
     new_deps: Vec<(u32, u32)>,
     self_dirty: Vec<u32>,
 }
@@ -2905,13 +3140,13 @@ trait WalkEnv<'p: 'c, 'c> {
 
     fn ctx(&self) -> &'c StaticCtx<'p>;
     fn position(&self) -> usize;
-    fn narrowed(&self) -> &[(LocalId, CompactInferred)];
-    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)>;
+    fn narrowed(&self) -> &[(LocalId, LatticeValue)];
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, LatticeValue)>;
 
     #[inline]
     fn on_enter_expr(&mut self) {}
     #[inline]
-    fn on_record(&mut self, _id: ExprId, value: CompactInferred) -> CompactInferred {
+    fn on_record(&mut self, _id: ExprId, value: LatticeValue) -> LatticeValue {
         value
     }
     #[inline]
@@ -2919,24 +3154,24 @@ trait WalkEnv<'p: 'c, 'c> {
     #[inline]
     fn on_declare_local(&mut self, _local: LocalId) {}
 
-    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred;
-    fn bind_local(&mut self, local: LocalId, value: CompactInferred);
+    fn read_local_raw(&mut self, local: LocalId) -> LatticeValue;
+    fn bind_local(&mut self, local: LocalId, value: LatticeValue);
 
-    fn read_def(&mut self, global: GlobalId) -> CompactInferred;
-    fn join_def(&mut self, global: GlobalId, value: CompactInferred);
+    fn read_def(&mut self, global: GlobalId) -> LatticeValue;
+    fn join_def(&mut self, global: GlobalId, value: LatticeValue);
 
-    fn read_fn_return(&mut self, slot: u32) -> CompactInferred;
-    fn join_fn_return(&mut self, slot: u32, value: CompactInferred);
+    fn read_fn_return(&mut self, slot: u32) -> LatticeValue;
+    fn join_fn_return(&mut self, slot: u32, value: LatticeValue);
 
-    fn read_atom(&mut self, atom: usize) -> CompactInferred;
-    fn join_atom(&mut self, atom: usize, value: CompactInferred);
+    fn read_atom(&mut self, atom: usize) -> LatticeValue;
+    fn join_atom(&mut self, atom: usize, value: LatticeValue);
 }
 
 struct Round1Env<'p, 'c> {
     ctx: &'c StaticCtx<'p>,
     state: &'c mut SolverState,
     uses: &'c mut [u32],
-    narrowed: Vec<(LocalId, CompactInferred)>,
+    narrowed: Vec<(LocalId, LatticeValue)>,
     position: usize,
     changed: bool,
     dep_seen_stamp: Vec<u32>,
@@ -2985,12 +3220,12 @@ impl<'p, 'c> WalkEnv<'p, 'c> for Round1Env<'p, 'c> {
     }
 
     #[inline]
-    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+    fn narrowed(&self) -> &[(LocalId, LatticeValue)] {
         &self.narrowed
     }
 
     #[inline]
-    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, LatticeValue)> {
         &mut self.narrowed
     }
 
@@ -3023,7 +3258,7 @@ impl<'p, 'c> WalkEnv<'p, 'c> for Round1Env<'p, 'c> {
     }
 
     #[inline]
-    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+    fn read_local_raw(&mut self, local: LocalId) -> LatticeValue {
         let param = self.ctx.param_slot[local.0];
         if param != u32::MAX {
             self.record_dep(self.ctx.layout.param_dep(param));
@@ -3034,7 +3269,7 @@ impl<'p, 'c> WalkEnv<'p, 'c> for Round1Env<'p, 'c> {
     }
 
     #[inline]
-    fn bind_local(&mut self, local: LocalId, value: CompactInferred) {
+    fn bind_local(&mut self, local: LocalId, value: LatticeValue) {
         if self.ctx.pinned[local.0] {
             return;
         }
@@ -3058,13 +3293,13 @@ impl<'p, 'c> WalkEnv<'p, 'c> for Round1Env<'p, 'c> {
     }
 
     #[inline]
-    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+    fn read_def(&mut self, global: GlobalId) -> LatticeValue {
         self.record_dep(self.ctx.layout.def_dep(global));
         self.state.def_values[global.0]
     }
 
     #[inline]
-    fn join_def(&mut self, global: GlobalId, value: CompactInferred) {
+    fn join_def(&mut self, global: GlobalId, value: LatticeValue) {
         let slot = &mut self.state.def_values[global.0];
         let joined = slot.union(value);
         if joined != *slot {
@@ -3074,13 +3309,13 @@ impl<'p, 'c> WalkEnv<'p, 'c> for Round1Env<'p, 'c> {
     }
 
     #[inline]
-    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+    fn read_fn_return(&mut self, slot: u32) -> LatticeValue {
         self.record_dep(self.ctx.layout.fn_dep(slot));
         self.state.fn_returns[slot as usize]
     }
 
     #[inline]
-    fn join_fn_return(&mut self, slot: u32, value: CompactInferred) {
+    fn join_fn_return(&mut self, slot: u32, value: LatticeValue) {
         let entry = &mut self.state.fn_returns[slot as usize];
         let joined = entry.union(value);
         if joined != *entry {
@@ -3090,13 +3325,13 @@ impl<'p, 'c> WalkEnv<'p, 'c> for Round1Env<'p, 'c> {
     }
 
     #[inline]
-    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+    fn read_atom(&mut self, atom: usize) -> LatticeValue {
         self.record_dep(self.ctx.layout.atom_dep(atom));
         self.state.contents[atom]
     }
 
     #[inline]
-    fn join_atom(&mut self, atom: usize, value: CompactInferred) {
+    fn join_atom(&mut self, atom: usize, value: LatticeValue) {
         let entry = &mut self.state.contents[atom];
         let joined = entry.union(value);
         if joined != *entry {
@@ -3112,7 +3347,7 @@ struct SerialDirtyEnv<'p, 'c> {
     subs: &'c mut SubscriberGraph,
     cur_dirty: &'c mut BitSet,
     next_dirty: &'c mut BitSet,
-    narrowed: &'c mut Vec<(LocalId, CompactInferred)>,
+    narrowed: &'c mut Vec<(LocalId, LatticeValue)>,
     local_read_stamp: &'c mut [u32],
     position: usize,
     reverse: bool,
@@ -3165,17 +3400,17 @@ impl<'p, 'c> WalkEnv<'p, 'c> for SerialDirtyEnv<'p, 'c> {
     }
 
     #[inline]
-    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+    fn narrowed(&self) -> &[(LocalId, LatticeValue)] {
         self.narrowed
     }
 
     #[inline]
-    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, LatticeValue)> {
         self.narrowed
     }
 
     #[inline]
-    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+    fn read_local_raw(&mut self, local: LocalId) -> LatticeValue {
         if self.ctx.param_slot[local.0] == u32::MAX {
             self.local_read_stamp[local.0] = self.position as u32;
         }
@@ -3183,7 +3418,7 @@ impl<'p, 'c> WalkEnv<'p, 'c> for SerialDirtyEnv<'p, 'c> {
     }
 
     #[inline]
-    fn bind_local(&mut self, local: LocalId, value: CompactInferred) {
+    fn bind_local(&mut self, local: LocalId, value: LatticeValue) {
         if self.ctx.pinned[local.0] {
             return;
         }
@@ -3204,12 +3439,12 @@ impl<'p, 'c> WalkEnv<'p, 'c> for SerialDirtyEnv<'p, 'c> {
     }
 
     #[inline]
-    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+    fn read_def(&mut self, global: GlobalId) -> LatticeValue {
         self.state.def_values[global.0]
     }
 
     #[inline]
-    fn join_def(&mut self, global: GlobalId, value: CompactInferred) {
+    fn join_def(&mut self, global: GlobalId, value: LatticeValue) {
         let slot = &mut self.state.def_values[global.0];
         let joined = slot.union(value);
         if joined != *slot {
@@ -3219,13 +3454,13 @@ impl<'p, 'c> WalkEnv<'p, 'c> for SerialDirtyEnv<'p, 'c> {
     }
 
     #[inline]
-    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+    fn read_fn_return(&mut self, slot: u32) -> LatticeValue {
         self.ensure_dynamic_dep(self.ctx.layout.fn_dep(slot));
         self.state.fn_returns[slot as usize]
     }
 
     #[inline]
-    fn join_fn_return(&mut self, slot: u32, value: CompactInferred) {
+    fn join_fn_return(&mut self, slot: u32, value: LatticeValue) {
         let entry = &mut self.state.fn_returns[slot as usize];
         let joined = entry.union(value);
         if joined != *entry {
@@ -3235,13 +3470,13 @@ impl<'p, 'c> WalkEnv<'p, 'c> for SerialDirtyEnv<'p, 'c> {
     }
 
     #[inline]
-    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+    fn read_atom(&mut self, atom: usize) -> LatticeValue {
         self.ensure_dynamic_dep(self.ctx.layout.atom_dep(atom));
         self.state.contents[atom]
     }
 
     #[inline]
-    fn join_atom(&mut self, atom: usize, value: CompactInferred) {
+    fn join_atom(&mut self, atom: usize, value: LatticeValue) {
         let entry = &mut self.state.contents[atom];
         let joined = entry.union(value);
         if joined != *entry {
@@ -3260,14 +3495,14 @@ struct ParallelSliceEnv<'p, 'c> {
     hi: usize,
     reverse: bool,
     position: usize,
-    narrowed: Vec<(LocalId, CompactInferred)>,
+    narrowed: Vec<(LocalId, LatticeValue)>,
     slice_dirty: BitSet,
     touched: BitSet,
-    dep_deltas: HashMap<u32, (CompactInferred, u32)>,
-    cur_locals: Vec<CompactInferred>,
+    dep_deltas: HashMap<u32, (LatticeValue, u32)>,
+    cur_locals: Vec<LatticeValue>,
     cur_local_read: Vec<bool>,
-    local_deltas: Vec<(LocalId, CompactInferred)>,
-    extra_local_deltas: HashMap<LocalId, CompactInferred>,
+    local_deltas: Vec<(LocalId, LatticeValue)>,
+    extra_local_deltas: HashMap<LocalId, LatticeValue>,
     new_deps: Vec<(u32, u32)>,
     self_dirty: Vec<u32>,
     form_local_changed: bool,
@@ -3299,7 +3534,7 @@ impl<'p, 'c> ParallelSliceEnv<'p, 'c> {
     }
 
     #[inline]
-    fn read_summary(&self, dep: usize) -> CompactInferred {
+    fn read_summary(&self, dep: usize) -> LatticeValue {
         if self.touched.get(dep)
             && let Some(&(val, _)) = self.dep_deltas.get(&(dep as u32))
         {
@@ -3309,7 +3544,7 @@ impl<'p, 'c> ParallelSliceEnv<'p, 'c> {
     }
 
     #[inline]
-    fn write_summary(&mut self, dep: usize, value: CompactInferred) {
+    fn write_summary(&mut self, dep: usize, value: LatticeValue) {
         let cur = self.read_summary(dep);
         let joined = cur.union(value);
         if joined == cur {
@@ -3351,17 +3586,17 @@ impl<'p, 'c> WalkEnv<'p, 'c> for ParallelSliceEnv<'p, 'c> {
     }
 
     #[inline]
-    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+    fn narrowed(&self) -> &[(LocalId, LatticeValue)] {
         &self.narrowed
     }
 
     #[inline]
-    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, LatticeValue)> {
         &mut self.narrowed
     }
 
     #[inline]
-    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+    fn read_local_raw(&mut self, local: LocalId) -> LatticeValue {
         let owner = self.meta.local_owner[local.0];
         if owner == self.position as u32 {
             let slot = self.meta.local_in_form[local.0] as usize;
@@ -3381,7 +3616,7 @@ impl<'p, 'c> WalkEnv<'p, 'c> for ParallelSliceEnv<'p, 'c> {
     }
 
     #[inline]
-    fn bind_local(&mut self, local: LocalId, value: CompactInferred) {
+    fn bind_local(&mut self, local: LocalId, value: LatticeValue) {
         if self.ctx.pinned[local.0] {
             return;
         }
@@ -3417,36 +3652,36 @@ impl<'p, 'c> WalkEnv<'p, 'c> for ParallelSliceEnv<'p, 'c> {
     }
 
     #[inline]
-    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+    fn read_def(&mut self, global: GlobalId) -> LatticeValue {
         self.read_summary(self.ctx.layout.def_dep(global))
     }
 
     #[inline]
-    fn join_def(&mut self, global: GlobalId, value: CompactInferred) {
+    fn join_def(&mut self, global: GlobalId, value: LatticeValue) {
         self.write_summary(self.ctx.layout.def_dep(global), value);
     }
 
     #[inline]
-    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+    fn read_fn_return(&mut self, slot: u32) -> LatticeValue {
         let dep = self.ctx.layout.fn_dep(slot);
         self.record_dynamic_dep(dep);
         self.read_summary(dep)
     }
 
     #[inline]
-    fn join_fn_return(&mut self, slot: u32, value: CompactInferred) {
+    fn join_fn_return(&mut self, slot: u32, value: LatticeValue) {
         self.write_summary(self.ctx.layout.fn_dep(slot), value);
     }
 
     #[inline]
-    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+    fn read_atom(&mut self, atom: usize) -> LatticeValue {
         let dep = self.ctx.layout.atom_dep(atom);
         self.record_dynamic_dep(dep);
         self.read_summary(dep)
     }
 
     #[inline]
-    fn join_atom(&mut self, atom: usize, value: CompactInferred) {
+    fn join_atom(&mut self, atom: usize, value: LatticeValue) {
         self.write_summary(self.ctx.layout.atom_dep(atom), value);
     }
 }
@@ -3455,7 +3690,7 @@ struct FinalDirectEnv<'p, 'c> {
     ctx: &'c StaticCtx<'p>,
     state: &'c SolverState,
     values: &'c mut [CompactInferred],
-    narrowed: Vec<(LocalId, CompactInferred)>,
+    narrowed: Vec<(LocalId, LatticeValue)>,
     position: usize,
 }
 
@@ -3473,59 +3708,59 @@ impl<'p, 'c> WalkEnv<'p, 'c> for FinalDirectEnv<'p, 'c> {
     }
 
     #[inline]
-    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+    fn narrowed(&self) -> &[(LocalId, LatticeValue)] {
         &self.narrowed
     }
 
     #[inline]
-    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, LatticeValue)> {
         &mut self.narrowed
     }
 
     #[inline]
-    fn on_record(&mut self, id: ExprId, value: CompactInferred) -> CompactInferred {
-        record_value(self.values, id, value);
+    fn on_record(&mut self, id: ExprId, value: LatticeValue) -> LatticeValue {
+        record_value(self.values, id, value.to_compact());
         value
     }
 
     #[inline]
-    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+    fn read_local_raw(&mut self, local: LocalId) -> LatticeValue {
         self.state.locals[local.0]
     }
 
     #[inline]
-    fn bind_local(&mut self, _local: LocalId, _value: CompactInferred) {}
+    fn bind_local(&mut self, _local: LocalId, _value: LatticeValue) {}
 
     #[inline]
-    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+    fn read_def(&mut self, global: GlobalId) -> LatticeValue {
         self.state.def_values[global.0]
     }
 
     #[inline]
-    fn join_def(&mut self, _global: GlobalId, _value: CompactInferred) {}
+    fn join_def(&mut self, _global: GlobalId, _value: LatticeValue) {}
 
     #[inline]
-    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+    fn read_fn_return(&mut self, slot: u32) -> LatticeValue {
         self.state.fn_returns[slot as usize]
     }
 
     #[inline]
-    fn join_fn_return(&mut self, _slot: u32, _value: CompactInferred) {}
+    fn join_fn_return(&mut self, _slot: u32, _value: LatticeValue) {}
 
     #[inline]
-    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+    fn read_atom(&mut self, atom: usize) -> LatticeValue {
         self.state.contents[atom]
     }
 
     #[inline]
-    fn join_atom(&mut self, _atom: usize, _value: CompactInferred) {}
+    fn join_atom(&mut self, _atom: usize, _value: LatticeValue) {}
 }
 
 struct FinalSliceEnv<'p, 'c> {
     ctx: &'c StaticCtx<'p>,
     state: &'c SolverState,
     entries: Vec<(u32, CompactInferred)>,
-    narrowed: Vec<(LocalId, CompactInferred)>,
+    narrowed: Vec<(LocalId, LatticeValue)>,
     position: usize,
 }
 
@@ -3543,58 +3778,58 @@ impl<'p, 'c> WalkEnv<'p, 'c> for FinalSliceEnv<'p, 'c> {
     }
 
     #[inline]
-    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+    fn narrowed(&self) -> &[(LocalId, LatticeValue)] {
         &self.narrowed
     }
 
     #[inline]
-    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, LatticeValue)> {
         &mut self.narrowed
     }
 
     #[inline]
-    fn on_record(&mut self, id: ExprId, value: CompactInferred) -> CompactInferred {
-        self.entries.push((id.0 as u32, value));
+    fn on_record(&mut self, id: ExprId, value: LatticeValue) -> LatticeValue {
+        self.entries.push((id.0 as u32, value.to_compact()));
         value
     }
 
     #[inline]
-    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+    fn read_local_raw(&mut self, local: LocalId) -> LatticeValue {
         self.state.locals[local.0]
     }
 
     #[inline]
-    fn bind_local(&mut self, _local: LocalId, _value: CompactInferred) {}
+    fn bind_local(&mut self, _local: LocalId, _value: LatticeValue) {}
 
     #[inline]
-    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+    fn read_def(&mut self, global: GlobalId) -> LatticeValue {
         self.state.def_values[global.0]
     }
 
     #[inline]
-    fn join_def(&mut self, _global: GlobalId, _value: CompactInferred) {}
+    fn join_def(&mut self, _global: GlobalId, _value: LatticeValue) {}
 
     #[inline]
-    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+    fn read_fn_return(&mut self, slot: u32) -> LatticeValue {
         self.state.fn_returns[slot as usize]
     }
 
     #[inline]
-    fn join_fn_return(&mut self, _slot: u32, _value: CompactInferred) {}
+    fn join_fn_return(&mut self, _slot: u32, _value: LatticeValue) {}
 
     #[inline]
-    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+    fn read_atom(&mut self, atom: usize) -> LatticeValue {
         self.state.contents[atom]
     }
 
     #[inline]
-    fn join_atom(&mut self, _atom: usize, _value: CompactInferred) {}
+    fn join_atom(&mut self, _atom: usize, _value: LatticeValue) {}
 }
 
 #[inline]
-fn read_local<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, local: LocalId) -> CompactInferred {
+fn read_local<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, local: LocalId) -> LatticeValue {
     if env.ctx().pinned[local.0] {
-        return CompactInferred::ANY;
+        return LatticeValue::ANY;
     }
     if let Some(&(_, value)) = env
         .narrowed()
@@ -3612,7 +3847,7 @@ fn walk_narrowed<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     env: &mut E,
     id: ExprId,
     filters: &[(LocalId, Filter)],
-) -> CompactInferred {
+) -> LatticeValue {
     if filters.is_empty() {
         return walk_expr(env, id);
     }
@@ -3638,8 +3873,8 @@ fn walk_discard<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) {
 }
 
 #[inline]
-fn walk_last<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> CompactInferred {
-    let mut last = CompactInferred::of(Type::NIL);
+fn walk_last<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> LatticeValue {
+    let mut last = LatticeValue::of(Type::NIL);
     for &id in ids {
         last = walk_expr(env, id);
     }
@@ -3649,7 +3884,7 @@ fn walk_last<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> Com
 #[inline]
 fn walk_args<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> ArgBuf {
     if ids.len() <= INLINE_ARGS {
-        let mut buf = [CompactInferred::NEVER; INLINE_ARGS];
+        let mut buf = [LatticeValue::NEVER; INLINE_ARGS];
         for (slot, &id) in buf.iter_mut().zip(ids) {
             *slot = walk_expr(env, id);
         }
@@ -3665,36 +3900,36 @@ fn walk_args<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> Arg
 
 /// Walk `ids` and join their values.
 #[inline]
-fn join_all<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> CompactInferred {
-    let mut acc = CompactInferred::NEVER;
+fn join_all<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> LatticeValue {
+    let mut acc = LatticeValue::NEVER;
     for &id in ids {
         acc = acc.union(walk_expr(env, id));
     }
     acc
 }
 
-fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> CompactInferred {
+fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> LatticeValue {
     use ExprKind as K;
     env.on_enter_expr();
     let ctx = env.ctx();
     let program = ctx.program;
     let value = match &program.exprs[id.0].kind {
-        K::Nil => CompactInferred::of(Type::NIL),
+        K::Nil => LatticeValue::of(Type::NIL),
         // The runtime's `Loadable` class, like a core type's (`AtomType`).
-        K::LoadableType => CompactInferred::of(Type::FN),
+        K::LoadableType => LatticeValue::of(Type::FN),
         // `new Loadable(...)`, as `K::Construct` below.
         K::Loadable { class, .. } => {
             walk_expr(env, *class);
             match program.exprs[class.0].kind {
-                K::Global(global) => instance(ctx, global, true).unwrap_or(CompactInferred::ANY),
-                _ => CompactInferred::ANY,
+                K::Global(global) => instance(ctx, global, true).unwrap_or(LatticeValue::ANY),
+                _ => LatticeValue::ANY,
             }
         }
-        K::Bool(_) => CompactInferred::of(Type::BOOLEAN),
-        K::Number(_) => CompactInferred::of(Type::NUMBER),
-        K::String(_) => CompactInferred::of(Type::STRING),
-        K::Keyword(_) => CompactInferred::of(Type::KEYWORD),
-        K::Symbol(_) => CompactInferred::of(Type::SYMBOL),
+        K::Bool(_) => LatticeValue::of(Type::BOOLEAN),
+        K::Number(_) => LatticeValue::of(Type::NUMBER),
+        K::String(_) => LatticeValue::of(Type::STRING),
+        K::Keyword(_) => LatticeValue::of(Type::KEYWORD),
+        K::Symbol(_) => LatticeValue::of(Type::SYMBOL),
         K::ReaderLiteral {
             kind,
             items,
@@ -3702,24 +3937,22 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
         } => {
             walk_discard(env, items);
             match (kind, quoted) {
-                (CompilerLiteralKind::JsArray, false) => {
-                    CompactInferred::known_raw(Type::HOST, KNOWN_ARRAY, 0)
-                }
+                (CompilerLiteralKind::JsArray, false) => LatticeValue::known_array(Type::HOST),
                 (
                     CompilerLiteralKind::JsObject
                     | CompilerLiteralKind::Regex
                     | CompilerLiteralKind::Instant,
                     false,
-                ) => CompactInferred::of(Type::HOST),
+                ) => LatticeValue::of(Type::HOST),
                 (CompilerLiteralKind::Uuid | CompilerLiteralKind::Queue, false) => {
-                    CompactInferred::of(Type::OBJECT)
+                    LatticeValue::of(Type::OBJECT)
                 }
-                _ => CompactInferred::ANY,
+                _ => LatticeValue::ANY,
             }
         }
         K::DefinitionTest { value, .. } | K::NamespaceView { value, .. } => walk_expr(env, *value),
         K::WithMeta { value, metadata } => {
-            let arguments = [walk_expr(env, *value).ty, walk_expr(env, *metadata).ty];
+            let arguments = [walk_expr(env, *value).ty(), walk_expr(env, *metadata).ty()];
             core_call(ctx, CoreFnId::WithMeta, &arguments)
         }
         K::Var {
@@ -3729,29 +3962,29 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
             if let Some(metadata) = metadata {
                 walk_expr(env, *metadata);
             }
-            CompactInferred::of(Type::OBJECT)
+            LatticeValue::of(Type::OBJECT)
         }
         K::List(items) => {
             let element = join_all(env, items);
-            CompactInferred::of(Type::LIST).with_elements(element)
+            LatticeValue::of(Type::LIST).with_elements(element)
         }
         K::Vector(items) => {
             let element = join_all(env, items);
-            CompactInferred::known_raw(Type::VECTOR, KNOWN_VECTOR, 0).with_elements(element)
+            LatticeValue::known_vector(Type::VECTOR).with_elements(element)
         }
         K::Map(items) | K::LiteralMap(items) => {
             walk_discard(env, items);
-            CompactInferred::of(Type::MAP)
+            LatticeValue::of(Type::MAP)
         }
         K::Set(items) | K::LiteralSet(items) => {
             let element = join_all(env, items);
-            CompactInferred::of(Type::SET).with_elements(element)
+            LatticeValue::of(Type::SET).with_elements(element)
         }
         K::CoreFn(core) => {
             if ctx.facts.replaced(*core) {
-                CompactInferred::ANY
+                LatticeValue::ANY
             } else {
-                CompactInferred::of(core.operation().value)
+                LatticeValue::of(core.operation().value)
             }
         }
         K::Local(local) => {
@@ -3761,38 +3994,38 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
             read_local(env, *local)
         }
         K::Global(global) => read_global(env, *global),
-        K::JsGlobal(_) => CompactInferred::ANY,
+        K::JsGlobal(_) => LatticeValue::ANY,
         K::JsTemplate { args, .. } => {
             walk_discard(env, args);
-            CompactInferred::ANY
+            LatticeValue::ANY
         }
         K::JsIndex { receiver, indices } => {
             walk_expr(env, *receiver);
             walk_discard(env, indices);
-            CompactInferred::ANY
+            LatticeValue::ANY
         }
         K::ThisAs { body, .. } => walk_expr(env, *body),
-        K::JsArguments => CompactInferred::of(Type::HOST),
+        K::JsArguments => LatticeValue::of(Type::HOST),
         K::JsDelete { receiver, key } => {
             walk_expr(env, *receiver);
             walk_expr(env, *key);
-            CompactInferred::of(Type::BOOLEAN)
+            LatticeValue::of(Type::BOOLEAN)
         }
         K::QualifiedMethod { class, .. } => {
             walk_expr(env, *class);
-            CompactInferred::of(Type::FN)
+            LatticeValue::of(Type::FN)
         }
         K::CopyArguments(dest) => {
             walk_expr(env, *dest);
-            CompactInferred::of(Type::NIL)
+            LatticeValue::of(Type::NIL)
         }
-        K::DefProtocol { .. } => CompactInferred::of(Type::NIL),
+        K::DefProtocol { .. } => LatticeValue::of(Type::NIL),
         K::ProtocolPredicate {
             protocol, value, ..
         } => {
             walk_expr(env, *protocol);
             walk_expr(env, *value);
-            CompactInferred::of(Type::BOOLEAN)
+            LatticeValue::of(Type::BOOLEAN)
         }
         K::ExtendType {
             target, methods, ..
@@ -3801,7 +4034,7 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
             for (_, method) in methods {
                 walk_expr(env, method.body);
             }
-            CompactInferred::ANY
+            LatticeValue::ANY
         }
         K::Reify {
             metadata, methods, ..
@@ -3812,7 +4045,7 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
             for (_, method) in methods {
                 walk_expr(env, method.body);
             }
-            CompactInferred::of(Type::OBJECT)
+            LatticeValue::of(Type::OBJECT)
         }
         K::DefType {
             layout, methods, ..
@@ -3825,15 +4058,15 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
             }
             match layout.body {
                 Some(body) => walk_expr(env, body),
-                None => CompactInferred::of(Type::FN),
+                None => LatticeValue::of(Type::FN),
             }
         }
         K::Construct { callee, args } => {
             walk_expr(env, *callee);
             walk_discard(env, args);
             match program.exprs[callee.0].kind {
-                K::Global(global) => instance(ctx, global, true).unwrap_or(CompactInferred::ANY),
-                _ => CompactInferred::ANY,
+                K::Global(global) => instance(ctx, global, true).unwrap_or(LatticeValue::ANY),
+                _ => LatticeValue::ANY,
             }
         }
         K::Assert { test, message, .. } => {
@@ -3841,7 +4074,7 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
             if let Some(message) = message {
                 walk_expr(env, *message);
             }
-            CompactInferred::of(Type::NIL)
+            LatticeValue::of(Type::NIL)
         }
         K::Def {
             global,
@@ -3860,13 +4093,13 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
                     }
                     init_val
                 }
-                None => CompactInferred::of(Type::NIL),
+                None => LatticeValue::of(Type::NIL),
             };
             if let Some(test) = test {
                 walk_expr(env, *test);
             }
             if *once {
-                value.union(CompactInferred::of(Type::NIL))
+                value.union(LatticeValue::of(Type::NIL))
             } else {
                 value
             }
@@ -3884,24 +4117,24 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
         }
         K::WithOutStr(body) => {
             walk_expr(env, *body);
-            CompactInferred::of(Type::STRING)
+            LatticeValue::of(Type::STRING)
         }
         K::Exists(value) | K::BindingExists(value) => {
             walk_expr(env, *value);
-            CompactInferred::of(Type::BOOLEAN)
+            LatticeValue::of(Type::BOOLEAN)
         }
         K::BooleanHint(value) => {
             walk_expr(env, *value);
-            CompactInferred::of(Type::BOOLEAN)
+            LatticeValue::of(Type::BOOLEAN)
         }
         K::Property { receiver, .. } => {
             walk_expr(env, *receiver);
-            CompactInferred::ANY
+            LatticeValue::ANY
         }
         K::MethodCall { receiver, args, .. } => {
             walk_expr(env, *receiver);
             walk_discard(env, args);
-            CompactInferred::ANY
+            LatticeValue::ANY
         }
         K::If { test, yes, no } => {
             walk_expr(env, *test);
@@ -3948,16 +4181,16 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
                     env.bind_local(param, value);
                 }
             }
-            CompactInferred::NEVER
+            LatticeValue::NEVER
         }
         K::Throw(value) => {
             walk_expr(env, *value);
-            CompactInferred::NEVER
+            LatticeValue::NEVER
         }
         // What a promise settles to, or the value itself, is not known.
         K::Await(value) => {
             walk_expr(env, *value);
-            CompactInferred::ANY
+            LatticeValue::ANY
         }
         K::Try {
             body,
@@ -3983,7 +4216,7 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
             ..
         } => {
             walk_expr(env, *test);
-            let mut value = CompactInferred::NEVER;
+            let mut value = LatticeValue::NEVER;
             for &(constant, branch) in branches {
                 walk_expr(env, constant);
                 value = value.union(walk_expr(env, branch));
@@ -3994,18 +4227,18 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
             value
         }
         K::Fn { name, methods } => {
-            let function = CompactInferred::known_function(id);
+            let function = LatticeValue::known_function(id);
             if !E::FINAL_PASS
                 && let Some(name) = name
             {
                 env.bind_local(*name, function);
             }
-            let mut ret = CompactInferred::NEVER;
+            let mut ret = LatticeValue::NEVER;
             for method in methods {
                 let body_val = walk_expr(env, method.body);
                 if !E::FINAL_PASS {
                     ret = ret.union(if method.asynchronous {
-                        CompactInferred::ANY
+                        LatticeValue::ANY
                     } else {
                         body_val
                     });
@@ -4018,7 +4251,7 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
                 }
             }
             if program.macro_functions.contains(&id) {
-                CompactInferred::ANY
+                LatticeValue::ANY
             } else {
                 function
             }
@@ -4044,7 +4277,7 @@ fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> Compact
         K::InstanceOf { class, value } => {
             walk_expr(env, *class);
             walk_expr(env, *value);
-            CompactInferred::of(Type::BOOLEAN)
+            LatticeValue::of(Type::BOOLEAN)
         }
     };
     env.on_record(id, value)
@@ -4057,7 +4290,7 @@ fn store<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     call_id: ExprId,
     core: CoreFnId,
     args: &[ExprId],
-    arguments: &[CompactInferred],
+    arguments: &[LatticeValue],
 ) {
     let ctx = env.ctx();
     let target = if core == CoreFnId::Atom {
@@ -4071,14 +4304,9 @@ fn store<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     let Some(atom) = ctx.closed.atom(target) else {
         return;
     };
-    let argument = |index: usize| {
-        arguments
-            .get(index)
-            .copied()
-            .unwrap_or(CompactInferred::ANY)
-    };
+    let argument = |index: usize| arguments.get(index).copied().unwrap_or(LatticeValue::ANY);
     let stored = match core {
-        _ if !ctx.facts.trusted(core, Calls::Invoke) => CompactInferred::ANY,
+        _ if !ctx.facts.trusted(core, Calls::Invoke) => LatticeValue::ANY,
         CoreFnId::Atom => argument(0),
         CoreFnId::Reset | CoreFnId::ResetVals => argument(1),
         CoreFnId::CompareAndSet => argument(2),
@@ -4090,10 +4318,10 @@ fn store<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
 
 /// What the closed atom read by `arg` holds (`sN`), else `any`.
 #[inline]
-fn state<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, arg: Option<&ExprId>) -> CompactInferred {
+fn state<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, arg: Option<&ExprId>) -> LatticeValue {
     match arg.and_then(|arg| env.ctx().closed.atom(*arg)) {
         Some(atom) => env.read_atom(atom),
-        None => CompactInferred::ANY,
+        None => LatticeValue::ANY,
     }
 }
 
@@ -4103,8 +4331,8 @@ fn atom_result<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     env: &mut E,
     core: CoreFnId,
     args: &[ExprId],
-    arguments: &[CompactInferred],
-) -> Option<CompactInferred> {
+    arguments: &[LatticeValue],
+) -> Option<LatticeValue> {
     let ctx = env.ctx();
     let atom = ctx.closed.atom(*args.first()?)?;
     if !ctx.facts.trusted(core, Calls::Invoke) || ctx.facts.replaced(CoreFnId::Atom) {
@@ -4124,7 +4352,7 @@ fn pass<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     env: &mut E,
     function: ExprId,
     method: usize,
-    arguments: &[CompactInferred],
+    arguments: &[LatticeValue],
 ) {
     let ExprKind::Fn { methods, .. } = &env.ctx().program.exprs[function.0].kind else {
         return;
@@ -4136,7 +4364,7 @@ fn pass<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
         let argument = arguments
             .get(index)
             .copied()
-            .unwrap_or(CompactInferred::of(Type::NIL));
+            .unwrap_or(LatticeValue::of(Type::NIL));
         env.bind_local(param, argument);
     }
     if let Some(rest) = method.rest {
@@ -4145,7 +4373,7 @@ fn pass<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
         } else {
             Type::NIL
         };
-        env.bind_local(rest, CompactInferred::of(rest_type));
+        env.bind_local(rest, LatticeValue::of(rest_type));
     }
 }
 
@@ -4154,13 +4382,13 @@ fn pass<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
 fn dispatch<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     env: &mut E,
     call_id: ExprId,
-    arguments: &[CompactInferred],
+    arguments: &[LatticeValue],
 ) {
     let ctx = env.ctx();
     let receiver = arguments
         .first()
         .copied()
-        .unwrap_or(CompactInferred::of(Type::NIL));
+        .unwrap_or(LatticeValue::of(Type::NIL));
     let inherits = ctx.closed.inherits();
     for (index, implementation) in ctx.closed.dispatch(call_id) {
         if !ctx.receivers[index].is_some_and(|receivers| receivers.reach(receiver, inherits)) {
@@ -4173,46 +4401,46 @@ fn dispatch<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
             let argument = arguments
                 .get(position)
                 .copied()
-                .unwrap_or(CompactInferred::of(Type::NIL));
+                .unwrap_or(LatticeValue::of(Type::NIL));
             env.bind_local(param, argument);
         }
     }
 }
 
 /// A read of `global`.
-fn read_global<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, global: GlobalId) -> CompactInferred {
+fn read_global<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, global: GlobalId) -> LatticeValue {
     let ctx = env.ctx();
     let program = ctx.program;
     if program.globals[global.0].name.contains('.') {
-        return CompactInferred::ANY;
+        return LatticeValue::ANY;
     }
     let (definition, value) = match ctx.facts.definition(global) {
-        Definition::Unknown => return CompactInferred::ANY,
+        Definition::Unknown => return LatticeValue::ANY,
         Definition::Def(definition) => {
             let ExprKind::Def { init, once, .. } = program.exprs[definition.0].kind else {
-                return CompactInferred::ANY;
+                return LatticeValue::ANY;
             };
             let value = match init {
                 Some(_) => env.read_def(global),
-                None => CompactInferred::of(Type::NIL),
+                None => LatticeValue::of(Type::NIL),
             };
             if once {
-                return value.union(CompactInferred::of(Type::NIL));
+                return value.union(LatticeValue::of(Type::NIL));
             }
             (definition, value)
         }
-        Definition::Type { definition, .. } => (definition, CompactInferred::of(Type::FN)),
+        Definition::Type { definition, .. } => (definition, LatticeValue::of(Type::FN)),
         Definition::Protocol(definition) => {
             let ExprKind::DefProtocol {
                 global: protocol, ..
             } = program.exprs[definition.0].kind
             else {
-                return CompactInferred::ANY;
+                return LatticeValue::ANY;
             };
             if protocol == global {
-                return CompactInferred::ANY;
+                return LatticeValue::ANY;
             }
-            (definition, CompactInferred::of(Type::FN))
+            (definition, LatticeValue::of(Type::FN))
         }
     };
     // Before its definition runs, a global is undefined. A read in a later
@@ -4225,14 +4453,14 @@ fn read_global<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, global: GlobalId) ->
     if defined_before {
         value
     } else {
-        value.union(CompactInferred::of(Type::NIL))
+        value.union(LatticeValue::of(Type::NIL))
     }
 }
 
 /// What `new global` (`construct`) or a call of `global` returns when `global`
 /// is a program type's constructor, or its positional or map factory.
 #[inline]
-fn instance(ctx: &StaticCtx<'_>, global: GlobalId, construct: bool) -> Option<CompactInferred> {
+fn instance(ctx: &StaticCtx<'_>, global: GlobalId, construct: bool) -> Option<LatticeValue> {
     let Definition::Type {
         type_global,
         role,
@@ -4246,25 +4474,24 @@ fn instance(ctx: &StaticCtx<'_>, global: GlobalId, construct: bool) -> Option<Co
         return None;
     }
     let class = if record { Type::RECORD } else { Type::OBJECT };
-    Some(CompactInferred::known_instance(class, type_global))
+    Some(LatticeValue::known_instance(class, type_global))
 }
 
 #[inline]
-fn core_call(ctx: &StaticCtx<'_>, core: CoreFnId, arguments: &[Type]) -> CompactInferred {
+fn core_call(ctx: &StaticCtx<'_>, core: CoreFnId, arguments: &[Type]) -> LatticeValue {
     let operation = core.operation();
     let call = operation.call(arguments);
     if !ctx.facts.trusted(core, call.calls) {
-        return CompactInferred::ANY;
+        return LatticeValue::ANY;
     }
     // Joining `returns` keeps the result monotone in the arguments: a call
     // outside the domain may also return what one inside does.
     let returns = call.returns.union(operation.returns_for(arguments.len()));
-    let known_tag = match core {
-        CoreFnId::Vector => KNOWN_VECTOR,
-        CoreFnId::Array => KNOWN_ARRAY,
-        _ => KNOWN_UNKNOWN,
-    };
-    CompactInferred::known_raw(returns, known_tag, 0)
+    match core {
+        CoreFnId::Vector => LatticeValue::known_vector(returns),
+        CoreFnId::Array => LatticeValue::known_array(returns),
+        _ => LatticeValue::of(returns),
+    }
 }
 
 #[inline]
@@ -4281,8 +4508,8 @@ fn core_result<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     env: &mut E,
     core: CoreFnId,
     args: &[ExprId],
-    arguments: &[CompactInferred],
-) -> CompactInferred {
+    arguments: &[LatticeValue],
+) -> LatticeValue {
     if let Some(result) = atom_result(env, core, args, arguments) {
         return result;
     }
@@ -4304,19 +4531,14 @@ fn describe<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     core: CoreFnId,
     descriptor: &Descriptor,
     args: &[ExprId],
-    arguments: &[CompactInferred],
+    arguments: &[LatticeValue],
     returns: bool,
-) -> CompactInferred {
-    let argument = |index: usize| {
-        arguments
-            .get(index)
-            .copied()
-            .unwrap_or(CompactInferred::ANY)
-    };
-    let mut value = CompactInferred::NEVER;
+) -> LatticeValue {
+    let argument = |index: usize| arguments.get(index).copied().unwrap_or(LatticeValue::ANY);
+    let mut value = LatticeValue::NEVER;
     for &term in &descriptor.terms {
         let part = match term {
-            Term::Type(ty) => CompactInferred::of(ty),
+            Term::Type(ty) => LatticeValue::of(ty),
             Term::Argument(index) => argument(index),
             Term::Element(index) => argument(index).element(),
             Term::Arguments(index) => arguments
@@ -4324,16 +4546,16 @@ fn describe<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
                 .unwrap_or(&[])
                 .iter()
                 .copied()
-                .fold(CompactInferred::NEVER, CompactInferred::union),
+                .fold(LatticeValue::NEVER, LatticeValue::union),
             Term::Elements(index) => arguments
                 .get(index..)
                 .unwrap_or(&[])
                 .iter()
                 .copied()
-                .fold(CompactInferred::NEVER, |acc, arg| acc.union(arg.element())),
+                .fold(LatticeValue::NEVER, |acc, arg| acc.union(arg.element())),
             Term::State(index) => state(env, args.get(index)),
             Term::Returns(index) if returns => callback_returns(env, core, index, args, arguments),
-            Term::Returns(_) => CompactInferred::ANY,
+            Term::Returns(_) => LatticeValue::ANY,
         };
         value = value.union(part);
     }
@@ -4345,10 +4567,10 @@ fn callback_arguments<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     core: CoreFnId,
     call: &[Descriptor],
     args: &[ExprId],
-    arguments: &[CompactInferred],
+    arguments: &[LatticeValue],
     returns: bool,
 ) -> ArgBuf {
-    let mut values = ArgBuf::Inline([CompactInferred::NEVER; INLINE_ARGS], 0);
+    let mut values = ArgBuf::Inline([LatticeValue::NEVER; INLINE_ARGS], 0);
     for descriptor in call {
         match descriptor.spread() {
             Some(Term::Arguments(from)) => {
@@ -4372,8 +4594,8 @@ fn callback_returns<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     core: CoreFnId,
     index: usize,
     args: &[ExprId],
-    arguments: &[CompactInferred],
-) -> CompactInferred {
+    arguments: &[LatticeValue],
+) -> LatticeValue {
     let callback = core
         .operation()
         .arity(arguments.len())
@@ -4381,9 +4603,9 @@ fn callback_returns<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     let (Some(callback), Some(&callee), Some(&value)) =
         (callback, args.get(index), arguments.get(index))
     else {
-        return CompactInferred::ANY;
+        return LatticeValue::ANY;
     };
-    let mut result = CompactInferred::NEVER;
+    let mut result = LatticeValue::NEVER;
     for call_desc in &callback.calls {
         let call_arguments = callback_arguments(env, core, call_desc, args, arguments, false);
         result = result.union(call(env, callee, value, &[], call_arguments.as_slice()));
@@ -4395,7 +4617,7 @@ fn pass_callback<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     env: &mut E,
     core: CoreFnId,
     args: &[ExprId],
-    arguments: &[CompactInferred],
+    arguments: &[LatticeValue],
     index: usize,
     function: ExprId,
 ) {
@@ -4426,7 +4648,7 @@ fn pass_callback<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     let Some(callback) = callback else {
         for method in methods {
             for &param in method.params.iter().chain(&method.rest) {
-                env.bind_local(param, CompactInferred::ANY);
+                env.bind_local(param, LatticeValue::ANY);
             }
         }
         return;
@@ -4443,10 +4665,10 @@ fn pass_callback<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
 fn call<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
     env: &mut E,
     callee: ExprId,
-    value: CompactInferred,
+    value: LatticeValue,
     args: &[ExprId],
-    arguments: &[CompactInferred],
-) -> CompactInferred {
+    arguments: &[LatticeValue],
+) -> LatticeValue {
     let ctx = env.ctx();
     let program = ctx.program;
     match &program.exprs[callee.0].kind {
@@ -4460,24 +4682,24 @@ fn call<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
             if let ExprKind::Global(global) = program.exprs[inner.0].kind
                 && program.globals[global.0].boolean_tag
             {
-                return CompactInferred::of(Type::BOOLEAN);
+                return LatticeValue::of(Type::BOOLEAN);
             }
         }
         _ => (),
     }
     // Calling nil throws. Staying `never` until the callee is known keeps
     // the fixed point from starting at `any` for recursive functions.
-    let callable = value.ty.difference(Type::NIL);
+    let callable = value.ty().difference(Type::NIL);
     if callable.is_never() {
-        return CompactInferred::NEVER;
+        return LatticeValue::NEVER;
     }
-    if value.known_tag == KNOWN_FUNCTION && callable == Type::FN {
-        let slot = ctx.fn_slot[value.known_id as usize];
+    if value.value.fn_id != NO_ID && callable == Type::FN {
+        let slot = ctx.fn_slot[value.value.fn_id as usize];
         if slot != u32::MAX {
             return env.read_fn_return(slot);
         }
     }
-    CompactInferred::ANY
+    LatticeValue::ANY
 }
 
 /// What `test` tells about locals in the branches of an `if`.
@@ -4740,68 +4962,120 @@ mod tests {
     #[test]
     fn compact_inferred_matches_public_inferred_lattice() {
         assert_eq!(std::mem::size_of::<CompactInferred>(), 16);
-        let pairs: Vec<(Inferred, CompactInferred)> = vec![
-            (Inferred::NEVER, CompactInferred::NEVER),
-            (Inferred::ANY, CompactInferred::ANY),
-            (Inferred::of(Type::NIL), CompactInferred::of(Type::NIL)),
-            (
-                Inferred::of(Type::NUMBER),
-                CompactInferred::of(Type::NUMBER),
-            ),
+        assert_eq!(std::mem::size_of::<LatticeValue>(), 24);
+        let pairs: Vec<(Inferred, LatticeValue)> = vec![
+            (Inferred::NEVER, LatticeValue::NEVER),
+            (Inferred::ANY, LatticeValue::ANY),
+            (Inferred::of(Type::NIL), LatticeValue::of(Type::NIL)),
+            (Inferred::of(Type::NUMBER), LatticeValue::of(Type::NUMBER)),
             (
                 Inferred::known(Type::FN, Known::Function(ExprId(7))),
-                CompactInferred::known_function(ExprId(7)),
+                LatticeValue::known_function(ExprId(7)),
             ),
             (
                 Inferred::known(Type::FN, Known::Function(ExprId(8))),
-                CompactInferred::known_function(ExprId(8)),
+                LatticeValue::known_function(ExprId(8)),
             ),
             (
                 Inferred::known(Type::RECORD, Known::Instance(GlobalId(3))),
-                CompactInferred::known_instance(Type::RECORD, GlobalId(3)),
+                LatticeValue::known_instance(Type::RECORD, GlobalId(3)),
             ),
             (
                 Inferred::known(Type::VECTOR, Known::Vector)
                     .with_elements(Inferred::of(Type::NUMBER)),
-                CompactInferred::known_raw(Type::VECTOR, KNOWN_VECTOR, 0)
-                    .with_elements(CompactInferred::of(Type::NUMBER)),
+                LatticeValue::known_vector(Type::VECTOR)
+                    .with_elements(LatticeValue::of(Type::NUMBER)),
             ),
             (
                 Inferred::known(Type::VECTOR, Known::Vector)
                     .with_elements(Inferred::known(Type::FN, Known::Function(ExprId(7)))),
-                CompactInferred::known_raw(Type::VECTOR, KNOWN_VECTOR, 0)
-                    .with_elements(CompactInferred::known_function(ExprId(7))),
+                LatticeValue::known_vector(Type::VECTOR)
+                    .with_elements(LatticeValue::known_function(ExprId(7))),
             ),
             (
                 Inferred::known(Type::HOST, Known::Array),
-                CompactInferred::known_raw(Type::HOST, KNOWN_ARRAY, 0),
+                LatticeValue::known_array(Type::HOST),
             ),
-            (Inferred::of(Type::MAP), CompactInferred::of(Type::MAP)),
-            (
-                Inferred::of(Type::STRING),
-                CompactInferred::of(Type::STRING),
-            ),
+            (Inferred::of(Type::HOST), LatticeValue::of(Type::HOST)),
+            (Inferred::of(Type::MAP), LatticeValue::of(Type::MAP)),
+            (Inferred::of(Type::STRING), LatticeValue::of(Type::STRING)),
         ];
-        for (a_pub, a_cmp) in &pairs {
-            assert_eq!(a_cmp.to_inferred(), *a_pub);
-            assert_eq!(a_cmp.element().to_inferred(), a_pub.element());
+        for (a_pub, a_lat) in &pairs {
+            assert_eq!(a_lat.to_compact().to_inferred(), *a_pub);
+            assert_eq!(a_lat.element().to_compact().to_inferred(), a_pub.element());
+            assert_eq!(a_lat.union(*a_lat), *a_lat);
             for mask in [
                 Type::NIL,
                 Type::FN,
                 Type::VECTOR,
                 Type::RECORD,
                 Type::NUMBER,
+                Type::HOST,
             ] {
-                assert_eq!(a_cmp.keep(mask).to_inferred(), a_pub.keep(mask));
-                assert_eq!(a_cmp.remove(mask).to_inferred(), a_pub.remove(mask));
-            }
-            for (b_pub, b_cmp) in &pairs {
-                assert_eq!(a_cmp.union(*b_cmp).to_inferred(), a_pub.union(*b_pub));
                 assert_eq!(
-                    a_cmp.with_elements(*b_cmp).to_inferred(),
-                    a_pub.with_elements(*b_pub)
+                    a_lat.keep(mask).to_compact().to_inferred(),
+                    a_pub.keep(mask)
+                );
+                assert_eq!(
+                    a_lat.remove(mask).to_compact().to_inferred(),
+                    a_pub.remove(mask)
                 );
             }
+            for (b_pub, b_lat) in &pairs {
+                assert_eq!(a_lat.union(*b_lat), b_lat.union(*a_lat));
+                assert_eq!(
+                    a_lat.union(*b_lat).to_compact().to_inferred(),
+                    a_pub.union(*b_pub)
+                );
+                assert_eq!(
+                    a_lat.with_elements(*b_lat).to_compact().to_inferred(),
+                    a_pub.with_elements(*b_pub)
+                );
+                for (_, c_lat) in &pairs {
+                    assert_eq!(
+                        a_lat.union(*b_lat).union(*c_lat),
+                        a_lat.union(b_lat.union(*c_lat)),
+                        "LatticeValue::union must be associative"
+                    );
+                }
+            }
+        }
+    }
+
+    fn flatten_top_forms(program: &Program) -> Vec<ExprId> {
+        let mut top = Vec::new();
+        let mut pending = vec![program.root];
+        while let Some(id) = pending.pop() {
+            match &program.exprs[id.0].kind {
+                ExprKind::Do(items) => pending.extend(items.iter().rev().copied()),
+                _ => top.push(id),
+            }
+        }
+        top
+    }
+
+    fn assert_inference_parity(program: &Program, serial: &Inference, parallel: &Inference) {
+        assert_eq!(parallel.typed_parameters(), serial.typed_parameters());
+        for expr in 0..program.exprs.len() {
+            let id = ExprId(expr);
+            assert_eq!(
+                parallel.value(id),
+                serial.value(id),
+                "value mismatch for {id:?}"
+            );
+        }
+        for local in 0..program.locals.len() {
+            let id = LocalId(local);
+            assert_eq!(
+                parallel.local(id),
+                serial.local(id),
+                "local mismatch for {id:?}"
+            );
+            assert_eq!(
+                parallel.uses(id),
+                serial.uses(id),
+                "uses mismatch for {id:?}"
+            );
         }
     }
 
@@ -4868,14 +5142,7 @@ mod tests {
 
         let forms = crate::parse(&source).expect("parse");
         let program = crate::analyze(&source, &forms).expect("analyze");
-        let mut top = Vec::new();
-        let mut pending = vec![program.root];
-        while let Some(id) = pending.pop() {
-            match &program.exprs[id.0].kind {
-                ExprKind::Do(items) => pending.extend(items.iter().rev().copied()),
-                _ => top.push(id),
-            }
-        }
+        let top = flatten_top_forms(&program);
         let closed = crate::call_shapes::closed_functions(&program, &[]);
         let serial = Inference::new(&program, ProgramFacts::new(&program, &top), &closed);
         assert!(serial.typed_parameters() > 30);
@@ -4890,33 +5157,59 @@ mod tests {
                 1,
                 1,
             );
-            assert_eq!(
-                parallel.typed_parameters(),
-                serial.typed_parameters(),
-                "typed_parameters mismatch at slots={slot_count}"
-            );
-            for expr in 0..program.exprs.len() {
-                let id = ExprId(expr);
-                assert_eq!(
-                    parallel.value(id),
-                    serial.value(id),
-                    "value mismatch for {id:?} at slots={slot_count}"
-                );
-            }
-            for local in 0..program.locals.len() {
-                let id = LocalId(local);
-                assert_eq!(
-                    parallel.local(id),
-                    serial.local(id),
-                    "local mismatch for {id:?} at slots={slot_count}"
-                );
-                assert_eq!(
-                    parallel.uses(id),
-                    serial.uses(id),
-                    "uses mismatch for {id:?} at slots={slot_count}"
-                );
-            }
+            assert_inference_parity(&program, &serial, &parallel);
         }
+    }
+
+    #[test]
+    fn parallel_bsp_preserves_mixed_representation_summary() {
+        // Mixing `Known::Function`, `Known::Array`, and `Known::Vector` into
+        // the same closed parameter across a forced BSP wave must agree with
+        // serial solving on both the raw parameter and narrowed branches.
+        let mut source = String::new();
+        source.push_str("(defn sink [v] (if (vector? v) (count v) 0) (if (array? v) v nil) nil)\n");
+        source.push_str("(defn feed [a b] (sink a) (sink b))\n");
+        for i in 0..16 {
+            source.push_str(&format!("(defn pad{i} [x] (+ x {i}))\n"));
+        }
+        source.push_str("(sink (fn [] nil))\n");
+        source.push_str("(feed #js [] [1])\n");
+        for i in 0..16 {
+            source.push_str(&format!("(pad{i} {i})\n"));
+        }
+        let forms = crate::parse(&source).expect("parse");
+        let program = crate::analyze(&source, &forms).expect("analyze");
+        let top = flatten_top_forms(&program);
+        let closed = crate::call_shapes::closed_functions(&program, &[]);
+        let facts = ProgramFacts::new(&program, &top);
+        let serial = Inference::new(&program, facts, &closed);
+
+        let slots = crate::scheduler::Slots::new(4).unwrap();
+        let raw_facts = ProgramFacts::new(&program, &top);
+        let mut solver = Solver::new(&program, &raw_facts, &closed);
+        assert!(solver.solve(slots, 1).is_some());
+        assert!(solver.bsp_waves > 0, "expected at least one BSP wave");
+
+        let parallel = Inference::build(
+            &program,
+            ProgramFacts::new(&program, &top),
+            &closed,
+            slots,
+            1,
+            1,
+        );
+        assert_inference_parity(&program, &serial, &parallel);
+        let v_local = program
+            .locals
+            .iter()
+            .enumerate()
+            .find_map(|(idx, binding)| (binding.name == "v").then_some(LocalId(idx)))
+            .expect("local v");
+        assert_eq!(
+            parallel.local(v_local),
+            Inferred::of(Type::FN.union(Type::HOST).union(Type::VECTOR))
+                .with_elements(Inferred::of(Type::NUMBER))
+        );
     }
 
     #[test]
@@ -4928,14 +5221,7 @@ mod tests {
         source.push_str("(f119 \"ok\")\n");
         let forms = crate::parse(&source).expect("parse");
         let program = crate::analyze(&source, &forms).expect("analyze");
-        let mut top = Vec::new();
-        let mut pending = vec![program.root];
-        while let Some(id) = pending.pop() {
-            match &program.exprs[id.0].kind {
-                ExprKind::Do(items) => pending.extend(items.iter().rev().copied()),
-                _ => top.push(id),
-            }
-        }
+        let top = flatten_top_forms(&program);
         let closed = crate::call_shapes::closed_functions(&program, &[]);
         let serial = Inference::new(&program, ProgramFacts::new(&program, &top), &closed);
         assert_eq!(serial.typed_parameters(), 120);
@@ -4952,5 +5238,137 @@ mod tests {
         );
         assert_eq!(parallel.typed_parameters(), 120);
         assert_eq!(parallel.value(program.root), Inferred::of(Type::STRING));
+    }
+
+    #[test]
+    fn parallel_bsp_retries_serially_before_dropping_closed_functions() {
+        // A loop that shifts a number through 62 locals one step per walk in
+        // an earlier slice, fed by a closed atom written from a later slice.
+        // Serial reverse sweep wakes the loop in round 2 and converges at round
+        // 64; a BSP wave in round 2 delays waking it to round 3 so the mixed
+        // solve exhausts ROUND_LIMIT, and `Inference::build` must retry
+        // serially with the original `ClosedFunctions` instead of dropping
+        // parameter types.
+        let mut source = String::from("(def state (atom nil))\n");
+        let mut bindings = String::new();
+        let mut recur_args = String::new();
+        for i in (1..63).rev() {
+            bindings.push_str(&format!("l{i} nil "));
+            recur_args.push_str(&format!("l{} ", i - 1));
+        }
+        bindings.push_str("l0 @state");
+        recur_args.push_str("l0");
+        source.push_str(&format!(
+            "(defn stepper [flag] (loop [{bindings}] (if flag (recur {recur_args}) (do l62 nil))))\n"
+        ));
+        for i in 0..16 {
+            source.push_str(&format!("(defn pad{i} [x] (+ x {i}))\n"));
+        }
+        source.push_str("(defn writer [x] (reset! state x) nil)\n");
+        source.push_str("(stepper true)\n");
+        for i in 0..16 {
+            source.push_str(&format!("(pad{i} {i})\n"));
+        }
+        source.push_str("(writer 1)\n");
+
+        let forms = crate::parse(&source).expect("parse");
+        let program = crate::analyze(&source, &forms).expect("analyze");
+        let top = flatten_top_forms(&program);
+        let closed = crate::call_shapes::closed_functions(&program, &[]);
+
+        let serial = Inference::new(&program, ProgramFacts::new(&program, &top), &closed);
+        assert!(serial.typed_parameters() >= 18);
+
+        let slots = crate::scheduler::Slots::new(4).unwrap();
+        let raw_facts = ProgramFacts::new(&program, &top);
+        let mut raw_solver = Solver::new(&program, &raw_facts, &closed);
+        let raw_result = raw_solver.solve(slots, 1);
+        assert!(raw_solver.bsp_waves > 0, "expected a BSP wave to run");
+        assert!(
+            raw_result.is_none(),
+            "expected BSP snapshot lag to exhaust ROUND_LIMIT before serial retry"
+        );
+
+        let parallel = Inference::build(
+            &program,
+            ProgramFacts::new(&program, &top),
+            &closed,
+            slots,
+            1,
+            1,
+        );
+        assert_inference_parity(&program, &serial, &parallel);
+    }
+
+    #[test]
+    fn oversized_slot_budget_keeps_inference_inline() {
+        let mut source = String::from("(defn f [x] (+ x 1))\n");
+        for i in 0..8 {
+            source.push_str(&format!("(defn g{i} [y] (f (+ y {i})))\n"));
+            source.push_str(&format!("(g{i} {i})\n"));
+        }
+        let forms = crate::parse(&source).expect("parse");
+        let program = crate::analyze(&source, &forms).expect("analyze");
+        let top = flatten_top_forms(&program);
+        let closed = crate::call_shapes::closed_functions(&program, &[]);
+
+        let serial = Inference::new(&program, ProgramFacts::new(&program, &top), &closed);
+        let huge = crate::scheduler::Slots::new(usize::MAX / 2 + 1).unwrap();
+        let parallel = Inference::build(
+            &program,
+            ProgramFacts::new(&program, &top),
+            &closed,
+            huge,
+            1,
+            1,
+        );
+        assert_inference_parity(&program, &serial, &parallel);
+    }
+
+    #[test]
+    fn parallel_bsp_wakes_new_function_return_subscriber() {
+        // `invoke` does not know `reader` as its callee until round 2 (when
+        // its parameter `f` learns `Known::Function(reader)` during a BSP
+        // wave). At the same time, a later slice widens `@state` from `number`
+        // to `number|string`. The newly discovered `fn_returns` edge for
+        // `reader` must be registered before changed summaries mark
+        // subscribers dirty so `invoke` and `observe` pick up `number|string`.
+        let mut source = String::new();
+        source.push_str("(def state (atom 1))\n");
+        source.push_str("(defn reader [] @state)\n");
+        source.push_str("(defn invoke [f] (f))\n");
+        source.push_str("(defn observe [] (invoke reader))\n");
+        for i in 0..16 {
+            source.push_str(&format!("(defn pad{i} [x] (+ x {i}))\n"));
+        }
+        source.push_str("(defn late-write [x] (reset! state x) nil)\n");
+        for i in 0..16 {
+            source.push_str(&format!("(pad{i} {i})\n"));
+        }
+        source.push_str("(late-write \"s\")\n");
+        source.push_str("(observe)\n");
+
+        let forms = crate::parse(&source).expect("parse");
+        let program = crate::analyze(&source, &forms).expect("analyze");
+        let top = flatten_top_forms(&program);
+        let closed = crate::call_shapes::closed_functions(&program, &[]);
+        let serial = Inference::new(&program, ProgramFacts::new(&program, &top), &closed);
+
+        let slots = crate::scheduler::Slots::new(4).unwrap();
+        let raw_facts = ProgramFacts::new(&program, &top);
+        let mut raw_solver = Solver::new(&program, &raw_facts, &closed);
+        assert!(raw_solver.solve(slots, 1).is_some());
+        assert!(raw_solver.bsp_waves > 0, "expected a BSP wave to run");
+
+        let parallel = Inference::build(
+            &program,
+            ProgramFacts::new(&program, &top),
+            &closed,
+            slots,
+            1,
+            1,
+        );
+        assert_inference_parity(&program, &serial, &parallel);
+        assert_eq!(parallel.ty(program.root), Type::NUMBER.union(Type::STRING));
     }
 }

@@ -1112,17 +1112,19 @@ and `Prepare` output does not change.
 - **Fixed point.** Locals and expressions start at `never` and grow until
   nothing changes. Every transfer is monotone over a finite lattice, and
   calling `nil` gives `never`, so recursive functions converge. Internally the
-  solver stores values in a 16-byte `CompactInferred` lattice (converting to
-  `Inferred` at the public query boundary), records per-form read dependencies
-  during the initial forward round, and re-walks only dirty forms in
-  alternating reverse/forward rounds (partitioned across `scheduler::map`
-  slices in parallel BSP waves when `slots > 1` and the dirty work exceeds a
-  threshold, falling back to serial rounds past `ROUND_LIMIT / 2` so deep
-  cross-slice chains converge identically). Per-expression `values` population
-  is deferred to a single read-only pass after convergence (batched on
-  `scheduler::map` when `slots > 1`). After `ROUND_LIMIT` rounds, inference
-  starts over without parameter types, and if that does not converge either,
-  everything is `any`.
+  solver tracks per-class refinements associatively so parallel merges and
+  serial sweeps converge to the same state, projects converged results into
+  16-byte `CompactInferred` storage (converting to `Inferred` at the public
+  query boundary), records per-form read dependencies during the initial
+  forward round, and re-walks only dirty forms in alternating reverse/forward
+  rounds (partitioned across `scheduler::map` slices in parallel BSP waves when
+  `slots > 1` and the dirty work exceeds a threshold, falling back to serial
+  rounds past `ROUND_LIMIT / 2`, and retrying serially with the original
+  `ClosedFunctions` before discarding parameter types if a multi-slot solve
+  reaches `ROUND_LIMIT`). Per-expression `values` population is deferred to a
+  single read-only pass after convergence (batched on `scheduler::map` when
+  `slots > 1`). After `ROUND_LIMIT` rounds, inference starts over without
+  parameter types, and if that does not converge either, everything is `any`.
 - **Program-wide conditions.** `ProgramFacts` is the scan `Inert` used,
   moved here. It records:
   - replaced core operations, whose calls are `any`;

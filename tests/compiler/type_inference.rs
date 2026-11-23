@@ -2325,3 +2325,94 @@ fn function_parameters_are_called_directly_unless_they_may_be_nil() {
     assert!(!js.contains(".call(null, (l"), "{js}");
     assert!(js.contains(".call(null, 1)"), "{js}");
 }
+
+#[test]
+fn wide_swap_callback_preserves_all_inferred_arguments() {
+    // Nine callback arguments (atom state + eight extra arguments) cross the
+    // inline argument buffer boundary (8) during callback argument assembly.
+    let source = r#"(def a (atom 10))
+        (defn combine [st a1 a2 a3 a4 a5 a6 a7 a8]
+          (if (and (number? st)
+                   (string? a1)
+                   (keyword? a2)
+                   (boolean? a3)
+                   (vector? a4)
+                   (map? a5)
+                   (set? a6)
+                   (symbol? a7)
+                   (number? a8))
+            (+ st a8)
+            0))
+        (pr-str (swap! a combine "s" :k true [1] {:a 1} #{2} 'sym 5))"#;
+    assert_eq!(local(source, "st"), Inferred::of(Type::NUMBER));
+    assert_eq!(local(source, "a1"), Inferred::of(Type::STRING));
+    assert_eq!(local(source, "a7"), Inferred::of(Type::SYMBOL));
+    assert_eq!(local(source, "a8"), Inferred::of(Type::NUMBER));
+    every_level(source, "15");
+}
+
+#[test]
+#[ignore = "200k acceptance check: set LIGHT_CLJS_200K_DIR=<project-dir> and run with --ignored --nocapture"]
+fn typed_parameter_parity_200k() {
+    let dir = std::path::PathBuf::from(
+        std::env::var("LIGHT_CLJS_200K_DIR")
+            .expect("set LIGHT_CLJS_200K_DIR to a 200k benchmark project directory"),
+    );
+    let roots: Vec<std::path::PathBuf> = [
+        "src",
+        "macros",
+        "lib/light/vendor",
+        "lib/light/compat",
+        "lib/light/re-frame",
+    ]
+    .into_iter()
+    .map(|rel| dir.join(rel))
+    .filter(|path| path.is_dir())
+    .collect();
+    assert!(!roots.is_empty(), "no source roots under {}", dir.display());
+    let mut host = light_cljs::MacroHost::new();
+    host.opaque_packages = true;
+    host.limits.expansions = 100_000_000;
+    host.limits.generated_nodes = 4_000_000_000;
+    host.evaluator_options.memory_limit = 4_000_000_000;
+    host.evaluator_options.poll_budget = 1_000_000_000_000;
+    host.evaluator_options.timeout = std::time::Duration::from_secs(3600);
+    let mut warnings = Vec::new();
+    let program = light_cljs::compiler::analyze_namespace_entry(
+        "workload.main",
+        &roots,
+        &mut host,
+        light_cljs::analyzer::AnalysisOptions::default(),
+        &mut warnings,
+    )
+    .expect("analyze 200k project");
+    let exprs = program.exprs.len();
+    let locals = program.locals.len();
+    let j1 = light_cljs::prepare_owned_application_with_slots(
+        program.clone(),
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+        light_cljs::scheduler::Slots::ONE,
+    );
+    let j8 = light_cljs::prepare_owned_application_with_slots(
+        program,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+        light_cljs::scheduler::Slots::new(8).unwrap(),
+    );
+    let t1 = j1.stats().typed_parameters;
+    let t8 = j8.stats().typed_parameters;
+    eprintln!(
+        "200k_parity dir={} exprs={} locals={} sizeof_Inferred={} typed_parameters_j1={} typed_parameters_j8={}",
+        dir.display(),
+        exprs,
+        locals,
+        std::mem::size_of::<Inferred>(),
+        t1,
+        t8,
+    );
+    assert_eq!(t8, t1, "typed_parameters diverged between j=1 and j=8");
+    if let Ok(expected) = std::env::var("LIGHT_CLJS_200K_EXPECTED_TYPED") {
+        let expected: usize = expected.parse().expect("expected typed_parameters count");
+        assert_eq!(t1, expected, "typed_parameters diverged from base at j=1");
+        assert_eq!(t8, expected, "typed_parameters diverged from base at j=8");
+    }
+}
