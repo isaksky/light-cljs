@@ -949,3 +949,53 @@ of 46% and 48% (parent, against its second cache-off round): the gate is
 (SHA-256 `d9f1a3e9...`, 31,091,665 bytes). On the generated 400k projects
 the same edit-rebuild gain is in
 [generated-shadow-vs-light.md](generated-shadow-vs-light.md#declaration-views-for-source-macro-users-unreserved-machine-november-14-2026-light-cljs-347).
+
+## Cold cache-fill macro-host capture and `reader_view` projection (light-cljs-1102, November 23, 2026)
+
+Re-enabling `reader_view` `&env` projection under work measurement (charging
+the sound `2 * (nodes + declared)` full-environment budget), splitting
+per-isolate caches (`WorkCache`: 16-entry LRU environment-size cache,
+`takeEncodePeak`, cached `takeNamespaces` wrappers, and `encode_peak_clean`)
+from per-unit `WorkMarks`, enabling permanent `__lightGensym` logging once per
+worker isolate on first macro-engine entry, and gating `takeNamespaces` on
+actual engine entry eliminate the worker and host overhead of cold cache-fill
+builds.
+
+V8 build release binaries (`c405fe2e` base vs `8662934e` candidate), Apple M3
+Ultra VM (24 vCPUs, 32 GiB), **unreserved** machine (1-minute `uptime` load
+3.76–4.91), medians of 3 alternating rounds at `--jobs 8` (1 alternating pair
+for `--jobs 1` and `--no-cache --jobs 8`) on `workload-200k-seed42` and
+`re-frame-200k-seed42` (`release bench --optimize advanced --stats`). Peak
+memory is from `/usr/bin/time -l` (GB = 10^9 bytes, MiB in parentheses).
+
+| Project | Mode | Binary | Wall (ms) | `time.worker-units-ms` | `trace.units.host` | `trace.units.host-ms` | `trace.engine.entries` | Peak memory |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `workload-200k-seed42` | `--no-cache --jobs 8` | base `c405fe2e` | 2,246.9 | 3,230.3 | 2,501 | 1,601.2 | 10,887 | 1.109 GB (1,057.2 MiB) |
+| `workload-200k-seed42` | `--no-cache --jobs 8` | candidate `8662934e` | 2,233.3 | 3,158.2 | 2,497 | 1,564.6 | 10,887 | 1.102 GB (1,051.4 MiB) |
+| `workload-200k-seed42` | cold `--cache-dir --jobs 1` | base `c405fe2e` | 7,619.4 | 0.0 | 13,464 | 2,576.1 | 436,461 | 0.937 GB (893.9 MiB) |
+| `workload-200k-seed42` | cold `--cache-dir --jobs 1` | candidate `8662934e` | 6,756.7 (-11.3%) | 0.0 | 2,580 (-80.8%) | 1,188.2 (-53.9%) | 278,921 (-36.1%) | 0.947 GB (903.3 MiB) |
+| `workload-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | base `c405fe2e` | 6,660.6 (6,657.0–6,772.2) | 5,691.2 (5,673.5–5,761.2) | 3,538 | 4,129.0 (4,099.7–4,164.5) | 71,648 | 1.154 GB (1.142–1.154) |
+| `workload-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | candidate `8662934e` | 5,255.7 (5,147.0–5,330.7) (-21.1%) | 3,521.0 (3,504.1–3,591.6) (-38.1%) | 2,406 (-32.0%) | 1,753.2 (1,738.0–1,781.9) (-57.5%) | 66,548 (-7.1%) | 1.155 GB (1.152–1.158) |
+| `re-frame-200k-seed42` | `--no-cache --jobs 8` | base `c405fe2e` | 3,537.0 | 3,483.9 | 2,473 | 1,675.6 | 4,987 | 1.358 GB (1,295.3 MiB) |
+| `re-frame-200k-seed42` | `--no-cache --jobs 8` | candidate `8662934e` | 3,338.8 | 3,479.9 | 2,467 | 1,684.0 | 4,987 | 1.341 GB (1,279.1 MiB) |
+| `re-frame-200k-seed42` | cold `--cache-dir --jobs 1` | base `c405fe2e` | 8,997.6 | 0.0 | 17,136 | 2,563.4 | 643,530 | 1.252 GB (1,194.1 MiB) |
+| `re-frame-200k-seed42` | cold `--cache-dir --jobs 1` | candidate `8662934e` | 8,727.9 (-3.0%) | 0.0 | 4,642 (-72.9%) | 1,410.4 (-45.0%) | 425,208 (-33.9%) | 1.214 GB (1,157.5 MiB) |
+| `re-frame-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | base `c405fe2e` | 7,461.1 (7,345.6–7,523.7) | 4,275.8 (4,256.4–4,362.5) | 3,643 | 2,591.6 (2,580.7–2,645.1) | 98,498 | 1.371 GB (1.357–1.382) |
+| `re-frame-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | candidate `8662934e` | 7,073.6 (6,982.6–7,182.5) (-5.2%) | 3,567.5 (3,542.7–3,582.8) (-16.6%) | 2,436 (-33.1%) | 1,729.8 (1,721.0–1,736.8) (-33.3%) | 96,318 (-2.2%) | 1.331 GB (1.315–1.354) |
+
+- *Parity.* Emitted `out/light/workload.main.js` is byte-identical between base
+  and candidate at each `--jobs` value and between `--no-cache` and cold
+  `--cache-dir` at the same `--jobs` (`workload-200k-seed42` `j=1` SHA-256
+  `94a7f9e2e894`, 3,386,878 bytes; `j=8` `4a4f9189a188`, 3,386,824 bytes;
+  `re-frame-200k-seed42` `j=1` `4946b32bc6bd`, 5,565,520 bytes; `j=8`
+  `e934a4528dc7`, 5,565,482 bytes). Every build matches `bb oracle.bb 42 3`
+  via `node run-light.mjs 42 3` (`484264` plain; `714878 117718` re-frame) and
+  passes `bb check-waste.bb --strict`.
+- *Targets.* On `workload-200k-seed42` cold `--jobs 8`, `time.worker-units-ms`
+  drops to 3,521.0 ms (<= 4,100 ms target) and `trace.units.host` drops to
+  2,406 (<= 2,600 target; `j=1` drops from 13,464 to 2,580, matching
+  `--no-cache`). On `re-frame-200k-seed42` cold `--jobs 8`,
+  `time.worker-units-ms` drops to 3,567.5 ms (<= 3,700 ms target; within 88 ms
+  of `--no-cache`), `trace.units.host` drops to 2,436 (`j=1` drops from 17,136
+  to 4,642, matching `--no-cache`), and peak memory drops 40 MB to 1.331 GB
+  (<= 1.42 GB target).
